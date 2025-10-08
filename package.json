@@ -1,0 +1,32 @@
+{
+  "name": "message-api",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "NODE_ENV=development node src/server.js",
+    "start": "NODE_ENV=production node src/server.js",
+    "test:login-flow": "node scripts/test-login-flow.mjs",
+    "test:prekeys-devkeys": "node scripts/test-prekeys-devkeys.mjs",
+    "test:messages-secure": "node scripts/test-messages-secure.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.890.0",
+    "@aws-sdk/s3-presigned-post": "^3.890.0",
+    "@aws-sdk/s3-request-presigner": "^3.890.0",
+    "@cloudflare/opaque-ts": "^0.7.5",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "nanoid": "^5.1.5",
+    "node-aes-cmac": "^0.1.1",
+    "pino": "^9.4.0",
+    "pino-http": "^10.3.0",
+    "pm2": "^6.0.11",
+    "ws": "^8.17.0",
+    "zod": "^3.25.76"
+  }
+}
