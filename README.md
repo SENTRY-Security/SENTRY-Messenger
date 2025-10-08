@@ -365,3 +365,21 @@ ORIGIN_API=https://api.message.sentry.red npm run test:messages-secure
 # 登入流程（可選，待 OPAQUE 路由穩定）
 ORIGIN_API=https://api.message.sentry.red npm run test:login-flow
 ```
+
+### GitHub Actions（E2E）
+
+Repo 已內建工作流程 `.github/workflows/e2e.yml`：
+
+- 觸發：PR 到 `main`、或手動（Workflow Dispatch）。
+- 需求：在 repo 的 Settings → Secrets and variables → Actions，新增 `E2E_ORIGIN_API`（建議填 Staging API，例如 `https://api.message.sentry.red`）。
+- 內容：
+  - Job `Prekeys & Devkeys`：呼叫 `/api/v1/keys/publish`、`/api/v1/devkeys/store|fetch`。
+  - Job `Messages Secure`：呼叫 `/api/v1/messages/secure` 建立/列出 envelope。
+- 安全性：如果沒有設定 `E2E_ORIGIN_API`，工作流程會自動跳過，不會打到外部 API。
+
+建議在 GitHub → Settings → Branches → Branch protection rules：
+
+- 建立 `main` 分支保護：
+  - Require a pull request before merging
+  - Require status checks to pass before merging（勾選 `E2E Checks / Prekeys & Devkeys`、`E2E Checks / Messages Secure`）
+  - Include administrators（視團隊需要）
