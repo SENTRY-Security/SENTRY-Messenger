@@ -471,11 +471,38 @@ export default {
 
       const results = [];
       for (const id of ids) {
-        const resSecure = await env.DB.prepare(
-          `DELETE FROM messages_secure WHERE id=?1`
-        ).bind(id).run();
-        const count = resSecure?.meta?.changes || 0;
-        results.push({ id, count });
+        let secureCount = 0;
+        try {
+          const resSecure = await env.DB.prepare(
+            `DELETE FROM messages_secure WHERE id=?1`
+          ).bind(id).run();
+          secureCount = resSecure?.meta?.changes || 0;
+        } catch (err) {
+          console.warn('delete messages_secure failed', err);
+        }
+
+        let generalCount = 0;
+        let mediaCount = 0;
+        try {
+          const row = await env.DB.prepare(
+            `SELECT obj_key FROM messages WHERE id=?1`
+          ).bind(id).all();
+          const objKey = row?.results?.[0]?.obj_key || null;
+          const resGeneral = await env.DB.prepare(
+            `DELETE FROM messages WHERE id=?1`
+          ).bind(id).run();
+          generalCount = resGeneral?.meta?.changes || 0;
+          if (objKey) {
+            const resMedia = await env.DB.prepare(
+              `DELETE FROM media_objects WHERE obj_key=?1`
+            ).bind(objKey).run();
+            mediaCount = resMedia?.meta?.changes || 0;
+          }
+        } catch (err) {
+          console.warn('delete messages/media failed', err);
+        }
+
+        results.push({ id, secure: secureCount, general: generalCount, media: mediaCount });
       }
 
       return json({ ok: true, results });

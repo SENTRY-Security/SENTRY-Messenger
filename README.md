@@ -178,6 +178,18 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 執行完成後，終端機會顯示 Pages 部署網址與 API 健康檢查指令，可依提示驗證。
 
+如需部分部署或在新 session 自動化執行，請依實際修改範圍選擇指令：
+
+| 修改範圍 | 指令範例 | 備註 |
+| --- | --- | --- |
+| Node API（`src/`、`scripts/` 等後端檔案） | `bash ./scripts/deploy-prod.sh --skip-worker --skip-pages` | 僅重新安裝依賴並透過 PM2 reload |
+| Cloudflare Worker / D1 schema（`data-worker/`） | `bash ./scripts/deploy-prod.sh --apply-migrations --skip-pages` | 若變更 schema 記得保留 `--apply-migrations` |
+| 前端（`web/`） | `bash ./scripts/deploy-prod.sh --skip-worker --skip-api` | 只重新部署 Pages（會保留後端現況） |
+
+部署後可使用腳本尾端提示的 `curl` 指令，快速檢查 API / Pages 是否恢復正常。
+
+> **新 session 提醒**：Codex 重新啟動時，請先閱讀 `Prompt.md`，再回到本檔查閱架構、測試與部署章節。遵循 SOP：先開發 → 跑四項測試 → 視修改範圍部署 → 驗證健康檢查 → 回報結果。
+
 ---
 
 ## 測試 TODO（覆蓋清單）
@@ -345,11 +357,23 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - 內容：SDM debug-kit → Exchange → `/api/v1/messages/secure` 建立 envelope → `/api/v1/messages/secure?conversationId=` 列出
   - 期望：create 202；list 至少一筆
 
+- `npm run test:friends-messages`
+  - 路徑：`scripts/test-friends-messages.mjs`
+  - 內容：兩位模擬用戶分別註冊→登入→建立好友邀請→受邀方加入→雙向傳送隱匿訊息並解密驗證
+  - 需求：需先啟動 Node API；可透過 `ORIGIN_API` 指定目標環境（預設 `http://127.0.0.1:3000`）
+
 - `npm run test:login-flow`
   - 路徑：`scripts/test-login-flow.mjs`
   - 內容：debug-kit → Exchange → OPAQUE（無紀錄則註冊）→ 首次 `/api/v1/mk/store` → 再 Exchange 應 `hasMK=true` → 再次 OPAQUE login
   - 參數：可用 `--uid <UIDHEX>` 固定測試 UID；`ORIGIN_API` 指定 API
   - 備註：若 OPAQUE 路由尚未完整，可能回 `RecordNotFound` 或 base64 解析錯誤；建議用前端 `ensureOpaque()` 路徑（會自動註冊再登入）或完成後端路由再跑此腳本。
+- `npm run test:front:login`
+  - 路徑：`tests/e2e/*.spec.mjs`（Playwright）
+  - 前置：自動清除上一輪的 E2E 截圖、Playwright report 與暫存測試資料，再重建測試用帳號
+  - 內容：登入後依序驗證暱稱同步、頭像更換、檔案上傳/刪除、雙向訊息讀寫、對話刪除（雙邊同步保留聯絡人）、聯絡人刪除與登出
+  - 截圖：關鍵步驟輸出至 `artifacts/e2e/screens/`，供驗收留存
+  - 需求：本機 API 需先啟動（例：`NODE_ENV=development node src/server.js`）；首次可跑 `npx playwright install --with-deps`
+  - 參數：以 `ORIGIN_API` 指定 API；預設使用 `http://127.0.0.1:3000`
 
 執行範例
 
@@ -364,6 +388,12 @@ ORIGIN_API=https://api.message.sentry.red npm run test:messages-secure
 
 # 登入流程（可選，待 OPAQUE 路由穩定）
 ORIGIN_API=https://api.message.sentry.red npm run test:login-flow
+
+# 前端 E2E 登入（需本機 API）
+NODE_ENV=development node src/server.js &
+API_PID=$!
+ORIGIN_API=http://127.0.0.1:3000 npm run test:front:login
+kill $API_PID
 ```
 
 ### GitHub Actions（E2E）

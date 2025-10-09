@@ -1383,7 +1383,16 @@ const contactsView = initContactsView({
   updateStats: () => updateProfileStats()
 });
 
-const { loadInitialContacts, addContactEntry: addContactEntryRaw, removeContactLocal: removeContactLocalRaw } = contactsView;
+const { loadInitialContacts, renderContacts, addContactEntry: addContactEntryRaw, removeContactLocal: removeContactLocalRaw } = contactsView;
+
+if (typeof window !== 'undefined') {
+  try {
+    window.__refreshContacts = async () => {
+      await loadInitialContacts();
+      renderContacts();
+    };
+  } catch {}
+}
 
 async function addContactEntry(contact) {
   const result = await addContactEntryRaw(contact);
@@ -1451,6 +1460,10 @@ shareController = setupShareController({
   getCurrentTab: () => currentTab,
   showToast
 });
+
+if (typeof window !== 'undefined') {
+  try { window.__shareController = shareController; } catch {}
+}
 
 const {
   restoreInviteSecrets,
@@ -1930,6 +1943,34 @@ async function refreshDriveList(){
   updateProfileStats();
 }
 
+if (typeof window !== 'undefined') {
+  try {
+    window.__refreshDrive = async () => {
+      try {
+        await refreshDriveList();
+      } catch (err) {
+        log({ driveRefreshError: err?.message || err });
+      }
+    };
+    window.__getContactState = () => {
+      try {
+        return Array.isArray(sessionStore.contactState) ? sessionStore.contactState.map((c) => ({ ...c })) : [];
+      } catch (err) {
+        log({ contactStateSnapshotError: err?.message || err });
+        return [];
+      }
+    };
+    window.__refreshConversations = async () => {
+      try {
+        await refreshConversationPreviews({ force: true });
+        renderConversationList();
+      } catch (err) {
+        log({ conversationRefreshError: err?.message || err });
+      }
+    };
+  } catch {}
+}
+
 function renderDriveList(items, convId){
   if (!driveList) return;
   closeOpenSwipe();
@@ -2366,9 +2407,35 @@ async function handleItemDelete({ type, key, name, element }) {
   });
 }
 
+if (typeof window !== 'undefined') {
+  try {
+    window.__deleteDriveObject = async (key) => {
+      if (!currentConvId || !key) return false;
+      const matches = currentMessages
+        .filter((msg) => {
+          const direct = typeof msg?.obj_key === 'string' ? msg.obj_key : '';
+          if (direct && direct === key) return true;
+          const header = safeJSON(msg?.header_json || msg?.header || '{}');
+          return typeof header?.obj === 'string' && header.obj === key;
+        });
+      const ids = matches.map((msg) => String(msg?.id || '')).filter(Boolean);
+      try {
+        log({ driveDeleteAttempt: { key, ids, matches: matches.length } });
+        await performDelete({ keys: [key], ids });
+        await refreshDriveList();
+        return true;
+      } catch (err) {
+        log({ deleteError: String(err?.message || err), key });
+        return false;
+      }
+    };
+  } catch {}
+}
+
 async function performDelete({ keys = [], ids = [] }) {
   if (!keys.length && !ids.length) return;
   const { deleted, failed } = await deleteEncryptedObjects({ keys, ids });
+  log({ driveDeleteResult: { keys, ids, deleted, failed } });
   if (deleted?.length) log({ deleted });
   if (failed?.length) log({ deleteFailed: failed });
 }

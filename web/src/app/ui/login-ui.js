@@ -13,7 +13,9 @@ import {
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
   getUidDigest, setUidDigest,
-  resetAll, clearSecrets
+  getDevicePriv,
+  resetAll, clearSecrets,
+  setOpaqueServerId
 } from '../core/store.js';
 import { exchangeSDM, unlockAndInit } from '../features/login-flow.js';
 import { exchangeFromURLIfPresent, exchangeWithParams, parseSdmParams } from '../features/sdm.js';
@@ -374,6 +376,17 @@ async function onUnlock() {
     showLoading(newAccount ? '正在建立安全環境…' : '登入中，請稍候…');
     const r = await unlockAndInit({ password: pwd });
     log({ unlocked: r.unlocked, initialized: r.initialized, replenished: r.replenished, next_opk_id: r.next_opk_id });
+    const devicePriv = getDevicePriv();
+    const hasPrekeys = !!(devicePriv &&
+      typeof devicePriv.ik_priv_b64 === 'string' && devicePriv.ik_priv_b64 &&
+      typeof devicePriv.spk_priv_b64 === 'string' && devicePriv.spk_priv_b64 &&
+      typeof devicePriv.spk_pub_b64 === 'string' && devicePriv.spk_pub_b64);
+    if (!hasPrekeys) {
+      hideLoading();
+      loginInProgress = false;
+      log('預共享金鑰尚未就緒，請稍後再試。');
+      return;
+    }
     updateUidDisplay();
     updateLoading('登入成功，正在導向…');
     // handoff MK/UID to next page (sessionStorage, same-tab only)
@@ -405,6 +418,7 @@ function invalidateExchange() {
   setAccountToken(null);
   setAccountDigest(null);
   setUidDigest(null);
+  setOpaqueServerId(null);
   try {
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');

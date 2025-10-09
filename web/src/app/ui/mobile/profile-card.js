@@ -160,9 +160,11 @@ export function initProfileCard(options) {
         updateStats?.();
         log({ profileNicknameUpdated: normalized });
         if (typeof broadcastContactUpdate === 'function') {
-          broadcastContactUpdate({ reason: 'nickname' }).catch((err) => {
+          try {
+            await broadcastContactUpdate({ reason: 'nickname' });
+          } catch (err) {
             log({ contactBroadcastError: err?.message || err, reason: 'nickname' });
-          });
+          }
         }
         modal.closeModal();
         restoreShareButton();
@@ -415,9 +417,11 @@ export function initProfileCard(options) {
         updateStats?.();
         log({ profileAvatarUpdated: avatarMeta.objKey });
         if (typeof broadcastContactUpdate === 'function') {
-          broadcastContactUpdate({ reason: 'avatar' }).catch((err) => {
+          try {
+            await broadcastContactUpdate({ reason: 'avatar' });
+          } catch (err) {
             log({ contactBroadcastError: err?.message || err, reason: 'avatar' });
-          });
+          }
         }
         cleanupTempURL();
         modal.closeModal();
@@ -511,19 +515,23 @@ export function initProfileCard(options) {
 
   async function loadImageElement(src) {
     const img = new Image();
+    const loadPromise = new Promise((resolve, reject) => {
+      img.onload = () => resolve(null);
+      img.onerror = (err) => reject(err || new Error('圖片載入失敗'));
+    });
     img.src = src;
     if (typeof img.decode === 'function') {
       try {
         await img.decode();
         return img;
       } catch (err) {
-        // 部分瀏覽器 decode 失敗時仍會觸發 onload
+        // decode 可能在部分環境失敗，改以 onload 事件處理
       }
     }
-    await new Promise((resolve, reject) => {
-      img.onload = () => resolve(null);
-      img.onerror = (err) => reject(err || new Error('圖片載入失敗'));
-    });
+    if (img.complete && img.naturalWidth && img.naturalHeight) {
+      return img;
+    }
+    await loadPromise;
     return img;
   }
 
