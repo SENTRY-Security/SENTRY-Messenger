@@ -94,6 +94,13 @@ function handleClientMessage(ws, data) {
       senderUid: ws.__uid,
       peerUid: ws.__uid
     });
+    return;
+  }
+  if (msg.type === 'contacts-reload') {
+    const targetUid = String(msg.targetUid || msg.peerUid || '').trim().toUpperCase();
+    if (!targetUid) return;
+    broadcast(targetUid, { type: 'contacts-reload', ts: Date.now() });
+    return;
   }
 }
 

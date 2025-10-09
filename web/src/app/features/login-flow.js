@@ -18,7 +18,8 @@ import {
   getDevicePriv, setDevicePriv,
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
-  getUidDigest, setUidDigest
+  getUidDigest, setUidDigest,
+  getOpaqueServerId, setOpaqueServerId
 } from '../core/store.js';
 
 // crypto deps
@@ -80,6 +81,11 @@ export async function exchangeSDM(p) {
   if (data.account_digest) setAccountDigest(data.account_digest);
   if (data.uidDigest) setUidDigest(data.uidDigest);
   if (data.uid_digest) setUidDigest(data.uid_digest);
+  if (Object.prototype.hasOwnProperty.call(data, 'opaqueServerId') || Object.prototype.hasOwnProperty.call(data, 'opaque_server_id')) {
+    setOpaqueServerId(data.opaqueServerId || data.opaque_server_id || null);
+  } else {
+    setOpaqueServerId(null);
+  }
 
   return {
     session: getSession(),
@@ -109,7 +115,8 @@ export async function unlockAndInit({ password }) {
   if (!accountToken || !accountDigest) throw new Error('Account info missing: please redo SDM exchange');
 
   // Enforce OPAQUE authentication (no fallback)
-  await ensureOpaque({ password: pwd, accountDigest });
+  const serverId = getOpaqueServerId();
+  await ensureOpaque({ password: pwd, accountDigest, serverId });
   // Refresh account credentials in case ensureOpaque updated them
   accountToken = getAccountToken();
   accountDigest = getAccountDigest();

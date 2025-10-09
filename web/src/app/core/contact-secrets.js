@@ -53,6 +53,7 @@ export function restoreContactSecrets() {
         role: typeof value?.role === 'string' ? value.role : null,
         conversationToken: typeof value?.conversationToken === 'string' ? value.conversationToken : null,
         conversationId: typeof value?.conversationId === 'string' ? value.conversationId : null,
+        conversationDrInit: value?.conversationDrInit || null,
         updatedAt: Number(value?.updatedAt || 0) || null
       });
     }
@@ -74,7 +75,7 @@ export function persistContactSecrets() {
   }
 }
 
-export function setContactSecret(peerUid, { inviteId, secret, role, conversationToken, conversationId } = {}) {
+export function setContactSecret(peerUid, { inviteId, secret, role, conversationToken, conversationId, conversationDrInit } = {}) {
   const key = normalizeUid(peerUid);
   if (!key) return;
   const id = typeof inviteId === 'string' ? inviteId.trim() : null;
@@ -87,6 +88,7 @@ export function setContactSecret(peerUid, { inviteId, secret, role, conversation
     role: role || null,
     conversationToken: typeof conversationToken === 'string' ? conversationToken.trim() || null : null,
     conversationId: typeof conversationId === 'string' ? conversationId.trim() || null : null,
+    conversationDrInit: conversationDrInit || null,
     updatedAt: Math.floor(Date.now() / 1000)
   });
   persistContactSecrets();

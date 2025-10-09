@@ -17,6 +17,7 @@
 // - MK_RAW: Uint8Array | null (decrypted MK, memory-only)
 // - DEVICE_PRIV: { ik_priv_b64, ik_pub_b64, spk_priv_b64, spk_pub_b64, spk_sig_b64, next_opk_id } | null
 // - DR_SESS: Map(peer_uidHex -> DR state object)
+// - OPAQUE_SERVER_ID: server identity string for OPAQUE handshake (optional)
 
 // --- primitives ---
 let _SESSION = null;
@@ -29,6 +30,7 @@ let _UID_DIGEST = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
 const _DR_SESS = new Map(); // peer_uidHex -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
+let _OPAQUE_SERVER_ID = null;
 
 // --- getters / setters ---
 export function getSession() { return _SESSION; }
@@ -129,4 +131,9 @@ export function buildAccountPayload(opts = {}) {
   if (includeUid && _UID_HEX && payload.uidHex == null) payload.uidHex = _UID_HEX;
   if (_UID_DIGEST && payload.uidDigest == null) payload.uidDigest = _UID_DIGEST;
   return payload;
+}
+
+export function getOpaqueServerId() { return _OPAQUE_SERVER_ID; }
+export function setOpaqueServerId(v) {
+  _OPAQUE_SERVER_ID = v ? String(v) : null;
 }

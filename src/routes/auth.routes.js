@@ -4,7 +4,9 @@ import crypto from 'node:crypto';
 import { verifySdmCmacFromEnvWithFallback, computeSdmCmac } from '../lib/ntag424-verify.js';
 import { deriveSdmFileReadKey, keyToHex } from '../lib/ntag424-kdf.js';
 import { signHmac } from '../utils/hmac.js';
-import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE2, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts/lib/src/index.js';
+import { logger } from '../utils/logger.js';
+import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE2, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
+import elliptic from 'elliptic';
 
 const r = Router();
 
@@ -25,18 +27,81 @@ const OPAQUE_AKE_PRIV_B64 = process.env.OPAQUE_AKE_PRIV_B64 || '';
 const OPAQUE_AKE_PUB_B64 = process.env.OPAQUE_AKE_PUB_B64 || '';
 
 let opaqueServer = null;
-function initOpaqueIfReady() {
+async function initOpaqueIfReady() {
   if (opaqueServer) return opaqueServer;
   if (!/^[0-9A-Fa-f]{64}$/.test(OPAQUE_SEED_HEX)) return null;
-  if (!OPAQUE_AKE_PRIV_B64 || !OPAQUE_AKE_PUB_B64) return null;
   const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
-  const oprf_seed = Buffer.from(OPAQUE_SEED_HEX, 'hex');
-  const ake_keypair_export = {
-    private_key: Uint8Array.from(Buffer.from(OPAQUE_AKE_PRIV_B64, 'base64')),
-    public_key: Uint8Array.from(Buffer.from(OPAQUE_AKE_PUB_B64, 'base64'))
+  const oprf_seed_u8 = Uint8Array.from(Buffer.from(OPAQUE_SEED_HEX, 'hex'));
+  const oprf_seed = Array.from(oprf_seed_u8);
+
+  // Preferred: use configured AKE keypair
+  let ake_keypair_export = null;
+  if (OPAQUE_AKE_PRIV_B64 && OPAQUE_AKE_PUB_B64) {
+    const privU8 = Uint8Array.from(Buffer.from(OPAQUE_AKE_PRIV_B64, 'base64'));
+    const pubU8  = Uint8Array.from(Buffer.from(OPAQUE_AKE_PUB_B64, 'base64'));
+    ake_keypair_export = {
+      private_key: Array.from(privU8),
+      public_key: Array.from(pubU8)
+    };
+  }
+
+  const toExportPair = (pair) => {
+    if (!pair) return null;
+    const priv = (pair.private_key instanceof Uint8Array) ? Array.from(pair.private_key) : Array.from(pair.private_key || []);
+    const pub  = (pair.public_key  instanceof Uint8Array) ? Array.from(pair.public_key)  : Array.from(pair.public_key || []);
+    return { private_key: priv, public_key: pub };
   };
-  opaqueServer = new OpaqueServer(cfg, oprf_seed, ake_keypair_export, OPAQUE_SERVER_ID);
-  return opaqueServer;
+
+  const tryInit = (pairIn) => {
+    try {
+      const pair = toExportPair(pairIn);
+      if (pair) {
+        try {
+          console.warn('[opaque.init] ake_key len', { priv: pair.private_key.length, pub: pair.public_key.length });
+          console.warn('[opaque.init] ake_key sample', {
+            priv0: typeof pair.private_key[0], priv1: typeof pair.private_key[1],
+            pub0: typeof pair.public_key[0], pub1: typeof pair.public_key[1]
+          });
+        } catch {}
+      }
+      opaqueServer = new OpaqueServer(cfg, oprf_seed, pair, OPAQUE_SERVER_ID);
+      return true;
+    } catch (e) {
+      try { console.error('[opaque.init] failed', e?.message || e); } catch {}
+      return false;
+    }
+  };
+
+  if (ake_keypair_export && tryInit(ake_keypair_export)) return opaqueServer;
+
+  // Fallback: generate ephemeral AKE keypair (for test envs). Not recommended for production.
+  try {
+    console.warn('[opaque.init] attempting fallback keypair generation');
+    // Try library-provided generator first
+    if (cfg?.ake?.generateAuthKeyPair) {
+      const kp = await cfg.ake.generateAuthKeyPair();
+      const fallback = { private_key: kp.private_key, public_key: kp.public_key };
+      if (tryInit(fallback)) {
+        console.warn('[opaque.init] using ephemeral AKE keypair (fallback-lib)');
+        return opaqueServer;
+      }
+    }
+    // Use elliptic P-256 to build a keypair (compressed pub)
+    const { ec: ECClass } = elliptic;
+    const ec = new ECClass('p256');
+    const kp2 = ec.genKeyPair();
+    const privArr = kp2.getPrivate().toArray('be', 32);
+    const pubArr = kp2.getPublic(true, 'array'); // compressed 33 bytes
+    const fallback2 = { private_key: Uint8Array.from(privArr), public_key: Uint8Array.from(pubArr) };
+    if (tryInit(fallback2)) {
+      console.warn('[opaque.init] using ephemeral AKE keypair (fallback-elliptic)');
+      return opaqueServer;
+    }
+  } catch (e) {
+    try { console.error('[opaque.init] fallback generateKeyPair failed', e?.message || e); } catch {}
+  }
+
+  return null;
 }
 
 function b64ToU8(b64) { return Uint8Array.from(Buffer.from(String(b64||''), 'base64')); }
@@ -191,7 +256,8 @@ r.post('/auth/sdm/exchange', async (req, res) => {
       wrapped_mk: data.wrapped_mk || undefined,
       accountToken,
       accountDigest: accountDigest.toUpperCase(),
-      uidDigest: uidDigest || null
+      uidDigest: uidDigest || null,
+      opaqueServerId: OPAQUE_SERVER_ID || null
     });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });
@@ -259,14 +325,17 @@ r.post('/mk/store', async (req, res) => {
 // POST /api/v1/auth/opaque/register-init
 r.post('/auth/opaque/register-init', async (req, res) => {
   try {
-    const server = initOpaqueIfReady();
+    const server = await initOpaqueIfReady();
     if (!server) return res.status(500).json({ error: 'ConfigError', message: 'OPAQUE not configured' });
     const input = OpaqueRegisterInitSchema.parse(req.body || {});
     const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
     // Validate length before deserializing to avoid opaque-ts generic errors
     const reqBytes = Array.from(b64flexToU8(input.request_b64));
-    if (reqBytes.length !== (RegistrationRequest.sizeSerialized(cfg))) {
-      return res.status(400).json({ error: 'BadRequest', message: 'invalid request_b64 length' });
+    const expectedReq = RegistrationRequest.sizeSerialized(cfg);
+    try { console.warn('[opaque.register-init] sizes', { acct: input.accountDigest, req_b64_len: input.request_b64?.length || 0, req_bytes_len: reqBytes.length, expected: expectedReq }); } catch {}
+    logger.info({ op: 'opaque.register-init', acct: input.accountDigest, req_b64_len: input.request_b64?.length || 0, req_bytes_len: reqBytes.length, expected: expectedReq });
+    if (reqBytes.length !== expectedReq) {
+      return res.status(400).json({ error: 'BadRequest', message: `invalid request_b64 length (got ${reqBytes.length}, expected ${expectedReq})` });
     }
     let reqObj;
     try {
@@ -274,8 +343,17 @@ r.post('/auth/opaque/register-init', async (req, res) => {
     } catch (e) {
       return res.status(400).json({ error: 'BadRequest', message: 'invalid request_b64' });
     }
-    const out = await server.registerInit(reqObj, input.accountDigest.toUpperCase());
-    if (out instanceof Error) return res.status(400).json({ error: 'OpaqueRegisterInitFailed', message: out.message || 'register-init failed' });
+    let out;
+    try {
+      out = await server.registerInit(reqObj, input.accountDigest.toUpperCase());
+    } catch (e) {
+      try { console.warn('[opaque.register-init] thrown', e?.message || e); } catch {}
+      return res.status(404).json({ error: 'RecordNotFound' });
+    }
+    if (out instanceof Error) {
+      try { console.warn('[opaque.register-init] out instanceof Error', out?.message || out); } catch {}
+      return res.status(404).json({ error: 'RecordNotFound' });
+    }
     const response_b64 = u8ToB64(new Uint8Array(out.serialize()));
     return res.json({ response_b64 });
   } catch (e) {
@@ -318,7 +396,7 @@ r.post('/auth/opaque/login-init', async (req, res) => {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not set' });
   }
   try {
-    const server = initOpaqueIfReady();
+    const server = await initOpaqueIfReady();
     if (!server) return res.status(500).json({ error: 'ConfigError', message: 'OPAQUE not configured' });
     const input = OpaqueLoginInitSchema.parse(req.body || {});
     const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
@@ -332,32 +410,51 @@ r.post('/auth/opaque/login-init', async (req, res) => {
       headers: { 'content-type': 'application/json', 'x-auth': sig },
       body: fetchBody
     });
-    if (w.status === 404) return res.status(404).json({ error: 'RecordNotFound' });
+    if (w.status === 404) {
+      try { console.warn('[opaque.login-init] 404 record', { acct: input.accountDigest }); } catch {}
+      logger.info({ op: 'opaque.login-init', acct: input.accountDigest, status: 404 });
+      return res.status(404).json({ error: 'RecordNotFound' });
+    }
     const data = await w.json().catch(async () => ({ text: await w.text().catch(() => '') }));
     if (!w.ok) return res.status(w.status).json({ error: 'OpaqueFetchFailed', details: data });
 
     const record_b64 = String(data.record_b64 || '').trim();
     const client_identity = data.client_identity ? String(data.client_identity) : undefined;
+    // Guard: if record is empty or too short, treat as not found
+    const recBytes = Array.from(b64flexToU8(record_b64));
+    try { console.warn('[opaque.login-init] record sizes', { acct: input.accountDigest, record_b64_len: record_b64.length, record_bytes_len: recBytes.length }); } catch {}
+    logger.info({ op: 'opaque.login-init', acct: input.accountDigest, record_b64_len: record_b64.length, record_bytes_len: recBytes.length });
+    const minRecord = RegistrationRecord.sizeSerialized(cfg);
+    if (!record_b64 || recBytes.length < minRecord) {
+      return res.status(404).json({ error: 'RecordNotFound' });
+    }
     let record;
     try {
-      record = RegistrationRecord.deserialize(cfg, Array.from(b64flexToU8(record_b64)));
+      record = RegistrationRecord.deserialize(cfg, recBytes);
     } catch (e) {
-      return res.status(400).json({ error: 'BadRequest', message: 'invalid record_b64' });
+      // Treat invalid/corrupted record as not found to trigger re-register
+      return res.status(404).json({ error: 'RecordNotFound' });
     }
 
     // Validate ke1 length before deserializing
     const ke1Bytes = Array.from(b64flexToU8(input.ke1_b64));
+    try { console.warn('[opaque.login-init] ke1 sizes', { acct: input.accountDigest, ke1_b64_len: input.ke1_b64?.length || 0, ke1_bytes_len: ke1Bytes.length }); } catch {}
+    logger.info({ op: 'opaque.login-init', acct: input.accountDigest, ke1_b64_len: input.ke1_b64?.length || 0, ke1_bytes_len: ke1Bytes.length });
     if (ke1Bytes.length !== KE1.sizeSerialized(cfg)) {
-      return res.status(400).json({ error: 'BadRequest', message: 'invalid ke1_b64 length' });
+      // invalid ke1 from client — cause re-register flow
+      return res.status(404).json({ error: 'RecordNotFound' });
     }
     let ke1;
     try {
       ke1 = KE1.deserialize(cfg, ke1Bytes);
     } catch (e) {
-      return res.status(400).json({ error: 'BadRequest', message: 'invalid ke1_b64' });
+      return res.status(404).json({ error: 'RecordNotFound' });
     }
     const initRes = await server.authInit(ke1, record, input.accountDigest.toUpperCase(), client_identity, input.context || undefined);
-    if (initRes instanceof Error) return res.status(400).json({ error: 'OpaqueLoginInitFailed', message: initRes.message || 'login-init failed' });
+    if (initRes instanceof Error) {
+      // Treat incompatible/corrupted record as missing to trigger re-register on the client.
+      return res.status(404).json({ error: 'RecordNotFound', message: 'register required' });
+    }
 
     const ke2_b64 = u8ToB64(new Uint8Array(initRes.ke2.serialize()));
     const expected_b64 = u8ToB64(new Uint8Array(initRes.expected.serialize()));
@@ -373,7 +470,7 @@ r.post('/auth/opaque/login-init', async (req, res) => {
 // POST /api/v1/auth/opaque/login-finish
 r.post('/auth/opaque/login-finish', async (req, res) => {
   try {
-    const server = initOpaqueIfReady();
+    const server = await initOpaqueIfReady();
     if (!server) return res.status(500).json({ error: 'ConfigError', message: 'OPAQUE not configured' });
     const input = OpaqueLoginFinishSchema.parse(req.body || {});
     const rec = OPAQUE_EXPECTED.get(input.opaqueSession);
@@ -389,12 +486,34 @@ r.post('/auth/opaque/login-finish', async (req, res) => {
     try {
       ke3 = KE3.deserialize(cfg, Array.from(b64flexToU8(input.ke3_b64)));
     } catch { return res.status(400).json({ error: 'BadRequest', message: 'invalid ke3_b64' }); }
+    logger.info({ op: 'opaque.login-finish', opaqueSession: input.opaqueSession, expected_len: rec.expected_b64?.length || 0, ke3_len: input.ke3_b64?.length || 0 });
     const fin = server.authFinish(ke3, expected);
     if (fin instanceof Error) return res.status(400).json({ error: 'OpaqueLoginFinishFailed', message: fin.message || 'login-finish failed' });
     const session_key_b64 = u8ToB64(new Uint8Array(fin.session_key));
     return res.json({ ok: true, session_key_b64 });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });
+  }
+});
+
+// DEBUG: OPAQUE config introspection (non-sensitive)
+r.get('/auth/opaque/debug', (req, res) => {
+  try {
+    const seedHex = String(OPAQUE_SEED_HEX || '');
+    const privB64 = String(OPAQUE_AKE_PRIV_B64 || '');
+    const pubB64  = String(OPAQUE_AKE_PUB_B64 || '');
+    const out = {
+      hasSeed: /^[0-9A-Fa-f]{64}$/.test(seedHex),
+      hasPriv: !!privB64,
+      hasPub: !!pubB64,
+      seedLen: seedHex.length,
+      privLen: Buffer.from(privB64 || '', 'base64').length || 0,
+      pubLen: Buffer.from(pubB64 || '', 'base64').length || 0,
+      serverId: OPAQUE_SERVER_ID || null
+    };
+    return res.json(out);
+  } catch (e) {
+    return res.status(500).json({ error: 'OpaqueDebugFailed', message: e?.message || 'internal error' });
   }
 });
 

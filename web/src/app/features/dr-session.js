@@ -131,17 +131,25 @@ export async function sendDrText({ peerUidHex, text, conversation, convId }) {
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
-  const state = drState(peer);
-  const hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+  let state = drState(peer);
+  let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
-  if (!hasDrState && !hasDrInit) {
-    throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+
+  if (!hasDrState) {
+    try {
+      await ensureDrSession({ peerUidHex: peer });
+    } catch (err) {
+      if (!hasDrInit) {
+        throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      }
+      throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+    }
+    state = drState(peer);
+    hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   }
 
-  try {
-    await ensureDrSession({ peerUidHex: peer });
-  } catch (err) {
-    throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+  if (!hasDrState && !hasDrInit) {
+    throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
   }
 
   const pkt = await drEncryptText(state, text);
@@ -219,6 +227,18 @@ export async function ensureDrReceiverState({ peerUidHex }) {
   if (guestBundle) {
     const ok = await bootstrapDrFromGuestBundle({ peerUidHex: peer, guestBundle });
     if (ok) return true;
+  }
+
+  // Fallback：若仍無 DR 狀態，嘗試作為 initiator 建立會話（需可存取對方 prekeys）。
+  const holder = drState(peer);
+  const hasKeys = holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub;
+  if (!hasKeys) {
+    try {
+      await ensureDrSession({ peerUidHex: peer });
+      return holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub ? true : false;
+    } catch (err) {
+      console.warn('[dr] receiver ensure session failed', err);
+    }
   }
 
   return false;

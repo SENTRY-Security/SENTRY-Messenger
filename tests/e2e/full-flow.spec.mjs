@@ -17,6 +17,8 @@ test.beforeAll(async () => {
     messageFromA: 'E2E bootstrap from user A',
     messageFromB: 'E2E bootstrap from user B'
   });
+  // eslint-disable-next-line no-console
+  console.log('[friendSetup conversation]', friendSetup?.conversation || null);
   serverProc = await startWebServer();
 });
 
@@ -83,15 +85,15 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
         role: 'owner',
         conversationToken: friendSetup.conversation.tokenB64,
         conversationId: friendSetup.conversation.conversationId,
+        conversationDrInit: friendSetup.conversation.drInit || null,
         updatedAt: nowTs
       }
     ]
   ]);
-  await pageA.addInitScript((value) => {
-    try { localStorage.setItem('contactSecrets-v1', value); } catch {}
-  }, secretEntryForA);
-
   try {
+    await pageA.addInitScript((value) => {
+      try { localStorage.setItem('contactSecrets-v1', value); } catch {}
+    }, secretEntryForA);
     await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
     await pageA.waitForTimeout(1000);
     await capture(pageA, 'userA_drive_initial');
@@ -123,19 +125,20 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     }, userB.uidHex, { timeout: 20000 });
     await capture(pageA, 'userA_contacts_after_nickname');
 
-    const secretEntryForB = JSON.stringify([
-      [
-        userA.uidHex,
-        {
-          inviteId: friendSetup.invite.inviteId,
-          secret: friendSetup.invite.secret,
-          role: 'guest',
-          conversationToken: friendSetup.conversation.tokenB64,
-          conversationId: friendSetup.conversation.conversationId,
-          updatedAt: nowTs
-        }
-      ]
-    ]);
+  const secretEntryForB = JSON.stringify([
+    [
+      userA.uidHex,
+      {
+        inviteId: friendSetup.invite.inviteId,
+        secret: friendSetup.invite.secret,
+        role: 'guest',
+        conversationToken: friendSetup.conversation.tokenB64,
+        conversationId: friendSetup.conversation.conversationId,
+        conversationDrInit: friendSetup.conversation.drInit || null,
+        updatedAt: nowTs
+      }
+    ]
+  ]);
     await pageB.addInitScript((value) => {
       try { localStorage.setItem('contactSecrets-v1', value); } catch {}
     }, secretEntryForB);
@@ -160,6 +163,23 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
         await window.__refreshConversations();
       }
     });
+    const drDebugInitB = await pageB.evaluate(async (peerUid) => {
+      const { drState } = await import('../app/core/store.js');
+      const state = drState(peerUid);
+      const toB64 = (u8) => (u8 instanceof Uint8Array ? Array.from(u8) : null);
+      return {
+        rk: toB64(state.rk),
+        ckS: toB64(state.ckS),
+        ckR: toB64(state.ckR),
+        Ns: state.Ns,
+        Nr: state.Nr,
+        PN: state.PN,
+        myPub: toB64(state.myRatchetPub),
+        their: toB64(state.theirRatchetPub)
+      };
+    }, userA.uidHex);
+    // eslint-disable-next-line no-console
+    console.log('[dr-state-B-init]', drDebugInitB);
     const contactNameOnB = pageB.locator(`.contact-item[data-peer-uid="${userA.uidHex}"] .name-text`);
     // eslint-disable-next-line no-console
     console.log('[contact-text]', await contactNameOnB.textContent());
@@ -167,6 +187,45 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await capture(pageB, 'userB_contacts_nickname_refreshed');
     const conversationSnippetB = pageB.locator(`.conversation-item[data-peer="${userA.uidHex}"] .conversation-snippet`);
     await capture(pageB, 'messages_list_userB_initial');
+    if (friendSetup.conversation?.initiatorDrState) {
+      await pageB.evaluate(async ({ peerUid, drState }) => {
+        const { primeDrStateFromInitiator } = await import('../app/features/dr-session.js');
+        const { b64ToBytes } = await import('../shared/utils/base64.js');
+        const decode = (b64) => (b64 ? b64ToBytes(b64) : null);
+        const revived = {
+          rk: decode(drState.rk_b64),
+          ckS: decode(drState.ckS_b64) || new Uint8Array(),
+          ckR: decode(drState.ckR_b64),
+          Ns: Number(drState.Ns || 0),
+          Nr: Number(drState.Nr || 0),
+          PN: Number(drState.PN || 0),
+          myRatchetPriv: decode(drState.myRatchetPriv_b64),
+          myRatchetPub: decode(drState.myRatchetPub_b64),
+          theirRatchetPub: decode(drState.theirRatchetPub_b64)
+        };
+        primeDrStateFromInitiator({ peerUidHex: peerUid, state: revived });
+      }, { peerUid: userA.uidHex, drState: friendSetup.conversation.initiatorDrState });
+    }
+
+    if (friendSetup.conversation?.responderDrState) {
+      await pageA.evaluate(async ({ peerUid, drState }) => {
+        const { primeDrStateFromInitiator } = await import('../app/features/dr-session.js');
+        const { b64ToBytes } = await import('../shared/utils/base64.js');
+        const decode = (b64) => (b64 ? b64ToBytes(b64) : null);
+        const revived = {
+          rk: decode(drState.rk_b64),
+          ckS: decode(drState.ckS_b64) || new Uint8Array(),
+          ckR: decode(drState.ckR_b64),
+          Ns: Number(drState.Ns || 0),
+          Nr: Number(drState.Nr || 0),
+          PN: Number(drState.PN || 0),
+          myRatchetPriv: decode(drState.myRatchetPriv_b64),
+          myRatchetPub: decode(drState.myRatchetPub_b64),
+          theirRatchetPub: decode(drState.theirRatchetPub_b64)
+        };
+        primeDrStateFromInitiator({ peerUidHex: peerUid, state: revived });
+      }, { peerUid: userB.uidHex, drState: friendSetup.conversation.responderDrState });
+    }
 
     await pageA.evaluate(() => document.getElementById('nav-profile')?.click());
     await pageA.evaluate(async (avatarB64) => {
@@ -225,8 +284,11 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       console.log('[contact-debug]', peerUid, el ? el.outerHTML : 'missing');
     }, userA.uidHex);
     await pageB.waitForFunction((peerUid) => {
-      const img = document.querySelector(`.contact-item[data-peer-uid="${peerUid}"] img`);
-      return !!img;
+      const img = document.querySelector(`.contact-item[data-peer-uid=\"${peerUid}\"] img`);
+      if (img) return true;
+      const getter = typeof window.__getContactState === 'function' ? window.__getContactState() : [];
+      const match = Array.isArray(getter) ? getter.find((c) => String(c?.peerUid || '').toUpperCase() === String(peerUid).toUpperCase()) : null;
+      return !!(match && match.avatar && (match.avatar.thumbDataUrl || match.avatar.previewDataUrl || match.avatar.url));
     }, userA.uidHex, { timeout: 30000 });
     await capture(pageB, 'userB_contacts_avatar_refreshed');
 
@@ -284,7 +346,27 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     const conversationItemB = pageB.locator(`.conversation-item[data-peer="${userA.uidHex}"]`);
     await conversationItemB.waitFor({ state: 'visible', timeout: 20000 });
     await conversationItemB.click();
+    const debugMessagesB = await pageB.evaluate(() => Array.from(document.querySelectorAll('#messagesList .message-bubble')).map((el) => el.textContent));
+    // eslint-disable-next-line no-console
+    console.log('[messagesList-before]', debugMessagesB);
     const messageFromALocatorB = pageB.locator('#messagesList .message-bubble', { hasText: messageFromA });
+    const drDebugBeforeDecrypt = await pageB.evaluate(async (peerUid) => {
+      const { drState } = await import('../app/core/store.js');
+      const state = drState(peerUid);
+      const toB64 = (u8) => (u8 instanceof Uint8Array ? Array.from(u8) : null);
+      return {
+        rk: toB64(state.rk),
+        ckS: toB64(state.ckS),
+        ckR: toB64(state.ckR),
+        Ns: state.Ns,
+        Nr: state.Nr,
+        PN: state.PN,
+        myPub: toB64(state.myRatchetPub),
+        their: toB64(state.theirRatchetPub)
+      };
+    }, userA.uidHex);
+    // eslint-disable-next-line no-console
+    console.log('[dr-state-B-before-decrypt]', drDebugBeforeDecrypt);
     await expect(messageFromALocatorB).toBeVisible({ timeout: 20000 });
     await pageB.fill('#messageInput', messageFromB);
     const sendB = pageB.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));

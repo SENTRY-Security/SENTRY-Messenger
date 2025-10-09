@@ -26,7 +26,7 @@ function b64ToU8(b64) {
   return out;
 }
 
-export async function opaqueRegister({ password, accountDigest, clientIdentity }) {
+export async function opaqueRegister({ password, accountDigest, clientIdentity, serverId }) {
   const { OpaqueClient, getOpaqueConfig, OpaqueID } = await loadOpaque();
   const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
   const client = new OpaqueClient(cfg);
@@ -45,7 +45,7 @@ export async function opaqueRegister({ password, accountDigest, clientIdentity }
     cfg,
     Array.from(b64ToU8(d1.response_b64))
   );
-  const fin = await client.registerFinish(response, undefined, clientIdentity || undefined);
+  const fin = await client.registerFinish(response, serverId || undefined, clientIdentity || undefined);
   if (fin instanceof Error) throw fin;
   const record_b64 = u8ToB64(new Uint8Array(fin.record.serialize()));
   const { r: r2, data: d2 } = await fetchJSON('/api/v1/auth/opaque/register-finish', {
@@ -60,7 +60,7 @@ export async function opaqueRegister({ password, accountDigest, clientIdentity }
   return true;
 }
 
-export async function opaqueLogin({ password, accountDigest, context }) {
+export async function opaqueLogin({ password, accountDigest, context, serverId, clientIdentity }) {
   const { OpaqueClient, getOpaqueConfig, OpaqueID } = await loadOpaque();
   const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
   const client = new OpaqueClient(cfg);
@@ -77,7 +77,7 @@ export async function opaqueLogin({ password, accountDigest, context }) {
   }
   const KE2 = (await import('https://esm.sh/@cloudflare/opaque-ts@0.7.5/lib/src/messages.js')).KE2;
   const ke2Obj = KE2.deserialize(cfg, Array.from(b64ToU8(d1.ke2_b64)));
-  const fin = await client.authFinish(ke2Obj, undefined, undefined, context || undefined);
+  const fin = await client.authFinish(ke2Obj, serverId || undefined, clientIdentity || undefined, context || undefined);
   if (fin instanceof Error) throw fin;
   const ke3_b64 = u8ToB64(new Uint8Array(fin.ke3.serialize()));
   const { r: r2, data: d2 } = await fetchJSON('/api/v1/auth/opaque/login-finish', {
@@ -91,18 +91,18 @@ export async function opaqueLogin({ password, accountDigest, context }) {
   return { sessionKeyB64: d2.session_key_b64 };
 }
 
-export async function ensureOpaque({ password, accountDigest }) {
+export async function ensureOpaque({ password, accountDigest, serverId, clientIdentity }) {
   try {
     // try login; if record missing, server will 404 -> then register and retry login
-    const ok = await opaqueLogin({ password, accountDigest });
+    const ok = await opaqueLogin({ password, accountDigest, serverId, clientIdentity });
     return ok;
   } catch (e) {
     const msg = String(e?.message || e || '');
-    if (/RecordNotFound/i.test(msg) || /404/.test(msg)) {
-      await opaqueRegister({ password, accountDigest });
-      return await opaqueLogin({ password, accountDigest });
+    // Treat common server/client decode issues as missing record → re-register path
+    if (/RecordNotFound/i.test(msg) || /404/.test(msg) || /invalid\s+(request|record|ke1|ke3|expected)_b64/i.test(msg) || /Array of byte-sized integers expected/i.test(msg)) {
+      await opaqueRegister({ password, accountDigest, serverId, clientIdentity });
+      return await opaqueLogin({ password, accountDigest, serverId, clientIdentity });
     }
     throw e;
   }
 }
-

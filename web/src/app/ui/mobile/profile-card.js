@@ -459,18 +459,36 @@ export function initProfileCard(options) {
     return avatar.thumbDataUrl ? avatar : sessionStore.profileState.avatar;
   }
 
-  async function buildLocalContactPayload() {
+  async function buildLocalContactPayload({ conversation, drInit } = {}) {
     const nickname = sessionStore.profileState?.nickname || '';
     let avatar = null;
     if (sessionStore.profileState?.avatar) {
       avatar = await ensureAvatarThumbnail();
       if (avatar) avatar = { ...avatar };
     }
-    return {
+    const payload = {
       nickname: nickname || generateRandomNickname(),
       avatar,
       addedAt: Math.floor(Date.now() / 1000)
     };
+    const convo = conversation && (conversation.tokenB64 || conversation.token_b64) && (conversation.conversationId || conversation.conversation_id)
+      ? {
+          token_b64: conversation.tokenB64 || conversation.token_b64,
+          conversation_id: conversation.conversationId || conversation.conversation_id,
+          ...(conversation.dr_init ? { dr_init: conversation.dr_init } : null)
+        }
+      : null;
+    if (!convo && drInit && conversation && (conversation.tokenB64 || conversation.token_b64) && (conversation.conversationId || conversation.conversation_id)) {
+      payload.conversation = {
+        token_b64: conversation.tokenB64 || conversation.token_b64,
+        conversation_id: conversation.conversationId || conversation.conversation_id,
+        dr_init: drInit
+      };
+    } else if (convo) {
+      if (drInit && !convo.dr_init) convo.dr_init = drInit;
+      payload.conversation = convo;
+    }
+    return payload;
   }
 
   async function loadAndResizeImage(file, { maxSize }) {

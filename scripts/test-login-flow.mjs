@@ -3,8 +3,14 @@
 // Usage:
 //   ORIGIN_API=https://api.message.sentry.red node scripts/test-login-flow.mjs [--origin URL] [--uid UIDHEX]
 
+import nodeCrypto from 'node:crypto';
 import { OpaqueClient, getOpaqueConfig, OpaqueID } from '@cloudflare/opaque-ts/lib/src/index.js';
 import { KE2, RegistrationResponse } from '@cloudflare/opaque-ts/lib/src/messages.js';
+import { wrapMKWithPasswordArgon2id } from './lib/argon2-wrap.mjs';
+
+if (!globalThis.crypto) {
+  globalThis.crypto = nodeCrypto.webcrypto;
+}
 
 const args = process.argv.slice(2);
 const findArg = (name) => {
@@ -14,10 +20,11 @@ const findArg = (name) => {
 
 const ORIGIN_API = process.env.ORIGIN_API || findArg('--origin') || 'http://127.0.0.1:3000';
 const FIXED_UID = findArg('--uid');
+const SERVER_ID = process.env.OPAQUE_SERVER_ID || findArg('--server-id') || null;
 
 function b64(u8) { return Buffer.from(u8).toString('base64'); }
 function b64u8(s) { return Uint8Array.from(Buffer.from(String(s || ''), 'base64')); }
-function rnd(n) { const u = new Uint8Array(n); crypto.getRandomValues(u); return u; }
+function rnd(n) { const u = new Uint8Array(n); globalThis.crypto.getRandomValues(u); return u; }
 
 async function jsonPost(path, body) {
   const url = path.startsWith('http') ? path : ORIGIN_API.replace(/\/$/, '') + path;
@@ -39,7 +46,7 @@ async function sdmExchange({ uidHex, sdmmac, sdmcounter, nonce }) {
   return data;
 }
 
-async function opaqueRegister({ password, accountDigest }) {
+async function opaqueRegister({ password, accountDigest, serverId }) {
   const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
   const client = new OpaqueClient(cfg);
   const init = await client.registerInit(password);
@@ -48,7 +55,7 @@ async function opaqueRegister({ password, accountDigest }) {
   const { r: r1, data: d1 } = await jsonPost('/api/v1/auth/opaque/register-init', { accountDigest, request_b64 });
   if (!r1.ok || !d1?.response_b64) throw new Error('register-init failed: ' + JSON.stringify(d1));
   const resp = RegistrationResponse.deserialize(cfg, Array.from(b64u8(d1.response_b64)));
-  const fin = await client.registerFinish(resp, undefined, undefined);
+  const fin = await client.registerFinish(resp, serverId || undefined, undefined);
   if (fin instanceof Error) throw fin;
   const record_b64 = b64(new Uint8Array(fin.record.serialize()));
   const { r: r2, data: d2 } = await jsonPost('/api/v1/auth/opaque/register-finish', { accountDigest, record_b64 });
@@ -56,7 +63,7 @@ async function opaqueRegister({ password, accountDigest }) {
   return true;
 }
 
-async function opaqueLogin({ password, accountDigest }) {
+async function opaqueLogin({ password, accountDigest, serverId }) {
   const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
   const client = new OpaqueClient(cfg);
   const ke1 = await client.authInit(password);
@@ -65,19 +72,12 @@ async function opaqueLogin({ password, accountDigest }) {
   const { r: r1, data: d1 } = await jsonPost('/api/v1/auth/opaque/login-init', { accountDigest, ke1_b64 });
   if (!r1.ok || !d1?.ke2_b64 || !d1?.opaqueSession) throw new Error('login-init failed: ' + JSON.stringify(d1));
   const ke2 = KE2.deserialize(getOpaqueConfig(OpaqueID.OPAQUE_P256), Array.from(b64u8(d1.ke2_b64)));
-  const fin = await client.authFinish(ke2, undefined, undefined, undefined);
+  const fin = await client.authFinish(ke2, serverId || undefined, undefined, undefined);
   if (fin instanceof Error) throw fin;
   const ke3_b64 = b64(new Uint8Array(fin.ke3.serialize()));
   const { r: r2, data: d2 } = await jsonPost('/api/v1/auth/opaque/login-finish', { opaqueSession: d1.opaqueSession, ke3_b64 });
   if (!r2.ok || !d2?.ok) throw new Error('login-finish failed: ' + JSON.stringify(d2));
   return d2.session_key_b64;
-}
-
-function fakeArgonWrappedMK() {
-  return {
-    v: 1, kdf: 'argon2id', m: 64, t: 3, p: 1,
-    salt_b64: b64(rnd(16)), iv_b64: b64(rnd(12)), ct_b64: b64(rnd(32))
-  };
 }
 
 async function mkStore({ session, uidHex, accountToken, accountDigest, wrapped_mk }) {
@@ -103,17 +103,18 @@ async function main() {
 
   console.log('[3] OPAQUE login (will register if needed)');
   try {
-    await opaqueRegister({ password, accountDigest });
+    await opaqueRegister({ password, accountDigest, serverId: SERVER_ID });
     console.log('    register: ok');
   } catch (e) {
     console.log('    register: skipped or failed:', e?.message || e);
   }
-  const sessionKeyB64 = await opaqueLogin({ password, accountDigest });
+  const sessionKeyB64 = await opaqueLogin({ password, accountDigest, serverId: SERVER_ID });
   console.log('    login: ok, sessionKeyB64 len =', (sessionKeyB64 || '').length);
 
   if (!ex1.hasMK) {
     console.log('[4] MK store (first-time)');
-    const wrapped_mk = fakeArgonWrappedMK();
+    const mk = rnd(32);
+    const wrapped_mk = await wrapMKWithPasswordArgon2id(password, mk);
     await mkStore({ session: ex1.session, uidHex, accountToken: ex1.accountToken, accountDigest, wrapped_mk });
     console.log('    mk.store: ok');
   }
@@ -127,11 +128,10 @@ async function main() {
   console.log('    wrapped_mk present =', !!ex2.wrapped_mk);
 
   console.log('[7] OPAQUE login (existing)');
-  const sessionKey2 = await opaqueLogin({ password, accountDigest });
+  const sessionKey2 = await opaqueLogin({ password, accountDigest, serverId: SERVER_ID });
   console.log('    login existing: ok, sessionKey len =', (sessionKey2 || '').length);
 
   console.log('\nALL OK');
 }
 
 main().catch((e) => { console.error('TEST FAILED:', e?.message || e); process.exit(1); });
-

@@ -13,9 +13,13 @@ import { log } from '../core/log.js';
 const CONTACT_INFO_TAG = 'contact/v1';
 const missingSecretWarned = new Set();
 
-function contactsConvId() {
+function contactConvIds() {
+  const ids = [];
+  const uid = (getUidHex() || '').toUpperCase();
+  if (uid) ids.push(`contacts-${uid}`);
   const acct = (getAccountDigest() || '').toUpperCase();
-  return acct ? `contacts-${acct}` : null;
+  if (acct && acct !== uid) ids.push(`contacts-${acct}`);
+  return ids;
 }
 
 function nowTs() {
@@ -24,20 +28,32 @@ function nowTs() {
 
 export async function loadContacts() {
   const mk = getMkRaw();
-  const convId = contactsConvId();
-  if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
+  const convIds = contactConvIds();
+  if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
 
   restoreContactSecrets();
 
-  const { r, data } = await listMessages({ convId, limit: 100 });
-  if (r.status === 404) return [];
-  if (!r.ok) {
-    const msg = typeof data === 'string' ? data : data?.error || data?.message || 'load contacts failed';
-    throw new Error(msg);
+  const aggregatedItems = [];
+
+  for (const convId of convIds) {
+    const { r, data } = await listMessages({ convId, limit: 100 });
+    if (r.status === 404) {
+      continue;
+    }
+    if (!r.ok) {
+      const msg = typeof data === 'string' ? data : data?.error || data?.message || 'load contacts failed';
+      throw new Error(msg);
+    }
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (items.length) {
+      aggregatedItems.push(...items);
+    }
   }
-  const items = Array.isArray(data?.items) ? data.items : [];
+
+  if (!aggregatedItems.length) return [];
+
   const peerMap = new Map();
-  for (const item of items) {
+  for (const item of aggregatedItems) {
     try {
       const header = item?.header_json ? JSON.parse(item.header_json) : item?.header;
       const envelope = header?.envelope;
@@ -64,6 +80,11 @@ export async function loadContacts() {
           console.warn('[contacts] contact-share decrypt failed', err?.message || err);
           continue;
         }
+        try {
+          console.log('[contacts] decrypted contact-share', peerUid, JSON.stringify(contact));
+        } catch {
+          console.log('[contacts] decrypted contact-share', peerUid, contact);
+        }
         if (!contact) continue;
         conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
           ? {
@@ -74,7 +95,8 @@ export async function loadContacts() {
           : (secretInfo?.conversationToken && secretInfo?.conversationId
               ? {
                   token_b64: secretInfo.conversationToken,
-                  conversation_id: secretInfo.conversationId
+                  conversation_id: secretInfo.conversationId,
+                  ...(secretInfo?.conversationDrInit ? { dr_init: secretInfo.conversationDrInit } : null)
                 }
               : null);
         setContactSecret(peerUid, {
@@ -82,7 +104,8 @@ export async function loadContacts() {
           secret,
           role: secretInfo?.role || null,
           conversationToken: conversation?.token_b64 || null,
-          conversationId: conversation?.conversation_id || null
+          conversationId: conversation?.conversation_id || null,
+          conversationDrInit: conversation?.dr_init || null
         });
       } else {
         console.warn('[contacts] unsupported envelope format', { id: item?.id, envelope });
@@ -123,7 +146,8 @@ export async function loadContacts() {
           secret: storedSecret,
           role: storedRole,
           conversationToken: conversation?.token_b64 || null,
-          conversationId: conversation?.conversation_id || null
+          conversationId: conversation?.conversation_id || null,
+          conversationDrInit: conversation?.dr_init || null
         });
       }
       peerMap.set(entry.peerUid, entry);
@@ -138,8 +162,8 @@ export async function loadContacts() {
 
 export async function saveContact(contact) {
   const mk = getMkRaw();
-  const convId = contactsConvId();
-  if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
+  const convIds = contactConvIds();
+  if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const peerUid = String(contact?.peerUid || '').toUpperCase();
   if (!peerUid) throw new Error('peerUid required');
 
@@ -169,17 +193,21 @@ export async function saveContact(contact) {
   const envelope = await wrapWithMK_JSON(payload, mk, CONTACT_INFO_TAG);
   const header = { contact: 1, v: 1, peerUid, ts: payload.addedAt, envelope };
 
-  const body = {
-    convId,
-    type: 'text',
-    aead: 'aes-256-gcm',
-    header,
-    ciphertext_b64: envelope?.ct_b64 || 'contact'
-  };
-  const { r, data } = await createMessage(body);
-  if (!r.ok) {
-    const msg = typeof data === 'string' ? data : data?.error || data?.message || 'contact save failed';
-    throw new Error(msg);
+  let firstMsgId = null;
+  for (const convId of convIds) {
+    const body = {
+      convId,
+      type: 'text',
+      aead: 'aes-256-gcm',
+      header,
+      ciphertext_b64: envelope?.ct_b64 || 'contact'
+    };
+    const { r, data } = await createMessage(body);
+    if (!r.ok) {
+      const msg = typeof data === 'string' ? data : data?.error || data?.message || 'contact save failed';
+      throw new Error(msg);
+    }
+    if (!firstMsgId) firstMsgId = data?.id || null;
   }
-  return { ...payload, msgId: data?.id || null };
+  return { ...payload, msgId: firstMsgId };
 }

@@ -98,14 +98,10 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
         raw
       });
     } catch (err) {
-      errs.push(err?.message || String(err));
-      out.push({
-        id: raw?.id || null,
-        ts: raw?.created_at || null,
-        error: err?.message || String(err),
-        direction: 'unknown',
-        raw
-      });
+      const msg = err?.message || String(err);
+      errs.push(msg);
+      console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg });
+      continue;
     }
   }
 

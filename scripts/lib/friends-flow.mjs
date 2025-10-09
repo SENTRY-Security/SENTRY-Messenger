@@ -1,40 +1,61 @@
 import crypto from 'node:crypto';
 import { OpaqueClient, getOpaqueConfig, OpaqueID } from '@cloudflare/opaque-ts/lib/src/index.js';
 import { KE2, RegistrationResponse } from '@cloudflare/opaque-ts/lib/src/messages.js';
+import {
+  generateInitialBundle,
+  wrapDevicePrivWithMK
+} from '../../web/src/shared/crypto/prekeys.js';
+import { x3dhInitiate, x3dhRespond } from '../../web/src/shared/crypto/dr.js';
+import {
+  deriveConversationContextFromSecret,
+  encryptConversationEnvelope,
+  decryptConversationEnvelope,
+  computeConversationFingerprint
+} from '../../web/src/shared/conversation/context.js';
+import {
+  encryptContactPayload as encryptContactPayloadShared,
+  decryptContactPayload as decryptContactPayloadShared
+} from '../../web/src/shared/contacts/contact-share.js';
+import {
+  bytesToB64,
+  bytesToB64Url,
+  b64ToBytes,
+  b64UrlToBytes
+} from '../../web/src/shared/utils/base64.js';
+import { wrapMKWithPasswordArgon2id } from './argon2-wrap.mjs';
 
-const subtle = crypto.webcrypto?.subtle;
-if (!subtle) {
-  throw new Error('WebCrypto subtle API is required (Node 20+)');
+if (!globalThis.crypto) {
+  globalThis.crypto = crypto.webcrypto;
 }
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
-const CONTACT_INFO = TEXT_ENCODER.encode('contact-share');
-const ZERO_SALT_CONTACT = new Uint8Array(16);
-const ZERO_SALT_CONV = new Uint8Array(32);
-const HKDF_INFO_CONV = TEXT_ENCODER.encode('sentry/conv-token');
-
-function toBase64(buffer) {
-  return Buffer.from(buffer).toString('base64');
-}
-
-function toBase64Url(buffer) {
-  return toBase64(buffer).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function fromBase64Url(str) {
-  const normalized = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
-  const pad = normalized.length % 4;
-  const padded = normalized + (pad ? '='.repeat(4 - pad) : '');
-  return Buffer.from(padded, 'base64');
-}
 
 function randomUidHex() {
   return crypto.randomBytes(7).toString('hex').toUpperCase();
 }
 
 function randomPassword() {
-  return 'pass-' + crypto.randomBytes(6).toString('hex');
+  return `pass-${crypto.randomBytes(8).toString('hex')}`;
+}
+
+function encodeU8(value) {
+  return value instanceof Uint8Array ? bytesToB64(value) : null;
+}
+
+function serializeDrState(state) {
+  if (!state || typeof state !== 'object') return null;
+  return {
+    rk_b64: encodeU8(state.rk),
+    ckS_b64: encodeU8(state.ckS),
+    ckR_b64: encodeU8(state.ckR),
+    Ns: Number(state.Ns || 0),
+    Nr: Number(state.Nr || 0),
+    PN: Number(state.PN || 0),
+    myRatchetPriv_b64: encodeU8(state.myRatchetPriv),
+    myRatchetPub_b64: encodeU8(state.myRatchetPub),
+    theirRatchetPub_b64: encodeU8(state.theirRatchetPub)
+  };
 }
 
 async function jsonPost(origin, path, body) {
@@ -44,14 +65,6 @@ async function jsonPost(origin, path, body) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
   });
-  let data;
-  try { data = await res.json(); } catch { data = await res.text(); }
-  return { res, data };
-}
-
-async function jsonGet(origin, path) {
-  const url = path.startsWith('http') ? path : `${origin}${path}`;
-  const res = await fetch(url);
   let data;
   try { data = await res.json(); } catch { data = await res.text(); }
   return { res, data };
@@ -75,13 +88,13 @@ async function opaqueRegister(origin, { password, accountDigest, serverId }) {
   const client = new OpaqueClient(cfg);
   const init = await client.registerInit(password);
   if (init instanceof Error) throw init;
-  const request_b64 = toBase64(init.serialize());
+  const request_b64 = bytesToB64(init.serialize());
   const { res: r1, data: d1 } = await jsonPost(origin, '/api/v1/auth/opaque/register-init', { accountDigest, request_b64 });
   if (!r1.ok || !d1?.response_b64) throw new Error(`register-init failed: ${JSON.stringify(d1)}`);
-  const resp = RegistrationResponse.deserialize(cfg, Array.from(Buffer.from(d1.response_b64, 'base64')));
+  const resp = RegistrationResponse.deserialize(cfg, Array.from(b64ToBytes(d1.response_b64)));
   const fin = await client.registerFinish(resp, serverId || undefined, undefined);
   if (fin instanceof Error) throw fin;
-  const record_b64 = toBase64(fin.record.serialize());
+  const record_b64 = bytesToB64(fin.record.serialize());
   const { res: r2, data: d2 } = await jsonPost(origin, '/api/v1/auth/opaque/register-finish', { accountDigest, record_b64 });
   if (r2.status !== 204) throw new Error(`register-finish failed: ${JSON.stringify(d2)}`);
 }
@@ -91,24 +104,54 @@ async function opaqueLogin(origin, { password, accountDigest, serverId }) {
   const client = new OpaqueClient(cfg);
   const ke1 = await client.authInit(password);
   if (ke1 instanceof Error) throw ke1;
-  const ke1_b64 = toBase64(ke1.serialize());
+  const ke1_b64 = bytesToB64(ke1.serialize());
   const { res: r1, data: d1 } = await jsonPost(origin, '/api/v1/auth/opaque/login-init', { accountDigest, ke1_b64 });
   if (!r1.ok || !d1?.ke2_b64 || !d1?.opaqueSession) throw new Error(`login-init failed: ${JSON.stringify(d1)}`);
-  const ke2 = KE2.deserialize(cfg, Array.from(Buffer.from(d1.ke2_b64, 'base64')));
+  const ke2 = KE2.deserialize(cfg, Array.from(b64ToBytes(d1.ke2_b64)));
   const fin = await client.authFinish(ke2, serverId || undefined, undefined, undefined);
   if (fin instanceof Error) throw fin;
-  const ke3_b64 = toBase64(fin.ke3.serialize());
+  const ke3_b64 = bytesToB64(fin.ke3.serialize());
   const { res: r2, data: d2 } = await jsonPost(origin, '/api/v1/auth/opaque/login-finish', { opaqueSession: d1.opaqueSession, ke3_b64 });
   if (!r2.ok || !d2?.ok) throw new Error(`login-finish failed: ${JSON.stringify(d2)}`);
   return d2.session_key_b64;
 }
 
-async function bootstrapUser({ origin, label, uidHex, password }) {
+async function publishBundle(origin, { uidHex, accountToken, accountDigest, bundle }) {
+  const { res, data } = await jsonPost(origin, '/api/v1/keys/publish', {
+    uidHex,
+    accountToken,
+    accountDigest,
+    bundle
+  });
+  if (res.status !== 204) throw new Error(`keys.publish failed: ${JSON.stringify(data)}`);
+}
+
+async function storeDevkeys(origin, { uidHex, accountToken, accountDigest, wrapped_dev }) {
+  const { res, data } = await jsonPost(origin, '/api/v1/devkeys/store', {
+    uidHex,
+    accountToken,
+    accountDigest,
+    wrapped_dev
+  });
+  if (res.status !== 204) throw new Error(`devkeys.store failed: ${JSON.stringify(data)}`);
+}
+
+async function mkStore(origin, { session, uidHex, accountToken, accountDigest, wrapped_mk }) {
+  const payload = {
+    uidHex,
+    wrapped_mk
+  };
+  if (session) payload.session = session;
+  if (accountToken) payload.accountToken = accountToken;
+  if (accountDigest) payload.accountDigest = accountDigest;
+  const { res, data } = await jsonPost(origin, '/api/v1/mk/store', payload);
+  if (res.status !== 204) throw new Error(`mk.store failed: ${JSON.stringify(data)}`);
+}
+
+export async function bootstrapUser({ origin, label, uidHex, password }) {
   const uid = uidHex || randomUidHex();
   const pwd = password || randomPassword();
-  console.log(`[${label}] debug-kit (${uid})`);
   const kit = await sdmDebugKit(origin, uid);
-  console.log(`[${label}] exchange`);
   const ex = await sdmExchange(origin, {
     uid: kit.uidHex,
     sdmmac: kit.sdmmac,
@@ -121,55 +164,131 @@ async function bootstrapUser({ origin, label, uidHex, password }) {
   if (!accountToken || !accountDigest) throw new Error('missing account credentials');
   const serverId = ex.opaqueServerId || ex.opaque_server_id || null;
 
-  console.log(`[${label}] OPAQUE register/login`);
   await opaqueRegister(origin, { password: pwd, accountDigest, serverId });
   await opaqueLogin(origin, { password: pwd, accountDigest, serverId });
 
-  console.log(`[${label}] publish prekeys & store devkeys`);
-  await publishPrekeys(origin, { uidHex: kit.uidHex, accountToken, accountDigest });
-  await storeDevkeys(origin, { uidHex: kit.uidHex, accountToken, accountDigest });
+  const mk = crypto.randomBytes(32);
+  const wrapped_mk = await wrapMKWithPasswordArgon2id(pwd, mk);
+  await mkStore(origin, {
+    session: ex.session || null,
+    uidHex: kit.uidHex,
+    accountToken,
+    accountDigest,
+    wrapped_mk
+  });
+
+  const { devicePriv, bundlePub } = await generateInitialBundle(1, 40);
+  await publishBundle(origin, { uidHex: kit.uidHex, accountToken, accountDigest, bundle: bundlePub });
+
+  const wrapped_dev = await wrapDevicePrivWithMK(devicePriv, mk);
+  await storeDevkeys(origin, { uidHex: kit.uidHex, accountToken, accountDigest, wrapped_dev });
 
   return {
     uidHex: kit.uidHex,
     accountToken,
     accountDigest,
     password: pwd,
-    opaqueServerId: serverId
+    opaqueServerId: serverId,
+    devicePriv,
+    bundlePub,
+    mk,
+    wrappedMK: wrapped_mk,
+    wrappedDev: wrapped_dev
   };
 }
 
-async function publishPrekeys(origin, { uidHex, accountToken, accountDigest, count = 10 }) {
+function buildContactPayload({ nickname, conversation, drInit }) {
+  const base = {
+    nickname: nickname || `好友-${crypto.randomBytes(2).toString('hex')}`,
+    avatar: null,
+    addedAt: Math.floor(Date.now() / 1000)
+  };
+  if (conversation) {
+    base.conversation = { ...conversation };
+    if (drInit) base.conversation.dr_init = drInit;
+  }
+  return base;
+}
+
+function normalizeOwnerBundle(bundle) {
+  if (!bundle || typeof bundle !== 'object') throw new Error('owner bundle missing');
+  const ik = String(bundle.ik_pub || bundle.ik || '').trim();
+  const spk = String(bundle.spk_pub || bundle.spk || '').trim();
+  const sig = String(bundle.spk_sig || '').trim();
+  if (!ik || !spk || !sig) throw new Error('owner bundle invalid');
+  const out = { ik_pub: ik, spk_pub: spk, spk_sig: sig };
+  if (bundle.opk && bundle.opk.id != null && bundle.opk.pub) {
+    out.opk = { id: bundle.opk.id, pub: bundle.opk.pub };
+  }
+  return out;
+}
+
+function buildGuestBundle(devicePriv, ownerBundle, x3dhState) {
+  const ekPub = x3dhState?.myRatchetPub instanceof Uint8Array ? x3dhState.myRatchetPub : new Uint8Array();
   const bundle = {
-    ik_pub: toBase64(crypto.randomBytes(32)),
-    spk_pub: toBase64(crypto.randomBytes(32)),
-    spk_sig: toBase64(crypto.randomBytes(64)),
-    opks: Array.from({ length: count }, (_, i) => ({ id: i + 1, pub: toBase64(crypto.randomBytes(32)) }))
+    ik_pub: devicePriv.ik_pub_b64,
+    ek_pub: bytesToB64(ekPub)
   };
-  const { res, data } = await jsonPost(origin, '/api/v1/keys/publish', {
-    uidHex,
-    accountToken,
-    accountDigest,
-    bundle
-  });
-  if (res.status !== 204) throw new Error(`keys.publish failed: ${JSON.stringify(data)}`);
+  if (devicePriv.spk_pub_b64) bundle.spk_pub = devicePriv.spk_pub_b64;
+  if (ownerBundle?.opk && ownerBundle.opk.id != null) bundle.opk_id = ownerBundle.opk.id;
+  return bundle;
 }
 
-async function storeDevkeys(origin, { uidHex, accountToken, accountDigest }) {
-  const wrapped_dev = {
-    v: 1,
-    aead: 'aes-256-gcm',
-    info: 'devkeys/v1',
-    salt_b64: toBase64(crypto.randomBytes(16)),
-    iv_b64: toBase64(crypto.randomBytes(12)),
-    ct_b64: toBase64(crypto.randomBytes(64))
+function buildConversationInfo(conversation) {
+  return {
+    token_b64: conversation.tokenB64,
+    conversation_id: conversation.conversationId
   };
-  const { res, data } = await jsonPost(origin, '/api/v1/devkeys/store', {
-    uidHex,
-    accountToken,
-    accountDigest,
-    wrapped_dev
+}
+
+export async function setupFriendConversation({ origin, userA = {}, userB = {} }) {
+  const userAData = await bootstrapUser({ origin, label: 'A', uidHex: userA.uidHex, password: userA.password });
+  const userBData = await bootstrapUser({ origin, label: 'B', uidHex: userB.uidHex, password: userB.password });
+
+  const invite = await createFriendInvite(origin, userAData);
+  const conversation = await deriveConversationContextFromSecret(invite.secret);
+
+  const ownerPayload = buildContactPayload({
+    nickname: userA.nickname || '使用者A',
+    conversation: buildConversationInfo(conversation)
   });
-  if (res.status !== 204) throw new Error(`devkeys.store failed: ${JSON.stringify(data)}`);
+  await attachInviteContact(origin, {
+    inviteId: invite.inviteId,
+    secret: invite.secret,
+    payload: ownerPayload
+  });
+
+  const ownerBundle = normalizeOwnerBundle(invite.prekeyBundle);
+  const bundleForInitiate = ownerBundle.opk ? { ...ownerBundle, opk: null } : ownerBundle;
+  const guestState = await x3dhInitiate(userBData.devicePriv, bundleForInitiate);
+  const guestBundle = buildGuestBundle(userBData.devicePriv, ownerBundle, guestState);
+  const ownerState = await x3dhRespond(userAData.devicePriv, guestBundle);
+  // eslint-disable-next-line no-console
+  const drInit = { guest_bundle: guestBundle, role: 'initiator' };
+  const guestPayload = buildContactPayload({
+    nickname: userB.nickname || '使用者B',
+    conversation: buildConversationInfo(conversation),
+    drInit
+  });
+
+  await acceptFriendInvite(origin, userBData, {
+    inviteId: invite.inviteId,
+    secret: invite.secret,
+    contactPayload: guestPayload,
+    guestBundle
+  });
+
+  return {
+    userA: userAData,
+    userB: userBData,
+    conversation: {
+      ...conversation,
+      drInit,
+      initiatorDrState: serializeDrState(guestState),
+      responderDrState: serializeDrState(ownerState)
+    },
+    invite
+  };
 }
 
 async function createFriendInvite(origin, user, ttlSeconds = 300) {
@@ -191,7 +310,7 @@ async function createFriendInvite(origin, user, ttlSeconds = 300) {
 }
 
 async function attachInviteContact(origin, { inviteId, secret, payload }) {
-  const envelope = await encryptContactPayload(secret, payload);
+  const envelope = await encryptContactPayloadShared({ secret, payload });
   const { res, data } = await jsonPost(origin, '/api/v1/friends/invite/contact', {
     inviteId,
     secret,
@@ -200,10 +319,10 @@ async function attachInviteContact(origin, { inviteId, secret, payload }) {
   if (!res.ok) throw new Error(`friends.invite.contact failed: ${JSON.stringify(data)}`);
 }
 
-async function acceptFriendInvite(origin, user, { inviteId, secret, contactPayload }) {
+async function acceptFriendInvite(origin, user, { inviteId, secret, contactPayload, guestBundle }) {
   let contactEnvelope = null;
   if (contactPayload) {
-    contactEnvelope = await encryptContactPayload(secret, contactPayload);
+    contactEnvelope = await encryptContactPayloadShared({ secret, payload: contactPayload });
   }
   const { res, data } = await jsonPost(origin, '/api/v1/friends/accept', {
     inviteId,
@@ -211,135 +330,12 @@ async function acceptFriendInvite(origin, user, { inviteId, secret, contactPaylo
     myUid: user.uidHex,
     accountToken: user.accountToken,
     accountDigest: user.accountDigest,
-    contactEnvelope
+    contactEnvelope,
+    guestBundle
   });
   if (!res.ok) throw new Error(`friends.accept failed: ${JSON.stringify(data)}`);
   return data;
 }
 
-async function encryptContactPayload(secretB64, payload) {
-  if (!secretB64) throw new Error('secret required');
-  const secretBytes = fromBase64Url(secretB64);
-  const baseKey = await subtle.importKey('raw', secretBytes, 'HKDF', false, ['deriveKey']);
-  const key = await subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: ZERO_SALT_CONTACT, info: CONTACT_INFO }, baseKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
-  const iv = crypto.randomBytes(12);
-  const plain = TEXT_ENCODER.encode(JSON.stringify(payload));
-  const ct = Buffer.from(await subtle.encrypt({ name: 'AES-GCM', iv }, key, plain));
-  return { iv: toBase64(iv), ct: toBase64(ct) };
-}
-
-async function deriveConversationContext(secretB64) {
-  const secretBytes = fromBase64Url(secretB64);
-  const baseKey = await subtle.importKey('raw', secretBytes, 'HKDF', false, ['deriveBits']);
-  const bits = await subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: ZERO_SALT_CONV, info: HKDF_INFO_CONV }, baseKey, 256);
-  const tokenBytes = Buffer.from(bits);
-  const tokenB64 = toBase64Url(tokenBytes);
-  const digest = crypto.createHash('sha256').update(tokenBytes).digest();
-  const conversationId = toBase64Url(digest).slice(0, 44);
-  return { tokenB64, conversationId };
-}
-
-async function encryptConversationEnvelope(tokenB64, payload) {
-  const tokenBytes = fromBase64Url(tokenB64);
-  const key = await subtle.importKey('raw', tokenBytes, 'AES-GCM', false, ['encrypt']);
-  const iv = crypto.randomBytes(12);
-  const plain = TEXT_ENCODER.encode(JSON.stringify(payload));
-  const ct = Buffer.from(await subtle.encrypt({ name: 'AES-GCM', iv }, key, plain));
-  return {
-    v: 1,
-    iv_b64: toBase64Url(iv),
-    payload_b64: toBase64Url(ct)
-  };
-}
-
-function buildContactPayload({ nickname, conversationId, tokenB64 }) {
-  return {
-    nickname: nickname || `好友-${crypto.randomBytes(2).toString('hex')}`,
-    avatar: null,
-    addedAt: Math.floor(Date.now() / 1000),
-    conversation: {
-      token_b64: tokenB64,
-      conversation_id: conversationId
-    }
-  };
-}
-
-async function sendSecureMessage(origin, { conversationId, tokenB64, senderUid, text }) {
-  const ts = Math.floor(Date.now() / 1000);
-  const payload = {
-    v: 1,
-    hdr_b64: toBase64Url(TEXT_ENCODER.encode(JSON.stringify({ from: senderUid }))),
-    ct_b64: toBase64Url(TEXT_ENCODER.encode(text)),
-    meta: {
-      ts,
-      sender_fingerprint: toBase64Url(crypto.createHmac('sha256', fromBase64Url(tokenB64)).update(senderUid.toUpperCase()).digest()),
-      msg_type: 'text'
-    }
-  };
-  const envelope = await encryptConversationEnvelope(tokenB64, payload);
-  const { res, data } = await jsonPost(origin, '/api/v1/messages/secure', {
-    conversation_id: conversationId,
-    payload_envelope: envelope,
-    created_at: ts
-  });
-  if (res.status !== 202) throw new Error(`messages.secure failed: ${JSON.stringify(data)}`);
-  return data;
-}
-
-export async function setupFriendConversation({
-  origin,
-  userA = {},
-  userB = {},
-  messageFromA = 'Hello from A',
-  messageFromB = 'Reply from B'
-}) {
-  const userAData = await bootstrapUser({ origin, label: 'A', uidHex: userA.uidHex, password: userA.password });
-  const userBData = await bootstrapUser({ origin, label: 'B', uidHex: userB.uidHex, password: userB.password });
-
-  const invite = await createFriendInvite(origin, userAData);
-  const conversation = await deriveConversationContext(invite.secret);
-
-  const ownerPayload = buildContactPayload({
-    nickname: userA.nickname || '使用者A',
-    conversationId: conversation.conversationId,
-    tokenB64: conversation.tokenB64
-  });
-  await attachInviteContact(origin, {
-    inviteId: invite.inviteId,
-    secret: invite.secret,
-    payload: ownerPayload
-  });
-
-  const guestPayload = buildContactPayload({
-    nickname: userB.nickname || '使用者B',
-    conversationId: conversation.conversationId,
-    tokenB64: conversation.tokenB64
-  });
-
-  await acceptFriendInvite(origin, userBData, {
-    inviteId: invite.inviteId,
-    secret: invite.secret,
-    contactPayload: guestPayload
-  });
-
-  await sendSecureMessage(origin, {
-    conversationId: conversation.conversationId,
-    tokenB64: conversation.tokenB64,
-    senderUid: userAData.uidHex,
-    text: messageFromA
-  });
-
-  await sendSecureMessage(origin, {
-    conversationId: conversation.conversationId,
-    tokenB64: conversation.tokenB64,
-    senderUid: userBData.uidHex,
-    text: messageFromB
-  });
-
-  return {
-    userA: userAData,
-    userB: userBData,
-    conversation,
-    invite
-  };
-}
+export const encryptContactPayload = encryptContactPayloadShared;
+export const decryptContactPayload = decryptContactPayloadShared;

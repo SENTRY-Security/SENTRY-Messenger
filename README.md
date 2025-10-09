@@ -48,6 +48,81 @@ SENTRY Message 是一套以 **NTAG424 SDM** 與 **前端零知識密鑰管理** 
 
 ---
 
+## 端對端流程整理
+
+以下以兩位使用者（A、B）建立好友並互傳訊息為例，整理整體系統的實際執行步驟，方便排錯與撰寫測試腳本。
+
+### 1. 身分啟動與帳號建立
+
+1. **SDM Debug / Exchange**  
+   - 呼叫 `/api/v1/auth/sdm/debug-kit` 取得測試用的 `uidHex`、`sdmmac`、`sdmcounter`。  
+   - 將資料送至 `/api/v1/auth/sdm/exchange`，Node 端驗證 SDM 並向 Worker 建立帳號紀錄，回傳一次性 `session`、`accountToken`、`accountDigest`、`opaqueServerId` 等。
+
+2. **OPAQUE 註冊＋登入**  
+   - 使用 `@cloudflare/opaque-ts`：`register-init → register-finish → login-init → login-finish`（Node 端代理至 Worker `/d1/opaque/*`）。  
+   - 完成後取得長期登入所需的 password-based session。
+
+3. **主金鑰（MK）處理**  
+   - 首次登入：產生 MK，呼叫 `/api/v1/mk/store` 以 Argon2 封裝並儲存。  
+   - 之後登入：以 OPAQUE 取得 password 解出 MK，暫存在 `sessionStorage`，App 頁載入後立即清空。
+
+### 2. 裝置金鑰與 Prekeys
+
+1. **設備備份**  
+   - 若沒有既有備份，前端產生 IK（Ed25519）、SPK（X25519 + SIG）、一批 OPKs。  
+   - `/api/v1/keys/publish` 將公開 prekey bundle 送往 Worker。  
+   - 利用 MK 加密裝置私鑰，呼叫 `/api/v1/devkeys/store` 保存。
+
+2. **對方 prekey 取得**  
+   - 發起端在需要時呼叫 `/api/v1/keys/bundle` 取得對方 SPK/OPK（Worker 會消耗一支 OPK）。
+
+### 3. 好友邀請與共享
+
+1. **建立邀請（使用者 A）**  
+   - `/api/v1/friends/invite` 產生 `inviteId/secret`。  
+   - 產生 conversation token（HKDF(invite secret)），將個資封裝後呼叫 `/api/v1/friends/invite/contact` 儲存 owner contact envelope。
+
+2. **接受邀請（使用者 B）**  
+   - 取得 `inviteId/secret` 後呼叫 `/api/v1/friends/accept`：驗證 secret → 綁定帳號 → 儲存 guest contact envelope、guest bundle → 回傳 owner contact envelope。  
+   - 兩端透過 WebSocket 接收 `contact-share` 事件，解密後更新 `contacts-<uid>` conversation、`contactSecrets-v1`，保留 `conversation.token` 與（若有的）`dr_init.guest_bundle`。
+
+### 4. Double Ratchet 訊息傳遞
+
+1. **初始化 DR 狀態**  
+   - 發送前檢查 `drState(peer)` 是否存在：  
+     - 若無且 `contactSecrets` 有 `dr_init`，呼叫 `bootstrapDrFromGuestBundle`。  
+     - 若仍無狀態，透過 `prekeysBundle` + `x3dhInitiate` 主動建立（消耗對方 OPK）。
+
+2. **送出訊息**  
+   - `drEncryptText` 產生 header（含 `iv_b64`）與密文。  
+  - `/api/v1/messages/secure` 送交 Node → Worker，儲存 `payload_envelope`。
+
+3. **接收解密**  
+   - 透過 `/api/v1/messages/secure?conversationId=...` 或 WebSocket 取得新訊息。  
+   - `decryptConversationEnvelope` → 驗證 header → `drDecryptText` 還原 plaintext。  
+   - 若仍缺乏 DR 狀態，`ensureDrReceiverState` 會重試 bootstrap。
+
+### 5. 媒體（如需要）
+
+1. `encryptAndPutWithProgress` 用 MK 加密 → `/media/sign-put` 取得預簽 URL → 上傳 R2。  
+2. 呼叫 `/api/v1/messages` 建立媒體索引，header 記錄 R2 key 與 envelope。  
+3. 接收端利用 `/media/sign-get` 下載後再以 MK 解密。
+
+---
+
+## 測試腳本建議
+
+為確保整個端到端流程可重現，建議撰寫專用的 Node 腳本（例如 `scripts/test-e2e-session.mjs`）涵蓋：
+
+1. A、B 各自完成：SDM exchange → OPAQUE → MK 存取 → prekeys/devkeys。  
+2. A 建立 invite 並附上 contact envelope，B 接受後確認 Worker 儲存 owner/guest contact 與 `dr_init`。  
+3. 兩端利用 API 建立 DR state，互傳 secure message，再從 `/messages/secure` 取回並以 `drDecryptText` 驗證密文可正確解密。
+
+這支腳本可以協助在無 UI 的情況下確認所有 API 互動是否完備，也能作為 CI 端的端對端回歸測試基礎。  
+**注意**：每當後端流程或資料格式更新時，請同步維護並重跑 `scripts/test-api-flow.mjs`；Playwright E2E (`npm run test:front:login`) 也必須涵蓋同樣的加密邏輯，確認最新流程完全一致且不依賴 fallback。
+
+---
+
 ## 加密流程（更新版）
 
 ### 1. 登入與主金鑰 (MK)
@@ -413,3 +488,9 @@ Repo 已內建工作流程 `.github/workflows/e2e.yml`：
   - Require a pull request before merging
   - Require status checks to pass before merging（勾選 `E2E Checks / Prekeys & Devkeys`、`E2E Checks / Messages Secure`）
   - Include administrators（視團隊需要）
+
+---
+
+## 授權條款
+
+本專案採用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-only）。任何人皆可依照該授權條款自由使用、修改與散佈此專案；若部署於可供他人透過網路存取的服務，請務必公開對應的來源碼與修改內容，以確保社群共享與使用者權益。

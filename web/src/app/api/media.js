@@ -4,7 +4,7 @@
 // Front-end API wrappers for media endpoints (sign-put, sign-get, create message index).
 // ESM only; depends on core/http. No UI logic here.
 
-import { fetchJSON, jsonReq } from '../core/http.js';
+import { fetchJSON } from '../core/http.js';
 
 /**
  * Request a presigned PUT for uploading an encrypted object to R2.
@@ -33,16 +33,11 @@ export async function signGet({ key }) {
  * @returns {Promise<{ r: Response, data: any }>} data: backend response JSON
  */
 export async function createMessage(body) {
-  const r = await fetch('/api/v1/messages', jsonReq(body, { 'X-Client-Id': 'webdemo' }));
-  const text = await r.text();
-  let data; try { data = JSON.parse(text); } catch { data = text; }
-  return { r, data };
+  return await fetchJSON('/api/v1/messages', body, { 'X-Client-Id': 'webdemo' });
 }
 
 export async function deleteMediaKeys(payload) {
-  const r = await fetch('/api/v1/messages/delete', jsonReq(payload, { 'X-Client-Id': 'webdemo' }));
-  const text = await r.text();
-  let data; try { data = JSON.parse(text); } catch { data = text; }
+  const { r, data } = await fetchJSON('/api/v1/messages/delete', payload, { 'X-Client-Id': 'webdemo' });
   if (!r.ok) {
     const msg = typeof data === 'string' ? data : data?.message || data?.error || 'delete failed';
     throw new Error(msg);

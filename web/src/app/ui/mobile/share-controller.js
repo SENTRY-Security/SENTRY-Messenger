@@ -29,10 +29,12 @@ export function setupShareController(options) {
     switchTab,
     updateProfileStats,
     getCurrentTab,
-    showToast: showToastOption
+    showToast: showToastOption,
+    wsSend
   } = options;
 
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
+  let wsTransport = typeof wsSend === 'function' ? wsSend : null;
 
   if (!dom) throw new Error('share controller requires dom references');
   restoreContactSecrets();
@@ -41,11 +43,21 @@ export function setupShareController(options) {
     if (!peerUid || !inviteId || !secret) return;
     let conversationToken = null;
     let conversationId = null;
+    let conversationDrInit = null;
     if (conversation) {
       conversationToken = conversation.tokenB64 || conversation.token_b64 || null;
       conversationId = conversation.conversationId || conversation.conversation_id || null;
+      conversationDrInit = conversation.dr_init || conversation.drInit || null;
     }
-    setContactSecret(peerUid, { inviteId, secret, role, conversationToken, conversationId });
+    const existing = getContactSecret(peerUid) || {};
+    setContactSecret(peerUid, {
+      inviteId,
+      secret,
+      role,
+      conversationToken: conversationToken || existing.conversationToken || null,
+      conversationId: conversationId || existing.conversationId || null,
+      conversationDrInit: conversationDrInit || existing.conversationDrInit || null
+    });
   }
 
   function getSecretForPeer(peerUid) {
@@ -111,7 +123,8 @@ export function setupShareController(options) {
           ownerUid: record.ownerUid ? String(record.ownerUid).toUpperCase() : null,
           prekeyBundle: record.prekeyBundle || null,
           conversationToken: record.conversationToken || null,
-          conversationId: record.conversationId || null
+          conversationId: record.conversationId || null,
+          conversationDrInit: record.conversationDrInit || null
         };
       }
     }
@@ -143,7 +156,10 @@ export function setupShareController(options) {
     handleInviteScan,
     broadcastContactUpdate,
     removeContactSecret: (peerUid) => deleteContactSecret(peerUid),
-    getCurrentInvite: () => shareState.currentInvite
+    getCurrentInvite: () => shareState.currentInvite,
+    setWsSend(fn) {
+      wsTransport = typeof fn === 'function' ? fn : null;
+    }
   };
 
   function handleEscapeKey(e) {
@@ -178,7 +194,8 @@ export function setupShareController(options) {
         ownerUid: String(invite.ownerUid || uid).toUpperCase(),
         prekeyBundle: invite.prekeyBundle || null,
         conversationToken: conversation.tokenB64,
-        conversationId: conversation.conversationId
+        conversationId: conversation.conversationId,
+        conversationDrInit: conversation.drInit || conversation.dr_init || null
       };
       inviteSecrets.set(shareState.currentInvite.inviteId, {
         secret: shareState.currentInvite.secret,
@@ -187,7 +204,8 @@ export function setupShareController(options) {
         prekeyBundle: shareState.currentInvite.prekeyBundle || null,
         expiresAt: shareState.currentInvite.expiresAt,
         conversationToken: shareState.currentInvite.conversationToken,
-        conversationId: shareState.currentInvite.conversationId
+        conversationId: shareState.currentInvite.conversationId,
+        conversationDrInit: shareState.currentInvite.conversationDrInit || null
       });
       persistInviteSecrets();
 
@@ -439,7 +457,8 @@ export function setupShareController(options) {
         ownerUid: parsed.ownerUid || null,
         ownerBundle,
         conversationToken: conversation.tokenB64,
-        conversationId: conversation.conversationId
+        conversationId: conversation.conversationId,
+        conversationDrInit: conversation.drInit || conversation.dr_init || null
       };
       inviteSecrets.set(parsed.inviteId, entry);
       persistInviteSecrets();
@@ -452,19 +471,26 @@ export function setupShareController(options) {
       if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入後再試');
       const x3dhState = await x3dhInitiate(devicePriv, ownerBundle);
       const guestBundle = buildGuestBundle(devicePriv, ownerBundle, x3dhState);
+      const drInitPayload = { guest_bundle: guestBundle, role: 'initiator' };
       entry.guestBundle = guestBundle;
+      entry.conversationDrInit = drInitPayload;
       inviteSecrets.set(parsed.inviteId, entry);
       persistInviteSecrets();
+      const conversationContext = {
+        token_b64: conversation.tokenB64,
+        conversation_id: conversation.conversationId,
+        dr_init: drInitPayload
+      };
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
         peerUid: parsed.ownerUid || null,
-        dr_init: { guest_bundle: guestBundle, role: 'initiator' }
+        dr_init: drInitPayload
       });
       let contactEnvelope = null;
       try {
         const payload = await buildLocalContactPayload({
-          conversation,
-          drInit: { guestBundle, role: 'initiator' }
+          conversation: conversationContext,
+          drInit: drInitPayload
         });
         contactEnvelope = await encryptContactPayload(parsed.secret, payload);
       } catch (err) {
@@ -485,10 +511,19 @@ export function setupShareController(options) {
         }
         const nickname = ownerContact?.nickname || '';
         const avatar = ownerContact?.avatar || null;
-        const conversationInfo = ownerContact?.conversation || {
-          token_b64: conversation.tokenB64,
-          conversation_id: conversation.conversationId
-        };
+        let conversationInfo = ownerContact?.conversation && ownerContact.conversation.token_b64 && ownerContact.conversation.conversation_id
+          ? {
+              token_b64: ownerContact.conversation.token_b64,
+              conversation_id: ownerContact.conversation.conversation_id,
+              ...(ownerContact.conversation.dr_init ? { dr_init: ownerContact.conversation.dr_init } : null)
+            }
+          : conversationContext;
+        if (!conversationInfo?.dr_init && conversationContext?.dr_init) {
+          conversationInfo = {
+            ...(conversationInfo || {}),
+            dr_init: conversationContext.dr_init
+          };
+        }
         await addContactEntry({
           peerUid: res.owner_uid,
           nickname,
@@ -535,6 +570,7 @@ export function setupShareController(options) {
     const inviteId = String(msg?.inviteId || '').trim();
     const fromUid = String(msg?.fromUid || '').toUpperCase();
     if (!inviteId || !fromUid) return;
+    const existingContact = sessionStore.contactIndex?.get?.(fromUid) || null;
     const record = inviteSecrets.get(inviteId);
     let secret = record?.secret;
     let stored = null;
@@ -558,7 +594,20 @@ export function setupShareController(options) {
       } else if (record?.conversationToken && record?.conversationId) {
         conversation = { token_b64: record.conversationToken, conversation_id: record.conversationId };
       } else if (stored?.conversationToken && stored?.conversationId) {
-        conversation = { token_b64: stored.conversationToken, conversation_id: stored.conversationId };
+        conversation = {
+          token_b64: stored.conversationToken,
+          conversation_id: stored.conversationId,
+          dr_init: stored.conversationDrInit || null
+        };
+      } else if (existingContact?.conversation?.token_b64 && existingContact?.conversation?.conversation_id) {
+        conversation = {
+          token_b64: existingContact.conversation.token_b64,
+          conversation_id: existingContact.conversation.conversation_id,
+          dr_init: existingContact.conversation.dr_init || null
+        };
+      }
+      if (conversation && !conversation.dr_init) {
+        conversation.dr_init = existingContact?.conversation?.dr_init || stored?.conversationDrInit || record?.conversationDrInit || null;
       }
       await addContactEntry({
         peerUid: fromUid,
@@ -621,11 +670,18 @@ export function setupShareController(options) {
     const errors = [];
 
     for (const [peerUid, info] of entries) {
+      log({ contactBroadcastCandidate: {
+        peerUid,
+        hasInviteId: !!info?.inviteId,
+        hasSecret: !!info?.secret,
+        hasConversation: !!(info?.conversationToken && info?.conversationId),
+        role: info?.role || null
+      } });
       const inviteId = info?.inviteId;
       const secret = info?.secret;
       if (!inviteId || !secret) continue;
       const contactEntry = sessionStore.contactIndex?.get?.(peerUid) || null;
-      const conversation = contactEntry?.conversation && contactEntry.conversation.token_b64 && contactEntry.conversation.conversation_id
+      let conversation = contactEntry?.conversation && contactEntry.conversation.token_b64 && contactEntry.conversation.conversation_id
         ? {
             tokenB64: contactEntry.conversation.token_b64,
             conversationId: contactEntry.conversation.conversation_id,
@@ -637,8 +693,22 @@ export function setupShareController(options) {
                 conversationId: info.conversationId
               }
             : null);
+      const conversationId = conversation?.conversationId || conversation?.conversation_id || null;
+      if (conversationId && (!conversation?.dr_init || !conversation.dr_init?.guest_bundle)) {
+        const storedConv = sessionStore.conversationIndex?.get?.(conversationId);
+        if (storedConv?.dr_init) {
+          conversation = {
+            ...(conversation || {}),
+            tokenB64: conversation?.tokenB64 || storedConv.token_b64,
+            conversationId,
+            dr_init: storedConv.dr_init
+          };
+        }
+      }
+      const drInit = conversation?.dr_init || conversation?.drInit || info?.conversationDrInit || null;
       try {
-        const payload = await buildLocalContactPayload({ conversation });
+        const payload = await buildLocalContactPayload({ conversation, drInit });
+        log({ contactBroadcastPayload: { peerUid, hasConversation: !!payload?.conversation, drInit: payload?.conversation?.dr_init ? 'yes' : 'no' } });
         const envelope = await encryptContactPayload(secret, payload);
         await friendsShareContactUpdate({ inviteId, secret, peerUid, envelope });
         storeContactSecretMapping({
@@ -649,9 +719,35 @@ export function setupShareController(options) {
           conversation
         });
         success += 1;
+        if (wsTransport) {
+          try {
+            wsTransport({
+              type: 'contacts-reload',
+              targetUid: peerUid
+            });
+          } catch (err) {
+            log({ contactsReloadNotifyError: err?.message || err, peerUid });
+          }
+        }
       } catch (err) {
+        const message = err?.message || '';
+        if (message.includes('NotFound')) {
+          log({ contactBroadcastFallback: message, peerUid, reason: reason || null });
+          if (wsTransport) {
+            try {
+              wsTransport({
+                type: 'contacts-reload',
+                targetUid: peerUid
+              });
+              success += 1;
+              continue;
+            } catch (notifyErr) {
+              log({ contactsReloadNotifyError: notifyErr?.message || notifyErr, peerUid });
+            }
+          }
+        }
         errors.push({ peerUid, error: err });
-        log({ contactBroadcastError: err?.message || err, peerUid, reason: reason || null });
+        log({ contactBroadcastError: message || err, peerUid, reason: reason || null });
       }
     }
 
@@ -695,20 +791,23 @@ export function setupShareController(options) {
         if (info.guestBundle || info.guest_bundle) {
           record.guestBundle = info.guestBundle || info.guest_bundle;
         }
-      if (info.expiresAt || info.expires_at) {
-        const ts = Number(info.expiresAt ?? info.expires_at);
-        if (Number.isFinite(ts)) record.expiresAt = ts;
+        if (info.conversationDrInit || info.conversation_dr_init) {
+          record.conversationDrInit = info.conversationDrInit || info.conversation_dr_init;
+        }
+        if (info.expiresAt || info.expires_at) {
+          const ts = Number(info.expiresAt ?? info.expires_at);
+          if (Number.isFinite(ts)) record.expiresAt = ts;
+        }
+        if (info.conversationToken || info.conversation_token) {
+          const token = String(info.conversationToken || info.conversation_token || '').trim();
+          if (token) record.conversationToken = token;
+        }
+        if (info.conversationId || info.conversation_id) {
+          const cid = String(info.conversationId || info.conversation_id || '').trim();
+          if (cid) record.conversationId = cid;
+        }
+        inviteSecrets.set(String(inviteId), record);
       }
-      if (info.conversationToken || info.conversation_token) {
-        const token = String(info.conversationToken || info.conversation_token || '').trim();
-        if (token) record.conversationToken = token;
-      }
-      if (info.conversationId || info.conversation_id) {
-        const cid = String(info.conversationId || info.conversation_id || '').trim();
-        if (cid) record.conversationId = cid;
-      }
-      inviteSecrets.set(String(inviteId), record);
-    }
     } catch (err) {
       log({ inviteSecretRestoreError: err?.message || err });
     }
@@ -738,26 +837,81 @@ export function setupShareController(options) {
   }
 
   async function buildLocalContactPayload({ conversation, drInit } = {}) {
-    try {
-      if (profileInitPromise) await profileInitPromise;
-    } catch (err) {
-      log({ profileInitAwaitError: err?.message || err });
+    const initialProfile = typeof getProfileState === 'function' ? getProfileState() : null;
+
+    const pickPreferredProfile = (a, b) => {
+      if (a && b) {
+        const tsA = Number(a.updatedAt || a.ts || 0);
+        const tsB = Number(b.updatedAt || b.ts || 0);
+        if (tsB > tsA) return b;
+        if (tsA > tsB) return a;
+        const hasAvatarA = !!(a.avatar && (a.avatar.thumbDataUrl || a.avatar.previewDataUrl));
+        const hasAvatarB = !!(b.avatar && (b.avatar.thumbDataUrl || b.avatar.previewDataUrl));
+        if (hasAvatarA && !hasAvatarB) return a;
+        if (hasAvatarB && !hasAvatarA) return b;
+        return a;
+      }
+      return a || b || null;
+    };
+
+    let profileState = initialProfile;
+    if (profileInitPromise) {
+      try {
+        await profileInitPromise;
+      } catch (err) {
+        log({ profileInitAwaitError: err?.message || err });
+      }
+      const loadedProfile = typeof getProfileState === 'function' ? getProfileState() : null;
+      profileState = pickPreferredProfile(initialProfile, loadedProfile);
+      if (profileState && sessionStore.profileState !== profileState) {
+        sessionStore.profileState = profileState;
+      }
     }
-    const profileState = typeof getProfileState === 'function' ? getProfileState() : null;
+
     const nickname = profileState?.nickname || '';
     let avatar = null;
-    if (profileState?.avatar) {
-      avatar = await ensureAvatarThumbnail?.();
-      if (avatar) avatar = { ...avatar };
+    const baseAvatar = profileState?.avatar || initialProfile?.avatar || null;
+    if (baseAvatar) {
+      let ensuredAvatar = null;
+      if (ensureAvatarThumbnail) {
+        try {
+          ensuredAvatar = await ensureAvatarThumbnail();
+        } catch (err) {
+          log({ ensureAvatarThumbError: err?.message || err });
+        }
+      }
+      const effectiveAvatar = ensuredAvatar || baseAvatar;
+      const thumb = effectiveAvatar?.thumbDataUrl || effectiveAvatar?.previewDataUrl || null;
+      if (thumb) {
+        avatar = {
+          ...effectiveAvatar,
+          thumbDataUrl: thumb
+        };
+        if (!avatar.previewDataUrl && effectiveAvatar?.previewDataUrl) {
+          avatar.previewDataUrl = effectiveAvatar.previewDataUrl;
+        }
+        if (!profileState?.avatar?.thumbDataUrl && thumb) {
+          sessionStore.profileState = {
+            ...(sessionStore.profileState || {}),
+            avatar: { ...(sessionStore.profileState?.avatar || effectiveAvatar), thumbDataUrl: thumb }
+          };
+          profileState = sessionStore.profileState;
+        }
+      }
     }
+
     let conversationInfo = null;
-    if (conversation && conversation.tokenB64 && conversation.conversationId) {
-      conversationInfo = {
-        token_b64: conversation.tokenB64,
-        conversation_id: conversation.conversationId
-      };
-      const drInitPayload = normalizeDrInit(drInit) || normalizeDrInit(conversation.dr_init || conversation.drInit);
-      if (drInitPayload) conversationInfo.dr_init = drInitPayload;
+    if (conversation) {
+      const convToken = conversation.tokenB64 || conversation.token_b64 || null;
+      const convId = conversation.conversationId || conversation.conversation_id || null;
+      if (convToken && convId) {
+        conversationInfo = {
+          token_b64: convToken,
+          conversation_id: convId
+        };
+        const drInitPayload = normalizeDrInit(drInit) || normalizeDrInit(conversation.dr_init || conversation.drInit);
+        if (drInitPayload) conversationInfo.dr_init = drInitPayload;
+      }
     }
     const payload = {
       nickname: nickname || generateRandomNickname(),
