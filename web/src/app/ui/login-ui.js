@@ -33,10 +33,119 @@ const welcomeContent = document.getElementById('welcomeContent');
 const welcomeNextBtn = document.getElementById('welcomeNext');
 const welcomeCloseBtn = document.getElementById('welcomeClose');
 
+let pendingLogoutNotice = null;
+
+function isAutomationEnv() {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
+  } catch {}
+  return false;
+}
+(function captureLogoutNotice() {
+  try {
+    pendingLogoutNotice = sessionStorage.getItem('app:lastLogoutReason');
+  } catch {}
+})();
+
 setLogSink((line) => {
   if (out) out.textContent = line;
   if (shouldShowModal(line)) showModalMessage(line);
 });
+
+function purgeLoginStorage() {
+  let seeds = null;
+  if (typeof window !== 'undefined' && window.__LOGIN_SEED_LOCALSTORAGE && typeof window.__LOGIN_SEED_LOCALSTORAGE === 'object') {
+    seeds = { ...window.__LOGIN_SEED_LOCALSTORAGE };
+  }
+  try {
+    const storage = localStorage;
+    const contactSecretsSnapshot = storage.getItem('contactSecrets-v1');
+    if (contactSecretsSnapshot && (typeof contactSecretsSnapshot === 'string')) {
+      if (!seeds) seeds = {};
+      if (!Object.prototype.hasOwnProperty.call(seeds, 'contactSecrets-v1') || (seeds['contactSecrets-v1']?.length || 0) < contactSecretsSnapshot.length) {
+        seeds['contactSecrets-v1'] = contactSecretsSnapshot;
+      }
+    }
+    if (typeof sessionStorage !== 'undefined') {
+      const handoffSnapshot = sessionStorage.getItem('contactSecrets-v1');
+      if (handoffSnapshot && (typeof handoffSnapshot === 'string')) {
+        if (!seeds) seeds = {};
+        const existingLen = Object.prototype.hasOwnProperty.call(seeds, 'contactSecrets-v1') ? (seeds['contactSecrets-v1']?.length || 0) : 0;
+        if (!existingLen || handoffSnapshot.length >= existingLen) {
+          seeds['contactSecrets-v1'] = handoffSnapshot;
+          seeds.__CONTACT_SECRET_SOURCE = 'session';
+        }
+        if (isAutomationEnv()) {
+          try {
+            console.log('[login-session-snapshot]', JSON.stringify({
+              sessionBytes: handoffSnapshot.length,
+              existingSeedBytes: existingLen
+            }));
+          } catch {}
+        }
+      }
+    }
+    if (isAutomationEnv() && seeds?.['contactSecrets-v1']) {
+      log({
+        loginStorageSeedPrepared: true,
+        contactSecretsBytes: seeds['contactSecrets-v1'].length,
+        contactSecretsSource: seeds.__CONTACT_SECRET_SOURCE || 'local'
+      });
+    }
+    storage.clear();
+    if (seeds) {
+      for (const [key, value] of Object.entries(seeds)) {
+        if (key.startsWith('__')) continue;
+        try { storage.setItem(key, value); } catch (err) { log({ loginStorageSeedError: err?.message || err, key }); }
+      }
+    }
+  } catch (err) {
+    log({ loginStorageClearLocalError: err?.message || err });
+  }
+  try {
+    resetAll();
+    clearSecrets();
+  } catch (err) {
+    log({ loginStoreResetError: err?.message || err });
+  }
+  try {
+    sessionStorage.removeItem('wrapped_dev');
+    sessionStorage.removeItem('contactSecrets-v1');
+  } catch {}
+  if (typeof window !== 'undefined' && window.__LOGIN_SEED_LOCALSTORAGE) {
+    try { delete window.__LOGIN_SEED_LOCALSTORAGE; } catch {}
+  }
+  if (typeof window !== 'undefined' && window.caches?.keys) {
+    caches.keys()
+      .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+      .catch((err) => log({ loginCacheClearError: err?.message || err }));
+  }
+  if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+    indexedDB.databases()
+      .then((dbs) => Promise.all(
+        dbs
+          .map((db) => db?.name)
+          .filter((name) => typeof name === 'string' && name.length)
+          .map((name) => new Promise((resolve) => {
+            const req = indexedDB.deleteDatabase(name);
+            req.onsuccess = () => resolve();
+            req.onblocked = () => resolve();
+            req.onerror = () => {
+              log({ loginIndexedDbDeleteError: req.error?.message || req.error || name, name });
+              resolve();
+            };
+          }))
+      ))
+      .catch((err) => log({ loginIndexedDbClearError: err?.message || err }));
+  }
+}
+
+purgeLoginStorage();
+if (pendingLogoutNotice) {
+  log(pendingLogoutNotice);
+  try { sessionStorage.removeItem('app:lastLogoutReason'); } catch {}
+  pendingLogoutNotice = null;
+}
 
 const uidEl = $('#uidHex');
 const uidDisplayEl = document.getElementById('uidHexDisplay');
@@ -392,15 +501,40 @@ async function onUnlock() {
     // handoff MK/UID to next page (sessionStorage, same-tab only)
     try {
       const mk = getMkRaw();
-      if (mk && mk.length) sessionStorage.setItem('mk_b64', b64(mk));
       const uid = getUidHex();
-      if (uid) sessionStorage.setItem('uid_hex', uid);
       const accountToken = getAccountToken();
-      if (accountToken) sessionStorage.setItem('account_token', accountToken);
       const accountDigest = getAccountDigest();
-      if (accountDigest) sessionStorage.setItem('account_digest', accountDigest);
       const uidDigest = getUidDigest();
+      log({
+        loginHandoff: {
+          mk: !!mk,
+          uid: !!uid,
+          accountToken: !!accountToken,
+          accountDigest: !!accountDigest,
+          uidDigest: !!uidDigest,
+          wrappedDev: !!r?.wrapped_dev
+        }
+      });
+      if (mk && mk.length) sessionStorage.setItem('mk_b64', b64(mk));
+      if (uid) sessionStorage.setItem('uid_hex', uid);
+      if (accountToken) sessionStorage.setItem('account_token', accountToken);
+      if (accountDigest) sessionStorage.setItem('account_digest', accountDigest);
       if (uidDigest) sessionStorage.setItem('uid_digest', uidDigest);
+      if (r?.wrapped_dev) {
+        sessionStorage.setItem('wrapped_dev', JSON.stringify(r.wrapped_dev));
+      } else {
+        sessionStorage.removeItem('wrapped_dev');
+      }
+      try {
+        const contactSecretsSnapshot = localStorage.getItem('contactSecrets-v1');
+        if (contactSecretsSnapshot && contactSecretsSnapshot.length) {
+          sessionStorage.setItem('contactSecrets-v1', contactSecretsSnapshot);
+        } else {
+          sessionStorage.removeItem('contactSecrets-v1');
+        }
+      } catch (err) {
+        log({ contactSecretHandoffError: err?.message || err });
+      }
     } catch {}
     setTimeout(() => location.replace('/pages/app.html'), 300);
   } catch (e) {

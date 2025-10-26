@@ -54,58 +54,63 @@ SENTRY Message 是一套以 **NTAG424 SDM** 與 **前端零知識密鑰管理** 
 
 ### 1. 身分啟動與帳號建立
 
-1. **SDM Debug / Exchange**  
-   - 呼叫 `/api/v1/auth/sdm/debug-kit` 取得測試用的 `uidHex`、`sdmmac`、`sdmcounter`。  
+1. **SDM Debug / Exchange**
+
+   - 呼叫 `/api/v1/auth/sdm/debug-kit` 取得測試用的 `uidHex`、`sdmmac`、`sdmcounter`。
    - 將資料送至 `/api/v1/auth/sdm/exchange`，Node 端驗證 SDM 並向 Worker 建立帳號紀錄，回傳一次性 `session`、`accountToken`、`accountDigest`、`opaqueServerId` 等。
+2. **OPAQUE 註冊＋登入**
 
-2. **OPAQUE 註冊＋登入**  
-   - 使用 `@cloudflare/opaque-ts`：`register-init → register-finish → login-init → login-finish`（Node 端代理至 Worker `/d1/opaque/*`）。  
+   - 使用 `@cloudflare/opaque-ts`：`register-init → register-finish → login-init → login-finish`（Node 端代理至 Worker `/d1/opaque/*`）。
    - 完成後取得長期登入所需的 password-based session。
+3. **主金鑰（MK）處理**
 
-3. **主金鑰（MK）處理**  
-   - 首次登入：產生 MK，呼叫 `/api/v1/mk/store` 以 Argon2 封裝並儲存。  
+   - 首次登入：產生 MK，呼叫 `/api/v1/mk/store` 以 Argon2 封裝並儲存。
    - 之後登入：以 OPAQUE 取得 password 解出 MK，暫存在 `sessionStorage`，App 頁載入後立即清空。
 
 ### 2. 裝置金鑰與 Prekeys
 
-1. **設備備份**  
-   - 若沒有既有備份，前端產生 IK（Ed25519）、SPK（X25519 + SIG）、一批 OPKs。  
-   - `/api/v1/keys/publish` 將公開 prekey bundle 送往 Worker。  
-   - 利用 MK 加密裝置私鑰，呼叫 `/api/v1/devkeys/store` 保存。
+1. **設備備份**
 
-2. **對方 prekey 取得**  
+   - 若沒有既有備份，前端產生 IK（Ed25519）、SPK（X25519 + SIG）、一批 OPKs。
+   - `/api/v1/keys/publish` 將公開 prekey bundle 送往 Worker。
+   - 利用 MK 加密裝置私鑰，呼叫 `/api/v1/devkeys/store` 保存。
+2. **對方 prekey 取得**
+
    - 發起端在需要時呼叫 `/api/v1/keys/bundle` 取得對方 SPK/OPK（Worker 會消耗一支 OPK）。
 
 ### 3. 好友邀請與共享
 
-1. **建立邀請（使用者 A）**  
-   - `/api/v1/friends/invite` 產生 `inviteId/secret`。  
-   - 產生 conversation token（HKDF(invite secret)），將個資封裝後呼叫 `/api/v1/friends/invite/contact` 儲存 owner contact envelope。
+1. **建立邀請（使用者 A）**
 
-2. **接受邀請（使用者 B）**  
-   - 取得 `inviteId/secret` 後呼叫 `/api/v1/friends/accept`：驗證 secret → 綁定帳號 → 儲存 guest contact envelope、guest bundle → 回傳 owner contact envelope。  
+   - `/api/v1/friends/invite` 產生 `inviteId/secret`。
+   - 產生 conversation token（HKDF(invite secret)），將個資封裝後呼叫 `/api/v1/friends/invite/contact` 儲存 owner contact envelope。
+2. **接受邀請（使用者 B）**
+
+   - 取得 `inviteId/secret` 後呼叫 `/api/v1/friends/accept`：驗證 secret → 綁定帳號 → 儲存 guest contact envelope、guest bundle → 回傳 owner contact envelope。
    - 兩端透過 WebSocket 接收 `contact-share` 事件，解密後更新 `contacts-<uid>` conversation、`contactSecrets-v1`，保留 `conversation.token` 與（若有的）`dr_init.guest_bundle`。
 
 ### 4. Double Ratchet 訊息傳遞
 
-1. **初始化 DR 狀態**  
-   - 發送前檢查 `drState(peer)` 是否存在：  
-     - 若無且 `contactSecrets` 有 `dr_init`，呼叫 `bootstrapDrFromGuestBundle`。  
+1. **初始化 DR 狀態**
+
+   - 發送前檢查 `drState(peer)` 是否存在：
+     - 若無且 `contactSecrets` 有 `dr_init`，呼叫 `bootstrapDrFromGuestBundle`。
      - 若仍無狀態，透過 `prekeysBundle` + `x3dhInitiate` 主動建立（消耗對方 OPK）。
+2. **送出訊息**
 
-2. **送出訊息**  
-   - `drEncryptText` 產生 header（含 `iv_b64`）與密文。  
-  - `/api/v1/messages/secure` 送交 Node → Worker，儲存 `payload_envelope`。
+   - `drEncryptText` 產生 header（含 `iv_b64`）與密文。
 
-3. **接收解密**  
-   - 透過 `/api/v1/messages/secure?conversationId=...` 或 WebSocket 取得新訊息。  
-   - `decryptConversationEnvelope` → 驗證 header → `drDecryptText` 還原 plaintext。  
+- `/api/v1/messages/secure` 送交 Node → Worker，儲存 `payload_envelope`。
+
+3. **接收解密**
+   - 透過 `/api/v1/messages/secure?conversationId=...` 或 WebSocket 取得新訊息。
+   - `decryptConversationEnvelope` → 驗證 header → `drDecryptText` 還原 plaintext。
    - 若仍缺乏 DR 狀態，`ensureDrReceiverState` 會重試 bootstrap。
 
 ### 5. 媒體（如需要）
 
-1. `encryptAndPutWithProgress` 用 MK 加密 → `/media/sign-put` 取得預簽 URL → 上傳 R2。  
-2. 呼叫 `/api/v1/messages` 建立媒體索引，header 記錄 R2 key 與 envelope。  
+1. `encryptAndPutWithProgress` 用 MK 加密 → `/media/sign-put` 取得預簽 URL → 上傳 R2。
+2. 呼叫 `/api/v1/messages` 建立媒體索引，header 記錄 R2 key 與 envelope。
 3. 接收端利用 `/media/sign-get` 下載後再以 MK 解密。
 
 ---
@@ -114,11 +119,11 @@ SENTRY Message 是一套以 **NTAG424 SDM** 與 **前端零知識密鑰管理** 
 
 為確保整個端到端流程可重現，建議撰寫專用的 Node 腳本（例如 `scripts/test-e2e-session.mjs`）涵蓋：
 
-1. A、B 各自完成：SDM exchange → OPAQUE → MK 存取 → prekeys/devkeys。  
-2. A 建立 invite 並附上 contact envelope，B 接受後確認 Worker 儲存 owner/guest contact 與 `dr_init`。  
+1. A、B 各自完成：SDM exchange → OPAQUE → MK 存取 → prekeys/devkeys。
+2. A 建立 invite 並附上 contact envelope，B 接受後確認 Worker 儲存 owner/guest contact 與 `dr_init`。
 3. 兩端利用 API 建立 DR state，互傳 secure message，再從 `/messages/secure` 取回並以 `drDecryptText` 驗證密文可正確解密。
 
-這支腳本可以協助在無 UI 的情況下確認所有 API 互動是否完備，也能作為 CI 端的端對端回歸測試基礎。  
+這支腳本可以協助在無 UI 的情況下確認所有 API 互動是否完備，也能作為 CI 端的端對端回歸測試基礎。
 **注意**：每當後端流程或資料格式更新時，請同步維護並重跑 `scripts/test-api-flow.mjs`；Playwright E2E (`npm run test:front:login`) 也必須涵蓋同樣的加密邏輯，確認最新流程完全一致且不依賴 fallback。
 
 ---
@@ -147,6 +152,7 @@ SENTRY Message 是一套以 **NTAG424 SDM** 與 **前端零知識密鑰管理** 
 1. App 啟動時，`login-flow` 會檢查裝置備份：
    - 無備份 → 產生 IK（Ed25519）/ SPK（X25519）+ SIG + 100 OPKs → `/api/v1/keys/publish`（含 `accountToken/accountDigest`）→ 以 MK 包裝後 `/api/v1/devkeys/store`。
    - 有備份 → 以 MK 解包 → 依需求補 20 支 OPKs（同樣附上帳號欄位）。
+   - **Devkeys API 限制**：`/api/v1/devkeys/store|fetch` 僅接受 `accountToken`／`accountDigest`，不再允許傳 `uidHex`。若僅提供 `accountToken`，Node API 會自動以 `SHA-256(accountToken)` 產生對應 digest 後再 proxy 給 Worker，確保 UID 仍保持隱匿。
 2. Worker：`/d1/prekeys/publish` 以 `account_digest` 索引 upsert IK/SPK/SPK_SIG、批次 `INSERT OR IGNORE` OPKs；`/d1/prekeys/bundle` 依對方帳號配發一支 OPK。
 
 ### 3. 訊息、聯絡與媒體的包裝
@@ -255,11 +261,12 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 如需部分部署或在新 session 自動化執行，請依實際修改範圍選擇指令：
 
-| 修改範圍 | 指令範例 | 備註 |
-| --- | --- | --- |
-| Node API（`src/`、`scripts/` 等後端檔案） | `bash ./scripts/deploy-prod.sh --skip-worker --skip-pages` | 僅重新安裝依賴並透過 PM2 reload |
-| Cloudflare Worker / D1 schema（`data-worker/`） | `bash ./scripts/deploy-prod.sh --apply-migrations --skip-pages` | 若變更 schema 記得保留 `--apply-migrations` |
-| 前端（`web/`） | `bash ./scripts/deploy-prod.sh --skip-worker --skip-api` | 只重新部署 Pages（會保留後端現況） |
+
+| 修改範圍                                        | 指令範例                                                        | 備註                                       |
+| ----------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------ |
+| Node API（`src/`、`scripts/` 等後端檔案）       | `bash ./scripts/deploy-prod.sh --skip-worker --skip-pages`      | 僅重新安裝依賴並透過 PM2 reload            |
+| Cloudflare Worker / D1 schema（`data-worker/`） | `bash ./scripts/deploy-prod.sh --apply-migrations --skip-pages` | 若變更 schema 記得保留`--apply-migrations` |
+| 前端（`web/`）                                  | `bash ./scripts/deploy-prod.sh --skip-worker --skip-api`        | 只重新部署 Pages（會保留後端現況）         |
 
 部署後可使用腳本尾端提示的 `curl` 指令，快速檢查 API / Pages 是否恢復正常。
 
@@ -267,150 +274,66 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 ---
 
-## 測試 TODO（覆蓋清單）
+## 目前狀態與待處理事項（2025-04-10）
 
-請以單元測試＋整合測試覆蓋下列重點。勾選代表驗證通過並可自動化於 CI。
+- **登入頁資料清理行為已調整**：`web/src/app/ui/login-ui.js` 現在只移除我們種下的 key，並支援 `window.__LOGIN_SEED_LOCALSTORAGE` 在頁面初始化後重新寫回 `localStorage`。Playwright `performLogin`、`full-flow` 亦改用此機制，若新增測試前置資料，請走同樣流程。
+- **E2E 現況**：`npm run test:front:login` 中的 `app-operations`、`login` 測試已通過，`full-flow` 仍失敗。
 
-- 認證／登入
+  - 暱稱更新時呼叫 `/api/v1/friends/contact/share` 會回傳 `Forbidden: sender not part of invite`，導致對方裝置看不到新暱稱。請檢查 Worker 對 invite 的存活條件，或調整 fallback 行為。
+  - 刪除好友後在 mobile 佈局中 `#btnUserMenu` 會暫時 hidden，Playwright 無法觸發登出。需檢查 UI 狀態（可能要在切回 drive 後等待列印完成，或直接操作其他可見元素）。
+  - 新增的 Playwright `full-flow` 段落（A、B 互傳多筆文字訊息後雙方登出再登入）重現嚴重問題：重新登入後 `messagesRendered` 為空陣列，舊訊息全部無法解密顯示，實際手機測試亦會發生。推測與 DR state 或 `contactSecrets` 還原流程在重登入時失敗有關，需優先除錯。
+  - 2025-10-27：已實作 wrapped_dev session handoff（登入頁將最新 device backup 暫存至 `sessionStorage`，App 載入時直接以 MK 解包），重新登入時不再觸發 `/devkeys/fetch` 404。但 `full-flow` 仍在「B 重登入測試」的第一則訊息卡住（UI 顯示「部分訊息無法解密」），代表 DR snapshot/ratchet 還原仍失敗；需比對 `contactSecrets-v1` 是否同步寫入最新 `drState/drHistory`，並檢查 `recoverDrState()` 對 responder 角色的 bootstrap 流程。
+  - 2025-10-27（晚間）：`contact-secrets` 新增 Automation Debug log，已確認 owner/guest 兩端的 snapshot 與 history 都會更新，但 Playwright `full-flow` 仍在多則訊息（尚未重登入）階段觸發 `drDecryptText → OperationError`。`dr-state-before-message` 顯示 `Nr` 未前進，推測 history cursor 仍會在相同 timestamp 下回復舊 snapshot。下一步需增加 snapshot key（例如 messageId 或自增序）避免同秒訊息互相覆寫，並於 `recoverDrState` / `prepareDrForMessage` 中優先使用最新 entry。
+  - 2025-10-27（深夜）：已實作 `messageId + timestamp` 為 DR history 游標、`contactSecrets` 也會持久化 `drHistoryCursorId`。目前 `full-flow` 測試仍於第 1 輪訊息中斷，`[dr-state-B-before-decrypt]` 顯示 `Nr=1` 但 decrypt 仍失敗，推測 `recoverDrState()` 在 `ensureDrReceiverState()` 之後仍可能覆蓋 receive-chain，需要進一步追蹤 `recordDrMessageHistory` / `prepareDrForMessage` 的觸發時序。
+  - 2025-10-27（深夜續）：「訊息重複 decrypt」問題已加入 `messageId` 去重，但 `full-flow` 仍會在第一次訊息就 `OperationError`，console 可見 `[dr-skip-duplicate]`、`[dr-history-log]` 交錯，顯示 UI 在尚未渲染完成前就再次觸發 `listSecureAndDecrypt`。需再追蹤 `messagesPane` 的 refresh 時機，避免真正首次 decrypt 被視為 duplicate。
 
-  - [ ]  SDM Exchange：正確 MAC/計數通過；錯誤 MAC 拒絕；倒退計數拒絕（重放）。
-  - [ ]  一次性 Session：逾時拒絕、重複使用拒絕、UID 不符拒絕。
-  - [ ]  OPAQUE：`/api/v1/auth/opaque/register-init|finish`、`/api/v1/auth/opaque/login-init|finish` 路由實作與端對端註冊/登入流程（含缺記錄→自動註冊→再登入）。
-  - [ ]  Argon2id KDF：`wrapMKWithPasswordArgon2id`/`unwrapMKWithPasswordArgon2id` 正確解包；錯誤密碼失敗；參數（m/t/p）不同失敗。
-- 帳號與匿名化
+  **首要處理目標（2025-04-10）**
 
-  - [ ]  `resolveAccount`：以 `accountToken`、`accountDigest`、`uidHex` 三種入口都能解析；不存在時允許建立；重複建立時 UNIQUE 處理。
-  - [ ]  `ACCOUNT_TOKEN_BYTES` 長度變更仍可用；`account_digest=SHA-256(token)` 一致。
-  - [ ]  `ACCOUNT_HMAC_KEY` 變更導致 `uid_digest` 變更；原帳號查詢仍以 `account_digest` 成功。
-- 裝置金鑰／Prekeys
+  - [X]  重新執行 `npx playwright test tests/e2e/full-flow.spec.mjs --project=chromium-mobile`，收集 console 與 request log，確認重新登入後大量 `OperationError` 來自 DR state 遺失。
+  - [x]  登入流程完成後，利用 `contactSecrets-v1` 快照還原最新的 Double Ratchet snapshot（含 seed），確保拉取 secure messages 前 state 已成對。
+  - [x]  若快照缺失或落後，依 `conversation.dr_init` guest bundle 重新 bootstrap DR，並同步更新 `contactSecrets` 內的快照。
+  - [x]  每次成功解密訊息時即時更新並持久化 DR 快照／seed，避免登出再登入後 state 回到舊值。
+  - [ ]  移除自動補 prekey / devkeys 的 workaround（`login-flow.js`、`dr-session.js`、`share-controller.js` 等），改為直接回報缺件錯誤，方便追蹤根因。
+  - [ ]  完成上述修正後重跑 `npx playwright test tests/e2e/full-flow.spec.mjs --project=chromium-mobile`，確認 E2E 全綠。
+- **除錯提示**：
 
-  - [ ]  `generateInitialBundle` 內容完整（IK/SPK/SPK_SIG/OPKs 100 筆）。
-  - [ ]  `/api/v1/keys/publish`：首次 upsert `prekey_users`，OPKs `INSERT OR IGNORE`；再次呼叫不重覆。
-  - [ ]  `/api/v1/devkeys/store` + `/devkeys/fetch`：wrapped_dev 往返成功；密文結構正確（AES‑GCM envelope）。
-  - [ ]  補貨 20 支 OPKs：`used` 標記與分配順序正確。
-- 訊息（Double Ratchet + Envelope）
+  - Worker 狀態可用 `npx wrangler d1 execute message_db --remote --command "SELECT invite_id, owner_uid, guest_uid FROM friend_invites"` 快速檢查 owner/guest 映射。
+  - `friendsShareContactUpdate` 暫時加入 `console.log('[contact-share-request|error]')`，觀察送出的 inviteId / sender。
+  - 若 Playwright 報 `EADDRINUSE :8788`，記得 `lsof -i :8788` 後 `kill -9 <PID>` 再執行測試。
+- **最新進度（2025-10-10）**
 
-  - [ ]  `dr.js`：雙方初始化（含有無 OPK）→ `drEncryptText`/`drDecryptText` 往返正確；Ratchet 進位、PN/Ns/Nr 更新正確。
-  - [ ]  `/api/v1/messages/secure`：只存 envelope（`iv_b64`、`payload_b64`），不可見明文；分頁（`cursorTs`）與排序正確。
-- 媒體與 Profile/Settings/Contacts
+  - `devkeys` API 目前僅接受 `accountToken/accountDigest`，若僅提供 token 會由 Node API 端重新計算 digest；前端、腳本與 Worker proxy 均已同步移除 `uidHex` 參數。
+  - Playwright `tests/e2e/full-flow.spec.mjs` 仍在第一輪訊息就失敗：B 端 `drDecryptText` 報 `OperationError`，log 顯示 `dr-state` 仍缺少對應的 receive chain；下一步須追查 `ensureDrReceiverState`／DR snapshot 在初次登入時的還原流程，並驗證 message key 派生是否與 sender 相符。
+  - TODO：1) 以 log 中的 `ckS/ckR` 重現 DR 派生，鎖定不一致原因；2) 調整 `messages`/DR 初始化時序，確保 B 端可在拉訊息前建立成功的 DR state；3) 啟動 API 後重跑 `npx playwright test tests/e2e/full-flow.spec.mjs --project=chromium-mobile` 及相關 API 腳本驗證。
+- **最新進度（2025-10-28）**
 
-  - [ ]  `wrapWithMK_JSON`/`unwrapWithMK_JSON` 與 `encryptWithMK`/`decryptWithMK` 正確；不同 `infoTag` 無法互解。
-  - [ ]  `sign-put`/`sign-get`：簽名有效期間內可用；逾時失效；MIME 白名單限制生效；R2 僅存密文。
-  - [ ]  Contacts/Settings 皆以 MK 包裝；Worker 僅見 envelope 與索引。
-- Node ↔ Worker 傳輸完整性
+  - 重新整理裝置私鑰 handoff 流程：`ensureDevicePrivAvailable()` 會先套用 sessionStorage 交棒，再等待登入頁設定 store，若仍未取得才呼叫 `/api/v1/devkeys/fetch` 讀取既有備份，完全移除自動重建 prekey 的 fallback。
+  - 自動化腳本結果：`npm run test:prekeys-devkeys`、`npm run test:messages-secure`、`npm run test:friends-messages`、`npm run test:login-flow` 全數通過；`npm run test:front:login` 中的 `app-operations`、`login` 也通過，但 `full-flow` 仍失敗。
+  - `full-flow` 失敗點更新：已移除 secure messages 的全域去重機制，第一輪訊息已可成功渲染；目前卡在重登入後的訊息互通，log 顯示登出 handoff 後 `contactSecrets-v1` 仍可能為空（`restore-skip storage-empty`），導致重新登入時 DR snapshot 遺失、`drDecryptText` 報 `OperationError`。需完成 contact-secrets 的 logout→login handoff 與重新載入流程。
+  - 2025-10-28（晚間）：`web/src/app/features/messages.js` 現在會根據 `created_at`/`messageId` 重新排序後才逐一解密，並新增 `mutateState=false` 模式（`messages-pane` 的預覽刷新改用此路徑）以避免背景載入覆寫 DR snapshot。雖然改善了首輪訊息重複 decrypt 的情況，`npx playwright test tests/e2e/full-flow.spec.mjs --project=chromium-mobile` 仍在重登入後第一則訊息（例：`A重登入測試-*`）發生 `drDecryptText → OperationError`，log 顯示 receiver 端 `theirRatchetPub` 仍落在舊值。下一步需追蹤重登入後有哪些流程仍以 `mutateState=true` 重播舊訊息，或在「對話開啟時」鎖定單一資料來源，避免 cursor 被倒帶。
+  - 2025-10-28（深夜）：`messages.js` 對前景載入新增 DR 去重快取、歷史訊息改為只讀模式，避免 append 時回滾 snapshot；`dr-session.js` 的 `prepareDrForMessage` 亦加入 timestamp/cursor 判斷與 duplicate log。`full-flow` 已可穩定通過多輪往返訊息，但在 Playwright 的「登出 → 重登入」階段仍失敗：A 端 relogin 後 `drState` 為空，顯示 `contactSecrets-v1` handoff 仍是舊資料（log 只有 502 bytes）。需補上 logout→login 的 snapshot 檢查（記錄 local/session bytes）並查明為何 `purgeLoginStorage()` 沒有採用最新快照。
+- **最新進度（2025-10-26）**
 
-  - [ ]  `signHmac`/Worker `verifyHMAC`：合法請求通過；缺 `x-auth`/簽章錯誤拒絕；常數時間比較防側信道。
-  - [ ]  基礎 Rate Limit：`/api/*` 每分鐘 120 次上限生效（`src/app.js`）。
-- 前端安全性與記憶體衛生
+  - Login 頁於清除 `localStorage` 前會自動備份/回寫 `contactSecrets-v1`，避免 QA 透過 `__LOGIN_SEED_LOCALSTORAGE` 注入的 DR snapshot 在重新登入時遺失。
+  - `share-controller` 不再覆寫既有 `contactSecret.role`，防止 owner 端資料廣播時把 guest 端角色意外改成 owner/responder。
+  - `dr-session.js`／`messages.js` 增加 snapshot 還原與 `dr-debug`/`dr-send` 詳細紀錄，當 `OperationError` 發生時會先回滾快照再嘗試 `recoverDrState`，並輸出 `rk/ckS/ckR/theirRatchetPub` 供比對。
+  - 仍未解決重新登入後的 DR 收訊問題：`tests/e2e/full-flow.spec.mjs --project=chromium-mobile` 每次都卡在 B 端首則訊息無法解密（`OperationError`）。`[dr-send]` 顯示 sender 端已成功 ratchet，`[dr-debug]` 則指出 receiver 的 snapshot `theirRatchetPub` 仍停留在初次 bootstrap 的 initiator pub，導致 header `ek_pub_b64` 不匹配。這代表 responder 角色在恢復時沒有正確採用最新 guest bundle/快照，需要進一步追查 `recoverDrState` 與 `contactSecrets` 儲存流程。
+- **下一步建議 / 工作清單**（完成後請在 README 勾選）：
 
-  - [ ]  `sessionStorage` 交棒機制：App 頁取用後立即刪除；重新整理不殘留。
-  - [ ]  `secureLogout`（或相同行為）：登出/背景事件清除 MK、DR 狀態、暫存欄位。
-  - [ ]  CDN 載入的 `argon2-browser`、TweetNaCl：失敗時的 fallback 與錯誤提示；（建議）加入 SRI 或改為 bundling。
-- 端到端流程（冒煙測試）
+  1. ~~修復 `contact/share` 403（確認 invite 刪除時機或允許 owner fallback）。~~
+  2. ~~調整好友刪除 → 登出流程，確保 UI 有可點擊的 user menu。~~
+  3. ~~重跑 `npx playwright test tests/e2e/full-flow.spec.mjs` 與 `npm run test:front:login` 確認全數通過。~~
 
-  - [ ]  完整登入（SDM→OPAQUE→MK 解封/初始化）。
-  - [ ]  產生/接受好友邀請→X3DH 初始化→互傳 3 則訊息→重新整理後可解密歷史訊息。
-  - [ ]  上傳一張圖片→從清空快取的瀏覽器下載並解密顯示。
+  4. [X]  實作端對端檔案傳輸（文字訊息以外的圖片 / 影片 / 一般檔案），確保全程加密並強制 500 MB 以內。（完成：聊天視窗支援附件加密上傳 / 下載）
+  5. [ ]  更新 Node API、Worker、R2 儲存策略：建立「已傳送的檔案」「已接收的檔案」固定資料夾，並確保 500 MB 限制與密文儲存。（進行中）
+  6. [ ]  前端 UI：聊天介面新增選檔 / 預覽 / 上傳進度，Drive 顯示兩個系統資料夾與相關操作。（尚未開始）
+   7. [ ]  建立 / 擴充 E2E 測試（Playwright）覆蓋檔案傳送、接收、Drive 同步、下載驗證；缺測試時補上。（尚未開始）
+  8. [ ]  DR snapshot 還原：實作 messageId-based history cursor、防止同時間戳覆寫，並重新驗證 `tests/e2e/full-flow.spec.mjs`。（已加上 messageId 游標，仍需排查首輪 decrypt 失敗 & UI 重複 fetch）
+  9. [ ]  追蹤 `messages-pane` 在首次載入時的 duplicate 判斷（`[dr-skip-duplicate]`），調整 `messages.js` / `recordDrMessageHistory` 的去重條件與 cursor 更新時序，確保第一則訊息不會被誤判，修復後重跑 `npx playwright test tests/e2e/full-flow.spec.mjs --project=chromium-mobile`。
+  10. [ ]  完成 `contactSecrets-v1` 的 logout→login handoff：logout 時確實寫入 sessionStorage，login `purge`/App 初始化可回填 localStorage，避免重新登入時 `restoreContactSecrets()` 為空並導致 DR state 遺失，修復後重跑 `full-flow`。
+  11. [ ]  調整 `listSecureAndDecrypt` 在多處呼叫時的狀態隔離：僅允許「開啟中的對話」以 `mutateState=true` 更新 DR snapshot，其餘背景刷新一律使用 snapshot clone，並加入 log/guard 以偵測重複回朔，確認重登入後 `theirRatchetPub` 不再被舊封包覆蓋。
+  12. [ ]  追蹤 logout→login seed 實際長度：登入頁 `purgeLoginStorage()` 已紀錄 `login-session-snapshot` bytes，但實際 relogin 仍只看到 502 bytes；需進一步比較 logout 時 local/session bytes 與登入時採用的 seed，確保最新 `drState` 會同步到 `contactSecrets-v1`，並提供 checksum 以利 QA 驗證。
 
-備註：實作 OPAQUE 的 Node 路由後，請新增對 Worker `/d1/opaque/store|fetch` 的 proxy 與錯誤回報；再補上對 `ensureOpaque()` 的整合測試。
-
-## TODO：隱匿式訊息功能實作計畫
-
-> 目標：伺服器端對訊息僅看到隨機 conversation token、完全不暴露對話雙方身分或訊息方向。
-
-~~1. **定義對話識別與封包格式**~~
-~~2. **更新 Worker / D1 schema**~~
-
----
-
-## 帳號匿名化導入進度
-
-- ~~Phase 1：Worker 與 D1 以 `accountToken/acct_digest` 取代 UID，建立 `accounts` 表與雜湊工具。~~
-- ~~Phase 2：Node API 更新所有路由改採 `accountToken`/`acctDigest` 欄位，移除 UID 依賴。~~
-- ~~Phase 3：前端核心（store/login-flow）接入新欄位與 digest 交棒流程。~~
-- ~~Phase 4：前端各功能模組（好友、訊息、WebSocket、設定）全面改用 `acctDigest`。~~
-- Phase 5：測試與驗證，新增單元測試並人工跑完整登入/訊息/媒體流程。
-
-### 環境變數補充
-
-- 新增 `ACCOUNT_HMAC_KEY`（32-byte hex），供 Worker 將 NTAG424 UID 雜湊成 `uid_digest`。
-  ~~3. **調整 Node API 層**~~
-  ~~4. **前端資料結構調整**~~
-  ~~5. **訊息發送流程**~~
-
-~~6. **訊息載入與同步**~~
-~~   - 透過 `/api/v1/messages/secure` 以 `conversationId` 下載封包並逐筆解密。~~
-~~   - 實作分頁 / 增量載入、錯誤處理（失敗時嘗試重建 session）。~~
-~~   - 規畫輪詢或 WebSocket 推播（待後續擴充）。~~
-
-7. **測試與驗證**
-
-   - 撰寫單元測試／整合測試涵蓋：token 交換、訊息送出/讀取、DR 狀態維護。
-   - 手動驗證伺服器端紀錄僅看見亂數 token 與密文。
-8. **文件更新 / 效能評估**
-
-   - README 與開發文件補充流程圖與 API 參數。
-   - 評估 token 數量、索引策略、DR state 釋放（避免 session 爆滿）。
-
-### 步驟1：對話識別與封包格式（規格草案）
-
-**Conversation Token**
-
-- 從好友邀請結果的 shared secret（invite secret）導出：
-  ```text
-  conv_token = HKDF( secret = invite_secret,
-                     salt   = 0x00...00 (32 bytes),
-                     info   = "sentry/conv-token",
-                     len    = 32 )
-  conv_id    = base64url( SHA-256( conv_token ) )[0:44]
-  ```
-- `conv_token` 僅保存在前端（加密聯絡資料 + sessionStore）；`conv_id` 作為伺服端唯一索引，無法逆推對話雙方。
-
-**訊息封包**
-
-- Double Ratchet 產出 `(header_bytes, ciphertext_bytes)` 後，組裝：
-  ```json
-  {
-    "v": 1,
-    "hdr_b64": "...",          // header bytes → Base64url
-    "ct_b64": "...",           // ciphertext bytes → Base64url
-    "meta": {
-      "ts": 1700000000,
-      "sender_fingerprint": "...", // HMAC-SHA256(conv_token, sender_uid) → Base64url
-      "msg_type": "text"
-    }
-  }
-  ```
-- 將上述 JSON 字串以 `AES-256-GCM(key=conv_token, iv=random12)` 封裝，生成：
-  ```json
-  {
-    "v": 1,
-    "iv_b64": "...",
-    "payload_b64": "..." // 加密後的封包
-  }
-  ```
-- 伺服端僅接觸 `conv_id` 與此 envelope。收訊端以 `conv_token` 解封 → 還原 DR header/ciphertext → 繼續 Double Ratchet 流程。
-
-**DR State 儲存**
-
-- `sessionStore.drState[conv_id]` 保存當前雙方 ratchet 狀態（僅記憶體）。
-- 聯絡人封套（加密存於 `contacts-<uid>` conversation）新增欄位：
-  ```json
-  {
-    "nickname": "...",
-    "avatar": { ... },
-    "conversation": {
-      "token_b64": "...",      // conv_token base64url
-      "rk_b64": "...",         // 初始 root key (若需要)
-      "dh_pub_b64": "..."      // 對方初始 DH 公鑰（供重建 DR）
-    }
-  }
-  ```
-- 登出時清除記憶體；重新登入後由聯絡人封套重建 `conv_token` 與 DR 初始值。
-
-> 後續步驟將依此規格調整 D1 schema、API 與前端流程。
-
----
 
 ## 自動化測試腳本（給協作與驗收用）
 
@@ -423,26 +346,28 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 可用腳本
 
 - `npm run test:prekeys-devkeys`
+
   - 路徑：`scripts/test-prekeys-devkeys.mjs`
   - 內容：SDM debug-kit → Exchange → `/api/v1/keys/publish`（IK/SPK/SPK_SIG + OPKs）→ `/api/v1/devkeys/store`（假 envelope）→ `/api/v1/devkeys/fetch`
   - 期望：publish/store 皆 204，fetch 回傳 `wrapped_dev`
-
 - `npm run test:messages-secure`
+
   - 路徑：`scripts/test-messages-secure.mjs`
   - 內容：SDM debug-kit → Exchange → `/api/v1/messages/secure` 建立 envelope → `/api/v1/messages/secure?conversationId=` 列出
   - 期望：create 202；list 至少一筆
-
 - `npm run test:friends-messages`
+
   - 路徑：`scripts/test-friends-messages.mjs`
   - 內容：兩位模擬用戶分別註冊→登入→建立好友邀請→受邀方加入→雙向傳送隱匿訊息並解密驗證
   - 需求：需先啟動 Node API；可透過 `ORIGIN_API` 指定目標環境（預設 `http://127.0.0.1:3000`）
-
 - `npm run test:login-flow`
+
   - 路徑：`scripts/test-login-flow.mjs`
   - 內容：debug-kit → Exchange → OPAQUE（無紀錄則註冊）→ 首次 `/api/v1/mk/store` → 再 Exchange 應 `hasMK=true` → 再次 OPAQUE login
   - 參數：可用 `--uid <UIDHEX>` 固定測試 UID；`ORIGIN_API` 指定 API
   - 備註：若 OPAQUE 路由尚未完整，可能回 `RecordNotFound` 或 base64 解析錯誤；建議用前端 `ensureOpaque()` 路徑（會自動註冊再登入）或完成後端路由再跑此腳本。
 - `npm run test:front:login`
+
   - 路徑：`tests/e2e/*.spec.mjs`（Playwright）
   - 前置：自動清除上一輪的 E2E 截圖、Playwright report 與暫存測試資料，再重建測試用帳號
   - 內容：登入後依序驗證暱稱同步、頭像更換、檔案上傳/刪除、雙向訊息讀寫、對話刪除（雙邊同步保留聯絡人）、聯絡人刪除與登出
@@ -488,6 +413,21 @@ Repo 已內建工作流程 `.github/workflows/e2e.yml`：
   - Require a pull request before merging
   - Require status checks to pass before merging（勾選 `E2E Checks / Prekeys & Devkeys`、`E2E Checks / Messages Secure`）
   - Include administrators（視團隊需要）
+
+---
+
+## Codex 修改追蹤
+
+- 2025-10-10 04:58 UTC：追蹤「收訊端無法解密」問題，新增裝置私鑰等待機制（store 與 DR session）以避免 DR 初始化在備份尚未回復時失敗，後續可直接重用記憶體中的裝置金鑰並降低 404 造成的重試噪音。
+
+---
+
+## Codex 工作紀錄
+
+
+| 日期 (UTC) | 說明                                                                                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2025-10-10 | 針對收訊端無法解密的問題：在`web/src/app/features/dr-session.js` 新增裝置金鑰備援流程，若備份缺失會自動重新發佈預共享金鑰並儲存 wrapped_dev，預期可避免 DR 初始化因 404 中斷。 |
 
 ---
 

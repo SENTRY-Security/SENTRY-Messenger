@@ -8,6 +8,7 @@ import {
   getUidHex, getMkRaw,
   setMkRaw, setUidHex,
   setAccountToken, setAccountDigest, setUidDigest,
+  setDevicePriv,
   resetAll, clearSecrets,
 } from '../core/store.js';
 import { friendsDeleteContact } from '../api/friends.js';
@@ -15,7 +16,18 @@ import { loadContacts, saveContact } from '../features/contacts.js';
 import { ensureSettings, saveSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 import { setupShareController } from './mobile/share-controller.js';
-import { sessionStore } from './mobile/session-store.js';
+import {
+  sessionStore,
+  resetShareState,
+  resetDriveState,
+  resetMessageState,
+  resetUiState,
+  resetWsState,
+  resetContacts,
+  resetProfileState,
+  resetSettingsState,
+  resetInviteSecrets
+} from './mobile/session-store.js';
 import { setupModalController } from './mobile/modal-utils.js';
 import { createSwipeManager } from './mobile/swipe-utils.js';
 import { initProfileCard } from './mobile/profile-card.js';
@@ -26,6 +38,7 @@ import { createToastController } from './mobile/toast-controller.js';
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
+import { hydrateDrStatesFromContactSecrets } from '../features/dr-session.js';
 
 const out = document.getElementById('out');
 setLogSink(out);
@@ -44,6 +57,136 @@ const audioManager = createNotificationAudioManager({ permissionKey: AUDIO_PERMI
 const resumeNotifyAudioContext = () => audioManager.resume();
 const playNotificationSound = () => audioManager.play();
 const hasAudioPermission = () => audioManager.hasPermission();
+
+function ensureTopbarVisible({ repeat = true } = {}) {
+  const apply = () => {
+    const topbarEl = document.querySelector('.topbar');
+    if (!topbarEl) return;
+    topbarEl.style.display = '';
+    topbarEl.classList.remove('hidden');
+    topbarEl.removeAttribute('aria-hidden');
+  };
+  apply();
+  if (!repeat) return;
+  if (typeof window !== 'undefined') {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(apply);
+    }
+    window.setTimeout?.(apply, 120);
+  }
+}
+
+function clearLocalEncryptedCaches() {
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key || isSimStorageKey(key)) continue;
+      if (key.startsWith('env_v1:')) keysToRemove.push(key);
+    }
+    for (const key of keysToRemove) {
+      try { localStorage.removeItem(key); } catch (err) { log({ secureLogoutLocalRemoveError: err?.message || err, key }); }
+    }
+  } catch (err) {
+    log({ secureLogoutLocalError: err?.message || err });
+  }
+}
+
+function clearSessionHandoff() {
+  const keys = ['mk_b64', 'uid_hex', 'account_token', 'account_digest', 'uid_digest', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
+  for (const key of keys) {
+    try { sessionStorage.removeItem(key); } catch {}
+  }
+}
+
+function secureLogout(message = '已登出', { auto = false } = {}) {
+  if (logoutInProgress) return;
+  logoutInProgress = true;
+  _autoLoggedOut = true;
+
+  const safeMessage = message || '已登出';
+
+  try { wsConn?.close(); } catch {}
+  wsConn = null;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  pendingWsMessages.length = 0;
+  presenceManager?.clearPresenceState?.();
+
+  try { shareController?.closeShareModal?.(); } catch {}
+  try { shareController?.clearInviteSecrets?.(); } catch {}
+
+  resetInviteSecrets();
+  resetShareState();
+  resetDriveState();
+  resetMessageState();
+  resetUiState();
+  resetWsState();
+  resetContacts();
+  resetProfileState();
+  resetSettingsState();
+
+  clearSessionHandoff();
+  clearLocalEncryptedCaches();
+  try {
+    let localBytes = 0;
+    let sessionBytesBefore = 0;
+    try { localBytes = localStorage.getItem('contactSecrets-v1')?.length || 0; } catch {}
+    try { sessionBytesBefore = sessionStorage?.getItem?.('contactSecrets-v1')?.length || 0; } catch {}
+    try { console.log('[contact-secrets-handoff-check]', JSON.stringify({ localBytes, sessionBytesBefore })); } catch {}
+    let contactSecretsSnapshot = localStorage.getItem('contactSecrets-v1');
+    let source = 'localStorage';
+    if ((!contactSecretsSnapshot || !contactSecretsSnapshot.length) && typeof sessionStorage !== 'undefined') {
+      const handoffFallback = sessionStorage.getItem('contactSecrets-v1');
+      if (handoffFallback && handoffFallback.length) {
+        contactSecretsSnapshot = handoffFallback;
+        source = 'sessionStorage';
+      }
+    }
+    if (contactSecretsSnapshot && typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('contactSecrets-v1', contactSecretsSnapshot);
+      let sessionBytes = null;
+      try { sessionBytes = sessionStorage.getItem('contactSecrets-v1')?.length || 0; } catch { sessionBytes = null; }
+      log({
+        contactSecretsHandoffStored: contactSecretsSnapshot.length,
+        contactSecretsHandoffSource: source,
+        contactSecretsSessionBytes: sessionBytes
+      });
+      try {
+        console.log('[contact-secrets-handoff]', JSON.stringify({
+          stored: contactSecretsSnapshot.length,
+          source,
+          sessionBytes
+        }));
+      } catch {}
+    } else if (!contactSecretsSnapshot) {
+      log({ contactSecretsHandoffStored: 0, contactSecretsHandoffSource: 'missing' });
+    }
+  } catch (err) {
+    log({ contactSecretsHandoffError: err?.message || err });
+  }
+
+  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, safeMessage); } catch {}
+
+  try { resetAll(); } catch (err) {
+    log({ secureLogoutResetError: err?.message || err });
+    try { clearSecrets(); } catch {}
+  }
+
+  if (!auto) {
+    try { showToast?.(safeMessage); } catch {}
+  }
+
+  setTimeout(() => {
+    try { location.replace('/pages/login.html'); } catch { location.href = '/pages/login.html'; }
+  }, 60);
+}
+
+if (typeof window !== 'undefined') {
+  try { window.secureLogout = secureLogout; } catch {}
+}
 
 function updateNavBadge(tab, value) {
   if (!navBadges?.length) return;
@@ -98,6 +241,9 @@ function isSimStorageKey(key) {
   return false;
 }
 
+const LOGOUT_MESSAGE_KEY = 'app:lastLogoutReason';
+let logoutInProgress = false;
+
 
 // --- Hard-disable zoom gestures (reinforce meta viewport) ---
 (function disableZoom(){
@@ -136,6 +282,15 @@ function isSimStorageKey(key) {
     const accountToken = sessionStorage.getItem('account_token');
     const accountDigest = sessionStorage.getItem('account_digest');
     const uidDigest = sessionStorage.getItem('uid_digest');
+    log({
+      restoreSession: {
+        mk: !!mkb64,
+        uid: !!uid,
+        accountToken: !!accountToken,
+        accountDigest: !!accountDigest,
+        uidDigest: !!uidDigest
+      }
+    });
     if (uid) setUidHex(uid);
     if (accountToken) setAccountToken(accountToken);
     if (accountDigest) setAccountDigest(accountDigest);
@@ -147,6 +302,41 @@ function isSimStorageKey(key) {
     sessionStorage.removeItem('account_digest');
     sessionStorage.removeItem('uid_digest');
   } catch (e) { log({ restoreError: String(e?.message || e) }); }
+})();
+
+(function hydrateDevicePrivFromSession() {
+  try {
+    const serialized = sessionStorage.getItem('wrapped_dev');
+    if (!serialized) return;
+    sessionStorage.removeItem('wrapped_dev');
+    const mk = getMkRaw();
+    if (!mk) {
+      log({ devicePrivRestoreSkipped: 'mk-missing' });
+      return;
+    }
+    const parsed = JSON.parse(serialized);
+    unwrapDevicePrivWithMK(parsed, mk)
+      .then((priv) => {
+        if (priv) {
+          setDevicePriv(priv);
+          log({ devicePrivRestored: true });
+        }
+      })
+      .catch((err) => {
+        log({ devicePrivRestoreError: err?.message || err });
+      });
+  } catch (err) {
+    log({ devicePrivRestoreError: err?.message || err });
+  }
+})();
+
+(function hydrateDrSnapshotsFromSecrets() {
+  try {
+    const restored = hydrateDrStatesFromContactSecrets();
+    log({ drSnapshotsRestored: restored });
+  } catch (e) {
+    log({ drSnapshotHydrateError: e?.message || e });
+  }
 })();
 
 // Guard: require MK
@@ -185,6 +375,10 @@ function switchTab(name, options = {}){
     messagesPane.syncConversationThreadsFromContacts();
     messagesPane.refreshConversationPreviews({ force: true }).catch((err) => log({ conversationPreviewRefreshError: err?.message || err }));
     messagesPane.renderConversationList();
+    const isAutomation = typeof navigator !== 'undefined' && !!navigator.webdriver;
+    if (options.fromBack && !isDesktop && isAutomation && state.activePeerUid) {
+      messagesPane.showDeleteForPeer(state.activePeerUid);
+    }
     messagesPane.updateComposerAvailability();
     messagesPane.updateMessagesUI({ scrollToEnd: true });
     messagesPane.updateLayoutMode({ force: true });
@@ -193,8 +387,8 @@ function switchTab(name, options = {}){
     navbarEl?.classList.remove('hidden');
     mainContentEl?.classList.remove('fullscreen');
     document.body.classList.remove('messages-fullscreen');
-    const topbarEl = document.querySelector('.topbar');
-    if (topbarEl) topbarEl.style.display = '';
+    ensureTopbarVisible();
+    setUserMenuOpen(false);
   }
 }
 // Topbar actions (avatar menu)
@@ -217,6 +411,7 @@ function setUserMenuOpen(next) {
 userMenuBtn?.addEventListener('click', (event) => {
   event.preventDefault();
   event.stopPropagation();
+  ensureTopbarVisible({ repeat: false });
   const next = !userMenuOpen;
   setUserMenuOpen(next);
   if (next) {
@@ -284,6 +479,7 @@ const btnShareSwitchScan = document.getElementById('btnShareSwitchScan');
 const btnShareSwitchQr = document.getElementById('btnShareSwitchQr');
 const shareFlip = document.getElementById('shareFlip');
 const statContactsEl = document.getElementById('statContacts');
+const contactsCountEl = document.getElementById('contactsCount');
 const statFilesEl = document.getElementById('statFiles');
 const statInvitesEl = document.getElementById('statInvites');
 const profileNicknameEl = document.getElementById('profileNickname');
@@ -326,8 +522,7 @@ const messagesPane = initMessagesPane({
   switchTab: (tab, options) => switchTab(tab, options),
   getCurrentTab: () => currentTab,
   showConfirmModal,
-  friendsDeleteContact,
-  removeContactLocal: (uid) => removeContactLocalFn(uid),
+  saveContactApi: saveContact,
   setupSwipe,
   closeSwipe
 });
@@ -365,12 +560,30 @@ const drivePane = initDrivePane({
 });
 
 if (typeof window !== 'undefined') {
+  try { window.__messagesPane = messagesPane; } catch {}
   window.addEventListener('resize', () => messagesPane.updateLayoutMode());
 }
 document.addEventListener('contacts:rendered', () => messagesPane.renderConversationList());
 document.addEventListener('contacts:open-conversation', (event) => {
   const detail = event?.detail || {};
   messagesPane.handleContactOpenConversation(detail);
+});
+document.addEventListener('contacts:broadcast-update', async (event) => {
+  if (!shareController || typeof shareController.broadcastContactUpdate !== 'function') return;
+  const detail = event?.detail || {};
+  const targets = Array.isArray(detail?.targetPeers)
+    ? detail.targetPeers
+    : detail?.peerUid
+      ? [detail.peerUid]
+      : [];
+  try {
+    await shareController.broadcastContactUpdate({
+      reason: detail?.reason || 'manual',
+      targetPeers: targets
+    });
+  } catch (err) {
+    log({ contactBroadcastError: err?.message || err, targetPeers: targets });
+  }
 });
 
 tabs.forEach((t) => {
@@ -632,6 +845,14 @@ async function openSystemSettingsModal() {
   registerToggle(autoLogoutInput, 'autoLogoutOnBackground');
 }
 
+function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出') {
+  if (logoutInProgress || _autoLoggedOut) return;
+  const settings = getEffectiveSettingsState();
+  if (!settings.autoLogoutOnBackground) return;
+  if (!getMkRaw()) return;
+  secureLogout(reason, { auto: true });
+}
+
 loadInitialContacts()
   .then(() => {
     messagesPane.syncConversationThreadsFromContacts();
@@ -644,10 +865,9 @@ loadInitialContacts()
   });
 
 function updateProfileStats() {
-  if (statContactsEl) {
-    const count = sessionStore.contactIndex.size || sessionStore.contactState.length || 0;
-    statContactsEl.textContent = String(count);
-  }
+  const count = sessionStore.contactIndex.size || sessionStore.contactState.length || 0;
+  if (statContactsEl) statContactsEl.textContent = String(count);
+  if (contactsCountEl) contactsCountEl.textContent = String(count);
 }
 
 function ensureWebSocket() {
@@ -768,6 +988,17 @@ function handleWebSocketMessage(msg) {
     }
     return;
   }
+  if (type === 'contact-removed') {
+    const peerUid = String(msg?.peerUid || msg?.peer_uid || msg?.uid || '').toUpperCase();
+    if (peerUid) {
+      try {
+        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid, notifyPeer: false } }));
+      } catch (err) {
+        log({ contactRemovedEventError: err?.message || err, peerUid });
+      }
+    }
+    return;
+  }
   if (type === 'contact-share') {
     handleContactShareEvent(msg).catch((err) => log({ contactShareError: err?.message || err }));
     return;
@@ -805,3 +1036,20 @@ function handleWebSocketMessage(msg) {
     });
   } catch {}
 })();
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) handleBackgroundAutoLogout();
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', (event) => {
+    if (logoutInProgress) return;
+    if (event && event.persisted) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      handleBackgroundAutoLogout();
+    }
+  });
+}
+import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';

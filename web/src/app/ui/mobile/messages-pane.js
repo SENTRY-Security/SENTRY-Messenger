@@ -140,7 +140,8 @@ export function initMessagesPane({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerUidHex: thread.peerUid,
-            limit: 20
+            limit: 20,
+            mutateState: false
           });
           const list = Array.isArray(items) ? items.filter(Boolean) : [];
           if (!list.length) {
@@ -592,17 +593,22 @@ export function initMessagesPane({
         tokenB64: state.conversationToken,
         peerUidHex: state.activePeerUid,
         limit: 50,
-        cursorTs: cursor
+        cursorTs: cursor,
+        mutateState: !append
       });
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
       if (append) {
         const existingIds = new Set(state.messages.map((m) => m.id));
         chunk = chunk.filter((m) => !existingIds.has(m.id));
-        state.messages = [...chunk, ...state.messages];
-        updateMessagesUI({ preserveScroll: true });
+        if (chunk.length) {
+          state.messages = [...chunk, ...state.messages];
+          updateMessagesUI({ preserveScroll: true });
+        }
       } else {
-        state.messages = chunk;
-        updateMessagesUI({ scrollToEnd: true });
+        if (chunk.length || !state.messages.length) {
+          state.messages = chunk;
+          updateMessagesUI({ scrollToEnd: true });
+        }
       }
       state.nextCursorTs = nextCursorTs;
       state.hasMore = !!nextCursorTs;
