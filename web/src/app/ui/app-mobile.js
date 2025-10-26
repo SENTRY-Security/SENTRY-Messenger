@@ -11,6 +11,7 @@ import {
   setDevicePriv,
   resetAll, clearSecrets,
 } from '../core/store.js';
+import { persistContactSecrets, lockContactSecrets } from '../core/contact-secrets.js';
 import { friendsDeleteContact } from '../api/friends.js';
 import { loadContacts, saveContact } from '../features/contacts.js';
 import { ensureSettings, saveSettings, DEFAULT_SETTINGS } from '../features/settings.js';
@@ -82,6 +83,7 @@ function clearLocalEncryptedCaches() {
     for (let i = 0; i < localStorage.length; i += 1) {
       const key = localStorage.key(i);
       if (!key || isSimStorageKey(key)) continue;
+      if (key === 'contactSecrets-v1-latest') continue;
       if (key.startsWith('env_v1:')) keysToRemove.push(key);
     }
     for (const key of keysToRemove) {
@@ -106,6 +108,13 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
 
   const safeMessage = message || '已登出';
 
+  try {
+    lockContactSecrets('secure-logout');
+    persistContactSecrets();
+  } catch (err) {
+    log({ contactSecretsPersistError: err?.message || err });
+  }
+
   try { wsConn?.close(); } catch {}
   wsConn = null;
   if (wsReconnectTimer) {
@@ -129,7 +138,6 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   resetSettingsState();
 
   clearSessionHandoff();
-  clearLocalEncryptedCaches();
   try {
     let localBytes = 0;
     let sessionBytesBefore = 0;
@@ -149,6 +157,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
       sessionStorage.setItem('contactSecrets-v1', contactSecretsSnapshot);
       let sessionBytes = null;
       try { sessionBytes = sessionStorage.getItem('contactSecrets-v1')?.length || 0; } catch { sessionBytes = null; }
+      try { localStorage.setItem('contactSecrets-v1-latest', contactSecretsSnapshot); } catch {}
       log({
         contactSecretsHandoffStored: contactSecretsSnapshot.length,
         contactSecretsHandoffSource: source,
@@ -167,6 +176,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   } catch (err) {
     log({ contactSecretsHandoffError: err?.message || err });
   }
+  clearLocalEncryptedCaches();
 
   try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, safeMessage); } catch {}
 
@@ -306,8 +316,46 @@ let logoutInProgress = false;
 
 (function hydrateDevicePrivFromSession() {
   try {
-    const serialized = sessionStorage.getItem('wrapped_dev');
-    if (!serialized) return;
+    let serialized = sessionStorage.getItem('wrapped_dev');
+    if (!serialized) {
+      let restoredFromLocal = false;
+      if (typeof localStorage !== 'undefined') {
+        try {
+          const localCopy = localStorage.getItem('wrapped_dev_handoff');
+          if (localCopy) {
+            serialized = localCopy;
+            restoredFromLocal = true;
+            localStorage.removeItem('wrapped_dev_handoff');
+          }
+        } catch {}
+      }
+      if (!serialized && typeof window !== 'undefined' && window.name) {
+        try {
+          const handoff = JSON.parse(window.name);
+          if (handoff && handoff.wrapped_dev) {
+            serialized = JSON.stringify(handoff.wrapped_dev);
+          }
+        } catch {}
+        try { window.name = ''; } catch {}
+      }
+      if (!serialized) {
+        let sessionKeys = null;
+        try {
+          sessionKeys = [];
+          for (let i = 0; i < sessionStorage.length; i += 1) {
+            sessionKeys.push(sessionStorage.key(i));
+          }
+        } catch {}
+        log({ devicePrivRestoreSkipped: 'session-missing', sessionKeys });
+        return;
+      }
+      log({ devicePrivRestoreFallback: restoredFromLocal ? 'localStorage' : 'unknown-source' });
+    } else {
+      try {
+        localStorage?.setItem?.('wrapped_dev_handoff', serialized);
+      } catch {}
+      try { window.name = ''; } catch {}
+    }
     sessionStorage.removeItem('wrapped_dev');
     const mk = getMkRaw();
     if (!mk) {
@@ -319,6 +367,7 @@ let logoutInProgress = false;
       .then((priv) => {
         if (priv) {
           setDevicePriv(priv);
+          try { localStorage?.removeItem?.('wrapped_dev_handoff'); } catch {}
           log({ devicePrivRestored: true });
         }
       })

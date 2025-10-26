@@ -293,13 +293,21 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [x]  登入流程完成後，利用 `contactSecrets-v1` 快照還原最新的 Double Ratchet snapshot（含 seed），確保拉取 secure messages 前 state 已成對。
   - [x]  若快照缺失或落後，依 `conversation.dr_init` guest bundle 重新 bootstrap DR，並同步更新 `contactSecrets` 內的快照。
   - [x]  每次成功解密訊息時即時更新並持久化 DR 快照／seed，避免登出再登入後 state 回到舊值。
-  - [ ]  移除自動補 prekey / devkeys 的 workaround（`login-flow.js`、`dr-session.js`、`share-controller.js` 等），改為直接回報缺件錯誤，方便追蹤根因。
+  - [X]  移除自動補 prekey / devkeys 的 workaround（`login-flow.js`、`dr-session.js`、`share-controller.js` 等），改為直接回報缺件錯誤，方便追蹤根因。
   - [ ]  完成上述修正後重跑 `npx playwright test tests/e2e/full-flow.spec.mjs --project=chromium-mobile`，確認 E2E 全綠。
 - **除錯提示**：
 
   - Worker 狀態可用 `npx wrangler d1 execute message_db --remote --command "SELECT invite_id, owner_uid, guest_uid FROM friend_invites"` 快速檢查 owner/guest 映射。
   - `friendsShareContactUpdate` 暫時加入 `console.log('[contact-share-request|error]')`，觀察送出的 inviteId / sender。
   - 若 Playwright 報 `EADDRINUSE :8788`，記得 `lsof -i :8788` 後 `kill -9 <PID>` 再執行測試。
+- **最新進度（2025-10-29）**
+
+  - 確認裝置金鑰交棒：`ensureDevicePrivAvailable()` 現在只依賴登入頁交棒／記憶體狀態；App 載入時若偵測到 `sessionStorage` 缺件會直接報錯。為確保跨頁可讀，登入成功後同時將 `wrapped_dev` 寫入 `sessionStorage`、`localStorage`（`wrapped_dev_handoff`）以及 `window.name`，App 端會依序套用並在解密後清除，避免 fallback 重建。
+  - `login-flow.js` 清除了遺留的 `ensureKeysAfterUnlock` 匯入，後續不再有自動補 prekey/devkeys 的路徑；`app-mobile.js` 也新增 `sessionKeys` 調試 log，方便追蹤手動交棒是否成功。
+  - `contact-secrets` 匯入邏輯更新：新增 `pullLatestSnapshot()`，無論 localStorage 或 sessionStorage 先載入，都會將較新的快照寫回 localStorage，再解析成 Map，避免新舊資料交錯。
+  - 登出交棒流程：`secureLogout()` 會先 `persistContactSecrets()` 再將 JSON 寫入 `sessionStorage` 與 `localStorage/contactSecrets-v1-latest`，並延後清除其他 app cache，避免登入頁尚未複製前資料被清掉。登入頁的 `purgeLoginStorage()` 也會優先採用 `contactSecrets-v1-latest`，並保留來源資訊供 debug。
+  - 測試：`ORIGIN_API=http://127.0.0.1:3000 npx playwright test tests/e2e/full-flow.spec.mjs --project=chromium-mobile` 仍失敗；重登入後第一則訊息 `drDecryptText` 報 `OperationError`，畫面 `messagesRendered` 為空。雖然 `contactSecretsHandoffStored` 顯示 4K+ bytes、裝置金鑰也成功交棒，但 `hydrateDrStatesFromContactSecrets()` 仍印出 `hasDrState:false`，代表最新 `drState/drHistory` 尚未寫回 snapshot。
+  - 下一步：1) 追蹤 `contactSecrets-v1-latest` 內容，確認 logout 時的 JSON 是否包含 `drState`、`drHistory`；2) 比對登入頁注入流程，確保 `contactSecrets-v1` 不會在 `storage.clear()` 後被覆蓋為舊資料；3) 在 `hydrateDrStatesFromContactSecrets()` 取得 snapshot 後強制 log 出實際欄位，以鎖定遺失來源，完成後再重跑 `full-flow`。
 - **最新進度（2025-10-10）**
 
   - `devkeys` API 目前僅接受 `accountToken/accountDigest`，若僅提供 token 會由 Node API 端重新計算 digest；前端、腳本與 Worker proxy 均已同步移除 `uidHex` 參數。

@@ -60,12 +60,26 @@ function purgeLoginStorage() {
   try {
     const storage = localStorage;
     const contactSecretsSnapshot = storage.getItem('contactSecrets-v1');
-    if (contactSecretsSnapshot && (typeof contactSecretsSnapshot === 'string')) {
-      if (!seeds) seeds = {};
-      if (!Object.prototype.hasOwnProperty.call(seeds, 'contactSecrets-v1') || (seeds['contactSecrets-v1']?.length || 0) < contactSecretsSnapshot.length) {
-        seeds['contactSecrets-v1'] = contactSecretsSnapshot;
+    const latestHandoffSnapshot = storage.getItem('contactSecrets-v1-latest');
+    const pickBestSnapshot = () => {
+      const currentLen = seeds && Object.prototype.hasOwnProperty.call(seeds, 'contactSecrets-v1')
+        ? (seeds['contactSecrets-v1']?.length || 0)
+        : 0;
+      let best = contactSecretsSnapshot && typeof contactSecretsSnapshot === 'string' ? contactSecretsSnapshot : null;
+      let bestSource = 'local';
+      if (latestHandoffSnapshot && typeof latestHandoffSnapshot === 'string') {
+        if (!best || latestHandoffSnapshot.length >= (best?.length || 0)) {
+          best = latestHandoffSnapshot;
+          bestSource = 'latest';
+        }
       }
-    }
+      if (best && best.length > currentLen) {
+        if (!seeds) seeds = {};
+        seeds['contactSecrets-v1'] = best;
+        seeds.__CONTACT_SECRET_SOURCE = bestSource;
+      }
+    };
+    pickBestSnapshot();
     if (typeof sessionStorage !== 'undefined') {
       const handoffSnapshot = sessionStorage.getItem('contactSecrets-v1');
       if (handoffSnapshot && (typeof handoffSnapshot === 'string')) {
@@ -520,10 +534,26 @@ async function onUnlock() {
       if (accountToken) sessionStorage.setItem('account_token', accountToken);
       if (accountDigest) sessionStorage.setItem('account_digest', accountDigest);
       if (uidDigest) sessionStorage.setItem('uid_digest', uidDigest);
+      const isAutomationEnv = (() => {
+        try { return typeof navigator !== 'undefined' && !!navigator.webdriver; } catch { return false; }
+      })();
       if (r?.wrapped_dev) {
-        sessionStorage.setItem('wrapped_dev', JSON.stringify(r.wrapped_dev));
+        const serializedWrapped = JSON.stringify(r.wrapped_dev);
+        sessionStorage.setItem('wrapped_dev', serializedWrapped);
+        try { localStorage.setItem('wrapped_dev_handoff', serializedWrapped); } catch {}
+        try { window.name = JSON.stringify({ wrapped_dev: r.wrapped_dev }); } catch {}
+        if (isAutomationEnv) {
+          try {
+            console.log('[login-handoff] wrapped_dev stored', serializedWrapped.length);
+          } catch {}
+        }
       } else {
         sessionStorage.removeItem('wrapped_dev');
+        try { localStorage.removeItem('wrapped_dev_handoff'); } catch {}
+        try { window.name = ''; } catch {}
+        if (isAutomationEnv) {
+          try { console.warn('[login-handoff] wrapped_dev missing'); } catch {}
+        }
       }
       try {
         const contactSecretsSnapshot = localStorage.getItem('contactSecrets-v1');

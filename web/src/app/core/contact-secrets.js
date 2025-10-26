@@ -7,24 +7,82 @@ import { b64 } from '../crypto/nacl.js';
 
 const STORAGE_KEY = 'contactSecrets-v1';
 let restored = false;
+let contactSecretsLocked = false;
+
+function getLocalStorageSafe() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage || null;
+  } catch {
+    return null;
+  }
+}
+
+function getSessionStorageSafe() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage || null;
+  } catch {
+    return null;
+  }
+}
+
+function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSessionIfCopied = true } = {}) {
+  let localPayload = null;
+  let sessionPayload = null;
+  const local = getLocalStorageSafe();
+  const session = getSessionStorageSafe();
+
+  if (local) {
+    try {
+      localPayload = local.getItem(STORAGE_KEY);
+    } catch (err) {
+      log({ contactSecretLocalReadError: err?.message || err });
+    }
+  }
+
+  if (session) {
+    try {
+      sessionPayload = session.getItem(STORAGE_KEY);
+    } catch (err) {
+      log({ contactSecretSessionReadError: err?.message || err });
+    }
+  }
+
+  const shouldPromote = sessionPayload &&
+    (forcePromote || !localPayload || sessionPayload.length > localPayload.length);
+  let wroteToLocal = false;
+
+  if (shouldPromote && local) {
+    try {
+      local.setItem(STORAGE_KEY, sessionPayload);
+      wroteToLocal = true;
+    } catch (err) {
+      log({ contactSecretSessionCopyError: err?.message || err });
+    }
+  }
+
+  if (shouldPromote) {
+    if (session && removeSessionIfCopied && (!local || wroteToLocal)) {
+      try { session.removeItem(STORAGE_KEY); } catch {}
+    }
+    debugLog('session-promote', {
+      reason,
+      bytes: sessionPayload?.length || 0,
+      wroteToLocal,
+      hasLocal: !!local
+    });
+    return sessionPayload;
+  }
+
+  return localPayload || sessionPayload || null;
+}
 
 (function hydrateContactSecretsFromSession() {
   try {
-    if (typeof window === 'undefined') return;
-    const session = window.sessionStorage;
-    if (!session) return;
-    const snapshot = session.getItem(STORAGE_KEY);
-    if (!snapshot || typeof snapshot !== 'string' || !snapshot.length) return;
-    const storage = window.localStorage;
-    if (storage) {
-      const existing = storage.getItem(STORAGE_KEY);
-      if (!existing || existing.length < snapshot.length) {
-        storage.setItem(STORAGE_KEY, snapshot);
-      }
-    }
-    session.removeItem(STORAGE_KEY);
+    pullLatestSnapshot({ forcePromote: false, reason: 'module-init' });
   } catch {
-    // ignore hydration errors; fallback to storage copy
+    // ignore hydration errors; rely on restoreContactSecrets fallback
   }
 })();
 
@@ -160,14 +218,10 @@ function normalizeDrHistory(entries) {
 }
 
 function getStorage() {
-  if (typeof window !== 'undefined') {
-    try {
-      if (window.localStorage) return window.localStorage;
-    } catch {}
-    try {
-      if (window.sessionStorage) return window.sessionStorage;
-    } catch {}
-  }
+  const local = getLocalStorageSafe();
+  if (local) return local;
+  const session = getSessionStorageSafe();
+  if (session) return session;
   return null;
 }
 
@@ -185,15 +239,13 @@ export function restoreContactSecrets() {
   if (restored) return ensureMap();
   restored = true;
   const map = ensureMap();
-  const storage = getStorage();
-  if (!storage) return map;
+  const snapshot = pullLatestSnapshot({ forcePromote: true, reason: 'restore' });
+  if (!snapshot) {
+    debugLog('restore-skip', { reason: 'storage-empty' });
+    return map;
+  }
   try {
-    const raw = storage.getItem(STORAGE_KEY);
-    if (!raw) {
-      debugLog('restore-skip', { reason: 'storage-empty' });
-      return map;
-    }
-    const items = JSON.parse(raw);
+    const items = JSON.parse(snapshot);
     if (!Array.isArray(items)) return map;
     map.clear();
     for (const [peerUid, value] of items) {
@@ -220,6 +272,13 @@ export function restoreContactSecrets() {
         drHistoryCursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
         drHistoryCursorId: drHistoryCursorId || null,
         updatedAt: Number(value?.updatedAt || 0) || null
+      });
+      debugLog('restore-entry', {
+        peerUid: key,
+        hasDrState: !!drState,
+        historyLen: drHistory.length,
+        cursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
+        cursorId: drHistoryCursorId || null
       });
     }
     debugLog('restore', { entries: map.size });
@@ -257,6 +316,10 @@ export function persistContactSecrets() {
 }
 
 export function setContactSecret(peerUid, opts = {}) {
+  if (contactSecretsLocked) {
+    debugLog('set-skip-locked', { peerUid: normalizeUid(peerUid), source: opts?.__debugSource || null });
+    return;
+  }
   const {
     inviteId,
     secret,
@@ -357,4 +420,11 @@ export function getContactSecret(peerUid) {
   if (!key) return null;
   const map = ensureMap();
   return map.get(key) || null;
+}
+
+export function lockContactSecrets(reason = 'locked') {
+  if (contactSecretsLocked) return false;
+  contactSecretsLocked = true;
+  debugLog('lock', { reason });
+  return true;
 }
