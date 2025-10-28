@@ -674,7 +674,7 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       await targetPage.locator('#btnUserMenu').click();
       await targetPage.waitForSelector('[data-action="logout"]', { timeout: 5000 });
       await targetPage.click('[data-action="logout"]');
-      await targetPage.waitForURL('**/pages/login.html', { timeout: 20000 });
+      await targetPage.waitForURL('**/pages/logout.html', { timeout: 20000 });
       await capture(targetPage, `${label}_logged_out_for_relogin`);
     };
 
@@ -877,7 +877,7 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await pageA.locator('#btnUserMenu').click();
     await pageA.waitForSelector('[data-action="logout"]', { timeout: 5000 });
     await pageA.click('[data-action="logout"]');
-    await pageA.waitForURL('**/pages/login.html', { timeout: 20000 });
+    await pageA.waitForURL('**/pages/logout.html', { timeout: 20000 });
     await capture(pageA, 'userA_logged_out');
   } finally {
     await contextB.close();

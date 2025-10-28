@@ -206,7 +206,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   }
 
   setTimeout(() => {
-    try { location.replace('/pages/login.html'); } catch { location.href = '/pages/login.html'; }
+    try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
   }, 60);
 }
 

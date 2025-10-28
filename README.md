@@ -200,7 +200,7 @@ kill $API_PID
 
 | 日期 | 里程碑 |
 | --- | --- |
-| **2025-11-04（Codex）** | 修復重新開啟會話時訊息列表被清空（重置 processed cache 重新導入訊息歷史），`tests/e2e/full-flow.spec.mjs` 新增「返回列表→重進會話」與「聯絡人頁→點選好友」驗證，雙端確認訊息與附件仍存在，再進行刪除；`npm run test:front:login` 通過。 |
+| **2025-11-04（Codex）** | 修復重新開啟會話時訊息列表被清空（重置 processed cache 重新導入訊息歷史），新增登出後專用畫面（呼吸紅光 Logo + 提示文案），`tests/e2e/full-flow.spec.mjs` 新增「返回列表→重進會話」與「聯絡人頁→點選好友」驗證，雙端確認訊息與附件仍存在，再進行刪除；`npm run test:front:login` 通過。 |
 | **2025-11-03（Codex）** | 重新設計會話與聯絡人列表的刪除介面（固定 delete row + 送出模擬 `/friends/delete`），修正 pointer-events 攔截問題，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。|
 | **2025-11-02（Codex）** | 新增 DR replay 陣列快取與 skipped message key 快取，`listSecureAndDecrypt` 支援非 mutate 模式也能 replay；`sendDrMedia` 攜帶媒體索引並寫入本地預覽。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow}` 通過；`npm run test:front:login` 已可重登入成功解密所有文字訊息與上傳附件，但流程在會話刪除（`.item-delete` 被 pointer-events 阻擋）與暱稱廣播 fallback（`/friends/contact/share` 404）卡住，待修。 |
 | **2025-11-01（Codex）** | Worker `/d1/friends/contact/share` 新增 fallback：當 `invite_id` 不存在但仍提供 `myUid/peerUid` 時，直接寫入目標聯絡人信箱並標記 `fallback=invite_missing`；登入流程若備份 404，會優先回填 handoff 的 `wrapped_dev`，必要時再重建。前端送訊端會連同 `message_key_b64` 與 `snapshotAfter` 寫入 DR 歷史，讀取端也能以 replay 優先解密。`npm run test:prekeys-devkeys` / `test:messages-secure` / `test:friends-messages` / `test:login-flow` 通過；`npm run test:front:login` 仍於 `tests/e2e/full-flow.spec.mjs` 失敗：最新 run 中訊息 `d27fb152-3093-43d3-84c7-232a82358203` replay 後 DR state 的 `Nr` 未同步至 header `n=2`，導致再次 `OperationError`，重播後續的媒體預覽流程亦受阻。 |
@@ -236,6 +236,7 @@ kill $API_PID
 
 | 時間 (UTC) | 說明 |
 | --- | --- |
+| 2025-11-04 14:10 | 新增 `/pages/logout.html`（紅光呼吸 Logo + 提示文案），`secureLogout` 改導向該頁；同步更新 README 與 E2E 驗證記錄。 |
 | 2025-11-04 12:05 | `messages-pane` 重新進入對話時會重置 processed cache，確保舊訊息仍會載入；`tests/e2e/full-flow.spec.mjs` 增加「回到列表再進入」與「聯絡人頁點選好友」雙端驗證；`npm run test:front:login` 通過。 |
 | 2025-11-04 08:30 | `tests/e2e/full-flow.spec.mjs` 刪除前新增雙端回到訊息列表再進入對話的驗證步驟，確認歷史訊息與附件完好；`npm run test:front:login` 通過。 |
 | 2025-11-03 09:10 | 重新設計訊息/聯絡人 delete row、導入 `sessionStore.deletedConversations` 與 `/friends/delete` 模擬請求，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 通過。 |
