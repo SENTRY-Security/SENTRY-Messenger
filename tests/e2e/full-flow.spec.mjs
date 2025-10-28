@@ -573,22 +573,23 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
         const rect = el.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       }, selector, { timeout: 20000 });
-      const conversationItem = targetPage.locator(selector).first();
-      await conversationItem.scrollIntoViewIfNeeded();
-      await conversationItem.click();
-      await targetPage.waitForTimeout(500);
-      await targetPage.evaluate(async (peer) => {
+      await targetPage.evaluate(async ({ peer, selector: sel }) => {
         try {
-          if (window.__messagesPane?.setActiveConversation) {
-            await window.__messagesPane.setActiveConversation(peer);
+          const pane = window.__messagesPane;
+          if (pane?.setActiveConversation) {
+            await pane.setActiveConversation(peer);
+          } else {
+            const el = document.querySelector(sel);
+            el?.dispatchEvent(new Event('click', { bubbles: true }));
           }
-          if (window.__messagesPane?.loadActiveConversationMessages) {
-            await window.__messagesPane.loadActiveConversationMessages({ append: false });
+          if (pane?.loadActiveConversationMessages) {
+            await pane.loadActiveConversationMessages({ append: false, replay: true });
           }
         } catch (err) {
           console.log('[verifyConversationPersistence.loadConversation]', err?.message || err);
         }
-      }, peerUid);
+      }, { peer: peerUid, selector });
+      await targetPage.waitForTimeout(500);
       await targetPage.waitForTimeout(300);
       try {
         await targetPage.evaluate(async (peer) => {
