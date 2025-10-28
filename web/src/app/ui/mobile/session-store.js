@@ -53,6 +53,7 @@ export const sessionStore = {
   contactSecrets: new Map(),
   onlineContacts: new Set(),
   inviteSecrets: new Map(),
+  deletedConversations: new Set(),
   shareState: cloneValue(defaultShareState),
   driveState: cloneValue(defaultDriveState),
   messageState: cloneValue(defaultMessageState),
@@ -87,6 +88,7 @@ export function resetContacts() {
   if (sessionStore.contactSecrets) sessionStore.contactSecrets.clear();
   if (sessionStore.conversationThreads) sessionStore.conversationThreads.clear();
   sessionStore.onlineContacts.clear();
+  sessionStore.deletedConversations.clear();
 }
 
 export function resetProfileState() {

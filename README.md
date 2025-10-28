@@ -1,6 +1,6 @@
 # SENTRY Message — 技術筆記
 
-> 近期進度：`npm run test:prekeys-devkeys`、`test:messages-secure`、`test:friends-messages`、`test:login-flow` 皆通過；`npm run test:front:login` 已可跨重登入解密文字訊息，仍在流程末段卡在會話刪除（`.conversation-item .item-delete` 被 UI pointer-events 攔截）與暱稱廣播 fallback（`/friends/contact/share` 404）。請依最新進度章節追蹤修復，完成後重跑 full-flow。
+> 近期進度：調整訊息/聯絡人列表刪除 UI（固定 delete row + 模擬 `/friends/delete`），修復重新開啟會話時訊息被清空問題（重置 processed cache 後重新載入），`tests/e2e/full-flow.spec.mjs` 刪除前新增重新開啟會話驗證訊息與附件仍在；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過；暱稱廣播 fallback（`/friends/contact/share` 404）仍待修復。
 
 ---
 
@@ -200,6 +200,8 @@ kill $API_PID
 
 | 日期 | 里程碑 |
 | --- | --- |
+| **2025-11-04（Codex）** | 修復重新開啟會話時訊息列表被清空（重置 processed cache 重新導入訊息歷史），`tests/e2e/full-flow.spec.mjs` 新增「返回列表→重進會話」與「聯絡人頁→點選好友」驗證，雙端確認訊息與附件仍存在，再進行刪除；`npm run test:front:login` 通過。 |
+| **2025-11-03（Codex）** | 重新設計會話與聯絡人列表的刪除介面（固定 delete row + 送出模擬 `/friends/delete`），修正 pointer-events 攔截問題，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。|
 | **2025-11-02（Codex）** | 新增 DR replay 陣列快取與 skipped message key 快取，`listSecureAndDecrypt` 支援非 mutate 模式也能 replay；`sendDrMedia` 攜帶媒體索引並寫入本地預覽。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow}` 通過；`npm run test:front:login` 已可重登入成功解密所有文字訊息與上傳附件，但流程在會話刪除（`.item-delete` 被 pointer-events 阻擋）與暱稱廣播 fallback（`/friends/contact/share` 404）卡住，待修。 |
 | **2025-11-01（Codex）** | Worker `/d1/friends/contact/share` 新增 fallback：當 `invite_id` 不存在但仍提供 `myUid/peerUid` 時，直接寫入目標聯絡人信箱並標記 `fallback=invite_missing`；登入流程若備份 404，會優先回填 handoff 的 `wrapped_dev`，必要時再重建。前端送訊端會連同 `message_key_b64` 與 `snapshotAfter` 寫入 DR 歷史，讀取端也能以 replay 優先解密。`npm run test:prekeys-devkeys` / `test:messages-secure` / `test:friends-messages` / `test:login-flow` 通過；`npm run test:front:login` 仍於 `tests/e2e/full-flow.spec.mjs` 失敗：最新 run 中訊息 `d27fb152-3093-43d3-84c7-232a82358203` replay 後 DR state 的 `Nr` 未同步至 header `n=2`，導致再次 `OperationError`，重播後續的媒體預覽流程亦受阻。 |
 | **2025-10-31（Codex）** | 新增 `drHistory.messageKey_b64` 儲存每則訊息的派生金鑰，`listSecureAndDecrypt()` 在重新登入、初次載入時會優先使用快照中的 message key 進行重播解密，避免重複 ratchet 導致 `OperationError`。`npm run test:prekeys-devkeys` / `test:messages-secure` / `test:friends-messages` / `test:login-flow` 均通過；`npm run test:front:login` 仍在 `tests/e2e/full-flow.spec.mjs` 卡關：A 端更新暱稱時 `/friends/contact/share` 回 404，導致 B 端重新登入流程出現 `Device backup missing`（`/devkeys/fetch` 404）。需先修復 contact share / devkeys 取得問題，再重跑 full-flow 驗證 decrypt 是否恢復正常。 |
@@ -225,7 +227,7 @@ kill $API_PID
 11. [ ] 完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
 12. [ ] `listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
 13. [ ] 比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
-14. [ ] `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
+14. [X] `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
 15. [ ] 暱稱廣播 `/friends/contact/share` 仍回 404 fallback，B 端未即時更新新暱稱，需檢查 invite 缺失案例處理與重新拉取機制。
 
 ---
@@ -234,6 +236,9 @@ kill $API_PID
 
 | 時間 (UTC) | 說明 |
 | --- | --- |
+| 2025-11-04 12:05 | `messages-pane` 重新進入對話時會重置 processed cache，確保舊訊息仍會載入；`tests/e2e/full-flow.spec.mjs` 增加「回到列表再進入」與「聯絡人頁點選好友」雙端驗證；`npm run test:front:login` 通過。 |
+| 2025-11-04 08:30 | `tests/e2e/full-flow.spec.mjs` 刪除前新增雙端回到訊息列表再進入對話的驗證步驟，確認歷史訊息與附件完好；`npm run test:front:login` 通過。 |
+| 2025-11-03 09:10 | 重新設計訊息/聯絡人 delete row、導入 `sessionStore.deletedConversations` 與 `/friends/delete` 模擬請求，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 通過。 |
 | 2025-11-02 07:40 | `listSecureAndDecrypt` 擴充 replay 條件、`drDecryptText` 新增 skipped message key 快取，修正重登入後 `OperationError`；同步補上 OperationError → 歷史快照還原流程。 |
 | 2025-11-01 06:12 | Worker contact-share 增加 invite 缺失 fallback，並於登入流程缺備份時優先回填 handoff，再自動重建裝置金鑰；同期調整登入流程把 fallback 備份回傳給 handoff。 |
 | 2025-10-10 04:58 | 針對收訊端解密失敗，於 `web/src/app/features/dr-session.js` 新增裝置金鑰備援流程；若備份缺失會重新發佈預共享金鑰並儲存 `wrapped_dev`，避免 DR 初始化因 404 中斷。 |

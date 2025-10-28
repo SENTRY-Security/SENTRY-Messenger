@@ -545,6 +545,127 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     }
 
     const uniqueMessageTexts = Array.from(new Set(allMessageTexts));
+    const recentMessageTexts = uniqueMessageTexts.slice(-4);
+
+    const verifyConversationPersistence = async ({
+      targetPage,
+      peerUid,
+      messageTexts = [],
+      attachmentNames = [],
+      screenshotLabel
+    }) => {
+      const backBtn = targetPage.locator('#messagesBackBtn');
+      try {
+        if (await backBtn.isVisible()) {
+          await backBtn.click();
+          await targetPage.waitForTimeout(200);
+        }
+      } catch {}
+      await targetPage.evaluate(() => document.getElementById('messagesBackBtn')?.click());
+      await targetPage.waitForTimeout(200);
+      await targetPage.evaluate(() => document.getElementById('nav-messages')?.click());
+      const selector = `.conversation-item[data-peer="${peerUid}"]`;
+      await targetPage.waitForFunction((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }, selector, { timeout: 20000 });
+      const conversationItem = targetPage.locator(selector).first();
+      await conversationItem.scrollIntoViewIfNeeded();
+      await conversationItem.click();
+      await targetPage.waitForTimeout(500);
+      await targetPage.evaluate(async (peer) => {
+        try {
+          if (window.__messagesPane?.setActiveConversation) {
+            await window.__messagesPane.setActiveConversation(peer);
+          }
+          if (window.__messagesPane?.loadActiveConversationMessages) {
+            await window.__messagesPane.loadActiveConversationMessages({ append: false });
+          }
+        } catch (err) {
+          console.log('[verifyConversationPersistence.loadConversation]', err?.message || err);
+        }
+      }, peerUid);
+      await targetPage.waitForTimeout(300);
+      try {
+        await targetPage.evaluate(async (peer) => {
+          try {
+            const mod = await import('../app/features/dr-session.js');
+            if (mod?.ensureDrReceiverState) {
+              await mod.ensureDrReceiverState({ peerUidHex: peer });
+            }
+          } catch (err) {
+            console.log('[verifyConversationPersistence.ensureDrReceiverState]', err?.message || err);
+          }
+        }, peerUid);
+      } catch {}
+      await expect
+        .poll(async () => targetPage.locator('#messagesList .message-bubble').count(), { timeout: 30000 })
+        .toBeGreaterThan(0);
+      if (Array.isArray(messageTexts)) {
+        for (const text of messageTexts) {
+          if (!text) continue;
+          await expect(targetPage.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 30000 });
+        }
+      }
+      if (Array.isArray(attachmentNames)) {
+        for (const name of attachmentNames) {
+          if (!name) continue;
+          const fileBubble = targetPage.locator('.message-bubble', {
+            has: targetPage.locator('.message-file-name', { hasText: name })
+          }).last();
+          await expect(fileBubble).toBeVisible({ timeout: 30000 });
+        }
+      }
+      if (screenshotLabel) {
+        await capture(targetPage, screenshotLabel);
+      }
+      await targetPage.evaluate(() => document.getElementById('messagesBackBtn')?.click());
+      await targetPage.waitForTimeout(200);
+    };
+
+    const verifyContactNavigationLoadsConversation = async ({
+      targetPage,
+      peerUid,
+      messageTexts = [],
+      attachmentNames = [],
+      screenshotLabel
+    }) => {
+      await targetPage.evaluate(() => document.getElementById('nav-contacts')?.click());
+      await targetPage.waitForTimeout(300);
+      const selector = `.contact-item[data-peer-uid="${peerUid}"]`;
+      await targetPage.locator(selector).first().waitFor({ state: 'visible', timeout: 20000 });
+      const contactItem = targetPage.locator(selector).first();
+      await contactItem.scrollIntoViewIfNeeded();
+      await contactItem.click();
+      await targetPage.waitForTimeout(500);
+      await expect
+        .poll(async () => targetPage.locator('#messagesList .message-bubble').count(), { timeout: 30000 })
+        .toBeGreaterThan(0);
+      if (Array.isArray(messageTexts)) {
+        for (const text of messageTexts) {
+          if (!text) continue;
+          await expect(targetPage.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 30000 });
+        }
+      }
+      if (Array.isArray(attachmentNames)) {
+        for (const name of attachmentNames) {
+          if (!name) continue;
+          const fileBubble = targetPage.locator('.message-bubble', {
+            has: targetPage.locator('.message-file-name', { hasText: name })
+          }).last();
+          await expect(fileBubble).toBeVisible({ timeout: 30000 });
+        }
+      }
+      if (screenshotLabel) {
+        await capture(targetPage, screenshotLabel);
+      }
+      await targetPage.evaluate(() => document.getElementById('messagesBackBtn')?.click());
+      await targetPage.waitForTimeout(200);
+    };
 
     const logoutUser = async (targetPage, label) => {
       await targetPage.evaluate(() => document.getElementById('nav-drive')?.click());
@@ -665,6 +786,20 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     const incomingPdfBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
     await expect(incomingPdfBubbleB.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
     await capture(pageB, 'messages_userB_pdf_preview');
+    await verifyConversationPersistence({
+      targetPage: pageB,
+      peerUid: userA.uidHex,
+      messageTexts: recentMessageTexts,
+      attachmentNames: [samplePdf.name],
+      screenshotLabel: 'messages_userB_persistence_check'
+    });
+    await verifyContactNavigationLoadsConversation({
+      targetPage: pageB,
+      peerUid: userA.uidHex,
+      messageTexts: recentMessageTexts,
+      attachmentNames: [samplePdf.name],
+      screenshotLabel: 'messages_userB_contact_entry'
+    });
 
     await pageA.evaluate(async () => {
       document.getElementById('nav-messages')?.click();
@@ -677,6 +812,20 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     console.log('[conversation-snippet-A]', await conversationSnippetA.textContent());
     await expect(conversationSnippetA).toContainText(samplePdf.name, { timeout: 20000 });
     await capture(pageA, 'messages_list_userA_after_reply');
+    await verifyConversationPersistence({
+      targetPage: pageA,
+      peerUid: userB.uidHex,
+      messageTexts: recentMessageTexts,
+      attachmentNames: [samplePdf.name],
+      screenshotLabel: 'messages_userA_persistence_check'
+    });
+    await verifyContactNavigationLoadsConversation({
+      targetPage: pageA,
+      peerUid: userB.uidHex,
+      messageTexts: recentMessageTexts,
+      attachmentNames: [samplePdf.name],
+      screenshotLabel: 'messages_userA_contact_entry'
+    });
 
     await pageA.evaluate(() => document.getElementById('messagesBackBtn')?.click());
     const convoDeleteBtn = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"] .item-delete`);

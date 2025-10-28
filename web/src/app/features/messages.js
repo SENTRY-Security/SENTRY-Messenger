@@ -575,3 +575,8 @@ function markMessageProcessed(conversationId, messageId, maxEntries = 200) {
     if (!first.done) set.delete(first.value);
   }
 }
+
+export function resetProcessedMessages(conversationId) {
+  if (!conversationId) return;
+  processedMessageCache.delete(conversationId);
+}

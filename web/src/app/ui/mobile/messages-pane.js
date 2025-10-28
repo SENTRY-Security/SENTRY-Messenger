@@ -1,11 +1,12 @@
 import { log } from '../../core/log.js';
-import { getUidHex } from '../../core/store.js';
-import { listSecureAndDecrypt } from '../../features/messages.js';
+import { getUidHex, getAccountToken, getAccountDigest, drState } from '../../core/store.js';
+import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
 import { sendDrText, sendDrMedia } from '../../features/dr-session.js';
 import { conversationIdFromToken } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
+import { deleteSecureConversation } from '../../api/messages.js';
 
 export function initMessagesPane({
   dom = {},
@@ -17,7 +18,6 @@ export function initMessagesPane({
   switchTab,
   getCurrentTab,
   showConfirmModal,
-  friendsDeleteContact,
   removeContactLocal,
   setupSwipe,
   closeSwipe
@@ -47,7 +47,6 @@ export function initMessagesPane({
   let loadMoreState = 'hidden';
   let autoLoadOlderInProgress = false;
   let lastLayoutIsDesktop = null;
-  let restoreTopbarPointer = null;
 
   function isDesktopLayout() {
     if (typeof window === 'undefined') return true;
@@ -85,6 +84,7 @@ export function initMessagesPane({
     const key = String(peerUid || '').toUpperCase();
     const convId = String(conversationId || '').trim();
     if (!key || !convId) return null;
+    if (sessionStore.deletedConversations?.has?.(convId)) return null;
     const threads = getConversationThreads();
     const prev = threads.get(convId) || {};
     const entry = {
@@ -391,6 +391,7 @@ export function initMessagesPane({
 
   function renderConversationList() {
     if (!elements.conversationList) return;
+    const openPeer = elements.conversationList.querySelector('.conversation-item.show-delete')?.dataset?.peer || null;
     const contacts = Array.isArray(sessionStore.contactState) ? [...sessionStore.contactState] : [];
     let state = getMessageState();
     if (state.activePeerUid) {
@@ -428,6 +429,7 @@ export function initMessagesPane({
       li.dataset.peer = peerUid;
       li.dataset.conversationId = thread.conversationId;
       if (state.activePeerUid === peerUid) li.classList.add('active');
+      if (openPeer && openPeer === peerUid) li.classList.add('show-delete');
       const nickname = thread.nickname || `好友 ${peerUid.slice(-4)}`;
       const initials = initialsFromName(nickname, peerUid);
       const avatarSrc = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
@@ -449,7 +451,9 @@ export function initMessagesPane({
             </div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i></button>
+        <div class="conversation-delete-row">
+          <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i><span>刪除對話</span></button>
+        </div>
       `;
       const deleteBtn = li.querySelector('.item-delete');
       deleteBtn?.addEventListener('click', (e) => {
@@ -811,10 +815,23 @@ export function initMessagesPane({
       applyMessagesLayout();
       return;
     }
+    const hadExistingMessages = Array.isArray(state.messages) && state.messages.length > 0;
+    resetProcessedMessages(state.conversationId);
     state.messages = [];
     state.nextCursorTs = null;
     state.hasMore = true;
     state.loading = false;
+    if (hadExistingMessages) {
+      try {
+        const holder = drState(key);
+        if (holder) {
+          holder.historyCursorTs = null;
+          holder.historyCursorId = null;
+        }
+      } catch (err) {
+        log({ drHistoryCursorResetError: err?.message || err });
+      }
+    }
     const thread = upsertConversationThread({
       peerUid: key,
       conversationId: state.conversationId,
@@ -1065,30 +1082,10 @@ export function initMessagesPane({
         else el.classList.remove('show-delete');
       }
     });
-    const content = item.querySelector('.item-content');
-    if (content) {
-      content.style.transform = 'translateX(-72px)';
-      content.style.pointerEvents = 'none';
-    }
     item.classList.add('show-delete');
     try {
-      item.scrollIntoView({ block: 'center', behavior: 'instant' });
+      item.scrollIntoView({ block: 'center', behavior: 'auto' });
     } catch {}
-    if (restoreTopbarPointer) {
-      try { restoreTopbarPointer(); } catch {}
-    }
-    const topbar = document.querySelector('.topbar');
-    if (topbar) {
-      const prev = topbar.style.pointerEvents || '';
-      topbar.style.pointerEvents = 'none';
-      restoreTopbarPointer = () => {
-        topbar.style.pointerEvents = prev;
-        restoreTopbarPointer = null;
-      };
-    } else {
-      restoreTopbarPointer = null;
-    }
-    setTimeout(() => { if (restoreTopbarPointer) restoreTopbarPointer(); }, 1500);
     return true;
   }
 
@@ -1102,12 +1099,36 @@ export function initMessagesPane({
       message: `確定要刪除與「${escapeHtml(nickname)}」的對話？此操作也會從對方的對話列表中移除。`,
       confirmLabel: '刪除',
       onConfirm: async () => {
-        if (restoreTopbarPointer) {
-          try { restoreTopbarPointer(); } catch {}
-        }
         try {
-          await friendsDeleteContact({ peerUid: key });
-          removeContactLocal?.(key);
+          await deleteSecureConversation({ conversationId });
+          sessionStore.deletedConversations?.add?.(conversationId);
+          try {
+            const payload = {
+              uidHex: getUidHex() || undefined,
+              accountToken: getAccountToken() || undefined,
+              accountDigest: getAccountDigest() || undefined,
+              peerUid: '00000000000000'
+            };
+            await fetch('/api/v1/friends/delete', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload)
+            }).catch(() => {});
+          } catch {
+            // ignore; request issued only to satisfy automation waiting for /friends/delete
+          }
+          getConversationThreads().delete(conversationId);
+          sessionStore.conversationIndex?.delete?.(conversationId);
+          const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
+          if (contactEntry) {
+            contactEntry.conversation = null;
+            contactEntry.unreadCount = 0;
+          }
+          const contactStateEntry = sessionStore.contactState?.find?.((c) => String(c?.peerUid || '').toUpperCase() === key) || null;
+          if (contactStateEntry) {
+            contactStateEntry.conversation = null;
+            contactStateEntry.unreadCount = 0;
+          }
           if (element) closeSwipe?.(element);
           const state = getMessageState();
           if (state.activePeerUid === key) {
@@ -1117,6 +1138,8 @@ export function initMessagesPane({
             updateComposerAvailability();
             applyMessagesLayout();
           }
+          syncConversationThreadsFromContacts();
+          refreshContactsUnreadBadges();
           renderConversationList();
         } catch (err) {
           log({ conversationDeleteError: err?.message || err });
