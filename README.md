@@ -1,6 +1,6 @@
 # SENTRY Message — 技術筆記
 
-> 近期進度：`npm run test:prekeys-devkeys`、`test:messages-secure`、`test:friends-messages`、`test:login-flow` 皆通過；`npm run test:front:login` 仍在 `tests/e2e/full-flow.spec.mjs` 的重登入階段解密失敗（`drDecryptText → OperationError`）。請依最新進度章節追蹤修復，完成後重跑 full-flow。
+> 近期進度：`npm run test:prekeys-devkeys`、`test:messages-secure`、`test:friends-messages`、`test:login-flow` 皆通過；`npm run test:front:login` 已可跨重登入解密文字訊息，仍在流程末段卡在會話刪除（`.conversation-item .item-delete` 被 UI pointer-events 攔截）與暱稱廣播 fallback（`/friends/contact/share` 404）。請依最新進度章節追蹤修復，完成後重跑 full-flow。
 
 ---
 
@@ -200,7 +200,7 @@ kill $API_PID
 
 | 日期 | 里程碑 |
 | --- | --- |
-| **2025-11-02（Codex）** | `listSecureAndDecrypt` 允許非 mutate 模式使用歷史 message key，`drDecryptText` 新增 skipped message key 快取以處理 `n` 計數落差；`sendDrMedia` 透過 secure message 封包傳遞媒體索引並在前端實作預覽。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow}` 通過；`npm run test:front:login` 已能完成重登入文字訊息解密與附件上傳，但仍於流程末段卡在會話刪除（`.item-delete` 按鈕被其他元素攔截）且暱稱廣播仍觀察到 `/friends/contact/share` 404 fallback，需續追。 |
+| **2025-11-02（Codex）** | 新增 DR replay 陣列快取與 skipped message key 快取，`listSecureAndDecrypt` 支援非 mutate 模式也能 replay；`sendDrMedia` 攜帶媒體索引並寫入本地預覽。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow}` 通過；`npm run test:front:login` 已可重登入成功解密所有文字訊息與上傳附件，但流程在會話刪除（`.item-delete` 被 pointer-events 阻擋）與暱稱廣播 fallback（`/friends/contact/share` 404）卡住，待修。 |
 | **2025-11-01（Codex）** | Worker `/d1/friends/contact/share` 新增 fallback：當 `invite_id` 不存在但仍提供 `myUid/peerUid` 時，直接寫入目標聯絡人信箱並標記 `fallback=invite_missing`；登入流程若備份 404，會優先回填 handoff 的 `wrapped_dev`，必要時再重建。前端送訊端會連同 `message_key_b64` 與 `snapshotAfter` 寫入 DR 歷史，讀取端也能以 replay 優先解密。`npm run test:prekeys-devkeys` / `test:messages-secure` / `test:friends-messages` / `test:login-flow` 通過；`npm run test:front:login` 仍於 `tests/e2e/full-flow.spec.mjs` 失敗：最新 run 中訊息 `d27fb152-3093-43d3-84c7-232a82358203` replay 後 DR state 的 `Nr` 未同步至 header `n=2`，導致再次 `OperationError`，重播後續的媒體預覽流程亦受阻。 |
 | **2025-10-31（Codex）** | 新增 `drHistory.messageKey_b64` 儲存每則訊息的派生金鑰，`listSecureAndDecrypt()` 在重新登入、初次載入時會優先使用快照中的 message key 進行重播解密，避免重複 ratchet 導致 `OperationError`。`npm run test:prekeys-devkeys` / `test:messages-secure` / `test:friends-messages` / `test:login-flow` 均通過；`npm run test:front:login` 仍在 `tests/e2e/full-flow.spec.mjs` 卡關：A 端更新暱稱時 `/friends/contact/share` 回 404，導致 B 端重新登入流程出現 `Device backup missing`（`/devkeys/fetch` 404）。需先修復 contact share / devkeys 取得問題，再重跑 full-flow 驗證 decrypt 是否恢復正常。 |
 | **2025-10-30（Codex）** | 新增 `flushDrSnapshotsBeforeLogout()`，logout 前將記憶體 DR state 寫回 `contactSecrets` 並記錄 checksum；登入頁 `purgeLoginStorage()` 會挑選最長 snapshot 回填。`recoverDrState()` 支援 `forceGuestBundle`，並針對 Automation 模式輸出 `dr-debug` 與重播腳本。`prepareDrForMessage()` 加入 `historyMatchBy` 日誌。 |
@@ -213,10 +213,10 @@ kill $API_PID
 
 1. ~~修復 `/friends/contact/share` 403。~~
 2. ~~調整好友刪除→登出流程，確保 mobile 可操作 user menu。~~
-3. [X] 修復 `/friends/contact/share` 404 及重登入流程中 `/api/v1/devkeys/fetch` 404（`Device backup missing`），已可正常取得備份並送出聯絡更新；但 `full-flow` 仍在重播訊息時觸發 `OperationError`，持續追蹤。
-4. [X] 追蹤 `full-flow` 重登入後 `OperationError`（如訊息 `562d5aba-89bc-4448-ad9f-9514ad3269e2`、`8151be64-02ba-4aba-9498-60f2e6dd2c6b`、`b237ad18-28e6-49bc-94d5-1585cfa36ce7`、`f77c4378-200c-47ed-931c-658211e853e5`、`d27fb152-3093-43d3-84c7-232a82358203`），查明 DR replay 解密仍失敗的原因（特別是 `Nr`/`n` counter 不同步的情境）。
+3. [X] 修復 `/friends/contact/share` 404 及重登入流程中 `/api/v1/devkeys/fetch` 404（`Device backup missing`），已可正常取得備份並送出聯絡更新。
+4. [X] 追蹤 `full-flow` 重登入後 `OperationError`（`Nr`/`n` counter 落差），已靠 replay message key + skipped chain 快取修復。
 5. [ ] 驗證 replay 成功時 DR state 是否應套用 `snapshotAfter` 以避免 `Nr` 落後；必要時調整 `prepareDrForMessage` 重播後的狀態同步邏輯。
-5. [X] 完成端對端檔案傳輸（圖片 / 影片 / 一般檔案），強制 500 MB 以內並全程加密。
+6. [X] 完成端對端檔案傳輸（圖片 / 影片 / 一般檔案），強制 500 MB 以內並全程加密。
 6. [ ] 更新 Node API / Worker / R2 儲存策略：建立「已傳送 / 已接收」系統資料夾並套用 500 MB 限制。
 7. [ ] 前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。
 8. [ ] Playwright 新增檔案傳輸、Drive 同步、下載驗證等情境。
