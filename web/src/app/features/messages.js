@@ -345,41 +345,51 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
         }
         if (!decrypted && allowCursorReplay && prepResult?.historyEntry?.messageKey_b64) {
           try {
+            const historyEntry = prepResult.historyEntry || null;
             const replayText = await decryptWithMessageKey({
-              messageKeyB64: prepResult.historyEntry.messageKey_b64,
+              messageKeyB64: historyEntry?.messageKey_b64,
               ivB64: pkt.iv_b64,
               ciphertextB64
             });
+            let stateSynced = false;
+            try {
+              if (historyEntry?.snapshotAfter) {
+                restoreDrStateFromSnapshot({
+                  peerUidHex,
+                  snapshot: historyEntry.snapshotAfter,
+                  force: true
+                });
+                state = drState(peerUidHex);
+                stateSynced = !!state;
+              } else if (historyEntry?.snapshot) {
+                restoreDrStateFromSnapshot({
+                  peerUidHex,
+                  snapshot: historyEntry.snapshot,
+                  force: true
+                });
+                const replayState = drState(peerUidHex);
+                if (replayState) {
+                  await drDecryptText(replayState, pkt, {
+                    onMessageKey: () => {}
+                  });
+                  state = replayState;
+                  stateSynced = true;
+                }
+              }
+            } catch (advanceErr) {
+              if (drDebug) {
+                console.warn('[messages] replay state advance failed', advanceErr);
+              }
+            }
             if (shouldTrackState) {
               markMessageProcessed(conversationId, messageId);
-              try {
-                if (historyEntry?.snapshotAfter) {
-                  restoreDrStateFromSnapshot({
-                    peerUidHex,
-                    snapshot: historyEntry.snapshotAfter,
-                    force: true
-                  });
-                  state = drState(peerUidHex);
-                } else if (historyEntry?.snapshot) {
-                  restoreDrStateFromSnapshot({
-                    peerUidHex,
-                    snapshot: historyEntry.snapshot,
-                    force: true
-                  });
-                  const replayState = drState(peerUidHex);
-                  if (replayState) {
-                    await drDecryptText(replayState, pkt, {
-                      onMessageKey: () => {}
-                    });
-                    state = replayState;
-                  }
-                }
-                if (state) {
+              if (stateSynced && state) {
+                try {
                   persistDrSnapshot({ peerUidHex, state });
-                }
-              } catch (advanceErr) {
-                if (drDebug) {
-                  console.warn('[messages] replay state advance failed', advanceErr);
+                } catch (persistErr) {
+                  if (drDebug) {
+                    console.warn('[messages] replay persist snapshot failed', persistErr);
+                  }
                 }
               }
             }

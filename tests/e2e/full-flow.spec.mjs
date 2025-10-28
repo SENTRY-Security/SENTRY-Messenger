@@ -159,6 +159,42 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     });
   };
 
+  const verifySignPutResponse = async (response, contextLabel) => {
+    let payload = null;
+    let raw = null;
+    try {
+      payload = response.request().postDataJSON();
+    } catch {
+      try {
+        raw = response.request().postData();
+      } catch {
+        raw = null;
+      }
+    }
+    if (!raw) {
+      try {
+        raw = response.request().postData();
+      } catch {
+        raw = null;
+      }
+    }
+    if (!payload && raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = null;
+      }
+    }
+    expect(payload?.direction ?? null, `${contextLabel} direction`).toBe('sent');
+    if (payload?.accountDigest) {
+      expect(payload.accountDigest, `${contextLabel} accountDigest`).toMatch(/^[0-9A-F]{64}$/);
+    }
+    const body = await response.json();
+    expect(body?.objectPath, `${contextLabel} objectPath`).toBeTruthy();
+    expect(body.objectPath, `${contextLabel} system folder`).toContain('/已傳送/');
+    return body;
+  };
+
   const newNickname = `自動測試-${Date.now()}`;
   // eslint-disable-next-line no-console
   console.log('[test-new-nickname]', newNickname);
@@ -369,8 +405,25 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await pageA.waitForSelector('#btnUploadOpen', { timeout: 5000 });
     await pageA.click('#btnUploadOpen');
     await pageA.waitForSelector('#uploadFileInput', { timeout: 5000 });
+    const driveSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const driveIndexPromise = pageA.waitForResponse((res) => {
+      if (res.request().method() !== 'POST' || !res.url().includes('/api/v1/messages')) return false;
+      try {
+        const raw = res.request().postData();
+        return typeof raw === 'string' && raw.includes('"convId":"drive-');
+      } catch {
+        return false;
+      }
+    });
     await pageA.setInputFiles('#uploadFileInput', uploadFilePath);
     await pageA.click('#uploadForm button[type="submit"]');
+    const driveSignPutResponse = await driveSignPutPromise;
+    await verifySignPutResponse(driveSignPutResponse, 'drive upload');
+    await driveIndexPromise;
+    const systemFolder = pageA.locator('.file-item.folder[data-folder-name="已傳送"]');
+    await expect(systemFolder).toBeVisible({ timeout: 30000 });
+    await systemFolder.click();
+    await pageA.waitForTimeout(200);
     const uploadedFile = pageA.locator(`.file-item[data-name="${uploadFileName}"]`);
     await expect(uploadedFile).toBeVisible({ timeout: 30000 });
     await capture(pageA, 'drive_after_file_upload');
@@ -736,12 +789,13 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     const samplePdf = createSamplePdfFile();
 
     // 圖片附件預覽
-    const imageSignPut = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
-    const imageSecurePost = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+    const imageSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const imageSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
     await pageA.click('#composerAttach');
     await pageA.setInputFiles('#messageFileInput', uploadFilePath);
-    await imageSignPut.catch(() => {});
-    await imageSecurePost.catch(() => {});
+    const imageSignPutResponse = await imageSignPutPromise;
+    await verifySignPutResponse(imageSignPutResponse, 'image upload');
+    await imageSecurePostPromise;
     const outgoingImageBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: uploadFileName }) }).last();
     await expect(outgoingImageBubbleA.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
     await capture(pageA, 'messages_userA_image_preview');
@@ -751,16 +805,17 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await capture(pageB, 'messages_userB_image_preview');
 
     // 影片附件預覽
-    const videoSignPut = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
-    const videoSecurePost = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+    const videoSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const videoSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
     await pageA.click('#composerAttach');
     await pageA.setInputFiles('#messageFileInput', {
       name: sampleVideo.name,
       mimeType: sampleVideo.mimeType,
       buffer: sampleVideo.buffer
     });
-    await videoSignPut.catch(() => {});
-    await videoSecurePost.catch(() => {});
+    const videoSignPutResponse = await videoSignPutPromise;
+    await verifySignPutResponse(videoSignPutResponse, 'video upload');
+    await videoSecurePostPromise;
     const outgoingVideoBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
     await expect(outgoingVideoBubbleA.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
     await capture(pageA, 'messages_userA_video_preview');
@@ -770,16 +825,17 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await capture(pageB, 'messages_userB_video_preview');
 
     // PDF 附件預覽
-    const pdfSignPut = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
-    const pdfSecurePost = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+    const pdfSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const pdfSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
     await pageA.click('#composerAttach');
     await pageA.setInputFiles('#messageFileInput', {
       name: samplePdf.name,
       mimeType: samplePdf.mimeType,
       buffer: samplePdf.buffer
     });
-    await pdfSignPut.catch(() => {});
-    await pdfSecurePost.catch(() => {});
+    const pdfSignPutResponse = await pdfSignPutPromise;
+    await verifySignPutResponse(pdfSignPutResponse, 'pdf upload');
+    await pdfSecurePostPromise;
     const outgoingPdfBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
     await expect(outgoingPdfBubbleA.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
     await capture(pageA, 'messages_userA_pdf_preview');

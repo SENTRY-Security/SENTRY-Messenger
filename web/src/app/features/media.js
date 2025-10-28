@@ -3,7 +3,7 @@
 // No UI here. Callers (UI) should pass File/Blob and render results.
 
 import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMediaKeys } from '../api/media.js';
-import { getMkRaw } from '../core/store.js';
+import { getMkRaw, getAccountDigest } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 
 const encoder = new TextEncoder();
@@ -77,7 +77,7 @@ export async function deleteEncryptedObjects({ keys, ids }) {
  * @param {{convId:string, file:File|Blob}} p
  * @returns {Promise<{objectKey:string,size:number,envelope:object,message:any}>}
  */
-export async function encryptAndPut({ convId, file, dir, skipIndex = false }) {
+export async function encryptAndPut({ convId, file, dir, skipIndex = false, direction = 'sent' }) {
   const mk = getMkRaw();
   if (!mk) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
@@ -99,7 +99,16 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false }) {
 
   // 2) Get presigned PUT
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
-  const { r: rSign, data: sign } = await apiSignPut({ convId, contentType, dir: storageDir || undefined, size: fileSize ?? plainBuf.byteLength });
+  const accountDigest = getAccountDigest();
+  const signPayload = {
+    convId,
+    contentType,
+    dir: storageDir || undefined,
+    size: fileSize ?? plainBuf.byteLength,
+    direction: direction === 'received' ? 'received' : 'sent'
+  };
+  if (accountDigest) signPayload.accountDigest = accountDigest;
+  const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;
   if (!upload?.url) throw new Error('sign-put missing upload.url');
@@ -142,7 +151,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false }) {
  * Same as encryptAndPut but allows tracking upload progress via XHR.
  * @param {{convId:string, file:File|Blob, onProgress?:(p:{loaded:number,total:number,percent:number})=>void}} p
  */
-export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false }) {
+export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent' }) {
   const mk = getMkRaw();
   if (!mk) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
@@ -162,7 +171,16 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   const ct = await aeadEncryptWithMK(plainBuf, mk, 'media/v1');
 
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
-  const { r: rSign, data: sign } = await apiSignPut({ convId, contentType, dir: storageDir || undefined, size: fileSize ?? plainBuf.byteLength });
+  const accountDigest = getAccountDigest();
+  const signPayload = {
+    convId,
+    contentType,
+    dir: storageDir || undefined,
+    size: fileSize ?? plainBuf.byteLength,
+    direction: direction === 'received' ? 'received' : 'sent'
+  };
+  if (accountDigest) signPayload.accountDigest = accountDigest;
+  const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;
   if (!upload?.url) throw new Error('sign-put missing upload.url');

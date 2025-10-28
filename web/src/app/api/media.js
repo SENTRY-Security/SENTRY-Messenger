@@ -11,10 +11,12 @@ import { fetchJSON } from '../core/http.js';
  * @param {{ convId: string, contentType: string, dir?: string }} p
  * @returns {Promise<{ r: Response, data: any }>} data typically { upload:{url,key,fields?,headers?,method?}, objectPath, expiresIn }
  */
-export async function signPut({ convId, contentType, dir, size }) {
+export async function signPut({ convId, contentType, dir, size, direction, accountDigest }) {
   const body = { convId, contentType };
   if (dir) body.dir = dir;
   if (typeof size === 'number') body.size = size;
+  if (direction) body.direction = direction;
+  if (accountDigest) body.accountDigest = accountDigest;
   return await fetchJSON('/api/v1/media/sign-put', body);
 }
 

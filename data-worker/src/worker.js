@@ -91,6 +91,44 @@ export default {
         objKey ?? null, sizeBytes ?? null, ts
       ).run();
 
+      if (type === 'media') {
+        let headerObj = null;
+        try {
+          headerObj = headerJson ? JSON.parse(headerJson) : (headerJson === null ? null : {});
+        } catch {
+          headerObj = null;
+        }
+        const headerObjKey = headerObj && typeof headerObj === 'object' ? headerObj.obj : null;
+        const headerSize = headerObj && typeof headerObj === 'object' ? headerObj.size : null;
+        const recordedKey = typeof headerObjKey === 'string' && headerObjKey.trim().length ? headerObjKey.trim() : (typeof objKey === 'string' ? objKey : null);
+        const recordedSize = (() => {
+          const fromHeader = Number(headerSize);
+          if (Number.isFinite(fromHeader) && fromHeader >= 0) return fromHeader;
+          const fromBody = Number(sizeBytes);
+          if (Number.isFinite(fromBody) && fromBody >= 0) return fromBody;
+          return null;
+        })();
+        if (recordedKey) {
+          try {
+            await env.DB.prepare(`
+              INSERT INTO media_objects (obj_key, conv_id, size_bytes, created_at)
+              VALUES (?1, ?2, ?3, ?4)
+              ON CONFLICT(obj_key) DO UPDATE SET
+                conv_id=excluded.conv_id,
+                size_bytes=excluded.size_bytes,
+                created_at=excluded.created_at
+            `).bind(
+              recordedKey,
+              convId,
+              Number.isFinite(recordedSize) ? recordedSize : null,
+              ts
+            ).run();
+          } catch (err) {
+            console.warn('media_objects upsert failed', err?.message || err);
+          }
+        }
+      }
+
       return json({ ok: true, msgId });
     }
 
@@ -870,6 +908,57 @@ export default {
       }
 
       return json({ ok: true, results });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/d1/media/usage') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const convIdRaw = body?.convId ?? body?.conversationId;
+      if (!convIdRaw || typeof convIdRaw !== 'string') {
+        return json({ error: 'BadRequest', message: 'convId required' }, { status: 400 });
+      }
+      const convId = normalizeConversationId(convIdRaw);
+      if (!convId) {
+        return json({ error: 'BadRequest', message: 'invalid convId' }, { status: 400 });
+      }
+      const prefixRaw = typeof body?.prefix === 'string' ? body.prefix.trim() : '';
+      let prefix = prefixRaw || convId;
+      prefix = prefix.replace(/[\u0000-\u001F\u007F]/gu, '');
+      if (!prefix.startsWith(convId)) {
+        prefix = convId;
+      }
+      const ensureSlash = prefix.endsWith('/') ? prefix : `${prefix}/`;
+      const escapeLike = (value) => value.replace(/([%_\\])/g, '\\$1');
+      const likePattern = `${escapeLike(ensureSlash)}%`;
+      let totalBytes = 0;
+      let objectCount = 0;
+      try {
+        const stmt = await env.DB.prepare(`
+          SELECT
+            COALESCE(SUM(COALESCE(size_bytes, 0)), 0) AS total_bytes,
+            COUNT(*) AS object_count
+          FROM media_objects
+          WHERE conv_id=?1
+            AND obj_key LIKE ?2 ESCAPE '\\'
+        `).bind(convId, likePattern).all();
+        const row = stmt?.results?.[0] || null;
+        totalBytes = Number(row?.total_bytes ?? 0);
+        objectCount = Number(row?.object_count ?? 0);
+      } catch (err) {
+        console.warn('media usage query failed', err?.message || err);
+        return json({ error: 'UsageQueryFailed', message: err?.message || 'media usage query failed' }, { status: 500 });
+      }
+      return json({
+        ok: true,
+        convId,
+        prefix,
+        totalBytes,
+        objectCount
+      });
     }
 
     // 交換：建立 / 更新 account、檢查 counter、回傳 MK 包裝資訊

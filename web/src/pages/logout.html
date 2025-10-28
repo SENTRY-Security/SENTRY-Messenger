@@ -42,6 +42,16 @@
         box-shadow: 0 0 45px rgba(248, 113, 113, 0.35);
         overflow: hidden;
       }
+      .logo-wrapper .logo-ring {
+        position: absolute;
+        inset: -12px;
+        border-radius: 50%;
+        border: 3px solid rgba(248, 113, 113, 0.45);
+        box-shadow: 0 0 32px rgba(248, 113, 113, 0.35);
+        filter: blur(0.2px);
+        animation: ringPulse 4.5s ease-in-out infinite;
+        pointer-events: none;
+      }
       .logo-wrapper::before,
       .logo-wrapper::after {
         content: '';
@@ -78,11 +88,27 @@
           opacity: 0.95;
         }
       }
+      @keyframes ringPulse {
+        0%,
+        100% {
+          transform: scale(0.98);
+          opacity: 0.55;
+        }
+        35% {
+          transform: scale(1.03);
+          opacity: 0.85;
+        }
+        70% {
+          transform: scale(1.05);
+          opacity: 0.65;
+        }
+      }
     </style>
   </head>
   <body>
     <main class="logout-container" aria-labelledby="logoutMessage">
       <div class="logo-wrapper">
+        <span class="logo-ring" aria-hidden="true"></span>
         <img src="../assets/images/logo.svg" alt="SENTRY Message" />
       </div>
       <p id="logoutMessage" class="logout-message">系統已登出，所有本機資料已清除。</p>
