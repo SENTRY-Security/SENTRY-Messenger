@@ -17,9 +17,31 @@ export const getStatus = (req, res) => {
 
 const DATA_API = process.env.DATA_API_URL;     // e.g. https://message-data.<account>.workers.dev
 const HMAC_SECRET = process.env.DATA_API_HMAC; // must match the Worker secret HMAC_SECRET
+const FETCH_TIMEOUT_MS = Number(process.env.DATA_API_TIMEOUT_MS || 8000);
+
+async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const DeleteMessagesSchema = z.object({
   ids: z.array(z.string().min(1))
+});
+
+const DeleteSecureConversationSchema = z.object({
+  conversationId: z.string().min(8),
+  uidHex: z.string().optional(),
+  accountToken: z.string().optional(),
+  accountDigest: z.string().optional()
+}).superRefine((value, ctx) => {
+  if (!value.uidHex && !value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'uidHex or accountToken/accountDigest required' });
+  }
 });
 
 export const createMessage = async (req, res) => {
@@ -241,4 +263,57 @@ export const deleteMessages = async (req, res) => {
   }
 
   return res.json({ ok: true, worker: workerJson?.results || [] });
+};
+
+export const deleteSecureConversation = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
+  let input;
+  try {
+    input = DeleteSecureConversationSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
+  }
+
+  const sanitizeUidHex = (value) => {
+    if (!value) return undefined;
+    const cleaned = String(value).replace(/[^0-9a-f]/gi, '').toUpperCase();
+    return cleaned.length >= 14 ? cleaned : undefined;
+  };
+
+  const payload = {
+    conversationId: input.conversationId
+  };
+  const uidHex = sanitizeUidHex(input.uidHex);
+  if (uidHex) payload.uidHex = uidHex;
+  if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
+  if (input.accountDigest) payload.accountDigest = String(input.accountDigest).trim().toUpperCase();
+
+  const path = '/d1/messages/secure/delete-conversation';
+  const body = JSON.stringify(payload);
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  try {
+    const upstream = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+    const text = await upstream.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    if (upstream.status === 404) {
+      return res.json({ ok: true, deleted_secure: 0, deleted_general: 0, conversation_id: payload.conversationId, skipped: true });
+    }
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ error: 'DeleteConversationFailed', details: data });
+    }
+    return res.json(data);
+  } catch (err) {
+    return res.status(504).json({
+      error: 'DeleteConversationTimeout',
+      message: err?.message || 'fetch aborted'
+    });
+  }
 };

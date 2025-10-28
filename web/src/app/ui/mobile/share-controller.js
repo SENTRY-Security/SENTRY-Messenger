@@ -3,17 +3,16 @@ import { encodeFriendInvite } from '../../lib/invite.js';
 import { generateQR } from '../../lib/qr.js';
 import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
-import { devkeysFetch } from '../../api/devkeys.js';
-import { unwrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { getUidHex, getMkRaw, getDevicePriv, setDevicePriv } from '../../core/store.js';
-import { generateRandomNickname } from '../../features/profile.js';
+import { getUidHex } from '../../core/store.js';
+import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore } from './session-store.js';
-import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
+import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState } from '../../features/dr-session.js';
+import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 
 const INVITE_SECRET_STORAGE_KEY = 'inviteSecrets-v1';
 
@@ -35,11 +34,26 @@ export function setupShareController(options) {
 
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
+  const recentlyDeletedPeers = new Map();
+  const CONTACT_READD_COOLDOWN_MS = 30_000;
 
   if (!dom) throw new Error('share controller requires dom references');
-  restoreContactSecrets();
+  const contactSecretMap = restoreContactSecrets();
+  primeStoredDrSnapshots(contactSecretMap);
 
-  function storeContactSecretMapping({ peerUid, inviteId, secret, role, conversation }) {
+  function primeStoredDrSnapshots(map) {
+    if (!(map instanceof Map)) return;
+    for (const [peerUid, info] of map.entries()) {
+      if (!info?.drState) continue;
+      try {
+        restoreDrStateFromSnapshot({ peerUidHex: peerUid, snapshot: info.drState });
+      } catch (err) {
+        log({ drSnapshotRestoreError: err?.message || err, peerUid });
+      }
+    }
+  }
+
+  function storeContactSecretMapping({ peerUid, inviteId, secret, role, conversation, drState }) {
     if (!peerUid || !inviteId || !secret) return;
     let conversationToken = null;
     let conversationId = null;
@@ -50,14 +64,41 @@ export function setupShareController(options) {
       conversationDrInit = conversation.dr_init || conversation.drInit || null;
     }
     const existing = getContactSecret(peerUid) || {};
-    setContactSecret(peerUid, {
+    const payload = {
       inviteId,
       secret,
-      role,
+      role: typeof existing.role === 'string' && existing.role.length ? existing.role : (role || null),
       conversationToken: conversationToken || existing.conversationToken || null,
       conversationId: conversationId || existing.conversationId || null,
       conversationDrInit: conversationDrInit || existing.conversationDrInit || null
-    });
+    };
+    if (drState) {
+      const snapshot = snapshotDrState(drState);
+      if (snapshot) {
+        payload.drState = snapshot;
+      }
+    }
+    setContactSecret(peerUid, payload);
+  }
+
+  function markPeerRecentlyDeleted(peerUid) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key) return;
+    recentlyDeletedPeers.set(key, Date.now());
+    log({ contactRecentlyDeletedMarked: key });
+  }
+
+  function wasPeerRecentlyDeleted(peerUid) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key) return false;
+    const ts = recentlyDeletedPeers.get(key);
+    if (!ts) return false;
+    if (Date.now() - ts > CONTACT_READD_COOLDOWN_MS) {
+      recentlyDeletedPeers.delete(key);
+      return false;
+    }
+    log({ contactRecentlyDeletedCheck: key });
+    return true;
   }
 
   function getSecretForPeer(peerUid) {
@@ -84,6 +125,8 @@ export function setupShareController(options) {
   shareState.scanner = shareState.scanner || null;
   shareState.scannerActive = shareState.scannerActive || false;
   shareState.scannerOpen = shareState.scannerOpen || false;
+  shareState.inviteBlockedDueToKeys = !!shareState.inviteBlockedDueToKeys;
+  shareState.lastInviteError = shareState.lastInviteError || null;
 
   if (shareModal) shareModal.setAttribute('data-share-mode', shareState.mode);
 
@@ -133,6 +176,10 @@ export function setupShareController(options) {
 
   async function ensureActiveInvite({ force = false } = {}) {
     if (!shareModal) return;
+    if (shareState.inviteBlockedDueToKeys && !force) {
+      setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', true);
+      return;
+    }
     if (!shareState.currentInvite || force) {
       const stored = getStoredActiveInvite();
       if (stored) shareState.currentInvite = stored;
@@ -144,6 +191,22 @@ export function setupShareController(options) {
     }
     await onGenerateInvite({ auto: true });
   }
+
+  document.addEventListener('contacts:removed', (event) => {
+    const detail = event?.detail || {};
+    const peer = detail.peerUid || detail.peer_uid || detail.peer || detail.uid;
+    markPeerRecentlyDeleted(peer);
+    if (detail?.notifyPeer !== false && wsTransport && peer) {
+      try {
+        wsTransport({
+          type: 'contact-removed',
+          targetUid: String(peer).toUpperCase()
+        });
+      } catch (err) {
+        log({ contactRemovedNotifyError: err?.message || err, peer });
+      }
+    }
+  });
 
   return {
     persistInviteSecrets,
@@ -166,7 +229,7 @@ export function setupShareController(options) {
     if (e.key === 'Escape' && shareState.open) closeShareModal();
   }
 
-  async function onGenerateInvite({ auto = false } = {}) {
+  async function onGenerateInvite({ auto = false, attempt = 0 } = {}) {
     const uid = getUidHex();
     if (!uid) {
       setInviteStatus('尚未登入，無法生成 QR，請重新登入後再試。', true);
@@ -208,15 +271,24 @@ export function setupShareController(options) {
         conversationDrInit: shareState.currentInvite.conversationDrInit || null
       });
       persistInviteSecrets();
+      shareState.inviteBlockedDueToKeys = false;
+      shareState.lastInviteError = null;
 
       await attachInviteOwnerContact(shareState.currentInvite);
       renderInviteQr(shareState.currentInvite);
       startInviteCountdown(shareState.currentInvite.expiresAt);
     } catch (err) {
       const msg = err?.message || String(err);
-      log({ inviteError: msg });
-      setInviteStatus(`生成失敗：${msg}`, true);
+      log({ inviteError: msg, attempt });
       shareState.currentInvite = null;
+      shareState.lastInviteError = msg;
+      if (isPrekeyRecoveryError(msg)) {
+        shareState.inviteBlockedDueToKeys = true;
+        setInviteStatus('生成失敗：缺少交友金鑰，請重新登入完成初始化', true);
+      } else {
+        shareState.inviteBlockedDueToKeys = false;
+        setInviteStatus(`生成失敗：${msg}`, true);
+      }
     } finally {
       updateProfileStats?.();
     }
@@ -292,8 +364,12 @@ export function setupShareController(options) {
       clearInviteView();
       if (inviteBtn) inviteBtn.textContent = '生成交友邀請';
       if (shareState.open) {
-        setInviteStatus('交友邀請已過期，正在重新生成…');
-        setTimeout(() => onGenerateInvite({ auto: true }), 220);
+        if (shareState.inviteBlockedDueToKeys) {
+          setInviteStatus('交友邀請已過期，請重新登入完成初始化。', true);
+        } else {
+          setInviteStatus('交友邀請已過期，正在重新生成…');
+          setTimeout(() => onGenerateInvite({ auto: true }), 220);
+        }
       } else {
         setInviteStatus('交友邀請已過期，請重新生成。', true);
       }
@@ -464,7 +540,8 @@ export function setupShareController(options) {
       persistInviteSecrets();
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
-        peerUid: parsed.ownerUid || null
+        peerUid: parsed.ownerUid || null,
+        secretRole: 'guest'
       });
 
       const devicePriv = await ensureDevicePrivLoaded();
@@ -484,7 +561,8 @@ export function setupShareController(options) {
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
         peerUid: parsed.ownerUid || null,
-        dr_init: drInitPayload
+        dr_init: drInitPayload,
+        secretRole: 'guest'
       });
       let contactEnvelope = null;
       try {
@@ -543,7 +621,8 @@ export function setupShareController(options) {
           inviteId: parsed.inviteId,
           secret: parsed.secret,
           role: 'guest',
-          conversation: conversationInfo
+          conversation: conversationInfo,
+          drState: x3dhState
         });
       }
       inviteSecrets.delete(parsed.inviteId);
@@ -588,6 +667,12 @@ export function setupShareController(options) {
     if (!envelope?.iv || !envelope?.ct) return;
     try {
       const payload = await decryptContactPayload(secret, envelope);
+      const reason = payload?.reason || null;
+      if (reason === 'conversation-delete' && wasPeerRecentlyDeleted(fromUid)) {
+        log({ contactShareIgnoredForDeleted: fromUid, reason });
+        recentlyDeletedPeers.delete(fromUid);
+        return;
+      }
       let conversation = null;
       if (payload?.conversation && payload.conversation.token_b64 && payload.conversation.conversation_id) {
         conversation = payload.conversation;
@@ -622,7 +707,8 @@ export function setupShareController(options) {
         sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
           token_b64: conversation.token_b64,
           peerUid: fromUid,
-          dr_init: conversation.dr_init || null
+          dr_init: conversation.dr_init || null,
+          secretRole: record?.role || stored?.role || null
         });
       }
       storeContactSecretMapping({
@@ -632,8 +718,15 @@ export function setupShareController(options) {
         role: record?.role || stored?.role || null,
         conversation
       });
-      if (conversation?.dr_init?.guest_bundle || conversation?.drInit?.guestBundle) {
-        const bundle = conversation.dr_init?.guest_bundle || conversation.drInit?.guestBundle;
+      const drInit = conversation?.dr_init || conversation?.drInit || null;
+      const bundle = drInit?.guest_bundle || drInit?.guestBundle || null;
+      const candidateRole = [
+        existingContact?.secretRole,
+        record?.role,
+        stored?.role
+      ].find((value) => typeof value === 'string' && value.length);
+      const selfRole = candidateRole ? candidateRole.toLowerCase() : null;
+      if (bundle && selfRole !== 'guest') {
         try {
           await bootstrapDrFromGuestBundle({ peerUidHex: fromUid, guestBundle: bundle });
         } catch (err) {
@@ -643,10 +736,14 @@ export function setupShareController(options) {
       inviteSecrets.delete(inviteId);
       persistInviteSecrets();
       shareState.currentInvite = null;
-      try {
-        await onGenerateInvite({ auto: true });
-      } catch (err) {
-        log({ autoInviteRefreshError: err?.message || err });
+      if (!shareState.inviteBlockedDueToKeys) {
+        try {
+          await onGenerateInvite({ auto: true });
+        } catch (err) {
+          log({ autoInviteRefreshError: err?.message || err });
+        }
+      } else if (shareState.open) {
+        setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', true);
       }
       if (shareState.open) {
         closeShareModal();
@@ -656,13 +753,21 @@ export function setupShareController(options) {
       if (typeof switchTab === 'function' && tab !== 'contacts') {
         switchTab('contacts');
       }
+      recentlyDeletedPeers.delete(fromUid);
     } catch (err) {
       log({ contactShareDecryptError: err?.message || err });
     }
   }
 
-  async function broadcastContactUpdate({ reason } = {}) {
+  async function broadcastContactUpdate({ reason, targetPeers, overrides } = {}) {
     const secretMap = restoreContactSecrets();
+    const targetSet = Array.isArray(targetPeers)
+      ? new Set(
+          targetPeers
+            .map((value) => (typeof value === 'string' ? value.trim().toUpperCase() : null))
+            .filter(Boolean)
+        )
+      : null;
     const entries = Array.from(secretMap.entries());
     if (!entries.length) return { total: 0, success: 0, errors: [] };
 
@@ -670,6 +775,7 @@ export function setupShareController(options) {
     const errors = [];
 
     for (const [peerUid, info] of entries) {
+      if (targetSet && !targetSet.has(String(peerUid || '').toUpperCase())) continue;
       log({ contactBroadcastCandidate: {
         peerUid,
         hasInviteId: !!info?.inviteId,
@@ -706,10 +812,13 @@ export function setupShareController(options) {
         }
       }
       const drInit = conversation?.dr_init || conversation?.drInit || info?.conversationDrInit || null;
+      let payload = null;
+      let envelope = null;
       try {
-        const payload = await buildLocalContactPayload({ conversation, drInit });
+        payload = await buildLocalContactPayload({ conversation, drInit, overrides });
+        payload.reason = reason || 'update';
         log({ contactBroadcastPayload: { peerUid, hasConversation: !!payload?.conversation, drInit: payload?.conversation?.dr_init ? 'yes' : 'no' } });
-        const envelope = await encryptContactPayload(secret, payload);
+        envelope = await encryptContactPayload(secret, payload);
         await friendsShareContactUpdate({ inviteId, secret, peerUid, envelope });
         storeContactSecretMapping({
           peerUid,
@@ -733,6 +842,23 @@ export function setupShareController(options) {
         const message = err?.message || '';
         if (message.includes('NotFound')) {
           log({ contactBroadcastFallback: message, peerUid, reason: reason || null });
+          try {
+            if (!envelope && secret && payload) {
+              envelope = await encryptContactPayload(secret, payload);
+            }
+            if (wsTransport && envelope) {
+              wsTransport({
+                type: 'contact-share',
+                targetUid: peerUid,
+                inviteId,
+                envelope
+              });
+              success += 1;
+              continue;
+            }
+          } catch (notifyErr) {
+            log({ contactShareFallbackError: notifyErr?.message || notifyErr, peerUid });
+          }
           if (wsTransport) {
             try {
               wsTransport({
@@ -836,7 +962,7 @@ export function setupShareController(options) {
     return null;
   }
 
-  async function buildLocalContactPayload({ conversation, drInit } = {}) {
+  async function buildLocalContactPayload({ conversation, drInit, overrides } = {}) {
     const initialProfile = typeof getProfileState === 'function' ? getProfileState() : null;
 
     const pickPreferredProfile = (a, b) => {
@@ -913,8 +1039,10 @@ export function setupShareController(options) {
         if (drInitPayload) conversationInfo.dr_init = drInitPayload;
       }
     }
+    const overrideNickname = overrides?.nickname ? normalizeNickname(overrides.nickname) : null;
+    const effectiveNickname = overrideNickname || nickname || generateRandomNickname();
     const payload = {
-      nickname: nickname || generateRandomNickname(),
+      nickname: effectiveNickname,
       avatar,
       addedAt: Math.floor(Date.now() / 1000)
     };
@@ -922,21 +1050,18 @@ export function setupShareController(options) {
     return payload;
   }
   async function ensureDevicePrivLoaded() {
-    let priv = getDevicePriv?.();
-    if (priv) return priv;
-    const uid = getUidHex();
-    if (!uid) throw new Error('尚未登入，請重新登入後再試');
-    const { r, data } = await devkeysFetch({ uidHex: uid });
-    if (r.status === 404) throw new Error('找不到裝置金鑰備份，請重新登入完成初始化');
-    if (!r.ok) {
-      const msg = typeof data === 'string' ? data : data?.message || data?.error || '讀取裝置金鑰失敗';
+    try {
+      return await ensureDevicePrivAvailable();
+    } catch (err) {
+      const msg = err?.message || '找不到裝置金鑰，請重新登入完成初始化';
       throw new Error(msg);
     }
-    const mk = getMkRaw();
-    if (!mk) throw new Error('尚未解鎖主金鑰，請重新登入');
-    priv = await unwrapDevicePrivWithMK(data.wrapped_dev, mk);
-    setDevicePriv?.(priv);
-    return priv;
+  }
+
+  function isPrekeyRecoveryError(message) {
+    if (!message) return false;
+    const lower = String(message).toLowerCase();
+    return lower.includes('prekey') || lower.includes('bundle');
   }
 
   function normalizeInviteOwnerBundle(bundle) {

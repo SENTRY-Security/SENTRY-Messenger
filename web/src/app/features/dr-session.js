@@ -19,6 +19,7 @@ import {
 } from './conversation.js';
 import { bytesToB64Url } from '../ui/mobile/ui-utils.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
+import { encryptAndPutWithProgress } from './media.js';
 
 function normHex(s) { return String(s || '').replace(/[^0-9a-f]/gi, '').toUpperCase(); }
 
@@ -106,7 +107,7 @@ function compareHistoryKeys(aTs, aId, bTs, bId) {
   return 0;
 }
 
-function appendDrHistoryEntry({ peerUidHex, ts, snapshot, messageId }) {
+function appendDrHistoryEntry({ peerUidHex, ts, snapshot, snapshotNext, messageId, messageKeyB64 }) {
   const peer = normHex(peerUidHex);
   const stamp = Number(ts);
   if (!peer || !snapshot || !Number.isFinite(stamp)) return false;
@@ -118,8 +119,19 @@ function appendDrHistoryEntry({ peerUidHex, ts, snapshot, messageId }) {
     if (entry?.messageId || messageId) return false;
     return Number(entry?.ts) === stamp;
   });
-  if (idx >= 0) history.splice(idx, 1);
-  history.push({ ts: stamp, messageId: messageId || null, snapshot });
+  let preservedKey = null;
+  if (idx >= 0) {
+    const existing = history.splice(idx, 1)[0];
+    if (existing?.messageKey_b64) preservedKey = existing.messageKey_b64;
+  }
+  const entry = {
+    ts: stamp,
+    messageId: messageId || null,
+    snapshot,
+    messageKey_b64: messageKeyB64 || preservedKey || null
+  };
+  if (snapshotNext) entry.snapshotAfter = snapshotNext;
+  history.push(entry);
   history.sort((a, b) => compareHistoryKeys(Number(a?.ts), a?.messageId || null, Number(b?.ts), b?.messageId || null));
   while (history.length > MAX_HISTORY_ENTRIES) history.shift();
   setContactSecret(peer, {
@@ -132,6 +144,8 @@ function appendDrHistoryEntry({ peerUidHex, ts, snapshot, messageId }) {
       peerUidHex: peer,
       ts: stamp,
       messageId: messageId || null,
+      hasSnapshotAfter: !!entry.snapshotAfter,
+      hasMessageKey: !!(messageKeyB64 || preservedKey),
       length: history.length
     }));
   }
@@ -174,6 +188,10 @@ function restoreDrStateFromHistory({ peerUidHex, ts, messageId }) {
     }));
   }
   return restored;
+}
+
+export function restoreDrStateToHistoryPoint({ peerUidHex, ts, messageId }) {
+  return restoreDrStateFromHistory({ peerUidHex, ts, messageId });
 }
 
 function updateHistoryCursor({ peerUidHex, ts, messageId }) {
@@ -499,6 +517,8 @@ export async function sendDrText({ peerUidHex, text, conversation, convId }) {
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   logDrSend('encrypt-before', { peerUidHex: peer, snapshot: preSnapshot || null });
   const pkt = await drEncryptText(state, text);
+  const messageKeyB64 = pkt?.message_key_b64 || null;
+  const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
 
   let conversationId = convContext?.conversation_id || convContext?.conversationId || null;
@@ -529,11 +549,159 @@ export async function sendDrText({ peerUidHex, text, conversation, convId }) {
   });
   if (!r.ok) throw new Error('sendText failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
   if (preSnapshot) {
-    recordDrMessageHistory({ peerUidHex: peer, messageTs: now, messageId: data?.id || null, snapshot: preSnapshot });
+    recordDrMessageHistory({
+      peerUidHex: peer,
+      messageTs: now,
+      messageId: data?.id || null,
+      snapshot: preSnapshot,
+      snapshotNext: postSnapshot,
+      messageKeyB64
+    });
   }
   persistDrSnapshot({ peerUidHex: peer, state });
-  logDrSend('encrypt-after', { peerUidHex: peer, snapshot: snapshotDrState(state, { setDefaultUpdatedAt: false }) });
+  logDrSend('encrypt-after', { peerUidHex: peer, snapshot: postSnapshot });
   return { msg: data, convId: conversationId, secure: true };
+}
+
+export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir, onProgress } = {}) {
+  const me = getUidHex();
+  const peer = normHex(peerUidHex);
+  if (!me) throw new Error('UID not set');
+  if (!peer) throw new Error('peerUidHex required');
+  if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
+    throw new Error('file required');
+  }
+
+  const convContext = conversation || conversationContextForPeer(peer);
+  const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
+  if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
+
+  let state = drState(peer);
+  let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+  const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
+
+  if (!hasDrState) {
+    try {
+      await ensureDrSession({ peerUidHex: peer });
+    } catch (err) {
+      if (!hasDrInit) {
+        throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      }
+      throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+    }
+    state = drState(peer);
+    hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+  }
+
+  if (!hasDrState && !hasDrInit) {
+    throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+  }
+
+  let conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
+  if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
+
+  const uploadResult = await encryptAndPutWithProgress({
+    convId: conversationId,
+    file,
+    dir,
+    onProgress,
+    skipIndex: true
+  });
+
+  const metadata = {
+    type: 'media',
+    objectKey: uploadResult.objectKey,
+    name: typeof file.name === 'string' && file.name ? file.name : '附件',
+    size: typeof file.size === 'number' ? file.size : uploadResult.size ?? null,
+    contentType: file.type || 'application/octet-stream',
+    envelope: uploadResult.envelope || null,
+    dir: Array.isArray(dir) && dir.length ? dir.map((seg) => String(seg || '').trim()).filter(Boolean) : null
+  };
+
+  const payloadText = JSON.stringify({
+    type: metadata.type,
+    objectKey: metadata.objectKey,
+    name: metadata.name,
+    size: metadata.size,
+    contentType: metadata.contentType,
+    envelope: metadata.envelope,
+    dir: metadata.dir
+  });
+
+  const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
+  logDrSend('encrypt-media-before', { peerUidHex: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
+  const pkt = await drEncryptText(state, payloadText);
+  const messageKeyB64 = pkt?.message_key_b64 || null;
+  const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
+  const now = Math.floor(Date.now() / 1000);
+
+  const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64 };
+  const headerJson = JSON.stringify(headerPayload);
+  const hdrB64 = bytesToB64Url(new TextEncoder().encode(headerJson));
+  const ctB64 = base64ToUrl(pkt.ciphertext_b64);
+  const fingerprint = await computeConversationFingerprint(tokenB64, me);
+
+  const securePayload = {
+    v: 1,
+    hdr_b64: hdrB64,
+    ct_b64: ctB64,
+    meta: {
+      ts: now,
+      sender_fingerprint: fingerprint,
+      msg_type: 'media',
+      media: {
+        object_key: metadata.objectKey,
+        size: metadata.size,
+        name: metadata.name,
+        content_type: metadata.contentType
+      }
+    }
+  };
+
+  const envelope = await encryptConversationEnvelope(tokenB64, securePayload);
+  const { r, data } = await createSecureMessage({
+    conversationId,
+    payloadEnvelope: envelope,
+    createdAt: now
+  });
+  if (!r.ok) throw new Error('sendMedia failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
+  if (preSnapshot) {
+    recordDrMessageHistory({
+      peerUidHex: peer,
+      messageTs: now,
+      messageId: data?.id || null,
+      snapshot: preSnapshot,
+      snapshotNext: postSnapshot,
+      messageKeyB64
+    });
+  }
+  persistDrSnapshot({ peerUidHex: peer, state });
+  logDrSend('encrypt-media-after', { peerUidHex: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
+
+  return {
+    msg: {
+      id: data?.id || null,
+      ts: now,
+      text: `[檔案] ${metadata.name}`,
+      type: 'media',
+      media: {
+        objectKey: metadata.objectKey,
+        name: metadata.name,
+        size: metadata.size,
+        contentType: metadata.contentType,
+        envelope: metadata.envelope,
+        dir: metadata.dir,
+        createdAt: now
+      }
+    },
+    convId: conversationId,
+    secure: true,
+    upload: {
+      objectKey: metadata.objectKey,
+      envelope: metadata.envelope,
+      size: uploadResult.size
+    }
+  };
 }
 
 export async function bootstrapDrFromGuestBundle({ peerUidHex, guestBundle, force = false }) {
@@ -678,7 +846,7 @@ export async function recoverDrState({ peerUidHex } = {}) {
   return false;
 }
 
-export function prepareDrForMessage({ peerUidHex, messageTs, messageId }) {
+export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCursorReplay = false }) {
   const peer = normHex(peerUidHex);
   if (!peer) return { restored: false, duplicate: false };
   const secretInfo = getContactSecret(peer);
@@ -687,35 +855,50 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId }) {
   const stampIsFinite = Number.isFinite(stamp);
   const cursorTs = Number.isFinite(holder?.historyCursorTs) ? holder.historyCursorTs : null;
   const cursorId = holder?.historyCursorId || null;
-  const hasMatchingHistory = !!(messageId && secretInfo?.drHistory?.some((entry) => entry?.messageId === messageId));
-  if (cursorId && messageId && cursorId === messageId) {
+  const historyList = Array.isArray(secretInfo?.drHistory) ? secretInfo.drHistory : [];
+  const historyEntry = messageId ? historyList.find((entry) => entry?.messageId === messageId) : null;
+  const hasMatchingHistory = !!historyEntry;
+  const allowReplay = !!allowCursorReplay;
+
+  if (!allowReplay && cursorId && messageId && cursorId === messageId) {
     if (isAutomationEnv()) {
       console.log('[dr-skip-duplicate]', JSON.stringify({ peerUidHex: peer, messageId, cursorTs }));
     }
     return { restored: false, duplicate: true };
   }
+  if (allowReplay && hasMatchingHistory && historyEntry?.messageKey_b64) {
+    return { restored: false, duplicate: false, replay: true, historyEntry };
+  }
   let restored = false;
-  if (!holder?.rk) {
-    restored = restoreDrStateFromHistory({ peerUidHex: peer, ts: stamp, messageId });
-    if (restored && isAutomationEnv()) {
-      console.log('[dr-history-restore]', JSON.stringify({ peerUidHex: peer, reason: 'missing-rk', messageId: messageId || null, ts: stamp }));
+  const tryHistoryRestore = (reason) => {
+    const ok = restoreDrStateFromHistory({ peerUidHex: peer, ts: stamp, messageId });
+    if (ok && isAutomationEnv()) {
+      console.log('[dr-history-restore]', JSON.stringify({
+        peerUidHex: peer,
+        reason,
+        cursorTs,
+        cursorId,
+        messageId: messageId || null,
+        ts: stamp
+      }));
     }
+    return ok;
+  };
+  if (!holder?.rk) {
+    restored = tryHistoryRestore('missing-rk');
   } else {
     const isOlderThanCursor = stampIsFinite && cursorTs !== null && stamp < cursorTs;
     const restoreByHistoryOnly = !stampIsFinite && hasMatchingHistory;
-    if (isOlderThanCursor || restoreByHistoryOnly) {
-      restored = restoreDrStateFromHistory({ peerUidHex: peer, ts: stamp, messageId });
-      if (restored && isAutomationEnv()) {
-        console.log('[dr-history-restore]', JSON.stringify({
-          peerUidHex: peer,
-          reason: isOlderThanCursor ? 'rewind' : 'history-lookup',
-          cursorTs,
-          cursorId,
-          messageId: messageId || null,
-          ts: stamp
-        }));
-      }
-    } else if (hasMatchingHistory) {
+    const replayNeedsRestore = allowReplay && hasMatchingHistory && !historyEntry?.messageKey_b64;
+    if (isOlderThanCursor || restoreByHistoryOnly || replayNeedsRestore) {
+      const reason = (() => {
+        if (isOlderThanCursor) return 'rewind';
+        if (restoreByHistoryOnly) return 'history-lookup';
+        if (replayNeedsRestore) return 'replay-no-key';
+        return 'history';
+      })();
+      restored = tryHistoryRestore(reason);
+    } else if (hasMatchingHistory && !allowReplay) {
       if (isAutomationEnv()) {
         console.log('[dr-skip-duplicate]', JSON.stringify({ peerUidHex: peer, messageId, cursorTs }));
       }
@@ -729,14 +912,21 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId }) {
       if (messageId) refreshed.historyCursorId = messageId;
     }
   }
-  return { restored, duplicate: false };
+  return { restored, duplicate: false, historyEntry: hasMatchingHistory ? historyEntry : null };
 }
 
-export function recordDrMessageHistory({ peerUidHex, messageTs, messageId, snapshot }) {
+export function recordDrMessageHistory({ peerUidHex, messageTs, messageId, snapshot, snapshotNext, messageKeyB64 }) {
   const peer = normHex(peerUidHex);
   const stamp = Number(messageTs);
   if (!peer || !snapshot || !Number.isFinite(stamp)) return false;
-  appendDrHistoryEntry({ peerUidHex: peer, ts: stamp, snapshot, messageId });
+  appendDrHistoryEntry({
+    peerUidHex: peer,
+    ts: stamp,
+    snapshot,
+    snapshotNext,
+    messageId,
+    messageKeyB64
+  });
   updateHistoryCursor({ peerUidHex: peer, ts: stamp, messageId });
   if (isAutomationEnv()) {
     console.log('[dr-history-record]', JSON.stringify({ peerUidHex: peer, ts: stamp, messageId: messageId || null }));

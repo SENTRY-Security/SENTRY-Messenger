@@ -2,7 +2,7 @@ import { log } from '../../core/log.js';
 import { sessionStore } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
-import { deleteContactSecret } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 
 export function initContactsView(options) {
@@ -36,6 +36,8 @@ export function initContactsView(options) {
 
   const PULL_THRESHOLD = 88;
   const PULL_MAX = 140;
+  const RECENT_REMOVE_SUPPRESS_MS = 45_000;
+  const recentlyRemovedPeers = new Map();
   let pullGuardActive = false;
   let pullTracking = false;
   let pullDecided = false;
@@ -119,27 +121,83 @@ export function initContactsView(options) {
 
       swipe.setupSwipe(li);
       li.querySelector('.name')?.setAttribute('title', `${name} (${key})`);
+      try {
+        log({
+          contactRender: {
+            peerUid: key,
+            hasDelete: !!li.querySelector('.item-delete')
+          }
+        });
+      } catch {}
       contactsListEl.appendChild(li);
     });
     updateStats?.();
     try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch {}
   }
 
-  function removeContactLocal(peerUid) {
-    const key = String(peerUid || '').toUpperCase();
+  function markRecentlyRemoved(key) {
     if (!key) return;
+    recentlyRemovedPeers.set(key, Date.now());
+  }
+
+  function isRecentlyRemoved(key) {
+    if (!key) return false;
+    const ts = recentlyRemovedPeers.get(key);
+    if (!ts) return false;
+    if (Date.now() - ts > RECENT_REMOVE_SUPPRESS_MS) {
+      recentlyRemovedPeers.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  function removeContactState(peerUid, { notifyPeer = true } = {}) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key) return false;
+    let mutated = false;
     const idx = sessionStore.contactState.findIndex((c) => String(c?.peerUid || '').toUpperCase() === key);
-    if (idx >= 0) sessionStore.contactState.splice(idx, 1);
-    contactIndex.delete(key);
+    if (idx >= 0) {
+      sessionStore.contactState.splice(idx, 1);
+      mutated = true;
+    }
+    if (contactIndex.delete(key)) mutated = true;
     if (conversationIndex) {
       for (const [convId, info] of conversationIndex.entries()) {
-        if (info?.peerUid === key) conversationIndex.delete(convId);
+        if (info?.peerUid === key) {
+          conversationIndex.delete(convId);
+          mutated = true;
+        }
       }
     }
-    deleteContactSecret(key);
-    presenceManager.removePresenceForContact(key);
-    renderContacts();
-    updateStats?.();
+    if (mutated) {
+      deleteContactSecret(key);
+      presenceManager.removePresenceForContact(key);
+      renderContacts();
+      updateStats?.();
+      markRecentlyRemoved(key);
+    }
+    if (mutated && notifyPeer) {
+      try {
+        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: key, notifyPeer: true } }));
+      } catch (err) {
+        log({ contactRemovedEventError: err?.message || err });
+      }
+    }
+    return mutated;
+  }
+
+  function removeContactLocal(peerUid) {
+    removeContactState(peerUid, { notifyPeer: true });
+  }
+
+  function showDeleteForContact(peerUid) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key || !contactsListEl) return;
+    contactsListEl.querySelectorAll('.contact-item').forEach((item) => {
+      if (!item || !item.classList) return;
+      if (item.dataset.peerUid === key) item.classList.add('show-delete');
+      else item.classList.remove('show-delete');
+    });
   }
 
   function confirmDeleteContact({ peerUid, element, name }) {
@@ -152,7 +210,7 @@ export function initContactsView(options) {
       onConfirm: async () => {
         try {
           await friendsDeleteContact({ peerUid: key });
-          removeContactLocal(key);
+          removeContactState(key, { notifyPeer: true });
           if (element) swipe.closeSwipe(element);
           updateStats?.();
           log({ contactDeleted: key });
@@ -252,6 +310,12 @@ export function initContactsView(options) {
 
   function scheduleDrBootstrap(peerUid, conversation) {
     if (!peerUid || !conversation) return;
+    const entry = sessionStore.contactIndex?.get?.(peerUid) || null;
+    const entryRole = typeof entry?.secretRole === 'string' ? entry.secretRole.toLowerCase() : null;
+    const secretInfo = getContactSecret(peerUid);
+    const secretRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
+    const selfRole = entryRole || secretRole;
+    if (selfRole === 'guest') return;
     const bundle = conversation?.dr_init?.guest_bundle || conversation?.drInit?.guestBundle;
     if (!bundle) return;
     bootstrapDrFromGuestBundle({ peerUidHex: peerUid, guestBundle: bundle }).catch((err) => {
@@ -260,26 +324,56 @@ export function initContactsView(options) {
   }
 
   async function loadInitialContacts() {
+    const prevPeers = new Set(
+      Array.isArray(sessionStore.contactState)
+        ? sessionStore.contactState
+            .map((entry) => String(entry?.peerUid || '').toUpperCase())
+            .filter(Boolean)
+        : []
+    );
+    let fetched = [];
     try {
       const entries = await loadContactsApi();
-      sessionStore.contactState = Array.isArray(entries) ? [...entries] : [];
-      contactIndex.clear();
-      conversationIndex?.clear();
-      for (const entry of sessionStore.contactState) {
-        const key = String(entry?.peerUid || '').toUpperCase();
-        if (key) contactIndex.set(key, entry);
-        const conv = entry?.conversation;
-        if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
-          conversationIndex.set(conv.conversation_id, {
-            token_b64: conv.token_b64,
-            peerUid: key,
-            dr_init: conv.dr_init || null
-          });
-          scheduleDrBootstrap(key, conv);
-        }
-      }
+      fetched = Array.isArray(entries) ? [...entries] : [];
     } catch (err) {
       log({ contactsInitError: err?.message || err });
+      fetched = [];
+    }
+    contactIndex.clear();
+    conversationIndex?.clear();
+    const sanitized = [];
+    for (const entry of fetched) {
+      const key = String(entry?.peerUid || '').toUpperCase();
+      if (!key) continue;
+      if (isRecentlyRemoved(key)) {
+        presenceManager.removePresenceForContact(key);
+        continue;
+      }
+      sanitized.push(entry);
+      contactIndex.set(key, entry);
+      const conv = entry?.conversation;
+      if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
+        conversationIndex.set(conv.conversation_id, {
+          token_b64: conv.token_b64,
+          peerUid: key,
+          dr_init: conv.dr_init || null,
+          secretRole: entry?.secretRole || entry?.secret_role || null
+        });
+        scheduleDrBootstrap(key, conv);
+      }
+    }
+    sessionStore.contactState = sanitized;
+    const currentPeers = new Set(
+      sanitized.map((entry) => String(entry?.peerUid || '').toUpperCase()).filter(Boolean)
+    );
+    for (const peer of prevPeers) {
+      if (peer && !currentPeers.has(peer)) {
+        try {
+          document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: peer, notifyPeer: false } }));
+        } catch (err) {
+          log({ contactRemovedEventError: err?.message || err, peer });
+        }
+      }
     }
     renderContacts();
     presenceManager.sendPresenceSubscribe();
@@ -288,6 +382,10 @@ export function initContactsView(options) {
   async function addContactEntry({ peerUid, nickname, avatar, conversation, contactSecret, inviteId, secretRole }) {
     const key = String(peerUid || '').toUpperCase();
     if (!key) return;
+    if (isRecentlyRemoved(key)) {
+      log({ contactSuppressedAfterAddition: key });
+      return;
+    }
     const now = Math.floor(Date.now() / 1000);
     const conversationPayload = conversation && conversation.conversation_id && conversation.token_b64 ? {
       token_b64: conversation.token_b64,
@@ -320,7 +418,8 @@ export function initContactsView(options) {
         conversationIndex.set(entry.conversation.conversation_id, {
           token_b64: entry.conversation.token_b64,
           peerUid: key,
-          dr_init: entry.conversation.dr_init || null
+          dr_init: entry.conversation.dr_init || null,
+          secretRole: entry.secretRole || entry.secret_role || null
         });
         scheduleDrBootstrap(key, entry.conversation);
       }
@@ -340,6 +439,20 @@ export function initContactsView(options) {
   }
 
   setupPullToRefresh();
+
+  document.addEventListener('contacts:show-delete', (event) => {
+    const detail = event?.detail || {};
+    const targetPeer = detail.peerUid || detail.peer_uid || detail.peer || detail.uid;
+    showDeleteForContact(targetPeer);
+  });
+
+  document.addEventListener('contacts:removed', (event) => {
+    const detail = event?.detail || {};
+    if (!detail || detail.notifyPeer) return;
+    const peer = detail.peerUid || detail.peer_uid || detail.peer || detail.uid;
+    if (!peer) return;
+    removeContactState(peer, { notifyPeer: false });
+  });
 
   return {
     loadInitialContacts,

@@ -5,7 +5,7 @@
 // Exports:
 //   x3dhInitiate(devicePriv, peerBundle) -> DR state
 //   drRatchet(state, theirRatchetPubU8) -> void
-//   drEncryptText(state, plaintext) -> { aead:'aes-256-gcm', header:{dr,ek_pub_b64,pn,n}, iv_b64,ciphertext_b64 }
+//   drEncryptText(state, plaintext) -> { aead:'aes-256-gcm', header:{dr,ek_pub_b64,pn,n}, iv_b64,ciphertext_b64, message_key_b64 }
 //   drDecryptText(state, packet) -> string
 //
 // Types:

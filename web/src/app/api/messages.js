@@ -5,6 +5,7 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchWithTimeout, jsonReq } from '../core/http.js';
+import { buildAccountPayload } from '../core/store.js';
 export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrapper
 
 /**
@@ -53,6 +54,15 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs 
   if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursorTs', String(cursorTs));
   const url = `/api/v1/messages/secure?${qs.toString()}`;
   const r = await fetchWithTimeout(url, { method: 'GET' }, 15000);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  return { r, data };
+}
+
+export async function deleteSecureConversation({ conversationId }) {
+  if (!conversationId) throw new Error('conversationId required');
+  const payload = buildAccountPayload({ overrides: { conversationId } });
+  const r = await fetchWithTimeout('/api/v1/messages/secure/delete-conversation', jsonReq(payload), 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
   return { r, data };

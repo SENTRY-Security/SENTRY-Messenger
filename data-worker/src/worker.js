@@ -287,10 +287,12 @@ export default {
 
       const inviteId = String(body?.inviteId || '').trim();
       const secret = String(body?.secret || '').trim();
-      const myUid = normalizeUid(body?.myUid);
+      const myUid = normalizeUid(body?.myUid || body?.my_uid);
+      const accountDigest = normalizeUid(body?.accountDigest || body?.account_digest);
+      const peerUidBody = normalizeUid(body?.peerUid || body?.peer_uid);
       const envelope = normalizeEnvelope(body?.envelope);
-      if (!inviteId || !secret || !myUid || !envelope) {
-        return json({ error: 'BadRequest', message: 'inviteId, secret, myUid and envelope required' }, { status: 400 });
+      if (!inviteId || !secret || !envelope || (!myUid && !accountDigest)) {
+        return json({ error: 'BadRequest', message: 'inviteId, secret, sender identity and envelope required' }, { status: 400 });
       }
 
       const rows = await env.DB.prepare(
@@ -299,27 +301,250 @@ export default {
          WHERE invite_id=?1`
       ).bind(inviteId).all();
       const row = rows?.results?.[0];
-      if (!row) return json({ error: 'NotFound' }, { status: 404 });
+      if (!row) {
+        const fallbackSender = normalizeUid(myUid);
+        const fallbackTarget = normalizeUid(peerUidBody);
+        if (fallbackSender && fallbackTarget) {
+          const ts = Math.floor(Date.now() / 1000);
+          await insertContactMessage(env, { convUid: fallbackTarget, peerUid: fallbackSender, envelope, ts });
+          return json({ ok: true, targetUid: fallbackTarget, ts, fallback: 'invite_missing' });
+        }
+        return json({ error: 'NotFound' }, { status: 404 });
+      }
       if (row.secret !== secret) return json({ error: 'Forbidden', message: 'secret mismatch' }, { status: 403 });
 
-      const ownerUid = normalizeUid(row.owner_uid);
-      const guestUid = normalizeUid(row.guest_uid);
-      if (!ownerUid || !guestUid) {
+      const ownerDigest = normalizeUid(row.owner_account_digest);
+      const guestDigest = normalizeUid(row.guest_account_digest);
+      let ownerUid = normalizeUid(row.owner_uid);
+      let guestUid = normalizeUid(row.guest_uid);
+
+      let myUidDigest = null;
+      if (myUid) {
+        try {
+          myUidDigest = await hashUidToDigest(env, myUid);
+        } catch (err) {
+          console.warn('contact_share_hash_self_failed', err?.message || err);
+        }
+      }
+
+      let peerUidDigest = null;
+      if (peerUidBody) {
+        try {
+          peerUidDigest = await hashUidToDigest(env, peerUidBody);
+        } catch (err) {
+          console.warn('contact_share_hash_peer_failed', err?.message || err);
+        }
+      }
+
+      const fetchUidByDigest = async (digest) => {
+        const normalizedDigest = normalizeUid(digest);
+        if (!normalizedDigest) return null;
+        try {
+          const account = await resolveAccount(env, { accountDigest: normalizedDigest });
+          const rawUid = account?.uid_plain || account?.uid_hex || account?.uid;
+          return normalizeUid(rawUid);
+        } catch (err) {
+          console.warn('contact_share_resolve_account_failed', err?.message || err);
+          return null;
+        }
+      };
+
+      const updateInviteUid = async (role, value) => {
+        const normalized = normalizeUid(value);
+        if (!normalized) return null;
+        if (role === 'owner') {
+          if (ownerUid === normalized) return normalized;
+          ownerUid = normalized;
+          try {
+            await env.DB.prepare(
+              `UPDATE friend_invites SET owner_uid=?2 WHERE invite_id=?1 AND (owner_uid IS NULL OR owner_uid='')`
+            ).bind(inviteId, ownerUid).run();
+          } catch (err) {
+            console.warn('contact_share_owner_uid_update_failed', err?.message || err);
+          }
+          return ownerUid;
+        }
+        if (guestUid === normalized) return normalized;
+        guestUid = normalized;
+        try {
+          await env.DB.prepare(
+            `UPDATE friend_invites SET guest_uid=?2 WHERE invite_id=?1 AND (guest_uid IS NULL OR guest_uid='')`
+          ).bind(inviteId, guestUid).run();
+        } catch (err) {
+          console.warn('contact_share_guest_uid_update_failed', err?.message || err);
+        }
+        return guestUid;
+      };
+
+      let senderRole = null;
+
+      const ensureOwnerUid = async () => {
+        if (ownerUid) return ownerUid;
+        if (senderRole === 'owner' && myUid) {
+          if (!ownerDigest || (myUidDigest && ownerDigest && myUidDigest === ownerDigest) || (accountDigest && ownerDigest && accountDigest === ownerDigest)) {
+            return updateInviteUid('owner', myUid);
+          }
+        }
+        if (peerUidBody && peerUidDigest && ownerDigest && peerUidDigest === ownerDigest) {
+          return updateInviteUid('owner', peerUidBody);
+        }
+        const resolved = await fetchUidByDigest(ownerDigest);
+        if (resolved) return updateInviteUid('owner', resolved);
+        return ownerUid;
+      };
+
+      const ensureGuestUid = async () => {
+        if (guestUid) return guestUid;
+        if (senderRole === 'guest' && myUid) {
+          if (!guestDigest || (myUidDigest && guestDigest && myUidDigest === guestDigest) || (accountDigest && guestDigest && accountDigest === guestDigest)) {
+            return updateInviteUid('guest', myUid);
+          }
+        }
+        if (peerUidBody && peerUidDigest && guestDigest && peerUidDigest === guestDigest) {
+          return updateInviteUid('guest', peerUidBody);
+        }
+        const resolved = await fetchUidByDigest(guestDigest);
+        if (resolved) return updateInviteUid('guest', resolved);
+        return guestUid;
+      };
+
+      if (!ownerUid) {
+        const resolved = await fetchUidByDigest(ownerDigest);
+        if (resolved) ownerUid = await updateInviteUid('owner', resolved);
+      }
+      if (!guestUid) {
+        const resolved = await fetchUidByDigest(guestDigest);
+        if (resolved) guestUid = await updateInviteUid('guest', resolved);
+      }
+
+      if (myUid && ownerUid && myUid === ownerUid) senderRole = 'owner';
+      else if (myUid && guestUid && myUid === guestUid) senderRole = 'guest';
+
+      if (!senderRole && accountDigest) {
+        if (ownerDigest && accountDigest === ownerDigest) {
+          senderRole = 'owner';
+          if (!ownerUid && myUid) {
+            ownerUid = await updateInviteUid('owner', myUid);
+          }
+        } else if (guestDigest && accountDigest === guestDigest) {
+          senderRole = 'guest';
+          if (!guestUid && myUid) {
+            guestUid = await updateInviteUid('guest', myUid);
+          }
+        }
+      }
+
+      if (!senderRole && myUidDigest) {
+        if (ownerDigest && myUidDigest === ownerDigest) {
+          senderRole = 'owner';
+          if (!ownerUid && myUid) {
+            ownerUid = await updateInviteUid('owner', myUid);
+          }
+        } else if (guestDigest && myUidDigest === guestDigest) {
+          senderRole = 'guest';
+          if (!guestUid && myUid) {
+            guestUid = await updateInviteUid('guest', myUid);
+          }
+        }
+      }
+
+      if (!senderRole && peerUidDigest) {
+        if (ownerDigest && peerUidDigest === ownerDigest) {
+          senderRole = 'guest';
+          if (!guestUid && peerUidBody) {
+            guestUid = await updateInviteUid('guest', peerUidBody);
+          }
+        } else if (guestDigest && peerUidDigest === guestDigest) {
+          senderRole = 'owner';
+          if (!ownerUid && peerUidBody) {
+            ownerUid = await updateInviteUid('owner', peerUidBody);
+          }
+        }
+      }
+
+      if (!senderRole && myUid) {
+        try {
+          const account = await resolveAccount(env, { uidHex: myUid });
+          const acctDigest = normalizeUid(account?.account_digest);
+          if (acctDigest && ownerDigest && acctDigest === ownerDigest) {
+            senderRole = 'owner';
+            if (!ownerUid) {
+              ownerUid = await updateInviteUid('owner', myUid);
+            }
+          } else if (acctDigest && guestDigest && acctDigest === guestDigest) {
+            senderRole = 'guest';
+            if (!guestUid) {
+              guestUid = await updateInviteUid('guest', myUid);
+            }
+          }
+        } catch (err) {
+          console.warn('contact_share_resolve_self_failed', err?.message || err);
+        }
+      }
+
+      if (!senderRole && peerUidBody) {
+        const normalizedPeer = normalizeUid(peerUidBody);
+        if (normalizedPeer && ownerUid && normalizedPeer === ownerUid) {
+          senderRole = 'guest';
+          if (!guestUid && myUid) {
+            guestUid = await updateInviteUid('guest', myUid);
+          }
+        } else if (normalizedPeer && guestUid && normalizedPeer === guestUid) {
+          senderRole = 'owner';
+          if (!ownerUid && myUid) {
+            ownerUid = await updateInviteUid('owner', myUid);
+          }
+        }
+      }
+
+      if (!senderRole) {
+        return json({ error: 'Forbidden', message: 'sender not part of invite' }, { status: 403 });
+      }
+
+      const resolvedOwnerUid = await ensureOwnerUid();
+      const resolvedGuestUid = await ensureGuestUid();
+
+      const senderUid = senderRole === 'owner' ? resolvedOwnerUid : resolvedGuestUid;
+      let targetUid = senderRole === 'owner' ? resolvedGuestUid : resolvedOwnerUid;
+
+      if (!senderUid) {
+        return json({ error: 'Conflict', message: 'sender uid unresolved' }, { status: 409 });
+      }
+
+      if (!targetUid && peerUidBody) {
+        const expectedDigest = senderRole === 'owner' ? guestDigest : ownerDigest;
+        if (!expectedDigest) {
+          targetUid = peerUidBody;
+        } else if (peerUidDigest && peerUidDigest === expectedDigest) {
+          targetUid = peerUidBody;
+        }
+      }
+
+      if (!targetUid) {
+        const fallbackDigest = senderRole === 'owner' ? guestDigest : ownerDigest;
+        const fetched = await fetchUidByDigest(fallbackDigest);
+        if (fetched) {
+          if (senderRole === 'owner') {
+            await updateInviteUid('guest', fetched);
+          } else {
+            await updateInviteUid('owner', fetched);
+          }
+          targetUid = fetched;
+        }
+      }
+
+      if (!targetUid) {
         return json({ error: 'Conflict', message: 'friendship not established' }, { status: 409 });
       }
 
-      let targetUid;
-      if (myUid === ownerUid) targetUid = guestUid;
-      else if (myUid === guestUid) targetUid = ownerUid;
-      else return json({ error: 'Forbidden', message: 'sender not part of invite' }, { status: 403 });
-
       const ts = Math.floor(Date.now() / 1000);
-      await insertContactMessage(env, { convUid: targetUid, peerUid: myUid, envelope, ts });
+      await insertContactMessage(env, { convUid: targetUid, peerUid: senderUid, envelope, ts });
 
       return json({ ok: true, targetUid, ts });
     }
 
     if (req.method === 'POST' && url.pathname === '/d1/friends/contact-delete') {
+      await ensureFriendInviteTable(env);
       let body;
       try {
         body = await req.json();
@@ -333,17 +558,99 @@ export default {
         return json({ error: 'BadRequest', message: 'ownerUid & peerUid required' }, { status: 400 });
       }
 
+      const ownerDigests = new Set();
+      const peerDigests = new Set();
+      const ownerDigestBody = normalizeUid(body?.ownerAccountDigest || body?.owner_account_digest);
+      const peerDigestBody = normalizeUid(body?.peerAccountDigest || body?.peer_account_digest);
+      if (ownerDigestBody) {
+        ownerDigests.add(ownerDigestBody);
+      }
+      if (peerDigestBody) {
+        peerDigests.add(peerDigestBody);
+      }
+
+      try {
+        const rel = await env.DB.prepare(
+          `SELECT owner_uid, guest_uid, owner_account_digest, guest_account_digest
+             FROM friend_invites
+            WHERE (owner_uid=?1 AND guest_uid=?2)
+               OR (owner_uid=?2 AND guest_uid=?1)`
+        ).bind(ownerUid, peerUid).all();
+        for (const row of rel?.results || []) {
+          const ownerRowUid = normalizeUid(row.owner_uid);
+          const guestRowUid = normalizeUid(row.guest_uid);
+          if (ownerRowUid === ownerUid && guestRowUid === peerUid) {
+            const ownerDigest = normalizeUid(row.owner_account_digest);
+            if (ownerDigest) ownerDigests.add(ownerDigest);
+            const peerDigest = normalizeUid(row.guest_account_digest);
+            if (peerDigest) peerDigests.add(peerDigest);
+          } else if (ownerRowUid === peerUid && guestRowUid === ownerUid) {
+            const peerDigest = normalizeUid(row.owner_account_digest);
+            if (peerDigest) peerDigests.add(peerDigest);
+            const ownerDigest = normalizeUid(row.guest_account_digest);
+            if (ownerDigest) ownerDigests.add(ownerDigest);
+          }
+        }
+      } catch {
+        // ignore lookup failures; proceed with provided identifiers
+      }
+
+      try {
+        const ownerAccount = await resolveAccount(env, { uidHex: ownerUid });
+        const digest = normalizeUid(ownerAccount?.account_digest);
+        if (digest) ownerDigests.add(digest);
+      } catch {
+        // ignore missing account; allow deletion to continue
+      }
+
+      try {
+        const peerAccount = await resolveAccount(env, { uidHex: peerUid });
+        const digest = normalizeUid(peerAccount?.account_digest);
+        if (digest) peerDigests.add(digest);
+      } catch {
+        // ignore missing account; allow deletion to continue
+      }
+
+      try {
+        const ownerDerived = await hashUidToDigest(env, ownerUid);
+        const norm = normalizeUid(ownerDerived);
+        if (norm) ownerDigests.add(norm);
+      } catch {
+        // ignore hashing failures
+      }
+
+      try {
+        const peerDerived = await hashUidToDigest(env, peerUid);
+        const norm = normalizeUid(peerDerived);
+        if (norm) peerDigests.add(norm);
+      } catch {
+        // ignore hashing failures
+      }
+
       const results = [];
       const now = Math.floor(Date.now() / 1000);
 
-      const convOwner = `contacts-${ownerUid}`;
-      const resOwner = await deleteContactByPeer(env, convOwner, peerUid);
-      results.push({ convId: convOwner, removed: resOwner });
+      const targets = new Map();
+      const addTarget = (convId, targetUid) => {
+        if (!convId || !targetUid) return;
+        const key = `${convId}::${targetUid}`;
+        if (!targets.has(key)) targets.set(key, { convId, targetUid });
+      };
+
+      addTarget(`contacts-${ownerUid}`, peerUid);
+      if (ownerDigestBody) addTarget(`contacts-${ownerDigestBody}`, peerUid);
+      for (const digest of ownerDigests) addTarget(`contacts-${digest}`, peerUid);
 
       if (peerUid !== ownerUid) {
-        const convPeer = `contacts-${peerUid}`;
-        const resPeer = await deleteContactByPeer(env, convPeer, ownerUid);
-        results.push({ convId: convPeer, removed: resPeer });
+        addTarget(`contacts-${peerUid}`, ownerUid);
+        if (peerDigestBody) addTarget(`contacts-${peerDigestBody}`, ownerUid);
+        for (const digest of peerDigests) addTarget(`contacts-${digest}`, ownerUid);
+      }
+
+      const targetList = Array.from(targets.values());
+      for (const entry of targetList) {
+        const removed = await deleteContactByPeer(env, entry.convId, entry.targetUid);
+        results.push({ convId: entry.convId, removed });
       }
 
       return json({ ok: true, ts: now, results });
@@ -452,6 +759,63 @@ export default {
         owner_contact_ts: row.owner_contact_ts || null,
         guest_contact_stored: guestContactStored
       });
+    }
+
+    // 刪除整個 secure conversation（雙邊隱匿訊息）
+    if (req.method === 'POST' && url.pathname === '/d1/messages/secure/delete-conversation') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+
+      const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+      if (!conversationId) {
+        return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+      }
+
+      try {
+        await resolveAccount(env, {
+          accountToken: body.accountToken,
+          accountDigest: body.accountDigest,
+          uidHex: body.uidHex
+        });
+      } catch (err) {
+        console.warn('secure_delete_conversation_resolve_failed', err?.message || err);
+      }
+
+      await ensureDataTables(env);
+
+      let deletedSecure = 0;
+      let deletedGeneral = 0;
+      try {
+        const resSecure = await env.DB.prepare(
+          `DELETE FROM messages_secure WHERE conversation_id=?1`
+        ).bind(conversationId).run();
+        deletedSecure = resSecure?.meta?.changes || 0;
+      } catch (err) {
+        console.warn('delete secure conversation failed', err?.message || err);
+      }
+
+      try {
+        const resGeneral = await env.DB.prepare(
+          `DELETE FROM messages WHERE conv_id=?1`
+        ).bind(conversationId).run();
+        deletedGeneral = resGeneral?.meta?.changes || 0;
+      } catch (err) {
+        console.warn('delete general conversation failed', err?.message || err);
+      }
+
+      try {
+        await env.DB.prepare(
+          `DELETE FROM conversations WHERE id=?1`
+        ).bind(conversationId).run();
+      } catch (err) {
+        console.warn('delete conversations row failed', err?.message || err);
+      }
+
+      return json({ ok: true, deleted_secure: deletedSecure, deleted_general: deletedGeneral, conversation_id: conversationId });
     }
 
     // 批次刪除訊息（依 obj_key）

@@ -1,50 +1,32 @@
-# Codex 筆記（未來會話提示）
+# Codex Session 提示
 
-## 使用者需求摘要
+這份檔案是我在每次開啟新 session 時的「開機流程」。只要啟動就照著做，避免遺漏資訊或只回報失敗。
 
-- 目前專案尚未正式公開，僅在測試階段。Cloudflare D1 / R2 的測試資料允許自由覆寫或清空。
-- 你擁有完整權限，可以部署 Node API、Cloudflare Worker，並執行原本撰寫的自動化測試腳本。
-- 所有工作開始前請先閱讀並參照 `README.md`，了解架構、路由、測試腳本與 TODO 清單。
-- 環境變數與密鑰（NTAG424、OPAQUE、HMAC、R2/S3 等）都已在 `.env` 檔中備妥，可直接使用。
-- 回覆與說明請使用中文。
-- 新的 session 一律先參考此檔案，再依 README 的 TODO / 指示展開工作，不須等待額外指令。
-- 若執行的修改或測試結果失敗 / 不符預期，必須主動除錯、調整程式並重複驗證，切勿只回報錯誤。請將此流程視為固定要求。
-- 結束一輪完整測試後，重新部署所有相關服務
+## 1. 進場流程
+1. 讀完此檔後，立即開 `README.md`，從「最新進度 / TODO / 測試規範」掌握目前狀態與優先修的問題。
+2. 若 README 有新的紀錄方式或工作清單，視為唯一真相；所有開發與回報都以 README 為準。
 
-- **測試腳本維護**：每次調整後端流程或資料格式時，務必同步更新並重新執行 `scripts/test-api-flow.mjs`，確保完整 API 流程（無需前端介面）仍可成功驗證與解密。
-
-## 常用專案資訊
-
-- Node API：`src/server.js`、路由位於 `src/routes/`。
-- Cloudflare Worker：`data-worker/`，`wrangler.toml` 及 migrations 已準備好。
-- 測試腳本：
+## 2. 開發守則
+- 修改任何程式碼後**必須**自己跑對應測試。預設要跑：
   - `npm run test:prekeys-devkeys`
   - `npm run test:messages-secure`
+  - `npm run test:friends-messages`
   - `npm run test:login-flow`
-  - `npm run test:front:login`（Playwright E2E）
-- 其他工具：Playwright E2E 測試、`scripts/` 內的實用腳本。
+  - `npm run test:front:login`
+  如某測試與此次修改無關，需在回報裡寫明理由與風險，否則視同漏測。
+- 測試失敗就繼續除錯、修正後再跑，直到成功。禁止只回報錯誤或以 workaround/fallback 帶過。
+- 若後端流程或資料格式更新，要同時維護 `scripts/test-api-flow.mjs` 等腳本並重新驗證。
 
-## 操作提醒
+## 3. 回報與紀錄
+- 回覆一律使用中文，內容包含：修改範圍、實際執行的測試與結果、如有未跑測試需列出原因與風險。
+- 完成每次修改後，要依 README 的格式更新「最新進度」或工作紀錄，寫下：
+  1. 目前狀態 / 測試結論
+  2. 下一步預計處理的項目
+  這是下一個 session 的依據，務必保持同步。
 
-- 作業環境具備完全檔案存取與網路能力，不需要額外申請權限。
-- 遇到流程中斷或需要重新建立會話，可直接參考此檔內容，避免重複詢問使用者。
+## 4. 其他提醒
+- 具有完整檔案與網路權限，可部署 Node API、Cloudflare Worker，並使用 `scripts/` 內工具。
+- 測試或部署完成後，依 README 指示執行健康檢查（如 `curl` 檢查 API/Pages）。
+- 若流程中斷或重啟 session，就再讀本檔 + README，照上述步驟重新接手。
 
-## 建議工作流程
-
-1. **新 session 啟動**：一律先完整閱讀 `Prompt.md`，接著打開 `README.md` 了解架構、TODO、測試與部署規範，再開始動工。
-2. 進行需求時，必要時可查閱 `src/`、`data-worker/`、`web/` 目錄；避免改動使用者未授權檔案。
-3. 完成功能或修復後，一律自行執行下列測試（視需求可追加），除非個別測試與修改內容無關才可跳過並於回報中說明原因：
-   - `npm run test:prekeys-devkeys`
-   - `npm run test:messages-secure`
-   - `npm run test:login-flow`
-   - `npm run test:friends-messages`
-   - `npm run test:front:login`（Playwright：登入＋主畫面多項操作；需確認 API 已啟動）
-4. 若需部署，依修改範圍選擇 `scripts/deploy-prod.sh`：
-   - 後端/Node 變更：`bash ./scripts/deploy-prod.sh --skip-worker --skip-pages`
-   - Worker / D1 變更：`bash ./scripts/deploy-prod.sh --apply-migrations --skip-pages`
-   - 前端 Pages 變更：`bash ./scripts/deploy-prod.sh --skip-worker --skip-api`
-   - 執行完成後使用腳本提示的 `curl` 指令檢查 API/Pages 健康狀態
-5. 如果測試或部署失敗，先分析並修正程式碼與流程，直到全部通過再回報成果。
-6. 撰寫回覆時，說明修改範圍、測試結果、部署情況與後續建議步驟；保持中文說明與簡潔格式。未執行的測試或部署需明確交代原因與風險。
-
-> **備忘**：未來若 session 重新開啟，只要收到「閱讀 Prompt.md 並開始工作」指令，就依上述步驟自動執行：閱讀 → 開發 → 測試 → 視情況部署 → 回報。*** End Patch***
+> TL;DR：每一輪必做「讀 README → 按最新優先修 → 自己跑相關測試 → 成功後更新 README 紀錄 → 回報詳細結果」。任何少一步都視為未完成。*** End Patch***

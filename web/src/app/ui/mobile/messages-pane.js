@@ -1,10 +1,11 @@
 import { log } from '../../core/log.js';
 import { getUidHex } from '../../core/store.js';
 import { listSecureAndDecrypt } from '../../features/messages.js';
-import { sendDrText } from '../../features/dr-session.js';
+import { sendDrText, sendDrMedia } from '../../features/dr-session.js';
 import { conversationIdFromToken } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml } from './ui-utils.js';
+import { downloadAndDecrypt } from '../../features/media.js';
 
 export function initMessagesPane({
   dom = {},
@@ -30,6 +31,7 @@ export function initMessagesPane({
     input: dom.messageInputEl ?? document.getElementById('messageInput'),
     sendBtn: dom.messageSendBtn ?? document.getElementById('messageSend'),
     attachBtn: dom.composerAttachBtn ?? document.getElementById('composerAttach'),
+    fileInput: dom.messageFileInputEl ?? document.getElementById('messageFileInput'),
     conversationList: dom.conversationListEl ?? document.getElementById('conversationList'),
     messagesList: dom.messagesListEl ?? document.getElementById('messagesList'),
     messagesEmpty: dom.messagesEmptyEl ?? document.getElementById('messagesEmpty'),
@@ -45,6 +47,7 @@ export function initMessagesPane({
   let loadMoreState = 'hidden';
   let autoLoadOlderInProgress = false;
   let lastLayoutIsDesktop = null;
+  let restoreTopbarPointer = null;
 
   function isDesktopLayout() {
     if (typeof window === 'undefined') return true;
@@ -490,6 +493,137 @@ export function initMessagesPane({
     updateLoadMoreVisibility();
   }
 
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+    const display = Number(value.toFixed(precision));
+    return `${display} ${units[unitIndex]}`;
+  }
+
+  function formatFileMeta(media) {
+    const parts = [];
+    if (Number.isFinite(media?.size)) parts.push(formatBytes(media.size));
+    if (media?.contentType) parts.push(media.contentType);
+    return parts.join(' · ');
+  }
+
+  async function ensureMediaPreviewUrl(media) {
+    if (!media) return null;
+    if (media.previewUrl) return media.previewUrl;
+    if (media.localUrl) {
+      media.previewUrl = media.localUrl;
+      return media.previewUrl;
+    }
+    if (!media.objectKey || !media.envelope) return null;
+    if (media.previewPromise) return media.previewPromise;
+    media.previewPromise = downloadAndDecrypt({ key: media.objectKey, envelope: media.envelope })
+      .then((result) => {
+        if (!result || !result.blob) return null;
+        const url = URL.createObjectURL(result.blob);
+        media.previewUrl = url;
+        if (!media.contentType && result.contentType) {
+          media.contentType = result.contentType;
+        }
+        return url;
+      })
+      .catch((err) => {
+        log({ mediaPreviewError: err?.message || err, objectKey: media.objectKey });
+        return null;
+      })
+      .finally(() => {
+        media.previewPromise = null;
+      });
+    return media.previewPromise;
+  }
+
+  function setPreviewSource(el, media) {
+    if (!el || !media) return;
+    const apply = (url) => {
+      if (!url || typeof el.src !== 'string') return;
+      el.src = url;
+      if (el.tagName === 'VIDEO') {
+        try { el.load(); } catch {}
+      }
+    };
+    if (media.previewUrl) {
+      apply(media.previewUrl);
+      return;
+    }
+    if (media.localUrl) {
+      media.previewUrl = media.localUrl;
+      apply(media.previewUrl);
+      return;
+    }
+    if (!media.objectKey || !media.envelope) return;
+    ensureMediaPreviewUrl(media).then((url) => {
+      if (url && typeof el.src === 'string' && !el.src) apply(url);
+    }).catch(() => {});
+  }
+
+  function attachMediaPreview(container, media) {
+    const type = (media?.contentType || '').toLowerCase();
+    const nameLower = (media?.name || '').toLowerCase();
+    container.innerHTML = '';
+    if (type.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.className = 'message-file-preview-image';
+      img.alt = media?.name || 'image preview';
+      img.decoding = 'async';
+      container.appendChild(img);
+      setPreviewSource(img, media);
+    } else if (type.startsWith('video/')) {
+      const video = document.createElement('video');
+      video.className = 'message-file-preview-video';
+      video.controls = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'metadata';
+      container.appendChild(video);
+      setPreviewSource(video, media);
+    } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
+      const pdf = document.createElement('div');
+      pdf.className = 'message-file-preview-pdf';
+      pdf.textContent = 'PDF';
+      container.appendChild(pdf);
+    } else {
+      const generic = document.createElement('div');
+      generic.className = 'message-file-preview-generic';
+      generic.textContent = '檔案';
+      container.appendChild(generic);
+    }
+  }
+
+  function renderMediaBubble(bubble, msg) {
+    const media = msg.media || {};
+    bubble.classList.add('message-has-media');
+    bubble.innerHTML = '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'message-file';
+    const preview = document.createElement('div');
+    preview.className = 'message-file-preview';
+    const info = document.createElement('div');
+    info.className = 'message-file-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'message-file-name';
+    nameEl.textContent = media.name || '附件';
+    const metaEl = document.createElement('div');
+    metaEl.className = 'message-file-meta';
+    metaEl.textContent = formatFileMeta(media);
+    info.appendChild(nameEl);
+    info.appendChild(metaEl);
+    wrapper.appendChild(preview);
+    wrapper.appendChild(info);
+    bubble.appendChild(wrapper);
+    attachMediaPreview(preview, media);
+  }
+
   function updateMessagesUI({ scrollToEnd = false, preserveScroll = false } = {}) {
     if (!elements.messagesList) return;
     const state = getMessageState();
@@ -550,7 +684,13 @@ export function initMessagesPane({
         }
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
-        bubble.textContent = msg.text || msg.error || '(無法解密)';
+        const messageType = msg.type || (msg.media ? 'media' : 'text');
+        if (!msg.type) msg.type = messageType;
+        if (messageType === 'media' && msg.media) {
+          renderMediaBubble(bubble, msg);
+        } else {
+          bubble.textContent = msg.text || msg.error || '(無法解密)';
+        }
         row.appendChild(bubble);
         li.appendChild(row);
         elements.messagesList.appendChild(li);
@@ -594,7 +734,8 @@ export function initMessagesPane({
         peerUidHex: state.activePeerUid,
         limit: 50,
         cursorTs: cursor,
-        mutateState: !append
+        mutateState: !append,
+        allowReplay: !append
       });
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
       if (append) {
@@ -710,17 +851,93 @@ export function initMessagesPane({
     await loadActiveConversationMessages({ append: false });
   }
 
-  function appendLocalOutgoingMessage({ text, ts, id }) {
+  function appendLocalOutgoingMessage({ text, ts, id, type = 'text', media = null }) {
     const state = getMessageState();
     const message = {
       id: id || `local-${Date.now()}`,
       ts: ts || Math.floor(Date.now() / 1000),
       text,
-      direction: 'outgoing'
+      direction: 'outgoing',
+      type,
+      media: media ? { ...media } : null
     };
+    if (message.type === 'media' && message.media) {
+      if (!message.text) message.text = `[檔案] ${message.media.name || '附件'}`;
+      if (message.media.localUrl && !message.media.previewUrl) {
+        message.media.previewUrl = message.media.localUrl;
+      }
+    } else {
+      message.type = 'text';
+    }
     state.messages.push(message);
     updateMessagesUI({ scrollToEnd: true });
     syncThreadFromActiveMessages();
+  }
+
+  async function handleComposerFileSelection(event) {
+    const input = event?.target || event?.currentTarget || elements.fileInput;
+    const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
+    if (!files.length) return;
+    const state = getMessageState();
+    if (!state.activePeerUid || !state.conversationToken) {
+      setMessagesStatus('請先選擇已建立安全對話的好友', true);
+      return;
+    }
+    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerUid) || null;
+    const conversation = contactEntry?.conversation || null;
+    try {
+      for (const file of files) {
+        setMessagesStatus('正在加密與上傳檔案…', false);
+        const res = await sendDrMedia({
+          peerUidHex: state.activePeerUid,
+          file,
+          conversation,
+          convId: state.conversationId,
+          dir: state.conversationId ? ['messages', state.conversationId] : 'messages',
+          onProgress: (progress) => {
+            if (!progress || !Number.isFinite(progress.percent)) return;
+            const pct = Math.min(100, Math.max(0, progress.percent));
+            setMessagesStatus(`上傳中… ${pct}%`, false);
+          }
+        });
+        if (res?.convId && !state.conversationId) {
+          state.conversationId = res.convId;
+        }
+        const ts = res?.msg?.ts || Math.floor(Date.now() / 1000);
+        const mediaInfo = res?.msg?.media ? { ...res.msg.media } : {};
+        mediaInfo.name = mediaInfo.name || file.name || '附件';
+        mediaInfo.size = Number.isFinite(mediaInfo.size) ? mediaInfo.size : (typeof file.size === 'number' ? file.size : null);
+        mediaInfo.contentType = mediaInfo.contentType || file.type || 'application/octet-stream';
+        mediaInfo.localUrl = URL.createObjectURL(file);
+        if (!mediaInfo.previewUrl) mediaInfo.previewUrl = mediaInfo.localUrl;
+        const messageId = res?.msg?.id || res?.upload?.objectKey || `local-${Date.now()}`;
+        const previewText = res?.msg?.text || `[檔案] ${mediaInfo.name}`;
+        appendLocalOutgoingMessage({
+          text: previewText,
+          ts,
+          id: messageId,
+          type: 'media',
+          media: mediaInfo
+        });
+        const senderUid = getUidHex();
+        if (state.activePeerUid && senderUid) {
+          wsSendFn({
+            type: 'message-new',
+            targetUid: state.activePeerUid,
+            conversationId: state.conversationId,
+            preview: previewText,
+            ts,
+            senderUid
+          });
+        }
+      }
+      setMessagesStatus('');
+    } catch (err) {
+      log({ messageComposerUploadError: err?.message || err });
+      setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
+    } finally {
+      if (input) input.value = '';
+    }
   }
 
   function applyMessagesLayout() {
@@ -836,6 +1053,45 @@ export function initMessagesPane({
     }
   }
 
+  function showDeleteForPeer(peerUid) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key || !elements.conversationList) return false;
+    const item = elements.conversationList.querySelector(`.conversation-item[data-peer="${key}"]`);
+    if (!item) return false;
+    const others = elements.conversationList.querySelectorAll('.conversation-item.show-delete');
+    others.forEach((el) => {
+      if (el !== item) {
+        if (typeof closeSwipe === 'function') closeSwipe(el);
+        else el.classList.remove('show-delete');
+      }
+    });
+    const content = item.querySelector('.item-content');
+    if (content) {
+      content.style.transform = 'translateX(-72px)';
+      content.style.pointerEvents = 'none';
+    }
+    item.classList.add('show-delete');
+    try {
+      item.scrollIntoView({ block: 'center', behavior: 'instant' });
+    } catch {}
+    if (restoreTopbarPointer) {
+      try { restoreTopbarPointer(); } catch {}
+    }
+    const topbar = document.querySelector('.topbar');
+    if (topbar) {
+      const prev = topbar.style.pointerEvents || '';
+      topbar.style.pointerEvents = 'none';
+      restoreTopbarPointer = () => {
+        topbar.style.pointerEvents = prev;
+        restoreTopbarPointer = null;
+      };
+    } else {
+      restoreTopbarPointer = null;
+    }
+    setTimeout(() => { if (restoreTopbarPointer) restoreTopbarPointer(); }, 1500);
+    return true;
+  }
+
   function handleConversationDelete({ conversationId, peerUid, element }) {
     const key = String(peerUid || '').toUpperCase();
     if (!key) return;
@@ -846,6 +1102,9 @@ export function initMessagesPane({
       message: `確定要刪除與「${escapeHtml(nickname)}」的對話？此操作也會從對方的對話列表中移除。`,
       confirmLabel: '刪除',
       onConfirm: async () => {
+        if (restoreTopbarPointer) {
+          try { restoreTopbarPointer(); } catch {}
+        }
         try {
           await friendsDeleteContact({ peerUid: key });
           removeContactLocal?.(key);
@@ -1010,7 +1269,15 @@ export function initMessagesPane({
     });
 
     elements.attachBtn?.addEventListener('click', () => {
-      showToast?.('檔案傳送功能尚未開放，敬請期待！');
+      if (!elements.fileInput) {
+        showToast?.('找不到檔案上傳元件');
+        return;
+      }
+      elements.fileInput.click();
+    });
+
+    elements.fileInput?.addEventListener('change', (event) => {
+      handleComposerFileSelection(event);
     });
 
     if (elements.scrollEl) {
@@ -1114,6 +1381,7 @@ export function initMessagesPane({
     updateMessagesUI,
     applyMessagesLayout,
     triggerAutoLoadOlder,
-    setLoadMoreState
+    setLoadMoreState,
+    showDeleteForPeer
   };
 }

@@ -8,6 +8,7 @@ import { b64 } from '../crypto/nacl.js';
 const STORAGE_KEY = 'contactSecrets-v1';
 let restored = false;
 let contactSecretsLocked = false;
+const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 
 function getLocalStorageSafe() {
   if (typeof window === 'undefined') return null;
@@ -203,7 +204,18 @@ function normalizeDrHistory(entries) {
     if (!Number.isFinite(ts) || ts <= 0) continue;
     if (!snap) continue;
     const messageId = chooseString(entry.messageId ?? entry.id ?? entry.message_id, null);
-    out.push({ ts, messageId, snapshot: snap });
+    const messageKey = chooseString(entry.messageKey_b64 ?? entry.message_key_b64 ?? entry.messageKey ?? entry.message_key, null);
+    const snapshotAfter = normalizeDrSnapshot(
+      entry.snapshotAfter || entry.snapshot_after || entry.nextSnapshot || entry.snapshot_next || null,
+      { setDefaultUpdatedAt: false }
+    );
+    out.push({
+      ts,
+      messageId,
+      snapshot: snap,
+      snapshotAfter: snapshotAfter || null,
+      messageKey_b64: messageKey || null
+    });
   }
   out.sort((a, b) => {
     if (a.ts !== b.ts) return a.ts - b.ts;
@@ -244,6 +256,9 @@ export function restoreContactSecrets() {
     debugLog('restore-skip', { reason: 'storage-empty' });
     return map;
   }
+  let totalEntries = 0;
+  let withDrState = 0;
+  let withHistory = 0;
   try {
     const items = JSON.parse(snapshot);
     if (!Array.isArray(items)) return map;
@@ -259,6 +274,9 @@ export function restoreContactSecrets() {
       const drHistoryCursorTs = Number(value?.drHistoryCursorTs ?? value?.dr_history_cursor_ts ?? null);
       const drHistoryCursorId = chooseString(value?.drHistoryCursorId ?? value?.dr_history_cursor_id, null);
       if (!inviteId || !secret) continue;
+      totalEntries += 1;
+      if (drState) withDrState += 1;
+      if (drHistory.length) withHistory += 1;
       map.set(key, {
         inviteId,
         secret,
@@ -282,6 +300,14 @@ export function restoreContactSecrets() {
       });
     }
     debugLog('restore', { entries: map.size });
+    log({
+      contactSecretsRestoreSummary: {
+        entries: totalEntries,
+        withDrState,
+        withHistory,
+        bytes: snapshot.length
+      }
+    });
   } catch (err) {
     log({ contactSecretRestoreError: err?.message || err });
   }
@@ -427,4 +453,78 @@ export function lockContactSecrets(reason = 'locked') {
   contactSecretsLocked = true;
   debugLog('lock', { reason });
   return true;
+}
+
+function basicChecksum(payload) {
+  let hash = 0;
+  for (let i = 0; i < payload.length; i += 1) {
+    hash = (hash + payload.charCodeAt(i)) >>> 0; // unsigned 32-bit accumulate
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function bufferToHex(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let hex = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
+export async function computeContactSecretsChecksum(payload) {
+  if (!payload || typeof payload !== 'string') return null;
+  if (typeof crypto !== 'undefined' && crypto?.subtle && TEXT_ENCODER) {
+    try {
+      const encoded = TEXT_ENCODER.encode(payload);
+      const digest = await crypto.subtle.digest('SHA-256', encoded);
+      return { algorithm: 'sha256', value: bufferToHex(digest) };
+    } catch (err) {
+      log({ contactSecretChecksumError: err?.message || err });
+    }
+  }
+  return { algorithm: 'sum32', value: basicChecksum(payload) };
+}
+
+export function summarizeContactSecretsPayload(payload) {
+  const summary = {
+    entries: 0,
+    withDrState: 0,
+    withHistory: 0,
+    withSeed: 0,
+    maxHistory: 0,
+    bytes: typeof payload === 'string' ? payload.length : 0
+  };
+  if (!payload || typeof payload !== 'string') {
+    summary.parseError = 'empty';
+    return summary;
+  }
+  try {
+    const parsed = JSON.parse(payload);
+    if (!Array.isArray(parsed)) {
+      summary.parseError = 'not-array';
+      return summary;
+    }
+    for (const entry of parsed) {
+      if (!Array.isArray(entry) || entry.length < 2) continue;
+      const value = entry[1] || {};
+      summary.entries += 1;
+      if (value?.drState && typeof value.drState === 'object') {
+        const rk = value.drState.rk_b64 || value.drState.rk;
+        if (typeof rk === 'string' && rk.length) summary.withDrState += 1;
+      }
+      const historyLen = Array.isArray(value?.drHistory) ? value.drHistory.length : 0;
+      if (historyLen > 0) {
+        summary.withHistory += 1;
+        if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
+      }
+      if (typeof value?.drSeed === 'string' && value.drSeed.length) {
+        summary.withSeed += 1;
+      }
+    }
+    summary.withoutDrState = Math.max(0, summary.entries - summary.withDrState);
+  } catch (err) {
+    summary.parseError = err?.message || String(err);
+  }
+  return summary;
 }

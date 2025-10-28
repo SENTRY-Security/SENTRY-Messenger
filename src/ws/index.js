@@ -77,6 +77,16 @@ function handleClientMessage(ws, data) {
     });
     return;
   }
+  if (msg.type === 'contact-removed') {
+    const targetUid = String(msg.targetUid || msg.peerUid || '').trim().toUpperCase();
+    if (!targetUid) return;
+    broadcast(targetUid, {
+      type: 'contact-removed',
+      peerUid: ws.__uid,
+      ts: Date.now()
+    });
+    return;
+  }
   if (msg.type === 'message-new') {
     if (!ws.__uid) return;
     const targetUid = String(msg.targetUid || msg.peerUid || msg.peer_uid || '').trim().toUpperCase();

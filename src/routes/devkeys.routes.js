@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import { z } from 'zod';
 import { signHmac } from '../utils/hmac.js';
 
@@ -30,20 +31,17 @@ async function callWorker(path, bodyObj) {
 const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const AccountSelectorBase = z.object({
-  uidHex: z.string().min(14).optional(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 });
 
 function ensureAccountSelector(value, ctx) {
-  if (!value.uidHex && !(value.accountToken && value.accountDigest)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'uidHex or accountToken+accountDigest required' });
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
   }
 }
 
-const AccountSelectorSchema = AccountSelectorBase.superRefine(ensureAccountSelector);
-
-const FetchSchema = AccountSelectorSchema;
+const FetchSchema = AccountSelectorBase.superRefine(ensureAccountSelector);
 
 const AeadEnvelopeSchema = z.object({
   v: z.number(),
@@ -68,18 +66,22 @@ const StoreSchema = AccountSelectorBase.extend({
   wrapped_dev: z.union([AeadEnvelopeSchema, ArgonEnvelopeSchema])
 }).superRefine(ensureAccountSelector);
 
-function sanitizeUidHex(value) {
-  if (!value) return undefined;
-  const cleaned = String(value).replace(/[^0-9a-f]/gi, '').toUpperCase();
-  return cleaned.length >= 14 ? cleaned.slice(0, 14) : undefined;
+function digestToken(token) {
+  return crypto.createHash('sha256').update(String(token), 'utf8').digest('hex').toUpperCase();
 }
 
-function prepAccountPayload({ uidHex, accountToken, accountDigest }) {
+function prepAccountPayload({ accountToken, accountDigest }) {
   const payload = {};
-  const normalizedUid = sanitizeUidHex(uidHex);
-  if (normalizedUid) payload.uidHex = normalizedUid;
-  if (accountToken) payload.accountToken = String(accountToken).trim();
-  if (accountDigest) payload.accountDigest = String(accountDigest).trim().toUpperCase();
+  const tokenClean = accountToken ? String(accountToken).trim() : '';
+  if (tokenClean) {
+    payload.accountToken = tokenClean;
+    payload.accountDigest = digestToken(tokenClean);
+    return payload;
+  }
+  if (accountDigest) {
+    const cleanedDigest = String(accountDigest).replace(/[^0-9A-F]/gi, '').toUpperCase();
+    if (cleanedDigest) payload.accountDigest = cleanedDigest;
+  }
   return payload;
 }
 

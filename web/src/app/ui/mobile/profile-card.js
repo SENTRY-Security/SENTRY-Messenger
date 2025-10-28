@@ -161,7 +161,7 @@ export function initProfileCard(options) {
         log({ profileNicknameUpdated: normalized });
         if (typeof broadcastContactUpdate === 'function') {
           try {
-            await broadcastContactUpdate({ reason: 'nickname' });
+            await broadcastContactUpdate({ reason: 'nickname', overrides: { nickname: normalized } });
           } catch (err) {
             log({ contactBroadcastError: err?.message || err, reason: 'nickname' });
           }

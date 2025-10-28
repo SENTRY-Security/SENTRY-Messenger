@@ -29,7 +29,6 @@ import {
 } from '../crypto/kdf.js';
 
 import {
-  ensureKeysAfterUnlock as ensureKeys,
   wrapDevicePrivWithMK,
   unwrapDevicePrivWithMK,
   generateInitialBundle,
@@ -53,6 +52,31 @@ function asMsg(e, fallback) {
  * Normalize hex helpers
  */
 function normHex(s) { return String(s || '').replace(/[^0-9a-f]/gi, '').toUpperCase(); }
+
+function peekWrappedDevHandoff() {
+  let raw = null;
+  if (typeof sessionStorage !== 'undefined') {
+    try {
+      raw = sessionStorage.getItem('wrapped_dev');
+    } catch {
+      raw = null;
+    }
+  }
+  if (!raw && typeof localStorage !== 'undefined') {
+    try {
+      raw = localStorage.getItem('wrapped_dev_handoff');
+    } catch {
+      raw = null;
+    }
+  }
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    try { console.warn('[login-flow] wrapped_dev parse failed', err?.message || err); } catch {}
+    return null;
+  }
+}
 
 /**
  * 1) SDM Exchange — call /api/v1/auth/sdm/exchange and update store
@@ -108,6 +132,7 @@ export async function unlockAndInit({ password }) {
   if (!pwd) throw new Error('password required');
   if (!getSession()) throw new Error('SDM exchange required');
 
+  const hadWrappedMK = getHasMK();
   const uidHex = getUidHex();
   if (!uidHex) throw new Error('uid not set');
   let accountToken = getAccountToken();
@@ -128,6 +153,7 @@ export async function unlockAndInit({ password }) {
   let initialized = false;
   let replenished = false;
   let nextId;
+  let wrappedDevEnvelope = null;
 
   if (getHasMK()) {
     // unwrap existing MK
@@ -161,9 +187,8 @@ export async function unlockAndInit({ password }) {
   }
 
   // Ensure device bundle / replenish OPKs
-  // Provide API callbacks for ensureKeys()
-  const fetchDevkeys = async (uid) => {
-    const { r, data } = await devkeysFetch({ uidHex: uid, accountToken, accountDigest });
+  const fetchDevkeys = async () => {
+    const { r, data } = await devkeysFetch({ accountToken, accountDigest });
     if (r.status === 404) return null;
     if (!r.ok) throw new Error('devkeys.fetch failed');
     return data;
@@ -175,80 +200,78 @@ export async function unlockAndInit({ password }) {
     return true;
   };
 
-  const storeDevkeys = async (session, uid, wrapped_dev) => {
-    const { r } = await devkeysStore({ uidHex: uid, accountToken, accountDigest, wrapped_dev, session });
+  const storeDevkeys = async (session, wrapped_dev) => {
+    const { r } = await devkeysStore({ accountToken, accountDigest, wrapped_dev, session });
     if (r.status !== 204) throw new Error('devkeys.store failed');
     return true;
   };
 
   // Try existing backup
-  const existing = await fetchDevkeys(uidHex).catch(() => null);
-  if (!existing || !existing.wrapped_dev) {
+  let existing = await fetchDevkeys();
+  let hasExistingBackup = !!(existing && existing.wrapped_dev);
+  const fallbackWrappedDev = hadWrappedMK ? peekWrappedDevHandoff() : null;
+  if (!hasExistingBackup && fallbackWrappedDev) {
+    try {
+      await storeDevkeys(undefined, fallbackWrappedDev);
+      existing = { wrapped_dev: fallbackWrappedDev };
+      hasExistingBackup = true;
+    } catch (err) {
+      try { console.warn('[login-flow] devkeys fallback store failed', err?.message || err); } catch {}
+    }
+  }
+  if (hasExistingBackup) {
+    wrappedDevEnvelope = existing.wrapped_dev;
+  }
+  if (!hasExistingBackup) {
+    if (hadWrappedMK && !fallbackWrappedDev) {
+      try { console.warn('[login-flow] device backup missing; regenerating bundle'); } catch {}
+    }
     // full init path: generate bundle (+100), publish, store backup
     try {
       const { devicePriv, bundlePub } = await generateInitialBundle(1, 100);
       setDevicePriv(devicePriv);
       await publishBundle(bundlePub);
       const wrapped_dev = await wrapDevicePrivWithMK(devicePriv, getMkRaw());
-      await storeDevkeys(getSession(), uidHex, wrapped_dev);
+      await storeDevkeys(getSession(), wrapped_dev);
       initialized = true;
       nextId = devicePriv.next_opk_id;
+      wrappedDevEnvelope = wrapped_dev;
     } catch (e) {
       throw new Error('Prekeys initialization failed: ' + asMsg(e));
     }
   } else {
-    // replenish path — report step-specific errors, with fallback re-initialization
+    // replenish path — report step-specific errors，禁止自動重建
     try {
       let devicePriv;
-      let needReinit = false;
-
-      // 1) unwrap existing device backup
       try {
         devicePriv = await unwrapDevicePrivWithMK(existing.wrapped_dev, getMkRaw());
       } catch (e) {
-        // Fallback: treat as missing/legacy backup — reinitialize device keys
-        needReinit = true;
-        console.warn('unwrap device backup failed, reinitializing device keys:', asMsg(e));
+        throw new Error('Device backup unwrap failed: ' + asMsg(e));
       }
 
-      if (needReinit) {
+      setDevicePriv(devicePriv);
+      const { opks, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
+      if (opks.length > 0) {
         try {
-          const init = await generateInitialBundle(1, 100);
-          devicePriv = init.devicePriv;
-          setDevicePriv(devicePriv);
-          await publishBundle(init.bundlePub);
-          const wrapped_dev = await wrapDevicePrivWithMK(devicePriv, getMkRaw());
-          await storeDevkeys(getSession(), uidHex, wrapped_dev); // session may be null; storeDevkeys will omit it
-          initialized = true;
-          nextId = devicePriv.next_opk_id;
+          await publishBundle({ opks });
         } catch (e) {
-          throw new Error('Prekeys re-initialization failed: ' + asMsg(e));
+          throw new Error('keys.publish (replenish) failed: ' + asMsg(e));
         }
-      } else {
-        // 2) normal replenish: add +20 OPKs
-        setDevicePriv(devicePriv);
-        const { opks, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
-        if (opks.length > 0) {
-          try {
-            await publishBundle({ opks });
-          } catch (e) {
-            throw new Error('keys.publish (replenish) failed: ' + asMsg(e));
-          }
-          devicePriv.next_opk_id = next;
-          const wrapped_dev = await wrapDevicePrivWithMK(devicePriv, getMkRaw());
-          try {
-            await storeDevkeys(undefined, uidHex, wrapped_dev);
-          } catch (e) {
-            throw new Error('devkeys.store (replenish) failed: ' + asMsg(e));
-          }
-          replenished = true;
-          nextId = next;
+        devicePriv.next_opk_id = next;
+        const wrapped_dev = await wrapDevicePrivWithMK(devicePriv, getMkRaw());
+        try {
+          await storeDevkeys(undefined, wrapped_dev);
+        } catch (e) {
+          throw new Error('devkeys.store (replenish) failed: ' + asMsg(e));
         }
+        replenished = true;
+        nextId = next;
+        wrappedDevEnvelope = wrapped_dev;
       }
     } catch (e) {
       throw new Error('Prekeys replenish failed: ' + asMsg(e));
     }
   }
 
-  return { unlocked, initialized, replenished, next_opk_id: nextId };
+  return { unlocked, initialized, replenished, next_opk_id: nextId, wrapped_dev: wrappedDevEnvelope };
 }

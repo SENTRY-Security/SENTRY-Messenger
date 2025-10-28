@@ -10,8 +10,14 @@ import {
   setAccountToken, setAccountDigest, setUidDigest,
   setDevicePriv,
   resetAll, clearSecrets,
+  drState
 } from '../core/store.js';
-import { persistContactSecrets, lockContactSecrets } from '../core/contact-secrets.js';
+import {
+  persistContactSecrets,
+  lockContactSecrets,
+  summarizeContactSecretsPayload,
+  computeContactSecretsChecksum
+} from '../core/contact-secrets.js';
 import { friendsDeleteContact } from '../api/friends.js';
 import { loadContacts, saveContact } from '../features/contacts.js';
 import { ensureSettings, saveSettings, DEFAULT_SETTINGS } from '../features/settings.js';
@@ -39,7 +45,7 @@ import { createToastController } from './mobile/toast-controller.js';
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
-import { hydrateDrStatesFromContactSecrets } from '../features/dr-session.js';
+import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 
 const out = document.getElementById('out');
 setLogSink(out);
@@ -109,6 +115,12 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   const safeMessage = message || '已登出';
 
   try {
+    flushDrSnapshotsBeforeLogout();
+  } catch (err) {
+    log({ contactSecretsSnapshotFlushError: err?.message || err, reason: 'secure-logout-call' });
+  }
+
+  try {
     lockContactSecrets('secure-logout');
     persistContactSecrets();
   } catch (err) {
@@ -158,10 +170,13 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
       let sessionBytes = null;
       try { sessionBytes = sessionStorage.getItem('contactSecrets-v1')?.length || 0; } catch { sessionBytes = null; }
       try { localStorage.setItem('contactSecrets-v1-latest', contactSecretsSnapshot); } catch {}
+      const meta = persistContactSecretMetadata({ snapshot: contactSecretsSnapshot, source });
       log({
         contactSecretsHandoffStored: contactSecretsSnapshot.length,
         contactSecretsHandoffSource: source,
-        contactSecretsSessionBytes: sessionBytes
+        contactSecretsSessionBytes: sessionBytes,
+        contactSecretsEntries: meta?.entries || 0,
+        contactSecretsDrStates: meta?.withDrState || 0
       });
       try {
         console.log('[contact-secrets-handoff]', JSON.stringify({
@@ -171,6 +186,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
         }));
       } catch {}
     } else if (!contactSecretsSnapshot) {
+      persistContactSecretMetadata({ snapshot: null, source: 'missing' });
       log({ contactSecretsHandoffStored: 0, contactSecretsHandoffSource: 'missing' });
     }
   } catch (err) {
@@ -252,7 +268,95 @@ function isSimStorageKey(key) {
 }
 
 const LOGOUT_MESSAGE_KEY = 'app:lastLogoutReason';
+const CONTACT_SECRETS_META_KEY = 'contactSecrets-v1-meta';
+const CONTACT_SECRETS_CHECKSUM_KEY = 'contactSecrets-v1-checksum';
 let logoutInProgress = false;
+
+function persistContactSecretMetadata({ snapshot, source }) {
+  if (!snapshot || typeof snapshot !== 'string') {
+    try {
+      sessionStorage?.removeItem?.(CONTACT_SECRETS_META_KEY);
+      sessionStorage?.removeItem?.(CONTACT_SECRETS_CHECKSUM_KEY);
+    } catch {}
+    return null;
+  }
+  const summary = summarizeContactSecretsPayload(snapshot);
+  const meta = {
+    ...summary,
+    source: source || 'unknown',
+    ts: Date.now()
+  };
+  try {
+    sessionStorage?.setItem?.(CONTACT_SECRETS_META_KEY, JSON.stringify(meta));
+  } catch {}
+  try {
+    window.__CONTACT_SECRETS_META__ = meta;
+  } catch {}
+  log({ contactSecretsSnapshotSummary: meta });
+  computeContactSecretsChecksum(snapshot)
+    ?.then((checksum) => {
+      if (!checksum) return;
+      const detail = {
+        ...meta,
+        checksumAlgo: checksum.algorithm || 'unknown',
+        checksum: checksum.value || null
+      };
+      try {
+        sessionStorage?.setItem?.(CONTACT_SECRETS_CHECKSUM_KEY, JSON.stringify(detail));
+      } catch {}
+      log({
+        contactSecretsSnapshotChecksum: {
+          checksum: detail.checksum,
+          algo: detail.checksumAlgo,
+          bytes: detail.bytes,
+          source: detail.source
+        }
+      });
+    })
+    .catch((err) => log({ contactSecretsChecksumError: err?.message || err }));
+  return meta;
+}
+
+function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
+  try {
+    const peerSet = new Set();
+    if (sessionStore.contactSecrets instanceof Map) {
+      for (const key of sessionStore.contactSecrets.keys()) {
+        if (key) peerSet.add(key);
+      }
+    }
+    if (sessionStore.contactIndex instanceof Map) {
+      for (const key of sessionStore.contactIndex.keys()) {
+        if (key) peerSet.add(key);
+      }
+    }
+    let attempted = 0;
+    let persisted = 0;
+    const missingState = [];
+    for (const peerUid of peerSet) {
+      attempted += 1;
+      const state = drState(peerUid);
+      if (state?.rk) {
+        if (persistDrSnapshot({ peerUidHex: peerUid, state })) {
+          persisted += 1;
+        }
+      } else {
+        missingState.push(peerUid);
+      }
+    }
+    log({
+      contactSecretsSnapshotFlush: {
+        reason,
+        peers: peerSet.size,
+        attempted,
+        persisted,
+        missingState
+      }
+    });
+  } catch (err) {
+    log({ contactSecretsSnapshotFlushError: err?.message || err, reason });
+  }
+}
 
 
 // --- Hard-disable zoom gestures (reinforce meta viewport) ---
@@ -383,6 +487,16 @@ let logoutInProgress = false;
   try {
     const restored = hydrateDrStatesFromContactSecrets();
     log({ drSnapshotsRestored: restored });
+    try {
+      const snapshot = localStorage.getItem('contactSecrets-v1');
+      if (snapshot) {
+        log({ contactSecretsAppLoadSummary: summarizeContactSecretsPayload(snapshot) });
+      } else {
+        log({ contactSecretsAppLoadSummary: { entries: 0, bytes: 0, parseError: 'missing' } });
+      }
+    } catch (err) {
+      log({ contactSecretsAppLoadSummaryError: err?.message || err });
+    }
   } catch (e) {
     log({ drSnapshotHydrateError: e?.message || e });
   }

@@ -20,6 +20,7 @@ import {
 import { exchangeSDM, unlockAndInit } from '../features/login-flow.js';
 import { exchangeFromURLIfPresent, exchangeWithParams, parseSdmParams } from '../features/sdm.js';
 import { sdmDebugKit } from '../api/auth.js';
+import { summarizeContactSecretsPayload } from '../core/contact-secrets.js';
 
 // ---- UI elements ----
 const $ = (sel) => document.querySelector(sel);
@@ -61,6 +62,12 @@ function purgeLoginStorage() {
     const storage = localStorage;
     const contactSecretsSnapshot = storage.getItem('contactSecrets-v1');
     const latestHandoffSnapshot = storage.getItem('contactSecrets-v1-latest');
+    if (contactSecretsSnapshot) {
+      log({ contactSecretsLocalSummary: summarizeContactSecretsPayload(contactSecretsSnapshot) });
+    }
+    if (latestHandoffSnapshot) {
+      log({ contactSecretsLatestSummary: summarizeContactSecretsPayload(latestHandoffSnapshot) });
+    }
     const pickBestSnapshot = () => {
       const currentLen = seeds && Object.prototype.hasOwnProperty.call(seeds, 'contactSecrets-v1')
         ? (seeds['contactSecrets-v1']?.length || 0)
@@ -76,10 +83,13 @@ function purgeLoginStorage() {
       if (best && best.length > currentLen) {
         if (!seeds) seeds = {};
         seeds['contactSecrets-v1'] = best;
+        seeds['contactSecrets-v1-latest'] = best;
         seeds.__CONTACT_SECRET_SOURCE = bestSource;
       }
     };
     pickBestSnapshot();
+    let handoffSummary = null;
+    let handoffChecksum = null;
     if (typeof sessionStorage !== 'undefined') {
       const handoffSnapshot = sessionStorage.getItem('contactSecrets-v1');
       if (handoffSnapshot && (typeof handoffSnapshot === 'string')) {
@@ -98,6 +108,22 @@ function purgeLoginStorage() {
           } catch {}
         }
       }
+      try {
+        const metaRaw = sessionStorage.getItem('contactSecrets-v1-meta');
+        if (metaRaw) handoffSummary = JSON.parse(metaRaw);
+      } catch {}
+      try {
+        const checksumRaw = sessionStorage.getItem('contactSecrets-v1-checksum');
+        if (checksumRaw) handoffChecksum = JSON.parse(checksumRaw);
+      } catch {}
+      if (handoffSummary) {
+        log({ contactSecretsHandoffSummary: handoffSummary });
+      }
+      if (handoffChecksum) {
+        log({ contactSecretsHandoffChecksum: handoffChecksum });
+      }
+      try { sessionStorage.removeItem('contactSecrets-v1-meta'); } catch {}
+      try { sessionStorage.removeItem('contactSecrets-v1-checksum'); } catch {}
     }
     if (isAutomationEnv() && seeds?.['contactSecrets-v1']) {
       log({
@@ -105,12 +131,33 @@ function purgeLoginStorage() {
         contactSecretsBytes: seeds['contactSecrets-v1'].length,
         contactSecretsSource: seeds.__CONTACT_SECRET_SOURCE || 'local'
       });
+      log({
+        contactSecretsSeedSources: {
+          localBytes: contactSecretsSnapshot?.length || 0,
+          latestBytes: latestHandoffSnapshot?.length || 0,
+          sessionBytes: seeds.__CONTACT_SECRET_SOURCE === 'session' ? seeds['contactSecrets-v1']?.length || 0 : 0
+        }
+      });
+      log({
+        contactSecretsSeedSummary: summarizeContactSecretsPayload(seeds['contactSecrets-v1'])
+      });
+      if (handoffSummary && handoffSummary.bytes && seeds['contactSecrets-v1']) {
+        log({
+          contactSecretsSeedDeltaBytes: seeds['contactSecrets-v1'].length - handoffSummary.bytes
+        });
+      }
     }
     storage.clear();
     if (seeds) {
+      if (seeds['contactSecrets-v1'] && !seeds['contactSecrets-v1-latest']) {
+        seeds['contactSecrets-v1-latest'] = seeds['contactSecrets-v1'];
+      }
       for (const [key, value] of Object.entries(seeds)) {
         if (key.startsWith('__')) continue;
-        try { storage.setItem(key, value); } catch (err) { log({ loginStorageSeedError: err?.message || err, key }); }
+        try { storage.setItem(key, value); } catch (err) { log({ loginStorageSeedWriteError: err?.message || err, key }); }
+      }
+      if (seeds['contactSecrets-v1']) {
+        log({ contactSecretsSeedApplied: summarizeContactSecretsPayload(seeds['contactSecrets-v1']) });
       }
     }
   } catch (err) {

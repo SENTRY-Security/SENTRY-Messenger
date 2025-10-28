@@ -7,11 +7,14 @@ import { createDownloadGet, createUploadPut } from '../../services/s3.js';
 const r = Router();
 const nano = customAlphabet('1234567890abcdef', 32);
 
+const MAX_UPLOAD_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 524_288_000); // default 500MB
+
 const SignPutSchema = z.object({
   convId: z.string().min(1),
   ext: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i).optional(),
   contentType: z.string().min(1).optional(),
-  dir: z.string().max(200).optional() // optional subdirectory inside convId (already hashed client-side)
+  dir: z.string().max(200).optional(), // optional subdirectory inside convId (already hashed client-side)
+  size: z.number().int().min(1).optional()
 });
 
 const SignGetSchema = z.object({
@@ -24,6 +27,21 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   const input = SignPutSchema.parse(req.body);
 
   const ttlSec = Number(process.env.SIGNED_PUT_TTL || 900);
+  const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 524_288_000;
+
+  if (input.size != null) {
+    const sizeNum = Number(input.size);
+    if (!Number.isFinite(sizeNum) || sizeNum <= 0) {
+      return res.status(400).json({ error: 'BadRequest', message: 'invalid size' });
+    }
+    if (sizeNum > maxBytes) {
+      return res.status(413).json({
+        error: 'FileTooLarge',
+        message: `Payload exceeds limit ${maxBytes} bytes`,
+        maxBytes
+      });
+    }
+  }
 
   const uid = nano();
   // sanitize optional dir path: keep safe chars per segment

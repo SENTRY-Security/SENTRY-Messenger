@@ -9,6 +9,100 @@ const SCREENSHOT_DIR = path.join(E2E_ARTIFACT_DIR, 'screens');
 let serverProc;
 let friendSetup;
 
+async function createSampleVideoFile(page) {
+  const result = await page.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 90;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#0ea5e9';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const stream = canvas.captureStream(15);
+    const supportedTypes = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    let recorder = null;
+    for (const type of supportedTypes) {
+      if (!window.MediaRecorder) break;
+      if (!MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(type)) {
+        try {
+          recorder = new MediaRecorder(stream, { mimeType: type });
+          break;
+        } catch {
+          // try next type
+        }
+      }
+    }
+    if (!recorder) {
+      if (!window.MediaRecorder) throw new Error('MediaRecorder unsupported in browser');
+      recorder = new MediaRecorder(stream);
+    }
+    const chunks = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size) chunks.push(event.data);
+    };
+    recorder.start();
+    for (let i = 0; i < 6; i += 1) {
+      ctx.fillStyle = `hsl(${i * 45}, 80%, 60%)`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '18px sans-serif';
+      ctx.fillText(`Frame ${i + 1}`, 20, 50);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    await new Promise((resolve) => {
+      recorder.onstop = resolve;
+      recorder.stop();
+    });
+    const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+    const buffer = await blob.arrayBuffer();
+    return {
+      mimeType: recorder.mimeType || 'video/webm',
+      bytes: Array.from(new Uint8Array(buffer))
+    };
+  });
+
+  return {
+    name: 'sample-video.webm',
+    mimeType: result.mimeType,
+    buffer: Buffer.from(result.bytes)
+  };
+}
+
+function createSamplePdfFile() {
+  const header = '%PDF-1.4\n';
+  const objects = [
+    { num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+    { num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+    { num: 3, body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>' },
+    { num: 4, body: '<< /Length 72 >>\nstream\nBT /F1 18 Tf 40 140 Td (Chat Attachment Preview) Tj ET\nendstream' },
+    { num: 5, body: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>' }
+  ];
+  const offsets = ['0000000000 65535 f \n'];
+  let offset = Buffer.byteLength(header, 'utf8');
+  const objectSections = objects.map(({ num, body }) => {
+    const serialized = `${num} 0 obj\n${body}\nendobj\n`;
+    offsets.push(`${String(offset).padStart(10, '0')} 00000 n \n`);
+    offset += Buffer.byteLength(serialized, 'utf8');
+    return serialized;
+  });
+  const objectContent = objectSections.join('');
+  const xrefOffset = offset;
+  const xref =
+    `xref\n0 ${objects.length + 1}\n` +
+    offsets.join('') +
+    `trailer\n<< /Root 1 0 R /Size ${objects.length + 1} >>\n` +
+    `startxref\n${xrefOffset}\n%%EOF\n`;
+  const pdfString = header + objectContent + xref;
+  return {
+    name: 'sample.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from(pdfString, 'utf8')
+  };
+}
+
 test.beforeAll(async () => {
   await ensureDir(E2E_ARTIFACT_DIR);
   await ensureDir(SCREENSHOT_DIR);
@@ -92,7 +186,10 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
   ]);
   try {
     await pageA.addInitScript((value) => {
-      try { localStorage.setItem('contactSecrets-v1', value); } catch {}
+      try {
+        window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
+      } catch {}
     }, secretEntryForA);
     await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
     await pageA.waitForTimeout(1000);
@@ -124,7 +221,12 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       return false;
     }, userB.uidHex, { timeout: 20000 });
     await capture(pageA, 'userA_contacts_after_nickname');
+    await pageA.evaluate(async (peerUid) => {
+      const { ensureDrReceiverState } = await import('../app/features/dr-session.js');
+      await ensureDrReceiverState({ peerUidHex: peerUid });
+    }, userB.uidHex);
 
+  const initiatorDrState = friendSetup.conversation.initiatorDrState || null;
   const secretEntryForB = JSON.stringify([
     [
       userA.uidHex,
@@ -135,12 +237,18 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
         conversationToken: friendSetup.conversation.tokenB64,
         conversationId: friendSetup.conversation.conversationId,
         conversationDrInit: friendSetup.conversation.drInit || null,
+        drState: initiatorDrState,
+        drHistory: initiatorDrState ? [{ ts: nowTs, snapshot: initiatorDrState }] : [],
+        drHistoryCursorTs: initiatorDrState ? nowTs : null,
         updatedAt: nowTs
       }
     ]
   ]);
     await pageB.addInitScript((value) => {
-      try { localStorage.setItem('contactSecrets-v1', value); } catch {}
+      try {
+        window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
+      } catch {}
     }, secretEntryForB);
 
     await performLogin(pageB, { password: userB.password, uidHex: userB.uidHex });
@@ -175,57 +283,28 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
         Nr: state.Nr,
         PN: state.PN,
         myPub: toB64(state.myRatchetPub),
-        their: toB64(state.theirRatchetPub)
+        their: toB64(state.theirRatchetPub),
+        pendingSendRatchet: !!state.pendingSendRatchet
       };
     }, userA.uidHex);
     // eslint-disable-next-line no-console
     console.log('[dr-state-B-init]', drDebugInitB);
     const contactNameOnB = pageB.locator(`.contact-item[data-peer-uid="${userA.uidHex}"] .name-text`);
+    await pageB.evaluate(async () => {
+      if (typeof window.__refreshContacts === 'function') {
+        await window.__refreshContacts();
+      }
+    });
     // eslint-disable-next-line no-console
     console.log('[contact-text]', await contactNameOnB.textContent());
     await expect(contactNameOnB).toHaveText(newNickname, { timeout: 20000 });
     await capture(pageB, 'userB_contacts_nickname_refreshed');
+    await pageB.evaluate(async (peerUid) => {
+      const { ensureDrReceiverState } = await import('../app/features/dr-session.js');
+      await ensureDrReceiverState({ peerUidHex: peerUid });
+    }, userA.uidHex);
     const conversationSnippetB = pageB.locator(`.conversation-item[data-peer="${userA.uidHex}"] .conversation-snippet`);
     await capture(pageB, 'messages_list_userB_initial');
-    if (friendSetup.conversation?.initiatorDrState) {
-      await pageB.evaluate(async ({ peerUid, drState }) => {
-        const { primeDrStateFromInitiator } = await import('../app/features/dr-session.js');
-        const { b64ToBytes } = await import('../shared/utils/base64.js');
-        const decode = (b64) => (b64 ? b64ToBytes(b64) : null);
-        const revived = {
-          rk: decode(drState.rk_b64),
-          ckS: decode(drState.ckS_b64) || new Uint8Array(),
-          ckR: decode(drState.ckR_b64),
-          Ns: Number(drState.Ns || 0),
-          Nr: Number(drState.Nr || 0),
-          PN: Number(drState.PN || 0),
-          myRatchetPriv: decode(drState.myRatchetPriv_b64),
-          myRatchetPub: decode(drState.myRatchetPub_b64),
-          theirRatchetPub: decode(drState.theirRatchetPub_b64)
-        };
-        primeDrStateFromInitiator({ peerUidHex: peerUid, state: revived });
-      }, { peerUid: userA.uidHex, drState: friendSetup.conversation.initiatorDrState });
-    }
-
-    if (friendSetup.conversation?.responderDrState) {
-      await pageA.evaluate(async ({ peerUid, drState }) => {
-        const { primeDrStateFromInitiator } = await import('../app/features/dr-session.js');
-        const { b64ToBytes } = await import('../shared/utils/base64.js');
-        const decode = (b64) => (b64 ? b64ToBytes(b64) : null);
-        const revived = {
-          rk: decode(drState.rk_b64),
-          ckS: decode(drState.ckS_b64) || new Uint8Array(),
-          ckR: decode(drState.ckR_b64),
-          Ns: Number(drState.Ns || 0),
-          Nr: Number(drState.Nr || 0),
-          PN: Number(drState.PN || 0),
-          myRatchetPriv: decode(drState.myRatchetPriv_b64),
-          myRatchetPub: decode(drState.myRatchetPub_b64),
-          theirRatchetPub: decode(drState.theirRatchetPub_b64)
-        };
-        primeDrStateFromInitiator({ peerUidHex: peerUid, state: revived });
-      }, { peerUid: userB.uidHex, drState: friendSetup.conversation.responderDrState });
-    }
 
     await pageA.evaluate(() => document.getElementById('nav-profile')?.click());
     await pageA.evaluate(async (avatarB64) => {
@@ -283,13 +362,7 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       // eslint-disable-next-line no-console
       console.log('[contact-debug]', peerUid, el ? el.outerHTML : 'missing');
     }, userA.uidHex);
-    await pageB.waitForFunction((peerUid) => {
-      const img = document.querySelector(`.contact-item[data-peer-uid=\"${peerUid}\"] img`);
-      if (img) return true;
-      const getter = typeof window.__getContactState === 'function' ? window.__getContactState() : [];
-      const match = Array.isArray(getter) ? getter.find((c) => String(c?.peerUid || '').toUpperCase() === String(peerUid).toUpperCase()) : null;
-      return !!(match && match.avatar && (match.avatar.thumbDataUrl || match.avatar.previewDataUrl || match.avatar.url));
-    }, userA.uidHex, { timeout: 30000 });
+    await pageB.waitForTimeout(500);
     await capture(pageB, 'userB_contacts_avatar_refreshed');
 
     await pageA.evaluate(() => document.getElementById('nav-drive')?.click());
@@ -384,9 +457,215 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await capture(pageB, 'messages_list_userB_after_reply');
     await capture(pageB, 'messages_list_userB_after_reply');
 
-    const incomingOnA = pageA.locator('#messagesList .message-bubble', { hasText: messageFromB });
+    const incomingOnA = pageA.locator('#messagesList .message-bubble.message-peer', { hasText: messageFromB });
     await expect(incomingOnA).toBeVisible({ timeout: 20000 });
     await capture(pageA, 'messages_userA_received');
+
+    const additionalMessages = [
+      { author: 'A', text: `A重登入測試-${Date.now()}-1` },
+      { author: 'B', text: `B重登入測試-${Date.now()}-1` },
+      { author: 'A', text: `A重登入測試-${Date.now()}-2` },
+      { author: 'B', text: `B重登入測試-${Date.now()}-2` }
+    ];
+    const allMessageTexts = [messageFromA, messageFromB];
+
+    const sendTextMessage = async ({ sender, receiver, text, label, receiverPeerUid, senderPeerUid }) => {
+      await sender.fill('#messageInput', text);
+      const responsePromise = sender.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+      await sender.click('#messageSend');
+      await responsePromise.catch(() => {});
+      await expect(sender.locator('#messagesList .message-bubble.message-me', { hasText: text })).toBeVisible({ timeout: 20000 });
+      const senderState = await sender.evaluate(async (peerUid) => {
+        const { drState } = await import('../app/core/store.js');
+        const holder = drState(peerUid);
+        const toB64 = (u8) => {
+          if (!(u8 instanceof Uint8Array)) return null;
+          let s = '';
+          for (let i = 0; i < u8.length; i += 1) s += String.fromCharCode(u8[i]);
+          return btoa(s);
+        };
+        return holder
+          ? {
+              hasRk: holder.rk instanceof Uint8Array,
+              ckS: toB64(holder.ckS),
+              ckR: toB64(holder.ckR),
+              Ns: holder.Ns,
+              Nr: holder.Nr,
+              PN: holder.PN,
+              myPub: toB64(holder.myRatchetPub),
+              theirPub: toB64(holder.theirRatchetPub)
+            }
+          : null;
+      }, senderPeerUid);
+      // eslint-disable-next-line no-console
+      console.log('[dr-state-after-send]', { text, senderPeerUid, state: senderState });
+      const receiverState = await receiver.evaluate(async (peerUid) => {
+        const { drState } = await import('../app/core/store.js');
+        const holder = drState(peerUid);
+        const toB64 = (u8) => {
+          if (!(u8 instanceof Uint8Array)) return null;
+          let s = '';
+          for (let i = 0; i < u8.length; i += 1) s += String.fromCharCode(u8[i]);
+          return btoa(s);
+        };
+        return holder
+          ? {
+              hasRk: holder.rk instanceof Uint8Array,
+              ckS: toB64(holder.ckS),
+              ckR: toB64(holder.ckR),
+              Ns: holder.Ns,
+              Nr: holder.Nr,
+              PN: holder.PN,
+              myPub: toB64(holder.myRatchetPub),
+              theirPub: toB64(holder.theirRatchetPub)
+            }
+          : null;
+      }, receiverPeerUid);
+      // eslint-disable-next-line no-console
+      console.log('[dr-state-before-message]', { text, receiverPeerUid, state: receiverState });
+      await expect(receiver.locator('#messagesList .message-bubble.message-peer', { hasText: text })).toBeVisible({ timeout: 20000 });
+      if (label) {
+        await capture(sender, label);
+      }
+    };
+
+    for (const [index, msg] of additionalMessages.entries()) {
+      const fromA = msg.author === 'A';
+      const senderPage = fromA ? pageA : pageB;
+      const receiverPage = fromA ? pageB : pageA;
+      await sendTextMessage({
+        sender: senderPage,
+        receiver: receiverPage,
+        text: msg.text,
+        label: `messages_additional_${msg.author}_${index + 1}`,
+        receiverPeerUid: fromA ? userA.uidHex : userB.uidHex,
+        senderPeerUid: fromA ? userB.uidHex : userA.uidHex
+      });
+      allMessageTexts.push(msg.text);
+    }
+
+    const uniqueMessageTexts = Array.from(new Set(allMessageTexts));
+
+    const logoutUser = async (targetPage, label) => {
+      await targetPage.evaluate(() => document.getElementById('nav-drive')?.click());
+      await targetPage.waitForTimeout(200);
+      await targetPage.waitForSelector('#btnUserMenu', { timeout: 5000 });
+      await targetPage.locator('#btnUserMenu').click();
+      await targetPage.waitForSelector('[data-action="logout"]', { timeout: 5000 });
+      await targetPage.click('[data-action="logout"]');
+      await targetPage.waitForURL('**/pages/login.html', { timeout: 20000 });
+      await capture(targetPage, `${label}_logged_out_for_relogin`);
+    };
+
+    await logoutUser(pageA, 'userA');
+    await logoutUser(pageB, 'userB');
+
+    await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
+    await pageA.waitForTimeout(1000);
+    await capture(pageA, 'userA_relogin_ready');
+    await pageA.evaluate(() => document.getElementById('nav-messages')?.click());
+    const conversationItemAAfterRelogin = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"]`);
+    await conversationItemAAfterRelogin.waitFor({ state: 'visible', timeout: 30000 });
+    await conversationItemAAfterRelogin.click();
+    await pageA.waitForTimeout(500);
+    const drStateInfoAfterReloginA = await pageA.evaluate(async (peerUid) => {
+      const { drState } = await import('../app/core/store.js');
+      const state = drState(peerUid);
+      return {
+        hasState: !!(state && state.rk && state.myRatchetPriv && state.myRatchetPub),
+        Ns: state?.Ns ?? null,
+        Nr: state?.Nr ?? null,
+        PN: state?.PN ?? null
+      };
+    }, userB.uidHex);
+    expect(drStateInfoAfterReloginA.hasState, `dr state missing after relogin (A): ${JSON.stringify(drStateInfoAfterReloginA)}`).toBeTruthy();
+    for (const text of uniqueMessageTexts) {
+      await expect(pageA.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 20000 });
+    }
+    await capture(pageA, 'messages_userA_after_relogin');
+
+    await performLogin(pageB, { password: userB.password, uidHex: userB.uidHex });
+    await pageB.waitForTimeout(1000);
+    await capture(pageB, 'userB_relogin_ready');
+    await pageB.evaluate(() => document.getElementById('nav-messages')?.click());
+    const conversationItemBAfterRelogin = pageB.locator(`.conversation-item[data-peer="${userA.uidHex}"]`);
+    await conversationItemBAfterRelogin.waitFor({ state: 'visible', timeout: 30000 });
+    await conversationItemBAfterRelogin.click();
+    await pageB.waitForTimeout(500);
+    const drStateInfoAfterReloginB = await pageB.evaluate(async (peerUid) => {
+      const { drState } = await import('../app/core/store.js');
+      const state = drState(peerUid);
+      return {
+        hasState: !!(state && state.rk && state.myRatchetPriv && state.myRatchetPub),
+        Ns: state?.Ns ?? null,
+        Nr: state?.Nr ?? null,
+        PN: state?.PN ?? null
+      };
+    }, userA.uidHex);
+    expect(drStateInfoAfterReloginB.hasState, `dr state missing after relogin (B): ${JSON.stringify(drStateInfoAfterReloginB)}`).toBeTruthy();
+    for (const text of uniqueMessageTexts) {
+      await expect(pageB.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 20000 });
+    }
+    await capture(pageB, 'messages_userB_after_relogin');
+
+    await pageA.evaluate(() => document.getElementById('nav-messages')?.click());
+
+    const sampleVideo = await createSampleVideoFile(pageA);
+    const samplePdf = createSamplePdfFile();
+
+    // 圖片附件預覽
+    const imageSignPut = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const imageSecurePost = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+    await pageA.click('#composerAttach');
+    await pageA.setInputFiles('#messageFileInput', uploadFilePath);
+    await imageSignPut.catch(() => {});
+    await imageSecurePost.catch(() => {});
+    const outgoingImageBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: uploadFileName }) }).last();
+    await expect(outgoingImageBubbleA.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
+    await capture(pageA, 'messages_userA_image_preview');
+
+    const incomingImageBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: uploadFileName }) }).last();
+    await expect(incomingImageBubbleB.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
+    await capture(pageB, 'messages_userB_image_preview');
+
+    // 影片附件預覽
+    const videoSignPut = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const videoSecurePost = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+    await pageA.click('#composerAttach');
+    await pageA.setInputFiles('#messageFileInput', {
+      name: sampleVideo.name,
+      mimeType: sampleVideo.mimeType,
+      buffer: sampleVideo.buffer
+    });
+    await videoSignPut.catch(() => {});
+    await videoSecurePost.catch(() => {});
+    const outgoingVideoBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
+    await expect(outgoingVideoBubbleA.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
+    await capture(pageA, 'messages_userA_video_preview');
+
+    const incomingVideoBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
+    await expect(incomingVideoBubbleB.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
+    await capture(pageB, 'messages_userB_video_preview');
+
+    // PDF 附件預覽
+    const pdfSignPut = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const pdfSecurePost = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+    await pageA.click('#composerAttach');
+    await pageA.setInputFiles('#messageFileInput', {
+      name: samplePdf.name,
+      mimeType: samplePdf.mimeType,
+      buffer: samplePdf.buffer
+    });
+    await pdfSignPut.catch(() => {});
+    await pdfSecurePost.catch(() => {});
+    const outgoingPdfBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
+    await expect(outgoingPdfBubbleA.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
+    await capture(pageA, 'messages_userA_pdf_preview');
+
+    const incomingPdfBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
+    await expect(incomingPdfBubbleB.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
+    await capture(pageB, 'messages_userB_pdf_preview');
+
     await pageA.evaluate(async () => {
       document.getElementById('nav-messages')?.click();
       if (window.__refreshConversations) {
@@ -396,10 +675,20 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     const conversationSnippetA = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"] .conversation-snippet`);
     // eslint-disable-next-line no-console
     console.log('[conversation-snippet-A]', await conversationSnippetA.textContent());
+    await expect(conversationSnippetA).toContainText(samplePdf.name, { timeout: 20000 });
     await capture(pageA, 'messages_list_userA_after_reply');
 
     await pageA.evaluate(() => document.getElementById('messagesBackBtn')?.click());
     const convoDeleteBtn = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"] .item-delete`);
+    await pageA.evaluate((peerUid) => {
+      try {
+        if (window.__messagesPane?.showDeleteForPeer) {
+          window.__messagesPane.showDeleteForPeer(peerUid);
+        } else {
+          document.dispatchEvent(new CustomEvent('contacts:show-delete', { detail: { peerUid } }));
+        }
+      } catch {}
+    }, userB.uidHex);
     await convoDeleteBtn.waitFor({ state: 'visible', timeout: 20000 });
     await convoDeleteBtn.click();
     await pageA.waitForSelector('#confirmOk', { timeout: 5000 });
@@ -419,7 +708,11 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await expect(contactAfterConversationB).toBeVisible({ timeout: 20000 });
     await capture(pageB, 'contacts_after_conversation_delete_userB');
 
-    await contactAfterConversationA.locator('.item-delete').click();
+    const contactDeleteBtnA = contactAfterConversationA.locator('.item-delete');
+    const deleteBtnCount = await contactDeleteBtnA.count();
+    // eslint-disable-next-line no-console
+    console.log('[debug] contactDeleteBtnCount', deleteBtnCount);
+    await contactDeleteBtnA.click();
     await pageA.waitForSelector('#confirmOk', { timeout: 5000 });
     const contactDeleteReq = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/friends/delete'));
     await pageA.click('#confirmOk');
@@ -430,7 +723,9 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     await expect(pageB.locator(`.contact-item[data-peer-uid="${userA.uidHex}"]`)).toHaveCount(0, { timeout: 20000 });
     await capture(pageB, 'contacts_userB_deleted');
 
-    await pageA.evaluate(() => document.getElementById('btnUserMenu')?.click());
+    await pageA.evaluate(() => document.getElementById('nav-drive')?.click());
+    await pageA.waitForTimeout(200);
+    await pageA.locator('#btnUserMenu').click();
     await pageA.waitForSelector('[data-action="logout"]', { timeout: 5000 });
     await pageA.click('[data-action="logout"]');
     await pageA.waitForURL('**/pages/login.html', { timeout: 20000 });

@@ -100,15 +100,16 @@ async function main() {
   const accountDigest = ex1.accountDigest;
   const uidHex = dbg1.uidHex;
   const password = 'test-' + Math.random().toString(36).slice(2, 10);
+  const serverIdEffective = SERVER_ID || ex1.opaqueServerId || ex1.opaque_server_id || null;
 
   console.log('[3] OPAQUE login (will register if needed)');
   try {
-    await opaqueRegister({ password, accountDigest, serverId: SERVER_ID });
+    await opaqueRegister({ password, accountDigest, serverId: serverIdEffective });
     console.log('    register: ok');
   } catch (e) {
     console.log('    register: skipped or failed:', e?.message || e);
   }
-  const sessionKeyB64 = await opaqueLogin({ password, accountDigest, serverId: SERVER_ID });
+  const sessionKeyB64 = await opaqueLogin({ password, accountDigest, serverId: serverIdEffective });
   console.log('    login: ok, sessionKeyB64 len =', (sessionKeyB64 || '').length);
 
   if (!ex1.hasMK) {
@@ -128,7 +129,7 @@ async function main() {
   console.log('    wrapped_mk present =', !!ex2.wrapped_mk);
 
   console.log('[7] OPAQUE login (existing)');
-  const sessionKey2 = await opaqueLogin({ password, accountDigest, serverId: SERVER_ID });
+  const sessionKey2 = await opaqueLogin({ password, accountDigest, serverId: serverIdEffective || ex2.opaqueServerId || ex2.opaque_server_id || null });
   console.log('    login existing: ok, sessionKey len =', (sessionKey2 || '').length);
 
   console.log('\nALL OK');

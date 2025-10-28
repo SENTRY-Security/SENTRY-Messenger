@@ -11,9 +11,10 @@ import { fetchJSON } from '../core/http.js';
  * @param {{ convId: string, contentType: string, dir?: string }} p
  * @returns {Promise<{ r: Response, data: any }>} data typically { upload:{url,key,fields?,headers?,method?}, objectPath, expiresIn }
  */
-export async function signPut({ convId, contentType, dir }) {
+export async function signPut({ convId, contentType, dir, size }) {
   const body = { convId, contentType };
   if (dir) body.dir = dir;
+  if (typeof size === 'number') body.size = size;
   return await fetchJSON('/api/v1/media/sign-put', body);
 }
 

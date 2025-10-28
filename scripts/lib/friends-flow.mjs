@@ -54,7 +54,8 @@ function serializeDrState(state) {
     PN: Number(state.PN || 0),
     myRatchetPriv_b64: encodeU8(state.myRatchetPriv),
     myRatchetPub_b64: encodeU8(state.myRatchetPub),
-    theirRatchetPub_b64: encodeU8(state.theirRatchetPub)
+    theirRatchetPub_b64: encodeU8(state.theirRatchetPub),
+    pendingSendRatchet: !!state.pendingSendRatchet
   };
 }
 
@@ -126,9 +127,8 @@ async function publishBundle(origin, { uidHex, accountToken, accountDigest, bund
   if (res.status !== 204) throw new Error(`keys.publish failed: ${JSON.stringify(data)}`);
 }
 
-async function storeDevkeys(origin, { uidHex, accountToken, accountDigest, wrapped_dev }) {
+async function storeDevkeys(origin, { accountToken, accountDigest, wrapped_dev }) {
   const { res, data } = await jsonPost(origin, '/api/v1/devkeys/store', {
-    uidHex,
     accountToken,
     accountDigest,
     wrapped_dev
@@ -181,7 +181,9 @@ export async function bootstrapUser({ origin, label, uidHex, password }) {
   await publishBundle(origin, { uidHex: kit.uidHex, accountToken, accountDigest, bundle: bundlePub });
 
   const wrapped_dev = await wrapDevicePrivWithMK(devicePriv, mk);
-  await storeDevkeys(origin, { uidHex: kit.uidHex, accountToken, accountDigest, wrapped_dev });
+  await storeDevkeys(origin, { accountToken, accountDigest, wrapped_dev });
+  // eslint-disable-next-line no-console
+  console.log('[friends-flow] devkeys stored for', kit.uidHex);
 
   return {
     uidHex: kit.uidHex,
@@ -291,14 +293,64 @@ export async function setupFriendConversation({ origin, userA = {}, userB = {} }
   };
 }
 
-async function createFriendInvite(origin, user, ttlSeconds = 300) {
+function normalizeErrorCode(payload) {
+  if (!payload) return null;
+  if (typeof payload === 'string') {
+    try {
+      const parsed = JSON.parse(payload);
+      return normalizeErrorCode(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof payload === 'object') {
+    const nested = normalizeErrorCode(payload.details);
+    if (nested) return nested;
+    return payload.error || payload.code || null;
+  }
+  return null;
+}
+
+async function rotateOwnerPrekeys({ origin, user, count = 40 }) {
+  const startId = Number(user?.devicePriv?.next_opk_id || user?.devicePriv?.nextOpkId || 1);
+  const { devicePriv, bundlePub } = await generateInitialBundle(startId, count);
+  await publishBundle(origin, {
+    uidHex: user.uidHex,
+    accountToken: user.accountToken,
+    accountDigest: user.accountDigest,
+    bundle: bundlePub
+  });
+  if (user?.mk) {
+    const wrappedDev = await wrapDevicePrivWithMK(devicePriv, user.mk);
+    await storeDevkeys(origin, {
+      accountToken: user.accountToken,
+      accountDigest: user.accountDigest,
+      wrapped_dev: wrappedDev
+    });
+    // eslint-disable-next-line no-console
+    console.log('[friends-flow] rotated devkeys stored for', user.uidHex);
+    user.wrappedDev = wrappedDev;
+  }
+  user.devicePriv = devicePriv;
+  user.bundlePub = bundlePub;
+  return true;
+}
+
+async function createFriendInvite(origin, user, ttlSeconds = 300, attempt = 0) {
   const { res, data } = await jsonPost(origin, '/api/v1/friends/invite', {
     uidHex: user.uidHex,
     accountToken: user.accountToken,
     accountDigest: user.accountDigest,
     ttlSeconds
   });
-  if (!res.ok) throw new Error(`friends.invite failed: ${JSON.stringify(data)}`);
+  if (!res.ok) {
+    const code = normalizeErrorCode(data);
+    if (code === 'PrekeyUnavailable' && attempt < 2) {
+      await rotateOwnerPrekeys({ origin, user, count: 40 });
+      return createFriendInvite(origin, user, ttlSeconds, attempt + 1);
+    }
+    throw new Error(`friends.invite failed: ${JSON.stringify(data)}`);
+  }
   if (!data?.inviteId || !data?.secret) throw new Error('invite response incomplete');
   return {
     inviteId: data.inviteId,

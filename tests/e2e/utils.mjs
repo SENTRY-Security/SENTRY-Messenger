@@ -69,10 +69,28 @@ export async function ensureDir(targetPath) {
 }
 
 export async function performLogin(page, { password = 'test1234', uidHex } = {}) {
+  await page.addInitScript(() => {
+    try {
+      window.__DEBUG_CONTACT_SECRETS__ = true;
+    } catch {}
+  });
+  await page.addInitScript(() => {
+    try {
+      window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+      window.__LOGIN_SEED_LOCALSTORAGE['ntag424-sim:forceDebug'] = '1';
+      const snapshot = window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'];
+      if (snapshot) {
+        localStorage.setItem('contactSecrets-v1', snapshot);
+      } else {
+        localStorage.removeItem('contactSecrets-v1');
+      }
+    } catch {}
+  });
   if (uidHex) {
     await page.addInitScript((uid) => {
       try {
-        localStorage.setItem('ntag424-sim:debug-kit', JSON.stringify({ uidHex: uid }));
+        window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        window.__LOGIN_SEED_LOCALSTORAGE['ntag424-sim:debug-kit'] = JSON.stringify({ uidHex: uid });
       } catch {}
     }, uidHex);
   } else {
@@ -142,4 +160,14 @@ export async function performLogin(page, { password = 'test1234', uidHex } = {})
     sessionStorage.getItem('account_token') === null
   ));
   expect(cleared).toBeTruthy();
+
+  await page.evaluate(() => {
+    try {
+      const snapshot = localStorage.getItem('contactSecrets-v1');
+      if (snapshot) {
+        window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = snapshot;
+      }
+    } catch {}
+  });
 }

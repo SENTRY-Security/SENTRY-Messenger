@@ -7,6 +7,7 @@ import { getMkRaw } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 
 const encoder = new TextEncoder();
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
 
 function normalizeDirSegments(dir) {
   if (!dir) return [];
@@ -76,22 +77,29 @@ export async function deleteEncryptedObjects({ keys, ids }) {
  * @param {{convId:string, file:File|Blob}} p
  * @returns {Promise<{objectKey:string,size:number,envelope:object,message:any}>}
  */
-export async function encryptAndPut({ convId, file, dir }) {
+export async function encryptAndPut({ convId, file, dir, skipIndex = false }) {
   const mk = getMkRaw();
   if (!mk) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
 
   const contentType = file.type || 'application/octet-stream';
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
+  const fileSize = typeof file.size === 'number' ? file.size : null;
+  if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
+    throw new Error('檔案大小超過 500MB 限制');
+  }
   const dirSegments = normalizeDirSegments(dir);
 
   // 1) Read & Encrypt
   const plainBuf = new Uint8Array(await file.arrayBuffer());
+  if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
+    throw new Error('檔案大小超過 500MB 限制');
+  }
   const ct = await aeadEncryptWithMK(plainBuf, mk, 'media/v1');
 
   // 2) Get presigned PUT
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
-  const { r: rSign, data: sign } = await apiSignPut({ convId, contentType, dir: storageDir || undefined });
+  const { r: rSign, data: sign } = await apiSignPut({ convId, contentType, dir: storageDir || undefined, size: fileSize ?? plainBuf.byteLength });
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;
   if (!upload?.url) throw new Error('sign-put missing upload.url');
@@ -112,16 +120,20 @@ export async function encryptAndPut({ convId, file, dir }) {
   saveEnvelopeMeta(objectKey, { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64, contentType, name });
 
   // 5) Create message index（把 envelope JSON 放在 ciphertext_b64，小訊息）
-  const msgBody = {
-    convId,
-    type: 'media',
-    aead: 'aes-256-gcm',
-    // 將封套必要欄位一併放入 header.env，支援跨裝置解密
-    header: { obj: objectKey, size: ct.cipherBuf.byteLength, name, contentType, dir: dirSegments, env: { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64 } },
-    ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify(envelope)))
-  };
-  const { r: rMsg, data: dataMsg } = await createMessage(msgBody);
-  if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(dataMsg));
+  let dataMsg = null;
+  if (!skipIndex) {
+    const msgBody = {
+      convId,
+      type: 'media',
+      aead: 'aes-256-gcm',
+      // 將封套必要欄位一併放入 header.env，支援跨裝置解密
+      header: { obj: objectKey, size: ct.cipherBuf.byteLength, name, contentType, dir: dirSegments, env: { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64 } },
+      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify(envelope)))
+    };
+    const { r: rMsg, data } = await createMessage(msgBody);
+    if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(data));
+    dataMsg = data;
+  }
 
   return { objectKey, size: ct.cipherBuf.byteLength, envelope, message: dataMsg };
 }
@@ -130,20 +142,27 @@ export async function encryptAndPut({ convId, file, dir }) {
  * Same as encryptAndPut but allows tracking upload progress via XHR.
  * @param {{convId:string, file:File|Blob, onProgress?:(p:{loaded:number,total:number,percent:number})=>void}} p
  */
-export async function encryptAndPutWithProgress({ convId, file, onProgress, dir }) {
+export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false }) {
   const mk = getMkRaw();
   if (!mk) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
 
   const contentType = file.type || 'application/octet-stream';
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
+  const fileSize = typeof file.size === 'number' ? file.size : null;
+  if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
+    throw new Error('檔案大小超過 500MB 限制');
+  }
   const dirSegments = normalizeDirSegments(dir);
 
   const plainBuf = new Uint8Array(await file.arrayBuffer());
+  if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
+    throw new Error('檔案大小超過 500MB 限制');
+  }
   const ct = await aeadEncryptWithMK(plainBuf, mk, 'media/v1');
 
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
-  const { r: rSign, data: sign } = await apiSignPut({ convId, contentType, dir: storageDir || undefined });
+  const { r: rSign, data: sign } = await apiSignPut({ convId, contentType, dir: storageDir || undefined, size: fileSize ?? plainBuf.byteLength });
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;
   if (!upload?.url) throw new Error('sign-put missing upload.url');
@@ -170,15 +189,19 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir 
   const envelope = { v: 1, aead: 'aes-256-gcm', iv_b64: b64(ct.iv), hkdf_salt_b64: b64(ct.hkdfSalt) };
   saveEnvelopeMeta(objectKey, { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64, contentType, name });
 
-  const msgBody = {
-    convId,
-    type: 'media',
-    aead: 'aes-256-gcm',
-    header: { obj: objectKey, size: ct.cipherBuf.byteLength, name, contentType, dir: dirSegments, env: { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64 } },
-    ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify(envelope)))
-  };
-  const { r: rMsg, data: dataMsg } = await createMessage(msgBody);
-  if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(dataMsg));
+  let dataMsg = null;
+  if (!skipIndex) {
+    const msgBody = {
+      convId,
+      type: 'media',
+      aead: 'aes-256-gcm',
+      header: { obj: objectKey, size: ct.cipherBuf.byteLength, name, contentType, dir: dirSegments, env: { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64 } },
+      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify(envelope)))
+    };
+    const { r: rMsg, data } = await createMessage(msgBody);
+    if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(data));
+    dataMsg = data;
+  }
 
   return { objectKey, size: ct.cipherBuf.byteLength, envelope, message: dataMsg };
 }

@@ -5,7 +5,10 @@ export function createSwipeManager() {
     if (!item) return;
     item.classList.remove('show-delete');
     const content = item.querySelector('.item-content');
-    if (content) content.style.transform = '';
+    if (content) {
+      content.style.transform = '';
+      content.style.pointerEvents = '';
+    }
     if (openSwipeItem === item) openSwipeItem = null;
   }
 
@@ -42,6 +45,7 @@ export function createSwipeManager() {
       if (deltaX < -40) {
         li.classList.add('show-delete');
         content.style.transform = `translateX(${limit}px)`;
+        content.style.pointerEvents = 'none';
         openSwipeItem = li;
       } else {
         closeSwipe(li);

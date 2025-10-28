@@ -76,6 +76,7 @@ export async function friendsDeleteContact({ peerUid } = {}) {
     const msg = formatErrorMessage(data, 'delete contact failed', r.status);
     throw new Error(msg);
   }
+  log({ friendsDeleteResult: data, payloadPeer: peerUid });
   return data;
 }
 
@@ -87,8 +88,16 @@ export async function friendsShareContactUpdate({ inviteId, secret, peerUid, env
   }
   const payload = withAccount({ inviteId, secret, myUid, envelope }, { includeUid: false });
   if (peerUid) payload.peerUid = peerUid;
+  try {
+    // eslint-disable-next-line no-console
+    console.log('[contact-share-request]', { inviteId, myUid, peerUid: peerUid || null });
+  } catch {}
   const { r, data } = await fetchJSON('/api/v1/friends/contact/share', payload);
   if (!r.ok) {
+    try {
+      // eslint-disable-next-line no-console
+      console.log('[contact-share-error]', r.status, data);
+    } catch {}
     const msg = formatErrorMessage(data, 'contact share failed', r.status);
     throw new Error(msg);
   }

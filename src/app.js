@@ -37,13 +37,16 @@ app.use(express.json({ limit: '2mb' }));
 // 日誌
 app.use(pinoHttp({ logger }));
 
-// API 基礎 Rate Limit（可視路徑細分）
-app.use('/api/', rateLimit({
-  windowMs: 60 * 1000,
-  limit: 120, // 每分鐘 120 次
-  standardHeaders: true,
-  legacyHeaders: false
-}));
+// API 基礎 Rate Limit（僅在正式環境啟用，可視路徑細分）
+const enableRateLimit = process.env.NODE_ENV === 'production' && process.env.DISABLE_RATE_LIMIT !== '1';
+if (enableRateLimit) {
+  app.use('/api/', rateLimit({
+    windowMs: 60 * 1000,
+    limit: 300, // 每分鐘 300 次
+    standardHeaders: true,
+    legacyHeaders: false
+  }));
+}
 
 // 路由
 app.use('/api', routes);

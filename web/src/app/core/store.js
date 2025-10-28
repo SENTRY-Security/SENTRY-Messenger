@@ -29,8 +29,22 @@ let _ACCOUNT_DIGEST = null;
 let _UID_DIGEST = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
+const _DEVICE_PRIV_WAITERS = new Set();
 const _DR_SESS = new Map(); // peer_uidHex -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
 let _OPAQUE_SERVER_ID = null;
+
+function settleDevicePrivWaiter(entry, value) {
+  if (!entry) return;
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+  }
+  _DEVICE_PRIV_WAITERS.delete(entry);
+  try {
+    entry.resolve(value);
+  } catch {
+    // ignore downstream errors from listeners
+  }
+}
 
 // --- getters / setters ---
 export function getSession() { return _SESSION; }
@@ -74,15 +88,60 @@ export function getMkRaw() { return _MK_RAW; }
 export function setMkRaw(u8) { _MK_RAW = u8 || null; }
 
 export function getDevicePriv() { return _DEVICE_PRIV; }
-export function setDevicePriv(obj) { _DEVICE_PRIV = obj || null; }
+export function setDevicePriv(obj) {
+  _DEVICE_PRIV = obj || null;
+  if (_DEVICE_PRIV_WAITERS.size) {
+    const current = _DEVICE_PRIV;
+    for (const entry of Array.from(_DEVICE_PRIV_WAITERS)) {
+      settleDevicePrivWaiter(entry, current);
+    }
+  }
+}
+
+export function waitForDevicePriv({ timeoutMs = 5000 } = {}) {
+  const current = _DEVICE_PRIV;
+  if (current) return Promise.resolve(current);
+  return new Promise((resolve) => {
+    const entry = { resolve, timer: null };
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      entry.timer = setTimeout(() => {
+        settleDevicePrivWaiter(entry, null);
+      }, timeoutMs);
+    }
+    _DEVICE_PRIV_WAITERS.add(entry);
+  });
+}
 
 export function getDrSessMap() { return _DR_SESS; }
 export function drState(peerUidHex) {
   const key = (peerUidHex || '').toUpperCase();
   if (!_DR_SESS.has(key)) {
-    _DR_SESS.set(key, { rk:null, ckS:null, ckR:null, Ns:0, Nr:0, PN:0, myRatchetPriv:null, myRatchetPub:null, theirRatchetPub:null, baseKey:null });
+    _DR_SESS.set(key, {
+      rk: null,
+      ckS: null,
+      ckR: null,
+      Ns: 0,
+      Nr: 0,
+      PN: 0,
+      myRatchetPriv: null,
+      myRatchetPub: null,
+      theirRatchetPub: null,
+      baseKey: null,
+      pendingSendRatchet: false,
+      historyCursorTs: null,
+      historyCursorId: null,
+      skippedKeys: new Map()
+    });
   }
-  return _DR_SESS.get(key);
+  const state = _DR_SESS.get(key);
+  if (state && !(state.skippedKeys instanceof Map)) {
+    try {
+      state.skippedKeys = new Map();
+    } catch {
+      state.skippedKeys = null;
+    }
+  }
+  return state;
 }
 export function clearDrState(peerUidHex) {
   if (!peerUidHex) { _DR_SESS.clear(); return; }
@@ -100,7 +159,7 @@ export function clearExchangeState() {
 /** Clear the decrypted MK and DR sessions (e.g., on logout). */
 export function clearSecrets() {
   _MK_RAW = null;
-  _DEVICE_PRIV = null;
+  setDevicePriv(null);
   _DR_SESS.clear();
 }
 
@@ -114,7 +173,7 @@ export function resetAll() {
   _ACCOUNT_DIGEST = null;
   _UID_DIGEST = null;
   _MK_RAW = null;
-  _DEVICE_PRIV = null;
+  setDevicePriv(null);
   _DR_SESS.clear();
 }
 

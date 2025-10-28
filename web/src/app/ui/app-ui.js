@@ -7,12 +7,14 @@ import {
   getUidHex, getMkRaw,
   setMkRaw, setUidHex,
   setAccountToken, setAccountDigest, setUidDigest,
+  setDevicePriv,
   clearSecrets, resetAll
 } from '../core/store.js';
 import { encryptAndPut, signGet, downloadAndDecrypt } from '../features/media.js';
 import { listSecureAndDecrypt } from '../features/messages.js';
 import { ensureDrSession, sendDrText } from '../features/dr-session.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
+import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
 
 // ---- UI elements ----
 const $ = (sel) => document.querySelector(sel);
@@ -58,6 +60,31 @@ function isSimStorageKey(key) {
   }
 })();
 
+(function hydrateDevicePrivFromSession() {
+  try {
+    const serialized = sessionStorage.getItem('wrapped_dev');
+    if (!serialized) return;
+    sessionStorage.removeItem('wrapped_dev');
+    const mk = getMkRaw();
+    if (!mk) {
+      log({ devicePrivRestoreSkipped: 'mk-missing' });
+      return;
+    }
+    const parsed = JSON.parse(serialized);
+    unwrapDevicePrivWithMK(parsed, mk)
+      .then((priv) => {
+        if (priv) {
+          setDevicePriv(priv);
+          log({ devicePrivRestored: true });
+        }
+      })
+      .catch((err) => {
+        log({ devicePrivRestoreError: err?.message || err });
+      });
+  } catch (err) {
+    log({ devicePrivRestoreError: err?.message || err });
+  }
+})();
 // If still not unlocked after restoration, redirect back to Login
 (function ensureUnlockedOrRedirect(){
   try {
@@ -134,6 +161,7 @@ function onLogout() {
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
     sessionStorage.removeItem('uid_digest');
+    sessionStorage.removeItem('wrapped_dev');
   } catch {}
   try {
     // clear local envelope cache (env_v1:*), 保留模擬資料

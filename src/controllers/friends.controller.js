@@ -47,7 +47,9 @@ const AttachInviteContactSchema = z.object({
 
 const DeleteContactSchema = z.object({
   uidHex: z.string().min(14),
-  peerUid: z.string().min(14)
+  peerUid: z.string().min(14),
+  accountDigest: z.string().min(14).optional(),
+  peerAccountDigest: z.string().min(14).optional()
 });
 
 const ShareContactSchema = z.object({
@@ -55,7 +57,8 @@ const ShareContactSchema = z.object({
   secret: z.string().min(8),
   myUid: z.string().min(14),
   envelope: ContactEnvelopeSchema,
-  peerUid: z.string().min(14).optional()
+  peerUid: z.string().min(14).optional(),
+  accountDigest: z.string().min(16).optional()
 });
 
 export const createInvite = async (req, res) => {
@@ -237,12 +240,17 @@ export const shareContactUpdate = async (req, res) => {
   }
 
   const path = '/d1/friends/contact/share';
-  const body = JSON.stringify({
+  const peerUid = input.peerUid ? String(input.peerUid).toUpperCase() : null;
+  const accountDigest = input.accountDigest ? String(input.accountDigest).toUpperCase() : null;
+  const payload = {
     inviteId: input.inviteId,
     secret: input.secret,
     myUid: input.myUid,
     envelope: input.envelope
-  });
+  };
+  if (peerUid) payload.peerUid = peerUid;
+  if (accountDigest) payload.accountDigest = accountDigest;
+  const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 
   let upstream;
@@ -304,9 +312,14 @@ export const deleteContact = async (req, res) => {
 
   const ownerUid = String(input.uidHex).toUpperCase();
   const peerUid = String(input.peerUid).toUpperCase();
+  const ownerAccountDigest = input.accountDigest ? String(input.accountDigest).toUpperCase() : null;
+  const peerAccountDigest = input.peerAccountDigest ? String(input.peerAccountDigest).toUpperCase() : null;
 
   const path = '/d1/friends/contact-delete';
-  const body = JSON.stringify({ ownerUid, peerUid });
+  const payload = { ownerUid, peerUid };
+  if (ownerAccountDigest) payload.ownerAccountDigest = ownerAccountDigest;
+  if (peerAccountDigest) payload.peerAccountDigest = peerAccountDigest;
+  const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 
   let upstream;

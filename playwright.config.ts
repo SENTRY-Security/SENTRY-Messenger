@@ -1,4 +1,4 @@
-import { defineConfig } from '@playwright/test';
+import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -6,13 +6,13 @@ export default defineConfig({
   reporter: 'list',
   workers: 1,
   globalSetup: './tests/e2e/global-setup.mjs',
-  use: {
-    headless: true,
-  },
   projects: [
     {
-      name: 'chromium',
-      use: { browserName: 'chromium' }
+      name: 'chromium-mobile',
+      use: {
+        ...devices['Pixel 5'],
+        headless: true,
+      }
     }
   ]
 });

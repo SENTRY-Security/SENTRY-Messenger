@@ -27,7 +27,9 @@ const defaultMessageState = {
   nextCursorTs: null,
   loading: false,
   hasMore: true,
-  viewMode: 'list'
+  viewMode: 'list',
+  pendingDeletePeer: null,
+  deletePreviewPeer: null
 };
 
 const defaultUiState = {

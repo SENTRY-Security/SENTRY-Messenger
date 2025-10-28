@@ -23,6 +23,48 @@ function split64(u) {
   return { a: u.slice(0, 32), b: u.slice(32, 64) };
 }
 
+function ensureSkipStore(st) {
+  if (!st || typeof st !== 'object') return null;
+  if (!(st.skippedKeys instanceof Map)) {
+    try {
+      st.skippedKeys = new Map();
+    } catch {
+      st.skippedKeys = null;
+    }
+  }
+  return st.skippedKeys || null;
+}
+
+function rememberSkippedKey(st, chainId, index, keyB64, maxPerChain = 20) {
+  if (!chainId || !Number.isFinite(index)) return;
+  const store = ensureSkipStore(st);
+  if (!store) return;
+  let chain = store.get(chainId);
+  if (!chain) {
+    chain = new Map();
+    store.set(chainId, chain);
+  }
+  chain.set(index, keyB64);
+  if (chain.size > maxPerChain) {
+    const firstKey = chain.keys().next();
+    if (!firstKey.done) {
+      chain.delete(firstKey.value);
+    }
+  }
+}
+
+function takeSkippedKey(st, chainId, index) {
+  if (!chainId || !Number.isFinite(index)) return null;
+  const store = ensureSkipStore(st);
+  if (!store) return null;
+  const chain = store.get(chainId);
+  if (!chain) return null;
+  const value = chain.get(index) || null;
+  if (value !== null) chain.delete(index);
+  if (!chain.size) store.delete(chainId);
+  return value;
+}
+
 export async function x3dhInitiate(devicePriv, peerBundle) {
   await loadNacl();
   const myIKsec64 = b64u8(devicePriv.ik_priv_b64);
@@ -34,16 +76,11 @@ export async function x3dhInitiate(devicePriv, peerBundle) {
   const peerIK = await convertEd25519PublicKey(b64u8(peerBundle.ik_pub));
   if (!peerIK) throw new Error('peer ik conversion failed');
   const peerSPK = b64u8(peerBundle.spk_pub);
-  const opkPub = peerBundle.opk && peerBundle.opk.pub ? b64u8(peerBundle.opk.pub) : null;
 
   const DH1 = await scalarMult(myIKsec32, peerSPK);
   const DH2 = await scalarMult(ek.secretKey, peerIK);
   const DH3 = await scalarMult(ek.secretKey, peerSPK);
   let dhCat = new Uint8Array([...DH1, ...DH2, ...DH3]);
-  if (opkPub) {
-    const DH4 = await scalarMult(ek.secretKey, opkPub);
-    dhCat = new Uint8Array([...dhCat, ...DH4]);
-  }
 
   const rk = await hkdfBytes(dhCat, 'x3dh-salt', 'x3dh-root', 32);
   const seed = await kdfCK(rk);
@@ -58,7 +95,8 @@ export async function x3dhInitiate(devicePriv, peerBundle) {
     PN: 0,
     myRatchetPriv: ek.secretKey,
     myRatchetPub: ek.publicKey,
-    theirRatchetPub: null
+    theirRatchetPub: null,
+    pendingSendRatchet: false
   };
 }
 
@@ -105,7 +143,8 @@ export async function x3dhRespond(devicePriv, guestBundle) {
     PN: 0,
     myRatchetPriv: myNew.secretKey,
     myRatchetPub: myNew.publicKey,
-    theirRatchetPub: guestEK
+    theirRatchetPub: guestEK,
+    pendingSendRatchet: true
   };
 }
 
@@ -123,24 +162,40 @@ export async function drRatchet(st, theirRatchetPubU8) {
   st.myRatchetPriv = myNew.secretKey;
   st.myRatchetPub = myNew.publicKey;
   st.theirRatchetPub = theirRatchetPubU8;
+  st.pendingSendRatchet = false;
 }
 
 export async function drEncryptText(st, plaintext) {
+  if (st.pendingSendRatchet) {
+    st.pendingSendRatchet = false;
+    st.ckS = null;
+  }
   if (!st.ckS) {
     if (!st.theirRatchetPub) {
+      if (!(st.myRatchetPriv instanceof Uint8Array) || !(st.myRatchetPub instanceof Uint8Array)) {
+        const initial = await genX25519Keypair();
+        st.myRatchetPriv = initial.secretKey;
+        st.myRatchetPub = initial.publicKey;
+      }
       const seed = await kdfCK(st.rk);
       const { a: ckS } = split64(seed);
       st.ckS = ckS;
     } else {
-      const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), st.theirRatchetPub);
+      const myNew = await genX25519Keypair();
+      const dh = await scalarMult(myNew.secretKey.slice(0, 32), st.theirRatchetPub);
       const rkOut = await kdfRK(st.rk, dh);
       const { a: newRoot, b: chainSeed } = split64(rkOut);
       st.rk = newRoot;
       st.ckS = chainSeed;
+      st.PN = st.Ns;
+      st.Ns = 0;
+      st.myRatchetPriv = myNew.secretKey;
+      st.myRatchetPub = myNew.publicKey;
     }
   }
   const mkOut = await kdfCK(st.ckS);
   const { a: mk, b: nextCkS } = split64(mkOut);
+  const mkB64 = b64(mk);
   st.ckS = nextCkS;
   st.Ns += 1;
 
@@ -149,21 +204,63 @@ export async function drEncryptText(st, plaintext) {
   const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
 
   const header = { dr: 1, ek_pub_b64: b64(st.myRatchetPub), pn: st.PN, n: st.Ns };
-  return { aead: 'aes-256-gcm', header, iv_b64: b64(iv), ciphertext_b64: b64(new Uint8Array(ctBuf)) };
+  return {
+    aead: 'aes-256-gcm',
+    header,
+    iv_b64: b64(iv),
+    ciphertext_b64: b64(new Uint8Array(ctBuf)),
+    message_key_b64: mkB64
+  };
 }
 
-export async function drDecryptText(st, packet) {
+export async function drDecryptText(st, packet, opts = {}) {
+  const onMessageKey = typeof opts?.onMessageKey === 'function' ? opts.onMessageKey : null;
   const theirPub = b64u8(packet.header.ek_pub_b64);
   if (!st.theirRatchetPub || b64(st.theirRatchetPub) !== packet.header.ek_pub_b64) {
     await drRatchet(st, theirPub);
   } else {
     st.theirRatchetPub = theirPub;
   }
-  if (!st.ckR) throw new Error('receive chain missing');
-  const mkOut = await kdfCK(st.ckR);
-  const { a: mk, b: nextCkR } = split64(mkOut);
-  st.ckR = nextCkR;
-  st.Nr += 1;
+  const chainId = packet?.header?.ek_pub_b64 || null;
+  const headerN = Number(packet?.header?.n);
+  let usedStoredKey = false;
+  let mk = null;
+  if (chainId && Number.isFinite(headerN)) {
+    const cached = takeSkippedKey(st, chainId, headerN);
+    if (cached) {
+      mk = b64u8(cached);
+      usedStoredKey = true;
+    }
+  }
+  if (!usedStoredKey) {
+    if (!st.ckR) throw new Error('receive chain missing');
+    if (chainId && Number.isFinite(headerN)) {
+      while (st.ckR && st.Nr + 1 < headerN) {
+        const skippedOut = await kdfCK(st.ckR);
+        const { a: skippedMk, b: skippedNext } = split64(skippedOut);
+        st.ckR = skippedNext;
+        st.Nr += 1;
+        rememberSkippedKey(st, chainId, st.Nr, b64(skippedMk));
+      }
+    }
+    const mkOut = await kdfCK(st.ckR);
+    const derivation = split64(mkOut);
+    mk = derivation.a;
+    st.ckR = derivation.b;
+  }
+  if (onMessageKey) {
+    try {
+      onMessageKey(b64(mk));
+    } catch {
+      // ignore callback errors
+    }
+  }
+  if (!usedStoredKey) {
+    st.Nr += 1;
+    if (Number.isFinite(headerN) && headerN > st.Nr) {
+      st.Nr = headerN;
+    }
+  }
 
   const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
   const pt = await crypto.subtle.decrypt(

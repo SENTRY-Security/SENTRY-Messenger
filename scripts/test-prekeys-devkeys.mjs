@@ -43,14 +43,14 @@ function fakeAeadEnvelope() {
   return { v: 1, aead: 'aes-256-gcm', salt_b64: b64(rnd(16)), iv_b64: b64(rnd(12)), ct_b64: b64(rnd(64)), info: 'devkeys/v1' };
 }
 
-async function devkeysStore({ uidHex, accountToken, accountDigest }) {
+async function devkeysStore({ accountToken, accountDigest }) {
   const wrapped_dev = fakeAeadEnvelope();
-  const { r, data } = await jsonPost('/api/v1/devkeys/store', { uidHex, accountToken, accountDigest, wrapped_dev });
+  const { r, data } = await jsonPost('/api/v1/devkeys/store', { accountToken, accountDigest, wrapped_dev });
   if (r.status !== 204) throw new Error('devkeys.store failed: ' + JSON.stringify(data));
 }
 
-async function devkeysFetch({ uidHex, accountToken, accountDigest }) {
-  const { r, data } = await jsonPost('/api/v1/devkeys/fetch', { uidHex, accountToken, accountDigest });
+async function devkeysFetch({ accountToken, accountDigest }) {
+  const { r, data } = await jsonPost('/api/v1/devkeys/fetch', { accountToken, accountDigest });
   if (r.status === 404) throw new Error('devkeys.fetch not found');
   if (!r.ok) throw new Error('devkeys.fetch failed: ' + JSON.stringify(data));
   return data;
@@ -70,11 +70,11 @@ async function main() {
   console.log('    publish ok');
 
   console.log('[3] devkeys store');
-  await devkeysStore({ uidHex: dbg.uidHex, accountToken, accountDigest });
+  await devkeysStore({ accountToken, accountDigest });
   console.log('    store ok');
 
   console.log('[4] devkeys fetch');
-  const fetched = await devkeysFetch({ uidHex: dbg.uidHex, accountToken, accountDigest });
+  const fetched = await devkeysFetch({ accountToken, accountDigest });
   assert(!!fetched?.wrapped_dev, 'wrapped_dev missing');
   console.log('    fetch ok');
 
@@ -82,4 +82,3 @@ async function main() {
 }
 
 main().catch((e) => { console.error('TEST FAILED:', e?.message || e); process.exit(1); });
-
