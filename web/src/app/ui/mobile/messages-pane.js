@@ -1,7 +1,7 @@
 import { log } from '../../core/log.js';
-import { getUidHex, getAccountToken, getAccountDigest, drState } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
-import { sendDrText, sendDrMedia } from '../../features/dr-session.js';
+import { getUidHex, getAccountToken, getAccountDigest } from '../../core/store.js';
+import { listSecureAndDecrypt } from '../../features/messages.js';
+import { sendDrText, sendDrMedia, ensureDrReceiverState } from '../../features/dr-session.js';
 import { conversationIdFromToken } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml } from './ui-utils.js';
@@ -722,7 +722,7 @@ export function initMessagesPane({
     }
   }
 
-  async function loadActiveConversationMessages({ append = false } = {}) {
+  async function loadActiveConversationMessages({ append = false, replay = false } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerUid) return;
     if (state.loading) return;
@@ -732,14 +732,15 @@ export function initMessagesPane({
     if (!append) setMessagesStatus('載入中…');
     try {
       const cursor = append ? state.nextCursorTs : undefined;
+      const forceReplay = !append && replay;
       const { items, nextCursorTs, errors } = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerUidHex: state.activePeerUid,
         limit: 50,
         cursorTs: cursor,
-        mutateState: !append,
-        allowReplay: !append
+        mutateState: forceReplay ? false : !append,
+        allowReplay: !append || forceReplay
       });
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
       if (append) {
@@ -749,6 +750,9 @@ export function initMessagesPane({
           state.messages = [...chunk, ...state.messages];
           updateMessagesUI({ preserveScroll: true });
         }
+      } else if (forceReplay) {
+        state.messages = chunk;
+        updateMessagesUI({ scrollToEnd: true });
       } else {
         if (chunk.length || !state.messages.length) {
           state.messages = chunk;
@@ -799,6 +803,7 @@ export function initMessagesPane({
     log({ setActiveConversation: { peer: key, conversationId: conversation.conversation_id || null, hasDrInit: !!(conversation.dr_init || conversation.drInit) } });
     log({ setActiveConversation: { peer: key, conversationId: conversation.conversation_id || null } });
     const state = getMessageState();
+    const hadExistingMessages = Array.isArray(state.messages) && state.messages.length > 0;
     state.activePeerUid = key;
     state.conversationToken = conversation.token_b64;
     try {
@@ -815,23 +820,10 @@ export function initMessagesPane({
       applyMessagesLayout();
       return;
     }
-    const hadExistingMessages = Array.isArray(state.messages) && state.messages.length > 0;
-    resetProcessedMessages(state.conversationId);
     state.messages = [];
     state.nextCursorTs = null;
     state.hasMore = true;
     state.loading = false;
-    if (hadExistingMessages) {
-      try {
-        const holder = drState(key);
-        if (holder) {
-          holder.historyCursorTs = null;
-          holder.historyCursorId = null;
-        }
-      } catch (err) {
-        log({ drHistoryCursorResetError: err?.message || err });
-      }
-    }
     const thread = upsertConversationThread({
       peerUid: key,
       conversationId: state.conversationId,
@@ -846,6 +838,11 @@ export function initMessagesPane({
       state.viewMode = 'detail';
     } else if (!state.viewMode) {
       state.viewMode = 'detail';
+    }
+    try {
+      await ensureDrReceiverState({ peerUidHex: key });
+    } catch (err) {
+      log({ ensureDrStateError: err?.message || err, peerUid: key });
     }
     if (elements.peerName) elements.peerName.textContent = nickname;
     if (elements.peerAvatar) {
@@ -865,7 +862,7 @@ export function initMessagesPane({
     updateComposerAvailability();
     clearMessagesView();
     applyMessagesLayout();
-    await loadActiveConversationMessages({ append: false });
+    await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
   }
 
   function appendLocalOutgoingMessage({ text, ts, id, type = 'text', media = null }) {
