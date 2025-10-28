@@ -26,6 +26,7 @@
 
 ## 4. 其他提醒
 - 具有完整檔案與網路權限，可部署 Node API、Cloudflare Worker，並使用 `scripts/` 內工具。
+- 預設擁有 Git push、Cloudflare 清除 / 部署、D1 / R2 操作等權限；確認動作安全後直接執行，勿假設需要額外授權。
 - 測試或部署完成後，依 README 指示執行健康檢查（如 `curl` 檢查 API/Pages）。
 - 若流程中斷或重啟 session，就再讀本檔 + README，照上述步驟重新接手。
 

@@ -43,6 +43,8 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 
 開發流程請遵循 `Prompt.md`：新 session 先閱讀 README 最新進度 → 選定優先事項 → 修改後自跑測試 → 更新此文件紀錄。
 
+**權限提醒**：Codex 預設擁有 Git 推送、Cloudflare Worker／Pages 部署、D1／R2 清除與各項腳本執行權限。確認操作安全後請直接執行，不需假設權限受限。
+
 ---
 
 ## 架構概覽
