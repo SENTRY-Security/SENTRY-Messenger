@@ -30,6 +30,7 @@ export async function loadContacts() {
   const mk = getMkRaw();
   const convIds = contactConvIds();
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
+  const selfUid = (getUidHex() || '').toUpperCase();
 
   restoreContactSecrets();
 
@@ -59,6 +60,7 @@ export async function loadContacts() {
       const envelope = header?.envelope;
       if (!header?.contact || !envelope) continue;
       const peerUid = String(header?.peerUid || '').toUpperCase();
+      if (selfUid && peerUid === selfUid) continue;
       let contact = null;
       let conversation = null;
       if (envelope?.aead === 'aes-256-gcm') {
