@@ -129,9 +129,15 @@ export function setupShareController(options) {
       const { opks, next } = await generateOpksFrom(startId, PREKEY_REPLENISH_COUNT);
       if (!opks.length) {
         lastPrekeyEnsureResult = false;
-        return false;
+        throw new Error('prekey generate failed');
       }
-      await prekeysPublish({ bundle: { opks } });
+      const { r, data } = await prekeysPublish({ bundle: { opks } });
+      if (!r.ok) {
+        const preview = typeof data === 'string'
+          ? data
+          : (data?.details || data?.message || data?.error || 'prekey publish failed');
+        throw new Error(String(preview || 'prekey publish failed'));
+      }
       devicePriv.next_opk_id = next;
       setDevicePriv(devicePriv);
       const wrapped = await wrapDevicePrivWithMK(devicePriv, mk);

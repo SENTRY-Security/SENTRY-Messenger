@@ -200,7 +200,7 @@ kill $API_PID
 
 | 日期 | 里程碑 |
 | --- | --- |
-| **2025-11-06（Codex）** | Playwright full-flow 完成附件共享金鑰封套驗證，修復接收端預覽維持 `pending`；`sendDrMedia()` 會為媒體產生共享 key，`downloadAndDecrypt()` 依 `key_type` 自動挑選 MK 或共享金鑰；完成 Cloudflare D1 / R2 清空後重新部署 Worker、Node API、Pages。 |
+| **2025-11-06（Codex）** | Playwright full-flow 完成附件共享金鑰封套驗證，修復接收端預覽維持 `pending`；`sendDrMedia()` 會為媒體產生共享 key，`downloadAndDecrypt()` 依 `key_type` 自動挑選 MK 或共享金鑰；Share controller 會檢查 OPK 補貨 API 回應並於失敗時回報 `PrekeyUnavailable`，避免出現「缺少交友金鑰」；完成 Cloudflare D1 / R2 清空後重新部署 Worker、Node API、Pages。 |
 | **2025-11-05（Codex）** | `listSecureAndDecrypt()` 重播後套用 `snapshotAfter`，統一媒體物件至 `已傳送 / 已接收` 系統資料夾並新增 Worker 容量追蹤；DR receiver 重登入時會回溯歷史 snapshot 並重設 processed cache，避免首輪 decrypt 失敗與重複抓取；E2E `full-flow` 驗證 `sign-put` payload 與 Drive「已傳送」資料夾顯示；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。 |
 | **2025-11-04（Codex）** | 修復重新開啟會話時訊息列表被清空（重置 processed cache 重新導入訊息歷史），新增登出後專用畫面（呼吸紅光 Logo + 提示文案），`tests/e2e/full-flow.spec.mjs` 新增「返回列表→重進會話」與「聯絡人頁→點選好友」驗證，雙端確認訊息與附件仍存在，再進行刪除；`npm run test:front:login` 通過。 |
 | **2025-11-03（Codex）** | 重新設計會話與聯絡人列表的刪除介面（固定 delete row + 送出模擬 `/friends/delete`），修正 pointer-events 攔截問題，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。|
@@ -240,6 +240,7 @@ kill $API_PID
 | 時間 (UTC) | 說明 |
 | --- | --- |
 | 2025-11-06 08:20 | 媒體訊息改用共享封套金鑰（`sendDrMedia` 產生 32-byte key、`downloadAndDecrypt` 依 `key_type` 解密），修復接收端附件預覽長時間 `pending`；Playwright `tests/e2e/full-flow.spec.mjs` 通過後清除 Cloudflare D1 / R2 並以 `scripts/deploy-prod.sh --apply-migrations` 重新部署 Worker / Node API / Pages。 |
+| 2025-11-06 09:30 | `share-controller` 於補貨 OPK 時檢查 `/api/v1/keys/publish` 回應，若失敗會回拋錯誤並觸發自動重試，避免再次遇到「生成失敗：缺少交友金鑰」。 |
 | 2025-11-06 06:40 | Share controller 於生成邀請前自動補貨 OPK，`PrekeyUnavailable` 會觸發一次補貨並重試；登入頁新增首次初始化進度指示（OPAQUE、MK、Prekeys 等步驟顯示）；同時為 Playwright full-flow 新增附件 digest 驗證，確認接收端可成功解密下載並比對 SHA-256。 |
 | 2025-11-06 04:30 | `listSecureAndDecrypt` 在非前景對話改採 DR 狀態 clone + replay 補正，`prepareDrForMessage` 支援預覽模式並補強 history cursor；`pullLatestSnapshot` 比對 bytes/timestamp/checksum 後回寫 localStorage，logout handoff 會同步 meta/checksum；訊息面板新增 messageId 去重；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 通過。 |
 | 2025-11-05 10:40 | `/media/sign-put` 加入系統資料夾（已傳送/已接收）路徑與 500 MB 容量檢查，Worker 新增 `/d1/media/usage` 並記錄 `media_objects`，前端統一帶入 direction；重跑全套測試通過。 |
