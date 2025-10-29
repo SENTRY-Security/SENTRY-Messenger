@@ -161,6 +161,7 @@ export function setupShareController(options) {
   const {
     inviteCountdownEl,
     inviteQrBox,
+    inviteRetryBtn,
     btnShareModal,
     shareModal,
     shareModalBackdrop,
@@ -180,6 +181,7 @@ export function setupShareController(options) {
   shareState.scannerOpen = shareState.scannerOpen || false;
   shareState.inviteBlockedDueToKeys = !!shareState.inviteBlockedDueToKeys;
   shareState.lastInviteError = shareState.lastInviteError || null;
+  shareState.retryHandler = shareState.retryHandler || null;
 
   if (shareModal) shareModal.setAttribute('data-share-mode', shareState.mode);
 
@@ -197,6 +199,15 @@ export function setupShareController(options) {
 
   document.addEventListener('keydown', handleEscapeKey);
   ensureQrPlaceholder();
+
+  inviteRetryBtn?.addEventListener('click', () => {
+    if (inviteRetryBtn.disabled) return;
+    const handler = typeof shareState.retryHandler === 'function' ? shareState.retryHandler : null;
+    if (handler) {
+      inviteRetryBtn.disabled = true;
+      handler();
+    }
+  });
 
   const AUTO_REFRESH_BUFFER_MS = 5_000;
 
@@ -230,7 +241,7 @@ export function setupShareController(options) {
   async function ensureActiveInvite({ force = false } = {}) {
     if (!shareModal) return;
     if (shareState.inviteBlockedDueToKeys && !force) {
-      setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', true);
+      setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', { isError: true });
       return;
     }
     if (!shareState.currentInvite || force) {
@@ -282,21 +293,32 @@ export function setupShareController(options) {
     if (e.key === 'Escape' && shareState.open) closeShareModal();
   }
 
-  async function onGenerateInvite({ auto = false, attempt = 0, prekeyRetry = false } = {}) {
+  async function onGenerateInvite({ auto = false, attempt = 0 } = {}) {
     const uid = getUidHex();
     if (!uid) {
-      setInviteStatus('尚未登入，無法生成 QR，請重新登入後再試。', true);
+      setInviteStatus('尚未登入，無法生成交友邀請，請重新登入後再試。', {
+        isError: true,
+        showRetry: true,
+        retryHandler: () => window.location.reload()
+      });
       return;
     }
 
-    setInviteStatus(auto ? '更新交友邀請中…' : '建立交友邀請中…');
+    if (shareState.retryTimerId) {
+      clearTimeout(shareState.retryTimerId);
+      shareState.retryTimerId = null;
+    }
+
+    setInviteStatus(auto ? '更新交友邀請中…' : '建立交友邀請中…', { loading: true });
+    shareState.retryHandler = null;
     clearInviteView();
-    log('invite: begin create');
+    log({ inviteBegin: { auto, attempt } });
 
     try {
-      await ensureOwnerPrekeys({ force: attempt > 0, reason: attempt > 0 ? 'retry' : 'initial' }).catch((err) => {
-        log({ invitePrekeyEnsureWarn: err?.message || err, phase: attempt > 0 ? 'retry' : 'initial' });
-      });
+      setInviteStatus('檢查交友金鑰配置…', { loading: true });
+      await ensureOwnerPrekeys({ force: attempt > 0, reason: attempt > 0 ? 'retry' : 'initial' });
+
+      setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
       const invite = await friendsCreateInvite({ uidHex: uid });
       log({ inviteCreateFetched: true });
       if (!invite || !invite.inviteId || !invite.secret || !invite.expiresAt) {
@@ -329,7 +351,9 @@ export function setupShareController(options) {
       persistInviteSecrets();
       shareState.inviteBlockedDueToKeys = false;
       shareState.lastInviteError = null;
+      shareState.retryHandler = null;
 
+      setInviteStatus('邀請已生成，載入 QR 中…', { loading: true });
       await attachInviteOwnerContact(shareState.currentInvite);
       renderInviteQr(shareState.currentInvite);
       startInviteCountdown(shareState.currentInvite.expiresAt);
@@ -338,24 +362,54 @@ export function setupShareController(options) {
       log({ inviteError: msg, attempt });
       shareState.currentInvite = null;
       shareState.lastInviteError = msg;
+      shareState.inviteBlockedDueToKeys = false;
+
+      if (shareState.retryTimerId) {
+        clearTimeout(shareState.retryTimerId);
+        shareState.retryTimerId = null;
+      }
+
       if (isPrekeyRecoveryError(msg)) {
         shareState.inviteBlockedDueToKeys = true;
-        if (attempt < 2 && !prekeyRetry) {
-          setInviteStatus('生成失敗：缺少交友金鑰，正在自動補貨…', true);
-          try {
-            await ensureOwnerPrekeys({ force: true, reason: 'recover' });
-            shareState.inviteBlockedDueToKeys = false;
-            shareState.lastInviteError = null;
-            return await onGenerateInvite({ auto, attempt: attempt + 1, prekeyRetry: true });
-          } catch (recoverErr) {
-            log({ invitePrekeyRecoveryFailed: recoverErr?.message || recoverErr });
-          }
+        const nextAttempt = attempt + 1;
+        const maxAutoRetries = 3;
+        if (nextAttempt <= maxAutoRetries) {
+          const delayMs = Math.min(4000, 1000 * Math.pow(2, attempt));
+          setInviteStatus(`補貨交友金鑰失敗，${(delayMs / 1000).toFixed(1)} 秒後自動重試（第 ${nextAttempt}/${maxAutoRetries} 次）。`, {
+            isError: true,
+            loading: true
+          });
+          shareState.retryTimerId = setTimeout(() => {
+            shareState.retryTimerId = null;
+            onGenerateInvite({ auto: true, attempt: nextAttempt });
+          }, delayMs);
+          return;
         }
-        setInviteStatus('生成失敗：缺少交友金鑰，請重新登入完成初始化。', true);
-      } else {
-        shareState.inviteBlockedDueToKeys = false;
-        setInviteStatus(`生成失敗：${msg}`, true);
       }
+
+      const normalized = msg.toLowerCase();
+      let userMessage = msg;
+      if (normalized.includes('裝置金鑰')) {
+        userMessage = '生成失敗：找不到裝置金鑰，請確認晶片交棒或重新登入。';
+      } else if (normalized.includes('主金鑰') || normalized.includes('尚未解鎖')) {
+        userMessage = '生成失敗：主金鑰尚未解鎖，請重新登入完成初始化。';
+      } else if (normalized.includes('prekey') || normalized.includes('bundle')) {
+        userMessage = `生成失敗：補貨交友金鑰失敗（${msg}），請稍後再試或檢查網路。`;
+      } else if (normalized.includes('network') || normalized.includes('fetch')) {
+        userMessage = `生成失敗：網路請求失敗（${msg}），請檢查連線後重試。`;
+      } else {
+        userMessage = `生成失敗：${msg}`;
+      }
+      const manualRetry = () => {
+        shareState.retryHandler = null;
+        setInviteStatus('重新嘗試生成交友邀請…', { loading: true });
+        onGenerateInvite({ auto: false, attempt: 0 });
+      };
+      setInviteStatus(userMessage, {
+        isError: true,
+        showRetry: true,
+        retryHandler: manualRetry
+      });
     } finally {
       updateProfileStats?.();
     }
@@ -411,16 +465,36 @@ export function setupShareController(options) {
     if (placeholder) placeholder.remove();
   }
 
-  function setInviteStatus(message, isError = false) {
+  function setInviteStatus(message, opts = {}) {
+    if (typeof opts === 'boolean') {
+      opts = { isError: opts };
+    }
+    const {
+      isError = false,
+      loading = false,
+      showRetry = false,
+      retryHandler = null
+    } = opts || {};
     if (!inviteCountdownEl) return;
     inviteCountdownEl.textContent = message || '';
-    inviteCountdownEl.style.color = isError ? '#ef4444' : '#64748b';
+    inviteCountdownEl.classList.toggle('is-error', !!isError && !!message);
+    inviteCountdownEl.classList.toggle('is-loading', !!loading && !!message);
+    shareState.retryHandler = typeof retryHandler === 'function' ? retryHandler : null;
+    if (inviteRetryBtn) {
+      if (message && showRetry && shareState.retryHandler) {
+        inviteRetryBtn.style.display = 'inline-flex';
+        inviteRetryBtn.disabled = !!loading;
+      } else {
+        inviteRetryBtn.style.display = 'none';
+        inviteRetryBtn.disabled = false;
+      }
+    }
   }
 
   function startInviteCountdown(expiresAt) {
     stopInviteCountdown();
     if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
-      setInviteStatus('邀請資訊不完整，請重新生成。', true);
+      setInviteStatus('邀請資訊不完整，請重新生成。', { isError: true });
       return;
     }
     const tick = () => {
@@ -432,13 +506,13 @@ export function setupShareController(options) {
       if (inviteBtn) inviteBtn.textContent = '生成交友邀請';
       if (shareState.open) {
         if (shareState.inviteBlockedDueToKeys) {
-          setInviteStatus('交友邀請已過期，請重新登入完成初始化。', true);
+          setInviteStatus('交友邀請已過期，請重新登入完成初始化。', { isError: true });
         } else {
           setInviteStatus('交友邀請已過期，正在重新生成…');
           setTimeout(() => onGenerateInvite({ auto: true }), 220);
         }
       } else {
-        setInviteStatus('交友邀請已過期，請重新生成。', true);
+        setInviteStatus('交友邀請已過期，請重新生成。', { isError: true });
       }
       return;
     }
@@ -810,7 +884,7 @@ export function setupShareController(options) {
           log({ autoInviteRefreshError: err?.message || err });
         }
       } else if (shareState.open) {
-        setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', true);
+        setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', { isError: true });
       }
       if (shareState.open) {
         closeShareModal();

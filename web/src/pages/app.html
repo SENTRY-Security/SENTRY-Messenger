@@ -362,8 +362,14 @@
       .share-head { position:relative; padding:24px 24px 12px; display:flex; flex-direction:column; gap:12px; justify-content:flex-start; }
       .share-head-content { display:flex; flex-direction:column; gap:8px; max-width:calc(100% - 130px); }
       .share-title { font-size:18px; font-weight:700; letter-spacing:0.4px; }
-      .share-countdown { display:flex; justify-content:center; width:100%; }
-      #inviteCountdown { display:inline-flex; align-items:center; justify-content:center; min-height:30px; padding:6px 16px; border-radius:999px; background:#f1f5f9; box-shadow:inset 0 0 0 1px rgba(15,23,42,0.1); color:#0f172a; font-size:12px; letter-spacing:0.4px; }
+      .share-countdown { display:flex; justify-content:center; align-items:center; gap:12px; width:100%; }
+      #inviteCountdown { display:inline-flex; align-items:center; justify-content:center; min-height:30px; padding:6px 16px; border-radius:999px; background:#f1f5f9; box-shadow:inset 0 0 0 1px rgba(15,23,42,0.1); color:#0f172a; font-size:12px; letter-spacing:0.4px; transition:background .2s ease,color .2s ease; }
+      #inviteCountdown.is-error { background:rgba(239,68,68,0.12); color:#b91c1c; box-shadow:inset 0 0 0 1px rgba(185,28,28,0.35); }
+      #inviteCountdown.is-loading::after { content:''; width:10px; height:10px; border-radius:50%; border:2px solid currentColor; border-top-color:transparent; margin-left:8px; animation:share-spinner 0.8s linear infinite; }
+      @keyframes share-spinner { from { transform:rotate(0deg);} to { transform:rotate(360deg);} }
+      #inviteRetryBtn { display:none; border:none; border-radius:999px; padding:6px 14px; font-size:12px; background:#2563eb; color:#fff; box-shadow:0 6px 16px rgba(37,99,235,0.28); cursor:pointer; transition:transform .15s ease, box-shadow .15s ease; }
+      #inviteRetryBtn:active { transform:translateY(1px); box-shadow:0 3px 10px rgba(37,99,235,0.25); }
+      #inviteRetryBtn[disabled] { opacity:0.5; cursor:wait; }
       .share-face.share-back .share-countdown { display:none; }
       #inviteCountdown:empty { display:none; }
       .share-close { position:absolute; top:18px; left:18px; width:32px; height:32px; border:none; border-radius:50%; background:rgba(15,23,42,0.08); color:inherit; font-size:20px; display:flex; align-items:center; justify-content:center; cursor:pointer; transition:transform .2s ease, opacity .2s ease; }
@@ -560,7 +566,10 @@
               </button>
             </header>
             <div class="share-body share-body-qr">
-              <div class="share-countdown"><span id="inviteCountdown"></span></div>
+              <div class="share-countdown">
+                <span id="inviteCountdown"></span>
+                <button id="inviteRetryBtn" type="button">再試一次</button>
+              </div>
               <div id="inviteQrBox" class="share-qr-box"></div>
             </div>
           </div>
