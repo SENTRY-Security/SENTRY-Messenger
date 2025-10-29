@@ -13,7 +13,8 @@ import {
   recordDrMessageHistory,
   snapshotDrState,
   restoreDrStateFromSnapshot,
-  restoreDrStateToHistoryPoint
+  restoreDrStateToHistoryPoint,
+  cloneDrStateHolder
 } from './dr-session.js';
 import { decryptConversationEnvelope, computeConversationFingerprint } from './conversation.js';
 import { b64UrlToBytes } from '../ui/mobile/ui-utils.js';
@@ -223,7 +224,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
   const { r, data } = await listSecureMessages({ conversationId, limit, cursorTs });
   const out = [];
   const errs = [];
-  let state = drState(peerUidHex);
+  let state = null;
   let items = [];
   let nextCursorTs = null;
   if (!r.ok) {
@@ -257,20 +258,8 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
   const sortedItems = sortMessagesByTimeline(items);
   const shouldTrackState = mutateState !== false;
   const allowCursorReplay = !!allowReplay || !shouldTrackState;
-  let stateSnapshotBeforeBatch = null;
-  let cursorBackup = null;
-  if (!shouldTrackState) {
-    try {
-      stateSnapshotBeforeBatch = snapshotDrState(state, { setDefaultUpdatedAt: false });
-      cursorBackup = {
-        ts: Number.isFinite(state?.historyCursorTs) ? state.historyCursorTs : null,
-        id: state?.historyCursorId || null
-      };
-    } catch {
-      stateSnapshotBeforeBatch = null;
-      cursorBackup = { ts: null, id: null };
-    }
-  }
+  const baseState = drState(peerUidHex);
+  state = shouldTrackState ? baseState : cloneDrStateHolder(baseState);
 
   if (drDebug) {
     try {
@@ -278,6 +267,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
         peerUidHex,
         conversationId,
         mutateState: shouldTrackState,
+        mode: shouldTrackState ? 'live' : 'preview',
         cursorTs: cursorTs ?? null,
         nextCursorTs,
         itemsRequested: sortedItems.length
@@ -327,11 +317,16 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
       if (senderFingerprint && fingerprintSelf && senderFingerprint === fingerprintSelf) direction = 'outgoing';
       else if (senderFingerprint && fingerprintPeer && senderFingerprint === fingerprintPeer) direction = 'incoming';
       if (Number.isFinite(msgTs)) {
+        if (shouldTrackState) {
+          state = drState(peerUidHex);
+        }
         prepResult = prepareDrForMessage({
           peerUidHex,
           messageTs: msgTs,
           messageId,
-          allowCursorReplay
+          allowCursorReplay,
+          stateOverride: state,
+          mutate: shouldTrackState
         });
         const historyEntry = prepResult?.historyEntry || null;
         if (prepResult?.duplicate) {
@@ -340,7 +335,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
           }
           continue;
         }
-        if (prepResult?.restored) {
+        if (prepResult?.restored && shouldTrackState) {
           state = drState(peerUidHex);
         }
         if (!decrypted && allowCursorReplay && prepResult?.historyEntry?.messageKey_b64) {
@@ -354,25 +349,40 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
             let stateSynced = false;
             try {
               if (historyEntry?.snapshotAfter) {
-                restoreDrStateFromSnapshot({
+                const restored = restoreDrStateFromSnapshot({
                   peerUidHex,
                   snapshot: historyEntry.snapshotAfter,
-                  force: true
+                  force: true,
+                  targetState: shouldTrackState ? null : state,
+                  sourceTag: 'history-replay-after'
                 });
-                state = drState(peerUidHex);
-                stateSynced = !!state;
+                if (shouldTrackState) {
+                  state = drState(peerUidHex);
+                  stateSynced = !!state;
+                } else {
+                  stateSynced = restored;
+                }
               } else if (historyEntry?.snapshot) {
-                restoreDrStateFromSnapshot({
+                const restored = restoreDrStateFromSnapshot({
                   peerUidHex,
                   snapshot: historyEntry.snapshot,
-                  force: true
+                  force: true,
+                  targetState: shouldTrackState ? null : state,
+                  sourceTag: 'history-replay'
                 });
-                const replayState = drState(peerUidHex);
-                if (replayState) {
-                  await drDecryptText(replayState, pkt, {
+                if (shouldTrackState) {
+                  const replayState = drState(peerUidHex);
+                  if (replayState) {
+                    await drDecryptText(replayState, pkt, {
+                      onMessageKey: () => {}
+                    });
+                    state = replayState;
+                    stateSynced = true;
+                  }
+                } else if (restored) {
+                  await drDecryptText(state, pkt, {
                     onMessageKey: () => {}
                   });
-                  state = replayState;
                   stateSynced = true;
                 }
               }
@@ -429,7 +439,9 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
       for (let attempt = 0; attempt < 2 && !decrypted; attempt += 1) {
         let snapshotBefore = null;
         try {
-          state = drState(peerUidHex);
+          if (shouldTrackState) {
+            state = drState(peerUidHex);
+          }
           snapshotBefore = Number.isFinite(msgTs) ? snapshotDrState(state, { setDefaultUpdatedAt: false }) : null;
           const text = await drDecryptText(state, pkt, {
             onMessageKey: (mk) => {
@@ -474,18 +486,26 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               ts: Number.isFinite(msgTs) ? msgTs : null,
               header,
               snapshotBefore: snapshotBefore || null,
-              snapshotAfter: snapshotForDebug(drState(peerUidHex))
+              snapshotAfter: snapshotForDebug(shouldTrackState ? drState(peerUidHex) : state)
             });
             if (snapshotBefore) {
               try {
-                restoreDrStateFromSnapshot({ peerUidHex, snapshot: snapshotBefore, force: true });
-                state = drState(peerUidHex);
+                restoreDrStateFromSnapshot({
+                  peerUidHex,
+                  snapshot: snapshotBefore,
+                  force: true,
+                  targetState: shouldTrackState ? null : state,
+                  sourceTag: 'decrypt-rollback'
+                });
+                if (shouldTrackState) {
+                  state = drState(peerUidHex);
+                }
               } catch (restoreErr) {
                 console.warn('[messages] dr snapshot rollback failed', restoreErr);
               }
             }
           }
-          if (attempt === 0 && isOpError) {
+          if (shouldTrackState && attempt === 0 && isOpError) {
             let restoredFromHistory = false;
             if (Number.isFinite(msgTs) || messageId) {
               try {
@@ -517,10 +537,12 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               state = drState(peerUidHex);
               continue;
             }
-            const recovered = await recoverDrState({ peerUidHex });
-            if (recovered) {
-              state = drState(peerUidHex);
-              continue;
+            if (shouldTrackState) {
+              const recovered = await recoverDrState({ peerUidHex });
+              if (recovered) {
+                state = drState(peerUidHex);
+                continue;
+              }
             }
           }
           break;
@@ -536,27 +558,6 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
       const msg = err?.message || String(err);
       errs.push(msg);
       console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg });
-    }
-  }
-
-  if (!shouldTrackState && stateSnapshotBeforeBatch) {
-    try {
-      restoreDrStateFromSnapshot({ peerUidHex, snapshot: stateSnapshotBeforeBatch, force: true });
-      const holder = drState(peerUidHex);
-      if (holder) {
-        holder.historyCursorTs = cursorBackup?.ts ?? null;
-        holder.historyCursorId = cursorBackup?.id || null;
-      }
-      if (drDebug) {
-        console.log('[dr-list-restore-snapshot]', JSON.stringify({
-          peerUidHex,
-          conversationId,
-          restoredCursorTs: holder?.historyCursorTs || null,
-          restoredCursorId: holder?.historyCursorId || null
-        }));
-      }
-    } catch (err) {
-      console.warn('[messages] restore batch snapshot failed', err);
     }
   }
 

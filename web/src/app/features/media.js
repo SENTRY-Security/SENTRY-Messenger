@@ -44,6 +44,41 @@ async function deriveStorageDirPath(dirSegments, mk) {
   return hashes.join('/');
 }
 
+function normalizeSharedKey(input) {
+  if (!input) return null;
+  if (input instanceof Uint8Array) return input;
+  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength));
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (Array.isArray(input) && input.every((n) => Number.isFinite(n))) {
+    return new Uint8Array(input.map((n) => Number(n) & 0xff));
+  }
+  if (typeof input === 'string') {
+    try {
+      return b64u8(input);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function buildEnvelope({ ct, keyType, keyU8, infoTag, contentType, name }) {
+  const envelope = {
+    v: keyType === 'shared' ? 2 : 1,
+    aead: 'aes-256-gcm',
+    iv_b64: b64(ct.iv),
+    hkdf_salt_b64: b64(ct.hkdfSalt),
+    info_tag: infoTag || 'media/v1',
+    key_type: keyType || 'mk',
+    contentType,
+    name
+  };
+  if (keyType === 'shared' && keyU8) {
+    envelope.key_b64 = b64(keyU8);
+  }
+  return envelope;
+}
+
 /** Persist envelope metadata for a given object key (local-only cache). */
 export function saveEnvelopeMeta(objectKey, meta) {
   try { localStorage.setItem('env_v1:' + objectKey, JSON.stringify(meta)); } catch {}
@@ -77,10 +112,15 @@ export async function deleteEncryptedObjects({ keys, ids }) {
  * @param {{convId:string, file:File|Blob}} p
  * @returns {Promise<{objectKey:string,size:number,envelope:object,message:any}>}
  */
-export async function encryptAndPut({ convId, file, dir, skipIndex = false, direction = 'sent' }) {
+export async function encryptAndPut({ convId, file, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag } = {}) {
   const mk = getMkRaw();
-  if (!mk) throw new Error('Not unlocked: MK not ready');
+  const sharedKeyU8 = normalizeSharedKey(Array.isArray(encryptionKey) ? encryptionKey : encryptionKey?.key || encryptionKey);
+  const useSharedKey = !!sharedKeyU8;
+  if (!mk && !useSharedKey) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
+  if (useSharedKey && !skipIndex) {
+    throw new Error('shared encryption key is only supported when skipIndex=true');
+  }
 
   const contentType = file.type || 'application/octet-stream';
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
@@ -89,13 +129,20 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
     throw new Error('檔案大小超過 500MB 限制');
   }
   const dirSegments = normalizeDirSegments(dir);
+  if (dirSegments.length && !mk) {
+    throw new Error('MK required for directory hashing');
+  }
 
   // 1) Read & Encrypt
   const plainBuf = new Uint8Array(await file.arrayBuffer());
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
     throw new Error('檔案大小超過 500MB 限制');
   }
-  const ct = await aeadEncryptWithMK(plainBuf, mk, 'media/v1');
+  const infoTag = useSharedKey
+    ? (typeof encryptionInfoTag === 'string' && encryptionInfoTag.trim() ? encryptionInfoTag.trim() : 'media/v1')
+    : 'media/v1';
+  const ctKey = useSharedKey ? sharedKeyU8 : mk;
+  const ct = await aeadEncryptWithMK(plainBuf, ctKey, infoTag);
 
   // 2) Get presigned PUT
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
@@ -124,9 +171,16 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   const objectKey = upload.key || objectPath;
 
   // 4) Save envelope meta locally（供後續下載解密）
-  const envelope = { v: 1, aead: 'aes-256-gcm', iv_b64: b64(ct.iv), hkdf_salt_b64: b64(ct.hkdfSalt) };
+  const envelope = buildEnvelope({
+    ct,
+    keyType: useSharedKey ? 'shared' : 'mk',
+    keyU8: useSharedKey ? sharedKeyU8 : null,
+    infoTag,
+    contentType,
+    name
+  });
   // 本機快取封套，供同裝置後續下載/預覽
-  saveEnvelopeMeta(objectKey, { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64, contentType, name });
+  saveEnvelopeMeta(objectKey, envelope);
 
   // 5) Create message index（把 envelope JSON 放在 ciphertext_b64，小訊息）
   let dataMsg = null;
@@ -136,8 +190,27 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
       type: 'media',
       aead: 'aes-256-gcm',
       // 將封套必要欄位一併放入 header.env，支援跨裝置解密
-      header: { obj: objectKey, size: ct.cipherBuf.byteLength, name, contentType, dir: dirSegments, env: { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64 } },
-      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify(envelope)))
+      header: {
+        obj: objectKey,
+        size: ct.cipherBuf.byteLength,
+        name,
+        contentType,
+        dir: dirSegments,
+        env: {
+          iv_b64: envelope.iv_b64,
+          hkdf_salt_b64: envelope.hkdf_salt_b64,
+          info_tag: envelope.info_tag,
+          key_type: envelope.key_type
+        }
+      },
+      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({
+        v: envelope.v,
+        aead: envelope.aead,
+        iv_b64: envelope.iv_b64,
+        hkdf_salt_b64: envelope.hkdf_salt_b64,
+        info_tag: envelope.info_tag,
+        key_type: envelope.key_type
+      })))
     };
     const { r: rMsg, data } = await createMessage(msgBody);
     if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(data));
@@ -151,10 +224,15 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
  * Same as encryptAndPut but allows tracking upload progress via XHR.
  * @param {{convId:string, file:File|Blob, onProgress?:(p:{loaded:number,total:number,percent:number})=>void}} p
  */
-export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent' }) {
+export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag } = {}) {
   const mk = getMkRaw();
-  if (!mk) throw new Error('Not unlocked: MK not ready');
+  const sharedKeyU8 = normalizeSharedKey(Array.isArray(encryptionKey) ? encryptionKey : encryptionKey?.key || encryptionKey);
+  const useSharedKey = !!sharedKeyU8;
+  if (!mk && !useSharedKey) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
+  if (useSharedKey && !skipIndex) {
+    throw new Error('shared encryption key is only supported when skipIndex=true');
+  }
 
   const contentType = file.type || 'application/octet-stream';
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
@@ -163,12 +241,19 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
     throw new Error('檔案大小超過 500MB 限制');
   }
   const dirSegments = normalizeDirSegments(dir);
+  if (dirSegments.length && !mk) {
+    throw new Error('MK required for directory hashing');
+  }
 
   const plainBuf = new Uint8Array(await file.arrayBuffer());
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
     throw new Error('檔案大小超過 500MB 限制');
   }
-  const ct = await aeadEncryptWithMK(plainBuf, mk, 'media/v1');
+  const infoTag = useSharedKey
+    ? (typeof encryptionInfoTag === 'string' && encryptionInfoTag.trim() ? encryptionInfoTag.trim() : 'media/v1')
+    : 'media/v1';
+  const ctKey = useSharedKey ? sharedKeyU8 : mk;
+  const ct = await aeadEncryptWithMK(plainBuf, ctKey, infoTag);
 
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
   const accountDigest = getAccountDigest();
@@ -204,8 +289,15 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   });
 
   const objectKey = upload.key || objectPath;
-  const envelope = { v: 1, aead: 'aes-256-gcm', iv_b64: b64(ct.iv), hkdf_salt_b64: b64(ct.hkdfSalt) };
-  saveEnvelopeMeta(objectKey, { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64, contentType, name });
+  const envelope = buildEnvelope({
+    ct,
+    keyType: useSharedKey ? 'shared' : 'mk',
+    keyU8: useSharedKey ? sharedKeyU8 : null,
+    infoTag,
+    contentType,
+    name
+  });
+  saveEnvelopeMeta(objectKey, envelope);
 
   let dataMsg = null;
   if (!skipIndex) {
@@ -213,8 +305,27 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
       convId,
       type: 'media',
       aead: 'aes-256-gcm',
-      header: { obj: objectKey, size: ct.cipherBuf.byteLength, name, contentType, dir: dirSegments, env: { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64 } },
-      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify(envelope)))
+      header: {
+        obj: objectKey,
+        size: ct.cipherBuf.byteLength,
+        name,
+        contentType,
+        dir: dirSegments,
+        env: {
+          iv_b64: envelope.iv_b64,
+          hkdf_salt_b64: envelope.hkdf_salt_b64,
+          info_tag: envelope.info_tag,
+          key_type: envelope.key_type
+        }
+      },
+      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({
+        v: envelope.v,
+        aead: envelope.aead,
+        iv_b64: envelope.iv_b64,
+        hkdf_salt_b64: envelope.hkdf_salt_b64,
+        info_tag: envelope.info_tag,
+        key_type: envelope.key_type
+      })))
     };
     const { r: rMsg, data } = await createMessage(msgBody);
     if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(data));
@@ -237,11 +348,20 @@ export async function signGet({ key }) {
  * Returns { blob, contentType, name, bytes } for callers to save/display.
  */
 export async function downloadAndDecrypt({ key, envelope, onStatus }) {
-  const mk = getMkRaw();
-  if (!mk) throw new Error('Not unlocked: MK not ready');
-
   const meta = envelope || loadEnvelopeMeta(key);
   if (!meta) throw new Error('No envelope metadata available for key');
+  const keyType = String(meta.key_type || meta.keyType || 'mk').toLowerCase();
+  let baseKey = null;
+  if (keyType === 'shared') {
+    const keyB64 = meta.key_b64 || meta.keyB64;
+    if (!keyB64) throw new Error('No shared media key available');
+    baseKey = normalizeSharedKey(keyB64);
+    if (!baseKey) throw new Error('Shared media key invalid');
+  } else {
+    baseKey = getMkRaw();
+    if (!baseKey) throw new Error('Not unlocked: MK not ready');
+  }
+  const infoTag = typeof meta.info_tag === 'string' && meta.info_tag ? meta.info_tag : 'media/v1';
 
   onStatus?.({ stage: 'sign', message: '取得下載授權…' });
   const { download } = await signGet({ key });
@@ -282,10 +402,10 @@ export async function downloadAndDecrypt({ key, envelope, onStatus }) {
   onStatus?.({ stage: 'decrypt', message: '解密檔案中…' });
   const plain = await aeadDecryptWithMK(
     cipherU8,
-    mk,
+    baseKey,
     b64u8(meta.hkdf_salt_b64),
     b64u8(meta.iv_b64),
-    'media/v1'
+    infoTag
   );
   onStatus?.({ stage: 'done', bytes: plain.length });
   const blob = new Blob([plain], { type: meta.contentType || 'application/octet-stream' });

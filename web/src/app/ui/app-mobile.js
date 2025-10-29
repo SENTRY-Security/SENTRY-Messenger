@@ -277,6 +277,8 @@ function persistContactSecretMetadata({ snapshot, source }) {
     try {
       sessionStorage?.removeItem?.(CONTACT_SECRETS_META_KEY);
       sessionStorage?.removeItem?.(CONTACT_SECRETS_CHECKSUM_KEY);
+      localStorage?.removeItem?.(CONTACT_SECRETS_META_KEY);
+      localStorage?.removeItem?.(CONTACT_SECRETS_CHECKSUM_KEY);
     } catch {}
     return null;
   }
@@ -288,6 +290,9 @@ function persistContactSecretMetadata({ snapshot, source }) {
   };
   try {
     sessionStorage?.setItem?.(CONTACT_SECRETS_META_KEY, JSON.stringify(meta));
+  } catch {}
+  try {
+    localStorage?.setItem?.(CONTACT_SECRETS_META_KEY, JSON.stringify(meta));
   } catch {}
   try {
     window.__CONTACT_SECRETS_META__ = meta;
@@ -303,6 +308,9 @@ function persistContactSecretMetadata({ snapshot, source }) {
       };
       try {
         sessionStorage?.setItem?.(CONTACT_SECRETS_CHECKSUM_KEY, JSON.stringify(detail));
+      } catch {}
+      try {
+        localStorage?.setItem?.(CONTACT_SECRETS_CHECKSUM_KEY, JSON.stringify(detail));
       } catch {}
       log({
         contactSecretsSnapshotChecksum: {

@@ -743,6 +743,16 @@ export function initMessagesPane({
         allowReplay: !append || forceReplay
       });
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
+      if (chunk.length) {
+        const seenIds = new Set();
+        chunk = chunk.filter((entry) => {
+          const messageId = entry?.id || entry?.messageId || null;
+          if (!messageId) return true;
+          if (seenIds.has(messageId)) return false;
+          seenIds.add(messageId);
+          return true;
+        });
+      }
       if (append) {
         const existingIds = new Set(state.messages.map((m) => m.id));
         chunk = chunk.filter((m) => !existingIds.has(m.id));
@@ -754,7 +764,21 @@ export function initMessagesPane({
         state.messages = chunk;
         updateMessagesUI({ scrollToEnd: true });
       } else {
-        if (chunk.length || !state.messages.length) {
+        if (chunk.length) {
+          const mergedMap = new Map();
+          for (const msg of state.messages) {
+            if (!msg || !msg.id) continue;
+            mergedMap.set(msg.id, msg);
+          }
+          for (const msg of chunk) {
+            if (!msg || !msg.id) continue;
+            mergedMap.set(msg.id, msg);
+          }
+          const merged = Array.from(mergedMap.values());
+          merged.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+          state.messages = merged;
+          updateMessagesUI({ scrollToEnd: true });
+        } else if (!state.messages.length) {
           state.messages = chunk;
           updateMessagesUI({ scrollToEnd: true });
         }

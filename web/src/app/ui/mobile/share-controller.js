@@ -1,11 +1,13 @@
 import { friendsCreateInvite, friendsAcceptInvite, friendsAttachInviteContact, parseFriendInvite, friendsShareContactUpdate } from '../../api/friends.js';
+import { prekeysPublish } from '../../api/prekeys.js';
+import { devkeysStore } from '../../api/devkeys.js';
 import { encodeFriendInvite } from '../../lib/invite.js';
 import { generateQR } from '../../lib/qr.js';
 import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { getUidHex } from '../../core/store.js';
+import { getUidHex, setDevicePriv, getMkRaw } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
@@ -13,6 +15,7 @@ import { restoreContactSecrets, setContactSecret, deleteContactSecret, getContac
 import { sessionStore } from './session-store.js';
 import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState } from '../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
+import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 
 const INVITE_SECRET_STORAGE_KEY = 'inviteSecrets-v1';
 
@@ -36,6 +39,11 @@ export function setupShareController(options) {
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
   const recentlyDeletedPeers = new Map();
   const CONTACT_READD_COOLDOWN_MS = 30_000;
+  const PREKEY_ENSURE_INTERVAL_MS = 120_000;
+  const PREKEY_REPLENISH_COUNT = 24;
+  let prekeyEnsurePromise = null;
+  let lastPrekeyEnsureTs = 0;
+  let lastPrekeyEnsureResult = false;
 
   if (!dom) throw new Error('share controller requires dom references');
   const contactSecretMap = restoreContactSecrets();
@@ -105,6 +113,45 @@ export function setupShareController(options) {
     if (!peerUid) return null;
     return getContactSecret(peerUid);
   }
+
+  async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
+    const now = Date.now();
+    if (prekeyEnsurePromise) return prekeyEnsurePromise;
+    if (!force && lastPrekeyEnsureResult && now - lastPrekeyEnsureTs < PREKEY_ENSURE_INTERVAL_MS) {
+      return false;
+    }
+    prekeyEnsurePromise = (async () => {
+      const devicePriv = await ensureDevicePrivLoaded();
+      if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入完成初始化');
+      const mk = getMkRaw();
+      if (!mk) throw new Error('尚未解鎖主金鑰，請重新登入完成初始化');
+      const startId = Number(devicePriv.next_opk_id || 1);
+      const { opks, next } = await generateOpksFrom(startId, PREKEY_REPLENISH_COUNT);
+      if (!opks.length) {
+        lastPrekeyEnsureResult = false;
+        return false;
+      }
+      await prekeysPublish({ bundle: { opks } });
+      devicePriv.next_opk_id = next;
+      setDevicePriv(devicePriv);
+      const wrapped = await wrapDevicePrivWithMK(devicePriv, mk);
+      await devkeysStore({ wrapped_dev: wrapped });
+      lastPrekeyEnsureTs = Date.now();
+      lastPrekeyEnsureResult = true;
+      log({ invitePrekeyReplenished: { count: opks.length, next, reason } });
+      return true;
+    })()
+      .catch((err) => {
+        lastPrekeyEnsureResult = false;
+        log({ invitePrekeyEnsureError: err?.message || err, reason });
+        throw err;
+      })
+      .finally(() => {
+        prekeyEnsurePromise = null;
+      });
+    return prekeyEnsurePromise;
+  }
+
   const {
     inviteCountdownEl,
     inviteQrBox,
@@ -229,7 +276,7 @@ export function setupShareController(options) {
     if (e.key === 'Escape' && shareState.open) closeShareModal();
   }
 
-  async function onGenerateInvite({ auto = false, attempt = 0 } = {}) {
+  async function onGenerateInvite({ auto = false, attempt = 0, prekeyRetry = false } = {}) {
     const uid = getUidHex();
     if (!uid) {
       setInviteStatus('尚未登入，無法生成 QR，請重新登入後再試。', true);
@@ -241,6 +288,9 @@ export function setupShareController(options) {
     log('invite: begin create');
 
     try {
+      await ensureOwnerPrekeys({ force: attempt > 0, reason: attempt > 0 ? 'retry' : 'initial' }).catch((err) => {
+        log({ invitePrekeyEnsureWarn: err?.message || err, phase: attempt > 0 ? 'retry' : 'initial' });
+      });
       const invite = await friendsCreateInvite({ uidHex: uid });
       log({ inviteCreateFetched: true });
       if (!invite || !invite.inviteId || !invite.secret || !invite.expiresAt) {
@@ -284,7 +334,18 @@ export function setupShareController(options) {
       shareState.lastInviteError = msg;
       if (isPrekeyRecoveryError(msg)) {
         shareState.inviteBlockedDueToKeys = true;
-        setInviteStatus('生成失敗：缺少交友金鑰，請重新登入完成初始化', true);
+        if (attempt < 2 && !prekeyRetry) {
+          setInviteStatus('生成失敗：缺少交友金鑰，正在自動補貨…', true);
+          try {
+            await ensureOwnerPrekeys({ force: true, reason: 'recover' });
+            shareState.inviteBlockedDueToKeys = false;
+            shareState.lastInviteError = null;
+            return await onGenerateInvite({ auto, attempt: attempt + 1, prekeyRetry: true });
+          } catch (recoverErr) {
+            log({ invitePrekeyRecoveryFailed: recoverErr?.message || recoverErr });
+          }
+        }
+        setInviteStatus('生成失敗：缺少交友金鑰，請重新登入完成初始化。', true);
       } else {
         shareState.inviteBlockedDueToKeys = false;
         setInviteStatus(`生成失敗：${msg}`, true);

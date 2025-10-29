@@ -152,9 +152,9 @@ function appendDrHistoryEntry({ peerUidHex, ts, snapshot, snapshotNext, messageI
   return true;
 }
 
-function restoreDrStateFromHistory({ peerUidHex, ts, messageId }) {
+function restoreDrStateFromHistory({ peerUidHex, ts, messageId, targetState = null, reasonTag = null }) {
   const peer = normHex(peerUidHex);
-  if (!peer) return false;
+  if (!peer && !targetState) return false;
   const info = getContactSecret(peer);
   if (!info?.drHistory?.length) return false;
   const stamp = Number(ts);
@@ -177,14 +177,21 @@ function restoreDrStateFromHistory({ peerUidHex, ts, messageId }) {
   }
   if (!entry) entry = normalizedHistory[normalizedHistory.length - 1];
   if (!entry?.snapshot) return false;
-  const restored = restoreDrStateFromSnapshot({ peerUidHex: peer, snapshot: entry.snapshot, force: true });
+  const restored = restoreDrStateFromSnapshot({
+    peerUidHex: peer,
+    snapshot: entry.snapshot,
+    force: true,
+    targetState,
+    sourceTag: reasonTag || 'history-restore'
+  });
   if (restored && isAutomationEnv()) {
     console.log('[dr-history-apply]', JSON.stringify({
       peerUidHex: peer,
       appliedTs: entry.ts,
       appliedMessageId: entry.messageId || null,
       requestedTs: stamp,
-      requestedMessageId: messageId || null
+      requestedMessageId: messageId || null,
+      mode: targetState ? 'preview' : 'live'
     }));
   }
   return restored;
@@ -251,13 +258,14 @@ export function snapshotDrStateForPeer(peerUidHex) {
   return snapshotDrState(holder);
 }
 
-export function restoreDrStateFromSnapshot({ peerUidHex, snapshot, force = false } = {}) {
+export function restoreDrStateFromSnapshot({ peerUidHex, snapshot, force = false, targetState = null, sourceTag = 'snapshot' } = {}) {
   const peer = normHex(peerUidHex);
-  if (!peer) return false;
+  if (!peer && !targetState) return false;
   const data = sanitizeSnapshotInput(snapshot);
   if (!data) return false;
-  const holder = drState(peer);
-  if (!force && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
+  const holder = targetState || drState(peer);
+  if (!holder) return false;
+  if (!targetState && !force && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
     return false;
   }
   const assign = (prop, valueB64) => {
@@ -278,10 +286,18 @@ export function restoreDrStateFromSnapshot({ peerUidHex, snapshot, force = false
   assign('myRatchetPub', data.myRatchetPub_b64);
   assign('theirRatchetPub', data.theirRatchetPub_b64);
   holder.pendingSendRatchet = !!data.pendingSendRatchet;
-  markHolderSnapshot(holder, 'snapshot', data.updatedAt || Date.now());
-  holder.baseKey = holder.baseKey || {};
-  holder.baseKey.snapshot = true;
-  if (data.role) holder.baseKey.role = data.role;
+  const snapshotTs = data.updatedAt || Date.now();
+  if (targetState) {
+    holder.snapshotTs = snapshotTs;
+    holder.snapshotSource = sourceTag;
+    holder.baseKey = holder.baseKey ? { ...holder.baseKey, snapshot: true } : { snapshot: true };
+    if (data.role) holder.baseKey.role = data.role;
+  } else {
+    markHolderSnapshot(holder, 'snapshot', snapshotTs);
+    holder.baseKey = holder.baseKey || {};
+    holder.baseKey.snapshot = true;
+    if (data.role) holder.baseKey.role = data.role;
+  }
   return true;
 }
 
@@ -392,7 +408,7 @@ export function hydrateDrStatesFromContactSecrets() {
   return restoredCount;
 }
 
-function copyDrState(target, source) {
+export function copyDrState(target, source) {
   if (!target || !source) return;
   target.rk = cloneU8(source.rk) || null;
   target.ckS = cloneU8(source.ckS) || null;
@@ -410,6 +426,52 @@ function copyDrState(target, source) {
   if (source.snapshotSource) {
     target.snapshotSource = source.snapshotSource;
   }
+}
+
+function cloneSkippedKeysStore(input) {
+  if (!(input instanceof Map)) return new Map();
+  const out = new Map();
+  for (const [chainId, chain] of input.entries()) {
+    if (chain instanceof Map) {
+      out.set(chainId, new Map(chain));
+    }
+  }
+  return out;
+}
+
+function createDrStateShell() {
+  return {
+    rk: null,
+    ckS: null,
+    ckR: null,
+    Ns: 0,
+    Nr: 0,
+    PN: 0,
+    myRatchetPriv: null,
+    myRatchetPub: null,
+    theirRatchetPub: null,
+    pendingSendRatchet: false,
+    baseKey: null,
+    snapshotTs: null,
+    snapshotSource: null,
+    historyCursorTs: null,
+    historyCursorId: null,
+    skippedKeys: new Map()
+  };
+}
+
+export function cloneDrStateHolder(source) {
+  const shell = createDrStateShell();
+  if (!source) return shell;
+  copyDrState(shell, source);
+  shell.pendingSendRatchet = !!source.pendingSendRatchet;
+  shell.baseKey = source.baseKey ? { ...source.baseKey } : (shell.baseKey || null);
+  shell.snapshotTs = Number.isFinite(source.snapshotTs) ? source.snapshotTs : shell.snapshotTs;
+  shell.snapshotSource = source.snapshotSource || shell.snapshotSource;
+  shell.historyCursorTs = Number.isFinite(source.historyCursorTs) ? source.historyCursorTs : null;
+  shell.historyCursorId = source.historyCursorId || null;
+  shell.skippedKeys = cloneSkippedKeysStore(source.skippedKeys);
+  return shell;
 }
 
 async function ensureDevicePrivLoaded() {
@@ -600,12 +662,15 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   let conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
+  const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
   const uploadResult = await encryptAndPutWithProgress({
     convId: conversationId,
     file,
     dir,
     onProgress,
-    skipIndex: true
+    skipIndex: true,
+    encryptionKey: { key: sharedMediaKey, type: 'shared' },
+    encryptionInfoTag: 'media/v1'
   });
 
   const metadata = {
@@ -879,11 +944,11 @@ export async function recoverDrState({ peerUidHex } = {}) {
   return false;
 }
 
-export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCursorReplay = false }) {
+export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCursorReplay = false, stateOverride = null, mutate = true }) {
   const peer = normHex(peerUidHex);
   if (!peer) return { restored: false, duplicate: false };
   const secretInfo = getContactSecret(peer);
-  const holder = drState(peer);
+  const holder = stateOverride || drState(peer);
   const stamp = Number(messageTs);
   const stampIsFinite = Number.isFinite(stamp);
   const cursorTs = Number.isFinite(holder?.historyCursorTs) ? holder.historyCursorTs : null;
@@ -904,7 +969,13 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCur
   }
   let restored = false;
   const tryHistoryRestore = (reason) => {
-    const ok = restoreDrStateFromHistory({ peerUidHex: peer, ts: stamp, messageId });
+    const ok = restoreDrStateFromHistory({
+      peerUidHex: peer,
+      ts: stamp,
+      messageId,
+      targetState: mutate ? null : holder,
+      reasonTag: reason
+    });
     if (ok && isAutomationEnv()) {
       console.log('[dr-history-restore]', JSON.stringify({
         peerUidHex: peer,
@@ -939,11 +1010,8 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCur
     }
   }
   if (restored) {
-    const refreshed = drState(peer);
-    if (refreshed) {
-      if (Number.isFinite(stamp)) refreshed.historyCursorTs = stamp;
-      if (messageId) refreshed.historyCursorId = messageId;
-    }
+    if (Number.isFinite(stamp)) holder.historyCursorTs = stamp;
+    if (messageId) holder.historyCursorId = messageId;
   }
   return { restored, duplicate: false, historyEntry: hasMatchingHistory ? historyEntry : null };
 }

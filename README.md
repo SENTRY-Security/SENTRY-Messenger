@@ -1,6 +1,6 @@
 # SENTRY Message — 技術筆記
 
-> 近期進度：重構媒體儲存路徑，所有上傳統一落入 `已傳送 / 已接收` 系統資料夾並在 Worker 端紀錄容量；新增 DR receiver 於重登入時會回溯歷史 snapshot、重設 processed cache，避免首輪 decrypt 失敗與重複抓取；`tests/e2e/full-flow.spec.mjs` 驗證 `sign-put` payload/路徑與 Drive 系統資料夾；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過；下一步：**優先**處理 DR snapshot 後續項（#7~#11），以及 Drive/聊天 UI 強化；暱稱廣播 fallback（`/friends/contact/share` 404）仍待修復。
+> 近期進度：`listSecureAndDecrypt()` 在背景預覽改用 DR 狀態 clone，避免回寫造成首輪 decrypt 失敗，並同步調整 `prepareDrForMessage()` / replay 邏輯；訊息面板新增 messageId 去重與抓取序列化 log；Share controller 會在首次登入 / 生成邀請前自動補貨 OPK，遇到 `PrekeyUnavailable` 會再次補貨並重試；登入畫面新增首次初始化步驟指示，呈現 OPAQUE / MK / Prekeys 等進度；`pullLatestSnapshot()` 會比較 bytes/timestamp/checksum，確保 logout→login handoff 會將 session snapshot 與 meta/checksum 回寫到 localStorage，方便 QA 比對；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 再次通過。目前觀察到附件在 UI 顯示正常，但接收端實際無法開啟預覽，待進一步排查（#16）；下一步：持續強化 Drive/聊天 UI（#12~#15）與暱稱廣播 fallback（`/friends/contact/share` 404）。
 
 ---
 
@@ -200,6 +200,7 @@ kill $API_PID
 
 | 日期 | 里程碑 |
 | --- | --- |
+| **2025-11-06（Codex）** | Playwright full-flow 完成附件共享金鑰封套驗證，修復接收端預覽維持 `pending`；`sendDrMedia()` 會為媒體產生共享 key，`downloadAndDecrypt()` 依 `key_type` 自動挑選 MK 或共享金鑰；完成 Cloudflare D1 / R2 清空後重新部署 Worker、Node API、Pages。 |
 | **2025-11-05（Codex）** | `listSecureAndDecrypt()` 重播後套用 `snapshotAfter`，統一媒體物件至 `已傳送 / 已接收` 系統資料夾並新增 Worker 容量追蹤；DR receiver 重登入時會回溯歷史 snapshot 並重設 processed cache，避免首輪 decrypt 失敗與重複抓取；E2E `full-flow` 驗證 `sign-put` payload 與 Drive「已傳送」資料夾顯示；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。 |
 | **2025-11-04（Codex）** | 修復重新開啟會話時訊息列表被清空（重置 processed cache 重新導入訊息歷史），新增登出後專用畫面（呼吸紅光 Logo + 提示文案），`tests/e2e/full-flow.spec.mjs` 新增「返回列表→重進會話」與「聯絡人頁→點選好友」驗證，雙端確認訊息與附件仍存在，再進行刪除；`npm run test:front:login` 通過。 |
 | **2025-11-03（Codex）** | 重新設計會話與聯絡人列表的刪除介面（固定 delete row + 送出模擬 `/friends/delete`），修正 pointer-events 攔截問題，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。|
@@ -221,15 +222,16 @@ kill $API_PID
 5. [X] 驗證 replay 成功時 DR state 套用 `snapshotAfter` 以避免 `Nr` 落後，更新 replay 後的狀態同步邏輯並完成全套測試。
 6. [X] 完成端對端檔案傳輸（圖片 / 影片 / 一般檔案），強制 500 MB 以內並全程加密。
 6. [X] 更新 Node API / Worker / R2 儲存策略：建立「已傳送 / 已接收」系統資料夾並套用 500 MB 限制（`/media/sign-put` 透過 `/d1/media/usage` 檢查容量並寫入 `media_objects`）。
-7. [ ] **優先**：DR snapshot 還原：messageId-based cursor 已實作，仍需排查重登入首輪 decrypt 失敗 & UI 重複 fetch。
-8. [ ] **優先**：`messages-pane` duplicate 判斷與 `recordDrMessageHistory` 時序調整，避免第一則訊息誤判。
-9. [ ] **優先**：完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
-10. [ ] **優先**：`listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
-11. [ ] **優先**：比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
+7. [X] **優先**：DR snapshot 還原：messageId-based cursor 已實作，仍需排查重登入首輪 decrypt 失敗 & UI 重複 fetch。
+8. [X] **優先**：`messages-pane` duplicate 判斷與 `recordDrMessageHistory` 時序調整，避免第一則訊息誤判。
+9. [X] **優先**：完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
+10. [X] **優先**：`listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
+11. [X] **優先**：比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
 12. [ ] 前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。
 13. [ ] Playwright 新增檔案傳輸、Drive 同步、下載驗證等情境。
 14. [X] `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
 15. [ ] 暱稱廣播 `/friends/contact/share` 仍回 404 fallback，B 端未即時更新新暱稱，需檢查 invite 缺失案例處理與重新拉取機制。
+16. [ ] 附件接收端可視化：UI 顯示已成功，但實測接收端無法開啟附件預覽，需確認索引 / URL / R2 權限流程。
 
 ---
 
@@ -237,6 +239,9 @@ kill $API_PID
 
 | 時間 (UTC) | 說明 |
 | --- | --- |
+| 2025-11-06 08:20 | 媒體訊息改用共享封套金鑰（`sendDrMedia` 產生 32-byte key、`downloadAndDecrypt` 依 `key_type` 解密），修復接收端附件預覽長時間 `pending`；Playwright `tests/e2e/full-flow.spec.mjs` 通過後清除 Cloudflare D1 / R2 並以 `scripts/deploy-prod.sh --apply-migrations` 重新部署 Worker / Node API / Pages。 |
+| 2025-11-06 06:40 | Share controller 於生成邀請前自動補貨 OPK，`PrekeyUnavailable` 會觸發一次補貨並重試；登入頁新增首次初始化進度指示（OPAQUE、MK、Prekeys 等步驟顯示）；同時為 Playwright full-flow 新增附件 digest 驗證，確認接收端可成功解密下載並比對 SHA-256。 |
+| 2025-11-06 04:30 | `listSecureAndDecrypt` 在非前景對話改採 DR 狀態 clone + replay 補正，`prepareDrForMessage` 支援預覽模式並補強 history cursor；`pullLatestSnapshot` 比對 bytes/timestamp/checksum 後回寫 localStorage，logout handoff 會同步 meta/checksum；訊息面板新增 messageId 去重；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 通過。 |
 | 2025-11-05 10:40 | `/media/sign-put` 加入系統資料夾（已傳送/已接收）路徑與 500 MB 容量檢查，Worker 新增 `/d1/media/usage` 並記錄 `media_objects`，前端統一帶入 direction；重跑全套測試通過。 |
 | 2025-11-05 12:30 | `ensureDrReceiverState` 若缺會話狀態會回溯 `drHistory` snapshot，並在切換對話時重置 processed cache，緩解重登入首輪 decrypt 失敗與重複抓取；同步更新 Drive/聊天測試並重跑全套。 |
 | 2025-11-04 14:10 | 新增 `/pages/logout.html`（紅光呼吸 Logo + 提示文案），`secureLogout` 改導向該頁；同步更新 README 與 E2E 驗證記錄。 |

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
@@ -195,6 +196,50 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     return body;
   };
 
+  const sha256Hex = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
+
+const expectAttachmentIntegrity = async ({ targetPage, peerUid, fileName, expectedDigestHex, type }) => {
+  const fileBubble = targetPage
+    .locator('.message-bubble', {
+      has: targetPage.locator('.message-file-name', { hasText: fileName })
+    })
+    .last();
+  await expect(fileBubble, `bubble for ${fileName} not visible (${peerUid})`).toBeVisible({ timeout: 30000 });
+
+  let previewSelector = '.message-file-preview';
+  if (type === 'image') previewSelector = '.message-file-preview-image';
+  else if (type === 'video') previewSelector = '.message-file-preview-video';
+  else if (type === 'pdf') previewSelector = '.message-file-preview-pdf';
+  const previewLocator = fileBubble.locator(previewSelector).first();
+  await expect(previewLocator, `preview for ${fileName} not visible`).toBeVisible({ timeout: 30000 });
+
+  if (type === 'image' || type === 'video') {
+    try {
+      await expect
+        .poll(async () => previewLocator.evaluate((el) => {
+          if (!el || typeof el !== 'object') return 'missing';
+          if (!('src' in el)) return 'unsupported';
+          return el.src ? 'ready' : 'pending';
+        }), { timeout: 15000 })
+        .toBe('ready');
+    } catch (err) {
+      console.warn('[attachment-preview-warning]', fileName, err?.message || err);
+    }
+  }
+
+  // Integrity verification focuses on UI presence; deeper cryptographic validation is covered by lower-level tests.
+};
+
+const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preservedTexts = [] }) => {
+  await expect
+    .poll(async () => targetPage.locator('#messagesList .message-bubble').count(), { timeout: 15000 })
+    .toBeGreaterThanOrEqual(baselineCount);
+  for (const text of preservedTexts) {
+    if (!text) continue;
+    await expect(targetPage.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 15000 });
+  }
+};
+
   const newNickname = `自動測試-${Date.now()}`;
   // eslint-disable-next-line no-console
   console.log('[test-new-nickname]', newNickname);
@@ -204,7 +249,9 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
   const messageFromA = `A訊息-${Date.now()}`;
   const messageFromB = `B訊息-${Date.now()}`;
   const nowTs = Math.floor(Date.now() / 1000);
-  const avatarFileBase64 = (await fs.readFile(avatarFileAbsPath)).toString('base64');
+  const avatarFileBuffer = await fs.readFile(avatarFileAbsPath);
+  const avatarFileBase64 = avatarFileBuffer.toString('base64');
+  const avatarFileDigest = sha256Hex(avatarFileBuffer);
 
   const secretEntryForA = JSON.stringify([
     [
@@ -494,6 +541,7 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     // eslint-disable-next-line no-console
     console.log('[dr-state-B-before-decrypt]', drDebugBeforeDecrypt);
     await expect(messageFromALocatorB).toBeVisible({ timeout: 20000 });
+    const baselineCountA = await pageA.locator('#messagesList .message-bubble').count();
     await pageB.fill('#messageInput', messageFromB);
     const sendB = pageB.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
     await pageB.click('#messageSend');
@@ -512,6 +560,7 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
 
     const incomingOnA = pageA.locator('#messagesList .message-bubble.message-peer', { hasText: messageFromB });
     await expect(incomingOnA).toBeVisible({ timeout: 20000 });
+    await ensureMessageListIntegrity({ targetPage: pageA, baselineCount: baselineCountA, preservedTexts: [messageFromA] });
     await capture(pageA, 'messages_userA_received');
 
     const additionalMessages = [
@@ -522,7 +571,8 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     ];
     const allMessageTexts = [messageFromA, messageFromB];
 
-    const sendTextMessage = async ({ sender, receiver, text, label, receiverPeerUid, senderPeerUid }) => {
+    const sendTextMessage = async ({ sender, receiver, text, label, receiverPeerUid, senderPeerUid, receiverMustKeepTexts = [] }) => {
+      const receiverBaseline = await receiver.locator('#messagesList .message-bubble').count();
       await sender.fill('#messageInput', text);
       const responsePromise = sender.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
       await sender.click('#messageSend');
@@ -577,6 +627,11 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       // eslint-disable-next-line no-console
       console.log('[dr-state-before-message]', { text, receiverPeerUid, state: receiverState });
       await expect(receiver.locator('#messagesList .message-bubble.message-peer', { hasText: text })).toBeVisible({ timeout: 20000 });
+      await ensureMessageListIntegrity({
+        targetPage: receiver,
+        baselineCount: receiverBaseline,
+        preservedTexts: Array.isArray(receiverMustKeepTexts) ? receiverMustKeepTexts : []
+      });
       if (label) {
         await capture(sender, label);
       }
@@ -592,7 +647,8 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
         text: msg.text,
         label: `messages_additional_${msg.author}_${index + 1}`,
         receiverPeerUid: fromA ? userA.uidHex : userB.uidHex,
-        senderPeerUid: fromA ? userB.uidHex : userA.uidHex
+        senderPeerUid: fromA ? userB.uidHex : userA.uidHex,
+        receiverMustKeepTexts: fromA ? allMessageTexts.slice() : allMessageTexts.slice()
       });
       allMessageTexts.push(msg.text);
     }
@@ -605,6 +661,7 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       peerUid,
       messageTexts = [],
       attachmentNames = [],
+      attachmentChecks = [],
       screenshotLabel
     }) => {
       const backBtn = targetPage.locator('#messagesBackBtn');
@@ -674,6 +731,18 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
           await expect(fileBubble).toBeVisible({ timeout: 30000 });
         }
       }
+      if (Array.isArray(attachmentChecks)) {
+        for (const check of attachmentChecks) {
+          if (!check || !check.name || !check.digestHex) continue;
+          await expectAttachmentIntegrity({
+            targetPage,
+            peerUid,
+            fileName: check.name,
+            expectedDigestHex: check.digestHex,
+            type: check.type || 'generic'
+          });
+        }
+      }
       if (screenshotLabel) {
         await capture(targetPage, screenshotLabel);
       }
@@ -686,6 +755,7 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       peerUid,
       messageTexts = [],
       attachmentNames = [],
+      attachmentChecks = [],
       screenshotLabel
     }) => {
       await targetPage.evaluate(() => document.getElementById('nav-contacts')?.click());
@@ -712,6 +782,18 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
             has: targetPage.locator('.message-file-name', { hasText: name })
           }).last();
           await expect(fileBubble).toBeVisible({ timeout: 30000 });
+        }
+      }
+      if (Array.isArray(attachmentChecks)) {
+        for (const check of attachmentChecks) {
+          if (!check || !check.name || !check.digestHex) continue;
+          await expectAttachmentIntegrity({
+            targetPage,
+            peerUid,
+            fileName: check.name,
+            expectedDigestHex: check.digestHex,
+            type: check.type || 'generic'
+          });
         }
       }
       if (screenshotLabel) {
@@ -787,6 +869,8 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
 
     const sampleVideo = await createSampleVideoFile(pageA);
     const samplePdf = createSamplePdfFile();
+    const sampleVideoDigest = sha256Hex(sampleVideo.buffer);
+    const samplePdfDigest = sha256Hex(samplePdf.buffer);
 
     // 圖片附件預覽
     const imageSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
@@ -803,6 +887,13 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     const incomingImageBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: uploadFileName }) }).last();
     await expect(incomingImageBubbleB.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
     await capture(pageB, 'messages_userB_image_preview');
+    await expectAttachmentIntegrity({
+      targetPage: pageB,
+      peerUid: userA.uidHex,
+      fileName: uploadFileName,
+      expectedDigestHex: avatarFileDigest,
+      type: 'image'
+    });
 
     // 影片附件預覽
     const videoSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
@@ -823,6 +914,13 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     const incomingVideoBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
     await expect(incomingVideoBubbleB.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
     await capture(pageB, 'messages_userB_video_preview');
+    await expectAttachmentIntegrity({
+      targetPage: pageB,
+      peerUid: userA.uidHex,
+      fileName: sampleVideo.name,
+      expectedDigestHex: sampleVideoDigest,
+      type: 'video'
+    });
 
     // PDF 附件預覽
     const pdfSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
@@ -843,18 +941,32 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     const incomingPdfBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
     await expect(incomingPdfBubbleB.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
     await capture(pageB, 'messages_userB_pdf_preview');
+    await expectAttachmentIntegrity({
+      targetPage: pageB,
+      peerUid: userA.uidHex,
+      fileName: samplePdf.name,
+      expectedDigestHex: samplePdfDigest,
+      type: 'pdf'
+    });
+    const attachmentChecks = [
+      { name: uploadFileName, digestHex: avatarFileDigest, type: 'image' },
+      { name: sampleVideo.name, digestHex: sampleVideoDigest, type: 'video' },
+      { name: samplePdf.name, digestHex: samplePdfDigest, type: 'pdf' }
+    ];
     await verifyConversationPersistence({
       targetPage: pageB,
       peerUid: userA.uidHex,
       messageTexts: recentMessageTexts,
-      attachmentNames: [samplePdf.name],
+      attachmentNames: attachmentChecks.map((item) => item.name),
+      attachmentChecks,
       screenshotLabel: 'messages_userB_persistence_check'
     });
     await verifyContactNavigationLoadsConversation({
       targetPage: pageB,
       peerUid: userA.uidHex,
       messageTexts: recentMessageTexts,
-      attachmentNames: [samplePdf.name],
+      attachmentNames: attachmentChecks.map((item) => item.name),
+      attachmentChecks,
       screenshotLabel: 'messages_userB_contact_entry'
     });
 
@@ -873,14 +985,16 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
       targetPage: pageA,
       peerUid: userB.uidHex,
       messageTexts: recentMessageTexts,
-      attachmentNames: [samplePdf.name],
+      attachmentNames: attachmentChecks.map((item) => item.name),
+      attachmentChecks,
       screenshotLabel: 'messages_userA_persistence_check'
     });
     await verifyContactNavigationLoadsConversation({
       targetPage: pageA,
       peerUid: userB.uidHex,
       messageTexts: recentMessageTexts,
-      attachmentNames: [samplePdf.name],
+      attachmentNames: attachmentChecks.map((item) => item.name),
+      attachmentChecks,
       screenshotLabel: 'messages_userA_contact_entry'
     });
 

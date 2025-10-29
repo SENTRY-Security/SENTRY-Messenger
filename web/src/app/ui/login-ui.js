@@ -247,6 +247,20 @@ if (pwdConfirmEl) {
 }
 applyAccountMode();
 const loadingBackdrop = document.getElementById('loginLoading'); const loadingTextEl = document.getElementById('loginLoadingText');
+const bootstrapProgressEl = document.getElementById('loginBootstrapProgress');
+const bootstrapStepsListEl = document.getElementById('loginBootstrapSteps');
+const bootstrapStepDefs = [
+  { key: 'opaque', label: '驗證帳戶（OPAQUE）' },
+  { key: 'wrap-mk', label: '保護主金鑰' },
+  { key: 'mk-store', label: '儲存主金鑰' },
+  { key: 'devkeys-fetch', label: '讀取裝置備份' },
+  { key: 'generate-bundle', label: '產生預共享金鑰' },
+  { key: 'prekeys-publish', label: '上傳預共享金鑰' },
+  { key: 'wrap-device', label: '備份裝置金鑰' },
+  { key: 'devkeys-store', label: '儲存裝置備份' }
+];
+const bootstrapStepMap = new Map();
+let bootstrapInitialized = false;
 
 function loadSimDebugState() {
   try {
@@ -261,6 +275,93 @@ function saveSimDebugState(data) {
   try {
     localStorage.setItem(SIM_DEBUG_STORAGE_KEY, JSON.stringify(data || {}));
   } catch {}
+}
+
+function resetBootstrapProgress() {
+  bootstrapInitialized = false;
+  bootstrapStepMap.clear();
+  if (bootstrapStepsListEl) bootstrapStepsListEl.innerHTML = '';
+  if (bootstrapProgressEl) bootstrapProgressEl.classList.add('hidden');
+}
+
+function formatBootstrapDetail(detail) {
+  if (!detail) return '';
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'number') return String(detail);
+  if (typeof detail === 'object') {
+    if (detail.opkCount !== undefined && detail.opkCount !== null) {
+      return `OPK 數量：${detail.opkCount}`;
+    }
+    if (detail.message) return String(detail.message);
+    if (detail.note) return String(detail.note);
+    if (detail.error) return String(detail.error);
+  }
+  return '';
+}
+
+function initBootstrapProgress() {
+  if (!bootstrapProgressEl || !bootstrapStepsListEl) return;
+  bootstrapProgressEl.classList.remove('hidden');
+  bootstrapStepsListEl.innerHTML = '';
+  bootstrapStepMap.clear();
+  for (const def of bootstrapStepDefs) {
+    const li = document.createElement('li');
+    li.dataset.step = def.key;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const label = document.createElement('span');
+    label.className = 'label-text';
+    label.textContent = def.label;
+    const status = document.createElement('span');
+    status.className = 'status-text';
+    status.textContent = '等待';
+    row.append(label, status);
+    const detail = document.createElement('span');
+    detail.className = 'detail-text';
+    detail.textContent = '';
+    detail.style.display = 'none';
+    li.append(row, detail);
+    bootstrapStepsListEl.append(li);
+    bootstrapStepMap.set(def.key, { el: li, statusText: status, detailText: detail, status: 'pending' });
+  }
+  bootstrapInitialized = true;
+}
+
+const BOOTSTRAP_STATE_CLASS = {
+  start: 'in-progress',
+  success: 'success',
+  error: 'error',
+  skip: 'skip',
+  info: 'info'
+};
+
+const BOOTSTRAP_STATUS_TEXT = {
+  pending: '等待',
+  start: '處理中…',
+  success: '完成',
+  error: '失敗',
+  skip: '略過',
+  info: '完成'
+};
+
+function updateBootstrapStep(step, status, detail) {
+  const entry = bootstrapStepMap.get(step);
+  if (!entry) return;
+  entry.status = status;
+  const classNames = ['in-progress', 'success', 'error', 'skip', 'info'];
+  entry.el.classList.remove(...classNames);
+  const cls = BOOTSTRAP_STATE_CLASS[status];
+  if (cls) entry.el.classList.add(cls);
+  if (status === 'start' && !cls) entry.el.classList.add('in-progress');
+  entry.statusText.textContent = BOOTSTRAP_STATUS_TEXT[status] || BOOTSTRAP_STATUS_TEXT.pending;
+  const detailText = formatBootstrapDetail(detail);
+  if (detailText) {
+    entry.detailText.textContent = detailText;
+    entry.detailText.style.display = '';
+  } else {
+    entry.detailText.textContent = '';
+    entry.detailText.style.display = 'none';
+  }
 }
 
 function showLoading(message) {
@@ -542,9 +643,20 @@ async function onUnlock() {
   }
   try {
     await ensureAudioPermissionForLogin();
+    if (newAccount) {
+      resetBootstrapProgress();
+      initBootstrapProgress();
+    } else {
+      resetBootstrapProgress();
+    }
     loginInProgress = true;
     showLoading(newAccount ? '正在建立安全環境…' : '登入中，請稍候…');
-    const r = await unlockAndInit({ password: pwd });
+    const r = await unlockAndInit({
+      password: pwd,
+      onProgress: (step, status, detail) => {
+        updateBootstrapStep(step, status, detail);
+      }
+    });
     log({ unlocked: r.unlocked, initialized: r.initialized, replenished: r.replenished, next_opk_id: r.next_opk_id });
     const devicePriv = getDevicePriv();
     const hasPrekeys = !!(devicePriv &&

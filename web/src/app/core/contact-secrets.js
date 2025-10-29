@@ -6,6 +6,8 @@ import { log } from './log.js';
 import { b64 } from '../crypto/nacl.js';
 
 const STORAGE_KEY = 'contactSecrets-v1';
+const META_KEY = 'contactSecrets-v1-meta';
+const CHECKSUM_KEY = 'contactSecrets-v1-checksum';
 let restored = false;
 let contactSecretsLocked = false;
 const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
@@ -28,9 +30,22 @@ function getSessionStorageSafe() {
   }
 }
 
+function parseJsonSafe(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSessionIfCopied = true } = {}) {
   let localPayload = null;
   let sessionPayload = null;
+  let localMeta = null;
+  let sessionMeta = null;
+  let localChecksum = null;
+  let sessionChecksum = null;
   const local = getLocalStorageSafe();
   const session = getSessionStorageSafe();
 
@@ -40,6 +55,12 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
     } catch (err) {
       log({ contactSecretLocalReadError: err?.message || err });
     }
+    try {
+      localMeta = parseJsonSafe(local.getItem(META_KEY));
+    } catch {}
+    try {
+      localChecksum = parseJsonSafe(local.getItem(CHECKSUM_KEY));
+    } catch {}
   }
 
   if (session) {
@@ -48,18 +69,58 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
     } catch (err) {
       log({ contactSecretSessionReadError: err?.message || err });
     }
+    try {
+      sessionMeta = parseJsonSafe(session.getItem(META_KEY));
+    } catch {}
+    try {
+      sessionChecksum = parseJsonSafe(session.getItem(CHECKSUM_KEY));
+    } catch {}
   }
 
-  const shouldPromote = sessionPayload &&
-    (forcePromote || !localPayload || sessionPayload.length > localPayload.length);
+  const localLen = typeof localPayload === 'string' ? localPayload.length : 0;
+  const sessionLen = typeof sessionPayload === 'string' ? sessionPayload.length : 0;
+  const localTs = Number(localMeta?.ts || 0);
+  const sessionTs = Number(sessionMeta?.ts || 0);
+  const localChecksumVal = typeof localChecksum?.checksum === 'string' ? localChecksum.checksum : null;
+  const sessionChecksumVal = typeof sessionChecksum?.checksum === 'string' ? sessionChecksum.checksum : null;
+
+  let promoteReason = null;
+  if (sessionPayload) {
+    if (forcePromote) {
+      promoteReason = 'force';
+    } else if (!localPayload) {
+      promoteReason = 'missing-local';
+    } else if (sessionLen > localLen) {
+      promoteReason = 'length-greater';
+    } else if (sessionLen === localLen) {
+      if (sessionTs && (!localTs || sessionTs > localTs)) {
+        promoteReason = 'newer-timestamp';
+      } else if (sessionTs && localTs && sessionTs === localTs && sessionChecksumVal && localChecksumVal && sessionChecksumVal !== localChecksumVal) {
+        promoteReason = 'checksum-diff';
+      } else if (!sessionTs && !localTs && sessionChecksumVal && localChecksumVal && sessionChecksumVal !== localChecksumVal) {
+        promoteReason = 'checksum-diff';
+      } else if (!localTs && sessionTs) {
+        promoteReason = 'timestamp-available';
+      }
+    }
+  }
+
+  const shouldPromote = !!promoteReason;
   let wroteToLocal = false;
 
   if (shouldPromote && local) {
     try {
       local.setItem(STORAGE_KEY, sessionPayload);
       wroteToLocal = true;
+      if (sessionMeta) {
+        local.setItem(META_KEY, JSON.stringify(sessionMeta));
+      }
+      if (sessionChecksum) {
+        local.setItem(CHECKSUM_KEY, JSON.stringify(sessionChecksum));
+      }
     } catch (err) {
       log({ contactSecretSessionCopyError: err?.message || err });
+      wroteToLocal = false;
     }
   }
 
@@ -71,10 +132,26 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
       reason,
       bytes: sessionPayload?.length || 0,
       wroteToLocal,
-      hasLocal: !!local
+      hasLocal: !!local,
+      promoteReason,
+      localBytes: localLen,
+      sessionBytes: sessionLen,
+      localTs,
+      sessionTs,
+      checksumChanged: sessionChecksumVal && localChecksumVal ? sessionChecksumVal !== localChecksumVal : null
     });
     return sessionPayload;
   }
+
+  debugLog('session-skip', {
+    reason,
+    forcePromote,
+    localBytes: localLen,
+    sessionBytes: sessionLen,
+    localTs,
+    sessionTs,
+    checksumEqual: sessionChecksumVal && localChecksumVal ? sessionChecksumVal === localChecksumVal : null
+  });
 
   return localPayload || sessionPayload || null;
 }
