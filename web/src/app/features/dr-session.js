@@ -749,6 +749,39 @@ export async function ensureDrReceiverState({ peerUidHex }) {
     }
     state = drState(peer);
   }
+  if (!state?.rk && Array.isArray(secretInfo?.drHistory) && secretInfo.drHistory.length) {
+    const candidates = secretInfo.drHistory
+      .slice()
+      .reverse()
+      .filter((entry) => entry && (entry.snapshotAfter || entry.snapshot));
+    for (const entry of candidates) {
+      try {
+        const snap = entry.snapshotAfter || entry.snapshot;
+        const ok = restoreDrStateFromSnapshot({ peerUidHex: peer, snapshot: snap, force: true });
+        if (ok) {
+          const holder = drState(peer);
+          if (holder) {
+            if (Number.isFinite(entry.ts)) holder.historyCursorTs = entry.ts;
+            if (entry.messageId) holder.historyCursorId = entry.messageId;
+            markHolderSnapshot(holder, 'ensure-history', Date.now());
+            persistDrSnapshot({ peerUidHex: peer, state: holder });
+          }
+          state = drState(peer);
+          if (
+            state?.rk &&
+            state.myRatchetPriv instanceof Uint8Array &&
+            state.myRatchetPub instanceof Uint8Array &&
+            (state.ckR instanceof Uint8Array || state.ckS instanceof Uint8Array)
+          ) {
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn('[dr] ensure receiver history restore failed', err);
+      }
+    }
+    state = drState(peer);
+  }
   if (state?.rk && (state.ckR instanceof Uint8Array || state.ckS instanceof Uint8Array) && state.myRatchetPriv && state.myRatchetPub) {
     return true;
   }

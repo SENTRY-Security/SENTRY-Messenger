@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { getUidHex, getAccountToken, getAccountDigest } from '../../core/store.js';
-import { listSecureAndDecrypt } from '../../features/messages.js';
+import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, ensureDrReceiverState } from '../../features/dr-session.js';
 import { conversationIdFromToken } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
@@ -820,6 +820,8 @@ export function initMessagesPane({
       applyMessagesLayout();
       return;
     }
+    const resolvedConvId = conversation?.conversation_id || conversation?.conversationId || state.conversationId || null;
+    if (resolvedConvId) resetProcessedMessages(resolvedConvId);
     state.messages = [];
     state.nextCursorTs = null;
     state.hasMore = true;
