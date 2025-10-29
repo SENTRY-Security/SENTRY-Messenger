@@ -131,13 +131,49 @@ export function setupShareController(options) {
         lastPrekeyEnsureResult = false;
         throw new Error('prekey generate failed');
       }
-      const { r, data } = await prekeysPublish({ bundle: { opks } });
-      if (!r.ok) {
-        const preview = typeof data === 'string'
-          ? data
-          : (data?.details || data?.message || data?.error || 'prekey publish failed');
-        throw new Error(String(preview || 'prekey publish failed'));
+      const publishBundle = async ({ includeIdentity } = {}) => {
+        const bundle = includeIdentity
+          ? {
+              ik_pub: devicePriv.ik_pub_b64,
+              spk_pub: devicePriv.spk_pub_b64,
+              spk_sig: devicePriv.spk_sig_b64,
+              opks
+            }
+          : { opks };
+        const { r, data } = await prekeysPublish({ bundle });
+        if (!r.ok) {
+          const detail = typeof data === 'string'
+            ? data
+            : (data?.details || data?.message || data?.error || '');
+          const err = new Error(detail || 'prekey publish failed');
+          err.status = r.status;
+          err.payload = data;
+          throw err;
+        }
+        return true;
+      };
+      let published = false;
+      try {
+        await publishBundle({ includeIdentity: false });
+        published = true;
+      } catch (err) {
+        const reason = String(err?.message || '').toLowerCase();
+        const needFullBundle =
+          reason.includes('prekeyunavailable') ||
+          reason.includes('prekey user not found') ||
+          reason.includes('prekey user missing') ||
+          err?.status === 404 ||
+          err?.status === 409;
+        log({
+          invitePrekeyPublishOpkOnlyFailed: err?.message || err,
+          status: err?.status || null,
+          fallback: needFullBundle
+        });
+        if (!needFullBundle) throw err;
+        await publishBundle({ includeIdentity: true });
+        published = true;
       }
+      if (!published) throw new Error('prekey publish not completed');
       devicePriv.next_opk_id = next;
       setDevicePriv(devicePriv);
       const wrapped = await wrapDevicePrivWithMK(devicePriv, mk);
