@@ -4,7 +4,7 @@ import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/mes
 import { sendDrText, sendDrMedia, ensureDrReceiverState } from '../../features/dr-session.js';
 import { conversationIdFromToken } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
-import { escapeHtml } from './ui-utils.js';
+import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { deleteSecureConversation } from '../../api/messages.js';
 
@@ -20,7 +20,8 @@ export function initMessagesPane({
   showConfirmModal,
   removeContactLocal,
   setupSwipe,
-  closeSwipe
+  closeSwipe,
+  modal: modalOptions = {}
 }) {
   const elements = {
     pane: dom.messagesPaneEl ?? document.querySelector('.messages-pane'),
@@ -47,6 +48,12 @@ export function initMessagesPane({
   let loadMoreState = 'hidden';
   let autoLoadOlderInProgress = false;
   let lastLayoutIsDesktop = null;
+
+  const showModalLoading = typeof modalOptions.showModalLoading === 'function' ? modalOptions.showModalLoading : null;
+  const updateLoadingModal = typeof modalOptions.updateLoadingModal === 'function' ? modalOptions.updateLoadingModal : null;
+  const openPreviewModal = typeof modalOptions.openModal === 'function' ? modalOptions.openModal : null;
+  const closePreviewModal = typeof modalOptions.closeModal === 'function' ? modalOptions.closeModal : null;
+  const setModalObjectUrl = typeof modalOptions.setModalObjectUrl === 'function' ? modalOptions.setModalObjectUrl : null;
 
   function isDesktopLayout() {
     if (typeof window === 'undefined') return true;
@@ -518,6 +525,189 @@ export function initMessagesPane({
     return parts.join(' · ');
   }
 
+  const toast = typeof showToast === 'function' ? showToast : null;
+
+  function canPreviewMedia(media) {
+    if (!media || typeof media !== 'object') return false;
+    if (media.localUrl) return true;
+    if (media.objectKey && media.envelope) return true;
+    return false;
+  }
+
+  async function openMediaPreview(media) {
+    if (!canPreviewMedia(media)) {
+      toast?.('無法預覽附件：缺少封套或檔案資訊。');
+      return;
+    }
+    if (!showModalLoading || !openPreviewModal || !setModalObjectUrl) {
+      toast?.('預覽模組尚未就緒，請稍後再試。');
+      return;
+    }
+    const displayName = media.name || '附件';
+    try {
+      let result = null;
+      if (media.objectKey && media.envelope) {
+        showModalLoading('下載加密檔案中…');
+        result = await downloadAndDecrypt({
+          key: media.objectKey,
+          envelope: media.envelope,
+          onStatus: ({ stage, loaded, total }) => {
+            if (!updateLoadingModal) return;
+            if (stage === 'sign') {
+              updateLoadingModal({ percent: 5, text: '取得下載授權中…' });
+            } else if (stage === 'download-start') {
+              updateLoadingModal({ percent: 10, text: '下載加密檔案中…' });
+            } else if (stage === 'download') {
+              const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
+              const percent = pct != null ? Math.min(95, Math.max(15, pct)) : 45;
+              const text = pct != null
+                ? `下載加密檔案中… ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
+                : `下載加密檔案中… (${fmtSize(loaded)})`;
+              updateLoadingModal({ percent, text });
+            } else if (stage === 'decrypt') {
+              updateLoadingModal({ percent: 98, text: '解密檔案中…' });
+            }
+          }
+        });
+      } else {
+        showModalLoading(`準備 ${displayName}…`);
+        const response = await fetch(media.localUrl);
+        if (!response.ok) throw new Error('讀取本機預覽失敗');
+        const blob = await response.blob();
+        result = {
+          blob,
+          contentType: media.contentType || blob.type || 'application/octet-stream',
+          name: displayName
+        };
+      }
+      await renderMediaPreviewModal({
+        blob: result.blob,
+        contentType: result.contentType || media.contentType || 'application/octet-stream',
+        name: result.name || displayName
+      });
+    } catch (err) {
+      closePreviewModal?.();
+      toast?.(`附件預覽失敗：${err?.message || err}`);
+    }
+  }
+
+  async function renderMediaPreviewModal({ blob, contentType, name }) {
+    const modalEl = document.getElementById('modal');
+    const body = document.getElementById('modalBody');
+    const title = document.getElementById('modalTitle');
+    if (!modalEl || !body || !title) {
+      closePreviewModal?.();
+      toast?.('無法顯示附件預覽');
+      return;
+    }
+    modalEl.classList.remove(
+      'loading-modal',
+      'progress-modal',
+      'folder-modal',
+      'upload-modal',
+      'confirm-modal',
+      'nickname-modal',
+      'avatar-modal',
+      'avatar-preview-modal',
+      'settings-modal'
+    );
+
+    body.innerHTML = '';
+    const resolvedName = name || '附件';
+    title.textContent = resolvedName;
+    title.setAttribute('title', resolvedName);
+
+    const url = URL.createObjectURL(blob);
+    setModalObjectUrl?.(url);
+
+    const downloadBtn = document.getElementById('modalDownload');
+    if (downloadBtn) {
+      downloadBtn.style.display = 'inline-flex';
+      downloadBtn.onclick = () => {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = resolvedName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      };
+    }
+
+    const container = document.createElement('div');
+    container.className = 'preview-wrap';
+    const wrap = document.createElement('div');
+    wrap.className = 'viewer';
+    container.appendChild(wrap);
+    body.appendChild(container);
+
+    const ct = (contentType || '').toLowerCase();
+    if (ct.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = resolvedName;
+      wrap.appendChild(img);
+    } else if (ct.startsWith('video/')) {
+      const video = document.createElement('video');
+      video.src = url;
+      video.controls = true;
+      video.playsInline = true;
+      wrap.appendChild(video);
+    } else if (ct.startsWith('audio/')) {
+      const audio = document.createElement('audio');
+      audio.src = url;
+      audio.controls = true;
+      wrap.appendChild(audio);
+    } else if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
+      const iframe = document.createElement('iframe');
+      iframe.src = url;
+      iframe.className = 'viewer';
+      iframe.title = resolvedName;
+      wrap.appendChild(iframe);
+    } else if (ct.startsWith('text/')) {
+      try {
+        const textContent = await blob.text();
+        const pre = document.createElement('pre');
+        pre.textContent = textContent;
+        wrap.appendChild(pre);
+      } catch {
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = '無法顯示文字內容。';
+        wrap.appendChild(msg);
+      }
+    } else {
+      const message = document.createElement('div');
+      message.style.textAlign = 'center';
+      message.innerHTML = `無法預覽此類型（${escapeHtml(contentType || '未知')}）。<br/><br/>`;
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = resolvedName;
+      link.textContent = '下載檔案';
+      link.className = 'primary';
+      message.appendChild(link);
+      wrap.appendChild(message);
+    }
+
+    openPreviewModal?.();
+  }
+
+  function addMediaPreviewAction(container, media) {
+    if (!container || !canPreviewMedia(media)) return;
+    const actions = document.createElement('div');
+    actions.className = 'message-file-actions';
+    const previewBtn = document.createElement('button');
+    previewBtn.type = 'button';
+    previewBtn.className = 'message-file-preview-btn';
+    previewBtn.textContent = '預覽';
+    previewBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMediaPreview(media);
+    });
+    actions.appendChild(previewBtn);
+    container.appendChild(actions);
+  }
+
   async function ensureMediaPreviewUrl(media) {
     if (!media) return null;
     if (media.previewUrl) return media.previewUrl;
@@ -624,6 +814,7 @@ export function initMessagesPane({
     info.appendChild(metaEl);
     wrapper.appendChild(preview);
     wrapper.appendChild(info);
+    addMediaPreviewAction(wrapper, media);
     bubble.appendChild(wrapper);
     attachMediaPreview(preview, media);
   }

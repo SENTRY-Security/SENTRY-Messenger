@@ -227,7 +227,29 @@ const expectAttachmentIntegrity = async ({ targetPage, peerUid, fileName, expect
     }
   }
 
-  // Integrity verification focuses on UI presence; deeper cryptographic validation is covered by lower-level tests.
+  if (expectedDigestHex) {
+    const digestHex = await targetPage.evaluate(async ({ name }) => {
+      const toHex = (u8) => Array.from(new Uint8Array(u8)).map((b) => b.toString(16).padStart(2, '0')).join('');
+      const pane = window.__messagesPane;
+      if (!pane || typeof pane.getMessageState !== 'function') return null;
+      const state = pane.getMessageState();
+      const message = (state?.messages || []).find((m) => m?.media && (m.media.name || '').trim() === name);
+      if (!message?.media?.objectKey || !message.media.envelope) return null;
+      try {
+        const { downloadAndDecrypt } = await import('/app/features/media.js');
+        const result = await downloadAndDecrypt({ key: message.media.objectKey, envelope: message.media.envelope });
+        if (!result?.blob) return null;
+        const buffer = await result.blob.arrayBuffer();
+        const digest = await crypto.subtle.digest('SHA-256', buffer);
+        return toHex(digest);
+      } catch (err) {
+        console.warn('[attachment-digest-fail]', name, err?.message || err);
+        return null;
+      }
+    }, { name: fileName });
+    expect(digestHex, `digest not available for ${fileName} (${peerUid})`).toBeTruthy();
+    expect(digestHex.toLowerCase()).toBe(expectedDigestHex.toLowerCase());
+  }
 };
 
 const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preservedTexts = [] }) => {
@@ -467,10 +489,6 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
     const driveSignPutResponse = await driveSignPutPromise;
     await verifySignPutResponse(driveSignPutResponse, 'drive upload');
     await driveIndexPromise;
-    const systemFolder = pageA.locator('.file-item.folder[data-folder-name="已傳送"]');
-    await expect(systemFolder).toBeVisible({ timeout: 30000 });
-    await systemFolder.click();
-    await pageA.waitForTimeout(200);
     const uploadedFile = pageA.locator(`.file-item[data-name="${uploadFileName}"]`);
     await expect(uploadedFile).toBeVisible({ timeout: 30000 });
     await capture(pageA, 'drive_after_file_upload');
@@ -541,6 +559,7 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
     // eslint-disable-next-line no-console
     console.log('[dr-state-B-before-decrypt]', drDebugBeforeDecrypt);
     await expect(messageFromALocatorB).toBeVisible({ timeout: 20000 });
+
     const baselineCountA = await pageA.locator('#messagesList .message-bubble').count();
     await pageB.fill('#messageInput', messageFromB);
     const sendB = pageB.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));

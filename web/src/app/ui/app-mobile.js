@@ -695,7 +695,14 @@ const messagesPane = initMessagesPane({
   showConfirmModal,
   saveContactApi: saveContact,
   setupSwipe,
-  closeSwipe
+  closeSwipe,
+  modal: {
+    openModal,
+    closeModal,
+    showModalLoading,
+    updateLoadingModal,
+    setModalObjectUrl
+  }
 });
 
 messagesPane.attachDomEvents();

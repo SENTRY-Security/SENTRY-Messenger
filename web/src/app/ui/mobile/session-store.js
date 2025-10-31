@@ -42,6 +42,17 @@ const defaultWsState = {
   reconnectTimer: null
 };
 
+function resetState(target, defaults) {
+  if (!target || typeof target !== 'object' || !defaults) return;
+  const defaultClone = cloneValue(defaults);
+  for (const key of Object.keys(target)) {
+    if (!(key in defaults)) {
+      delete target[key];
+    }
+  }
+  Object.assign(target, defaultClone);
+}
+
 export const sessionStore = {
   profileState: null,
   settingsState: null,
@@ -62,23 +73,23 @@ export const sessionStore = {
 };
 
 export function resetShareState() {
-  Object.assign(sessionStore.shareState, cloneValue(defaultShareState));
+  resetState(sessionStore.shareState, defaultShareState);
 }
 
 export function resetDriveState() {
-  Object.assign(sessionStore.driveState, cloneValue(defaultDriveState));
+  resetState(sessionStore.driveState, defaultDriveState);
 }
 
 export function resetMessageState() {
-  Object.assign(sessionStore.messageState, cloneValue(defaultMessageState));
+  resetState(sessionStore.messageState, defaultMessageState);
 }
 
 export function resetUiState() {
-  Object.assign(sessionStore.uiState, cloneValue(defaultUiState));
+  resetState(sessionStore.uiState, defaultUiState);
 }
 
 export function resetWsState() {
-  Object.assign(sessionStore.wsState, cloneValue(defaultWsState));
+  resetState(sessionStore.wsState, defaultWsState);
 }
 
 export function resetContacts() {

@@ -1,6 +1,6 @@
 # SENTRY Message — 技術筆記
 
-> 近期進度：`listSecureAndDecrypt()` 在背景預覽改用 DR 狀態 clone，避免回寫造成首輪 decrypt 失敗，並同步調整 `prepareDrForMessage()` / replay 邏輯；訊息面板新增 messageId 去重與抓取序列化 log；Share controller 會在首次登入 / 生成邀請前自動補貨 OPK，遇到 `PrekeyUnavailable` 會再次補貨並重試；登入畫面新增首次初始化步驟指示，呈現 OPAQUE / MK / Prekeys 等進度；`pullLatestSnapshot()` 會比較 bytes/timestamp/checksum，確保 logout→login handoff 會將 session snapshot 與 meta/checksum 回寫到 localStorage，方便 QA 比對；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 再次通過。目前觀察到附件在 UI 顯示正常，但接收端實際無法開啟預覽，待進一步排查（#16）；下一步：持續強化 Drive/聊天 UI（#12~#15）與暱稱廣播 fallback（`/friends/contact/share` 404）。
+> 近期進度：修復 logout→relogin 後分享面板持續顯示「缺少交友金鑰」造成 QR 無法重生的問題，重置 shareState 會清除補貨鎖定並恢復自動補貨；Drive 面板改以使用者資料夾為主並隱藏系統「已傳送 / 已接收」層，避免上傳檔案被困且可再次上傳 / 刪除；訊息附件新增「預覽」動作沿用 Modal 下載流程並於 Playwright 內實際執行 `downloadAndDecrypt` 驗證 SHA-256 digest，確認接收端確實可還原檔案；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過，後續將持續強化 Drive / 聊天 UI（#12~#15）。
 
 ---
 
@@ -200,6 +200,7 @@ kill $API_PID
 
 | 日期 | 里程碑 |
 | --- | --- |
+| **2025-11-08（Codex）** | 修正 shareState 在 logout 後殘留 `inviteBlockedDueToKeys` 導致 QR 再登入無法生成；Drive 列表隱藏系統「已傳送 / 已接收」層並依使用者資料夾顯示，允許重複上傳與刪除；訊息附件新增預覽按鈕沿用 Modal，Playwright 以 `downloadAndDecrypt` 驗證 SHA-256 digest；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。 |
 | **2025-11-07（Codex）** | 交友金鑰補貨流程自動在 `PrekeyUnavailable/NotFound` 時改用完整 bundle（IK/SPK/OPK）重發，狀態列 spinner 調整為正圓動畫；聯絡人載入時會跳過自己，避免改暱稱後自我條目出現在好友清單；全套 Playwright full-flow 再次確認；清空 Cloudflare D1 / R2 並重部署 Worker / Node API / Pages。 |
 | **2025-11-06（Codex）** | Playwright full-flow 完成附件共享金鑰封套驗證，修復接收端預覽維持 `pending`；`sendDrMedia()` 會為媒體產生共享 key，`downloadAndDecrypt()` 依 `key_type` 自動挑選 MK 或共享金鑰；Share controller 會檢查 OPK 補貨 API 回應並於失敗時回報 `PrekeyUnavailable`，避免出現「缺少交友金鑰」；完成 Cloudflare D1 / R2 清空後重新部署 Worker、Node API、Pages。 |
 | **2025-11-05（Codex）** | `listSecureAndDecrypt()` 重播後套用 `snapshotAfter`，統一媒體物件至 `已傳送 / 已接收` 系統資料夾並新增 Worker 容量追蹤；DR receiver 重登入時會回溯歷史 snapshot 並重設 processed cache，避免首輪 decrypt 失敗與重複抓取；E2E `full-flow` 驗證 `sign-put` payload 與 Drive「已傳送」資料夾顯示；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。 |
@@ -228,11 +229,11 @@ kill $API_PID
 9. [X] **優先**：完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
 10. [X] **優先**：`listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
 11. [X] **優先**：比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
-12. [ ] 前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。
+12. [ ] 前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。（已隱藏系統「已傳送 / 已接收」夾層，待補多檔案與排序）
 13. [ ] Playwright 新增檔案傳輸、Drive 同步、下載驗證等情境。
 14. [X] `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
 15. [ ] 暱稱廣播 `/friends/contact/share` 仍回 404 fallback，B 端未即時更新新暱稱，需檢查 invite 缺失案例處理與重新拉取機制。
-16. [ ] 附件接收端可視化：UI 顯示已成功，但實測接收端無法開啟附件預覽，需確認索引 / URL / R2 權限流程。
+16. [X] 附件接收端可視化：訊息附件新增「預覽」動作沿用 Modal 並提供下載，E2E 透過 `downloadAndDecrypt` 驗證 SHA-256 digest 確保可還原檔案。
 17. [ ] 好友邀請交友金鑰補貨強化：登入後應即時顯示補貨階段、精準提示失敗原因、提供人工重試並擴大自動重試，避免「缺少交友金鑰」無明確導因。
 
 ### 好友邀請／交友金鑰補貨強化計畫
@@ -259,6 +260,7 @@ kill $API_PID
 
 | 時間 (UTC) | 說明 |
 | --- | --- |
+| 2025-11-08 07:20 | Reset shareState 時同步清除 `inviteBlockedDueToKeys`，修復重登入後分享面板無法再產生交友 QR；Drive pane 以使用者資料夾呈現並隱藏系統夾層、清理資料夾操作與刪除比對；訊息附件新增預覽按鈕沿用 Modal，並在 Playwright 內以 `downloadAndDecrypt` 驗證附件 digest；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全部通過。 |
 | 2025-11-07 08:40 | `share-controller` 補貨失敗時自動改送完整 IK/SPK/OPK bundle，並固定邀請狀態列 spinner 為正圓；`loadContacts` 過濾自己帳號避免自我條目；重跑 Playwright full-flow，清除 Cloudflare D1 / R2 後重新部署所有元件。 |
 | 2025-11-06 08:20 | 媒體訊息改用共享封套金鑰（`sendDrMedia` 產生 32-byte key、`downloadAndDecrypt` 依 `key_type` 解密），修復接收端附件預覽長時間 `pending`；Playwright `tests/e2e/full-flow.spec.mjs` 通過後清除 Cloudflare D1 / R2 並以 `scripts/deploy-prod.sh --apply-migrations` 重新部署 Worker / Node API / Pages。 |
 | 2025-11-06 09:30 | `share-controller` 於補貨 OPK 時檢查 `/api/v1/keys/publish` 回應，若失敗會回拋錯誤並觸發自動重試，避免再次遇到「生成失敗：缺少交友金鑰」。 |

@@ -17,6 +17,40 @@ export function initDrivePane({
   const btnNewFolder = dom.btnNewFolder ?? document.getElementById('btnNewFolder');
   const btnUp = dom.btnUp ?? document.getElementById('btnUp');
 
+  const SYSTEM_DIR_SENT = '已傳送';
+  const SYSTEM_DIR_RECEIVED = '已接收';
+  const RESERVED_DIRS = new Set([SYSTEM_DIR_SENT, SYSTEM_DIR_RECEIVED]);
+
+  function isReservedDir(name) {
+    if (typeof name !== 'string') return false;
+    const normalized = name.trim();
+    return RESERVED_DIRS.has(normalized);
+  }
+
+  function sanitizePathSegments(input) {
+    if (!Array.isArray(input)) return [];
+    return input
+      .map((seg) => String(seg || '').trim())
+      .filter((seg) => seg && !isReservedDir(seg));
+  }
+
+  function ensureSafeCwd() {
+    const cleaned = sanitizePathSegments(Array.isArray(driveState.cwd) ? driveState.cwd : []);
+    const requiresUpdate =
+      !Array.isArray(driveState.cwd) ||
+      cleaned.length !== driveState.cwd.length ||
+      cleaned.some((seg, idx) => seg !== driveState.cwd[idx]);
+    if (requiresUpdate) {
+      driveState.cwd = [...cleaned];
+    }
+    return driveState.cwd;
+  }
+
+  function sanitizeHeaderDir(segments) {
+    if (!Array.isArray(segments)) return [];
+    return sanitizePathSegments(segments);
+  }
+
   const {
     openModal,
     closeModal,
@@ -33,14 +67,16 @@ export function initDrivePane({
   const { setupSwipe, closeSwipe, closeOpenSwipe } = swipe;
 
   const driveState = sessionStore.driveState;
+  ensureSafeCwd();
 
   function cwdPath() {
-    return driveState.cwd.join('/');
+    return ensureSafeCwd().join('/');
   }
 
   function renderCrumb() {
     if (!crumbEl) return;
-    const parts = [{ name: '根目錄', path: '' }, ...driveState.cwd.map((seg, idx) => ({ name: seg, path: driveState.cwd.slice(0, idx + 1).join('/') }))];
+    const cwd = ensureSafeCwd();
+    const parts = [{ name: '根目錄', path: '' }, ...cwd.map((seg, idx) => ({ name: seg, path: cwd.slice(0, idx + 1).join('/') }))];
     crumbEl.innerHTML = '';
     parts.forEach((p, i) => {
       const isLast = i === parts.length - 1;
@@ -80,13 +116,14 @@ export function initDrivePane({
     if (!header) return [];
     const dir = header.dir;
     if (Array.isArray(dir)) {
-      return dir.map((seg) => String(seg || '').trim()).filter(Boolean);
+      return sanitizeHeaderDir(dir);
     }
     if (typeof dir === 'string') {
-      return String(dir)
+      const segments = String(dir)
         .split('/')
         .map((seg) => String(seg || '').trim())
         .filter(Boolean);
+      return sanitizeHeaderDir(segments);
     }
     return [];
   }
@@ -108,42 +145,32 @@ export function initDrivePane({
     const items = Array.isArray(data?.items) ? data.items : [];
     driveState.currentMessages = items;
     driveState.currentConvId = convId;
-    renderDriveList(items, convId);
+    renderDriveList(items);
     updateStats?.();
   }
 
-  function renderDriveList(items, convId) {
+  function renderDriveList(items) {
     if (!driveListEl) return;
     closeOpenSwipe?.();
     renderCrumb();
     driveListEl.innerHTML = '';
-    if (btnUp) btnUp.style.display = driveState.cwd.length ? 'inline-flex' : 'none';
+    const currentPath = [...ensureSafeCwd()];
+    if (btnUp) btnUp.style.display = currentPath.length ? 'inline-flex' : 'none';
     const folderSet = new Map();
     const files = [];
-    const prefix = convId + '/' + (cwdPath() ? cwdPath() + '/' : '');
-    const currentPath = [...driveState.cwd];
     for (const it of items) {
       const header = safeJSON(it.header_json || it.header || '{}');
       const dirSegments = getDirSegmentsFromHeader(header);
       const objKey = typeof it?.obj_key === 'string' && it.obj_key ? it.obj_key : (typeof header?.obj === 'string' ? header.obj : '');
-      if (dirSegments.length) {
-        if (!pathStartsWith(dirSegments, currentPath)) continue;
-        if (dirSegments.length > currentPath.length) {
-          const next = dirSegments[currentPath.length];
-          if (next) folderSet.set(next, (folderSet.get(next) || 0) + 1);
-          continue;
+      if (!pathStartsWith(dirSegments, currentPath)) continue;
+      if (dirSegments.length > currentPath.length) {
+        const next = dirSegments[currentPath.length];
+        if (next && !isReservedDir(next)) {
+          folderSet.set(next, (folderSet.get(next) || 0) + 1);
         }
-        files.push({ header, ts: it.ts, obj_key: objKey });
         continue;
       }
-      if (!objKey || !objKey.startsWith(prefix)) continue;
-      const rel = objKey.slice(prefix.length);
-      if (rel.includes('/')) {
-        const first = rel.split('/')[0];
-        folderSet.set(first, (folderSet.get(first) || 0) + 1);
-      } else {
-        files.push({ header, ts: it.ts, obj_key: objKey });
-      }
+      files.push({ header, ts: it.ts, obj_key: objKey });
     }
     const folders = Array.from(folderSet.entries()).sort((a, b) => a[0].localeCompare(b[0]));
     for (const [name, count] of folders) {
@@ -168,6 +195,7 @@ export function initDrivePane({
         }
         closeOpenSwipe?.();
         driveState.cwd.push(name);
+        ensureSafeCwd();
         refreshDriveList().catch(() => {});
       };
       li.addEventListener('click', (e) => {
@@ -344,9 +372,16 @@ export function initDrivePane({
         input?.select?.();
         return;
       }
+      if (isReservedDir(safeName)) {
+        if (errorEl) errorEl.textContent = '「已傳送」與「已接收」為系統保留資料夾，請改用其他名稱。';
+        input?.focus();
+        input?.select?.();
+        return;
+      }
       if (input) input.value = safeName;
       if (errorEl) errorEl.textContent = '';
       driveState.cwd.push(safeName);
+      ensureSafeCwd();
       closeModal?.();
       try {
         await refreshDriveList();
@@ -369,7 +404,7 @@ export function initDrivePane({
       await encryptAndPutWithProgress({
         convId,
         file,
-        dir: [...driveState.cwd],
+        dir: [...ensureSafeCwd()],
         onProgress: (p) => updateProgressModal?.(p)
       });
       completeProgressModal?.();
@@ -520,18 +555,22 @@ export function initDrivePane({
 
     const folderName = String(name || '').trim();
     if (!folderName) return;
-    const rel = cwdPath();
-    const folderRel = rel ? `${rel}/${folderName}` : folderName;
-    const prefix = `${driveState.currentConvId}/${folderRel}`;
+    if (isReservedDir(folderName)) return;
+    const basePath = [...ensureSafeCwd()];
+    const targetPath = [...basePath, folderName];
     const targetMessages = driveState.currentMessages
-      .map((it) => {
-        const direct = typeof it?.obj_key === 'string' ? it.obj_key : '';
-        if (direct) return direct;
-        const header = safeJSON(it?.header_json || it?.header || '{}');
-        return typeof header?.obj === 'string' ? header.obj : '';
+      .map((msg) => {
+        const header = safeJSON(msg?.header_json || msg?.header || '{}');
+        const dirSegments = getDirSegmentsFromHeader(header);
+        if (!pathStartsWith(dirSegments, targetPath)) return null;
+        const objKey = typeof msg?.obj_key === 'string' && msg.obj_key
+          ? msg.obj_key
+          : (typeof header?.obj === 'string' ? header.obj : '');
+        if (!objKey) return null;
+        const id = String(msg?.id || '');
+        return { objKey, id };
       })
-      .map((objKey, idx) => ({ objKey, id: String(driveState.currentMessages[idx]?.id || '') }))
-      .filter(({ objKey }) => objKey && objKey.startsWith(`${prefix}/`));
+      .filter(Boolean);
 
     if (!targetMessages.length) {
       log({ deleteInfo: `資料夾「${folderName}」內沒有檔案` });
@@ -610,6 +649,7 @@ export function initDrivePane({
     btnUp?.addEventListener('click', () => {
       if (!driveState.cwd.length) return;
       driveState.cwd.pop();
+      ensureSafeCwd();
       refreshDriveList().catch(() => {});
     });
   }
