@@ -4,6 +4,9 @@ set -euo pipefail
 # === 配置（必要時調整） ===
 API_BASE="${API_BASE:-https://message.sentry.red}"   # 你的 API 網域
 CLIENT_ID="${CLIENT_ID:-devtest}"                    # 送到後端的 X-Client-Id 標頭（可自訂）
+UID_HEX="${UID_HEX:-}"
+ACCOUNT_TOKEN="${ACCOUNT_TOKEN:-}"
+ACCOUNT_DIGEST="${ACCOUNT_DIGEST:-}"
 
 # === 參數 ===
 # 用法： ./r2-media-test.sh <convId> <filePath> [contentType] [ext]
@@ -49,8 +52,17 @@ SIZE_BYTES="$(stat -c%s "$FILE" 2>/dev/null || stat -f%z "$FILE")"
 echo "=== 1) sign-put 取得直傳授權（presigned PUT） ==="
 RESP_SIGN_PUT="$(curl -sS -X POST "$API_BASE/api/v1/media/sign-put" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg conv "$CONV_ID" --arg ext "$EXT" --arg ct "$CONTENT_TYPE" \
-        '{convId:$conv, ext:$ext, contentType:$ct}')")"
+  -d "$(jq -nc \
+        --arg conv "$CONV_ID" \
+        --arg ext "$EXT" \
+        --arg ct "$CONTENT_TYPE" \
+        --arg uid "$UID_HEX" \
+        --arg token "$ACCOUNT_TOKEN" \
+        --arg digest "$ACCOUNT_DIGEST" \
+        --argjson size "$SIZE_BYTES" \
+        '({convId:$conv, uidHex:($uid|ascii_upcase), ext:$ext, contentType:$ct, size:$size} \
+          + (if $token|length > 0 then {accountToken:$token} else {} end) \
+          + (if $digest|length > 0 then {accountDigest:($digest|ascii_upcase)} else {} end))')")"
 
 echo "$RESP_SIGN_PUT" | jq .
 
@@ -103,7 +115,14 @@ echo
 echo "=== 4) 產生短效下載 URL 並抓回前 32 bytes 驗證 ==="
 RESP_GET="$(curl -sS -X POST "$API_BASE/api/v1/media/sign-get" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg key "$P_Key" '{key:$key}')" )"
+  -d "$(jq -nc \
+        --arg key "$P_Key" \
+        --arg uid "$UID_HEX" \
+        --arg token "$ACCOUNT_TOKEN" \
+        --arg digest "$ACCOUNT_DIGEST" \
+        '({key:$key, uidHex:($uid|ascii_upcase)} \
+          + (if $token|length > 0 then {accountToken:$token} else {} end) \
+          + (if $digest|length > 0 then {accountDigest:($digest|ascii_upcase)} else {} end))' )"
 echo "$RESP_GET" | jq .
 
 GET_URL="$(echo "$RESP_GET" | jq -r '.download.url')"
@@ -116,3 +135,11 @@ echo -n "下載前 32 bytes："
 curl -sS "$GET_URL" | head -c 32 | hexdump -C
 echo
 echo "完成。Object Key: $P_Key"
+if [[ -z "$UID_HEX" ]]; then
+  echo "請先設定 UID_HEX 環境變數（7-byte UID 的 14 hex）" >&2
+  exit 2
+fi
+if [[ -z "$ACCOUNT_TOKEN" && -z "$ACCOUNT_DIGEST" ]]; then
+  echo "至少需要 ACCOUNT_TOKEN 或 ACCOUNT_DIGEST 其中一個環境變數" >&2
+  exit 2
+fi

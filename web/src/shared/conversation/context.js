@@ -49,3 +49,7 @@ export async function computeConversationFingerprint(tokenB64, uid) {
   const sig = await crypto.subtle.sign('HMAC', key, data);
   return bytesToB64Url(new Uint8Array(sig));
 }
+
+export async function computeConversationAccessFingerprint(tokenB64, accountDigest) {
+  return computeConversationFingerprint(tokenB64, accountDigest);
+}

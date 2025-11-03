@@ -7,13 +7,15 @@ import {
   encryptConversationEnvelope,
   decryptConversationEnvelope,
   conversationIdFromToken,
-  computeConversationFingerprint
+  computeConversationFingerprint,
+  computeConversationAccessFingerprint
 } from '../../shared/conversation/context.js';
 
 export {
   deriveConversationContextFromSecret,
   conversationIdFromToken,
   computeConversationFingerprint,
+  computeConversationAccessFingerprint,
   encryptConversationEnvelope,
   decryptConversationEnvelope
 };

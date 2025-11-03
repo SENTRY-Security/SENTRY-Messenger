@@ -60,7 +60,9 @@ const ShareContactSchema = z.object({
   myUid: z.string().min(14),
   envelope: ContactEnvelopeSchema,
   peerUid: z.string().min(14).optional(),
-  accountDigest: z.string().min(16).optional()
+  accountDigest: z.string().min(16).optional(),
+  conversationId: z.string().min(8).optional(),
+  conversationFingerprint: z.string().min(8).optional()
 });
 
 export const createInvite = async (req, res) => {
@@ -254,6 +256,8 @@ export const shareContactUpdate = async (req, res) => {
   };
   if (peerUid) payload.peerUid = peerUid;
   if (accountDigest) payload.accountDigest = accountDigest;
+  if (input.conversationId) payload.conversationId = String(input.conversationId);
+  if (input.conversationFingerprint) payload.conversationFingerprint = String(input.conversationFingerprint);
   const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 

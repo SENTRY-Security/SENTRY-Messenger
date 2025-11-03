@@ -330,8 +330,11 @@ export default {
       const inviteId = String(body?.inviteId || '').trim();
       const secret = String(body?.secret || '').trim();
       const myUid = normalizeUid(body?.myUid || body?.my_uid);
-      const accountDigest = normalizeUid(body?.accountDigest || body?.account_digest);
+      const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
       const peerUidBody = normalizeUid(body?.peerUid || body?.peer_uid);
+      const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+      const conversationFingerprintRaw = typeof body?.conversationFingerprint === 'string' ? body.conversationFingerprint.trim() : '';
+      const conversationFingerprint = conversationFingerprintRaw ? conversationFingerprintRaw : null;
       const envelope = normalizeEnvelope(body?.envelope);
       if (!inviteId || !secret || !envelope || (!myUid && !accountDigest)) {
         return json({ error: 'BadRequest', message: 'inviteId, secret, sender identity and envelope required' }, { status: 400 });
@@ -355,8 +358,8 @@ export default {
       }
       if (row.secret !== secret) return json({ error: 'Forbidden', message: 'secret mismatch' }, { status: 403 });
 
-      const ownerDigest = normalizeUid(row.owner_account_digest);
-      const guestDigest = normalizeUid(row.guest_account_digest);
+      const ownerDigest = normalizeAccountDigest(row.owner_account_digest);
+      const guestDigest = normalizeAccountDigest(row.guest_account_digest);
       let ownerUid = normalizeUid(row.owner_uid);
       let guestUid = normalizeUid(row.guest_uid);
 
@@ -379,7 +382,7 @@ export default {
       }
 
       const fetchUidByDigest = async (digest) => {
-        const normalizedDigest = normalizeUid(digest);
+        const normalizedDigest = normalizeAccountDigest(digest);
         if (!normalizedDigest) return null;
         try {
           const account = await resolveAccount(env, { accountDigest: normalizedDigest });
@@ -507,7 +510,7 @@ export default {
       if (!senderRole && myUid) {
         try {
           const account = await resolveAccount(env, { uidHex: myUid });
-          const acctDigest = normalizeUid(account?.account_digest);
+          const acctDigest = normalizeAccountDigest(account?.account_digest);
           if (acctDigest && ownerDigest && acctDigest === ownerDigest) {
             senderRole = 'owner';
             if (!ownerUid) {
@@ -582,6 +585,39 @@ export default {
       const ts = Math.floor(Date.now() / 1000);
       await insertContactMessage(env, { convUid: targetUid, peerUid: senderUid, envelope, ts });
 
+      if (conversationId) {
+        let senderDigestResolved = senderRole === 'owner' ? ownerDigest : guestDigest;
+        let targetDigestResolved = senderRole === 'owner' ? guestDigest : ownerDigest;
+        if (!senderDigestResolved && senderUid) {
+          try {
+            senderDigestResolved = await hashUidToDigest(env, senderUid);
+          } catch (err) {
+            console.warn('conversation_acl_sender_digest_failed', err?.message || err);
+          }
+        }
+        if (!targetDigestResolved && targetUid) {
+          try {
+            targetDigestResolved = await hashUidToDigest(env, targetUid);
+          } catch (err) {
+            console.warn('conversation_acl_target_digest_failed', err?.message || err);
+          }
+        }
+        if (senderDigestResolved) {
+          await grantConversationAccess(env, {
+            conversationId,
+            accountDigest: senderDigestResolved,
+            fingerprint: conversationFingerprint
+          });
+        }
+        if (targetDigestResolved) {
+          await grantConversationAccess(env, {
+            conversationId,
+            accountDigest: targetDigestResolved,
+            fingerprint: null
+          });
+        }
+      }
+
       return json({ ok: true, targetUid, ts });
     }
 
@@ -602,8 +638,8 @@ export default {
 
       const ownerDigests = new Set();
       const peerDigests = new Set();
-      const ownerDigestBody = normalizeUid(body?.ownerAccountDigest || body?.owner_account_digest);
-      const peerDigestBody = normalizeUid(body?.peerAccountDigest || body?.peer_account_digest);
+      const ownerDigestBody = normalizeAccountDigest(body?.ownerAccountDigest || body?.owner_account_digest);
+      const peerDigestBody = normalizeAccountDigest(body?.peerAccountDigest || body?.peer_account_digest);
       if (ownerDigestBody) {
         ownerDigests.add(ownerDigestBody);
       }
@@ -622,14 +658,14 @@ export default {
           const ownerRowUid = normalizeUid(row.owner_uid);
           const guestRowUid = normalizeUid(row.guest_uid);
           if (ownerRowUid === ownerUid && guestRowUid === peerUid) {
-            const ownerDigest = normalizeUid(row.owner_account_digest);
+            const ownerDigest = normalizeAccountDigest(row.owner_account_digest);
             if (ownerDigest) ownerDigests.add(ownerDigest);
-            const peerDigest = normalizeUid(row.guest_account_digest);
+            const peerDigest = normalizeAccountDigest(row.guest_account_digest);
             if (peerDigest) peerDigests.add(peerDigest);
           } else if (ownerRowUid === peerUid && guestRowUid === ownerUid) {
-            const peerDigest = normalizeUid(row.owner_account_digest);
+            const peerDigest = normalizeAccountDigest(row.owner_account_digest);
             if (peerDigest) peerDigests.add(peerDigest);
-            const ownerDigest = normalizeUid(row.guest_account_digest);
+            const ownerDigest = normalizeAccountDigest(row.guest_account_digest);
             if (ownerDigest) ownerDigests.add(ownerDigest);
           }
         }
@@ -639,7 +675,7 @@ export default {
 
       try {
         const ownerAccount = await resolveAccount(env, { uidHex: ownerUid });
-        const digest = normalizeUid(ownerAccount?.account_digest);
+        const digest = normalizeAccountDigest(ownerAccount?.account_digest);
         if (digest) ownerDigests.add(digest);
       } catch {
         // ignore missing account; allow deletion to continue
@@ -647,7 +683,7 @@ export default {
 
       try {
         const peerAccount = await resolveAccount(env, { uidHex: peerUid });
-        const digest = normalizeUid(peerAccount?.account_digest);
+        const digest = normalizeAccountDigest(peerAccount?.account_digest);
         if (digest) peerDigests.add(digest);
       } catch {
         // ignore missing account; allow deletion to continue
@@ -655,7 +691,7 @@ export default {
 
       try {
         const ownerDerived = await hashUidToDigest(env, ownerUid);
-        const norm = normalizeUid(ownerDerived);
+        const norm = normalizeAccountDigest(ownerDerived);
         if (norm) ownerDigests.add(norm);
       } catch {
         // ignore hashing failures
@@ -663,7 +699,7 @@ export default {
 
       try {
         const peerDerived = await hashUidToDigest(env, peerUid);
-        const norm = normalizeUid(peerDerived);
+        const norm = normalizeAccountDigest(peerDerived);
         if (norm) peerDigests.add(norm);
       } catch {
         // ignore hashing failures
@@ -965,6 +1001,43 @@ export default {
         totalBytes,
         objectCount
       });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/d1/conversations/authorize') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+      if (!conversationId) {
+        return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+      }
+      const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+      if (!accountDigest) {
+        return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+      }
+      const fingerprint = typeof body?.fingerprint === 'string' ? body.fingerprint.trim() : null;
+      await ensureDataTables(env);
+      let row;
+      try {
+        const res = await env.DB.prepare(
+          `SELECT fingerprint FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2`
+        ).bind(conversationId, accountDigest).all();
+        row = res?.results?.[0] || null;
+      } catch (err) {
+        console.warn('conversation_acl_query_failed', err?.message || err);
+        return json({ error: 'ConversationLookupFailed', message: err?.message || 'lookup failed' }, { status: 500 });
+      }
+      if (!row) {
+        return json({ error: 'Forbidden', message: 'conversation access not granted' }, { status: 403 });
+      }
+      const storedFp = typeof row.fingerprint === 'string' ? row.fingerprint.trim() : '';
+      if (fingerprint && storedFp && fingerprint !== storedFp) {
+        return json({ error: 'Forbidden', message: 'fingerprint mismatch' }, { status: 403 });
+      }
+      return json({ ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/d1/accounts/verify') {
@@ -1405,6 +1478,12 @@ function normalizeConversationId(value) {
   return token;
 }
 
+function normalizeAccountDigest(value) {
+  const cleaned = String(value || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (cleaned.length !== 64) return null;
+  return cleaned;
+}
+
 function normalizeSecureEnvelope(obj) {
   if (!obj || typeof obj !== 'object') return null;
   const v = Number(obj.v ?? 1);
@@ -1487,6 +1566,26 @@ async function insertContactMessage(env, { convUid, peerUid, envelope, ts }) {
     headerJson,
     ts
   ).run();
+}
+
+async function grantConversationAccess(env, { conversationId, accountDigest, fingerprint }) {
+  if (!conversationId || !accountDigest) return;
+  await ensureDataTables(env);
+  const fp = fingerprint && String(fingerprint).trim() ? String(fingerprint).trim() : null;
+  try {
+    await env.DB.prepare(`
+      INSERT INTO conversation_acl (conversation_id, account_digest, fingerprint)
+      VALUES (?1, ?2, ?3)
+      ON CONFLICT(conversation_id, account_digest) DO UPDATE SET
+        fingerprint = CASE
+          WHEN excluded.fingerprint IS NOT NULL AND excluded.fingerprint != '' THEN excluded.fingerprint
+          ELSE conversation_acl.fingerprint
+        END,
+        updated_at = strftime('%s','now')
+    `).bind(conversationId, accountDigest, fp).run();
+  } catch (err) {
+    console.warn('conversation_acl_upsert_failed', err?.message || err);
+  }
 }
 
 function normalizeOwnerPrekeyBundle(bundle) {
@@ -1708,6 +1807,16 @@ async function ensureDataTables(env) {
         created_at INTEGER NOT NULL
       )`,
     `CREATE INDEX IF NOT EXISTS idx_media_conv ON media_objects (conv_id)`,
+    `CREATE TABLE IF NOT EXISTS conversation_acl (
+        conversation_id TEXT NOT NULL,
+        account_digest TEXT NOT NULL,
+        fingerprint TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        PRIMARY KEY (conversation_id, account_digest),
+        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_conversation_acl_account ON conversation_acl (account_digest)`,
     `CREATE TABLE IF NOT EXISTS messages_secure (
         id TEXT PRIMARY KEY,
         conversation_id TEXT NOT NULL,
@@ -1804,6 +1913,12 @@ async function ensureDataTables(env) {
        FOR EACH ROW
        BEGIN
          UPDATE device_backup SET updated_at = strftime('%s','now') WHERE account_digest = OLD.account_digest;
+       END;`,
+    `CREATE TRIGGER trg_conversation_acl_updated
+       AFTER UPDATE ON conversation_acl
+       FOR EACH ROW
+       BEGIN
+         UPDATE conversation_acl SET updated_at = strftime('%s','now') WHERE conversation_id = OLD.conversation_id AND account_digest = OLD.account_digest;
        END;`
   ];
 

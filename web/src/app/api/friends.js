@@ -80,7 +80,7 @@ export async function friendsDeleteContact({ peerUid } = {}) {
   return data;
 }
 
-export async function friendsShareContactUpdate({ inviteId, secret, peerUid, envelope } = {}) {
+export async function friendsShareContactUpdate({ inviteId, secret, peerUid, envelope, conversationId, conversationFingerprint } = {}) {
   const myUid = getUidHex();
   if (!myUid) throw new Error('Not unlocked: UID missing');
   if (!inviteId || !secret || !envelope?.iv || !envelope?.ct) {
@@ -88,6 +88,8 @@ export async function friendsShareContactUpdate({ inviteId, secret, peerUid, env
   }
   const payload = withAccount({ inviteId, secret, myUid, envelope }, { includeUid: false });
   if (peerUid) payload.peerUid = peerUid;
+  if (conversationId) payload.conversationId = conversationId;
+  if (conversationFingerprint) payload.conversationFingerprint = conversationFingerprint;
   try {
     // eslint-disable-next-line no-console
     console.log('[contact-share-request]', { inviteId, myUid, peerUid: peerUid || null });

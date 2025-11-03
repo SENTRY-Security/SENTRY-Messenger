@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { signHmac } from '../utils/hmac.js';
 import { createWsToken } from '../utils/ws-token.js';
+import { verifyAccount, normalizeUidHex, normalizeAccountDigest } from '../utils/account-verify.js';
 
 const r = Router();
 
@@ -20,30 +20,6 @@ const TokenRequestSchema = z.object({
   }
 });
 
-function normalizeUidHex(value) {
-  const cleaned = String(value || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
-  if (cleaned.length < 14) return null;
-  return cleaned.slice(0, 14);
-}
-
-async function verifyAccount(payload) {
-  const path = '/d1/accounts/verify';
-  const body = JSON.stringify(payload);
-  const sig = signHmac(path, body, HMAC_SECRET);
-  const res = await fetch(`${DATA_API}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-auth': sig },
-    body
-  });
-  let raw = '';
-  try { raw = await res.text(); } catch { raw = ''; }
-  let data = raw;
-  if (raw) {
-    try { data = JSON.parse(raw); } catch {/* ignore */ }
-  }
-  return { ok: res.ok, status: res.status, data };
-}
-
 r.post('/ws/token', async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
@@ -61,7 +37,10 @@ r.post('/ws/token', async (req, res) => {
 
   const payload = { uidHex };
   if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
-  if (input.accountDigest) payload.accountDigest = String(input.accountDigest).trim().toUpperCase();
+  if (input.accountDigest) {
+    const normalizedDigest = normalizeAccountDigest(input.accountDigest);
+    if (normalizedDigest) payload.accountDigest = normalizedDigest;
+  }
 
   let verified;
   try {

@@ -459,7 +459,7 @@ export function initMessagesPane({
           </div>
         </div>
         <div class="conversation-delete-row">
-          <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i><span>刪除對話</span></button>
+          <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i></button>
         </div>
       `;
       const deleteBtn = li.querySelector('.item-delete');

@@ -4,6 +4,12 @@ import { z } from 'zod';
 import { customAlphabet } from 'nanoid';
 import { createDownloadGet, createUploadPut } from '../../services/s3.js';
 import { signHmac } from '../../utils/hmac.js';
+import {
+  verifyAccount,
+  normalizeUidHex,
+  normalizeAccountDigest,
+  AccountDigestRegex
+} from '../../utils/account-verify.js';
 
 const r = Router();
 const nano = customAlphabet('1234567890abcdef', 32);
@@ -14,21 +20,33 @@ const HMAC_SECRET = process.env.DATA_API_HMAC;
 
 const SYSTEM_DIR_SENT = '已傳送';
 const SYSTEM_DIR_RECEIVED = '已接收';
-const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const SignPutSchema = z.object({
   convId: z.string().min(1),
+  uidHex: z.string().min(14),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
   ext: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i).optional(),
   contentType: z.string().min(1).optional(),
   dir: z.string().max(200).optional(), // optional subdirectory inside convId (already hashed client-side)
   size: z.number().int().min(1).optional(),
-  direction: z.enum(['sent', 'received']).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  direction: z.enum(['sent', 'received']).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
 });
 
 const SignGetSchema = z.object({
   key: z.string().min(3),
+  uidHex: z.string().min(14),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
   downloadName: z.string().min(1).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
 });
 
 async function fetchMediaUsage({ convId, prefix }) {
@@ -65,12 +83,118 @@ async function fetchMediaUsage({ convId, prefix }) {
   return data;
 }
 
+const ConversationIdRegex = /^[A-Za-z0-9_-]{8,128}$/;
+
+function normalizeConversationId(value) {
+  if (!value) return null;
+  const token = String(value).trim();
+  if (!token) return null;
+  if (!ConversationIdRegex.test(token)) return null;
+  return token;
+}
+
+function isSystemOwnedConversation({ convId, accountDigest, uidHex }) {
+  if (!convId) return false;
+  const acct = (accountDigest || '').toUpperCase();
+  const uid = (uidHex || '').toUpperCase();
+  if (acct) {
+    if (convId === `drive-${acct}`) return true;
+    if (convId === `profile-${acct}`) return true;
+    if (convId === `settings-${acct}`) return true;
+    if (convId === `avatar-${acct}`) return true;
+    if (convId === `contacts-${acct}`) return true;
+  }
+  if (uid && convId === `contacts-${uid}`) return true;
+  return false;
+}
+
+async function authorizeConversationAccess({ convId, accountDigest, fingerprint }) {
+  if (!DATA_API || !HMAC_SECRET) {
+    const err = new Error('DATA_API_URL or DATA_API_HMAC not configured');
+    err.status = 500;
+    throw err;
+  }
+  const bodyObj = { conversationId: convId, accountDigest };
+  if (fingerprint) bodyObj.fingerprint = fingerprint;
+  const path = '/d1/conversations/authorize';
+  const body = JSON.stringify(bodyObj);
+  const sig = signHmac(path, body, HMAC_SECRET);
+  const res = await fetch(`${DATA_API}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-auth': sig },
+    body
+  });
+  let data = null;
+  let raw = '';
+  try { raw = await res.text(); } catch { raw = ''; }
+  if (raw) {
+    try { data = JSON.parse(raw); } catch { data = raw; }
+  }
+  if (!res.ok) {
+    const err = new Error('ConversationAccessDenied');
+    err.status = res.status || 502;
+    err.details = data;
+    throw err;
+  }
+}
+
+function extractConversationIdFromKey(key) {
+  const safe = String(key || '').replace(/[\u0000-\u001F\u007F]/gu, '').trim();
+  if (!safe) return null;
+  const firstSlash = safe.indexOf('/');
+  if (firstSlash === -1) return safe;
+  return safe.slice(0, firstSlash);
+}
+
 // POST /api/v1/media/sign-put
 r.post('/media/sign-put', asyncH(async (req, res) => {
   const input = SignPutSchema.parse(req.body);
 
   const ttlSec = Number(process.env.SIGNED_PUT_TTL || 900);
   const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 524_288_000;
+
+  const uidHex = normalizeUidHex(input.uidHex);
+  if (!uidHex) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid uidHex' });
+  }
+  const tokenClean = input.accountToken ? String(input.accountToken).trim() : undefined;
+  const digestClean = input.accountDigest ? normalizeAccountDigest(input.accountDigest) : undefined;
+  const accountPayload = { uidHex };
+  if (tokenClean) accountPayload.accountToken = tokenClean;
+  if (digestClean) accountPayload.accountDigest = digestClean;
+
+  let verified;
+  try {
+    verified = await verifyAccount(accountPayload);
+  } catch (err) {
+    return res.status(502).json({ error: 'VerifyFailed', message: err?.message || 'verify request failed' });
+  }
+  if (!verified.ok) {
+    const status = verified.status || 502;
+    return res.status(status).json(verified.data || { error: 'VerifyFailed' });
+  }
+  const resolvedDigest = normalizeAccountDigest(verified.data?.account_digest || verified.data?.accountDigest || digestClean);
+  if (!resolvedDigest) {
+    return res.status(502).json({ error: 'VerifyFailed', message: 'account digest missing' });
+  }
+  const resolvedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || uidHex) || uidHex;
+
+  const convId = normalizeConversationId(input.convId);
+  if (!convId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid convId' });
+  }
+
+  if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
+    try {
+      await authorizeConversationAccess({ convId, accountDigest: resolvedDigest });
+    } catch (err) {
+      const status = err?.status || 502;
+      const payload = err?.details && typeof err.details === 'object'
+        ? err.details
+        : { error: 'ConversationAccessDenied', message: err?.message || 'conversation access denied', details: err?.details || null };
+      return res.status(status).json(payload);
+    }
+  }
 
   if (input.size != null) {
     const sizeNum = Number(input.size);
@@ -106,8 +230,7 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   }
   const direction = input.direction === 'received' ? 'received' : 'sent';
   const systemDir = direction === 'received' ? SYSTEM_DIR_RECEIVED : SYSTEM_DIR_SENT;
-  const convIdCleanRaw = String(input.convId).replace(/[\u0000-\u001F\u007F]/gu, '').trim();
-  const convIdClean = convIdCleanRaw || input.convId;
+  const convIdClean = convId;
   const basePrefix = `${convIdClean}/${systemDir}`;
   const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
   const key = `${keyPrefix}/${uid}`;
@@ -151,6 +274,51 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
 // POST /api/v1/media/sign-get
 r.post('/media/sign-get', asyncH(async (req, res) => {
   const input = SignGetSchema.parse(req.body);
+
+  const uidHex = normalizeUidHex(input.uidHex);
+  if (!uidHex) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid uidHex' });
+  }
+  const tokenClean = input.accountToken ? String(input.accountToken).trim() : undefined;
+  const digestClean = input.accountDigest ? normalizeAccountDigest(input.accountDigest) : undefined;
+  const accountPayload = { uidHex };
+  if (tokenClean) accountPayload.accountToken = tokenClean;
+  if (digestClean) accountPayload.accountDigest = digestClean;
+
+  let verified;
+  try {
+    verified = await verifyAccount(accountPayload);
+  } catch (err) {
+    return res.status(502).json({ error: 'VerifyFailed', message: err?.message || 'verify request failed' });
+  }
+  if (!verified.ok) {
+    const status = verified.status || 502;
+    return res.status(status).json(verified.data || { error: 'VerifyFailed' });
+  }
+  const resolvedDigest = normalizeAccountDigest(verified.data?.account_digest || verified.data?.accountDigest || digestClean);
+  if (!resolvedDigest) {
+    return res.status(502).json({ error: 'VerifyFailed', message: 'account digest missing' });
+  }
+  const resolvedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || uidHex) || uidHex;
+
+  const convIdFragment = extractConversationIdFromKey(input.key);
+  const convId = convIdFragment ? normalizeConversationId(convIdFragment) : null;
+  if (!convId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid object key' });
+  }
+
+  if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
+    try {
+      await authorizeConversationAccess({ convId, accountDigest: resolvedDigest });
+    } catch (err) {
+      const status = err?.status || 502;
+      const payload = err?.details && typeof err.details === 'object'
+        ? err.details
+        : { error: 'ConversationAccessDenied', message: err?.message || 'conversation access denied', details: err?.details || null };
+      return res.status(status).json(payload);
+    }
+  }
+
   const ttlSec = Number(process.env.SIGNED_GET_TTL || 900);
   const out = await createDownloadGet({ key: input.key, ttlSec, downloadName: input.downloadName });
   res.json({ download: out, expiresIn: ttlSec });

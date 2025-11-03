@@ -3,7 +3,7 @@
 // No UI here. Callers (UI) should pass File/Blob and render results.
 
 import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMediaKeys } from '../api/media.js';
-import { getMkRaw, getAccountDigest } from '../core/store.js';
+import { getMkRaw } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 
 const encoder = new TextEncoder();
@@ -196,7 +196,6 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
 
   // 2) Get presigned PUT
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
-  const accountDigest = getAccountDigest();
   const signPayload = {
     convId,
     contentType,
@@ -204,7 +203,6 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
     size: fileSize ?? plainBuf.byteLength,
     direction: direction === 'received' ? 'received' : 'sent'
   };
-  if (accountDigest) signPayload.accountDigest = accountDigest;
   const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;
@@ -306,7 +304,6 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   const ct = await aeadEncryptWithMK(plainBuf, ctKey, infoTag);
 
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
-  const accountDigest = getAccountDigest();
   const signPayload = {
     convId,
     contentType,
@@ -314,7 +311,6 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
     size: fileSize ?? plainBuf.byteLength,
     direction: direction === 'received' ? 'received' : 'sent'
   };
-  if (accountDigest) signPayload.accountDigest = accountDigest;
   const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;

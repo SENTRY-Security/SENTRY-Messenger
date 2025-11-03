@@ -7,9 +7,9 @@ import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { getUidHex, setDevicePriv, getMkRaw } from '../../core/store.js';
+import { getUidHex, setDevicePriv, getMkRaw, getAccountDigest } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
-import { deriveConversationContextFromSecret } from '../../features/conversation.js';
+import { deriveConversationContextFromSecret, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore } from './session-store.js';
@@ -989,6 +989,8 @@ export function setupShareController(options) {
         }
       }
       const drInit = conversation?.dr_init || conversation?.drInit || info?.conversationDrInit || null;
+      const conversationToken = conversation?.tokenB64 || conversation?.token_b64 || null;
+      const accountDigest = (getAccountDigest() || '').toUpperCase();
       let payload = null;
       let envelope = null;
       try {
@@ -996,7 +998,18 @@ export function setupShareController(options) {
         payload.reason = reason || 'update';
         log({ contactBroadcastPayload: { peerUid, hasConversation: !!payload?.conversation, drInit: payload?.conversation?.dr_init ? 'yes' : 'no' } });
         envelope = await encryptContactPayload(secret, payload);
-        await friendsShareContactUpdate({ inviteId, secret, peerUid, envelope });
+        let conversationFingerprint = null;
+        if (conversationToken && accountDigest) {
+          try {
+            conversationFingerprint = await computeConversationAccessFingerprint(conversationToken, accountDigest);
+          } catch (fpErr) {
+            log({ contactConversationFingerprintError: fpErr?.message || fpErr, peerUid });
+          }
+        }
+        const sharePayload = { inviteId, secret, peerUid, envelope };
+        if (conversationId) sharePayload.conversationId = conversationId;
+        if (conversationFingerprint) sharePayload.conversationFingerprint = conversationFingerprint;
+        await friendsShareContactUpdate(sharePayload);
         storeContactSecretMapping({
           peerUid,
           inviteId,
