@@ -9,10 +9,10 @@ import { getUidHex, getAccountToken, getAccountDigest } from '../core/store.js';
 
 /**
  * Request a presigned PUT for uploading an encrypted object to R2.
- * @param {{ convId: string, contentType: string, dir?: string }} p
+ * @param {{ convId: string, contentType: string, dir?: string, conversationFingerprint?: string }} p
  * @returns {Promise<{ r: Response, data: any }>} data typically { upload:{url,key,fields?,headers?,method?}, objectPath, expiresIn }
  */
-export async function signPut({ convId, contentType, dir, size, direction, uidHex, accountToken, accountDigest } = {}) {
+export async function signPut({ convId, contentType, dir, size, direction, uidHex, accountToken, accountDigest, conversationFingerprint } = {}) {
   const resolvedConv = typeof convId === 'string' ? convId : '';
   if (!resolvedConv) throw new Error('convId required');
   const resolvedUid = (uidHex || getUidHex() || '').toUpperCase();
@@ -25,6 +25,7 @@ export async function signPut({ convId, contentType, dir, size, direction, uidHe
   if (token) body.accountToken = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
   if (digest) body.accountDigest = digest;
+  if (conversationFingerprint) body.conversationFingerprint = conversationFingerprint;
   return await fetchJSON('/api/v1/media/sign-put', body);
 }
 
@@ -33,7 +34,7 @@ export async function signPut({ convId, contentType, dir, size, direction, uidHe
  * @param {{ key: string }} p
  * @returns {Promise<{ r: Response, data: any }>} data: { download:{url,bucket,key}, expiresIn }
  */
-export async function signGet({ key, uidHex, accountToken, accountDigest } = {}) {
+export async function signGet({ key, uidHex, accountToken, accountDigest, conversationFingerprint } = {}) {
   const resolvedKey = typeof key === 'string' ? key : '';
   if (!resolvedKey) throw new Error('object key required');
   const resolvedUid = (uidHex || getUidHex() || '').toUpperCase();
@@ -43,6 +44,7 @@ export async function signGet({ key, uidHex, accountToken, accountDigest } = {})
   if (token) body.accountToken = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
   if (digest) body.accountDigest = digest;
+  if (conversationFingerprint) body.conversationFingerprint = conversationFingerprint;
   return await fetchJSON('/api/v1/media/sign-get', body);
 }
 

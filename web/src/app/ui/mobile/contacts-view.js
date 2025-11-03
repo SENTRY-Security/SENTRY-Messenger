@@ -4,6 +4,7 @@ import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
+import { getUidHex, getAccountDigest } from '../../core/store.js';
 
 export function initContactsView(options) {
   const {
@@ -61,9 +62,13 @@ export function initContactsView(options) {
       return;
     }
 
+    const selfUid = (getUidHex() || '').toUpperCase();
+    const selfDigest = (getAccountDigest() || '').toUpperCase();
+
     sessionStore.contactState.forEach((c) => {
       const key = String(c?.peerUid || '').toUpperCase();
       if (!key) return;
+      if ((selfUid && key === selfUid) || (selfDigest && key === selfDigest)) return;
       const name = normalizeNickname(c.nickname || '') || c.nickname || `好友 ${key.slice(-4)}`;
       const avatarSrc = c.avatar?.thumbDataUrl || c.avatar?.previewDataUrl || '';
       const initials = name ? name.slice(0, 2) : key.slice(-2);
@@ -121,14 +126,6 @@ export function initContactsView(options) {
 
       swipe.setupSwipe(li);
       li.querySelector('.name')?.setAttribute('title', `${name} (${key})`);
-      try {
-        log({
-          contactRender: {
-            peerUid: key,
-            hasDelete: !!li.querySelector('.item-delete')
-          }
-        });
-      } catch {}
       contactsListEl.appendChild(li);
     });
     updateStats?.();
@@ -382,6 +379,12 @@ export function initContactsView(options) {
   async function addContactEntry({ peerUid, nickname, avatar, conversation, contactSecret, inviteId, secretRole }) {
     const key = String(peerUid || '').toUpperCase();
     if (!key) return;
+    const selfUid = (getUidHex() || '').toUpperCase();
+    const selfDigest = (getAccountDigest() || '').toUpperCase();
+    if ((selfUid && key === selfUid) || (selfDigest && key === selfDigest)) {
+      log({ contactSkipSelfEntry: key });
+      return;
+    }
     if (isRecentlyRemoved(key)) {
       log({ contactSuppressedAfterAddition: key });
       return;
@@ -432,7 +435,6 @@ export function initContactsView(options) {
       renderContacts();
       presenceManager.sendPresenceSubscribe();
       updateStats?.();
-      log({ contactAdded: key });
     } catch (err) {
       log({ contactAddError: err?.message || err });
     }

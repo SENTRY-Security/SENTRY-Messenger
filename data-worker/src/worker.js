@@ -1031,7 +1031,11 @@ export default {
         return json({ error: 'ConversationLookupFailed', message: err?.message || 'lookup failed' }, { status: 500 });
       }
       if (!row) {
-        return json({ error: 'Forbidden', message: 'conversation access not granted' }, { status: 403 });
+        if (!fingerprint) {
+          return json({ error: 'Forbidden', message: 'conversation access not granted' }, { status: 403 });
+        }
+        await grantConversationAccess(env, { conversationId, accountDigest, fingerprint });
+        return json({ ok: true, created: true });
       }
       const storedFp = typeof row.fingerprint === 'string' ? row.fingerprint.trim() : '';
       if (fingerprint && storedFp && fingerprint !== storedFp) {

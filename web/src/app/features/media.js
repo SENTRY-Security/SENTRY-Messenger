@@ -162,7 +162,7 @@ export async function deleteEncryptedObjects({ keys, ids }) {
  * @param {{convId:string, file:File|Blob}} p
  * @returns {Promise<{objectKey:string,size:number,envelope:object,message:any}>}
  */
-export async function encryptAndPut({ convId, file, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag } = {}) {
+export async function encryptAndPut({ convId, file, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag, conversationFingerprint } = {}) {
   const mk = getMkRaw();
   const sharedKeyU8 = normalizeSharedKey(Array.isArray(encryptionKey) ? encryptionKey : encryptionKey?.key || encryptionKey);
   const useSharedKey = !!sharedKeyU8;
@@ -203,6 +203,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
     size: fileSize ?? plainBuf.byteLength,
     direction: direction === 'received' ? 'received' : 'sent'
   };
+  if (conversationFingerprint) signPayload.conversationFingerprint = conversationFingerprint;
   const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;
@@ -272,7 +273,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
  * Same as encryptAndPut but allows tracking upload progress via XHR.
  * @param {{convId:string, file:File|Blob, onProgress?:(p:{loaded:number,total:number,percent:number})=>void}} p
  */
-export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag } = {}) {
+export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag, conversationFingerprint } = {}) {
   const mk = getMkRaw();
   const sharedKeyU8 = normalizeSharedKey(Array.isArray(encryptionKey) ? encryptionKey : encryptionKey?.key || encryptionKey);
   const useSharedKey = !!sharedKeyU8;
@@ -311,6 +312,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
     size: fileSize ?? plainBuf.byteLength,
     direction: direction === 'received' ? 'received' : 'sent'
   };
+  if (conversationFingerprint) signPayload.conversationFingerprint = conversationFingerprint;
   const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
   const { upload, objectPath } = sign;

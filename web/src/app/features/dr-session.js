@@ -7,12 +7,14 @@ import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import {
   getUidHex,
+  getAccountDigest,
   drState
 } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   computeConversationFingerprint,
+  computeConversationAccessFingerprint,
   encryptConversationEnvelope,
   conversationIdFromToken,
   base64ToUrl
@@ -662,6 +664,16 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   let conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
+  const accountDigest = (getAccountDigest() || '').toUpperCase();
+  let conversationFingerprint = null;
+  if (accountDigest && tokenB64) {
+    try {
+      conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
+    } catch (err) {
+      logDrSend('fingerprint-error', { peerUidHex: peer, error: err?.message || err });
+    }
+  }
+
   const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
   const uploadResult = await encryptAndPutWithProgress({
     convId: conversationId,
@@ -670,7 +682,8 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
     onProgress,
     skipIndex: true,
     encryptionKey: { key: sharedMediaKey, type: 'shared' },
-    encryptionInfoTag: 'media/v1'
+    encryptionInfoTag: 'media/v1',
+    conversationFingerprint
   });
 
   const metadata = {

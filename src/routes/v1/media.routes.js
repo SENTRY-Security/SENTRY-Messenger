@@ -26,6 +26,7 @@ const SignPutSchema = z.object({
   uidHex: z.string().min(14),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  conversationFingerprint: z.string().min(16).optional(),
   ext: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i).optional(),
   contentType: z.string().min(1).optional(),
   dir: z.string().max(200).optional(), // optional subdirectory inside convId (already hashed client-side)
@@ -42,6 +43,7 @@ const SignGetSchema = z.object({
   uidHex: z.string().min(14),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  conversationFingerprint: z.string().min(16).optional(),
   downloadName: z.string().min(1).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
@@ -186,7 +188,11 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
 
   if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
     try {
-      await authorizeConversationAccess({ convId, accountDigest: resolvedDigest });
+      await authorizeConversationAccess({
+        convId,
+        accountDigest: resolvedDigest,
+        fingerprint: input.conversationFingerprint ? String(input.conversationFingerprint).trim() || null : null
+      });
     } catch (err) {
       const status = err?.status || 502;
       const payload = err?.details && typeof err.details === 'object'
@@ -309,7 +315,11 @@ r.post('/media/sign-get', asyncH(async (req, res) => {
 
   if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
     try {
-      await authorizeConversationAccess({ convId, accountDigest: resolvedDigest });
+      await authorizeConversationAccess({
+        convId,
+        accountDigest: resolvedDigest,
+        fingerprint: input.conversationFingerprint ? String(input.conversationFingerprint).trim() || null : null
+      });
     } catch (err) {
       const status = err?.status || 502;
       const payload = err?.details && typeof err.details === 'object'
