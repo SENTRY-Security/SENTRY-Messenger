@@ -340,6 +340,27 @@ body.modal-open {
   color: #bae6fd;
 }
 
+.version-info-menu {
+  display: none;
+  margin: 8px 16px;
+  padding: 10px 12px;
+  background: #0f172a;
+  color: #f8fafc;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.version-info-menu strong {
+  display: block;
+  color: #bae6fd;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+.version-info-menu[data-open="true"] {
+  display: block;
+}
+
 .upload-file-list {
   margin: 10px 0 0;
   padding: 0;

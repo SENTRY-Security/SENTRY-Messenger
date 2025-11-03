@@ -60,7 +60,7 @@ const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
 const navBadges = typeof document !== 'undefined' ? Array.from(document.querySelectorAll('.nav-badge')) : [];
 
-initVersionInfoButton({ buttonId: 'versionInfoBtnApp', popupId: 'versionInfoPopupApp' });
+initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
 
 let pendingServerOps = 0;
 let waitOverlayTimer = null;
@@ -575,6 +575,8 @@ const userMenu = document.getElementById('userMenu');
 const userMenuBtn = document.getElementById('btnUserMenu');
 const userMenuDropdown = document.getElementById('userMenuDropdown');
 const userMenuSettingsBtn = userMenuDropdown?.querySelector('[data-action="settings"]') || null;
+const userMenuVersionBtn = userMenuDropdown?.querySelector('[data-action="version-info"]') || null;
+const userMenuVersionPopup = document.getElementById('versionInfoPopupAppMenu');
 const userMenuLogoutBtn = userMenuDropdown?.querySelector('[data-action="logout"]') || null;
 
 let userMenuOpen = false;
@@ -584,6 +586,10 @@ function setUserMenuOpen(next) {
   userMenuDropdown.classList.toggle('open', userMenuOpen);
   userMenuDropdown.setAttribute('aria-hidden', userMenuOpen ? 'false' : 'true');
   userMenuBtn.setAttribute('aria-expanded', userMenuOpen ? 'true' : 'false');
+  if (!userMenuOpen && userMenuVersionPopup) {
+    userMenuVersionPopup.dataset.open = 'false';
+    userMenuVersionPopup.setAttribute('aria-hidden', 'true');
+  }
 }
 
 userMenuBtn?.addEventListener('click', (event) => {

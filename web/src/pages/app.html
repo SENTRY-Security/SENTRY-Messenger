@@ -462,12 +462,14 @@
           <button id="btnUserMenu" class="user-avatar-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="開啟使用者選單">
             <img id="headerAvatarImg" src="/assets/images/avatar.png" alt="使用者頭像" />
           </button>
-          <div id="userMenuDropdown" class="user-menu-dropdown" role="menu" aria-hidden="true">
-            <button class="user-menu-item" type="button" data-action="settings" role="menuitem">系統設定</button>
-            <div class="user-menu-divider" role="presentation"></div>
-            <button class="user-menu-item logout" type="button" data-action="logout" role="menuitem">登出</button>
-          </div>
+        <div id="userMenuDropdown" class="user-menu-dropdown" role="menu" aria-hidden="true">
+          <button class="user-menu-item" type="button" data-action="settings" role="menuitem">系統設定</button>
+          <button class="user-menu-item" type="button" data-action="version-info" id="userMenuVersionBtn" role="menuitem">版本資訊</button>
+          <div class="version-info-menu" id="versionInfoPopupAppMenu" aria-hidden="true"></div>
+          <div class="user-menu-divider" role="presentation"></div>
+          <button class="user-menu-item logout" type="button" data-action="logout" role="menuitem">登出</button>
         </div>
+      </div>
       </div>
     </header>
 
@@ -679,8 +681,6 @@
         }
       })();
     </script>
-    <button class="version-info-btn" id="versionInfoBtnApp" aria-label="顯示版本資訊">i</button>
-    <div class="version-info-popup" id="versionInfoPopupApp" role="dialog" aria-hidden="true"></div>
     <script type="module" src="/app/ui/app-mobile.js?v=3"></script>
   </body>
 </html>
