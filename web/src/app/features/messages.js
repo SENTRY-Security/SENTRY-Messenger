@@ -4,7 +4,7 @@
 
 import { listSecureMessages } from '../api/messages.js';
 import { drDecryptText } from '../crypto/dr.js';
-import { drState, getUidHex } from '../core/store.js';
+import { drState, getUidHex, getAccountDigest } from '../core/store.js';
 import {
   ensureDrReceiverState,
   persistDrSnapshot,
@@ -16,7 +16,7 @@ import {
   restoreDrStateToHistoryPoint,
   cloneDrStateHolder
 } from './dr-session.js';
-import { decryptConversationEnvelope, computeConversationFingerprint } from './conversation.js';
+import { decryptConversationEnvelope, computeConversationFingerprint, computeConversationAccessFingerprint } from './conversation.js';
 import { b64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta } from './media.js';
@@ -221,7 +221,17 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
     };
   }
 
-  const { r, data } = await listSecureMessages({ conversationId, limit, cursorTs });
+  const accountDigest = (getAccountDigest() || '').toUpperCase();
+  let conversationFingerprint = null;
+  if (accountDigest) {
+    try {
+      conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
+    } catch (err) {
+      logDrDebug('fingerprint-error', { conversationId, error: err?.message || err });
+    }
+  }
+
+  const { r, data } = await listSecureMessages({ conversationId, limit, cursorTs, conversationFingerprint });
   const out = [];
   const errs = [];
   let state = null;

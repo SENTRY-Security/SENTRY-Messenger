@@ -39,7 +39,7 @@ export async function friendsCreateInvite({ uidHex, ttlSeconds, prekeyBundle } =
 
 export async function friendsAcceptInvite({ inviteId, secret, contactEnvelope, guestBundle, ownerUid } = {}) {
   const myUid = getUidHex();
-  const payload = withAccount({ inviteId, secret }, { includeUid: false });
+  const payload = withAccount({ inviteId, secret });
   if (myUid) payload.myUid = myUid;
   if (contactEnvelope && contactEnvelope.iv && contactEnvelope.ct) {
     payload.contactEnvelope = contactEnvelope;
@@ -58,7 +58,7 @@ export async function friendsAttachInviteContact({ inviteId, secret, envelope } 
   if (!inviteId || !secret || !envelope?.iv || !envelope?.ct) {
     throw new Error('invalid envelope payload');
   }
-  const payload = { inviteId, secret, envelope };
+  const payload = withAccount({ inviteId, secret, envelope });
   const { r, data } = await fetchJSON('/api/v1/friends/invite/contact', payload);
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'attach contact failed', r.status);
@@ -86,7 +86,7 @@ export async function friendsShareContactUpdate({ inviteId, secret, peerUid, env
   if (!inviteId || !secret || !envelope?.iv || !envelope?.ct) {
     throw new Error('invalid envelope payload');
   }
-  const payload = withAccount({ inviteId, secret, myUid, envelope }, { includeUid: false });
+  const payload = withAccount({ inviteId, secret, myUid, envelope });
   if (peerUid) payload.peerUid = peerUid;
   if (conversationId) payload.conversationId = conversationId;
   if (conversationFingerprint) payload.conversationFingerprint = conversationFingerprint;

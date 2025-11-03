@@ -5,7 +5,7 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchJSON } from '../core/http.js';
-import { getUidHex, getAccountToken, getAccountDigest } from '../core/store.js';
+import { getUidHex, getAccountToken, getAccountDigest, buildAccountPayload } from '../core/store.js';
 
 /**
  * Request a presigned PUT for uploading an encrypted object to R2.
@@ -58,7 +58,11 @@ export async function createMessage(body) {
   return await fetchJSON('/api/v1/messages', body, { 'X-Client-Id': 'webdemo' });
 }
 
-export async function deleteMediaKeys(payload) {
+export async function deleteMediaKeys({ ids = [], keys = [], conversationId } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  const overrides = { conversationId, ids };
+  if (keys && keys.length) overrides.keys = keys;
+  const payload = buildAccountPayload({ overrides });
   const { r, data } = await fetchJSON('/api/v1/messages/delete', payload, { 'X-Client-Id': 'webdemo' });
   if (!r.ok) {
     const msg = typeof data === 'string' ? data : data?.message || data?.error || 'delete failed';

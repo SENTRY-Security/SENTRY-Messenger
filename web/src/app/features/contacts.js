@@ -4,7 +4,7 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
-import { getMkRaw, getUidHex, getAccountDigest } from '../core/store.js';
+import { getMkRaw, getUidHex, getAccountDigest, buildAccountPayload } from '../core/store.js';
 import { normalizeNickname, generateRandomNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
@@ -31,6 +31,7 @@ export async function loadContacts() {
   const convIds = contactConvIds();
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const selfUid = (getUidHex() || '').toUpperCase();
+  const selfDigest = (getAccountDigest() || '').toUpperCase();
 
   restoreContactSecrets();
 
@@ -59,10 +60,10 @@ export async function loadContacts() {
       const header = item?.header_json ? JSON.parse(item.header_json) : item?.header;
       const envelope = header?.envelope;
       if (!header?.contact || !envelope) continue;
-      const peerUid = String(header?.peerUid || '').toUpperCase();
-      if (selfUid && peerUid === selfUid) continue;
+      let peerUid = String(header?.peerUid || header?.peer_uid || '').toUpperCase();
       let contact = null;
       let conversation = null;
+      let pendingSecretUpdate = null;
       if (envelope?.aead === 'aes-256-gcm') {
         contact = await unwrapWithMK_JSON(envelope, mk);
       } else if (isContactShareEnvelope(envelope) && peerUid) {
@@ -101,14 +102,14 @@ export async function loadContacts() {
                   ...(secretInfo?.conversationDrInit ? { dr_init: secretInfo.conversationDrInit } : null)
                 }
               : null);
-        setContactSecret(peerUid, {
+        pendingSecretUpdate = {
           inviteId: secretInfo?.inviteId || header?.inviteId || header?.invite_id || null,
           secret,
           role: secretInfo?.role || null,
           conversationToken: conversation?.token_b64 || null,
           conversationId: conversation?.conversation_id || null,
           conversationDrInit: conversation?.dr_init || null
-        });
+        };
       } else {
         console.warn('[contacts] unsupported envelope format', { id: item?.id, envelope });
         continue;
@@ -127,8 +128,14 @@ export async function loadContacts() {
       const storedSecret = typeof contact?.contactSecret_b64 === 'string' ? contact.contactSecret_b64.trim() : null;
       const storedInviteId = typeof contact?.inviteId === 'string' ? contact.inviteId.trim() : null;
       const storedRole = typeof contact?.contactSecret_role === 'string' ? contact.contactSecret_role : null;
+      const resolvedPeerUid = peerUid || String(contact?.peerUid || contact?.peer_uid || '').toUpperCase();
+      if (!resolvedPeerUid) continue;
+      peerUid = resolvedPeerUid;
+      if (pendingSecretUpdate) {
+        setContactSecret(peerUid, pendingSecretUpdate);
+      }
       const entry = {
-        peerUid: peerUid || String(contact?.peerUid || '').toUpperCase(),
+        peerUid,
         nickname: normalized,
         avatar: contact?.avatar || null,
         addedAt: Number(contact?.addedAt || item?.ts || nowTs()),
@@ -138,6 +145,14 @@ export async function loadContacts() {
         inviteId: storedInviteId,
         secretRole: storedRole
       };
+      const isSelfContact = !!peerUid && (
+        (selfUid && peerUid === selfUid) ||
+        (selfDigest && peerUid === selfDigest)
+      );
+      if (isSelfContact) {
+        entry.isSelfContact = true;
+        entry.hidden = true;
+      }
       const existing = peerMap.get(entry.peerUid);
       if (existing && (existing.addedAt || 0) >= (entry.addedAt || 0)) {
         continue;
@@ -197,13 +212,14 @@ export async function saveContact(contact) {
 
   let firstMsgId = null;
   for (const convId of convIds) {
-    const body = {
+    const msgPayload = {
       convId,
       type: 'text',
       aead: 'aes-256-gcm',
       header,
       ciphertext_b64: envelope?.ct_b64 || 'contact'
     };
+    const body = buildAccountPayload({ overrides: msgPayload });
     const { r, data } = await createMessage(body);
     if (!r.ok) {
       const msg = typeof data === 'string' ? data : data?.error || data?.message || 'contact save failed';

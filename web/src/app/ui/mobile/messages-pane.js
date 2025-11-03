@@ -2,7 +2,7 @@ import { log } from '../../core/log.js';
 import { getUidHex, getAccountToken, getAccountDigest } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, ensureDrReceiverState } from '../../features/dr-session.js';
-import { conversationIdFromToken } from '../../features/conversation.js';
+import { conversationIdFromToken, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
@@ -1314,7 +1314,17 @@ export function initMessagesPane({
       confirmLabel: '刪除',
       onConfirm: async () => {
         try {
-          await deleteSecureConversation({ conversationId });
+          let conversationFingerprint = null;
+          const tokenB64 = contactEntry?.conversation?.token_b64 || contactEntry?.conversation?.tokenB64 || null;
+          const accountDigest = (getAccountDigest() || '').toUpperCase();
+          if (tokenB64 && accountDigest) {
+            try {
+              conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
+            } catch (err) {
+              console.warn('[messages-pane] compute conversation fingerprint failed', err?.message || err);
+            }
+          }
+          await deleteSecureConversation({ conversationId, conversationFingerprint });
           sessionStore.deletedConversations?.add?.(conversationId);
           try {
             const payload = {
@@ -1333,10 +1343,10 @@ export function initMessagesPane({
           }
           getConversationThreads().delete(conversationId);
           sessionStore.conversationIndex?.delete?.(conversationId);
-          const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
-          if (contactEntry) {
-            contactEntry.conversation = null;
-            contactEntry.unreadCount = 0;
+          const contactEntryAfter = sessionStore.contactIndex?.get?.(key) || null;
+          if (contactEntryAfter) {
+            contactEntryAfter.conversation = null;
+            contactEntryAfter.unreadCount = 0;
           }
           const contactStateEntry = sessionStore.contactState?.find?.((c) => String(c?.peerUid || '').toUpperCase() === key) || null;
           if (contactStateEntry) {

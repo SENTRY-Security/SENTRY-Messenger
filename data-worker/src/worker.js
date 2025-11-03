@@ -294,6 +294,8 @@ export default {
       const inviteId = String(body?.inviteId || '').trim();
       const secret = String(body?.secret || '').trim();
       const envelope = normalizeEnvelope(body?.envelope);
+      const ownerUid = normalizeUid(body?.ownerUid || body?.owner_uid);
+      const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
 
       if (!inviteId || !secret || !envelope) {
         return json({ error: 'BadRequest', message: 'inviteId, secret and envelope required' }, { status: 400 });
@@ -302,7 +304,36 @@ export default {
       const sel = await env.DB.prepare(
         `SELECT invite_id, secret, expires_at FROM friend_invites WHERE invite_id=?1`
       ).bind(inviteId).all();
-      const row = sel?.results?.[0];
+      let row = sel?.results?.[0];
+      if (!row && ownerUid && accountDigest) {
+        let ownerAccount;
+        try {
+          ownerAccount = await resolveAccount(env, { uidHex: ownerUid, accountDigest }, { allowCreate: false, preferredAccountDigest: accountDigest });
+        } catch (err) {
+          return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+        }
+        if (!ownerAccount || ownerAccount.account_digest !== accountDigest) {
+          return json({ error: 'Forbidden', message: 'owner account mismatch' }, { status: 403 });
+        }
+        const nowInsert = Math.floor(Date.now() / 1000);
+        const fallbackTtl = Number.isFinite(body?.ttlSeconds) ? Number(body.ttlSeconds) : 600;
+        const expiresAt = nowInsert + Math.min(Math.max(fallbackTtl, 60), 900);
+        try {
+          await env.DB.prepare(
+            `INSERT OR IGNORE INTO friend_invites(
+                invite_id, owner_account_digest, owner_uid, secret, expires_at,
+                prekey_bundle, channel_seed, owner_contact_json, owner_contact_ts,
+                guest_account_digest, guest_uid, guest_contact_json, guest_contact_ts, guest_bundle_json, used_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`
+          ).bind(inviteId, accountDigest, ownerUid, secret, expiresAt).run();
+        } catch (err) {
+          console.warn('invite_contact_fallback_insert_failed', err?.message || err);
+        }
+        const retry = await env.DB.prepare(
+          `SELECT invite_id, secret, expires_at, owner_account_digest, owner_uid FROM friend_invites WHERE invite_id=?1`
+        ).bind(inviteId).all();
+        row = retry?.results?.[0] || null;
+      }
       if (!row) return json({ error: 'NotFound' }, { status: 404 });
       if (row.secret !== secret) return json({ error: 'Forbidden', message: 'secret mismatch' }, { status: 403 });
       const now = Math.floor(Date.now() / 1000);

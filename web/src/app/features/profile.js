@@ -4,7 +4,7 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
-import { getMkRaw, getUidHex, getAccountDigest } from '../core/store.js';
+import { getMkRaw, getUidHex, getAccountDigest, buildAccountPayload } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';
@@ -89,13 +89,14 @@ export async function saveProfile(profile) {
 
   const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
   const header = { profile: 1, v: 1, ts: obj.updatedAt, envelope };
-  const body = {
+  const payload = {
     convId,
     type: 'text',
     aead: 'aes-256-gcm',
     header,
     ciphertext_b64: envelope?.ct_b64 || 'profile'
   };
+  const body = buildAccountPayload({ overrides: payload });
   const { r, data } = await createMessage(body);
   if (!r.ok) {
     const msg = typeof data === 'string' ? data : data?.error || data?.message || 'profile save failed';

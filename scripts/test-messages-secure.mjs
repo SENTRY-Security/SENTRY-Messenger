@@ -8,16 +8,17 @@ const ORIGIN_API = process.env.ORIGIN_API || 'http://127.0.0.1:3000';
 function rnd(n) { return crypto.randomBytes(n); }
 function b64(u8) { return Buffer.from(u8).toString('base64'); }
 
-async function jsonPost(path, body) {
+async function jsonPost(path, body, headers = {}) {
   const url = path.startsWith('http') ? path : ORIGIN_API.replace(/\/$/, '') + path;
-  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const allHeaders = { 'content-type': 'application/json', ...headers };
+  const r = await fetch(url, { method: 'POST', headers: allHeaders, body: JSON.stringify(body) });
   let data; try { data = await r.json(); } catch { data = await r.text(); }
   return { r, data };
 }
 
-async function jsonGet(path) {
+async function jsonGet(path, headers = {}) {
   const url = path.startsWith('http') ? path : ORIGIN_API.replace(/\/$/, '') + path;
-  const r = await fetch(url, { method: 'GET' });
+  const r = await fetch(url, { method: 'GET', headers });
   let data; try { data = await r.json(); } catch { data = await r.text(); }
   return { r, data };
 }
@@ -46,19 +47,36 @@ async function main() {
   const ex = await sdmExchange(dbg);
   assert(ex.accountDigest, 'missing account');
 
+  const uidHex = String(dbg.uidHex || ex.uidHex || ex.uid_hex || '').toUpperCase();
+  const accountToken = ex.accountToken || ex.account_token || null;
+  const accountDigest = String(ex.accountDigest || ex.account_digest || '').toUpperCase();
+  assert(uidHex, 'uidHex missing');
+  assert(accountToken || accountDigest, 'account credentials missing');
+
   const convId = `contacts-${ex.accountDigest}`;
-  const msgId = crypto.randomUUID();
   const ts = Math.floor(Date.now() / 1000);
 
   console.log('[2] create secure message');
   // Create secure message (Node expects conversation_id)
-  const body = { conversation_id: convId, payload_envelope: fakeEnvelope(), created_at: ts };
+  const body = {
+    conversation_id: convId,
+    payload_envelope: fakeEnvelope(),
+    created_at: ts,
+    uidHex,
+    accountToken,
+    accountDigest
+  };
   const { r: rc, data: dc } = await jsonPost('/api/v1/messages/secure', body);
   if (!rc.ok) throw new Error('create secure failed: ' + JSON.stringify(dc));
   console.log('    create ok, id =', dc?.id || '(n/a)');
 
   console.log('[3] list secure messages');
-  const { r: rl, data: dl } = await jsonGet(`/api/v1/messages/secure?conversationId=${encodeURIComponent(convId)}`);
+  const headers = {
+    'X-Uid-Hex': uidHex,
+    'X-Account-Digest': accountDigest
+  };
+  if (accountToken) headers['X-Account-Token'] = accountToken;
+  const { r: rl, data: dl } = await jsonGet(`/api/v1/messages/secure?conversationId=${encodeURIComponent(convId)}`, headers);
   if (!rl.ok) throw new Error('list secure failed: ' + JSON.stringify(dl));
   const items = dl?.items || [];
   assert(items.length >= 1, 'expected >= 1 item');

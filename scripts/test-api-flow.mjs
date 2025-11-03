@@ -14,7 +14,8 @@ import crypto from 'node:crypto';
 import { setupFriendConversation } from './lib/friends-flow.mjs';
 import {
   encryptConversationEnvelope,
-  decryptConversationEnvelope
+  decryptConversationEnvelope,
+  computeConversationAccessFingerprint
 } from '../web/src/shared/conversation/context.js';
 import {
   bytesToB64,
@@ -38,11 +39,22 @@ async function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendTestMessage({ senderLabel, senderUid, conversation, text }) {
+async function sendTestMessage({ senderLabel, senderUid, conversation, text, account }) {
   const keyBytes = b64UrlToBytes(conversation.tokenB64);
   const key = await crypto.webcrypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
   const msgIv = crypto.webcrypto.getRandomValues(new Uint8Array(12));
   const cipherBytes = new Uint8Array(await crypto.webcrypto.subtle.encrypt({ name: 'AES-GCM', iv: msgIv }, key, encoder.encode(text)));
+
+  if (!account?.uidHex || !account?.accountDigest) {
+    throw new Error('account credentials missing for sender');
+  }
+
+  let conversationFingerprint = null;
+  try {
+    conversationFingerprint = await computeConversationAccessFingerprint(conversation.tokenB64, account.accountDigest);
+  } catch (err) {
+    console.warn('[test-api-flow] computeConversationAccessFingerprint failed:', err?.message || err);
+  }
 
   const header = {
     v: 1,
@@ -69,7 +81,11 @@ async function sendTestMessage({ senderLabel, senderUid, conversation, text }) {
     body: JSON.stringify({
       conversation_id: conversation.conversationId,
       payload_envelope: envelope,
-      created_at: nowTs()
+      created_at: nowTs(),
+      uidHex: account.uidHex,
+      accountDigest: account.accountDigest,
+      accountToken: account.accountToken,
+      conversationFingerprint
     })
   });
   if (res.status !== 202) {
@@ -79,7 +95,25 @@ async function sendTestMessage({ senderLabel, senderUid, conversation, text }) {
 }
 
 async function fetchAndDecrypt({ viewer, conversation }) {
-  const res = await fetch(`${ORIGIN}/api/v1/messages/secure?conversationId=${encodeURIComponent(conversation.conversationId)}`);
+  if (!viewer?.uidHex || !viewer?.accountDigest) {
+    throw new Error(`viewer ${viewer?.label || ''} missing credentials`);
+  }
+  let conversationFingerprint = null;
+  try {
+    conversationFingerprint = await computeConversationAccessFingerprint(conversation.tokenB64, viewer.accountDigest);
+  } catch (err) {
+    console.warn('[test-api-flow] computeConversationAccessFingerprint(viewer) failed:', err?.message || err);
+  }
+  const headers = {
+    'X-Uid-Hex': viewer.uidHex,
+    'X-Account-Digest': viewer.accountDigest
+  };
+  if (viewer.accountToken) headers['X-Account-Token'] = viewer.accountToken;
+  if (conversationFingerprint) headers['X-Conversation-Fingerprint'] = conversationFingerprint;
+  const res = await fetch(`${ORIGIN}/api/v1/messages/secure?conversationId=${encodeURIComponent(conversation.conversationId)}`, {
+    method: 'GET',
+    headers
+  });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`fetch secure messages failed (${res.status}): ${body}`);
@@ -132,7 +166,8 @@ async function fetchAndDecrypt({ viewer, conversation }) {
     senderLabel: 'owner',
     senderUid: userA.uidHex,
     conversation,
-    text: messageA
+    text: messageA,
+    account: userA
   });
   console.log('[message] sent by A');
 
@@ -140,14 +175,15 @@ async function fetchAndDecrypt({ viewer, conversation }) {
     senderLabel: 'guest',
     senderUid: userB.uidHex,
     conversation,
-    text: messageB
+    text: messageB,
+    account: userB
   });
   console.log('[message] sent by B');
 
   await wait(500);
 
-  const decryptedForA = await fetchAndDecrypt({ viewer: { label: 'A', uidHex: userA.uidHex }, conversation });
-  const decryptedForB = await fetchAndDecrypt({ viewer: { label: 'B', uidHex: userB.uidHex }, conversation });
+  const decryptedForA = await fetchAndDecrypt({ viewer: { label: 'A', uidHex: userA.uidHex, accountToken: userA.accountToken, accountDigest: userA.accountDigest }, conversation });
+  const decryptedForB = await fetchAndDecrypt({ viewer: { label: 'B', uidHex: userB.uidHex, accountToken: userB.accountToken, accountDigest: userB.accountDigest }, conversation });
 
   console.log('[decrypt] viewer A sees', decryptedForA);
   console.log('[decrypt] viewer B sees', decryptedForB);

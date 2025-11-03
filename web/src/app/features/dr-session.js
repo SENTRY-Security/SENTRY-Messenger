@@ -588,6 +588,16 @@ export async function sendDrText({ peerUidHex, text, conversation, convId }) {
   let conversationId = convContext?.conversation_id || convContext?.conversationId || null;
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
+  const accountDigest = (getAccountDigest() || '').toUpperCase();
+  let conversationFingerprint = null;
+  if (accountDigest && tokenB64) {
+    try {
+      conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
+    } catch (err) {
+      logDrSend('fingerprint-error', { peerUidHex: peer, error: err?.message || err });
+    }
+  }
+
   const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64 };
   const headerJson = JSON.stringify(headerPayload);
   const hdrB64 = bytesToB64Url(new TextEncoder().encode(headerJson));
@@ -609,7 +619,8 @@ export async function sendDrText({ peerUidHex, text, conversation, convId }) {
   const { r, data } = await createSecureMessage({
     conversationId,
     payloadEnvelope: envelope,
-    createdAt: now
+    createdAt: now,
+    conversationFingerprint
   });
   if (!r.ok) throw new Error('sendText failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
   if (preSnapshot) {
@@ -740,7 +751,8 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   const { r, data } = await createSecureMessage({
     conversationId,
     payloadEnvelope: envelope,
-    createdAt: now
+    createdAt: now,
+    conversationFingerprint
   });
   if (!r.ok) throw new Error('sendMedia failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
   if (preSnapshot) {

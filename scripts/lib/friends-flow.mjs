@@ -257,7 +257,8 @@ export async function setupFriendConversation({ origin, userA = {}, userB = {} }
   await attachInviteContact(origin, {
     inviteId: invite.inviteId,
     secret: invite.secret,
-    payload: ownerPayload
+    payload: ownerPayload,
+    owner: userAData
   });
 
   const ownerBundle = normalizeOwnerBundle(invite.prekeyBundle);
@@ -361,12 +362,15 @@ async function createFriendInvite(origin, user, ttlSeconds = 300, attempt = 0) {
   };
 }
 
-async function attachInviteContact(origin, { inviteId, secret, payload }) {
+async function attachInviteContact(origin, { inviteId, secret, payload, owner }) {
   const envelope = await encryptContactPayloadShared({ secret, payload });
   const { res, data } = await jsonPost(origin, '/api/v1/friends/invite/contact', {
     inviteId,
     secret,
-    envelope
+    envelope,
+    uidHex: owner?.uidHex,
+    accountToken: owner?.accountToken,
+    accountDigest: owner?.accountDigest
   });
   if (!res.ok) throw new Error(`friends.invite.contact failed: ${JSON.stringify(data)}`);
 }

@@ -300,13 +300,14 @@ export function initDrivePane({
     body.innerHTML = `
       <form id="uploadForm" class="upload-form">
         <div class="upload-field">
-          <input id="uploadFileInput" type="file" class="upload-input" />
+          <input id="uploadFileInput" type="file" class="upload-input" multiple />
           <label for="uploadFileInput" class="upload-callout">
             <i class='bx bx-cloud-upload'></i>
-            <span>點擊選擇檔案</span>
+            <span>點擊選擇檔案（可多選）</span>
           </label>
         </div>
         <div id="uploadFileName" class="upload-name">尚未選擇檔案</div>
+        <ul id="uploadFileList" class="upload-file-list"></ul>
         <p class="upload-hint">支援 iOS Safari：會開啟照片、檔案選擇器。</p>
         <p class="upload-error" role="alert"></p>
         <div class="upload-actions">
@@ -317,23 +318,45 @@ export function initDrivePane({
     openModal?.();
     const input = body.querySelector('#uploadFileInput');
     const nameEl = body.querySelector('#uploadFileName');
+    const listEl = body.querySelector('#uploadFileList');
     const errorEl = body.querySelector('.upload-error');
     const cancelBtn = body.querySelector('#uploadCancel');
     const form = body.querySelector('#uploadForm');
     cancelBtn?.addEventListener('click', () => closeModal?.(), { once: true });
     input?.addEventListener('change', () => {
-      if (nameEl) nameEl.textContent = input?.files?.[0]?.name || '尚未選擇檔案';
+      const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
+      if (!files.length) {
+        if (nameEl) nameEl.textContent = '尚未選擇檔案';
+        if (listEl) listEl.innerHTML = '';
+        if (errorEl) errorEl.textContent = '';
+        return;
+      }
+      const totalSize = files.reduce((sum, f) => sum + (typeof f.size === 'number' ? f.size : 0), 0);
+      if (nameEl) {
+        nameEl.textContent = files.length === 1
+          ? files[0].name
+          : `${files.length} 個檔案 · ${fmtSize(totalSize)}`;
+      }
+      if (listEl) {
+        listEl.innerHTML = files
+          .map((file) => `<li><span class="upload-file-name">${escapeHtml(file.name || '未命名')}</span><span class="upload-file-size">${fmtSize(file.size || 0)}</span></li>`)
+          .join('');
+      }
       if (errorEl) errorEl.textContent = '';
     });
     form?.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const file = input?.files?.[0];
-      if (!file) {
+      const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
+      if (!files.length) {
         if (errorEl) errorEl.textContent = '請先選擇要上傳的檔案。';
         return;
       }
       closeModal?.();
-      await startUpload(file);
+      try {
+        await startUploadQueue(files);
+      } catch (err) {
+        log({ driveUploadError: err?.message || err });
+      }
     }, { once: true });
   }
 
@@ -391,27 +414,56 @@ export function initDrivePane({
     });
   }
 
-  async function startUpload(file) {
-    if (!file) return;
+  async function startUploadQueue(selectedFiles) {
+    const files = Array.isArray(selectedFiles) ? selectedFiles.filter(Boolean) : [];
+    if (!files.length) return;
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) {
       alert('尚未登入，請重新登入後再試。');
       return;
     }
     const convId = driveState.currentConvId || `drive-${acct}`;
-    showProgressModal?.(file.name || '檔案');
+    showProgressModal?.(files.length === 1 ? (files[0].name || '檔案') : `${files.length} 個檔案`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const titleEl = document.querySelector('.progress-wrap .progress-title');
+    const textEl = document.getElementById('progressText');
+    const innerEl = document.getElementById('progressInner');
     try {
-      await encryptAndPutWithProgress({
-        convId,
-        file,
-        dir: [...ensureSafeCwd()],
-        onProgress: (p) => updateProgressModal?.(p)
-      });
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (titleEl) titleEl.textContent = `上傳中 (${i + 1}/${files.length})：${file.name || '檔案'}`;
+        if (innerEl) innerEl.style.width = '0%';
+        if (textEl) textEl.textContent = '準備中…';
+        await encryptAndPutWithProgress({
+          convId,
+          file,
+          dir: [...ensureSafeCwd()],
+          onProgress: (progress) => {
+            if (!progress) return;
+            const loaded = typeof progress.loaded === 'number' ? progress.loaded : 0;
+            const total = typeof progress.total === 'number' ? progress.total : (typeof file.size === 'number' ? file.size : 0);
+            const percent = progress.percent != null
+              ? progress.percent
+              : (total > 0 ? Math.round((loaded / total) * 100) : 0);
+            updateProgressModal?.({
+              ...progress,
+              loaded,
+              total,
+              percent
+            });
+          }
+        });
+        if (innerEl) innerEl.style.width = '100%';
+        if (textEl) textEl.textContent = `已完成 (${i + 1}/${files.length})`;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
       completeProgressModal?.();
+      await new Promise((resolve) => setTimeout(resolve, 680));
       await refreshDriveList();
     } catch (err) {
       log({ driveUploadError: err?.message || err });
       failProgressModal?.(err?.message || String(err));
+      throw err;
     }
   }
 
@@ -599,7 +651,10 @@ export function initDrivePane({
 
   async function performDelete({ keys = [], ids = [] }) {
     if (!keys.length && !ids.length) return;
-    const { deleted, failed } = await deleteEncryptedObjects({ keys, ids });
+    const acct = (getAccountDigest() || '').toUpperCase();
+    if (!acct) throw new Error('Account missing');
+    const convId = `drive-${acct}`;
+    const { deleted, failed } = await deleteEncryptedObjects({ keys, ids, convId });
     log({ driveDeleteResult: { keys, ids, deleted, failed } });
     if (deleted?.length) log({ deleted });
     if (failed?.length) log({ deleteFailed: failed });

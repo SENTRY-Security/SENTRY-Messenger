@@ -287,6 +287,42 @@ body.modal-open {
 .progress-modal .modal-body {
   color: #e2e8f0;
 }
+
+.upload-file-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+  max-height: 140px;
+  overflow-y: auto;
+  background: rgba(241, 245, 249, 0.35);
+}
+.upload-file-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #1f2937;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+.upload-file-list li:last-child {
+  border-bottom: none;
+}
+.upload-file-name {
+  flex: 1;
+  margin-right: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-file-size {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
 .loading-modal .modal-panel {
   align-items: center;
   text-align: center;

@@ -2,6 +2,9 @@ import { CreateMessageSchema, CreateSecureMessageSchema } from '../schemas/messa
 import crypto from 'node:crypto';
 import { signHmac } from '../utils/hmac.js';
 import { z } from 'zod';
+import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
+import { normalizeConversationId, authorizeConversationAccess, isSystemOwnedConversation } from '../utils/conversation-auth.js';
+import { AccountDigestRegex } from '../utils/account-verify.js';
 
 export const getHealth = (req, res) => {
   res.json({ ok: true, ts: Date.now() });
@@ -29,41 +32,157 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
   }
 }
 
+const UidHexRegex = /^[0-9A-Fa-f]{14,}$/;
+
 const DeleteMessagesSchema = z.object({
-  ids: z.array(z.string().min(1))
+  ids: z.array(z.string().min(1)),
+  conversationId: z.string().min(1),
+  uidHex: z.string().regex(UidHexRegex),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  conversationFingerprint: z.string().min(8).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
 });
 
 const DeleteSecureConversationSchema = z.object({
   conversationId: z.string().min(8),
-  uidHex: z.string().optional(),
-  accountToken: z.string().optional(),
-  accountDigest: z.string().optional()
+  uidHex: z.string().regex(UidHexRegex),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  conversationFingerprint: z.string().min(8).optional()
 }).superRefine((value, ctx) => {
-  if (!value.uidHex && !value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'uidHex or accountToken/accountDigest required' });
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
   }
 });
 
+function firstString(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const resolved = firstString(entry);
+      if (resolved) return resolved;
+    }
+  }
+  return null;
+}
+
+function extractAccountFromRequest(req) {
+  const header = (name) => firstString(req.get(name));
+  const queryVal = (name) => firstString(req.query?.[name]);
+  const uidHex = firstString(
+    header('x-uid-hex'),
+    header('x-uid'),
+    queryVal('uidHex'),
+    queryVal('uid_hex'),
+    queryVal('uid')
+  );
+  const accountToken = firstString(
+    header('x-account-token'),
+    queryVal('accountToken'),
+    queryVal('account_token')
+  );
+  const accountDigest = firstString(
+    header('x-account-digest'),
+    queryVal('accountDigest'),
+    queryVal('account_digest')
+  );
+  const conversationFingerprint = firstString(
+    header('x-conversation-fingerprint'),
+    queryVal('conversationFingerprint'),
+    queryVal('conversation_fingerprint')
+  );
+  return { uidHex, accountToken, accountDigest, conversationFingerprint };
+}
+
+async function authorizeAccountForConversation({ conversationId, uidHex, accountToken, accountDigest, fingerprint }) {
+  const normalizedConv = normalizeConversationId(conversationId);
+  if (!normalizedConv) {
+    throw new AccountAuthError('invalid conversationId', 400);
+  }
+
+  const { uidHex: resolvedUid, accountDigest: resolvedDigest } = await resolveAccountAuth({
+    uidHex,
+    accountToken,
+    accountDigest
+  });
+
+  if (!isSystemOwnedConversation({ convId: normalizedConv, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
+    try {
+      await authorizeConversationAccess({
+        convId: normalizedConv,
+        accountDigest: resolvedDigest,
+        fingerprint: fingerprint || null
+      });
+    } catch (err) {
+      const status = err?.status || 502;
+      const details = err?.details;
+      const message = err?.message || 'conversation access denied';
+      throw new AccountAuthError(message, status, details);
+    }
+  }
+
+  return { conversationId: normalizedConv, uidHex: resolvedUid, accountDigest: resolvedDigest };
+}
+
+function respondAccountError(res, err, fallback = 'authorization failed') {
+  if (err instanceof AccountAuthError) {
+    const status = err.status || 400;
+    if (err.details && typeof err.details === 'object') {
+      return res.status(status).json(err.details);
+    }
+    return res.status(status).json({ error: 'AccountAuthFailed', message: err.message || fallback });
+  }
+  return res.status(500).json({ error: 'AccountAuthFailed', message: err?.message || fallback });
+}
+
 export const createMessage = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
   // Validate body
   const input = CreateMessageSchema.parse(req.body);
+  const {
+    convId: rawConvId,
+    uidHex,
+    accountToken,
+    accountDigest,
+    conversationFingerprint,
+    ...messageInput
+  } = input;
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: rawConvId,
+      uidHex,
+      accountToken,
+      accountDigest,
+      fingerprint: conversationFingerprint
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
 
   // Build payload to D1 (index only, never plaintext)
   const payload = {
     msgId: crypto.randomUUID(),
-    convId: input.convId,
-    senderId: req.headers['x-client-id'] || 'unknown',
-    type: input.type,
-    aead: input.aead,
-    headerJson: JSON.stringify(input.header || {}),
-    objKey: input.header?.obj || null,
-    sizeBytes: input.header?.size ?? null,
+    convId: auth.conversationId,
+    senderId: req.headers['x-client-id'] || auth.uidHex || 'unknown',
+    type: messageInput.type,
+    aead: messageInput.aead,
+    headerJson: JSON.stringify(messageInput.header || {}),
+    objKey: messageInput.header?.obj || null,
+    sizeBytes: messageInput.header?.size ?? null,
     ts: Math.floor(Date.now() / 1000)
   };
-
-  if (!DATA_API || !HMAC_SECRET) {
-    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
-  }
 
   const path = '/d1/messages';
   const body = JSON.stringify(payload);
@@ -104,13 +223,35 @@ export const createSecureMessage = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
-  const messageId = input.id || crypto.randomUUID();
-  const createdAt = Number.isFinite(input.created_at) ? input.created_at : Math.floor(Date.now() / 1000);
+  const {
+    conversation_id: rawConversationId,
+    uidHex,
+    accountToken,
+    accountDigest,
+    conversationFingerprint,
+    ...messageInput
+  } = input;
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: rawConversationId,
+      uidHex,
+      accountToken,
+      accountDigest,
+      fingerprint: conversationFingerprint
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
+  const messageId = messageInput.id || crypto.randomUUID();
+  const createdAt = Number.isFinite(messageInput.created_at) ? messageInput.created_at : Math.floor(Date.now() / 1000);
 
   const payload = {
     id: messageId,
-    conversation_id: input.conversation_id,
-    payload_envelope: input.payload_envelope,
+    conversation_id: auth.conversationId,
+    payload_envelope: messageInput.payload_envelope,
     created_at: createdAt
   };
 
@@ -152,13 +293,28 @@ export const createSecureMessage = async (req, res) => {
   }
 };
 export const listMessages = async (req, res) => {
-  const convId = req.params.convId;
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
+  const convIdRaw = req.params.convId;
+  const account = extractAccountFromRequest(req);
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: convIdRaw,
+      uidHex: account.uidHex,
+      accountToken: account.accountToken,
+      accountDigest: account.accountDigest,
+      fingerprint: account.conversationFingerprint
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
   // Build query string
   const params = new URLSearchParams();
-  if (convId) params.append('convId', convId);
+  params.append('convId', auth.conversationId);
   if (req.query.cursorTs) params.append('cursorTs', req.query.cursorTs);
   if (req.query.limit) params.append('limit', req.query.limit);
   const path = `/d1/messages?${params.toString()}`;
@@ -192,13 +348,27 @@ export const listSecureMessages = async (req, res) => {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
 
-  const conversationId = req.query.conversationId || req.query.conversation_id;
-  if (!conversationId) {
+  const conversationIdRaw = req.query.conversationId || req.query.conversation_id;
+  if (!conversationIdRaw) {
     return res.status(400).json({ error: 'BadRequest', message: 'conversationId required' });
   }
 
+  const account = extractAccountFromRequest(req);
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: conversationIdRaw,
+      uidHex: account.uidHex,
+      accountToken: account.accountToken,
+      accountDigest: account.accountDigest,
+      fingerprint: account.conversationFingerprint
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
   const params = new URLSearchParams();
-  params.set('conversationId', conversationId);
+  params.set('conversationId', auth.conversationId);
   if (req.query.cursorTs) params.set('cursorTs', String(req.query.cursorTs));
   if (req.query.limit) params.set('limit', String(req.query.limit));
 
@@ -231,10 +401,23 @@ export const deleteMessages = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: input.conversationId,
+      uidHex: input.uidHex,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest,
+      fingerprint: input.conversationFingerprint
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
   const ids = Array.from(new Set((input.ids || []).map(k => String(k || '').trim()).filter(Boolean)));
 
   const path = '/d1/messages/delete';
-  const body = JSON.stringify({ ids });
+  const body = JSON.stringify({ ids, conversationId: auth.conversationId });
   const sig = signHmac(path, body, HMAC_SECRET);
 
   let workerRes;
@@ -277,19 +460,26 @@ export const deleteSecureConversation = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
-  const sanitizeUidHex = (value) => {
-    if (!value) return undefined;
-    const cleaned = String(value).replace(/[^0-9a-f]/gi, '').toUpperCase();
-    return cleaned.length >= 14 ? cleaned : undefined;
-  };
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: input.conversationId,
+      uidHex: input.uidHex,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest,
+      fingerprint: input.conversationFingerprint
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
 
   const payload = {
-    conversationId: input.conversationId
+    conversationId: auth.conversationId,
+    uidHex: auth.uidHex,
+    accountDigest: auth.accountDigest
   };
-  const uidHex = sanitizeUidHex(input.uidHex);
-  if (uidHex) payload.uidHex = uidHex;
   if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
-  if (input.accountDigest) payload.accountDigest = String(input.accountDigest).trim().toUpperCase();
+  if (input.conversationFingerprint) payload.conversationFingerprint = String(input.conversationFingerprint).trim();
 
   const path = '/d1/messages/secure/delete-conversation';
   const body = JSON.stringify(payload);

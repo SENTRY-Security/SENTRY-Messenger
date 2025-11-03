@@ -10,6 +10,11 @@ import {
   normalizeAccountDigest,
   AccountDigestRegex
 } from '../../utils/account-verify.js';
+import {
+  normalizeConversationId,
+  authorizeConversationAccess,
+  isSystemOwnedConversation
+} from '../../utils/conversation-auth.js';
 
 const r = Router();
 const nano = customAlphabet('1234567890abcdef', 32);
@@ -83,61 +88,6 @@ async function fetchMediaUsage({ convId, prefix }) {
   }
   if (data?.error) throw new Error(`media usage rejected (${res.status}): ${JSON.stringify(data)}`);
   return data;
-}
-
-const ConversationIdRegex = /^[A-Za-z0-9_-]{8,128}$/;
-
-function normalizeConversationId(value) {
-  if (!value) return null;
-  const token = String(value).trim();
-  if (!token) return null;
-  if (!ConversationIdRegex.test(token)) return null;
-  return token;
-}
-
-function isSystemOwnedConversation({ convId, accountDigest, uidHex }) {
-  if (!convId) return false;
-  const acct = (accountDigest || '').toUpperCase();
-  const uid = (uidHex || '').toUpperCase();
-  if (acct) {
-    if (convId === `drive-${acct}`) return true;
-    if (convId === `profile-${acct}`) return true;
-    if (convId === `settings-${acct}`) return true;
-    if (convId === `avatar-${acct}`) return true;
-    if (convId === `contacts-${acct}`) return true;
-  }
-  if (uid && convId === `contacts-${uid}`) return true;
-  return false;
-}
-
-async function authorizeConversationAccess({ convId, accountDigest, fingerprint }) {
-  if (!DATA_API || !HMAC_SECRET) {
-    const err = new Error('DATA_API_URL or DATA_API_HMAC not configured');
-    err.status = 500;
-    throw err;
-  }
-  const bodyObj = { conversationId: convId, accountDigest };
-  if (fingerprint) bodyObj.fingerprint = fingerprint;
-  const path = '/d1/conversations/authorize';
-  const body = JSON.stringify(bodyObj);
-  const sig = signHmac(path, body, HMAC_SECRET);
-  const res = await fetch(`${DATA_API}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-auth': sig },
-    body
-  });
-  let data = null;
-  let raw = '';
-  try { raw = await res.text(); } catch { raw = ''; }
-  if (raw) {
-    try { data = JSON.parse(raw); } catch { data = raw; }
-  }
-  if (!res.ok) {
-    const err = new Error('ConversationAccessDenied');
-    err.status = res.status || 502;
-    err.details = data;
-    throw err;
-  }
 }
 
 function extractConversationIdFromKey(key) {

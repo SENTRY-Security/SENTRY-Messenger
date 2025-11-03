@@ -3,7 +3,7 @@
 // No UI here. Callers (UI) should pass File/Blob and render results.
 
 import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMediaKeys } from '../api/media.js';
-import { getMkRaw } from '../core/store.js';
+import { getMkRaw, buildAccountPayload } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 
 const encoder = new TextEncoder();
@@ -138,12 +138,13 @@ export function loadEnvelopeMeta(objectKey) {
   try { const s = localStorage.getItem('env_v1:' + objectKey); return s ? JSON.parse(s) : null; } catch { return null; }
 }
 
-export async function deleteEncryptedObjects({ keys, ids }) {
+export async function deleteEncryptedObjects({ keys, ids, convId }) {
   const uniqKeys = Array.from(new Set((keys || []).map(k => String(k || '').trim()).filter(Boolean)));
   const uniqIds = Array.from(new Set((ids || []).map(k => String(k || '').trim()).filter(Boolean)));
   if (!uniqKeys.length && !uniqIds.length) return { deleted: [] };
+  if (!convId) throw new Error('convId required for deletion');
   try {
-    const { data } = await deleteMediaKeys({ keys: uniqKeys, ids: uniqIds });
+    const { data } = await deleteMediaKeys({ keys: uniqKeys, ids: uniqIds, conversationId: convId });
     try { uniqKeys.forEach((key) => localStorage.removeItem('env_v1:' + key)); } catch {}
     const deleted = data?.deleted || data?.results || [];
     return { deleted, failed: data?.failed || [] };
@@ -234,7 +235,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   // 5) Create message index（把 envelope JSON 放在 ciphertext_b64，小訊息）
   let dataMsg = null;
   if (!skipIndex) {
-    const msgBody = {
+    const msgPayload = {
       convId,
       type: 'media',
       aead: 'aes-256-gcm',
@@ -261,6 +262,8 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
         key_type: envelope.key_type
       })))
     };
+    if (conversationFingerprint) msgPayload.conversationFingerprint = conversationFingerprint;
+    const msgBody = buildAccountPayload({ overrides: msgPayload });
     const { r: rMsg, data } = await createMessage(msgBody);
     if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(data));
     dataMsg = data;
@@ -349,7 +352,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
 
   let dataMsg = null;
   if (!skipIndex) {
-    const msgBody = {
+    const msgPayload = {
       convId,
       type: 'media',
       aead: 'aes-256-gcm',
@@ -375,6 +378,8 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
         key_type: envelope.key_type
       })))
     };
+    if (conversationFingerprint) msgPayload.conversationFingerprint = conversationFingerprint;
+    const msgBody = buildAccountPayload({ overrides: msgPayload });
     const { r: rMsg, data } = await createMessage(msgBody);
     if (!rMsg.ok) throw new Error('message index failed: ' + JSON.stringify(data));
     dataMsg = data;

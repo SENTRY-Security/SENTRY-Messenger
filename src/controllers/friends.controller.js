@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { signHmac } from '../utils/hmac.js';
 import { logger } from '../utils/logger.js';
 import { getWebSocketManager } from '../ws/index.js';
+import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
+import { normalizeAccountDigest, normalizeUidHex, AccountDigestRegex } from '../utils/account-verify.js';
 
 const DATA_API = process.env.DATA_API_URL;
 const HMAC_SECRET = process.env.DATA_API_HMAC;
@@ -19,12 +21,18 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
   }
 }
 
+const UidHexRegex = /^[0-9A-Fa-f]{14,}$/;
+
 const CreateInviteSchema = z.object({
-  uidHex: z.string().min(14),
+  uidHex: z.string().regex(UidHexRegex),
   ttlSeconds: z.number().int().min(30).max(600).optional(),
   prekeyBundle: z.any().optional(),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().min(16).optional()
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
 });
 
 const ContactEnvelopeSchema = z.object({
@@ -35,35 +43,73 @@ const ContactEnvelopeSchema = z.object({
 const AcceptInviteSchema = z.object({
   inviteId: z.string().min(8),
   secret: z.string().min(8),
-  myUid: z.string().min(14).optional(),
+  myUid: z.string().regex(UidHexRegex).optional(),
+  uidHex: z.string().regex(UidHexRegex).optional(),
   contactEnvelope: ContactEnvelopeSchema.optional(),
   guestBundle: z.any().optional(),
-  ownerUid: z.string().min(14).optional()
+  ownerUid: z.string().regex(UidHexRegex).optional(),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
+  if (!value.myUid && !value.uidHex) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'myUid or uidHex required' });
+  }
 });
 
 const AttachInviteContactSchema = z.object({
   inviteId: z.string().min(8),
   secret: z.string().min(8),
-  envelope: ContactEnvelopeSchema
+  envelope: ContactEnvelopeSchema,
+  uidHex: z.string().regex(UidHexRegex),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
 });
 
 const DeleteContactSchema = z.object({
-  uidHex: z.string().min(14),
-  peerUid: z.string().min(14),
-  accountDigest: z.string().min(14).optional(),
+  uidHex: z.string().regex(UidHexRegex),
+  peerUid: z.string().regex(UidHexRegex),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
   peerAccountDigest: z.string().min(14).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
 });
 
 const ShareContactSchema = z.object({
   inviteId: z.string().min(8),
   secret: z.string().min(8),
-  myUid: z.string().min(14),
+  myUid: z.string().regex(UidHexRegex),
   envelope: ContactEnvelopeSchema,
-  peerUid: z.string().min(14).optional(),
-  accountDigest: z.string().min(16).optional(),
+  peerUid: z.string().regex(UidHexRegex).optional(),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
   conversationId: z.string().min(8).optional(),
   conversationFingerprint: z.string().min(8).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
 });
+
+function respondAccountError(res, err, fallback = 'authorization failed') {
+  if (err instanceof AccountAuthError) {
+    const status = err.status || 400;
+    if (err.details && typeof err.details === 'object') {
+      return res.status(status).json(err.details);
+    }
+    return res.status(status).json({ error: 'AccountAuthFailed', message: err.message || fallback });
+  }
+  return res.status(500).json({ error: 'AccountAuthFailed', message: err?.message || fallback });
+}
 
 export const createInvite = async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {
@@ -77,22 +123,34 @@ export const createInvite = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      uidHex: input.uidHex,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
   const inviteId = nanoid(16);
   const secret = crypto.randomBytes(24).toString('base64url');
   const ttl = Math.min(Math.max(input.ttlSeconds ?? 300, 30), 600);
   const expiresAt = Math.floor(Date.now() / 1000) + ttl;
 
   const path = '/d1/friends/invite';
-  const body = JSON.stringify({
+  const bodyPayload = {
     inviteId,
-    ownerUid: input.uidHex,
+    ownerUid: auth.uidHex,
     secret,
     expiresAt,
     prekeyBundle: input.prekeyBundle ?? null,
     channelSeed: null,
-    accountToken: input.accountToken || null,
-    accountDigest: input.accountDigest || null
-  });
+    accountToken: input.accountToken ? String(input.accountToken).trim() : null,
+    accountDigest: auth.accountDigest
+  };
+  const body = JSON.stringify(bodyPayload);
   const sig = signHmac(path, body, HMAC_SECRET);
 
   let upstream;
@@ -125,7 +183,7 @@ export const createInvite = async (req, res) => {
     inviteId,
     secret,
     expiresAt,
-    ownerUid: String(input.uidHex || '').toUpperCase() || payload?.owner_uid || null,
+    ownerUid: auth.uidHex || payload?.owner_uid || null,
     prekeyBundle: payload?.prekey_bundle || null
   });
 };
@@ -142,14 +200,35 @@ export const acceptInvite = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      uidHex: input.uidHex || input.myUid,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
+  const guestUid = auth.uidHex;
+  const requestedMyUid = input.myUid ? normalizeUidHex(input.myUid) : null;
+  if (requestedMyUid && requestedMyUid !== guestUid) {
+    return res.status(403).json({ error: 'AccountMismatch', message: 'myUid does not match verified account' });
+  }
+  const ownerUid = input.ownerUid ? normalizeUidHex(input.ownerUid) : undefined;
+
   const path = '/d1/friends/accept';
   const bodyPayload = {
     inviteId: input.inviteId,
     secret: input.secret,
     guestContact: input.contactEnvelope || undefined,
-    guestUid: input.myUid ? String(input.myUid).toUpperCase() : undefined,
+    guestUid,
+    myUid: guestUid,
     guestBundle: input.guestBundle || undefined,
-    ownerUid: input.ownerUid ? String(input.ownerUid).toUpperCase() : undefined
+    ownerUid: ownerUid || undefined,
+    accountDigest: auth.accountDigest,
+    accountToken: input.accountToken ? String(input.accountToken).trim() : undefined
   };
   const body = JSON.stringify(bodyPayload);
   const sig = signHmac(path, body, HMAC_SECRET);
@@ -177,12 +256,12 @@ export const acceptInvite = async (req, res) => {
   const data = await upstream.json();
   try {
     const manager = getWebSocketManager();
-    manager?.notifyInviteAccepted(data?.owner_uid, input.inviteId, String(input.myUid || '').toUpperCase());
-    if (input.myUid) manager?.notifyContactsReload(String(input.myUid).toUpperCase());
+    manager?.notifyInviteAccepted(data?.owner_uid, input.inviteId, guestUid);
+    if (guestUid) manager?.notifyContactsReload(guestUid);
     if (data?.owner_uid) manager?.notifyContactsReload(String(data.owner_uid).toUpperCase());
-    if (data?.owner_uid && input.contactEnvelope && input.myUid) {
+    if (data?.owner_uid && input.contactEnvelope && guestUid) {
       manager?.sendContactShare(String(data.owner_uid).toUpperCase(), {
-        fromUid: String(input.myUid).toUpperCase(),
+        fromUid: guestUid,
         inviteId: input.inviteId,
         envelope: input.contactEnvelope
       });
@@ -205,8 +284,27 @@ export const attachInviteContact = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      uidHex: input.uidHex,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
   const path = '/d1/friends/invite/contact';
-  const body = JSON.stringify({ inviteId: input.inviteId, secret: input.secret, envelope: input.envelope });
+  const payload = {
+    inviteId: input.inviteId,
+    secret: input.secret,
+    envelope: input.envelope,
+    ownerUid: auth.uidHex,
+    accountDigest: auth.accountDigest
+  };
+  if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
+  const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 
   let upstream;
@@ -245,13 +343,26 @@ export const shareContactUpdate = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      uidHex: input.myUid,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
+  const myUid = auth.uidHex;
+  const peerUid = input.peerUid ? normalizeUidHex(input.peerUid) : null;
+  const accountDigest = auth.accountDigest;
+
   const path = '/d1/friends/contact/share';
-  const peerUid = input.peerUid ? String(input.peerUid).toUpperCase() : null;
-  const accountDigest = input.accountDigest ? String(input.accountDigest).toUpperCase() : null;
   const payload = {
     inviteId: input.inviteId,
     secret: input.secret,
-    myUid: input.myUid,
+    myUid,
     envelope: input.envelope
   };
   if (peerUid) payload.peerUid = peerUid;
@@ -290,10 +401,10 @@ export const shareContactUpdate = async (req, res) => {
 
   try {
     const manager = getWebSocketManager();
-    const targetUid = String(data?.targetUid || input.peerUid || '').toUpperCase();
+    const targetUid = normalizeUidHex(data?.targetUid || input.peerUid || '');
     if (targetUid) {
       manager?.sendContactShare(targetUid, {
-        fromUid: String(input.myUid || '').toUpperCase(),
+        fromUid: myUid,
         inviteId: input.inviteId,
         envelope: input.envelope
       });
@@ -318,14 +429,27 @@ export const deleteContact = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
-  const ownerUid = String(input.uidHex).toUpperCase();
-  const peerUid = String(input.peerUid).toUpperCase();
-  const ownerAccountDigest = input.accountDigest ? String(input.accountDigest).toUpperCase() : null;
-  const peerAccountDigest = input.peerAccountDigest ? String(input.peerAccountDigest).toUpperCase() : null;
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      uidHex: input.uidHex,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
+  const ownerUid = auth.uidHex;
+  const peerUid = normalizeUidHex(input.peerUid);
+  if (!peerUid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid peerUid' });
+  }
+  const ownerAccountDigest = auth.accountDigest;
+  const peerAccountDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
 
   const path = '/d1/friends/contact-delete';
-  const payload = { ownerUid, peerUid };
-  if (ownerAccountDigest) payload.ownerAccountDigest = ownerAccountDigest;
+  const payload = { ownerUid, peerUid, ownerAccountDigest };
   if (peerAccountDigest) payload.peerAccountDigest = peerAccountDigest;
   const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);

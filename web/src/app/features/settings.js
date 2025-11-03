@@ -3,7 +3,7 @@
 
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
-import { getMkRaw, getUidHex, getAccountDigest } from '../core/store.js';
+import { getMkRaw, getUidHex, getAccountDigest, buildAccountPayload } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 
 const SETTINGS_INFO_TAG = 'settings/v1';
@@ -70,7 +70,7 @@ export async function saveSettings(settings) {
 
   const envelope = await wrapWithMK_JSON(payload, mk, SETTINGS_INFO_TAG);
   const header = { settings: 1, v: 1, ts: payload.updatedAt, envelope };
-  const body = {
+  const overrides = {
     convId,
     type: 'text',
     aead: 'aes-256-gcm',
@@ -78,6 +78,7 @@ export async function saveSettings(settings) {
     ciphertext_b64: envelope?.ct_b64 || 'settings'
   };
 
+  const body = buildAccountPayload({ overrides });
   const { r, data } = await createMessage(body);
   if (!r.ok) {
     const msg = typeof data === 'string' ? data : data?.error || data?.message || 'settings save failed';

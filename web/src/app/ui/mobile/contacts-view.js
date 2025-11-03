@@ -346,7 +346,6 @@ export function initContactsView(options) {
         presenceManager.removePresenceForContact(key);
         continue;
       }
-      sanitized.push(entry);
       contactIndex.set(key, entry);
       const conv = entry?.conversation;
       if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
@@ -356,8 +355,15 @@ export function initContactsView(options) {
           dr_init: conv.dr_init || null,
           secretRole: entry?.secretRole || entry?.secret_role || null
         });
-        scheduleDrBootstrap(key, conv);
+        const isHidden = entry?.hidden === true || entry?.isSelfContact === true;
+        if (!isHidden) {
+          scheduleDrBootstrap(key, conv);
+        }
       }
+      if (entry?.hidden === true || entry?.isSelfContact === true) {
+        continue;
+      }
+      sanitized.push(entry);
     }
     sessionStore.contactState = sanitized;
     const currentPeers = new Set(

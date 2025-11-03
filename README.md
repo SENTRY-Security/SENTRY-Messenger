@@ -200,12 +200,16 @@ kill $API_PID
 
 ### 時間軸
 
-- **目前狀態**：媒體簽章 API 已強制攜帶帳號憑證與會話指紋；Worker 若缺 ACL 會自動補登記。聯絡人列表已過濾自身帳號（含 digest），`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
-- **下一步**：觀察舊帳號是否缺少 conversation ACL，必要時補做批次廣播或後端回填。
+- **目前狀態**：訊息 / 好友 REST API 維持帳號驗證 + 會話 ACL 檢查；自我聯絡 metadata 已回填（UI 仍隱藏自我條目）；好友邀請初始化在 `/friends/invite/contact` 會自動帶入帳號驗證並支援缺漏補建，`friend_invites` 不再因 race 造成 404。DR / ACL 啟動驗證完成：登入或掃描後會話 fingerprint 會立即比對並補齊 ACL；Drive 上傳面板支援多檔案選擇與批次進度顯示。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
+- **下一步**：觀察 Worker 端尚未覆蓋的刪除 / 補貨情境是否需要新增 ACL 建立流程，並評估舊資料批次修補需求。
 
 
 | 日期                    | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-11-10（Codex）** | DR / ACL 啟動驗證：登入或掃描後載入訊息會先計算 conversation fingerprint 並帶入 `/messages/secure`，確保 Worker 授權與 DR state 就緒；重新驗證 `npm run test:{friends-messages,front:login}`。 |
+| **2025-11-10（Codex）** | 好友邀請初始化加強：`/friends/invite/contact` 會附帶帳號驗證資訊並於缺漏時自動建立 `friend_invites` 記錄，確保 owner envelope 一定寫入；Node/前端/script 同步更新。`npm run test:{friends-messages,front:login}` 通過。 |
+| **2025-11-10（Codex）** | 恢復自我聯絡 metadata：`loadContacts` 會保留自身條目並寫入 `contactSecrets` / `conversationIndex`，UI 仍隱藏自我聯絡避免清單出現自己；重跑 `npm run test:{friends-messages,front:login}` 驗證。 |
+| **2025-11-10（Codex）** | `messages.controller` 與 `friends.controller` 新增帳號驗證 + 會話 ACL 授權，所有列表 / 刪除 / 建立操作需帶入 `uidHex` 與 `accountToken/accountDigest`；前端 API、DR 流程與測試腳本同步補上憑證與 conversation fingerprint。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。 |
 | **2025-11-09（Codex）** | `/media/sign-put|get` 強制驗證登入帳號並透過 Worker `/d1/conversations/authorize` 檢查會話授權，若缺 ACL 則憑指紋自動補建；聯絡人列表過濾自身 UID / Digest 以免更新頭像時出現自己。前端簽名請求自動帶入憑證，`scripts/r2-media-test.sh` 更新支援新欄位。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。                                                                                                                                                                                                                                                        |
 | **2025-11-08（Codex）** | 修正 shareState 在 logout 後殘留`inviteBlockedDueToKeys` 導致 QR 再登入無法生成；Drive 列表隱藏系統「已傳送 / 已接收」層並依使用者資料夾顯示，允許重複上傳與刪除；訊息附件新增預覽按鈕沿用 Modal，Playwright 以 `downloadAndDecrypt` 驗證 SHA-256 digest；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。                                                                                                                                                                                                                                                                                                                           |
 | **2025-11-07（Codex）** | 交友金鑰補貨流程自動在`PrekeyUnavailable/NotFound` 時改用完整 bundle（IK/SPK/OPK）重發，狀態列 spinner 調整為正圓動畫；聯絡人載入時會跳過自己，避免改暱稱後自我條目出現在好友清單；全套 Playwright full-flow 再次確認；清空 Cloudflare D1 / R2 並重部署 Worker / Node API / Pages。                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -224,27 +228,30 @@ kill $API_PID
 
 ### 工作清單
 
-1. [X]  修復 `/friends/contact/share` 403。
-2. [X]  調整好友刪除→登出流程，確保 mobile 可操作 user menu。
-3. [X]  修復 `/friends/contact/share` 404 及重登入流程中 `/api/v1/devkeys/fetch` 404（`Device backup missing`），已可正常取得備份並送出聯絡更新。
-4. [X]  追蹤 `full-flow` 重登入後 `OperationError`（`Nr`/`n` counter 落差），已靠 replay message key + skipped chain 快取修復。
-5. [X]  驗證 replay 成功時 DR state 套用 `snapshotAfter` 以避免 `Nr` 落後，更新 replay 後的狀態同步邏輯並完成全套測試。
-6. [X]  完成端對端檔案傳輸（圖片 / 影片 / 一般檔案），強制 500 MB 以內並全程加密。
-7. [X]  更新 Node API / Worker / R2 儲存策略：建立「已傳送 / 已接收」系統資料夾並套用 500 MB 限制（`/media/sign-put` 透過 `/d1/media/usage` 檢查容量並寫入 `media_objects`）。
-8. [X]  **優先**：DR snapshot 還原：messageId-based cursor 已實作，仍需排查重登入首輪 decrypt 失敗 & UI 重複 fetch。
-9. [X]  **優先**：`messages-pane` duplicate 判斷與 `recordDrMessageHistory` 時序調整，避免第一則訊息誤判。
-10. [X]  **優先**：完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
-11. [X]  **優先**：`listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
-12. [X]  **優先**：比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
-13. [X]  `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
-14. [X]  附件接收端可視化：訊息附件新增「預覽」動作沿用 Modal 並提供下載，E2E 透過 `downloadAndDecrypt` 驗證 SHA-256 digest 確保可還原檔案。
-15. [X]  好友邀請交友金鑰補貨強化：登入後應即時顯示補貨階段、精準提示失敗原因、提供人工重試並擴大自動重試，避免「缺少交友金鑰」無明確導因。
-16. [X]  **安全**：WebSocket `/ws` 缺乏身份驗證，任何客戶端都能送出 `{type:'auth',uid}` 直接綁定任意 UID，導致 presence / contact-share 廣播外洩（見 `src/ws/index.js:46-105`）。現已改為 `/api/v1/ws/token` 簽發短期 HMAC token，server 驗證後才綁定連線。
-17. [X]  **安全**：媒體簽章 API (`/api/v1/media/sign-put|get`) 已強制攜帶帳號憑證並呼叫 Worker `/d1/conversations/authorize` 核對會話 ACL，避免未授權取得簽名 URL。
-18. [ ]  **安全**：訊息與好友 REST API 缺乏授權流程，攻擊者可憑猜測的 `convId`、`uidHex` 操作 `/messages/*`、`/friends/*` 讀寫或刪除資料（見 `src/controllers/messages.controller.js:47-319`, `src/controllers/friends.controller.js:66-192` 及對應路由）。應先建立身份驗證層並在轉呼 Worker 前檢查帳號權限。
-19. [ ]  前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。（已隱藏系統「已傳送 / 已接收」夾層，待補多檔案與排序）
-20. [ ]  Playwright 新增檔案傳輸、Drive 同步、下載驗證等情境。
-21. [ ]  暱稱廣播 `/friends/contact/share` 仍回 404 fallback，B 端未即時更新新暱稱，需檢查 invite 缺失案例處理與重新拉取機制。
+1. [X]  **優先**：恢復自我聯絡 metadata 流程：保留 `contactSecrets` / `conversationIndex` 的自我紀錄，僅在 UI 隱藏避免自我條目顯示。
+2. [X]  **優先**：穩定邀請初始化：`/friends/invite/contact` 加入帳號驗證與缺漏補建流程，owner envelope 一定寫入，掃描端不再遇到 `friend_invites` 404。
+3. [X]  **優先**：DR / ACL 啟動驗證：登入或掃描後確認 fingerprint / DR state 完整，杜絕「部分訊息無法解密」。
+4. [X]  修復 `/friends/contact/share` 403。
+5. [X]  調整好友刪除→登出流程，確保 mobile 可操作 user menu。
+6. [X]  修復 `/friends/contact/share` 404 及重登入流程中 `/api/v1/devkeys/fetch` 404（`Device backup missing`），已可正常取得備份並送出聯絡更新。
+7. [X]  追蹤 `full-flow` 重登入後 `OperationError`（`Nr`/`n` counter 落差），已靠 replay message key + skipped chain 快取修復。
+8. [X]  驗證 replay 成功時 DR state 套用 `snapshotAfter` 以避免 `Nr` 落後，更新 replay 後的狀態同步邏輯並完成全套測試。
+9. [X]  完成端對端檔案傳輸（圖片 / 影片 / 一般檔案），強制 500 MB 以內並全程加密。
+10. [X]  更新 Node API / Worker / R2 儲存策略：建立「已傳送 / 已接收」系統資料夾並套用 500 MB 限制（`/media/sign-put` 透過 `/d1/media/usage` 檢查容量並寫入 `media_objects`）。
+11. [X]  **優先**：DR snapshot 還原：messageId-based cursor 已實作，仍需排查重登入首輪 decrypt 失敗 & UI 重複 fetch。
+12. [X]  **優先**：`messages-pane` duplicate 判斷與 `recordDrMessageHistory` 時序調整，避免第一則訊息誤判。
+13. [X]  **優先**：完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
+14. [X]  **優先**：`listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
+15. [X]  **優先**：比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
+16. [X]  `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
+17. [X]  附件接收端可視化：訊息附件新增「預覽」動作沿用 Modal 並提供下載，E2E 透過 `downloadAndDecrypt` 驗證 SHA-256 digest 確保可還原檔案。
+18. [X]  好友邀請交友金鑰補貨強化：登入後應即時顯示補貨階段、精準提示失敗原因、提供人工重試並擴大自動重試，避免「缺少交友金鑰」無明確導因。
+19. [X]  **安全**：WebSocket `/ws` 缺乏身份驗證，任何客戶端都能送出 `{type:'auth',uid}` 直接綁定任意 UID，導致 presence / contact-share 廣播外洩（見 `src/ws/index.js:46-105`）。現已改為 `/api/v1/ws/token` 簽發短期 HMAC token，server 驗證後才綁定連線。
+20. [X]  **安全**：媒體簽章 API (`/api/v1/media/sign-put|get`) 已強制攜帶帳號憑證並呼叫 Worker `/d1/conversations/authorize` 核對會話 ACL，避免未授權取得簽名 URL。
+21. [X]  **安全**：訊息與好友 REST API 已要求 `uidHex` + `accountToken/accountDigest` 驗證並呼叫 Worker `/d1/conversations/authorize`，未授權的 `convId` 請求會被拒絕；前端 API 與腳本同步帶入憑證與 conversation fingerprint。
+22. [ ]  前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。（已隱藏系統「已傳送 / 已接收」夾層，待補多檔案與排序）
+23. [ ]  Playwright 新增檔案傳輸、Drive 同步、下載驗證等情境。
+24. [ ]  暱稱廣播 `/friends/contact/share` 仍回 404 fallback，B 端未即時更新新暱稱，需檢查 invite 缺失案例處理與重新拉取機制。
 
 ---
 
@@ -253,6 +260,9 @@ kill $API_PID
 
 | 時間 (UTC)       | 說明                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2025-11-10 11:40 | `loadContacts` 恢復自我聯絡紀錄，標記為 hidden 以供 UI 遮蔽但維持 `contactSecrets` / `conversationIndex`；`contacts-view` 僅在渲染時忽略 hidden 條目。`npm run test:{friends-messages,front:login}` 通過。                                                                                                                     |
+| 2025-11-10 09:20 | Drive 上傳彈窗支援多檔案選擇、清單預覽與逐檔進度提示；批次上傳流程沿用加密上傳並在每檔完成後刷新列表。`npm run test:front:login` 通過。                                                                                                                                                                                                                  |
+| 2025-11-10 07:15 | `messages.controller` / `friends.controller` 加入帳號驗證與會話 ACL 授權，前端 API、DR 流程與腳本同步帶入 `uidHex`、`accountToken/accountDigest` 及 conversation fingerprint；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。                                                                                       |
 | 2025-11-09 06:30 | 強化 `/api/v1/media/sign-put|get`：簽名請求需帶入 UID 與 `accountToken/accountDigest`，並呼叫 Worker `/d1/conversations/authorize` 檢查 `conversation_acl`；好友聯絡分享會同步登記 ACL。前端簽名流程與 `scripts/r2-media-test.sh` 補齊新欄位。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。            |
 | 2025-11-08 07:20 | Reset shareState 時同步清除`inviteBlockedDueToKeys`，修復重登入後分享面板無法再產生交友 QR；Drive pane 以使用者資料夾呈現並隱藏系統夾層、清理資料夾操作與刪除比對；訊息附件新增預覽按鈕沿用 Modal，並在 Playwright 內以 `downloadAndDecrypt` 驗證附件 digest；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全部通過。       |
 | 2025-11-07 08:40 | `share-controller` 補貨失敗時自動改送完整 IK/SPK/OPK bundle，並固定邀請狀態列 spinner 為正圓；`loadContacts` 過濾自己帳號避免自我條目；重跑 Playwright full-flow，清除 Cloudflare D1 / R2 後重新部署所有元件。                                                                                                                                                          |
