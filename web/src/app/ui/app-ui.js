@@ -89,8 +89,8 @@ function isSimStorageKey(key) {
 (function ensureUnlockedOrRedirect(){
   try {
     if (!getMkRaw()) {
-      log('Not unlocked: redirecting to /pages/login.html …');
-      setTimeout(() => location.replace('/pages/login.html'), 200);
+      log('Not unlocked: redirecting to /pages/logout.html …');
+      setTimeout(() => location.replace('/pages/logout.html'), 200);
     }
   } catch (e) {
     log({ redirectGuardError: String(e?.message || e) });
@@ -179,8 +179,8 @@ function onLogout() {
     // clear all in-memory state (MK, DR sessions, UID, etc.)
     resetAll();
   } catch { try { clearSecrets(); } catch {} }
-  // navigate back to login
-  try { location.replace('/pages/login.html'); } catch { location.href = '/pages/login.html'; }
+  // navigate to logout page
+  try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
 }
 
 // ---- Encrypt & Upload ----
