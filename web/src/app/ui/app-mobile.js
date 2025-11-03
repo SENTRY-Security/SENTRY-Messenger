@@ -520,8 +520,8 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
 // Guard: require MK
 (function ensureUnlockedOrRedirect(){
   if (!getMkRaw()) {
-    log('Not unlocked: redirecting to /pages/login.html …');
-    setTimeout(() => location.replace('/pages/login.html'), 200);
+    log('Not unlocked: redirecting to /pages/logout.html …');
+    secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
   }
 })();
 
