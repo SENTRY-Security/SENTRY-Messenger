@@ -49,6 +49,7 @@ import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 import { requestWsToken } from '../api/ws.js';
+import { initVersionInfoButton } from './version-info.js';
 
 const out = document.getElementById('out');
 setLogSink(out);
@@ -58,6 +59,8 @@ const { showToast, hideToast } = createToastController(document.getElementById('
 const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
 const navBadges = typeof document !== 'undefined' ? Array.from(document.querySelectorAll('.nav-badge')) : [];
+
+initVersionInfoButton({ buttonId: 'versionInfoBtnApp', popupId: 'versionInfoPopupApp' });
 
 let pendingServerOps = 0;
 let waitOverlayTimer = null;

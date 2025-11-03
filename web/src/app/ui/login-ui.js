@@ -4,6 +4,7 @@
 
 // Removed import of fetchJSON, jsonReq from ../core/http.js
 import { log, setLogSink } from '../core/log.js';
+import { initVersionInfoButton } from './version-info.js';
 import {
   getSession, setSession,
   getHasMK, setHasMK,
@@ -33,6 +34,8 @@ const welcomeModal = document.getElementById('welcomeModal');
 const welcomeContent = document.getElementById('welcomeContent');
 const welcomeNextBtn = document.getElementById('welcomeNext');
 const welcomeCloseBtn = document.getElementById('welcomeClose');
+
+initVersionInfoButton({ buttonId: 'versionInfoBtnLogin', popupId: 'versionInfoPopupLogin' });
 
 let pendingLogoutNotice = null;
 
