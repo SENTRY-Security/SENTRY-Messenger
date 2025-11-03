@@ -2,18 +2,59 @@
 // Small helper to attach a floating version info button & popup.
 
 const STATUS_ENDPOINT = '/status';
+const HEALTH_ENDPOINT = '/api/health';
 let cachedInfo = null;
 let pendingFetch = null;
+let cachedHealth = null;
+let pendingHealth = null;
+
+function getAppVersion() {
+  if (typeof window !== 'undefined') {
+    return window.APP_VERSION || 'unknown';
+  }
+  return 'unknown';
+}
+
+function getAppBuildTime() {
+  if (typeof window !== 'undefined' && window.APP_BUILD_AT) return window.APP_BUILD_AT;
+  try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); }
+}
+
+function summarizeStatus(info) {
+  if (!info) return '－';
+  if (info.error) return `錯誤：${info.error}`;
+  if (info.status && info.status !== 200 && info.status !== 'ok') {
+    return `HTTP ${info.status}`;
+  }
+  return '正常';
+}
+
+function summarizeHealth(health) {
+  if (!health) return '－';
+  if (health.error) return `錯誤：${health.error}`;
+  if (health.ok === false) {
+    return health.message ? `失敗：${health.message}` : '失敗';
+  }
+  return '正常';
+}
 
 function formatInfo(info) {
   const now = new Date();
   const fetchedAt = info?.fetchedAt ? new Date(info.fetchedAt) : now;
+  const hasWindow = typeof window !== 'undefined';
   return {
     service: info?.name || info?.service || 'SENTRY API',
     version: info?.version || info?.build || 'unknown',
     environment: info?.env || info?.environment || '-',
+    statusSummary: summarizeStatus(info),
+    healthSummary: summarizeHealth(info?.apiHealth),
+    apiOrigin: hasWindow ? (window.API_ORIGIN || window.location.origin) : '-',
+    pagesOrigin: hasWindow ? window.location.origin : '-',
+    appVersion: getAppVersion(),
+    appBuildAt: getAppBuildTime(),
     fetchedAt: fetchedAt.toLocaleString('zh-TW', { hour12: false }),
-    clientLoadedAt: now.toLocaleString('zh-TW', { hour12: false })
+    clientLoadedAt: now.toLocaleString('zh-TW', { hour12: false }),
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '-'
   };
 }
 
@@ -41,14 +82,44 @@ async function fetchStatus() {
   return pendingFetch;
 }
 
+async function fetchApiHealth() {
+  if (cachedHealth) return cachedHealth;
+  if (pendingHealth) return pendingHealth;
+  pendingHealth = fetch(HEALTH_ENDPOINT, { cache: 'no-store' })
+    .then(async (res) => {
+      if (!res.ok) {
+        cachedHealth = { error: `HTTP ${res.status}` };
+        return cachedHealth;
+      }
+      const data = await res.json().catch(() => ({}));
+      cachedHealth = data;
+      return cachedHealth;
+    })
+    .catch((err) => {
+      cachedHealth = { error: err?.message || 'Unknown error' };
+      return cachedHealth;
+    })
+    .finally(() => {
+      pendingHealth = null;
+    });
+  return pendingHealth;
+}
+
 function renderPopup(popup, info) {
   const details = formatInfo(info);
   popup.innerHTML = `
     <strong>版本資訊</strong>
+    <div>前端版本：${details.appVersion}</div>
+    <div>前端建置：${details.appBuildAt}</div>
     <div>前端載入：${details.clientLoadedAt}</div>
+    <div>Pages Origin：${details.pagesOrigin}</div>
+    <div>API Origin：${details.apiOrigin}</div>
     <div>服務：${details.service}</div>
     <div>版本：${details.version}</div>
     <div>環境：${details.environment}</div>
+    <div>服務狀態：${details.statusSummary}</div>
+    <div>API 健康：${details.healthSummary}</div>
+    <div style="margin-top:6px;">User-Agent：${details.userAgent}</div>
     <div style="margin-top:6px; font-size:11px;">更新時間：${details.fetchedAt}</div>
   `;
   popup.setAttribute('aria-hidden', 'false');
@@ -84,7 +155,9 @@ export function initVersionInfoButton({ buttonId, popupId }) {
     popup.setAttribute('aria-hidden', 'false');
     popup.dataset.open = 'true';
     try {
-      const info = await fetchStatus();
+      const [statusInfo, healthInfo] = await Promise.all([fetchStatus(), fetchApiHealth()]);
+      if (statusInfo) statusInfo.apiHealth = healthInfo;
+      const info = statusInfo || { apiHealth: healthInfo };
       if (info?.error) {
         renderError(popup, info.error);
       } else {

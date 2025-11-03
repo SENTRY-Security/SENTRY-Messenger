@@ -15,6 +15,10 @@
     <!-- Icons: Boxicons -->
     <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="/assets/profile-extra.css" />
+    <script>
+      window.APP_VERSION = '0.1.0';
+      window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
+    </script>
     <style>
       :root { color-scheme: light; --bg:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --brand:#111827; }
       * { box-sizing: border-box; }

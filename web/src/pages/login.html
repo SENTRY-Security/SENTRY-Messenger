@@ -13,6 +13,10 @@
     <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
     <link rel="stylesheet" href="/assets/styles.css" />
     <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <script>
+      window.APP_VERSION = '0.1.0';
+      window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
+    </script>
     <style>
       :root { color-scheme: light; --bg:#0f172a; --fg:#111827; --muted:#64748b; --line:#e2e8f0; --card:#ffffff; --gradient: linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
       html, body { height:100%; min-height:100%; }
