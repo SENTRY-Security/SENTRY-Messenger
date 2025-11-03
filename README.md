@@ -217,8 +217,8 @@ kill $API_PID
 
 ### 工作清單
 
-1. ~~修復 `/friends/contact/share` 403。~~
-2. ~~調整好友刪除→登出流程，確保 mobile 可操作 user menu。~~
+1. [X] 修復 `/friends/contact/share` 403。
+2. [X] 調整好友刪除→登出流程，確保 mobile 可操作 user menu。
 3. [X] 修復 `/friends/contact/share` 404 及重登入流程中 `/api/v1/devkeys/fetch` 404（`Device backup missing`），已可正常取得備份並送出聯絡更新。
 4. [X] 追蹤 `full-flow` 重登入後 `OperationError`（`Nr`/`n` counter 落差），已靠 replay message key + skipped chain 快取修復。
 5. [X] 驗證 replay 成功時 DR state 套用 `snapshotAfter` 以避免 `Nr` 落後，更新 replay 後的狀態同步邏輯並完成全套測試。
@@ -229,12 +229,15 @@ kill $API_PID
 9. [X] **優先**：完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
 10. [X] **優先**：`listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
 11. [X] **優先**：比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
-12. [ ] 前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。（已隱藏系統「已傳送 / 已接收」夾層，待補多檔案與排序）
-13. [ ] Playwright 新增檔案傳輸、Drive 同步、下載驗證等情境。
 14. [X] `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
-15. [ ] 暱稱廣播 `/friends/contact/share` 仍回 404 fallback，B 端未即時更新新暱稱，需檢查 invite 缺失案例處理與重新拉取機制。
 16. [X] 附件接收端可視化：訊息附件新增「預覽」動作沿用 Modal 並提供下載，E2E 透過 `downloadAndDecrypt` 驗證 SHA-256 digest 確保可還原檔案。
-17. [ ] 好友邀請交友金鑰補貨強化：登入後應即時顯示補貨階段、精準提示失敗原因、提供人工重試並擴大自動重試，避免「缺少交友金鑰」無明確導因。
+17. [X] 好友邀請交友金鑰補貨強化：登入後應即時顯示補貨階段、精準提示失敗原因、提供人工重試並擴大自動重試，避免「缺少交友金鑰」無明確導因。
+18. [ ] **安全**：WebSocket `/ws` 缺乏身份驗證，任何客戶端都能送出 `{type:'auth',uid}` 直接綁定任意 UID，導致 presence / contact-share 廣播外洩（見 `src/ws/index.js:46-105`）。需加入授權機制（如基於 session token 的簽章）並在 server 驗證。
+19. [ ] **安全**：媒體簽章 API (`/api/v1/media/sign-put|get`) 僅檢查輸入格式，缺少使用者身份驗證；惡意者可取得 R2 簽名 URL 竊取或塞滿任意會話資料（見 `src/routes/v1/media.routes.js:69-157`）。需強制攜帶並驗證登入態／會話擁有權。
+20. [ ] **安全**：訊息與好友 REST API 缺乏授權流程，攻擊者可憑猜測的 `convId`、`uidHex` 操作 `/messages/*`、`/friends/*` 讀寫或刪除資料（見 `src/controllers/messages.controller.js:47-319`, `src/controllers/friends.controller.js:66-192` 及對應路由）。應先建立身份驗證層並在轉呼 Worker 前檢查帳號權限。
+21. [ ] 前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。（已隱藏系統「已傳送 / 已接收」夾層，待補多檔案與排序）
+22. [ ] Playwright 新增檔案傳輸、Drive 同步、下載驗證等情境。
+23. [ ] 暱稱廣播 `/friends/contact/share` 仍回 404 fallback，B 端未即時更新新暱稱，需檢查 invite 缺失案例處理與重新拉取機制。
 
 ### 好友邀請／交友金鑰補貨強化計畫
 

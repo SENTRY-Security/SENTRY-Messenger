@@ -9,6 +9,56 @@ import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK,
 const encoder = new TextEncoder();
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
 
+const EXT_CONTENT_TYPE = new Map([
+  ['mov', 'video/quicktime'],
+  ['m4v', 'video/mp4'],
+  ['mp4', 'video/mp4'],
+  ['webm', 'video/webm'],
+  ['avi', 'video/x-msvideo'],
+  ['mkv', 'video/x-matroska'],
+  ['heic', 'image/heic'],
+  ['heif', 'image/heif'],
+  ['jpg', 'image/jpeg'],
+  ['jpeg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['gif', 'image/gif'],
+  ['webp', 'image/webp'],
+  ['bmp', 'image/bmp'],
+  ['svg', 'image/svg+xml'],
+  ['pdf', 'application/pdf'],
+  ['txt', 'text/plain'],
+  ['md', 'text/markdown'],
+  ['json', 'application/json'],
+  ['csv', 'text/csv'],
+  ['tsv', 'text/tab-separated-values'],
+  ['mp3', 'audio/mpeg'],
+  ['m4a', 'audio/mp4'],
+  ['aac', 'audio/aac'],
+  ['wav', 'audio/wav'],
+  ['flac', 'audio/flac'],
+  ['ogg', 'audio/ogg'],
+  ['oga', 'audio/ogg'],
+  ['opus', 'audio/opus'],
+  ['zip', 'application/zip'],
+  ['rar', 'application/vnd.rar'],
+  ['7z', 'application/x-7z-compressed']
+]);
+
+function guessContentTypeFromName(name) {
+  if (!name) return 'application/octet-stream';
+  const idx = String(name).lastIndexOf('.');
+  if (idx === -1) return 'application/octet-stream';
+  const ext = String(name).slice(idx + 1).toLowerCase();
+  return EXT_CONTENT_TYPE.get(ext) || 'application/octet-stream';
+}
+
+function resolveContentType(file) {
+  const fileType = typeof file?.type === 'string' ? file.type.trim() : '';
+  if (fileType && fileType !== 'application/octet-stream') return fileType;
+  const fileName = typeof file?.name === 'string' ? file.name : '';
+  return guessContentTypeFromName(fileName);
+}
+
 function normalizeDirSegments(dir) {
   if (!dir) return [];
   if (Array.isArray(dir)) {
@@ -122,7 +172,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
     throw new Error('shared encryption key is only supported when skipIndex=true');
   }
 
-  const contentType = file.type || 'application/octet-stream';
+  const contentType = resolveContentType(file);
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
   const fileSize = typeof file.size === 'number' ? file.size : null;
   if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
@@ -234,7 +284,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
     throw new Error('shared encryption key is only supported when skipIndex=true');
   }
 
-  const contentType = file.type || 'application/octet-stream';
+  const contentType = resolveContentType(file);
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
   const fileSize = typeof file.size === 'number' ? file.size : null;
   if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {

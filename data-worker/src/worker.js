@@ -936,8 +936,9 @@ export default {
         prefix = convId;
       }
       const ensureSlash = prefix.endsWith('/') ? prefix : `${prefix}/`;
-      const escapeLike = (value) => value.replace(/([%_\\])/g, '\\$1');
-      const likePattern = `${escapeLike(ensureSlash)}%`;
+      const rangeStart = ensureSlash;
+      // 將上界設為 prefix + U+FFFF，確保涵蓋所有以 prefix 開頭的 obj_key
+      const rangeEnd = `${ensureSlash}\uFFFF`;
       let totalBytes = 0;
       let objectCount = 0;
       try {
@@ -947,8 +948,9 @@ export default {
             COUNT(*) AS object_count
           FROM media_objects
           WHERE conv_id=?1
-            AND obj_key LIKE ?2 ESCAPE '\\'
-        `).bind(convId, likePattern).all();
+            AND obj_key >= ?2
+            AND obj_key < ?3
+        `).bind(convId, rangeStart, rangeEnd).all();
         const row = stmt?.results?.[0] || null;
         totalBytes = Number(row?.total_bytes ?? 0);
         objectCount = Number(row?.object_count ?? 0);
