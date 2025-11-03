@@ -10,7 +10,9 @@ import {
   setAccountToken, setAccountDigest, setUidDigest,
   setDevicePriv,
   resetAll, clearSecrets,
-  drState
+  drState,
+  getAccountToken,
+  getAccountDigest
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -46,6 +48,7 @@ import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
+import { requestWsToken } from '../api/ws.js';
 
 const out = document.getElementById('out');
 setLogSink(out);
@@ -129,6 +132,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
 
   try { wsConn?.close(); } catch {}
   wsConn = null;
+  wsAuthTokenInfo = null;
   if (wsReconnectTimer) {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
@@ -773,6 +777,7 @@ switchTab('drive');
 
 let wsConn = null;
 let wsReconnectTimer = null;
+let wsAuthTokenInfo = null;
 const pendingWsMessages = [];
 let _autoLoggedOut = false;
 
@@ -1050,14 +1055,55 @@ function updateProfileStats() {
 
 function ensureWebSocket() {
   if (wsConn || wsReconnectTimer) return;
-  const uid = getUidHex();
-  if (!uid) return;
-  connectWebSocket();
+  if (!getUidHex()) return;
+  connectWebSocket().catch((err) => {
+    log({ wsConnectError: err?.message || err });
+  });
 }
 
-function connectWebSocket() {
+function scheduleWsReconnect(delay = 2000) {
+  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    connectWebSocket().catch((err) => {
+      log({ wsReconnectError: err?.message || err });
+    });
+  }, delay);
+}
+
+async function getWsAuthToken({ force = false } = {}) {
+  const uidHex = getUidHex();
+  if (!uidHex) throw new Error('缺少 UID');
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!force && wsAuthTokenInfo && wsAuthTokenInfo.token) {
+    const exp = Number(wsAuthTokenInfo.expiresAt || 0);
+    if (!exp || exp - nowSec > 30) {
+      return wsAuthTokenInfo;
+    }
+  }
+  const accountToken = getAccountToken();
+  const accountDigest = getAccountDigest();
+  const { r, data } = await requestWsToken({ uidHex, accountToken, accountDigest });
+  if (!r.ok || !data?.token) {
+    const message = typeof data === 'string' ? data : data?.message || data?.error || 'ws token failed';
+    throw new Error(message);
+  }
+  const expiresAt = Number(data.expiresAt || data.exp || 0) || null;
+  wsAuthTokenInfo = { token: data.token, expiresAt };
+  return wsAuthTokenInfo;
+}
+
+async function connectWebSocket() {
   const uid = getUidHex();
   if (!uid) return;
+  let tokenInfo;
+  try {
+    tokenInfo = await getWsAuthToken();
+  } catch (err) {
+    log({ wsTokenError: err?.message || err });
+    scheduleWsReconnect(4000);
+    return;
+  }
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let baseHost = connectionIndicator?.dataset?.wsHost || '';
   let path = connectionIndicator?.dataset?.wsPath || '/api/ws';
@@ -1084,7 +1130,11 @@ function connectWebSocket() {
   ws.onopen = () => {
     log({ wsState: 'open' });
     wsReconnectTimer = null;
-    try { ws.send(JSON.stringify({ type: 'auth', uid })); } catch {}
+    try {
+      ws.send(JSON.stringify({ type: 'auth', uid, token: tokenInfo.token }));
+    } catch (err) {
+      log({ wsAuthSendError: err?.message || err });
+    }
     if (pendingWsMessages.length) {
       for (const msg of pendingWsMessages.splice(0)) {
         try { ws.send(JSON.stringify(msg)); } catch (err) { log({ wsSendError: err?.message || err }); }
@@ -1102,15 +1152,15 @@ function connectWebSocket() {
     wsConn = null;
     updateConnectionIndicator('offline');
     presenceManager.clearPresenceState();
-    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = setTimeout(() => {
-      wsReconnectTimer = null;
-      connectWebSocket();
-    }, 2000);
+    if (evt.code === 4401) {
+      wsAuthTokenInfo = null;
+    }
+    scheduleWsReconnect();
   };
   ws.onerror = () => {
     log({ wsError: true });
     updateConnectionIndicator('offline');
+    wsAuthTokenInfo = null;
     try { ws.close(); } catch {}
   };
 }

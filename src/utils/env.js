@@ -5,7 +5,8 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   SERVICE_NAME: z.string().min(1).default('message-api'),
   SERVICE_VERSION: z.string().min(1).default('0.1.0'),
-  CORS_ORIGIN: z.string().url().optional()
+  CORS_ORIGIN: z.string().url().optional(),
+  WS_TOKEN_SECRET: z.string().min(32, 'WS_TOKEN_SECRET must be at least 32 characters long')
 });
 
 export const env = EnvSchema.parse({
@@ -13,5 +14,6 @@ export const env = EnvSchema.parse({
   PORT: process.env.PORT,
   SERVICE_NAME: process.env.SERVICE_NAME,
   SERVICE_VERSION: process.env.SERVICE_VERSION,
-  CORS_ORIGIN: process.env.CORS_ORIGIN
+  CORS_ORIGIN: process.env.CORS_ORIGIN,
+  WS_TOKEN_SECRET: process.env.WS_TOKEN_SECRET
 });

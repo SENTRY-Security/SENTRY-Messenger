@@ -5,6 +5,7 @@ import auth from './auth.routes.js';
 import keys from './keys.routes.js';
 import devkeys from './devkeys.routes.js';
 import friends from './friends.routes.js';
+import wsToken from './ws-token.routes.js';
 import { getHealth, getStatus } from '../controllers/messages.controller.js';
 
 const r = Router();
@@ -21,5 +22,6 @@ r.use('/', friends);
 r.use('/v1', auth);
 r.use('/v1', keys);
 r.use('/v1', devkeys);
+r.use('/v1', wsToken);
 
 export default r;

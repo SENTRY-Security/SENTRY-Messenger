@@ -967,6 +967,46 @@ export default {
       });
     }
 
+    if (req.method === 'POST' && url.pathname === '/d1/accounts/verify') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const uidHex = normalizeUid(body?.uidHex || body?.uid_hex || body?.uid);
+      if (!uidHex) {
+        return json({ error: 'BadRequest', message: 'uidHex required' }, { status: 400 });
+      }
+      const accountTokenRaw = body?.accountToken || body?.account_token;
+      const accountDigestRaw = body?.accountDigest || body?.account_digest;
+      const accountToken = typeof accountTokenRaw === 'string' && accountTokenRaw.trim().length ? accountTokenRaw.trim() : null;
+      const accountDigest = typeof accountDigestRaw === 'string' && accountDigestRaw.trim().length ? accountDigestRaw.trim() : null;
+      if (!accountToken && !accountDigest) {
+        return json({ error: 'BadRequest', message: 'accountToken or accountDigest required' }, { status: 400 });
+      }
+      try {
+        const account = await resolveAccount(env, { uidHex, accountToken, accountDigest }, { allowCreate: false, preferredAccountToken: accountToken || null, preferredAccountDigest: accountDigest || null });
+        if (!account) {
+          return json({ error: 'NotFound' }, { status: 404 });
+        }
+        if (accountToken && account.account_token !== accountToken) {
+          return json({ error: 'Forbidden', message: 'account token mismatch' }, { status: 403 });
+        }
+        const normalizedUid = normalizeUid(account.uid_plain || uidHex);
+        if (normalizedUid !== uidHex) {
+          return json({ error: 'Forbidden', message: 'uid mismatch' }, { status: 403 });
+        }
+        return json({
+          ok: true,
+          uid_hex: normalizedUid,
+          account_digest: account.account_digest
+        });
+      } catch (err) {
+        return json({ error: 'VerifyFailed', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+      }
+    }
+
     // 交換：建立 / 更新 account、檢查 counter、回傳 MK 包裝資訊
     if (req.method === 'POST' && url.pathname === '/d1/tags/exchange') {
       let body;

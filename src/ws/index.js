@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { logger } from '../utils/logger.js';
+import { verifyWsToken } from '../utils/ws-token.js';
 
 const clients = new Map(); // uid -> Set<WebSocket>
 const presenceWatchers = new Map(); // uid -> Set<WebSocket>
@@ -45,12 +46,26 @@ function handleClientMessage(ws, data) {
   logger.debug({ raw: msg, uid: ws.__uid || null }, 'ws_message_received');
   if (msg.type === 'auth') {
     const uid = String(msg.uid || '').trim();
+    const token = typeof msg.token === 'string' ? msg.token : '';
     if (!uid) {
       ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'uid_required' }));
       return;
     }
-    addClient(uid, ws);
-    ws.send(JSON.stringify({ type: 'auth', ok: true }));
+    const verification = verifyWsToken(token);
+    if (!verification.ok) {
+      ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'invalid_token' }));
+      try { ws.close(4401, 'invalid_token'); } catch {}
+      return;
+    }
+    const claimedUid = uid.toUpperCase();
+    if (verification.payload.uid !== claimedUid) {
+      ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'uid_mismatch' }));
+      try { ws.close(4401, 'uid_mismatch'); } catch {}
+      return;
+    }
+    ws.__accountDigest = verification.payload.accountDigest;
+    addClient(claimedUid, ws);
+    ws.send(JSON.stringify({ type: 'auth', ok: true, exp: verification.payload.exp }));
     return;
   }
   if (!ws.__uid) return;
@@ -135,6 +150,7 @@ export function setupWebSocket(server) {
 
   wss.on('connection', (ws) => {
     ws.__uid = null;
+    ws.__accountDigest = null;
     ws.__watching = new Set();
     ws.on('message', (data) => handleClientMessage(ws, data));
     ws.on('close', (code, reason) => {

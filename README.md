@@ -39,7 +39,7 @@ NODE_ENV=development node src/server.js            # 啟動 API
 node scripts/serve-web.mjs                         # 啟動本機 Pages
 ```
 
-必要環境變數（摘要）：`DATA_API_URL`, `DATA_API_HMAC`, `S3_*`, `NTAG424_*`, `OPAQUE_*`, `ACCOUNT_TOKEN_BYTES`, `SIGNED_{PUT,GET}_TTL`, `UPLOAD_MAX_BYTES`。細節見[安全預設](#安全預設與環境配置)。
+必要環境變數（摘要）：`DATA_API_URL`, `DATA_API_HMAC`, `WS_TOKEN_SECRET`, `S3_*`, `NTAG424_*`, `OPAQUE_*`, `ACCOUNT_TOKEN_BYTES`, `SIGNED_{PUT,GET}_TTL`, `UPLOAD_MAX_BYTES`。細節見[安全預設](#安全預設與環境配置)。
 
 開發流程請遵循 `Prompt.md`：新 session 先閱讀 README 最新進度 → 選定優先事項 → 修改後自跑測試 → 更新此文件紀錄。
 
@@ -232,7 +232,7 @@ kill $API_PID
 14. [X] `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
 16. [X] 附件接收端可視化：訊息附件新增「預覽」動作沿用 Modal 並提供下載，E2E 透過 `downloadAndDecrypt` 驗證 SHA-256 digest 確保可還原檔案。
 17. [X] 好友邀請交友金鑰補貨強化：登入後應即時顯示補貨階段、精準提示失敗原因、提供人工重試並擴大自動重試，避免「缺少交友金鑰」無明確導因。
-18. [ ] **安全**：WebSocket `/ws` 缺乏身份驗證，任何客戶端都能送出 `{type:'auth',uid}` 直接綁定任意 UID，導致 presence / contact-share 廣播外洩（見 `src/ws/index.js:46-105`）。需加入授權機制（如基於 session token 的簽章）並在 server 驗證。
+18. [X] **安全**：WebSocket `/ws` 缺乏身份驗證，任何客戶端都能送出 `{type:'auth',uid}` 直接綁定任意 UID，導致 presence / contact-share 廣播外洩（見 `src/ws/index.js:46-105`）。現已改為 `/api/v1/ws/token` 簽發短期 HMAC token，server 驗證後才綁定連線。
 19. [ ] **安全**：媒體簽章 API (`/api/v1/media/sign-put|get`) 僅檢查輸入格式，缺少使用者身份驗證；惡意者可取得 R2 簽名 URL 竊取或塞滿任意會話資料（見 `src/routes/v1/media.routes.js:69-157`）。需強制攜帶並驗證登入態／會話擁有權。
 20. [ ] **安全**：訊息與好友 REST API 缺乏授權流程，攻擊者可憑猜測的 `convId`、`uidHex` 操作 `/messages/*`、`/friends/*` 讀寫或刪除資料（見 `src/controllers/messages.controller.js:47-319`, `src/controllers/friends.controller.js:66-192` 及對應路由）。應先建立身份驗證層並在轉呼 Worker 前檢查帳號權限。
 21. [ ] 前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。（已隱藏系統「已傳送 / 已接收」夾層，待補多檔案與排序）
