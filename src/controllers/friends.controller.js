@@ -22,7 +22,9 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
 const CreateInviteSchema = z.object({
   uidHex: z.string().min(14),
   ttlSeconds: z.number().int().min(30).max(600).optional(),
-  prekeyBundle: z.any().optional()
+  prekeyBundle: z.any().optional(),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().min(16).optional()
 });
 
 const ContactEnvelopeSchema = z.object({
@@ -85,7 +87,9 @@ export const createInvite = async (req, res) => {
     secret,
     expiresAt,
     prekeyBundle: input.prekeyBundle ?? null,
-    channelSeed: null
+    channelSeed: null,
+    accountToken: input.accountToken || null,
+    accountDigest: input.accountDigest || null
   });
   const sig = signHmac(path, body, HMAC_SECRET);
 

@@ -212,6 +212,10 @@ export default {
       const ownerUid = normalizeUid(body?.ownerUid || body?.owner_uid);
       const secret = String(body?.secret || '').trim();
       const expiresAt = Number(body?.expiresAt || 0);
+      const accountTokenRaw = body?.accountToken || body?.account_token || null;
+      const accountDigestRaw = body?.accountDigest || body?.account_digest || null;
+      const accountToken = typeof accountTokenRaw === 'string' && accountTokenRaw.length ? accountTokenRaw : null;
+      const accountDigest = typeof accountDigestRaw === 'string' && accountDigestRaw.length ? String(accountDigestRaw).replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null;
 
       if (!inviteId || !ownerUid || !secret || !Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) {
         return json({ error: 'BadRequest', message: 'invalid invite payload' }, { status: 400 });
@@ -219,7 +223,7 @@ export default {
 
       let ownerAccount;
       try {
-        ownerAccount = await resolveAccount(env, { uidHex: ownerUid });
+        ownerAccount = await resolveAccount(env, { uidHex: ownerUid, accountToken, accountDigest }, { allowCreate: !!(accountToken || accountDigest), preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
       }
@@ -1089,6 +1093,16 @@ export default {
       }
 
       const acctDigest = account.account_digest;
+      let existingUserRow = null;
+      try {
+        const existing = await env.DB.prepare(
+          `SELECT ik_pub FROM prekey_users WHERE account_digest=?1`
+        ).bind(acctDigest).all();
+        existingUserRow = existing?.results && existing.results.length > 0 ? existing.results[0] : null;
+      } catch (err) {
+        console.warn('prekey_users lookup failed', err?.message || err);
+        return json({ error: 'PrekeyLookupFailed', message: err?.message || 'failed to lookup prekey user' }, { status: 500 });
+      }
 
       // 如果帶了 IK/SPK/SPK_SIG ⇒ upsert prekey_users；否則允許只帶 OPKs（補貨）
       if (hasUserBundle) {
@@ -1106,12 +1120,16 @@ export default {
              VALUES (?1, ?2, ?3, ?4)`
           ).bind(acctDigest, String(ik_pub), String(spk_pub), String(spk_sig)).run();
         }
+        existingUserRow = { ik_pub: String(ik_pub) };
       }
 
       // 批次寫入 OPKs（INSERT OR IGNORE）
       const opks = Array.isArray(b.opks) ? b.opks : [];
       if (!hasUserBundle && opks.length === 0) {
         return json({ error: 'BadRequest', message: 'bundle requires either ik/spk/spk_sig or at least one opk' }, { status: 400 });
+      }
+      if (!hasUserBundle && !existingUserRow) {
+        return json({ error: 'PrekeyUnavailable', message: 'owner bundle missing; publish with IK/SPK first' }, { status: 409 });
       }
       for (const it of opks) {
         if (!it) continue;
@@ -1494,7 +1512,7 @@ async function digestAccountToken(token) {
   return bytesToHex(new Uint8Array(digest));
 }
 
-async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {}, { allowCreate = false } = {}) {
+async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {}, { allowCreate = false, preferredAccountToken = null, preferredAccountDigest = null } = {}) {
   const db = env.DB;
   const normalizedUid = uidHex ? normalizeUid(uidHex) : null;
   let uidDigest = null;
@@ -1548,8 +1566,22 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
   }
 
   uidDigest = uidDigest || await hashUidToDigest(env, normalizedUid);
-  const token = generateAccountToken(env);
-  const acctDigest = await digestAccountToken(token);
+  let token = preferredAccountToken || accountToken || null;
+  if (token) token = String(token);
+  let acctDigest = preferredAccountDigest || accountDigest || null;
+  if (acctDigest) {
+    acctDigest = String(acctDigest).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+    if (!acctDigest) acctDigest = null;
+  }
+  if (token && !acctDigest) {
+    acctDigest = await digestAccountToken(token);
+  }
+  if (!token) {
+    token = generateAccountToken(env);
+  }
+  if (!acctDigest) {
+    acctDigest = await digestAccountToken(token);
+  }
   const now = Math.floor(Date.now() / 1000);
 
   try {
