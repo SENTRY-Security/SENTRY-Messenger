@@ -3,6 +3,7 @@
 
 import { prekeysBundle } from '../api/prekeys.js';
 import { createSecureMessage } from '../api/messages.js';
+import { friendsBootstrapSession } from '../api/friends.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import {
@@ -97,6 +98,9 @@ function sanitizeSnapshotInput(snapshot) {
 }
 
 const MAX_HISTORY_ENTRIES = 120;
+const SESSION_BOOTSTRAP_REFRESH_INTERVAL_MS = 180_000;
+
+const remoteBootstrapLocks = new Map();
 
 function compareHistoryKeys(aTs, aId, bTs, bId) {
   const aHasTs = Number.isFinite(aTs);
@@ -870,6 +874,80 @@ export function primeDrStateFromInitiator({ peerUidHex, state }) {
   return true;
 }
 
+async function ensureRemoteBootstrap({ peerUidHex, reason = 'dr-session', force = false } = {}) {
+  const peer = normHex(peerUidHex);
+  if (!peer) return null;
+  const existing = getContactSecret(peer);
+  if (!existing) return null;
+  const relationshipRole = typeof existing?.role === 'string' ? existing.role.toLowerCase() : null;
+
+  const lastTs = Number(existing.sessionBootstrapTs);
+  if (!force && Number.isFinite(lastTs)) {
+    const elapsed = Date.now() - lastTs * 1000;
+    if (elapsed < SESSION_BOOTSTRAP_REFRESH_INTERVAL_MS) {
+      return null;
+    }
+  }
+
+  if (remoteBootstrapLocks.has(peer)) {
+    return remoteBootstrapLocks.get(peer);
+  }
+
+  const worker = (async () => {
+    try {
+      const roleHint =
+        relationshipRole === 'owner'
+          ? 'owner'
+          : (relationshipRole === 'guest' ? 'guest' : undefined);
+      const res = await friendsBootstrapSession({
+        peerUid: peer,
+        roleHint,
+        inviteId: existing?.inviteId || null
+      });
+      const guestBundle = res?.guestBundle || res?.guest_bundle || null;
+      if (!guestBundle) return null;
+
+      const mergedDrInit = { ...(existing.conversationDrInit || {}) };
+      mergedDrInit.guest_bundle = guestBundle;
+      mergedDrInit.guestBundle = guestBundle;
+
+      setContactSecret(peer, {
+        conversation: { drInit: mergedDrInit },
+        session: { bootstrapTs: Math.floor(Date.now() / 1000) },
+        meta: { source: `remote-bootstrap:${reason}` }
+      });
+
+      const contactEntry = sessionStore.contactIndex?.get?.(peer);
+      if (contactEntry) {
+        if (!contactEntry.conversation) contactEntry.conversation = {};
+        if (!contactEntry.conversation.dr_init) contactEntry.conversation.dr_init = {};
+        contactEntry.conversation.dr_init.guest_bundle = guestBundle;
+        contactEntry.conversation.dr_init.guestBundle = guestBundle;
+      }
+
+      const convIndex = sessionStore.conversationIndex;
+      if (convIndex && typeof convIndex.forEach === 'function') {
+        for (const info of convIndex.values()) {
+          if (!info || info.peerUid !== peer) continue;
+          if (!info.dr_init) info.dr_init = {};
+          info.dr_init.guest_bundle = guestBundle;
+          info.dr_init.guestBundle = guestBundle;
+        }
+      }
+
+      return { guestBundle, role: res?.role || null };
+    } catch (err) {
+      console.warn('[dr] remote bootstrap fetch failed', err?.message || err);
+      return null;
+    } finally {
+      remoteBootstrapLocks.delete(peer);
+    }
+  })();
+
+  remoteBootstrapLocks.set(peer, worker);
+  return worker;
+}
+
 export async function ensureDrReceiverState({ peerUidHex }) {
   const peer = normHex(peerUidHex);
   if (!peer) return false;
@@ -930,8 +1008,27 @@ export async function ensureDrReceiverState({ peerUidHex }) {
   }
 
   const context = conversationContextForPeer(peer) || {};
-  const drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
-  const guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
+  let drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
+  let guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
+
+  if (!guestBundle && relationshipRole !== 'guest') {
+    try {
+      const remote = await ensureRemoteBootstrap({ peerUidHex: peer, reason: 'ensureDrReceiverState' });
+      if (remote?.guestBundle) {
+        const refreshedSecret = getContactSecret(peer);
+        const refreshedContext = conversationContextForPeer(peer) || {};
+        drInit = refreshedContext?.dr_init || refreshedSecret?.conversationDrInit || drInit;
+        guestBundle =
+          drInit?.guest_bundle ||
+          drInit?.guestBundle ||
+          remote.guestBundle ||
+          null;
+      }
+    } catch (err) {
+      console.warn('[dr] ensure remote bootstrap failed', err?.message || err);
+    }
+  }
+
   const allowResponderBootstrap = (() => {
     if (relationshipRole === 'guest') return false;
     if (relationshipRole === 'owner') return true;

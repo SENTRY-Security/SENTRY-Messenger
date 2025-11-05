@@ -64,7 +64,12 @@ export async function fetchWithTimeout(resource, options = {}, timeout = 15000) 
   dispatchFetchEvent('app:fetch-start', detail);
   try {
     log({ fetchStart: fmtResource(target), method: options?.method || 'GET', body: options?.body || null });
-    const res = await fetch(target, { ...options, signal: controller.signal });
+    const fetchOptions = {
+      ...options,
+      cache: options?.cache ?? 'no-store',
+      signal: controller.signal
+    };
+    const res = await fetch(target, fetchOptions);
     log({ fetchDone: fmtResource(resource), status: res?.status });
     return res;
   } finally {

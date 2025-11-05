@@ -3,7 +3,7 @@
 
 import { drState } from '../core/store.js';
 import { getContactSecret } from '../core/contact-secrets.js';
-import { ensureDrReceiverState, sendDrSessionAck } from './dr-session.js';
+import { ensureDrReceiverState, sendDrSessionAck, sendDrSessionInit } from './dr-session.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 
 const STATUS_IDLE = 'idle';
@@ -14,6 +14,8 @@ const STATUS_FAILED = 'failed';
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_POLL_INTERVAL_MS = 400;
 const ACK_TIMEOUT_MS = 10_000;
+const SESSION_INIT_RETRY_LIMIT = 3;
+const SESSION_INIT_RETRY_BACKOFF_MS = 5_000;
 
 const listeners = new Set();
 const peerStates = new Map();
@@ -67,7 +69,10 @@ function cloneStatus(key, entry) {
       pendingAck: false,
       ackDeadline: null,
       lastInitAt: null,
-      lastAckAt: null
+      lastAckAt: null,
+      initSendCount: 0,
+      lastRetryAt: null,
+      lastAckTimeoutAt: null
     };
     return {
       peerUidHex: key,
@@ -87,7 +92,10 @@ function cloneStatus(key, entry) {
     pendingAck: !!ctrl.pendingAckResponse,
     ackDeadline: ctrl.ackDeadline || null,
     lastInitAt: ctrl.lastInitAt || null,
-    lastAckAt: ctrl.lastAckAt || null
+    lastAckAt: ctrl.lastAckAt || null,
+    initSendCount: Number(ctrl.initSendCount) || 0,
+    lastRetryAt: ctrl.lastRetryAt || null,
+    lastAckTimeoutAt: ctrl.lastAckTimeoutAt || null
   };
   return {
     peerUidHex: key,
@@ -119,7 +127,10 @@ function emitStatus(key, entry, extra = {}) {
       pendingAck: !!ctrl.pendingAckResponse,
       ackDeadline: ctrl.ackDeadline || null,
       lastInitAt: ctrl.lastInitAt || null,
-      lastAckAt: ctrl.lastAckAt || null
+      lastAckAt: ctrl.lastAckAt || null,
+      initSendCount: Number(ctrl.initSendCount) || 0,
+      lastRetryAt: ctrl.lastRetryAt || null,
+      lastAckTimeoutAt: ctrl.lastAckTimeoutAt || null
     }
   };
   for (const listener of listeners) {
@@ -183,7 +194,11 @@ function initControlState() {
     lastInitAt: null,
     lastAckAt: null,
     pendingAckResponse: false,
-    lastIncomingInitAt: null
+    lastIncomingInitAt: null,
+    initSendCount: 0,
+    retryInFlight: false,
+    lastRetryAt: null,
+    lastAckTimeoutAt: null
   };
 }
 
@@ -204,11 +219,15 @@ function scheduleAckTimeout(key, entry) {
     entry.control.awaitingAck = false;
     entry.control.pendingAckResponse = false;
     entry.control.ackDeadline = null;
-    setStatus(key, STATUS_FAILED, {
-      reason: 'ack-timeout',
-      source: 'control-message',
-      error: '等待 session ack 逾時'
-    });
+    entry.control.lastAckTimeoutAt = Date.now();
+    if (hasReceiverReady(key)) {
+      setStatus(key, STATUS_READY, {
+        reason: 'ack-timeout-ready',
+        source: 'control-message'
+      });
+      return;
+    }
+    void handleAckTimeout(key, entry);
   }, ACK_TIMEOUT_MS);
 }
 
@@ -222,6 +241,10 @@ function markControlMessage(key, type, direction) {
       ctrl.awaitingAck = true;
       ctrl.pendingAckResponse = false;
       ctrl.lastInitAt = now;
+      ctrl.initSendCount = (Number(ctrl.initSendCount) || 0) + 1;
+      ctrl.retryInFlight = false;
+      ctrl.lastRetryAt = now;
+      ctrl.lastAckTimeoutAt = null;
       scheduleAckTimeout(key, entry);
     } else {
       ctrl.pendingAckResponse = true;
@@ -234,10 +257,18 @@ function markControlMessage(key, type, direction) {
       ctrl.awaitingAck = false;
       ctrl.pendingAckResponse = false;
       ctrl.lastAckAt = now;
+      ctrl.initSendCount = 0;
+      ctrl.retryInFlight = false;
+      ctrl.lastRetryAt = null;
+      ctrl.lastAckTimeoutAt = null;
       clearAckTimer(entry);
     } else {
       ctrl.awaitingAck = false;
       ctrl.lastAckAt = now;
+      ctrl.initSendCount = 0;
+      ctrl.retryInFlight = false;
+      ctrl.lastRetryAt = null;
+      ctrl.lastAckTimeoutAt = null;
       clearAckTimer(entry);
     }
   }
@@ -255,6 +286,95 @@ async function sendAckIfPending(key, { source = 'control-message' } = {}) {
     setStatus(key, STATUS_READY, { reason: 'session-ack-sent', source });
   } catch (err) {
     setStatus(key, STATUS_FAILED, { reason: 'session-ack-failed', source, error: err });
+  }
+}
+
+function isSessionMissingError(err) {
+  if (!err) return false;
+  const message = typeof err === 'string' ? err : (err?.message || '');
+  if (!message) return false;
+  if (message.includes('缺少安全會話')) return true;
+  const lowered = message.toLowerCase();
+  return lowered.includes('session') && lowered.includes('missing');
+}
+
+function isLocalInitiator(key) {
+  const secret = getContactSecret(key);
+  const role = typeof secret?.role === 'string' ? secret.role.toLowerCase() : null;
+  if (role === 'owner') return true;
+  const holder = drState(key);
+  const baseRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
+  return baseRole === 'initiator';
+}
+
+async function triggerSessionInit(
+  key,
+  entry,
+  { reason = 'session-init', source = 'control-message', force = false } = {}
+) {
+  if (!key) return false;
+  const target = entry || ensureEntry(key);
+  if (!target) return false;
+  const ctrl = target.control || (target.control = initControlState());
+  if (!isLocalInitiator(key)) return false;
+  const sentCount = Number(ctrl.initSendCount) || 0;
+  if (!force) {
+    if (ctrl.awaitingAck || ctrl.retryInFlight) return false;
+    if (sentCount >= SESSION_INIT_RETRY_LIMIT) return false;
+    if (ctrl.lastInitAt && Date.now() - ctrl.lastInitAt < SESSION_INIT_RETRY_BACKOFF_MS) return false;
+  } else if (sentCount >= SESSION_INIT_RETRY_LIMIT) {
+    return false;
+  }
+
+  ctrl.retryInFlight = true;
+  try {
+    await sendDrSessionInit({ peerUidHex: key });
+    markControlMessage(key, CONTROL_MESSAGE_TYPES.SESSION_INIT, 'outgoing');
+    setStatus(key, STATUS_PENDING, { reason, source, attempts: target.attempts || 0 });
+    return true;
+  } catch (err) {
+    setStatus(key, STATUS_FAILED, { reason: 'session-init-send-failed', source, error: err });
+    console.warn('[secure-conversation] session-init send failed', err);
+    return false;
+  } finally {
+    ctrl.retryInFlight = false;
+    ctrl.lastRetryAt = Date.now();
+  }
+}
+
+async function handleAckTimeout(key, entry) {
+  if (!key) return;
+  const target = entry || ensureEntry(key);
+  if (!target) return;
+  const ctrl = target.control || (target.control = initControlState());
+  const sentCount = Number(ctrl.initSendCount) || 0;
+  if (!isLocalInitiator(key) || sentCount >= SESSION_INIT_RETRY_LIMIT) {
+    setStatus(key, STATUS_FAILED, {
+      reason: 'ack-timeout',
+      source: 'control-message',
+      error: '等待 session ack 逾時'
+    });
+    return;
+  }
+  try {
+    const triggered = await triggerSessionInit(key, target, {
+      reason: 'session-init-retry',
+      source: 'control-message',
+      force: true
+    });
+    if (!triggered) {
+      setStatus(key, STATUS_FAILED, {
+        reason: 'ack-timeout',
+        source: 'control-message',
+        error: '等待 session ack 逾時'
+      });
+    }
+  } catch (err) {
+    setStatus(key, STATUS_FAILED, {
+      reason: 'ack-timeout',
+      source: 'control-message',
+      error: err
+    });
   }
 }
 
@@ -296,6 +416,15 @@ export async function ensureSecureConversationReady({
     return entry.pendingPromise;
   }
 
+  if (!hasReceiverReady(key) && isLocalInitiator(key)) {
+    triggerSessionInit(key, entry, {
+      reason: 'ensure-session-init',
+      source
+    }).catch((err) => {
+      console.warn('[secure-conversation] trigger session-init failed', err);
+    });
+  }
+
   entry.attempts = 0;
   const worker = (async () => {
     let lastError = null;
@@ -308,6 +437,14 @@ export async function ensureSecureConversationReady({
         return cloneStatus(key, peerStates.get(key));
       } catch (err) {
         lastError = err;
+        if (isSessionMissingError(err)) {
+          triggerSessionInit(key, entry, {
+            reason: 'ensure-session-init',
+            source
+          }).catch((triggerErr) => {
+            console.warn('[secure-conversation] ensure trigger session-init failed', triggerErr);
+          });
+        }
         if (hasReceiverReady(key)) {
           setStatus(key, STATUS_READY, { reason: 'ensure-late-success', source, attempts: entry.attempts });
           return cloneStatus(key, peerStates.get(key));

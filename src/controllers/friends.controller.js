@@ -100,6 +100,102 @@ const ShareContactSchema = z.object({
   }
 });
 
+const BootstrapSessionSchema = z.object({
+  uidHex: z.string().regex(UidHexRegex),
+  peerUid: z.string().regex(UidHexRegex),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  roleHint: z.enum(['owner', 'guest']).optional(),
+  inviteId: z.string().min(8).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
+});
+
+const SESSION_BOOTSTRAP_TTL_MS = 10 * 60 * 1000;
+const sessionBootstrapCache = new Map();
+
+function makeBootstrapKey(ownerUid, guestUid) {
+  return `${ownerUid}::${guestUid}`;
+}
+
+function pruneBootstrapCache(now = Date.now()) {
+  for (const [key, entry] of sessionBootstrapCache.entries()) {
+    if (!entry || !Number.isFinite(entry.cachedAt)) continue;
+    if (now - entry.cachedAt > SESSION_BOOTSTRAP_TTL_MS) {
+      sessionBootstrapCache.delete(key);
+    }
+  }
+}
+
+function setBootstrapCache({
+  ownerUid,
+  guestUid,
+  ownerAccountDigest,
+  guestAccountDigest,
+  guestBundle,
+  ownerContact,
+  guestContact,
+  inviteId,
+  guestContactTs = null,
+  ownerContactTs = null,
+  usedAt = null,
+  createdAt = null
+} = {}) {
+  const owner = ownerUid ? normalizeUidHex(ownerUid) : null;
+  const guest = guestUid ? normalizeUidHex(guestUid) : null;
+  if (!owner || !guest) return;
+  if (!guestBundle || typeof guestBundle !== 'object') return;
+  pruneBootstrapCache();
+  const key = makeBootstrapKey(owner, guest);
+  sessionBootstrapCache.set(key, {
+    ownerUid: owner,
+    guestUid: guest,
+    ownerAccountDigest: ownerAccountDigest ? normalizeAccountDigest(ownerAccountDigest) : null,
+    guestAccountDigest: guestAccountDigest ? normalizeAccountDigest(guestAccountDigest) : null,
+    guestBundle,
+    ownerContact: ownerContact || null,
+    guestContact: guestContact || null,
+    inviteId: inviteId || null,
+    guestContactTs: Number.isFinite(guestContactTs) ? guestContactTs : null,
+    ownerContactTs: Number.isFinite(ownerContactTs) ? ownerContactTs : null,
+    usedAt: Number.isFinite(usedAt) ? usedAt : null,
+    createdAt: Number.isFinite(createdAt) ? createdAt : null,
+    cachedAt: Date.now(),
+    lastAccessAt: null
+  });
+}
+
+function getBootstrapCache({ requesterUid, requesterDigest, peerUid }) {
+  pruneBootstrapCache();
+  const requester = requesterUid ? normalizeUidHex(requesterUid) : null;
+  const peer = peerUid ? normalizeUidHex(peerUid) : null;
+  if (!requester || !peer) return null;
+
+  const forwardKey = makeBootstrapKey(requester, peer);
+  let entry = sessionBootstrapCache.get(forwardKey);
+  let role = 'owner';
+  if (entry) {
+    if (entry.ownerAccountDigest && requesterDigest && normalizeAccountDigest(requesterDigest) !== entry.ownerAccountDigest) {
+      entry = null;
+    }
+  }
+  if (!entry) {
+    const reverseKey = makeBootstrapKey(peer, requester);
+    const reverse = sessionBootstrapCache.get(reverseKey);
+    if (reverse) {
+      if (!reverse.guestAccountDigest || !requesterDigest || normalizeAccountDigest(requesterDigest) === reverse.guestAccountDigest) {
+        entry = reverse;
+        role = 'guest';
+      }
+    }
+  }
+  if (!entry) return null;
+  entry.lastAccessAt = Date.now();
+  return { role, record: entry };
+}
+
 function respondAccountError(res, err, fallback = 'authorization failed') {
   if (err instanceof AccountAuthError) {
     const status = err.status || 400;
@@ -269,6 +365,25 @@ export const acceptInvite = async (req, res) => {
   } catch (err) {
     logger.warn({ err: err?.message || err }, 'ws_notify_failed');
   }
+  try {
+    const ownerUidResolved = normalizeUidHex(data?.owner_uid || ownerUid || null);
+    setBootstrapCache({
+      ownerUid: ownerUidResolved,
+      guestUid,
+      ownerAccountDigest: data?.owner_account_digest || null,
+      guestAccountDigest: data?.guest_account_digest || auth.accountDigest || null,
+      guestBundle: input.guestBundle || data?.guest_bundle || null,
+      ownerContact: data?.owner_contact || null,
+      guestContact: data?.guest_contact || null,
+      inviteId: input.inviteId || null,
+      guestContactTs: data?.guest_contact_ts ?? null,
+      ownerContactTs: data?.owner_contact_ts ?? null,
+      usedAt: data?.used_at ?? null,
+      createdAt: data?.created_at ?? null
+    });
+  } catch (err) {
+    logger.warn({ err: err?.message || err }, 'bootstrap_cache_store_failed');
+  }
   return res.json(data);
 };
 
@@ -415,6 +530,138 @@ export const shareContactUpdate = async (req, res) => {
   }
 
   return res.json(data);
+};
+
+export const bootstrapFriendSession = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
+  let input;
+  try {
+    input = BootstrapSessionSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
+  }
+
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      uidHex: input.uidHex,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
+  const peerUid = normalizeUidHex(input.peerUid);
+  if (!peerUid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'peerUid invalid' });
+  }
+
+  const cacheHit = getBootstrapCache({
+    requesterUid: auth.uidHex,
+    requesterDigest: auth.accountDigest,
+    peerUid
+  });
+  if (cacheHit?.record?.guestBundle) {
+    const { record, role } = cacheHit;
+    const response = {
+      role,
+      inviteId: record.inviteId || null,
+      ownerUid: record.ownerUid || null,
+      guestUid: record.guestUid || null,
+      guestBundle: record.guestBundle,
+      guestContact: record.guestContact || null,
+      ownerContact: record.ownerContact || null,
+      guestContactTs: record.guestContactTs || null,
+      ownerContactTs: record.ownerContactTs || null,
+      usedAt: record.usedAt || null,
+      createdAt: record.createdAt || null
+    };
+    return res.json({ ok: true, ...response });
+  }
+
+  const path = '/d1/friends/bootstrap';
+  const payload = {
+    accountDigest: auth.accountDigest,
+    peerUid
+  };
+  if (input.roleHint) payload.roleHint = input.roleHint;
+  if (input.inviteId) payload.inviteId = input.inviteId;
+  const body = JSON.stringify(payload);
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  let upstream;
+  try {
+    upstream = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+  } catch (err) {
+    return res.status(504).json({
+      error: 'FriendBootstrapFailed',
+      message: 'Upstream timeout',
+      details: err?.message || 'fetch aborted'
+    });
+  }
+
+  const text = await upstream.text().catch(() => '');
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!upstream.ok) {
+    if (data && typeof data === 'object') {
+      return res.status(upstream.status).json(data);
+    }
+    return res.status(upstream.status).json({
+      error: 'FriendBootstrapFailed',
+      details: text || 'upstream error'
+    });
+  }
+
+  const record = (data && typeof data === 'object' ? (data.record || data) : {}) || {};
+  const formatUid = (value) => normalizeUidHex(value) || null;
+  const response = {
+    role: typeof record.role === 'string' ? record.role : null,
+    inviteId: record.invite_id || record.inviteId || null,
+    ownerUid: formatUid(record.owner_uid || record.ownerUid),
+    guestUid: formatUid(record.guest_uid || record.guestUid),
+    guestBundle: record.guest_bundle || record.guestBundle || null,
+    guestContact: record.guest_contact || record.guestContact || null,
+    ownerContact: record.owner_contact || record.ownerContact || null,
+    guestContactTs: record.guest_contact_ts || record.guestContactTs || null,
+    ownerContactTs: record.owner_contact_ts || record.ownerContactTs || null,
+    usedAt: record.used_at || record.usedAt || null,
+    createdAt: record.created_at || record.createdAt || null
+  };
+
+  try {
+    setBootstrapCache({
+      ownerUid: response.ownerUid,
+      guestUid: response.guestUid || peerUid,
+      ownerAccountDigest: record.owner_account_digest || null,
+      guestAccountDigest: record.guest_account_digest || null,
+      guestBundle: response.guestBundle,
+      ownerContact: response.ownerContact,
+      guestContact: response.guestContact,
+      inviteId: response.inviteId,
+      guestContactTs: response.guestContactTs,
+      ownerContactTs: response.ownerContactTs,
+      usedAt: response.usedAt,
+      createdAt: response.createdAt
+    });
+  } catch (err) {
+    logger.warn({ err: err?.message || err }, 'bootstrap_cache_store_failed');
+  }
+
+  return res.json({ ok: true, ...response });
 };
 
 export const deleteContact = async (req, res) => {

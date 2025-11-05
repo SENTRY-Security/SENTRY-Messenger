@@ -59,6 +59,15 @@ function serializeDrState(state) {
   };
 }
 
+function stableJson(obj) {
+  if (!obj || typeof obj !== 'object') return JSON.stringify(obj);
+  const normalized = {};
+  for (const key of Object.keys(obj).sort()) {
+    normalized[key] = obj[key];
+  }
+  return JSON.stringify(normalized);
+}
+
 async function jsonPost(origin, path, body) {
   const url = path.startsWith('http') ? path : `${origin}${path}`;
   const res = await fetch(url, {
@@ -281,6 +290,28 @@ export async function setupFriendConversation({ origin, userA = {}, userB = {} }
     guestBundle
   });
 
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const bootstrapRecord = await fetchFriendBootstrap(origin, userAData, userBData.uidHex, {
+    roleHint: 'owner',
+    inviteId: invite.inviteId
+  }).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn('[friends-flow] bootstrap-session request failed', err?.message || err);
+    return null;
+  });
+  const fetchedGuestBundle = bootstrapRecord?.guestBundle || bootstrapRecord?.guest_bundle || null;
+  if (bootstrapRecord && !fetchedGuestBundle) {
+    throw new Error('bootstrap-session missing guest bundle');
+  }
+  if (bootstrapRecord && stableJson(fetchedGuestBundle) !== stableJson(guestBundle)) {
+    throw new Error('bootstrap-session guest bundle mismatch');
+  }
+  if (!bootstrapRecord) {
+    // eslint-disable-next-line no-console
+    console.warn('[friends-flow] bootstrap-session response unavailable, continuing without cache validation');
+  }
+
   return {
     userA: userAData,
     userB: userBData,
@@ -290,7 +321,8 @@ export async function setupFriendConversation({ origin, userA = {}, userB = {} }
       initiatorDrState: serializeDrState(guestState),
       responderDrState: serializeDrState(ownerState)
     },
-    invite
+    invite,
+    bootstrapRecord
   };
 }
 
@@ -390,6 +422,26 @@ async function acceptFriendInvite(origin, user, { inviteId, secret, contactPaylo
     guestBundle
   });
   if (!res.ok) throw new Error(`friends.accept failed: ${JSON.stringify(data)}`);
+  return data;
+}
+
+async function fetchFriendBootstrap(origin, requester, peerUid, { roleHint, inviteId } = {}) {
+  if (!requester?.uidHex) throw new Error('requester uid required');
+  const payload = {
+    uidHex: requester.uidHex,
+    peerUid,
+    accountToken: requester.accountToken,
+    accountDigest: requester.accountDigest
+  };
+  if (roleHint) payload.roleHint = roleHint;
+  if (inviteId) payload.inviteId = inviteId;
+  const { res, data } = await jsonPost(origin, '/api/v1/friends/bootstrap-session', payload);
+  if (res.status === 404) {
+    // eslint-disable-next-line no-console
+    console.warn('[friends-flow] bootstrap-session not available (404), skipping');
+    return null;
+  }
+  if (!res.ok) throw new Error(`friends.bootstrap-session failed: ${JSON.stringify(data)}`);
   return data;
 }
 

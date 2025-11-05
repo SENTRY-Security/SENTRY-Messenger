@@ -117,6 +117,43 @@ export async function friendsAcceptInviteFromInput(input) {
   return friendsAcceptInvite(payload);
 }
 
+export async function friendsBootstrapSession({ peerUid, uidHex, roleHint, inviteId } = {}) {
+  const payload = withAccount({ peerUid, uidHex });
+  if (roleHint && typeof roleHint === 'string') {
+    const lowered = roleHint.trim().toLowerCase();
+    if (lowered === 'owner' || lowered === 'guest') payload.roleHint = lowered;
+  }
+  if (inviteId) payload.inviteId = inviteId;
+  const { r, data } = await fetchJSON('/api/v1/friends/bootstrap-session', payload);
+  if (!r.ok) {
+    const msg = formatErrorMessage(data, 'bootstrap session failed', r.status);
+    throw new Error(msg);
+  }
+  const record = data && typeof data === 'object' ? data : {};
+  const pick = (primary, fallback) => (primary !== undefined ? primary : fallback);
+  const result = {
+    role: typeof record.role === 'string' ? record.role : null,
+    inviteId: pick(record.inviteId, record.invite_id) || null,
+    ownerUid: pick(record.ownerUid, record.owner_uid) || null,
+    guestUid: pick(record.guestUid, record.guest_uid) || null,
+    guestBundle: pick(record.guestBundle, record.guest_bundle) || null,
+    guestContact: pick(record.guestContact, record.guest_contact) || null,
+    ownerContact: pick(record.ownerContact, record.owner_contact) || null,
+    guestContactTs: pick(record.guestContactTs, record.guest_contact_ts) || null,
+    ownerContactTs: pick(record.ownerContactTs, record.owner_contact_ts) || null,
+    usedAt: pick(record.usedAt, record.used_at) || null,
+    createdAt: pick(record.createdAt, record.created_at) || null
+  };
+  log({
+    friendBootstrapSession: {
+      peerUid: payload.peerUid || null,
+      role: result.role,
+      hasGuestBundle: !!result.guestBundle
+    }
+  });
+  return result;
+}
+
 async function postInvite(path, payload, allowFallback) {
   log({ inviteFetchStart: path, payload });
   const { r, data } = await fetchJSON(path, payload);
