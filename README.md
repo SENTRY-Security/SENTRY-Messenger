@@ -222,7 +222,7 @@ kill $API_PID
   - [ ] 擬定控制訊息策略（如 session ack / 重送）並評估伺服器端 bootstrap API。
 - [ ] **Contact Secrets 結構化**
   - [x] 拆分 invite metadata、DR snapshot、history、session-bootstrap 標記等資料結構，改寫為型別化 getter/setter。
-  - [ ] 重新整理 storage 序列化 / 還原流程，確保跨 session 邏輯簡潔。
+  - [x] 重新整理 storage 序列化 / 還原流程，確保跨 session 邏輯簡潔。
 - [ ] **控制訊息通道**
   - [ ] 定義 `msg_type` 枚舉並集中處理（例如 `session-init`, `session-ack`），避免散落於 UI 層判斷。
   - [ ] 評估 Server 端增加 session bootstrap API 或 Worker 流程，減少靠純訊息封包 workaround。
@@ -239,8 +239,8 @@ kill $API_PID
 
 ### 時間軸
 
-- **目前狀態**：`SecureConversationManager` 已接手 DR 初始化與 `session-init` 控制訊息，Messages / Contacts UI 透過狀態事件自動顯示安全對話 Modal、解除輸入鎖定並移除 `secureInitBlocked` 等布林旗標；`listSecureAndDecrypt` 改由集中管理器確保會話就緒與回溯。Contact Secrets 更新流程改為結構化 getter/setter（`invite/conversation/dr/session` 四層），同步新增 `getContactSecretSections` 方便後續模組引用。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
-- **下一步**：整理 Contact Secrets 儲存與還原流程（meta/checksum & storage promote）並擬定控制訊息枚舉／Bootstrap API 設計，同步補上相對應測試。
+- **目前狀態**：`SecureConversationManager` 已接手 DR 初始化與 `session-init` 控制訊息，Messages / Contacts UI 透過狀態事件自動顯示安全對話 Modal、解除輸入鎖定並移除 `secureInitBlocked` 等布林旗標；`listSecureAndDecrypt` 改由集中管理器確保會話就緒與回溯。Contact Secrets 更新流程改為結構化 getter/setter（`invite/conversation/dr/session` 四層），同步新增 `getContactSecretSections` 方便後續模組引用並導入版本化儲存格式。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
+- **下一步**：設計控制訊息枚舉與 session ack 流程，評估 server 端 bootstrap API 需求並補齊測試／文件。
 
 
 | 日期                    | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

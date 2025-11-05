@@ -8,6 +8,7 @@ import { b64 } from '../crypto/nacl.js';
 const STORAGE_KEY = 'contactSecrets-v1';
 const META_KEY = 'contactSecrets-v1-meta';
 const CHECKSUM_KEY = 'contactSecrets-v1-checksum';
+const CONTACT_SECRETS_VERSION = 2;
 let restored = false;
 let contactSecretsLocked = false;
 const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
@@ -346,47 +347,75 @@ export function restoreContactSecrets() {
   let totalEntries = 0;
   let withDrState = 0;
   let withHistory = 0;
+  let withSeed = 0;
   try {
-    const items = JSON.parse(snapshot);
-    if (!Array.isArray(items)) return map;
     map.clear();
-    for (const [peerUid, value] of items) {
-      const key = normalizeUid(peerUid);
-      if (!key) continue;
-      const inviteId = typeof value?.inviteId === 'string' ? value.inviteId.trim() : null;
-      const secret = typeof value?.secret === 'string' ? value.secret.trim() : null;
-      const drState = normalizeDrSnapshot(value?.drState || value?.dr_state || null, { setDefaultUpdatedAt: false });
-      const drSeed = chooseString(value?.drSeed ?? value?.dr_seed, null);
-      const drHistory = normalizeDrHistory(value?.drHistory || value?.dr_history || null);
-      const drHistoryCursorTs = Number(value?.drHistoryCursorTs ?? value?.dr_history_cursor_ts ?? null);
-      const drHistoryCursorId = chooseString(value?.drHistoryCursorId ?? value?.dr_history_cursor_id, null);
-      if (!inviteId || !secret) continue;
-      totalEntries += 1;
-      if (drState) withDrState += 1;
-      if (drHistory.length) withHistory += 1;
-      const sessionBootstrapTs = Number(value?.sessionBootstrapTs ?? value?.session_bootstrap_ts ?? null);
-      map.set(key, {
-        inviteId,
-        secret,
-        role: typeof value?.role === 'string' ? value.role : null,
-        conversationToken: typeof value?.conversationToken === 'string' ? value.conversationToken : null,
-        conversationId: typeof value?.conversationId === 'string' ? value.conversationId : null,
-        conversationDrInit: value?.conversationDrInit || null,
-        drState,
-        drSeed,
-        drHistory,
-        drHistoryCursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
-        drHistoryCursorId: drHistoryCursorId || null,
-        sessionBootstrapTs: Number.isFinite(sessionBootstrapTs) ? sessionBootstrapTs : null,
-        updatedAt: Number(value?.updatedAt || 0) || null
-      });
-      debugLog('restore-entry', {
-        peerUid: key,
-        hasDrState: !!drState,
-        historyLen: drHistory.length,
-        cursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
-        cursorId: drHistoryCursorId || null
-      });
+    const parsed = JSON.parse(snapshot);
+    if (Array.isArray(parsed)) {
+      for (const [peerUid, value] of parsed) {
+        const key = normalizeUid(peerUid);
+        if (!key) continue;
+        const inviteId = typeof value?.inviteId === 'string' ? value.inviteId.trim() : null;
+        const secret = typeof value?.secret === 'string' ? value.secret.trim() : null;
+        const drState = normalizeDrSnapshot(value?.drState || value?.dr_state || null, { setDefaultUpdatedAt: false });
+        const drSeed = chooseString(value?.drSeed ?? value?.dr_seed, null);
+        const drHistory = normalizeDrHistory(value?.drHistory || value?.dr_history || null);
+        const drHistoryCursorTs = Number(value?.drHistoryCursorTs ?? value?.dr_history_cursor_ts ?? null);
+        const drHistoryCursorId = chooseString(value?.drHistoryCursorId ?? value?.dr_history_cursor_id, null);
+        if (!inviteId || !secret) continue;
+        totalEntries += 1;
+        if (drState) withDrState += 1;
+        if (drHistory.length) withHistory += 1;
+        if (drSeed) withSeed += 1;
+        const sessionBootstrapTs = Number(value?.sessionBootstrapTs ?? value?.session_bootstrap_ts ?? null);
+        map.set(key, {
+          inviteId,
+          secret,
+          role: typeof value?.role === 'string' ? value.role : null,
+          conversationToken: typeof value?.conversationToken === 'string' ? value.conversationToken : null,
+          conversationId: typeof value?.conversationId === 'string' ? value.conversationId : null,
+          conversationDrInit: value?.conversationDrInit || null,
+          drState,
+          drSeed,
+          drHistory,
+          drHistoryCursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
+          drHistoryCursorId: drHistoryCursorId || null,
+          sessionBootstrapTs: Number.isFinite(sessionBootstrapTs) ? sessionBootstrapTs : null,
+          updatedAt: Number(value?.updatedAt || 0) || null
+        });
+        debugLog('restore-entry', {
+          peerUid: key,
+          hasDrState: !!drState,
+          historyLen: drHistory.length,
+          cursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
+          cursorId: drHistoryCursorId || null
+        });
+      }
+    } else {
+      const structured = parseStructuredSnapshot(parsed);
+      if (!structured) {
+        debugLog('restore-skip', { reason: 'unsupported-format' });
+        return map;
+      }
+      for (const entry of structured.entries) {
+        const normalized = normalizeStructuredEntry(entry);
+        if (!normalized) continue;
+        const { peerUid, record } = normalized;
+        if (!record.inviteId || !record.secret) continue;
+        totalEntries += 1;
+        if (record.drState) withDrState += 1;
+        if (Array.isArray(record.drHistory) && record.drHistory.length) withHistory += 1;
+        if (record.drSeed) withSeed += 1;
+        map.set(peerUid, record);
+        debugLog('restore-entry', {
+          peerUid,
+          hasDrState: !!record.drState,
+          historyLen: Array.isArray(record.drHistory) ? record.drHistory.length : 0,
+          cursorTs: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
+          cursorId: record.drHistoryCursorId || null,
+          version: structured.version
+        });
+      }
     }
     debugLog('restore', { entries: map.size });
     log({
@@ -394,6 +423,7 @@ export function restoreContactSecrets() {
         entries: totalEntries,
         withDrState,
         withHistory,
+        withSeed,
         bytes: snapshot.length
       }
     });
@@ -408,14 +438,16 @@ export function persistContactSecrets() {
   const storage = getStorage();
   if (!storage) return;
   try {
-    const entriesArray = Array.from(map.entries());
-    const payload = JSON.stringify(entriesArray);
+    const { payload, summary, checksum } = serializeContactSecretsMap(map);
     storage.setItem(STORAGE_KEY, payload);
     let sessionBytes = null;
-    try {
-      sessionStorage?.setItem?.(STORAGE_KEY, payload);
-      sessionBytes = payload.length;
-    } catch {}
+    const sessionStore = getSessionStorageSafe();
+    if (sessionStore) {
+      try {
+        sessionStore.setItem(STORAGE_KEY, payload);
+        sessionBytes = payload.length;
+      } catch {}
+    }
     if (typeof window !== 'undefined') {
       try {
         if (!window.__LOGIN_SEED_LOCALSTORAGE || typeof window.__LOGIN_SEED_LOCALSTORAGE !== 'object') {
@@ -424,7 +456,46 @@ export function persistContactSecrets() {
         window.__LOGIN_SEED_LOCALSTORAGE[STORAGE_KEY] = payload;
       } catch {}
     }
-    debugLog('persist', { entries: map.size, bytes: payload.length, sessionBytes });
+    const metaRecord = {
+      version: summary.version,
+      ts: summary.generatedAt,
+      entries: summary.entries,
+      withDrState: summary.withDrState,
+      withoutDrState: summary.withoutDrState,
+      withHistory: summary.withHistory,
+      maxHistory: summary.maxHistory,
+      withSeed: summary.withSeed,
+      bytes: summary.bytes
+    };
+    const metaJson = JSON.stringify(metaRecord);
+    try { storage.setItem(META_KEY, metaJson); } catch {}
+    if (sessionStore) {
+      try { sessionStore.setItem(META_KEY, metaJson); } catch {}
+    }
+    const localStore = getLocalStorageSafe();
+    if (localStore) {
+      try { localStore.setItem(META_KEY, metaJson); } catch {}
+    }
+    if (checksum) {
+      const checksumRecord = { checksum, algorithm: 'sum32', ts: summary.generatedAt };
+      const checksumJson = JSON.stringify(checksumRecord);
+      try { storage.setItem(CHECKSUM_KEY, checksumJson); } catch {}
+      if (sessionStore) {
+        try { sessionStore.setItem(CHECKSUM_KEY, checksumJson); } catch {}
+      }
+      if (localStore) {
+        try { localStore.setItem(CHECKSUM_KEY, checksumJson); } catch {}
+      }
+    }
+    debugLog('persist', {
+      entries: summary.entries,
+      bytes: summary.bytes,
+      sessionBytes,
+      version: summary.version,
+      withDrState: summary.withDrState,
+      withHistory: summary.withHistory,
+      withSeed: summary.withSeed
+    });
   } catch (err) {
     log({ contactSecretPersistError: err?.message || err });
   }
@@ -464,6 +535,151 @@ function cloneContactSecretRecord(existing) {
     drHistoryCursorTs: Number.isFinite(existing.drHistoryCursorTs) ? existing.drHistoryCursorTs : null,
     drHistoryCursorId: existing.drHistoryCursorId || null,
     updatedAt: Number.isFinite(existing.updatedAt) ? existing.updatedAt : null
+  };
+}
+
+function buildStructuredEntry(peerUid, record) {
+  return {
+    peerUid,
+    invite: {
+      id: record.inviteId || null,
+      secret: record.secret || null,
+      role: record.role || null
+    },
+    conversation: {
+      token: record.conversationToken || null,
+      id: record.conversationId || null,
+      drInit: record.conversationDrInit || null
+    },
+    dr: {
+      state: record.drState || null,
+      seed: record.drSeed || null,
+      history: Array.isArray(record.drHistory) ? record.drHistory : [],
+      cursor: {
+        ts: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
+        id: record.drHistoryCursorId || null
+      }
+    },
+    session: {
+      bootstrapTs: Number.isFinite(record.sessionBootstrapTs) ? record.sessionBootstrapTs : null
+    },
+    meta: {
+      updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : null
+    }
+  };
+}
+
+function serializeContactSecretsMap(map) {
+  const entries = [];
+  const summary = {
+    entries: 0,
+    withDrState: 0,
+    withHistory: 0,
+    withSeed: 0,
+    maxHistory: 0
+  };
+  if (map instanceof Map) {
+    for (const [peerUid, record] of map.entries()) {
+      if (!peerUid || !record?.inviteId || !record?.secret) continue;
+      const entry = buildStructuredEntry(peerUid, record);
+      entries.push(entry);
+      summary.entries += 1;
+      if (entry.dr?.state && typeof entry.dr.state === 'object') {
+        const rk = entry.dr.state.rk_b64 || entry.dr.state.rk;
+        if (typeof rk === 'string' && rk.length) summary.withDrState += 1;
+      }
+      const historyLen = Array.isArray(entry.dr?.history) ? entry.dr.history.length : 0;
+      if (historyLen > 0) {
+        summary.withHistory += 1;
+        if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
+      }
+      if (entry.dr?.seed && typeof entry.dr.seed === 'string' && entry.dr.seed.length) {
+        summary.withSeed += 1;
+      }
+    }
+  }
+  summary.withoutDrState = Math.max(0, summary.entries - summary.withDrState);
+  const generatedAt = Date.now();
+  const payloadObj = {
+    v: CONTACT_SECRETS_VERSION,
+    generatedAt,
+    entries
+  };
+  const payload = JSON.stringify(payloadObj);
+  summary.bytes = payload.length;
+  summary.generatedAt = generatedAt;
+  summary.version = CONTACT_SECRETS_VERSION;
+  const checksum = basicChecksum(payload);
+  return { payload, summary, checksum };
+}
+
+function normalizeStructuredEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const peerUid = normalizeUid(entry.peerUid || entry.peer_uid || null);
+  if (!peerUid) return null;
+  const invite = entry.invite || {};
+  const inviteId = normalizeOptionalString(invite.id);
+  const secret = normalizeOptionalString(invite.secret);
+  if (!inviteId || !secret) return null;
+  const record = createEmptyContactSecret();
+  record.inviteId = inviteId;
+  record.secret = secret;
+  record.role = normalizeOptionalString(invite.role) || null;
+
+  const conversation = entry.conversation || {};
+  record.conversationToken = normalizeOptionalString(conversation.token) || null;
+  record.conversationId = normalizeOptionalString(conversation.id) || null;
+  if (Object.prototype.hasOwnProperty.call(conversation, 'drInit')) {
+    record.conversationDrInit = conversation.drInit || null;
+  }
+
+  const dr = entry.dr || {};
+  if (Object.prototype.hasOwnProperty.call(dr, 'state')) {
+    const normalizedState = dr.state ? normalizeDrSnapshot(dr.state, { setDefaultUpdatedAt: false }) : null;
+    if (normalizedState) record.drState = normalizedState;
+  }
+  if (Object.prototype.hasOwnProperty.call(dr, 'seed')) {
+    record.drSeed = normalizeOptionalString(dr.seed) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(dr, 'history')) {
+    record.drHistory = normalizeDrHistory(dr.history);
+  }
+  const cursor = dr.cursor || {};
+  if (Object.prototype.hasOwnProperty.call(cursor, 'ts')) {
+    const cursorTs = Number(cursor.ts);
+    record.drHistoryCursorTs = Number.isFinite(cursorTs) ? cursorTs : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(cursor, 'id')) {
+    record.drHistoryCursorId = normalizeOptionalString(cursor.id) || null;
+  }
+
+  const session = entry.session || {};
+  if (Object.prototype.hasOwnProperty.call(session, 'bootstrapTs')) {
+    const bootstrapTs = Number(session.bootstrapTs);
+    record.sessionBootstrapTs = Number.isFinite(bootstrapTs) ? bootstrapTs : null;
+  }
+
+  const meta = entry.meta || {};
+  if (Object.prototype.hasOwnProperty.call(meta, 'updatedAt')) {
+    const updated = Number(meta.updatedAt);
+    record.updatedAt = Number.isFinite(updated) ? updated : null;
+  }
+
+  return { peerUid, record };
+}
+
+function parseStructuredSnapshot(payloadObj) {
+  if (!payloadObj || typeof payloadObj !== 'object') return null;
+  const entries = Array.isArray(payloadObj.entries) ? payloadObj.entries : [];
+  const versionRaw = payloadObj.v ?? payloadObj.version ?? null;
+  const version = Number.isFinite(Number(versionRaw)) ? Number(versionRaw) : CONTACT_SECRETS_VERSION;
+  const generatedAt = Number.isFinite(Number(payloadObj.generatedAt ?? payloadObj.ts))
+    ? Number(payloadObj.generatedAt ?? payloadObj.ts)
+    : null;
+  return {
+    version,
+    generatedAt,
+    entries
   };
 }
 
@@ -747,28 +963,53 @@ export function summarizeContactSecretsPayload(payload) {
   }
   try {
     const parsed = JSON.parse(payload);
-    if (!Array.isArray(parsed)) {
-      summary.parseError = 'not-array';
+    if (Array.isArray(parsed)) {
+      for (const entry of parsed) {
+        if (!Array.isArray(entry) || entry.length < 2) continue;
+        const value = entry[1] || {};
+        summary.entries += 1;
+        if (value?.drState && typeof value.drState === 'object') {
+          const rk = value.drState.rk_b64 || value.drState.rk;
+          if (typeof rk === 'string' && rk.length) summary.withDrState += 1;
+        }
+        const historyLen = Array.isArray(value?.drHistory) ? value.drHistory.length : 0;
+        if (historyLen > 0) {
+          summary.withHistory += 1;
+          if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
+        }
+        if (typeof value?.drSeed === 'string' && value.drSeed.length) {
+          summary.withSeed += 1;
+        }
+      }
+    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
+      summary.version = Number.isFinite(Number(parsed.v ?? parsed.version)) ? Number(parsed.v ?? parsed.version) : CONTACT_SECRETS_VERSION;
+      for (const entry of parsed.entries) {
+        if (!entry || typeof entry !== 'object') continue;
+        const invite = entry.invite || {};
+        if (!invite.secret || !invite.id) continue;
+        summary.entries += 1;
+        const dr = entry.dr || {};
+        if (dr.state && typeof dr.state === 'object') {
+          const rk = dr.state.rk_b64 || dr.state.rk;
+          if (typeof rk === 'string' && rk.length) summary.withDrState += 1;
+        }
+        const historyLen = Array.isArray(dr.history) ? dr.history.length : 0;
+        if (historyLen > 0) {
+          summary.withHistory += 1;
+          if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
+        }
+        if (typeof dr.seed === 'string' && dr.seed.length) {
+          summary.withSeed += 1;
+        }
+      }
+    } else {
+      summary.parseError = 'unsupported-format';
       return summary;
     }
-    for (const entry of parsed) {
-      if (!Array.isArray(entry) || entry.length < 2) continue;
-      const value = entry[1] || {};
-      summary.entries += 1;
-      if (value?.drState && typeof value.drState === 'object') {
-        const rk = value.drState.rk_b64 || value.drState.rk;
-        if (typeof rk === 'string' && rk.length) summary.withDrState += 1;
-      }
-      const historyLen = Array.isArray(value?.drHistory) ? value.drHistory.length : 0;
-      if (historyLen > 0) {
-        summary.withHistory += 1;
-        if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
-      }
-      if (typeof value?.drSeed === 'string' && value.drSeed.length) {
-        summary.withSeed += 1;
-      }
-    }
     summary.withoutDrState = Math.max(0, summary.entries - summary.withDrState);
+    if (!summary.version) {
+      summary.version = Array.isArray(parsed) ? 1 : CONTACT_SECRETS_VERSION;
+    }
   } catch (err) {
     summary.parseError = err?.message || String(err);
   }
