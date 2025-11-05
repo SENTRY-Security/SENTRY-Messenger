@@ -5,6 +5,7 @@ import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 import { getUidHex, getAccountDigest } from '../../core/store.js';
+import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
 
 export function initContactsView(options) {
   const {
@@ -168,6 +169,11 @@ export function initContactsView(options) {
     }
     if (mutated) {
       deleteContactSecret(key);
+      try {
+        resetSecureConversation(key, { reason: 'contact-removed', source: 'contacts-view' });
+      } catch (err) {
+        log({ resetSecureConversationError: err?.message || err, peerUid: key });
+      }
       presenceManager.removePresenceForContact(key);
       renderContacts();
       updateStats?.();

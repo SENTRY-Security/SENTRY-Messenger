@@ -1,7 +1,15 @@
 import { log } from '../../core/log.js';
 import { getUidHex, getAccountToken, getAccountDigest } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
-import { sendDrText, sendDrMedia, ensureDrReceiverState } from '../../features/dr-session.js';
+import { sendDrText, sendDrMedia } from '../../features/dr-session.js';
+import {
+  ensureSecureConversationReady,
+  subscribeSecureConversation,
+  getSecureConversationStatus,
+  handleSecureConversationControlMessage,
+  SECURE_CONVERSATION_STATUS,
+  listSecureConversationStatuses
+} from '../../features/secure-conversation-manager.js';
 import { conversationIdFromToken, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
@@ -44,6 +52,10 @@ export function initMessagesPane({
     loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('#messagesLoadMore .spinner')
   };
 
+  const secureStatusCache = new Map();
+  let unsubscribeSecureStatus = null;
+  let activeSecurityModalPeer = null;
+
   let wsSendFn = () => false;
   let loadMoreState = 'hidden';
   let autoLoadOlderInProgress = false;
@@ -54,6 +66,98 @@ export function initMessagesPane({
   const openPreviewModal = typeof modalOptions.openModal === 'function' ? modalOptions.openModal : null;
   const closePreviewModal = typeof modalOptions.closeModal === 'function' ? modalOptions.closeModal : null;
   const setModalObjectUrl = typeof modalOptions.setModalObjectUrl === 'function' ? modalOptions.setModalObjectUrl : null;
+  const showSecurityModal = typeof modalOptions.showSecurityModal === 'function' ? modalOptions.showSecurityModal : null;
+
+  for (const info of listSecureConversationStatuses()) {
+    if (!info?.peerUidHex) continue;
+    secureStatusCache.set(info.peerUidHex, { status: info.status, error: info.error });
+  }
+  if (typeof unsubscribeSecureStatus === 'function') {
+    unsubscribeSecureStatus();
+  }
+  unsubscribeSecureStatus = subscribeSecureConversation(handleSecureStatusEvent);
+
+  function cacheSecureStatus(peerUidHex, status, error) {
+    const key = String(peerUidHex || '').toUpperCase();
+    if (!key) return null;
+    const entry = {
+      status: status || SECURE_CONVERSATION_STATUS.IDLE,
+      error: error || null
+    };
+    secureStatusCache.set(key, entry);
+    return entry;
+  }
+
+  function getCachedSecureStatus(peerUidHex) {
+    const key = String(peerUidHex || '').toUpperCase();
+    if (!key) return null;
+    const cached = secureStatusCache.get(key);
+    if (cached) return cached;
+    const managerStatus = getSecureConversationStatus(key);
+    if (!managerStatus) return null;
+    return cacheSecureStatus(key, managerStatus.status, managerStatus.error);
+  }
+
+  function hideSecurityModal() {
+    if (!activeSecurityModalPeer) return;
+    closePreviewModal?.();
+    activeSecurityModalPeer = null;
+  }
+
+  function updateSecurityModalForPeer(peerUidHex, statusInfo) {
+    if (!showSecurityModal) return;
+    const status = statusInfo?.status || null;
+    const key = String(peerUidHex || '').toUpperCase();
+    const shouldShow = status === SECURE_CONVERSATION_STATUS.PENDING;
+    if (shouldShow) {
+      if (activeSecurityModalPeer !== key) {
+        showSecurityModal({
+          title: '建立安全對話',
+          message: '正在與好友建立安全對話，請稍候…'
+        });
+        activeSecurityModalPeer = key;
+      }
+      return;
+    }
+    if (activeSecurityModalPeer && activeSecurityModalPeer === key) {
+      hideSecurityModal();
+    } else if (activeSecurityModalPeer && !key) {
+      hideSecurityModal();
+    }
+  }
+
+  function applySecureStatusForActivePeer(peerUidHex, statusInfo) {
+    const state = getMessageState();
+    const key = String(peerUidHex || '').toUpperCase();
+    if (state.activePeerUid !== key) {
+      if (!state.activePeerUid) hideSecurityModal();
+      return;
+    }
+    const status = statusInfo?.status || null;
+    updateSecurityModalForPeer(key, statusInfo);
+    if (status === SECURE_CONVERSATION_STATUS.PENDING) {
+      setMessagesStatus('正在建立安全對話…');
+    } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
+      const msg = statusInfo?.error ? `建立安全對話失敗：${statusInfo.error}` : '建立安全對話失敗，請稍後再試。';
+      setMessagesStatus(msg, true);
+    } else if (status === SECURE_CONVERSATION_STATUS.READY) {
+      setMessagesStatus('');
+    } else {
+      setMessagesStatus('');
+    }
+    updateComposerAvailability();
+  }
+
+  function handleSecureStatusEvent(event) {
+    const key = String(event?.peerUidHex || '').toUpperCase();
+    if (!key) return;
+    const entry = cacheSecureStatus(key, event?.status, event?.error);
+    if (!entry) return;
+    const state = getMessageState();
+    if (state.activePeerUid === key) {
+      applySecureStatusForActivePeer(key, entry);
+    }
+  }
 
   function isDesktopLayout() {
     if (typeof window === 'undefined') return true;
@@ -308,14 +412,22 @@ export function initMessagesPane({
   function updateComposerAvailability() {
     if (!elements.input || !elements.sendBtn) return;
     const state = getMessageState();
-    const enabled = !!(state.conversationToken && state.activePeerUid);
+    const key = state.activePeerUid ? String(state.activePeerUid).toUpperCase() : null;
+    const statusInfo = key ? getCachedSecureStatus(key) : null;
+    const status = statusInfo?.status || null;
+    const blocked = status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
+    const enabled = !!(state.conversationToken && state.activePeerUid && !blocked);
     elements.input.disabled = !enabled;
     elements.sendBtn.disabled = !enabled;
-    if (!enabled) {
-      elements.input.placeholder = '尚未建立安全對話';
-    } else {
-      elements.input.placeholder = '輸入訊息…';
+    let placeholder = '輸入訊息…';
+    if (!state.conversationToken || !state.activePeerUid) {
+      placeholder = '選擇好友開始聊天';
+    } else if (status === SECURE_CONVERSATION_STATUS.PENDING) {
+      placeholder = '正在建立安全對話…';
+    } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
+      placeholder = statusInfo?.error ? `安全對話失敗：${statusInfo.error}` : '安全對話建立失敗，請稍後再試。';
     }
+    elements.input.placeholder = placeholder;
   }
 
   function setLoadMoreState(next) {
@@ -1010,6 +1122,7 @@ export function initMessagesPane({
       if (elements.peerName) elements.peerName.textContent = nickname;
       setMessagesStatus('此好友尚未建立安全對話，請重新生成邀請。', true);
       clearMessagesView();
+      hideSecurityModal();
       updateComposerAvailability();
       renderConversationList();
       applyMessagesLayout();
@@ -1028,6 +1141,7 @@ export function initMessagesPane({
       if (elements.peerName) elements.peerName.textContent = nickname;
       setMessagesStatus('無法建立對話：' + (err?.message || err), true);
       clearMessagesView();
+      hideSecurityModal();
       updateComposerAvailability();
       renderConversationList();
       const fallbackState = getMessageState();
@@ -1057,10 +1171,22 @@ export function initMessagesPane({
       state.viewMode = 'detail';
     }
     try {
-      await ensureDrReceiverState({ peerUidHex: key });
+      await ensureSecureConversationReady({
+        peerUidHex: key,
+        reason: 'open-conversation',
+        source: 'messages-pane:setActiveConversation'
+      });
     } catch (err) {
-      log({ ensureDrStateError: err?.message || err, peerUid: key });
+      const errorMsg = err?.message || err || '建立安全對話失敗，請稍後再試。';
+      log({ ensureSecureConversationError: errorMsg, peerUid: key });
+      const cached = cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
+      applySecureStatusForActivePeer(key, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
+      applyMessagesLayout();
+      return;
     }
+    const statusInfo = getCachedSecureStatus(key) || cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.READY, null);
+    applySecureStatusForActivePeer(key, statusInfo);
+    updateComposerAvailability();
     if (elements.peerName) elements.peerName.textContent = nickname;
     if (elements.peerAvatar) {
       elements.peerAvatar.innerHTML = '';
@@ -1359,6 +1485,7 @@ export function initMessagesPane({
             resetMessageState();
             if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
             clearMessagesView();
+            hideSecurityModal();
             updateComposerAvailability();
             applyMessagesLayout();
           }
@@ -1429,6 +1556,16 @@ export function initMessagesPane({
     const senderUidRaw = event?.senderUid || event?.sender_uid || null;
     const senderUid = senderUidRaw ? String(senderUidRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
     const isSelf = !!(myUid && senderUid && myUid === senderUid);
+
+    const msgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
+    if (msgType === 'session-init') {
+      handleSecureConversationControlMessage({
+        peerUidHex: peerUid,
+        messageType: 'session-init',
+        direction: isSelf ? 'outgoing' : 'incoming',
+        source: 'ws:message-new'
+      });
+    }
 
     const state = getMessageState();
     const active = state.conversationId === convId && state.activePeerUid === peerUid;
@@ -1513,6 +1650,7 @@ export function initMessagesPane({
       applyMessagesLayout();
       elements.input?.blur();
       switchTab?.('messages', { fromBack: true });
+      hideSecurityModal();
     });
 
     elements.attachBtn?.addEventListener('click', () => {

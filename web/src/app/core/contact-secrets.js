@@ -213,6 +213,16 @@ function chooseString(value, fallback) {
   return fallback ?? null;
 }
 
+function normalizeOptionalString(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  return null;
+}
+
 function toBase64Maybe(value) {
   if (value === undefined || value === null) return null;
   if (typeof value === 'string') {
@@ -354,6 +364,7 @@ export function restoreContactSecrets() {
       totalEntries += 1;
       if (drState) withDrState += 1;
       if (drHistory.length) withHistory += 1;
+      const sessionBootstrapTs = Number(value?.sessionBootstrapTs ?? value?.session_bootstrap_ts ?? null);
       map.set(key, {
         inviteId,
         secret,
@@ -366,6 +377,7 @@ export function restoreContactSecrets() {
         drHistory,
         drHistoryCursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
         drHistoryCursorId: drHistoryCursorId || null,
+        sessionBootstrapTs: Number.isFinite(sessionBootstrapTs) ? sessionBootstrapTs : null,
         updatedAt: Number(value?.updatedAt || 0) || null
       });
       debugLog('restore-entry', {
@@ -418,83 +430,207 @@ export function persistContactSecrets() {
   }
 }
 
+function createEmptyContactSecret() {
+  return {
+    inviteId: null,
+    secret: null,
+    role: null,
+    conversationToken: null,
+    conversationId: null,
+    conversationDrInit: null,
+    sessionBootstrapTs: null,
+    drState: null,
+    drSeed: null,
+    drHistory: [],
+    drHistoryCursorTs: null,
+    drHistoryCursorId: null,
+    updatedAt: null
+  };
+}
+
+function cloneContactSecretRecord(existing) {
+  if (!existing) return createEmptyContactSecret();
+  return {
+    inviteId: existing.inviteId || null,
+    secret: existing.secret || null,
+    role: existing.role || null,
+    conversationToken: existing.conversationToken || null,
+    conversationId: existing.conversationId || null,
+    conversationDrInit: existing.conversationDrInit || null,
+    sessionBootstrapTs: Number.isFinite(existing.sessionBootstrapTs) ? existing.sessionBootstrapTs : null,
+    drState: existing.drState ? { ...existing.drState } : null,
+    drSeed: existing.drSeed || null,
+    drHistory: Array.isArray(existing.drHistory) ? existing.drHistory.slice() : [],
+    drHistoryCursorTs: Number.isFinite(existing.drHistoryCursorTs) ? existing.drHistoryCursorTs : null,
+    drHistoryCursorId: existing.drHistoryCursorId || null,
+    updatedAt: Number.isFinite(existing.updatedAt) ? existing.updatedAt : null
+  };
+}
+
+function normalizeContactSecretUpdate(update = {}) {
+  const structured = {
+    invite: {
+      id: { has: false, value: null },
+      secret: { has: false, value: null },
+      role: { has: false, value: null }
+    },
+    conversation: {
+      token: { has: false, value: null },
+      id: { has: false, value: null },
+      drInit: { has: false, value: null }
+    },
+    session: {
+      bootstrapTs: { has: false, value: null }
+    },
+    dr: {
+      state: { has: false, value: null },
+      seed: { has: false, value: null },
+      history: { has: false, value: null },
+      cursorTs: { has: false, value: null },
+      cursorId: { has: false, value: null }
+    },
+    meta: {
+      updatedAt: { has: false, value: null }
+    },
+    debugSource: update?.__debugSource || update?.source || update?.meta?.source || null
+  };
+
+  const applyString = (holder, key, raw) => {
+    if (raw === undefined) return;
+    holder[key] = { has: true, value: normalizeOptionalString(raw) ?? null };
+  };
+
+  const applyTimestamp = (holder, key, raw) => {
+    if (raw === undefined) return;
+    if (raw === null) {
+      holder[key] = { has: true, value: null };
+      return;
+    }
+    const n = Number(raw);
+    holder[key] = { has: true, value: Number.isFinite(n) ? Math.floor(n) : null };
+  };
+
+  function applyDrState(raw) {
+    if (raw === undefined) return;
+    if (raw === null) {
+      structured.dr.state = { has: true, value: null };
+      return;
+    }
+    const normalized = normalizeDrSnapshot(raw, { setDefaultUpdatedAt: true });
+    if (normalized) {
+      structured.dr.state = { has: true, value: normalized };
+    }
+  }
+
+  function applyDrHistory(raw) {
+    if (raw === undefined) return;
+    if (raw === null) {
+      structured.dr.history = { has: true, value: [] };
+      return;
+    }
+    structured.dr.history = { has: true, value: normalizeDrHistory(raw) };
+  }
+
+  function applyDrSeed(raw) {
+    if (raw === undefined) return;
+    structured.dr.seed = { has: true, value: normalizeOptionalString(raw) ?? null };
+  }
+
+  // New structured payload
+  if (update?.invite && typeof update.invite === 'object') {
+    applyString(structured.invite, 'id', update.invite.id);
+    applyString(structured.invite, 'secret', update.invite.secret);
+    applyString(structured.invite, 'role', update.invite.role);
+  }
+  if (update?.conversation && typeof update.conversation === 'object') {
+    applyString(structured.conversation, 'token', update.conversation.token);
+    applyString(structured.conversation, 'id', update.conversation.id);
+    if (Object.prototype.hasOwnProperty.call(update.conversation, 'drInit')) {
+      structured.conversation.drInit = { has: true, value: update.conversation.drInit || null };
+    }
+  }
+  if (update?.dr && typeof update.dr === 'object') {
+    if (Object.prototype.hasOwnProperty.call(update.dr, 'state')) applyDrState(update.dr.state);
+    if (Object.prototype.hasOwnProperty.call(update.dr, 'seed')) applyDrSeed(update.dr.seed);
+    if (Object.prototype.hasOwnProperty.call(update.dr, 'history')) applyDrHistory(update.dr.history);
+    if (update.dr.cursor && typeof update.dr.cursor === 'object') {
+      if (Object.prototype.hasOwnProperty.call(update.dr.cursor, 'ts')) applyTimestamp(structured.dr, 'cursorTs', update.dr.cursor.ts);
+      if (Object.prototype.hasOwnProperty.call(update.dr.cursor, 'id')) applyString(structured.dr, 'cursorId', update.dr.cursor.id);
+    } else {
+      if (Object.prototype.hasOwnProperty.call(update.dr, 'cursorTs')) applyTimestamp(structured.dr, 'cursorTs', update.dr.cursorTs);
+      if (Object.prototype.hasOwnProperty.call(update.dr, 'cursorId')) applyString(structured.dr, 'cursorId', update.dr.cursorId);
+    }
+  }
+  if (update?.session && typeof update.session === 'object') {
+    if (Object.prototype.hasOwnProperty.call(update.session, 'bootstrapTs')) {
+      applyTimestamp(structured.session, 'bootstrapTs', update.session.bootstrapTs);
+    }
+  }
+  if (update?.meta && typeof update.meta === 'object') {
+    if (Object.prototype.hasOwnProperty.call(update.meta, 'updatedAt')) {
+      applyTimestamp(structured.meta, 'updatedAt', update.meta.updatedAt);
+    }
+    if (typeof update.meta.source === 'string') {
+      structured.debugSource = update.meta.source;
+    }
+  }
+
+  // Backwards compatibility (legacy top-level fields)
+  applyString(structured.invite, 'id', update.inviteId);
+  applyString(structured.invite, 'secret', update.secret);
+  applyString(structured.invite, 'role', update.role);
+  applyString(structured.conversation, 'token', update.conversationToken);
+  applyString(structured.conversation, 'id', update.conversationId);
+  if (Object.prototype.hasOwnProperty.call(update, 'conversationDrInit')) {
+    structured.conversation.drInit = { has: true, value: update.conversationDrInit || null };
+  }
+  applyTimestamp(structured.session, 'bootstrapTs', update.sessionBootstrapTs);
+  if (Object.prototype.hasOwnProperty.call(update, 'drState')) applyDrState(update.drState);
+  if (Object.prototype.hasOwnProperty.call(update, 'drSeed')) applyDrSeed(update.drSeed);
+  if (Object.prototype.hasOwnProperty.call(update, 'drHistory')) applyDrHistory(update.drHistory);
+  if (Object.prototype.hasOwnProperty.call(update, 'drHistoryCursorTs')) {
+    applyTimestamp(structured.dr, 'cursorTs', update.drHistoryCursorTs);
+  }
+  if (Object.prototype.hasOwnProperty.call(update, 'drHistoryCursorId')) {
+    applyString(structured.dr, 'cursorId', update.drHistoryCursorId);
+  }
+
+  return structured;
+}
+
 export function setContactSecret(peerUid, opts = {}) {
   if (contactSecretsLocked) {
     debugLog('set-skip-locked', { peerUid: normalizeUid(peerUid), source: opts?.__debugSource || null });
     return;
   }
-  const {
-    inviteId,
-    secret,
-    role,
-    conversationToken,
-    conversationId,
-    conversationDrInit,
-    drState: drStateInput,
-    drSeed: drSeedInput,
-    drHistory: drHistoryInput,
-    drHistoryCursorTs,
-    drHistoryCursorId,
-    __debugSource
-  } = opts || {};
-  const hasDrState = Object.prototype.hasOwnProperty.call(opts, 'drState');
-  const hasDrSeed = Object.prototype.hasOwnProperty.call(opts, 'drSeed');
-  const hasDrHistory = Object.prototype.hasOwnProperty.call(opts, 'drHistory');
-  const hasHistoryCursor = Object.prototype.hasOwnProperty.call(opts, 'drHistoryCursorTs');
-  const hasHistoryCursorId = Object.prototype.hasOwnProperty.call(opts, 'drHistoryCursorId');
+  const structured = normalizeContactSecretUpdate(opts);
   const key = normalizeUid(peerUid);
   if (!key) return;
   const map = ensureMap();
   const existing = map.get(key) || null;
-  const id = chooseString(inviteId, existing?.inviteId);
-  const secretStr = chooseString(secret, existing?.secret);
-  if (!id || !secretStr) return;
+  const next = cloneContactSecretRecord(existing);
 
-  const next = {
-    inviteId: id,
-    secret: secretStr,
-    role: existing?.role || null,
-    conversationToken: existing?.conversationToken || null,
-    conversationId: existing?.conversationId || null,
-    conversationDrInit: existing?.conversationDrInit || null,
-    drState: existing?.drState || null,
-    drSeed: existing?.drSeed || null,
-    drHistory: Array.isArray(existing?.drHistory) ? existing.drHistory.slice() : [],
-    drHistoryCursorTs: Number.isFinite(existing?.drHistoryCursorTs) ? existing.drHistoryCursorTs : null,
-    drHistoryCursorId: existing?.drHistoryCursorId || null,
-    updatedAt: Math.floor(Date.now() / 1000)
-  };
+  const resolvedInviteId = structured.invite.id.has ? structured.invite.id.value : next.inviteId;
+  const resolvedSecret = structured.invite.secret.has ? structured.invite.secret.value : next.secret;
+  if (!resolvedInviteId || !resolvedSecret) return;
+  next.inviteId = resolvedInviteId;
+  next.secret = resolvedSecret;
 
-  if (role !== undefined) next.role = chooseString(role, next.role);
-  if (conversationToken !== undefined) next.conversationToken = chooseString(conversationToken, next.conversationToken);
-  if (conversationId !== undefined) next.conversationId = chooseString(conversationId, next.conversationId);
-  if (conversationDrInit !== undefined) next.conversationDrInit = conversationDrInit || null;
+  if (structured.invite.role.has) next.role = structured.invite.role.value;
+  if (structured.conversation.token.has) next.conversationToken = structured.conversation.token.value;
+  if (structured.conversation.id.has) next.conversationId = structured.conversation.id.value;
+  if (structured.conversation.drInit.has) next.conversationDrInit = structured.conversation.drInit.value;
+  if (structured.session.bootstrapTs.has) next.sessionBootstrapTs = structured.session.bootstrapTs.value;
+  if (structured.dr.state.has) next.drState = structured.dr.state.value;
+  if (structured.dr.seed.has) next.drSeed = structured.dr.seed.value;
+  if (structured.dr.history.has) next.drHistory = structured.dr.history.value || [];
+  if (structured.dr.cursorTs.has) next.drHistoryCursorTs = structured.dr.cursorTs.value;
+  if (structured.dr.cursorId.has) next.drHistoryCursorId = structured.dr.cursorId.value;
 
-  if (hasDrState) {
-    const candidate = drStateInput;
-    if (candidate === null) {
-      next.drState = null;
-    } else {
-      const normalized = normalizeDrSnapshot(candidate, { setDefaultUpdatedAt: true });
-      if (normalized) next.drState = normalized;
-    }
-  }
-
-  if (hasDrSeed) {
-    next.drSeed = chooseString(drSeedInput, next.drSeed);
-  }
-
-  if (hasDrHistory) {
-    const normalizedHistory = normalizeDrHistory(drHistoryInput);
-    next.drHistory = normalizedHistory;
-  }
-
-  if (hasHistoryCursor) {
-    const cursorVal = Number(drHistoryCursorTs);
-    next.drHistoryCursorTs = Number.isFinite(cursorVal) ? cursorVal : null;
-  }
-  if (hasHistoryCursorId) {
-    next.drHistoryCursorId = chooseString(drHistoryCursorId, next.drHistoryCursorId);
+  if (structured.meta.updatedAt.has) {
+    next.updatedAt = structured.meta.updatedAt.value ?? null;
+  } else {
+    next.updatedAt = Math.floor(Date.now() / 1000);
   }
 
   map.set(key, next);
@@ -507,7 +643,8 @@ export function setContactSecret(peerUid, opts = {}) {
     historyLen: Array.isArray(next.drHistory) ? next.drHistory.length : 0,
     cursorTs: next.drHistoryCursorTs || null,
     cursorId: next.drHistoryCursorId || null,
-    source: __debugSource || 'unknown'
+    source: structured.debugSource || opts?.__debugSource || 'unknown',
+    sessionBootstrapTs: next.sessionBootstrapTs || null
   });
 }
 
@@ -523,6 +660,38 @@ export function getContactSecret(peerUid) {
   if (!key) return null;
   const map = ensureMap();
   return map.get(key) || null;
+}
+
+export function getContactSecretSections(peerUid) {
+  const record = getContactSecret(peerUid);
+  if (!record) return null;
+  return {
+    invite: {
+      id: record.inviteId || null,
+      secret: record.secret || null,
+      role: record.role || null
+    },
+    conversation: {
+      token: record.conversationToken || null,
+      id: record.conversationId || null,
+      drInit: record.conversationDrInit || null
+    },
+    dr: {
+      state: record.drState ? { ...record.drState } : null,
+      seed: record.drSeed || null,
+      history: Array.isArray(record.drHistory) ? record.drHistory.slice() : [],
+      cursor: {
+        ts: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
+        id: record.drHistoryCursorId || null
+      }
+    },
+    session: {
+      bootstrapTs: Number.isFinite(record.sessionBootstrapTs) ? record.sessionBootstrapTs : null
+    },
+    meta: {
+      updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : null
+    }
+  };
 }
 
 export function lockContactSecrets(reason = 'locked') {

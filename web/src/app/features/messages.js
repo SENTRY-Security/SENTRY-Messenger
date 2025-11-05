@@ -6,7 +6,6 @@ import { listSecureMessages } from '../api/messages.js';
 import { drDecryptText } from '../crypto/dr.js';
 import { drState, getUidHex, getAccountDigest } from '../core/store.js';
 import {
-  ensureDrReceiverState,
   persistDrSnapshot,
   recoverDrState,
   prepareDrForMessage,
@@ -20,6 +19,7 @@ import { decryptConversationEnvelope, computeConversationFingerprint, computeCon
 import { b64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta } from './media.js';
+import { ensureSecureConversationReady } from './secure-conversation-manager.js';
 
 const decoder = new TextDecoder();
 const secureFetchBackoff = new Map();
@@ -174,6 +174,7 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
   const meta = payload?.meta || null;
   const baseId = messageId || toMessageId(raw) || null;
   const timestamp = Number.isFinite(ts) ? ts : null;
+  const msgType = typeof meta?.msg_type === 'string' ? meta.msg_type : null;
   const base = {
     id: baseId,
     ts: timestamp,
@@ -186,7 +187,7 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
     messageKey_b64: messageKeyB64 || null
   };
 
-  if (meta?.msg_type === 'media') {
+  if (msgType === 'media') {
     const mediaInfo = parseMediaMessage({ plaintext, meta });
     base.type = 'media';
     base.media = mediaInfo || null;
@@ -194,6 +195,9 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
     if (base.media && messageKeyB64) {
       base.media.messageKey_b64 = messageKeyB64;
     }
+  } else if (msgType === 'session-init') {
+    base.type = 'session-init';
+    base.text = '';
   } else {
     base.type = 'text';
     base.text = typeof base.text === 'string' ? base.text : '';
@@ -263,7 +267,11 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
     if (selfUid) fingerprintSelf = await computeConversationFingerprint(tokenB64, selfUid);
   } catch {}
 
-  await ensureDrReceiverState({ peerUidHex });
+  await ensureSecureConversationReady({
+    peerUidHex,
+    reason: 'list-messages',
+    source: 'messages:listSecureAndDecrypt'
+  });
 
   const sortedItems = sortMessagesByTimeline(items);
   const shouldTrackState = mutateState !== false;
@@ -423,7 +431,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               messageId,
               messageKeyB64: prepResult.historyEntry?.messageKey_b64 || null
             });
-            if (messageObj) out.push(messageObj);
+            if (messageObj && messageObj.type !== 'session-init') out.push(messageObj);
             decrypted = true;
             replayHandled = true;
           } catch (replayErr) {
@@ -483,7 +491,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
             messageId,
             messageKeyB64
           });
-          if (messageObj) out.push(messageObj);
+          if (messageObj && messageObj.type !== 'session-init') out.push(messageObj);
           decrypted = true;
         } catch (err) {
           lastError = err;
@@ -561,13 +569,17 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
 
       if (!decrypted) {
         const msg = lastError?.message || String(lastError || 'decrypt failed');
-        errs.push(msg);
-        console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg });
+        if ((payload?.meta?.msg_type || payload?.meta?.msgType) !== 'session-init') {
+          errs.push(msg);
+        }
+        console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg, msgType: payload?.meta?.msg_type || null });
       }
     } catch (err) {
       const msg = err?.message || String(err);
-      errs.push(msg);
-      console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg });
+      if ((payload?.meta?.msg_type || payload?.meta?.msgType) !== 'session-init') {
+        errs.push(msg);
+      }
+      console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg, msgType: payload?.meta?.msg_type || null });
     }
   }
 

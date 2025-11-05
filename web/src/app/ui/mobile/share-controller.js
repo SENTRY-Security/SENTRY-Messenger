@@ -13,7 +13,8 @@ import { deriveConversationContextFromSecret, computeConversationAccessFingerpri
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore } from './session-store.js';
-import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState } from '../../features/dr-session.js';
+import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState, sendDrSessionInit } from '../../features/dr-session.js';
+import { handleSecureConversationControlMessage } from '../../features/secure-conversation-manager.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 
@@ -72,21 +73,51 @@ export function setupShareController(options) {
       conversationDrInit = conversation.dr_init || conversation.drInit || null;
     }
     const existing = getContactSecret(peerUid) || {};
-    const payload = {
-      inviteId,
-      secret,
-      role: typeof existing.role === 'string' && existing.role.length ? existing.role : (role || null),
-      conversationToken: conversationToken || existing.conversationToken || null,
-      conversationId: conversationId || existing.conversationId || null,
-      conversationDrInit: conversationDrInit || existing.conversationDrInit || null
+    const update = {
+      invite: {
+        id: inviteId,
+        secret,
+        ...(role ? { role } : {})
+      },
+      conversation: {
+        token: conversationToken || existing.conversationToken || null,
+        id: conversationId || existing.conversationId || null,
+        drInit: conversationDrInit || existing.conversationDrInit || null
+      },
+      meta: { source: 'share-controller:storeContactSecret' }
     };
     if (drState) {
       const snapshot = snapshotDrState(drState);
       if (snapshot) {
-        payload.drState = snapshot;
+        update.dr = { state: snapshot };
       }
     }
-    setContactSecret(peerUid, payload);
+    setContactSecret(peerUid, update);
+  }
+
+  async function ensureSessionBootstrap(peerUid, conversation) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key || !conversation) return;
+    const secretInfo = getContactSecret(key);
+    if (!secretInfo?.inviteId || !secretInfo?.secret) return;
+    const role = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
+    if (role !== 'guest') return;
+    if (Number.isFinite(secretInfo.sessionBootstrapTs) && secretInfo.sessionBootstrapTs > 0) return;
+    try {
+      await sendDrSessionInit({ peerUidHex: key, conversation });
+      handleSecureConversationControlMessage({
+        peerUidHex: key,
+        messageType: 'session-init',
+        direction: 'outgoing',
+        source: 'share-controller:ensureSessionBootstrap'
+      });
+      setContactSecret(key, {
+        session: { bootstrapTs: Math.floor(Date.now() / 1000) },
+        meta: { source: 'share-controller:session-bootstrap' }
+      });
+    } catch (err) {
+      log({ sessionBootstrapSendError: err?.message || err, peerUid: key });
+    }
   }
 
   function markPeerRecentlyDeleted(peerUid) {
@@ -801,6 +832,7 @@ export function setupShareController(options) {
           conversation: conversationInfo,
           drState: x3dhState
         });
+        await ensureSessionBootstrap(res.owner_uid, conversationInfo);
       }
       inviteSecrets.delete(parsed.inviteId);
       persistInviteSecrets();

@@ -155,11 +155,29 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 流程：`wrangler deploy` → `wrangler d1 migrations apply --remote` → `npm ci && pm2 reload message-api` → `wrangler pages deploy`。可用 `--skip-{worker,api,pages}` 部分部署；若變更 D1 schema 請保留 `--apply-migrations`。
 
+### 正式釋出流程（必須）
+
+1. 本地修正完成後，先依 Prompt 規範跑完 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，確保全部綠燈。
+2. 透過 `./scripts/cleanup/wipe-all.sh` 清空 Cloudflare D1 / R2（如上節）。
+3. 執行 `bash ./scripts/deploy-prod.sh --apply-migrations`，不可跳過任何部件（Worker / Node API / Pages 必須同步部署）。
+4. 佈署完成後，以正式環境重新執行同組測試，範例如下（請將網域替換成實際 Production）：
+
+   ```bash
+   ORIGIN_API=https://api.message.sentry.red npm run test:prekeys-devkeys
+   ORIGIN_API=https://api.message.sentry.red npm run test:messages-secure
+   ORIGIN_API=https://api.message.sentry.red npm run test:friends-messages
+   ORIGIN_API=https://api.message.sentry.red npm run test:login-flow
+   ORIGIN_API=https://api.message.sentry.red E2E_ORIGIN_API=https://api.message.sentry.red npm run test:front:login
+   ```
+
+5. 若任何 Production 測試失敗，需先排除問題並重新部署，直到正式環境也全部通過為止。
+
 ---
 
 ## 測試與自動化
 
 > 修改程式碼後務必跑以下測試；若跳過，需在回報中說明原因與風險。
+> 正式釋出前，需再將 `ORIGIN_API`（及 `E2E_ORIGIN_API`）指向 Production，重跑同組測試確認線上環境也為綠燈。
 
 
 | 指令                            | 腳本                                | 覆蓋範圍 / 期望                                                                                                          |
@@ -196,16 +214,39 @@ kill $API_PID
 
 ---
 
+## 重構待辦
+
+- [x] **協定管理層**
+  - [x] 建立 `SecureConversationManager` 集中處理 X3DH / DR 初始化、`session-init` 控制訊息與狀態轉換，統一產出 `pending/ready/failed` 狀態。
+  - [x] Messages / Contacts UI 改為訂閱狀態事件（安全 Modal、輸入鎖定），移除舊有布林旗標與 `ensureDrReceiverState` 直呼。
+  - [ ] 擬定控制訊息策略（如 session ack / 重送）並評估伺服器端 bootstrap API。
+- [ ] **Contact Secrets 結構化**
+  - [x] 拆分 invite metadata、DR snapshot、history、session-bootstrap 標記等資料結構，改寫為型別化 getter/setter。
+  - [ ] 重新整理 storage 序列化 / 還原流程，確保跨 session 邏輯簡潔。
+- [ ] **控制訊息通道**
+  - [ ] 定義 `msg_type` 枚舉並集中處理（例如 `session-init`, `session-ack`），避免散落於 UI 層判斷。
+  - [ ] 評估 Server 端增加 session bootstrap API 或 Worker 流程，減少靠純訊息封包 workaround。
+- [ ] **測試補強**
+  - [ ] 增加「加好友未傳訊息 → 切換裝置 → 進入對話」等 E2E 場景，驗證安全 modal、錯誤訊息行為與狀態同步。
+  - [ ] 覆蓋 `listSecureAndDecrypt` 控制訊息 / replay 場景的單元測試。
+- [ ] **文件與設計視圖**
+  - [ ] 製作新流程圖（邀請 → Contact Secrets → DR ready → 訊息傳遞），更新 README 或 `/docs`。
+  - [ ] 補充重構後的狀態圖 / API 契約，便於後續維護。
+
+---
+
 ## 最新進度與工作項目
 
 ### 時間軸
 
-- **目前狀態**：訊息 / 好友 REST API 維持帳號驗證 + 會話 ACL 檢查；自我聯絡 metadata 已回填（UI 仍隱藏自我條目）；好友邀請初始化在 `/friends/invite/contact` 會自動帶入帳號驗證並支援缺漏補建，`friend_invites` 不再因 race 造成 404。DR / ACL 啟動驗證完成：登入或掃描後會話 fingerprint 會立即比對並補齊 ACL；Drive 上傳面板支援多檔案選擇與批次進度顯示。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
-- **下一步**：觀察 Worker 端尚未覆蓋的刪除 / 補貨情境是否需要新增 ACL 建立流程，並評估舊資料批次修補需求。
+- **目前狀態**：`SecureConversationManager` 已接手 DR 初始化與 `session-init` 控制訊息，Messages / Contacts UI 透過狀態事件自動顯示安全對話 Modal、解除輸入鎖定並移除 `secureInitBlocked` 等布林旗標；`listSecureAndDecrypt` 改由集中管理器確保會話就緒與回溯。Contact Secrets 更新流程改為結構化 getter/setter（`invite/conversation/dr/session` 四層），同步新增 `getContactSecretSections` 方便後續模組引用。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
+- **下一步**：整理 Contact Secrets 儲存與還原流程（meta/checksum & storage promote）並擬定控制訊息枚舉／Bootstrap API 設計，同步補上相對應測試。
 
 
 | 日期                    | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-11-12（Codex）** | 新增 `SecureConversationManager` 集中管理 DR 初始化與 `session-init` 控制訊息，Messages / Contacts UI 改為事件驅動顯示安全 Modal 並移除 `secureInitBlocked` flag；Contact Secrets setter 改為結構化（invite / conversation / dr / session）並提供 `getContactSecretSections` 方便後續模組引用。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 重跑皆綠。 |
+| **2025-11-11（Codex）** | 好友邀請接受後自動送出隱藏的 `session-init` 封包，同時保留 `guest_bundle` 強制重建流程並顯示安全提示 Modal，避免雙方首次聊天出現「部分訊息無法解密」。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 通過。 |
 | **2025-11-10（Codex）** | DR / ACL 啟動驗證：登入或掃描後載入訊息會先計算 conversation fingerprint 並帶入 `/messages/secure`，確保 Worker 授權與 DR state 就緒；重新驗證 `npm run test:{friends-messages,front:login}`。 |
 | **2025-11-10（Codex）** | 好友邀請初始化加強：`/friends/invite/contact` 會附帶帳號驗證資訊並於缺漏時自動建立 `friend_invites` 記錄，確保 owner envelope 一定寫入；Node/前端/script 同步更新。`npm run test:{friends-messages,front:login}` 通過。 |
 | **2025-11-10（Codex）** | 恢復自我聯絡 metadata：`loadContacts` 會保留自身條目並寫入 `contactSecrets` / `conversationIndex`，UI 仍隱藏自我聯絡避免清單出現自己；重跑 `npm run test:{friends-messages,front:login}` 驗證。 |
@@ -260,6 +301,7 @@ kill $API_PID
 
 | 時間 (UTC)       | 說明                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2025-11-12 08:10 | 建立 `SecureConversationManager` 集中處理 DR 初始化 / `session-init` 狀態，Messages / Contacts UI 改為訂閱狀態事件並關閉舊有 `secureInitBlocked` 流程；`listSecureAndDecrypt` 改透過管理器確認會話就緒。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。                                                          |
 | 2025-11-10 11:40 | `loadContacts` 恢復自我聯絡紀錄，標記為 hidden 以供 UI 遮蔽但維持 `contactSecrets` / `conversationIndex`；`contacts-view` 僅在渲染時忽略 hidden 條目。`npm run test:{friends-messages,front:login}` 通過。                                                                                                                     |
 | 2025-11-10 09:20 | Drive 上傳彈窗支援多檔案選擇、清單預覽與逐檔進度提示；批次上傳流程沿用加密上傳並在每檔完成後刷新列表。`npm run test:front:login` 通過。                                                                                                                                                                                                                  |
 | 2025-11-10 07:15 | `messages.controller` / `friends.controller` 加入帳號驗證與會話 ACL 授權，前端 API、DR 流程與腳本同步帶入 `uidHex`、`accountToken/accountDigest` 及 conversation fingerprint；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。                                                                                       |

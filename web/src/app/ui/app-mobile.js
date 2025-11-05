@@ -690,7 +690,8 @@ const {
   updateProgressModal,
   completeProgressModal,
   failProgressModal,
-  setModalObjectUrl
+  setModalObjectUrl,
+  showSecurityModal
 } = modalController;
 
 const { setupSwipe, closeSwipe, closeOpenSwipe } = createSwipeManager();
@@ -714,7 +715,8 @@ const messagesPane = initMessagesPane({
     closeModal,
     showModalLoading,
     updateLoadingModal,
-    setModalObjectUrl
+    setModalObjectUrl,
+    showSecurityModal
   }
 });
 

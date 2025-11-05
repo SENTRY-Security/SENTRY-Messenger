@@ -137,9 +137,8 @@ function appendDrHistoryEntry({ peerUidHex, ts, snapshot, snapshotNext, messageI
   history.sort((a, b) => compareHistoryKeys(Number(a?.ts), a?.messageId || null, Number(b?.ts), b?.messageId || null));
   while (history.length > MAX_HISTORY_ENTRIES) history.shift();
   setContactSecret(peer, {
-    inviteId: info.inviteId,
-    secret: info.secret,
-    drHistory: history
+    dr: { history },
+    meta: { source: 'dr-history-append' }
   });
   if (isAutomationEnv()) {
     console.log('[dr-history-append]', JSON.stringify({
@@ -217,10 +216,13 @@ function updateHistoryCursor({ peerUidHex, ts, messageId }) {
     return;
   }
   setContactSecret(peer, {
-    inviteId: info.inviteId,
-    secret: info.secret,
-    drHistoryCursorTs: Number.isFinite(stamp) ? stamp : null,
-    drHistoryCursorId: messageId || null
+    dr: {
+      cursor: {
+        ts: Number.isFinite(stamp) ? stamp : null,
+        id: messageId || null
+      }
+    },
+    meta: { source: 'dr-history-cursor' }
   });
   if (isAutomationEnv()) {
     console.log('[dr-history-cursor]', JSON.stringify({
@@ -318,16 +320,19 @@ export function persistDrSnapshot({ peerUidHex, state, snapshot } = {}) {
     return false;
   }
   try {
-    setContactSecret(peer, {
-      inviteId: info.inviteId,
-      secret: info.secret,
-      role: info.role || null,
-      conversationToken: info.conversationToken || null,
-      conversationId: info.conversationId || null,
-      conversationDrInit: info.conversationDrInit || null,
-      drState: snap,
-      __debugSource: 'persistDrSnapshot'
-    });
+    const update = {
+      dr: { state: snap },
+      meta: { source: 'persistDrSnapshot' }
+    };
+    const inviteUpdate = {};
+    if (info.role) inviteUpdate.role = info.role;
+    if (Object.keys(inviteUpdate).length) update.invite = inviteUpdate;
+    const conversationUpdate = {};
+    if (info.conversationToken) conversationUpdate.token = info.conversationToken;
+    if (info.conversationId) conversationUpdate.id = info.conversationId;
+    if (info.conversationDrInit) conversationUpdate.drInit = info.conversationDrInit;
+    if (Object.keys(conversationUpdate).length) update.conversation = conversationUpdate;
+    setContactSecret(peer, update);
     markHolderSnapshot(holder, 'persist', snap.updatedAt || Date.now());
     return true;
   } catch (err) {
@@ -389,10 +394,8 @@ export function hydrateDrStatesFromContactSecrets() {
       if (snapshotFromHistory) {
         historyFallbackCount += 1;
         setContactSecret(peerUid, {
-          inviteId: info.inviteId,
-          secret: info.secret,
-          drState: snapshot,
-          __debugSource: 'hydrateDrStateFallback'
+          dr: { state: snapshot },
+          meta: { source: 'hydrateDrStateFallback' }
         });
       }
     }
@@ -542,12 +545,7 @@ function conversationContextForPeer(peerUid) {
   return null;
 }
 
-/**
- * 發送 DR 文字訊息（必要時會先初始化會話）。
- * @param {{ peerUidHex: string, text: string, conversation?: { token_b64?:string, conversation_id?:string }, convId?: string }} p
- * @returns {Promise<{ msg: any, convId: string }>} 
- */
-export async function sendDrText({ peerUidHex, text, conversation, convId }) {
+async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOverrides = {} }) {
   const me = getUidHex();
   const peer = normHex(peerUidHex);
   if (!me) throw new Error('UID not set');
@@ -604,15 +602,26 @@ export async function sendDrText({ peerUidHex, text, conversation, convId }) {
   const ctB64 = base64ToUrl(pkt.ciphertext_b64);
   const fingerprint = await computeConversationFingerprint(tokenB64, me);
 
+  const meta = {
+    ts: now,
+    sender_fingerprint: fingerprint,
+    msg_type: typeof metaOverrides?.msg_type === 'string' && metaOverrides.msg_type.length
+      ? metaOverrides.msg_type
+      : 'text'
+  };
+  if (metaOverrides && typeof metaOverrides === 'object') {
+    for (const [key, value] of Object.entries(metaOverrides)) {
+      if (key === 'msg_type' || key === 'ts' || key === 'sender_fingerprint') continue;
+      if (value === undefined) continue;
+      meta[key] = value;
+    }
+  }
+
   const securePayload = {
     v: 1,
     hdr_b64: hdrB64,
     ct_b64: ctB64,
-    meta: {
-      ts: now,
-      sender_fingerprint: fingerprint,
-      msg_type: 'text'
-    }
+    meta
   };
 
   const envelope = await encryptConversationEnvelope(tokenB64, securePayload);
@@ -636,6 +645,28 @@ export async function sendDrText({ peerUidHex, text, conversation, convId }) {
   persistDrSnapshot({ peerUidHex: peer, state });
   logDrSend('encrypt-after', { peerUidHex: peer, snapshot: postSnapshot });
   return { msg: data, convId: conversationId, secure: true };
+}
+
+/**
+ * 發送 DR 文字訊息（必要時會先初始化會話）。
+ * @param {{ peerUidHex: string, text: string, conversation?: { token_b64?:string, conversation_id?:string }, convId?: string }} p
+ * @returns {Promise<{ msg: any, convId: string }>}
+ */
+export async function sendDrText({ peerUidHex, text, conversation, convId }) {
+  return sendDrPlaintext({ peerUidHex, text, conversation, convId });
+}
+
+export async function sendDrSessionInit({ peerUidHex, conversation, convId }) {
+  return sendDrPlaintext({
+    peerUidHex,
+    conversation,
+    convId,
+    text: 'session-init',
+    metaOverrides: {
+      msg_type: 'session-init',
+      control: 'bootstrap'
+    }
+  });
 }
 
 export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir, onProgress } = {}) {
@@ -872,7 +903,15 @@ export async function ensureDrReceiverState({ peerUidHex }) {
     }
     state = drState(peer);
   }
-  if (state?.rk && (state.ckR instanceof Uint8Array || state.ckS instanceof Uint8Array) && state.myRatchetPriv && state.myRatchetPub) {
+  const stateRole = typeof state?.baseKey?.role === 'string' ? state.baseKey.role.toLowerCase() : null;
+  const stateHasRatchet = !!(state?.rk && state?.myRatchetPriv && state?.myRatchetPub);
+  const stateHasReceiveChain = state?.ckR instanceof Uint8Array && state.ckR.length > 0;
+  const stateHasSendChain = state?.ckS instanceof Uint8Array && state.ckS.length > 0;
+  const isGuestLike = relationshipRole === 'guest' || stateRole === 'initiator';
+  if (stateHasRatchet && stateHasReceiveChain) {
+    return true;
+  }
+  if (stateHasRatchet && isGuestLike && (stateHasSendChain || stateHasReceiveChain)) {
     return true;
   }
 
@@ -895,12 +934,13 @@ export async function ensureDrReceiverState({ peerUidHex }) {
     const ok = await bootstrapDrFromGuestBundle({ peerUidHex: peer, guestBundle, force: shouldForce });
     if (ok || shouldForce) {
       const refreshed = drState(peer);
+      const refreshedRole = typeof refreshed?.baseKey?.role === 'string' ? refreshed.baseKey.role.toLowerCase() : null;
       if (
         refreshed?.rk &&
         refreshed?.ckR instanceof Uint8Array &&
         refreshed.ckR.length > 0 &&
         refreshed.myRatchetPriv instanceof Uint8Array &&
-        refreshed?.baseKey?.role === 'responder'
+        refreshedRole === 'responder'
       ) {
         return true;
       }
@@ -908,7 +948,13 @@ export async function ensureDrReceiverState({ peerUidHex }) {
   }
 
   const holder = drState(peer);
-  if (holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub) {
+  const holderRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
+  const holderHasRatchet = !!(holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub);
+  const holderHasReceiveChain = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0;
+  if (holderHasRatchet && holderHasReceiveChain) {
+    return true;
+  }
+  if (holderHasRatchet && (relationshipRole === 'guest' || holderRole === 'initiator')) {
     return true;
   }
 

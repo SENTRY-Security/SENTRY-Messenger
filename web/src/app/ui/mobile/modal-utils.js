@@ -94,6 +94,43 @@ export function setupModalController({ shareButtonProvider } = {}) {
     });
   }
 
+  function showSecurityModal({ title, message, subMessage } = {}) {
+    const modal = document.getElementById('modal');
+    const body = document.getElementById('modalBody');
+    if (!modal || !body) return;
+    modal.classList.remove(
+      'progress-modal',
+      'folder-modal',
+      'upload-modal',
+      'loading-modal',
+      'confirm-modal',
+      'nickname-modal',
+      'avatar-modal',
+      'avatar-preview-modal',
+      'settings-modal'
+    );
+    modal.classList.add('security-modal');
+    const modalTitle = document.getElementById('modalTitle');
+    if (modalTitle) modalTitle.textContent = title || '建立安全對話';
+    const spinner = '<div class="loading-spinner"></div>';
+    const primary = escapeHtml(message || '正在建立安全對話，請稍候…');
+    const secondary = typeof subMessage === 'string' && subMessage
+      ? `<div class="security-hint">${escapeHtml(subMessage)}</div>`
+      : '';
+    body.innerHTML = `
+      <div class="security-message">
+        ${spinner}
+        <div>${primary}</div>
+        ${secondary}
+      </div>`;
+    const main = document.querySelector('main.content');
+    if (main) {
+      main.classList.add('security-locked');
+      main.setAttribute('aria-hidden', 'true');
+    }
+    openModal();
+  }
+
   function showModalLoading(text) {
     const modal = document.getElementById('modal');
     const body = document.getElementById('modalBody');
@@ -232,6 +269,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
   return {
     openModal,
     closeModal,
+    showSecurityModal,
     showModalLoading,
     updateLoadingModal,
     showConfirmModal,

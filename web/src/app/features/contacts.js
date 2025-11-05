@@ -102,13 +102,21 @@ export async function loadContacts() {
                   ...(secretInfo?.conversationDrInit ? { dr_init: secretInfo.conversationDrInit } : null)
                 }
               : null);
+        const inviteIdValue = secretInfo?.inviteId || header?.inviteId || header?.invite_id || null;
+        const inviteUpdate = { secret };
+        if (inviteIdValue) inviteUpdate.id = inviteIdValue;
+        const resolvedRole = secretInfo?.role || null;
+        if (resolvedRole !== null && resolvedRole !== undefined) {
+          inviteUpdate.role = resolvedRole;
+        }
+        const conversationUpdate = {};
+        if (conversation?.token_b64) conversationUpdate.token = conversation.token_b64;
+        if (conversation?.conversation_id) conversationUpdate.id = conversation.conversation_id;
+        if (conversation?.dr_init) conversationUpdate.drInit = conversation.dr_init;
         pendingSecretUpdate = {
-          inviteId: secretInfo?.inviteId || header?.inviteId || header?.invite_id || null,
-          secret,
-          role: secretInfo?.role || null,
-          conversationToken: conversation?.token_b64 || null,
-          conversationId: conversation?.conversation_id || null,
-          conversationDrInit: conversation?.dr_init || null
+          invite: inviteUpdate,
+          ...(Object.keys(conversationUpdate).length ? { conversation: conversationUpdate } : {}),
+          meta: { source: 'contacts:pending-secret' }
         };
       } else {
         console.warn('[contacts] unsupported envelope format', { id: item?.id, envelope });
@@ -158,14 +166,21 @@ export async function loadContacts() {
         continue;
       }
       if (storedSecret) {
-        setContactSecret(entry.peerUid, {
-          inviteId: storedInviteId,
-          secret: storedSecret,
-          role: storedRole,
-          conversationToken: conversation?.token_b64 || null,
-          conversationId: conversation?.conversation_id || null,
-          conversationDrInit: conversation?.dr_init || null
-        });
+        const inviteUpdate = { secret: storedSecret };
+        if (storedInviteId) inviteUpdate.id = storedInviteId;
+        if (storedRole) inviteUpdate.role = storedRole;
+        const conversationUpdate = {};
+        if (conversation?.token_b64) conversationUpdate.token = conversation.token_b64;
+        if (conversation?.conversation_id) conversationUpdate.id = conversation.conversation_id;
+        if (conversation?.dr_init) conversationUpdate.drInit = conversation.dr_init;
+        const updatePayload = {
+          invite: inviteUpdate,
+          meta: { source: 'contacts:stored-secret' }
+        };
+        if (Object.keys(conversationUpdate).length) {
+          updatePayload.conversation = conversationUpdate;
+        }
+        setContactSecret(entry.peerUid, updatePayload);
       }
       peerMap.set(entry.peerUid, entry);
     } catch (err) {
