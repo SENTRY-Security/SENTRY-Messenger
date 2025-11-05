@@ -21,6 +21,7 @@ import {
 } from './conversation.js';
 import { bytesToB64Url } from '../ui/mobile/ui-utils.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
+import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
 import { encryptAndPutWithProgress } from './media.js';
 
 function normHex(s) { return String(s || '').replace(/[^0-9a-f]/gi, '').toUpperCase(); }
@@ -663,8 +664,21 @@ export async function sendDrSessionInit({ peerUidHex, conversation, convId }) {
     convId,
     text: 'session-init',
     metaOverrides: {
-      msg_type: 'session-init',
+      msg_type: CONTROL_MESSAGE_TYPES.SESSION_INIT,
       control: 'bootstrap'
+    }
+  });
+}
+
+export async function sendDrSessionAck({ peerUidHex, conversation, convId }) {
+  return sendDrPlaintext({
+    peerUidHex,
+    conversation,
+    convId,
+    text: 'session-ack',
+    metaOverrides: {
+      msg_type: CONTROL_MESSAGE_TYPES.SESSION_ACK,
+      control: 'ack'
     }
   });
 }

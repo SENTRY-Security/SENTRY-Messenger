@@ -10,6 +10,7 @@ import {
   SECURE_CONVERSATION_STATUS,
   listSecureConversationStatuses
 } from '../../features/secure-conversation-manager.js';
+import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from '../../features/secure-conversation-signals.js';
 import { conversationIdFromToken, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
@@ -1543,6 +1544,23 @@ export function initMessagesPane({
     }) || getConversationThreads().get(convId);
     if (!thread) return;
 
+    const myUid = getUidHex();
+    const senderUidRaw = event?.senderUid || event?.sender_uid || null;
+    const senderUid = senderUidRaw ? String(senderUidRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
+    const isSelf = !!(myUid && senderUid && myUid === senderUid);
+
+    const rawMsgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
+    const normalizedControlType = normalizeControlMessageType(rawMsgType);
+    if (normalizedControlType) {
+      handleSecureConversationControlMessage({
+        peerUidHex: peerUid,
+        messageType: normalizedControlType,
+        direction: isSelf ? 'outgoing' : 'incoming',
+        source: 'ws:message-new'
+      });
+      return;
+    }
+
     let tsRaw = Number(event?.ts ?? event?.timestamp);
     if (!Number.isFinite(tsRaw)) tsRaw = Math.floor(Date.now() / 1000);
     thread.lastMessageTs = tsRaw;
@@ -1551,21 +1569,6 @@ export function initMessagesPane({
     else if (!thread.lastMessageText) thread.lastMessageText = '有新訊息';
     const messageId = event?.messageId || event?.message_id;
     if (messageId) thread.lastMessageId = messageId;
-
-    const myUid = getUidHex();
-    const senderUidRaw = event?.senderUid || event?.sender_uid || null;
-    const senderUid = senderUidRaw ? String(senderUidRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
-    const isSelf = !!(myUid && senderUid && myUid === senderUid);
-
-    const msgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
-    if (msgType === 'session-init') {
-      handleSecureConversationControlMessage({
-        peerUidHex: peerUid,
-        messageType: 'session-init',
-        direction: isSelf ? 'outgoing' : 'incoming',
-        source: 'ws:message-new'
-      });
-    }
 
     const state = getMessageState();
     const active = state.conversationId === convId && state.activePeerUid === peerUid;

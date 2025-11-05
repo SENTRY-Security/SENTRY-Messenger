@@ -224,7 +224,7 @@ kill $API_PID
   - [x] 拆分 invite metadata、DR snapshot、history、session-bootstrap 標記等資料結構，改寫為型別化 getter/setter。
   - [x] 重新整理 storage 序列化 / 還原流程，確保跨 session 邏輯簡潔。
 - [ ] **控制訊息通道**
-  - [ ] 定義 `msg_type` 枚舉並集中處理（例如 `session-init`, `session-ack`），避免散落於 UI 層判斷。
+  - [x] 定義 `msg_type` 枚舉並集中處理（例如 `session-init`, `session-ack`），避免散落於 UI 層判斷。
   - [ ] 評估 Server 端增加 session bootstrap API 或 Worker 流程，減少靠純訊息封包 workaround。
 - [ ] **測試補強**
   - [ ] 增加「加好友未傳訊息 → 切換裝置 → 進入對話」等 E2E 場景，驗證安全 modal、錯誤訊息行為與狀態同步。
@@ -239,13 +239,13 @@ kill $API_PID
 
 ### 時間軸
 
-- **目前狀態**：`SecureConversationManager` 已接手 DR 初始化與 `session-init` 控制訊息，Messages / Contacts UI 透過狀態事件自動顯示安全對話 Modal、解除輸入鎖定並移除 `secureInitBlocked` 等布林旗標；`listSecureAndDecrypt` 改由集中管理器確保會話就緒與回溯。Contact Secrets 更新流程改為結構化 getter/setter（`invite/conversation/dr/session` 四層），同步新增 `getContactSecretSections` 方便後續模組引用並導入版本化儲存格式。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
+- **目前狀態**：`SecureConversationManager` 已接手 DR 初始化與 `session-init` 控制訊息並新增 `session-ack` 控制封包（含逾時處理），Messages / Contacts UI 透過狀態事件自動顯示安全對話 Modal、解除輸入鎖定並移除 `secureInitBlocked` 等布林旗標；`listSecureAndDecrypt` 改由集中管理器確保會話就緒與回溯。Contact Secrets 更新流程改為結構化 getter/setter（`invite/conversation/dr/session` 四層）且採版本化儲存格式。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
 - **下一步**：設計控制訊息枚舉與 session ack 流程，評估 server 端 bootstrap API 需求並補齊測試／文件。
 
 
 | 日期                    | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **2025-11-12（Codex）** | 新增 `SecureConversationManager` 集中管理 DR 初始化與 `session-init` 控制訊息，Messages / Contacts UI 改為事件驅動顯示安全 Modal 並移除 `secureInitBlocked` flag；Contact Secrets setter 改為結構化（invite / conversation / dr / session）並提供 `getContactSecretSections` 方便後續模組引用。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 重跑皆綠。 |
+| **2025-11-12（Codex）** | 新增 `SecureConversationManager` 集中管理 DR 初始化與 `session-init` 控制訊息，加入 `session-ack` 確認與逾時監控；Messages / Contacts UI 改為事件驅動顯示安全 Modal 並移除 `secureInitBlocked` flag。Contact Secrets setter 改為結構化（invite / conversation / dr / session）並提供 `getContactSecretSections` 方便後續模組引用。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 重跑皆綠。 |
 | **2025-11-11（Codex）** | 好友邀請接受後自動送出隱藏的 `session-init` 封包，同時保留 `guest_bundle` 強制重建流程並顯示安全提示 Modal，避免雙方首次聊天出現「部分訊息無法解密」。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 通過。 |
 | **2025-11-10（Codex）** | DR / ACL 啟動驗證：登入或掃描後載入訊息會先計算 conversation fingerprint 並帶入 `/messages/secure`，確保 Worker 授權與 DR state 就緒；重新驗證 `npm run test:{friends-messages,front:login}`。 |
 | **2025-11-10（Codex）** | 好友邀請初始化加強：`/friends/invite/contact` 會附帶帳號驗證資訊並於缺漏時自動建立 `friend_invites` 記錄，確保 owner envelope 一定寫入；Node/前端/script 同步更新。`npm run test:{friends-messages,front:login}` 通過。 |

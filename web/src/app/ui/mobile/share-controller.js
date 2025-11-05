@@ -15,6 +15,7 @@ import { restoreContactSecrets, setContactSecret, deleteContactSecret, getContac
 import { sessionStore } from './session-store.js';
 import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState, sendDrSessionInit } from '../../features/dr-session.js';
 import { handleSecureConversationControlMessage } from '../../features/secure-conversation-manager.js';
+import { CONTROL_MESSAGE_TYPES } from '../../features/secure-conversation-signals.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 
@@ -107,7 +108,7 @@ export function setupShareController(options) {
       await sendDrSessionInit({ peerUidHex: key, conversation });
       handleSecureConversationControlMessage({
         peerUidHex: key,
-        messageType: 'session-init',
+        messageType: CONTROL_MESSAGE_TYPES.SESSION_INIT,
         direction: 'outgoing',
         source: 'share-controller:ensureSessionBootstrap'
       });

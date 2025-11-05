@@ -19,6 +19,7 @@ import { decryptConversationEnvelope, computeConversationFingerprint, computeCon
 import { b64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta } from './media.js';
+import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 import { ensureSecureConversationReady } from './secure-conversation-manager.js';
 
 const decoder = new TextDecoder();
@@ -170,6 +171,14 @@ function parseMediaMessage({ plaintext, meta }) {
   return mediaInfo;
 }
 
+function isControlMessageObject(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  return (
+    obj.type === CONTROL_MESSAGE_TYPES.SESSION_INIT ||
+    obj.type === CONTROL_MESSAGE_TYPES.SESSION_ACK
+  );
+}
+
 function buildMessageObject({ plaintext, payload, header, raw, direction, ts, messageId, messageKeyB64 }) {
   const meta = payload?.meta || null;
   const baseId = messageId || toMessageId(raw) || null;
@@ -195,8 +204,11 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
     if (base.media && messageKeyB64) {
       base.media.messageKey_b64 = messageKeyB64;
     }
-  } else if (msgType === 'session-init') {
-    base.type = 'session-init';
+  } else if (msgType === CONTROL_MESSAGE_TYPES.SESSION_INIT) {
+    base.type = CONTROL_MESSAGE_TYPES.SESSION_INIT;
+    base.text = '';
+  } else if (msgType === CONTROL_MESSAGE_TYPES.SESSION_ACK) {
+    base.type = CONTROL_MESSAGE_TYPES.SESSION_ACK;
     base.text = '';
   } else {
     base.type = 'text';
@@ -330,6 +342,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
       let replayHandled = false;
       let messageKeyB64 = null;
       const meta = payload?.meta || null;
+      const payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
       const senderFingerprint = meta?.sender_fingerprint || meta?.fingerprint || null;
       let direction = 'unknown';
       if (senderFingerprint && fingerprintSelf && senderFingerprint === fingerprintSelf) direction = 'outgoing';
@@ -431,7 +444,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               messageId,
               messageKeyB64: prepResult.historyEntry?.messageKey_b64 || null
             });
-            if (messageObj && messageObj.type !== 'session-init') out.push(messageObj);
+            if (messageObj && !isControlMessageObject(messageObj)) out.push(messageObj);
             decrypted = true;
             replayHandled = true;
           } catch (replayErr) {
@@ -491,7 +504,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
             messageId,
             messageKeyB64
           });
-          if (messageObj && messageObj.type !== 'session-init') out.push(messageObj);
+          if (messageObj && !isControlMessageObject(messageObj)) out.push(messageObj);
           decrypted = true;
         } catch (err) {
           lastError = err;
@@ -569,14 +582,14 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
 
       if (!decrypted) {
         const msg = lastError?.message || String(lastError || 'decrypt failed');
-        if ((payload?.meta?.msg_type || payload?.meta?.msgType) !== 'session-init') {
+        if (!payloadMsgType || (payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_INIT && payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_ACK)) {
           errs.push(msg);
         }
         console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg, msgType: payload?.meta?.msg_type || null });
       }
     } catch (err) {
       const msg = err?.message || String(err);
-      if ((payload?.meta?.msg_type || payload?.meta?.msgType) !== 'session-init') {
+      if (!payloadMsgType || (payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_INIT && payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_ACK)) {
         errs.push(msg);
       }
       console.warn('[messages] secure decrypt skipped', { id: raw?.id, error: msg, msgType: payload?.meta?.msg_type || null });

@@ -3,7 +3,8 @@
 
 import { drState } from '../core/store.js';
 import { getContactSecret } from '../core/contact-secrets.js';
-import { ensureDrReceiverState } from './dr-session.js';
+import { ensureDrReceiverState, sendDrSessionAck } from './dr-session.js';
+import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 
 const STATUS_IDLE = 'idle';
 const STATUS_PENDING = 'pending';
@@ -12,6 +13,7 @@ const STATUS_FAILED = 'failed';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_POLL_INTERVAL_MS = 400;
+const ACK_TIMEOUT_MS = 10_000;
 
 const listeners = new Set();
 const peerStates = new Map();
@@ -47,15 +49,26 @@ function ensureEntry(peerUidHex) {
       attempts: 0,
       reason: null,
       source: null,
-      pendingPromise: null
+      pendingPromise: null,
+      control: null
     };
     peerStates.set(key, entry);
+  }
+  if (!entry.control) {
+    entry.control = initControlState();
   }
   return entry;
 }
 
 function cloneStatus(key, entry) {
   if (!entry) {
+    const controlSnapshot = {
+      awaitingAck: false,
+      pendingAck: false,
+      ackDeadline: null,
+      lastInitAt: null,
+      lastAckAt: null
+    };
     return {
       peerUidHex: key,
       status: STATUS_IDLE,
@@ -64,9 +77,18 @@ function cloneStatus(key, entry) {
       readyAt: null,
       attempts: 0,
       reason: null,
-      source: null
+      source: null,
+      control: controlSnapshot
     };
   }
+  const ctrl = entry.control || initControlState();
+  const controlSnapshot = {
+    awaitingAck: !!ctrl.awaitingAck,
+    pendingAck: !!ctrl.pendingAckResponse,
+    ackDeadline: ctrl.ackDeadline || null,
+    lastInitAt: ctrl.lastInitAt || null,
+    lastAckAt: ctrl.lastAckAt || null
+  };
   return {
     peerUidHex: key,
     status: entry.status,
@@ -75,12 +97,14 @@ function cloneStatus(key, entry) {
     readyAt: entry.readyAt || null,
     attempts: entry.attempts || 0,
     reason: entry.reason || null,
-    source: entry.source || null
+    source: entry.source || null,
+    control: controlSnapshot
   };
 }
 
 function emitStatus(key, entry, extra = {}) {
   if (!entry) return;
+  const ctrl = entry.control || initControlState();
   const payload = {
     peerUidHex: key,
     status: entry.status,
@@ -89,7 +113,14 @@ function emitStatus(key, entry, extra = {}) {
     readyAt: entry.readyAt,
     attempts: entry.attempts,
     reason: extra.reason ?? entry.reason ?? null,
-    source: extra.source ?? entry.source ?? null
+    source: extra.source ?? entry.source ?? null,
+    control: {
+      awaitingAck: !!ctrl.awaitingAck,
+      pendingAck: !!ctrl.pendingAckResponse,
+      ackDeadline: ctrl.ackDeadline || null,
+      lastInitAt: ctrl.lastInitAt || null,
+      lastAckAt: ctrl.lastAckAt || null
+    }
   };
   for (const listener of listeners) {
     try {
@@ -142,6 +173,89 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function initControlState() {
+  return {
+    awaitingAck: false,
+    ackTimer: null,
+    ackDeadline: null,
+    lastInitAt: null,
+    lastAckAt: null,
+    pendingAckResponse: false,
+    lastIncomingInitAt: null
+  };
+}
+
+function clearAckTimer(entry) {
+  if (entry?.control?.ackTimer) {
+    try { clearTimeout(entry.control.ackTimer); } catch {}
+    entry.control.ackTimer = null;
+    entry.control.ackDeadline = null;
+  }
+}
+
+function scheduleAckTimeout(key, entry) {
+  if (!entry?.control) return;
+  clearAckTimer(entry);
+  entry.control.ackDeadline = Date.now() + ACK_TIMEOUT_MS;
+  entry.control.ackTimer = setTimeout(() => {
+    entry.control.ackTimer = null;
+    entry.control.awaitingAck = false;
+    entry.control.pendingAckResponse = false;
+    entry.control.ackDeadline = null;
+    setStatus(key, STATUS_FAILED, {
+      reason: 'ack-timeout',
+      source: 'control-message',
+      error: '等待 session ack 逾時'
+    });
+  }, ACK_TIMEOUT_MS);
+}
+
+function markControlMessage(key, type, direction) {
+  const entry = ensureEntry(key);
+  if (!entry) return null;
+  const ctrl = entry.control || (entry.control = initControlState());
+  const now = Date.now();
+  if (type === CONTROL_MESSAGE_TYPES.SESSION_INIT) {
+    if (direction === 'outgoing') {
+      ctrl.awaitingAck = true;
+      ctrl.pendingAckResponse = false;
+      ctrl.lastInitAt = now;
+      scheduleAckTimeout(key, entry);
+    } else {
+      ctrl.pendingAckResponse = true;
+      ctrl.awaitingAck = false;
+      ctrl.lastIncomingInitAt = now;
+      clearAckTimer(entry);
+    }
+  } else if (type === CONTROL_MESSAGE_TYPES.SESSION_ACK) {
+    if (direction === 'incoming') {
+      ctrl.awaitingAck = false;
+      ctrl.pendingAckResponse = false;
+      ctrl.lastAckAt = now;
+      clearAckTimer(entry);
+    } else {
+      ctrl.awaitingAck = false;
+      ctrl.lastAckAt = now;
+      clearAckTimer(entry);
+    }
+  }
+  return entry;
+}
+
+async function sendAckIfPending(key, { source = 'control-message' } = {}) {
+  const entry = ensureEntry(key);
+  if (!entry?.control?.pendingAckResponse) return;
+  if (entry.control.awaitingAck) return; // already handling outgoing ack
+  entry.control.pendingAckResponse = false;
+  try {
+    await sendDrSessionAck({ peerUidHex: key });
+    markControlMessage(key, CONTROL_MESSAGE_TYPES.SESSION_ACK, 'outgoing');
+    setStatus(key, STATUS_READY, { reason: 'session-ack-sent', source });
+  } catch (err) {
+    setStatus(key, STATUS_FAILED, { reason: 'session-ack-failed', source, error: err });
+  }
 }
 
 export function subscribeSecureConversation(listener) {
@@ -223,19 +337,45 @@ export function handleSecureConversationControlMessage({
   source = 'control-message'
 } = {}) {
   const key = normalizePeer(peerUidHex);
-  if (!key || messageType !== 'session-init') return;
-  const entry = ensureEntry(key);
+  if (!key) return;
+  const normalizedType = normalizeControlMessageType(messageType);
+  if (!normalizedType) return;
+  const resolvedDirection = (direction || 'incoming').toLowerCase() === 'outgoing' ? 'outgoing' : 'incoming';
+  const entry = markControlMessage(key, normalizedType, resolvedDirection);
   if (!entry) return;
-  if (entry.status !== STATUS_READY) {
+
+  if (normalizedType === CONTROL_MESSAGE_TYPES.SESSION_INIT) {
+    const reason = resolvedDirection === 'outgoing' ? 'session-init-outgoing' : 'session-init-incoming';
     setStatus(key, STATUS_PENDING, {
-      reason: direction === 'outgoing' ? 'session-init-outgoing' : 'session-init-incoming',
+      reason,
       source,
       attempts: entry.attempts || 0
     });
+    if (resolvedDirection !== 'outgoing') {
+      ensureSecureConversationReady({
+        peerUidHex: key,
+        reason: 'session-init',
+        source
+      })
+        .then(() => sendAckIfPending(key, { source }))
+        .catch((err) => {
+          console.warn('[secure-conversation] ensure after session-init failed', err);
+          setStatus(key, STATUS_FAILED, {
+            reason: 'session-init-failed',
+            source,
+            error: err
+          });
+        });
+    }
+  } else if (normalizedType === CONTROL_MESSAGE_TYPES.SESSION_ACK) {
+    if (resolvedDirection === 'incoming') {
+      setStatus(key, STATUS_READY, {
+        reason: 'session-ack',
+        source,
+        attempts: entry.attempts || 0
+      });
+    }
   }
-  ensureSecureConversationReady({ peerUidHex: key, reason: 'session-init', source }).catch((err) => {
-    console.warn('[secure-conversation] ensure after session-init failed', err);
-  });
 }
 
 export function resetSecureConversation(peerUidHex, { reason = 'reset', source = 'resetSecureConversation' } = {}) {
@@ -243,6 +383,8 @@ export function resetSecureConversation(peerUidHex, { reason = 'reset', source =
   if (!key) return;
   const entry = ensureEntry(key);
   if (!entry) return;
+  clearAckTimer(entry);
+  entry.control = initControlState();
   entry.pendingPromise = null;
   entry.attempts = 0;
   setStatus(key, STATUS_IDLE, { reason, source });
