@@ -1171,6 +1171,13 @@ export function initMessagesPane({
     } else if (!state.viewMode) {
       state.viewMode = 'detail';
     }
+    let initialStatus = getCachedSecureStatus(key);
+    if (!initialStatus || initialStatus.status === SECURE_CONVERSATION_STATUS.IDLE) {
+      initialStatus = cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.PENDING, null);
+    }
+    if (initialStatus) {
+      applySecureStatusForActivePeer(key, initialStatus);
+    }
     try {
       await ensureSecureConversationReady({
         peerUidHex: key,

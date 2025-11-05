@@ -397,9 +397,16 @@ export function initContactsView(options) {
       log({ contactSkipSelfEntry: key });
       return;
     }
-    if (isRecentlyRemoved(key)) {
-      log({ contactSuppressedAfterAddition: key });
+    const bypassRemovalGuard =
+      !!(conversation && conversation.token_b64 && conversation.conversation_id) ||
+      (typeof contactSecret === 'string' && contactSecret.length > 0) ||
+      (typeof inviteId === 'string' && inviteId.length > 0);
+    if (isRecentlyRemoved(key) && !bypassRemovalGuard) {
+      log({ contactSuppressedAfterAddition: key, reason: 'recently-removed' });
       return;
+    }
+    if (bypassRemovalGuard && isRecentlyRemoved(key)) {
+      recentlyRemovedPeers.delete(key);
     }
     const now = Math.floor(Date.now() / 1000);
     const conversationPayload = conversation && conversation.conversation_id && conversation.token_b64 ? {
