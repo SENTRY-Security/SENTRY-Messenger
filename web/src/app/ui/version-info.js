@@ -8,6 +8,53 @@ let pendingFetch = null;
 let cachedHealth = null;
 let pendingHealth = null;
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const tier = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const value = bytes / (1024 ** tier);
+  return `${value.toFixed(tier === 0 ? 0 : 1)} ${units[tier]}`;
+}
+
+function collectStorageStats() {
+  if (typeof window === 'undefined') return [];
+  const encoder = new TextEncoder();
+  const results = [];
+  const addStats = (storage, label) => {
+    if (!storage) return;
+    try {
+      const length = storage.length;
+      let totalBytes = 0;
+      for (let i = 0; i < length; i += 1) {
+        const key = storage.key(i);
+        if (key == null) continue;
+        const value = storage.getItem(key);
+        totalBytes += encoder.encode(String(key)).length;
+        if (value != null) {
+          totalBytes += encoder.encode(String(value)).length;
+        }
+      }
+      results.push({
+        label,
+        keyCount: length,
+        totalBytes
+      });
+    } catch (err) {
+      results.push({
+        label,
+        keyCount: 0,
+        totalBytes: 0,
+        error: err?.message || String(err)
+      });
+    }
+  };
+
+  addStats(window.localStorage, 'localStorage');
+  addStats(window.sessionStorage, 'sessionStorage');
+
+  return results;
+}
+
 function getAppVersion() {
   if (typeof window !== 'undefined') {
     return window.APP_VERSION || 'unknown';
@@ -43,18 +90,13 @@ function formatInfo(info) {
   const fetchedAt = info?.fetchedAt ? new Date(info.fetchedAt) : now;
   const hasWindow = typeof window !== 'undefined';
   return {
-    service: info?.name || info?.service || 'SENTRY API',
     version: info?.version || info?.build || 'unknown',
-    environment: info?.env || info?.environment || '-',
     statusSummary: summarizeStatus(info),
     healthSummary: summarizeHealth(info?.apiHealth),
-    apiOrigin: hasWindow ? (window.API_ORIGIN || window.location.origin) : '-',
-    pagesOrigin: hasWindow ? window.location.origin : '-',
     appVersion: getAppVersion(),
     appBuildAt: getAppBuildTime(),
     fetchedAt: fetchedAt.toLocaleString('zh-TW', { hour12: false }),
-    clientLoadedAt: now.toLocaleString('zh-TW', { hour12: false }),
-    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '-'
+    clientLoadedAt: now.toLocaleString('zh-TW', { hour12: false })
   };
 }
 
@@ -107,19 +149,32 @@ async function fetchApiHealth() {
 
 function renderPopup(popup, info) {
   const details = formatInfo(info);
+  const storageStats = collectStorageStats();
+  const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
+  const storageRows = storageStats.map((item) => {
+    const detail = item.error
+      ? `<span style="color:#f87171;">錯誤：${item.error}</span>`
+      : `<span>${item.keyCount} keys / ${formatBytes(item.totalBytes)}</span>`;
+    return `
+      <div class="version-storage-row">
+        <span>${item.label}</span>
+        ${detail}
+      </div>`;
+  }).join('') || '<div class="version-storage-row">無可用資料</div>';
+
   popup.innerHTML = `
     <strong>版本資訊</strong>
     <div>前端版本：${details.appVersion}</div>
     <div>前端建置：${details.appBuildAt}</div>
     <div>前端載入：${details.clientLoadedAt}</div>
-    <div>Pages Origin：${details.pagesOrigin}</div>
-    <div>API Origin：${details.apiOrigin}</div>
-    <div>服務：${details.service}</div>
     <div>版本：${details.version}</div>
-    <div>環境：${details.environment}</div>
     <div>服務狀態：${details.statusSummary}</div>
     <div>API 健康：${details.healthSummary}</div>
-    <div style="margin-top:6px;">User-Agent：${details.userAgent}</div>
+    <div style="margin-top:10px;font-weight:600;">前端儲存資訊</div>
+    <div class="version-storage-list">
+      ${storageRows}
+    </div>
+    <div class="version-storage-total">總計：${formatBytes(totalBytes)}</div>
     <div style="margin-top:6px; font-size:11px;">更新時間：${details.fetchedAt}</div>
   `;
   popup.setAttribute('aria-hidden', 'false');
