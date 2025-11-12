@@ -348,33 +348,57 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
   - [ ] 決定是否以 feature flag 控制（逐步 rollout）。
   - [ ] 文件化使用者需知（例如清除 cache、隱私說明）。
 
-### Encrypted Voice / Video Call Roadmap（Mobile-first）
+### Encrypted Voice / Video Call Roadmap（Mobile + Future iOS App）
 
-- [ ] **需求盤點與 UX**
-  - [ ] 釐清語音／視訊情境（背景播放、螢幕鎖定、弱網、耳機/喇叭切換）並產出 mobile-first wireframe（撥號、來電、通話中）。
-  - [ ] 規劃來電通知策略：前景 toast、背景推播、App 關閉時喚醒與拒接流程。
-- [ ] **信令與狀態機**
-  - [ ] 定義 WebSocket 信令事件（invite / accept / reject / cancel / busy / ice-candidate）與重試、超時、互斥規則。
-  - [ ] 決定是否獨立信令 Worker 或沿用 `/ws`，並加上版本欄位與能力探針。
+- [x] **需求盤點與 UX**（詳見 [`docs/encrypted-calls-plan.md`](docs/encrypted-calls-plan.md)）
+  - [x] 逐一列出語音／視訊情境（背景播放、螢幕鎖定、弱網、耳機/喇叭切換、CarPlay），並同時產出 PWA 與未來 iOS App 可共用的 wireframe（撥號、來電、通話中、迷你浮窗）。
+  - [x] 規劃前景/背景通知策略：Web 推播 + iOS PushKit，定義 App 被殺掉時的 fallback 接通流程。
+- [x] **信令與狀態機**（詳見 [`docs/encrypted-calls-signaling.md`](docs/encrypted-calls-signaling.md)）
+  - [x] 設計 WebSocket 信令（invite / accept / reject / cancel / busy / ringing / ice-candidate）並提供版本/能力欄位，確保 iOS 原生與 Web 可以依 capability 切換。
+  - [x] 製作呼叫狀態機（自動重試、超時、互斥鎖）並輸出為共用文件，供原生 App SDK 直接沿用。
+- [x] **端對端加密媒體**（詳見 [`docs/encrypted-calls-media.md`](docs/encrypted-calls-media.md)）
+  - [x] 評估 WebRTC Insertable Streams + SFrame 或自建 SRTP pipeline，並定義與 X3DH/Double Ratchet 相容的 key ladder（呼叫 master key → per-direction key）。
+  - [x] 制定金鑰輪換/銷毀 API，使 JavaScript 與 iOS (Swift) 可以共用同一份 protobuf/CBOR 描述。
+- [x] **NAT Traversal / TURN**（詳見 [`docs/encrypted-calls-network.md`](docs/encrypted-calls-network.md)）
+  - [x] 佈建 STUN/TURN (coturn) 並規劃 OAuth/TLS 憑證；整理成設定檔讓 Web 與 iOS WebRTC stack 共用。
+  - [x] 撰寫頻寬/延遲探針，定義語音優先、視訊 fallback、純語音模式切換規則。
+- [x] **行動裝置 UI / 體驗**（詳見 [`docs/encrypted-calls-ui.md`](docs/encrypted-calls-ui.md)）
+  - [x] 完成通話控制列（靜音、擴音、切視訊、掛斷）與全螢幕來電頁，並提供原生 iOS 套件可套用的 design tokens。
+  - [x] 實作背景播放、Audio Focus、CallKit 介面與網路切換自動重連，確保 web / iOS 行為一致。
+- [x] **後端與監控**（詳見 [`docs/encrypted-calls-backend.md`](docs/encrypted-calls-backend.md)）
+  - [x] 新增呼叫事件記錄（成功率、建立時間、ICE 失敗率、封包遺失）並輸出 Prometheus/Grafana dashboard。
+  - [x] 建立濫用防護（呼叫速率、黑名單、封鎖同步）並定義 API 讓 iOS app 也能使用。
+- [x] **測試與安全審查**（詳見 [`docs/encrypted-calls-testing.md`](docs/encrypted-calls-testing.md)）
+  - [x] 撰寫自動化腳本模擬兩支行動裝置（Web + iOS 模擬器）驗證信令、金鑰交握、音訊/視訊傳輸。
+  - [x] 更新 threat model、安排第三方評估（加密材料壽命、記憶體擦除、螢幕錄影保護）。
+- [x] **視訊與擴充**（詳見 [`docs/encrypted-calls-video.md`](docs/encrypted-calls-video.md)）
+  - [x] 規劃視訊 UI（畫中畫、鏡頭切換、螢幕分享）與頻寬調度，並設計多方通話/會議的擴充接口供 iOS/Android/ Web 共用。
+
+### Encrypted Call Implementation Checklist
+
+> 依據 `docs/encrypted-calls-*.md` 內容統整的實作待辦，已確認各文件規劃互不衝突，可依序執行。
+
+- [ ] **基礎 Schema 與模組初始化**
+  - [ ] 建立 `shared/calls/schemas.{js,ts}`（含 `callKeyEnvelope`, `callMediaState`, capability 定義），並同步 Swift 版本。
+  - [ ] 新增 `calls/` 前端模組骨架（state manager、event bus、network config loader）。
+- [ ] **後端資料層與 API**
+  - [ ] 在 Worker / D1 實作 `call_sessions`, `call_events` migrations 及 CRUD endpoint（參考 `docs/encrypted-calls-backend.md`）。
+  - [ ] Node API 實作 `/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}`，含 rate limit 與 abuse guard。
+- [ ] **信令與互斥控制**
+  - [ ] WebSocket handler 支援 `call-*` 事件、鎖定/超時機制，並更新前端/ iOS 客戶端 SDK 以共用狀態機（見 `docs/encrypted-calls-signaling.md`）。
 - [ ] **端對端加密媒體**
-  - [ ] 選定技術（WebRTC Insertable Streams 或自建 SRTP），設計與現有 X3DH/DR 的 key ladder（呼叫 master key → per-direction SRTP key）。
-  - [ ] 定義金鑰輪換、掛斷銷毀與錯誤恢復，並預留視訊共用相同金鑰框架。
-- [ ] **NAT Traversal 與 TURN**
-  - [ ] 佈建 STUN/TURN（含 TLS/443）並制定臨時憑證取得方式。
-  - [ ] 規劃頻寬偵測與自動降階（語音優先、視訊 fallback），記錄 QoS 指標。
+  - [ ] 實作 `CallKeyManager`（HKDF ladder、輪換、銷毀）與 `call-key-envelope` 交換。
+  - [ ] Web 端導入 Insertable Streams pipeline；iOS 端整合 SFrame / SRTP transform（見 `docs/encrypted-calls-media.md`）。
+- [ ] **NAT / TURN 整合**
+  - [ ] 佈署 coturn（DNS/TLS/監控）並完成 `/turn-credentials` API；前端讀取 `network-config` 自動套用（見 `docs/encrypted-calls-network.md`）。
 - [ ] **行動裝置 UI / 體驗**
-  - [ ] 完成通話控制列（靜音、擴音、切換視訊、掛斷）與 full-screen 來電頁，支援裝置旋轉與安全鎖定畫面。
-  - [ ] 實作背景播放、Audio Focus 管理與網路切換時的自動重連提示。
-- [ ] **後端服務與監控**
-  - [ ] 新增呼叫事件表與匿名統計（成功率、平均建立時間、ICE 失敗率、封包遺失）。
-  - [ ] 建立濫用防護（呼叫速率限制、黑名單、封鎖 UI），並串 Grafana/Alert。
-- [ ] **測試與安全審查**
-  - [ ] 撰寫自動化流程（模擬兩支行動裝置）驗證信令、金鑰交握、實際音訊與視訊封包。
-  - [ ] 更新 threat model、安排第三方評估（加密材料壽命、記憶體擦除、截圖保護）。
-- [ ] **視訊擴充與未來功能**
-  - [ ] 規劃視訊 UI（畫中畫、前/後鏡頭切換、螢幕分享）與頻寬調度策略。
-  - [ ] 設計多方通話／群組會議的擴充點與與訊息系統的同步行程。
-
+  - [ ] 建立通話 overlay、控制列、背景/鎖屏流程與 design tokens；iOS 連動 CallKit/Audio Focus（見 `docs/encrypted-calls-ui.md`）。
+- [ ] **視訊、螢幕分享與擴充**
+  - [ ] 實作頻寬 profile manager、PiP、螢幕分享及多方通話預留 hook（見 `docs/encrypted-calls-video.md`）。
+- [ ] **測試與安全驗證**
+  - [ ] 完成單元/整合/端到端測試（含 Playwright + iOS 實機）並更新 CI；同步 Threat Model、第三方評估（見 `docs/encrypted-calls-testing.md`）。
+- [ ] **監控與營運**
+  - [ ] 佈建呼叫專用 Prometheus/Grafana dashboard、Loki log pipeline，並撰寫週報/告警流程。
 ---
 
 ## Codex 修改追蹤

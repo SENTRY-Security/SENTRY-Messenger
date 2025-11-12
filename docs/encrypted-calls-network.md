@@ -1,0 +1,122 @@
+# Encrypted Voice / Video Call — NAT Traversal / TURN 與頻寬偵測
+
+> 對應 README「Encrypted Voice / Video Call Roadmap」第四項。說明 STUN/TURN 佈建、憑證與頻寬策略，供 Web PWA 與未來 iOS App 共用。
+
+## 1. STUN / TURN 架構
+
+- 使用 **coturn** 佈署兩組節點：
+  - `turn1.sentry.mobi`（台灣），`turn2.sentry.mobi`（東京）
+  - IPv4/IPv6、TCP/UDP/TLS/443 皆開啟，避免企業網封鎖。
+- STUN 伺服器使用相同節點，Port 3478/5349。
+- 與 Cloudflare Warp/Argo 互通需額外開放 2408 port（可選）。
+
+## 2. 認證與金鑰
+
+- TURN 使用短期憑證（長度 16 bytes username + HMAC-based password）。
+- `POST /api/v1/calls/turn-credentials`：伺服器產生 `username = timestamp:uid`，`password = HMAC(shared_secret, username)`，TTL 5 分鐘。
+- 回傳結構：
+
+```jsonc
+{
+  "ttl": 300,
+  "iceServers": [
+    { "urls": ["stun:turn1.sentry.mobi:3478"] },
+    {
+      "urls": [
+        "turn:turn1.sentry.mobi:3478?transport=udp",
+        "turns:turn1.sentry.mobi:5349?transport=tcp"
+      ],
+      "username": "1700000000:ABCD1234",
+      "credential": "base64-hmac"
+    }
+  ]
+}
+```
+
+- iOS 端沿用相同 API，使用 `RTCIceServer` 結構。
+
+## 3. 設定檔模板
+
+```ini
+listening-port=3478
+tls-listening-port=5349
+external-ip=<public-ip>
+realm=sentry.mobi
+server-name=turn.sentry.mobi
+lt-cred-mech
+cert=/etc/letsencrypt/live/turn.sentry.mobi/fullchain.pem
+pkey=/etc/letsencrypt/live/turn.sentry.mobi/privkey.pem
+use-auth-secret
+static-auth-secret=<TURN_SHARED_SECRET>
+```
+
+## 4. 頻寬與延遲偵測
+
+### 4.1 前置探針
+
+- 建立 dummy RTCPeerConnection，測試：
+  - `RTCIceCandidatePairStats.currentRoundTripTime`
+  - 上下行可用頻寬（`availableOutgoingBitrate`, `availableIncomingBitrate`）
+- 根據結果設定初始媒體設定：
+
+| 條件 | 預設模式 |
+| ---- | -------- |
+| RTT < 150ms & 上下行 > 2Mbps | 視訊 540p + 語音 |
+| RTT < 300ms & 寬頻 > 512kbps | 視訊 360p |
+| 其餘 | 語音模式 |
+
+### 4.2 通話中監測
+
+- 每 3 秒讀取 `getStats()`：
+  - 若 `packetsLost / totalPackets > 5%` → 降低視訊碼率
+  - `availableOutgoingBitrate < 200kbps` → 切語音
+  - `currentRoundTripTime > 800ms` → 顯示「網路延遲」提示
+- 將結果同步到信令 `call-media-update` 中，以協調雙端狀態。
+
+## 5. Web / iOS 共用設定
+
+- 將 ICE 設定與閾值寫入 `shared/calls/network-config.json`（待建立）：
+
+```jsonc
+{
+  "turnSecretsEndpoint": "/api/v1/calls/turn-credentials",
+  "turnTtlSeconds": 300,
+  "rtcpProbe": { "timeoutMs": 1500 },
+  "bandwidthProfiles": [
+    { "name": "video-medium", "minBitrate": 900000, "maxBitrate": 1400000 },
+    { "name": "video-low", "minBitrate": 300000, "maxBitrate": 600000 },
+    { "name": "audio", "minBitrate": 32000, "maxBitrate": 64000 }
+  ]
+}
+```
+
+- iOS App 可直接載入此檔或轉為 Plist。
+
+## 6. Fallback 策略
+
+- 若 TURN 也無法連線：
+  - 提示「無法建立通話，請檢查網路設定」並回傳報告。
+  - 觸發 `call-media-update` 報告 `network=blocked`，伺服器記錄。
+- 支援 relay 優先的策略：`iceTransportPolicy = "all"`，但在偵測多次 P2P 失敗後改為 `relay`。
+
+## 7. 監控與告警
+
+- coturn log 送到 Loki/CloudWatch，指標：
+  - `Total Allocations`, `Total Bandwidth`, `401/438 錯誤數`
+- Prometheus Exporter 觀察：
+  - `turn_allocations_active`
+  - `turn_tls_sessions`
+  - `turn_traffic_sent/received`
+- 設置告警：當 `allocations_active > 80% capacity` 或 `401 spikes` 時通知 on-call。
+
+## 8. 待辦清單
+
+1. 申請 `turn*.sentry.mobi` DNS 與 TLS 憑證。
+2. 建立 Terraform/Ansible 腳本佈署 coturn。
+3. 實作 `/api/v1/calls/turn-credentials` 端點，與帳號驗證綁定。
+4. App / Web 共用的 `network-config` 檔案與載入邏輯。
+5. 帶寬自動降階演算法（寫入 `calls/network-manager.js` + Swift counterpart）。
+
+---
+
+**狀態**：設計完成，後續依此實作並於 README 更新進度。
