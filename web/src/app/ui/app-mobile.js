@@ -56,6 +56,12 @@ import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../cry
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
 import { initVersionInfoButton } from './version-info.js';
+import {
+  setCallSignalSender,
+  handleCallSignalMessage,
+  handleCallAuxMessage
+} from '../features/calls/signaling.js';
+import { initCallOverlay } from './mobile/call-overlay.js';
 
 const out = document.getElementById('out');
 setLogSink(out);
@@ -740,6 +746,8 @@ const messagesPane = initMessagesPane({
   }
 });
 
+initCallOverlay({ showToast });
+
 messagesPane.attachDomEvents();
 messagesPane.ensureConversationIndex();
 messagesPane.renderConversationList();
@@ -1407,6 +1415,7 @@ function wsSend(payload) {
 
 messagesPane.setWsSend(wsSend);
 shareController?.setWsSend?.(wsSend);
+setCallSignalSender(wsSend);
 
 function updateConnectionIndicator(state) {
   if (!connectionIndicator) return;
@@ -1431,6 +1440,9 @@ function handleWebSocketMessage(msg) {
     if (msg?.ok) updateConnectionIndicator('online');
     else updateConnectionIndicator('offline');
     if (msg?.ok) presenceManager.sendPresenceSubscribe();
+    return;
+  }
+  if (handleCallSignalMessage(msg) || handleCallAuxMessage(msg)) {
     return;
   }
   if (type === 'invite-accepted') {

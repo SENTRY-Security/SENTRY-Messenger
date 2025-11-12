@@ -1,13 +1,10 @@
 import crypto from 'node:crypto';
 import { z } from 'zod';
-import { signHmac } from '../utils/hmac.js';
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
 import { normalizeUidHex, normalizeAccountDigest, AccountDigestRegex } from '../utils/account-verify.js';
-import { logger } from '../utils/logger.js';
+import { appendCallEvent, callWorkerRequest, ensureCallWorkerConfig } from '../services/call-worker.js';
+import { CallIdRegex } from '../utils/call-validators.js';
 
-const DATA_API = process.env.DATA_API_URL;
-const HMAC_SECRET = process.env.DATA_API_HMAC;
-const FETCH_TIMEOUT_MS = Number(process.env.DATA_API_TIMEOUT_MS || 8000);
 const DEFAULT_SESSION_TTL = Number(process.env.CALL_SESSION_TTL_SECONDS || 90);
 const TURN_SHARED_SECRET = process.env.TURN_SHARED_SECRET || '';
 const TURN_TTL_SECONDS = Number(process.env.TURN_TTL_SECONDS || 300);
@@ -18,7 +15,6 @@ const TURN_RELAY_URIS = parseUriList(
 );
 
 const UidRegex = /^[0-9A-Fa-f]{14,}$/;
-const CallIdRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const BaseAccountSchema = z.object({
   uidHex: z.string().regex(UidRegex),
@@ -73,49 +69,6 @@ function parseUriList(value) {
     .filter(Boolean);
 }
 
-async function fetchWithTimeout(resource, options = {}, timeout = FETCH_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  try {
-    return await fetch(resource, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function callDataWorker(path, { method = 'POST', body = null } = {}) {
-  if (!DATA_API || !HMAC_SECRET) {
-    throw new Error('DATA_API_URL or DATA_API_HMAC not configured');
-  }
-  const serialized = body !== null && body !== undefined ? JSON.stringify(body) : '';
-  const sig = signHmac(path, serialized, HMAC_SECRET);
-  const headers = { 'x-auth': sig };
-  if (serialized) headers['content-type'] = 'application/json';
-  const resp = await fetchWithTimeout(`${DATA_API}${path}`, {
-    method,
-    headers,
-    body: serialized || undefined
-  });
-  const text = await resp.text().catch(() => '');
-  let data = text;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      // leave as text
-    }
-  } else {
-    data = null;
-  }
-  if (!resp.ok) {
-    const err = new Error('worker request failed');
-    err.status = resp.status;
-    err.payload = data;
-    throw err;
-  }
-  return data;
-}
-
 function clamp(value, min, max) {
   const num = Number(value);
   if (!Number.isFinite(num)) return min;
@@ -133,34 +86,8 @@ function respondAccountError(res, err, fallback = 'authorization failed') {
   return res.status(500).json({ error: 'AccountAuthError', message: err?.message || fallback });
 }
 
-async function appendCallEvent({ callId, type, payload, fromUid, toUid, traceId }) {
-  try {
-    await callDataWorker('/d1/calls/events', {
-      method: 'POST',
-      body: {
-        callId,
-        type,
-        payload,
-        fromUid,
-        toUid,
-        traceId
-      }
-    });
-  } catch (err) {
-    logger.warn({ msg: 'call_event_append_failed', callId, type, error: err?.message, status: err?.status });
-  }
-}
-
-function ensureDataApiConfigured(res) {
-  if (!DATA_API || !HMAC_SECRET) {
-    res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
-    return false;
-  }
-  return true;
-}
-
 export async function inviteCall(req, res) {
-  if (!ensureDataApiConfigured(res)) return;
+  if (!ensureCallWorkerConfig(res)) return;
   const parsed = CallInviteSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -199,7 +126,7 @@ export async function inviteCall(req, res) {
   };
   let workerRes;
   try {
-    workerRes = await callDataWorker('/d1/calls/session', { method: 'POST', body: sessionPayload });
+    workerRes = await callWorkerRequest('/d1/calls/session', { method: 'POST', body: sessionPayload });
   } catch (err) {
     return res.status(err.status || 502).json({ error: 'CallSessionUpsertFailed', message: err?.message, details: err?.payload || null });
   }
@@ -220,7 +147,7 @@ export async function inviteCall(req, res) {
 }
 
 export async function cancelCall(req, res) {
-  if (!ensureDataApiConfigured(res)) return;
+  if (!ensureCallWorkerConfig(res)) return;
   const parsed = CallMutateSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -247,7 +174,7 @@ export async function cancelCall(req, res) {
   };
   let workerRes;
   try {
-    workerRes = await callDataWorker('/d1/calls/session', { method: 'POST', body: payload });
+    workerRes = await callWorkerRequest('/d1/calls/session', { method: 'POST', body: payload });
   } catch (err) {
     return res.status(err.status || 502).json({ error: 'CallCancelFailed', message: err?.message, details: err?.payload || null });
   }
@@ -262,7 +189,7 @@ export async function cancelCall(req, res) {
 }
 
 export async function acknowledgeCall(req, res) {
-  if (!ensureDataApiConfigured(res)) return;
+  if (!ensureCallWorkerConfig(res)) return;
   const parsed = CallAckSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -287,7 +214,7 @@ export async function acknowledgeCall(req, res) {
   };
   let workerRes;
   try {
-    workerRes = await callDataWorker('/d1/calls/session', { method: 'POST', body: payload });
+    workerRes = await callWorkerRequest('/d1/calls/session', { method: 'POST', body: payload });
   } catch (err) {
     return res.status(err.status || 502).json({ error: 'CallAckFailed', message: err?.message, details: err?.payload || null });
   }
@@ -302,7 +229,7 @@ export async function acknowledgeCall(req, res) {
 }
 
 export async function reportCallMetrics(req, res) {
-  if (!ensureDataApiConfigured(res)) return;
+  if (!ensureCallWorkerConfig(res)) return;
   const parsed = CallMetricsSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -326,7 +253,7 @@ export async function reportCallMetrics(req, res) {
   };
   let workerRes;
   try {
-    workerRes = await callDataWorker('/d1/calls/session', { method: 'POST', body: payload });
+    workerRes = await callWorkerRequest('/d1/calls/session', { method: 'POST', body: payload });
   } catch (err) {
     return res.status(err.status || 502).json({ error: 'CallMetricsFailed', message: err?.message, details: err?.payload || null });
   }
@@ -340,7 +267,7 @@ export async function reportCallMetrics(req, res) {
 }
 
 export async function getCallSession(req, res) {
-  if (!ensureDataApiConfigured(res)) return;
+  if (!ensureCallWorkerConfig(res)) return;
   const callId = String(req.params?.callId || '').trim().toLowerCase();
   if (!CallIdRegex.test(callId)) {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid call id' });
@@ -362,7 +289,7 @@ export async function getCallSession(req, res) {
   }
   let workerRes;
   try {
-    workerRes = await callDataWorker(`/d1/calls/session?callId=${encodeURIComponent(callId)}`, { method: 'GET' });
+    workerRes = await callWorkerRequest(`/d1/calls/session?callId=${encodeURIComponent(callId)}`, { method: 'GET' });
   } catch (err) {
     return res.status(err.status || 502).json({ error: 'CallFetchFailed', message: err?.message, details: err?.payload || null });
   }

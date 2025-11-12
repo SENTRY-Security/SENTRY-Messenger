@@ -27,3 +27,10 @@ export {
   getCachedCallNetworkConfig,
   primeCallNetworkConfig
 } from './network-config.js';
+export {
+  setCallSignalSender,
+  sendCallInviteSignal,
+  sendCallSignal,
+  handleCallSignalMessage,
+  handleCallAuxMessage
+} from './signaling.js';

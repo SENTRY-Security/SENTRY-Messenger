@@ -16,6 +16,13 @@ import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { deleteSecureConversation } from '../../api/messages.js';
+import {
+  CALL_REQUEST_KIND,
+  requestOutgoingCall,
+  loadCallNetworkConfig,
+  sendCallInviteSignal,
+  getCallSessionSnapshot
+} from '../../features/calls/index.js';
 
 export function initMessagesPane({
   dom = {},
@@ -70,6 +77,10 @@ export function initMessagesPane({
   const closePreviewModal = typeof modalOptions.closeModal === 'function' ? modalOptions.closeModal : null;
   const setModalObjectUrl = typeof modalOptions.setModalObjectUrl === 'function' ? modalOptions.setModalObjectUrl : null;
   const showSecurityModal = typeof modalOptions.showSecurityModal === 'function' ? modalOptions.showSecurityModal : null;
+
+  loadCallNetworkConfig().catch((err) => {
+    log({ callNetworkConfigPrefetchFailed: err?.message || err });
+  });
 
   for (const info of listSecureConversationStatuses()) {
     if (!info?.peerUidHex) continue;
@@ -468,9 +479,60 @@ export function initMessagesPane({
     showToast?.('敬請期待');
   }
 
-  function handleConversationAction(type) {
+  async function handleConversationAction(type) {
     const state = getMessageState();
     if (!state.activePeerUid || !state.conversationToken) return;
+    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerUid) || null;
+    const fallbackName = `好友 ${state.activePeerUid.slice(-4)}`;
+    const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
+    const avatarUrl = contactEntry?.avatarUrl || contactEntry?.avatar || null;
+    const peerAccountDigest = contactEntry?.accountDigest
+      || contactEntry?.account_digest
+      || contactEntry?.peerAccountDigest
+      || contactEntry?.peer_account_digest
+      || null;
+    let result;
+    try {
+      result = await requestOutgoingCall({
+        peerUidHex: state.activePeerUid,
+        peerDisplayName: displayName,
+        peerAvatarUrl: avatarUrl,
+        peerAccountDigest,
+        kind: type === 'video' ? CALL_REQUEST_KIND.VIDEO : CALL_REQUEST_KIND.VOICE
+      });
+    } catch (err) {
+      result = { ok: false, error: err?.message || 'call invite failed' };
+    }
+    if (!result?.ok) {
+      if (result?.error === 'CALL_ALREADY_IN_PROGRESS') {
+        showToast?.('已有進行中的通話');
+      } else if (result?.error === 'MISSING_PEER') {
+        showToast?.('找不到通話對象');
+      } else {
+        showToast?.(result?.error || '暫時無法啟動通話');
+      }
+      return;
+    }
+    const snapshot = getCallSessionSnapshot();
+    const callId = result.callId || snapshot?.callId || null;
+    if (callId) {
+      const traceId = snapshot?.traceId || result?.session?.metadata?.traceId || null;
+      const sent = sendCallInviteSignal({
+        callId,
+        peerUidHex: state.activePeerUid,
+        mode: type === 'video' ? 'video' : 'voice',
+        metadata: {
+          displayName,
+          avatarUrl
+        },
+        traceId
+      });
+      if (!sent) {
+        log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerUid });
+      }
+    } else {
+      log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerUid: state.activePeerUid });
+    }
     showComingSoonModal(type);
   }
 
