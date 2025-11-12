@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { getContactSecret } from '../../core/contact-secrets.js';
-import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../shared/utils/base64.js';
+import { bytesToB64, b64ToBytes, b64UrlToBytes } from '/shared/utils/base64.js';
 import {
   CALL_EVENT,
   subscribeCallEvent
@@ -15,7 +15,7 @@ import {
   updateCallMedia,
   setCallMediaStatus
 } from './state.js';
-import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
+import { CALL_MEDIA_STATE_STATUS } from '/shared/calls/schemas.js';
 
 const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 const ZERO_SALT = new Uint8Array(32);
@@ -24,6 +24,7 @@ let subscriptions = [];
 let deriveTask = null;
 let suppressAutoDerive = false;
 let keyContext = null;
+let isResettingContext = false;
 
 const ROLE_KEY_LABELS = {
   caller: {
@@ -279,40 +280,54 @@ async function finalizeContext(context) {
 }
 
 function resetKeyContext(reason) {
+  if (isResettingContext) return;
+  isResettingContext = true;
   keyContext = null;
   const state = getCallMediaState();
-  if (!state) return;
-  updateCallMedia({
-    pendingEnvelope: null,
-    derivedKeys: {
-      audioTx: null,
-      audioRx: null,
-      videoTx: null,
-      videoRx: null
-    },
-    frameCounters: {
-      audioTx: 0,
-      audioRx: 0,
-      videoTx: 0,
-      videoRx: 0
-    },
-    cmkMaterial: null
-  });
-  setCallMediaStatus(state, CALL_MEDIA_STATE_STATUS.IDLE);
-  if (reason) {
-    log({ callKeyContextReset: reason });
+  try {
+    if (state) {
+      updateCallMedia({
+        pendingEnvelope: null,
+        derivedKeys: {
+          audioTx: null,
+          audioRx: null,
+          videoTx: null,
+          videoRx: null
+        },
+        frameCounters: {
+          audioTx: 0,
+          audioRx: 0,
+          videoTx: 0,
+          videoRx: 0
+        },
+        cmkMaterial: null
+      });
+      setCallMediaStatus(state, CALL_MEDIA_STATE_STATUS.IDLE);
+    }
+    if (reason) {
+      log({ callKeyContextReset: reason });
+    }
+  } finally {
+    isResettingContext = false;
   }
 }
 
 function handleCallStateEvent(session) {
   const snapshot = session || getCallSessionSnapshot();
   if (!snapshot) return;
+  const state = getCallMediaState();
+  const hasContext = keyContext || hasActiveMediaState(state);
+  if (!snapshot.callId && !hasContext) {
+    return;
+  }
   if (
     snapshot.status === CALL_SESSION_STATUS.ENDED
     || snapshot.status === CALL_SESSION_STATUS.FAILED
     || snapshot.status === CALL_SESSION_STATUS.IDLE
   ) {
-    resetKeyContext('session-complete');
+    if (hasContext) {
+      resetKeyContext('session-complete');
+    }
     return;
   }
   maybeDeriveKeys('state');
@@ -351,4 +366,12 @@ function cloneMediaDescriptor(media) {
     video: media.video ? { ...media.video } : {},
     screenshare: media.screenshare ? { ...media.screenshare } : {}
   };
+}
+
+function hasActiveMediaState(state) {
+  if (!state) return false;
+  if (state.pendingEnvelope) return true;
+  if (state.cmkMaterial) return true;
+  const keys = state.derivedKeys || {};
+  return Boolean(keys.audioTx || keys.audioRx || keys.videoTx || keys.videoRx);
 }
