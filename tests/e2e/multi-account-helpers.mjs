@@ -205,10 +205,16 @@ export async function ensureModalClosed(page) {
 export async function persistContactSecretsForRelogin(page) {
   return page.evaluate(() => {
     try {
-      const snapshot = localStorage.getItem('contactSecrets-v1');
+      const uidHex = sessionStorage.getItem('uid_hex') || localStorage.getItem('uid_hex');
+      const normalizedUid = uidHex ? uidHex.replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null;
+      const contactKey = normalizedUid ? `contactSecrets-v1:uid-${normalizedUid}` : 'contactSecrets-v1';
+      const latestKey = normalizedUid ? `contactSecrets-v1-latest:uid-${normalizedUid}` : 'contactSecrets-v1-latest';
+      const snapshot = localStorage.getItem(contactKey) || localStorage.getItem('contactSecrets-v1');
       if (!snapshot) return null;
       window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+      window.__LOGIN_SEED_LOCALSTORAGE[contactKey] = snapshot;
       window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = snapshot;
+      window.__LOGIN_SEED_LOCALSTORAGE[latestKey] = snapshot;
       window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1-latest'] = snapshot;
       return snapshot;
     } catch (err) {

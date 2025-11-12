@@ -45,5 +45,9 @@ export {
   disposeCallMediaSession,
   startOutgoingCallMedia,
   acceptIncomingCallMedia,
-  endCallMediaSession
+  endCallMediaSession,
+  isLocalAudioMuted,
+  setLocalAudioMuted,
+  isRemoteAudioMuted,
+  setRemoteAudioMuted
 } from './media-session.js';

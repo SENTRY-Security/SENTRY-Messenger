@@ -29,6 +29,8 @@ let activePeerUid = null;
 let direction = 'outgoing';
 let unsubscribers = [];
 let awaitingOfferAfterAccept = false;
+let localAudioMuted = false;
+let remoteAudioMuted = false;
 
 export function initCallMediaSession({ sendSignalFn, showToastFn }) {
   sendSignal = typeof sendSignalFn === 'function' ? sendSignalFn : null;
@@ -74,6 +76,24 @@ export function endCallMediaSession(reason = 'hangup') {
   cleanupPeerConnection(reason);
 }
 
+export function isLocalAudioMuted() {
+  return localAudioMuted;
+}
+
+export function setLocalAudioMuted(muted = false) {
+  localAudioMuted = !!muted;
+  applyLocalAudioMuteState();
+}
+
+export function isRemoteAudioMuted() {
+  return remoteAudioMuted;
+}
+
+export function setRemoteAudioMuted(muted = false) {
+  remoteAudioMuted = !!muted;
+  applyRemoteAudioMuteState();
+}
+
 function ensureRemoteAudioElement() {
   if (typeof document === 'undefined') return null;
   remoteAudioEl = document.getElementById('callRemoteAudio');
@@ -85,6 +105,7 @@ function ensureRemoteAudioElement() {
     remoteAudioEl.style.display = 'none';
     document.body.appendChild(remoteAudioEl);
   }
+  remoteAudioEl.muted = !!remoteAudioMuted;
   return remoteAudioEl;
 }
 
@@ -130,6 +151,7 @@ async function attachLocalMedia() {
       const sender = peerConnection.addTrack(track, localStream);
       setupInsertableStreamsForSender(sender, track);
     });
+    applyLocalAudioMuteState();
   } catch (err) {
     showToast?.('無法存取麥克風：' + (err?.message || err), true);
     log({ callMediaMicError: err?.message || err });
@@ -269,6 +291,7 @@ function cleanupPeerConnection(reason) {
       remoteAudioEl.style.display = 'none';
     } catch {}
   }
+  resetControlStates();
   if (reason) {
     log({ callMediaCleanup: reason });
   }
@@ -279,6 +302,7 @@ function attachRemoteStream(stream) {
   try {
     remoteAudioEl.srcObject = stream;
     remoteAudioEl.style.display = 'block';
+    applyRemoteAudioMuteState();
   } catch (err) {
     log({ callMediaAttachError: err?.message || err });
   }
@@ -372,4 +396,45 @@ function buildNonce(baseNonce, counter) {
   const view = new DataView(nonce.buffer);
   view.setUint32(nonce.length - 4, counter, false);
   return nonce;
+}
+
+function applyLocalAudioMuteState() {
+  if (localStream) {
+    try {
+      localStream.getAudioTracks().forEach((track) => {
+        track.enabled = !localAudioMuted;
+      });
+    } catch {}
+  }
+  updateCallMedia({
+    controls: {
+      audioMuted: localAudioMuted
+    }
+  });
+}
+
+function applyRemoteAudioMuteState() {
+  if (remoteAudioEl) {
+    try {
+      remoteAudioEl.muted = !!remoteAudioMuted;
+    } catch {}
+  }
+  updateCallMedia({
+    controls: {
+      remoteMuted: remoteAudioMuted
+    }
+  });
+}
+
+function resetControlStates() {
+  const hadLocalMute = localAudioMuted;
+  const hadRemoteMute = remoteAudioMuted;
+  localAudioMuted = false;
+  remoteAudioMuted = false;
+  if (hadLocalMute) {
+    applyLocalAudioMuteState();
+  }
+  if (hadRemoteMute) {
+    applyRemoteAudioMuteState();
+  }
 }

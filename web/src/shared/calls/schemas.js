@@ -45,6 +45,11 @@ const DEFAULT_MEDIA_DESCRIPTOR = Object.freeze({
   screenshare: DEFAULT_SCREENSHARE_MEDIA
 });
 
+const DEFAULT_MEDIA_CONTROLS = Object.freeze({
+  audioMuted: false,
+  remoteMuted: false
+});
+
 export const DEFAULT_CALL_MEDIA_CAPABILITY = Object.freeze({
   audio: true,
   video: false,
@@ -79,6 +84,18 @@ function cloneMediaDescriptor(source = null) {
     video: mergeMediaToggle(DEFAULT_VIDEO_MEDIA, base.video),
     screenshare: mergeMediaToggle(DEFAULT_SCREENSHARE_MEDIA, base.screenshare)
   };
+}
+
+function cloneMediaControls(source = null) {
+  const result = { ...DEFAULT_MEDIA_CONTROLS };
+  if (!source || typeof source !== 'object') {
+    return result;
+  }
+  for (const key of Object.keys(DEFAULT_MEDIA_CONTROLS)) {
+    if (source[key] == null) continue;
+    result[key] = !!source[key];
+  }
+  return result;
 }
 
 function mergeMediaToggle(defaults, override) {
@@ -316,6 +333,7 @@ export function createCallMediaState(options = {}) {
     nextRotateAt: rotateIntervalMs ? now + rotateIntervalMs : null,
     rotateIntervalMs,
     pendingEnvelope: null,
+    controls: cloneMediaControls(options.controls),
     createdAt: options.createdAt && Number.isFinite(options.createdAt) ? Number(options.createdAt) : now,
     updatedAt: now
   };
@@ -329,7 +347,8 @@ export function cloneCallMediaState(state) {
     frameCounters: cloneFrameCounters(state.frameCounters),
     media: cloneMediaDescriptor(state.media),
     capabilities: state.capabilities ? { ...state.capabilities, features: cloneFeatures(state.capabilities.features) } : null,
-    pendingEnvelope: state.pendingEnvelope ? { ...state.pendingEnvelope } : null
+    pendingEnvelope: state.pendingEnvelope ? { ...state.pendingEnvelope } : null,
+    controls: cloneMediaControls(state.controls)
   };
 }
 
@@ -387,6 +406,12 @@ export function touchCallMediaState(state, fields = {}) {
   if (Object.prototype.hasOwnProperty.call(fields, 'cmkMaterial')) {
     state.cmkMaterial = fields.cmkMaterial ? cloneKeyMaterial(fields.cmkMaterial) : null;
   }
+  if (fields.controls) {
+    state.controls = cloneMediaControls({
+      ...state.controls,
+      ...fields.controls
+    });
+  }
   if (fields.rotateIntervalMs) {
     state.rotateIntervalMs = normalizeRotateInterval(fields.rotateIntervalMs);
   }
@@ -428,7 +453,8 @@ export function serializeCallMediaState(state) {
     nextRotateAt: clone.nextRotateAt,
     lastRotateAt: clone.lastRotateAt,
     createdAt: clone.createdAt,
-    updatedAt: clone.updatedAt
+    updatedAt: clone.updatedAt,
+    controls: clone.controls
   };
   return json;
 }

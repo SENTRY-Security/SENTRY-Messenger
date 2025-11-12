@@ -21,7 +21,11 @@ import {
   persistContactSecrets,
   lockContactSecrets,
   summarizeContactSecretsPayload,
-  computeContactSecretsChecksum
+  computeContactSecretsChecksum,
+  getContactSecretsStorageKeys,
+  getContactSecretsLatestKeys,
+  getContactSecretsMetaKeys,
+  getContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
 import { friendsDeleteContact } from '../api/friends.js';
 import { mkUpdate } from '../api/auth.js';
@@ -87,6 +91,50 @@ const resumeNotifyAudioContext = () => audioManager.resume();
 const playNotificationSound = () => audioManager.play();
 const hasAudioPermission = () => audioManager.hasPermission();
 
+function getContactSecretKeyOptions() {
+  return {
+    uid: getUidHex(),
+    accountDigest: getAccountDigest()
+  };
+}
+
+function readContactSnapshot(storage, keys = []) {
+  if (!storage || !keys?.length) return null;
+  for (const key of keys) {
+    try {
+      const value = storage.getItem(key);
+      if (value) return { key, value };
+    } catch {}
+  }
+  return null;
+}
+
+function writeContactSnapshot(storage, keys = [], value) {
+  if (!storage || !keys?.length || value == null) return;
+  for (const key of keys) {
+    try { storage.setItem(key, value); } catch {}
+  }
+}
+
+function removeContactKeys(storage, keys = []) {
+  if (!storage || !keys?.length) return;
+  for (const key of keys) {
+    try { storage.removeItem(key); } catch {}
+  }
+}
+
+function mergeUniqueKeyLists(...lists) {
+  const result = [];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const key of list) {
+      if (!key) continue;
+      if (!result.includes(key)) result.push(key);
+    }
+  }
+  return result;
+}
+
 function ensureTopbarVisible({ repeat = true } = {}) {
   const apply = () => {
     const topbarEl = document.querySelector('.topbar');
@@ -111,7 +159,7 @@ function clearLocalEncryptedCaches() {
     for (let i = 0; i < localStorage.length; i += 1) {
       const key = localStorage.key(i);
       if (!key || isSimStorageKey(key)) continue;
-      if (key === 'contactSecrets-v1-latest') continue;
+      if (key?.startsWith('contactSecrets-v1-latest')) continue;
       if (key.startsWith('env_v1:')) keysToRemove.push(key);
     }
     for (const key of keysToRemove) {
@@ -123,7 +171,19 @@ function clearLocalEncryptedCaches() {
 }
 
 function clearSessionHandoff() {
-const keys = ['mk_b64', 'uid_hex', 'account_token', 'account_digest', 'uid_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
+  const baseKeys = ['mk_b64', 'uid_hex', 'account_token', 'account_digest', 'uid_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
+  const opts = getContactSecretKeyOptions();
+  const contactKeys = mergeUniqueKeyLists(
+    getContactSecretsStorageKeys(opts),
+    getContactSecretsStorageKeys({}),
+    getContactSecretsLatestKeys(opts),
+    getContactSecretsLatestKeys({}),
+    getContactSecretsMetaKeys(opts),
+    getContactSecretsMetaKeys({}),
+    getContactSecretsChecksumKeys(opts),
+    getContactSecretsChecksumKeys({})
+  );
+  const keys = [...baseKeys, ...contactKeys];
   for (const key of keys) {
     try { sessionStorage.removeItem(key); } catch {}
   }
@@ -177,24 +237,48 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   try {
     let localBytes = 0;
     let sessionBytesBefore = 0;
-    try { localBytes = localStorage.getItem('contactSecrets-v1')?.length || 0; } catch {}
-    try { sessionBytesBefore = sessionStorage?.getItem?.('contactSecrets-v1')?.length || 0; } catch {}
+    const keyOptions = getContactSecretKeyOptions();
+    const storageKeys = getContactSecretsStorageKeys(keyOptions);
+    const latestKeys = getContactSecretsLatestKeys(keyOptions);
+    try {
+      for (const key of storageKeys) {
+        const len = localStorage.getItem(key)?.length || 0;
+        if (len > localBytes) localBytes = len;
+      }
+    } catch {}
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        for (const key of storageKeys) {
+          const len = sessionStorage.getItem(key)?.length || 0;
+          if (len > sessionBytesBefore) sessionBytesBefore = len;
+        }
+      }
+    } catch {}
     try { console.log('[contact-secrets-handoff-check]', JSON.stringify({ localBytes, sessionBytesBefore })); } catch {}
-    let contactSecretsSnapshot = localStorage.getItem('contactSecrets-v1');
+    let contactSecretsSnapshot = null;
     let source = 'localStorage';
-    if ((!contactSecretsSnapshot || !contactSecretsSnapshot.length) && typeof sessionStorage !== 'undefined') {
-      const handoffFallback = sessionStorage.getItem('contactSecrets-v1');
-      if (handoffFallback && handoffFallback.length) {
-        contactSecretsSnapshot = handoffFallback;
-        source = 'sessionStorage';
+    const localRecord = readContactSnapshot(localStorage, storageKeys);
+    if (localRecord?.value) {
+      contactSecretsSnapshot = localRecord.value;
+      source = `localStorage:${localRecord.key}`;
+    } else if (typeof sessionStorage !== 'undefined') {
+      const sessionRecord = readContactSnapshot(sessionStorage, storageKeys);
+      if (sessionRecord?.value) {
+        contactSecretsSnapshot = sessionRecord.value;
+        source = `sessionStorage:${sessionRecord.key}`;
       }
     }
     if (contactSecretsSnapshot && typeof sessionStorage !== 'undefined') {
-      sessionStorage.setItem('contactSecrets-v1', contactSecretsSnapshot);
+      writeContactSnapshot(sessionStorage, storageKeys, contactSecretsSnapshot);
       let sessionBytes = null;
-      try { sessionBytes = sessionStorage.getItem('contactSecrets-v1')?.length || 0; } catch { sessionBytes = null; }
-      try { localStorage.setItem('contactSecrets-v1-latest', contactSecretsSnapshot); } catch {}
-      const meta = persistContactSecretMetadata({ snapshot: contactSecretsSnapshot, source });
+      try {
+        for (const key of storageKeys) {
+          const len = sessionStorage.getItem(key)?.length || 0;
+          if (len > sessionBytes) sessionBytes = len;
+        }
+      } catch { sessionBytes = null; }
+      writeContactSnapshot(localStorage, latestKeys, contactSecretsSnapshot);
+      const meta = persistContactSecretMetadata({ snapshot: contactSecretsSnapshot, source, keyOptions });
       log({
         contactSecretsHandoffStored: contactSecretsSnapshot.length,
         contactSecretsHandoffSource: source,
@@ -210,7 +294,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
         }));
       } catch {}
     } else if (!contactSecretsSnapshot) {
-      persistContactSecretMetadata({ snapshot: null, source: 'missing' });
+      persistContactSecretMetadata({ snapshot: null, source: 'missing', keyOptions });
       log({ contactSecretsHandoffStored: 0, contactSecretsHandoffSource: 'missing' });
     }
   } catch (err) {
@@ -292,18 +376,15 @@ function isSimStorageKey(key) {
 }
 
 const LOGOUT_MESSAGE_KEY = 'app:lastLogoutReason';
-const CONTACT_SECRETS_META_KEY = 'contactSecrets-v1-meta';
-const CONTACT_SECRETS_CHECKSUM_KEY = 'contactSecrets-v1-checksum';
 let logoutInProgress = false;
 
-function persistContactSecretMetadata({ snapshot, source }) {
+function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
+  const opts = keyOptions || getContactSecretKeyOptions();
+  const metaKeys = getContactSecretsMetaKeys(opts);
+  const checksumKeys = getContactSecretsChecksumKeys(opts);
   if (!snapshot || typeof snapshot !== 'string') {
-    try {
-      sessionStorage?.removeItem?.(CONTACT_SECRETS_META_KEY);
-      sessionStorage?.removeItem?.(CONTACT_SECRETS_CHECKSUM_KEY);
-      localStorage?.removeItem?.(CONTACT_SECRETS_META_KEY);
-      localStorage?.removeItem?.(CONTACT_SECRETS_CHECKSUM_KEY);
-    } catch {}
+    removeContactKeys(sessionStorage, [...metaKeys, ...checksumKeys]);
+    removeContactKeys(localStorage, [...metaKeys, ...checksumKeys]);
     return null;
   }
   const summary = summarizeContactSecretsPayload(snapshot);
@@ -312,12 +393,9 @@ function persistContactSecretMetadata({ snapshot, source }) {
     source: source || 'unknown',
     ts: Date.now()
   };
-  try {
-    sessionStorage?.setItem?.(CONTACT_SECRETS_META_KEY, JSON.stringify(meta));
-  } catch {}
-  try {
-    localStorage?.setItem?.(CONTACT_SECRETS_META_KEY, JSON.stringify(meta));
-  } catch {}
+  const metaJson = JSON.stringify(meta);
+  writeContactSnapshot(sessionStorage, metaKeys, metaJson);
+  writeContactSnapshot(localStorage, metaKeys, metaJson);
   try {
     window.__CONTACT_SECRETS_META__ = meta;
   } catch {}
@@ -330,11 +408,11 @@ function persistContactSecretMetadata({ snapshot, source }) {
         checksumAlgo: checksum.algorithm || 'unknown',
         checksum: checksum.value || null
       };
+      const checksumJson = JSON.stringify(detail);
+      writeContactSnapshot(sessionStorage, checksumKeys, checksumJson);
+      writeContactSnapshot(localStorage, checksumKeys, checksumJson);
       try {
-        sessionStorage?.setItem?.(CONTACT_SECRETS_CHECKSUM_KEY, JSON.stringify(detail));
-      } catch {}
-      try {
-        localStorage?.setItem?.(CONTACT_SECRETS_CHECKSUM_KEY, JSON.stringify(detail));
+        window.__CONTACT_SECRETS_CHECKSUM__ = detail;
       } catch {}
       log({
         contactSecretsSnapshotChecksum: {
@@ -534,9 +612,9 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     const restored = hydrateDrStatesFromContactSecrets();
     log({ drSnapshotsRestored: restored });
     try {
-      const snapshot = localStorage.getItem('contactSecrets-v1');
-      if (snapshot) {
-        log({ contactSecretsAppLoadSummary: summarizeContactSecretsPayload(snapshot) });
+      const snapshotRecord = readContactSnapshot(localStorage, getContactSecretsStorageKeys(getContactSecretKeyOptions()));
+      if (snapshotRecord?.value) {
+        log({ contactSecretsAppLoadSummary: summarizeContactSecretsPayload(snapshotRecord.value) });
       } else {
         log({ contactSecretsAppLoadSummary: { entries: 0, bytes: 0, parseError: 'missing' } });
       }

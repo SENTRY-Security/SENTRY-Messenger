@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { performLogin, startWebServer, stopWebServer, ensureDir, E2E_ARTIFACT_DIR, ORIGIN } from './utils.mjs';
+import { performLogin, startWebServer, stopWebServer, ensureDir, E2E_ARTIFACT_DIR, ORIGIN, buildContactSecretsKey, buildContactSecretsLatestKey } from './utils.mjs';
 import { setupFriendConversation } from '../../scripts/lib/friends-flow.mjs';
 
 let serverProc;
@@ -62,12 +62,16 @@ test('secure conversation ready on new device without prior messages', async ({ 
     userB
   });
   if (contactSecretSnapshot) {
-    await page.addInitScript(({ snapshot }) => {
+    const contactKey = buildContactSecretsKey(userA.uidHex);
+    const latestKey = buildContactSecretsLatestKey(userA.uidHex);
+    await page.addInitScript(({ snapshot, contactKey: key, latestKey: latest }) => {
       window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+      if (key) window.__LOGIN_SEED_LOCALSTORAGE[key] = snapshot;
       window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = snapshot;
+      if (latest) window.__LOGIN_SEED_LOCALSTORAGE[latest] = snapshot;
       window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1-latest'] = snapshot;
       window.__LOGIN_SEED_LOCALSTORAGE.__CONTACT_SECRET_SOURCE = 'preseed';
-    }, { snapshot: contactSecretSnapshot });
+    }, { snapshot: contactSecretSnapshot, contactKey, latestKey });
   }
 
   await performLogin(page, { uidHex: userA.uidHex, password: userA.password });

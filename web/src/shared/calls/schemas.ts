@@ -36,6 +36,11 @@ export interface CallMediaCapability {
   maxRecvBitrateKbps: number | null;
 }
 
+export interface CallMediaControls {
+  audioMuted: boolean;
+  remoteMuted: boolean;
+}
+
 export interface CallKeyEnvelope {
   type: 'call-key-envelope';
   version: number;
@@ -85,6 +90,7 @@ export interface CallMediaState {
   nextRotateAt: number | null;
   rotateIntervalMs: number;
   pendingEnvelope: CallKeyEnvelope | null;
+  controls: CallMediaControls;
   createdAt: number;
   updatedAt: number;
 }
@@ -111,6 +117,7 @@ export declare function createCallMediaState(options?: {
   keyRotateIntervalMs?: number;
   derivedKeys?: Partial<CallDerivedKeySet> | null;
   frameCounters?: Partial<CallFrameCounters> | null;
+  controls?: Partial<CallMediaControls> | null;
   createdAt?: number;
 }): CallMediaState;
 export declare function cloneCallMediaState(state: CallMediaState | null): CallMediaState | null;

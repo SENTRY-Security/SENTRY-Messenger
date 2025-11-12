@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
-import { performLogin, startWebServer, stopWebServer, ensureDir, E2E_ARTIFACT_DIR, ORIGIN } from './utils.mjs';
+import { performLogin, startWebServer, stopWebServer, ensureDir, E2E_ARTIFACT_DIR, ORIGIN, buildContactSecretsKey } from './utils.mjs';
 import { setupFriendConversation } from '../../scripts/lib/friends-flow.mjs';
 
 const SCREENSHOT_DIR = path.join(E2E_ARTIFACT_DIR, 'screens');
@@ -290,13 +290,15 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
       }
     ]
   ]);
+  const contactKeyA = buildContactSecretsKey(userA.uidHex);
   try {
-    await pageA.addInitScript((value) => {
+    await pageA.addInitScript(({ value, contactKey }) => {
       try {
         window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        if (contactKey) window.__LOGIN_SEED_LOCALSTORAGE[contactKey] = value;
         window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
       } catch {}
-    }, secretEntryForA);
+    }, { value: secretEntryForA, contactKey: contactKeyA });
     await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
     await pageA.waitForTimeout(1000);
     await capture(pageA, 'userA_drive_initial');
@@ -350,12 +352,14 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
       }
     ]
   ]);
-    await pageB.addInitScript((value) => {
+    const contactKeyB = buildContactSecretsKey(userB.uidHex);
+    await pageB.addInitScript(({ value, contactKey }) => {
       try {
         window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        if (contactKey) window.__LOGIN_SEED_LOCALSTORAGE[contactKey] = value;
         window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
       } catch {}
-    }, secretEntryForB);
+    }, { value: secretEntryForB, contactKey: contactKeyB });
 
     await performLogin(pageB, { password: userB.password, uidHex: userB.uidHex });
     await pageB.waitForTimeout(1000);

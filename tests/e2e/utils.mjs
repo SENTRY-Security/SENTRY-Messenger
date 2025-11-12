@@ -9,6 +9,18 @@ export const WEB_PORT = Number(process.env.E2E_WEB_PORT || 8788);
 export const ARTIFACTS_ROOT = path.resolve('artifacts');
 export const E2E_ARTIFACT_DIR = path.join(ARTIFACTS_ROOT, 'e2e');
 
+const normalizeUid = (uid) => (uid ? String(uid).replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null);
+
+export const buildContactSecretsKey = (uid) => {
+  const normalized = normalizeUid(uid);
+  return normalized ? `contactSecrets-v1:uid-${normalized}` : 'contactSecrets-v1';
+};
+
+export const buildContactSecretsLatestKey = (uid) => {
+  const normalized = normalizeUid(uid);
+  return normalized ? `contactSecrets-v1-latest:uid-${normalized}` : 'contactSecrets-v1-latest';
+};
+
 async function waitForHealthz(url, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -69,32 +81,38 @@ export async function ensureDir(targetPath) {
 }
 
 export async function performLogin(page, { password = 'test1234', uidHex, contactSecretsSnapshot } = {}) {
+  const contactKey = buildContactSecretsKey(uidHex);
+  const latestKey = buildContactSecretsLatestKey(uidHex);
   await page.addInitScript(() => {
     try {
       window.__DEBUG_CONTACT_SECRETS__ = true;
     } catch {}
   });
   if (contactSecretsSnapshot) {
-    await page.addInitScript((snapshot) => {
+    await page.addInitScript(({ snapshot, contactKey: key, latestKey: latest }) => {
       try {
         window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        if (key) window.__LOGIN_SEED_LOCALSTORAGE[key] = snapshot;
         window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = snapshot;
+        if (latest) window.__LOGIN_SEED_LOCALSTORAGE[latest] = snapshot;
         window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1-latest'] = snapshot;
       } catch {}
-    }, contactSecretsSnapshot);
+    }, { snapshot: contactSecretsSnapshot, contactKey, latestKey });
   }
-  await page.addInitScript(() => {
+  await page.addInitScript(({ contactKey: key }) => {
     try {
       window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
       window.__LOGIN_SEED_LOCALSTORAGE['ntag424-sim:forceDebug'] = '1';
-      const snapshot = window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'];
+      const snapshot = (key && window.__LOGIN_SEED_LOCALSTORAGE[key]) || window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'];
       if (snapshot) {
+        if (key) localStorage.setItem(key, snapshot);
         localStorage.setItem('contactSecrets-v1', snapshot);
       } else {
+        if (key) localStorage.removeItem(key);
         localStorage.removeItem('contactSecrets-v1');
       }
     } catch {}
-  });
+  }, { contactKey });
   if (uidHex) {
     await page.addInitScript((uid) => {
       try {
@@ -170,13 +188,14 @@ export async function performLogin(page, { password = 'test1234', uidHex, contac
   ));
   expect(cleared).toBeTruthy();
 
-  await page.evaluate(() => {
+  await page.evaluate(({ contactKey: key }) => {
     try {
-      const snapshot = localStorage.getItem('contactSecrets-v1');
+      const snapshot = (key && localStorage.getItem(key)) || localStorage.getItem('contactSecrets-v1');
       if (snapshot) {
         window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        if (key) window.__LOGIN_SEED_LOCALSTORAGE[key] = snapshot;
         window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = snapshot;
       }
     } catch {}
-  });
+  }, { contactKey });
 }

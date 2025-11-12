@@ -4,10 +4,12 @@
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { log } from './log.js';
 import { b64 } from '../crypto/nacl.js';
+import { getUidHex, getAccountDigest } from './store.js';
 
-const STORAGE_KEY = 'contactSecrets-v1';
-const META_KEY = 'contactSecrets-v1-meta';
-const CHECKSUM_KEY = 'contactSecrets-v1-checksum';
+const STORAGE_KEY_BASE = 'contactSecrets-v1';
+const LATEST_KEY_BASE = 'contactSecrets-v1-latest';
+const META_KEY_BASE = 'contactSecrets-v1-meta';
+const CHECKSUM_KEY_BASE = 'contactSecrets-v1-checksum';
 const CONTACT_SECRETS_VERSION = 2;
 let restored = false;
 let contactSecretsLocked = false;
@@ -40,6 +42,60 @@ function parseJsonSafe(raw) {
   }
 }
 
+function normalizeHex(value) {
+  if (!value) return null;
+  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  return cleaned || null;
+}
+
+function resolveContactSecretsNamespace({ uid, accountDigest } = {}) {
+  const digest = normalizeHex(accountDigest) || normalizeHex(getAccountDigest?.());
+  if (digest) return `acct-${digest}`;
+  const uidHex = normalizeUid(uid ?? getUidHex?.());
+  if (uidHex) return `uid-${uidHex}`;
+  return null;
+}
+
+function buildKey(base, namespace) {
+  return namespace ? `${base}:${namespace}` : base;
+}
+
+function extractNamespaceFromKey(key, base) {
+  if (!key || !base) return null;
+  if (key === base) return null;
+  const prefix = `${base}:`;
+  if (key.startsWith(prefix)) return key.slice(prefix.length);
+  return null;
+}
+
+function uniqueKeys(list) {
+  return Array.from(new Set(list.filter(Boolean)));
+}
+
+function getKeyVariants(base, opts = {}) {
+  const namespace = resolveContactSecretsNamespace(opts);
+  const keys = [];
+  if (namespace) keys.push(buildKey(base, namespace));
+  keys.push(base);
+  return uniqueKeys(keys);
+}
+
+export function getContactSecretsStorageKeys(opts = {}) {
+  return getKeyVariants(STORAGE_KEY_BASE, opts);
+}
+
+export function getContactSecretsLatestKeys(opts = {}) {
+  return getKeyVariants(LATEST_KEY_BASE, opts);
+}
+
+export function getContactSecretsMetaKeys(opts = {}) {
+  return getKeyVariants(META_KEY_BASE, opts);
+}
+
+export function getContactSecretsChecksumKeys(opts = {}) {
+  return getKeyVariants(CHECKSUM_KEY_BASE, opts);
+}
+
 function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSessionIfCopied = true } = {}) {
   let localPayload = null;
   let sessionPayload = null;
@@ -50,33 +106,54 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
   const local = getLocalStorageSafe();
   const session = getSessionStorageSafe();
 
-  if (local) {
-    try {
-      localPayload = local.getItem(STORAGE_KEY);
-    } catch (err) {
-      log({ contactSecretLocalReadError: err?.message || err });
-    }
-    try {
-      localMeta = parseJsonSafe(local.getItem(META_KEY));
-    } catch {}
-    try {
-      localChecksum = parseJsonSafe(local.getItem(CHECKSUM_KEY));
-    } catch {}
-  }
+  const storageKeys = getContactSecretsStorageKeys();
 
-  if (session) {
-    try {
-      sessionPayload = session.getItem(STORAGE_KEY);
-    } catch (err) {
-      log({ contactSecretSessionReadError: err?.message || err });
+  const activeNamespace = resolveContactSecretsNamespace();
+
+  const readPayloadRecord = (store, baseKey) => {
+    if (!store) return { payload: null, key: buildKey(baseKey, activeNamespace), namespace: activeNamespace };
+    for (const key of storageKeys) {
+      try {
+        const value = store.getItem(key);
+        if (value) {
+          return { payload: value, key, namespace: extractNamespaceFromKey(key, baseKey) };
+        }
+      } catch (err) {
+        const field = store === local ? 'contactSecretLocalReadError' : 'contactSecretSessionReadError';
+        log({ [field]: err?.message || err, key });
+      }
     }
+    return { payload: null, key: buildKey(baseKey, activeNamespace), namespace: activeNamespace };
+  };
+
+  const readMetaRecord = (store, baseKey, namespace) => {
+    if (!store) return null;
+    const key = buildKey(baseKey, namespace);
     try {
-      sessionMeta = parseJsonSafe(session.getItem(META_KEY));
-    } catch {}
+      return parseJsonSafe(store.getItem(key));
+    } catch {
+      return null;
+    }
+  };
+
+  const readChecksumRecord = (store, baseKey, namespace) => {
+    if (!store) return null;
+    const key = buildKey(baseKey, namespace);
     try {
-      sessionChecksum = parseJsonSafe(session.getItem(CHECKSUM_KEY));
-    } catch {}
-  }
+      return parseJsonSafe(store.getItem(key));
+    } catch {
+      return null;
+    }
+  };
+
+  const localRecord = readPayloadRecord(local, STORAGE_KEY_BASE);
+  const sessionRecord = readPayloadRecord(session, STORAGE_KEY_BASE);
+  localPayload = localRecord.payload;
+  sessionPayload = sessionRecord.payload;
+  localMeta = readMetaRecord(local, META_KEY_BASE, localRecord.namespace);
+  sessionMeta = readMetaRecord(session, META_KEY_BASE, sessionRecord.namespace);
+  localChecksum = readChecksumRecord(local, CHECKSUM_KEY_BASE, localRecord.namespace);
+  sessionChecksum = readChecksumRecord(session, CHECKSUM_KEY_BASE, sessionRecord.namespace);
 
   const localLen = typeof localPayload === 'string' ? localPayload.length : 0;
   const sessionLen = typeof sessionPayload === 'string' ? sessionPayload.length : 0;
@@ -108,26 +185,38 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
 
   const shouldPromote = !!promoteReason;
   let wroteToLocal = false;
+  const resolvedNamespace = sessionRecord.namespace ?? activeNamespace;
 
   if (shouldPromote && local) {
     try {
-      local.setItem(STORAGE_KEY, sessionPayload);
+      const targetKey = buildKey(STORAGE_KEY_BASE, resolvedNamespace);
+      local.setItem(targetKey, sessionPayload);
       wroteToLocal = true;
       if (sessionMeta) {
-        local.setItem(META_KEY, JSON.stringify(sessionMeta));
+        local.setItem(buildKey(META_KEY_BASE, resolvedNamespace), JSON.stringify(sessionMeta));
       }
       if (sessionChecksum) {
-        local.setItem(CHECKSUM_KEY, JSON.stringify(sessionChecksum));
+        local.setItem(buildKey(CHECKSUM_KEY_BASE, resolvedNamespace), JSON.stringify(sessionChecksum));
       }
     } catch (err) {
       log({ contactSecretSessionCopyError: err?.message || err });
       wroteToLocal = false;
     }
+    // Legacy fallback for older builds – keep base key in sync
+    if (resolvedNamespace) {
+      try { local.setItem(STORAGE_KEY_BASE, sessionPayload); } catch {}
+      if (sessionMeta) {
+        try { local.setItem(META_KEY_BASE, JSON.stringify(sessionMeta)); } catch {}
+      }
+      if (sessionChecksum) {
+        try { local.setItem(CHECKSUM_KEY_BASE, JSON.stringify(sessionChecksum)); } catch {}
+      }
+    }
   }
 
   if (shouldPromote) {
     if (session && removeSessionIfCopied && (!local || wroteToLocal)) {
-      try { session.removeItem(STORAGE_KEY); } catch {}
+      try { session.removeItem(sessionRecord.key); } catch {}
     }
     debugLog('session-promote', {
       reason,
@@ -439,21 +528,30 @@ export function persistContactSecrets() {
   if (!storage) return;
   try {
     const { payload, summary, checksum } = serializeContactSecretsMap(map);
-    storage.setItem(STORAGE_KEY, payload);
+    const storageKeys = getContactSecretsStorageKeys();
+    const metaKeys = getContactSecretsMetaKeys();
+    const checksumKeys = getContactSecretsChecksumKeys();
+    storageKeys.forEach((key) => {
+      try { storage.setItem(key, payload); } catch {}
+    });
     let sessionBytes = null;
     const sessionStore = getSessionStorageSafe();
     if (sessionStore) {
-      try {
-        sessionStore.setItem(STORAGE_KEY, payload);
-        sessionBytes = payload.length;
-      } catch {}
+      storageKeys.forEach((key) => {
+        try {
+          sessionStore.setItem(key, payload);
+          sessionBytes = payload.length;
+        } catch {}
+      });
     }
     if (typeof window !== 'undefined') {
       try {
         if (!window.__LOGIN_SEED_LOCALSTORAGE || typeof window.__LOGIN_SEED_LOCALSTORAGE !== 'object') {
           window.__LOGIN_SEED_LOCALSTORAGE = {};
         }
-        window.__LOGIN_SEED_LOCALSTORAGE[STORAGE_KEY] = payload;
+        storageKeys.forEach((key) => {
+          window.__LOGIN_SEED_LOCALSTORAGE[key] = payload;
+        });
       } catch {}
     }
     const metaRecord = {
@@ -468,23 +566,35 @@ export function persistContactSecrets() {
       bytes: summary.bytes
     };
     const metaJson = JSON.stringify(metaRecord);
-    try { storage.setItem(META_KEY, metaJson); } catch {}
+    for (const key of metaKeys) {
+      try { storage.setItem(key, metaJson); } catch {}
+    }
     if (sessionStore) {
-      try { sessionStore.setItem(META_KEY, metaJson); } catch {}
+      for (const key of metaKeys) {
+        try { sessionStore.setItem(key, metaJson); } catch {}
+      }
     }
     const localStore = getLocalStorageSafe();
     if (localStore) {
-      try { localStore.setItem(META_KEY, metaJson); } catch {}
+      for (const key of metaKeys) {
+        try { localStore.setItem(key, metaJson); } catch {}
+      }
     }
     if (checksum) {
       const checksumRecord = { checksum, algorithm: 'sum32', ts: summary.generatedAt };
       const checksumJson = JSON.stringify(checksumRecord);
-      try { storage.setItem(CHECKSUM_KEY, checksumJson); } catch {}
+      for (const key of checksumKeys) {
+        try { storage.setItem(key, checksumJson); } catch {}
+      }
       if (sessionStore) {
-        try { sessionStore.setItem(CHECKSUM_KEY, checksumJson); } catch {}
+        for (const key of checksumKeys) {
+          try { sessionStore.setItem(key, checksumJson); } catch {}
+        }
       }
       if (localStore) {
-        try { localStore.setItem(CHECKSUM_KEY, checksumJson); } catch {}
+        for (const key of checksumKeys) {
+          try { localStore.setItem(key, checksumJson); } catch {}
+        }
       }
     }
     debugLog('persist', {

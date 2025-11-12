@@ -21,7 +21,13 @@ import {
 import { exchangeSDM, unlockAndInit } from '../features/login-flow.js';
 import { exchangeFromURLIfPresent, exchangeWithParams, parseSdmParams } from '../features/sdm.js';
 import { sdmDebugKit } from '../api/auth.js';
-import { summarizeContactSecretsPayload } from '../core/contact-secrets.js';
+import {
+  summarizeContactSecretsPayload,
+  getContactSecretsStorageKeys,
+  getContactSecretsLatestKeys,
+  getContactSecretsMetaKeys,
+  getContactSecretsChecksumKeys
+} from '../core/contact-secrets.js';
 
 // ---- UI elements ----
 const $ = (sel) => document.querySelector(sel);
@@ -55,6 +61,24 @@ setLogSink((line) => {
   if (out) out.textContent = line;
   if (shouldShowModal(line)) showModalMessage(line);
 });
+
+function getContactSecretKeyOptionsForLogin(uidOverride) {
+  return {
+    uid: uidOverride || getUidHex(),
+    accountDigest: getAccountDigest()
+  };
+}
+
+function readContactSnapshotFrom(storage, keys = []) {
+  if (!storage || !keys?.length) return null;
+  for (const key of keys) {
+    try {
+      const value = storage.getItem(key);
+      if (value) return { key, value };
+    } catch {}
+  }
+  return null;
+}
 
 function purgeLoginStorage() {
   let seeds = null;
@@ -174,7 +198,20 @@ function purgeLoginStorage() {
   }
   try {
     sessionStorage.removeItem('wrapped_dev');
-    sessionStorage.removeItem('contactSecrets-v1');
+    const keyOptions = getContactSecretKeyOptionsForLogin();
+    const keysToRemove = new Set([
+      ...getContactSecretsStorageKeys(keyOptions),
+      ...getContactSecretsStorageKeys({}),
+      ...getContactSecretsLatestKeys(keyOptions),
+      ...getContactSecretsLatestKeys({}),
+      ...getContactSecretsMetaKeys(keyOptions),
+      ...getContactSecretsMetaKeys({}),
+      ...getContactSecretsChecksumKeys(keyOptions),
+      ...getContactSecretsChecksumKeys({})
+    ]);
+    keysToRemove.forEach((key) => {
+      try { sessionStorage.removeItem(key); } catch {}
+    });
   } catch {}
   if (typeof window !== 'undefined' && window.__LOGIN_SEED_LOCALSTORAGE) {
     try { delete window.__LOGIN_SEED_LOCALSTORAGE; } catch {}
@@ -729,11 +766,17 @@ async function onUnlock() {
         }
       }
       try {
-        const contactSecretsSnapshot = localStorage.getItem('contactSecrets-v1');
-        if (contactSecretsSnapshot && contactSecretsSnapshot.length) {
-          sessionStorage.setItem('contactSecrets-v1', contactSecretsSnapshot);
+        const keyOptions = getContactSecretKeyOptionsForLogin();
+        const storageKeys = getContactSecretsStorageKeys(keyOptions);
+        const snapshotRecord = readContactSnapshotFrom(localStorage, storageKeys);
+        if (snapshotRecord?.value) {
+          for (const key of storageKeys) {
+            sessionStorage.setItem(key, snapshotRecord.value);
+          }
         } else {
-          sessionStorage.removeItem('contactSecrets-v1');
+          for (const key of storageKeys) {
+            sessionStorage.removeItem(key);
+          }
         }
       } catch (err) {
         log({ contactSecretHandoffError: err?.message || err });
