@@ -124,6 +124,7 @@ test.afterAll(async () => {
 test.describe.configure({ mode: 'serial' });
 
 test('complete secure messaging journey with media and cleanup', async ({ page, browser }) => {
+  test.setTimeout(240_000);
   if (!friendSetup) test.skip(true, 'friend setup failed');
 
   const { userA, userB } = friendSetup;

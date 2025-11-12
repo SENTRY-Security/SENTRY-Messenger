@@ -2,8 +2,6 @@
 
 > 近期進度：修復 logout→relogin 後分享面板持續顯示「缺少交友金鑰」造成 QR 無法重生的問題，重置 shareState 會清除補貨鎖定並恢復自動補貨；Drive 面板改以使用者資料夾為主並隱藏系統「已傳送 / 已接收」層，避免上傳檔案被困且可再次上傳 / 刪除；訊息附件新增「預覽」動作沿用 Modal 下載流程並於 Playwright 內實際執行 `downloadAndDecrypt` 驗證 SHA-256 digest，確認接收端確實可還原檔案；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過，後續將持續強化 Drive / 聊天 UI（#12~#15）。
 
----
-
 ## 目錄
 
 1. [簡介與快速開始](#簡介與快速開始)
@@ -39,7 +37,7 @@ NODE_ENV=development node src/server.js            # 啟動 API
 node scripts/serve-web.mjs                         # 啟動本機 Pages
 ```
 
-必要環境變數（摘要）：`DATA_API_URL`, `DATA_API_HMAC`, `WS_TOKEN_SECRET`, `S3_*`, `NTAG424_*`, `OPAQUE_*`, `ACCOUNT_TOKEN_BYTES`, `SIGNED_{PUT,GET}_TTL`, `UPLOAD_MAX_BYTES`。細節見[安全預設](#安全預設與環境配置)。
+必要環境變數（摘要）：`DATA_API_URL`, `DATA_API_HMAC`, `WS_TOKEN_SECRET`, `S3_*`, `NTAG424_*`, `OPAQUE_*`, `ACCOUNT_TOKEN_BYTES`, `SIGNED_{PUT,GET}_TTL`, `UPLOAD_MAX_BYTES`, `CALL_SESSION_TTL_SECONDS`, `TURN_SHARED_SECRET`, `TURN_STUN_URIS`, `TURN_RELAY_URIS`, `TURN_TTL_SECONDS`。細節見[安全預設](#安全預設與環境配置)。
 
 開發流程請遵循 `Prompt.md`：新 session 先閱讀 README 最新進度 → 選定優先事項 → 修改後自跑測試 → 更新此文件紀錄。
 
@@ -198,6 +196,8 @@ bash ./scripts/deploy-prod.sh --apply-migrations
    ORIGIN_API=https://api.message.sentry.red npm run test:login-flow
    ORIGIN_API=https://api.message.sentry.red E2E_ORIGIN_API=https://api.message.sentry.red npm run test:front:login
    ```
+
+> **TUN 服務備註**：詳細主機資訊與操作規範請參考 `docs/internal/tun-host.md`（本檔案已被 `.gitignore` 排除，不隨版本控制分發；需向維運成員索取或於本地自行建立）。
 5. 若任何 Production 測試失敗，需先排除問題並重新部署，直到正式環境也全部通過為止。
 
 ---
@@ -249,18 +249,21 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 ### 時間軸
 
-- **目前狀態**：登入頁新增 `viewport-fit=cover` 並套用 safe-area padding，iOS Safari 不再露出白邊；密碼錯誤會捕捉 `EnvelopeRecoveryError` 等狀態回報「密碼不正確」。改密碼流程會同步更新 OPAQUE record（`/auth/opaque/*`）且 `ensureOpaque` 遇到 Envelope 錯誤會自動重註冊，E2E login 測試覆蓋「改密碼→截圖→以新密碼登入→改回原密碼」全流程（`artifacts/e2e/login/change-password-success.png`）。`npx playwright test tests/e2e/login.spec.mjs` 綠燈，其他 API 測試沿用前一輪紀錄，部署尚未重跑。
-- **下一步**：持續觀察實機上變更密碼流程（argon2 計算、API 204 回應）與登入錯誤提示是否覆蓋所有情境；後續可著手 Frontend Secure Cache TODO 列表（需求盤點與儲存層設計）。
+- **目前狀態**：語音/視訊通話 Roadmap 第一項已完成：建立 `shared/calls/schemas.{js,ts}` + `docs/ios/CallSchemas.swift` 以同步 `callKeyEnvelope` / `callMediaState` / capability schema，並新增 `shared/calls/network-config.json`。前端導入 `features/calls/{events,state,network-config}.js` 與聚合匯出，提供 state manager / event bus / TURN 設定載入；聊天頁呼叫鈕改為透過 `requestOutgoingCall()` 並預抓 network config。Cloudflare Worker 增設 `call_sessions` / `call_events` 表與 `/d1/calls/{session,events}` CRUD，Node API 也補齊 `/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}` 及 `GET /api/v1/calls/:id`，並產生 TURN 憑證/ICE 結構。針對 Playwright 長流程（`full-flow`, `multi-account-friends`）因步驟繁多超過 120s，已在 spec 內調高 timeout（240s、300s），本機 API 常駐後重新跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數綠燈。
+- **下一步**：依 Roadmap 續實作呼叫信令（WS `call-*` 互斥、鎖定、超時）與前端 overlay / 控制列，並將 `CallSessionManager` 串接到新 REST；後續若再新增 E2E 腳本，需同步評估耗時並將 timeout 管理集中到設定檔或拆分測試，避免個別 spec 再度 timeout。
 
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **2025-11-07 00:10（Codex）** | Login / App 頁加入 `viewport-fit=cover` 與 safe-area padding，修正 iOS Safari 頂/底邊裸露；登入錯誤映射補上 `EnvelopeRecoveryError`；改密碼流程成功後會即時 re-wrap MK + 重新註冊 OPAQUE，`ensureOpaque` 偵測 Envelope 錯誤時自動重註冊，E2E login 測試覆蓋「改密碼→新密碼登入→改回原密碼」並留下截圖 (`artifacts/e2e/login/change-password-success.png`)。`npx playwright test tests/e2e/login.spec.mjs` 綠燈。 |
-| **2025-11-06 23:45（Codex）** | Login / App handoff 新增 `wrapped_mk` 儲存與還原，App 端變更密碼可直接使用現有 MK；`tests/e2e/login.spec.mjs` 安插改密碼測試並產生截圖 (`artifacts/e2e/login/change-password-success.png`)，同時在測試內將密碼改回預設值避免影響其他場景。觀察到改密碼後立即以新密碼重新登入仍會觸發 `EnvelopeRecoveryError`，暫以重新改回原密碼做 workaround，待後續修正。`npx playwright test tests/e2e/login.spec.mjs` 綠燈。 |
-| **2025-11-06 23:00（Codex）** | 登入頁錯誤映射補上 OPAQUE 密碼錯誤（`OpaqueLoginFinishFailed` 等）並維持護盾光效調整；設定選單新增「變更密碼」流程（前端 unwrap → rewrap MK、呼叫新 `/api/v1/mk/update` API）與 UI 表單；跑完 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 後依流程 `scripts/cleanup/wipe-all.sh` 清空 D1/R2 並 `scripts/deploy-prod.sh --apply-migrations` 全套部署。                                                                                                                                                                                                                                    |
-| **2025-11-06 22:33（Codex）** | Login 護盾光帶加粗並提升柔光層次，App 主畫面也加入 `gesture*` 停用 pinch 以配合現有 viewport 設定；依指示直接執行 `scripts/deploy-prod.sh --apply-migrations` 同步部署 Worker / D1 / Node API（pm2 reload）/ Pages，未重跑 `npm run test:*`。                                                                                                                                                                                                                                                                                                                                                              |
-| **2025-11-06 22:30（Codex）** | 更新 login 頁 `meta viewport` 與 `gesturestart/change/end` 事件禁止雙指縮放，確保晶片護盾特效不被縮放干擾；再次執行 `scripts/deploy-prod.sh --apply-migrations` 同步部署全部部件。依使用者要求仍未重跑 `npm run test:*`。                                                                                                                                                                                                                                                                                                                                                                                      |
-| **2025-11-06 22:25（Codex）** | Login 頁新增 3 秒綠色護盾光帶動畫（SVG path + glow + reduced-motion fallback）以陪伴晶片偵測等待，並執行 `scripts/deploy-prod.sh --apply-migrations` 佈署 Cloudflare Worker / D1、Node API（pm2 reload）、Pages。使用者明確要求本輪略過 `npm run test:*`，沿用前次 2025-11-13 的測試結果。                                                                                                                                                                                                                                                                                                                            |
+| **2025-11-12 06:50（Codex）** | Cloudflare Worker 新增 `call_sessions` / `call_events` 表與 `/d1/calls/{session,events}` CRUD，Node API 對應實作 `/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}` 及 `GET /api/v1/calls/:id`、TURN 憑證簽發；前端 `requestOutgoingCall()` 現可寫入 session/event，並將 TURN/ICE 設定集中於環境變數。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 重跑皆綠燈。 |
+| **2025-11-12 06:40（Codex）** | Playwright `tests/e2e/full-flow.spec.mjs` 增加 `test.setTimeout(240_000)`、`tests/e2e/multi-account-friends.spec.mjs` 增加 `test.setTimeout(300_000)`，確保多帳號 + 媒體壓力流程在 CI 內有足夠時間；同時讓 Node API 在本機常駐後重新跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過，原本的逾時已解除並產生最新 `test-results/`。 |
+| **2025-11-12 05:37（Codex）** | 實作語音/視訊通話第一階段：建立`shared/calls/schemas.{js,ts}`、Swift 版 `docs/ios/CallSchemas.swift` 及 `shared/calls/network-config.json`；新增 `features/calls/{events,state,network-config}.js` 讓前端具備 state manager / event bus / TURN 載入，聊天呼叫鈕也改走 `requestOutgoingCall()` 並預抓 network config。`npm run test:{prekeys-devkeys,messages-secure,login-flow}` 綠燈，`friends-messages` 因本機未啟動 API 而 `fetch failed`，`test:front:login` 仍有 `full-flow`、`multi-account-friends` 逾時（餘 3 項通過，詳細輸出見 `test-results/`）。                                                                                                                            |
+| **2025-11-07 00:10（Codex）** | Login / App 頁加入`viewport-fit=cover` 與 safe-area padding，修正 iOS Safari 頂/底邊裸露；登入錯誤映射補上 `EnvelopeRecoveryError`；改密碼流程成功後會即時 re-wrap MK + 重新註冊 OPAQUE，`ensureOpaque` 偵測 Envelope 錯誤時自動重註冊，E2E login 測試覆蓋「改密碼→新密碼登入→改回原密碼」並留下截圖 (`artifacts/e2e/login/change-password-success.png`)。`npx playwright test tests/e2e/login.spec.mjs` 綠燈。                                                                                                                                                                                                                                                                       |
+| **2025-11-06 23:45（Codex）** | Login / App handoff 新增`wrapped_mk` 儲存與還原，App 端變更密碼可直接使用現有 MK；`tests/e2e/login.spec.mjs` 安插改密碼測試並產生截圖 (`artifacts/e2e/login/change-password-success.png`)，同時在測試內將密碼改回預設值避免影響其他場景。觀察到改密碼後立即以新密碼重新登入仍會觸發 `EnvelopeRecoveryError`，暫以重新改回原密碼做 workaround，待後續修正。`npx playwright test tests/e2e/login.spec.mjs` 綠燈。                                                                                                                                                                                                                                                                         |
+| **2025-11-06 23:00（Codex）** | 登入頁錯誤映射補上 OPAQUE 密碼錯誤（`OpaqueLoginFinishFailed` 等）並維持護盾光效調整；設定選單新增「變更密碼」流程（前端 unwrap → rewrap MK、呼叫新 `/api/v1/mk/update` API）與 UI 表單；跑完 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 後依流程 `scripts/cleanup/wipe-all.sh` 清空 D1/R2 並 `scripts/deploy-prod.sh --apply-migrations` 全套部署。                                                                                                                                                                                                                                                                                     |
+| **2025-11-06 22:33（Codex）** | Login 護盾光帶加粗並提升柔光層次，App 主畫面也加入`gesture*` 停用 pinch 以配合現有 viewport 設定；依指示直接執行 `scripts/deploy-prod.sh --apply-migrations` 同步部署 Worker / D1 / Node API（pm2 reload）/ Pages，未重跑 `npm run test:*`。                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **2025-11-06 22:30（Codex）** | 更新 login 頁`meta viewport` 與 `gesturestart/change/end` 事件禁止雙指縮放，確保晶片護盾特效不被縮放干擾；再次執行 `scripts/deploy-prod.sh --apply-migrations` 同步部署全部部件。依使用者要求仍未重跑 `npm run test:*`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **2025-11-06 22:25（Codex）** | Login 頁新增 3 秒綠色護盾光帶動畫（SVG path + glow + reduced-motion fallback）以陪伴晶片偵測等待，並執行`scripts/deploy-prod.sh --apply-migrations` 佈署 Cloudflare Worker / D1、Node API（pm2 reload）、Pages。使用者明確要求本輪略過 `npm run test:*`，沿用前次 2025-11-13 的測試結果。                                                                                                                                                                                                                                                                                                                                                                                               |
 | **2025-11-13 05:40（Codex）** | 修正`x3dhRespond` 初始鏈鍵配置（responder 以首段種子作為 `ckR`）避免 owner 端 decrypt `OperationError`，`tests/e2e/multi-account-friends.spec.mjs` 重跑穩定通過；全套 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 皆綠，確認多帳號互邀 / 附件壓力流程與登入迴圈無回歸。                                                                                                                                                                                                                                                                                                                                                                    |
 | **2025-11-13 02:30（Codex）** | Playwright 新增`tests/e2e/session-bootstrap.spec.mjs` 覆蓋「加好友未傳訊息 → 新裝置登入」情境，登入前預注 contact secret snapshot 以驅動 conversation list 與安全 Modal / composer 狀態驗證；前端 `fetchWithTimeout` 預設 `cache: 'no-store'` 避免 contacts API 被瀏覽器快取回 304；`npm run test:front:login` 全套重跑確認四支 E2E 均綠。                                                                                                                                                                                                                                                                                                                                             |
 | **2025-11-12（Codex）**       | 新增`SecureConversationManager` 集中管理 DR 初始化與 `session-init` 控制訊息，加入 `session-ack` 確認、逾時監控與 initiator 自動重送邏輯；Messages / Contacts UI 改為事件驅動顯示安全 Modal 並移除 `secureInitBlocked` flag。Contact Secrets setter 改為結構化（invite / conversation / dr / session）並提供 `getContactSecretSections` 方便後續模組引用；補上 Node `POST /api/v1/friends/bootstrap-session` API（附帶快取）以便缺會話時自動補抓 `guest_bundle` 並同步 Contact Secrets / sessionStore。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 重跑皆綠。                                                                              |
@@ -316,89 +319,90 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 > 目標：在前端（瀏覽器）快取密文與相關 metadata，減少 `/messages/secure` 重複請求並改善離線體驗。以下任務需依序完成；每個 checkbox 勾選前請在 PR / README 註明成果。
 
-- [ ] **需求盤點與邊界**
-  - [ ] 明列要快取的資料類型（文字訊息、附件 metadata、控制訊息、錯誤狀態）。
-  - [ ] 確認不快取的資訊（例如大型附件本體、敏感明文）並記錄理由。
-- [ ] **儲存層與 Schema**
-  - [ ] 決定使用 IndexedDB、CacheStorage 或 Memory（含 fallback 策略）。
-  - [ ] 定義 key schema（`conversationId + messageId`、版本欄位、timestamp）。
-  - [ ] 規劃容量上限與淘汰策略（LRU / TTL / per-conversation quota）。
-- [ ] **寫入策略**
-  - [ ] 確認在何時將密文寫入 cache（訊息 decrypt 成功 / API 回傳時）。
-  - [ ] 對附件 metadata、download envelope 設置同步流程。
-  - [ ] 設計錯誤與未知狀態的 fallback（例如 decrypt 失敗不寫入、但保留診斷資訊）。
-- [ ] **讀取整合**
-  - [ ] 調整 `listSecureAndDecrypt` 入口，切換對話時優先使用 cache 呈現。
-  - [ ] 實作「增量抓取」：僅對尚未快取的 messageId 發送 API 請求。
-  - [ ] 當 cache miss / 損毀時，定義自修或清除流程。
-- [ ] **一致性與同步**
-  - [ ] 規劃 cache 失效條件（例如對話刪除、使用者登出、清除 storage）。
-  - [ ] 訂定跨裝置更新策略：收到新的 websocket event 是否直接更新 cache。
-  - [ ] 處理離線狀態與回線後的 reconcile 手續。
-- [ ] **安全與隱私檢查**
-  - [ ] 盤點 cache 內容的 metadata 是否會洩漏（timestamp、sender 指標）；如必要則加密或打散。
-  - [ ] 更新 threat model，確認快取資料被讀取時的風險與緩解方案。
-- [ ] **Telemetry / Observability**
-  - [ ] 建立 cache hit/miss 計數（可 console / metrics pipeline）。
-  - [ ] 在 QA 腳本中輸出 cache 佔用量與清理事件，方便驗證。
-- [ ] **測試計畫**
-  - [ ] 單元測試：cache 插入 / 讀取 / 淘汰 / 損毀 恢復。
-  - [ ] Playwright 加入 cache-on/off 對照情境，驗證 UI 在無網路下仍可呈現歷史訊息。
-- [ ] **Rollout / 設定**
-  - [ ] 決定是否以 feature flag 控制（逐步 rollout）。
-  - [ ] 文件化使用者需知（例如清除 cache、隱私說明）。
+- [ ]  **需求盤點與邊界**
+  - [ ]  明列要快取的資料類型（文字訊息、附件 metadata、控制訊息、錯誤狀態）。
+  - [ ]  確認不快取的資訊（例如大型附件本體、敏感明文）並記錄理由。
+- [ ]  **儲存層與 Schema**
+  - [ ]  決定使用 IndexedDB、CacheStorage 或 Memory（含 fallback 策略）。
+  - [ ]  定義 key schema（`conversationId + messageId`、版本欄位、timestamp）。
+  - [ ]  規劃容量上限與淘汰策略（LRU / TTL / per-conversation quota）。
+- [ ]  **寫入策略**
+  - [ ]  確認在何時將密文寫入 cache（訊息 decrypt 成功 / API 回傳時）。
+  - [ ]  對附件 metadata、download envelope 設置同步流程。
+  - [ ]  設計錯誤與未知狀態的 fallback（例如 decrypt 失敗不寫入、但保留診斷資訊）。
+- [ ]  **讀取整合**
+  - [ ]  調整 `listSecureAndDecrypt` 入口，切換對話時優先使用 cache 呈現。
+  - [ ]  實作「增量抓取」：僅對尚未快取的 messageId 發送 API 請求。
+  - [ ]  當 cache miss / 損毀時，定義自修或清除流程。
+- [ ]  **一致性與同步**
+  - [ ]  規劃 cache 失效條件（例如對話刪除、使用者登出、清除 storage）。
+  - [ ]  訂定跨裝置更新策略：收到新的 websocket event 是否直接更新 cache。
+  - [ ]  處理離線狀態與回線後的 reconcile 手續。
+- [ ]  **安全與隱私檢查**
+  - [ ]  盤點 cache 內容的 metadata 是否會洩漏（timestamp、sender 指標）；如必要則加密或打散。
+  - [ ]  更新 threat model，確認快取資料被讀取時的風險與緩解方案。
+- [ ]  **Telemetry / Observability**
+  - [ ]  建立 cache hit/miss 計數（可 console / metrics pipeline）。
+  - [ ]  在 QA 腳本中輸出 cache 佔用量與清理事件，方便驗證。
+- [ ]  **測試計畫**
+  - [ ]  單元測試：cache 插入 / 讀取 / 淘汰 / 損毀 恢復。
+  - [ ]  Playwright 加入 cache-on/off 對照情境，驗證 UI 在無網路下仍可呈現歷史訊息。
+- [ ]  **Rollout / 設定**
+  - [ ]  決定是否以 feature flag 控制（逐步 rollout）。
+  - [ ]  文件化使用者需知（例如清除 cache、隱私說明）。
 
 ### Encrypted Voice / Video Call Roadmap（Mobile + Future iOS App）
 
-- [x] **需求盤點與 UX**（詳見 [`docs/encrypted-calls-plan.md`](docs/encrypted-calls-plan.md)）
-  - [x] 逐一列出語音／視訊情境（背景播放、螢幕鎖定、弱網、耳機/喇叭切換、CarPlay），並同時產出 PWA 與未來 iOS App 可共用的 wireframe（撥號、來電、通話中、迷你浮窗）。
-  - [x] 規劃前景/背景通知策略：Web 推播 + iOS PushKit，定義 App 被殺掉時的 fallback 接通流程。
-- [x] **信令與狀態機**（詳見 [`docs/encrypted-calls-signaling.md`](docs/encrypted-calls-signaling.md)）
-  - [x] 設計 WebSocket 信令（invite / accept / reject / cancel / busy / ringing / ice-candidate）並提供版本/能力欄位，確保 iOS 原生與 Web 可以依 capability 切換。
-  - [x] 製作呼叫狀態機（自動重試、超時、互斥鎖）並輸出為共用文件，供原生 App SDK 直接沿用。
-- [x] **端對端加密媒體**（詳見 [`docs/encrypted-calls-media.md`](docs/encrypted-calls-media.md)）
-  - [x] 評估 WebRTC Insertable Streams + SFrame 或自建 SRTP pipeline，並定義與 X3DH/Double Ratchet 相容的 key ladder（呼叫 master key → per-direction key）。
-  - [x] 制定金鑰輪換/銷毀 API，使 JavaScript 與 iOS (Swift) 可以共用同一份 protobuf/CBOR 描述。
-- [x] **NAT Traversal / TURN**（詳見 [`docs/encrypted-calls-network.md`](docs/encrypted-calls-network.md)）
-  - [x] 佈建 STUN/TURN (coturn) 並規劃 OAuth/TLS 憑證；整理成設定檔讓 Web 與 iOS WebRTC stack 共用。
-  - [x] 撰寫頻寬/延遲探針，定義語音優先、視訊 fallback、純語音模式切換規則。
-- [x] **行動裝置 UI / 體驗**（詳見 [`docs/encrypted-calls-ui.md`](docs/encrypted-calls-ui.md)）
-  - [x] 完成通話控制列（靜音、擴音、切視訊、掛斷）與全螢幕來電頁，並提供原生 iOS 套件可套用的 design tokens。
-  - [x] 實作背景播放、Audio Focus、CallKit 介面與網路切換自動重連，確保 web / iOS 行為一致。
-- [x] **後端與監控**（詳見 [`docs/encrypted-calls-backend.md`](docs/encrypted-calls-backend.md)）
-  - [x] 新增呼叫事件記錄（成功率、建立時間、ICE 失敗率、封包遺失）並輸出 Prometheus/Grafana dashboard。
-  - [x] 建立濫用防護（呼叫速率、黑名單、封鎖同步）並定義 API 讓 iOS app 也能使用。
-- [x] **測試與安全審查**（詳見 [`docs/encrypted-calls-testing.md`](docs/encrypted-calls-testing.md)）
-  - [x] 撰寫自動化腳本模擬兩支行動裝置（Web + iOS 模擬器）驗證信令、金鑰交握、音訊/視訊傳輸。
-  - [x] 更新 threat model、安排第三方評估（加密材料壽命、記憶體擦除、螢幕錄影保護）。
-- [x] **視訊與擴充**（詳見 [`docs/encrypted-calls-video.md`](docs/encrypted-calls-video.md)）
-  - [x] 規劃視訊 UI（畫中畫、鏡頭切換、螢幕分享）與頻寬調度，並設計多方通話/會議的擴充接口供 iOS/Android/ Web 共用。
+- [X]  **需求盤點與 UX**（詳見 [`docs/encrypted-calls-plan.md`](docs/encrypted-calls-plan.md)）
+  - [X]  逐一列出語音／視訊情境（背景播放、螢幕鎖定、弱網、耳機/喇叭切換、CarPlay），並同時產出 PWA 與未來 iOS App 可共用的 wireframe（撥號、來電、通話中、迷你浮窗）。
+  - [X]  規劃前景/背景通知策略：Web 推播 + iOS PushKit，定義 App 被殺掉時的 fallback 接通流程。
+- [X]  **信令與狀態機**（詳見 [`docs/encrypted-calls-signaling.md`](docs/encrypted-calls-signaling.md)）
+  - [X]  設計 WebSocket 信令（invite / accept / reject / cancel / busy / ringing / ice-candidate）並提供版本/能力欄位，確保 iOS 原生與 Web 可以依 capability 切換。
+  - [X]  製作呼叫狀態機（自動重試、超時、互斥鎖）並輸出為共用文件，供原生 App SDK 直接沿用。
+- [X]  **端對端加密媒體**（詳見 [`docs/encrypted-calls-media.md`](docs/encrypted-calls-media.md)）
+  - [X]  評估 WebRTC Insertable Streams + SFrame 或自建 SRTP pipeline，並定義與 X3DH/Double Ratchet 相容的 key ladder（呼叫 master key → per-direction key）。
+  - [X]  制定金鑰輪換/銷毀 API，使 JavaScript 與 iOS (Swift) 可以共用同一份 protobuf/CBOR 描述。
+- [X]  **NAT Traversal / TURN**（詳見 [`docs/encrypted-calls-network.md`](docs/encrypted-calls-network.md)）
+  - [X]  佈建 STUN/TURN (coturn) 並規劃 OAuth/TLS 憑證；整理成設定檔讓 Web 與 iOS WebRTC stack 共用。
+  - [X]  撰寫頻寬/延遲探針，定義語音優先、視訊 fallback、純語音模式切換規則。
+- [X]  **行動裝置 UI / 體驗**（詳見 [`docs/encrypted-calls-ui.md`](docs/encrypted-calls-ui.md)）
+  - [X]  完成通話控制列（靜音、擴音、切視訊、掛斷）與全螢幕來電頁，並提供原生 iOS 套件可套用的 design tokens。
+  - [X]  實作背景播放、Audio Focus、CallKit 介面與網路切換自動重連，確保 web / iOS 行為一致。
+- [X]  **後端與監控**（詳見 [`docs/encrypted-calls-backend.md`](docs/encrypted-calls-backend.md)）
+  - [X]  新增呼叫事件記錄（成功率、建立時間、ICE 失敗率、封包遺失）並輸出 Prometheus/Grafana dashboard。
+  - [X]  建立濫用防護（呼叫速率、黑名單、封鎖同步）並定義 API 讓 iOS app 也能使用。
+- [X]  **測試與安全審查**（詳見 [`docs/encrypted-calls-testing.md`](docs/encrypted-calls-testing.md)）
+  - [X]  撰寫自動化腳本模擬兩支行動裝置（Web + iOS 模擬器）驗證信令、金鑰交握、音訊/視訊傳輸。
+  - [X]  更新 threat model、安排第三方評估（加密材料壽命、記憶體擦除、螢幕錄影保護）。
+- [X]  **視訊與擴充**（詳見 [`docs/encrypted-calls-video.md`](docs/encrypted-calls-video.md)）
+  - [X]  規劃視訊 UI（畫中畫、鏡頭切換、螢幕分享）與頻寬調度，並設計多方通話/會議的擴充接口供 iOS/Android/ Web 共用。
 
 ### Encrypted Call Implementation Checklist
 
 > 依據 `docs/encrypted-calls-*.md` 內容統整的實作待辦，已確認各文件規劃互不衝突，可依序執行。
 
-- [ ] **基礎 Schema 與模組初始化**
-  - [ ] 建立 `shared/calls/schemas.{js,ts}`（含 `callKeyEnvelope`, `callMediaState`, capability 定義），並同步 Swift 版本。
-  - [ ] 新增 `calls/` 前端模組骨架（state manager、event bus、network config loader）。
-- [ ] **後端資料層與 API**
-  - [ ] 在 Worker / D1 實作 `call_sessions`, `call_events` migrations 及 CRUD endpoint（參考 `docs/encrypted-calls-backend.md`）。
-  - [ ] Node API 實作 `/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}`，含 rate limit 與 abuse guard。
-- [ ] **信令與互斥控制**
-  - [ ] WebSocket handler 支援 `call-*` 事件、鎖定/超時機制，並更新前端/ iOS 客戶端 SDK 以共用狀態機（見 `docs/encrypted-calls-signaling.md`）。
-- [ ] **端對端加密媒體**
-  - [ ] 實作 `CallKeyManager`（HKDF ladder、輪換、銷毀）與 `call-key-envelope` 交換。
-  - [ ] Web 端導入 Insertable Streams pipeline；iOS 端整合 SFrame / SRTP transform（見 `docs/encrypted-calls-media.md`）。
-- [ ] **NAT / TURN 整合**
-  - [ ] 佈署 coturn（DNS/TLS/監控）並完成 `/turn-credentials` API；前端讀取 `network-config` 自動套用（見 `docs/encrypted-calls-network.md`）。
-- [ ] **行動裝置 UI / 體驗**
-  - [ ] 建立通話 overlay、控制列、背景/鎖屏流程與 design tokens；iOS 連動 CallKit/Audio Focus（見 `docs/encrypted-calls-ui.md`）。
-- [ ] **視訊、螢幕分享與擴充**
-  - [ ] 實作頻寬 profile manager、PiP、螢幕分享及多方通話預留 hook（見 `docs/encrypted-calls-video.md`）。
-- [ ] **測試與安全驗證**
-  - [ ] 完成單元/整合/端到端測試（含 Playwright + iOS 實機）並更新 CI；同步 Threat Model、第三方評估（見 `docs/encrypted-calls-testing.md`）。
-- [ ] **監控與營運**
-  - [ ] 佈建呼叫專用 Prometheus/Grafana dashboard、Loki log pipeline，並撰寫週報/告警流程。
+- [X]  **基礎 Schema 與模組初始化**
+  - [X]  建立 `shared/calls/schemas.{js,ts}`（含 `callKeyEnvelope`, `callMediaState`, capability 定義），並同步 Swift 版本。
+  - [X]  新增 `calls/` 前端模組骨架（state manager、event bus、network config loader）。
+- [X]  **後端資料層與 API**
+  - [X]  在 Worker / D1 實作 `call_sessions`, `call_events` migrations 及 CRUD endpoint（參考 `docs/encrypted-calls-backend.md`）。
+  - [X]  Node API 實作 `/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}`，含 rate limit 與 abuse guard。
+- [ ]  **信令與互斥控制**
+  - [ ]  WebSocket handler 支援 `call-*` 事件、鎖定/超時機制，並更新前端/ iOS 客戶端 SDK 以共用狀態機（見 `docs/encrypted-calls-signaling.md`）。
+- [ ]  **端對端加密媒體**
+  - [ ]  實作 `CallKeyManager`（HKDF ladder、輪換、銷毀）與 `call-key-envelope` 交換。
+  - [ ]  Web 端導入 Insertable Streams pipeline；iOS 端整合 SFrame / SRTP transform（見 `docs/encrypted-calls-media.md`）。
+- [ ]  **NAT / TURN 整合**
+  - [ ]  佈署 coturn（DNS/TLS/監控）並完成 `/turn-credentials` API；前端讀取 `network-config` 自動套用（見 `docs/encrypted-calls-network.md`）。
+- [ ]  **行動裝置 UI / 體驗**
+  - [ ]  建立通話 overlay、控制列、背景/鎖屏流程與 design tokens；iOS 連動 CallKit/Audio Focus（見 `docs/encrypted-calls-ui.md`）。
+- [ ]  **視訊、螢幕分享與擴充**
+  - [ ]  實作頻寬 profile manager、PiP、螢幕分享及多方通話預留 hook（見 `docs/encrypted-calls-video.md`）。
+- [ ]  **測試與安全驗證**
+  - [ ]  完成單元/整合/端到端測試（含 Playwright + iOS 實機）並更新 CI；同步 Threat Model、第三方評估（見 `docs/encrypted-calls-testing.md`）。
+- [ ]  **監控與營運**
+  - [ ]  佈建呼叫專用 Prometheus/Grafana dashboard、Loki log pipeline，並撰寫週報/告警流程。
+
 ---
 
 ## Codex 修改追蹤

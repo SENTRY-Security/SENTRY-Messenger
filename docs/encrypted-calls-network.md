@@ -13,7 +13,7 @@
 ## 2. 認證與金鑰
 
 - TURN 使用短期憑證（長度 16 bytes username + HMAC-based password）。
-- `POST /api/v1/calls/turn-credentials`：伺服器產生 `username = timestamp:uid`，`password = HMAC(shared_secret, username)`，TTL 5 分鐘。
+- `POST /api/v1/calls/turn-credentials`：伺服器產生 `username = timestamp:uid`，`password = HMAC(shared_secret, username)`，TTL 5 分鐘。Node API 會驗證 `uidHex + accountToken/accountDigest` 後直接回傳 `iceServers` 結構，客戶端不需再呼叫 Worker。
 - 回傳結構：
 
 ```jsonc
@@ -91,6 +91,11 @@ static-auth-secret=<TURN_SHARED_SECRET>
 ```
 
 - iOS App 可直接載入此檔或轉為 Plist。
+- 相關環境變數：
+  - `TURN_SHARED_SECRET`：產生 credential 的 HMAC key（與 coturn `static-auth-secret` 相同）
+  - `TURN_TTL_SECONDS`：憑證 TTL（預設 300）
+  - `TURN_STUN_URIS` / `TURN_RELAY_URIS`：Node API 打包 `iceServers` 時使用的 URL 清單，逗號分隔
+  - `CALL_SESSION_TTL_SECONDS`：`/api/v1/calls/invite` 預設 session 有效時間，超時後 Worker 會自動清除（見 backend 文檔）
 
 ## 6. Fallback 策略
 
@@ -113,8 +118,8 @@ static-auth-secret=<TURN_SHARED_SECRET>
 
 1. 申請 `turn*.sentry.mobi` DNS 與 TLS 憑證。
 2. 建立 Terraform/Ansible 腳本佈署 coturn。
-3. 實作 `/api/v1/calls/turn-credentials` 端點，與帳號驗證綁定。
-4. App / Web 共用的 `network-config` 檔案與載入邏輯。
+3. ✅ `/api/v1/calls/turn-credentials` 端點與帳號驗證綁定（Node API 已上線，見本文第 2 節）。
+4. ✅ App / Web 共用的 `network-config` 檔案與載入邏輯（`shared/calls/network-config.json` + `features/calls/network-config.js`）。
 5. 帶寬自動降階演算法（寫入 `calls/network-manager.js` + Swift counterpart）。
 
 ---

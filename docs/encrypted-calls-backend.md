@@ -36,10 +36,31 @@
 
 | Method | Path | 用途 |
 | ------ | ---- | ---- |
-| `POST /api/v1/calls/turn-credentials` | 發放 STUN/TURN 憑證（前一項已定義） |
-| `POST /api/v1/calls/report-metrics` | 客戶端回報 QoS（封包遺失、重連次數） |
+| `POST /api/v1/calls/invite` | 撥出方建立/更新 call session，寫入 `call_sessions` |
+| `POST /api/v1/calls/cancel` | 撥出方取消，標記 session 結束並記錄事件 |
+| `POST /api/v1/calls/ack` | 被叫方喚醒後回報「正在處理」，延長逾時 |
+| `POST /api/v1/calls/report-metrics` | 雙方回報 QoS（封包遺失、重連次數等） |
 | `GET /api/v1/calls/:id` | 取得 call session 狀態（調試 / CallKit 同步） |
-| `POST /api/v1/calls/ack` | 背景喚醒後告知正在處理，延長 server timeout |
+| `POST /api/v1/calls/turn-credentials` | 發放短期 STUN/TURN 憑證 |
+
+上述 Node API 皆透過 HMAC 代理 Cloudflare Worker 的 `/d1/calls/{session,events}` 端點：
+
+- `POST /d1/calls/session`：建立/更新 `call_sessions`，支援 metadata/metrics merge 以及 TTL。
+- `GET /d1/calls/session?callId=...`：讀取單一 session。
+- `POST /d1/calls/events`：寫入 `call_events`（invite/accept/ack/...）。
+- `GET /d1/calls/events?callId=...&limit=...`：調試時抓事件時間線。
+
+Worker 會定期（每分鐘）清理 7 天前的事件與已結束且過期的 session，對應 D1 migration `0008_calls.sql`。
+
+### 2.1 環境變數
+
+| 變數 | 用途 |
+| ---- | ---- |
+| `CALL_SESSION_TTL_SECONDS` | 預設 session 存活時間（Node API 端；預設 90 秒） |
+| `TURN_SHARED_SECRET` | 產生 TURN username/credential 時使用的 HMAC key |
+| `TURN_TTL_SECONDS` | TURN credential TTL（預設 300 秒） |
+| `TURN_STUN_URIS` | 逗號分隔的 STUN URL 清單 |
+| `TURN_RELAY_URIS` | 逗號分隔的 TURN URL 清單（含 `turn:` / `turns:`） |
 
 所有 API 需驗證 `accountToken + uidHex`，並與 `call_sessions` 比對。
 
@@ -95,8 +116,8 @@
 
 ## 7. 實作待辦
 
-1. 於 Worker 新增 `/d1/calls/*` endpoints 與 migrations。
-2. Node API 新增上述 REST endpoints。
+1. ✅ 於 Worker 新增 `/d1/calls/*` endpoints 與 migrations（`0008_calls.sql`）。
+2. ✅ Node API 新增上述 REST endpoints（`/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}`、`GET /api/v1/calls/:id`）。
 3. 建立 Prometheus exporter（或以 OpenTelemetry 方式輸出）。
 4. 設計 Loki/Grafana dashboard。
 5. 編寫自動清理腳本（每日刪除過期 sessions / events）。

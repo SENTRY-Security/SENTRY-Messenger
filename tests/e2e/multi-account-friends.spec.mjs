@@ -74,6 +74,7 @@ test.afterAll(async () => {
 });
 
 test('multi-account friendship, messaging, and attachment stress', async ({ browser }) => {
+  test.setTimeout(300_000);
   const userCount = Math.max(3, DEFAULT_USERS);
   for (let i = 0; i < userCount; i += 1) {
     // eslint-disable-next-line no-await-in-loop

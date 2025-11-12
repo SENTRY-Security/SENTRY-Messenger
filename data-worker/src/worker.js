@@ -199,6 +199,79 @@ export default {
       return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
     }
 
+    if (req.method === 'POST' && url.pathname === '/d1/calls/session') {
+      await cleanupCallTables(env);
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const result = await upsertCallSession(env, body || {});
+      if (!result.ok) {
+        return json({ error: result.error || 'CallSessionUpsertFailed', message: result.message || 'unable to store call session' }, { status: result.status || 400 });
+      }
+      return json({ ok: true, session: result.session });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/d1/calls/session') {
+      await cleanupCallTables(env);
+      const callId = normalizeCallId(url.searchParams.get('callId') || url.searchParams.get('call_id') || url.searchParams.get('id'));
+      if (!callId) {
+        return json({ error: 'BadRequest', message: 'callId required' }, { status: 400 });
+      }
+      const rows = await env.DB.prepare(
+        `SELECT * FROM call_sessions WHERE call_id=?1`
+      ).bind(callId).all();
+      const row = rows?.results?.[0];
+      if (!row) {
+        return json({ error: 'NotFound', message: 'call session not found' }, { status: 404 });
+      }
+      return json({ ok: true, session: serializeCallSessionRow(row) });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/d1/calls/events') {
+      await cleanupCallTables(env);
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const result = await insertCallEvent(env, body || {});
+      if (!result.ok) {
+        return json({ error: result.error || 'CallEventInsertFailed', message: result.message || 'unable to store call event' }, { status: result.status || 400 });
+      }
+      return json({ ok: true, event: result.event });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/d1/calls/events') {
+      await cleanupCallTables(env);
+      const callId = normalizeCallId(url.searchParams.get('callId') || url.searchParams.get('call_id') || url.searchParams.get('id'));
+      if (!callId) {
+        return json({ error: 'BadRequest', message: 'callId required' }, { status: 400 });
+      }
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 50), 1), 200);
+      const rows = await env.DB.prepare(
+        `SELECT event_id, call_id, type, payload_json, from_uid, to_uid, trace_id, created_at
+           FROM call_events
+          WHERE call_id=?1
+          ORDER BY created_at DESC
+          LIMIT ?2`
+      ).bind(callId, limit).all();
+      const events = (rows?.results || []).map((row) => ({
+        eventId: row.event_id,
+        callId: row.call_id,
+        type: row.type,
+        payload: safeJSON(row.payload_json),
+        fromUid: row.from_uid || null,
+        toUid: row.to_uid || null,
+        traceId: row.trace_id || null,
+        createdAt: Number(row.created_at) || null
+      }));
+      return json({ ok: true, events });
+    }
+
     // 建立好友邀請
     if (req.method === 'POST' && url.pathname === '/d1/friends/invite') {
       await ensureFriendInviteTable(env);
@@ -1640,6 +1713,276 @@ function normalizeOwnerPrekeyBundle(bundle) {
   return opk ? { ik_pub: ik, spk_pub: spk, spk_sig: sig, opk } : { ik_pub: ik, spk_pub: spk, spk_sig: sig, opk: null };
 }
 
+const CallStatusSet = new Set(['dialing', 'ringing', 'connecting', 'connected', 'in_call', 'ended', 'failed', 'cancelled', 'timeout', 'pending']);
+const CallModeSet = new Set(['voice', 'video']);
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CALL_EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CALL_SESSION_PURGE_GRACE_MS = 5 * 60 * 1000;
+let lastCallCleanupAt = 0;
+
+function normalizeCallId(value) {
+  const token = String(value || '').trim();
+  if (!token || !UUID_REGEX.test(token)) return null;
+  return token.toLowerCase();
+}
+
+function normalizeCallStatus(value) {
+  if (!value) return null;
+  const token = String(value).trim().toLowerCase();
+  if (CallStatusSet.has(token)) return token;
+  return null;
+}
+
+function normalizeCallMode(value) {
+  if (!value) return null;
+  const token = String(value).trim().toLowerCase();
+  if (CallModeSet.has(token)) return token;
+  return null;
+}
+
+function normalizeCallEndReason(value) {
+  if (!value) return null;
+  const token = String(value).trim().toLowerCase();
+  if (!token) return null;
+  return token;
+}
+
+function normalizeTimestampMs(value) {
+  if (value === null || value === undefined) return null;
+  let num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  if (Math.abs(num) < 1e11) {
+    num = Math.round(num * 1000);
+  } else {
+    num = Math.round(num);
+  }
+  return num;
+}
+
+function normalizePlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return { ...value };
+}
+
+function resolveCapabilities(existingJson, incoming) {
+  if (incoming === undefined) {
+    return normalizePlainObject(safeJSON(existingJson));
+  }
+  if (incoming === null) return null;
+  return normalizePlainObject(incoming) || null;
+}
+
+function resolveMergableJson(existingJson, incoming) {
+  const base = normalizePlainObject(safeJSON(existingJson));
+  if (incoming === undefined) {
+    return base;
+  }
+  if (incoming === null) {
+    return null;
+  }
+  const patch = normalizePlainObject(incoming);
+  if (!patch) return base;
+  const merged = { ...(base || {}) };
+  for (const [key, val] of Object.entries(patch)) {
+    merged[key] = val;
+  }
+  return merged;
+}
+
+function jsonStringOrNull(obj) {
+  if (obj === null || obj === undefined) return null;
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return null;
+  }
+}
+
+async function upsertCallSession(env, payload = {}) {
+  await ensureDataTables(env);
+  const callId = normalizeCallId(payload.callId || payload.call_id);
+  if (!callId) {
+    return { ok: false, status: 400, error: 'BadRequest', message: 'callId required' };
+  }
+  const rows = await env.DB.prepare(`SELECT * FROM call_sessions WHERE call_id=?1`).bind(callId).all();
+  const existing = rows?.results?.[0] || null;
+  const callerUid = normalizeUid(payload.callerUid || payload.caller_uid) || existing?.caller_uid;
+  if (!callerUid) {
+    return { ok: false, status: 400, error: 'BadRequest', message: 'callerUid required' };
+  }
+  const calleeUid = normalizeUid(payload.calleeUid || payload.callee_uid) || existing?.callee_uid;
+  if (!calleeUid) {
+    return { ok: false, status: 400, error: 'BadRequest', message: 'calleeUid required' };
+  }
+  const status = normalizeCallStatus(payload.status) || existing?.status || 'dialing';
+  const mode = normalizeCallMode(payload.mode) || existing?.mode || 'voice';
+  const callerDigest = normalizeAccountDigest(payload.callerAccountDigest || payload.caller_account_digest) || existing?.caller_account_digest || null;
+  const calleeDigest = normalizeAccountDigest(payload.calleeAccountDigest || payload.callee_account_digest) || existing?.callee_account_digest || null;
+  const now = Date.now();
+  const createdAt = existing?.created_at ? Number(existing.created_at) : now;
+  const updatedAt = normalizeTimestampMs(payload.updatedAt || payload.updated_at) || now;
+  const expiresAt = normalizeTimestampMs(payload.expiresAt || payload.expires_at) || existing?.expires_at || (now + 90_000);
+  const connectedAtInput = normalizeTimestampMs(payload.connectedAt || payload.connected_at);
+  const connectedAt = connectedAtInput ?? (existing && Number.isFinite(existing.connected_at) ? Number(existing.connected_at) : null);
+  const endedAtInput = normalizeTimestampMs(payload.endedAt || payload.ended_at);
+  const endedAt = endedAtInput ?? (existing && Number.isFinite(existing.ended_at) ? Number(existing.ended_at) : null);
+  const endReason = normalizeCallEndReason(payload.endReason || payload.end_reason) || existing?.end_reason || null;
+  const capabilitiesObj = resolveCapabilities(existing?.capabilities_json, payload.capabilities);
+  const metadataObj = resolveMergableJson(existing?.metadata_json, payload.metadata);
+  const metricsObj = resolveMergableJson(existing?.metrics_json, payload.metrics);
+  const lastEvent = payload.lastEvent || payload.last_event || existing?.last_event || null;
+
+  await env.DB.prepare(`
+    INSERT INTO call_sessions (
+      call_id, caller_uid, callee_uid,
+      caller_account_digest, callee_account_digest,
+      status, mode,
+      capabilities_json, metadata_json, metrics_json,
+      created_at, updated_at, connected_at, ended_at, end_reason, expires_at, last_event
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+    ON CONFLICT(call_id) DO UPDATE SET
+      caller_uid=excluded.caller_uid,
+      callee_uid=excluded.callee_uid,
+      caller_account_digest=excluded.caller_account_digest,
+      callee_account_digest=excluded.callee_account_digest,
+      status=excluded.status,
+      mode=excluded.mode,
+      capabilities_json=excluded.capabilities_json,
+      metadata_json=excluded.metadata_json,
+      metrics_json=excluded.metrics_json,
+      updated_at=excluded.updated_at,
+      connected_at=excluded.connected_at,
+      ended_at=excluded.ended_at,
+      end_reason=excluded.end_reason,
+      expires_at=excluded.expires_at,
+      last_event=excluded.last_event,
+      created_at=call_sessions.created_at
+  `).bind(
+    callId,
+    callerUid,
+    calleeUid,
+    callerDigest,
+    calleeDigest,
+    status,
+    mode,
+    jsonStringOrNull(capabilitiesObj),
+    jsonStringOrNull(metadataObj),
+    jsonStringOrNull(metricsObj),
+    createdAt,
+    updatedAt,
+    connectedAt,
+    endedAt,
+    endReason,
+    expiresAt,
+    lastEvent
+  ).run();
+
+  const latest = await env.DB.prepare(`SELECT * FROM call_sessions WHERE call_id=?1`).bind(callId).all();
+  const row = latest?.results?.[0];
+  if (!row) {
+    return { ok: false, status: 500, error: 'UpsertFailed', message: 'call session missing after upsert' };
+  }
+  return { ok: true, session: serializeCallSessionRow(row) };
+}
+
+async function insertCallEvent(env, payload = {}) {
+  await ensureDataTables(env);
+  const callId = normalizeCallId(payload.callId || payload.call_id);
+  if (!callId) {
+    return { ok: false, status: 400, error: 'BadRequest', message: 'callId required' };
+  }
+  const type = String(payload.type || '').trim();
+  if (!type) {
+    return { ok: false, status: 400, error: 'BadRequest', message: 'type required' };
+  }
+  const sessionRows = await env.DB.prepare(`SELECT call_id FROM call_sessions WHERE call_id=?1`).bind(callId).all();
+  if (!sessionRows?.results?.length) {
+    return { ok: false, status: 404, error: 'NotFound', message: 'call session not found' };
+  }
+  const eventId = String(payload.eventId || payload.event_id || crypto.randomUUID());
+  const createdAt = normalizeTimestampMs(payload.createdAt || payload.created_at) || Date.now();
+  const fromUid = normalizeUid(payload.fromUid || payload.from_uid);
+  const toUid = normalizeUid(payload.toUid || payload.to_uid);
+  const traceId = payload.traceId ? String(payload.traceId).trim() : null;
+  const eventPayload = payload.payload === undefined ? null : payload.payload;
+  const payloadJson = eventPayload === null ? null : jsonStringOrNull(eventPayload);
+  await env.DB.prepare(`
+    INSERT INTO call_events (event_id, call_id, type, payload_json, from_uid, to_uid, trace_id, created_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+  `).bind(
+    eventId,
+    callId,
+    type,
+    payloadJson,
+    fromUid,
+    toUid,
+    traceId,
+    createdAt
+  ).run();
+  await env.DB.prepare(
+    `UPDATE call_sessions SET last_event=?2, updated_at=?3 WHERE call_id=?1`
+  ).bind(callId, type, createdAt).run();
+  return {
+    ok: true,
+    event: {
+      eventId,
+      callId,
+      type,
+      payload: eventPayload,
+      fromUid: fromUid || null,
+      toUid: toUid || null,
+      traceId: traceId || null,
+      createdAt
+    }
+  };
+}
+
+function serializeCallSessionRow(row) {
+  if (!row) return null;
+  return {
+    callId: row.call_id,
+    callerUid: row.caller_uid,
+    calleeUid: row.callee_uid,
+    callerAccountDigest: row.caller_account_digest || null,
+    calleeAccountDigest: row.callee_account_digest || null,
+    status: row.status,
+    mode: row.mode,
+    capabilities: normalizePlainObject(safeJSON(row.capabilities_json)),
+    metadata: normalizePlainObject(safeJSON(row.metadata_json)),
+    metrics: normalizePlainObject(safeJSON(row.metrics_json)),
+    createdAt: Number(row.created_at) || null,
+    updatedAt: Number(row.updated_at) || null,
+    connectedAt: row.connected_at != null ? Number(row.connected_at) : null,
+    endedAt: row.ended_at != null ? Number(row.ended_at) : null,
+    endReason: row.end_reason || null,
+    expiresAt: Number(row.expires_at) || null,
+    lastEvent: row.last_event || null
+  };
+}
+
+async function cleanupCallTables(env) {
+  const now = Date.now();
+  if (now - lastCallCleanupAt < 60_000) return;
+  lastCallCleanupAt = now;
+  await ensureDataTables(env);
+  const eventExpiry = now - CALL_EVENT_TTL_MS;
+  const sessionExpiry = now - CALL_SESSION_PURGE_GRACE_MS;
+  try {
+    await env.DB.prepare(`DELETE FROM call_events WHERE created_at < ?1`).bind(eventExpiry).run();
+  } catch (err) {
+    console.warn('call_events_cleanup_failed', err?.message || err);
+  }
+  try {
+    await env.DB.prepare(
+      `DELETE FROM call_sessions
+        WHERE expires_at < ?1
+          AND status IN ('ended','failed','cancelled','timeout')`
+    ).bind(sessionExpiry).run();
+  } catch (err) {
+    console.warn('call_sessions_cleanup_failed', err?.message || err);
+  }
+}
+
 const textEncoder = new TextEncoder();
 let accountKeyHexCache = null;
 let accountKeyCryptoCache = null;
@@ -1923,7 +2266,40 @@ async function ensureDataTables(env) {
         created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         FOREIGN KEY (owner_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
       )`,
-    `CREATE INDEX IF NOT EXISTS idx_friend_invites_owner ON friend_invites(owner_account_digest)`
+    `CREATE INDEX IF NOT EXISTS idx_friend_invites_owner ON friend_invites(owner_account_digest)`,
+    `CREATE TABLE IF NOT EXISTS call_sessions (
+        call_id TEXT PRIMARY KEY,
+        caller_uid TEXT NOT NULL,
+        callee_uid TEXT NOT NULL,
+        caller_account_digest TEXT,
+        callee_account_digest TEXT,
+        status TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        capabilities_json TEXT,
+        metadata_json TEXT,
+        metrics_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        connected_at INTEGER,
+        ended_at INTEGER,
+        end_reason TEXT,
+        expires_at INTEGER NOT NULL,
+        last_event TEXT
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_call_sessions_status ON call_sessions(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_call_sessions_expires ON call_sessions(expires_at)`,
+    `CREATE TABLE IF NOT EXISTS call_events (
+        event_id TEXT PRIMARY KEY,
+        call_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        payload_json TEXT,
+        from_uid TEXT,
+        to_uid TEXT,
+        trace_id TEXT,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (call_id) REFERENCES call_sessions(call_id) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_call_events_call_created ON call_events(call_id, created_at DESC)`
   ];
 
   for (const sql of statements) {
