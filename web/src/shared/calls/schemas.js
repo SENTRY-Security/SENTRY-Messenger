@@ -377,11 +377,15 @@ export function touchCallMediaState(state, fields = {}) {
   if (fields.capabilities) {
     state.capabilities = normalizeCallMediaCapability({ ...state.capabilities, ...fields.capabilities });
   }
-  if (fields.pendingEnvelope) {
-    state.pendingEnvelope = assertCallKeyEnvelope(fields.pendingEnvelope);
+  if (Object.prototype.hasOwnProperty.call(fields, 'pendingEnvelope')) {
+    if (fields.pendingEnvelope) {
+      state.pendingEnvelope = assertCallKeyEnvelope(fields.pendingEnvelope);
+    } else {
+      state.pendingEnvelope = null;
+    }
   }
-  if (fields.cmkMaterial) {
-    state.cmkMaterial = cloneKeyMaterial(fields.cmkMaterial);
+  if (Object.prototype.hasOwnProperty.call(fields, 'cmkMaterial')) {
+    state.cmkMaterial = fields.cmkMaterial ? cloneKeyMaterial(fields.cmkMaterial) : null;
   }
   if (fields.rotateIntervalMs) {
     state.rotateIntervalMs = normalizeRotateInterval(fields.rotateIntervalMs);

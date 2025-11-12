@@ -6,7 +6,8 @@ import {
   getCallSessionSnapshot,
   getCallCapability,
   updateCallSessionStatus,
-  completeCallSession
+  completeCallSession,
+  applyCallEnvelope
 } from './state.js';
 
 let wsSend = null;
@@ -35,20 +36,23 @@ export function sendCallInviteSignal({
   peerUidHex,
   mode = 'voice',
   metadata = {},
-  traceId = null
+  traceId = null,
+  capabilities = null,
+  envelope = null
 } = {}) {
   if (!callId || !peerUidHex) {
     log({ callSignalSendSkipped: 'call-invite', reason: 'missing-call-or-peer' });
     return false;
   }
-  const capabilities = getCallCapability() || null;
+  const normalizedCapabilities = capabilities || getCallCapability() || null;
   return emitSignal({
     type: 'call-invite',
     callId,
     targetUid: String(peerUidHex).trim().toUpperCase(),
     mode: mode === 'video' ? 'video' : 'voice',
     metadata,
-    capabilities,
+    capabilities: normalizedCapabilities,
+    envelope,
     traceId
   });
 }
@@ -99,6 +103,18 @@ function applySignalToState(msg) {
   }
 }
 
+function maybeApplyEnvelopeFromSignal(msg) {
+  const envelope = msg?.payload?.envelope;
+  if (!envelope || !msg?.callId) return;
+  const session = getCallSessionSnapshot();
+  if (!session?.callId || session.callId !== msg.callId) return;
+  try {
+    applyCallEnvelope(envelope);
+  } catch (err) {
+    log({ callSignalEnvelopeError: err?.message || err, callId: msg.callId });
+  }
+}
+
 export function handleCallSignalMessage(msg) {
   if (!msg || typeof msg !== 'object') return false;
   const type = String(msg.type || '');
@@ -106,6 +122,8 @@ export function handleCallSignalMessage(msg) {
   if (!type.startsWith('call-')) return false;
   if (type === 'call-invite') {
     handleIncomingInvite(msg);
+  } else {
+    maybeApplyEnvelopeFromSignal(msg);
   }
   applySignalToState(msg);
   emitCallEvent(CALL_EVENT.SIGNAL, { signal: msg, session: getCallSessionSnapshot() });

@@ -249,13 +249,13 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 ### 時間軸
 
-- **目前狀態**：語音/視訊通話底層信令已完成：Node WebSocket 驗證 `callId`/目標 UID、寫入 `call_events` 並以 120 秒互斥鎖避免雙方重複通話；前端透過 `features/calls/signaling.js` + `call-overlay` 實際發出 `call-invite`、顯示撥號/來電 UI，使用者可接聽、拒接或掛斷。目前尚未串上媒體/Insertable Streams，因此暫不重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，待媒體層完成後一併驗證。
-- **下一步**：導入 `CallKeyManager` + Insertable Streams、串接 TURN/ICE 認證並把 overlay 與實際媒體控制列連動；完成媒體層後重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`。若新增 E2E 腳本，需評估耗時並統一 timeout 管理，避免單一 spec 再度逾時。
+- **目前狀態**：CallKeyManager 已串接：撥號時會依聯絡人秘密派生 CMK、生成 `call-key-envelope` 並附在 `call-invite`，受話端自動驗證 `cmkProof`、派生音訊/視訊雙向金鑰並更新 `CallMediaState`；Overlay 會同步顯示「建立加密金鑰」/「加密失敗」狀態。Insertable Streams pipeline仍在建置，尚未打開實際媒體傳輸，因此暫不重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，待媒體層完成後一併驗證。
+- **下一步**：導入 Insertable Streams pipeline、串接 TURN/ICE 憑證與 WebRTC 連線，並把 overlay 與實際媒體控制列連動；完成媒體層後重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`。若新增 E2E 腳本，需評估耗時並統一 timeout 管理，避免單一 spec 再度逾時。
 
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **2025-11-12 14:20（Codex）** | WebSocket 端完成 `call-*` 信令鎖定與事件寫入，前端新增 `features/calls/signaling.js` 與行動版 `call-overlay`：聊天頁撥號後會透過 WS 廣播 `call-invite`，收到 `call-*` 事件時可顯示撥號/來電介面並提供接聽、拒接、掛斷動作。媒體層尚未串接，未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`。 |
+| **2025-11-12 15:40（Codex）** | `CallKeyManager` 完成：撥號時會以聯絡人祕密派生 CMK、產生 `call-key-envelope` 並隨 `call-invite` 傳送，受話端自動驗證 proof/派生音視訊雙向金鑰；Overlay 顯示「建立加密金鑰」與錯誤提示，`messages-pane` 撥號流程也確保 envelope 成功建立後才送信令。媒體層尚待串接，未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`。 |
 | **2025-11-12 12:10（Codex）** | Node WebSocket 新增 `call-invite/call-accept/...` 信令處理與 120 秒互斥鎖，所有事件寫入 Cloudflare Worker `call_events`；`features/calls/signaling.js` 讓 `messages-pane` 實際透過 WS 發送 `call-invite` 並在收到訊號時觸發 `markIncomingCall()`，再以 `CALL_EVENT.SIGNAL` 廣播供 UI/overlay 使用。README 更新現況與下一步，尚未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`。 |
 | **2025-11-12 06:50（Codex）** | Cloudflare Worker 新增 `call_sessions` / `call_events` 表與 `/d1/calls/{session,events}` CRUD，Node API 對應實作 `/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}` 及 `GET /api/v1/calls/:id`、TURN 憑證簽發；前端 `requestOutgoingCall()` 現可寫入 session/event，並將 TURN/ICE 設定集中於環境變數。`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 重跑皆綠燈。 |
 | **2025-11-12 06:40（Codex）** | Playwright `tests/e2e/full-flow.spec.mjs` 增加 `test.setTimeout(240_000)`、`tests/e2e/multi-account-friends.spec.mjs` 增加 `test.setTimeout(300_000)`，確保多帳號 + 媒體壓力流程在 CI 內有足夠時間；同時讓 Node API 在本機常駐後重新跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過，原本的逾時已解除並產生最新 `test-results/`。 |
@@ -392,7 +392,7 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 - [X]  **信令與互斥控制**
   - [X]  WebSocket handler 支援 `call-*` 事件、鎖定/超時機制，並更新前端/ iOS 客戶端 SDK 以共用狀態機（見 `docs/encrypted-calls-signaling.md`）。
 - [ ]  **端對端加密媒體**
-  - [ ]  實作 `CallKeyManager`（HKDF ladder、輪換、銷毀）與 `call-key-envelope` 交換。
+  - [X]  實作 `CallKeyManager`（HKDF ladder、輪換、銷毀）與 `call-key-envelope` 交換。
   - [ ]  Web 端導入 Insertable Streams pipeline；iOS 端整合 SFrame / SRTP transform（見 `docs/encrypted-calls-media.md`）。
 - [ ]  **NAT / TURN 整合**
   - [ ]  佈署 coturn（DNS/TLS/監控）並完成 `/turn-credentials` API；前端讀取 `network-config` 自動套用（見 `docs/encrypted-calls-network.md`）。

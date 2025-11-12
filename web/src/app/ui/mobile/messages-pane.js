@@ -18,10 +18,13 @@ import { downloadAndDecrypt } from '../../features/media.js';
 import { deleteSecureConversation } from '../../api/messages.js';
 import {
   CALL_REQUEST_KIND,
+  CALL_SESSION_DIRECTION,
   requestOutgoingCall,
   loadCallNetworkConfig,
   sendCallInviteSignal,
-  getCallSessionSnapshot
+  getCallSessionSnapshot,
+  getCallCapability,
+  prepareCallKeyEnvelope
 } from '../../features/calls/index.js';
 
 export function initMessagesPane({
@@ -459,26 +462,6 @@ export function initMessagesPane({
     updateConversationActionsAvailability();
   }
 
-  function showComingSoonModal(kind) {
-    const title = kind === 'video' ? '視訊通話' : '語音通話';
-    if (typeof showConfirmModal === 'function') {
-      showConfirmModal({
-        title,
-        message: '敬請期待',
-        confirmLabel: '了解',
-        onConfirm: () => {},
-        onCancel: () => {}
-      });
-      setTimeout(() => {
-        if (typeof document === 'undefined') return;
-        const cancelBtn = document.getElementById('confirmCancel');
-        if (cancelBtn) cancelBtn.style.display = 'none';
-      }, 0);
-      return;
-    }
-    showToast?.('敬請期待');
-  }
-
   async function handleConversationAction(type) {
     const state = getMessageState();
     if (!state.activePeerUid || !state.conversationToken) return;
@@ -515,25 +498,43 @@ export function initMessagesPane({
     }
     const snapshot = getCallSessionSnapshot();
     const callId = result.callId || snapshot?.callId || null;
-    if (callId) {
-      const traceId = snapshot?.traceId || result?.session?.metadata?.traceId || null;
-      const sent = sendCallInviteSignal({
+    if (!callId) {
+      log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerUid: state.activePeerUid });
+      showToast?.('無法建立通話：缺少識別碼', true);
+      return;
+    }
+    let envelope;
+    try {
+      envelope = await prepareCallKeyEnvelope({
         callId,
         peerUidHex: state.activePeerUid,
-        mode: type === 'video' ? 'video' : 'voice',
-        metadata: {
-          displayName,
-          avatarUrl
-        },
-        traceId
+        direction: CALL_SESSION_DIRECTION.OUTGOING
       });
-      if (!sent) {
-        log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerUid });
-      }
-    } else {
-      log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerUid: state.activePeerUid });
+    } catch (err) {
+      log({ callKeyEnvelopeError: err?.message || err, peerUid: state.activePeerUid });
+      showToast?.('無法建立通話加密金鑰', true);
+      return;
     }
-    showComingSoonModal(type);
+    const traceId = snapshot?.traceId || result?.session?.metadata?.traceId || null;
+    const capabilities = getCallCapability() || null;
+    const sent = sendCallInviteSignal({
+      callId,
+      peerUidHex: state.activePeerUid,
+      mode: type === 'video' ? 'video' : 'voice',
+      metadata: {
+        displayName,
+        avatarUrl
+      },
+      capabilities,
+      envelope,
+      traceId
+    });
+    if (!sent) {
+      log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerUid });
+      showToast?.('通話信令傳送失敗', true);
+      return;
+    }
+    showToast?.(type === 'video' ? '已發起視訊通話' : '已發起語音通話');
   }
 
   function setLoadMoreState(next) {

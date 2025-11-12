@@ -61,6 +61,7 @@ import {
   handleCallSignalMessage,
   handleCallAuxMessage
 } from '../features/calls/signaling.js';
+import { initCallKeyManager } from '../features/calls/key-manager.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 
 const out = document.getElementById('out');
@@ -747,6 +748,7 @@ const messagesPane = initMessagesPane({
 });
 
 initCallOverlay({ showToast });
+initCallKeyManager();
 
 messagesPane.attachDomEvents();
 messagesPane.ensureConversationIndex();

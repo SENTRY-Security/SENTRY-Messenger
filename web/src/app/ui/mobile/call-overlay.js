@@ -9,6 +9,7 @@ import {
   completeCallSession,
   updateCallSessionStatus
 } from '../../features/calls/index.js';
+import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 
 const STATUS_LABEL = {
   [CALL_SESSION_STATUS.OUTGOING]: '撥號中…',
@@ -16,6 +17,21 @@ const STATUS_LABEL = {
   [CALL_SESSION_STATUS.CONNECTING]: '正在接通…',
   [CALL_SESSION_STATUS.IN_CALL]: '通話中'
 };
+
+const MEDIA_STATUS_LABEL = {
+  [CALL_MEDIA_STATE_STATUS.KEY_PENDING]: '建立加密金鑰…',
+  [CALL_MEDIA_STATE_STATUS.ROTATING]: '加密金鑰輪換中…',
+  [CALL_MEDIA_STATE_STATUS.FAILED]: '加密失敗，請稍後再試'
+};
+
+function describeStatus(session) {
+  if (!session) return '連線中…';
+  const mediaStatus = session.mediaState?.status || null;
+  if (mediaStatus && MEDIA_STATUS_LABEL[mediaStatus]) {
+    return MEDIA_STATUS_LABEL[mediaStatus];
+  }
+  return STATUS_LABEL[session.status] || '連線中…';
+}
 
 function ensureStyles() {
   if (typeof document === 'undefined') return;
@@ -215,7 +231,7 @@ export function initCallOverlay({ showToast }) {
     }
     setVisibility(true);
     if (ui.nameLabel) ui.nameLabel.textContent = formatPeerName(session);
-    if (ui.statusLabel) ui.statusLabel.textContent = STATUS_LABEL[session.status] || '連線中…';
+    if (ui.statusLabel) ui.statusLabel.textContent = describeStatus(session);
     updateAvatar(ui.avatar, session);
     const incoming = session.status === CALL_SESSION_STATUS.INCOMING;
     if (ui.acceptBtn) ui.acceptBtn.style.display = incoming ? 'flex' : 'none';
@@ -302,7 +318,12 @@ export function initCallOverlay({ showToast }) {
   ui.cancelBtn?.addEventListener('click', handleCancel);
 
   const unsubscribers = [
-    subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => render(session)),
+    subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => {
+      render(session);
+      if (session?.mediaState?.status === CALL_MEDIA_STATE_STATUS.FAILED) {
+        showToast?.('無法建立加密通道', true);
+      }
+    }),
     subscribeCallEvent(CALL_EVENT.SIGNAL, () => render()),
     subscribeCallEvent(CALL_EVENT.ERROR, () => {
       showToast?.('通話發生錯誤', true);

@@ -34,3 +34,9 @@ export {
   handleCallSignalMessage,
   handleCallAuxMessage
 } from './signaling.js';
+export {
+  initCallKeyManager,
+  prepareCallKeyEnvelope,
+  getCallKeyContext,
+  supportsInsertableStreams
+} from './key-manager.js';
