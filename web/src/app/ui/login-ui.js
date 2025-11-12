@@ -681,6 +681,7 @@ async function onUnlock() {
       const accountToken = getAccountToken();
       const accountDigest = getAccountDigest();
       const uidDigest = getUidDigest();
+      const wrappedMk = getWrappedMK();
       log({
         loginHandoff: {
           mk: !!mk,
@@ -688,6 +689,7 @@ async function onUnlock() {
           accountToken: !!accountToken,
           accountDigest: !!accountDigest,
           uidDigest: !!uidDigest,
+          wrappedMk: !!wrappedMk,
           wrappedDev: !!r?.wrapped_dev
         }
       });
@@ -696,6 +698,15 @@ async function onUnlock() {
       if (accountToken) sessionStorage.setItem('account_token', accountToken);
       if (accountDigest) sessionStorage.setItem('account_digest', accountDigest);
       if (uidDigest) sessionStorage.setItem('uid_digest', uidDigest);
+      if (wrappedMk) {
+        try {
+          sessionStorage.setItem('wrapped_mk', JSON.stringify(wrappedMk));
+        } catch (err) {
+          log({ wrappedMkSerializeError: err?.message || err });
+        }
+      } else {
+        sessionStorage.removeItem('wrapped_mk');
+      }
       const isAutomationEnv = (() => {
         try { return typeof navigator !== 'undefined' && !!navigator.webdriver; } catch { return false; }
       })();
@@ -757,6 +768,7 @@ function invalidateExchange() {
 
 
 const FALLBACK_ERROR_MESSAGE = '發生未知錯誤，請稍後再試。';
+const PASSWORD_ERROR_MESSAGE = '密碼不正確，請重新輸入。';
 
 const ERROR_CODE_MESSAGES = {
   ConfigError: '伺服器設定異常，請通知客服。',
@@ -766,7 +778,10 @@ const ERROR_CODE_MESSAGES = {
   SessionExpired: '驗證已逾時，請重新感應卡片。',
   SessionMismatch: '驗證資料不一致，請重新感應卡片。',
   StoreFailed: '伺服器儲存資料失敗，請稍後再試。',
-  BadRequest: '送出的資訊格式不正確，請確認後重試。'
+  BadRequest: '送出的資訊格式不正確，請確認後重試。',
+  OpaqueLoginFinishFailed: PASSWORD_ERROR_MESSAGE,
+  OpaqueSessionExpired: '驗證已逾時，請重新感應卡片。',
+  OpaqueSessionNotFound: '驗證資訊不存在，請重新感應卡片。'
 };
 
 const ERROR_PATTERNS = [
@@ -779,7 +794,7 @@ const ERROR_PATTERNS = [
   { pattern: /sdm exchange required/i, message: '請先完成標籤驗證。' },
   { pattern: /uid not set/i, message: '尚未偵測到標籤 UID，請重新感應。' },
   { pattern: /wrong password or envelope mismatch/i, message: '密碼不正確，請重新輸入。' },
-  { pattern: /unlock failed/i, message: '密碼不正確，請重新輸入。' },
+  { pattern: /unlock failed/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /enter a password first/i, message: '請輸入解鎖密碼。' },
   { pattern: /run sdm exchange first/i, message: '請先感應標籤並完成驗證。' },
   { pattern: /mk\.store failed/i, message: '儲存主金鑰失敗，請稍後再試。' },
@@ -793,7 +808,11 @@ const ERROR_PATTERNS = [
   { pattern: /please re-tap the tag/i, message: '驗證已逾時，請重新感應卡片。' },
   { pattern: /counter must be strictly increasing/i, message: '偵測到晶片計數器重複，請關閉頁面後重新感應。' },
   { pattern: /uid mismatch/i, message: '驗證資料不一致，請重新感應卡片。' },
-  { pattern: /sdm verify failed/i, message: '標籤驗證失敗，請重新感應卡片。' }
+  { pattern: /sdm verify failed/i, message: '標籤驗證失敗，請重新感應卡片。' },
+  { pattern: /opaque login.*failed/i, message: PASSWORD_ERROR_MESSAGE },
+  { pattern: /opaque.*password/i, message: PASSWORD_ERROR_MESSAGE },
+  { pattern: /OpaqueLoginFinishFailed/i, message: PASSWORD_ERROR_MESSAGE },
+  { pattern: /EnvelopeRecoveryError/i, message: PASSWORD_ERROR_MESSAGE }
 ];
 
 function parseLinePayload(line) {

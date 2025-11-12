@@ -127,21 +127,30 @@ const ExchangeSchema = z.object({
 
 const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
+const WrappedMkSchema = z.object({
+  v: z.number(),
+  kdf: z.literal('argon2id'),
+  m: z.number(),
+  t: z.number(),
+  p: z.number(),
+  salt_b64: z.string().min(8),
+  iv_b64: z.string().min(8),
+  ct_b64: z.string().min(8)
+});
+
 const StoreMkSchema = z.object({
   session: z.string().min(8),
   uidHex: z.string().min(14),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  wrapped_mk: z.object({
-    v: z.number(),
-    kdf: z.literal('argon2id'),
-    m: z.number(),
-    t: z.number(),
-    p: z.number(),
-    salt_b64: z.string().min(8),
-    iv_b64: z.string().min(8),
-    ct_b64: z.string().min(8)
-  })
+  wrapped_mk: WrappedMkSchema
+});
+
+const UpdateMkSchema = z.object({
+  uidHex: z.string().min(14),
+  accountToken: z.string().min(8),
+  accountDigest: z.string().regex(AccountDigestRegex),
+  wrapped_mk: WrappedMkSchema
 });
 
 const DebugKitSchema = z.object({
@@ -303,6 +312,40 @@ r.post('/mk/store', async (req, res) => {
       uidHex,
       accountToken,
       accountDigest,
+      wrapped_mk: input.wrapped_mk
+    });
+    const sig = signHmac(path, body, HMAC_SECRET);
+    const w = await fetch(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+    if (!w.ok) {
+      const txt = await w.text().catch(() => '');
+      return res.status(502).json({ error: 'StoreFailed', details: txt });
+    }
+    return res.status(204).end();
+  } catch (e) {
+    return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });
+  }
+});
+
+// POST /api/v1/mk/update  （登入後變更密碼）
+r.post('/mk/update', async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not set' });
+  }
+  try {
+    const input = UpdateMkSchema.parse(req.body || {});
+    const uidHex = normalizeUidHex(input.uidHex);
+    if (!uidHex) {
+      return res.status(400).json({ error: 'BadRequest', message: 'invalid uidHex' });
+    }
+    const path = '/d1/tags/store-mk';
+    const body = JSON.stringify({
+      uidHex,
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest,
       wrapped_mk: input.wrapped_mk
     });
     const sig = signHmac(path, body, HMAC_SECRET);

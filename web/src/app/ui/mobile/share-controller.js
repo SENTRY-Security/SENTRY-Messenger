@@ -20,6 +20,7 @@ import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 
 const INVITE_SECRET_STORAGE_KEY = 'inviteSecrets-v1';
+const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'manual']);
 
 export function setupShareController(options) {
   const {
@@ -860,6 +861,7 @@ export function setupShareController(options) {
     const fromUid = String(msg?.fromUid || '').toUpperCase();
     if (!inviteId || !fromUid) return;
     const existingContact = sessionStore.contactIndex?.get?.(fromUid) || null;
+    const hadContact = !!existingContact;
     const record = inviteSecrets.get(inviteId);
     let secret = record?.secret;
     let stored = null;
@@ -877,9 +879,10 @@ export function setupShareController(options) {
     if (!envelope?.iv || !envelope?.ct) return;
     try {
       const payload = await decryptContactPayload(secret, envelope);
-      const reason = payload?.reason || null;
-      if (reason === 'conversation-delete' && wasPeerRecentlyDeleted(fromUid)) {
-        log({ contactShareIgnoredForDeleted: fromUid, reason });
+      const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
+      const reasonKey = reasonRaw ? reasonRaw.toLowerCase() : null;
+      if (reasonKey === 'conversation-delete' && wasPeerRecentlyDeleted(fromUid)) {
+        log({ contactShareIgnoredForDeleted: fromUid, reason: reasonKey });
         recentlyDeletedPeers.delete(fromUid);
         return;
       }
@@ -958,10 +961,26 @@ export function setupShareController(options) {
       if (shareState.open) {
         closeShareModal();
       }
-      if (notifyToast) notifyToast('已成功加入好友');
-      const tab = typeof getCurrentTab === 'function' ? getCurrentTab() : null;
-      if (typeof switchTab === 'function' && tab !== 'contacts') {
-        switchTab('contacts');
+      const isProfileUpdateReason = reasonKey && CONTACT_UPDATE_REASONS.has(reasonKey);
+      const isNewlyAdded = !hadContact;
+      if (notifyToast) {
+        if (isNewlyAdded) {
+          notifyToast('已成功加入好友');
+        } else if (isProfileUpdateReason) {
+          const updateMessage =
+            reasonKey === 'avatar'
+              ? '好友頭像已更新'
+              : reasonKey === 'nickname'
+                ? '好友暱稱已更新'
+                : '好友資料已更新';
+          notifyToast(updateMessage);
+        }
+      }
+      if (isNewlyAdded) {
+        const tab = typeof getCurrentTab === 'function' ? getCurrentTab() : null;
+        if (typeof switchTab === 'function' && tab !== 'contacts') {
+          switchTab('contacts');
+        }
       }
       recentlyDeletedPeers.delete(fromUid);
     } catch (err) {

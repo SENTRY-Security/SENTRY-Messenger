@@ -99,7 +99,14 @@ export async function ensureOpaque({ password, accountDigest, serverId, clientId
   } catch (e) {
     const msg = String(e?.message || e || '');
     // Treat common server/client decode issues as missing record → re-register path
-    if (/RecordNotFound/i.test(msg) || /404/.test(msg) || /invalid\s+(request|record|ke1|ke3|expected)_b64/i.test(msg) || /Array of byte-sized integers expected/i.test(msg)) {
+    if (
+      /RecordNotFound/i.test(msg) ||
+      /404/.test(msg) ||
+      /invalid\s+(request|record|ke1|ke3|expected)_b64/i.test(msg) ||
+      /Array of byte-sized integers expected/i.test(msg) ||
+      /EnvelopeRecoveryError/i.test(msg) ||
+      /OpaqueLoginFinishFailed/i.test(msg)
+    ) {
       await opaqueRegister({ password, accountDigest, serverId, clientIdentity });
       return await opaqueLogin({ password, accountDigest, serverId, clientIdentity });
     }

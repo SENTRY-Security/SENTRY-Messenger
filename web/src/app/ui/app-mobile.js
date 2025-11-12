@@ -12,7 +12,10 @@ import {
   resetAll, clearSecrets,
   drState,
   getAccountToken,
-  getAccountDigest
+  getAccountDigest,
+  getWrappedMK,
+  setWrappedMK,
+  getOpaqueServerId
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -21,6 +24,7 @@ import {
   computeContactSecretsChecksum
 } from '../core/contact-secrets.js';
 import { friendsDeleteContact } from '../api/friends.js';
+import { mkUpdate } from '../api/auth.js';
 import { loadContacts, saveContact } from '../features/contacts.js';
 import { ensureSettings, saveSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
@@ -48,6 +52,8 @@ import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
+import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
+import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
 import { initVersionInfoButton } from './version-info.js';
 
@@ -107,7 +113,7 @@ function clearLocalEncryptedCaches() {
 }
 
 function clearSessionHandoff() {
-  const keys = ['mk_b64', 'uid_hex', 'account_token', 'account_digest', 'uid_digest', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
+const keys = ['mk_b64', 'uid_hex', 'account_token', 'account_digest', 'uid_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
   for (const key of keys) {
     try { sessionStorage.removeItem(key); } catch {}
   }
@@ -411,13 +417,15 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     const accountToken = sessionStorage.getItem('account_token');
     const accountDigest = sessionStorage.getItem('account_digest');
     const uidDigest = sessionStorage.getItem('uid_digest');
+    const wrappedMkRaw = sessionStorage.getItem('wrapped_mk');
     log({
       restoreSession: {
         mk: !!mkb64,
         uid: !!uid,
         accountToken: !!accountToken,
         accountDigest: !!accountDigest,
-        uidDigest: !!uidDigest
+        uidDigest: !!uidDigest,
+        wrappedMk: !!wrappedMkRaw
       }
     });
     if (uid) setUidHex(uid);
@@ -425,11 +433,23 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     if (accountDigest) setAccountDigest(accountDigest);
     if (uidDigest) setUidDigest(uidDigest);
     if (mkb64 && !getMkRaw()) setMkRaw(b64u8(mkb64));
+    if (wrappedMkRaw) {
+      try {
+        const parsedWrapped = JSON.parse(wrappedMkRaw);
+        setWrappedMK(parsedWrapped);
+      } catch (err) {
+        log({ wrappedMkRestoreError: err?.message || err });
+        setWrappedMK(null);
+      }
+    } else {
+      setWrappedMK(null);
+    }
     sessionStorage.removeItem('mk_b64');
     sessionStorage.removeItem('uid_hex');
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
     sessionStorage.removeItem('uid_digest');
+    sessionStorage.removeItem('wrapped_mk');
   } catch (e) { log({ restoreError: String(e?.message || e) }); }
 })();
 
@@ -928,6 +948,24 @@ function getEffectiveSettingsState() {
   return { ...DEFAULT_SETTINGS, ...(sessionStore.settingsState || {}) };
 }
 
+const MODAL_VARIANTS = [
+  'security-modal',
+  'progress-modal',
+  'folder-modal',
+  'upload-modal',
+  'loading-modal',
+  'confirm-modal',
+  'nickname-modal',
+  'avatar-modal',
+  'avatar-preview-modal',
+  'settings-modal',
+  'change-password-modal'
+];
+
+function resetModalVariants(modalElement) {
+  modalElement.classList.remove(...MODAL_VARIANTS);
+}
+
 async function persistSettingsPatch(partial) {
   const previous = getEffectiveSettingsState();
   const next = { ...previous, ...partial };
@@ -963,17 +1001,7 @@ async function openSystemSettingsModal() {
   const title = document.getElementById('modalTitle');
   if (!modalElement || !body) return;
 
-  modalElement.classList.remove(
-    'security-modal',
-    'progress-modal',
-    'folder-modal',
-    'upload-modal',
-    'loading-modal',
-    'confirm-modal',
-    'nickname-modal',
-    'avatar-modal',
-    'avatar-preview-modal'
-  );
+  resetModalVariants(modalElement);
   modalElement.classList.add('settings-modal');
   if (title) title.textContent = '系統設定';
 
@@ -999,6 +1027,13 @@ async function openSystemSettingsModal() {
           <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
         </label>
       </div>
+      <div class="settings-item">
+        <div class="settings-text">
+          <strong>變更密碼</strong>
+          <p>更新登入密碼，需輸入目前密碼與新密碼。</p>
+        </div>
+        <button type="button" class="settings-link" id="settingsChangePassword">變更</button>
+      </div>
       <div class="settings-actions">
         <button type="button" class="secondary" id="settingsClose">關閉</button>
       </div>
@@ -1009,9 +1044,18 @@ async function openSystemSettingsModal() {
   const closeBtn = body.querySelector('#settingsClose');
   const showOnlineInput = body.querySelector('#settingsShowOnline');
   const autoLogoutInput = body.querySelector('#settingsAutoLogout');
+  const changePasswordBtn = body.querySelector('#settingsChangePassword');
   closeBtn?.addEventListener('click', () => {
     closeModal();
   }, { once: true });
+
+  changePasswordBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    openChangePasswordModal().catch((err) => {
+      log({ changePasswordModalError: err?.message || err });
+      alert('目前無法開啟變更密碼視窗，請稍後再試。');
+    });
+  });
 
   const registerToggle = (input, key) => {
     if (!input) return;
@@ -1037,6 +1081,174 @@ async function openSystemSettingsModal() {
 
   registerToggle(showOnlineInput, 'showOnlineStatus');
   registerToggle(autoLogoutInput, 'autoLogoutOnBackground');
+}
+
+async function openChangePasswordModal() {
+  const modalElement = document.getElementById('modal');
+  const body = document.getElementById('modalBody');
+  const title = document.getElementById('modalTitle');
+  if (!modalElement || !body) return;
+
+  resetModalVariants(modalElement);
+  modalElement.classList.add('change-password-modal');
+  if (title) title.textContent = '變更密碼';
+
+  body.innerHTML = `
+    <form id="changePasswordForm" class="change-password-form">
+      <label for="currentPassword">
+        目前密碼
+        <input id="currentPassword" type="password" autocomplete="current-password" required />
+      </label>
+      <label for="newPassword">
+        新密碼
+        <input id="newPassword" type="password" autocomplete="new-password" minlength="6" required />
+      </label>
+      <label for="confirmPassword">
+        確認新密碼
+        <input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" required />
+      </label>
+      <div id="changePasswordStatus" class="change-password-status" role="status" aria-live="polite"></div>
+      <div class="change-password-actions">
+        <button type="button" class="secondary" id="changePasswordCancel">取消</button>
+        <button type="submit" class="primary" id="changePasswordSubmit">更新密碼</button>
+      </div>
+    </form>
+  `;
+
+  openModal();
+
+  const form = body.querySelector('#changePasswordForm');
+  const currentInput = body.querySelector('#currentPassword');
+  const newInput = body.querySelector('#newPassword');
+  const confirmInput = body.querySelector('#confirmPassword');
+  const statusEl = body.querySelector('#changePasswordStatus');
+  const cancelBtn = body.querySelector('#changePasswordCancel');
+  const submitBtn = body.querySelector('#changePasswordSubmit');
+
+  const setStatus = (text, { success = false } = {}) => {
+    if (!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.classList.toggle('success', !!text && success);
+  };
+
+  const setSubmitting = (next) => {
+    const disabled = !!next;
+    [currentInput, newInput, confirmInput].forEach((input) => {
+      if (input) input.disabled = disabled;
+    });
+    if (cancelBtn) cancelBtn.disabled = disabled;
+    if (submitBtn) {
+      submitBtn.disabled = disabled;
+      if (disabled) {
+        submitBtn.dataset.prevText = submitBtn.textContent || '更新密碼';
+        submitBtn.textContent = '更新中...';
+      } else if (submitBtn.dataset.prevText) {
+        submitBtn.textContent = submitBtn.dataset.prevText;
+        delete submitBtn.dataset.prevText;
+      }
+    }
+  };
+
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const currentPassword = currentInput?.value || '';
+    const newPassword = newInput?.value || '';
+    const confirmPassword = confirmInput?.value || '';
+    setStatus('');
+
+    if (!currentPassword) {
+      setStatus('請輸入目前密碼。');
+      currentInput?.focus();
+      return;
+    }
+    if (!newPassword || newPassword.length < 6) {
+      setStatus('新密碼至少需 6 個字元。');
+      newInput?.focus();
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setStatus('新密碼需與目前密碼不同。');
+      newInput?.focus();
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setStatus('兩次輸入的密碼不一致。');
+      confirmInput?.focus();
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await changeAccountPassword(currentPassword, newPassword);
+      setStatus('密碼已更新，下次登入請使用新密碼。', { success: true });
+      form?.reset();
+      setTimeout(() => {
+        closeModal();
+      }, 1800);
+    } catch (err) {
+      const message = err?.userMessage || err?.message || '更新密碼失敗，請稍後再試。';
+      setStatus(message);
+    } finally {
+      setSubmitting(false);
+    }
+  });
+
+  cancelBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    closeModal();
+  }, { once: true });
+}
+
+async function changeAccountPassword(currentPassword, newPassword) {
+  const wrapped = getWrappedMK();
+  if (!wrapped) {
+    const err = new Error('目前無法取得主金鑰，請重新登入後再試。');
+    err.userMessage = err.message;
+    throw err;
+  }
+  const mk = await unwrapMKWithPasswordArgon2id(currentPassword, wrapped);
+  if (!mk) {
+    const err = new Error('目前的密碼不正確，請重新輸入。');
+    err.userMessage = err.message;
+    throw err;
+  }
+  const newWrapped = await wrapMKWithPasswordArgon2id(newPassword, mk);
+  const uidHex = getUidHex();
+  const accountToken = getAccountToken();
+  const accountDigest = getAccountDigest();
+  const serverId = getOpaqueServerId();
+  if (!uidHex || !accountToken || !accountDigest) {
+    const err = new Error('帳號資訊不足，請重新登入後再試。');
+    err.userMessage = err.message;
+    throw err;
+  }
+  const { r, data } = await mkUpdate({ uidHex, accountToken, accountDigest, wrapped_mk: newWrapped });
+  if (r.status !== 204) {
+    const userMessage = typeof data === 'object' && data?.message
+      ? data.message
+      : '更新密碼失敗，請稍後再試。';
+    const err = new Error(userMessage);
+    err.userMessage = userMessage;
+    throw err;
+  }
+  try {
+    await opaqueRegister({
+      password: newPassword,
+      accountDigest,
+      serverId
+    });
+    log({ changePasswordOpaqueRegister: { ok: true, serverId: !!serverId } });
+  } catch (err) {
+    const message = err?.message || '更新登入驗證資料失敗，請稍後再試。';
+    const error = new Error(message);
+    error.userMessage = message;
+    throw error;
+  }
+  log({ changePasswordUpdateStatus: r.status });
+  setWrappedMK(newWrapped);
+  setMkRaw(mk);
+  log({ passwordChangedAt: Date.now() });
+  return true;
 }
 
 function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出') {

@@ -131,7 +131,7 @@ export async function x3dhRespond(devicePriv, guestBundle) {
 
   const rk = await hkdfBytes(dhCat, 'x3dh-salt', 'x3dh-root', 32);
   const seed = await kdfCK(rk);
-  const { a: ckS, b: ckR } = split64(seed);
+  const { a: ckR, b: ckS } = split64(seed);
   const myNew = await genX25519Keypair();
 
   return {

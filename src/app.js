@@ -40,12 +40,34 @@ app.use(pinoHttp({ logger }));
 // API 基礎 Rate Limit（僅在正式環境啟用，可視路徑細分）
 const enableRateLimit = process.env.NODE_ENV === 'production' && process.env.DISABLE_RATE_LIMIT !== '1';
 if (enableRateLimit) {
-  app.use('/api/', rateLimit({
+  const apiRateLimiter = rateLimit({
     windowMs: 60 * 1000,
     limit: 300, // 每分鐘 300 次
     standardHeaders: true,
-    legacyHeaders: false
-  }));
+    legacyHeaders: false,
+    handler: (req, res, next, options) => {
+      logger.warn({
+        event: 'api.rate-limit',
+        path: req.originalUrl,
+        method: req.method,
+        ip: req.ip,
+        limit: options.limit,
+        windowMs: options.windowMs,
+        current: req.rateLimit?.current ?? null
+      }, 'API rate limit triggered');
+      const statusCode = options.statusCode ?? 429;
+      const message = typeof options.message === 'string'
+        ? options.message
+        : 'Too many requests, please try again later.';
+      res.status(statusCode).json({
+        error: 'TooManyRequests',
+        message,
+        limit: options.limit,
+        windowMs: options.windowMs
+      });
+    }
+  });
+  app.use('/api/', apiRateLimiter);
 }
 
 // 路由

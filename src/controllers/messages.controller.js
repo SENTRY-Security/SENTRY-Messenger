@@ -2,7 +2,9 @@ import { CreateMessageSchema, CreateSecureMessageSchema } from '../schemas/messa
 import crypto from 'node:crypto';
 import { signHmac } from '../utils/hmac.js';
 import { z } from 'zod';
+import fs from 'node:fs/promises';
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
+import { logger } from '../utils/logger.js';
 import { normalizeConversationId, authorizeConversationAccess, isSystemOwnedConversation } from '../utils/conversation-auth.js';
 import { AccountDigestRegex } from '../utils/account-verify.js';
 
@@ -21,6 +23,24 @@ export const getStatus = (req, res) => {
 const DATA_API = process.env.DATA_API_URL;     // e.g. https://message-data.<account>.workers.dev
 const HMAC_SECRET = process.env.DATA_API_HMAC; // must match the Worker secret HMAC_SECRET
 const FETCH_TIMEOUT_MS = Number(process.env.DATA_API_TIMEOUT_MS || 8000);
+const SECURE_DEBUG_LOG = process.env.SECURE_MSG_DEBUG_LOG || '';
+
+function appendSecureDebug(entry) {
+  if (!SECURE_DEBUG_LOG) return;
+  const payload = { ts: Date.now(), ...entry };
+  fs.appendFile(SECURE_DEBUG_LOG, `${JSON.stringify(payload)}\n`).catch(() => {});
+}
+
+const inflightSecureRequests = new Map();
+function inflightKey({ conversationId, cursorTs, limit }) {
+  return `${conversationId || ''}::${cursorTs || 'null'}::${limit || 'null'}`;
+}
+function trackInflight({ key, controller }) {
+  inflightSecureRequests.set(key, { startedAt: Date.now(), controller });
+  const cleanup = () => inflightSecureRequests.delete(key);
+  controller.signal.addEventListener('abort', cleanup, { once: true });
+  return cleanup;
+}
 
 async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -374,18 +394,90 @@ export const listSecureMessages = async (req, res) => {
 
   const path = `/d1/messages?${params.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
+  const inflightInfo = {
+    conversationId: auth.conversationId,
+    cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+    limit: req.query.limit ? Number(req.query.limit) : null
+  };
+  const key = inflightKey(inflightInfo);
+  if (inflightSecureRequests.has(key)) {
+    logger.warn({
+      event: 'd1.listSecureMessages.dedup',
+      ...inflightInfo
+    }, 'duplicate listSecureMessages request detected');
+    appendSecureDebug({ stage: 'dedup', ...inflightInfo });
+  }
 
   try {
-    const r = await fetch(`${DATA_API}${path}`, {
-      headers: { 'x-auth': sig }
+    logger.debug({
+      event: 'd1.listSecureMessages.request',
+      conversationId: auth.conversationId,
+      cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      limit: req.query.limit ? Number(req.query.limit) : null
+    }, 'fetching secure messages from D1');
+    appendSecureDebug({
+      stage: 'request',
+      conversationId: auth.conversationId,
+      cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      limit: req.query.limit ? Number(req.query.limit) : null
     });
+    const controller = new AbortController();
+    const cleanupInflight = trackInflight({ key, controller });
+    const r = await fetch(`${DATA_API}${path}`, {
+      headers: { 'x-auth': sig },
+      signal: controller.signal
+    }).finally(() => cleanupInflight());
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { data = text; }
     if (!r.ok) {
+      logger.warn({
+        event: 'd1.listSecureMessages.error',
+        conversationId: auth.conversationId,
+        status: r.status,
+        cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+        limit: req.query.limit ? Number(req.query.limit) : null,
+        details: typeof data === 'string' ? data.slice(0, 200) : data
+      }, 'D1 returned error for secure message list');
+      appendSecureDebug({
+        stage: 'error',
+        conversationId: auth.conversationId,
+        status: r.status,
+        cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+        limit: req.query.limit ? Number(req.query.limit) : null,
+        details: typeof data === 'string' ? data.slice(0, 200) : data
+      });
       return res.status(502).json({ error: 'D1ReadFailed', status: r.status, details: data });
     }
+    logger.debug({
+      event: 'd1.listSecureMessages.response',
+      conversationId: auth.conversationId,
+      status: r.status,
+      itemCount: Array.isArray(data?.items) ? data.items.length : null,
+      nextCursorTs: data?.nextCursorTs ?? null
+    }, 'received secure messages from D1');
+    appendSecureDebug({
+      stage: 'response',
+      conversationId: auth.conversationId,
+      status: r.status,
+      itemCount: Array.isArray(data?.items) ? data.items.length : null,
+      nextCursorTs: data?.nextCursorTs ?? null
+    });
     return res.json(data);
   } catch (err) {
+    logger.warn({
+      event: 'd1.listSecureMessages.fetch-failed',
+      conversationId: auth.conversationId,
+      cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      limit: req.query.limit ? Number(req.query.limit) : null,
+      error: err?.message || err
+    }, 'fetch to D1 failed');
+    appendSecureDebug({
+      stage: 'fetch-failed',
+      conversationId: auth.conversationId,
+      cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      limit: req.query.limit ? Number(req.query.limit) : null,
+      error: err?.message || String(err)
+    });
     return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
   }
 };

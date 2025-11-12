@@ -2,25 +2,62 @@
 // /app/features/messages.js
 // Feature: list conversation messages and decrypt DR packets using secure conversation tokens.
 
-import { listSecureMessages } from '../api/messages.js';
-import { drDecryptText } from '../crypto/dr.js';
-import { drState, getUidHex, getAccountDigest } from '../core/store.js';
+import { listSecureMessages as apiListSecureMessages } from '../api/messages.js';
+import { drDecryptText as cryptoDrDecryptText } from '../crypto/dr.js';
+import { drState as storeDrState, getUidHex as storeGetUidHex, getAccountDigest as storeGetAccountDigest } from '../core/store.js';
 import {
-  persistDrSnapshot,
-  recoverDrState,
-  prepareDrForMessage,
-  recordDrMessageHistory,
-  snapshotDrState,
-  restoreDrStateFromSnapshot,
-  restoreDrStateToHistoryPoint,
-  cloneDrStateHolder
+  persistDrSnapshot as sessionPersistDrSnapshot,
+  recoverDrState as sessionRecoverDrState,
+  prepareDrForMessage as sessionPrepareDrForMessage,
+  recordDrMessageHistory as sessionRecordDrMessageHistory,
+  snapshotDrState as sessionSnapshotDrState,
+  restoreDrStateFromSnapshot as sessionRestoreDrStateFromSnapshot,
+  restoreDrStateToHistoryPoint as sessionRestoreDrStateToHistoryPoint,
+  cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
-import { decryptConversationEnvelope, computeConversationFingerprint, computeConversationAccessFingerprint } from './conversation.js';
-import { b64UrlToBytes } from '../ui/mobile/ui-utils.js';
-import { b64u8 } from '../crypto/nacl.js';
-import { saveEnvelopeMeta } from './media.js';
+import {
+  decryptConversationEnvelope as convDecryptConversationEnvelope,
+  computeConversationFingerprint as convComputeConversationFingerprint,
+  computeConversationAccessFingerprint as convComputeConversationAccessFingerprint
+} from './conversation.js';
+import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
+import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
+import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
-import { ensureSecureConversationReady } from './secure-conversation-manager.js';
+import { ensureSecureConversationReady as managerEnsureSecureConversationReady } from './secure-conversation-manager.js';
+
+const defaultDeps = {
+  listSecureMessages: apiListSecureMessages,
+  drDecryptText: cryptoDrDecryptText,
+  drState: storeDrState,
+  getUidHex: storeGetUidHex,
+  getAccountDigest: storeGetAccountDigest,
+  persistDrSnapshot: sessionPersistDrSnapshot,
+  recoverDrState: sessionRecoverDrState,
+  prepareDrForMessage: sessionPrepareDrForMessage,
+  recordDrMessageHistory: sessionRecordDrMessageHistory,
+  snapshotDrState: sessionSnapshotDrState,
+  restoreDrStateFromSnapshot: sessionRestoreDrStateFromSnapshot,
+  restoreDrStateToHistoryPoint: sessionRestoreDrStateToHistoryPoint,
+  cloneDrStateHolder: sessionCloneDrStateHolder,
+  decryptConversationEnvelope: convDecryptConversationEnvelope,
+  computeConversationFingerprint: convComputeConversationFingerprint,
+  computeConversationAccessFingerprint: convComputeConversationAccessFingerprint,
+  b64UrlToBytes: uiB64UrlToBytes,
+  b64u8: naclB64u8,
+  saveEnvelopeMeta: mediaSaveEnvelopeMeta,
+  ensureSecureConversationReady: managerEnsureSecureConversationReady
+};
+
+const deps = { ...defaultDeps };
+
+export function __setMessagesTestOverrides(overrides = {}) {
+  Object.assign(deps, overrides);
+}
+
+export function __resetMessagesTestOverrides() {
+  Object.assign(deps, defaultDeps);
+}
 
 const decoder = new TextDecoder();
 const secureFetchBackoff = new Map();
@@ -80,7 +117,7 @@ function isDrDebugEnabled() {
 
 function snapshotForDebug(state) {
   try {
-    return snapshotDrState(state, { setDefaultUpdatedAt: false });
+    return deps.snapshotDrState(state, { setDefaultUpdatedAt: false });
   } catch {
     return null;
   }
@@ -105,9 +142,9 @@ function urlB64ToStd(b64url) {
 
 async function decryptWithMessageKey({ messageKeyB64, ivB64, ciphertextB64 }) {
   if (!messageKeyB64) throw new Error('message key missing');
-  const keyU8 = b64u8(messageKeyB64);
-  const ivU8 = b64u8(ivB64);
-  const ctU8 = b64u8(ciphertextB64);
+  const keyU8 = deps.b64u8(messageKeyB64);
+  const ivU8 = deps.b64u8(ivB64);
+  const ctU8 = deps.b64u8(ciphertextB64);
   const key = await crypto.subtle.importKey('raw', keyU8, 'AES-GCM', false, ['decrypt']);
   const ptBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivU8 }, key, ctU8);
   return decoder.decode(ptBuf);
@@ -151,7 +188,7 @@ function parseMediaMessage({ plaintext, meta }) {
   const dir = normalizeMediaDir(dirSource);
 
   if (objectKey && envelope) {
-    try { saveEnvelopeMeta(objectKey, envelope); } catch {}
+    try { deps.saveEnvelopeMeta(objectKey, envelope); } catch {}
   }
 
   const mediaInfo = {
@@ -237,17 +274,17 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
     };
   }
 
-  const accountDigest = (getAccountDigest() || '').toUpperCase();
+  const accountDigest = (deps.getAccountDigest() || '').toUpperCase();
   let conversationFingerprint = null;
   if (accountDigest) {
     try {
-      conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
+      conversationFingerprint = await deps.computeConversationAccessFingerprint(tokenB64, accountDigest);
     } catch (err) {
       logDrDebug('fingerprint-error', { conversationId, error: err?.message || err });
     }
   }
 
-  const { r, data } = await listSecureMessages({ conversationId, limit, cursorTs, conversationFingerprint });
+  const { r, data } = await deps.listSecureMessages({ conversationId, limit, cursorTs, conversationFingerprint });
   const out = [];
   const errs = [];
   let state = null;
@@ -273,13 +310,13 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
   const drDebug = isDrDebugEnabled();
   let fingerprintPeer = null;
   let fingerprintSelf = null;
-  try { fingerprintPeer = await computeConversationFingerprint(tokenB64, peerUidHex); } catch {}
+  try { fingerprintPeer = await deps.computeConversationFingerprint(tokenB64, peerUidHex); } catch {}
   try {
-    const selfUid = getUidHex();
-    if (selfUid) fingerprintSelf = await computeConversationFingerprint(tokenB64, selfUid);
+    const selfUid = deps.getUidHex();
+    if (selfUid) fingerprintSelf = await deps.computeConversationFingerprint(tokenB64, selfUid);
   } catch {}
 
-  await ensureSecureConversationReady({
+  await deps.ensureSecureConversationReady({
     peerUidHex,
     reason: 'list-messages',
     source: 'messages:listSecureAndDecrypt'
@@ -288,8 +325,8 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
   const sortedItems = sortMessagesByTimeline(items);
   const shouldTrackState = mutateState !== false;
   const allowCursorReplay = !!allowReplay || !shouldTrackState;
-  const baseState = drState(peerUidHex);
-  state = shouldTrackState ? baseState : cloneDrStateHolder(baseState);
+  const baseState = deps.drState(peerUidHex);
+  state = shouldTrackState ? baseState : deps.cloneDrStateHolder(baseState);
 
   if (drDebug) {
     try {
@@ -309,8 +346,8 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
     try {
       let decrypted = false;
       let lastError = null;
-      const payload = await decryptConversationEnvelope(tokenB64, raw?.payload_envelope || raw?.payloadEnvelope || raw?.payload);
-      const headerJson = decoder.decode(b64UrlToBytes(payload.hdr_b64));
+      const payload = await deps.decryptConversationEnvelope(tokenB64, raw?.payload_envelope || raw?.payloadEnvelope || raw?.payload);
+      const headerJson = decoder.decode(deps.b64UrlToBytes(payload.hdr_b64));
       const header = JSON.parse(headerJson);
       const ciphertextB64 = urlB64ToStd(payload.ct_b64);
       const pkt = {
@@ -349,9 +386,9 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
       else if (senderFingerprint && fingerprintPeer && senderFingerprint === fingerprintPeer) direction = 'incoming';
       if (Number.isFinite(msgTs)) {
         if (shouldTrackState) {
-          state = drState(peerUidHex);
+          state = deps.drState(peerUidHex);
         }
-        prepResult = prepareDrForMessage({
+        prepResult = deps.prepareDrForMessage({
           peerUidHex,
           messageTs: msgTs,
           messageId,
@@ -367,7 +404,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
           continue;
         }
         if (prepResult?.restored && shouldTrackState) {
-          state = drState(peerUidHex);
+          state = deps.drState(peerUidHex);
         }
         if (!decrypted && allowCursorReplay && prepResult?.historyEntry?.messageKey_b64) {
           try {
@@ -380,7 +417,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
             let stateSynced = false;
             try {
               if (historyEntry?.snapshotAfter) {
-                const restored = restoreDrStateFromSnapshot({
+                const restored = deps.restoreDrStateFromSnapshot({
                   peerUidHex,
                   snapshot: historyEntry.snapshotAfter,
                   force: true,
@@ -388,13 +425,13 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
                   sourceTag: 'history-replay-after'
                 });
                 if (shouldTrackState) {
-                  state = drState(peerUidHex);
+                  state = deps.drState(peerUidHex);
                   stateSynced = !!state;
                 } else {
                   stateSynced = restored;
                 }
               } else if (historyEntry?.snapshot) {
-                const restored = restoreDrStateFromSnapshot({
+                const restored = deps.restoreDrStateFromSnapshot({
                   peerUidHex,
                   snapshot: historyEntry.snapshot,
                   force: true,
@@ -402,16 +439,16 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
                   sourceTag: 'history-replay'
                 });
                 if (shouldTrackState) {
-                  const replayState = drState(peerUidHex);
+                  const replayState = deps.drState(peerUidHex);
                   if (replayState) {
-                    await drDecryptText(replayState, pkt, {
+                    await deps.drDecryptText(replayState, pkt, {
                       onMessageKey: () => {}
                     });
                     state = replayState;
                     stateSynced = true;
                   }
                 } else if (restored) {
-                  await drDecryptText(state, pkt, {
+                  await deps.drDecryptText(state, pkt, {
                     onMessageKey: () => {}
                   });
                   stateSynced = true;
@@ -426,7 +463,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               markMessageProcessed(conversationId, messageId);
               if (stateSynced && state) {
                 try {
-                  persistDrSnapshot({ peerUidHex, state });
+                  deps.persistDrSnapshot({ peerUidHex, state });
                 } catch (persistErr) {
                   if (drDebug) {
                     console.warn('[messages] replay persist snapshot failed', persistErr);
@@ -471,17 +508,17 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
         let snapshotBefore = null;
         try {
           if (shouldTrackState) {
-            state = drState(peerUidHex);
+            state = deps.drState(peerUidHex);
           }
-          snapshotBefore = Number.isFinite(msgTs) ? snapshotDrState(state, { setDefaultUpdatedAt: false }) : null;
-          const text = await drDecryptText(state, pkt, {
+          snapshotBefore = Number.isFinite(msgTs) ? deps.snapshotDrState(state, { setDefaultUpdatedAt: false }) : null;
+          const text = await deps.drDecryptText(state, pkt, {
             onMessageKey: (mk) => {
               messageKeyB64 = mk;
             }
           });
-          const snapshotAfter = snapshotDrState(state, { setDefaultUpdatedAt: false });
+          const snapshotAfter = deps.snapshotDrState(state, { setDefaultUpdatedAt: false });
           if (shouldTrackState && snapshotBefore && Number.isFinite(msgTs)) {
-            recordDrMessageHistory({
+            deps.recordDrMessageHistory({
               peerUidHex,
               messageTs: msgTs,
               messageId,
@@ -492,7 +529,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
           }
           if (shouldTrackState) {
             markMessageProcessed(conversationId, messageId);
-            persistDrSnapshot({ peerUidHex, state });
+            deps.persistDrSnapshot({ peerUidHex, state });
           }
           const messageObj = buildMessageObject({
             plaintext: text,
@@ -517,11 +554,11 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               ts: Number.isFinite(msgTs) ? msgTs : null,
               header,
               snapshotBefore: snapshotBefore || null,
-              snapshotAfter: snapshotForDebug(shouldTrackState ? drState(peerUidHex) : state)
+              snapshotAfter: snapshotForDebug(shouldTrackState ? deps.drState(peerUidHex) : state)
             });
             if (snapshotBefore) {
               try {
-                restoreDrStateFromSnapshot({
+                deps.restoreDrStateFromSnapshot({
                   peerUidHex,
                   snapshot: snapshotBefore,
                   force: true,
@@ -529,7 +566,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
                   sourceTag: 'decrypt-rollback'
                 });
                 if (shouldTrackState) {
-                  state = drState(peerUidHex);
+                  state = deps.drState(peerUidHex);
                 }
               } catch (restoreErr) {
                 console.warn('[messages] dr snapshot rollback failed', restoreErr);
@@ -540,7 +577,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
             let restoredFromHistory = false;
             if (Number.isFinite(msgTs) || messageId) {
               try {
-                restoredFromHistory = restoreDrStateToHistoryPoint({
+                restoredFromHistory = deps.restoreDrStateToHistoryPoint({
                   peerUidHex,
                   ts: Number.isFinite(msgTs) ? msgTs : null,
                   messageId: messageId || null
@@ -552,7 +589,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               }
               if (!restoredFromHistory && Number.isFinite(msgTs)) {
                 try {
-                  restoredFromHistory = restoreDrStateToHistoryPoint({
+                  restoredFromHistory = deps.restoreDrStateToHistoryPoint({
                     peerUidHex,
                     ts: msgTs - 1,
                     messageId: null
@@ -565,13 +602,13 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
               }
             }
             if (restoredFromHistory) {
-              state = drState(peerUidHex);
+              state = deps.drState(peerUidHex);
               continue;
             }
             if (shouldTrackState) {
-              const recovered = await recoverDrState({ peerUidHex });
+              const recovered = await deps.recoverDrState({ peerUidHex });
               if (recovered) {
-                state = drState(peerUidHex);
+                state = deps.drState(peerUidHex);
                 continue;
               }
             }

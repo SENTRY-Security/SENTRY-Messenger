@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
     <title>SENTRY MESSENGER — Login</title>
     <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
@@ -29,10 +29,24 @@
         min-height:100vh;
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, 'Noto Sans TC', sans-serif;
         background:var(--gradient);
+        background-attachment:fixed;
         display:flex;
         justify-content:center;
         align-items:center;
-        padding:32px 18px;
+        padding:calc(32px + env(safe-area-inset-top, 0px)) 18px calc(32px + env(safe-area-inset-bottom, 0px));
+        overscroll-behavior:contain;
+        position:relative;
+      }
+      body::before {
+        content:'';
+        position:fixed;
+        left:0;
+        right:0;
+        top:-120vh;
+        bottom:-120vh;
+        background:var(--gradient);
+        z-index:-1;
+        pointer-events:none;
       }
       .login-shell {
         width:min(420px,100%);
@@ -174,6 +188,23 @@
       html.orientation-block { height:100%; overflow:hidden; }
       html.orientation-block body { overflow:hidden; height:100%; }
       html.orientation-block .orientation-overlay { display:flex; }
+      .chip-guard-overlay { position:fixed; inset:0; pointer-events:none; z-index:1200; opacity:1; animation:chipGuardFadeOut .6s ease forwards; animation-delay:3.25s; }
+      .chip-guard-overlay svg { position:absolute; inset:0; width:100%; height:100%; display:block; }
+      .chip-guard-path {
+        fill:none;
+        stroke-width:1.68;
+        stroke-linecap:round;
+        stroke-linejoin:round;
+        stroke-dasharray:100;
+        stroke-dashoffset:100;
+        animation:chipGuardSweep 3s ease forwards;
+        filter:url(#chipGuardGlow) drop-shadow(0 0 26px rgba(74,222,128,0.65)) drop-shadow(0 0 52px rgba(16,185,129,0.45));
+      }
+      .chip-guard-message { position:absolute; top:28px; left:50%; transform:translateX(-50%); padding:6px 22px 7px; border-radius:999px; background:rgba(15,118,110,0.28); border:1px solid rgba(34,197,94,0.75); color:#ecfccb; font-size:13px; letter-spacing:0.45px; font-weight:600; text-shadow:0 0 14px rgba(52,211,153,0.9); box-shadow:0 16px 34px rgba(2,6,23,0.45), 0 0 24px rgba(74,222,128,0.45); animation:chipGuardMessagePulse 1.4s ease-in-out infinite alternate; pointer-events:none; backdrop-filter:blur(2px); }
+      @keyframes chipGuardSweep { 0% { stroke-dashoffset:100; opacity:0.65; } 10% { opacity:1; } 100% { stroke-dashoffset:0; opacity:1; } }
+      @keyframes chipGuardFadeOut { 0% { opacity:1; } 100% { opacity:0; } }
+      @keyframes chipGuardMessagePulse { 0% { opacity:0.8; box-shadow:0 12px 22px rgba(2,6,23,0.2); } 100% { opacity:1; box-shadow:0 18px 40px rgba(15,23,42,0.45); } }
+      @media (prefers-reduced-motion: reduce) { .chip-guard-overlay { display:none; } }
     </style>
   </head>
   <body>
@@ -181,6 +212,25 @@
       <span class="icon" aria-hidden="true">📱</span>
       <strong>請以直立模式使用</strong>
       <span>為維持最佳使用體驗，請將裝置旋轉回直立方向。</span>
+    </div>
+    <div id="chipGuardOverlay" class="chip-guard-overlay" aria-hidden="true">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="presentation" aria-hidden="true">
+        <defs>
+          <linearGradient id="chipGuardGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#86efac" />
+            <stop offset="45%" stop-color="#22c55e" />
+            <stop offset="100%" stop-color="#4ade80" />
+          </linearGradient>
+          <filter id="chipGuardGlow" x="-70%" y="-70%" width="240%" height="240%" color-interpolation-filters="sRGB">
+            <feDropShadow dx="0" dy="0" stdDeviation="2.4" flood-color="#bbf7d0" flood-opacity="0.95"></feDropShadow>
+            <feDropShadow dx="0" dy="0" stdDeviation="5.5" flood-color="#4ade80" flood-opacity="0.8"></feDropShadow>
+            <feDropShadow dx="0" dy="0" stdDeviation="15" flood-color="#22c55e" flood-opacity="0.6"></feDropShadow>
+            <feDropShadow dx="0" dy="0" stdDeviation="24" flood-color="#16a34a" flood-opacity="0.35"></feDropShadow>
+          </filter>
+        </defs>
+        <path class="chip-guard-path" d="M50 0H100V100H0V0H50" stroke="url(#chipGuardGradient)" pathLength="100"></path>
+      </svg>
+      <div class="chip-guard-message" role="presentation">偵測晶片序號中...</div>
     </div>
     <main class="login-shell">
       <div class="brand">
@@ -331,6 +381,12 @@
         if (screen.orientation && screen.orientation.lock && isMobileLike()) {
           screen.orientation.lock('portrait').catch(() => {});
         }
+      })();
+      (function disablePinchZoom(){
+        const prevent = (evt) => evt.preventDefault();
+        document.addEventListener('gesturestart', prevent, { passive:false });
+        document.addEventListener('gesturechange', prevent, { passive:false });
+        document.addEventListener('gestureend', prevent, { passive:false });
       })();
     </script>
     <script type="module" src="/app/ui/login-ui.js"></script>

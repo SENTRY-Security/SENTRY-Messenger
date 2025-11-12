@@ -68,12 +68,21 @@ export async function ensureDir(targetPath) {
   await fs.mkdir(absPath, { recursive: true });
 }
 
-export async function performLogin(page, { password = 'test1234', uidHex } = {}) {
+export async function performLogin(page, { password = 'test1234', uidHex, contactSecretsSnapshot } = {}) {
   await page.addInitScript(() => {
     try {
       window.__DEBUG_CONTACT_SECRETS__ = true;
     } catch {}
   });
+  if (contactSecretsSnapshot) {
+    await page.addInitScript((snapshot) => {
+      try {
+        window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+        window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = snapshot;
+        window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1-latest'] = snapshot;
+      } catch {}
+    }, contactSecretsSnapshot);
+  }
   await page.addInitScript(() => {
     try {
       window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};

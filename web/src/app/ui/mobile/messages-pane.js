@@ -50,7 +50,9 @@ export function initMessagesPane({
     scrollEl: dom.messagesScrollEl ?? document.getElementById('messagesScroll'),
     loadMoreBtn: dom.messagesLoadMoreBtn ?? document.getElementById('messagesLoadMore'),
     loadMoreLabel: dom.messagesLoadMoreLabel ?? document.querySelector('#messagesLoadMore .label'),
-    loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('#messagesLoadMore .spinner')
+    loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('#messagesLoadMore .spinner'),
+    callBtn: dom.messagesCallBtn ?? document.getElementById('messagesCallBtn'),
+    videoBtn: dom.messagesVideoBtn ?? document.getElementById('messagesVideoBtn')
   };
 
   const secureStatusCache = new Map();
@@ -410,9 +412,23 @@ export function initMessagesPane({
     elements.statusLabel.style.color = isError ? '#dc2626' : '#64748b';
   }
 
-  function updateComposerAvailability() {
-    if (!elements.input || !elements.sendBtn) return;
+  function updateConversationActionsAvailability() {
     const state = getMessageState();
+    const enabled = !!(state.activePeerUid && state.conversationToken);
+    const buttons = [elements.callBtn, elements.videoBtn];
+    for (const btn of buttons) {
+      if (!btn) continue;
+      btn.disabled = !enabled;
+      btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+    }
+  }
+
+  function updateComposerAvailability() {
+    const state = getMessageState();
+    if (!elements.input || !elements.sendBtn) {
+      updateConversationActionsAvailability();
+      return;
+    }
     const key = state.activePeerUid ? String(state.activePeerUid).toUpperCase() : null;
     const statusInfo = key ? getCachedSecureStatus(key) : null;
     const status = statusInfo?.status || null;
@@ -429,6 +445,33 @@ export function initMessagesPane({
       placeholder = statusInfo?.error ? `安全對話失敗：${statusInfo.error}` : '安全對話建立失敗，請稍後再試。';
     }
     elements.input.placeholder = placeholder;
+    updateConversationActionsAvailability();
+  }
+
+  function showComingSoonModal(kind) {
+    const title = kind === 'video' ? '視訊通話' : '語音通話';
+    if (typeof showConfirmModal === 'function') {
+      showConfirmModal({
+        title,
+        message: '敬請期待',
+        confirmLabel: '了解',
+        onConfirm: () => {},
+        onCancel: () => {}
+      });
+      setTimeout(() => {
+        if (typeof document === 'undefined') return;
+        const cancelBtn = document.getElementById('confirmCancel');
+        if (cancelBtn) cancelBtn.style.display = 'none';
+      }, 0);
+      return;
+    }
+    showToast?.('敬請期待');
+  }
+
+  function handleConversationAction(type) {
+    const state = getMessageState();
+    if (!state.activePeerUid || !state.conversationToken) return;
+    showComingSoonModal(type);
   }
 
   function setLoadMoreState(next) {
@@ -1674,6 +1717,9 @@ export function initMessagesPane({
     elements.fileInput?.addEventListener('change', (event) => {
       handleComposerFileSelection(event);
     });
+
+    elements.callBtn?.addEventListener('click', () => handleConversationAction('voice'));
+    elements.videoBtn?.addEventListener('click', () => handleConversationAction('video'));
 
     if (elements.scrollEl) {
       elements.scrollEl.addEventListener('scroll', handleMessagesScroll, { passive: true });

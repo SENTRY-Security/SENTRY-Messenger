@@ -40,3 +40,12 @@ export async function mkStore({ session, uidHex, accountToken, accountDigest, wr
   if (accountDigest) body.accountDigest = accountDigest;
   return await fetchJSON('/api/v1/mk/store', body);
 }
+
+/**
+ * MK Update — change password after login by updating wrapped MK.
+ * @param {{uidHex:string, accountToken:string, accountDigest:string, wrapped_mk:object}} p
+ * @returns {Promise<{ r: Response, data: any }>} r.status === 204 on success
+ */
+export async function mkUpdate({ uidHex, accountToken, accountDigest, wrapped_mk }) {
+  return await fetchJSON('/api/v1/mk/update', { uidHex, accountToken, accountDigest, wrapped_mk });
+}
