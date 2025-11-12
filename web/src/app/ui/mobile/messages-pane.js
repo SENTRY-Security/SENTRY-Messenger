@@ -24,7 +24,8 @@ import {
   sendCallInviteSignal,
   getCallSessionSnapshot,
   getCallCapability,
-  prepareCallKeyEnvelope
+  prepareCallKeyEnvelope,
+  startOutgoingCallMedia
 } from '../../features/calls/index.js';
 
 export function initMessagesPane({
@@ -533,6 +534,12 @@ export function initMessagesPane({
       log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerUid });
       showToast?.('通話信令傳送失敗', true);
       return;
+    }
+    try {
+      await startOutgoingCallMedia({ callId, peerUid: state.activePeerUid });
+    } catch (err) {
+      log({ callMediaStartError: err?.message || err });
+      showToast?.('無法啟動通話媒體：' + (err?.message || err), true);
     }
     showToast?.(type === 'video' ? '已發起視訊通話' : '已發起語音通話');
   }

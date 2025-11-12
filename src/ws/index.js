@@ -16,10 +16,12 @@ const CALL_SIGNAL_TYPES = new Set([
   'call-busy',
   'call-end',
   'call-ice-candidate',
-  'call-media-update'
+  'call-media-update',
+  'call-offer',
+  'call-answer'
 ]);
 const CALL_RELEASE_EVENTS = new Set(['call-end', 'call-cancel', 'call-reject', 'call-busy']);
-const CALL_RENEW_EVENTS = new Set(['call-ringing', 'call-accept', 'call-media-update', 'call-ice-candidate']);
+const CALL_RENEW_EVENTS = new Set(['call-ringing', 'call-accept', 'call-media-update', 'call-ice-candidate', 'call-offer', 'call-answer']);
 const CALL_LOCK_TTL_MS = Math.max(30_000, Number(process.env.CALL_LOCK_TTL_MS || 120000));
 const MAX_SIGNAL_JSON_BYTES = 16 * 1024;
 const MAX_SIGNAL_STRING_BYTES = 4096;

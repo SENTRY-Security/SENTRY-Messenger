@@ -250,7 +250,7 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 ### 時間軸
 
 - **目前狀態**：CallKeyManager 已串接：撥號時會依聯絡人秘密派生 CMK、生成 `call-key-envelope` 並附在 `call-invite`，受話端自動驗證 `cmkProof`、派生音訊/視訊雙向金鑰並更新 `CallMediaState`；Overlay 會同步顯示「建立加密金鑰」/「加密失敗」狀態。Insertable Streams pipeline仍在建置，尚未打開實際媒體傳輸，因此暫不重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，待媒體層完成後一併驗證。
-- **下一步**：導入 Insertable Streams pipeline、串接 TURN/ICE 憑證與 WebRTC 連線，並把 overlay 與實際媒體控制列連動；完成媒體層後重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`。若新增 E2E 腳本，需評估耗時並統一 timeout 管理，避免單一 spec 再度逾時。
+- **下一步**：建立端對端互通驗證（雙端同時撥接、ICE/SDP 透過 `call-offer/answer` 流程實測）、補上自動化測試與 TURN 健康檢查；完成後重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並新增通話相關的 Playwright 腳本，同時整理 Insertable Streams 金鑰輪換文件。
 
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

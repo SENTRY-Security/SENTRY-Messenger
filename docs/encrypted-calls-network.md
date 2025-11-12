@@ -9,6 +9,7 @@
   - IPv4/IPv6、TCP/UDP/TLS/443 皆開啟，避免企業網封鎖。
 - STUN 伺服器使用相同節點，Port 3478/5349。
 - 與 Cloudflare Warp/Argo 互通需額外開放 2408 port（可選）。
+- **目前狀態**：先行在 `tun.sentry.red`（Linode）完成 coturn 安裝與憑證布署，開放 TCP/UDP `3478`, `5349`, `49160-49200`；`/etc/turnserver.conf` 以 `use-auth-secret` 搭配 `TURN_SHARED_SECRET`，供 Web / Node 端 `/api/v1/calls/turn-credentials` 發放短期憑證。待第二個節點到位後，依同樣設定補上 `turn2.sentry.mobi`。
 
 ## 2. 認證與金鑰
 

@@ -86,7 +86,7 @@ Per-direction SRTP Keys (audioTx, audioRx, videoTx, videoRx)
 ## 8. 實作待辦
 
 1. 建立共用 schema / 型別檔案（TS + Swift）。
-2. PWA 端導入 Insertable Streams pipeline + key 管理器。
+2. PWA 端導入 Insertable Streams pipeline + key 管理器。✅（`web/src/app/features/calls/{key-manager,media-session}.js` 已提供 CMK 衍生、AES-GCM transform 與 TURN/ICE 連線骨架。）
 3. iOS 端整合 WebRTC Native + SFrame，並提供與 JS 相同 API。
 4. 「call-media-update」事件需更新 key epoch 並觸發 UI 提示。
 5. 監控：記錄 key 派生 / 輪換事件與錯誤率。

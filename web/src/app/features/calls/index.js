@@ -40,3 +40,10 @@ export {
   getCallKeyContext,
   supportsInsertableStreams
 } from './key-manager.js';
+export {
+  initCallMediaSession,
+  disposeCallMediaSession,
+  startOutgoingCallMedia,
+  acceptIncomingCallMedia,
+  endCallMediaSession
+} from './media-session.js';

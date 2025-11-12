@@ -59,9 +59,12 @@ import { initVersionInfoButton } from './version-info.js';
 import {
   setCallSignalSender,
   handleCallSignalMessage,
-  handleCallAuxMessage
-} from '../features/calls/signaling.js';
-import { initCallKeyManager } from '../features/calls/key-manager.js';
+  handleCallAuxMessage,
+  sendCallSignal,
+  initCallKeyManager,
+  initCallMediaSession,
+  disposeCallMediaSession
+} from '../features/calls/index.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 
 const out = document.getElementById('out');
@@ -134,6 +137,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   const safeMessage = message || '已登出';
 
   try {
+    disposeCallMediaSession();
     flushDrSnapshotsBeforeLogout();
   } catch (err) {
     log({ contactSecretsSnapshotFlushError: err?.message || err, reason: 'secure-logout-call' });
@@ -749,6 +753,10 @@ const messagesPane = initMessagesPane({
 
 initCallOverlay({ showToast });
 initCallKeyManager();
+initCallMediaSession({
+  sendSignalFn: (type, payload) => sendCallSignal(type, payload),
+  showToastFn: showToast
+});
 
 messagesPane.attachDomEvents();
 messagesPane.ensureConversationIndex();
@@ -1515,6 +1523,9 @@ if (typeof window !== 'undefined') {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
       handleBackgroundAutoLogout();
     }
+  });
+  window.addEventListener('beforeunload', () => {
+    disposeCallMediaSession();
   });
 }
 import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';

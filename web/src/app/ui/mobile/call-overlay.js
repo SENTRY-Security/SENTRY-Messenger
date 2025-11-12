@@ -7,7 +7,9 @@ import {
   getCallSessionSnapshot,
   sendCallSignal,
   completeCallSession,
-  updateCallSessionStatus
+  updateCallSessionStatus,
+  acceptIncomingCallMedia,
+  endCallMediaSession
 } from '../../features/calls/index.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 
@@ -159,6 +161,7 @@ function ensureOverlayElements() {
         <button type="button" class="call-btn accept" data-call-action="accept">接聽</button>
         <button type="button" class="call-btn cancel" data-call-action="cancel">掛斷</button>
       </div>
+      <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
     </div>
   `;
   document.body.appendChild(root);
@@ -255,6 +258,7 @@ export function initCallOverlay({ showToast }) {
     try {
       await acknowledgeCall({ callId: session.callId, traceId: session.traceId });
       updateCallSessionStatus(CALL_SESSION_STATUS.CONNECTING, { callId: session.callId });
+      await acceptIncomingCallMedia({ callId: session.callId, peerUid: session.peerUidHex });
       sendCallSignal('call-accept', {
         callId: session.callId,
         targetUid: session.peerUidHex,
@@ -282,6 +286,7 @@ export function initCallOverlay({ showToast }) {
           reason: 'user_reject'
         });
       }
+      endCallMediaSession('rejected');
       completeCallSession({ reason: 'rejected' });
     } finally {
       state.actionBusy = false;
@@ -296,6 +301,7 @@ export function initCallOverlay({ showToast }) {
     render(session);
     try {
       await cancelCall({ callId: session.callId, reason: 'caller_cancelled' });
+      endCallMediaSession('cancelled');
       if (session.peerUidHex) {
         sendCallSignal('call-cancel', {
           callId: session.callId,
