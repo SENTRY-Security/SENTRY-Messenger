@@ -123,6 +123,7 @@ test('multi-account friendship, messaging, and attachment stress', async ({ brow
       await expectMessageBubble(guest.page, messageFromGuest);
 
       await openConversationWithPeer(owner.page, guest.uidHex);
+      await waitForSecureConversationReady(owner.page, guest.uidHex);
       await expectMessageBubble(owner.page, messageFromGuest);
     });
 
@@ -131,6 +132,7 @@ test('multi-account friendship, messaging, and attachment stress', async ({ brow
       await waitForSecureConversationReady(owner.page, guest.uidHex);
       await sendFileAttachment(owner.page, ATTACHMENT_PATH, { fileName: attachmentName });
       await openConversationWithPeer(guest.page, owner.uidHex);
+      await waitForSecureConversationReady(guest.page, owner.uidHex);
       const fileBubble = guest.page.locator('.message-bubble', {
         has: guest.page.locator('.message-file-name', { hasText: attachmentName })
       }).last();

@@ -230,6 +230,8 @@ test('encrypted audio call with fake media stream', async ({ browser }) => {
     });
 
     await test.step('發起語音通話並等待來電', async () => {
+      await openConversationWithPeer(caller.page, callee.uidHex);
+      await waitForSecureConversationReady(caller.page, callee.uidHex);
       await dismissToasts(caller.page);
       await caller.page.locator('#messagesCallBtn').scrollIntoViewIfNeeded();
       const restoreTopbar = await disableTopbarPointerEvents(caller.page);

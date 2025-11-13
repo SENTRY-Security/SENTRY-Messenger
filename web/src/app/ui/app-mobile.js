@@ -426,13 +426,18 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   }
 
   try {
-    lockContactSecrets('secure-logout');
     persistContactSecrets();
     triggerContactSecretsBackup('secure-logout', { force: true, keepalive: true }).catch((err) => {
       log({ contactSecretsBackupDuringLogoutError: err?.message || err });
     });
   } catch (err) {
     log({ contactSecretsPersistError: err?.message || err });
+  } finally {
+    try {
+      lockContactSecrets('secure-logout');
+    } catch (err) {
+      log({ contactSecretsLockError: err?.message || err });
+    }
   }
 
   try { wsConn?.close(); } catch {}

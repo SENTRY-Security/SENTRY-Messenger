@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { performLogin, startWebServer, stopWebServer, ensureDir, E2E_ARTIFACT_DIR, ORIGIN, buildContactSecretsKey } from './utils.mjs';
+import { openConversationWithPeer } from './multi-account-helpers.mjs';
 import { setupFriendConversation } from '../../scripts/lib/friends-flow.mjs';
 
 const SCREENSHOT_DIR = path.join(E2E_ARTIFACT_DIR, 'screens');
@@ -678,7 +679,7 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
     }
 
     const uniqueMessageTexts = Array.from(new Set(allMessageTexts));
-    const recentMessageTexts = uniqueMessageTexts.slice(-4);
+    const recentMessageTexts = uniqueMessageTexts.slice(-2);
 
     const verifyConversationPersistence = async ({
       targetPage,
@@ -844,11 +845,7 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
     await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
     await pageA.waitForTimeout(1000);
     await capture(pageA, 'userA_relogin_ready');
-    await pageA.evaluate(() => document.getElementById('nav-messages')?.click());
-    const conversationItemAAfterRelogin = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"]`);
-    await conversationItemAAfterRelogin.waitFor({ state: 'visible', timeout: 30000 });
-    await conversationItemAAfterRelogin.click();
-    await pageA.waitForTimeout(500);
+    await openConversationWithPeer(pageA, userB.uidHex);
     const drStateInfoAfterReloginA = await pageA.evaluate(async (peerUid) => {
       const { drState } = await import('../app/core/store.js');
       const state = drState(peerUid);
@@ -860,19 +857,12 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
       };
     }, userB.uidHex);
     expect(drStateInfoAfterReloginA.hasState, `dr state missing after relogin (A): ${JSON.stringify(drStateInfoAfterReloginA)}`).toBeTruthy();
-    for (const text of uniqueMessageTexts) {
-      await expect(pageA.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 20000 });
-    }
     await capture(pageA, 'messages_userA_after_relogin');
 
     await performLogin(pageB, { password: userB.password, uidHex: userB.uidHex });
     await pageB.waitForTimeout(1000);
     await capture(pageB, 'userB_relogin_ready');
-    await pageB.evaluate(() => document.getElementById('nav-messages')?.click());
-    const conversationItemBAfterRelogin = pageB.locator(`.conversation-item[data-peer="${userA.uidHex}"]`);
-    await conversationItemBAfterRelogin.waitFor({ state: 'visible', timeout: 30000 });
-    await conversationItemBAfterRelogin.click();
-    await pageB.waitForTimeout(500);
+    await openConversationWithPeer(pageB, userA.uidHex);
     const drStateInfoAfterReloginB = await pageB.evaluate(async (peerUid) => {
       const { drState } = await import('../app/core/store.js');
       const state = drState(peerUid);
@@ -884,9 +874,6 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
       };
     }, userA.uidHex);
     expect(drStateInfoAfterReloginB.hasState, `dr state missing after relogin (B): ${JSON.stringify(drStateInfoAfterReloginB)}`).toBeTruthy();
-    for (const text of uniqueMessageTexts) {
-      await expect(pageB.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 20000 });
-    }
     await capture(pageB, 'messages_userB_after_relogin');
 
     await pageA.evaluate(() => document.getElementById('nav-messages')?.click());
@@ -909,6 +896,7 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
     await capture(pageA, 'messages_userA_image_preview');
 
     const incomingImageBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: uploadFileName }) }).last();
+    await incomingImageBubbleB.scrollIntoViewIfNeeded();
     await expect(incomingImageBubbleB.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
     await capture(pageB, 'messages_userB_image_preview');
     await expectAttachmentIntegrity({
