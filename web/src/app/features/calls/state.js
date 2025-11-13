@@ -9,6 +9,7 @@ import {
 } from '../../../shared/calls/schemas.js';
 import { createCallInvite } from '../../api/calls.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
+import { sessionStore } from '../../ui/mobile/session-store.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -43,6 +44,27 @@ const SERVER_STATUS_MAP = Object.freeze({
 });
 
 let activeSession = createEmptySession();
+
+function resolveSelfProfileSummary() {
+  const profile = sessionStore?.profileState || null;
+  const nicknameRaw = typeof profile?.nickname === 'string' ? profile.nickname.trim() : '';
+  const displayName = nicknameRaw || null;
+  const candidateUrls = [
+    profile?.avatar?.shareUrl,
+    profile?.avatar?.publicUrl,
+    profile?.avatar?.url,
+    profile?.avatar?.httpsUrl,
+    profile?.avatar?.cdnUrl
+  ];
+  let avatarUrl = null;
+  for (const url of candidateUrls) {
+    if (typeof url === 'string' && /^https?:/i.test(url)) {
+      avatarUrl = url;
+      break;
+    }
+  }
+  return { displayName, avatarUrl };
+}
 
 function createEmptySession() {
   return {
@@ -191,6 +213,15 @@ export async function requestOutgoingCall({
     const metadata = {};
     if (peerDisplayName) metadata.peerDisplayName = peerDisplayName;
     if (peerAvatarUrl) metadata.peerAvatarUrl = peerAvatarUrl;
+    const selfProfile = resolveSelfProfileSummary();
+    if (selfProfile.displayName) {
+      metadata.displayName = selfProfile.displayName;
+      metadata.callerDisplayName = selfProfile.displayName;
+    }
+    if (selfProfile.avatarUrl) {
+      metadata.avatarUrl = selfProfile.avatarUrl;
+      metadata.callerAvatarUrl = selfProfile.avatarUrl;
+    }
     const response = await createCallInvite({
       peerUid: peerKey,
       peerAccountDigest: peerDigest,

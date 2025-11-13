@@ -16,6 +16,7 @@ import {
   isRemoteAudioMuted
 } from '../../features/calls/index.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
+import { createCallAudioManager } from './call-audio.js';
 
 const STATUS_LABEL = {
   [CALL_SESSION_STATUS.OUTGOING]: '撥號中…',
@@ -36,6 +37,10 @@ const ENCRYPTION_STATUS_LABEL = {
   [CALL_MEDIA_STATE_STATUS.ROTATING]: '加密金鑰輪換中…',
   [CALL_MEDIA_STATE_STATUS.FAILED]: '無法保護此通話'
 };
+
+const BUBBLE_SIZE = 76;
+const BUBBLE_MARGIN = 16;
+const MIN_DRAG_DISTANCE = 6;
 
 function describeStatus(session) {
   if (!session) return '連線中…';
@@ -77,6 +82,7 @@ function ensureStyles() {
     }
     .call-overlay.hidden { opacity: 0; }
     .call-overlay .call-card {
+      position: relative;
       width: min(420px, 100%);
       background: rgba(15, 23, 42, 0.92);
       color: #f8fafc;
@@ -196,6 +202,84 @@ function ensureStyles() {
       background: #0ea5e9;
       box-shadow: 0 0 18px rgba(14,165,233,0.45);
     }
+    .call-overlay .call-minify-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      border: none;
+      background: rgba(15,23,42,0.4);
+      color: #f8fafc;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 160ms ease, transform 160ms ease;
+    }
+    .call-overlay .call-minify-btn i {
+      font-size: 18px;
+      margin: 0;
+    }
+    .call-overlay .call-minify-btn:active {
+      transform: scale(0.9);
+    }
+    .call-overlay .call-mini-bubble {
+      position: fixed;
+      width: 76px;
+      height: 76px;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.95);
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transform: scale(0.8);
+      transition: opacity 200ms ease, transform 200ms ease;
+      pointer-events: none;
+      touch-action: none;
+      z-index: 1000;
+    }
+    .call-overlay .call-mini-bubble.dragging {
+      opacity: 0.85;
+    }
+    .call-overlay .call-mini-avatar {
+      width: 68px;
+      height: 68px;
+      border-radius: 999px;
+      background: rgba(248,250,252,0.1);
+      color: #f8fafc;
+      font-size: 20px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .call-overlay .call-mini-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .call-overlay.minimized {
+      pointer-events: none;
+    }
+    .call-overlay.minimized .call-card {
+      opacity: 0;
+      transform: translateY(40px) scale(0.95);
+      pointer-events: none;
+    }
+    .call-overlay.minimized .call-minify-btn {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .call-overlay.minimized .call-mini-bubble {
+      opacity: 1;
+      transform: scale(1);
+      pointer-events: auto;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -221,6 +305,9 @@ function ensureOverlayElements() {
   root.setAttribute('aria-hidden', 'true');
   root.innerHTML = `
     <div class="call-card" role="dialog" aria-live="assertive">
+      <button type="button" class="call-minify-btn" data-call-action="minify" aria-label="縮小通話視窗">
+        <i class='bx bx-chevron-down'></i>
+      </button>
       <div class="call-peer">
         <div class="call-avatar" aria-hidden="true"></div>
         <div class="call-meta">
@@ -251,6 +338,9 @@ function ensureOverlayElements() {
       </div>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
     </div>
+    <div class="call-mini-bubble" role="button" aria-label="回到通話視窗" tabindex="0">
+      <div class="call-mini-avatar" aria-hidden="true"></div>
+    </div>
   `;
   document.body.appendChild(root);
   return {
@@ -268,9 +358,12 @@ function ensureOverlayElements() {
     controlsRow: root.querySelector('.call-controls'),
     muteBtn: root.querySelector('[data-call-action="mute"]'),
     speakerBtn: root.querySelector('[data-call-action="speaker"]'),
-    hangupBtn: root.querySelector('[data-call-action="hangup"]')
-  };
-}
+      hangupBtn: root.querySelector('[data-call-action="hangup"]'),
+      minifyBtn: root.querySelector('[data-call-action="minify"]'),
+      bubble: root.querySelector('.call-mini-bubble'),
+      bubbleAvatar: root.querySelector('.call-mini-avatar')
+    };
+  }
 
 function formatPeerName(session) {
   if (!session) return '好友';
@@ -281,14 +374,14 @@ function formatPeerName(session) {
   return '好友';
 }
 
-function updateAvatar(el, session) {
+function renderAvatarContent(el, session) {
   if (!el) return;
   el.innerHTML = '';
   const url = session?.peerAvatarUrl;
   if (url) {
     const img = document.createElement('img');
     img.src = url;
-    img.alt = session.peerDisplayName || 'avatar';
+    img.alt = session?.peerDisplayName || 'avatar';
     el.appendChild(img);
     return;
   }
@@ -297,6 +390,10 @@ function updateAvatar(el, session) {
     .slice(0, 2)
     .toUpperCase() || '?';
   el.textContent = initials;
+}
+
+function updateAvatar(el, session) {
+  renderAvatarContent(el, session);
 }
 
 function shouldDisplay(status) {
@@ -313,7 +410,75 @@ export function initCallOverlay({ showToast }) {
   ensureStyles();
   const ui = ensureOverlayElements();
   if (!ui) return () => {};
-  const state = { actionBusy: false, timerHandle: null, timerStart: null };
+  const state = {
+    actionBusy: false,
+    timerHandle: null,
+    timerStart: null,
+    lastStatus: CALL_SESSION_STATUS.IDLE,
+    toneCallId: null,
+    playedToneKeys: new Set(),
+    minimized: false,
+    bubble: { x: null, y: null },
+    bubbleDrag: {
+      pointerId: null,
+      startX: 0,
+      startY: 0,
+      baseX: 0,
+      baseY: 0,
+      moved: false
+    }
+  };
+  const audio = createCallAudioManager();
+
+  function clampBubblePosition(x, y) {
+    if (typeof window === 'undefined') return { x, y };
+    const maxX = Math.max(BUBBLE_MARGIN, window.innerWidth - BUBBLE_SIZE - BUBBLE_MARGIN);
+    const maxY = Math.max(BUBBLE_MARGIN, window.innerHeight - BUBBLE_SIZE - BUBBLE_MARGIN);
+    const clampedX = Math.min(Math.max(x, BUBBLE_MARGIN), maxX);
+    const clampedY = Math.min(Math.max(y, BUBBLE_MARGIN), maxY);
+    return { x: clampedX, y: clampedY };
+  }
+
+  function applyBubblePosition() {
+    if (!ui.bubble || state.bubble.x == null || state.bubble.y == null) return;
+    const { x, y } = clampBubblePosition(state.bubble.x, state.bubble.y);
+    state.bubble.x = x;
+    state.bubble.y = y;
+    ui.bubble.style.left = `${x}px`;
+    ui.bubble.style.top = `${y}px`;
+  }
+
+  function ensureBubblePosition() {
+    if (state.bubble.x != null && state.bubble.y != null) {
+      applyBubblePosition();
+      return;
+    }
+    if (typeof window === 'undefined') return;
+    state.bubble.x = window.innerWidth - (BUBBLE_SIZE + BUBBLE_MARGIN);
+    state.bubble.y = window.innerHeight - (BUBBLE_SIZE + BUBBLE_MARGIN * 4);
+    applyBubblePosition();
+  }
+
+  function updateMinimizedState() {
+    if (!ui.root) return;
+    ui.root.classList.toggle('minimized', !!state.minimized);
+    if (state.minimized) {
+      ensureBubblePosition();
+    }
+  }
+
+  function minimizeOverlay() {
+    if (state.minimized) return;
+    state.minimized = true;
+    ensureBubblePosition();
+    updateMinimizedState();
+  }
+
+  function restoreOverlay() {
+    if (!state.minimized) return;
+    state.minimized = false;
+    updateMinimizedState();
+  }
 
   function setVisibility(visible) {
     if (!ui.root) return;
@@ -321,6 +486,10 @@ export function initCallOverlay({ showToast }) {
     ui.root.setAttribute('aria-hidden', visible ? 'false' : 'true');
     if (!visible) {
       stopTimer();
+      state.minimized = false;
+      updateMinimizedState();
+    } else {
+      updateMinimizedState();
     }
   }
 
@@ -350,10 +519,95 @@ export function initCallOverlay({ showToast }) {
     }
   }
 
+  function ensureToneContext(session) {
+    const callId = session?.callId || null;
+    if (callId !== state.toneCallId) {
+      state.toneCallId = callId;
+      state.playedToneKeys.clear();
+    }
+  }
+
+  function makeToneKey(kind, callId) {
+    const id = callId || 'global';
+    return `${id}:${kind}`;
+  }
+
+  function playToneOnce(kind, { callId } = {}) {
+    const key = makeToneKey(kind, callId || state.toneCallId);
+    if (state.playedToneKeys.has(key)) return;
+    state.playedToneKeys.add(key);
+    if (kind === 'accepted') {
+      audio.playAcceptedTone();
+    } else if (kind === 'ended') {
+      audio.playEndTone();
+    }
+  }
+
   function setToggleState(btn, active) {
     if (!btn) return;
     btn.classList.toggle('active', !!active);
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+
+  function handleWindowResize() {
+    if (!state.minimized) return;
+    applyBubblePosition();
+  }
+
+  function handleBubblePointerDown(event) {
+    if (!state.minimized || !ui.bubble) return;
+    event.preventDefault();
+    const pointerId = event.pointerId ?? 'mouse';
+    state.bubbleDrag.pointerId = pointerId;
+    state.bubbleDrag.startX = event.clientX;
+    state.bubbleDrag.startY = event.clientY;
+    state.bubbleDrag.baseX = state.bubble.x ?? 0;
+    state.bubbleDrag.baseY = state.bubble.y ?? 0;
+    state.bubbleDrag.moved = false;
+    ui.bubble.setPointerCapture?.(pointerId);
+  }
+
+  function handleBubblePointerMove(event) {
+    if (!state.minimized || state.bubbleDrag.pointerId == null) return;
+    if (event.pointerId !== state.bubbleDrag.pointerId) return;
+    const dx = event.clientX - state.bubbleDrag.startX;
+    const dy = event.clientY - state.bubbleDrag.startY;
+    if (!state.bubbleDrag.moved && Math.hypot(dx, dy) > MIN_DRAG_DISTANCE) {
+      state.bubbleDrag.moved = true;
+      ui.bubble?.classList.add('dragging');
+    }
+    if (!state.bubbleDrag.moved) return;
+    state.bubble.x = state.bubbleDrag.baseX + dx;
+    state.bubble.y = state.bubbleDrag.baseY + dy;
+    applyBubblePosition();
+  }
+
+  function finishBubblePointer(event, cancelled = false) {
+    if (state.bubbleDrag.pointerId == null || event.pointerId !== state.bubbleDrag.pointerId) return;
+    ui.bubble?.releasePointerCapture?.(state.bubbleDrag.pointerId);
+    const moved = state.bubbleDrag.moved;
+    state.bubbleDrag.pointerId = null;
+    state.bubbleDrag.moved = false;
+    ui.bubble?.classList.remove('dragging');
+    if (!cancelled && !moved) {
+      restoreOverlay();
+    }
+  }
+
+  function handleBubblePointerUp(event) {
+    finishBubblePointer(event, false);
+  }
+
+  function handleBubblePointerCancel(event) {
+    finishBubblePointer(event, true);
+  }
+
+  function handleBubbleKeyDown(event) {
+    if (!state.minimized) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      restoreOverlay();
+    }
   }
 
   function syncControlStates(session) {
@@ -364,8 +618,40 @@ export function initCallOverlay({ showToast }) {
     setToggleState(ui.speakerBtn, !!remoteMuted);
   }
 
+  function updateBubbleDetails(session) {
+    if (!ui.bubble) return;
+    const labelName = session ? formatPeerName(session) : '好友';
+    ui.bubble.setAttribute('aria-label', `回到與 ${labelName} 的通話`);
+    renderAvatarContent(ui.bubbleAvatar, session);
+  }
+
+  function syncAudio(session) {
+    const status = session?.status || CALL_SESSION_STATUS.IDLE;
+    const displayable = session && shouldDisplay(status);
+    if (!displayable) {
+      audio.stopLoops();
+    } else if (status === CALL_SESSION_STATUS.OUTGOING) {
+      audio.playOutgoingLoop();
+    } else if (status === CALL_SESSION_STATUS.INCOMING) {
+      audio.playIncomingLoop();
+    } else {
+      audio.stopLoops();
+    }
+    if (status === CALL_SESSION_STATUS.CONNECTING && state.lastStatus !== CALL_SESSION_STATUS.CONNECTING) {
+      playToneOnce('accepted', { callId: session?.callId });
+    }
+    const wasEnded = [CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(state.lastStatus);
+    if ([CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(status) && !wasEnded) {
+      playToneOnce('ended', { callId: session?.callId });
+    }
+    state.lastStatus = status;
+  }
+
   function render(session = getCallSessionSnapshot()) {
+    ensureToneContext(session);
+    syncAudio(session);
     if (!session || !shouldDisplay(session.status)) {
+      updateBubbleDetails(null);
       setVisibility(false);
       state.actionBusy = false;
       return;
@@ -375,6 +661,7 @@ export function initCallOverlay({ showToast }) {
     if (ui.statusLabel) ui.statusLabel.textContent = describeStatus(session);
     if (ui.secureLabel) ui.secureLabel.textContent = describeSecureStatus(session);
     updateAvatar(ui.avatar, session);
+    updateBubbleDetails(session);
     updateTimer(session);
     syncControlStates(session);
     const incoming = session.status === CALL_SESSION_STATUS.INCOMING;
@@ -518,6 +805,31 @@ export function initCallOverlay({ showToast }) {
   ui.hangupBtn?.addEventListener('click', handleHangup);
   ui.muteBtn?.addEventListener('click', handleMuteToggle);
   ui.speakerBtn?.addEventListener('click', handleSpeakerToggle);
+  ui.minifyBtn?.addEventListener('click', minimizeOverlay);
+  ui.bubble?.addEventListener('pointerdown', handleBubblePointerDown);
+  ui.bubble?.addEventListener('pointermove', handleBubblePointerMove);
+  ui.bubble?.addEventListener('pointerup', handleBubblePointerUp);
+  ui.bubble?.addEventListener('pointercancel', handleBubblePointerCancel);
+  ui.bubble?.addEventListener('keydown', handleBubbleKeyDown);
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', handleWindowResize);
+  }
+
+  function handleSignalTone(signal) {
+    if (!signal?.type) return;
+    const type = String(signal.type);
+    const session = getCallSessionSnapshot();
+    ensureToneContext(session);
+    const callId = signal.callId || session?.callId || null;
+    if (type === 'call-accept') {
+      playToneOnce('accepted', { callId });
+      return;
+    }
+    if (['call-end', 'call-cancel', 'call-reject', 'call-busy'].includes(type)) {
+      playToneOnce('ended', { callId });
+      audio.stopLoops();
+    }
+  }
 
   const unsubscribers = [
     subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => {
@@ -526,7 +838,10 @@ export function initCallOverlay({ showToast }) {
         showToast?.('無法建立加密通道', true);
       }
     }),
-    subscribeCallEvent(CALL_EVENT.SIGNAL, () => render()),
+    subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => {
+      handleSignalTone(signal);
+      render();
+    }),
     subscribeCallEvent(CALL_EVENT.ERROR, () => {
       showToast?.('通話發生錯誤', true);
       render();
@@ -540,5 +855,15 @@ export function initCallOverlay({ showToast }) {
       try { off?.(); } catch {}
     });
     stopTimer();
+    audio.dispose();
+    ui.minifyBtn?.removeEventListener('click', minimizeOverlay);
+    ui.bubble?.removeEventListener('pointerdown', handleBubblePointerDown);
+    ui.bubble?.removeEventListener('pointermove', handleBubblePointerMove);
+    ui.bubble?.removeEventListener('pointerup', handleBubblePointerUp);
+    ui.bubble?.removeEventListener('pointercancel', handleBubblePointerCancel);
+    ui.bubble?.removeEventListener('keydown', handleBubbleKeyDown);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('resize', handleWindowResize);
+    }
   };
 }

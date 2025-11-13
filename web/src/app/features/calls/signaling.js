@@ -1,4 +1,5 @@
 import { log } from '../../core/log.js';
+import { sessionStore } from '../../ui/mobile/session-store.js';
 import { emitCallEvent, CALL_EVENT } from './events.js';
 import {
   CALL_SESSION_STATUS,
@@ -11,6 +12,41 @@ import {
 } from './state.js';
 
 let wsSend = null;
+
+function normalizeUidKey(uid) {
+  return String(uid || '').toUpperCase() || null;
+}
+
+function resolveContactSnapshot(uid) {
+  const key = normalizeUidKey(uid);
+  if (!key || !(sessionStore?.contactIndex instanceof Map)) return { key: null, nickname: null, avatarUrl: null };
+  const entry = sessionStore.contactIndex.get(key);
+  if (!entry) return { key, nickname: null, avatarUrl: null };
+  const nickname =
+    entry.nickname
+    || entry.profile?.nickname
+    || entry.profile?.displayName
+    || entry.profile?.name
+    || entry.contactProfile?.nickname
+    || entry.contactProfile?.displayName
+    || null;
+  const avatarCandidates = [
+    entry.avatarUrl,
+    entry.avatar?.thumbDataUrl,
+    entry.avatar?.previewDataUrl,
+    entry.avatar?.url,
+    entry.profile?.avatarUrl,
+    entry.profile?.avatar?.thumbUrl
+  ];
+  let avatarUrl = null;
+  for (const candidate of avatarCandidates) {
+    if (typeof candidate === 'string' && candidate.length) {
+      avatarUrl = candidate;
+      break;
+    }
+  }
+  return { key, nickname, avatarUrl };
+}
 
 export function setCallSignalSender(fn) {
   wsSend = typeof fn === 'function' ? fn : null;
@@ -66,11 +102,23 @@ function handleIncomingInvite(msg) {
   const payload = msg?.payload || {};
   const metadata = payload.metadata || payload.meta || {};
   const envelope = payload.envelope || null;
+  const contactSnapshot = resolveContactSnapshot(msg?.fromUid);
+  const fallbackName = contactSnapshot.nickname
+    || (contactSnapshot.key ? `好友 ${contactSnapshot.key.slice(-4)}` : null);
+  const fallbackAvatar = contactSnapshot.avatarUrl || null;
   const result = markIncomingCall({
     callId: msg.callId,
     peerUidHex: msg.fromUid,
-    peerDisplayName: metadata.displayName || metadata.peerDisplayName || metadata.name || null,
-    peerAvatarUrl: metadata.avatarUrl || metadata.peerAvatarUrl || metadata.avatar || null,
+    peerDisplayName: metadata.displayName
+      || metadata.callerDisplayName
+      || metadata.name
+      || fallbackName
+      || null,
+    peerAvatarUrl: metadata.avatarUrl
+      || metadata.callerAvatarUrl
+      || metadata.avatar
+      || fallbackAvatar
+      || null,
     envelope,
     traceId: msg.traceId
   });

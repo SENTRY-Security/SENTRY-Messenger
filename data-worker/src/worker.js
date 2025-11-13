@@ -132,6 +132,123 @@ export default {
       return json({ ok: true, msgId });
     }
 
+    // Contact Secrets backup (encrypted payload only)
+    if (req.method === 'POST' && url.pathname === '/d1/contact-secrets/backup') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+      if (!accountDigest) {
+        return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+      }
+      const payload = body?.payload;
+      if (!payload || typeof payload !== 'object') {
+        return json({ error: 'BadRequest', message: 'payload required' }, { status: 400 });
+      }
+      const snapshotVersion = Number.isFinite(Number(body?.snapshotVersion)) ? Number(body.snapshotVersion) : null;
+      const entries = Number.isFinite(Number(body?.entries)) ? Number(body.entries) : null;
+      const bytes = Number.isFinite(Number(body?.bytes)) ? Number(body.bytes) : null;
+      const checksum = typeof body?.checksum === 'string' ? String(body.checksum).slice(0, 128) : null;
+      const deviceLabel = typeof body?.deviceLabel === 'string' ? String(body.deviceLabel).slice(0, 120) : null;
+      const deviceId = typeof body?.deviceId === 'string' ? String(body.deviceId).slice(0, 120) : null;
+      const updatedAt = normalizeTimestampMs(body?.updatedAt || body?.updated_at) || Date.now();
+      let version = Number.isFinite(Number(body?.version)) && Number(body.version) > 0
+        ? Math.floor(Number(body.version))
+        : null;
+
+      const existingVersionRow = await env.DB.prepare(
+        `SELECT MAX(version) as max_version FROM contact_secret_backups WHERE account_digest=?1`
+      ).bind(accountDigest).all();
+      const nextVersion = Number(existingVersionRow?.results?.[0]?.max_version || 0);
+      if (!version || version <= nextVersion) {
+        version = nextVersion + 1;
+      }
+
+      await env.DB.prepare(
+        `INSERT INTO contact_secret_backups (
+            account_digest, version, payload_json, snapshot_version, entries,
+            checksum, bytes, updated_at, device_label, device_id, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%s','now'))`
+      ).bind(
+        accountDigest,
+        version,
+        JSON.stringify(payload),
+        snapshotVersion,
+        entries,
+        checksum,
+        bytes,
+        updatedAt,
+        deviceLabel,
+        deviceId
+      ).run();
+
+      await trimContactSecretBackups(env, accountDigest, 5);
+
+      return json({
+        ok: true,
+        backup: {
+          accountDigest,
+          version,
+          updatedAt,
+          snapshotVersion,
+          entries,
+          bytes,
+          checksum,
+          deviceLabel,
+          deviceId
+        }
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/d1/contact-secrets/backup') {
+      const accountDigest = normalizeAccountDigest(
+        url.searchParams.get('accountDigest')
+        || url.searchParams.get('account_digest')
+      );
+      if (!accountDigest) {
+        return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+      }
+      const limitParam = Number(url.searchParams.get('limit') || 1);
+      const limit = Math.min(Math.max(limitParam || 1, 1), 10);
+      const versionParam = Number(url.searchParams.get('version') || 0);
+
+      let stmt;
+      if (Number.isFinite(versionParam) && versionParam > 0) {
+        stmt = env.DB.prepare(
+          `SELECT * FROM contact_secret_backups
+            WHERE account_digest=?1 AND version=?2
+            ORDER BY updated_at DESC
+            LIMIT 1`
+        ).bind(accountDigest, Math.floor(versionParam));
+      } else {
+        stmt = env.DB.prepare(
+          `SELECT * FROM contact_secret_backups
+            WHERE account_digest=?1
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?2`
+        ).bind(accountDigest, limit);
+      }
+      const rows = await stmt.all();
+      const backups = (rows?.results || []).map((row) => ({
+        id: row.id,
+        accountDigest: row.account_digest,
+        version: row.version,
+        snapshotVersion: row.snapshot_version,
+        entries: row.entries,
+        checksum: row.checksum,
+        bytes: row.bytes,
+        updatedAt: Number(row.updated_at) || null,
+        deviceLabel: row.device_label || null,
+        deviceId: row.device_id || null,
+        createdAt: Number(row.created_at) || null,
+        payload: safeJSON(row.payload_json)
+      }));
+      return json({ ok: true, backups });
+    }
+
     // 查詢訊息（游標=ts）
     if (req.method === 'GET' && url.pathname === '/d1/messages') {
       const secureConversation = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
@@ -1548,6 +1665,21 @@ function json(obj, init) {
   });
 }
 
+async function trimContactSecretBackups(env, accountDigest, limit = 5) {
+  if (!accountDigest) return;
+  const keep = Math.max(Number(limit) || 1, 1);
+  await env.DB.prepare(
+    `DELETE FROM contact_secret_backups
+       WHERE account_digest=?1
+         AND id NOT IN (
+           SELECT id FROM contact_secret_backups
+            WHERE account_digest=?1
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?2
+         )`
+  ).bind(accountDigest, keep).run();
+}
+
 let friendInviteTableReady = false;
 async function ensureFriendInviteTable(env) {
   if (friendInviteTableReady) return;
@@ -2299,7 +2431,25 @@ async function ensureDataTables(env) {
         created_at INTEGER NOT NULL,
         FOREIGN KEY (call_id) REFERENCES call_sessions(call_id) ON DELETE CASCADE
       )`,
-    `CREATE INDEX IF NOT EXISTS idx_call_events_call_created ON call_events(call_id, created_at DESC)`
+    `CREATE INDEX IF NOT EXISTS idx_call_events_call_created ON call_events(call_id, created_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS contact_secret_backups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_digest TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        snapshot_version INTEGER,
+        entries INTEGER,
+        checksum TEXT,
+        bytes INTEGER,
+        updated_at INTEGER NOT NULL,
+        device_label TEXT,
+        device_id TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+      )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_secret_backups_account_version
+        ON contact_secret_backups (account_digest, version)`,
+    `CREATE INDEX IF NOT EXISTS idx_contact_secret_backups_account_updated
+        ON contact_secret_backups (account_digest, updated_at DESC)`
   ];
 
   for (const sql of statements) {

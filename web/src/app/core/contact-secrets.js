@@ -433,12 +433,41 @@ export function restoreContactSecrets() {
     debugLog('restore-skip', { reason: 'storage-empty' });
     return map;
   }
+  applySnapshotPayload(map, snapshot, { replace: true, reason: 'restore' });
+  return map;
+}
+
+export function importContactSecretsSnapshot(snapshot, { replace = true, reason = 'import', persist = true } = {}) {
+  if (!snapshot) return null;
+  if (contactSecretsLocked) {
+    debugLog('import-skip-locked', { reason });
+    return null;
+  }
+  const map = ensureMap();
+  const summary = applySnapshotPayload(map, snapshot, { replace, reason });
+  if (summary && persist) {
+    try {
+      persistContactSecrets();
+    } catch (err) {
+      log({ contactSecretsImportPersistError: err?.message || err });
+    }
+  }
+  return summary;
+}
+
+function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import' } = {}) {
   let totalEntries = 0;
   let withDrState = 0;
   let withHistory = 0;
   let withSeed = 0;
+  let structuredVersion = null;
+  let structuredGeneratedAt = null;
+  if (!snapshot || typeof snapshot !== 'string') {
+    debugLog('restore-skip', { reason: 'snapshot-empty', source: reason });
+    return null;
+  }
   try {
-    map.clear();
+    if (replace) map.clear();
     const parsed = JSON.parse(snapshot);
     if (Array.isArray(parsed)) {
       for (const [peerUid, value] of parsed) {
@@ -477,15 +506,18 @@ export function restoreContactSecrets() {
           hasDrState: !!drState,
           historyLen: drHistory.length,
           cursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
-          cursorId: drHistoryCursorId || null
+          cursorId: drHistoryCursorId || null,
+          source: reason
         });
       }
     } else {
       const structured = parseStructuredSnapshot(parsed);
       if (!structured) {
-        debugLog('restore-skip', { reason: 'unsupported-format' });
-        return map;
+        debugLog('restore-skip', { reason: 'unsupported-format', source: reason });
+        return null;
       }
+      structuredVersion = structured.version || null;
+      structuredGeneratedAt = structured.generatedAt || null;
       for (const entry of structured.entries) {
         const normalized = normalizeStructuredEntry(entry);
         if (!normalized) continue;
@@ -502,24 +534,29 @@ export function restoreContactSecrets() {
           historyLen: Array.isArray(record.drHistory) ? record.drHistory.length : 0,
           cursorTs: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
           cursorId: record.drHistoryCursorId || null,
-          version: structured.version
+          version: structured.version,
+          source: reason
         });
       }
     }
-    debugLog('restore', { entries: map.size });
+    debugLog('restore', { entries: map.size, source: reason });
+    const summaryPayload = {
+      entries: totalEntries,
+      withDrState,
+      withHistory,
+      withSeed,
+      bytes: snapshot.length,
+      version: structuredVersion,
+      generatedAt: structuredGeneratedAt
+    };
     log({
-      contactSecretsRestoreSummary: {
-        entries: totalEntries,
-        withDrState,
-        withHistory,
-        withSeed,
-        bytes: snapshot.length
-      }
+      contactSecretsRestoreSummary: summaryPayload
     });
+    return summaryPayload;
   } catch (err) {
     log({ contactSecretRestoreError: err?.message || err });
+    return null;
   }
-  return map;
 }
 
 export function persistContactSecrets() {
@@ -606,6 +643,16 @@ export function persistContactSecrets() {
       withHistory: summary.withHistory,
       withSeed: summary.withSeed
     });
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      try {
+        const evt = new CustomEvent('contactSecrets:persisted', {
+          detail: { payload, summary, checksum }
+        });
+        window.dispatchEvent(evt);
+      } catch (err) {
+        log({ contactSecretsPersistEventError: err?.message || err });
+      }
+    }
   } catch (err) {
     log({ contactSecretPersistError: err?.message || err });
   }
@@ -721,6 +768,11 @@ function serializeContactSecretsMap(map) {
   summary.version = CONTACT_SECRETS_VERSION;
   const checksum = basicChecksum(payload);
   return { payload, summary, checksum };
+}
+
+export function buildContactSecretsSnapshot() {
+  const map = ensureMap();
+  return serializeContactSecretsMap(map);
 }
 
 function normalizeStructuredEntry(entry) {

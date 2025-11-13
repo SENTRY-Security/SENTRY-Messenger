@@ -71,6 +71,10 @@ import {
   disposeCallMediaSession
 } from '../features/calls/index.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
+import {
+  initContactSecretsBackup,
+  triggerContactSecretsBackup
+} from '../features/contact-backup.js';
 
 const out = document.getElementById('out');
 setLogSink(out);
@@ -104,6 +108,7 @@ let customLogoutInvoker = null;
 
 initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
 initRemoteConsoleRelay();
+initContactSecretsBackup();
 
 let pendingServerOps = 0;
 let waitOverlayTimer = null;
@@ -237,6 +242,9 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   try {
     lockContactSecrets('secure-logout');
     persistContactSecrets();
+    triggerContactSecretsBackup('secure-logout', { force: true, keepalive: true }).catch((err) => {
+      log({ contactSecretsBackupDuringLogoutError: err?.message || err });
+    });
   } catch (err) {
     log({ contactSecretsPersistError: err?.message || err });
   }
