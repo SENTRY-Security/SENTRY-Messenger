@@ -60,6 +60,7 @@ import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../cry
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
 import { initVersionInfoButton } from './version-info.js';
+import { initRemoteConsoleRelay } from './mobile/remote-console.js';
 import {
   setCallSignalSender,
   handleCallSignalMessage,
@@ -102,6 +103,7 @@ let customLogoutModalContext = null;
 let customLogoutInvoker = null;
 
 initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
+initRemoteConsoleRelay();
 
 let pendingServerOps = 0;
 let waitOverlayTimer = null;

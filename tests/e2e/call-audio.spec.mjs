@@ -23,6 +23,7 @@ import {
 
 const FAKE_AUDIO_PATH = path.resolve('tests/assets/fake-audio.wav');
 const APP_ORIGIN = `http://localhost:${WEB_PORT}`;
+const CALL_ARTIFACT_DIR = path.join(E2E_ARTIFACT_DIR, 'call-audio');
 
 test.use({
   permissions: ['microphone'],
@@ -41,6 +42,7 @@ let serverProc;
 
 test.beforeAll(async () => {
   await ensureDir(E2E_ARTIFACT_DIR);
+  await ensureDir(CALL_ARTIFACT_DIR);
   serverProc = await startWebServer();
 });
 
@@ -89,6 +91,14 @@ async function ensureOverlayHidden(page, { timeout = 20000 } = {}) {
   }, null, { timeout });
 }
 
+async function captureScreen(page, label) {
+  const safeLabel = label.replace(/[^a-z0-9-_]+/gi, '_').toLowerCase();
+  const filePath = path.join(CALL_ARTIFACT_DIR, `${Date.now()}-${safeLabel}.png`);
+  const buffer = await page.screenshot({ path: filePath, fullPage: true });
+  await test.info().attach(label, { body: buffer, contentType: 'image/png' });
+  return filePath;
+}
+
 test('encrypted audio call with fake media stream', async ({ browser }) => {
   test.setTimeout(300_000);
   const caller = await createAccount(browser, 'caller');
@@ -118,6 +128,8 @@ test('encrypted audio call with fake media stream', async ({ browser }) => {
       await waitForSecureConversationReady(callee.page, caller.uidHex);
 
       await expect(caller.page.locator('#messagesCallBtn')).toBeEnabled({ timeout: 10000 });
+      await captureScreen(caller.page, 'caller-ready');
+      await captureScreen(callee.page, 'callee-ready');
     });
 
     await test.step('發起語音通話並等待來電', async () => {
@@ -131,6 +143,8 @@ test('encrypted audio call with fake media stream', async ({ browser }) => {
       }
       await waitForOverlayStatus(caller.page, /撥號中/, { timeout: 30000 });
       await waitForOverlayStatus(callee.page, /來電中/, { timeout: 30000 });
+      await captureScreen(caller.page, 'caller-dialing');
+      await captureScreen(callee.page, 'callee-incoming');
     });
 
     await test.step('接聽並等候通話加密就緒', async () => {
@@ -139,12 +153,16 @@ test('encrypted audio call with fake media stream', async ({ browser }) => {
       await waitForOverlayStatus(callee.page, /通話中|正在接通/, { timeout: 60000 });
       await waitForSecureLabel(caller.page, /端到端加密已啟動|加密金鑰/, { timeout: 60000 });
       await waitForSecureLabel(callee.page, /端到端加密已啟動|加密金鑰/, { timeout: 60000 });
+      await captureScreen(caller.page, 'caller-in-call');
+      await captureScreen(callee.page, 'callee-in-call');
     });
 
     await test.step('掛斷並確認介面恢復', async () => {
       await caller.page.click('#callOverlay [data-call-action="hangup"]');
       await ensureOverlayHidden(caller.page);
       await ensureOverlayHidden(callee.page);
+      await captureScreen(caller.page, 'caller-call-ended');
+      await captureScreen(callee.page, 'callee-call-ended');
     });
   } finally {
     await cleanup();
