@@ -158,7 +158,7 @@ async function maybeDeriveKeys(trigger = 'auto') {
 async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
   const mediaState = getCallMediaState();
   if (!mediaState) return null;
-  setCallMediaStatus(mediaState, CALL_MEDIA_STATE_STATUS.KEY_PENDING);
+  setCallMediaStatus(CALL_MEDIA_STATE_STATUS.KEY_PENDING);
   const context = await buildKeyContext({ session, envelope });
   await finalizeContext(context);
   keyContext = context;
@@ -276,7 +276,7 @@ async function finalizeContext(context) {
       salt: context.envelope?.cmkSalt || null
     }
   });
-  setCallMediaStatus(state, CALL_MEDIA_STATE_STATUS.READY);
+  setCallMediaStatus(CALL_MEDIA_STATE_STATUS.READY);
 }
 
 function resetKeyContext(reason) {
@@ -302,7 +302,7 @@ function resetKeyContext(reason) {
         },
         cmkMaterial: null
       });
-      setCallMediaStatus(state, CALL_MEDIA_STATE_STATUS.IDLE);
+      setCallMediaStatus(CALL_MEDIA_STATE_STATUS.IDLE);
     }
     if (reason) {
       log({ callKeyContextReset: reason });

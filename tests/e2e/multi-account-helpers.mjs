@@ -166,6 +166,43 @@ export async function waitForSecureConversationReady(page, peerUid, options = {}
   }, normalized, { timeout: options.timeout ?? 45000 });
 }
 
+export async function dismissToasts(page) {
+  const toast = page.locator('#appToast');
+  if (!toast) return;
+  const isVisible = await toast.isVisible().catch(() => false);
+  if (isVisible) {
+    await page.evaluate(() => {
+      try {
+        const toastEl = document.getElementById('appToast');
+        toastEl?.classList?.remove?.('show');
+      } catch {}
+    }).catch(() => {});
+  }
+  await toast.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+}
+
+export async function disableTopbarPointerEvents(page) {
+  const applied = await page.evaluate(() => {
+    const topbar = document.querySelector('.topbar');
+    if (!topbar) return false;
+    if (!topbar.dataset.prevPointerEvents) {
+      topbar.dataset.prevPointerEvents = topbar.style.pointerEvents || '';
+    }
+    topbar.style.pointerEvents = 'none';
+    return true;
+  }).catch(() => false);
+  return async () => {
+    if (!applied) return;
+    await page.evaluate(() => {
+      const topbar = document.querySelector('.topbar');
+      if (!topbar) return;
+      const prev = topbar.dataset.prevPointerEvents ?? '';
+      topbar.style.pointerEvents = prev;
+      delete topbar.dataset.prevPointerEvents;
+    }).catch(() => {});
+  };
+}
+
 export async function sendTextMessage(page, text) {
   await page.fill('#messageInput', text);
   await expect(page.locator('#messageSend')).toBeEnabled();
