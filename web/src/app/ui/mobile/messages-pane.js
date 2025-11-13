@@ -510,11 +510,11 @@ export function initMessagesPane({
     }
     if (!result?.ok) {
       if (result?.error === 'CALL_ALREADY_IN_PROGRESS') {
-        showToast?.('已有進行中的通話');
+        showToast?.('已有進行中的通話', { variant: 'warning' });
       } else if (result?.error === 'MISSING_PEER') {
-        showToast?.('找不到通話對象');
+        showToast?.('找不到通話對象', { variant: 'warning' });
       } else {
-        showToast?.(result?.error || '暫時無法啟動通話');
+        showToast?.(result?.error || '暫時無法啟動通話', { variant: 'error' });
       }
       return;
     }
@@ -522,7 +522,7 @@ export function initMessagesPane({
     const callId = result.callId || snapshot?.callId || null;
     if (!callId) {
       log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerUid: state.activePeerUid });
-      showToast?.('無法建立通話：缺少識別碼', true);
+      showToast?.('無法建立通話：缺少識別碼', { variant: 'error' });
       return;
     }
     let envelope;
@@ -534,7 +534,7 @@ export function initMessagesPane({
       });
     } catch (err) {
       log({ callKeyEnvelopeError: err?.message || err, peerUid: state.activePeerUid });
-      showToast?.('無法建立通話加密金鑰', true);
+      showToast?.('無法建立通話加密金鑰', { variant: 'error' });
       return;
     }
     const traceId = snapshot?.traceId || result?.session?.metadata?.traceId || null;
@@ -568,16 +568,16 @@ export function initMessagesPane({
     });
     if (!sent) {
       log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerUid });
-      showToast?.('通話信令傳送失敗', true);
+      showToast?.('通話信令傳送失敗', { variant: 'error' });
       return;
     }
     try {
       await startOutgoingCallMedia({ callId, peerUid: state.activePeerUid });
     } catch (err) {
       log({ callMediaStartError: err?.message || err });
-      showToast?.('無法啟動通話媒體：' + (err?.message || err), true);
+      showToast?.('無法啟動通話媒體：' + (err?.message || err), { variant: 'error' });
     }
-    showToast?.('已發起語音通話');
+    showToast?.('已發起語音通話', { variant: 'success' });
   }
 
   function setLoadMoreState(next) {
@@ -1843,7 +1843,7 @@ export function initMessagesPane({
 
     elements.attachBtn?.addEventListener('click', () => {
       if (!elements.fileInput) {
-        showToast?.('找不到檔案上傳元件');
+        showToast?.('找不到檔案上傳元件', { variant: 'warning' });
         return;
       }
       elements.fileInput.click();

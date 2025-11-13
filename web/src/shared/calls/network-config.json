@@ -16,7 +16,8 @@
   "ice": {
     "iceTransportPolicy": "all",
     "bundlePolicy": "balanced",
-    "continualGatheringPolicy": "gather_continually"
+    "continualGatheringPolicy": "gather_continually",
+    "servers": []
   },
   "fallback": {
     "maxPeerConnectionRetries": 2,

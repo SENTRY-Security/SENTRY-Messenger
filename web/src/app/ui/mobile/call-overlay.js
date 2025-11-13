@@ -693,7 +693,7 @@ export function initCallOverlay({ showToast }) {
     const session = getCallSessionSnapshot();
     if (!session?.callId || state.actionBusy) return;
     if (!session.peerUidHex) {
-      showToast?.('缺少通話對象', true);
+      showToast?.('缺少通話對象', { variant: 'error' });
       return;
     }
     state.actionBusy = true;
@@ -709,7 +709,7 @@ export function initCallOverlay({ showToast }) {
       });
     } catch (err) {
       log({ callAcceptError: err?.message || err });
-      showToast?.('接聽失敗', true);
+      showToast?.('接聽失敗', { variant: 'error' });
     } finally {
       state.actionBusy = false;
       render();
@@ -755,7 +755,7 @@ export function initCallOverlay({ showToast }) {
       completeCallSession({ reason: 'cancelled' });
     } catch (err) {
       log({ callCancelError: err?.message || err });
-      showToast?.('無法結束通話', true);
+      showToast?.('無法結束通話', { variant: 'error' });
     } finally {
       state.actionBusy = false;
       render();
@@ -782,7 +782,7 @@ export function initCallOverlay({ showToast }) {
       completeCallSession({ reason: 'hangup' });
     } catch (err) {
       log({ callHangupError: err?.message || err });
-      showToast?.('無法結束通話', true);
+      showToast?.('無法結束通話', { variant: 'error' });
     } finally {
       state.actionBusy = false;
       render();
@@ -841,7 +841,7 @@ export function initCallOverlay({ showToast }) {
     subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => {
       render(session);
       if (session?.mediaState?.status === CALL_MEDIA_STATE_STATUS.FAILED) {
-        showToast?.('無法建立加密通道', true);
+        showToast?.('無法建立加密通道', { variant: 'error' });
       }
     }),
     subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => {
@@ -849,7 +849,7 @@ export function initCallOverlay({ showToast }) {
       render();
     }),
     subscribeCallEvent(CALL_EVENT.ERROR, () => {
-      showToast?.('通話發生錯誤', true);
+      showToast?.('通話發生錯誤', { variant: 'error' });
       render();
     })
   ];

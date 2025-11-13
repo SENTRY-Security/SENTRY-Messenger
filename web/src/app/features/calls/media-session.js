@@ -220,7 +220,7 @@ async function ensurePeerConnection() {
     if (iceState === 'connected' || iceState === 'completed') {
       promoteSessionToInCall('ice-state');
     } else if (iceState === 'failed') {
-      showToast?.('通話連線失敗', true);
+      showToast?.('通話連線失敗', { variant: 'error' });
       completeCallSession({ reason: iceState });
       cleanupPeerConnection(iceState);
     }
@@ -232,7 +232,7 @@ async function ensurePeerConnection() {
       return;
     }
     if (state === 'failed' || state === 'disconnected') {
-      showToast?.('通話連線中斷', true);
+      showToast?.('通話連線中斷', { variant: 'warning' });
       completeCallSession({ reason: state });
       cleanupPeerConnection(state);
     } else if (state === 'closed') {
@@ -258,7 +258,7 @@ async function attachLocalMedia() {
     });
     applyLocalAudioMuteState();
   } catch (err) {
-    showToast?.('無法存取麥克風：' + (err?.message || err), true);
+    showToast?.('無法存取麥克風：' + (err?.message || err), { variant: 'error' });
     log({ callMediaMicError: err?.message || err });
   }
 }
@@ -268,17 +268,32 @@ async function buildRtcConfiguration() {
   if (!config) {
     try { config = await loadCallNetworkConfig(); } catch {}
   }
-  let iceServers = config?.ice?.servers || null;
-  if (!iceServers || !iceServers.length) {
-    try {
-      const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
-      iceServers = creds?.iceServers || [];
-    } catch (err) {
-      log({ callTurnCredentialError: err?.message || err });
-      showToast?.('無法取得 TURN 認證', true);
-    }
+  const baseServers = Array.isArray(config?.ice?.servers)
+    ? config.ice.servers
+        .map((entry) => {
+          if (!entry || typeof entry !== 'object') return null;
+          const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+          const normalizedUrls = urls
+            .map((url) => (typeof url === 'string' ? url.trim() : ''))
+            .filter((url) => url.length);
+          if (!normalizedUrls.length) return null;
+          const server = { urls: normalizedUrls };
+          if (entry.username) server.username = entry.username;
+          if (entry.credential) server.credential = entry.credential;
+          return server;
+        })
+        .filter(Boolean)
+    : [];
+  let credentialServers = [];
+  try {
+    const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
+    credentialServers = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
+  } catch (err) {
+    log({ callTurnCredentialError: err?.message || err });
+      showToast?.('無法取得 TURN 認證', { variant: 'warning' });
   }
-  return { iceServers: iceServers?.length ? iceServers : undefined };
+  const iceServers = [...baseServers, ...credentialServers];
+  return { iceServers: iceServers.length ? iceServers : undefined };
 }
 
 async function createAndSendOffer() {

@@ -965,7 +965,7 @@ export function setupShareController(options) {
       const isNewlyAdded = !hadContact;
       if (notifyToast) {
         if (isNewlyAdded) {
-          notifyToast('已成功加入好友');
+          notifyToast('已成功加入好友', { variant: 'success' });
         } else if (isProfileUpdateReason) {
           const updateMessage =
             reasonKey === 'avatar'
@@ -973,7 +973,7 @@ export function setupShareController(options) {
               : reasonKey === 'nickname'
                 ? '好友暱稱已更新'
                 : '好友資料已更新';
-          notifyToast(updateMessage);
+          notifyToast(updateMessage, { variant: 'success' });
         }
       }
       if (isNewlyAdded) {
@@ -1121,7 +1121,7 @@ export function setupShareController(options) {
 
     if (success > 0 && notifyToast) {
       const message = reason === 'avatar' ? '好友頭像已更新' : '好友資料已更新';
-      notifyToast(message);
+      notifyToast(message, { variant: 'success' });
     }
 
     return { total: entries.length, success, errors };

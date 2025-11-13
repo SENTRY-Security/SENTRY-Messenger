@@ -36,6 +36,16 @@
 
 - iOS 端沿用相同 API，使用 `RTCIceServer` 結構。
 
+## 2.1 Network Config API
+
+- `GET /api/v1/calls/network-config` 需附帶 `uidHex + accountToken/accountDigest`，回傳與 `web/src/shared/calls/network-config.json` 相同 schema，並依照環境變數自動帶入：
+  - TURN 憑證 TTL（沿用 `TURN_TTL_SECONDS`）
+  - STUN/TURN 端點：`TURN_STUN_URIS`、`CALL_EXTRA_STUN_URIS`
+  - ICE Policy：`CALL_ICE_TRANSPORT_POLICY`, `CALL_ICE_BUNDLE_POLICY`, `CALL_ICE_GATHER_POLICY`
+  - 頻寬探針、Fallback 參數：`CALL_RTCP_TIMEOUT_MS`, `CALL_RTCP_MAX_ATTEMPTS`, `CALL_RTCP_TARGET_KBPS`, `CALL_FALLBACK_MAX_RETRIES`, `CALL_FALLBACK_RELAY_AFTER`, `CALL_FALLBACK_BLOCKED_AFTER`
+  - 版本與 TURN endpoint override：`CALL_NETWORK_VERSION`, `CALL_TURN_ENDPOINT`
+- 前端（Web / iOS）會優先呼叫此 API，若失敗才回退至打包在 Pages 的 `/shared/calls/network-config.json`，最後才使用程式內建的極簡預設值。如此在調整 TURN 拓撲或參數時只需更新後端環境變數即可，無須重新佈署前端。
+
 ## 3. 設定檔模板
 
 ```ini
@@ -96,6 +106,12 @@ static-auth-secret=<TURN_SHARED_SECRET>
   - `TURN_SHARED_SECRET`：產生 credential 的 HMAC key（與 coturn `static-auth-secret` 相同）
   - `TURN_TTL_SECONDS`：憑證 TTL（預設 300）
   - `TURN_STUN_URIS` / `TURN_RELAY_URIS`：Node API 打包 `iceServers` 時使用的 URL 清單，逗號分隔
+  - `CALL_EXTRA_STUN_URIS`：額外追加的 STUN 列表，會與 `TURN_STUN_URIS` 一起注入 `/calls/network-config`
+  - `CALL_TURN_ENDPOINT`：若 TURN credential API 另有 gateway，可在此覆寫 `turnSecretsEndpoint`
+  - `CALL_NETWORK_VERSION`：回傳給客戶端的設定版本號，便於做分流
+  - `CALL_ICE_TRANSPORT_POLICY` / `CALL_ICE_BUNDLE_POLICY` / `CALL_ICE_GATHER_POLICY`：調整 WebRTC ICE 策略
+  - `CALL_RTCP_TIMEOUT_MS`, `CALL_RTCP_MAX_ATTEMPTS`, `CALL_RTCP_TARGET_KBPS`：頻寬探針閾值
+  - `CALL_FALLBACK_MAX_RETRIES`, `CALL_FALLBACK_RELAY_AFTER`, `CALL_FALLBACK_BLOCKED_AFTER`：PeerConnection 失敗重試與 relay-only 切換門檻
   - `CALL_SESSION_TTL_SECONDS`：`/api/v1/calls/invite` 預設 session 有效時間，超時後 Worker 會自動清除（見 backend 文檔）
 
 ## 6. Fallback 策略
