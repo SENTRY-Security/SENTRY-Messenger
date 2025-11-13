@@ -79,6 +79,7 @@ const { showToast, hideToast } = createToastController(document.getElementById('
 const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
 const navBadges = typeof document !== 'undefined' ? Array.from(document.querySelectorAll('.nav-badge')) : [];
+const logoutRedirectCover = document.getElementById('logoutRedirectCover');
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
 const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
@@ -216,7 +217,13 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
 
   const safeMessage = message || '已登出';
   const settingsSnapshot = getEffectiveSettingsState();
-  const logoutRedirectTarget = getLogoutRedirectTarget(settingsSnapshot);
+  const logoutRedirectInfo = getLogoutRedirectInfo(settingsSnapshot);
+  const logoutRedirectTarget = logoutRedirectInfo.url;
+  if (logoutRedirectInfo.isCustom) {
+    showLogoutRedirectCover();
+  } else {
+    hideLogoutRedirectCover();
+  }
 
   try {
     disposeCallMediaSession();
@@ -1164,14 +1171,33 @@ customLogoutInput?.addEventListener('input', () => {
   if (customLogoutErrorEl) customLogoutErrorEl.textContent = '';
 });
 
-function getLogoutRedirectTarget(settings = getEffectiveSettingsState()) {
+function getLogoutRedirectInfo(settings = getEffectiveSettingsState()) {
   const state = settings || getEffectiveSettingsState();
-  if (state.autoLogoutRedirectMode === 'custom') {
-    const sanitized = sanitizeLogoutRedirectUrl(state.autoLogoutCustomUrl);
-    if (sanitized) return sanitized;
-  }
-  return LOGOUT_REDIRECT_DEFAULT_URL;
+  const sanitized = sanitizeLogoutRedirectUrl(state.autoLogoutCustomUrl);
+  const isCustom = state.autoLogoutRedirectMode === 'custom' && !!sanitized;
+  return {
+    url: isCustom ? sanitized : LOGOUT_REDIRECT_DEFAULT_URL,
+    isCustom
+  };
 }
+
+function getLogoutRedirectTarget(settings) {
+  return getLogoutRedirectInfo(settings).url;
+}
+
+function showLogoutRedirectCover() {
+  if (!logoutRedirectCover) return;
+  logoutRedirectCover.classList.add('show');
+  logoutRedirectCover.setAttribute('aria-hidden', 'false');
+}
+
+function hideLogoutRedirectCover() {
+  if (!logoutRedirectCover) return;
+  logoutRedirectCover.classList.remove('show');
+  logoutRedirectCover.setAttribute('aria-hidden', 'true');
+}
+
+hideLogoutRedirectCover();
 
 const MODAL_VARIANTS = [
   'security-modal',
