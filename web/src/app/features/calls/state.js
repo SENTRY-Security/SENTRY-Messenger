@@ -66,6 +66,10 @@ function resolveSelfProfileSummary() {
   return { displayName, avatarUrl };
 }
 
+export function getSelfProfileSummary() {
+  return resolveSelfProfileSummary();
+}
+
 function createEmptySession() {
   return {
     traceId: null,
@@ -88,7 +92,9 @@ function createEmptySession() {
       config: null,
       lastLoadedAt: null
     },
-    serverSession: null
+    serverSession: null,
+    remoteDisplayName: null,
+    remoteAvatarUrl: null
   };
 }
 
@@ -199,6 +205,8 @@ export async function requestOutgoingCall({
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
   activeSession.peerAccountDigest = peerDigest || null;
+  activeSession.remoteDisplayName = peerDisplayName || null;
+  activeSession.remoteAvatarUrl = peerAvatarUrl || null;
   activeSession.kind = normalizeKind(kind);
   activeSession.requestedAt = Date.now();
   resetMediaState();
@@ -269,6 +277,8 @@ export function markIncomingCall({
   activeSession.peerUidHex = peerKey;
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
+  activeSession.remoteDisplayName = peerDisplayName || null;
+  activeSession.remoteAvatarUrl = peerAvatarUrl || null;
   activeSession.callId = callId || null;
   activeSession.traceId = traceId || createTraceId();
   activeSession.requestedAt = Date.now();

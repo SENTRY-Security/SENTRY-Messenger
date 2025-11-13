@@ -7,7 +7,8 @@ import {
   getCallMediaState,
   updateCallMedia,
   completeCallSession,
-  getCallSessionSnapshot
+  getCallSessionSnapshot,
+  updateCallSessionStatus
 } from './state.js';
 import {
   getCallKeyContext,
@@ -31,6 +32,20 @@ let unsubscribers = [];
 let awaitingOfferAfterAccept = false;
 let localAudioMuted = false;
 let remoteAudioMuted = false;
+
+function promoteSessionToInCall(source = 'media') {
+  const session = getCallSessionSnapshot();
+  if (!session?.callId) return;
+  if (session.status === CALL_SESSION_STATUS.IN_CALL) return;
+  const promotableStatuses = [
+    CALL_SESSION_STATUS.CONNECTING,
+    CALL_SESSION_STATUS.OUTGOING,
+    CALL_SESSION_STATUS.INCOMING
+  ];
+  if (!promotableStatuses.includes(session.status)) return;
+  updateCallSessionStatus(CALL_SESSION_STATUS.IN_CALL, { callId: session.callId });
+  log({ callSessionPromoted: source, callId: session.callId, prevStatus: session.status });
+}
 
 export function initCallMediaSession({ sendSignalFn, showToastFn }) {
   sendSignal = typeof sendSignalFn === 'function' ? sendSignalFn : null;
@@ -125,12 +140,29 @@ async function ensurePeerConnection() {
     remoteStream = event.streams[0] || new MediaStream([event.track]);
     attachRemoteStream(remoteStream);
     setupInsertableStreamsForReceiver(event.receiver, event.track);
+    promoteSessionToInCall('remote-track');
+  };
+  peerConnection.oniceconnectionstatechange = () => {
+    const iceState = peerConnection.iceConnectionState;
+    if (iceState === 'connected' || iceState === 'completed') {
+      promoteSessionToInCall('ice-state');
+    } else if (iceState === 'failed') {
+      showToast?.('通話連線失敗', true);
+      completeCallSession({ reason: iceState });
+      cleanupPeerConnection(iceState);
+    }
   };
   peerConnection.onconnectionstatechange = () => {
     const state = peerConnection.connectionState;
+    if (state === 'connected' || state === 'completed') {
+      promoteSessionToInCall('connection-state');
+      return;
+    }
     if (state === 'failed' || state === 'disconnected') {
       showToast?.('通話連線中斷', true);
       completeCallSession({ reason: state });
+      cleanupPeerConnection(state);
+    } else if (state === 'closed') {
       cleanupPeerConnection(state);
     }
   };
@@ -202,6 +234,7 @@ async function applyRemoteOfferAndAnswer(msg) {
       description: { sdp: answer.sdp, type: answer.type }
     });
   }
+  promoteSessionToInCall('answer-sent');
 }
 
 async function handleIncomingOffer(msg) {
@@ -225,6 +258,7 @@ async function handleIncomingAnswer(msg) {
   if (!awaitingAnswer) return;
   try {
     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
+    promoteSessionToInCall('answer-received');
   } catch (err) {
     log({ callMediaAnswerError: err?.message || err });
   } finally {
@@ -303,8 +337,21 @@ function attachRemoteStream(stream) {
     remoteAudioEl.srcObject = stream;
     remoteAudioEl.style.display = 'block';
     applyRemoteAudioMuteState();
+    attemptRemoteAudioPlayback();
   } catch (err) {
     log({ callMediaAttachError: err?.message || err });
+  }
+}
+
+function attemptRemoteAudioPlayback() {
+  if (!remoteAudioEl || typeof remoteAudioEl.play !== 'function') return;
+  try {
+    const maybePromise = remoteAudioEl.play();
+    if (maybePromise && typeof maybePromise.catch === 'function') {
+      maybePromise.catch((err) => log({ callMediaPlayError: err?.message || err }));
+    }
+  } catch (err) {
+    log({ callMediaPlayError: err?.message || err });
   }
 }
 
@@ -418,6 +465,9 @@ function applyRemoteAudioMuteState() {
     try {
       remoteAudioEl.muted = !!remoteAudioMuted;
     } catch {}
+    if (!remoteAudioMuted) {
+      attemptRemoteAudioPlayback();
+    }
   }
   updateCallMedia({
     controls: {

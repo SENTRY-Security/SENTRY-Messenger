@@ -24,6 +24,7 @@ import {
   sendCallInviteSignal,
   getCallSessionSnapshot,
   getCallCapability,
+  getSelfProfileSummary,
   prepareCallKeyEnvelope,
   startOutgoingCallMedia
 } from '../../features/calls/index.js';
@@ -463,13 +464,32 @@ export function initMessagesPane({
     updateConversationActionsAvailability();
   }
 
+  function resolveContactAvatarUrl(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    const candidates = [
+      entry.avatarUrl,
+      entry.avatar?.thumbDataUrl,
+      entry.avatar?.previewDataUrl,
+      entry.avatar?.url,
+      entry.avatar?.httpsUrl,
+      entry.profile?.avatarUrl,
+      entry.profile?.avatar?.thumbUrl
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
   async function handleConversationAction(type) {
     const state = getMessageState();
     if (!state.activePeerUid || !state.conversationToken) return;
     const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerUid) || null;
     const fallbackName = `好友 ${state.activePeerUid.slice(-4)}`;
     const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
-    const avatarUrl = contactEntry?.avatarUrl || contactEntry?.avatar || null;
+    const avatarUrl = resolveContactAvatarUrl(contactEntry);
     const peerAccountDigest = contactEntry?.accountDigest
       || contactEntry?.account_digest
       || contactEntry?.peerAccountDigest
@@ -518,14 +538,29 @@ export function initMessagesPane({
     }
     const traceId = snapshot?.traceId || result?.session?.metadata?.traceId || null;
     const capabilities = getCallCapability() || null;
+    const callerSummary = getSelfProfileSummary() || {};
+    const fallbackCallerName = (() => {
+      const uid = getUidHex();
+      return uid ? `好友 ${uid.slice(-4)}` : null;
+    })();
+    const callerDisplayName = callerSummary.displayName || fallbackCallerName || null;
+    const callerAvatarUrl = callerSummary.avatarUrl || sessionStore.currentAvatarUrl || null;
+    const metadata = {};
+    if (callerDisplayName) {
+      metadata.displayName = callerDisplayName;
+      metadata.callerDisplayName = callerDisplayName;
+    }
+    if (callerAvatarUrl) {
+      metadata.avatarUrl = callerAvatarUrl;
+      metadata.callerAvatarUrl = callerAvatarUrl;
+    }
+    if (displayName) metadata.peerDisplayName = displayName;
+    if (avatarUrl) metadata.peerAvatarUrl = avatarUrl;
     const sent = sendCallInviteSignal({
       callId,
       peerUidHex: state.activePeerUid,
       mode: type === 'video' ? 'video' : 'voice',
-      metadata: {
-        displayName,
-        avatarUrl
-      },
+      metadata,
       capabilities,
       envelope,
       traceId

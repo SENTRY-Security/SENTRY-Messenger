@@ -20,7 +20,8 @@ export {
   setCallNetworkConfig,
   getCallNetworkConfig,
   hydrateCallCapability,
-  getCallCapability
+  getCallCapability,
+  getSelfProfileSummary
 } from './state.js';
 export {
   loadCallNetworkConfig,
