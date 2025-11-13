@@ -246,12 +246,12 @@ function ensureStyles() {
       opacity: 0.85;
     }
     .call-overlay .call-mini-avatar {
-      width: 68px;
-      height: 68px;
+      width: 48px;
+      height: 48px;
       border-radius: 999px;
       background: rgba(248,250,252,0.1);
       color: #f8fafc;
-      font-size: 20px;
+      font-size: 16px;
       font-weight: 600;
       display: flex;
       align-items: center;

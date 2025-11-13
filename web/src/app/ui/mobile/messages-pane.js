@@ -17,8 +17,10 @@ import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { deleteSecureConversation } from '../../api/messages.js';
 import {
+  CALL_EVENT,
   CALL_REQUEST_KIND,
   CALL_SESSION_DIRECTION,
+  CALL_SESSION_STATUS,
   requestOutgoingCall,
   loadCallNetworkConfig,
   sendCallInviteSignal,
@@ -26,7 +28,8 @@ import {
   getCallCapability,
   getSelfProfileSummary,
   prepareCallKeyEnvelope,
-  startOutgoingCallMedia
+  startOutgoingCallMedia,
+  subscribeCallEvent
 } from '../../features/calls/index.js';
 
 export function initMessagesPane({
@@ -75,6 +78,144 @@ export function initMessagesPane({
   let loadMoreState = 'hidden';
   let autoLoadOlderInProgress = false;
   let lastLayoutIsDesktop = null;
+  let unsubscribeCallState = null;
+
+  const CALL_LOG_LIMIT = 50;
+  const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+
+  function ensureCallLogStore() {
+    if (!(sessionStore.callLogs instanceof Map)) {
+      sessionStore.callLogs = new Map();
+    }
+    return sessionStore.callLogs;
+  }
+
+  function getCallLogEntries(peerUidHex) {
+    const key = String(peerUidHex || '').toUpperCase();
+    if (!key) return [];
+    const store = ensureCallLogStore();
+    return store.get(key) || [];
+  }
+
+  function appendCallLogEntry(entry) {
+    if (!entry?.peerUidHex) return;
+    const store = ensureCallLogStore();
+    const key = entry.peerUidHex;
+    const list = store.get(key) ? [...store.get(key)] : [];
+    const filtered = list.filter((item) => item.id !== entry.id);
+    filtered.push(entry);
+    filtered.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    while (filtered.length > CALL_LOG_LIMIT) {
+      filtered.shift();
+    }
+    store.set(key, filtered);
+  }
+
+  function formatCallDuration(seconds) {
+    const total = Number(seconds);
+    if (!Number.isFinite(total) || total <= 0) return '0秒';
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    if (mins > 0) {
+      return `${mins}分${secs.toString().padStart(2, '0')}秒`;
+    }
+    return `${secs}秒`;
+  }
+
+  function buildCallLogMessage(entry) {
+    return {
+      id: entry.id,
+      ts: entry.ts,
+      type: 'call-log',
+      callLog: entry
+    };
+  }
+
+  function mergeMessagesWithCallLogs(messages, peerUidHex) {
+    const base = Array.isArray(messages) ? [...messages] : [];
+    const existingLogIds = new Set(
+      base.filter((msg) => msg?.type === 'call-log' && msg?.id).map((msg) => msg.id)
+    );
+    const logs = getCallLogEntries(peerUidHex);
+    for (const entry of logs) {
+      const message = buildCallLogMessage(entry);
+      if (existingLogIds.has(message.id)) continue;
+      base.push(message);
+    }
+    base.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    return base;
+  }
+
+  function updateThreadsWithCallLog(entry) {
+    const threads = getConversationThreads();
+    let touched = false;
+    for (const thread of threads.values()) {
+      if (thread.peerUid === entry.peerUidHex) {
+        thread.lastMessageText = entry.label;
+        thread.lastMessageTs = entry.ts;
+        thread.lastDirection = entry.direction === CALL_SESSION_DIRECTION.OUTGOING ? 'outgoing' : 'incoming';
+        thread.needsRefresh = true;
+        touched = true;
+      }
+    }
+    if (touched) {
+      renderConversationList();
+    }
+  }
+
+  function handleCallStateEvent(detail = {}) {
+    const session = detail.session || null;
+    if (!session?.peerUidHex) return;
+    const status = session.status;
+    if (![CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(status)) return;
+    const key = String(session.peerUidHex || '').toUpperCase();
+    if (!key) return;
+    const endedAt = session.endedAt || Date.now();
+    const connectedAt = session.connectedAt || null;
+    const durationSeconds = connectedAt ? Math.max(1, Math.round((endedAt - connectedAt) / 1000)) : 0;
+    const direction = session.direction || CALL_SESSION_DIRECTION.OUTGOING;
+    const rawReason = detail.reason || session.lastError || '';
+    const normalizedReason = String(rawReason || '').toLowerCase();
+    let outcome = 'missed';
+    let label = '';
+    let subLabel = null;
+    if (durationSeconds > 0 && status === CALL_SESSION_STATUS.ENDED) {
+      outcome = 'success';
+      label = `語音通話 ${formatCallDuration(durationSeconds)}`;
+      subLabel = direction === CALL_SESSION_DIRECTION.OUTGOING ? '我方撥出' : '對方來電';
+    } else if (normalizedReason.includes('cancel')) {
+      outcome = 'failed';
+      label = '通話已取消';
+      subLabel = direction === CALL_SESSION_DIRECTION.OUTGOING ? '我方取消' : '對方取消';
+    } else if (normalizedReason.includes('reject')) {
+      outcome = 'failed';
+      label = direction === CALL_SESSION_DIRECTION.OUTGOING ? '對方拒絕通話' : '你已拒絕通話';
+    } else if (status === CALL_SESSION_STATUS.FAILED && session.lastError) {
+      outcome = 'failed';
+      label = '通話失敗';
+      subLabel = session.lastError;
+    } else {
+      outcome = 'missed';
+      label = direction === CALL_SESSION_DIRECTION.OUTGOING ? '對方未接聽' : '未接聽';
+    }
+    const entry = {
+      id: session.callId ? `call-log-${session.callId}` : `call-log-${key}-${endedAt}`,
+      callId: session.callId || null,
+      ts: Math.floor(endedAt / 1000),
+      peerUidHex: key,
+      direction,
+      durationSeconds,
+      outcome,
+      label,
+      subLabel
+    };
+    appendCallLogEntry(entry);
+    updateThreadsWithCallLog(entry);
+    const state = getMessageState();
+    if (state.activePeerUid === key) {
+      updateMessagesUI({ scrollToEnd: outcome === 'success' });
+    }
+  }
 
   const showModalLoading = typeof modalOptions.showModalLoading === 'function' ? modalOptions.showModalLoading : null;
   const updateLoadingModal = typeof modalOptions.updateLoadingModal === 'function' ? modalOptions.updateLoadingModal : null;
@@ -86,6 +227,11 @@ export function initMessagesPane({
   loadCallNetworkConfig().catch((err) => {
     log({ callNetworkConfigPrefetchFailed: err?.message || err });
   });
+
+  if (typeof unsubscribeCallState === 'function') {
+    unsubscribeCallState();
+  }
+  unsubscribeCallState = subscribeCallEvent(CALL_EVENT.STATE, handleCallStateEvent);
 
   for (const info of listSecureConversationStatuses()) {
     if (!info?.peerUidHex) continue;
@@ -1091,14 +1237,15 @@ export function initMessagesPane({
       prevScroll = elements.scrollEl.scrollTop;
     }
 
+    const timelineMessages = mergeMessagesWithCallLogs(state.messages, state.activePeerUid);
     elements.messagesList.innerHTML = '';
-    if (!state.messages.length) {
+    if (!timelineMessages.length) {
       elements.messagesEmpty?.classList.remove('hidden');
     } else {
       elements.messagesEmpty?.classList.add('hidden');
       let prevTs = null;
       let prevDateKey = null;
-      for (const msg of state.messages) {
+      for (const msg of timelineMessages) {
         const tsVal = Number(msg.ts || null);
         const hasTs = Number.isFinite(tsVal);
         const dateKey = hasTs ? new Date(tsVal * 1000).toDateString() : null;
@@ -1116,6 +1263,34 @@ export function initMessagesPane({
           prevDateKey = dateKey;
         }
         const li = document.createElement('li');
+        const messageType = msg.type || (msg.media ? 'media' : 'text');
+        if (!msg.type) msg.type = messageType;
+        if (messageType === 'call-log' && msg.callLog) {
+          li.className = 'call-log-entry';
+          const chip = document.createElement('div');
+          const outcome = msg.callLog.outcome || 'missed';
+          chip.className = `call-log-chip ${outcome}`;
+          const icon = document.createElement('span');
+          icon.className = 'call-log-icon';
+          icon.innerHTML = CALL_LOG_PHONE_ICON;
+          chip.appendChild(icon);
+          const textGroup = document.createElement('div');
+          textGroup.className = 'call-log-text-group';
+          const main = document.createElement('div');
+          main.className = 'call-log-main';
+          main.textContent = msg.callLog.label || '語音通話';
+          textGroup.appendChild(main);
+          if (msg.callLog.subLabel) {
+            const sub = document.createElement('div');
+            sub.className = 'call-log-sub';
+            sub.textContent = msg.callLog.subLabel;
+            textGroup.appendChild(sub);
+          }
+          chip.appendChild(textGroup);
+          li.appendChild(chip);
+          elements.messagesList.appendChild(li);
+          continue;
+        }
         const row = document.createElement('div');
         row.className = 'message-row';
         if (msg.direction === 'outgoing') {
@@ -1126,7 +1301,7 @@ export function initMessagesPane({
           avatar.className = 'message-avatar';
           const contact = msg.direction === 'incoming' ? sessionStore.contactIndex?.get?.(state.activePeerUid || '') : null;
           const name = contact?.nickname || '';
-          const initials = name ? name.slice(0,1) : '好友';
+          const initials = name ? name.slice(0, 1) : '好友';
           avatar.textContent = initials;
           if (contact?.avatar?.thumbDataUrl || contact?.avatar?.previewDataUrl || contact?.avatar?.url) {
             const img = document.createElement('img');
@@ -1141,8 +1316,6 @@ export function initMessagesPane({
         }
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
-        const messageType = msg.type || (msg.media ? 'media' : 'text');
-        if (!msg.type) msg.type = messageType;
         if (messageType === 'media' && msg.media) {
           renderMediaBubble(bubble, msg);
         } else {
