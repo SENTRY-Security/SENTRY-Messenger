@@ -80,6 +80,16 @@ const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
 const navBadges = typeof document !== 'undefined' ? Array.from(document.querySelectorAll('.nav-badge')) : [];
 
+const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
+const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
+const LOGOUT_REDIRECT_SUGGESTIONS = Object.freeze([
+  'https://google.com',
+  'https://apple.com',
+  'https://www.cloudflare.com',
+  'https://www.mozilla.org',
+  'https://www.wikipedia.org'
+]);
+
 initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
 
 let pendingServerOps = 0;
@@ -195,6 +205,8 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   _autoLoggedOut = true;
 
   const safeMessage = message || '已登出';
+  const settingsSnapshot = getEffectiveSettingsState();
+  const logoutRedirectTarget = getLogoutRedirectTarget(settingsSnapshot);
 
   try {
     disposeCallMediaSession();
@@ -314,7 +326,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   }
 
   setTimeout(() => {
-    try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
+    try { location.replace(logoutRedirectTarget); } catch { location.href = logoutRedirectTarget; }
   }, 60);
 }
 
@@ -1044,6 +1056,29 @@ function getEffectiveSettingsState() {
   return { ...DEFAULT_SETTINGS, ...(sessionStore.settingsState || {}) };
 }
 
+function sanitizeLogoutRedirectUrl(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:') return '';
+    if (!parsed.hostname) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function getLogoutRedirectTarget(settings = getEffectiveSettingsState()) {
+  const state = settings || getEffectiveSettingsState();
+  if (state.autoLogoutRedirectMode === 'custom') {
+    const sanitized = sanitizeLogoutRedirectUrl(state.autoLogoutCustomUrl);
+    if (sanitized) return sanitized;
+  }
+  return LOGOUT_REDIRECT_DEFAULT_URL;
+}
+
 const MODAL_VARIANTS = [
   'security-modal',
   'progress-modal',
@@ -1065,15 +1100,21 @@ function resetModalVariants(modalElement) {
 async function persistSettingsPatch(partial) {
   const previous = getEffectiveSettingsState();
   const next = { ...previous, ...partial };
-  const noChange =
-    previous.showOnlineStatus === next.showOnlineStatus &&
-    previous.autoLogoutOnBackground === next.autoLogoutOnBackground;
+  const trackedKeys = ['showOnlineStatus', 'autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl'];
+  const noChange = trackedKeys.every((key) => previous[key] === next[key]);
   if (noChange) return previous;
   sessionStore.settingsState = next;
   try {
     const saved = await saveSettings(next);
     sessionStore.settingsState = saved;
-    log({ settingsSaved: { showOnlineStatus: saved.showOnlineStatus, autoLogoutOnBackground: saved.autoLogoutOnBackground } });
+    log({
+      settingsSaved: {
+        showOnlineStatus: saved.showOnlineStatus,
+        autoLogoutOnBackground: saved.autoLogoutOnBackground,
+        autoLogoutRedirectMode: saved.autoLogoutRedirectMode,
+        hasCustomLogoutUrl: !!sanitizeLogoutRedirectUrl(saved.autoLogoutCustomUrl)
+      }
+    });
     return saved;
   } catch (err) {
     sessionStore.settingsState = previous;
@@ -1101,6 +1142,10 @@ async function openSystemSettingsModal() {
   modalElement.classList.add('settings-modal');
   if (title) title.textContent = '系統設定';
 
+  const logoutUrlValue = current.autoLogoutCustomUrl || '';
+  const logoutUrlOptionsHtml = LOGOUT_REDIRECT_SUGGESTIONS.map((url) => `<option value="${escapeHtml(url)}"></option>`).join('');
+  const autoLogoutDetailsVisible = !!current.autoLogoutOnBackground;
+
   body.innerHTML = `
     <div id="systemSettings" class="settings-form">
       <div class="settings-item">
@@ -1123,6 +1168,27 @@ async function openSystemSettingsModal() {
           <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
         </label>
       </div>
+      <div id="settingsAutoLogoutOptions" class="settings-nested ${autoLogoutDetailsVisible ? '' : 'hidden'}" aria-hidden="${autoLogoutDetailsVisible ? 'false' : 'true'}">
+        <label class="settings-option">
+          <input type="radio" name="autoLogoutRedirect" id="settingsLogoutDefault" value="default" ${current.autoLogoutRedirectMode !== 'custom' ? 'checked' : ''} />
+          <div class="option-body">
+            <strong>預設登出頁面</strong>
+            <p>使用系統提供的安全登出頁面。</p>
+          </div>
+        </label>
+        <div class="settings-option custom-option">
+          <input type="radio" name="autoLogoutRedirect" id="settingsLogoutCustom" value="custom" ${current.autoLogoutRedirectMode === 'custom' ? 'checked' : ''} />
+          <div class="option-body">
+            <strong>客製化登出頁面</strong>
+            <p>選擇或輸入常見網址，也可自行輸入 HTTPS 網址。</p>
+            <div class="custom-input-row">
+              <input type="url" id="settingsLogoutUrl" name="settingsLogoutUrl" list="settingsLogoutUrlOptions" placeholder="${escapeHtml(LOGOUT_REDIRECT_PLACEHOLDER)}" value="${escapeHtml(logoutUrlValue)}" inputmode="url" autocomplete="off" />
+              <button type="button" id="settingsLogoutSave">儲存</button>
+            </div>
+            <datalist id="settingsLogoutUrlOptions">${logoutUrlOptionsHtml}</datalist>
+          </div>
+        </div>
+      </div>
       <div class="settings-item">
         <div class="settings-text">
           <strong>變更密碼</strong>
@@ -1140,7 +1206,14 @@ async function openSystemSettingsModal() {
   const closeBtn = body.querySelector('#settingsClose');
   const showOnlineInput = body.querySelector('#settingsShowOnline');
   const autoLogoutInput = body.querySelector('#settingsAutoLogout');
+  const autoLogoutOptionsSection = body.querySelector('#settingsAutoLogoutOptions');
+  const logoutDefaultRadio = body.querySelector('#settingsLogoutDefault');
+  const logoutCustomRadio = body.querySelector('#settingsLogoutCustom');
+  const logoutUrlInput = body.querySelector('#settingsLogoutUrl');
+  const logoutSaveBtn = body.querySelector('#settingsLogoutSave');
   const changePasswordBtn = body.querySelector('#settingsChangePassword');
+  let logoutSavePending = false;
+  const logoutSaveDefaultLabel = logoutSaveBtn?.textContent || '儲存';
   closeBtn?.addEventListener('click', () => {
     closeModal();
   }, { once: true });
@@ -1151,6 +1224,106 @@ async function openSystemSettingsModal() {
       log({ changePasswordModalError: err?.message || err });
       alert('目前無法開啟變更密碼視窗，請稍後再試。');
     });
+  });
+
+  const setAutoLogoutOptionsVisibility = (visible) => {
+    if (!autoLogoutOptionsSection) return;
+    autoLogoutOptionsSection.classList.toggle('hidden', !visible);
+    autoLogoutOptionsSection.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  };
+
+  const syncLogoutRadios = () => {
+    const state = getEffectiveSettingsState();
+    if (logoutDefaultRadio) logoutDefaultRadio.checked = state.autoLogoutRedirectMode !== 'custom';
+    if (logoutCustomRadio) logoutCustomRadio.checked = state.autoLogoutRedirectMode === 'custom';
+  };
+
+  const syncLogoutSaveButton = () => {
+    if (!logoutSaveBtn || !logoutUrlInput) return;
+    if (logoutSavePending) {
+      logoutSaveBtn.disabled = true;
+      return;
+    }
+    const sanitized = sanitizeLogoutRedirectUrl(logoutUrlInput.value || '');
+    const savedValue = getEffectiveSettingsState().autoLogoutCustomUrl || '';
+    logoutSaveBtn.disabled = !sanitized || sanitized === savedValue;
+  };
+
+  setAutoLogoutOptionsVisibility(autoLogoutDetailsVisible);
+  syncLogoutRadios();
+  syncLogoutSaveButton();
+
+  logoutUrlInput?.addEventListener('input', () => {
+    syncLogoutSaveButton();
+  });
+
+  logoutSaveBtn?.addEventListener('click', async () => {
+    if (!logoutSaveBtn || !logoutUrlInput || logoutSaveBtn.disabled) return;
+    const sanitized = sanitizeLogoutRedirectUrl(logoutUrlInput.value || '');
+    if (!sanitized) {
+      alert('請輸入有效的 HTTPS 網址，例如 https://example.com。');
+      return;
+    }
+    logoutSavePending = true;
+    logoutSaveBtn.disabled = true;
+    logoutSaveBtn.textContent = '儲存中…';
+    try {
+      await persistSettingsPatch({ autoLogoutRedirectMode: 'custom', autoLogoutCustomUrl: sanitized });
+      logoutUrlInput.value = sanitized;
+      syncLogoutRadios();
+    } catch (err) {
+      log({ customLogoutUrlSaveError: err?.message || err });
+      alert('儲存設定失敗，請稍後再試。');
+    } finally {
+      logoutSavePending = false;
+      logoutSaveBtn.textContent = logoutSaveDefaultLabel;
+      syncLogoutSaveButton();
+    }
+  });
+
+  logoutDefaultRadio?.addEventListener('change', async () => {
+    if (!logoutDefaultRadio.checked) return;
+    logoutDefaultRadio.disabled = true;
+    logoutCustomRadio && (logoutCustomRadio.disabled = true);
+    try {
+      await persistSettingsPatch({ autoLogoutRedirectMode: 'default' });
+    } catch (err) {
+      log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' });
+      alert('儲存設定失敗，請稍後再試。');
+    } finally {
+      logoutDefaultRadio.disabled = false;
+      if (logoutCustomRadio) logoutCustomRadio.disabled = false;
+      syncLogoutRadios();
+      syncLogoutSaveButton();
+    }
+  });
+
+  logoutCustomRadio?.addEventListener('change', async () => {
+    if (!logoutCustomRadio.checked) {
+      syncLogoutSaveButton();
+      return;
+    }
+    const savedValue = sanitizeLogoutRedirectUrl(getEffectiveSettingsState().autoLogoutCustomUrl);
+    if (!savedValue) {
+      alert('請先輸入有效的 HTTPS 網址並按「儲存」，才能啟用客製化登出頁面。');
+      logoutCustomRadio.checked = false;
+      if (logoutDefaultRadio) logoutDefaultRadio.checked = true;
+      syncLogoutRadios();
+      return;
+    }
+    logoutCustomRadio.disabled = true;
+    logoutDefaultRadio && (logoutDefaultRadio.disabled = true);
+    try {
+      await persistSettingsPatch({ autoLogoutRedirectMode: 'custom' });
+    } catch (err) {
+      log({ logoutRedirectModeSaveError: err?.message || err, mode: 'custom' });
+      alert('儲存設定失敗，請稍後再試。');
+    } finally {
+      logoutCustomRadio.disabled = false;
+      if (logoutDefaultRadio) logoutDefaultRadio.disabled = false;
+      syncLogoutRadios();
+      syncLogoutSaveButton();
+    }
   });
 
   const registerToggle = (input, key) => {
@@ -1176,7 +1349,33 @@ async function openSystemSettingsModal() {
   };
 
   registerToggle(showOnlineInput, 'showOnlineStatus');
-  registerToggle(autoLogoutInput, 'autoLogoutOnBackground');
+  if (autoLogoutInput) {
+    autoLogoutInput.addEventListener('change', async () => {
+      const previous = getEffectiveSettingsState();
+      const prevValue = !!previous.autoLogoutOnBackground;
+      const nextValue = !!autoLogoutInput.checked;
+      if (prevValue === nextValue) {
+        setAutoLogoutOptionsVisibility(nextValue);
+        return;
+      }
+      autoLogoutInput.disabled = true;
+      setAutoLogoutOptionsVisibility(nextValue);
+      try {
+        await persistSettingsPatch({ autoLogoutOnBackground: nextValue });
+        _autoLoggedOut = false;
+      } catch (err) {
+        log({ settingsAutoSaveError: err?.message || err });
+        alert('儲存設定失敗，請稍後再試。');
+        autoLogoutInput.checked = prevValue;
+      } finally {
+        autoLogoutInput.disabled = false;
+        const state = getEffectiveSettingsState();
+        setAutoLogoutOptionsVisibility(!!state.autoLogoutOnBackground);
+        syncLogoutRadios();
+        syncLogoutSaveButton();
+      }
+    });
+  }
 }
 
 async function openChangePasswordModal() {

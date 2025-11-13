@@ -15,13 +15,33 @@ function convIdForSettings() {
 
 export const DEFAULT_SETTINGS = Object.freeze({
   showOnlineStatus: true,
-  autoLogoutOnBackground: true
+  autoLogoutOnBackground: true,
+  autoLogoutRedirectMode: 'default',
+  autoLogoutCustomUrl: ''
 });
 
+function sanitizeLogoutUrl(input) {
+  if (typeof input !== 'string') return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+  const trimmed = input.trim();
+  if (!trimmed) return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'https:') return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+    if (!url.hostname) return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+    return url.toString();
+  } catch {
+    return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+  }
+}
+
 function normalizeSettings(input = {}) {
+  const sanitizedUrl = sanitizeLogoutUrl(input.autoLogoutCustomUrl);
+  const wantsCustomRedirect = input.autoLogoutRedirectMode === 'custom' && !!sanitizedUrl;
   const normalized = {
     showOnlineStatus: typeof input.showOnlineStatus === 'boolean' ? input.showOnlineStatus : DEFAULT_SETTINGS.showOnlineStatus,
-    autoLogoutOnBackground: typeof input.autoLogoutOnBackground === 'boolean' ? input.autoLogoutOnBackground : DEFAULT_SETTINGS.autoLogoutOnBackground
+    autoLogoutOnBackground: typeof input.autoLogoutOnBackground === 'boolean' ? input.autoLogoutOnBackground : DEFAULT_SETTINGS.autoLogoutOnBackground,
+    autoLogoutRedirectMode: wantsCustomRedirect ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
+    autoLogoutCustomUrl: sanitizedUrl
   };
   return normalized;
 }

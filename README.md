@@ -148,7 +148,7 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 ### 媒體、設定與資料夾命名
 
 - **媒體 / Drive**：`encryptAndPutWithProgress()` 用 MK 加密 → `/media/sign-put` → R2 上傳；接收端 `/media/sign-get` → 解密。Drive 系統資料夾命名為 `drive-<acctDigest>`（必要時以 MK-HMAC 分段）。
-- **設定**：`settings-<acctDigest>` 以 MK 包裝 `{ showOnlineStatus, autoLogoutOnBackground }`；App 啟動時 `ensureSettings()`，更新立即 `saveSettings()`。
+- **設定**：`settings-<acctDigest>` 以 MK 包裝 `{ showOnlineStatus, autoLogoutOnBackground, autoLogoutRedirectMode, autoLogoutCustomUrl }`，所有欄位都以 MK-AEAD 加密儲存；App 啟動時 `ensureSettings()`，更新立即 `saveSettings()`。
 - **其餘 envelope**：Profile/聯絡人/訊息/媒體皆以 MK 衍生 AES-GCM；儲存層只保存密文。
 
 ---
@@ -157,7 +157,7 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 
 - **登出清理**：`secureLogout()` 先 `flushDrSnapshotsBeforeLogout()` 與 `persistContactSecrets()`，將 JSON 寫入 sessionStorage + `contactSecrets-v1-latest`，再清除 cache/indexedDB 等。
 - **登入頁**：`purgeLoginStorage()` 會挑選最長 snapshot 回填 localStorage，並輸出 checksum（`contactSecretsSeed*`）供 QA 比對。
-- **背景自動登出**：`autoLogoutOnBackground`（預設 true）在 App 退到背景時觸發 `secureLogout()`。
+- **背景自動登出**：`autoLogoutOnBackground`（預設 true）在 App 退到背景時觸發 `secureLogout()`；若 `autoLogoutRedirectMode=custom` 且 `autoLogoutCustomUrl` 通過 HTTPS 驗證，登出後會導向指定網址。
 - **環境變數**（常用）：`NTAG424_*`, `ACCOUNT_HMAC_KEY`, `OPAQUE_*`, `DATA_API_*`, `S3_*`, `UPLOAD_MAX_BYTES`, `SIGNED_{PUT,GET}_TTL`, `SERVICE_*`, `ACCOUNT_TOKEN_BYTES`, `CORS_ORIGIN` 等。
 
 ---
@@ -249,12 +249,13 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 ### 時間軸
 
-- **目前狀態**：CallKeyManager + media session 已佈署，Call Overlay 現可顯示撥號/加密狀態、連線計時與靜音/喇叭/掛斷控制；CallMediaState 新增 `controls` 追蹤本地/遠端靜音並與 Insertable Streams pipeline 同步。`contactSecrets-v1` 也改為依 `uidHex/accountDigest` 建立 namespace，登出時只保留當前帳號快照，避免同裝置切換晶片時 snapshot 被覆蓋。
-- **下一步**：建立端對端互通驗證（雙端同時撥接並實測 Insertable Streams）、補上通話專用 Playwright 流程與 TURN 健康檢查，並觀察多帳號切換後的 contact snapshot 是否仍有 edge case（例如跨瀏覽器/跨平台 handoff）。
+- **目前狀態**：系統設定頁完成「當畫面不在前台時自動登出」子選項，支援預設 / 客製化登出頁面單選、可編輯下拉（Google/Apple 等）與 HTTPS 驗證；儲存後 `settings-<acctDigest>` 會帶入 `autoLogoutRedirectMode`＋`autoLogoutCustomUrl` 並持續以 MK-AEAD 加密，`secureLogout()` 也會依設定導向預設頁或自訂網址。
+- **下一步**：補齊自動化情境（含背景自動登出 + 客製化網址）與 QA 腳本，並持續追蹤 Call / TURN 互通測試與 contact snapshot 邊界案例。
 
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-11-13 05:10（Codex）** | 系統設定頁在「當畫面不在前台時自動登出」啟用時會顯示「預設 / 客製化」單選與可編輯下拉，支援常見網址選擇、HTTPS 正規化與立即儲存；`settings-<acctDigest>` 新增 `autoLogoutRedirectMode/autoLogoutCustomUrl` 仍以 MK-AEAD 加密，`secureLogout()` 會依設定導向預設頁或自訂網址。同步補強 README 與 CSS；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過。 |
 | **2025-11-12 19:30（Codex）** | Call Overlay 加入加密狀態、通話計時與靜音/喇叭/掛斷控制，`shared/calls/schemas.{js,ts}` 新增 `controls` 結構供 media session 同步，`features/calls/media-session.js` 暴露靜音 API 並於 Insertable Streams 管線套用；同時把 `contactSecrets-v1` 名稱空間化（`uid`/`accountDigest`），修正同裝置不同晶片交錯測試時的 snapshot 汙染，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 再次全數通過。 |
 | **2025-11-12 10:25（Codex）** | 修正 CallKeyManager 在登入階段反覆 `resetKeyContext` 造成 stack overflow，調整 `/shared/*` 載入路徑並讓 Playwright `test:front:login` 再次綠燈；同時完成 `sendCallOffer/Answer` + TURN Insertable Streams skeleton，`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過後重新部署 Worker / Node API / Pages。 |
 | **2025-11-12 15:40（Codex）** | `CallKeyManager` 完成：撥號時會以聯絡人祕密派生 CMK、產生 `call-key-envelope` 並隨 `call-invite` 傳送，受話端自動驗證 proof/派生音視訊雙向金鑰；Overlay 顯示「建立加密金鑰」與錯誤提示，`messages-pane` 撥號流程也確保 envelope 成功建立後才送信令。媒體層尚待串接，未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`。 |

@@ -444,6 +444,17 @@
       .settings-item p { margin:4px 0 0; font-size:12px; color:#64748b; line-height:1.5; }
       .settings-link { border:none; background:#0f172a; color:#fff; border-radius:999px; padding:8px 16px; font-size:13px; letter-spacing:0.3px; cursor:pointer; box-shadow:0 6px 16px rgba(15,23,42,0.18); white-space:nowrap; }
       .settings-link:active { transform:translateY(1px); }
+      .settings-nested { display:flex; flex-direction:column; gap:14px; padding:16px; border-radius:18px; border:1px solid rgba(148,163,184,0.4); background:#f8fafc; }
+      .settings-option { display:flex; gap:10px; align-items:flex-start; }
+      .settings-option input[type="radio"] { margin-top:4px; }
+      .settings-option .option-body { flex:1; }
+      .settings-option .option-body strong { font-size:14px; }
+      .settings-option .option-body p { margin:4px 0 0; font-size:12px; color:#64748b; line-height:1.5; }
+      .settings-option .custom-input-row { display:flex; gap:10px; margin-top:10px; }
+      .settings-option .custom-input-row input { flex:1; border:1px solid var(--line); border-radius:999px; padding:8px 12px; font-size:13px; min-height:36px; background:#fff; }
+      .settings-option .custom-input-row input:focus-visible { outline:2px solid rgba(56,189,248,0.4); outline-offset:2px; }
+      .settings-option .custom-input-row button { border:none; border-radius:999px; padding:8px 18px; font-size:13px; letter-spacing:0.3px; background:#0f172a; color:#fff; cursor:pointer; box-shadow:0 4px 12px rgba(15,23,42,0.2); min-width:84px; }
+      .settings-option .custom-input-row button:disabled { opacity:0.5; cursor:not-allowed; box-shadow:none; }
       .settings-actions { display:flex; justify-content:flex-end; gap:10px; }
       .settings-actions button { min-width:88px; }
       .settings-switch { position:relative; display:inline-flex; align-items:center; justify-content:flex-start; cursor:pointer; user-select:none; }
