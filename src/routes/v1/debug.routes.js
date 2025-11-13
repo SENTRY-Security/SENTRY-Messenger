@@ -21,7 +21,7 @@ const BaseSchema = z.object({
   uidHex: z.string().regex(UidRegex),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
-}).superRefine(ensureAccountCredentials);
+});
 
 const ConsoleEntrySchema = z.object({
   level: z.string().optional(),
@@ -35,7 +35,7 @@ const ConsolePayloadSchema = BaseSchema.extend({
   entries: z.array(ConsoleEntrySchema).min(1),
   clientTs: z.number().optional(),
   meta: z.record(z.any()).optional()
-});
+}).superRefine(ensureAccountCredentials);
 
 function respondAccountError(res, err, fallback = 'authorization failed') {
   if (err instanceof AccountAuthError) {

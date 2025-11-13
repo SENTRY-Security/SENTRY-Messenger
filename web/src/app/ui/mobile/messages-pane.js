@@ -486,6 +486,7 @@ export function initMessagesPane({
   async function handleConversationAction(type) {
     const state = getMessageState();
     if (!state.activePeerUid || !state.conversationToken) return;
+    const actionType = type === 'video' ? 'voice' : type; // 視訊暫時停用，強制走語音
     const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerUid) || null;
     const fallbackName = `好友 ${state.activePeerUid.slice(-4)}`;
     const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
@@ -502,7 +503,7 @@ export function initMessagesPane({
         peerDisplayName: displayName,
         peerAvatarUrl: avatarUrl,
         peerAccountDigest,
-        kind: type === 'video' ? CALL_REQUEST_KIND.VIDEO : CALL_REQUEST_KIND.VOICE
+        kind: actionType === 'video' ? CALL_REQUEST_KIND.VIDEO : CALL_REQUEST_KIND.VOICE
       });
     } catch (err) {
       result = { ok: false, error: err?.message || 'call invite failed' };
@@ -559,7 +560,7 @@ export function initMessagesPane({
     const sent = sendCallInviteSignal({
       callId,
       peerUidHex: state.activePeerUid,
-      mode: type === 'video' ? 'video' : 'voice',
+      mode: actionType === 'video' ? 'video' : 'voice',
       metadata,
       capabilities,
       envelope,
@@ -576,7 +577,7 @@ export function initMessagesPane({
       log({ callMediaStartError: err?.message || err });
       showToast?.('無法啟動通話媒體：' + (err?.message || err), true);
     }
-    showToast?.(type === 'video' ? '已發起視訊通話' : '已發起語音通話');
+    showToast?.('已發起語音通話');
   }
 
   function setLoadMoreState(next) {
@@ -1343,25 +1344,54 @@ export function initMessagesPane({
     const statusInfo = getCachedSecureStatus(key) || cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.READY, null);
     applySecureStatusForActivePeer(key, statusInfo);
     updateComposerAvailability();
-    if (elements.peerName) elements.peerName.textContent = nickname;
-    if (elements.peerAvatar) {
-      elements.peerAvatar.innerHTML = '';
-      const avatarData = entry?.avatar;
-      if (avatarData?.thumbDataUrl || avatarData?.previewDataUrl || avatarData?.url) {
-        const img = document.createElement('img');
-        img.src = avatarData.thumbDataUrl || avatarData.previewDataUrl || avatarData.url;
-        img.alt = nickname;
-        elements.peerAvatar.appendChild(img);
-      } else {
-        elements.peerAvatar.textContent = initialsFromName(nickname, key).slice(0, 2);
-      }
-    }
+    refreshActivePeerMetadata(key, { fallbackName: nickname });
     setMessagesStatus('');
     renderConversationList();
     updateComposerAvailability();
     clearMessagesView();
     applyMessagesLayout();
     await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
+  }
+
+  function refreshActivePeerMetadata(peerUid, { fallbackName } = {}) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key) return;
+    const entry = sessionStore.contactIndex?.get?.(key) || null;
+    const nickname = entry?.nickname || fallbackName || `好友 ${key.slice(-4)}`;
+    if (elements.peerName) elements.peerName.textContent = nickname;
+    if (!elements.peerAvatar) return;
+    elements.peerAvatar.innerHTML = '';
+    const avatarData = entry?.avatar;
+    if (avatarData?.thumbDataUrl || avatarData?.previewDataUrl || avatarData?.url) {
+      const img = document.createElement('img');
+      img.src = avatarData.thumbDataUrl || avatarData.previewDataUrl || avatarData.url;
+      img.alt = nickname;
+      elements.peerAvatar.appendChild(img);
+    } else {
+      elements.peerAvatar.textContent = initialsFromName(nickname, key).slice(0, 2);
+    }
+  }
+
+  function handleContactEntryUpdated(detail = {}) {
+    const peerUid = String(detail?.peerUid || '').toUpperCase();
+    if (!peerUid) return;
+    const entry = sessionStore.contactIndex?.get?.(peerUid) || detail.entry || null;
+    if (!entry) return;
+    const hasConversation = entry.conversation?.conversation_id && entry.conversation?.token_b64;
+    if (hasConversation) {
+      upsertConversationThread({
+        peerUid,
+        conversationId: entry.conversation.conversation_id,
+        tokenB64: entry.conversation.token_b64,
+        nickname: entry.nickname,
+        avatar: entry.avatar || null
+      });
+    }
+    const state = getMessageState();
+    if (state.activePeerUid === peerUid) {
+      refreshActivePeerMetadata(peerUid);
+    }
+    renderConversationList();
   }
 
   function appendLocalOutgoingMessage({ text, ts, id, type = 'text', media = null }) {
@@ -1919,6 +1949,7 @@ export function initMessagesPane({
     appendLocalOutgoingMessage,
     handleIncomingSecureMessage,
     handleContactOpenConversation,
+    handleContactEntryUpdated,
     setMessagesStatus,
     getMessageState,
     ensureConversationIndex,

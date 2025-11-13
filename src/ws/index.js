@@ -135,8 +135,16 @@ function buildCallDetail(msg = {}) {
       if (desc !== null) detail.description = desc;
     }
   }
+  if (msg.candidate !== undefined) {
+    if (typeof msg.candidate === 'object' && msg.candidate !== null) {
+      const cloned = safeCloneObject(msg.candidate);
+      if (cloned !== null) detail.candidate = cloned;
+    } else {
+      const candidateStr = limitString(msg.candidate, 2048);
+      if (candidateStr !== null) detail.candidate = candidateStr;
+    }
+  }
   const stringFields = {
-    candidate: 2048,
     reason: 256,
     error: 256,
     label: 256,

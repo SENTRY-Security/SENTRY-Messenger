@@ -76,6 +76,7 @@ import {
   triggerContactSecretsBackup
 } from '../features/contact-backup.js';
 
+const MEDIA_PERMISSION_KEY = 'media-permission-v1';
 const out = document.getElementById('out');
 setLogSink(out);
 
@@ -85,6 +86,11 @@ const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
 const navBadges = typeof document !== 'undefined' ? Array.from(document.querySelectorAll('.nav-badge')) : [];
 const logoutRedirectCover = document.getElementById('logoutRedirectCover');
+const mediaPermissionOverlay = document.getElementById('mediaPermissionOverlay');
+const mediaPermissionAllowBtn = document.getElementById('mediaPermissionAllowBtn');
+const mediaPermissionSkipBtn = document.getElementById('mediaPermissionSkipBtn');
+const mediaPermissionStatus = document.getElementById('mediaPermissionStatus');
+let mediaPermissionRequesting = false;
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
 const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
@@ -161,6 +167,186 @@ function mergeUniqueKeyLists(...lists) {
     }
   }
   return result;
+}
+
+function isAutomationEnvironment() {
+  if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
+  if (typeof window !== 'undefined' && (window.Cypress || window.Playwright)) return true;
+  try {
+    const ua = navigator.userAgent || '';
+    if (/Playwright|HeadlessChrome|puppeteer/i.test(ua)) return true;
+  } catch {}
+  return false;
+}
+
+function hasMediaPermissionFlag() {
+  if (typeof sessionStorage === 'undefined') return false;
+  try {
+    return sessionStorage.getItem(MEDIA_PERMISSION_KEY) === 'granted';
+  } catch {
+    return false;
+  }
+}
+
+function markMediaPermissionGranted() {
+  if (typeof sessionStorage === 'undefined') return;
+  try { sessionStorage.setItem(MEDIA_PERMISSION_KEY, 'granted'); } catch {}
+  try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch {}
+}
+
+function setMediaPermissionStatus(message = '', { success = false } = {}) {
+  if (!mediaPermissionStatus) return;
+  mediaPermissionStatus.textContent = message || '';
+  mediaPermissionStatus.classList.toggle('success', !!message && success);
+  if (!success) {
+    mediaPermissionStatus.classList.remove('success');
+  }
+}
+
+function hideMediaPermissionPrompt() {
+  if (!mediaPermissionOverlay) return;
+  mediaPermissionOverlay.style.display = 'none';
+  mediaPermissionOverlay.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('media-permission-open');
+  if (mediaPermissionAllowBtn) {
+    mediaPermissionAllowBtn.disabled = false;
+    mediaPermissionAllowBtn.classList.remove('loading');
+  }
+  setMediaPermissionStatus('');
+}
+
+function showMediaPermissionPrompt() {
+  if (!mediaPermissionOverlay) return;
+  mediaPermissionOverlay.style.display = 'flex';
+  mediaPermissionOverlay.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('media-permission-open');
+  setMediaPermissionStatus('');
+  mediaPermissionAllowBtn?.focus?.();
+}
+
+function stopStreamTracks(stream) {
+  if (!stream?.getTracks) return;
+  for (const track of stream.getTracks()) {
+    try { track.stop(); } catch {}
+  }
+}
+
+async function requestUserMediaAccess({ timeoutMs = 15000 } = {}) {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    throw new Error('瀏覽器不支援麥克風授權，請改用最新版 Safari / Chrome。');
+  }
+  const withTimeout = (promise, label) => Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${label || 'media'} timeout`)), timeoutMs);
+    })
+  ]);
+  try {
+    const audioStream = await withTimeout(navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+      video: false
+    }), 'audio');
+    stopStreamTracks(audioStream);
+    return { audioGranted: true, videoGranted: false };
+  } catch (err) {
+    throw err || new Error('需要授權麥克風才能繼續使用語音通話');
+  }
+}
+
+function describeMediaPermissionError(err) {
+  if (!err) return '授權失敗，請在瀏覽器或系統設定中允許麥克風。';
+  const message = String(err?.message || '').toLowerCase();
+  const name = (err.name || err.code || '').toLowerCase();
+  if (name === 'notallowederror' || name === 'securityerror') {
+    return '你已拒絕麥克風，請到瀏覽器或系統設定重新允許後再試。';
+  }
+  if (name === 'notfounderror' || name === 'devicesnotfounderror') {
+    return '找不到可用的麥克風，請確認裝置已啟用。';
+  }
+  if (name === 'notreadableerror' || name === 'trackstarterror') {
+    return '無法啟動麥克風，可能已被其他應用程式使用。';
+  }
+  if (message.includes('timeout')) {
+    return '等待授權逾時，請確認瀏覽器有顯示「允許麥克風」提示或稍後再試。';
+  }
+  return err?.message || '授權失敗，請稍後再試或檢查系統權限設定。';
+}
+
+async function warmUpSilentAudioPlayback() {
+  if (typeof window === 'undefined') return;
+  try { await resumeNotifyAudioContext()?.catch(() => {}); } catch {}
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      const ctx = new AudioCtx();
+      await ctx.resume().catch(() => {});
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start?.(0);
+      await ctx.close().catch(() => {});
+    }
+  } catch {}
+  try {
+    if (typeof Audio !== 'undefined') {
+      const audio = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
+      audio.muted = true;
+      audio.playsInline = true;
+      await audio.play().catch(() => {});
+      audio.pause();
+    }
+  } catch {}
+}
+
+async function handleMediaPermissionGrant() {
+  if (!mediaPermissionOverlay || !mediaPermissionAllowBtn) return;
+  if (mediaPermissionRequesting) return;
+  mediaPermissionRequesting = true;
+  mediaPermissionAllowBtn.disabled = true;
+  mediaPermissionAllowBtn.classList.add('loading');
+  setMediaPermissionStatus('請在瀏覽器的提示中允許麥克風…');
+  try {
+    const result = await requestUserMediaAccess();
+    await warmUpSilentAudioPlayback();
+    markMediaPermissionGranted();
+    setMediaPermissionStatus('麥克風已啟用，可立即使用語音通話。', { success: true });
+    showToast?.('已啟用麥克風，可使用語音通話');
+    setTimeout(() => hideMediaPermissionPrompt(), 600);
+  } catch (err) {
+    setMediaPermissionStatus(describeMediaPermissionError(err));
+    if (mediaPermissionAllowBtn) {
+      mediaPermissionAllowBtn.disabled = false;
+      mediaPermissionAllowBtn.classList.remove('loading');
+    }
+  } finally {
+    mediaPermissionRequesting = false;
+  }
+}
+
+function initMediaPermissionPrompt() {
+  if (!mediaPermissionOverlay) return;
+  if (mediaPermissionOverlay.dataset.init === '1') return;
+  mediaPermissionOverlay.dataset.init = '1';
+  if (isAutomationEnvironment()) {
+    markMediaPermissionGranted();
+    hideMediaPermissionPrompt();
+    warmUpSilentAudioPlayback();
+    return;
+  }
+  if (hasMediaPermissionFlag()) {
+    hideMediaPermissionPrompt();
+    warmUpSilentAudioPlayback();
+    return;
+  }
+  showMediaPermissionPrompt();
+  mediaPermissionAllowBtn?.addEventListener('click', handleMediaPermissionGrant);
+  mediaPermissionSkipBtn?.addEventListener('click', () => {
+    hideMediaPermissionPrompt();
+    setMediaPermissionStatus('');
+    warmUpSilentAudioPlayback();
+    showToast?.('未啟用麥克風，通話可能無法使用');
+  });
 }
 
 function ensureTopbarVisible({ repeat = true } = {}) {
@@ -874,6 +1060,7 @@ initCallMediaSession({
   sendSignalFn: (type, payload) => sendCallSignal(type, payload),
   showToastFn: showToast
 });
+initMediaPermissionPrompt();
 
 messagesPane.attachDomEvents();
 messagesPane.ensureConversationIndex();
@@ -915,6 +1102,12 @@ document.addEventListener('contacts:rendered', () => messagesPane.renderConversa
 document.addEventListener('contacts:open-conversation', (event) => {
   const detail = event?.detail || {};
   messagesPane.handleContactOpenConversation(detail);
+});
+document.addEventListener('contacts:entry-updated', (event) => {
+  const detail = event?.detail || {};
+  if (typeof messagesPane.handleContactEntryUpdated === 'function') {
+    messagesPane.handleContactEntryUpdated(detail);
+  }
 });
 document.addEventListener('contacts:broadcast-update', async (event) => {
   if (!shareController || typeof shareController.broadcastContactUpdate !== 'function') return;
@@ -1657,7 +1850,8 @@ loadInitialContacts()
   });
 
 function updateProfileStats() {
-  const count = sessionStore.contactIndex.size || sessionStore.contactState.length || 0;
+  const contacts = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
+  const count = contacts.filter((entry) => entry && entry.hidden !== true && entry.isSelfContact !== true).length;
   if (statContactsEl) statContactsEl.textContent = String(count);
   if (contactsCountEl) contactsCountEl.textContent = String(count);
 }

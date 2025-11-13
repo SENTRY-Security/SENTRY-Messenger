@@ -32,6 +32,54 @@ let unsubscribers = [];
 let awaitingOfferAfterAccept = false;
 let localAudioMuted = false;
 let remoteAudioMuted = false;
+let pendingRemoteCandidates = [];
+
+function normalizeCallSignal(signal) {
+  if (!signal || typeof signal !== 'object') return signal;
+  const payload = signal.payload;
+  const enriched = { ...signal };
+  if (!enriched.description && payload && typeof payload === 'object' && payload.description) {
+    enriched.description = payload.description;
+  }
+  if (enriched.candidate) {
+    enriched.candidate = normalizeCandidate(enriched.candidate);
+  } else if (payload && typeof payload === 'object' && payload.candidate) {
+    enriched.candidate = normalizeCandidate(payload.candidate);
+  }
+  return enriched;
+}
+
+function normalizeCandidate(candidate) {
+  if (!candidate) return null;
+  if (typeof candidate === 'string') {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {}
+    if (candidate.startsWith('candidate:')) {
+      return { candidate };
+    }
+    return null;
+  }
+  return candidate;
+}
+
+async function addRemoteCandidate(candidate) {
+  if (!peerConnection || !candidate) return;
+  try {
+    await peerConnection.addIceCandidate(candidate);
+  } catch (err) {
+    log({ callMediaCandidateError: err?.message || err });
+  }
+}
+
+async function flushPendingRemoteCandidates() {
+  if (!pendingRemoteCandidates.length) return;
+  const queue = pendingRemoteCandidates.splice(0);
+  for (const candidate of queue) {
+    await addRemoteCandidate(candidate);
+  }
+}
 
 function promoteSessionToInCall(source = 'media') {
   const session = getCallSessionSnapshot();
@@ -117,11 +165,33 @@ function ensureRemoteAudioElement() {
     remoteAudioEl.id = 'callRemoteAudio';
     remoteAudioEl.autoplay = true;
     remoteAudioEl.playsInline = true;
-    remoteAudioEl.style.display = 'none';
+    remoteAudioEl.preload = 'auto';
+    remoteAudioEl.setAttribute('aria-hidden', 'true');
+    applyRemoteAudioElementStyles(remoteAudioEl);
     document.body.appendChild(remoteAudioEl);
+  } else {
+    applyRemoteAudioElementStyles(remoteAudioEl);
   }
   remoteAudioEl.muted = !!remoteAudioMuted;
+  if (remoteAudioMuted) {
+    remoteAudioEl.setAttribute('muted', 'true');
+  } else {
+    remoteAudioEl.removeAttribute('muted');
+  }
   return remoteAudioEl;
+}
+
+function applyRemoteAudioElementStyles(el) {
+  if (!el) return;
+  Object.assign(el.style, {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    opacity: '0',
+    pointerEvents: 'none',
+    bottom: '0',
+    left: '0'
+  });
 }
 
 async function ensurePeerConnection() {
@@ -130,10 +200,13 @@ async function ensurePeerConnection() {
   peerConnection = new RTCPeerConnection(rtcConfig);
   peerConnection.onicecandidate = (event) => {
     if (!event.candidate || !sendSignal || !activeCallId) return;
+    const candidateInit = typeof event.candidate.toJSON === 'function'
+      ? event.candidate.toJSON()
+      : event.candidate;
     sendSignal('call-ice-candidate', {
       callId: activeCallId,
       targetUid: activePeerUid,
-      candidate: event.candidate
+      candidate: candidateInit
     });
   };
   peerConnection.ontrack = (event) => {
@@ -256,13 +329,14 @@ async function handleIncomingOffer(msg) {
 async function handleIncomingAnswer(msg) {
   if (!peerConnection || msg.fromUid === getUidHex()) return;
   if (!awaitingAnswer) return;
+  if (!msg?.description) return;
+  awaitingAnswer = false;
   try {
     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
+    await flushPendingRemoteCandidates();
     promoteSessionToInCall('answer-received');
   } catch (err) {
     log({ callMediaAnswerError: err?.message || err });
-  } finally {
-    awaitingAnswer = false;
   }
 }
 
@@ -270,25 +344,26 @@ async function handleIncomingCandidate(msg) {
   if (!peerConnection || msg.fromUid === getUidHex()) return;
   const candidate = msg.candidate;
   if (!candidate) return;
-  try {
-    await peerConnection.addIceCandidate(candidate);
-  } catch (err) {
-    log({ callMediaCandidateError: err?.message || err });
+  if (!peerConnection.remoteDescription || !peerConnection.remoteDescription.type) {
+    pendingRemoteCandidates.push(candidate);
+    return;
   }
+  await addRemoteCandidate(candidate);
 }
 
 function handleSignal(msg) {
-  if (!msg || msg.callId && activeCallId && msg.callId !== activeCallId) return;
-  const type = msg?.type;
+  const signal = normalizeCallSignal(msg);
+  if (!signal || signal.callId && activeCallId && signal.callId !== activeCallId) return;
+  const type = signal?.type;
   switch (type) {
     case 'call-offer':
-      handleIncomingOffer(msg);
+      handleIncomingOffer(signal);
       break;
     case 'call-answer':
-      handleIncomingAnswer(msg);
+      handleIncomingAnswer(signal);
       break;
     case 'call-ice-candidate':
-      handleIncomingCandidate(msg);
+      handleIncomingCandidate(signal);
       break;
     default:
       break;
@@ -317,12 +392,13 @@ function cleanupPeerConnection(reason) {
   pendingOffer = null;
   awaitingAnswer = false;
   awaitingOfferAfterAccept = false;
+  pendingRemoteCandidates = [];
   activeCallId = null;
   activePeerUid = null;
   if (remoteAudioEl) {
     try {
       remoteAudioEl.srcObject = null;
-      remoteAudioEl.style.display = 'none';
+      applyRemoteAudioElementStyles(remoteAudioEl);
     } catch {}
   }
   resetControlStates();
@@ -464,10 +540,13 @@ function applyRemoteAudioMuteState() {
   if (remoteAudioEl) {
     try {
       remoteAudioEl.muted = !!remoteAudioMuted;
+      if (remoteAudioMuted) {
+        remoteAudioEl.setAttribute('muted', 'true');
+      } else {
+        remoteAudioEl.removeAttribute('muted');
+        attemptRemoteAudioPlayback();
+      }
     } catch {}
-    if (!remoteAudioMuted) {
-      attemptRemoteAudioPlayback();
-    }
   }
   updateCallMedia({
     controls: {

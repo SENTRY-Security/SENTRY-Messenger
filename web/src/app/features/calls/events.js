@@ -35,14 +35,14 @@ export function emitCallEvent(event, detail) {
   if (!bucket || !bucket.size) return;
   const payload = {
     type: String(event),
-    detail,
+    detail: detail && typeof detail === 'object' ? detail : {},
     ts: Date.now()
   };
   for (const handler of Array.from(bucket)) {
     try {
-      handler(payload);
+      handler(payload.detail);
     } catch (err) {
-      console.warn('[calls:event] listener error', err);
+      console.warn('[calls:event] listener error', payload.type, err);
     }
   }
 }

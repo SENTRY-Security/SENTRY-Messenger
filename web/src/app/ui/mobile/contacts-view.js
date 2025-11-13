@@ -454,8 +454,24 @@ export function initContactsView(options) {
       renderContacts();
       presenceManager.sendPresenceSubscribe();
       updateStats?.();
+      emitContactEntryUpdated(entry, { peerUid: key, isNew: existingIndex < 0 });
     } catch (err) {
       log({ contactAddError: err?.message || err });
+    }
+  }
+
+  function emitContactEntryUpdated(entry, { peerUid, isNew } = {}) {
+    if (!peerUid) return;
+    try {
+      document.dispatchEvent(new CustomEvent('contacts:entry-updated', {
+        detail: {
+          peerUid,
+          isNew: !!isNew,
+          entry
+        }
+      }));
+    } catch (err) {
+      log({ contactEntryUpdateEventError: err?.message || err, peerUid });
     }
   }
 

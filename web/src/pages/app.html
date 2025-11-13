@@ -486,6 +486,24 @@
       .change-password-status.success { color:#15803d; }
       .change-password-actions { display:flex; justify-content:flex-end; gap:10px; }
       main.content.security-locked { pointer-events:none; filter:grayscale(.4); opacity:.6; }
+      .media-permission-overlay { position:fixed; inset:0; background:radial-gradient(circle at top,rgba(15,23,42,0.98),rgba(2,6,23,0.98)); color:#f8fafc; display:none; align-items:center; justify-content:center; padding:32px 20px; z-index:2200; text-align:left; }
+      .media-permission-card { width:min(420px, 92vw); background:rgba(15,23,42,0.96); border:1px solid rgba(148,163,184,0.3); border-radius:24px; padding:28px 24px 30px; box-shadow:0 24px 80px rgba(15,23,42,0.55); display:flex; flex-direction:column; gap:14px; }
+      .media-permission-card .icon { font-size:38px; color:#38bdf8; display:inline-flex; align-items:center; justify-content:center; }
+      .media-permission-card h2 { margin:4px 0; font-size:20px; letter-spacing:0.4px; color:#fff; }
+      .media-permission-card p { margin:0; font-size:14px; color:#cbd5f5; line-height:1.5; }
+      .media-permission-card ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:8px; font-size:13px; color:#e2e8f0; }
+      .media-permission-card li { display:flex; align-items:flex-start; gap:10px; }
+      .media-permission-card li i { font-size:18px; color:#38bdf8; margin-top:2px; }
+      .media-permission-status { min-height:20px; font-size:13px; color:#f97316; }
+      .media-permission-status.success { color:#4ade80; }
+      .media-permission-actions { display:flex; flex-direction:column; gap:10px; margin-top:6px; }
+      .media-permission-btn { border:none; border-radius:999px; padding:12px 18px; font-size:15px; font-weight:600; background:linear-gradient(135deg,#38bdf8,#2563eb); color:#fff; box-shadow:0 14px 40px rgba(37,99,235,0.45); display:inline-flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; transition:transform .15s ease; }
+      .media-permission-btn:active { transform:translateY(1px); }
+      .media-permission-btn.loading { opacity:0.7; pointer-events:none; position:relative; }
+      .media-permission-btn.loading::after { content:''; width:16px; height:16px; border-radius:50%; border:2px solid rgba(255,255,255,0.55); border-top-color:#fff; animation:modal-spin .9s linear infinite; }
+      .media-permission-skip { border:none; background:none; color:#cbd5ff; font-size:13px; text-decoration:underline; cursor:pointer; padding:6px; align-self:center; }
+      .media-permission-skip:active { opacity:0.85; }
+      body.media-permission-open { overflow:hidden; }
     </style>
   </head>
   <body>
@@ -545,7 +563,6 @@
                 </div>
                 <div class="messages-actions">
                   <button id="messagesCallBtn" type="button" class="messages-action-btn" aria-label="語音通話" title="語音通話" disabled><i class='bx bx-phone'></i></button>
-                  <button id="messagesVideoBtn" type="button" class="messages-action-btn" aria-label="視訊通話" title="視訊通話" disabled><i class='bx bx-video'></i></button>
                 </div>
               </div>
               <div id="messagesScroll" class="messages-scroll">
@@ -720,6 +737,25 @@
         <span>我的檔案</span>
       </button>
     </nav>
+
+    <div id="mediaPermissionOverlay" class="media-permission-overlay" aria-hidden="true" style="display:none">
+      <div class="media-permission-card" role="dialog" aria-modal="true" aria-labelledby="mediaPermissionTitle">
+        <i class='bx bxs-lock-shield icon' aria-hidden="true"></i>
+        <h2 id="mediaPermissionTitle">啟用語音通話</h2>
+        <p>為避免 iOS 裝置來電無聲，登入後請先授權麥克風並預先解鎖音訊播放。</p>
+        <ul>
+          <li><i class='bx bx-microphone'></i><span>允許麥克風權限才能建立端到端加密的語音通話。</span></li>
+          <li><i class='bx bx-volume-full'></i><span>提前允許瀏覽器播放音訊，避免 Safari 阻擋遠端聲音。</span></li>
+        </ul>
+        <div id="mediaPermissionStatus" class="media-permission-status" role="status" aria-live="polite"></div>
+        <div class="media-permission-actions">
+          <button id="mediaPermissionAllowBtn" type="button" class="media-permission-btn">
+            <i class='bx bx-check-shield'></i>允許麥克風
+          </button>
+          <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip">稍後再說</button>
+        </div>
+      </div>
+    </div>
 
     <div id="logoutRedirectCover" class="logout-redirect-cover" aria-hidden="true">
       <div class="cover-spinner" aria-hidden="true"></div>

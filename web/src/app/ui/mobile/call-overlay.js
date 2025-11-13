@@ -365,27 +365,33 @@ function ensureOverlayElements() {
     };
   }
 
+function resolveRemoteProfile(session) {
+  const fallback = session?.peerUidHex ? `好友 ${session.peerUidHex.slice(-4)}` : '好友';
+  const name = session?.remoteDisplayName
+    || session?.peerDisplayName
+    || fallback;
+  const avatarUrl = session?.remoteAvatarUrl || session?.peerAvatarUrl || null;
+  return { name, avatarUrl, fallback };
+}
+
 function formatPeerName(session) {
   if (!session) return '好友';
-  if (session.peerDisplayName) return session.peerDisplayName;
-  if (session.peerUidHex) {
-    return `好友 ${session.peerUidHex.slice(-4)}`;
-  }
-  return '好友';
+  const profile = resolveRemoteProfile(session);
+  return profile.name || '好友';
 }
 
 function renderAvatarContent(el, session) {
   if (!el) return;
   el.innerHTML = '';
-  const url = session?.peerAvatarUrl;
-  if (url) {
+  const profile = resolveRemoteProfile(session);
+  if (profile.avatarUrl) {
     const img = document.createElement('img');
-    img.src = url;
-    img.alt = session?.peerDisplayName || 'avatar';
+    img.src = profile.avatarUrl;
+    img.alt = profile.name || 'avatar';
     el.appendChild(img);
     return;
   }
-  const initials = (session?.peerDisplayName || session?.peerUidHex || '?')
+  const initials = (profile.name || session?.peerUidHex || '?')
     .replace(/\s+/g, '')
     .slice(0, 2)
     .toUpperCase() || '?';
