@@ -10,17 +10,29 @@ const state = {
   endpoint: null,
   buffer: [],
   timer: null,
-  flushing: false
+  flushing: false,
+  userPreferenceSet: false,
+  serverEnabled: false
 };
 
-function getDefaultEndpoint() {
+function getApiOrigin() {
   try {
-    const apiOrigin = typeof window !== 'undefined' ? (window.API_ORIGIN || '') : '';
-    const base = apiOrigin && apiOrigin !== '/' ? apiOrigin.replace(/\/$/, '') : '';
-    return `${base}/api/v1/debug/console`;
-  } catch {
-    return '/api/v1/debug/console';
-  }
+    if (typeof window !== 'undefined' && typeof window.API_ORIGIN === 'string') {
+      const trimmed = window.API_ORIGIN.trim();
+      if (trimmed) return trimmed.replace(/\/$/, '');
+    }
+  } catch {}
+  return '';
+}
+
+function getDefaultEndpoint() {
+  const base = getApiOrigin();
+  return `${base || ''}/api/v1/debug/console`;
+}
+
+function getConfigEndpoint() {
+  const base = getApiOrigin();
+  return `${base || ''}/api/v1/debug/config`;
 }
 
 function applyQueryOverrides() {
@@ -30,24 +42,32 @@ function applyQueryOverrides() {
     if (params.has('remoteConsole')) {
       const flag = params.get('remoteConsole');
       state.enabled = flag !== '0' && flag !== 'false';
+      state.userPreferenceSet = true;
     }
     if (params.has('remoteConsoleEndpoint')) {
       const ep = params.get('remoteConsoleEndpoint') || '';
       if (ep) state.endpoint = ep;
+      state.userPreferenceSet = true;
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 function loadConfig() {
   try {
-    state.enabled = localStorage.getItem(STORAGE_KEY_ENABLED) === 'true';
+    const rawEnabled = localStorage.getItem(STORAGE_KEY_ENABLED);
+    if (rawEnabled !== null) {
+      state.enabled = rawEnabled === 'true';
+      state.userPreferenceSet = true;
+    } else {
+      state.enabled = false;
+      state.userPreferenceSet = false;
+    }
     const storedEndpoint = localStorage.getItem(STORAGE_KEY_ENDPOINT);
     state.endpoint = storedEndpoint || getDefaultEndpoint();
   } catch {
     state.enabled = false;
     state.endpoint = getDefaultEndpoint();
+    state.userPreferenceSet = false;
   }
   applyQueryOverrides();
 }
@@ -58,9 +78,7 @@ function persistConfig() {
     if (state.endpoint) {
       localStorage.setItem(STORAGE_KEY_ENDPOINT, state.endpoint);
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 function serializeArg(arg) {
@@ -126,7 +144,6 @@ async function flushBuffer() {
       body: JSON.stringify(payload)
     });
   } catch (err) {
-    // restore entries to the front if failed
     state.buffer.unshift(...entries);
   } finally {
     state.flushing = false;
@@ -161,14 +178,10 @@ function patchConsole() {
     console[method] = (...args) => {
       try {
         original[method]?.(...args);
-      } catch {
-        // ignore
-      }
+      } catch {}
       try {
         bufferEntry(method, args);
-      } catch {
-        // ignore
-      }
+      } catch {}
     };
   }
   Object.defineProperty(console, '__REMOTE_CONSOLE_PATCHED__', {
@@ -178,17 +191,39 @@ function patchConsole() {
   });
 }
 
-function enableRelay({ endpoint } = {}) {
+function enableRelay({ endpoint, persist = true } = {}) {
   if (endpoint) state.endpoint = endpoint;
   state.enabled = true;
-  persistConfig();
+  if (persist) {
+    state.userPreferenceSet = true;
+    persistConfig();
+  }
   scheduleFlush();
 }
 
-function disableRelay() {
+function disableRelay({ persist = true } = {}) {
   state.enabled = false;
-  persistConfig();
+  if (persist) {
+    state.userPreferenceSet = true;
+    persistConfig();
+  }
   disableFlushTimer();
+}
+
+async function fetchServerConfig() {
+  try {
+    const res = await fetch(getConfigEndpoint(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    state.serverEnabled = !!data?.enabled;
+    if (state.serverEnabled && !state.userPreferenceSet) {
+      const endpoint = data.endpoint || state.endpoint || getDefaultEndpoint();
+      enableRelay({ endpoint, persist: false });
+    }
+    if (!state.serverEnabled && !state.userPreferenceSet) {
+      disableRelay({ persist: false });
+    }
+  } catch {}
 }
 
 export function initRemoteConsoleRelay() {
@@ -197,15 +232,16 @@ export function initRemoteConsoleRelay() {
   if (state.enabled) {
     scheduleFlush();
   }
+  fetchServerConfig().catch(() => {});
   if (typeof window !== 'undefined') {
     window.RemoteConsoleRelay = {
-      enable: (endpoint) => enableRelay({ endpoint }),
-      disable: () => disableRelay(),
+      enable: (endpoint) => enableRelay({ endpoint, persist: true }),
+      disable: () => disableRelay({ persist: true }),
       setEndpoint: (endpoint) => {
         state.endpoint = endpoint || getDefaultEndpoint();
         persistConfig();
       },
-      status: () => ({ enabled: state.enabled, endpoint: state.endpoint })
+      status: () => ({ enabled: state.enabled, endpoint: state.endpoint, serverEnabled: state.serverEnabled })
     };
   }
 }

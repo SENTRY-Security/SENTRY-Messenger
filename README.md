@@ -158,6 +158,7 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 - **登出清理**：`secureLogout()` 先 `flushDrSnapshotsBeforeLogout()` 與 `persistContactSecrets()`，將 JSON 寫入 sessionStorage + `contactSecrets-v1-latest`，再清除 cache/indexedDB 等。
 - **登入頁**：`purgeLoginStorage()` 會挑選最長 snapshot 回填 localStorage，並輸出 checksum（`contactSecretsSeed*`）供 QA 比對。
 - **背景自動登出**：`autoLogoutOnBackground`（預設 true）在 App 退到背景時觸發 `secureLogout()`；若 `autoLogoutRedirectMode=custom` 且 `autoLogoutCustomUrl` 通過 HTTPS 驗證，登出後會導向指定網址。
+- **Remote Console**：設 `REMOTE_CONSOLE_ENABLED=1` 可允許前端上報 `console.log` 至 `/api/v1/debug/console`（預設關閉）；僅於追查問題時啟用，並搭配 `?remoteConsole=1` 或 `window.RemoteConsoleRelay.enable()` 啟用個別裝置。
 - **環境變數**（常用）：`NTAG424_*`, `ACCOUNT_HMAC_KEY`, `OPAQUE_*`, `DATA_API_*`, `S3_*`, `UPLOAD_MAX_BYTES`, `SIGNED_{PUT,GET}_TTL`, `SERVICE_*`, `ACCOUNT_TOKEN_BYTES`, `CORS_ORIGIN` 等。
 
 ---
