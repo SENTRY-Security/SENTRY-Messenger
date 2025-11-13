@@ -1,5 +1,6 @@
 import {
   DEFAULT_CALL_MEDIA_CAPABILITY,
+  CALL_MEDIA_STATE_STATUS,
   applyCallKeyEnvelopeToState,
   cloneCallMediaState,
   createCallMediaState,
@@ -302,6 +303,11 @@ export function updateCallSessionStatus(nextStatus, { error = null, callId = nul
   activeSession.status = nextStatus;
   if (callId) activeSession.callId = callId;
   if (error) activeSession.lastError = error;
+  const shouldPromoteAfterEmit = (
+    nextStatus === CALL_SESSION_STATUS.CONNECTING
+    && activeSession.mediaState?.status === CALL_MEDIA_STATE_STATUS.READY
+    && activeSession.callId
+  );
   if (nextStatus === CALL_SESSION_STATUS.CONNECTING) {
     if (!activeSession.connectedAt) activeSession.connectedAt = Date.now();
   }
@@ -309,6 +315,9 @@ export function updateCallSessionStatus(nextStatus, { error = null, callId = nul
     activeSession.endedAt = Date.now();
   }
   emitState('status-change');
+  if (shouldPromoteAfterEmit) {
+    updateCallSessionStatus(CALL_SESSION_STATUS.IN_CALL, { callId: activeSession.callId });
+  }
   return cloneSession();
 }
 
@@ -343,6 +352,13 @@ export function applyCallEnvelope(envelope) {
 export function setCallMediaStatus(status, error = null) {
   setMediaStatus(activeSession.mediaState, status, error);
   emitState('media-status');
+  if (
+    status === CALL_MEDIA_STATE_STATUS.READY
+    && activeSession.callId
+    && activeSession.status === CALL_SESSION_STATUS.CONNECTING
+  ) {
+    updateCallSessionStatus(CALL_SESSION_STATUS.IN_CALL, { callId: activeSession.callId });
+  }
   return cloneCallMediaState(activeSession.mediaState);
 }
 

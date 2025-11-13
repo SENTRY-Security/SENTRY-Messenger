@@ -73,6 +73,17 @@ async function waitForSecureLabel(page, regex, { timeout = 60000 } = {}) {
   await expect(label).toHaveText(regex, { timeout });
 }
 
+async function waitForInCallAndTimer(page, { timeout = 60000 } = {}) {
+  // overlay may still顯示「正在接通…」在加密完成前，但計時器啟動代表已進入通話中。
+  await waitForOverlayStatus(page, /通話中|正在接通/, { timeout });
+  const timerLabel = page.locator('#callOverlay .call-timer-label');
+  await expect(timerLabel).toBeVisible({ timeout });
+  await expect.poll(async () => {
+    const text = await timerLabel.textContent();
+    return text && /^\d{2}:\d{2}$/.test(text) ? text : null;
+  }, { timeout, message: 'call timer never started' }).not.toBeNull();
+}
+
 async function waitForRemoteAudioTrack(page, { timeout = 60000 } = {}) {
   await page.waitForFunction(() => {
     const audio = document.getElementById('callRemoteAudio');
@@ -153,6 +164,8 @@ test('encrypted audio call with fake media stream', async ({ browser }) => {
       await waitForOverlayStatus(callee.page, /通話中|正在接通/, { timeout: 60000 });
       await waitForSecureLabel(caller.page, /端到端加密已啟動|加密金鑰/, { timeout: 60000 });
       await waitForSecureLabel(callee.page, /端到端加密已啟動|加密金鑰/, { timeout: 60000 });
+      await waitForInCallAndTimer(caller.page);
+      await waitForInCallAndTimer(callee.page);
       await captureScreen(caller.page, 'caller-in-call');
       await captureScreen(callee.page, 'callee-in-call');
     });
