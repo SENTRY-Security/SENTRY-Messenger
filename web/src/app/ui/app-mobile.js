@@ -90,6 +90,16 @@ const LOGOUT_REDIRECT_SUGGESTIONS = Object.freeze([
   'https://www.wikipedia.org'
 ]);
 
+const customLogoutModal = document.getElementById('customLogoutModal');
+const customLogoutBackdrop = document.getElementById('customLogoutBackdrop');
+const customLogoutCloseBtn = document.getElementById('customLogoutClose');
+const customLogoutInput = document.getElementById('customLogoutInput');
+const customLogoutSaveBtn = document.getElementById('customLogoutSave');
+const customLogoutCancelBtn = document.getElementById('customLogoutCancel');
+const customLogoutErrorEl = document.getElementById('customLogoutError');
+let customLogoutModalContext = null;
+let customLogoutInvoker = null;
+
 initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
 
 let pendingServerOps = 0;
@@ -1070,6 +1080,90 @@ function sanitizeLogoutRedirectUrl(value) {
   }
 }
 
+function openCustomLogoutUrlModal({ initialValue = '', onSubmit, onCancel, invoker } = {}) {
+  if (!customLogoutModal || !customLogoutInput || !customLogoutSaveBtn) return;
+  customLogoutModalContext = { onSubmit, onCancel };
+  customLogoutInvoker = invoker || null;
+  customLogoutInput.value = initialValue || '';
+  customLogoutInput.placeholder = LOGOUT_REDIRECT_PLACEHOLDER;
+  if (customLogoutErrorEl) customLogoutErrorEl.textContent = '';
+  customLogoutSaveBtn.disabled = false;
+  customLogoutSaveBtn.textContent = '儲存';
+  customLogoutModal.style.display = 'flex';
+  customLogoutModal.setAttribute('aria-hidden', 'false');
+  setTimeout(() => {
+    try { customLogoutInput.focus({ preventScroll: true }); } catch { customLogoutInput.focus(); }
+  }, 30);
+}
+
+function closeCustomLogoutUrlModal() {
+  if (!customLogoutModal) return;
+  customLogoutModal.style.display = 'none';
+  customLogoutModal.setAttribute('aria-hidden', 'true');
+  customLogoutModalContext = null;
+  const focusTarget = customLogoutInvoker;
+  customLogoutInvoker = null;
+  if (focusTarget && typeof focusTarget.focus === 'function') {
+    try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
+  }
+}
+
+function handleCustomLogoutCancel() {
+  const handler = customLogoutModalContext?.onCancel;
+  closeCustomLogoutUrlModal();
+  if (typeof handler === 'function') {
+    try { handler(); } catch (err) { log({ customLogoutCancelError: err?.message || err }); }
+  }
+}
+
+async function handleCustomLogoutSave() {
+  if (!customLogoutModalContext || typeof customLogoutModalContext.onSubmit !== 'function') return;
+  if (!customLogoutInput || !customLogoutSaveBtn) return;
+  const sanitized = sanitizeLogoutRedirectUrl(customLogoutInput.value || '');
+  if (!sanitized) {
+    if (customLogoutErrorEl) customLogoutErrorEl.textContent = '請輸入有效的 HTTPS 網址，例如 https://example.com。';
+    customLogoutInput.focus();
+    return;
+  }
+  if (customLogoutErrorEl) customLogoutErrorEl.textContent = '';
+  const originalLabel = customLogoutSaveBtn.textContent;
+  customLogoutSaveBtn.disabled = true;
+  customLogoutSaveBtn.textContent = '儲存中…';
+  try {
+    await customLogoutModalContext.onSubmit(sanitized);
+    closeCustomLogoutUrlModal();
+  } catch (err) {
+    log({ customLogoutSaveError: err?.message || err });
+    const message = err?.userMessage || err?.message || '儲存設定失敗，請稍後再試。';
+    if (customLogoutErrorEl) customLogoutErrorEl.textContent = message;
+  } finally {
+    customLogoutSaveBtn.disabled = false;
+    customLogoutSaveBtn.textContent = originalLabel;
+  }
+}
+
+customLogoutCancelBtn?.addEventListener('click', () => {
+  handleCustomLogoutCancel();
+});
+customLogoutCloseBtn?.addEventListener('click', () => {
+  handleCustomLogoutCancel();
+});
+customLogoutBackdrop?.addEventListener('click', () => {
+  handleCustomLogoutCancel();
+});
+customLogoutSaveBtn?.addEventListener('click', () => {
+  handleCustomLogoutSave();
+});
+customLogoutInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    handleCustomLogoutSave();
+  }
+});
+customLogoutInput?.addEventListener('input', () => {
+  if (customLogoutErrorEl) customLogoutErrorEl.textContent = '';
+});
+
 function getLogoutRedirectTarget(settings = getEffectiveSettingsState()) {
   const state = settings || getEffectiveSettingsState();
   if (state.autoLogoutRedirectMode === 'custom') {
@@ -1142,8 +1236,7 @@ async function openSystemSettingsModal() {
   modalElement.classList.add('settings-modal');
   if (title) title.textContent = '系統設定';
 
-  const logoutUrlValue = current.autoLogoutCustomUrl || '';
-  const logoutUrlOptionsHtml = LOGOUT_REDIRECT_SUGGESTIONS.map((url) => `<option value="${escapeHtml(url)}"></option>`).join('');
+  const customSummaryValue = sanitizeLogoutRedirectUrl(current.autoLogoutCustomUrl) || '尚未設定安全網址';
   const autoLogoutDetailsVisible = !!current.autoLogoutOnBackground;
 
   body.innerHTML = `
@@ -1171,23 +1264,20 @@ async function openSystemSettingsModal() {
       <div id="settingsAutoLogoutOptions" class="settings-nested ${autoLogoutDetailsVisible ? '' : 'hidden'}" aria-hidden="${autoLogoutDetailsVisible ? 'false' : 'true'}">
         <label class="settings-option">
           <input type="radio" name="autoLogoutRedirect" id="settingsLogoutDefault" value="default" ${current.autoLogoutRedirectMode !== 'custom' ? 'checked' : ''} />
-          <div class="option-body">
-            <strong>預設登出頁面</strong>
-            <p>使用系統提供的安全登出頁面。</p>
-          </div>
-        </label>
-        <div class="settings-option custom-option">
-          <input type="radio" name="autoLogoutRedirect" id="settingsLogoutCustom" value="custom" ${current.autoLogoutRedirectMode === 'custom' ? 'checked' : ''} />
-          <div class="option-body">
-            <strong>客製化登出頁面</strong>
-            <p>選擇或輸入常見網址，也可自行輸入 HTTPS 網址。</p>
-            <div class="custom-input-row">
-              <input type="url" id="settingsLogoutUrl" name="settingsLogoutUrl" list="settingsLogoutUrlOptions" placeholder="${escapeHtml(LOGOUT_REDIRECT_PLACEHOLDER)}" value="${escapeHtml(logoutUrlValue)}" inputmode="url" autocomplete="off" />
-              <button type="button" id="settingsLogoutSave">儲存</button>
-            </div>
-            <datalist id="settingsLogoutUrlOptions">${logoutUrlOptionsHtml}</datalist>
-          </div>
+        <div class="option-body">
+          <strong>預設登出頁面</strong>
+          <p>使用系統提供的安全登出頁面。</p>
         </div>
+      </label>
+      <div class="settings-option custom-option">
+        <input type="radio" name="autoLogoutRedirect" id="settingsLogoutCustom" value="custom" ${current.autoLogoutRedirectMode === 'custom' ? 'checked' : ''} />
+        <div class="option-body">
+          <strong>客製化登出頁面</strong>
+          <p>導向指定的 HTTPS 網址，僅限受信任的頁面。</p>
+          <div class="custom-summary" id="settingsLogoutSummary">${escapeHtml(customSummaryValue)}</div>
+          <button type="button" class="settings-link subtle" id="settingsLogoutManage">設定網址</button>
+        </div>
+      </div>
       </div>
       <div class="settings-item">
         <div class="settings-text">
@@ -1209,11 +1299,9 @@ async function openSystemSettingsModal() {
   const autoLogoutOptionsSection = body.querySelector('#settingsAutoLogoutOptions');
   const logoutDefaultRadio = body.querySelector('#settingsLogoutDefault');
   const logoutCustomRadio = body.querySelector('#settingsLogoutCustom');
-  const logoutUrlInput = body.querySelector('#settingsLogoutUrl');
-  const logoutSaveBtn = body.querySelector('#settingsLogoutSave');
+  const logoutSummaryEl = body.querySelector('#settingsLogoutSummary');
+  const logoutManageBtn = body.querySelector('#settingsLogoutManage');
   const changePasswordBtn = body.querySelector('#settingsChangePassword');
-  let logoutSavePending = false;
-  const logoutSaveDefaultLabel = logoutSaveBtn?.textContent || '儲存';
   closeBtn?.addEventListener('click', () => {
     closeModal();
   }, { once: true });
@@ -1238,47 +1326,36 @@ async function openSystemSettingsModal() {
     if (logoutCustomRadio) logoutCustomRadio.checked = state.autoLogoutRedirectMode === 'custom';
   };
 
-  const syncLogoutSaveButton = () => {
-    if (!logoutSaveBtn || !logoutUrlInput) return;
-    if (logoutSavePending) {
-      logoutSaveBtn.disabled = true;
-      return;
-    }
-    const sanitized = sanitizeLogoutRedirectUrl(logoutUrlInput.value || '');
-    const savedValue = getEffectiveSettingsState().autoLogoutCustomUrl || '';
-    logoutSaveBtn.disabled = !sanitized || sanitized === savedValue;
+  const refreshLogoutSummary = () => {
+    if (!logoutSummaryEl) return;
+    const saved = sanitizeLogoutRedirectUrl(getEffectiveSettingsState().autoLogoutCustomUrl);
+    logoutSummaryEl.textContent = saved || '尚未設定安全網址';
+  };
+
+  const launchCustomLogoutModal = (invoker) => {
+    openCustomLogoutUrlModal({
+      initialValue: sanitizeLogoutRedirectUrl(getEffectiveSettingsState().autoLogoutCustomUrl) || LOGOUT_REDIRECT_SUGGESTIONS[0] || '',
+      invoker,
+      onSubmit: async (url) => {
+        await persistSettingsPatch({ autoLogoutCustomUrl: url, autoLogoutRedirectMode: 'custom' });
+        refreshLogoutSummary();
+        syncLogoutRadios();
+      },
+      onCancel: () => {
+        refreshLogoutSummary();
+        syncLogoutRadios();
+      }
+    });
   };
 
   setAutoLogoutOptionsVisibility(autoLogoutDetailsVisible);
   syncLogoutRadios();
-  syncLogoutSaveButton();
+  refreshLogoutSummary();
 
-  logoutUrlInput?.addEventListener('input', () => {
-    syncLogoutSaveButton();
-  });
-
-  logoutSaveBtn?.addEventListener('click', async () => {
-    if (!logoutSaveBtn || !logoutUrlInput || logoutSaveBtn.disabled) return;
-    const sanitized = sanitizeLogoutRedirectUrl(logoutUrlInput.value || '');
-    if (!sanitized) {
-      alert('請輸入有效的 HTTPS 網址，例如 https://example.com。');
-      return;
-    }
-    logoutSavePending = true;
-    logoutSaveBtn.disabled = true;
-    logoutSaveBtn.textContent = '儲存中…';
-    try {
-      await persistSettingsPatch({ autoLogoutRedirectMode: 'custom', autoLogoutCustomUrl: sanitized });
-      logoutUrlInput.value = sanitized;
-      syncLogoutRadios();
-    } catch (err) {
-      log({ customLogoutUrlSaveError: err?.message || err });
-      alert('儲存設定失敗，請稍後再試。');
-    } finally {
-      logoutSavePending = false;
-      logoutSaveBtn.textContent = logoutSaveDefaultLabel;
-      syncLogoutSaveButton();
-    }
+  logoutManageBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (logoutCustomRadio) logoutCustomRadio.checked = true;
+    launchCustomLogoutModal(event.currentTarget);
   });
 
   logoutDefaultRadio?.addEventListener('change', async () => {
@@ -1287,6 +1364,7 @@ async function openSystemSettingsModal() {
     logoutCustomRadio && (logoutCustomRadio.disabled = true);
     try {
       await persistSettingsPatch({ autoLogoutRedirectMode: 'default' });
+      refreshLogoutSummary();
     } catch (err) {
       log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' });
       alert('儲存設定失敗，請稍後再試。');
@@ -1294,36 +1372,13 @@ async function openSystemSettingsModal() {
       logoutDefaultRadio.disabled = false;
       if (logoutCustomRadio) logoutCustomRadio.disabled = false;
       syncLogoutRadios();
-      syncLogoutSaveButton();
     }
   });
 
-  logoutCustomRadio?.addEventListener('change', async () => {
-    if (!logoutCustomRadio.checked) {
-      syncLogoutSaveButton();
-      return;
-    }
-    const savedValue = sanitizeLogoutRedirectUrl(getEffectiveSettingsState().autoLogoutCustomUrl);
-    if (!savedValue) {
-      alert('請先輸入有效的 HTTPS 網址並按「儲存」，才能啟用客製化登出頁面。');
-      logoutCustomRadio.checked = false;
-      if (logoutDefaultRadio) logoutDefaultRadio.checked = true;
-      syncLogoutRadios();
-      return;
-    }
-    logoutCustomRadio.disabled = true;
-    logoutDefaultRadio && (logoutDefaultRadio.disabled = true);
-    try {
-      await persistSettingsPatch({ autoLogoutRedirectMode: 'custom' });
-    } catch (err) {
-      log({ logoutRedirectModeSaveError: err?.message || err, mode: 'custom' });
-      alert('儲存設定失敗，請稍後再試。');
-    } finally {
-      logoutCustomRadio.disabled = false;
-      if (logoutDefaultRadio) logoutDefaultRadio.disabled = false;
-      syncLogoutRadios();
-      syncLogoutSaveButton();
-    }
+  logoutCustomRadio?.addEventListener('change', (event) => {
+    if (!logoutCustomRadio.checked) return;
+    if (event && event.isTrusted === false) return;
+    launchCustomLogoutModal(event.currentTarget);
   });
 
   const registerToggle = (input, key) => {

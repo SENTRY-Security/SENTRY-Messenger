@@ -37,7 +37,6 @@ const modalBody = document.getElementById('loginModalBody');
 const modalClose = document.getElementById('loginModalClose');
 const modalBackdrop = document.getElementById('loginModalBackdrop');
 const welcomeModal = document.getElementById('welcomeModal');
-const welcomeContent = document.getElementById('welcomeContent');
 const welcomeNextBtn = document.getElementById('welcomeNext');
 const welcomeCloseBtn = document.getElementById('welcomeClose');
 
@@ -423,7 +422,14 @@ function showWelcomeModal() {
   if (!welcomeModal) return;
   welcomeModal.classList.remove('hidden');
   welcomeModal.setAttribute('aria-hidden', 'false');
-  if (welcomeContent) welcomeContent.focus({ preventScroll: true });
+  const focusTarget = welcomeNextBtn || welcomeCloseBtn;
+  if (focusTarget && typeof focusTarget.focus === 'function') {
+    try {
+      focusTarget.focus({ preventScroll: true });
+    } catch {
+      focusTarget.focus();
+    }
+  }
 }
 
 function hideWelcomeModal() {
