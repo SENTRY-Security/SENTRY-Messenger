@@ -65,7 +65,6 @@ export const sessionStore = {
   onlineContacts: new Set(),
   inviteSecrets: new Map(),
   deletedConversations: new Set(),
-  callLogs: new Map(),
   shareState: cloneValue(defaultShareState),
   driveState: cloneValue(defaultDriveState),
   messageState: cloneValue(defaultMessageState),
@@ -101,7 +100,6 @@ export function resetContacts() {
   if (sessionStore.conversationThreads) sessionStore.conversationThreads.clear();
   sessionStore.onlineContacts.clear();
   sessionStore.deletedConversations.clear();
-  if (sessionStore.callLogs) sessionStore.callLogs.clear();
 }
 
 export function resetProfileState() {

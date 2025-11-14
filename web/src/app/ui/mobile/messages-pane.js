@@ -1,7 +1,7 @@
 import { log } from '../../core/log.js';
 import { getUidHex, getAccountToken, getAccountDigest } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
-import { sendDrText, sendDrMedia } from '../../features/dr-session.js';
+import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
 import {
   ensureSecureConversationReady,
   subscribeSecureConversation,
@@ -31,6 +31,11 @@ import {
   startOutgoingCallMedia,
   subscribeCallEvent
 } from '../../features/calls/index.js';
+import {
+  CALL_LOG_OUTCOME,
+  describeCallLogForViewer,
+  resolveViewerRole
+} from '../../features/calls/call-log.js';
 
 export function initMessagesPane({
   dom = {},
@@ -80,81 +85,60 @@ export function initMessagesPane({
   let lastLayoutIsDesktop = null;
   let unsubscribeCallState = null;
 
-  const CALL_LOG_LIMIT = 50;
   const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
-  function ensureCallLogStore() {
-    if (!(sessionStore.callLogs instanceof Map)) {
-      sessionStore.callLogs = new Map();
-    }
-    return sessionStore.callLogs;
-  }
-
-  function getCallLogEntries(peerUidHex) {
-    const key = String(peerUidHex || '').toUpperCase();
-    if (!key) return [];
-    const store = ensureCallLogStore();
-    return store.get(key) || [];
-  }
-
-  function appendCallLogEntry(entry) {
-    if (!entry?.peerUidHex) return;
-    const store = ensureCallLogStore();
-    const key = entry.peerUidHex;
-    const list = store.get(key) ? [...store.get(key)] : [];
-    const filtered = list.filter((item) => item.id !== entry.id);
-    filtered.push(entry);
-    filtered.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    while (filtered.length > CALL_LOG_LIMIT) {
-      filtered.shift();
-    }
-    store.set(key, filtered);
-  }
-
-  function formatCallDuration(seconds) {
-    const total = Number(seconds);
-    if (!Number.isFinite(total) || total <= 0) return '0秒';
-    const mins = Math.floor(total / 60);
-    const secs = total % 60;
-    if (mins > 0) {
-      return `${mins}分${secs.toString().padStart(2, '0')}秒`;
-    }
-    return `${secs}秒`;
-  }
-
-  function buildCallLogMessage(entry) {
+  function createCallLogMessage(entry, { messageDirection = 'outgoing' } = {}) {
+    const callLog = {
+      callId: entry.callId || null,
+      outcome: entry.outcome,
+      durationSeconds: entry.durationSeconds,
+      authorRole: entry.direction || CALL_SESSION_DIRECTION.OUTGOING,
+      reason: entry.reason || null
+    };
+    const viewerRole = resolveViewerRole(callLog.authorRole, messageDirection);
+    const { label, subLabel } = describeCallLogForViewer(callLog, viewerRole);
     return {
-      id: entry.id,
+      id: entry.id || null,
       ts: entry.ts,
       type: 'call-log',
-      callLog: entry
+      direction: messageDirection,
+      text: label,
+      callLog: {
+        ...callLog,
+        viewerRole,
+        label,
+        subLabel
+      }
     };
   }
 
-  function mergeMessagesWithCallLogs(messages, peerUidHex) {
-    const base = Array.isArray(messages) ? [...messages] : [];
-    const existingLogIds = new Set(
-      base.filter((msg) => msg?.type === 'call-log' && msg?.id).map((msg) => msg.id)
-    );
-    const logs = getCallLogEntries(peerUidHex);
-    for (const entry of logs) {
-      const message = buildCallLogMessage(entry);
-      if (existingLogIds.has(message.id)) continue;
-      base.push(message);
-    }
-    base.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    return base;
-  }
-
-  function updateThreadsWithCallLog(entry) {
+  function updateThreadsWithCallLogDisplay({ peerUidHex, label, ts, direction }) {
     const threads = getConversationThreads();
     let touched = false;
     for (const thread of threads.values()) {
-      if (thread.peerUid === entry.peerUidHex) {
-        thread.lastMessageText = entry.label;
-        thread.lastMessageTs = entry.ts;
-        thread.lastDirection = entry.direction === CALL_SESSION_DIRECTION.OUTGOING ? 'outgoing' : 'incoming';
+      if (thread.peerUid === peerUidHex) {
+        thread.lastMessageText = label;
+        thread.lastMessageTs = ts;
+        thread.lastDirection = direction;
+        thread.lastReadTs = ts;
+        thread.unreadCount = 0;
         thread.needsRefresh = true;
+        touched = true;
+      }
+    }
+    if (touched) {
+      renderConversationList();
+    }
+  }
+
+  function updateThreadAvatar(peerUid, avatarData) {
+    const key = String(peerUid || '').toUpperCase();
+    if (!key) return;
+    const threads = getConversationThreads();
+    let touched = false;
+    for (const thread of threads.values()) {
+      if (thread.peerUid === key) {
+        thread.avatar = avatarData || null;
         touched = true;
       }
     }
@@ -170,50 +154,73 @@ export function initMessagesPane({
     if (![CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(status)) return;
     const key = String(session.peerUidHex || '').toUpperCase();
     if (!key) return;
+    const identifier = session.callId || session.traceId || `${key}-${session.requestedAt || Date.now()}`;
+    if (sentCallLogIds.has(identifier)) return;
+    sentCallLogIds.add(identifier);
     const endedAt = session.endedAt || Date.now();
     const connectedAt = session.connectedAt || null;
     const durationSeconds = connectedAt ? Math.max(1, Math.round((endedAt - connectedAt) / 1000)) : 0;
     const direction = session.direction || CALL_SESSION_DIRECTION.OUTGOING;
     const rawReason = detail.reason || session.lastError || '';
-    const normalizedReason = String(rawReason || '').toLowerCase();
-    let outcome = 'missed';
-    let label = '';
-    let subLabel = null;
+    const normalizedReason = typeof rawReason === 'string' ? rawReason : '';
+    let outcome = CALL_LOG_OUTCOME.MISSED;
     if (durationSeconds > 0 && status === CALL_SESSION_STATUS.ENDED) {
-      outcome = 'success';
-      label = `語音通話 ${formatCallDuration(durationSeconds)}`;
-      subLabel = direction === CALL_SESSION_DIRECTION.OUTGOING ? '我方撥出' : '對方來電';
-    } else if (normalizedReason.includes('cancel')) {
-      outcome = 'failed';
-      label = '通話已取消';
-      subLabel = direction === CALL_SESSION_DIRECTION.OUTGOING ? '我方取消' : '對方取消';
-    } else if (normalizedReason.includes('reject')) {
-      outcome = 'failed';
-      label = direction === CALL_SESSION_DIRECTION.OUTGOING ? '對方拒絕通話' : '你已拒絕通話';
-    } else if (status === CALL_SESSION_STATUS.FAILED && session.lastError) {
-      outcome = 'failed';
-      label = '通話失敗';
-      subLabel = session.lastError;
+      outcome = CALL_LOG_OUTCOME.SUCCESS;
+    } else if (/cancel/i.test(normalizedReason)) {
+      outcome = CALL_LOG_OUTCOME.CANCELLED;
+    } else if (/reject/i.test(normalizedReason)) {
+      outcome = CALL_LOG_OUTCOME.FAILED;
+    } else if (status === CALL_SESSION_STATUS.FAILED && normalizedReason) {
+      outcome = CALL_LOG_OUTCOME.FAILED;
     } else {
-      outcome = 'missed';
-      label = direction === CALL_SESSION_DIRECTION.OUTGOING ? '對方未接聽' : '未接聽';
+      outcome = CALL_LOG_OUTCOME.MISSED;
     }
     const entry = {
-      id: session.callId ? `call-log-${session.callId}` : `call-log-${key}-${endedAt}`,
-      callId: session.callId || null,
+      id: session.callId ? `call-log-${session.callId}` : `call-log-${identifier}`,
+      callId: session.callId || identifier,
       ts: Math.floor(endedAt / 1000),
       peerUidHex: key,
       direction,
       durationSeconds,
       outcome,
-      label,
-      subLabel
+      reason: normalizedReason || null
     };
-    appendCallLogEntry(entry);
-    updateThreadsWithCallLog(entry);
-    const state = getMessageState();
-    if (state.activePeerUid === key) {
-      updateMessagesUI({ scrollToEnd: outcome === 'success' });
+    if (direction === CALL_SESSION_DIRECTION.OUTGOING) {
+      const state = getMessageState();
+      const isActive = state.activePeerUid === key;
+      const viewerMessage = createCallLogMessage(entry, { messageDirection: 'outgoing' });
+      let localMessage = null;
+      if (isActive) {
+        localMessage = { ...viewerMessage };
+        localMessage.id = localMessage.id || entry.id;
+        localMessage.pending = true;
+        state.messages.push(localMessage);
+        updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
+      }
+      updateThreadsWithCallLogDisplay({
+        peerUidHex: key,
+        label: viewerMessage.text,
+        ts: entry.ts,
+        direction: 'outgoing'
+      });
+      sendDrCallLog({
+        peerUidHex: key,
+        callId: entry.callId,
+        outcome: entry.outcome,
+        durationSeconds: entry.durationSeconds,
+        direction: entry.direction,
+        reason: entry.reason
+      })
+        .then(({ msg }) => {
+          if (localMessage && msg?.id) {
+            localMessage.id = msg.id;
+            localMessage.pending = false;
+          }
+        })
+        .catch((err) => {
+          log({ callLogSendError: err?.message || err });
+          showToast?.('通話紀錄同步失敗', { variant: 'warning' });
+        });
     }
   }
 
@@ -1237,7 +1244,7 @@ export function initMessagesPane({
       prevScroll = elements.scrollEl.scrollTop;
     }
 
-    const timelineMessages = mergeMessagesWithCallLogs(state.messages, state.activePeerUid);
+    const timelineMessages = Array.isArray(state.messages) ? [...state.messages] : [];
     elements.messagesList.innerHTML = '';
     if (!timelineMessages.length) {
       elements.messagesEmpty?.classList.remove('hidden');
@@ -1278,12 +1285,14 @@ export function initMessagesPane({
           textGroup.className = 'call-log-text-group';
           const main = document.createElement('div');
           main.className = 'call-log-main';
-          main.textContent = msg.callLog.label || '語音通話';
+          const viewerRole = msg.callLog.viewerRole || resolveViewerRole(msg.callLog.authorRole, msg.direction);
+          const { label, subLabel } = describeCallLogForViewer(msg.callLog, viewerRole);
+          main.textContent = label || '語音通話';
           textGroup.appendChild(main);
-          if (msg.callLog.subLabel) {
+          if (subLabel) {
             const sub = document.createElement('div');
             sub.className = 'call-log-sub';
-            sub.textContent = msg.callLog.subLabel;
+            sub.textContent = subLabel;
             textGroup.appendChild(sub);
           }
           chip.appendChild(textGroup);
@@ -1543,6 +1552,8 @@ export function initMessagesPane({
     } else {
       elements.peerAvatar.textContent = initialsFromName(nickname, key).slice(0, 2);
     }
+    const avatarData = entry?.avatar || null;
+    updateThreadAvatar(peerUid, avatarData);
   }
 
   function handleContactEntryUpdated(detail = {}) {
@@ -1559,12 +1570,15 @@ export function initMessagesPane({
         nickname: entry.nickname,
         avatar: entry.avatar || null
       });
+      updateThreadAvatar(peerUid, entry.avatar || null);
     }
     const state = getMessageState();
     if (state.activePeerUid === peerUid) {
       refreshActivePeerMetadata(peerUid);
     }
-    renderConversationList();
+    if (!hasConversation) {
+      renderConversationList();
+    }
   }
 
   function appendLocalOutgoingMessage({ text, ts, id, type = 'text', media = null }) {

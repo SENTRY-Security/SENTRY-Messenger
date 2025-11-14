@@ -843,6 +843,34 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   };
 }
 
+export async function sendDrCallLog({
+  peerUidHex,
+  callId,
+  outcome,
+  durationSeconds,
+  direction,
+  reason
+}) {
+  const payload = {
+    type: 'call-log',
+    callId: callId || null,
+    outcome,
+    durationSeconds,
+    direction,
+    reason
+  };
+  const metaOverrides = {
+    msg_type: 'call-log',
+    call_id: callId || null,
+    call_outcome: outcome,
+    call_duration: durationSeconds,
+    call_direction: direction,
+    call_reason: reason || null
+  };
+  const text = JSON.stringify(payload);
+  return sendDrPlaintext({ peerUidHex, text, metaOverrides });
+}
+
 export async function bootstrapDrFromGuestBundle({ peerUidHex, guestBundle, force = false }) {
   const peer = normHex(peerUidHex);
   if (!peer) return false;

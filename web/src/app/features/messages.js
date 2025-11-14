@@ -25,6 +25,11 @@ import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 import { ensureSecureConversationReady as managerEnsureSecureConversationReady } from './secure-conversation-manager.js';
+import {
+  describeCallLogForViewer,
+  normalizeCallLogPayload,
+  resolveViewerRole
+} from './calls/call-log.js';
 
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
@@ -241,6 +246,23 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
     if (base.media && messageKeyB64) {
       base.media.messageKey_b64 = messageKeyB64;
     }
+  } else if (msgType === 'call-log') {
+    let parsed = null;
+    if (typeof plaintext === 'string') {
+      try { parsed = JSON.parse(plaintext); } catch {}
+    }
+    const callLog = normalizeCallLogPayload(parsed || {}, meta || {});
+    const viewerRole = resolveViewerRole(callLog.authorRole, direction);
+    const { label, subLabel } = describeCallLogForViewer(callLog, viewerRole);
+    base.type = 'call-log';
+    base.callLog = {
+      ...callLog,
+      viewerRole,
+      label,
+      subLabel
+    };
+    base.text = label || '語音通話';
+    base.subLabel = subLabel || null;
   } else if (msgType === CONTROL_MESSAGE_TYPES.SESSION_INIT) {
     base.type = CONTROL_MESSAGE_TYPES.SESSION_INIT;
     base.text = '';
