@@ -21,20 +21,8 @@ import {
   disableTopbarPointerEvents
 } from './multi-account-helpers.mjs';
 
-const FAKE_AUDIO_PATH = path.resolve('tests/assets/fake-audio.wav');
 const APP_ORIGIN = `http://localhost:${WEB_PORT}`;
 const CALL_ARTIFACT_DIR = path.join(E2E_ARTIFACT_DIR, 'call-audio');
-
-test.use({
-  permissions: ['microphone'],
-  launchOptions: {
-    args: [
-      '--use-fake-device-for-media-stream',
-      '--use-fake-ui-for-media-stream',
-      `--use-file-for-fake-audio-capture=${FAKE_AUDIO_PATH}`
-    ]
-  }
-});
 
 test.describe.configure({ mode: 'serial' });
 
