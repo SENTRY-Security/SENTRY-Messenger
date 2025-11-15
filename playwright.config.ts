@@ -8,10 +8,10 @@ export default defineConfig({
   globalSetup: './tests/e2e/global-setup.mjs',
   projects: [
     {
-      name: 'chromium-mobile',
+      name: 'webkit-mobile',
       use: {
-        ...devices['Pixel 5'],
-        headless: true,
+        ...devices['iPhone 13 Pro'],
+        headless: true
       }
     }
   ]

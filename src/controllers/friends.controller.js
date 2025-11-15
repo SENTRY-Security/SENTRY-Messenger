@@ -116,6 +116,25 @@ const BootstrapSessionSchema = z.object({
 const SESSION_BOOTSTRAP_TTL_MS = 10 * 60 * 1000;
 const sessionBootstrapCache = new Map();
 
+function normalizeGuestBundlePayload(bundle) {
+  if (!bundle || typeof bundle !== 'object') return null;
+  const clean = (value) => (typeof value === 'string' ? value.trim() : '');
+  const ek = clean(bundle.ek_pub || bundle.ek || bundle.ephemeral_pub || '');
+  const sig = clean(bundle.spk_sig || bundle.spkSig || bundle.signature || '');
+  if (!ek || !sig) return null;
+  const normalized = { ek_pub: ek, spk_sig: sig };
+  const ik = clean(bundle.ik_pub || bundle.ik || bundle.identity_pub || '');
+  if (ik) normalized.ik_pub = ik;
+  const spk = clean(bundle.spk_pub || bundle.spk || '');
+  if (spk) normalized.spk_pub = spk;
+  const opkIdRaw = bundle.opk_id ?? bundle.opkId ?? bundle.opk?.id;
+  if (opkIdRaw !== undefined && opkIdRaw !== null && opkIdRaw !== '') {
+    const parsed = Number(opkIdRaw);
+    if (Number.isFinite(parsed)) normalized.opk_id = parsed;
+  }
+  return normalized;
+}
+
 function makeBootstrapKey(ownerUid, guestUid) {
   return `${ownerUid}::${guestUid}`;
 }
@@ -146,7 +165,11 @@ function setBootstrapCache({
   const owner = ownerUid ? normalizeUidHex(ownerUid) : null;
   const guest = guestUid ? normalizeUidHex(guestUid) : null;
   if (!owner || !guest) return;
-  if (!guestBundle || typeof guestBundle !== 'object') return;
+  const normalizedGuestBundle = normalizeGuestBundlePayload(guestBundle);
+  if (!normalizedGuestBundle) {
+    logger.warn({ ownerUid: owner, guestUid: guest }, 'guest_bundle_cache_rejected');
+    return;
+  }
   pruneBootstrapCache();
   const key = makeBootstrapKey(owner, guest);
   sessionBootstrapCache.set(key, {
@@ -154,7 +177,7 @@ function setBootstrapCache({
     guestUid: guest,
     ownerAccountDigest: ownerAccountDigest ? normalizeAccountDigest(ownerAccountDigest) : null,
     guestAccountDigest: guestAccountDigest ? normalizeAccountDigest(guestAccountDigest) : null,
-    guestBundle,
+    guestBundle: normalizedGuestBundle,
     ownerContact: ownerContact || null,
     guestContact: guestContact || null,
     inviteId: inviteId || null,
@@ -176,9 +199,11 @@ function getBootstrapCache({ requesterUid, requesterDigest, peerUid }) {
   const forwardKey = makeBootstrapKey(requester, peer);
   let entry = sessionBootstrapCache.get(forwardKey);
   let role = 'owner';
+  let cacheKey = entry ? forwardKey : null;
   if (entry) {
     if (entry.ownerAccountDigest && requesterDigest && normalizeAccountDigest(requesterDigest) !== entry.ownerAccountDigest) {
       entry = null;
+      cacheKey = null;
     }
   }
   if (!entry) {
@@ -188,10 +213,17 @@ function getBootstrapCache({ requesterUid, requesterDigest, peerUid }) {
       if (!reverse.guestAccountDigest || !requesterDigest || normalizeAccountDigest(requesterDigest) === reverse.guestAccountDigest) {
         entry = reverse;
         role = 'guest';
+        cacheKey = reverseKey;
       }
     }
   }
   if (!entry) return null;
+  const normalized = normalizeGuestBundlePayload(entry.guestBundle);
+  if (!normalized) {
+    if (cacheKey) sessionBootstrapCache.delete(cacheKey);
+    return null;
+  }
+  entry.guestBundle = normalized;
   entry.lastAccessAt = Date.now();
   return { role, record: entry };
 }
@@ -265,7 +297,16 @@ export const createInvite = async (req, res) => {
   }
   if (!upstream.ok) {
     const txt = await upstream.text().catch(() => '');
-    return res.status(502).json({ error: 'InviteCreateFailed', details: txt });
+    let payload = null;
+    try {
+      payload = txt ? JSON.parse(txt) : null;
+    } catch {
+      payload = null;
+    }
+    if (payload && typeof payload === 'object') {
+      return res.status(upstream.status).json(payload);
+    }
+    return res.status(upstream.status).json({ error: 'InviteCreateFailed', details: txt || 'upstream error' });
   }
 
   let payload;
@@ -628,12 +669,11 @@ export const bootstrapFriendSession = async (req, res) => {
 
   const record = (data && typeof data === 'object' ? (data.record || data) : {}) || {};
   const formatUid = (value) => normalizeUidHex(value) || null;
-  const response = {
+  const responseBase = {
     role: typeof record.role === 'string' ? record.role : null,
     inviteId: record.invite_id || record.inviteId || null,
     ownerUid: formatUid(record.owner_uid || record.ownerUid),
     guestUid: formatUid(record.guest_uid || record.guestUid),
-    guestBundle: record.guest_bundle || record.guestBundle || null,
     guestContact: record.guest_contact || record.guestContact || null,
     ownerContact: record.owner_contact || record.ownerContact || null,
     guestContactTs: record.guest_contact_ts || record.guestContactTs || null,
@@ -642,13 +682,28 @@ export const bootstrapFriendSession = async (req, res) => {
     createdAt: record.created_at || record.createdAt || null
   };
 
+  const workerGuestBundle = record.guest_bundle || record.guestBundle || null;
+  const normalizedWorkerGuestBundle = normalizeGuestBundlePayload(workerGuestBundle);
+  if (!normalizedWorkerGuestBundle) {
+    logger.warn({
+      peerUid,
+      inviteId: responseBase.inviteId || payload.inviteId || null
+    }, 'guest_bundle_missing_from_worker');
+    return res.status(409).json({
+      error: 'GuestBundleIncomplete',
+      message: '好友金鑰資料缺失，請請對方重新產生邀請並完成登入'
+    });
+  }
+
+  const response = { ...responseBase, guestBundle: normalizedWorkerGuestBundle };
+
   try {
     setBootstrapCache({
       ownerUid: response.ownerUid,
       guestUid: response.guestUid || peerUid,
       ownerAccountDigest: record.owner_account_digest || null,
       guestAccountDigest: record.guest_account_digest || null,
-      guestBundle: response.guestBundle,
+      guestBundle: normalizedWorkerGuestBundle,
       ownerContact: response.ownerContact,
       guestContact: response.guestContact,
       inviteId: response.inviteId,

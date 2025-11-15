@@ -293,6 +293,7 @@ const bootstrapStepDefs = [
   { key: 'wrap-mk', label: '保護主金鑰' },
   { key: 'mk-store', label: '儲存主金鑰' },
   { key: 'devkeys-fetch', label: '讀取裝置備份' },
+  { key: 'prekeys-sync', label: '同步預共享金鑰' },
   { key: 'generate-bundle', label: '產生預共享金鑰' },
   { key: 'prekeys-publish', label: '上傳預共享金鑰' },
   { key: 'wrap-device', label: '備份裝置金鑰' },

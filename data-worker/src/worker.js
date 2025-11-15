@@ -524,7 +524,7 @@ export default {
         ).bind(inviteId).all();
         row = retry?.results?.[0] || null;
       }
-      if (!row) return json({ error: 'NotFound' }, { status: 404 });
+      if (!row) return json({ error: 'NotFound', message: 'invite not found' }, { status: 404 });
       if (row.secret !== secret) return json({ error: 'Forbidden', message: 'secret mismatch' }, { status: 403 });
       const now = Math.floor(Date.now() / 1000);
       if (Number(row.expires_at || 0) < now) return json({ error: 'Expired' }, { status: 410 });
@@ -568,14 +568,7 @@ export default {
       ).bind(inviteId).all();
       const row = rows?.results?.[0];
       if (!row) {
-        const fallbackSender = normalizeUid(myUid);
-        const fallbackTarget = normalizeUid(peerUidBody);
-        if (fallbackSender && fallbackTarget) {
-          const ts = Math.floor(Date.now() / 1000);
-          await insertContactMessage(env, { convUid: fallbackTarget, peerUid: fallbackSender, envelope, ts });
-          return json({ ok: true, targetUid: fallbackTarget, ts, fallback: 'invite_missing' });
-        }
-        return json({ error: 'NotFound' }, { status: 404 });
+        return json({ error: 'NotFound', message: 'invite not found' }, { status: 404 });
       }
       if (row.secret !== secret) return json({ error: 'Forbidden', message: 'secret mismatch' }, { status: 403 });
 
@@ -2276,21 +2269,6 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
 
 async function ensureDataTables(env) {
   if (dataTablesReady) return;
-  const dropLegacy = [
-    'DROP TABLE IF EXISTS tags',
-    'DROP TABLE IF EXISTS prekey_users',
-    'DROP TABLE IF EXISTS prekey_opk',
-    'DROP TABLE IF EXISTS device_backup',
-    'DROP TABLE IF EXISTS friend_invites'
-  ];
-
-  for (const sql of dropLegacy) {
-    try {
-      await env.DB.prepare(sql).run();
-    } catch (err) {
-      console.warn('ensureDataTables drop failed', sql, err?.message || err);
-    }
-  }
 
   const statements = [
     `CREATE TABLE IF NOT EXISTS conversations (
@@ -2503,10 +2481,12 @@ function normalizeGuestBundle(bundle) {
   if (!ek) return null;
   const ik = bundle.ik_pub || bundle.ik || bundle.identity_pub ? String(bundle.ik_pub || bundle.ik || bundle.identity_pub || '').trim() : null;
   const spk = bundle.spk_pub ? String(bundle.spk_pub || '').trim() : null;
+  const sig = bundle.spk_sig || bundle.spkSig || bundle.signature ? String(bundle.spk_sig || bundle.spkSig || bundle.signature || '').trim() : null;
   const opkId = bundle.opk_id ?? bundle.opkId ?? bundle.opk?.id;
   const out = { ek_pub: ek };
   if (ik) out.ik_pub = ik;
   if (spk) out.spk_pub = spk;
+  if (sig) out.spk_sig = sig;
   if (opkId != null && opkId !== '') {
     const num = Number(opkId);
     if (Number.isFinite(num)) out.opk_id = num;

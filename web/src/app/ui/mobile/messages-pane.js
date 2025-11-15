@@ -37,6 +37,8 @@ import {
   resolveViewerRole
 } from '../../features/calls/call-log.js';
 
+const sentCallLogIds = new Set();
+
 export function initMessagesPane({
   dom = {},
   navbarEl,
@@ -1552,8 +1554,7 @@ export function initMessagesPane({
     } else {
       elements.peerAvatar.textContent = initialsFromName(nickname, key).slice(0, 2);
     }
-    const avatarData = entry?.avatar || null;
-    updateThreadAvatar(peerUid, avatarData);
+    updateThreadAvatar(peerUid, avatarData || null);
   }
 
   function handleContactEntryUpdated(detail = {}) {

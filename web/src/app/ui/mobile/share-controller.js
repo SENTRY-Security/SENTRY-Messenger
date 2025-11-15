@@ -7,7 +7,7 @@ import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { getUidHex, setDevicePriv, getMkRaw, getAccountDigest } from '../../core/store.js';
+import { getUidHex, setDevicePriv, getMkRaw, getAccountDigest, clearDrState } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
@@ -822,6 +822,7 @@ export function setupShareController(options) {
           secretRole: 'guest'
         });
         try {
+          clearDrState(res.owner_uid);
           primeDrStateFromInitiator({ peerUidHex: res.owner_uid, state: x3dhState });
         } catch (err) {
           log({ drPrimeError: err?.message || err });
@@ -877,6 +878,7 @@ export function setupShareController(options) {
     }
     const envelope = msg?.envelope;
     if (!envelope?.iv || !envelope?.ct) return;
+    const hasPendingInvite = !!record;
     try {
       const payload = await decryptContactPayload(secret, envelope);
       const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
@@ -931,17 +933,41 @@ export function setupShareController(options) {
         role: record?.role || stored?.role || null,
         conversation
       });
-      const drInit = conversation?.dr_init || conversation?.drInit || null;
-      const bundle = drInit?.guest_bundle || drInit?.guestBundle || null;
+      const drInitRaw = conversation?.dr_init || conversation?.drInit || null;
+      let validatedDrInit = drInitRaw ? normalizeDrInit(drInitRaw) : null;
+      if (!validatedDrInit && drInitRaw) {
+        log({ contactShareGuestBundleInvalid: { fromUid, inviteId, hasBundle: true } });
+      }
+      if (!validatedDrInit && conversation?.dr_init) {
+        const normalized = normalizeDrInit(conversation.dr_init);
+        if (normalized) validatedDrInit = normalized;
+      }
+      if (conversation && validatedDrInit) {
+        conversation.dr_init = validatedDrInit;
+      }
+      const bundleRaw = validatedDrInit?.guest_bundle || drInitRaw?.guest_bundle || drInitRaw?.guestBundle || null;
+      const normalizedBundle = bundleRaw ? normalizeGuestBundle(bundleRaw) : null;
       const candidateRole = [
         existingContact?.secretRole,
         record?.role,
         stored?.role
       ].find((value) => typeof value === 'string' && value.length);
       const selfRole = candidateRole ? candidateRole.toLowerCase() : null;
-      if (bundle && selfRole !== 'guest') {
+      if (bundleRaw && !normalizedBundle) {
+        log({ contactShareGuestBundleMissingSig: { fromUid, inviteId } });
+        if (notifyToast) {
+          notifyToast('好友金鑰資料缺失，請請對方重新邀請', { variant: 'error' });
+        }
+      } else if (normalizedBundle && selfRole !== 'guest') {
+        if (hasPendingInvite) {
+          clearDrState(fromUid);
+        }
         try {
-          await bootstrapDrFromGuestBundle({ peerUidHex: fromUid, guestBundle: bundle });
+          await bootstrapDrFromGuestBundle({
+            peerUidHex: fromUid,
+            guestBundle: normalizedBundle,
+            force: hasPendingInvite
+          });
         } catch (err) {
           log({ drBootstrapError: err?.message || err });
         }
@@ -1157,7 +1183,8 @@ export function setupShareController(options) {
           record.prekeyBundle = info.prekeyBundle || info.ownerBundle || info.prekey_bundle;
         }
         if (info.guestBundle || info.guest_bundle) {
-          record.guestBundle = info.guestBundle || info.guest_bundle;
+          const normalizedBundle = normalizeGuestBundle(info.guestBundle || info.guest_bundle);
+          if (normalizedBundle) record.guestBundle = normalizedBundle;
         }
         if (info.conversationDrInit || info.conversation_dr_init) {
           record.conversationDrInit = info.conversationDrInit || info.conversation_dr_init;
@@ -1192,12 +1219,31 @@ export function setupShareController(options) {
     updateProfileStats?.();
   }
 
+  function normalizeGuestBundle(bundle) {
+    if (!bundle || typeof bundle !== 'object') return null;
+    const clean = (value) => (typeof value === 'string' ? value.trim() : '');
+    const ek = clean(bundle.ek_pub || bundle.ek || bundle.ephemeral_pub || '');
+    const sig = clean(bundle.spk_sig || bundle.spkSig || bundle.signature || '');
+    if (!ek || !sig) return null;
+    const normalized = { ek_pub: ek, spk_sig: sig };
+    const ik = clean(bundle.ik_pub || bundle.ik || bundle.identity_pub || '');
+    if (ik) normalized.ik_pub = ik;
+    const spk = clean(bundle.spk_pub || bundle.spk || '');
+    if (spk) normalized.spk_pub = spk;
+    const opkIdRaw = bundle.opk_id ?? bundle.opkId ?? bundle.opk?.id;
+    if (opkIdRaw !== undefined && opkIdRaw !== null && opkIdRaw !== '') {
+      const parsed = Number(opkIdRaw);
+      if (Number.isFinite(parsed)) normalized.opk_id = parsed;
+    }
+    return normalized;
+  }
+
   function normalizeDrInit(info) {
     if (!info || typeof info !== 'object') return null;
     if (info.guest_bundle || info.guestBundle) {
-      const bundle = info.guest_bundle || info.guestBundle;
-      if (!bundle || typeof bundle !== 'object') return null;
-      const out = { guest_bundle: bundle };
+      const normalizedBundle = normalizeGuestBundle(info.guest_bundle || info.guestBundle);
+      if (!normalizedBundle) return null;
+      const out = { guest_bundle: normalizedBundle };
       if (info.role) out.role = info.role;
       return out;
     }
@@ -1329,6 +1375,7 @@ export function setupShareController(options) {
       ek_pub: b64(ekPub)
     };
     if (devicePriv.spk_pub_b64) bundle.spk_pub = devicePriv.spk_pub_b64;
+     if (devicePriv.spk_sig_b64) bundle.spk_sig = devicePriv.spk_sig_b64;
     if (ownerBundle?.opk && ownerBundle.opk.id != null) bundle.opk_id = ownerBundle.opk.id;
     return bundle;
   }

@@ -176,6 +176,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
   let replenished = false;
   let nextId;
   let wrappedDevEnvelope = null;
+  report('prekeys-sync', 'skip');
 
   if (getHasMK()) {
     report('wrap-mk', 'skip');
@@ -233,10 +234,42 @@ export async function unlockAndInit({ password, onProgress } = {}) {
     return data;
   };
 
-  const publishBundle = async (bundlePub) => {
-    const { r } = await prekeysPublish({ uidHex, accountToken, accountDigest, bundle: bundlePub });
-    if (r.status !== 204) throw new Error('keys.publish failed');
-    return true;
+  const publishBundle = async (bundlePub, { devicePriv = null, allowFallback = true } = {}) => {
+    const send = async (payload) => {
+      const { r, data } = await prekeysPublish({ uidHex, accountToken, accountDigest, bundle: payload });
+      if (r.status === 204) return { ok: true };
+      let detail = '';
+      if (data && typeof data === 'object') {
+        if (typeof data.details === 'string') {
+          try {
+            const parsed = JSON.parse(data.details);
+            detail = parsed?.message || parsed?.error || data.details;
+          } catch {
+            detail = data.details;
+          }
+        }
+        detail = detail || data.message || data.error || '';
+      } else if (typeof data === 'string') {
+        detail = data;
+      }
+      return { ok: false, status: r.status, message: detail || `HTTP ${r.status}` };
+    };
+
+    const attempt = await send(bundlePub);
+    if (attempt.ok) return true;
+    const missingKeys = !bundlePub?.ik_pub || !bundlePub?.spk_pub || !bundlePub?.spk_sig;
+    if (allowFallback && attempt.status === 409 && devicePriv && missingKeys) {
+      const fallbackPayload = {
+        ik_pub: devicePriv.ik_pub_b64,
+        spk_pub: devicePriv.spk_pub_b64,
+        spk_sig: devicePriv.spk_sig_b64,
+        opks: Array.isArray(bundlePub?.opks) ? bundlePub.opks : []
+      };
+      const retry = await send(fallbackPayload);
+      if (retry.ok) return true;
+      throw new Error(`keys.publish failed: ${retry.message}`);
+    }
+    throw new Error(`keys.publish failed: ${attempt.message}`);
   };
 
   const storeDevkeys = async (session, wrapped_dev) => {
@@ -286,7 +319,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       const { devicePriv, bundlePub } = await generateInitialBundle(1, 100);
       report('generate-bundle', 'success', { opkCount: bundlePub?.opks?.length || 0 });
       setDevicePriv(devicePriv);
-      await runStep('prekeys-publish', () => publishBundle(bundlePub));
+      await runStep('prekeys-publish', () => publishBundle(bundlePub, { devicePriv }));
       const wrapped_dev = await runStep('wrap-device', () => wrapDevicePrivWithMK(devicePriv, getMkRaw()));
       await runStep('devkeys-store', () => storeDevkeys(getSession(), wrapped_dev));
       initialized = true;
@@ -309,12 +342,17 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       });
 
       setDevicePriv(devicePriv);
+      await runStep('prekeys-sync', () => publishBundle({
+        ik_pub: devicePriv.ik_pub_b64,
+        spk_pub: devicePriv.spk_pub_b64,
+        spk_sig: devicePriv.spk_sig_b64
+      }, { devicePriv, allowFallback: false }));
       const { opks, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
       if (opks.length > 0) {
         report('generate-bundle', 'start');
         report('prekeys-publish', 'start');
         try {
-          await publishBundle({ opks });
+          await publishBundle({ opks }, { devicePriv });
         } catch (e) {
           report('prekeys-publish', 'error', e?.message || e);
           report('generate-bundle', 'error', e?.message || e);

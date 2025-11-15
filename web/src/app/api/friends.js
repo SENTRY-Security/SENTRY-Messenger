@@ -32,7 +32,7 @@ export async function friendsCreateInvite({ uidHex, ttlSeconds, prekeyBundle } =
   const payload = withAccount({ uidHex });
   if (ttlSeconds) payload.ttlSeconds = ttlSeconds;
   if (prekeyBundle) payload.prekeyBundle = prekeyBundle;
-  const res = await postInvite('/api/v1/friends/invite', payload, true);
+  const res = await postInvite('/api/v1/friends/invite', payload);
   log({ inviteAPIResult: res });
   return res;
 }
@@ -154,15 +154,11 @@ export async function friendsBootstrapSession({ peerUid, uidHex, roleHint, invit
   return result;
 }
 
-async function postInvite(path, payload, allowFallback) {
+async function postInvite(path, payload) {
   log({ inviteFetchStart: path, payload });
   const { r, data } = await fetchJSON(path, payload);
   log({ inviteFetchDone: path, status: r.status, data });
   if (r.ok) return data;
-
-  if (allowFallback && r.status === 404 && path !== '/api/friends/invite') {
-    return postInvite('/api/friends/invite', payload, false);
-  }
 
   const msg = formatErrorMessage(data, 'invite failed', r.status);
   throw new Error(msg);

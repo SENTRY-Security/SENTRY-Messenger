@@ -170,6 +170,49 @@ function mergeUniqueKeyLists(...lists) {
   return result;
 }
 
+function isIosWebKitLikeBrowser() {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const platform = navigator.platform || '';
+  const maxTouchPoints = Number(navigator.maxTouchPoints) || 0;
+  const isTouchMac = platform === 'MacIntel' && maxTouchPoints > 1;
+  const uaHintsPlatform = navigator.userAgentData?.platform || '';
+  const isiOSUA = /iPad|iPhone|iPod/i.test(ua);
+  const isiOSPlatformHint = /iOS/i.test(uaHintsPlatform || '');
+  const isStandalone = typeof navigator.standalone === 'boolean' ? navigator.standalone : false;
+  return isiOSUA || isTouchMac || isiOSPlatformHint || isStandalone;
+}
+
+function supportsMediaConstraint(key) {
+  if (typeof navigator === 'undefined') return false;
+  const supported = navigator.mediaDevices?.getSupportedConstraints?.();
+  if (!supported || typeof supported !== 'object') return false;
+  return Boolean(supported[key]);
+}
+
+function isConstraintUnsatisfiedError(err) {
+  if (!err) return false;
+  const code = (err.name || err.code || '').toLowerCase();
+  return code === 'overconstrainederror' || code === 'constraintnotsatisfiederror';
+}
+
+function getMicrophoneConstraintProfiles() {
+  const supportsEchoCancellation = supportsMediaConstraint('echoCancellation');
+  const supportsNoiseSuppression = supportsMediaConstraint('noiseSuppression') && !isIosWebKitLikeBrowser();
+  const profiles = [];
+  if (supportsNoiseSuppression) {
+    const advanced = {};
+    if (supportsEchoCancellation) advanced.echoCancellation = true;
+    advanced.noiseSuppression = true;
+    profiles.push({ audio: advanced, video: false });
+  }
+  if (supportsEchoCancellation) {
+    profiles.push({ audio: { echoCancellation: true }, video: false });
+  }
+  profiles.push({ audio: true, video: false });
+  return profiles;
+}
+
 function isAutomationEnvironment() {
   if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
   if (typeof window !== 'undefined' && (window.Cypress || window.Playwright)) return true;
@@ -290,22 +333,41 @@ async function requestUserMediaAccess({ timeoutMs = 15000 } = {}) {
       setTimeout(() => reject(new Error(`${label || 'media'} timeout`)), timeoutMs);
     })
   ]);
-  try {
-    const audioStream = await withTimeout(navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-      video: false
-    }), 'audio');
-    stopStreamTracks(audioStream);
-    return { audioGranted: true, videoGranted: false };
-  } catch (err) {
-    throw err || new Error('需要授權麥克風才能繼續使用語音通話');
+  const constraintProfiles = getMicrophoneConstraintProfiles();
+  let lastError = null;
+  for (let attempt = 0; attempt < constraintProfiles.length; attempt += 1) {
+    const constraints = constraintProfiles[attempt];
+    try {
+      const audioStream = await withTimeout(
+        navigator.mediaDevices.getUserMedia(constraints),
+        'audio'
+      );
+      stopStreamTracks(audioStream);
+      return { audioGranted: true, videoGranted: false };
+    } catch (err) {
+      lastError = err;
+      if (!isConstraintUnsatisfiedError(err)) {
+        throw err || new Error('需要授權麥克風才能繼續使用語音通話');
+      }
+      log({
+        mediaPermissionConstraintRetry: {
+          name: err?.name,
+          message: err?.message,
+          nextProfile: attempt < constraintProfiles.length - 1
+        }
+      });
+    }
   }
+  throw lastError || new Error('需要授權麥克風才能繼續使用語音通話');
 }
 
 function describeMediaPermissionError(err) {
   if (!err) return '授權失敗，請在瀏覽器或系統設定中允許麥克風。';
   const message = String(err?.message || '').toLowerCase();
   const name = (err.name || err.code || '').toLowerCase();
+  if (name === 'overconstrainederror' || name === 'constraintnotsatisfiederror') {
+    return '麥克風已允許，但此裝置不支援進階音訊設定，請改用預設麥克風或稍後再試。';
+  }
   if (name === 'notallowederror' || name === 'securityerror') {
     return '你已拒絕麥克風，請到瀏覽器或系統設定重新允許後再試。';
   }
@@ -401,6 +463,12 @@ async function handleMediaPermissionGrant() {
       await finalizeMediaPermission();
     }
   } catch (err) {
+    if (isConstraintUnsatisfiedError(err)) {
+      await finalizeMediaPermission({ warning: true });
+      setMediaPermissionStatus('麥克風已允許，但已改用較低階設定。', { success: true });
+      mediaPermissionRequesting = false;
+      return;
+    }
     const permissionUnlocked = await waitForMicrophoneUnlock({ maxWaitMs: 2000, intervalMs: 250 });
     if (permissionUnlocked) {
       await finalizeMediaPermission({ warning: true });
