@@ -77,10 +77,39 @@ import {
 } from '../features/contact-backup.js';
 
 const MEDIA_PERMISSION_KEY = 'media-permission-v1';
+const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
 const out = document.getElementById('out');
 setLogSink(out);
+try {
+  log({ appVersion: window.APP_VERSION || 'unknown', buildAt: window.APP_BUILD_AT || document.lastModified || null });
+} catch {}
+const BUILD_META = (() => {
+  try {
+    const version = String(window.APP_VERSION || 'dev');
+    const buildAt = String(window.APP_BUILD_AT || document.lastModified || '');
+    return { version, buildAt, label: buildAt ? `${version} @ ${buildAt}` : version };
+  } catch {
+    return { version: 'unknown', buildAt: null, label: 'unknown build' };
+  }
+})();
 
 const { showToast, hideToast } = createToastController(document.getElementById('appToast'));
+let remoteConsoleAutoEnabled = false;
+
+(function autoEnableRemoteConsoleFromHandoff() {
+  if (!consumeRemoteConsoleHandoffFlag()) return;
+  setTimeout(() => {
+    try {
+      window.RemoteConsoleRelay?.enable?.();
+      showToast?.(`已依登入頁設定啟用遠端 Console（${BUILD_META.label}）。`, { variant: 'info' });
+      log({ remoteConsoleAutoEnabled: true });
+      remoteConsoleAutoEnabled = true;
+      updateMediaPermissionDebugVisibility();
+    } catch (err) {
+      log({ remoteConsoleAutoEnableError: err?.message || err });
+    }
+  }, 250);
+})();
 
 const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
@@ -88,10 +117,31 @@ const navBadges = typeof document !== 'undefined' ? Array.from(document.querySel
 const logoutRedirectCover = document.getElementById('logoutRedirectCover');
 const mediaPermissionOverlay = document.getElementById('mediaPermissionOverlay');
 const mediaPermissionAllowBtn = document.getElementById('mediaPermissionAllowBtn');
+const mediaPermissionAllowLabel = document.getElementById('mediaPermissionAllowLabel');
 const mediaPermissionSkipBtn = document.getElementById('mediaPermissionSkipBtn');
+const mediaPermissionDebugBtn = document.getElementById('mediaPermissionDebugBtn');
 const mediaPermissionStatus = document.getElementById('mediaPermissionStatus');
-let mediaPermissionRequesting = false;
-let mediaPermissionUnlockPoller = null;
+let mediaPermissionAwaitingConfirm = false;
+let mediaPermissionSystemGranted = false;
+let mediaPermissionActivePrompt = null;
+let mediaPermissionPollingTimer = null;
+const SIM_STORAGE_PREFIX = (() => {
+  try { return getSimStoragePrefix(); } catch { return 'ntag424-sim:'; }
+})();
+const SIM_STORAGE_KEY = (() => {
+  try { return getSimStorageKey(); } catch { return null; }
+})();
+
+function isSimStorageKey(key) {
+  if (!key) return false;
+  if (SIM_STORAGE_KEY && key === SIM_STORAGE_KEY) return true;
+  if (SIM_STORAGE_PREFIX && key.startsWith(SIM_STORAGE_PREFIX)) return true;
+  return false;
+}
+
+let reloadNavigationMemo = null;
+let reloadNavigationReason = null;
+let reloadLogoutTriggered = false;
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
 const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
@@ -102,6 +152,14 @@ const LOGOUT_REDIRECT_SUGGESTIONS = Object.freeze([
   'https://www.mozilla.org',
   'https://www.wikipedia.org'
 ]);
+const LOGOUT_MESSAGE_KEY = 'app:lastLogoutReason';
+let logoutInProgress = false;
+let _autoLoggedOut = false;
+let wsConn = null;
+let wsReconnectTimer = null;
+let wsAuthTokenInfo = null;
+const pendingWsMessages = [];
+let presenceManager = null;
 
 const customLogoutModal = document.getElementById('customLogoutModal');
 const customLogoutBackdrop = document.getElementById('customLogoutBackdrop');
@@ -116,6 +174,31 @@ let customLogoutInvoker = null;
 initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
 initRemoteConsoleRelay();
 initContactSecretsBackup();
+
+function consumeRemoteConsoleHandoffFlag() {
+  try {
+    const flag = sessionStorage.getItem(REMOTE_CONSOLE_HANDOFF_KEY);
+    if (flag === '1') {
+      sessionStorage.removeItem(REMOTE_CONSOLE_HANDOFF_KEY);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function isRemoteConsoleActive() {
+  try {
+    if (remoteConsoleAutoEnabled) return true;
+    return !!window.RemoteConsoleRelay?.status?.()?.enabled;
+  } catch {
+    return remoteConsoleAutoEnabled;
+  }
+}
+
+function updateMediaPermissionDebugVisibility() {
+  if (!mediaPermissionDebugBtn) return;
+  mediaPermissionDebugBtn.style.display = isRemoteConsoleActive() ? 'inline-block' : 'none';
+}
 
 let pendingServerOps = 0;
 let waitOverlayTimer = null;
@@ -249,12 +332,15 @@ function setMediaPermissionStatus(message = '', { success = false } = {}) {
 
 function hideMediaPermissionPrompt() {
   if (!mediaPermissionOverlay) return;
+  if (mediaPermissionPollingTimer) {
+    clearInterval(mediaPermissionPollingTimer);
+    mediaPermissionPollingTimer = null;
+  }
   mediaPermissionOverlay.style.display = 'none';
   mediaPermissionOverlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('media-permission-open');
   if (mediaPermissionAllowBtn) {
     mediaPermissionAllowBtn.disabled = false;
-    mediaPermissionAllowBtn.classList.remove('loading');
   }
   setMediaPermissionStatus('');
 }
@@ -275,55 +361,48 @@ function stopStreamTracks(stream) {
   }
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
-}
-
-async function detectUnlockedMicrophonePermission() {
-  if (typeof navigator === 'undefined') return false;
+async function collectMicrophonePermissionSignals() {
+  const result = { permState: null, hasLabel: false };
+  if (typeof navigator === 'undefined') return result;
   const { permissions, mediaDevices } = navigator;
   if (permissions?.query) {
     try {
-      const status = await permissions.query({ name: 'microphone' });
-      if (status?.state === 'granted') return true;
+      result.permState = (await permissions.query({ name: 'microphone' }))?.state || null;
     } catch {}
   }
   if (mediaDevices?.enumerateDevices) {
     try {
       const devices = await mediaDevices.enumerateDevices();
-      return devices.some((device) => device.kind === 'audioinput' && device.label && device.label.trim());
+      result.hasLabel = Array.isArray(devices)
+        && devices.some((device) => device.kind === 'audioinput' && device.label && device.label.trim());
     } catch {}
   }
+  return result;
+}
+
+function startMediaPermissionPolling() {
+  if (mediaPermissionPollingTimer) return;
+  mediaPermissionPollingTimer = setInterval(async () => {
+    try {
+      const { permState, hasLabel } = await collectMicrophonePermissionSignals();
+      if (permState === 'granted' || hasLabel) {
+        hideMediaPermissionPrompt();
+        setMediaPermissionStatus('');
+      }
+    } catch (err) {
+      log({ mediaPermissionPollError: err?.message || err });
+    }
+  }, 500);
+}
+
+async function detectUnlockedMicrophonePermission() {
+  const { permState, hasLabel } = await collectMicrophonePermissionSignals();
+  if (permState === 'granted') return true;
+  if (hasLabel) return true;
   return false;
 }
 
-async function waitForMicrophoneUnlock({ maxWaitMs = 6000, intervalMs = 350 } = {}) {
-  if (mediaPermissionUnlockPoller) {
-    try { return await mediaPermissionUnlockPoller; } catch { return false; }
-  }
-  let resolvePoll;
-  mediaPermissionUnlockPoller = new Promise((resolve) => { resolvePoll = resolve; });
-  const startedAt = Date.now();
-  let unlocked = false;
-  try {
-    while (Date.now() - startedAt < maxWaitMs) {
-      // eslint-disable-next-line no-await-in-loop
-      const granted = await detectUnlockedMicrophonePermission();
-      if (granted) {
-        unlocked = true;
-        break;
-      }
-      // eslint-disable-next-line no-await-in-loop
-      await delay(intervalMs);
-    }
-  } finally {
-    resolvePoll?.(unlocked);
-    mediaPermissionUnlockPoller = null;
-  }
-  return unlocked;
-}
-
-async function requestUserMediaAccess({ timeoutMs = 15000 } = {}) {
+async function requestUserMediaAccess({ timeoutMs = 5000 } = {}) {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     throw new Error('瀏覽器不支援麥克風授權，請改用最新版 Safari / Chrome。');
   }
@@ -410,85 +489,133 @@ async function warmUpSilentAudioPlayback() {
   } catch {}
 }
 
-async function finalizeMediaPermission({ warning = false } = {}) {
+async function finalizeMediaPermission({ warning = false, autoCloseDelayMs = 600, statusMessage } = {}) {
   await warmUpSilentAudioPlayback();
   markMediaPermissionGranted();
-  const message = warning
-    ? '麥克風授權已允許，若仍無法通話請在設定中重新測試。'
-    : '麥克風已啟用，可立即使用語音通話。';
-  setMediaPermissionStatus(message, { success: true });
+  const message = statusMessage !== undefined
+    ? statusMessage
+    : warning
+      ? '麥克風授權已允許，若仍無法通話請在設定中重新測試。'
+      : '麥克風已啟用，可立即使用語音通話。';
+  if (message !== null) {
+    setMediaPermissionStatus(message, { success: true });
+  }
   if (mediaPermissionAllowBtn) {
     mediaPermissionAllowBtn.disabled = false;
-    mediaPermissionAllowBtn.classList.remove('loading');
   }
+  setMediaPermissionButtonState('initial');
+  mediaPermissionSystemGranted = false;
   showToast?.(
     warning
       ? '麥克風已允許，但裝置暫時無法啟動；稍後可再嘗試通話。'
       : '已啟用麥克風，可使用語音通話',
     { variant: warning ? 'warning' : 'success' }
   );
-  setTimeout(() => hideMediaPermissionPrompt(), 600);
+  setTimeout(() => hideMediaPermissionPrompt(), Math.max(0, Number(autoCloseDelayMs) || 0));
+}
+
+function setMediaPermissionButtonState(state = 'initial') {
+  if (!mediaPermissionAllowBtn || !mediaPermissionAllowLabel) return;
+  if (state === 'confirm') {
+    mediaPermissionAllowBtn.classList.add('state-confirm');
+    mediaPermissionAllowLabel.textContent = '我已按下同意';
+    mediaPermissionAwaitingConfirm = true;
+  } else {
+    mediaPermissionAllowBtn.classList.remove('state-confirm');
+    mediaPermissionAllowLabel.textContent = '允許麥克風';
+    mediaPermissionAwaitingConfirm = false;
+  }
+}
+
+async function startMediaPermissionPrompt() {
+  if (mediaPermissionActivePrompt) return;
+  mediaPermissionSystemGranted = false;
+  setMediaPermissionStatus('請在系統視窗中按下「允許」，完成後再點「我已按下同意」。');
+  log({ mediaPermission: 'requestUserMedia:start' });
+  mediaPermissionActivePrompt = requestUserMediaAccess({ timeoutMs: 5000 })
+    .then(async () => {
+      mediaPermissionSystemGranted = true;
+      try {
+        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: '已確�認授權並啟動麥克風，稍後會自動關閉提示。' });
+        log({ mediaPermission: 'prompt-detected' });
+      } catch (err) {
+        log({ mediaPermissionPromptFinalizeError: err?.message || err });
+      }
+    })
+    .catch((err) => {
+      log({ mediaPermissionError: err?.message || err });
+      mediaPermissionSystemGranted = false;
+      setMediaPermissionStatus(describeMediaPermissionError(err));
+      showToast?.('授權失敗，請再試一次', { variant: 'warning' });
+      setMediaPermissionButtonState('initial');
+    })
+    .finally(() => {
+      mediaPermissionActivePrompt = null;
+    });
+}
+
+async function verifyMediaPermissionAfterConfirm() {
+  try {
+    const { permState, hasLabel } = await collectMicrophonePermissionSignals();
+    if (isRemoteConsoleActive()) {
+      try {
+        const toastMessage = permState === 'granted'
+          ? '已授權麥克風權限'
+          : `權限狀態：${permState || 'unknown'} / Label: ${hasLabel ? '有' : '無'}`;
+        showToast?.(toastMessage, { variant: permState === 'granted' || hasLabel ? 'success' : 'warning' });
+        log({ mediaPermissionConfirmCheck: { perm: permState, label: hasLabel, toast: toastMessage } });
+      } catch (err) {
+        log({ mediaPermissionConfirmToastError: err?.message || err });
+      }
+    }
+    const grantedByQuery = permState === 'granted' || hasLabel;
+    const fallbackUnlocked = grantedByQuery
+      ? false
+      : await detectUnlockedMicrophonePermission().catch(() => false);
+    const unlocked = mediaPermissionSystemGranted || grantedByQuery || fallbackUnlocked;
+    if (unlocked) {
+      mediaPermissionSystemGranted = false;
+      if (grantedByQuery) {
+        hideMediaPermissionPrompt();
+        setMediaPermissionStatus('');
+      }
+      await finalizeMediaPermission({ warning: false, statusMessage: grantedByQuery ? null : undefined });
+      log({ mediaPermission: 'confirmed-by-user' });
+      setMediaPermissionButtonState('initial');
+      return true;
+    }
+    setMediaPermissionStatus('尚未偵測到授權，請再次確認或稍後到 Safari 設定允許。');
+    showToast?.('尚未允許麥克風', { variant: 'warning' });
+    setMediaPermissionButtonState('initial');
+    return false;
+  } catch (err) {
+    log({ mediaPermissionVerifyError: err?.message || err });
+    showToast?.('檢查授權時發生錯誤，請再試一次', { variant: 'warning' });
+    setMediaPermissionButtonState('initial');
+    return false;
+  }
 }
 
 async function handleMediaPermissionGrant() {
   if (!mediaPermissionOverlay || !mediaPermissionAllowBtn) return;
-  if (mediaPermissionRequesting) return;
-  mediaPermissionRequesting = true;
-  mediaPermissionAllowBtn.disabled = true;
-  mediaPermissionAllowBtn.classList.add('loading');
-  setMediaPermissionStatus('請在瀏覽器的提示中允許麥克風…');
-  // 先在使用者點擊的同一手勢中解鎖 AudioContext，避免 Safari 阻擋來電音效
-  try {
+  if (!mediaPermissionAwaitingConfirm) {
     resumeNotifyAudioContext()?.catch(() => {});
     audioManager.loadBuffer?.();
-  } catch {}
-  try {
-    let watcherResult = null;
-    const permissionWatcher = waitForMicrophoneUnlock({ maxWaitMs: 8000, intervalMs: 250 }).then((granted) => {
-      watcherResult = granted;
-      return granted;
-    });
-    const mediaPromise = requestUserMediaAccess();
-    const outcome = await Promise.race([
-      mediaPromise.then(() => 'media'),
-      permissionWatcher.then((granted) => (granted ? 'unlocked' : 'pending'))
-    ]);
-    if (outcome === 'media') {
-      await finalizeMediaPermission();
-    } else if (outcome === 'unlocked') {
-      mediaPromise.catch(() => {});
-      await finalizeMediaPermission({ warning: true });
-    } else {
-      await mediaPromise;
-      await finalizeMediaPermission();
-    }
-  } catch (err) {
-    if (isConstraintUnsatisfiedError(err)) {
-      await finalizeMediaPermission({ warning: true });
-      setMediaPermissionStatus('麥克風已允許，但已改用較低階設定。', { success: true });
-      mediaPermissionRequesting = false;
-      return;
-    }
-    const permissionUnlocked = await waitForMicrophoneUnlock({ maxWaitMs: 2000, intervalMs: 250 });
-    if (permissionUnlocked) {
-      await finalizeMediaPermission({ warning: true });
-      mediaPermissionRequesting = false;
-      return;
-    }
-    setMediaPermissionStatus(describeMediaPermissionError(err));
-    if (mediaPermissionAllowBtn) {
-      mediaPermissionAllowBtn.disabled = false;
-      mediaPermissionAllowBtn.classList.remove('loading');
-    }
-  } finally {
-    mediaPermissionRequesting = false;
+    log({ mediaPermission: 'triggered' });
+    setMediaPermissionButtonState('confirm');
+    startMediaPermissionPolling();
+    await startMediaPermissionPrompt();
+    return;
   }
+  log({ mediaPermission: 'confirm-button-clicked' });
+  await verifyMediaPermissionAfterConfirm();
 }
 
 function initMediaPermissionPrompt() {
   if (!mediaPermissionOverlay) return;
   if (mediaPermissionOverlay.dataset.init === '1') return;
   mediaPermissionOverlay.dataset.init = '1';
+  setMediaPermissionButtonState('initial');
   if (isAutomationEnvironment()) {
     markMediaPermissionGranted();
     hideMediaPermissionPrompt();
@@ -505,9 +632,48 @@ function initMediaPermissionPrompt() {
   mediaPermissionSkipBtn?.addEventListener('click', () => {
     hideMediaPermissionPrompt();
     setMediaPermissionStatus('');
+    mediaPermissionSystemGranted = false;
+    setMediaPermissionButtonState('initial');
     warmUpSilentAudioPlayback();
     showToast?.('未啟用麥克風，通話可能無法使用', { variant: 'warning' });
   });
+  if (mediaPermissionDebugBtn && !mediaPermissionDebugBtn.dataset.init) {
+    mediaPermissionDebugBtn.dataset.init = '1';
+    mediaPermissionDebugBtn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      if (!isRemoteConsoleActive()) {
+        showToast?.('須啟用遠端 Console 才可查詢', { variant: 'warning' });
+        return;
+      }
+      try {
+        const perm = await navigator.permissions?.query?.({ name: 'microphone' }).catch(() => null);
+        const devices = await navigator.mediaDevices?.enumerateDevices?.().catch(() => []);
+        const hasLabel = Array.isArray(devices) && devices.some((d) => d.kind === 'audioinput' && d.label);
+        const toastMessage = perm?.state === 'granted'
+          ? '已授權麥克風權限'
+          : `權限狀態：${perm?.state || 'unknown'} / Label: ${hasLabel ? '有' : '無'}`;
+        showToast?.(toastMessage, { variant: perm?.state === 'granted' || hasLabel ? 'success' : 'warning' });
+        log({ mediaPermissionDebugCheck: { perm: perm?.state, label: hasLabel, devicesLength: devices?.length || 0, toast: toastMessage } });
+        if (perm?.state === 'granted' || hasLabel) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            log({ mediaPermissionDebugStream: { tracks: stream?.getTracks?.().length || 0 } });
+        setMediaPermissionStatus('已確認授權並啟動麥克風，稍後會自動關閉提示。', { success: true });
+        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: null });
+        setTimeout(() => {
+          try { stream?.getTracks?.().forEach((track) => track.stop()); } catch {}
+        }, 500);
+          } catch (err) {
+            log({ mediaPermissionDebugStreamError: err?.message || err });
+          }
+        }
+      } catch (err) {
+        showToast?.('無法取得權限狀態', { variant: 'warning' });
+        log({ mediaPermissionDebugError: err?.message || err });
+      }
+    });
+  }
+  updateMediaPermissionDebugVisibility();
 }
 
 function ensureTopbarVisible({ repeat = true } = {}) {
@@ -713,6 +879,65 @@ if (typeof window !== 'undefined') {
   try { window.secureLogout = secureLogout; } catch {}
 }
 
+function isReloadNavigation() {
+  if (reloadNavigationMemo !== null) return reloadNavigationMemo;
+  let detected = false;
+  let reason = null;
+  try {
+    if (typeof performance !== 'undefined') {
+      if (typeof performance.getEntriesByType === 'function') {
+        const entries = performance.getEntriesByType('navigation');
+        if (entries && entries.length) {
+          const latest = entries[entries.length - 1];
+          const type = (latest?.type || '').toLowerCase();
+          if (type === 'reload' || type === 'back_forward') {
+            detected = true;
+            reason = `navigation-entry:${type}`;
+          }
+        }
+      }
+      if (!detected && performance.navigation) {
+        const navType = Number(performance.navigation.type);
+        const reloadConst = typeof performance.navigation.TYPE_RELOAD === 'number'
+          ? performance.navigation.TYPE_RELOAD
+          : 1;
+        if (navType === reloadConst || navType === 1) {
+          detected = true;
+          reason = 'performance.navigation';
+        }
+      }
+    }
+    if (!detected && typeof document !== 'undefined' && typeof location !== 'undefined') {
+      const ref = document.referrer || '';
+      if (ref && location.href && ref === location.href) {
+        detected = true;
+        reason = 'referrer-match';
+      }
+    }
+  } catch (err) {
+    log({ reloadNavigationDetectError: err?.message || err });
+  }
+  reloadNavigationMemo = detected;
+  if (detected) reloadNavigationReason = reason;
+  return reloadNavigationMemo;
+}
+
+function forceReloadLogout(message = '重新整理後已自動登出') {
+  if (reloadLogoutTriggered) return;
+  reloadLogoutTriggered = true;
+  try {
+    secureLogout(message, { auto: true });
+  } catch (err) {
+    log({ forceReloadLogoutError: err?.message || err });
+  }
+}
+
+(function enforceReloadLogoutOnLoad() {
+  if (!isReloadNavigation()) return;
+  log({ reloadNavigationDetected: reloadNavigationReason || true });
+  forceReloadLogout();
+})();
+
 function updateNavBadge(tab, value) {
   if (!navBadges?.length) return;
   for (const badge of navBadges) {
@@ -751,23 +976,6 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     resumeNotifyAudioContext();
   }
 }
-
-const SIM_STORAGE_PREFIX = (() => {
-  try { return getSimStoragePrefix(); } catch { return 'ntag424-sim:'; }
-})();
-const SIM_STORAGE_KEY = (() => {
-  try { return getSimStorageKey(); } catch { return null; }
-})();
-
-function isSimStorageKey(key) {
-  if (!key) return false;
-  if (SIM_STORAGE_KEY && key === SIM_STORAGE_KEY) return true;
-  if (SIM_STORAGE_PREFIX && key.startsWith(SIM_STORAGE_PREFIX)) return true;
-  return false;
-}
-
-const LOGOUT_MESSAGE_KEY = 'app:lastLogoutReason';
-let logoutInProgress = false;
 
 function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
   const opts = keyOptions || getContactSecretKeyOptions();
@@ -1078,6 +1286,8 @@ const userMenuSettingsBtn = userMenuDropdown?.querySelector('[data-action="setti
 const userMenuVersionBtn = userMenuDropdown?.querySelector('[data-action="version-info"]') || null;
 const userMenuVersionPopup = document.getElementById('versionInfoPopupAppMenu');
 const userMenuLogoutBtn = userMenuDropdown?.querySelector('[data-action="logout"]') || null;
+const topbarTitleEl = document.querySelector('.topbar .title');
+let remoteConsolePressTimer = null;
 
 let userMenuOpen = false;
 function setUserMenuOpen(next) {
@@ -1104,6 +1314,35 @@ userMenuBtn?.addEventListener('click', (event) => {
     }, 20);
   }
 });
+
+function handleRemoteConsoleLongPressStart() {
+  if (remoteConsolePressTimer) return;
+  remoteConsolePressTimer = setTimeout(() => {
+    remoteConsolePressTimer = null;
+    try {
+      window.RemoteConsoleRelay?.enable?.();
+      showToast?.(`已啟用遠端 Console，記錄將上傳到 API。（${BUILD_META.label}）`, { variant: 'info' });
+      remoteConsoleAutoEnabled = true;
+      updateMediaPermissionDebugVisibility();
+    } catch (err) {
+      log({ remoteConsoleEnableError: err?.message || err });
+    }
+  }, 1500);
+}
+
+function handleRemoteConsoleLongPressEnd() {
+  if (!remoteConsolePressTimer) return;
+  clearTimeout(remoteConsolePressTimer);
+  remoteConsolePressTimer = null;
+}
+
+topbarTitleEl?.addEventListener('pointerdown', (event) => {
+  if (event.pointerType === 'touch' || event.pointerType === 'mouse') {
+    handleRemoteConsoleLongPressStart();
+  }
+});
+topbarTitleEl?.addEventListener('pointerup', handleRemoteConsoleLongPressEnd);
+topbarTitleEl?.addEventListener('pointerleave', handleRemoteConsoleLongPressEnd);
 
 userMenuDropdown?.addEventListener('click', (event) => {
   event.stopPropagation();
@@ -1299,14 +1538,7 @@ tabs.forEach((t) => {
 });
 
 switchTab('drive');
-
-let wsConn = null;
-let wsReconnectTimer = null;
-let wsAuthTokenInfo = null;
-const pendingWsMessages = [];
-let _autoLoggedOut = false;
-
-const presenceManager = createPresenceManager({
+presenceManager = createPresenceManager({
   contactsListEl,
   wsSend
 });
@@ -1998,6 +2230,10 @@ async function changeAccountPassword(currentPassword, newPassword) {
 
 function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出') {
   if (logoutInProgress || _autoLoggedOut) return;
+  if (isReloadNavigation()) {
+    forceReloadLogout();
+    return;
+  }
   const settings = getEffectiveSettingsState();
   if (!settings.autoLogoutOnBackground) return;
   if (!getMkRaw()) return;
@@ -2248,6 +2484,10 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', (event) => {
     if (logoutInProgress) return;
     if (event && event.persisted) return;
+    if (isReloadNavigation()) {
+      forceReloadLogout();
+      return;
+    }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
       handleBackgroundAutoLogout();
     }
