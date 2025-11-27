@@ -66,11 +66,11 @@
       #tab-drive { display:block; }
       .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 12px 0; }
       #tab-contacts { display:flex; flex-direction:column; height:100%; overflow:hidden; }
-      #tab-contacts .card.contacts-card { padding: 0; margin:0; border:none; border-radius:0; overflow:hidden; flex:1; display:flex; background:transparent; box-shadow:none; min-height:0; }
-      .contacts-scroll { position: relative; padding: 0; flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
-      .contacts-refresh { position: relative; display:flex; align-items:center; justify-content:center; gap:8px; height:44px; margin:-40px 0 8px; color:#64748b; font-size:12px; letter-spacing:0.3px; opacity:0; pointer-events:none; }
+      #tab-contacts .card.contacts-card { padding: 0; margin:0; border:none; border-radius:0; overflow:hidden; flex:1; display:flex; flex-direction:column; background:transparent; box-shadow:none; min-height:0; }
+      .contacts-scroll { position: relative; padding: 0; flex:1 1 auto; display:flex; flex-direction:column; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; transform: translateY(-5px); }
+      .contacts-refresh { position: fixed; top: calc(var(--topbar-offset) + 20px); left: 0; right: 0; display:flex; align-items:center; justify-content:center; gap:8px; height:44px; color:#64748b; font-size:12px; letter-spacing:0.3px; opacity:0; pointer-events:none; z-index: 2; }
       .contacts-refresh .icon { font-size:18px; display:inline-flex; align-items:center; justify-content:center; }
-      .contacts-refresh.loading .icon { animation: modal-spin .9s linear infinite; }
+      .contacts-refresh .icon.spin { animation: modal-spin .9s linear infinite; }
       .contacts-refresh.ready { color:#0f172a; font-weight:500; }
       .contacts-refresh.ready .icon { color:#0f172a; }
       .contact-list { list-style:none; padding-left:0; margin:5px 0 0; display:flex; flex-direction:column; gap:12px; flex:1 1 auto; overflow-y:auto; }
@@ -541,11 +541,11 @@
     <main class="content">
       <section id="tab-contacts" class="tab">
         <div class="card contacts-card">
+          <div id="contactsRefreshHint" class="contacts-refresh">
+            <i class='bx bx-refresh icon' aria-hidden="true"></i>
+            <span class="label">下拉更新聯絡人</span>
+          </div>
           <div id="contactsScroll" class="contacts-scroll">
-            <div id="contactsRefreshHint" class="contacts-refresh">
-              <i class='bx bx-refresh icon' aria-hidden="true"></i>
-              <span class="label">下拉更新聯絡人</span>
-            </div>
             <div class="contact-list-header"><strong id="contactsCount">0</strong> 個好友</div>
             <ul id="contactsList" class="contact-list"></ul>
           </div>

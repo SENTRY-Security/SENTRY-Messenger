@@ -48,7 +48,7 @@ export function setupShareController(options) {
   let lastPrekeyEnsureTs = 0;
   let lastPrekeyEnsureResult = false;
 
-  if (!dom) throw new Error('share controller requires dom references');
+  if (!dom) throw new Error('分享控制器缺少必要的 DOM 參照');
   const contactSecretMap = restoreContactSecrets();
   primeStoredDrSnapshots(contactSecretMap);
 
@@ -162,7 +162,7 @@ export function setupShareController(options) {
       const { opks, next } = await generateOpksFrom(startId, PREKEY_REPLENISH_COUNT);
       if (!opks.length) {
         lastPrekeyEnsureResult = false;
-        throw new Error('prekey generate failed');
+        throw new Error('交友金鑰生成失敗');
       }
       const publishBundle = async ({ includeIdentity } = {}) => {
         const bundle = includeIdentity
@@ -206,7 +206,7 @@ export function setupShareController(options) {
         await publishBundle({ includeIdentity: true });
         published = true;
       }
-      if (!published) throw new Error('prekey publish not completed');
+      if (!published) throw new Error('交友金鑰補貨未完成');
       devicePriv.next_opk_id = next;
       setDevicePriv(devicePriv);
       const wrapped = await wrapDevicePrivWithMK(devicePriv, mk);
@@ -611,7 +611,7 @@ export function setupShareController(options) {
 
   async function ensureInviteScanner() {
     if (shareState.scanner) return shareState.scanner;
-    if (!inviteScanVideo) throw new Error('scan video missing');
+    if (!inviteScanVideo) throw new Error('找不到掃描相機的影片元素');
     QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
     shareState.scanner = new QrScanner(inviteScanVideo, (res) => {
       if (!res) return;

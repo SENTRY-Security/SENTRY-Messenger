@@ -95,6 +95,7 @@ const BUILD_META = (() => {
 
 const { showToast, hideToast } = createToastController(document.getElementById('appToast'));
 let remoteConsoleAutoEnabled = false;
+const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style || null : null;
 
 (function autoEnableRemoteConsoleFromHandoff() {
   if (!consumeRemoteConsoleHandoffFlag()) return;
@@ -175,6 +176,7 @@ let customLogoutInvoker = null;
 initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
 initRemoteConsoleRelay();
 initContactSecretsBackup();
+observeTopbarHeight();
 
 function consumeRemoteConsoleHandoffFlag() {
   try {
@@ -194,6 +196,43 @@ function isRemoteConsoleActive() {
   } catch {
     return remoteConsoleAutoEnabled;
   }
+}
+
+function normalizeOverlayState() {
+  const modal = document.getElementById('modal');
+  const modalHidden = !modal || modal.getAttribute('aria-hidden') === 'true' || modal.style.display === 'none';
+  if (modalHidden && modal && modal.style.display !== 'none') modal.style.display = 'none';
+  if (modalHidden) document.body.classList.remove('modal-open');
+
+  const shareModal = document.getElementById('shareModal');
+  const shareHidden = !shareModal || shareModal.getAttribute('aria-hidden') === 'true' || shareModal.style.display === 'none';
+  if (shareHidden && shareModal && shareModal.style.display !== 'none') shareModal.style.display = 'none';
+  if (shareHidden) document.body.classList.remove('modal-open');
+
+  const mediaOverlay = document.getElementById('mediaPermissionOverlay');
+  const mediaHidden = !mediaOverlay || mediaOverlay.getAttribute('aria-hidden') === 'true' || mediaOverlay.style.display === 'none';
+  if (mediaHidden && mediaOverlay) mediaOverlay.style.display = 'none';
+  if (mediaHidden) document.body.classList.remove('media-permission-open');
+}
+
+function refreshTopbarOffset() {
+  if (!rootStyle) return;
+  const topbarEl = document.querySelector('.topbar');
+  const height = Math.max(0, topbarEl?.offsetHeight || 0);
+  rootStyle.setProperty('--topbar-height', `${height}px`);
+  rootStyle.setProperty('--topbar-offset', `${height}px`);
+}
+
+function observeTopbarHeight() {
+  const topbarEl = document.querySelector('.topbar');
+  if (!topbarEl) return;
+  refreshTopbarOffset();
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => refreshTopbarOffset());
+    ro.observe(topbarEl);
+  }
+  window.addEventListener('resize', refreshTopbarOffset);
+  window.addEventListener('orientationchange', refreshTopbarOffset);
 }
 
 function updateMediaPermissionDebugVisibility() {
@@ -749,6 +788,8 @@ function ensureTopbarVisible({ repeat = true } = {}) {
     topbarEl.style.display = '';
     topbarEl.classList.remove('hidden');
     topbarEl.removeAttribute('aria-hidden');
+    refreshTopbarOffset();
+    normalizeOverlayState();
   };
   apply();
   if (!repeat) return;
@@ -1304,6 +1345,7 @@ const tabs = ['contacts','messages','drive','profile'];
 let currentTab = 'drive';
 function switchTab(name, options = {}){
   currentTab = name;
+  normalizeOverlayState();
   resetMainContentScroll({ smooth: false });
   tabs.forEach((t) => {
     const page = document.getElementById(`tab-${t}`);

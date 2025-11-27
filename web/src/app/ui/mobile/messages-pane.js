@@ -866,6 +866,12 @@ export function initMessagesPane({
     }
   }
 
+  function updateMessagesScrollOverflow() {
+    const scroller = elements.scrollEl;
+    if (!scroller) return;
+    scroller.style.overflowY = 'auto';
+  }
+
   function renderConversationList() {
     if (!elements.conversationList) return;
     const openPeer = elements.conversationList.querySelector('.conversation-item.show-delete')?.dataset?.peer || null;
@@ -999,6 +1005,9 @@ export function initMessagesPane({
 
   function canPreviewMedia(media) {
     if (!media || typeof media !== 'object') return false;
+    if (media.previewUrl) return true;
+    if (media.preview?.localUrl) return true;
+    if (media.preview?.objectKey && media.preview?.envelope) return true;
     if (media.localUrl) return true;
     if (media.objectKey && media.envelope) return true;
     return false;
@@ -1175,24 +1184,35 @@ export function initMessagesPane({
   async function ensureMediaPreviewUrl(media) {
     if (!media) return null;
     if (media.previewUrl) return media.previewUrl;
+    if (media.preview?.localUrl) {
+      media.previewUrl = media.preview.localUrl;
+      return media.previewUrl;
+    }
     if (media.localUrl) {
       media.previewUrl = media.localUrl;
       return media.previewUrl;
     }
-    if (!media.objectKey || !media.envelope) return null;
+    const preferPreview = media.preview?.objectKey && media.preview?.envelope;
+    const targetKey = preferPreview ? media.preview.objectKey : media.objectKey;
+    const targetEnvelope = preferPreview ? media.preview.envelope : media.envelope;
+    if (!targetKey || !targetEnvelope) return null;
     if (media.previewPromise) return media.previewPromise;
-    media.previewPromise = downloadAndDecrypt({ key: media.objectKey, envelope: media.envelope })
+    media.previewPromise = downloadAndDecrypt({ key: targetKey, envelope: targetEnvelope })
       .then((result) => {
         if (!result || !result.blob) return null;
         const url = URL.createObjectURL(result.blob);
         media.previewUrl = url;
-        if (!media.contentType && result.contentType) {
+        if (preferPreview && media.preview) {
+          if (!media.preview.contentType && result.contentType) {
+            media.preview.contentType = result.contentType;
+          }
+        } else if (!preferPreview && !media.contentType && result.contentType) {
           media.contentType = result.contentType;
         }
         return url;
       })
       .catch((err) => {
-        log({ mediaPreviewError: err?.message || err, objectKey: media.objectKey });
+        log({ mediaPreviewError: err?.message || err, objectKey: targetKey });
         return null;
       })
       .finally(() => {
@@ -1219,7 +1239,8 @@ export function initMessagesPane({
       apply(media.previewUrl);
       return;
     }
-    if (!media.objectKey || !media.envelope) return;
+    const hasRemotePreview = (media.preview?.objectKey && media.preview?.envelope) || (media.objectKey && media.envelope);
+    if (!hasRemotePreview) return;
     ensureMediaPreviewUrl(media).then((url) => {
       if (url && typeof el.src === 'string' && !el.src) apply(url);
     }).catch(() => {});
@@ -1227,10 +1248,12 @@ export function initMessagesPane({
 
   function attachMediaPreview(container, media) {
     const type = (media?.contentType || '').toLowerCase();
+    const previewType = (media?.preview?.contentType || '').toLowerCase();
+    const hasPreviewImage = previewType.startsWith('image/') || (!!media?.preview && (!!media.preview.objectKey || !!media.preview.localUrl));
     const nameLower = (media?.name || '').toLowerCase();
     container.innerHTML = '';
     container.classList.add('message-file-preview');
-    if (type.startsWith('image/')) {
+    if (hasPreviewImage || type.startsWith('image/')) {
       const img = document.createElement('img');
       img.className = 'message-file-preview-image';
       img.alt = media?.name || 'image preview';
@@ -1487,6 +1510,7 @@ export function initMessagesPane({
         scrollMessagesToBottom();
       }
     }
+    updateMessagesScrollOverflow();
     try {
       const diagnostics = Array.from(elements.messagesList.querySelectorAll('.message-bubble')).map((el) => ({
         text: el.textContent,
@@ -1893,11 +1917,12 @@ export function initMessagesPane({
               size: Number.isFinite(res?.msg?.media?.size) ? res.msg.media.size : (typeof file.size === 'number' ? file.size : msg.media.size || null),
               contentType: res?.msg?.media?.contentType || msg.media.contentType || file.type || 'application/octet-stream',
               localUrl: msg.media.localUrl || localUrl,
-              previewUrl: msg.media.previewUrl || msg.media.localUrl || localUrl,
+              previewUrl: res?.msg?.media?.previewUrl || msg.media.previewUrl || msg.media.localUrl || localUrl,
               uploading: false,
               progress: 100,
               envelope: res?.msg?.media?.envelope || msg.media.envelope || null,
-              objectKey: res?.msg?.media?.objectKey || msg.media.objectKey || res?.upload?.objectKey || null
+              objectKey: res?.msg?.media?.objectKey || msg.media.objectKey || res?.upload?.objectKey || null,
+              preview: res?.msg?.media?.preview || msg.media.preview || null
             };
           }
           const senderUid = getUidHex();

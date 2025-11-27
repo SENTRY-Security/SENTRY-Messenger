@@ -30,6 +30,10 @@ export function initContactsView(options) {
   if (!modal || typeof modal.showConfirmModal !== 'function') throw new Error('modal helpers required');
   if (!swipe || typeof swipe.setupSwipe !== 'function') throw new Error('swipe helpers required');
   if (!presenceManager) throw new Error('presence manager required');
+  if (contactsScrollEl) {
+    contactsScrollEl.style.overflowY = 'auto';
+    contactsScrollEl.style.webkitOverflowScrolling = 'touch';
+  }
 
   const contactState = sessionStore.contactState;
   const contactIndex = sessionStore.contactIndex;
@@ -239,8 +243,22 @@ export function initContactsView(options) {
     const clamped = Math.min(PULL_MAX, Math.max(0, offset));
     const progress = Math.min(1, clamped / PULL_THRESHOLD);
     if (contactsRefreshEl) {
-      contactsRefreshEl.style.opacity = String(Math.min(1, progress * 1.2));
-      contactsRefreshEl.style.transform = `translateY(${clamped * -1}px)`;
+      const fadeStart = 5;
+      const fadeRange = 25;
+      const alpha = Math.min(1, Math.max(0, (clamped - fadeStart) / fadeRange));
+      contactsRefreshEl.style.opacity = String(alpha);
+      contactsRefreshEl.style.transform = 'translateY(0)';
+      const spinner = contactsRefreshEl.querySelector('.icon');
+      const labelEl = contactsRefreshEl.querySelector('.label');
+      if (spinner && labelEl) {
+        if (contactsRefreshing) {
+          spinner.classList.add('spin');
+          labelEl.textContent = '刷新聯絡人清單中';
+        } else {
+          spinner.classList.remove('spin');
+          labelEl.textContent = clamped >= 10 ? '放開重整聯絡人列表' : '下拉更新聯絡人';
+        }
+      }
     }
     if (contactsScrollEl) {
       contactsScrollEl.style.transform = `translateY(${clamped}px)`;
@@ -299,7 +317,7 @@ export function initContactsView(options) {
     if (pullDistance >= PULL_THRESHOLD && !pullInvalid) {
       contactsRefreshing = true;
       updateContactsPull(PULL_THRESHOLD);
-      if (contactsRefreshLabel) contactsRefreshLabel.textContent = '更新中…';
+      if (contactsRefreshLabel) contactsRefreshLabel.textContent = '載入中…';
       try {
         await loadInitialContacts();
       } finally {

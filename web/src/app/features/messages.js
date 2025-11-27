@@ -196,12 +196,43 @@ function parseMediaMessage({ plaintext, meta }) {
     try { deps.saveEnvelopeMeta(objectKey, envelope); } catch {}
   }
 
+  const previewSource = parsed?.preview || metaMedia?.preview || null;
+  const previewObjectKey =
+    previewSource?.objectKey ||
+    previewSource?.object_key ||
+    metaMedia?.preview_object_key ||
+    null;
+  const previewEnvelope =
+    previewSource?.envelope ||
+    previewSource?.env ||
+    metaMedia?.preview_envelope ||
+    null;
+  const previewSizeRaw = previewSource?.size ?? metaMedia?.preview_size;
+  const previewContentType =
+    previewSource?.contentType ||
+    previewSource?.content_type ||
+    metaMedia?.preview_content_type ||
+    null;
+  const previewWidth = Number(previewSource?.width);
+  const previewHeight = Number(previewSource?.height);
+  if (previewObjectKey && previewEnvelope) {
+    try { deps.saveEnvelopeMeta(previewObjectKey, previewEnvelope); } catch {}
+  }
+
   const mediaInfo = {
     objectKey,
     name,
     size,
     contentType,
     envelope: envelope || null,
+    preview: previewObjectKey || previewEnvelope ? {
+      objectKey: previewObjectKey || null,
+      envelope: previewEnvelope || null,
+      size: Number.isFinite(Number(previewSizeRaw)) ? Number(previewSizeRaw) : null,
+      contentType: previewContentType || null,
+      width: Number.isFinite(previewWidth) ? previewWidth : null,
+      height: Number.isFinite(previewHeight) ? previewHeight : null
+    } : null,
     dir,
     senderFingerprint: meta?.sender_fingerprint || null
   };
@@ -209,6 +240,7 @@ function parseMediaMessage({ plaintext, meta }) {
   if (parsed?.sha256) mediaInfo.sha256 = parsed.sha256;
   if (parsed?.localUrl) mediaInfo.localUrl = parsed.localUrl;
   if (parsed?.previewUrl) mediaInfo.previewUrl = parsed.previewUrl;
+  if (previewSource?.localUrl) mediaInfo.previewUrl = mediaInfo.previewUrl || previewSource.localUrl;
 
   return mediaInfo;
 }

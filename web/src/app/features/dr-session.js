@@ -687,6 +687,170 @@ export async function sendDrSessionAck({ peerUidHex, conversation, convId }) {
   });
 }
 
+const MEDIA_PREVIEW_MAX_DIMENSION = 480;
+const MEDIA_PREVIEW_JPEG_QUALITY = 0.82;
+const MEDIA_PREVIEW_CAPTURE_FRACTION = 0.05;
+
+function scaleToPreviewSize(width, height) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { width: null, height: null };
+  }
+  const maxSide = Math.max(width, height);
+  const ratio = maxSide > MEDIA_PREVIEW_MAX_DIMENSION ? MEDIA_PREVIEW_MAX_DIMENSION / maxSide : 1;
+  return {
+    width: Math.max(1, Math.round(width * ratio)),
+    height: Math.max(1, Math.round(height * ratio))
+  };
+}
+
+function canvasToJpegBlob(canvas, quality = MEDIA_PREVIEW_JPEG_QUALITY) {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error('preview toBlob failed'));
+      }, 'image/jpeg', quality);
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function buildImagePreviewBlob(file) {
+  if (!file) return null;
+  let url = null;
+  try {
+    url = URL.createObjectURL(file);
+    const img = new Image();
+    img.decoding = 'async';
+    const loadPromise = new Promise((resolve, reject) => {
+      img.onload = () => resolve(null);
+      img.onerror = () => reject(new Error('image load failed'));
+    });
+    img.src = url;
+    await loadPromise;
+    const { width, height } = img;
+    if (!width || !height) return null;
+    const target = scaleToPreviewSize(width, height);
+    if (!target.width || !target.height) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = target.width;
+    canvas.height = target.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, target.width, target.height);
+    const blob = await canvasToJpegBlob(canvas);
+    return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
+  } finally {
+    if (url) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+  }
+}
+
+function waitForVideoEvent(video, event, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = typeof timeoutMs === 'number' && timeoutMs > 0
+      ? setTimeout(() => {
+          cleanup();
+          reject(new Error('video preview timeout'));
+        }, timeoutMs)
+      : null;
+    const onEvent = () => {
+      cleanup();
+      resolve(null);
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error('video preview failed'));
+    };
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      video.removeEventListener(event, onEvent);
+      video.removeEventListener('error', onError);
+    };
+    video.addEventListener(event, onEvent, { once: true });
+    video.addEventListener('error', onError, { once: true });
+  });
+}
+
+async function buildVideoPreviewBlob(file) {
+  if (!file) return null;
+  let url = null;
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  try {
+    url = URL.createObjectURL(file);
+    video.src = url;
+    await waitForVideoEvent(video, 'loadedmetadata');
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const targetTime = Math.min(
+      Math.max(duration * MEDIA_PREVIEW_CAPTURE_FRACTION, 0.08),
+      duration > 0 ? Math.max(0.01, duration - 0.02) : 0.08
+    );
+    if (Number.isFinite(targetTime)) {
+      try {
+        video.currentTime = targetTime;
+        await waitForVideoEvent(video, 'seeked');
+      } catch {
+        await waitForVideoEvent(video, 'loadeddata');
+      }
+    } else {
+      await waitForVideoEvent(video, 'loadeddata');
+    }
+    const vw = video.videoWidth || 0;
+    const vh = video.videoHeight || 0;
+    if (!vw || !vh) return null;
+    const target = scaleToPreviewSize(vw, vh);
+    if (!target.width || !target.height) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = target.width;
+    canvas.height = target.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, target.width, target.height);
+    const blob = await canvasToJpegBlob(canvas);
+    return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
+  } finally {
+    if (url) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+  }
+}
+
+async function buildMediaPreviewBlob(file) {
+  const type = (file?.type || '').toLowerCase();
+  if (type.startsWith('image/')) {
+    return buildImagePreviewBlob(file);
+  }
+  if (type.startsWith('video/')) {
+    try {
+      return await buildVideoPreviewBlob(file);
+    } catch (err) {
+      logDrSend('video-preview-failed', { error: err?.message || err });
+      return null;
+    }
+  }
+  return null;
+}
+
+function blobToNamedFile(blob, nameHint) {
+  if (!blob) return null;
+  const safeName = typeof nameHint === 'string' && nameHint.trim()
+    ? nameHint.trim()
+    : 'preview.jpg';
+  if (typeof File === 'function') {
+    try {
+      return new File([blob], safeName, { type: blob.type || 'image/jpeg' });
+    } catch {
+      // ignore and fallback
+    }
+  }
+  try {
+    blob.name = safeName;
+  } catch {}
+  return blob;
+}
+
 export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir, onProgress, abortSignal } = {}) {
   const me = getUidHex();
   const peer = normHex(peerUidHex);
@@ -735,6 +899,40 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   }
 
   const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
+  let previewInfo = null;
+  let previewLocalUrl = null;
+  try {
+    const previewCandidate = await buildMediaPreviewBlob(file);
+    if (previewCandidate?.blob) {
+      const previewName = typeof file.name === 'string' && file.name
+        ? `${file.name}.preview.jpg`
+        : 'preview.jpg';
+      const previewFile = blobToNamedFile(previewCandidate.blob, previewName);
+      previewLocalUrl = URL.createObjectURL(previewCandidate.blob);
+      const previewUpload = await encryptAndPutWithProgress({
+        convId: conversationId,
+        file: previewFile,
+        dir,
+        onProgress: null,
+        skipIndex: true,
+        encryptionKey: { key: sharedMediaKey, type: 'shared' },
+        encryptionInfoTag: 'media/preview-v1',
+        conversationFingerprint
+      });
+      previewInfo = {
+        objectKey: previewUpload.objectKey,
+        size: previewUpload.size ?? previewFile?.size ?? previewCandidate.blob?.size ?? null,
+        contentType: previewFile?.type || previewCandidate.contentType || 'image/jpeg',
+        envelope: previewUpload.envelope || null,
+        width: previewCandidate.width || null,
+        height: previewCandidate.height || null
+      };
+      if (previewLocalUrl) previewInfo.localUrl = previewLocalUrl;
+    }
+  } catch (err) {
+    logDrSend('preview-generate-failed', { peerUidHex: peer, error: err?.message || err });
+  }
+
   const uploadResult = await encryptAndPutWithProgress({
     convId: conversationId,
     file,
@@ -754,7 +952,8 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
     size: typeof file.size === 'number' ? file.size : uploadResult.size ?? null,
     contentType: file.type || 'application/octet-stream',
     envelope: uploadResult.envelope || null,
-    dir: Array.isArray(dir) && dir.length ? dir.map((seg) => String(seg || '').trim()).filter(Boolean) : null
+    dir: Array.isArray(dir) && dir.length ? dir.map((seg) => String(seg || '').trim()).filter(Boolean) : null,
+    preview: previewInfo || null
   };
 
   const payloadText = JSON.stringify({
@@ -764,7 +963,17 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
     size: metadata.size,
     contentType: metadata.contentType,
     envelope: metadata.envelope,
-    dir: metadata.dir
+    dir: metadata.dir,
+    preview: metadata.preview
+      ? {
+          objectKey: metadata.preview.objectKey,
+          size: metadata.preview.size,
+          contentType: metadata.preview.contentType,
+          envelope: metadata.preview.envelope,
+          width: metadata.preview.width,
+          height: metadata.preview.height
+        }
+      : undefined
   });
 
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
@@ -796,6 +1005,15 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
       }
     }
   };
+  if (metadata.preview?.objectKey) {
+    securePayload.meta.media.preview = {
+      object_key: metadata.preview.objectKey,
+      size: metadata.preview.size,
+      content_type: metadata.preview.contentType,
+      width: metadata.preview.width,
+      height: metadata.preview.height
+    };
+  }
 
   const envelope = await encryptConversationEnvelope(tokenB64, securePayload);
   const { r, data } = await createSecureMessage({
@@ -831,7 +1049,9 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
         contentType: metadata.contentType,
         envelope: metadata.envelope,
         dir: metadata.dir,
-        createdAt: now
+        createdAt: now,
+        preview: metadata.preview || null,
+        previewUrl: previewLocalUrl || null
       }
     },
     convId: conversationId,

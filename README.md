@@ -208,6 +208,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 > 修改程式碼後務必跑以下測試；若跳過，需在回報中說明原因與風險。
 > 正式釋出前，需再將 `ORIGIN_API`（及 `E2E_ORIGIN_API`）指向 Production，重跑同組測試確認線上環境也為綠燈。
+> **提醒**：每次跑測試（本機或線上）前，先執行 `./scripts/cleanup/wipe-all.sh` 清空舊的 D1 / R2 資料，避免舊資料干擾結果。
 
 
 | 指令                                                           | 腳本                                | 覆蓋範圍 / 期望                                                                                                          |

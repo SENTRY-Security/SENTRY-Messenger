@@ -195,6 +195,9 @@ export function initDrivePane({
     closeOpenSwipe?.();
     renderCrumb();
     driveListEl.innerHTML = '';
+    driveListEl.style.overflowY = 'auto';
+    driveListEl.style.maxHeight = '100%';
+    driveListEl.style.webkitOverflowScrolling = 'touch';
     const currentPath = [...ensureSafeCwd()];
     if (btnUp) btnUp.style.display = currentPath.length ? 'inline-flex' : 'none';
     const folderSet = new Map();
@@ -363,6 +366,15 @@ export function initDrivePane({
     const errorEl = body.querySelector('.upload-error');
     const cancelBtn = body.querySelector('#uploadCancel');
     const form = body.querySelector('#uploadForm');
+
+    const formatUploadFileName = (name) => {
+      const safe = typeof name === 'string' && name.trim() ? name.trim() : '未命名';
+      const max = 26;
+      const tail = 8;
+      if (safe.length <= max) return safe;
+      const headLen = Math.max(6, max - tail - 3);
+      return `${safe.slice(0, headLen)}...${safe.slice(-tail)}`;
+    };
     cancelBtn?.addEventListener('click', () => closeModal?.(), { once: true });
     input?.addEventListener('change', () => {
       const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
@@ -375,12 +387,12 @@ export function initDrivePane({
       const totalSize = files.reduce((sum, f) => sum + (typeof f.size === 'number' ? f.size : 0), 0);
       if (nameEl) {
         nameEl.textContent = files.length === 1
-          ? files[0].name
+          ? formatUploadFileName(files[0].name)
           : `${files.length} 個檔案 · ${fmtSize(totalSize)}`;
       }
       if (listEl) {
         listEl.innerHTML = files
-          .map((file) => `<li><span class="upload-file-name">${escapeHtml(file.name || '未命名')}</span><span class="upload-file-size">${fmtSize(file.size || 0)}</span></li>`)
+          .map((file) => `<li><span class="upload-file-name">${escapeHtml(formatUploadFileName(file.name))}</span><span class="upload-file-size">${fmtSize(file.size || 0)}</span></li>`)
           .join('');
       }
       if (errorEl) errorEl.textContent = '';
