@@ -200,6 +200,22 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
 
   const sha256Hex = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
 
+  const openAttachmentPreview = async (targetPage, fileName) => {
+    const wrapper = targetPage
+      .locator('.message-bubble', {
+        has: targetPage.locator('.message-file-name', { hasText: fileName })
+      })
+      .last()
+      .locator('.message-file')
+      .first();
+    await wrapper.scrollIntoViewIfNeeded();
+    await wrapper.click();
+    const modal = targetPage.locator('#modal');
+    await expect(modal).toBeVisible({ timeout: 10000 });
+    await targetPage.click('#modalClose');
+    await expect(modal).toBeHidden({ timeout: 10000 });
+  };
+
 const expectAttachmentIntegrity = async ({ targetPage, peerUid, fileName, expectedDigestHex, type }) => {
   const fileBubble = targetPage
     .locator('.message-bubble', {
@@ -907,6 +923,7 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
     await incomingImageBubbleB.scrollIntoViewIfNeeded();
     await expect(incomingImageBubbleB.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
     await capture(pageB, 'messages_userB_image_preview');
+    await openAttachmentPreview(pageB, uploadFileName);
     await expectAttachmentIntegrity({
       targetPage: pageB,
       peerUid: userA.uidHex,
@@ -935,6 +952,7 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
       const incomingVideoBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
       await expect(incomingVideoBubbleB.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
       await capture(pageB, 'messages_userB_video_preview');
+      await openAttachmentPreview(pageB, sampleVideo.name);
       await expectAttachmentIntegrity({
         targetPage: pageB,
         peerUid: userA.uidHex,
@@ -968,6 +986,7 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
     const incomingPdfBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
     await expect(incomingPdfBubbleB.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
     await capture(pageB, 'messages_userB_pdf_preview');
+    await openAttachmentPreview(pageB, samplePdf.name);
     await expectAttachmentIntegrity({
       targetPage: pageB,
       peerUid: userA.uidHex,

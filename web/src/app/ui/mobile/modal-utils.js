@@ -49,12 +49,6 @@ export function setupModalController({ shareButtonProvider } = {}) {
       body.innerHTML = '';
     }
 
-    const downloadBtn = document.getElementById('modalDownload');
-    if (downloadBtn) {
-      downloadBtn.style.display = 'none';
-      downloadBtn.onclick = null;
-    }
-
     if (currentObjectUrl) {
       try { URL.revokeObjectURL(currentObjectUrl); } catch (err) { console.warn(err); }
       currentObjectUrl = null;
@@ -151,11 +145,6 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'settings-modal'
     );
     modal.classList.add('loading-modal');
-    const downloadBtn = document.getElementById('modalDownload');
-    if (downloadBtn) {
-      downloadBtn.style.display = 'none';
-      downloadBtn.onclick = null;
-    }
     const title = document.getElementById('modalTitle');
     if (title) title.textContent = '';
     body.innerHTML = `

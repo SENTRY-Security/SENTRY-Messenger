@@ -1084,15 +1084,8 @@ export function initMessagesPane({
 
     const downloadBtn = document.getElementById('modalDownload');
     if (downloadBtn) {
-      downloadBtn.style.display = 'inline-flex';
-      downloadBtn.onclick = () => {
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = resolvedName;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-      };
+      downloadBtn.style.display = 'none';
+      downloadBtn.onclick = null;
     }
 
     const container = document.createElement('div');
@@ -1153,21 +1146,22 @@ export function initMessagesPane({
     openPreviewModal?.();
   }
 
-  function addMediaPreviewAction(container, media) {
+  function enableMediaPreviewInteraction(container, media) {
     if (!container || !canPreviewMedia(media)) return;
-    const actions = document.createElement('div');
-    actions.className = 'message-file-actions';
-    const previewBtn = document.createElement('button');
-    previewBtn.type = 'button';
-    previewBtn.className = 'message-file-preview-btn';
-    previewBtn.textContent = '預覽';
-    previewBtn.addEventListener('click', (event) => {
+    container.classList.add('message-file-clickable');
+    container.setAttribute('role', 'button');
+    container.setAttribute('tabindex', '0');
+    const handler = (event) => {
       event.preventDefault();
       event.stopPropagation();
       openMediaPreview(media);
+    };
+    container.addEventListener('click', handler);
+    container.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        handler(event);
+      }
     });
-    actions.appendChild(previewBtn);
-    container.appendChild(actions);
   }
 
   async function ensureMediaPreviewUrl(media) {
@@ -1276,7 +1270,7 @@ export function initMessagesPane({
     info.appendChild(metaEl);
     wrapper.appendChild(preview);
     wrapper.appendChild(info);
-    addMediaPreviewAction(wrapper, media);
+    enableMediaPreviewInteraction(wrapper, media);
     bubble.appendChild(wrapper);
     attachMediaPreview(preview, media);
   }

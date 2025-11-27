@@ -544,12 +544,6 @@ export function initDrivePane({
       title.textContent = resolvedName;
       title.setAttribute('title', resolvedName);
 
-      const downloadBtn = document.getElementById('modalDownload');
-      if (downloadBtn) {
-        downloadBtn.style.display = 'inline-flex';
-        downloadBtn.onclick = () => onDownloadByKey(key, resolvedName);
-      }
-
       const url = URL.createObjectURL(blob);
       setModalObjectUrl?.(url);
 

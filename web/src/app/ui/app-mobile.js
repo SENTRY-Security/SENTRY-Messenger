@@ -125,6 +125,7 @@ let mediaPermissionAwaitingConfirm = false;
 let mediaPermissionSystemGranted = false;
 let mediaPermissionActivePrompt = null;
 let mediaPermissionPollingTimer = null;
+let cachedMicrophoneStream = null;
 const SIM_STORAGE_PREFIX = (() => {
   try { return getSimStoragePrefix(); } catch { return 'ntag424-sim:'; }
 })();
@@ -361,6 +362,21 @@ function stopStreamTracks(stream) {
   }
 }
 
+function isLiveMicrophoneStream(stream) {
+  if (!stream?.getAudioTracks) return false;
+  return stream.getAudioTracks().some((track) => track?.readyState === 'live');
+}
+
+function cacheMicrophoneStream(stream) {
+  if (!isLiveMicrophoneStream(stream)) return null;
+  if (cachedMicrophoneStream && cachedMicrophoneStream !== stream) {
+    try { stopStreamTracks(cachedMicrophoneStream); } catch {}
+  }
+  cachedMicrophoneStream = stream;
+  try { sessionStore.cachedMicrophoneStream = stream; } catch {}
+  return cachedMicrophoneStream;
+}
+
 async function collectMicrophonePermissionSignals() {
   const result = { permState: null, hasLabel: false };
   if (typeof navigator === 'undefined') return result;
@@ -421,7 +437,7 @@ async function requestUserMediaAccess({ timeoutMs = 5000 } = {}) {
         navigator.mediaDevices.getUserMedia(constraints),
         'audio'
       );
-      stopStreamTracks(audioStream);
+      cacheMicrophoneStream(audioStream);
       return { audioGranted: true, videoGranted: false };
     } catch (err) {
       lastError = err;
@@ -487,6 +503,23 @@ async function warmUpSilentAudioPlayback() {
       audio.pause();
     }
   } catch {}
+}
+
+function forceImmediateAudioPlayback() {
+  if (typeof Audio === 'undefined') return;
+  try {
+    const audio = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
+    audio.muted = true;
+    audio.playsInline = true;
+    audio.loop = false;
+    audio.play()
+      ?.catch((err) => log({ mediaPermissionForcePlayError: err?.message || err }));
+    setTimeout(() => {
+      try { audio.pause(); audio.src = ''; } catch {}
+    }, 1200);
+  } catch (err) {
+    log({ mediaPermissionForcePlayInitError: err?.message || err });
+  }
 }
 
 async function finalizeMediaPermission({ warning = false, autoCloseDelayMs = 600, statusMessage } = {}) {
@@ -598,6 +631,7 @@ async function verifyMediaPermissionAfterConfirm() {
 
 async function handleMediaPermissionGrant() {
   if (!mediaPermissionOverlay || !mediaPermissionAllowBtn) return;
+  forceImmediateAudioPlayback();
   if (!mediaPermissionAwaitingConfirm) {
     resumeNotifyAudioContext()?.catch(() => {});
     audioManager.loadBuffer?.();
@@ -630,6 +664,7 @@ function initMediaPermissionPrompt() {
   showMediaPermissionPrompt();
   mediaPermissionAllowBtn?.addEventListener('click', handleMediaPermissionGrant);
   mediaPermissionSkipBtn?.addEventListener('click', () => {
+    forceImmediateAudioPlayback();
     hideMediaPermissionPrompt();
     setMediaPermissionStatus('');
     mediaPermissionSystemGranted = false;

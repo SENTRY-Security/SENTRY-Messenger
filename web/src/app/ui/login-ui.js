@@ -409,6 +409,7 @@ function initBootstrapProgress() {
   bootstrapStepsListEl.innerHTML = '';
   bootstrapStepMap.clear();
   for (const def of bootstrapStepDefs) {
+    if (newAccount && def.key === 'prekeys-sync') continue;
     const li = document.createElement('li');
     li.dataset.step = def.key;
     const row = document.createElement('div');

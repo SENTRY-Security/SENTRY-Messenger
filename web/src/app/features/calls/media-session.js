@@ -2,6 +2,7 @@ import { issueTurnCredentials } from '../../api/calls.js';
 import { log } from '../../core/log.js';
 import { getUidHex } from '../../core/store.js';
 import { loadCallNetworkConfig } from './network-config.js';
+import { sessionStore } from '../../ui/mobile/session-store.js';
 import {
   getCallNetworkConfig,
   getCallMediaState,
@@ -33,6 +34,31 @@ let awaitingOfferAfterAccept = false;
 let localAudioMuted = false;
 let remoteAudioMuted = false;
 let pendingRemoteCandidates = [];
+
+function isLiveMicrophoneStream(stream) {
+  if (!stream?.getAudioTracks) return false;
+  return stream.getAudioTracks().some((track) => track?.readyState === 'live');
+}
+
+function cloneLiveAudioTracks(stream) {
+  if (!stream?.getAudioTracks) return [];
+  return stream.getAudioTracks()
+    .filter((track) => track?.readyState === 'live')
+    .map((track) => (typeof track.clone === 'function' ? track.clone() : track));
+}
+
+function getCachedMicrophoneStream() {
+  const cached = sessionStore?.cachedMicrophoneStream || null;
+  if (isLiveMicrophoneStream(cached)) return cached;
+  try { sessionStore.cachedMicrophoneStream = null; } catch {}
+  return null;
+}
+
+function setCachedMicrophoneStream(stream) {
+  if (!isLiveMicrophoneStream(stream)) return null;
+  try { sessionStore.cachedMicrophoneStream = stream; } catch {}
+  return stream;
+}
 
 function normalizeCallSignal(signal) {
   if (!signal || typeof signal !== 'object') return signal;
@@ -251,7 +277,19 @@ async function attachLocalMedia() {
     return;
   }
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const cached = getCachedMicrophoneStream();
+    if (cached) {
+      const tracks = cloneLiveAudioTracks(cached);
+      if (tracks.length) {
+        localStream = new MediaStream(tracks);
+      }
+    }
+    if (!localStream) {
+      const freshStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      setCachedMicrophoneStream(freshStream);
+      const tracks = cloneLiveAudioTracks(freshStream);
+      localStream = tracks.length ? new MediaStream(tracks) : freshStream;
+    }
     localStream.getTracks().forEach((track) => {
       const sender = peerConnection.addTrack(track, localStream);
       setupInsertableStreamsForSender(sender, track);
