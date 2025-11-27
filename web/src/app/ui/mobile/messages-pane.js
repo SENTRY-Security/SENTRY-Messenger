@@ -1221,6 +1221,7 @@ export function initMessagesPane({
     const type = (media?.contentType || '').toLowerCase();
     const nameLower = (media?.name || '').toLowerCase();
     container.innerHTML = '';
+    container.classList.add('message-file-preview');
     if (type.startsWith('image/')) {
       const img = document.createElement('img');
       img.className = 'message-file-preview-image';
@@ -1250,6 +1251,65 @@ export function initMessagesPane({
     }
   }
 
+  function renderUploadOverlay(wrapper, media) {
+    if (!wrapper || !media) return;
+    wrapper.style.position = 'relative';
+    const existing = wrapper.querySelector('.message-file-overlay');
+    const shouldShow = media.uploading || (Number.isFinite(media.progress) && media.progress < 100) || media.error;
+    if (!shouldShow) {
+      if (existing) existing.remove();
+      return;
+    }
+    const overlay = existing || document.createElement('div');
+    overlay.className = 'message-file-overlay';
+    Object.assign(overlay.style, {
+      position: 'absolute',
+      inset: '0',
+      background: media.error ? 'rgba(239,68,68,0.82)' : 'rgba(15,23,42,0.55)',
+      color: '#fff',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '8px',
+      borderRadius: '12px',
+      pointerEvents: 'none',
+      padding: '10px',
+      textAlign: 'center'
+    });
+    const pct = Number.isFinite(media.progress) ? Math.min(100, Math.max(0, Math.round(media.progress))) : null;
+    overlay.innerHTML = '';
+    if (media.error) {
+      const label = document.createElement('div');
+      label.textContent = '上傳失敗';
+      label.style.fontWeight = '600';
+      overlay.appendChild(label);
+      const detail = document.createElement('div');
+      detail.textContent = String(media.error || '').slice(0, 80) || '請稍後再試';
+      detail.style.fontSize = '12px';
+      detail.style.opacity = '0.9';
+      overlay.appendChild(detail);
+    } else {
+      const label = document.createElement('div');
+      label.textContent = pct != null ? `上傳中… ${pct}%` : '準備上傳…';
+      label.style.fontWeight = '600';
+      overlay.appendChild(label);
+      const barWrap = document.createElement('div');
+      barWrap.style.width = '80%';
+      barWrap.style.height = '6px';
+      barWrap.style.borderRadius = '999px';
+      barWrap.style.background = 'rgba(255,255,255,0.25)';
+      const bar = document.createElement('div');
+      bar.style.height = '100%';
+      bar.style.borderRadius = '999px';
+      bar.style.background = '#22d3ee';
+      bar.style.width = `${pct != null ? pct : 10}%`;
+      barWrap.appendChild(bar);
+      overlay.appendChild(barWrap);
+    }
+    if (!existing) wrapper.appendChild(overlay);
+  }
+
   function renderMediaBubble(bubble, msg) {
     const media = msg.media || {};
     bubble.classList.add('message-has-media');
@@ -1257,7 +1317,6 @@ export function initMessagesPane({
     const wrapper = document.createElement('div');
     wrapper.className = 'message-file';
     const preview = document.createElement('div');
-    preview.className = 'message-file-preview';
     const info = document.createElement('div');
     info.className = 'message-file-info';
     const nameEl = document.createElement('div');
@@ -1273,6 +1332,7 @@ export function initMessagesPane({
     enableMediaPreviewInteraction(wrapper, media);
     bubble.appendChild(wrapper);
     attachMediaPreview(preview, media);
+    renderUploadOverlay(wrapper, media);
   }
 
   function updateMessagesUI({ scrollToEnd = false, preserveScroll = false } = {}) {
@@ -1670,6 +1730,25 @@ export function initMessagesPane({
     state.messages.push(message);
     updateMessagesUI({ scrollToEnd: true });
     syncThreadFromActiveMessages();
+    return message;
+  }
+
+  function findMessageById(id) {
+    const state = getMessageState();
+    return state.messages.find((msg) => msg.id === id) || null;
+  }
+
+  function applyUploadProgress(message, { percent, error }) {
+    if (!message?.media) return;
+    if (Number.isFinite(percent)) {
+      const pct = Math.min(100, Math.max(0, Math.round(percent)));
+      message.media.progress = pct;
+      message.media.uploading = pct < 100 && !error;
+    }
+    if (error) {
+      message.media.error = error;
+      message.media.uploading = false;
+    }
   }
 
   async function handleComposerFileSelection(event) {
@@ -1685,48 +1764,89 @@ export function initMessagesPane({
     const conversation = contactEntry?.conversation || null;
     try {
       for (const file of files) {
-        setMessagesStatus('正在加密與上傳檔案…', false);
-        const res = await sendDrMedia({
-          peerUidHex: state.activePeerUid,
-          file,
-          conversation,
-          convId: state.conversationId,
-          dir: state.conversationId ? ['messages', state.conversationId] : 'messages',
-          onProgress: (progress) => {
-            if (!progress || !Number.isFinite(progress.percent)) return;
-            const pct = Math.min(100, Math.max(0, progress.percent));
-            setMessagesStatus(`上傳中… ${pct}%`, false);
+        const localUrl = URL.createObjectURL(file);
+        const tmpId = `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const previewText = `[檔案] ${file.name || '附件'}`;
+        const localMsg = appendLocalOutgoingMessage({
+          text: previewText,
+          ts: Math.floor(Date.now() / 1000),
+          id: tmpId,
+          type: 'media',
+          media: {
+            name: file.name || '附件',
+            size: typeof file.size === 'number' ? file.size : null,
+            contentType: file.type || 'application/octet-stream',
+            localUrl,
+            previewUrl: localUrl,
+            uploading: true,
+            progress: 0
           }
         });
-        if (res?.convId && !state.conversationId) {
-          state.conversationId = res.convId;
-        }
-        const ts = res?.msg?.ts || Math.floor(Date.now() / 1000);
-        const mediaInfo = res?.msg?.media ? { ...res.msg.media } : {};
-        mediaInfo.name = mediaInfo.name || file.name || '附件';
-        mediaInfo.size = Number.isFinite(mediaInfo.size) ? mediaInfo.size : (typeof file.size === 'number' ? file.size : null);
-        mediaInfo.contentType = mediaInfo.contentType || file.type || 'application/octet-stream';
-        mediaInfo.localUrl = URL.createObjectURL(file);
-        if (!mediaInfo.previewUrl) mediaInfo.previewUrl = mediaInfo.localUrl;
-        const messageId = res?.msg?.id || res?.upload?.objectKey || `local-${Date.now()}`;
-        const previewText = res?.msg?.text || `[檔案] ${mediaInfo.name}`;
-        appendLocalOutgoingMessage({
-          text: previewText,
-          ts,
-          id: messageId,
-          type: 'media',
-          media: mediaInfo
-        });
-        const senderUid = getUidHex();
-        if (state.activePeerUid && senderUid) {
-          wsSendFn({
-            type: 'message-new',
-            targetUid: state.activePeerUid,
-            conversationId: state.conversationId,
-            preview: previewText,
-            ts,
-            senderUid
+
+        const progressHandler = (progress) => {
+          const msg = findMessageById(localMsg.id);
+          if (!msg) return;
+          const percent = Number.isFinite(progress?.percent)
+            ? progress.percent
+            : (progress?.loaded && progress?.total ? (progress.loaded / progress.total) * 100 : null);
+          applyUploadProgress(msg, { percent });
+          updateMessagesUI({ scrollToEnd: false });
+        };
+
+        try {
+          const res = await sendDrMedia({
+            peerUidHex: state.activePeerUid,
+            file,
+            conversation,
+            convId: state.conversationId,
+            dir: state.conversationId ? ['messages', state.conversationId] : 'messages',
+            onProgress: progressHandler
           });
+          if (res?.convId && !state.conversationId) {
+            state.conversationId = res.convId;
+          }
+          const msg = findMessageById(localMsg.id);
+          if (msg) {
+            msg.id = res?.msg?.id || msg.id;
+            msg.ts = res?.msg?.ts || msg.ts || Math.floor(Date.now() / 1000);
+            msg.text = res?.msg?.text || msg.text;
+            msg.pending = false;
+            if (!msg.media) msg.media = {};
+            msg.media = {
+              ...msg.media,
+              ...res?.msg?.media,
+              name: (res?.msg?.media?.name || msg.media.name || file.name || '附件'),
+              size: Number.isFinite(res?.msg?.media?.size) ? res.msg.media.size : (typeof file.size === 'number' ? file.size : msg.media.size || null),
+              contentType: res?.msg?.media?.contentType || msg.media.contentType || file.type || 'application/octet-stream',
+              localUrl: msg.media.localUrl || localUrl,
+              previewUrl: msg.media.previewUrl || msg.media.localUrl || localUrl,
+              uploading: false,
+              progress: 100,
+              envelope: res?.msg?.media?.envelope || msg.media.envelope || null,
+              objectKey: res?.msg?.media?.objectKey || msg.media.objectKey || res?.upload?.objectKey || null
+            };
+          }
+          const senderUid = getUidHex();
+          if (state.activePeerUid && senderUid) {
+            wsSendFn({
+              type: 'message-new',
+              targetUid: state.activePeerUid,
+              conversationId: state.conversationId,
+              preview: msg?.text || previewText,
+              ts: msg?.ts || Math.floor(Date.now() / 1000),
+              senderUid
+            });
+          }
+        } catch (err) {
+          const msg = findMessageById(localMsg.id);
+          if (msg) {
+            applyUploadProgress(msg, { percent: msg.media?.progress ?? 0, error: err?.message || err });
+            msg.pending = false;
+            msg.text = `[上傳失敗] ${msg.media?.name || file.name || '附件'}`;
+          }
+          setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
+        } finally {
+          updateMessagesUI({ scrollToEnd: true });
         }
       }
       setMessagesStatus('');
