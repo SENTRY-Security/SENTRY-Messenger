@@ -7,6 +7,18 @@ export const CALL_LOG_OUTCOME = Object.freeze({
   CANCELLED: 'cancelled'
 });
 
+function formatReason(reason, viewerRole) {
+  if (!reason) return null;
+  const r = String(reason).toLowerCase();
+  const isOutgoing = viewerRole === CALL_SESSION_DIRECTION.OUTGOING;
+  if (r.includes('user_reject')) return isOutgoing ? '對方拒絕' : '你已拒絕';
+  if (r.includes('caller_cancelled')) return isOutgoing ? '你已取消' : '對方取消';
+  if (r.includes('peer_cancelled')) return isOutgoing ? '對方取消' : '你已取消';
+  if (r.includes('busy')) return isOutgoing ? '對方忙線中' : '你正忙線';
+  if (r.includes('timeout')) return '未接聽';
+  return reason;
+}
+
 export function formatCallLogDuration(seconds) {
   const total = Number(seconds);
   if (!Number.isFinite(total) || total <= 0) return '0秒';
@@ -66,7 +78,7 @@ export function describeCallLogForViewer(callLog, viewerRole) {
     }
     default: {
       label = '通話失敗';
-      subLabel = reason || null;
+      subLabel = formatReason(reason, role);
       break;
     }
   }
