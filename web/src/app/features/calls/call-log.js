@@ -12,6 +12,7 @@ function formatReason(reason, viewerRole) {
   const r = String(reason).toLowerCase();
   const isOutgoing = viewerRole === CALL_SESSION_DIRECTION.OUTGOING;
   if (r.includes('user_reject')) return isOutgoing ? '對方拒絕' : '你已拒絕';
+  if (r.includes('rejected')) return isOutgoing ? '對方拒絕' : '你已拒絕';
   if (r.includes('caller_cancelled')) return isOutgoing ? '你已取消' : '對方取消';
   if (r.includes('peer_cancelled')) return isOutgoing ? '對方取消' : '你已取消';
   if (r.includes('busy')) return isOutgoing ? '對方忙線中' : '你正忙線';
