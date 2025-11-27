@@ -391,7 +391,14 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
       const msgTs = Number(payload?.meta?.ts || raw?.created_at || raw?.createdAt || null);
       const messageTs = Number.isFinite(msgTs) ? msgTs : null;
       const messageId = toMessageId(raw);
-      if (shouldTrackState && wasMessageProcessed(conversationId, messageId)) {
+      const meta = payload?.meta || null;
+      const payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
+      const senderFingerprint = meta?.sender_fingerprint || meta?.fingerprint || null;
+      const isMediaMessage = !!(meta?.media);
+      let direction = 'unknown';
+      if (senderFingerprint && fingerprintSelf && senderFingerprint === fingerprintSelf) direction = 'outgoing';
+      else if (senderFingerprint && fingerprintPeer && senderFingerprint === fingerprintPeer) direction = 'incoming';
+      if (shouldTrackState && !isMediaMessage && wasMessageProcessed(conversationId, messageId)) {
         if (drDebug) {
           console.log('[dr-skip-message]', JSON.stringify({ peerUidHex, messageId, reason: 'processed-cache' }));
         }
@@ -400,12 +407,6 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
       let prepResult = null;
       let replayHandled = false;
       let messageKeyB64 = null;
-      const meta = payload?.meta || null;
-      const payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
-      const senderFingerprint = meta?.sender_fingerprint || meta?.fingerprint || null;
-      let direction = 'unknown';
-      if (senderFingerprint && fingerprintSelf && senderFingerprint === fingerprintSelf) direction = 'outgoing';
-      else if (senderFingerprint && fingerprintPeer && senderFingerprint === fingerprintPeer) direction = 'incoming';
       if (Number.isFinite(msgTs)) {
         if (shouldTrackState) {
           state = deps.drState(peerUidHex);
