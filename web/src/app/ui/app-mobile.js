@@ -522,6 +522,27 @@ function forceImmediateAudioPlayback() {
   }
 }
 
+function playConnectChime({ volume = 0.3 } = {}) {
+  if (typeof Audio === 'undefined') return;
+  try {
+    const audio = new Audio('/assets/audio/accept-call.mp3');
+    audio.volume = Math.min(Math.max(volume, 0), 1);
+    audio.playsInline = true;
+    audio.muted = false;
+    const cleanup = () => {
+      try { audio.pause(); audio.src = ''; audio.load(); } catch {}
+    };
+    audio.play()
+      ?.then(() => setTimeout(cleanup, 4000))
+      .catch((err) => {
+        log({ mediaPermissionChimeError: err?.message || err });
+        cleanup();
+      });
+  } catch (err) {
+    log({ mediaPermissionChimeInitError: err?.message || err });
+  }
+}
+
 async function finalizeMediaPermission({ warning = false, autoCloseDelayMs = 600, statusMessage } = {}) {
   await warmUpSilentAudioPlayback();
   markMediaPermissionGranted();
@@ -632,6 +653,7 @@ async function verifyMediaPermissionAfterConfirm() {
 async function handleMediaPermissionGrant() {
   if (!mediaPermissionOverlay || !mediaPermissionAllowBtn) return;
   forceImmediateAudioPlayback();
+  playConnectChime({ volume: 0.3 });
   if (!mediaPermissionAwaitingConfirm) {
     resumeNotifyAudioContext()?.catch(() => {});
     audioManager.loadBuffer?.();
