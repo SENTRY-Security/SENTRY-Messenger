@@ -200,7 +200,7 @@ export function initMessagesPane({
         return session.direction;
       }
       const myUid = getUidHex();
-      const callerUid = session.initiatorUid || session.callerUid || session.fromUid || session.fromUidHex || null;
+      const callerUid = session.initiatorUidHex || session.initiatorUid || session.callerUid || session.fromUid || session.fromUidHex || null;
       if (myUid && callerUid && String(callerUid).replace(/[^0-9a-f]/gi, '').toUpperCase() !== String(myUid || '').toUpperCase()) {
         return CALL_SESSION_DIRECTION.INCOMING;
       }

@@ -11,6 +11,7 @@ import {
 import { createCallInvite } from '../../api/calls.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
+import { getUidHex } from '../../core/store.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -76,6 +77,7 @@ function createEmptySession() {
     traceId: null,
     sessionId: null,
     callId: null,
+    initiatorUidHex: null,
     direction: null,
     status: CALL_SESSION_STATUS.IDLE,
     peerUidHex: null,
@@ -200,6 +202,7 @@ export async function requestOutgoingCall({
   activeSession = createEmptySession();
   activeSession.traceId = traceId || createTraceId();
   activeSession.sessionId = activeSession.traceId;
+  activeSession.initiatorUidHex = getUidHex ? getUidHex() : null;
   activeSession.direction = CALL_SESSION_DIRECTION.OUTGOING;
   activeSession.status = CALL_SESSION_STATUS.OUTGOING;
   activeSession.peerUidHex = peerKey;
@@ -273,6 +276,7 @@ export function markIncomingCall({
   if (!peerKey) return { ok: false, error: 'MISSING_PEER' };
   if (!canStartCall()) return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
   activeSession = createEmptySession();
+  activeSession.initiatorUidHex = peerKey;
   activeSession.direction = CALL_SESSION_DIRECTION.INCOMING;
   activeSession.status = CALL_SESSION_STATUS.INCOMING;
   activeSession.peerUidHex = peerKey;
