@@ -49,8 +49,8 @@ export function normalizeCallLogPayload(payload = {}, meta = {}) {
 export function resolveViewerRole(authorRole, messageDirection) {
   const normalizedAuthor = normalizeRole(authorRole);
   if (messageDirection === 'outgoing') return normalizedAuthor;
-  if (normalizedAuthor === CALL_SESSION_DIRECTION.OUTGOING) return CALL_SESSION_DIRECTION.INCOMING;
-  return CALL_SESSION_DIRECTION.OUTGOING;
+  if (messageDirection === 'incoming') return CALL_SESSION_DIRECTION.INCOMING;
+  return normalizedAuthor;
 }
 
 export function describeCallLogForViewer(callLog, viewerRole) {
