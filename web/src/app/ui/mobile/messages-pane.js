@@ -858,6 +858,14 @@ export function initMessagesPane({
     elements.scrollEl.scrollTop = elements.scrollEl.scrollHeight;
   }
 
+  function scrollMessagesToBottomSoon() {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => scrollMessagesToBottom());
+    } else {
+      setTimeout(() => scrollMessagesToBottom(), 0);
+    }
+  }
+
   function renderConversationList() {
     if (!elements.conversationList) return;
     const openPeer = elements.conversationList.querySelector('.conversation-item.show-delete')?.dataset?.peer || null;
@@ -1267,7 +1275,7 @@ export function initMessagesPane({
     Object.assign(overlay.style, {
       position: 'absolute',
       inset: '0',
-      background: media.error ? 'rgba(239,68,68,0.82)' : 'rgba(15,23,42,0.55)',
+      background: media.error ? 'rgba(239,68,68,0.82)' : 'rgba(15,23,42,0.75)',
       color: '#fff',
       display: 'flex',
       flexDirection: 'column',
@@ -1314,6 +1322,15 @@ export function initMessagesPane({
       cancelBtn.type = 'button';
       cancelBtn.textContent = '取消上傳';
       cancelBtn.className = 'upload-cancel-btn';
+      Object.assign(cancelBtn.style, {
+        background: 'rgba(0,0,0,0.55)',
+        color: '#fff',
+        border: '1px solid rgba(255,255,255,0.35)',
+        padding: '8px 12px',
+        borderRadius: '10px',
+        cursor: 'pointer',
+        fontSize: '13px'
+      });
       overlay.appendChild(cancelBtn);
       cancelBtn.addEventListener('click', (event) => {
         event.preventDefault();
@@ -1754,6 +1771,7 @@ export function initMessagesPane({
     state.messages.push(message);
     updateMessagesUI({ scrollToEnd: true });
     scrollMessagesToBottom();
+    scrollMessagesToBottomSoon();
     syncThreadFromActiveMessages();
     return message;
   }
@@ -1799,6 +1817,7 @@ export function initMessagesPane({
     const wrapper = elements.messagesList.querySelector(selector);
     if (!wrapper) return false;
     renderUploadOverlay(wrapper, media);
+    scrollMessagesToBottomSoon();
     return true;
   }
 
