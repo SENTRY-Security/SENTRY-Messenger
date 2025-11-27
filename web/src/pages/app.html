@@ -20,10 +20,11 @@
       window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
     </script>
     <style>
-      :root { color-scheme: light; --bg:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --brand:#111827; }
+      :root { color-scheme: light; --bg:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --brand:#111827; --topbar-height: 64px; --topbar-offset: calc(var(--topbar-height) + env(safe-area-inset-top, 0px)); --navbar-height: calc(78px + env(safe-area-inset-bottom, 0px)); --app-height: 100vh; }
       * { box-sizing: border-box; }
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans TC', sans-serif; margin: 0; background:var(--bg); color:var(--fg); }
-      .topbar { position: sticky; top:0; z-index:10; display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:none; background:#fff; backdrop-filter:saturate(180%) blur(6px); box-shadow:0 1px 0 rgba(15,23,42,0.04); }
+      html, body { height: 100%; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans TC', sans-serif; margin: 0; background:var(--bg); color:var(--fg); padding-top: var(--topbar-offset); padding-bottom: var(--navbar-height); overflow: hidden; }
+      .topbar { position: fixed; top: 0; left: 0; right: 0; z-index:10; display:flex; justify-content:space-between; align-items:center; padding:calc(12px + env(safe-area-inset-top, 0px)) 16px 12px; border-bottom:none; background:#fff; backdrop-filter:saturate(180%) blur(6px); box-shadow:0 1px 0 rgba(15,23,42,0.04); }
       .topbar .title { display:flex; align-items:center; gap:10px; font-size:16px; font-weight:700; letter-spacing:0.4px; }
       .topbar .actions { display:flex; align-items:center; }
       .topbar .title img.brand { height:20px; width:auto; display:block; }
@@ -44,11 +45,11 @@
       .icon-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid var(--line); border-radius:12px; background:#fff; }
       .icon-btn i { font-size:18px; }
       .icon-btn.danger { background:linear-gradient(180deg,#ef4444,#b91c1c); color:#fff; border-color:#b91c1c; box-shadow:0 6px 16px rgba(185,28,28,0.25); }
-      .content { padding: 12px 12px calc(80px + env(safe-area-inset-bottom, 0px)); display:flex; flex-direction:column; min-height:calc(100vh - 64px); }
-      .content.fullscreen { padding:12px 12px 12px; }
-      .content > .tab { flex:1 1 auto; min-height:0; }
+      .content { padding: 12px; display:flex; flex-direction:column; min-height:calc(var(--app-height) - var(--topbar-offset) - var(--navbar-height)); height:calc(var(--app-height) - var(--topbar-offset) - var(--navbar-height)); overflow:hidden; }
+      .content.fullscreen { padding:12px; }
+      .content > .tab { flex:1 1 auto; min-height:0; height:100%; overflow:hidden; }
       body.messages-fullscreen { overflow:hidden; }
-      body.messages-fullscreen main.content.fullscreen { height:calc(100vh - 64px); overflow:hidden; display:flex; flex-direction:column; }
+      body.messages-fullscreen main.content.fullscreen { height:calc(var(--app-height) - var(--topbar-offset)); overflow:hidden; display:flex; flex-direction:column; }
       body.messages-fullscreen .messages-pane { flex:1 1 auto; }
       body.messages-fullscreen .messages-thread { flex:1 1 auto; }
       body.messages-fullscreen .messages-scroll { height:100%; overflow-y:auto; }
@@ -60,19 +61,22 @@
       .nav-badge { position:absolute; top:2px; right:12px; min-width:18px; padding:1px 4px; border-radius:999px; background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; font-size:10px; font-weight:600; line-height:1.2; display:none; box-shadow:0 4px 10px rgba(37,99,235,0.25); }
       .navbtn.has-badge .nav-badge { display:inline-flex; align-items:center; justify-content:center; }
       .navbtn.active, .navbtn:focus { color:#111827; }
-      .tab { display:none; }
+      .tab { display:none; height:100%; }
       /* Fallback: show Drive tab by default in case JS fails */
       #tab-drive { display:block; }
       .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 12px 0; }
-      #tab-contacts { min-height: calc(100vh - 120px); display:flex; }
-      #tab-contacts .card.contacts-card { padding: 0; margin:0; border:none; border-radius:0; overflow:hidden; flex:1; display:flex; background:transparent; box-shadow:none; min-height:100%; }
-      .contacts-scroll { position: relative; padding: 0; flex:1 1 auto; display:flex; flex-direction:column; min-height:100%; }
+      #tab-contacts { display:flex; flex-direction:column; height:100%; overflow:hidden; }
+      #tab-contacts .card.contacts-card { padding: 0; margin:0; border:none; border-radius:0; overflow:hidden; flex:1; display:flex; background:transparent; box-shadow:none; min-height:0; }
+      .contacts-scroll { position: relative; padding: 0; flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
       .contacts-refresh { position: relative; display:flex; align-items:center; justify-content:center; gap:8px; height:44px; margin:-40px 0 8px; color:#64748b; font-size:12px; letter-spacing:0.3px; opacity:0; pointer-events:none; }
       .contacts-refresh .icon { font-size:18px; display:inline-flex; align-items:center; justify-content:center; }
       .contacts-refresh.loading .icon { animation: modal-spin .9s linear infinite; }
       .contacts-refresh.ready { color:#0f172a; font-weight:500; }
       .contacts-refresh.ready .icon { color:#0f172a; }
       .contact-list { list-style:none; padding-left:0; margin:5px 0 0; display:flex; flex-direction:column; gap:12px; flex:1 1 auto; overflow-y:auto; }
+      #tab-drive,
+      #tab-profile { overflow:auto; }
+      #tab-messages { overflow:hidden; }
       .contact-item { position:relative; display:flex; align-items:center; justify-content:flex-start; }
       .contact-item .item-content { display:flex; align-items:center; gap:12px; width:100%; padding:12px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 8px 16px rgba(15,23,42,0.06); transition:transform .18s ease; }
       .contact-item .avatar { width:44px; height:44px; border-radius:50%; background:#e2e8f0; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:18px; color:#64748b; }
@@ -80,7 +84,7 @@
       .contact-item .info { display:flex; flex-direction:column; gap:4px; flex:1; min-width:0; }
       .contact-item .info .name { font-size:15px; font-weight:600; color:#0f172a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .contact-item .info .meta { font-size:11px; color:#94a3b8; letter-spacing:0.2px; }
-      .contact-item .item-delete { position:absolute; top:0; right:0; bottom:0; width:72px; border:none; background:#ef4444; color:#fff; display:flex; align-items:center; justify-content:center; font-size:22px; cursor:pointer; pointer-events:auto; opacity:0; transition:opacity .18s ease; }
+      .contact-item .item-delete { position:absolute; top:0; right:0; bottom:0; width:72px; border:none; background:#ef4444; color:#fff; display:flex; align-items:center; justify-content:center; font-size:22px; cursor:pointer; pointer-events:none; opacity:0; transition:opacity .18s ease; }
       .contact-item .item-delete:active { transform:translateY(1px); }
       .contact-item.show-delete .item-content { transform:translateX(-72px); }
       .contact-item.show-delete .item-delete { pointer-events:auto; opacity:1; }
@@ -320,7 +324,7 @@
       .composer-send i { font-size:20px; }
       @media (max-width: 959px) {
         #tab-messages { padding:0; }
-        .messages-pane { border:none; border-radius:0; min-height:calc(100vh - 140px); box-shadow:none; background:#fff; }
+        .messages-pane { border:none; border-radius:0; min-height:calc(var(--app-height) - 140px); box-shadow:none; background:#fff; }
         .messages-body { flex-direction:column; }
         .messages-sidebar { width:100%; max-width:none; border-right:none; border-bottom:1px solid var(--line); }
         .messages-sidebar h3 { margin:14px 18px; }
@@ -330,7 +334,7 @@
         .messages-pane.detail-view .messages-thread { display:flex; }
         .messages-pane.detail-view .messages-back { display:inline-flex; }
         .messages-pane.list-view .messages-back { display:none; }
-        .messages-thread { min-height:calc(100vh - 208px); overflow:hidden; margin:0; }
+        .messages-thread { min-height:calc(var(--app-height) - 208px); overflow:hidden; margin:0; }
         .messages-header { padding:12px 16px; }
         .messages-scroll { padding:16px; }
         .messages-composer { padding:10px 12px; }
@@ -495,12 +499,12 @@
       .media-permission-card li { display:flex; align-items:flex-start; gap:10px; }
       .media-permission-card li i { font-size:18px; color:#38bdf8; margin-top:2px; }
       .media-permission-status { min-height:20px; font-size:13px; color:#f97316; }
+      .media-permission-hints { font-size:12px; color:#94a3b8; line-height:1.5; margin-top:4px; }
       .media-permission-status.success { color:#4ade80; }
       .media-permission-actions { display:flex; flex-direction:column; gap:10px; margin-top:6px; }
-      .media-permission-btn { border:none; border-radius:999px; padding:12px 18px; font-size:15px; font-weight:600; background:linear-gradient(135deg,#38bdf8,#2563eb); color:#fff; box-shadow:0 14px 40px rgba(37,99,235,0.45); display:inline-flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; transition:transform .15s ease; }
+      .media-permission-btn { border:none; border-radius:999px; padding:12px 18px; font-size:15px; font-weight:600; background:linear-gradient(135deg,#38bdf8,#2563eb); color:#fff; box-shadow:0 14px 40px rgba(37,99,235,0.45); display:inline-flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; transition:transform .15s ease, background .3s ease; }
       .media-permission-btn:active { transform:translateY(1px); }
-      .media-permission-btn.loading { opacity:0.7; pointer-events:none; position:relative; }
-      .media-permission-btn.loading::after { content:''; width:16px; height:16px; border-radius:50%; border:2px solid rgba(255,255,255,0.55); border-top-color:#fff; animation:modal-spin .9s linear infinite; }
+      .media-permission-btn.state-confirm { background:linear-gradient(135deg,#22c55e,#15803d); box-shadow:0 14px 38px rgba(34,197,94,0.45); }
       .media-permission-skip { border:none; background:none; color:#cbd5ff; font-size:13px; text-decoration:underline; cursor:pointer; padding:6px; align-self:center; }
       .media-permission-skip:active { opacity:0.85; }
       body.media-permission-open { overflow:hidden; }
@@ -748,10 +752,14 @@
           <li><i class='bx bx-volume-full'></i><span>提前允許瀏覽器播放音訊，避免 Safari 阻擋遠端聲音。</span></li>
         </ul>
         <div id="mediaPermissionStatus" class="media-permission-status" role="status" aria-live="polite"></div>
+        <p class="media-permission-hints">
+          若未彈出瀏覽器授權視窗，請按「取消重試」後再試一次，或稍後到 Safari 設定 > 網站進階設定 > 麥克風重新允許。
+        </p>
         <div class="media-permission-actions">
           <button id="mediaPermissionAllowBtn" type="button" class="media-permission-btn">
-            <i class='bx bx-check-shield'></i>允許麥克風
+            <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel">允許麥克風</span>
           </button>
+          <button id="mediaPermissionDebugBtn" type="button" class="media-permission-skip" style="display:none">查詢 Debug</button>
           <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip">稍後再說</button>
         </div>
       </div>
@@ -802,7 +810,48 @@
         document.addEventListener('gesturechange', prevent, { passive:false });
         document.addEventListener('gestureend', prevent, { passive:false });
       })();
+      (function maintainAppHeight(){
+        const docEl = document.documentElement;
+        let baseHeight = window.innerHeight || docEl.clientHeight || 0;
+        const applyHeight = (value) => {
+          if (!value) return;
+          docEl.style.setProperty('--app-height', `${value}px`);
+        };
+        applyHeight(baseHeight);
+        window.addEventListener('resize', () => {
+          const current = window.innerHeight || docEl.clientHeight || 0;
+          if (!current) return;
+          if (current >= baseHeight - 2) {
+            baseHeight = current;
+            applyHeight(baseHeight);
+          }
+        });
+        window.addEventListener('orientationchange', () => {
+          setTimeout(() => {
+            const current = window.innerHeight || docEl.clientHeight || baseHeight;
+            baseHeight = current;
+            applyHeight(baseHeight);
+          }, 300);
+        });
+      })();
     </script>
-    <script type="module" src="/app/ui/app-mobile.js?v=4"></script>
+    <script>
+      (function loadAppModule(){
+        const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
+        const versionedSrc = `/app/ui/app-mobile.js?v=${encodeURIComponent(stamp)}`;
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = versionedSrc;
+        script.onerror = () => {
+          if (script.dataset.retry) return;
+          script.dataset.retry = '1';
+          const fallback = document.createElement('script');
+          fallback.type = 'module';
+          fallback.src = `/app/ui/app-mobile.js?v=${Date.now()}`;
+          document.body.appendChild(fallback);
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
   </body>
 </html>

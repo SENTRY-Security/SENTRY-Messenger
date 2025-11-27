@@ -536,7 +536,7 @@ async function startMediaPermissionPrompt() {
     .then(async () => {
       mediaPermissionSystemGranted = true;
       try {
-        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: '已確�認授權並啟動麥克風，稍後會自動關閉提示。' });
+        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: '已確認授權並啟動麥克風，稍後會自動關閉提示。' });
         log({ mediaPermission: 'prompt-detected' });
       } catch (err) {
         log({ mediaPermissionPromptFinalizeError: err?.message || err });
@@ -674,6 +674,15 @@ function initMediaPermissionPrompt() {
     });
   }
   updateMediaPermissionDebugVisibility();
+}
+
+function resetMainContentScroll({ smooth = false } = {}) {
+  if (!mainContentEl) return;
+  try {
+    mainContentEl.scrollTo({ top: 0, left: 0, behavior: smooth ? 'smooth' : 'auto' });
+  } catch {
+    mainContentEl.scrollTop = 0;
+  }
 }
 
 function ensureTopbarVisible({ repeat = true } = {}) {
@@ -1238,6 +1247,7 @@ const tabs = ['contacts','messages','drive','profile'];
 let currentTab = 'drive';
 function switchTab(name, options = {}){
   currentTab = name;
+  resetMainContentScroll({ smooth: false });
   tabs.forEach((t) => {
     const page = document.getElementById(`tab-${t}`);
     const btn = document.getElementById(`nav-${t}`);

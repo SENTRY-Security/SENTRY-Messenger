@@ -16,7 +16,7 @@ test.afterAll(async () => {
   await stopWebServer(serverProc);
 });
 
-test('login flow supports password change and re-login', async ({ page }) => {
+test('login flow supports password change and re-login (reload enforces logout)', async ({ page }) => {
   page.on('console', msg => {
     // eslint-disable-next-line no-console
     console.log('[console]', msg.type(), msg.text());
@@ -44,6 +44,9 @@ test('login flow supports password change and re-login', async ({ page }) => {
   // 再次使用原密碼登入，確保流程恢復
   await performLogin(page, { password: INITIAL_PASSWORD, uidHex });
   await expect(page.locator('#nav-drive')).toBeVisible();
+  await ensureAutoLogoutDisabled(page);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForURL('**/pages/logout.html', { timeout: 20000 });
 });
 
 function generateUidHex() {
@@ -92,4 +95,29 @@ async function logoutFromApp(page) {
   await page.waitForSelector('[data-action="logout"]', { timeout: 5000 });
   await page.click('[data-action="logout"]');
   await page.waitForURL('**/pages/logout.html', { timeout: 20000 });
+}
+
+async function ensureAutoLogoutDisabled(page) {
+  await page.waitForSelector('#btnUserMenu', { timeout: 5000 });
+  await page.locator('#btnUserMenu').click();
+  await page.waitForSelector('[data-action="settings"]', { timeout: 5000 });
+  await page.click('[data-action="settings"]');
+  const settingsModal = page.locator('.modal.settings-modal');
+  await expect(settingsModal).toBeVisible();
+  const autoLogoutToggle = page.locator('#settingsAutoLogout');
+  if (await autoLogoutToggle.isChecked()) {
+    await autoLogoutToggle.click();
+    await expect(autoLogoutToggle).toBeDisabled({ timeout: 1000 });
+    await expect(autoLogoutToggle).toBeEnabled({ timeout: 10000 });
+  }
+  await expect(autoLogoutToggle).not.toBeChecked();
+  const closeBtn = page.locator('#settingsClose');
+  if (await closeBtn.isVisible()) {
+    await closeBtn.click();
+  }
+  await settingsModal.waitFor({ state: 'hidden', timeout: 7000 });
+  const menu = page.locator('#userMenuDropdown');
+  if (await menu.isVisible()) {
+    await page.locator('#btnUserMenu').click().catch(() => {});
+  }
 }

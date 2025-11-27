@@ -206,9 +206,33 @@
       @keyframes chipGuardFadeOut { 0% { opacity:1; } 100% { opacity:0; } }
       @keyframes chipGuardMessagePulse { 0% { opacity:0.8; box-shadow:0 12px 22px rgba(2,6,23,0.2); } 100% { opacity:1; box-shadow:0 18px 40px rgba(15,23,42,0.45); } }
       @media (prefers-reduced-motion: reduce) { .chip-guard-overlay { display:none; } }
+      .remote-console-toast {
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translate(-50%, -150%);
+        background: rgba(15,23,42,0.95);
+        color: #fef9c3;
+        padding: 9px 18px;
+        border-radius: 999px;
+        font-size: 13px;
+        letter-spacing: 0.4px;
+        box-shadow: 0 18px 36px rgba(2,6,23,0.45);
+        opacity: 0;
+        transition: transform 0.25s ease, opacity 0.25s ease;
+        z-index: 60;
+        pointer-events: none;
+      }
+      .remote-console-toast.show {
+        transform: translate(-50%, 0);
+        opacity: 1;
+      }
+      .remote-console-toast.warn { color: #fecdd3; }
+      .remote-console-toast.success { color: #bbf7d0; }
     </style>
   </head>
   <body>
+    <div id="remoteConsoleToast" class="remote-console-toast" role="status" aria-live="polite"></div>
     <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
       <span class="icon" aria-hidden="true">📱</span>
       <strong>請以直立模式使用</strong>
@@ -234,7 +258,7 @@
       <div class="chip-guard-message" role="presentation">偵測晶片序號中...</div>
     </div>
     <main class="login-shell">
-      <div class="brand">
+      <div class="brand" id="loginBrand">
         <img src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
         <h1>SENTRY MESSENGER</h1>
       </div>
@@ -390,6 +414,22 @@
         document.addEventListener('gestureend', prevent, { passive:false });
       })();
     </script>
-    <script type="module" src="/app/ui/login-ui.js?v=4"></script>
+    <script>
+      (function loadLoginModule(){
+        const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = `/app/ui/login-ui.js?v=${encodeURIComponent(stamp)}`;
+        script.onerror = () => {
+          if (script.dataset.retry) return;
+          script.dataset.retry = '1';
+          const fallback = document.createElement('script');
+          fallback.type = 'module';
+          fallback.src = `/app/ui/login-ui.js?v=${Date.now()}`;
+          document.body.appendChild(fallback);
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
   </body>
 </html>

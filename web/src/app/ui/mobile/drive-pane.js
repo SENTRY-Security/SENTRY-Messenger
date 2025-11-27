@@ -69,6 +69,46 @@ export function initDrivePane({
   const driveState = sessionStore.driveState;
   ensureSafeCwd();
 
+  async function fetchDriveMessages({ convId, pageLimit = 200, maxPages = 25 } = {}) {
+    if (!convId) throw new Error('convId required');
+    const items = [];
+    let cursor = undefined;
+    let pages = 0;
+    let truncated = false;
+    while (true) {
+      pages += 1;
+      if (pages > maxPages) {
+        truncated = true;
+        log({ driveListTruncated: true, pages, pageLimit });
+        break;
+      }
+      const { r, data } = await listMessages({ convId, limit: pageLimit, cursorTs: cursor });
+      if (!r.ok) throw new Error(typeof data === 'string' ? data : JSON.stringify(data));
+      const chunk = Array.isArray(data?.items) ? data.items : [];
+      if (chunk.length) items.push(...chunk);
+      const next = data?.nextCursorTs;
+      if (!next) break;
+      cursor = next;
+    }
+    return { items, truncated };
+  }
+
+  function findEnvelopeInMessages(messages, key) {
+    const hits = (Array.isArray(messages) ? messages : []).map((msg) => {
+      const header = safeJSON(msg?.header_json || msg?.header || '{}');
+      if (header?.obj === key && header?.env?.iv_b64 && header?.env?.hkdf_salt_b64) {
+        return {
+          iv_b64: header.env.iv_b64,
+          hkdf_salt_b64: header.env.hkdf_salt_b64,
+          contentType: header.contentType || 'application/octet-stream',
+          name: header.name || 'decrypted.bin'
+        };
+      }
+      return null;
+    }).filter(Boolean);
+    return hits[0] || null;
+  }
+
   function cwdPath() {
     return ensureSafeCwd().join('/');
   }
@@ -140,9 +180,10 @@ export function initDrivePane({
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) throw new Error('Account missing');
     const convId = `drive-${acct}`;
-    const { r, data } = await listMessages({ convId, limit: 50 });
-    if (!r.ok) throw new Error(typeof data === 'string' ? data : JSON.stringify(data));
-    const items = Array.isArray(data?.items) ? data.items : [];
+    const { items, truncated } = await fetchDriveMessages({ convId });
+    if (truncated) {
+      log({ driveListWarning: '列表已截斷，僅顯示最新項目', convId, items: items.length });
+    }
     driveState.currentMessages = items;
     driveState.currentConvId = convId;
     renderDriveList(items);
@@ -681,21 +722,14 @@ export function initDrivePane({
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) throw new Error('Account missing');
     const convId = `drive-${acct}`;
-    const { r, data } = await listMessages({ convId, limit: 100 });
-    if (!r.ok) throw new Error(typeof data === 'string' ? data : JSON.stringify(data));
-    const arr = Array.isArray(data?.items) ? data.items : [];
-    for (const it of arr) {
-      const header = safeJSON(it.header_json || it.header || '{}');
-      if (header && header.obj === key && header.env && header.env.iv_b64 && header.env.hkdf_salt_b64) {
-        return {
-          iv_b64: header.env.iv_b64,
-          hkdf_salt_b64: header.env.hkdf_salt_b64,
-          contentType: header.contentType || 'application/octet-stream',
-          name: header.name || 'decrypted.bin'
-        };
-      }
-    }
-    throw new Error('找不到封套資料（此物件可能來自尚未更新索引格式的舊版本）');
+    const cached = findEnvelopeInMessages(driveState.currentMessages, key);
+    if (cached) return cached;
+    const { items } = await fetchDriveMessages({ convId });
+    driveState.currentMessages = items;
+    driveState.currentConvId = convId;
+    const hit = findEnvelopeInMessages(items, key);
+    if (hit) return hit;
+    throw new Error('找不到封套資料（此物件可能來自尚未更新索引格式的舊版本或尚未同步）');
   }
 
   function bindDomEvents() {

@@ -39,6 +39,11 @@ const modalBackdrop = document.getElementById('loginModalBackdrop');
 const welcomeModal = document.getElementById('welcomeModal');
 const welcomeNextBtn = document.getElementById('welcomeNext');
 const welcomeCloseBtn = document.getElementById('welcomeClose');
+const loginBrand = document.getElementById('loginBrand');
+const remoteConsoleToast = document.getElementById('remoteConsoleToast');
+const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
+let loginBrandPressTimer = null;
+let remoteConsoleToastTimer = null;
 
 initVersionInfoButton({ buttonId: 'versionInfoBtnLogin', popupId: 'versionInfoPopupLogin' });
 
@@ -60,6 +65,65 @@ setLogSink((line) => {
   if (out) out.textContent = line;
   if (shouldShowModal(line)) showModalMessage(line);
 });
+
+function showRemoteConsoleToast(message, { variant = 'success' } = {}) {
+  if (!remoteConsoleToast) return;
+  remoteConsoleToast.textContent = message || '';
+  remoteConsoleToast.classList.remove('success', 'warn');
+  if (variant === 'warn') remoteConsoleToast.classList.add('warn');
+  else remoteConsoleToast.classList.add('success');
+  remoteConsoleToast.classList.add('show');
+  if (remoteConsoleToastTimer) clearTimeout(remoteConsoleToastTimer);
+  remoteConsoleToastTimer = setTimeout(() => {
+    remoteConsoleToast?.classList.remove('show');
+  }, 2600);
+}
+
+function isRemoteConsoleHandoffEnabled() {
+  try {
+    return sessionStorage.getItem(REMOTE_CONSOLE_HANDOFF_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setRemoteConsoleHandoffEnabled(next) {
+  try {
+    if (next) {
+      sessionStorage.setItem(REMOTE_CONSOLE_HANDOFF_KEY, '1');
+    } else {
+      sessionStorage.removeItem(REMOTE_CONSOLE_HANDOFF_KEY);
+    }
+  } catch {}
+  const message = next ? '登入後將自動啟用遠端 Console。' : '已取消遠端 Console 模式。';
+  showRemoteConsoleToast(message, { variant: next ? 'success' : 'warn' });
+  log(next ? '遠端除錯模式將於登入後自動啟用。' : '遠端除錯模式已取消。');
+}
+
+function handleLoginBrandLongPressTrigger() {
+  const next = !isRemoteConsoleHandoffEnabled();
+  setRemoteConsoleHandoffEnabled(next);
+}
+
+function handleLoginBrandLongPressStart() {
+  if (loginBrandPressTimer) return;
+  loginBrandPressTimer = setTimeout(() => {
+    loginBrandPressTimer = null;
+    handleLoginBrandLongPressTrigger();
+  }, 1500);
+}
+
+function clearLoginBrandLongPressTimer() {
+  if (!loginBrandPressTimer) return;
+  clearTimeout(loginBrandPressTimer);
+  loginBrandPressTimer = null;
+}
+
+loginBrand?.addEventListener('pointerdown', () => {
+  handleLoginBrandLongPressStart();
+});
+loginBrand?.addEventListener('pointerup', clearLoginBrandLongPressTimer);
+loginBrand?.addEventListener('pointerleave', clearLoginBrandLongPressTimer);
 
 function getContactSecretKeyOptionsForLogin(uidOverride) {
   return {

@@ -38,6 +38,39 @@ import {
 } from '../../features/calls/call-log.js';
 
 const sentCallLogIds = new Set();
+const callLogPlaceholders = new Map();
+
+function makeCallLogPlaceholderKey(peerUidHex, callId) {
+  if (!peerUidHex || !callId) return null;
+  return `${peerUidHex}:${callId}`;
+}
+
+function trackCallLogPlaceholder(peerUidHex, callId, message) {
+  const key = makeCallLogPlaceholderKey(peerUidHex, callId);
+  if (!key || !message) return;
+  callLogPlaceholders.set(key, message);
+}
+
+function resolveCallLogPlaceholder(peerUidHex, callId) {
+  const key = makeCallLogPlaceholderKey(peerUidHex, callId);
+  if (!key) return null;
+  return callLogPlaceholders.get(key) || null;
+}
+
+function releaseCallLogPlaceholder(peerUidHex, callId) {
+  const key = makeCallLogPlaceholderKey(peerUidHex, callId);
+  if (!key) return;
+  callLogPlaceholders.delete(key);
+}
+
+function clearCallLogPlaceholders() {
+  callLogPlaceholders.clear();
+}
+
+function resetMessageStateWithPlaceholders() {
+  clearCallLogPlaceholders();
+  resetMessageState();
+}
 
 export function initMessagesPane({
   dom = {},
@@ -187,43 +220,45 @@ export function initMessagesPane({
       outcome,
       reason: normalizedReason || null
     };
-    if (direction === CALL_SESSION_DIRECTION.OUTGOING) {
-      const state = getMessageState();
-      const isActive = state.activePeerUid === key;
-      const viewerMessage = createCallLogMessage(entry, { messageDirection: 'outgoing' });
-      let localMessage = null;
-      if (isActive) {
-        localMessage = { ...viewerMessage };
-        localMessage.id = localMessage.id || entry.id;
-        localMessage.pending = true;
-        state.messages.push(localMessage);
-        updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
-      }
-      updateThreadsWithCallLogDisplay({
-        peerUidHex: key,
-        label: viewerMessage.text,
-        ts: entry.ts,
-        direction: 'outgoing'
-      });
-      sendDrCallLog({
-        peerUidHex: key,
-        callId: entry.callId,
-        outcome: entry.outcome,
-        durationSeconds: entry.durationSeconds,
-        direction: entry.direction,
-        reason: entry.reason
-      })
-        .then(({ msg }) => {
-          if (localMessage && msg?.id) {
-            localMessage.id = msg.id;
-            localMessage.pending = false;
-          }
-        })
-        .catch((err) => {
-          log({ callLogSendError: err?.message || err });
-          showToast?.('通話紀錄同步失敗', { variant: 'warning' });
-        });
+    const state = getMessageState();
+    const isOutgoing = direction === CALL_SESSION_DIRECTION.OUTGOING;
+    const isActive = state.activePeerUid === key;
+    const viewerMessage = createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
+    let localMessage = null;
+    if (isActive) {
+      localMessage = { ...viewerMessage };
+      localMessage.id = localMessage.id || entry.id;
+      localMessage.pending = true;
+      state.messages.push(localMessage);
+      trackCallLogPlaceholder(key, entry.callId, localMessage);
+      updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
     }
+    updateThreadsWithCallLogDisplay({
+      peerUidHex: key,
+      label: viewerMessage.text,
+      ts: entry.ts,
+      direction: isOutgoing ? 'outgoing' : 'incoming'
+    });
+    if (!isOutgoing) return;
+    sendDrCallLog({
+      peerUidHex: key,
+      callId: entry.callId,
+      outcome: entry.outcome,
+      durationSeconds: entry.durationSeconds,
+      direction: entry.direction,
+      reason: entry.reason
+    })
+      .then(({ msg }) => {
+        if (localMessage && msg?.id) {
+          localMessage.id = msg.id;
+          localMessage.pending = false;
+          releaseCallLogPlaceholder(key, entry.callId);
+        }
+      })
+      .catch((err) => {
+        log({ callLogSendError: err?.message || err });
+        showToast?.('通話紀錄同步失敗', { variant: 'warning' });
+      });
   }
 
   const showModalLoading = typeof modalOptions.showModalLoading === 'function' ? modalOptions.showModalLoading : null;
@@ -340,7 +375,7 @@ export function initMessagesPane({
 
   function getMessageState() {
     if (!sessionStore.messageState) {
-      resetMessageState();
+      resetMessageStateWithPlaceholders();
     }
     return sessionStore.messageState;
   }
@@ -821,7 +856,7 @@ export function initMessagesPane({
     if (state.activePeerUid) {
       const exists = contacts.some((c) => String(c?.peerUid || '').toUpperCase() === state.activePeerUid);
       if (!exists) {
-        resetMessageState();
+        resetMessageStateWithPlaceholders();
         state = getMessageState();
         if (!isDesktopLayout()) state.viewMode = 'list';
         if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
@@ -1380,6 +1415,7 @@ export function initMessagesPane({
         allowReplay: !append || forceReplay
       });
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
+      let placeholderUpdated = false;
       if (chunk.length) {
         const seenIds = new Set();
         chunk = chunk.filter((entry) => {
@@ -1387,6 +1423,30 @@ export function initMessagesPane({
           if (!messageId) return true;
           if (seenIds.has(messageId)) return false;
           seenIds.add(messageId);
+          return true;
+        });
+      }
+      if (chunk.length) {
+        chunk = chunk.filter((entry) => {
+          if (entry?.type === 'call-log') {
+            const callId = entry.callLog?.callId || entry.meta?.call_id || null;
+            const placeholder = resolveCallLogPlaceholder(state.activePeerUid, callId);
+            if (placeholder && callId) {
+              placeholder.id = entry.id || placeholder.id;
+              placeholder.ts = entry.ts || placeholder.ts;
+              placeholder.direction = entry.direction || placeholder.direction;
+              if (entry.callLog) {
+                placeholder.callLog = {
+                  ...placeholder.callLog,
+                  ...entry.callLog
+                };
+              }
+              placeholder.pending = false;
+              releaseCallLogPlaceholder(state.activePeerUid, callId);
+              placeholderUpdated = true;
+              return false;
+            }
+          }
           return true;
         });
       }
@@ -1420,6 +1480,9 @@ export function initMessagesPane({
           updateMessagesUI({ scrollToEnd: true });
         }
       }
+      if (placeholderUpdated) {
+        updateMessagesUI({ scrollToEnd: true });
+      }
       state.nextCursorTs = nextCursorTs;
       state.hasMore = !!nextCursorTs;
       if (errors?.length) setMessagesStatus(`部分訊息無法解密，請重新建立安全對話（${errors.length}）`, true);
@@ -1450,7 +1513,7 @@ export function initMessagesPane({
     const nickname = entry.nickname || `好友 ${key.slice(-4)}`;
     const conversation = entry.conversation;
     if (!conversation?.token_b64) {
-      resetMessageState();
+      resetMessageStateWithPlaceholders();
       const state = getMessageState();
       if (!desktopLayout) state.viewMode = 'list';
       if (elements.peerName) elements.peerName.textContent = nickname;
@@ -1471,7 +1534,7 @@ export function initMessagesPane({
     try {
       state.conversationId = conversation.conversation_id || await conversationIdFromToken(conversation.token_b64);
     } catch (err) {
-      resetMessageState();
+      resetMessageStateWithPlaceholders();
       if (elements.peerName) elements.peerName.textContent = nickname;
       setMessagesStatus('無法建立對話：' + (err?.message || err), true);
       clearMessagesView();
@@ -1856,7 +1919,7 @@ export function initMessagesPane({
           if (element) closeSwipe?.(element);
           const state = getMessageState();
           if (state.activePeerUid === key) {
-            resetMessageState();
+            resetMessageStateWithPlaceholders();
             if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
             clearMessagesView();
             hideSecurityModal();

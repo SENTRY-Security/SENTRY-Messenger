@@ -71,8 +71,12 @@ export function setupModalController({ shareButtonProvider } = {}) {
     if (main) {
       main.classList.remove('security-locked');
       main.removeAttribute('aria-hidden');
+      try {
+        main.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      } catch {
+        main.scrollTop = 0;
+      }
     }
-
     document.body.classList.remove('modal-open');
   }
 

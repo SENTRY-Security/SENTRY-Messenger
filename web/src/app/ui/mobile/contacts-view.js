@@ -226,16 +226,25 @@ export function initContactsView(options) {
   }
 
   function applyContactsPullTransition(enable) {
-    if (!contactsRefreshEl) return;
-    contactsRefreshEl.style.transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
+    const transition = enable ? 'transform 120ms ease-out' : 'none';
+    if (contactsRefreshEl) {
+      contactsRefreshEl.style.transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
+    }
+    if (contactsScrollEl) {
+      contactsScrollEl.style.transition = transition;
+    }
   }
 
   function updateContactsPull(offset) {
-    if (!contactsRefreshEl) return;
     const clamped = Math.min(PULL_MAX, Math.max(0, offset));
     const progress = Math.min(1, clamped / PULL_THRESHOLD);
-    contactsRefreshEl.style.opacity = String(Math.min(1, progress * 1.2));
-    contactsRefreshEl.style.transform = `translateY(${clamped}px)`;
+    if (contactsRefreshEl) {
+      contactsRefreshEl.style.opacity = String(Math.min(1, progress * 1.2));
+      contactsRefreshEl.style.transform = `translateY(${clamped * -1}px)`;
+    }
+    if (contactsScrollEl) {
+      contactsScrollEl.style.transform = `translateY(${clamped}px)`;
+    }
     if (contactsRefreshLabel) contactsRefreshLabel.textContent = progress >= 1 ? '鬆開更新聯絡人' : '下拉更新聯絡人';
   }
 
