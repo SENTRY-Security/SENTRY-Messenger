@@ -687,7 +687,7 @@ export async function sendDrSessionAck({ peerUidHex, conversation, convId }) {
   });
 }
 
-export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir, onProgress } = {}) {
+export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir, onProgress, abortSignal } = {}) {
   const me = getUidHex();
   const peer = normHex(peerUidHex);
   if (!me) throw new Error('UID not set');
@@ -740,6 +740,7 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
     file,
     dir,
     onProgress,
+    abortSignal,
     skipIndex: true,
     encryptionKey: { key: sharedMediaKey, type: 'shared' },
     encryptionInfoTag: 'media/v1',

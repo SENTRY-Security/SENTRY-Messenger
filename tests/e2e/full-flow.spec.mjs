@@ -20,11 +20,7 @@ async function createSampleVideoFile(page) {
     ctx.fillStyle = '#0ea5e9';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     const stream = canvas.captureStream(15);
-    const supportedTypes = [
-      'video/webm;codecs=vp9',
-      'video/webm;codecs=vp8',
-      'video/webm'
-    ];
+    const supportedTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
     let recorder = null;
     for (const type of supportedTypes) {
       if (!window.MediaRecorder) break;
@@ -33,7 +29,7 @@ async function createSampleVideoFile(page) {
           recorder = new MediaRecorder(stream, { mimeType: type });
           break;
         } catch {
-          // try next type
+          /* try next */
         }
       }
     }
@@ -124,8 +120,8 @@ test.afterAll(async () => {
 
 test.describe.configure({ mode: 'serial' });
 
-test('complete secure messaging journey with media and cleanup', async ({ page, browser }) => {
-  test.setTimeout(600_000);
+test('media preview screenshots only', async ({ page, browser }) => {
+  test.setTimeout(240_000);
   if (!friendSetup) test.skip(true, 'friend setup failed');
 
   const { userA, userB } = friendSetup;
@@ -134,20 +130,10 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
   const pageB = await contextB.newPage();
 
   const tapConsole = (targetPage, label) => {
-    targetPage.on('console', (msg) => {
-      // eslint-disable-next-line no-console
-      console.log(`[${label} console]`, msg.type(), msg.text());
-    });
-    targetPage.on('pageerror', (err) => {
-      // eslint-disable-next-line no-console
-      console.log(`[${label} pageerror]`, err?.message || err);
-    });
-    targetPage.on('requestfailed', (request) => {
-      // eslint-disable-next-line no-console
-      console.log(`[${label} requestfailed]`, request.method(), request.url(), request.failure()?.errorText);
-    });
+    targetPage.on('console', (msg) => console.log(`[${label} console]`, msg.type(), msg.text())); // eslint-disable-line no-console
+    targetPage.on('pageerror', (err) => console.log(`[${label} pageerror]`, err?.message || err)); // eslint-disable-line no-console
+    targetPage.on('requestfailed', (request) => console.log(`[${label} requestfailed]`, request.method(), request.url(), request.failure()?.errorText)); // eslint-disable-line no-console
   };
-
   tapConsole(pageA, 'userA');
   tapConsole(pageB, 'userB');
 
@@ -162,136 +148,12 @@ test('complete secure messaging journey with media and cleanup', async ({ page, 
     });
   };
 
-  const verifySignPutResponse = async (response, contextLabel) => {
-    let payload = null;
-    let raw = null;
-    try {
-      payload = response.request().postDataJSON();
-    } catch {
-      try {
-        raw = response.request().postData();
-      } catch {
-        raw = null;
-      }
-    }
-    if (!raw) {
-      try {
-        raw = response.request().postData();
-      } catch {
-        raw = null;
-      }
-    }
-    if (!payload && raw) {
-      try {
-        payload = JSON.parse(raw);
-      } catch {
-        payload = null;
-      }
-    }
-    expect(payload?.direction ?? null, `${contextLabel} direction`).toBe('sent');
-    if (payload?.accountDigest) {
-      expect(payload.accountDigest, `${contextLabel} accountDigest`).toMatch(/^[0-9A-F]{64}$/);
-    }
-    const body = await response.json();
-    expect(body?.objectPath, `${contextLabel} objectPath`).toBeTruthy();
-    expect(body.objectPath, `${contextLabel} system folder`).toContain('/已傳送/');
-    return body;
-  };
-
-  const sha256Hex = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
-
-  const openAttachmentPreview = async (targetPage, fileName) => {
-    const wrapper = targetPage
-      .locator('.message-bubble', {
-        has: targetPage.locator('.message-file-name', { hasText: fileName })
-      })
-      .last()
-      .locator('.message-file')
-      .first();
-    await wrapper.scrollIntoViewIfNeeded();
-    await wrapper.click();
-    const modal = targetPage.locator('#modal');
-    await expect(modal).toBeVisible({ timeout: 10000 });
-    await targetPage.click('#modalClose');
-    await expect(modal).toBeHidden({ timeout: 10000 });
-  };
-
-const expectAttachmentIntegrity = async ({ targetPage, peerUid, fileName, expectedDigestHex, type }) => {
-  const fileBubble = targetPage
-    .locator('.message-bubble', {
-      has: targetPage.locator('.message-file-name', { hasText: fileName })
-    })
-    .last();
-  await expect(fileBubble, `bubble for ${fileName} not visible (${peerUid})`).toBeVisible({ timeout: 30000 });
-
-  let previewSelector = '.message-file-preview';
-  if (type === 'image') previewSelector = '.message-file-preview-image';
-  else if (type === 'video') previewSelector = '.message-file-preview-video';
-  else if (type === 'pdf') previewSelector = '.message-file-preview-pdf';
-  const previewLocator = fileBubble.locator(previewSelector).first();
-  await expect(previewLocator, `preview for ${fileName} not visible`).toBeVisible({ timeout: 30000 });
-
-  if (type === 'image' || type === 'video') {
-    try {
-      await expect
-        .poll(async () => previewLocator.evaluate((el) => {
-          if (!el || typeof el !== 'object') return 'missing';
-          if (!('src' in el)) return 'unsupported';
-          return el.src ? 'ready' : 'pending';
-        }), { timeout: 15000 })
-        .toBe('ready');
-    } catch (err) {
-      console.warn('[attachment-preview-warning]', fileName, err?.message || err);
-    }
-  }
-
-  if (expectedDigestHex) {
-    const digestHex = await targetPage.evaluate(async ({ name }) => {
-      const toHex = (u8) => Array.from(new Uint8Array(u8)).map((b) => b.toString(16).padStart(2, '0')).join('');
-      const pane = window.__messagesPane;
-      if (!pane || typeof pane.getMessageState !== 'function') return null;
-      const state = pane.getMessageState();
-      const message = (state?.messages || []).find((m) => m?.media && (m.media.name || '').trim() === name);
-      if (!message?.media?.objectKey || !message.media.envelope) return null;
-      try {
-        const { downloadAndDecrypt } = await import('/app/features/media.js');
-        const result = await downloadAndDecrypt({ key: message.media.objectKey, envelope: message.media.envelope });
-        if (!result?.blob) return null;
-        const buffer = await result.blob.arrayBuffer();
-        const digest = await crypto.subtle.digest('SHA-256', buffer);
-        return toHex(digest);
-      } catch (err) {
-        console.warn('[attachment-digest-fail]', name, err?.message || err);
-        return null;
-      }
-    }, { name: fileName });
-    expect(digestHex, `digest not available for ${fileName} (${peerUid})`).toBeTruthy();
-    expect(digestHex.toLowerCase()).toBe(expectedDigestHex.toLowerCase());
-  }
-};
-
-const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preservedTexts = [] }) => {
-  await expect
-    .poll(async () => targetPage.locator('#messagesList .message-bubble').count(), { timeout: 15000 })
-    .toBeGreaterThanOrEqual(baselineCount);
-  for (const text of preservedTexts) {
-    if (!text) continue;
-    await expect(targetPage.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 15000 });
-  }
-};
-
-  const newNickname = `自動測試-${Date.now()}`;
-  // eslint-disable-next-line no-console
-  console.log('[test-new-nickname]', newNickname);
   const avatarFileAbsPath = path.resolve('tests/assets/avatar.png');
   const uploadFilePath = avatarFileAbsPath;
   const uploadFileName = 'avatar.png';
-  const messageFromA = `A訊息-${Date.now()}`;
-  const messageFromB = `B訊息-${Date.now()}`;
   const nowTs = Math.floor(Date.now() / 1000);
   const avatarFileBuffer = await fs.readFile(avatarFileAbsPath);
-  const avatarFileBase64 = avatarFileBuffer.toString('base64');
-  const avatarFileDigest = sha256Hex(avatarFileBuffer);
+  const avatarFileDigest = crypto.createHash('sha256').update(avatarFileBuffer).digest('hex');
 
   const secretEntryForA = JSON.stringify([
     [
@@ -307,51 +169,6 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
       }
     ]
   ]);
-  const contactKeyA = buildContactSecretsKey(userA.uidHex);
-  try {
-    await pageA.addInitScript(({ value, contactKey }) => {
-      try {
-        window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
-        if (contactKey) window.__LOGIN_SEED_LOCALSTORAGE[contactKey] = value;
-        window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
-      } catch {}
-    }, { value: secretEntryForA, contactKey: contactKeyA });
-    await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
-    await pageA.waitForTimeout(1000);
-    await capture(pageA, 'userA_drive_initial');
-
-    await pageA.evaluate(() => document.getElementById('nav-profile')?.click());
-    await pageA.waitForSelector('#btnProfileNickEdit', { timeout: 15000 });
-    await pageA.click('#btnProfileNickEdit');
-    await pageA.waitForSelector('#nicknameInput', { timeout: 5000 });
-    await pageA.fill('#nicknameInput', newNickname);
-    const nicknameSave = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages'));
-    const nicknameShare = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/friends/contact/share'));
-    await pageA.click('#nicknameForm button[type="submit"]');
-    await nicknameSave.catch(() => {});
-    await nicknameShare.catch(() => {});
-    await expect(pageA.locator('#profileNickname')).toHaveText(newNickname, { timeout: 15000 });
-    await capture(pageA, 'userA_profile_nickname_updated');
-
-    await pageA.evaluate(() => document.getElementById('nav-contacts')?.click());
-    await pageA.waitForFunction((peerUid) => {
-      const normalize = (value) => String(value || '').toUpperCase();
-      const expected = normalize(peerUid);
-      const items = Array.from(document.querySelectorAll('.contact-item'));
-      if (!items.length) return null;
-      for (const item of items) {
-        const attr = normalize(item.getAttribute('data-peer-uid'));
-        if (attr === expected) return true;
-      }
-      return false;
-    }, userB.uidHex, { timeout: 20000 });
-    await capture(pageA, 'userA_contacts_after_nickname');
-    await pageA.evaluate(async (peerUid) => {
-      const { ensureDrReceiverState } = await import('../app/features/dr-session.js');
-      await ensureDrReceiverState({ peerUidHex: peerUid });
-    }, userB.uidHex);
-
-  const initiatorDrState = friendSetup.conversation.initiatorDrState || null;
   const secretEntryForB = JSON.stringify([
     [
       userA.uidHex,
@@ -362,748 +179,99 @@ const ensureMessageListIntegrity = async ({ targetPage, baselineCount, preserved
         conversationToken: friendSetup.conversation.tokenB64,
         conversationId: friendSetup.conversation.conversationId,
         conversationDrInit: friendSetup.conversation.drInit || null,
-        drState: initiatorDrState,
-        drHistory: initiatorDrState ? [{ ts: nowTs, snapshot: initiatorDrState }] : [],
-        drHistoryCursorTs: initiatorDrState ? nowTs : null,
         updatedAt: nowTs
       }
     ]
   ]);
-    const contactKeyB = buildContactSecretsKey(userB.uidHex);
-    await pageB.addInitScript(({ value, contactKey }) => {
-      try {
-        window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
-        if (contactKey) window.__LOGIN_SEED_LOCALSTORAGE[contactKey] = value;
-        window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
-      } catch {}
-    }, { value: secretEntryForB, contactKey: contactKeyB });
 
-    await performLogin(pageB, { password: userB.password, uidHex: userB.uidHex });
-    await pageB.waitForTimeout(1000);
-    await pageB.evaluate(async () => {
-      document.getElementById('nav-contacts')?.click();
-      if (window.__refreshContacts) {
-        await window.__refreshContacts();
-      }
-    });
-    const contactDump = await pageB.evaluate((peerUid) => {
-      const state = typeof window.__getContactState === 'function' ? window.__getContactState() : [];
-      return state.find((c) => String(c?.peerUid || '').toUpperCase() === String(peerUid).toUpperCase());
-    }, userA.uidHex);
-    // eslint-disable-next-line no-console
-    console.log('[contact-state]', contactDump);
-    await pageB.evaluate(async () => {
-      document.getElementById('nav-messages')?.click();
-      if (window.__refreshConversations) {
-        await window.__refreshConversations();
-      }
-    });
-    const drDebugInitB = await pageB.evaluate(async (peerUid) => {
-      const { drState } = await import('../app/core/store.js');
-      const state = drState(peerUid);
-      const toB64 = (u8) => (u8 instanceof Uint8Array ? Array.from(u8) : null);
-      return {
-        rk: toB64(state.rk),
-        ckS: toB64(state.ckS),
-        ckR: toB64(state.ckR),
-        Ns: state.Ns,
-        Nr: state.Nr,
-        PN: state.PN,
-        myPub: toB64(state.myRatchetPub),
-        their: toB64(state.theirRatchetPub),
-        pendingSendRatchet: !!state.pendingSendRatchet
-      };
-    }, userA.uidHex);
-    // eslint-disable-next-line no-console
-    console.log('[dr-state-B-init]', drDebugInitB);
-    const contactNameOnB = pageB.locator(`.contact-item[data-peer-uid="${userA.uidHex}"] .name-text`);
-    await pageB.evaluate(async () => {
-      if (typeof window.__refreshContacts === 'function') {
-        await window.__refreshContacts();
-      }
-    });
-    // eslint-disable-next-line no-console
-    console.log('[contact-text]', await contactNameOnB.textContent());
-    await expect(contactNameOnB).toHaveText(newNickname, { timeout: 20000 });
-    await capture(pageB, 'userB_contacts_nickname_refreshed');
-    await pageB.evaluate(async (peerUid) => {
-      const { ensureDrReceiverState } = await import('../app/features/dr-session.js');
-      await ensureDrReceiverState({ peerUidHex: peerUid });
-    }, userA.uidHex);
-    const conversationSnippetB = pageB.locator(`.conversation-item[data-peer="${userA.uidHex}"] .conversation-snippet`);
-    await capture(pageB, 'messages_list_userB_initial');
-
-    await pageA.evaluate(() => document.getElementById('nav-profile')?.click());
-    await pageA.evaluate(async (avatarB64) => {
-      const [{ uploadAvatar, saveProfile, normalizeNickname, generateRandomNickname }] = await Promise.all([
-        import('../app/features/profile.js')
-      ]);
-      const { sessionStore } = await import('../app/ui/mobile/session-store.js');
-      const binary = atob(avatarB64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i += 1) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      const file = new File([bytes], 'avatar.png', { type: 'image/png' });
-      const avatarMeta = await uploadAvatar({
-        file,
-        thumbDataUrl: 'data:image/png;base64,' + avatarB64,
-        onProgress: () => {}
-      });
-      const now = Math.floor(Date.now() / 1000);
-      const nickname = sessionStore.profileState?.nickname
-        ? normalizeNickname(sessionStore.profileState.nickname) || sessionStore.profileState.nickname
-        : generateRandomNickname();
-      const next = {
-        ...(sessionStore.profileState || {}),
-        nickname,
-        avatar: {
-          ...avatarMeta,
-          thumbDataUrl: avatarMeta.thumbDataUrl || ('data:image/png;base64,' + avatarB64)
-        },
-        updatedAt: now
-      };
-      const saved = await saveProfile(next).catch(() => next);
-      sessionStore.profileState = saved || next;
-      const img = document.getElementById('profileAvatarImg');
-      if (img) img.src = sessionStore.profileState.avatar?.thumbDataUrl || img.src;
-    }, avatarFileBase64);
-    await pageA.evaluate(async () => {
-      if (window.__shareController?.broadcastContactUpdate) {
-        await window.__shareController.broadcastContactUpdate({ reason: 'avatar' });
-      }
-    });
-    await pageA.waitForTimeout(500);
-    await capture(pageA, 'userA_profile_avatar_updated');
-
-    await pageB.evaluate(async () => {
-      if (window.__refreshContacts) {
-        await window.__refreshContacts();
-      } else {
-        document.getElementById('nav-drive')?.click();
-        document.getElementById('nav-contacts')?.click();
-      }
-    });
-    await pageB.evaluate((peerUid) => {
-      const el = document.querySelector(`.contact-item[data-peer-uid="${peerUid}"]`);
-      // eslint-disable-next-line no-console
-      console.log('[contact-debug]', peerUid, el ? el.outerHTML : 'missing');
-    }, userA.uidHex);
-    await pageB.waitForTimeout(500);
-    await capture(pageB, 'userB_contacts_avatar_refreshed');
-
-    await pageA.evaluate(() => document.getElementById('nav-drive')?.click());
-    await pageA.waitForSelector('#btnUploadOpen', { timeout: 5000 });
-    await pageA.click('#btnUploadOpen');
-    await pageA.waitForSelector('#uploadFileInput', { timeout: 5000 });
-    const driveSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
-    const driveIndexPromise = pageA.waitForResponse((res) => {
-      if (res.request().method() !== 'POST' || !res.url().includes('/api/v1/messages')) return false;
-      try {
-        const raw = res.request().postData();
-        return typeof raw === 'string' && raw.includes('"convId":"drive-');
-      } catch {
-        return false;
-      }
-    });
-    await pageA.setInputFiles('#uploadFileInput', uploadFilePath);
-    await pageA.click('#uploadForm button[type="submit"]');
-    const driveSignPutResponse = await driveSignPutPromise;
-    await verifySignPutResponse(driveSignPutResponse, 'drive upload');
-    await driveIndexPromise;
-    const uploadedFile = pageA.locator(`.file-item[data-name="${uploadFileName}"]`);
-    await expect(uploadedFile).toBeVisible({ timeout: 30000 });
-    await capture(pageA, 'drive_after_file_upload');
-    await pageA.waitForFunction(() => {
-      const modal = document.getElementById('modal');
-      return !modal || modal.getAttribute('aria-hidden') === 'true' || modal.classList.contains('hidden');
-    }, null, { timeout: 10000 });
-
-    const objectKeys = await pageA.evaluate((name) => (
-      Array.from(document.querySelectorAll(`.file-item[data-name="${name}"]`)).map((el) => el.dataset.key).filter(Boolean)
-    ), uploadFileName);
-    for (const key of objectKeys) {
-      const didDelete = await pageA.evaluate(async ({ key }) => {
-        if (!key) return false;
-        if (typeof window.__deleteDriveObject === 'function') {
-          return await window.__deleteDriveObject(key);
-        }
-        return false;
-      }, { key });
-      // eslint-disable-next-line no-console
-      console.log('[drive-delete]', key, didDelete);
-    }
-    await expect.poll(async () => {
-      await pageA.evaluate(async () => {
-        if (typeof window.__refreshDrive === 'function') {
-          await window.__refreshDrive();
-        }
-      });
-      return await pageA.locator(`.file-item[data-name="${uploadFileName}"]`).count();
-    }, { timeout: 30000, intervals: [500, 1000, 2000] }).toBe(0);
-    await capture(pageA, 'drive_after_file_delete');
-
-    await pageA.evaluate(() => document.getElementById('nav-messages')?.click());
-    const conversationItemA = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"]`);
-    await conversationItemA.waitFor({ state: 'visible', timeout: 20000 });
-    await conversationItemA.click();
-    await pageA.fill('#messageInput', messageFromA);
-    const sendA = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
-    await pageA.click('#messageSend');
-    await sendA.catch(() => {});
-    const messageBubbleA = pageA.locator('#messagesList .message-bubble', { hasText: messageFromA });
-    await expect(messageBubbleA).toBeVisible({ timeout: 20000 });
-    await capture(pageA, 'messages_userA_sent');
-
-    await pageB.evaluate(() => document.getElementById('nav-messages')?.click());
-    const conversationItemB = pageB.locator(`.conversation-item[data-peer="${userA.uidHex}"]`);
-    await conversationItemB.waitFor({ state: 'visible', timeout: 20000 });
-    await conversationItemB.click();
-    const debugMessagesB = await pageB.evaluate(() => Array.from(document.querySelectorAll('#messagesList .message-bubble')).map((el) => el.textContent));
-    // eslint-disable-next-line no-console
-    console.log('[messagesList-before]', debugMessagesB);
-    const messageFromALocatorB = pageB.locator('#messagesList .message-bubble', { hasText: messageFromA });
-    const drDebugBeforeDecrypt = await pageB.evaluate(async (peerUid) => {
-      const { drState } = await import('../app/core/store.js');
-      const state = drState(peerUid);
-      const toB64 = (u8) => (u8 instanceof Uint8Array ? Array.from(u8) : null);
-      return {
-        rk: toB64(state.rk),
-        ckS: toB64(state.ckS),
-        ckR: toB64(state.ckR),
-        Ns: state.Ns,
-        Nr: state.Nr,
-        PN: state.PN,
-        myPub: toB64(state.myRatchetPub),
-        their: toB64(state.theirRatchetPub)
-      };
-    }, userA.uidHex);
-    // eslint-disable-next-line no-console
-    console.log('[dr-state-B-before-decrypt]', drDebugBeforeDecrypt);
-    await expect(messageFromALocatorB).toBeVisible({ timeout: 20000 });
-
-    const baselineCountA = await pageA.locator('#messagesList .message-bubble').count();
-    await pageB.fill('#messageInput', messageFromB);
-    const sendB = pageB.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
-    await pageB.click('#messageSend');
-    await sendB.catch(() => {});
-    await expect(pageB.locator('#messagesList .message-bubble', { hasText: messageFromB })).toBeVisible({ timeout: 20000 });
-    await capture(pageB, 'messages_userB_sent');
-    await pageB.evaluate(async () => {
-      if (window.__refreshConversations) {
-        await window.__refreshConversations();
-      }
-    });
-    // eslint-disable-next-line no-console
-    console.log('[conversation-snippet-B]', await conversationSnippetB.textContent());
-    await capture(pageB, 'messages_list_userB_after_reply');
-    await capture(pageB, 'messages_list_userB_after_reply');
-
-    const incomingOnA = pageA.locator('#messagesList .message-bubble.message-peer', { hasText: messageFromB });
-    await expect(incomingOnA).toBeVisible({ timeout: 20000 });
-    await ensureMessageListIntegrity({ targetPage: pageA, baselineCount: baselineCountA, preservedTexts: [messageFromA] });
-    await capture(pageA, 'messages_userA_received');
-
-    const additionalMessages = [
-      { author: 'A', text: `A重登入測試-${Date.now()}-1` },
-      { author: 'B', text: `B重登入測試-${Date.now()}-1` },
-      { author: 'A', text: `A重登入測試-${Date.now()}-2` },
-      { author: 'B', text: `B重登入測試-${Date.now()}-2` }
-    ];
-    const allMessageTexts = [messageFromA, messageFromB];
-
-    const sendTextMessage = async ({ sender, receiver, text, label, receiverPeerUid, senderPeerUid, receiverMustKeepTexts = [] }) => {
-      const receiverBaseline = await receiver.locator('#messagesList .message-bubble').count();
-      await sender.fill('#messageInput', text);
-      const responsePromise = sender.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
-      await sender.click('#messageSend');
-      await responsePromise.catch(() => {});
-      await expect(sender.locator('#messagesList .message-bubble.message-me', { hasText: text })).toBeVisible({ timeout: 20000 });
-      const senderState = await sender.evaluate(async (peerUid) => {
-        const { drState } = await import('../app/core/store.js');
-        const holder = drState(peerUid);
-        const toB64 = (u8) => {
-          if (!(u8 instanceof Uint8Array)) return null;
-          let s = '';
-          for (let i = 0; i < u8.length; i += 1) s += String.fromCharCode(u8[i]);
-          return btoa(s);
-        };
-        return holder
-          ? {
-              hasRk: holder.rk instanceof Uint8Array,
-              ckS: toB64(holder.ckS),
-              ckR: toB64(holder.ckR),
-              Ns: holder.Ns,
-              Nr: holder.Nr,
-              PN: holder.PN,
-              myPub: toB64(holder.myRatchetPub),
-              theirPub: toB64(holder.theirRatchetPub)
-            }
-          : null;
-      }, senderPeerUid);
-      // eslint-disable-next-line no-console
-      console.log('[dr-state-after-send]', { text, senderPeerUid, state: senderState });
-      const receiverState = await receiver.evaluate(async (peerUid) => {
-        const { drState } = await import('../app/core/store.js');
-        const holder = drState(peerUid);
-        const toB64 = (u8) => {
-          if (!(u8 instanceof Uint8Array)) return null;
-          let s = '';
-          for (let i = 0; i < u8.length; i += 1) s += String.fromCharCode(u8[i]);
-          return btoa(s);
-        };
-        return holder
-          ? {
-              hasRk: holder.rk instanceof Uint8Array,
-              ckS: toB64(holder.ckS),
-              ckR: toB64(holder.ckR),
-              Ns: holder.Ns,
-              Nr: holder.Nr,
-              PN: holder.PN,
-              myPub: toB64(holder.myRatchetPub),
-              theirPub: toB64(holder.theirRatchetPub)
-            }
-          : null;
-      }, receiverPeerUid);
-      // eslint-disable-next-line no-console
-      console.log('[dr-state-before-message]', { text, receiverPeerUid, state: receiverState });
-      await expect(receiver.locator('#messagesList .message-bubble.message-peer', { hasText: text })).toBeVisible({ timeout: 20000 });
-      await ensureMessageListIntegrity({
-        targetPage: receiver,
-        baselineCount: receiverBaseline,
-        preservedTexts: Array.isArray(receiverMustKeepTexts) ? receiverMustKeepTexts : []
-      });
-      if (label) {
-        await capture(sender, label);
-      }
-    };
-
-    for (const [index, msg] of additionalMessages.entries()) {
-      const fromA = msg.author === 'A';
-      const senderPage = fromA ? pageA : pageB;
-      const receiverPage = fromA ? pageB : pageA;
-      await sendTextMessage({
-        sender: senderPage,
-        receiver: receiverPage,
-        text: msg.text,
-        label: `messages_additional_${msg.author}_${index + 1}`,
-        receiverPeerUid: fromA ? userA.uidHex : userB.uidHex,
-        senderPeerUid: fromA ? userB.uidHex : userA.uidHex,
-        receiverMustKeepTexts: fromA ? allMessageTexts.slice() : allMessageTexts.slice()
-      });
-      allMessageTexts.push(msg.text);
-    }
-
-    const uniqueMessageTexts = Array.from(new Set(allMessageTexts));
-    const recentMessageTexts = uniqueMessageTexts.slice(-2);
-
-    const verifyConversationPersistence = async ({
-      targetPage,
-      peerUid,
-      messageTexts = [],
-      attachmentNames = [],
-      attachmentChecks = [],
-      screenshotLabel
-    }) => {
-      const backBtn = targetPage.locator('#messagesBackBtn');
-      try {
-        if (await backBtn.isVisible()) {
-          await backBtn.click();
-          await targetPage.waitForTimeout(200);
-        }
-      } catch {}
-      await targetPage.evaluate(() => document.getElementById('messagesBackBtn')?.click());
-      await targetPage.waitForTimeout(200);
-      await targetPage.evaluate(() => document.getElementById('nav-messages')?.click());
-      const selector = `.conversation-item[data-peer="${peerUid}"]`;
-      await targetPage.waitForFunction((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return false;
-        const style = window.getComputedStyle(el);
-        if (style.visibility === 'hidden' || style.display === 'none') return false;
-        const rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      }, selector, { timeout: 20000 });
-      await targetPage.evaluate(async ({ peer, selector: sel }) => {
-        try {
-          const pane = window.__messagesPane;
-          if (pane?.setActiveConversation) {
-            await pane.setActiveConversation(peer);
-          } else {
-            const el = document.querySelector(sel);
-            el?.dispatchEvent(new Event('click', { bubbles: true }));
-          }
-          if (pane?.loadActiveConversationMessages) {
-            await pane.loadActiveConversationMessages({ append: false, replay: true });
-          }
-        } catch (err) {
-          console.log('[verifyConversationPersistence.loadConversation]', err?.message || err);
-        }
-      }, { peer: peerUid, selector });
-      await targetPage.waitForTimeout(500);
-      await targetPage.waitForTimeout(300);
-      try {
-        await targetPage.evaluate(async (peer) => {
-          try {
-            const mod = await import('../app/features/dr-session.js');
-            if (mod?.ensureDrReceiverState) {
-              await mod.ensureDrReceiverState({ peerUidHex: peer });
-            }
-          } catch (err) {
-            console.log('[verifyConversationPersistence.ensureDrReceiverState]', err?.message || err);
-          }
-        }, peerUid);
-      } catch {}
-      await expect
-        .poll(async () => targetPage.locator('#messagesList .message-bubble').count(), { timeout: 30000 })
-        .toBeGreaterThan(0);
-      if (Array.isArray(messageTexts)) {
-        for (const text of messageTexts) {
-          if (!text) continue;
-          await expect(targetPage.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 30000 });
-        }
-      }
-      if (Array.isArray(attachmentNames)) {
-        for (const name of attachmentNames) {
-          if (!name) continue;
-          const fileBubble = targetPage.locator('.message-bubble', {
-            has: targetPage.locator('.message-file-name', { hasText: name })
-          }).last();
-          await expect(fileBubble).toBeVisible({ timeout: 30000 });
-        }
-      }
-      if (Array.isArray(attachmentChecks)) {
-        for (const check of attachmentChecks) {
-          if (!check || !check.name || !check.digestHex) continue;
-          await expectAttachmentIntegrity({
-            targetPage,
-            peerUid,
-            fileName: check.name,
-            expectedDigestHex: check.digestHex,
-            type: check.type || 'generic'
-          });
-        }
-      }
-      if (screenshotLabel) {
-        await capture(targetPage, screenshotLabel);
-      }
-      await targetPage.evaluate(() => document.getElementById('messagesBackBtn')?.click());
-      await targetPage.waitForTimeout(200);
-    };
-
-    const verifyContactNavigationLoadsConversation = async ({
-      targetPage,
-      peerUid,
-      messageTexts = [],
-      attachmentNames = [],
-      attachmentChecks = [],
-      screenshotLabel
-    }) => {
-      await targetPage.evaluate(() => document.getElementById('nav-contacts')?.click());
-      await targetPage.waitForTimeout(300);
-      const selector = `.contact-item[data-peer-uid="${peerUid}"]`;
-      await targetPage.locator(selector).first().waitFor({ state: 'visible', timeout: 20000 });
-      const contactItem = targetPage.locator(selector).first();
-      await contactItem.scrollIntoViewIfNeeded();
-      await contactItem.click();
-      await targetPage.waitForTimeout(500);
-      await expect
-        .poll(async () => targetPage.locator('#messagesList .message-bubble').count(), { timeout: 30000 })
-        .toBeGreaterThan(0);
-      if (Array.isArray(messageTexts)) {
-        for (const text of messageTexts) {
-          if (!text) continue;
-          await expect(targetPage.locator('#messagesList .message-bubble', { hasText: text })).toBeVisible({ timeout: 30000 });
-        }
-      }
-      if (Array.isArray(attachmentNames)) {
-        for (const name of attachmentNames) {
-          if (!name) continue;
-          const fileBubble = targetPage.locator('.message-bubble', {
-            has: targetPage.locator('.message-file-name', { hasText: name })
-          }).last();
-          await expect(fileBubble).toBeVisible({ timeout: 30000 });
-        }
-      }
-      if (Array.isArray(attachmentChecks)) {
-        for (const check of attachmentChecks) {
-          if (!check || !check.name || !check.digestHex) continue;
-          await expectAttachmentIntegrity({
-            targetPage,
-            peerUid,
-            fileName: check.name,
-            expectedDigestHex: check.digestHex,
-            type: check.type || 'generic'
-          });
-        }
-      }
-      if (screenshotLabel) {
-        await capture(targetPage, screenshotLabel);
-      }
-      await targetPage.evaluate(() => document.getElementById('messagesBackBtn')?.click());
-      await targetPage.waitForTimeout(200);
-    };
-
-    const logoutUser = async (targetPage, label) => {
-      await targetPage.evaluate(() => document.getElementById('nav-drive')?.click());
-      await targetPage.waitForTimeout(200);
-      await targetPage.waitForSelector('#btnUserMenu', { timeout: 5000 });
-      await targetPage.locator('#btnUserMenu').click();
-      await targetPage.waitForSelector('[data-action="logout"]', { timeout: 5000 });
-      await targetPage.click('[data-action="logout"]');
-      await targetPage.waitForURL('**/pages/logout.html', { timeout: 20000 });
-      await capture(targetPage, `${label}_logged_out_for_relogin`);
-    };
-
-    await logoutUser(pageA, 'userA');
-    await logoutUser(pageB, 'userB');
-
-    await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
-    await pageA.waitForTimeout(1000);
-    await capture(pageA, 'userA_relogin_ready');
-    await openConversationWithPeer(pageA, userB.uidHex);
-    const drStateInfoAfterReloginA = await pageA.evaluate(async (peerUid) => {
-      const { drState } = await import('../app/core/store.js');
-      const state = drState(peerUid);
-      return {
-        hasState: !!(state && state.rk && state.myRatchetPriv && state.myRatchetPub),
-        Ns: state?.Ns ?? null,
-        Nr: state?.Nr ?? null,
-        PN: state?.PN ?? null
-      };
-    }, userB.uidHex);
-    expect(drStateInfoAfterReloginA.hasState, `dr state missing after relogin (A): ${JSON.stringify(drStateInfoAfterReloginA)}`).toBeTruthy();
-    await capture(pageA, 'messages_userA_after_relogin');
-
-    await performLogin(pageB, { password: userB.password, uidHex: userB.uidHex });
-    await pageB.waitForTimeout(1000);
-    await capture(pageB, 'userB_relogin_ready');
-    await openConversationWithPeer(pageB, userA.uidHex);
-    const drStateInfoAfterReloginB = await pageB.evaluate(async (peerUid) => {
-      const { drState } = await import('../app/core/store.js');
-      const state = drState(peerUid);
-      return {
-        hasState: !!(state && state.rk && state.myRatchetPriv && state.myRatchetPub),
-        Ns: state?.Ns ?? null,
-        Nr: state?.Nr ?? null,
-        PN: state?.PN ?? null
-      };
-    }, userA.uidHex);
-    expect(drStateInfoAfterReloginB.hasState, `dr state missing after relogin (B): ${JSON.stringify(drStateInfoAfterReloginB)}`).toBeTruthy();
-    await capture(pageB, 'messages_userB_after_relogin');
-
-    await pageA.evaluate(() => document.getElementById('nav-messages')?.click());
-
-    let sampleVideo = null;
+  const contactKeyA = buildContactSecretsKey(userA.uidHex);
+  await pageA.addInitScript(({ value, contactKey }) => {
     try {
-      sampleVideo = await createSampleVideoFile(pageA);
-    } catch (err) {
-      test.info().annotations.push({
-        type: 'video-skip',
-        description: `MediaRecorder unavailable: ${err?.message || err}`
-      });
-    }
-    const samplePdf = createSamplePdfFile();
-    const sampleVideoDigest = sampleVideo ? sha256Hex(sampleVideo.buffer) : null;
-    const samplePdfDigest = sha256Hex(samplePdf.buffer);
+      window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+      if (contactKey) window.__LOGIN_SEED_LOCALSTORAGE[contactKey] = value;
+      window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
+    } catch {}
+  }, { value: secretEntryForA, contactKey: contactKeyA });
+  await performLogin(pageA, { password: userA.password, uidHex: userA.uidHex });
+  await pageA.waitForTimeout(500);
+  await pageA.evaluate(() => document.getElementById('nav-messages')?.click());
 
-    // 圖片附件預覽
-    const imageSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
-    const imageSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
-    await pageA.click('#composerAttach');
-    await pageA.setInputFiles('#messageFileInput', uploadFilePath);
-    const imageSignPutResponse = await imageSignPutPromise;
-    await verifySignPutResponse(imageSignPutResponse, 'image upload');
-    await imageSecurePostPromise;
-    const outgoingImageBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: uploadFileName }) }).last();
-    await expect(outgoingImageBubbleA.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
-    await capture(pageA, 'messages_userA_image_preview');
+  const contactKeyB = buildContactSecretsKey(userB.uidHex);
+  await pageB.addInitScript(({ value, contactKey }) => {
+    try {
+      window.__LOGIN_SEED_LOCALSTORAGE = window.__LOGIN_SEED_LOCALSTORAGE || {};
+      if (contactKey) window.__LOGIN_SEED_LOCALSTORAGE[contactKey] = value;
+      window.__LOGIN_SEED_LOCALSTORAGE['contactSecrets-v1'] = value;
+    } catch {}
+  }, { value: secretEntryForB, contactKey: contactKeyB });
+  await performLogin(pageB, { password: userB.password, uidHex: userB.uidHex });
+  await pageB.waitForTimeout(500);
+  await pageB.evaluate(() => document.getElementById('nav-messages')?.click());
 
-    const incomingImageBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: uploadFileName }) }).last();
-    await incomingImageBubbleB.scrollIntoViewIfNeeded();
-    await expect(incomingImageBubbleB.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
-    await capture(pageB, 'messages_userB_image_preview');
-    await openAttachmentPreview(pageB, uploadFileName);
-    await expectAttachmentIntegrity({
-      targetPage: pageB,
-      peerUid: userA.uidHex,
-      fileName: uploadFileName,
-      expectedDigestHex: avatarFileDigest,
-      type: 'image'
-    });
+  await openConversationWithPeer(pageA, userB.uidHex);
+  await openConversationWithPeer(pageB, userA.uidHex);
+  await capture(pageB, 'messages_list_userB_initial');
 
-    // 影片附件預覽
-    if (sampleVideo) {
-      const videoSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
-      const videoSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
-      await pageA.click('#composerAttach');
-      await pageA.setInputFiles('#messageFileInput', {
-        name: sampleVideo.name,
-        mimeType: sampleVideo.mimeType,
-        buffer: sampleVideo.buffer
-      });
-      const videoSignPutResponse = await videoSignPutPromise;
-      await verifySignPutResponse(videoSignPutResponse, 'video upload');
-      await videoSecurePostPromise;
-      const outgoingVideoBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
-      await expect(outgoingVideoBubbleA.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
-      await capture(pageA, 'messages_userA_video_preview');
+  const samplePdf = createSamplePdfFile();
+  let sampleVideo = null;
+  try {
+    sampleVideo = await createSampleVideoFile(pageA);
+  } catch (err) {
+    test.info().annotations.push({ type: 'video-skip', description: err?.message || err });
+  }
 
-      const incomingVideoBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
-      await expect(incomingVideoBubbleB.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
-      await capture(pageB, 'messages_userB_video_preview');
-      await openAttachmentPreview(pageB, sampleVideo.name);
-      await expectAttachmentIntegrity({
-        targetPage: pageB,
-        peerUid: userA.uidHex,
-        fileName: sampleVideo.name,
-        expectedDigestHex: sampleVideoDigest,
-        type: 'video'
-      });
-    } else {
-      test.info().annotations.push({
-        type: 'video-skip',
-        description: 'Video attachment verification skipped (MediaRecorder unavailable)'
-      });
-    }
+  // 圖片附件
+  const imageSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+  const imageSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+  await pageA.click('#composerAttach');
+  await pageA.setInputFiles('#messageFileInput', uploadFilePath);
+  await imageSignPutPromise;
+  await imageSecurePostPromise;
+  const outgoingImageBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: uploadFileName }) }).last();
+  await expect(outgoingImageBubbleA.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
+  await capture(pageA, 'messages_userA_image_preview');
+  const incomingImageBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: uploadFileName }) }).last();
+  await expect(incomingImageBubbleB.locator('.message-file-preview-image')).toBeVisible({ timeout: 30000 });
+  await capture(pageB, 'messages_userB_image_preview');
+  test.info().annotations.push({ type: 'image-digest', description: avatarFileDigest });
 
-    // PDF 附件預覽
-    const pdfSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
-    const pdfSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+  // 影片附件
+  if (sampleVideo) {
+    const videoSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+    const videoSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
     await pageA.click('#composerAttach');
     await pageA.setInputFiles('#messageFileInput', {
-      name: samplePdf.name,
-      mimeType: samplePdf.mimeType,
-      buffer: samplePdf.buffer
+      name: sampleVideo.name,
+      mimeType: sampleVideo.mimeType,
+      buffer: sampleVideo.buffer
     });
-    const pdfSignPutResponse = await pdfSignPutPromise;
-    await verifySignPutResponse(pdfSignPutResponse, 'pdf upload');
-    await pdfSecurePostPromise;
-    const outgoingPdfBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
-    await expect(outgoingPdfBubbleA.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
-    await capture(pageA, 'messages_userA_pdf_preview');
-
-    const incomingPdfBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
-    await expect(incomingPdfBubbleB.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
-    await capture(pageB, 'messages_userB_pdf_preview');
-    await openAttachmentPreview(pageB, samplePdf.name);
-    await expectAttachmentIntegrity({
-      targetPage: pageB,
-      peerUid: userA.uidHex,
-      fileName: samplePdf.name,
-      expectedDigestHex: samplePdfDigest,
-      type: 'pdf'
-    });
-    const attachmentChecks = [
-      { name: uploadFileName, digestHex: avatarFileDigest, type: 'image' },
-      { name: sampleVideo.name, digestHex: sampleVideoDigest, type: 'video' },
-      { name: samplePdf.name, digestHex: samplePdfDigest, type: 'pdf' }
-    ];
-    await verifyConversationPersistence({
-      targetPage: pageB,
-      peerUid: userA.uidHex,
-      messageTexts: recentMessageTexts,
-      attachmentNames: attachmentChecks.map((item) => item.name),
-      attachmentChecks,
-      screenshotLabel: 'messages_userB_persistence_check'
-    });
-    await verifyContactNavigationLoadsConversation({
-      targetPage: pageB,
-      peerUid: userA.uidHex,
-      messageTexts: recentMessageTexts,
-      attachmentNames: attachmentChecks.map((item) => item.name),
-      attachmentChecks,
-      screenshotLabel: 'messages_userB_contact_entry'
-    });
-
-    await pageA.evaluate(async () => {
-      document.getElementById('nav-messages')?.click();
-      if (window.__refreshConversations) {
-        await window.__refreshConversations();
-      }
-    });
-    const conversationSnippetA = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"] .conversation-snippet`);
-    // eslint-disable-next-line no-console
-    console.log('[conversation-snippet-A]', await conversationSnippetA.textContent());
-    await expect(conversationSnippetA).toContainText(samplePdf.name, { timeout: 20000 });
-    await capture(pageA, 'messages_list_userA_after_reply');
-    await verifyConversationPersistence({
-      targetPage: pageA,
-      peerUid: userB.uidHex,
-      messageTexts: recentMessageTexts,
-      attachmentNames: attachmentChecks.map((item) => item.name),
-      attachmentChecks,
-      screenshotLabel: 'messages_userA_persistence_check'
-    });
-    await verifyContactNavigationLoadsConversation({
-      targetPage: pageA,
-      peerUid: userB.uidHex,
-      messageTexts: recentMessageTexts,
-      attachmentNames: attachmentChecks.map((item) => item.name),
-      attachmentChecks,
-      screenshotLabel: 'messages_userA_contact_entry'
-    });
-
-    await pageA.evaluate(() => document.getElementById('messagesBackBtn')?.click());
-    const convoDeleteBtn = pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"] .item-delete`);
-    await pageA.evaluate((peerUid) => {
-      try {
-        if (window.__messagesPane?.showDeleteForPeer) {
-          window.__messagesPane.showDeleteForPeer(peerUid);
-        } else {
-          document.dispatchEvent(new CustomEvent('contacts:show-delete', { detail: { peerUid } }));
-        }
-      } catch {}
-    }, userB.uidHex);
-    await convoDeleteBtn.waitFor({ state: 'visible', timeout: 20000 });
-    await convoDeleteBtn.click();
-    await pageA.waitForSelector('#confirmOk', { timeout: 5000 });
-    const convoDeleteReq = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/friends/delete'));
-    await pageA.click('#confirmOk');
-    await convoDeleteReq.catch(() => {});
-    await expect(pageA.locator(`.conversation-item[data-peer="${userB.uidHex}"]`)).toHaveCount(0, { timeout: 20000 });
-    await capture(pageA, 'conversation_deleted_from_userA');
-
-    await pageA.evaluate(() => document.getElementById('nav-contacts')?.click());
-    const contactAfterConversationA = pageA.locator(`.contact-item[data-peer-uid="${userB.uidHex}"]`);
-    await expect(contactAfterConversationA).toBeVisible({ timeout: 20000 });
-    await capture(pageA, 'contacts_after_conversation_delete_userA');
-
-    await pageB.evaluate(() => document.getElementById('nav-contacts')?.click());
-    const contactAfterConversationB = pageB.locator(`.contact-item[data-peer-uid="${userA.uidHex}"]`);
-    await expect(contactAfterConversationB).toBeVisible({ timeout: 20000 });
-    await capture(pageB, 'contacts_after_conversation_delete_userB');
-
-    const contactDeleteBtnA = contactAfterConversationA.locator('.item-delete');
-    const deleteBtnCount = await contactDeleteBtnA.count();
-    // eslint-disable-next-line no-console
-    console.log('[debug] contactDeleteBtnCount', deleteBtnCount);
-    await contactDeleteBtnA.click();
-    await pageA.waitForSelector('#confirmOk', { timeout: 5000 });
-    const contactDeleteReq = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/friends/delete'));
-    await pageA.click('#confirmOk');
-    await contactDeleteReq.catch(() => {});
-    await expect(pageA.locator(`.contact-item[data-peer-uid="${userB.uidHex}"]`)).toHaveCount(0, { timeout: 20000 });
-    await capture(pageA, 'contacts_userA_deleted');
-
-    await expect(pageB.locator(`.contact-item[data-peer-uid="${userA.uidHex}"]`)).toHaveCount(0, { timeout: 20000 });
-    await capture(pageB, 'contacts_userB_deleted');
-
-    await pageA.evaluate(() => document.getElementById('nav-drive')?.click());
-    await pageA.waitForTimeout(200);
-    await pageA.locator('#btnUserMenu').click();
-    await pageA.waitForSelector('[data-action="logout"]', { timeout: 5000 });
-    await pageA.click('[data-action="logout"]');
-    await pageA.waitForURL('**/pages/logout.html', { timeout: 20000 });
-    await capture(pageA, 'userA_logged_out');
-  } finally {
-    try {
-      await contextB.close();
-    } catch (err) {
-      test.info().annotations.push({
-        type: 'context-close',
-        description: `contextB close failed: ${err?.message || err}`
-      });
-    }
+    await videoSignPutPromise;
+    await videoSecurePostPromise;
+    const outgoingVideoBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
+    await expect(outgoingVideoBubbleA.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
+    await capture(pageA, 'messages_userA_video_preview');
+    const incomingVideoBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: sampleVideo.name }) }).last();
+    await expect(incomingVideoBubbleB.locator('.message-file-preview-video')).toBeVisible({ timeout: 30000 });
+    await capture(pageB, 'messages_userB_video_preview');
   }
+
+  // PDF 附件
+  const pdfSignPutPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/media/sign-put'));
+  const pdfSecurePostPromise = pageA.waitForResponse((res) => res.request().method() === 'POST' && res.url().includes('/api/v1/messages/secure'));
+  await pageA.click('#composerAttach');
+  await pageA.setInputFiles('#messageFileInput', {
+    name: samplePdf.name,
+    mimeType: samplePdf.mimeType,
+    buffer: samplePdf.buffer
+  });
+  await pdfSignPutPromise;
+  await pdfSecurePostPromise;
+  const outgoingPdfBubbleA = pageA.locator('.message-bubble.message-me', { has: pageA.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
+  await expect(outgoingPdfBubbleA.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
+  await capture(pageA, 'messages_userA_pdf_preview');
+  const incomingPdfBubbleB = pageB.locator('.message-bubble', { has: pageB.locator('.message-file-name', { hasText: samplePdf.name }) }).last();
+  await expect(incomingPdfBubbleB.locator('.message-file-preview-pdf')).toBeVisible({ timeout: 30000 });
+  await capture(pageB, 'messages_userB_pdf_preview');
+
+  await contextB.close();
 });

@@ -1253,8 +1253,10 @@ export function initMessagesPane({
 
   function renderUploadOverlay(wrapper, media) {
     if (!wrapper || !media) return;
-    wrapper.style.position = 'relative';
-    const existing = wrapper.querySelector('.message-file-overlay');
+    const target = wrapper.querySelector?.('.message-file-preview');
+    if (!target) return;
+    target.style.position = 'relative';
+    const existing = target.querySelector('.message-file-overlay');
     const shouldShow = media.uploading || (Number.isFinite(media.progress) && media.progress < 100) || media.error;
     if (!shouldShow) {
       if (existing) existing.remove();
@@ -1279,6 +1281,8 @@ export function initMessagesPane({
     });
     const pct = Number.isFinite(media.progress) ? Math.min(100, Math.max(0, Math.round(media.progress))) : null;
     overlay.innerHTML = '';
+    overlay.style.borderRadius = getComputedStyle(target).borderRadius || '12px';
+    overlay.style.pointerEvents = 'auto';
     if (media.error) {
       const label = document.createElement('div');
       label.textContent = '上傳失敗';
@@ -1306,8 +1310,26 @@ export function initMessagesPane({
       bar.style.width = `${pct != null ? pct : 10}%`;
       barWrap.appendChild(bar);
       overlay.appendChild(barWrap);
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = '取消上傳';
+      cancelBtn.className = 'upload-cancel-btn';
+      overlay.appendChild(cancelBtn);
+      cancelBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const bubble = overlay.closest('.message-bubble');
+        const msgId = bubble?.dataset?.messageId;
+        if (msgId) {
+          const msg = findMessageById(msgId);
+          if (msg?.abortController) {
+            try { msg.abortController.abort(); } catch {}
+          }
+          removeLocalMessageById(msgId);
+        }
+      });
     }
-    if (!existing) wrapper.appendChild(overlay);
+    if (!existing) target.appendChild(overlay);
   }
 
   function renderMediaBubble(bubble, msg) {
@@ -1424,8 +1446,9 @@ export function initMessagesPane({
         } else {
           row.style.gap = '0';
         }
-        const bubble = document.createElement('div');
-        bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
+    if (msg.id) bubble.dataset.messageId = msg.id;
         if (messageType === 'media' && msg.media) {
           renderMediaBubble(bubble, msg);
         } else {
@@ -1717,7 +1740,8 @@ export function initMessagesPane({
       text,
       direction: 'outgoing',
       type,
-      media: media ? { ...media } : null
+      media: media ? { ...media } : null,
+      abortController: null
     };
     if (message.type === 'media' && message.media) {
       if (!message.text) message.text = `[檔案] ${message.media.name || '附件'}`;
@@ -1729,6 +1753,7 @@ export function initMessagesPane({
     }
     state.messages.push(message);
     updateMessagesUI({ scrollToEnd: true });
+    scrollMessagesToBottom();
     syncThreadFromActiveMessages();
     return message;
   }
@@ -1749,6 +1774,32 @@ export function initMessagesPane({
       message.media.error = error;
       message.media.uploading = false;
     }
+  }
+
+  function removeLocalMessageById(id) {
+    const state = getMessageState();
+    const idx = state.messages.findIndex((m) => m.id === id);
+    if (idx >= 0) {
+      state.messages.splice(idx, 1);
+      updateMessagesUI({ scrollToEnd: true });
+    }
+  }
+
+  function escapeSelector(value) {
+    const str = String(value || '');
+    try {
+      if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(str);
+    } catch {}
+    return str.replace(/["\\]/g, '\\$&');
+  }
+
+  function updateUploadOverlayUI(messageId, media) {
+    if (!elements.messagesList || !messageId || !media) return false;
+    const selector = `.message-bubble[data-message-id="${escapeSelector(messageId)}"] .message-file`;
+    const wrapper = elements.messagesList.querySelector(selector);
+    if (!wrapper) return false;
+    renderUploadOverlay(wrapper, media);
+    return true;
   }
 
   async function handleComposerFileSelection(event) {
@@ -1790,8 +1841,11 @@ export function initMessagesPane({
             ? progress.percent
             : (progress?.loaded && progress?.total ? (progress.loaded / progress.total) * 100 : null);
           applyUploadProgress(msg, { percent });
-          updateMessagesUI({ scrollToEnd: false });
+          updateUploadOverlayUI(msg.id, msg.media);
         };
+
+        const abortController = new AbortController();
+        localMsg.abortController = abortController;
 
         try {
           const res = await sendDrMedia({
@@ -1800,7 +1854,8 @@ export function initMessagesPane({
             conversation,
             convId: state.conversationId,
             dir: state.conversationId ? ['messages', state.conversationId] : 'messages',
-            onProgress: progressHandler
+            onProgress: progressHandler,
+            abortSignal: abortController.signal
           });
           if (res?.convId && !state.conversationId) {
             state.conversationId = res.convId;

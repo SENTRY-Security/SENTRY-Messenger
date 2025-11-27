@@ -276,7 +276,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
  * Same as encryptAndPut but allows tracking upload progress via XHR.
  * @param {{convId:string, file:File|Blob, onProgress?:(p:{loaded:number,total:number,percent:number})=>void}} p
  */
-export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag, conversationFingerprint } = {}) {
+export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag, conversationFingerprint, abortSignal } = {}) {
   const mk = getMkRaw();
   const sharedKeyU8 = normalizeSharedKey(Array.isArray(encryptionKey) ? encryptionKey : encryptionKey?.key || encryptionKey);
   const useSharedKey = !!sharedKeyU8;
@@ -324,6 +324,17 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   // XHR upload for progress
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    if (abortSignal) {
+      const onAbort = () => {
+        try { xhr.abort(); } catch {}
+        reject(new DOMException('aborted', 'AbortError'));
+      };
+      if (abortSignal.aborted) {
+        onAbort();
+        return;
+      }
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    }
     xhr.open(upload.method || 'PUT', upload.url, true);
     const ctForPut = upload.headers?.['Content-Type'] || contentType;
     xhr.setRequestHeader('Content-Type', ctForPut);
