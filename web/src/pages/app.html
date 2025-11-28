@@ -15,6 +15,7 @@
     <!-- Icons: Boxicons -->
     <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="/assets/profile-extra.css" />
+    <link rel="stylesheet" href="/assets/cropper.css" />
     <script>
       window.APP_VERSION = '0.1.0';
       window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
@@ -355,18 +356,15 @@
       .modal.avatar-modal .modal-panel { width:min(360px, 92vw); background:#fff; color:#0f172a; max-height:80vh; display:flex; flex-direction:column; }
       .modal.avatar-modal .modal-body { overflow:auto; padding-right:12px; }
       .avatar-upload { display:flex; flex-direction:column; gap:16px; }
-      .avatar-preview { width:160px; height:160px; border-radius:24px; background:#e2e8f0; margin:0 auto; overflow:hidden; display:flex; align-items:center; justify-content:center; position:relative; }
-      .avatar-preview canvas, .avatar-preview img { width:100%; height:100%; display:block; border-radius:inherit; }
-      .avatar-preview::after { content:'預覽'; position:absolute; inset:auto auto 10px auto; font-size:12px; color:#fff; background:rgba(15,23,42,0.45); padding:2px 8px; border-radius:999px; letter-spacing:0.2px; }
-      .avatar-select { display:flex; justify-content:center; }
-      .avatar-select button { padding:8px 18px; border-radius:14px; background:#0ea5e9; color:#fff; border:none; cursor:pointer; box-shadow:0 8px 16px rgba(14,165,233,0.25); }
-      .avatar-select button:active { transform:translateY(1px); }
+      .avatar-cropper { width:min(280px, 82vw); height:min(280px, 82vw); border-radius:24px; background:#e2e8f0; margin:0 auto 10px; overflow:hidden; position:relative; box-shadow:0 12px 26px rgba(15,23,42,0.14); }
+      .avatar-cropper img { width:100%; height:100%; display:block; }
+      .avatar-cropper.zoom-hint::after { content:'雙指 / 滾輪可縮放'; position:absolute; left:50%; bottom:8px; transform:translateX(-50%); padding:6px 10px; border-radius:12px; background:rgba(15,23,42,0.75); color:#fff; font-size:11px; letter-spacing:0.2px; animation: hintPulse 1.2s ease-in-out 3; animation-fill-mode:forwards; pointer-events:none; }
+      .avatar-toolbar { display:flex; flex-direction:column; gap:8px; align-items:center; margin-bottom:6px; }
+      .avatar-actions-row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; width:100%; }
       .avatar-hint { margin:0; font-size:12px; color:#64748b; text-align:center; }
       .avatar-actions { display:flex; justify-content:flex-end; gap:10px; }
-      .avatar-controls { display:flex; flex-direction:column; gap:8px; }
-      .avatar-controls label { font-size:12px; color:#0f172a; display:flex; flex-direction:column; gap:6px; }
-      .avatar-controls input[type="range"] { width:100%; accent-color:#0ea5e9; }
-      .avatar-controls input[disabled] { opacity:0.4; }
+      .upload-primary { background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; box-shadow:0 10px 20px rgba(37,99,235,0.25); }
+      @keyframes hintPulse { 0% { opacity:0; transform:translate(-50%, 6px) scale(0.95);} 30% { opacity:1; transform:translate(-50%, 0) scale(1);} 100% { opacity:0; transform:translate(-50%, -4px) scale(1);} }
       .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
       .share-modal { z-index:1600; }
       .share-modal-panel { position:relative; width:min(420px, 92vw); max-width:420px; height:min(520px, 85vh); max-height:85vh; background:transparent; border-radius:24px; box-shadow:none; display:block; overflow:visible; perspective:1600px; }
@@ -618,9 +616,15 @@
               <nav id="driveCrumb" class="crumb" style="font-size:13px"></nav>
             </div>
             <div class="list-actions">
+              <button id="btnUp" type="button" class="secondary" style="display:none" aria-label="上一層" title="上一層" aria-live="polite">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M18 16H9V9" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M9 9L6 12" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M9 9L12 12" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
               <button id="btnUploadOpen" type="button" class="secondary" aria-label="上傳檔案" title="上傳檔案"><i class='bx bx-cloud-upload'></i></button>
               <button id="btnNewFolder" type="button" class="secondary" aria-label="新建資料夾" title="新建資料夾"><i class='bx bx-folder-plus'></i></button>
-              <button id="btnUp" type="button" class="secondary" style="display:none" aria-label="上一層" title="上一層"><i class='bx bx-chevron-up'></i></button>
             </div>
           </div>
           <ul id="driveList" class="list"></ul>

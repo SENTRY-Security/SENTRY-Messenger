@@ -276,7 +276,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
  * Same as encryptAndPut but allows tracking upload progress via XHR.
  * @param {{convId:string, file:File|Blob, onProgress?:(p:{loaded:number,total:number,percent:number})=>void}} p
  */
-export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag, conversationFingerprint, abortSignal } = {}) {
+export async function encryptAndPutWithProgress({ convId, file, onProgress, dir, skipIndex = false, direction = 'sent', encryptionKey, encryptionInfoTag, conversationFingerprint, abortSignal, extraHeader } = {}) {
   const mk = getMkRaw();
   const sharedKeyU8 = normalizeSharedKey(Array.isArray(encryptionKey) ? encryptionKey : encryptionKey?.key || encryptionKey);
   const useSharedKey = !!sharedKeyU8;
@@ -389,6 +389,9 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
         key_type: envelope.key_type
       })))
     };
+    if (extraHeader && typeof extraHeader === 'object') {
+      msgPayload.header = { ...msgPayload.header, ...extraHeader };
+    }
     if (conversationFingerprint) msgPayload.conversationFingerprint = conversationFingerprint;
     const msgBody = buildAccountPayload({ overrides: msgPayload });
     const { r: rMsg, data } = await createMessage(msgBody);

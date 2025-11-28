@@ -68,6 +68,16 @@ export function initDrivePane({
 
   const driveState = sessionStore.driveState;
   ensureSafeCwd();
+  const PLACEHOLDER_NAME = '.empty-folder';
+  const PLACEHOLDER_CT = 'application/x-empty-folder';
+
+  function isPlaceholder(header) {
+    if (!header) return false;
+    if (header.placeholder === true) return true;
+    const name = String(header.name || '').trim();
+    const ct = String(header.contentType || '').toLowerCase();
+    return name === PLACEHOLDER_NAME && ct === PLACEHOLDER_CT;
+  }
 
   async function fetchDriveMessages({ convId, pageLimit = 200, maxPages = 25 } = {}) {
     if (!convId) throw new Error('convId required');
@@ -204,20 +214,35 @@ export function initDrivePane({
     const files = [];
     for (const it of items) {
       const header = safeJSON(it.header_json || it.header || '{}');
+      const isPlaceholderItem = isPlaceholder(header);
       const dirSegments = getDirSegmentsFromHeader(header);
       const objKey = typeof it?.obj_key === 'string' && it.obj_key ? it.obj_key : (typeof header?.obj === 'string' ? header.obj : '');
       if (!pathStartsWith(dirSegments, currentPath)) continue;
       if (dirSegments.length > currentPath.length) {
         const next = dirSegments[currentPath.length];
         if (next && !isReservedDir(next)) {
-          folderSet.set(next, (folderSet.get(next) || 0) + 1);
+          const summary = folderSet.get(next) || { files: 0, placeholders: 0, subfolders: new Set() };
+          if (dirSegments.length > currentPath.length + 1) {
+            const childName = dirSegments[currentPath.length + 1];
+            if (childName) summary.subfolders.add(childName);
+          }
+          if (isPlaceholderItem) summary.placeholders += 1;
+          else summary.files += 1;
+          folderSet.set(next, summary);
         }
         continue;
       }
+      if (isPlaceholderItem) continue;
       files.push({ header, ts: it.ts, obj_key: objKey });
     }
     const folders = Array.from(folderSet.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    for (const [name, count] of folders) {
+    for (const [name, summary] of folders) {
+      const fileCount = Number(summary?.files || 0);
+      const folderCount = summary?.subfolders instanceof Set ? summary.subfolders.size : 0;
+      const parts = [];
+      if (folderCount > 0) parts.push(`${folderCount} 個資料夾`);
+      if (fileCount > 0) parts.push(`${fileCount} 個檔案`);
+      const subLabel = parts.length ? parts.join(' · ') : '空資料夾';
       const li = document.createElement('li');
       li.className = 'file-item folder';
       li.dataset.type = 'folder';
@@ -228,7 +253,7 @@ export function initDrivePane({
         <div class="item-content">
           <div class="meta">
             <div class="name"><i class='bx bx-folder' aria-hidden="true"></i><span class="label">${escapeHtml(name)}</span></div>
-            <div class="sub">${count} 項</div>
+            <div class="sub">${subLabel}</div>
           </div>
         </div>
         <button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`;
@@ -456,13 +481,22 @@ export function initDrivePane({
       }
       if (input) input.value = safeName;
       if (errorEl) errorEl.textContent = '';
-      driveState.cwd.push(safeName);
+      const basePath = [...ensureSafeCwd()];
+      const targetPath = [...basePath, safeName];
+      driveState.cwd = [...targetPath];
       ensureSafeCwd();
       closeModal?.();
+      showModalLoading?.('建立資料夾中…');
+      updateLoadingModal?.({ percent: 12, text: '準備建立資料夾…' });
       try {
+        await createFolderPlaceholder(targetPath);
+        updateLoadingModal?.({ percent: 55, text: '同步資料夾…' });
         await refreshDriveList();
+        updateLoadingModal?.({ percent: 95, text: '完成' });
       } catch (err) {
         log({ driveListError: String(err?.message || err) });
+      } finally {
+        setTimeout(() => closeModal?.(), 120);
       }
     });
   }
@@ -520,11 +554,27 @@ export function initDrivePane({
     }
   }
 
+  async function createFolderPlaceholder(pathSegments) {
+    const dir = Array.isArray(pathSegments) ? pathSegments.filter(Boolean) : [];
+    const acct = (getAccountDigest() || '').toUpperCase();
+    if (!acct) throw new Error('Account missing');
+    const convId = `drive-${acct}`;
+    const blob = new File([new Uint8Array([0])], PLACEHOLDER_NAME, { type: PLACEHOLDER_CT });
+    await encryptAndPutWithProgress({
+      convId,
+      file: blob,
+      dir,
+      extraHeader: { placeholder: true }
+    });
+  }
+
   async function doPreview(key, contentTypeHint, nameHint) {
     showModalLoading?.('下載加密檔案中…');
+    const envelope = findEnvelopeInMessages(driveState.currentMessages, key);
     try {
       const { blob, contentType, name } = await downloadAndDecrypt({
         key,
+        envelope,
         onProgress: ({ stage, loaded, total }) => {
           if (stage === 'sign') {
             updateLoadingModal?.({ percent: 5, text: '取得下載授權中…' });
@@ -660,6 +710,7 @@ export function initDrivePane({
     const targetMessages = driveState.currentMessages
       .map((msg) => {
         const header = safeJSON(msg?.header_json || msg?.header || '{}');
+        const placeholder = isPlaceholder(header);
         const dirSegments = getDirSegmentsFromHeader(header);
         if (!pathStartsWith(dirSegments, targetPath)) return null;
         const objKey = typeof msg?.obj_key === 'string' && msg.obj_key
@@ -667,9 +718,11 @@ export function initDrivePane({
           : (typeof header?.obj === 'string' ? header.obj : '');
         if (!objKey) return null;
         const id = String(msg?.id || '');
-        return { objKey, id };
+        return { objKey, id, placeholder };
       })
       .filter(Boolean);
+
+    const visibleCount = targetMessages.filter((m) => !m.placeholder).length;
 
     if (!targetMessages.length) {
       log({ deleteInfo: `資料夾「${folderName}」內沒有檔案` });
@@ -682,7 +735,9 @@ export function initDrivePane({
     if (element) closeSwipe?.(element);
     showConfirmModal?.({
       title: '確認刪除',
-      message: `刪除資料夾「${escapeHtml(folderName)}」及其 ${keys.length} 個檔案？`,
+      message: visibleCount > 0
+        ? `刪除資料夾「${escapeHtml(folderName)}」及其 ${visibleCount} 個檔案？`
+        : `刪除資料夾「${escapeHtml(folderName)}」（空資料夾）？`,
       confirmLabel: '刪除',
       onConfirm: async () => {
         try {

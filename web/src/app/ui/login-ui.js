@@ -28,6 +28,7 @@ import {
   getContactSecretsMetaKeys,
   getContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
+import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
 
 // ---- UI elements ----
 const $ = (sel) => document.querySelector(sel);
@@ -42,6 +43,10 @@ const welcomeCloseBtn = document.getElementById('welcomeClose');
 const loginBrand = document.getElementById('loginBrand');
 const remoteConsoleToast = document.getElementById('remoteConsoleToast');
 const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
+const loginShellEl = document.querySelector('.login-shell');
+const uidIdenticonEl = document.getElementById('uidIdenticon');
+const uidCardEl = document.getElementById('uidCard');
+const passwordAreaEl = document.getElementById('passwordArea');
 let loginBrandPressTimer = null;
 let remoteConsoleToastTimer = null;
 
@@ -65,6 +70,83 @@ setLogSink((line) => {
   if (out) out.textContent = line;
   if (shouldShowModal(line)) showModalMessage(line);
 });
+
+let identiconRenderSeq = 0;
+let mosaicTimer = null;
+let pendingStartAt = null;
+let pendingRenderTimeout = null;
+
+function applyMosaicColors() {
+  if (!uidIdenticonEl) return;
+  const cells = uidIdenticonEl.querySelectorAll('.mosaic div');
+  if (!cells?.length) return;
+  cells.forEach((cell) => {
+    const color = IDENTICON_PALETTE[Math.floor(Math.random() * IDENTICON_PALETTE.length)];
+    cell.style.background = color;
+  });
+}
+
+function startMosaicColors() {
+  stopMosaicColors();
+  applyMosaicColors();
+  mosaicTimer = setInterval(applyMosaicColors, 320);
+}
+
+function stopMosaicColors() {
+  if (mosaicTimer) {
+    clearInterval(mosaicTimer);
+    mosaicTimer = null;
+  }
+  if (pendingRenderTimeout) {
+    clearTimeout(pendingRenderTimeout);
+    pendingRenderTimeout = null;
+  }
+}
+let passwordAreaVisible = false;
+
+function setPasswordAreaVisible(visible) {
+  passwordAreaVisible = !!visible;
+  if (loginShellEl) loginShellEl.classList.toggle('login-verified', passwordAreaVisible);
+  if (!passwordAreaVisible) {
+    if (pwdEl) pwdEl.value = '';
+    if (pwdConfirmEl) pwdConfirmEl.value = '';
+  }
+}
+
+async function renderIdenticon(uid, { pending = false } = {}) {
+  if (!uidIdenticonEl) return;
+  if (pending || !uid) {
+    pendingStartAt = Date.now();
+    uidIdenticonEl.classList.add('pending');
+    const blocks = Array.from({ length: 25 }).map((_, i) => `<div style="--i:${i};"></div>`).join('');
+    uidIdenticonEl.innerHTML = `<div class="mosaic">${blocks}</div>`;
+    startMosaicColors();
+    return;
+  }
+  const elapsed = pendingStartAt ? Date.now() - pendingStartAt : null;
+  const minPendingMs = 2500;
+  if (elapsed !== null && elapsed < minPendingMs) {
+    if (pendingRenderTimeout) {
+      clearTimeout(pendingRenderTimeout);
+      pendingRenderTimeout = null;
+    }
+    const remain = minPendingMs - elapsed;
+    pendingRenderTimeout = setTimeout(() => renderIdenticon(uid, { pending: false }), remain);
+    return;
+  }
+  pendingStartAt = null;
+  stopMosaicColors();
+  uidIdenticonEl.classList.remove('pending');
+  const seq = ++identiconRenderSeq;
+  try {
+    const svg = await buildIdenticonSvg(uid);
+    if (seq !== identiconRenderSeq) return;
+    uidIdenticonEl.innerHTML = svg;
+  } catch (err) {
+    uidIdenticonEl.classList.add('pending');
+    log({ identiconError: String(err?.message || err) });
+  }
+}
 
 function showRemoteConsoleToast(message, { variant = 'success' } = {}) {
   if (!remoteConsoleToast) return;
@@ -312,7 +394,6 @@ if (pendingLogoutNotice) {
 }
 
 const uidEl = $('#uidHex');
-const uidDisplayEl = document.getElementById('uidHexDisplay');
 const macEl = $('#sdmMac');
 const ctrEl = $('#sdmCtr');
 const nonceEl = $('#nonce');
@@ -333,6 +414,8 @@ const SIM_DEBUG_STORAGE_KEY = 'ntag424-sim:debug-kit';
 let newAccount = false;
 let welcomeAcknowledged = false;
 
+setPasswordAreaVisible(false);
+
 if (pwdEl) {
   try {
     const rand = Math.random().toString(36).slice(2);
@@ -349,6 +432,9 @@ if (pwdConfirmEl) {
   } catch {}
 }
 applyAccountMode();
+if (getSession() || getHasMK() || getWrappedMK()) {
+  markVerifiedUI();
+}
 const loadingBackdrop = document.getElementById('loginLoading'); const loadingTextEl = document.getElementById('loginLoadingText');
 const bootstrapProgressEl = document.getElementById('loginBootstrapProgress');
 const bootstrapStepsListEl = document.getElementById('loginBootstrapSteps');
@@ -449,6 +535,22 @@ const BOOTSTRAP_STATUS_TEXT = {
   info: '完成'
 };
 
+function fadeOutBootstrapEntry(step, entry) {
+  if (!entry?.el || entry.el.dataset.fading === '1') return;
+  const el = entry.el;
+  el.dataset.fading = '1';
+  const triggerFade = () => el.classList.add('fading-out');
+  requestAnimationFrame(() => requestAnimationFrame(triggerFade));
+  const remove = () => {
+    if (el?.parentElement) {
+      el.parentElement.removeChild(el);
+    }
+    bootstrapStepMap.delete(step);
+  };
+  el.addEventListener('transitionend', remove, { once: true });
+  setTimeout(remove, 650);
+}
+
 function updateBootstrapStep(step, status, detail) {
   const entry = bootstrapStepMap.get(step);
   if (!entry) return;
@@ -466,6 +568,9 @@ function updateBootstrapStep(step, status, detail) {
   } else {
     entry.detailText.textContent = '';
     entry.detailText.style.display = 'none';
+  }
+  if (status === 'success' || status === 'skip' || status === 'info') {
+    fadeOutBootstrapEntry(step, entry);
   }
 }
 
@@ -549,33 +654,30 @@ const updateUidDisplay = () => {
   if (uidVerifying) return;
   const uid = getUidHex() || '';
   if (uidEl) uidEl.value = uid;
-  if (uidDisplayEl) uidDisplayEl.textContent = uid || '請重新感應晶片';
+  renderIdenticon(uid, { pending: !uid });
 };
 updateUidDisplay();
+
+function markVerifiedUI() {
+  setPasswordAreaVisible(true);
+  if (pwdEl) {
+    requestAnimationFrame(() => {
+      try {
+        pwdEl.focus({ preventScroll: true });
+      } catch {}
+    });
+  }
+}
 
 function setUidVerifyingState(active) {
   if (active) {
     if (uidVerifying) return;
     uidVerifying = true;
-    if (uidEl) {
-      uidEl.dataset.prevValue = uidEl.value || '';
-      uidEl.value = '晶片序號驗證中...';
-      uidEl.readOnly = true;
-      uidEl.classList.add('uid-verifying');
-    }
-    if (uidDisplayEl) uidDisplayEl.textContent = '晶片序號驗證中...';
+    renderIdenticon(null, { pending: true });
     return;
   }
   if (!uidVerifying) return;
   uidVerifying = false;
-  if (uidEl) {
-    if (uidEl.dataset.prevValue !== undefined) {
-      uidEl.value = uidEl.dataset.prevValue;
-      delete uidEl.dataset.prevValue;
-    }
-    uidEl.readOnly = false;
-    uidEl.classList.remove('uid-verifying');
-  }
   updateUidDisplay();
 }
 
@@ -672,6 +774,7 @@ async function onSdmExchange() {
     newAccount = !getHasMK();
     if (newAccount) welcomeAcknowledged = false;
     applyAccountMode();
+    markVerifiedUI();
   } catch (e) {
     log({ exchangeError: String(e?.message || e) });
   }
@@ -724,6 +827,7 @@ async function onSimDebugClick() {
       newAccount = !getHasMK();
       if (newAccount) welcomeAcknowledged = false;
       applyAccountMode();
+      markVerifiedUI();
     }
   } catch (e) {
     log({ exchangeError: String(e?.message || e) });

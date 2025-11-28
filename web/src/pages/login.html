@@ -54,6 +54,7 @@
         border-radius:24px;
         padding:32px 26px 36px;
         box-shadow:0 26px 60px rgba(15,23,42,0.45);
+        position:relative;
       }
       .brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
       .brand img { height:30px; width:auto; }
@@ -86,6 +87,68 @@
         border-color:#6366f1;
         box-shadow:0 0 0 3px rgba(99,102,241,0.18);
         background:#fff;
+      }
+      .uid-card {
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        flex-direction:column;
+        gap:12px;
+        padding:8px 0 12px;
+        margin:6px 0 0;
+        transition:transform .3s ease;
+      }
+      .uid-identicon {
+        width:72px;
+        height:72px;
+        border-radius:18px;
+        background:radial-gradient(circle at 30% 30%, #e0f2fe, #c084fc);
+        border:2px solid rgba(15,23,42,0.22);
+        box-shadow:0 12px 30px rgba(0,0,0,0.16), 0 5px 12px rgba(0,0,0,0.12);
+        position:relative;
+        overflow:hidden;
+        flex-shrink:0;
+      }
+      .uid-identicon.pending { animation: none; }
+      .uid-identicon.pending .mosaic {
+        width:100%;
+        height:100%;
+        display:grid;
+        grid-template-columns:repeat(5,1fr);
+        grid-template-rows:repeat(5,1fr);
+        gap:0;
+        padding:0;
+        box-sizing:border-box;
+      }
+      .uid-identicon.pending .mosaic div {
+        border-radius:0;
+        background: #dbeafe;
+        animation: mosaicPulse 0.9s ease-in-out infinite;
+      }
+      .uid-identicon svg { width:100%; height:100%; display:block; }
+      @keyframes mosaicPulse {
+        0% { opacity:0.78; }
+        50% { opacity:1; }
+        100% { opacity:0.78; }
+      }
+      .login-shell.login-verified .uid-card {
+        transform:translateY(-10px);
+      }
+      .password-area {
+        max-height:0;
+        opacity:0;
+        transform:translateY(10px);
+        overflow:hidden;
+        pointer-events:none;
+        transition:max-height .3s ease, opacity .3s ease, transform .3s ease;
+        margin:0;
+      }
+      .login-shell.login-verified .password-area {
+        max-height:520px;
+        opacity:1;
+        transform:translateY(0);
+        pointer-events:auto;
+        margin-top:8px;
       }
       .grid-two { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
       button {
@@ -169,11 +232,14 @@
       .loading-card { display:flex; flex-direction:column; align-items:center; gap:14px; padding:26px 30px; border-radius:20px; background:#0b1220; color:#f8fafc; box-shadow:0 22px 48px rgba(2,6,23,0.45); min-width:220px; max-width:320px; }
       .loading-spinner { width:48px; height:48px; border-radius:50%; border:4px solid rgba(148,163,184,0.25); border-top-color:#38bdf8; animation:login-spin .9s linear infinite; }
       .loading-text { font-size:14px; line-height:1.6; text-align:center; letter-spacing:0.5px; }
-      .bootstrap-progress { width:100%; margin-top:8px; padding-top:12px; border-top:1px solid rgba(148,163,184,0.3); display:flex; flex-direction:column; gap:8px; }
+      .bootstrap-progress { width:100%; margin-top:8px; padding-top:12px; border-top:1px solid rgba(148,163,184,0.3); display:flex; flex-direction:column; gap:8px; max-height:240px; overflow:hidden; }
       .bootstrap-progress.hidden { display:none !important; }
-      .bootstrap-progress .progress-note { font-size:12px; color:rgba(226,232,240,0.85); text-align:left; }
-      .bootstrap-progress ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
-      .bootstrap-progress li { display:flex; flex-direction:column; gap:2px; padding:8px 10px; border-radius:12px; background:rgba(15,23,42,0.35); border:1px solid rgba(148,163,184,0.35); color:#e2e8f0; font-size:12px; transition:background 0.2s ease, border-color 0.2s ease; }
+      .bootstrap-progress .progress-note { font-size:12px; color:rgba(226,232,240,0.85); text-align:left; flex-shrink:0; }
+      .bootstrap-progress ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; max-height:176px; overflow-y:auto; padding-right:4px; }
+      .bootstrap-progress ul::-webkit-scrollbar { width:6px; }
+      .bootstrap-progress ul::-webkit-scrollbar-thumb { background:rgba(148,163,184,0.5); border-radius:999px; }
+      .bootstrap-progress ul::-webkit-scrollbar-track { background:rgba(15,23,42,0.2); }
+      .bootstrap-progress li { display:flex; flex-direction:column; gap:2px; padding:8px 10px; border-radius:12px; background:rgba(15,23,42,0.35); border:1px solid rgba(148,163,184,0.35); color:#e2e8f0; font-size:12px; transition:background 0.2s ease, border-color 0.2s ease, opacity 0.32s ease, transform 0.32s ease, max-height 0.32s ease, margin 0.32s ease, padding 0.32s ease, border-width 0.32s ease; max-height:200px; will-change:opacity, transform; }
       .bootstrap-progress li .row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
       .bootstrap-progress li .label-text { font-weight:600; letter-spacing:0.2px; }
       .bootstrap-progress li .status-text { font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.4px; }
@@ -183,6 +249,7 @@
       .bootstrap-progress li.error { border-color:rgba(248,113,113,0.75); background:rgba(248,113,113,0.22); }
       .bootstrap-progress li.skip { opacity:0.65; }
       .bootstrap-progress li.info { border-color:rgba(96,165,250,0.55); background:rgba(59,130,246,0.22); }
+      .bootstrap-progress li.fading-out { opacity:0; max-height:0; margin:0; padding:0; border-width:0; transform:translateY(-6px); overflow:hidden; }
       @keyframes login-spin { to { transform:rotate(360deg); } }
       .orientation-overlay { position:fixed; inset:0; background:linear-gradient(160deg,rgba(15,23,42,0.98),rgba(15,23,42,0.92)); color:#f8fafc; display:none; align-items:center; justify-content:center; flex-direction:column; gap:12px; text-align:center; padding:32px; z-index:2000; font-size:18px; line-height:1.6; letter-spacing:0.4px; }
       .orientation-overlay .icon { font-size:42px; display:block; }
@@ -265,9 +332,16 @@
       <p class="subtitle">感應 SENTRY MESSENGER 晶片後輸入密碼即可登入。</p>
 
       <form autocomplete="off" data-1p-ignore="true" data-lpignore="true">
-        <div class="form-group">
-          <label for="uidHexDisplay">晶片序號</label>
-          <div id="uidHexDisplay" class="input display">尚未偵測</div>
+        <div class="uid-card" id="uidCard" aria-label="晶片識別圖">
+          <div class="uid-identicon pending" id="uidIdenticon" aria-hidden="true">
+            <div class="mosaic">
+              <div style="--i:0"></div><div style="--i:1"></div><div style="--i:2"></div><div style="--i:3"></div><div style="--i:4"></div>
+              <div style="--i:5"></div><div style="--i:6"></div><div style="--i:7"></div><div style="--i:8"></div><div style="--i:9"></div>
+              <div style="--i:10"></div><div style="--i:11"></div><div style="--i:12"></div><div style="--i:13"></div><div style="--i:14"></div>
+              <div style="--i:15"></div><div style="--i:16"></div><div style="--i:17"></div><div style="--i:18"></div><div style="--i:19"></div>
+              <div style="--i:20"></div><div style="--i:21"></div><div style="--i:22"></div><div style="--i:23"></div><div style="--i:24"></div>
+            </div>
+          </div>
           <input id="uidHex" type="hidden" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
         </div>
 
@@ -294,19 +368,21 @@
           <input id="sessionView" class="input" type="text" readonly placeholder="驗證後自動帶入" />
         </div>
 
-        <div class="form-group" id="passwordWrapper">
-          <label for="pwd">登入密碼</label>
-          <div class="password-field">
-            <input id="pwd" class="input" type="password" placeholder="至少六位數" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" name="__no_store_pwd__" />
-            <button type="button" class="password-toggle" data-target="pwd" aria-label="顯示密碼"><i class='bx bx-show'></i></button>
+        <div class="password-area" id="passwordArea">
+          <div class="form-group" id="passwordWrapper">
+            <label for="pwd">登入密碼</label>
+            <div class="password-field">
+              <input id="pwd" class="input" type="password" placeholder="至少六位數" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" name="__no_store_pwd__" />
+              <button type="button" class="password-toggle" data-target="pwd" aria-label="顯示密碼"><i class='bx bx-show'></i></button>
+            </div>
           </div>
-        </div>
 
-        <div class="form-group hidden" id="confirmWrapper">
-          <label for="pwdConfirm">確認密碼</label>
-          <div class="password-field">
-            <input id="pwdConfirm" class="input" type="password" placeholder="再次輸入密碼" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" />
-            <button type="button" class="password-toggle" data-target="pwdConfirm" aria-label="顯示密碼"><i class='bx bx-show'></i></button>
+          <div class="form-group hidden" id="confirmWrapper">
+            <label for="pwdConfirm">確認密碼</label>
+            <div class="password-field">
+              <input id="pwdConfirm" class="input" type="password" placeholder="再次輸入密碼" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" />
+              <button type="button" class="password-toggle" data-target="pwdConfirm" aria-label="顯示密碼"><i class='bx bx-show'></i></button>
+            </div>
           </div>
         </div>
 
