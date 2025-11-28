@@ -67,7 +67,9 @@ export async function renderPdfViewer({ url, name, modalApi }) {
         <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
         <div class="pdf-actions">
-          <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
+          <button type="button" class="pdf-btn" id="pdfDownload" aria-label="下載 PDF">
+            <svg viewBox="0 0 16 16" fill="none"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 11v2h10v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
       </div>
       <div class="pdf-stage">
