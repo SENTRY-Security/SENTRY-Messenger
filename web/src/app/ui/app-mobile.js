@@ -564,7 +564,7 @@ function forceImmediateAudioPlayback() {
 function playConnectChime({ volume = 0.3 } = {}) {
   if (typeof Audio === 'undefined') return;
   try {
-    const audio = new Audio('/assets/audio/accept-call.mp3');
+    const audio = new Audio('/assets/audio/click.mp3');
     audio.volume = Math.min(Math.max(volume, 0), 1);
     audio.playsInline = true;
     audio.muted = false;
