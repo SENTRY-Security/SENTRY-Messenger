@@ -68,7 +68,7 @@
       .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 12px 0; }
       #tab-contacts { display:flex; flex-direction:column; height:100%; overflow:hidden; }
       #tab-contacts .card.contacts-card { padding: 0; margin:0; border:none; border-radius:0; overflow:visible; flex:1; display:flex; flex-direction:column; background:transparent; box-shadow:none; min-height:0; }
-      .contacts-scroll { position: relative; padding: 0; flex:1 1 auto; display:flex; flex-direction:column; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+      .contacts-scroll { position: relative; padding: 0; flex:1 1 auto; display:flex; flex-direction:column; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding-bottom:calc(var(--navbar-height) + 16px); }
       .contacts-refresh { position: fixed; top: calc(var(--topbar-offset) + 20px); left: 0; right: 0; display:flex; align-items:center; justify-content:center; gap:8px; height:44px; color:#64748b; font-size:12px; letter-spacing:0.3px; opacity:0; pointer-events:none; z-index: 2; }
       .contacts-refresh .icon { font-size:18px; display:inline-flex; align-items:center; justify-content:center; }
       .contacts-refresh .icon.spin { animation: modal-spin .9s linear infinite; }
@@ -113,6 +113,7 @@
       .list-actions button:hover { background:#e2e8f0; }
       .list-actions button:active { transform:translateY(1px); }
       .list { list-style:none; padding-left:0; margin:0; display:flex; flex-direction:column; gap:8px; }
+      #driveList { padding-bottom:calc(var(--navbar-height) + 16px); }
       .file-item { position:relative; display:flex; align-items:center; gap:0; padding:0; border:1px solid var(--line); border-radius:16px; background:#fff; box-shadow:0 6px 20px rgba(15,23,42,0.05); transition:transform .15s ease, box-shadow .15s ease; cursor:pointer; outline:none; overflow:hidden; touch-action: pan-y; user-select:none; -webkit-user-select:none; }
       .file-item * { user-select:none; -webkit-user-select:none; }
       .file-item.folder { background:#f8fafc; }
