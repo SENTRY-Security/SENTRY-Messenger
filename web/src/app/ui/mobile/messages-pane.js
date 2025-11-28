@@ -1408,10 +1408,6 @@ export function initMessagesPane({
     body.appendChild(container);
 
     const ct = (contentType || '').toLowerCase();
-    if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-      const handled = await renderPdfPreview({ url, name: resolvedName });
-      if (handled) return;
-    }
     if (ct.startsWith('image/')) {
       const img = document.createElement('img');
       img.src = url;
@@ -1429,11 +1425,10 @@ export function initMessagesPane({
       audio.controls = true;
       wrap.appendChild(audio);
     } else if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-      const iframe = document.createElement('iframe');
-      iframe.src = url;
-      iframe.className = 'viewer';
-      iframe.title = resolvedName;
-      wrap.appendChild(iframe);
+      const msg = document.createElement('div');
+      msg.className = 'preview-message';
+      msg.innerHTML = `PDF 無內嵌預覽，將直接下載。<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">下載檔案</a>`;
+      wrap.appendChild(msg);
     } else if (ct.startsWith('text/')) {
       try {
         const textContent = await blob.text();
