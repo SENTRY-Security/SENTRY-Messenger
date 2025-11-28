@@ -19,8 +19,7 @@
 5. [營運與部署流程](#營運與部署流程)
 6. [測試與自動化](#測試與自動化)
 7. [最新進度與工作項目](#最新進度與工作項目)
-8. [Codex 修改追蹤](#codex-修改追蹤)
-9. [授權條款](#授權條款)
+8. [授權條款](#授權條款)
 
 ---
 
@@ -323,39 +322,12 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 | **2025-10-26**                | Login 頁清除 localStorage 前會回寫`contactSecrets-v1`；`share-controller` 不再覆寫既有角色；`dr-session.js` / `messages.js` 增加 snapshot 還原與 `dr-debug` log。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **2025-10-10**                | 裝置私鑰備援流程：若備份缺失，會重新發佈預共享金鑰並儲存`wrapped_dev`，避免 DR 初始化因 404 中斷。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
-### 工作清單
-
-1. [X]  **優先**：恢復自我聯絡 metadata 流程：保留 `contactSecrets` / `conversationIndex` 的自我紀錄，僅在 UI 隱藏避免自我條目顯示。
-2. [X]  **優先**：穩定邀請初始化：`/friends/invite/contact` 加入帳號驗證與缺漏補建流程，owner envelope 一定寫入，掃描端不再遇到 `friend_invites` 404。
-3. [X]  **優先**：DR / ACL 啟動驗證：登入或掃描後確認 fingerprint / DR state 完整，杜絕「部分訊息無法解密」。
-4. [X]  修復 `/friends/contact/share` 403。
-5. [X]  調整好友刪除→登出流程，確保 mobile 可操作 user menu。
-6. [X]  修復 `/friends/contact/share` 404 及重登入流程中 `/api/v1/devkeys/fetch` 404（`Device backup missing`），已可正常取得備份並送出聯絡更新。
-7. [X]  追蹤 `full-flow` 重登入後 `OperationError`（`Nr`/`n` counter 落差），已靠 replay message key + skipped chain 快取修復。
-8. [X]  驗證 replay 成功時 DR state 套用 `snapshotAfter` 以避免 `Nr` 落後，更新 replay 後的狀態同步邏輯並完成全套測試。
-9. [X]  完成端對端檔案傳輸（圖片 / 影片 / 一般檔案），強制 500 MB 以內並全程加密。
-10. [X]  更新 Node API / Worker / R2 儲存策略：建立「已傳送 / 已接收」系統資料夾並套用 500 MB 限制（`/media/sign-put` 透過 `/d1/media/usage` 檢查容量並寫入 `media_objects`）。
-11. [X]  **優先**：DR snapshot 還原：messageId-based cursor 已實作，仍需排查重登入首輪 decrypt 失敗 & UI 重複 fetch。
-12. [X]  **優先**：`messages-pane` duplicate 判斷與 `recordDrMessageHistory` 時序調整，避免第一則訊息誤判。
-13. [X]  **優先**：完成 `contactSecrets-v1` logout→login handoff：logout 必須寫入 sessionStorage，login/App 初始化可回填 localStorage。
-14. [X]  **優先**：`listSecureAndDecrypt` 狀態隔離：僅允許前景對話 `mutateState=true`，其餘使用 snapshot clone，並紀錄 log 以偵測回朔。
-15. [X]  **優先**：比對 logout / relogin snapshot 長度：確保最新 `drState` 同步到 `contactSecrets-v1`，提供 checksum 供 QA 驗證。
-16. [X]  `full-flow` Playwright：會話刪除按鈕被 topbar/內容攔截，導致 `.item-delete` 無法點擊，需調整 UI pointer-events。
-17. [X]  附件接收端可視化：訊息附件新增「預覽」動作沿用 Modal 並提供下載，E2E 透過 `downloadAndDecrypt` 驗證 SHA-256 digest 確保可還原檔案。
-18. [X]  好友邀請交友金鑰補貨強化：登入後應即時顯示補貨階段、精準提示失敗原因、提供人工重試並擴大自動重試，避免「缺少交友金鑰」無明確導因。
-19. [X]  **安全**：WebSocket `/ws` 缺乏身份驗證，任何客戶端都能送出 `{type:'auth',uid}` 直接綁定任意 UID，導致 presence / contact-share 廣播外洩（見 `src/ws/index.js:46-105`）。現已改為 `/api/v1/ws/token` 簽發短期 HMAC token，server 驗證後才綁定連線。
-20. [X]  **安全**：媒體簽章 API (`/api/v1/media/sign-put|get`) 已強制攜帶帳號憑證並呼叫 Worker `/d1/conversations/authorize` 核對會話 ACL，避免未授權取得簽名 URL。
-21. [X]  **安全**：訊息與好友 REST API 已要求 `uidHex` + `accountToken/accountDigest` 驗證並呼叫 Worker `/d1/conversations/authorize`，未授權的 `convId` 請求會被拒絕；前端 API 與腳本同步帶入憑證與 conversation fingerprint。
-22. [ ]  前端 UI：Drive / 聊天支援選檔、預覽、上傳進度、系統資料夾操作。（已隱藏系統「已傳送 / 已接收」夾層，待補多檔案與排序）
-23. [X]  登入錯誤訊息：新增 OPAQUE / unlock 相關錯誤碼與字串映射（`OpaqueLoginFinishFailed`、`opaque login failed` 等），密碼錯誤一律顯示「密碼不正確，請重新輸入」。
-24. [X]  設定選單：登入後的設定選單內補上「變更密碼」操作，驗證舊密碼 → 重新包裝 MK → 呼叫新 `/api/v1/mk/update` API，並同步更新 UI / API / README 流程。
-
-### Worker Friend Invite Integrity — TODO Checklist
-
-- [X] 移除 Worker 在 `/d1/friends/contact/share` 找不到 invite 時寫入 `contacts-*` fallback 的行為，改為直接回傳 `404 NotFound` 並阻止 UI 繼續顯示「已加入」。
-- [X] `/d1/friends/{invite,accept}` 任一步驟寫入失敗都必須 bubble 錯誤，前端不得以「邀請已建立／好友已加入」的訊息掩飾，避免 debug 困難。
-- [X] `/api/v1/friends/bootstrap-session` 與 share-controller 要驗證 Worker 回傳的 `guest_bundle` 是否完整（含 `spk_sig`），若缺失就立即中止、提示重新邀請並記錄 log。
-- [ ] Guest 登入初始化必須在 D1 無 prekey 時自動轉為「完整 bundle（IK/SPK/SPK_SIG+OPKs）」上傳，`/api/v1/keys/publish` 回傳 `PrekeyUnavailable` 不得被 silently ignore，否則 wipe D1 後接收端永遠無法解密。
+### TODO — Drive 檔名/資料夾名全加密（伺服器不可見）
+- [ ] 上傳／佔位檔：header 明文 `name/dir` 改為 placeholder，實際名稱改以 MK AEAD 加密後寫入 `name_enc` / `dir_enc`。
+- [ ] 列表／刪除：`getDirSegmentsFromHeader` 與路徑比較改用解密後的名稱，placeholder 不影響 UI。
+- [ ] 預覽：下載時優先使用列表已解密名稱；缺失時再 fallback 舊欄位（便於驗證）。
+- [ ] 重命名：檔案重命名只更新 `name_enc`；資料夾重命名批次更新其子項 `dir_enc`，明文欄位維持 placeholder。
+- [ ] 清空 D1 / R2 後重新部署並驗證：新增空資料夾、上傳/預覽、檔案/資料夾重命名流程。
 
 ### Encrypted Voice / Video Call Roadmap（Mobile + Future iOS App）
 
