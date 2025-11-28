@@ -2428,12 +2428,29 @@ export function initMessagesPane({
     const threads = getConversationThreads();
     const threadByConv = convId ? threads.get(convId) : null;
     const targetPeer = String(peerUid || threadByConv?.peerUid || '').toUpperCase();
+    const contactStateEntry = Array.isArray(sessionStore.contactState)
+      ? sessionStore.contactState.find((c) => String(c?.peerUid || '').toUpperCase() === targetPeer)
+      : null;
+    const contactStateConv = contactStateEntry?.conversation || null;
     const state = getMessageState();
-    const token = tokenB64 || threadByConv?.conversationToken || null;
-    const conversationId = convId || threadByConv?.conversationId || null;
+    const token = tokenB64
+      || threadByConv?.conversationToken
+      || contactStateConv?.token_b64
+      || contactStateConv?.tokenB64
+      || null;
+    const conversationId = convId
+      || threadByConv?.conversationId
+      || contactStateConv?.conversation_id
+      || contactStateConv?.conversationId
+      || null;
+    if (conversationId) {
+      const convIndex = ensureConversationIndex();
+      const prevConv = convIndex.get(conversationId) || {};
+      convIndex.set(conversationId, { ...prevConv, peerUid: targetPeer || prevConv.peerUid || null, token_b64: token || prevConv.token_b64 || null });
+    }
     if (targetPeer) {
       // 若 contactIndex 尚未有此人，先以 thread 資料補一筆避免 setActiveConversation 直接失敗。
-      if (!sessionStore.contactIndex?.get?.(targetPeer) && threadByConv) {
+      if (!sessionStore.contactIndex?.get?.(targetPeer) && (threadByConv || contactStateEntry)) {
         if (!(sessionStore.contactIndex instanceof Map)) {
           const entries = sessionStore.contactIndex && typeof sessionStore.contactIndex.entries === 'function'
             ? Array.from(sessionStore.contactIndex.entries())
@@ -2444,8 +2461,8 @@ export function initMessagesPane({
         sessionStore.contactIndex.set(targetPeer, {
           ...prev,
           peerUid: targetPeer,
-          nickname: threadByConv.nickname || prev.nickname || `好友 ${targetPeer.slice(-4)}`,
-          avatar: threadByConv.avatar || prev.avatar || null,
+          nickname: threadByConv?.nickname || contactStateEntry?.nickname || prev.nickname || `好友 ${targetPeer.slice(-4)}`,
+          avatar: threadByConv?.avatar || contactStateEntry?.avatar || prev.avatar || null,
           conversation: {
             conversation_id: conversationId,
             token_b64: token
