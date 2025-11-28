@@ -24,7 +24,7 @@
       :root { color-scheme: light; --bg:#fff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --brand:#111827; --topbar-height: 64px; --topbar-offset: calc(var(--topbar-height) + env(safe-area-inset-top, 0px)); --navbar-height: calc(78px + env(safe-area-inset-bottom, 0px)); --app-height: 100vh; }
       * { box-sizing: border-box; }
       html, body { height: 100%; }
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans TC', sans-serif; margin: 0; background:var(--bg); color:var(--fg); padding-top: var(--topbar-offset); padding-bottom: var(--navbar-height); overflow-x:hidden; overflow-y:auto; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans TC', sans-serif; margin: 0; background:var(--bg); color:var(--fg); padding-top: var(--topbar-offset); padding-bottom: 0; overflow:hidden; }
       .topbar { position: fixed; top: 0; left: 0; right: 0; z-index:10; display:flex; justify-content:space-between; align-items:center; padding:calc(12px + env(safe-area-inset-top, 0px)) 16px 12px; border-bottom:none; background:#fff; backdrop-filter:saturate(180%) blur(6px); box-shadow:0 1px 0 rgba(15,23,42,0.04); }
       .topbar .title { display:flex; align-items:center; gap:10px; font-size:16px; font-weight:700; letter-spacing:0.4px; }
       .topbar .actions { display:flex; align-items:center; }
@@ -46,9 +46,9 @@
       .icon-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid var(--line); border-radius:12px; background:#fff; }
       .icon-btn i { font-size:18px; }
       .icon-btn.danger { background:linear-gradient(180deg,#ef4444,#b91c1c); color:#fff; border-color:#b91c1c; box-shadow:0 6px 16px rgba(185,28,28,0.25); }
-      .content { padding: 12px; display:flex; flex-direction:column; min-height:calc(var(--app-height) - var(--topbar-offset) - var(--navbar-height)); height:auto; overflow:visible; }
-      .content.fullscreen { padding:12px; }
-      .content > .tab { flex:1 1 auto; min-height:0; height:auto; overflow:visible; }
+      .content { padding: 12px; display:flex; flex-direction:column; height:calc(var(--app-height) - var(--topbar-offset) - var(--navbar-height)); min-height:calc(var(--app-height) - var(--topbar-offset) - var(--navbar-height)); overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; }
+      .content.fullscreen { padding:12px; height:calc(var(--app-height) - var(--topbar-offset)); min-height:calc(var(--app-height) - var(--topbar-offset)); }
+      .content > .tab { flex:1 1 auto; min-height:0; height:auto; overflow:visible; padding-bottom:calc(var(--navbar-height) + 8px); }
       body.messages-fullscreen { overflow:hidden; }
       body.messages-fullscreen main.content.fullscreen { height:calc(var(--app-height) - var(--topbar-offset)); overflow:hidden; display:flex; flex-direction:column; }
       body.messages-fullscreen .messages-pane { flex:1 1 auto; }
