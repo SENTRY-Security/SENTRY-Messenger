@@ -24,6 +24,21 @@ export function cleanupPdfViewer() {
   activePdfCleanup = null;
 }
 
+function triggerDownload(url, filename) {
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    if (filename) a.download = filename;
+    a.rel = 'noopener';
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (err) {
+    log({ pdfDownloadError: err?.message || err });
+  }
+}
+
 export async function getPdfJsLibrary() {
   return getPdfJs();
 }
@@ -147,6 +162,13 @@ export async function renderPdfViewer({ url, name, modalApi }) {
 
   body.querySelector('#pdfPrev')?.addEventListener('click', () => queueRender(pageNum - 1));
   body.querySelector('#pdfNext')?.addEventListener('click', () => queueRender(pageNum + 1));
+  const downloadBtn = body.querySelector('#pdfDownload');
+  downloadBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const confirmed = window.confirm('下載後將在外部開啟 PDF，返回通訊軟體需重新感應。確定要下載嗎？');
+    if (!confirmed) return;
+    triggerDownload(url, name || 'file.pdf');
+  });
   body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
   closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
   closeArea?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
