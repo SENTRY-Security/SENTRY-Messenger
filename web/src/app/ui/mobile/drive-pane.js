@@ -270,6 +270,7 @@ export function initDrivePane({
       li.addEventListener('click', (e) => {
         if (e.target.closest('.item-delete')) return;
         if (li.classList.contains('show-delete')) { closeSwipe?.(li); return; }
+        if (li.dataset.longPressActive === '1') { li.dataset.longPressActive = '0'; return; }
         e.preventDefault();
         open();
       });
@@ -284,6 +285,7 @@ export function initDrivePane({
       });
       li.querySelector('.label')?.setAttribute('title', name);
       setupSwipe?.(li);
+      attachLongPressEdit(li, { type: 'folder', name });
       driveListEl.appendChild(li);
     }
     for (const f of files) {
@@ -322,6 +324,7 @@ export function initDrivePane({
       li.addEventListener('click', (e) => {
         if (e.target.closest('.item-delete')) return;
         if (li.classList.contains('show-delete')) { closeSwipe?.(li); return; }
+        if (li.dataset.longPressActive === '1') { li.dataset.longPressActive = '0'; return; }
         e.preventDefault();
         preview();
       });
@@ -336,6 +339,7 @@ export function initDrivePane({
       });
       li.querySelector('.label')?.setAttribute('title', name);
       setupSwipe?.(li);
+      attachLongPressEdit(li, { type: 'file', name, key });
       driveListEl.appendChild(li);
     }
     if (!folders.length && !files.length) {
@@ -360,25 +364,29 @@ export function initDrivePane({
 
   function attachLongPressEdit(li, { type, name, key }) {
     let pressTimer = null;
-    let active = false;
-    const start = () => {
+    const threshold = 700; // ms
+    const start = (e) => {
+      if (e?.target?.closest?.('.item-delete')) return;
       if (pressTimer) clearTimeout(pressTimer);
       pressTimer = setTimeout(() => {
-        active = true;
+        li.dataset.longPressActive = '1';
         openRenameModal({ type, name, key, element: li });
-      }, 650);
+      }, threshold);
     };
     const clear = () => {
       if (pressTimer) clearTimeout(pressTimer);
       pressTimer = null;
     };
-    li.addEventListener('touchstart', start);
+    li.addEventListener('touchstart', start, { passive: true });
     li.addEventListener('touchend', clear);
     li.addEventListener('touchmove', clear);
+    li.addEventListener('touchcancel', clear);
     li.addEventListener('mousedown', start);
     li.addEventListener('mouseleave', clear);
     li.addEventListener('mouseup', clear);
-    li.addEventListener('click', () => { if (active) { active = false; } });
+    li.addEventListener('click', () => {
+      if (li.dataset.longPressActive === '1') li.dataset.longPressActive = '0';
+    });
   }
 
   function openRenameModal({ type, name, key, element }) {
