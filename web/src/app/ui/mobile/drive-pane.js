@@ -430,16 +430,23 @@ export function initDrivePane({
         return;
       }
       closeModal?.();
+      showModalLoading?.('重新命名中…');
+      updateLoadingModal?.({ percent: 12, text: '準備重新命名…' });
       try {
         if (type === 'folder') {
           await renameFolder(name, newName);
+          updateLoadingModal?.({ percent: 55, text: '同步資料夾名稱…' });
         } else if (type === 'file') {
           await renameFile(key, newName);
+          updateLoadingModal?.({ percent: 55, text: '同步檔案名稱…' });
         }
+        updateLoadingModal?.({ percent: 85, text: '刷新列表…' });
         await refreshDriveList();
+        updateLoadingModal?.({ percent: 98, text: '完成' });
       } catch (err) {
         log({ renameError: err?.message || err });
       } finally {
+        setTimeout(() => closeModal?.(), 120);
         if (element) closeSwipe?.(element);
       }
     }, { once: true });
