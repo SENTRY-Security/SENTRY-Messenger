@@ -464,6 +464,10 @@
       .share-corner-qr::before, .share-corner-qr::after { content:''; position:absolute; width:10px; height:10px; background:#040b1a; }
       .share-corner-qr::before { top:5px; left:5px; box-shadow:0 14px 0 0 #040b1a, 14px 0 0 0 #040b1a; }
       .share-corner-qr::after { bottom:5px; right:5px; box-shadow:-14px 0 0 0 #040b1a; }
+      .share-modal[data-share-mode="qr"] .share-face.share-back { display:none; }
+      .share-modal[data-share-mode="qr"] .share-face.share-front { display:flex; }
+      .share-modal[data-share-mode="scan"] .share-face.share-front { display:none; }
+      .share-modal[data-share-mode="scan"] .share-face.share-back { display:flex; }
       .share-body { flex:1; display:flex; padding:12px 24px 24px; }
       .share-body-qr { flex-direction:column; align-items:center; justify-content:center; gap:18px; }
       .share-qr-box { width:100%; max-width:270px; aspect-ratio:1/1; display:flex; align-items:center; justify-content:center; border-radius:24px; background:linear-gradient(160deg,#f8fafc,#e0ecff); box-shadow:0 18px 36px rgba(15,23,42,0.16); overflow:hidden; }

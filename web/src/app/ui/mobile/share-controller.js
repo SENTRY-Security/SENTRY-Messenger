@@ -263,9 +263,9 @@ export function setupShareController(options) {
 
   if (btnShareModal) btnShareModal.addEventListener('click', () => openShareModal('qr'));
   shareBackdrop?.addEventListener('click', closeShareModal);
-  btnShareSwitchQr?.addEventListener('click', () => showShareMode('qr'));
-  btnShareSwitchScan?.addEventListener('click', () => showShareMode('scan'));
-  shareModalCloseButtons.forEach((btn) => btn.addEventListener('click', closeShareModal));
+  btnShareSwitchQr?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); showShareMode('qr'); });
+  btnShareSwitchScan?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); showShareMode('scan'); });
+  shareModalCloseButtons.forEach((btn) => btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closeShareModal(); }));
 
   document.addEventListener('keydown', handleEscapeKey);
   ensureQrPlaceholder();
