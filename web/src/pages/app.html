@@ -175,9 +175,9 @@
       .pdf-btn:active { transform:translateY(1px); }
       .pdf-btn svg { width:16px; height:16px; }
       .pdf-page-info { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:12px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); font-size:13px; }
-      .pdf-stage { flex:1; overflow:auto; padding:18px; display:flex; justify-content:center; align-items:flex-start; background:linear-gradient(180deg,#0b1220 0%,#0f172a 60%,#0b1220 100%); }
-      .pdf-canvas-wrap { position:relative; box-shadow:0 20px 40px rgba(0,0,0,0.35); border-radius:14px; overflow:hidden; background:#111827; }
-      .pdf-canvas { display:block; background:#fff; }
+      .pdf-stage { flex:1; overflow:auto; overflow-x:hidden; padding:18px; display:flex; justify-content:center; align-items:flex-start; background:linear-gradient(180deg,#0b1220 0%,#0f172a 60%,#0b1220 100%); }
+      .pdf-canvas-wrap { position:relative; width:min(100%, calc(100vw - 32px)); box-shadow:0 20px 40px rgba(0,0,0,0.35); border-radius:14px; overflow:hidden; background:#111827; }
+      .pdf-canvas { display:block; background:#fff; max-width:100%; height:auto; }
       .pdf-loading { color:#cbd5e1; font-size:13px; padding:16px; text-align:center; }
       .pdf-error { color:#fecaca; padding:16px; text-align:center; }
       @media (max-width: 640px) {

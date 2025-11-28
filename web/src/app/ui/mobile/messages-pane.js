@@ -1218,7 +1218,7 @@ export function initMessagesPane({
     let scale = 1;
     let rendering = false;
     let pendingPage = null;
-    let fitWidth = false;
+    let fitWidth = true;
 
     const updateLabels = () => {
       if (pageLabel && pdfDoc) pageLabel.textContent = `${pageNum} / ${pdfDoc.numPages}`;
