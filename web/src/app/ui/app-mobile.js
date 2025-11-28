@@ -1501,6 +1501,7 @@ function applyHeaderAvatar(src, hasCustom = false) {
 const btnUploadOpen = document.getElementById('btnUploadOpen');
 const inviteBtn = document.getElementById('btnInviteQr');
 const inviteCountdownEl = document.getElementById('inviteCountdown');
+const inviteRefreshBtn = document.getElementById('inviteRefreshBtn');
 const inviteQrBox = document.getElementById('inviteQrBox');
 const inviteScanVideo = document.getElementById('inviteScanVideo');
 const inviteScanStatus = document.getElementById('inviteScanStatus');
@@ -1721,6 +1722,7 @@ shareController = setupShareController({
     inviteBtn,
     inviteCountdownEl,
     inviteQrBox,
+    inviteRefreshBtn,
     btnShareModal,
     shareModal,
     shareModalBackdrop,

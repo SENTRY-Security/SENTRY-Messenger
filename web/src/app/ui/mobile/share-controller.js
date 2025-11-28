@@ -231,6 +231,7 @@ export function setupShareController(options) {
     inviteCountdownEl,
     inviteQrBox,
     inviteRetryBtn,
+    inviteRefreshBtn,
     btnShareModal,
     shareModal,
     shareModalBackdrop,
@@ -276,6 +277,13 @@ export function setupShareController(options) {
       inviteRetryBtn.disabled = true;
       handler();
     }
+  });
+  inviteRefreshBtn?.addEventListener('click', () => {
+    if (inviteRefreshBtn.disabled) return;
+    inviteRefreshBtn.disabled = true;
+    onGenerateInvite({ auto: false }).finally(() => {
+      inviteRefreshBtn.disabled = false;
+    });
   });
 
   const AUTO_REFRESH_BUFFER_MS = 5_000;
@@ -557,6 +565,9 @@ export function setupShareController(options) {
         inviteRetryBtn.style.display = 'none';
         inviteRetryBtn.disabled = false;
       }
+    }
+    if (inviteRefreshBtn) {
+      inviteRefreshBtn.disabled = !!loading;
     }
   }
 
