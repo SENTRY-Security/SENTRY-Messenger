@@ -170,7 +170,8 @@
       .pdf-viewer { display:flex; flex-direction:column; height:100%; width:100%; }
       .pdf-toolbar { display:flex; align-items:center; gap:10px; padding:12px 14px; background:linear-gradient(180deg,rgba(0,0,0,0.85) 0%,rgba(0,0,0,0.65) 100%); border-bottom:1px solid rgba(255,255,255,0.08); backdrop-filter:blur(10px); position:sticky; top:0; z-index:2; }
       .pdf-title { font-size:14px; font-weight:600; color:#e2e8f0; max-width:44vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .pdf-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
+      .pdf-actions { display:flex; flex-direction:column; gap:8px; margin-left:auto; }
+      .pdf-actions-row { display:flex; align-items:center; gap:8px; }
       .pdf-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 10px; border:1px solid rgba(255,255,255,0.14); border-radius:10px; background:rgba(255,255,255,0.05); color:#e2e8f0; font-size:13px; cursor:pointer; transition:all .2s ease; }
       .pdf-btn:hover { background:rgba(255,255,255,0.12); }
       .pdf-btn:active { transform:translateY(1px); }
