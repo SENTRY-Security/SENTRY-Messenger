@@ -37,7 +37,6 @@ import {
   resolveViewerRole
 } from '../../features/calls/call-log.js';
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs';
 
 const sentCallLogIds = new Set();
 const callLogPlaceholders = new Map();
@@ -65,7 +64,12 @@ function releaseCallLogPlaceholder(peerUidHex, callId) {
   callLogPlaceholders.delete(key);
 }
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+try {
+  const workerSrc = new URL('pdf.worker.min.mjs', import.meta.url).toString();
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
+} catch (err) {
+  log({ pdfWorkerInitError: err?.message || err });
+}
 let activePdfCleanup = null;
 
 function clearCallLogPlaceholders() {
