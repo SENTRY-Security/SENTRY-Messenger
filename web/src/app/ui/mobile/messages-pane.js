@@ -36,6 +36,8 @@ import {
   describeCallLogForViewer,
   resolveViewerRole
 } from '../../features/calls/call-log.js';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs';
 
 const sentCallLogIds = new Set();
 const callLogPlaceholders = new Map();
@@ -62,6 +64,9 @@ function releaseCallLogPlaceholder(peerUidHex, callId) {
   if (!key) return;
   callLogPlaceholders.delete(key);
 }
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+let activePdfCleanup = null;
 
 function clearCallLogPlaceholders() {
   callLogPlaceholders.clear();
@@ -1135,6 +1140,153 @@ export function initMessagesPane({
     return false;
   }
 
+  function cleanupPdfViewer() {
+    if (typeof activePdfCleanup === 'function') {
+      try { activePdfCleanup(); } catch {}
+    }
+    activePdfCleanup = null;
+  }
+
+  async function renderPdfPreview({ url, name }) {
+    const modalEl = document.getElementById('modal');
+    const body = document.getElementById('modalBody');
+    const modalTitle = document.getElementById('modalTitle');
+    const closeBtn = document.getElementById('modalClose');
+    const closeArea = document.getElementById('modalCloseArea');
+    if (!modalEl || !body || !modalTitle) return false;
+    cleanupPdfViewer();
+    modalEl.classList.add('pdf-modal');
+    modalTitle.textContent = '';
+    body.innerHTML = `
+      <div class="pdf-viewer">
+        <div class="pdf-toolbar">
+          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
+          <div class="pdf-actions">
+            <div class="pdf-page-info">
+              <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
+              <span id="pdfPageLabel">– / –</span>
+              <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
+            </div>
+            <div class="pdf-page-info">
+              <button type="button" class="pdf-btn" id="pdfZoomOut" aria-label="縮小">−</button>
+              <span id="pdfZoomLabel">100%</span>
+              <button type="button" class="pdf-btn" id="pdfZoomIn" aria-label="放大">＋</button>
+            </div>
+            <button type="button" class="pdf-btn" id="pdfFitBtn">適合寬度</button>
+            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
+          </div>
+        </div>
+        <div class="pdf-stage">
+          <div class="pdf-canvas-wrap">
+            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
+            <div class="pdf-loading" id="pdfLoading">載入中…</div>
+          </div>
+        </div>
+      </div>`;
+
+    openPreviewModal?.();
+
+    const canvas = body.querySelector('#pdfCanvas');
+    const loadingEl = body.querySelector('#pdfLoading');
+    const pageLabel = body.querySelector('#pdfPageLabel');
+    const zoomLabel = body.querySelector('#pdfZoomLabel');
+    const stage = body.querySelector('.pdf-stage');
+
+    let pdfDoc = null;
+    let pageNum = 1;
+    let scale = 1.1;
+    let rendering = false;
+    let pendingPage = null;
+    let fitWidth = false;
+
+    const updateLabels = () => {
+      if (pageLabel && pdfDoc) pageLabel.textContent = `${pageNum} / ${pdfDoc.numPages}`;
+      if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+    };
+
+    const cleanupCore = () => {
+      try { pdfDoc?.cleanup?.(); pdfDoc?.destroy?.(); } catch {}
+      modalEl.classList.remove('pdf-modal');
+    };
+
+    const renderPage = async (num) => {
+      if (!pdfDoc || !canvas) return;
+      rendering = true;
+      const page = await pdfDoc.getPage(num);
+      const baseViewport = page.getViewport({ scale: 1 });
+      if (fitWidth && stage?.clientWidth) {
+        const maxWidth = Math.max(stage.clientWidth - 24, 320);
+        scale = Math.min(2.5, Math.max(0.6, maxWidth / baseViewport.width));
+      }
+      const viewport = page.getViewport({ scale });
+      const ctx = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      if (loadingEl) loadingEl.textContent = `載入第 ${num} 頁…`;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      rendering = false;
+      updateLabels();
+      if (loadingEl) loadingEl.textContent = '';
+      if (pendingPage) {
+        const next = pendingPage;
+        pendingPage = null;
+        renderPage(next);
+      }
+    };
+
+    try {
+      pdfDoc = await pdfjsLib.getDocument({ url }).promise;
+      pageNum = 1;
+      updateLabels();
+      await renderPage(pageNum);
+    } catch (err) {
+      if (loadingEl) {
+        loadingEl.textContent = `PDF 載入失敗：${err?.message || err}`;
+        loadingEl.classList.add('pdf-error');
+      }
+      return true;
+    }
+
+    const queueRender = (num) => {
+      if (num < 1 || num > pdfDoc.numPages) return;
+      pageNum = num;
+      if (rendering) {
+        pendingPage = num;
+      } else {
+        renderPage(num);
+      }
+    };
+
+    const zoom = (delta) => {
+      scale = Math.min(3, Math.max(0.6, scale + delta));
+      fitWidth = false;
+      queueRender(pageNum);
+    };
+
+    body.querySelector('#pdfPrev')?.addEventListener('click', () => queueRender(pageNum - 1));
+    body.querySelector('#pdfNext')?.addEventListener('click', () => queueRender(pageNum + 1));
+    body.querySelector('#pdfZoomIn')?.addEventListener('click', () => zoom(0.15));
+    body.querySelector('#pdfZoomOut')?.addEventListener('click', () => zoom(-0.15));
+    body.querySelector('#pdfFitBtn')?.addEventListener('click', () => {
+      fitWidth = true;
+      queueRender(pageNum);
+    });
+    body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
+    closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
+    closeArea?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
+    const handleResize = () => { if (fitWidth) queueRender(pageNum); };
+    window.addEventListener('resize', handleResize);
+    updateLabels();
+    activePdfCleanup = () => {
+      cleanupCore();
+      window.removeEventListener('resize', handleResize);
+      closePreviewModal?.();
+      activePdfCleanup = null;
+    };
+    return true;
+  }
+
   async function openMediaPreview(media) {
     if (!canPreviewMedia(media)) {
       toast?.('無法預覽附件：缺少封套或檔案資訊。');
@@ -1201,6 +1353,7 @@ export function initMessagesPane({
       toast?.('無法顯示附件預覽');
       return;
     }
+    cleanupPdfViewer();
     modalEl.classList.remove(
       'loading-modal',
       'progress-modal',
@@ -1235,6 +1388,10 @@ export function initMessagesPane({
     body.appendChild(container);
 
     const ct = (contentType || '').toLowerCase();
+    if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
+      const handled = await renderPdfPreview({ url, name: resolvedName });
+      if (handled) return;
+    }
     if (ct.startsWith('image/')) {
       const img = document.createElement('img');
       img.src = url;
