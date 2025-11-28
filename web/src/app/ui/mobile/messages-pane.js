@@ -1340,6 +1340,7 @@ export function initMessagesPane({
     // Pinch zoom support
     let pinchStartDist = null;
     let pinchStartScale = scale;
+    let panStart = null;
     const getDistance = (touches) => {
       if (!touches || touches.length < 2) return null;
       const [a, b] = touches;
@@ -1351,6 +1352,17 @@ export function initMessagesPane({
       if (e.touches.length === 2) {
         pinchStartDist = getDistance(e.touches);
         pinchStartScale = scale;
+        panStart = null;
+        if (stage) stage.style.touchAction = 'none';
+      } else if (e.touches.length === 1 && scale > 1 && stage) {
+        const t = e.touches[0];
+        panStart = {
+          x: t.clientX,
+          y: t.clientY,
+          scrollLeft: stage.scrollLeft,
+          scrollTop: stage.scrollTop
+        };
+        stage.style.touchAction = 'none';
       }
     };
     const onTouchMove = (e) => {
@@ -1362,10 +1374,19 @@ export function initMessagesPane({
         scale = Math.min(3, Math.max(0.6, pinchStartScale * factor));
         fitWidth = false;
         queueRender(pageNum);
+      } else if (e.touches.length === 1 && panStart && stage) {
+        e.preventDefault();
+        const t = e.touches[0];
+        const dx = t.clientX - panStart.x;
+        const dy = t.clientY - panStart.y;
+        stage.scrollLeft = panStart.scrollLeft - dx;
+        stage.scrollTop = panStart.scrollTop - dy;
       }
     };
     const onTouchEnd = () => {
       pinchStartDist = null;
+      panStart = null;
+      if (stage && scale <= 1) stage.style.touchAction = 'auto';
     };
     stage?.addEventListener('touchstart', onTouchStart, { passive: false });
     stage?.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -1378,6 +1399,7 @@ export function initMessagesPane({
       stage?.removeEventListener('touchmove', onTouchMove);
       stage?.removeEventListener('touchend', onTouchEnd);
       stage?.removeEventListener('touchcancel', onTouchEnd);
+      if (stage) stage.style.touchAction = 'auto';
     };
     return true;
   }
