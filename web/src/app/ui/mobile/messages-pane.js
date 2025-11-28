@@ -1215,31 +1215,31 @@ export function initMessagesPane({
     modalTitle.textContent = '';
     body.innerHTML = `
       <div class="pdf-viewer">
-      <div class="pdf-toolbar">
-        <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
-        <div class="pdf-actions">
+        <div class="pdf-toolbar">
+          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
+          <div class="pdf-actions">
+            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
+          </div>
+        </div>
+        <div class="pdf-stage">
+          <div class="pdf-canvas-wrap">
+            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
+            <div class="pdf-loading" id="pdfLoading">載入中…</div>
+          </div>
+        </div>
+        <div class="pdf-footer">
           <div class="pdf-actions-row">
             <div class="pdf-page-info">
               <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
               <span id="pdfPageLabel">– / –</span>
               <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
             </div>
-            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
-          </div>
-          <div class="pdf-actions-row">
             <div class="pdf-page-info">
               <button type="button" class="pdf-btn" id="pdfZoomOut" aria-label="縮小">−</button>
               <span id="pdfZoomLabel">100%</span>
               <button type="button" class="pdf-btn" id="pdfZoomIn" aria-label="放大">＋</button>
             </div>
-          </div>
-        </div>
-      </div>
-        <div class="pdf-stage">
-          <div class="pdf-canvas-wrap">
-            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-            <div class="pdf-loading" id="pdfLoading">載入中…</div>
           </div>
         </div>
       </div>`;
