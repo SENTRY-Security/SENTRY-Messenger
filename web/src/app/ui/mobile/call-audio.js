@@ -3,7 +3,7 @@ import { log } from '../../core/log.js';
 const SOUND_SOURCES = {
   outgoing: '/assets/audio/call-out.mp3',
   incoming: '/assets/audio/call-in.mp3',
-  accepted: '/assets/audio/accept-call.mp3',
+  accepted: '/assets/audio/accept.mp3',
   ended: '/assets/audio/end-call.mp3'
 };
 
