@@ -98,6 +98,8 @@ export function initMessagesPane({
     attachBtn: dom.composerAttachBtn ?? document.getElementById('composerAttach'),
     fileInput: dom.messageFileInputEl ?? document.getElementById('messageFileInput'),
     conversationList: dom.conversationListEl ?? document.getElementById('conversationList'),
+    conversationRefreshEl: dom.conversationRefreshEl ?? document.getElementById('conversationRefresh'),
+    conversationRefreshLabelEl: dom.conversationRefreshLabelEl ?? document.querySelector('#conversationRefresh .label'),
     messagesList: dom.messagesListEl ?? document.getElementById('messagesList'),
     messagesEmpty: dom.messagesEmptyEl ?? document.getElementById('messagesEmpty'),
     peerName: dom.messagesPeerNameEl ?? document.getElementById('messagesPeerName'),
@@ -119,6 +121,15 @@ export function initMessagesPane({
   let autoLoadOlderInProgress = false;
   let lastLayoutIsDesktop = null;
   let unsubscribeCallState = null;
+  let conversationPullTracking = false;
+  let conversationPullDecided = false;
+  let conversationPullInvalid = false;
+  let conversationPullStartY = 0;
+  let conversationPullStartX = 0;
+  let conversationPullDistance = 0;
+  let conversationsRefreshing = false;
+  const CONV_PULL_THRESHOLD = 60;
+  const CONV_PULL_MAX = 140;
 
   const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
@@ -519,6 +530,117 @@ export function initMessagesPane({
 
     await Promise.allSettled(tasks);
     renderConversationList();
+  }
+
+  function applyConversationPullTransition(enable) {
+    const transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
+    if (elements.conversationRefreshEl) {
+      elements.conversationRefreshEl.style.transition = transition;
+    }
+    if (elements.conversationList) {
+      elements.conversationList.style.transition = enable ? 'transform 120ms ease-out' : 'none';
+    }
+  }
+
+  function updateConversationPull(offset) {
+    const clamped = Math.min(CONV_PULL_MAX, Math.max(0, offset));
+    const progress = Math.min(1, clamped / CONV_PULL_THRESHOLD);
+    if (elements.conversationRefreshEl) {
+      const fadeStart = 5;
+      const fadeRange = 25;
+      const alpha = Math.min(1, Math.max(0, (clamped - fadeStart) / fadeRange));
+      elements.conversationRefreshEl.style.opacity = String(alpha);
+      elements.conversationRefreshEl.style.transform = 'translateY(0)';
+      const spinner = elements.conversationRefreshEl.querySelector('.icon');
+      const labelEl = elements.conversationRefreshLabelEl || elements.conversationRefreshEl.querySelector('.label');
+      if (spinner && labelEl) {
+        if (conversationsRefreshing) {
+          spinner.classList.add('spin');
+          labelEl.textContent = '刷新中…';
+        } else {
+          spinner.classList.remove('spin');
+          labelEl.textContent = clamped >= CONV_PULL_THRESHOLD ? '鬆開更新對話列表' : '下拉更新對話';
+        }
+      }
+    }
+    if (elements.conversationList) {
+      elements.conversationList.style.transform = `translateY(${clamped}px)`;
+    }
+  }
+
+  function resetConversationPull({ animate = true } = {}) {
+    conversationPullDistance = 0;
+    applyConversationPullTransition(animate);
+    updateConversationPull(0);
+  }
+
+  async function handleConversationRefresh() {
+    if (conversationsRefreshing) return;
+    conversationsRefreshing = true;
+    updateConversationPull(CONV_PULL_THRESHOLD);
+    try {
+      syncConversationThreadsFromContacts();
+      await refreshConversationPreviews({ force: true });
+      renderConversationList();
+    } catch (err) {
+      log({ conversationPullRefreshError: err?.message || err });
+    } finally {
+      conversationsRefreshing = false;
+      resetConversationPull({ animate: true });
+    }
+  }
+
+  function handleConversationPullStart(e) {
+    if (!elements.conversationList) return;
+    if (elements.conversationList.scrollTop > 0) {
+      conversationPullInvalid = true;
+      return;
+    }
+    conversationPullInvalid = false;
+    if (e.touches?.length !== 1) return;
+    conversationPullTracking = true;
+    conversationPullDecided = false;
+    conversationPullStartY = e.touches[0].clientY;
+    conversationPullStartX = e.touches[0].clientX;
+    conversationPullDistance = 0;
+    applyConversationPullTransition(false);
+  }
+
+  function handleConversationPullMove(e) {
+    if (!conversationPullTracking || conversationPullInvalid || conversationsRefreshing) return;
+    if (e.touches?.length !== 1) return;
+    const dy = e.touches[0].clientY - conversationPullStartY;
+    const dx = Math.abs(e.touches[0].clientX - conversationPullStartX);
+    if (!conversationPullDecided) {
+      if (Math.abs(dy) < 8 && dx < 8) return;
+      conversationPullDecided = true;
+      if (dy <= 0 || dy < Math.abs(dx)) {
+        conversationPullTracking = false;
+        conversationPullInvalid = true;
+        resetConversationPull({ animate: true });
+        return;
+      }
+    }
+    conversationPullDistance = dy;
+    if (conversationPullDistance > 0) {
+      e.preventDefault();
+      updateConversationPull(conversationPullDistance);
+    }
+  }
+
+  function handleConversationPullEnd() {
+    if (!conversationPullTracking) return;
+    conversationPullTracking = false;
+    if (conversationsRefreshing) return;
+    if (conversationPullInvalid) {
+      resetConversationPull({ animate: true });
+      return;
+    }
+    if (conversationPullDistance >= CONV_PULL_THRESHOLD) {
+      handleConversationRefresh();
+    } else {
+      resetConversationPull({ animate: true });
+    }
   }
 
   function syncThreadFromActiveMessages() {
@@ -2340,6 +2462,13 @@ export function initMessagesPane({
     elements.loadMoreBtn?.addEventListener('click', () => {
       loadActiveConversationMessages({ append: true });
     });
+
+    if (elements.conversationList) {
+      elements.conversationList.addEventListener('touchstart', handleConversationPullStart, { passive: true });
+      elements.conversationList.addEventListener('touchmove', handleConversationPullMove, { passive: false });
+      elements.conversationList.addEventListener('touchend', handleConversationPullEnd, { passive: true });
+      elements.conversationList.addEventListener('touchcancel', handleConversationPullEnd, { passive: true });
+    }
 
     elements.conversationList?.addEventListener('click', (event) => {
       const target = event.target.closest('.conversation-item');
