@@ -476,7 +476,7 @@ async function requestUserMediaAccess({ timeoutMs = 5000 } = {}) {
         navigator.mediaDevices.getUserMedia(constraints),
         'audio'
       );
-      cacheMicrophoneStream(audioStream);
+      stopStreamTracks(audioStream);
       return { audioGranted: true, videoGranted: false };
     } catch (err) {
       lastError = err;
