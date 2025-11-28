@@ -1277,6 +1277,8 @@ export function initMessagesPane({
       const ctx = canvas.getContext('2d');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
       if (loadingEl) loadingEl.textContent = `載入第 ${num} 頁…`;
       await page.render({ canvasContext: ctx, viewport }).promise;
       rendering = false;
@@ -1287,6 +1289,7 @@ export function initMessagesPane({
         pendingPage = null;
         renderPage(next);
       }
+      if (stage) stage.style.touchAction = scale > 1 ? 'none' : 'auto';
     };
 
     try {

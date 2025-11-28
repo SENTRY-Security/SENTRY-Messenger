@@ -168,8 +168,8 @@
       .modal.pdf-modal .modal-head { display:none; }
       .modal.pdf-modal .modal-body { padding:0; background:#000; display:flex; flex:1; align-items:stretch; justify-content:center; }
       .pdf-viewer { display:flex; flex-direction:column; height:100%; width:100%; }
-      .pdf-toolbar { position:fixed; top:10px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:10px; padding:10px 12px; background:rgba(0,0,0,0.6); border:1px solid rgba(255,255,255,0.1); border-radius:14px; box-shadow:0 12px 32px rgba(0,0,0,0.35); backdrop-filter:blur(12px); z-index:5; }
-      .pdf-title { font-size:14px; font-weight:600; color:#e2e8f0; max-width:42vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .pdf-toolbar { position:fixed; top:0; left:0; right:0; transform:none; display:flex; align-items:center; gap:10px; padding:12px 16px; background:rgba(0,0,0,0.38); border-bottom:1px solid rgba(255,255,255,0.08); box-shadow:0 12px 32px rgba(0,0,0,0.25); backdrop-filter:blur(12px); z-index:5; }
+      .pdf-title { font-size:14px; font-weight:600; color:#e2e8f0; max-width:56vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .pdf-actions { display:flex; flex-direction:column; gap:8px; margin-left:auto; }
       .pdf-actions-row { display:flex; align-items:center; gap:8px; }
       .pdf-btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:8px 10px; border:1px solid rgba(255,255,255,0.14); border-radius:12px; background:rgba(255,255,255,0.08); color:#e2e8f0; font-size:13px; cursor:pointer; transition:all .2s ease; box-shadow:0 4px 18px rgba(0,0,0,0.25); }
@@ -177,7 +177,7 @@
       .pdf-btn:active { transform:translateY(1px); }
       .pdf-btn svg { width:16px; height:16px; }
       .pdf-page-info { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:12px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); font-size:13px; }
-      .pdf-footer { position:fixed; bottom:12px; left:50%; transform:translateX(-50%); width:auto; background:rgba(0,0,0,0.6); border:1px solid rgba(255,255,255,0.1); padding:10px 14px; border-radius:14px; box-shadow:0 12px 32px rgba(0,0,0,0.35); backdrop-filter:blur(12px); z-index:5; }
+      .pdf-footer { position:fixed; bottom:0; left:0; right:0; width:100%; background:rgba(0,0,0,0.38); border-top:1px solid rgba(255,255,255,0.08); padding:12px 14px; box-shadow:0 -12px 32px rgba(0,0,0,0.25); backdrop-filter:blur(12px); z-index:5; }
       .pdf-footer .pdf-actions-row { justify-content:center; flex-wrap:wrap; gap:10px; }
       .pdf-stage { flex:1; overflow:auto; padding:0; display:flex; justify-content:center; align-items:flex-start; background:#000; }
       .pdf-canvas-wrap { position:relative; box-shadow:none; border-radius:0; overflow:hidden; background:#111827; }
