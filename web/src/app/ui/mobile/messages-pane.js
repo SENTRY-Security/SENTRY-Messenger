@@ -36,8 +36,6 @@ import {
   describeCallLogForViewer,
   resolveViewerRole
 } from '../../features/calls/call-log.js';
-import * as pdfjsLib from 'pdfjs-dist';
-
 const sentCallLogIds = new Set();
 const callLogPlaceholders = new Map();
 
@@ -64,13 +62,24 @@ function releaseCallLogPlaceholder(peerUidHex, callId) {
   callLogPlaceholders.delete(key);
 }
 
-try {
-  const workerSrc = new URL('pdf.worker.min.mjs', import.meta.url).toString();
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
-} catch (err) {
-  log({ pdfWorkerInitError: err?.message || err });
-}
 let activePdfCleanup = null;
+let pdfJsLibPromise = null;
+
+async function getPdfJs() {
+  if (pdfJsLibPromise) return pdfJsLibPromise;
+  const version = '4.8.69';
+  const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
+  pdfJsLibPromise = import(`https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/+esm`)
+    .then((lib) => {
+      try { lib.GlobalWorkerOptions.workerSrc = workerUrl; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
+      return lib;
+    })
+    .catch((err) => {
+      pdfJsLibPromise = null;
+      throw err;
+    });
+  return pdfJsLibPromise;
+}
 
 function clearCallLogPlaceholders() {
   callLogPlaceholders.clear();
@@ -1152,6 +1161,13 @@ export function initMessagesPane({
   }
 
   async function renderPdfPreview({ url, name }) {
+    let pdfjsLib;
+    try {
+      pdfjsLib = await getPdfJs();
+    } catch (err) {
+      log({ pdfJsLoadError: err?.message || err });
+      return false;
+    }
     const modalEl = document.getElementById('modal');
     const body = document.getElementById('modalBody');
     const modalTitle = document.getElementById('modalTitle');
