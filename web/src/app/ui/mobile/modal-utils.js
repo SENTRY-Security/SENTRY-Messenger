@@ -7,6 +7,34 @@ export function setupModalController({ shareButtonProvider } = {}) {
     : () => shareButtonProvider || null;
 
   let currentObjectUrl = null;
+  let bodyScrollLocked = false;
+  let bodyScrollY = 0;
+
+  function lockBodyScroll() {
+    if (bodyScrollLocked) return;
+    const body = document.body;
+    bodyScrollY = typeof window !== 'undefined' ? (window.scrollY || document.documentElement?.scrollTop || 0) : 0;
+    body.style.position = 'fixed';
+    body.style.top = `-${bodyScrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+    bodyScrollLocked = true;
+  }
+
+  function unlockBodyScroll() {
+    if (!bodyScrollLocked) return;
+    const body = document.body;
+    body.style.position = '';
+    body.style.top = '';
+    body.style.left = '';
+    body.style.right = '';
+    body.style.width = '';
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: bodyScrollY || 0, behavior: 'auto' });
+    }
+    bodyScrollLocked = false;
+  }
 
   function openModal() {
     const modal = document.getElementById('modal');
@@ -14,6 +42,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
+    lockBodyScroll();
   }
 
   function closeModal() {
@@ -72,6 +101,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       }
     }
     document.body.classList.remove('modal-open');
+    unlockBodyScroll();
   }
 
   const modalClose = document.getElementById('modalClose');

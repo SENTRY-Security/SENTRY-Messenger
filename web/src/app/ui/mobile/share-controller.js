@@ -287,6 +287,34 @@ export function setupShareController(options) {
   });
 
   const AUTO_REFRESH_BUFFER_MS = 5_000;
+  let bodyScrollLocked = false;
+  let bodyScrollY = 0;
+
+  function lockBodyScroll() {
+    if (bodyScrollLocked) return;
+    bodyScrollY = typeof window !== 'undefined' ? (window.scrollY || document.documentElement?.scrollTop || 0) : 0;
+    const body = document.body;
+    body.style.position = 'fixed';
+    body.style.top = `-${bodyScrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+    bodyScrollLocked = true;
+  }
+
+  function unlockBodyScroll() {
+    if (!bodyScrollLocked) return;
+    const body = document.body;
+    body.style.position = '';
+    body.style.top = '';
+    body.style.left = '';
+    body.style.right = '';
+    body.style.width = '';
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: bodyScrollY || 0, behavior: 'auto' });
+    }
+    bodyScrollLocked = false;
+  }
 
   function isInviteActive(invite) {
     if (!invite || !Number.isFinite(invite.expiresAt)) return false;
@@ -685,6 +713,7 @@ export function setupShareController(options) {
     shareModal.style.display = 'flex';
     shareModal.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
+    lockBodyScroll();
     if (btnShareModal) {
       btnShareModal.dataset.hiddenByModal = '1';
       btnShareModal.style.visibility = 'hidden';
@@ -700,6 +729,7 @@ export function setupShareController(options) {
     shareModal.style.display = 'none';
     shareModal.setAttribute('aria-hidden', 'true');
     document.body.classList.remove('modal-open');
+    unlockBodyScroll();
     shareModal.removeAttribute('data-share-mode');
     shareFlip?.classList.remove('flipped');
     stopInviteScanner();
