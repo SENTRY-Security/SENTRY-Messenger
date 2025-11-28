@@ -1160,6 +1160,42 @@ export function initMessagesPane({
     activePdfCleanup = null;
   }
 
+  async function renderPdfThumbnail(media, canvas) {
+    if (!canvas) return;
+    canvas.dataset.previewState = 'loading';
+    try {
+      let buffer = null;
+      const directUrl = media?.previewUrl || media?.preview?.localUrl || media?.localUrl || null;
+      if (directUrl) {
+        const res = await fetch(directUrl);
+        if (!res.ok) throw new Error('preview fetch failed');
+        buffer = await res.arrayBuffer();
+      } else if (media?.objectKey && media?.envelope) {
+        const { blob } = await downloadAndDecrypt({ key: media.objectKey, envelope: media.envelope });
+        buffer = await blob.arrayBuffer();
+      } else {
+        canvas.dataset.previewState = 'error';
+        return;
+      }
+      const pdfjsLib = await getPdfJs();
+      const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+      const page = await doc.getPage(1);
+      const viewport = page.getViewport({ scale: 1 });
+      const targetWidth = 220;
+      const scale = Math.min(3, Math.max(0.5, targetWidth / viewport.width));
+      const vp = page.getViewport({ scale });
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      canvas.dataset.previewState = 'ready';
+      try { doc.cleanup?.(); doc.destroy?.(); } catch {}
+    } catch (err) {
+      canvas.dataset.previewState = 'error';
+      log({ pdfThumbError: err?.message || err });
+    }
+  }
+
   async function renderPdfPreview({ url, name }) {
     let pdfjsLib;
     try {
@@ -1566,10 +1602,12 @@ export function initMessagesPane({
       container.appendChild(video);
       setPreviewSource(video, media);
     } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
-      const pdf = document.createElement('div');
+      const pdf = document.createElement('canvas');
       pdf.className = 'message-file-preview-pdf';
-      pdf.textContent = 'PDF';
+      pdf.setAttribute('aria-label', media?.name || 'PDF 預覽');
+      pdf.dataset.previewState = 'loading';
       container.appendChild(pdf);
+      renderPdfThumbnail(media, pdf);
     } else {
       const generic = document.createElement('div');
       generic.className = 'message-file-preview-generic';
