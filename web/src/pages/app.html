@@ -484,6 +484,16 @@
         from { opacity:0; transform:translateY(12px) scale(0.97); }
         to { opacity:1; transform:translateY(0) scale(1); }
       }
+      .version-modal { display:flex; flex-direction:column; gap:10px; width:100%; color:#0f172a; }
+      .version-modal.loading { align-items:center; justify-content:center; padding:20px 0; }
+      .version-loading-text { font-size:13px; color:#475569; }
+      .version-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border:1px solid rgba(148,163,184,0.35); border-radius:10px; background:#f8fafc; font-size:13px; }
+      .version-label { color:#475569; }
+      .version-value { font-weight:600; color:#0f172a; text-align:right; }
+      .version-value.error { color:#dc2626; }
+      .version-section-title { font-size:13px; font-weight:700; margin-top:6px; color:#0f172a; }
+      .version-storage-list { display:flex; flex-direction:column; gap:8px; }
+      .version-storage-total { background:#e0f2fe; border-color:#bae6fd; }
       .modal.confirm-modal .modal-panel { width:min(360px, 92vw); max-height:none; }
       .modal.confirm-modal .modal-body { background:#fff; padding:24px 24px 20px; display:flex; flex-direction:column; gap:16px; }
       .confirm-message { font-size:14px; color:#1f2937; line-height:1.6; }

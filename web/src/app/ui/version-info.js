@@ -195,10 +195,102 @@ function closePopup(popup) {
   popup.setAttribute('aria-hidden', 'true');
 }
 
-export function initVersionInfoButton({ buttonId, popupId }) {
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderModalContent(container, info) {
+  const details = formatInfo(info);
+  const storageStats = collectStorageStats();
+  const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
+  const rows = [
+    ['前端版本', details.appVersion],
+    ['前端建置', details.appBuildAt],
+    ['前端載入', details.clientLoadedAt],
+    ['版本', details.version],
+    ['服務狀態', details.statusSummary],
+    ['API 健康', details.healthSummary],
+    ['更新時間', details.fetchedAt]
+  ];
+  const storageRows = storageStats.map((item) => {
+    const detail = item.error
+      ? `<span class="version-value error">錯誤：${escapeHtml(item.error)}</span>`
+      : `<span class="version-value">${item.keyCount} keys / ${formatBytes(item.totalBytes)}</span>`;
+    return `<div class="version-row"><span class="version-label">${escapeHtml(item.label)}</span>${detail}</div>`;
+  }).join('') || '<div class="version-row"><span class="version-label">儲存</span><span class="version-value">無可用資料</span></div>';
+
+  container.innerHTML = `
+    <div class="version-modal">
+      ${rows.map(([label, value]) => `<div class="version-row"><span class="version-label">${escapeHtml(label)}</span><span class="version-value">${escapeHtml(value)}</span></div>`).join('')}
+      <div class="version-section-title">前端儲存資訊</div>
+      <div class="version-storage-list">
+        ${storageRows}
+        <div class="version-row version-storage-total"><span class="version-label">總計</span><span class="version-value">${formatBytes(totalBytes)}</span></div>
+      </div>
+    </div>`;
+}
+
+export async function showVersionModal({ openModal, closeModal } = {}) {
+  const modal = document.getElementById('modal');
+  const body = document.getElementById('modalBody');
+  const title = document.getElementById('modalTitle');
+  if (!modal || !body) return;
+  modal.classList.remove(
+    'security-modal',
+    'progress-modal',
+    'folder-modal',
+    'upload-modal',
+    'loading-modal',
+    'confirm-modal',
+    'nickname-modal',
+    'avatar-modal',
+    'avatar-preview-modal',
+    'settings-modal',
+    'pdf-modal'
+  );
+  if (title) title.textContent = '版本資訊';
+  body.innerHTML = `<div class="version-modal loading"><div class="loading-spinner"></div><div class="version-loading-text">載入版本資訊…</div></div>`;
+  openModal?.();
+  try {
+    const [statusInfo, healthInfo] = await Promise.all([fetchStatus(), fetchApiHealth()]);
+    if (statusInfo) statusInfo.apiHealth = healthInfo;
+    const info = statusInfo || { apiHealth: healthInfo };
+    if (info?.error) {
+      renderModalContent(body, info);
+      body.querySelector('.version-value')?.classList?.add('error');
+    } else {
+      renderModalContent(body, info);
+    }
+  } catch (err) {
+    body.innerHTML = `<div class="version-modal"><div class="version-row"><span class="version-label">載入失敗</span><span class="version-value error">${escapeHtml(err?.message || '未知錯誤')}</span></div></div>`;
+  }
+  const modalClose = document.getElementById('modalClose');
+  const modalCloseArea = document.getElementById('modalCloseArea');
+  modalClose?.addEventListener('click', () => closeModal?.(), { once: true });
+  modalCloseArea?.addEventListener('click', () => closeModal?.(), { once: true });
+}
+
+export function initVersionInfoButton({ buttonId, popupId, openModal, closeModal }) {
   const button = document.getElementById(buttonId);
-  const popup = document.getElementById(popupId);
-  if (!button || !popup) return;
+  const popup = popupId ? document.getElementById(popupId) : null;
+  if (!button) return;
+  const useModal = typeof openModal === 'function' && typeof closeModal === 'function';
+
+  if (useModal) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showVersionModal({ openModal, closeModal });
+    });
+    return;
+  }
+
+  if (!popup) return;
 
   const togglePopup = async () => {
     const isOpen = popup.dataset.open === 'true';

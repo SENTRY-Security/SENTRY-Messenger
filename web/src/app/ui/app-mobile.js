@@ -173,7 +173,12 @@ const customLogoutErrorEl = document.getElementById('customLogoutError');
 let customLogoutModalContext = null;
 let customLogoutInvoker = null;
 
-initVersionInfoButton({ buttonId: 'userMenuVersionBtn', popupId: 'versionInfoPopupAppMenu' });
+initVersionInfoButton({
+  buttonId: 'userMenuVersionBtn',
+  popupId: 'versionInfoPopupAppMenu',
+  openModal,
+  closeModal
+});
 initRemoteConsoleRelay();
 initContactSecretsBackup();
 observeTopbarHeight();
