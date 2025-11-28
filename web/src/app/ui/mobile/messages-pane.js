@@ -2432,6 +2432,26 @@ export function initMessagesPane({
     const token = tokenB64 || threadByConv?.conversationToken || null;
     const conversationId = convId || threadByConv?.conversationId || null;
     if (targetPeer) {
+      // 若 contactIndex 尚未有此人，先以 thread 資料補一筆避免 setActiveConversation 直接失敗。
+      if (!sessionStore.contactIndex?.get?.(targetPeer) && threadByConv) {
+        if (!(sessionStore.contactIndex instanceof Map)) {
+          const entries = sessionStore.contactIndex && typeof sessionStore.contactIndex.entries === 'function'
+            ? Array.from(sessionStore.contactIndex.entries())
+            : [];
+          sessionStore.contactIndex = new Map(entries);
+        }
+        const prev = sessionStore.contactIndex.get(targetPeer) || {};
+        sessionStore.contactIndex.set(targetPeer, {
+          ...prev,
+          peerUid: targetPeer,
+          nickname: threadByConv.nickname || prev.nickname || `好友 ${targetPeer.slice(-4)}`,
+          avatar: threadByConv.avatar || prev.avatar || null,
+          conversation: {
+            conversation_id: conversationId,
+            token_b64: token
+          }
+        });
+      }
       const p = setActiveConversation(targetPeer);
       if (p?.catch) p.catch((err) => log({ toastOpenConversationError: err?.message || err }));
       return;
