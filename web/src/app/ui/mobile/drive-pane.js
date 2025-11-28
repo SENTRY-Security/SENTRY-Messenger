@@ -128,6 +128,23 @@ export function initDrivePane({
     return null;
   }
 
+  function buildCiphertextForRename({ msg, header }) {
+    const env = header?.env || {};
+    const aead = msg?.aead || 'aes-256-gcm';
+    const payload = (env?.iv_b64 && env?.hkdf_salt_b64)
+      ? {
+          v: env.v || 1,
+          aead: env.aead || aead,
+          iv_b64: env.iv_b64,
+          hkdf_salt_b64: env.hkdf_salt_b64,
+          info_tag: env.info_tag || 'media/v1',
+          key_type: env.key_type || 'mk'
+        }
+      : 'rename';
+    const buf = new TextEncoder().encode(typeof payload === 'string' ? payload : JSON.stringify(payload));
+    return b64(buf);
+  }
+
   function cwdPath() {
     return ensureSafeCwd().join('/');
   }
@@ -459,11 +476,13 @@ export function initDrivePane({
     const entry = findMessageEntryByKey(driveState.currentMessages, key);
     if (!entry) throw new Error('找不到檔案，請重新整理');
     const header = { ...entry.header, name: newName };
+    const ciphertext_b64 = buildCiphertextForRename({ msg: entry.msg, header });
     const msgPayload = {
       convId,
       type: entry.msg?.type || 'media',
       aead: entry.msg?.aead || 'aes-256-gcm',
-      header
+      header,
+      ciphertext_b64
     };
     const body = buildAccountPayload({ overrides: msgPayload });
     const { r, data } = await createMessage(body);
@@ -499,7 +518,8 @@ export function initDrivePane({
           ...header,
           dir: newDir,
           obj: objKey
-        }
+        },
+        ciphertext_b64: buildCiphertextForRename({ msg, header })
       };
       return payload;
     });
