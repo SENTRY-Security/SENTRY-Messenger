@@ -4,6 +4,7 @@ import { listMessages } from '../../api/messages.js';
 import { encryptAndPutWithProgress, deleteEncryptedObjects, downloadAndDecrypt, loadEnvelopeMeta } from '../../features/media.js';
 import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
+import { b64 } from '../../crypto/aead.js';
 
 export function initDrivePane({
   dom = {},
