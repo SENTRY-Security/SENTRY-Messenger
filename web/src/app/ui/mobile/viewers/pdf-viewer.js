@@ -44,7 +44,7 @@ export async function getPdfJsLibrary() {
 }
 
 export async function renderPdfViewer({ url, name, modalApi }) {
-  const { openModal, closeModal, showConfirmModal } = modalApi || {};
+  const { openModal, closeModal } = modalApi || {};
   let pdfjsLib;
   try {
     pdfjsLib = await getPdfJs();
@@ -165,19 +165,26 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   const downloadBtn = body.querySelector('#pdfDownload');
   downloadBtn?.addEventListener('click', (e) => {
     e.preventDefault();
-    const proceed = () => triggerDownload(url, name || 'file.pdf');
-    if (typeof showConfirmModal === 'function') {
-      showConfirmModal({
-        title: '下載 PDF',
-        message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？',
-        confirmLabel: '下載',
-        onConfirm: proceed
-      });
-    } else {
-      const confirmed = window.confirm('下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？');
-      if (!confirmed) return;
-      proceed();
-    }
+    const existing = document.querySelector('.pdf-confirm');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-confirm';
+    overlay.innerHTML = `
+      <div class="pdf-confirm-panel">
+        <div class="pdf-confirm-title">下載 PDF</div>
+        <div class="pdf-confirm-msg">下載後會在外部開啟，返回通訊軟體需要重新感應。確定要下載嗎？</div>
+        <div class="pdf-confirm-actions">
+          <button type="button" class="secondary" id="pdfDlCancel">取消</button>
+          <button type="button" class="primary" id="pdfDlOk">下載</button>
+        </div>
+      </div>`;
+    const cleanupConfirm = () => overlay.remove();
+    overlay.querySelector('#pdfDlCancel')?.addEventListener('click', cleanupConfirm, { once: true });
+    overlay.querySelector('#pdfDlOk')?.addEventListener('click', () => {
+      cleanupConfirm();
+      triggerDownload(url, name || 'file.pdf');
+    }, { once: true });
+    document.body.appendChild(overlay);
   });
   body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
   closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
