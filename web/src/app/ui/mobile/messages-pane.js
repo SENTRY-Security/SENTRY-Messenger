@@ -1215,7 +1215,7 @@ export function initMessagesPane({
 
     let pdfDoc = null;
     let pageNum = 1;
-    let scale = 1.1;
+    let scale = 1;
     let rendering = false;
     let pendingPage = null;
     let fitWidth = false;
