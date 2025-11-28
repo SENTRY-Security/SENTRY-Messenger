@@ -40,7 +40,7 @@ export function initContactsView(options) {
   if (!sessionStore.conversationIndex) sessionStore.conversationIndex = new Map();
   const conversationIndex = sessionStore.conversationIndex;
 
-  const PULL_THRESHOLD = 88;
+  const PULL_THRESHOLD = 60;
   const PULL_MAX = 140;
   const RECENT_REMOVE_SUPPRESS_MS = 45_000;
   const recentlyRemovedPeers = new Map();
