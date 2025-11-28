@@ -1215,24 +1215,23 @@ export function initMessagesPane({
     modalTitle.textContent = '';
     body.innerHTML = `
       <div class="pdf-viewer">
-        <div class="pdf-toolbar">
-          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
-          <div class="pdf-actions">
-            <div class="pdf-page-info">
-              <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
-              <span id="pdfPageLabel">– / –</span>
-              <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
-            </div>
-            <div class="pdf-page-info">
-              <button type="button" class="pdf-btn" id="pdfZoomOut" aria-label="縮小">−</button>
-              <span id="pdfZoomLabel">100%</span>
-              <button type="button" class="pdf-btn" id="pdfZoomIn" aria-label="放大">＋</button>
-            </div>
-            <button type="button" class="pdf-btn" id="pdfFitBtn">適合寬度</button>
-            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
+      <div class="pdf-toolbar">
+        <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
+        <div class="pdf-actions">
+          <div class="pdf-page-info">
+            <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
+            <span id="pdfPageLabel">– / –</span>
+            <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
           </div>
+          <div class="pdf-page-info">
+            <button type="button" class="pdf-btn" id="pdfZoomOut" aria-label="縮小">−</button>
+            <span id="pdfZoomLabel">100%</span>
+            <button type="button" class="pdf-btn" id="pdfZoomIn" aria-label="放大">＋</button>
+          </div>
+          <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
         </div>
+      </div>
         <div class="pdf-stage">
           <div class="pdf-canvas-wrap">
             <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
@@ -1272,7 +1271,7 @@ export function initMessagesPane({
       const page = await pdfDoc.getPage(num);
       const baseViewport = page.getViewport({ scale: 1 });
       if (fitWidth && stage?.clientWidth) {
-        const maxWidth = Math.max(stage.clientWidth - 24, 320);
+        const maxWidth = Math.max(stage.clientWidth, 320);
         scale = Math.min(2.5, Math.max(0.6, maxWidth / baseViewport.width));
       }
       const viewport = page.getViewport({ scale });
