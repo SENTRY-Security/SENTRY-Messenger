@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getAccountDigest } from '../../core/store.js';
+import { getAccountDigest, buildAccountPayload } from '../../core/store.js';
 import { listMessages } from '../../api/messages.js';
 import { encryptAndPutWithProgress, deleteEncryptedObjects, downloadAndDecrypt, loadEnvelopeMeta } from '../../features/media.js';
 import { sessionStore } from './session-store.js';
@@ -103,20 +103,29 @@ export function initDrivePane({
     return { items, truncated };
   }
 
-  function findEnvelopeInMessages(messages, key) {
-    const hits = (Array.isArray(messages) ? messages : []).map((msg) => {
+  function findMessageEntryByKey(messages, key) {
+    const items = Array.isArray(messages) ? messages : [];
+    for (const msg of items) {
       const header = safeJSON(msg?.header_json || msg?.header || '{}');
-      if (header?.obj === key && header?.env?.iv_b64 && header?.env?.hkdf_salt_b64) {
-        return {
-          iv_b64: header.env.iv_b64,
-          hkdf_salt_b64: header.env.hkdf_salt_b64,
-          contentType: header.contentType || 'application/octet-stream',
-          name: header.name || 'decrypted.bin'
-        };
+      if (header?.obj === key) {
+        return { msg, header };
       }
-      return null;
-    }).filter(Boolean);
-    return hits[0] || null;
+    }
+    return null;
+  }
+
+  function findEnvelopeInMessages(messages, key) {
+    const entry = findMessageEntryByKey(messages, key);
+    if (!entry) return null;
+    const env = entry.header?.env || {};
+    if (env?.iv_b64 && env?.hkdf_salt_b64) {
+      return {
+        ...env,
+        contentType: entry.header?.contentType || 'application/octet-stream',
+        name: entry.header?.name || 'decrypted.bin'
+      };
+    }
+    return null;
   }
 
   function cwdPath() {
@@ -364,7 +373,7 @@ export function initDrivePane({
 
   function attachLongPressEdit(li, { type, name, key }) {
     let pressTimer = null;
-    const threshold = 700; // ms
+    const threshold = 500; // ms
     const start = (e) => {
       if (e?.target?.closest?.('.item-delete')) return;
       if (pressTimer) clearTimeout(pressTimer);
@@ -440,33 +449,14 @@ export function initDrivePane({
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) throw new Error('Account missing');
     const convId = driveState.currentConvId || `drive-${acct}`;
-    const envelope = findEnvelopeInMessages(driveState.currentMessages, key);
-    if (!envelope) throw new Error('找不到檔案封套，請重新整理');
-    const header = {
-      obj: key,
-      size: envelope?.ct_b64 ? (envelope.ct_b64.length * 3) / 4 : null,
-      name: newName,
-      contentType: envelope?.contentType || 'application/octet-stream',
-      env: {
-        iv_b64: envelope.iv_b64,
-        hkdf_salt_b64: envelope.hkdf_salt_b64,
-        info_tag: envelope.info_tag,
-        key_type: envelope.key_type
-      }
-    };
+    const entry = findMessageEntryByKey(driveState.currentMessages, key);
+    if (!entry) throw new Error('找不到檔案，請重新整理');
+    const header = { ...entry.header, name: newName };
     const msgPayload = {
       convId,
-      type: 'media',
-      aead: 'aes-256-gcm',
-      header,
-      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({
-        v: envelope.v,
-        aead: envelope.aead,
-        iv_b64: envelope.iv_b64,
-        hkdf_salt_b64: envelope.hkdf_salt_b64,
-        info_tag: envelope.info_tag,
-        key_type: envelope.key_type
-      })))
+      type: entry.msg?.type || 'media',
+      aead: entry.msg?.aead || 'aes-256-gcm',
+      header
     };
     const body = buildAccountPayload({ overrides: msgPayload });
     const { r, data } = await createMessage(body);
@@ -488,35 +478,21 @@ export function initDrivePane({
         if (!pathStartsWith(dirSegments, targetPath)) return null;
         const objKey = typeof msg?.obj_key === 'string' && msg.obj_key ? msg.obj_key : (typeof header?.obj === 'string' ? header.obj : '');
         if (!objKey) return null;
-        return { header, objKey };
+        return { header, objKey, msg };
       })
       .filter(Boolean);
 
-    const batch = targetMessages.map(({ header, objKey }) => {
+    const batch = targetMessages.map(({ header, objKey, msg }) => {
       const newDir = getDirSegmentsFromHeader(header).map((seg) => (seg === oldName ? newName : seg));
-      const env = header?.env || {};
       const payload = {
         convId,
-        type: 'media',
-        aead: 'aes-256-gcm',
+        type: msg?.type || 'media',
+        aead: msg?.aead || 'aes-256-gcm',
         header: {
           ...header,
           dir: newDir,
-          env: {
-            iv_b64: env.iv_b64,
-            hkdf_salt_b64: env.hkdf_salt_b64,
-            info_tag: env.info_tag,
-            key_type: env.key_type
-          }
-        },
-        ciphertext_b64: header?.ciphertext_b64 || b64(new TextEncoder().encode(JSON.stringify({
-          v: env.v,
-          aead: env.aead || 'aes-256-gcm',
-          iv_b64: env.iv_b64,
-          hkdf_salt_b64: env.hkdf_salt_b64,
-          info_tag: env.info_tag,
-          key_type: env.key_type
-        })))
+          obj: objKey
+        }
       };
       return payload;
     });
