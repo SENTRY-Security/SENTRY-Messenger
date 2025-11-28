@@ -47,7 +47,7 @@ export async function getPdfJsLibrary() {
 }
 
 export async function renderPdfViewer({ url, name, modalApi }) {
-  const { openModal, closeModal } = modalApi || {};
+  const { openModal, closeModal, showConfirmModal } = modalApi || {};
   let pdfjsLib;
   try {
     pdfjsLib = await getPdfJs();
@@ -170,6 +170,16 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   const downloadBtn = body.querySelector('#pdfDownload');
   downloadBtn?.addEventListener('click', (e) => {
     e.preventDefault();
+    const proceed = () => triggerDownload(url, name || 'file.pdf');
+    if (typeof showConfirmModal === 'function') {
+      showConfirmModal({
+        title: '下載 PDF',
+        message: '下載後會在外部開啟，返回通訊軟體可能需要重新感應。確定要下載嗎？',
+        confirmLabel: '下載',
+        onConfirm: proceed
+      });
+      return;
+    }
     const existing = document.querySelector('.pdf-confirm');
     if (existing) existing.remove();
     const overlay = document.createElement('div');
@@ -187,7 +197,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     overlay.querySelector('#pdfDlCancel')?.addEventListener('click', cleanupConfirm, { once: true });
     overlay.querySelector('#pdfDlOk')?.addEventListener('click', () => {
       cleanupConfirm();
-      triggerDownload(url, name || 'file.pdf');
+      proceed();
     }, { once: true });
     document.body.appendChild(overlay);
   });
