@@ -31,7 +31,7 @@ function triggerDownload(url, filename) {
       const a = document.createElement('a');
       a.href = url;
       if (filename) a.download = filename;
-      a.rel = 'noopener';
+      a.rel = 'noopener noreferrer';
       a.target = '_blank';
       document.body.appendChild(a);
       a.click();
