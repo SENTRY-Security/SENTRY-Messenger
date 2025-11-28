@@ -15,6 +15,7 @@ import { conversationIdFromToken, computeConversationAccessFingerprint } from '.
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
+import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
 import { deleteSecureConversation } from '../../api/messages.js';
 import {
   CALL_EVENT,
@@ -60,25 +61,6 @@ function releaseCallLogPlaceholder(peerUidHex, callId) {
   const key = makeCallLogPlaceholderKey(peerUidHex, callId);
   if (!key) return;
   callLogPlaceholders.delete(key);
-}
-
-let activePdfCleanup = null;
-let pdfJsLibPromise = null;
-
-async function getPdfJs() {
-  if (pdfJsLibPromise) return pdfJsLibPromise;
-  const version = '4.8.69';
-  const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
-  pdfJsLibPromise = import(`https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/+esm`)
-    .then((lib) => {
-      try { lib.GlobalWorkerOptions.workerSrc = workerUrl; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
-      return lib;
-    })
-    .catch((err) => {
-      pdfJsLibPromise = null;
-      throw err;
-    });
-  return pdfJsLibPromise;
 }
 
 function clearCallLogPlaceholders() {
@@ -1153,13 +1135,6 @@ export function initMessagesPane({
     return false;
   }
 
-  function cleanupPdfViewer() {
-    if (typeof activePdfCleanup === 'function') {
-      try { activePdfCleanup(); } catch {}
-    }
-    activePdfCleanup = null;
-  }
-
   async function renderPdfThumbnail(media, canvas) {
     if (!canvas) return;
     canvas.dataset.previewState = 'loading';
@@ -1177,7 +1152,7 @@ export function initMessagesPane({
         canvas.dataset.previewState = 'error';
         return;
       }
-      const pdfjsLib = await getPdfJs();
+      const pdfjsLib = await getPdfJsLibrary();
       const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
       const page = await doc.getPage(1);
       const viewport = page.getViewport({ scale: 1 });
@@ -1194,217 +1169,6 @@ export function initMessagesPane({
       canvas.dataset.previewState = 'error';
       log({ pdfThumbError: err?.message || err });
     }
-  }
-
-  async function renderPdfPreview({ url, name }) {
-    let pdfjsLib;
-    try {
-      pdfjsLib = await getPdfJs();
-    } catch (err) {
-      log({ pdfJsLoadError: err?.message || err });
-      return false;
-    }
-    const modalEl = document.getElementById('modal');
-    const body = document.getElementById('modalBody');
-    const modalTitle = document.getElementById('modalTitle');
-    const closeBtn = document.getElementById('modalClose');
-    const closeArea = document.getElementById('modalCloseArea');
-    if (!modalEl || !body || !modalTitle) return false;
-    cleanupPdfViewer();
-    modalEl.classList.add('pdf-modal');
-    modalTitle.textContent = '';
-    body.innerHTML = `
-      <div class="pdf-viewer">
-        <div class="pdf-toolbar">
-          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
-          <div class="pdf-actions">
-            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
-          </div>
-        </div>
-        <div class="pdf-stage">
-          <div class="pdf-canvas-wrap">
-            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-            <div class="pdf-loading" id="pdfLoading">載入中…</div>
-          </div>
-        </div>
-        <div class="pdf-footer">
-          <div class="pdf-actions-row">
-            <div class="pdf-page-info">
-              <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
-              <span id="pdfPageLabel">– / –</span>
-              <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
-            </div>
-          </div>
-        </div>
-      </div>`;
-
-    openPreviewModal?.();
-
-    const canvas = body.querySelector('#pdfCanvas');
-    const loadingEl = body.querySelector('#pdfLoading');
-    const pageLabel = body.querySelector('#pdfPageLabel');
-    const zoomLabel = null;
-    const stage = body.querySelector('.pdf-stage');
-
-    let pdfDoc = null;
-    let pageNum = 1;
-    let scale = 1;
-    let rendering = false;
-    let pendingPage = null;
-    let fitWidth = true;
-
-    const updateLabels = () => {
-      if (pageLabel && pdfDoc) pageLabel.textContent = `${pageNum} / ${pdfDoc.numPages}`;
-      if (zoomLabel) zoomLabel.textContent = `${Math.round(scale * 100)}%`;
-    };
-
-    const cleanupCore = () => {
-      try { pdfDoc?.cleanup?.(); pdfDoc?.destroy?.(); } catch {}
-      modalEl.classList.remove('pdf-modal');
-    };
-
-    const renderPage = async (num) => {
-      if (!pdfDoc || !canvas) return;
-      rendering = true;
-      const page = await pdfDoc.getPage(num);
-      const baseViewport = page.getViewport({ scale: 1 });
-      if (fitWidth && stage?.clientWidth) {
-        const maxWidth = Math.max(stage.clientWidth, 320);
-        scale = Math.min(2.5, Math.max(0.6, maxWidth / baseViewport.width));
-      }
-      const viewport = page.getViewport({ scale });
-      const ctx = canvas.getContext('2d');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      if (loadingEl) loadingEl.textContent = `載入第 ${num} 頁…`;
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      rendering = false;
-      updateLabels();
-      if (loadingEl) loadingEl.textContent = '';
-      if (pendingPage) {
-        const next = pendingPage;
-        pendingPage = null;
-        renderPage(next);
-      }
-      if (stage) stage.style.touchAction = scale > 1 ? 'none' : 'auto';
-    };
-
-    try {
-      pdfDoc = await pdfjsLib.getDocument({ url }).promise;
-      pageNum = 1;
-      updateLabels();
-      await renderPage(pageNum);
-    } catch (err) {
-      if (loadingEl) {
-        loadingEl.textContent = `PDF 載入失敗：${err?.message || err}`;
-        loadingEl.classList.add('pdf-error');
-      }
-      return true;
-    }
-
-    const queueRender = (num) => {
-      if (num < 1 || num > pdfDoc.numPages) return;
-      pageNum = num;
-      if (rendering) {
-        pendingPage = num;
-      } else {
-        renderPage(num);
-      }
-    };
-
-    const zoom = (delta) => {
-      scale = Math.min(3, Math.max(0.6, scale + delta));
-      fitWidth = false;
-      queueRender(pageNum);
-    };
-
-    body.querySelector('#pdfPrev')?.addEventListener('click', () => queueRender(pageNum - 1));
-    body.querySelector('#pdfNext')?.addEventListener('click', () => queueRender(pageNum + 1));
-    body.querySelector('#pdfFitBtn')?.addEventListener('click', () => {
-      fitWidth = true;
-      queueRender(pageNum);
-    });
-    body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
-    closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
-    closeArea?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
-    const handleResize = () => { if (fitWidth) queueRender(pageNum); };
-    window.addEventListener('resize', handleResize);
-    updateLabels();
-    activePdfCleanup = () => {
-      cleanupCore();
-      window.removeEventListener('resize', handleResize);
-      closePreviewModal?.();
-      activePdfCleanup = null;
-    };
-
-    // Pinch zoom support
-    let pinchStartDist = null;
-    let pinchStartScale = scale;
-    let panStart = null;
-    const getDistance = (touches) => {
-      if (!touches || touches.length < 2) return null;
-      const [a, b] = touches;
-      const dx = a.clientX - b.clientX;
-      const dy = a.clientY - b.clientY;
-      return Math.sqrt(dx * dx + dy * dy);
-    };
-    const onTouchStart = (e) => {
-      if (e.touches.length === 2) {
-        pinchStartDist = getDistance(e.touches);
-        pinchStartScale = scale;
-        panStart = null;
-        if (stage) stage.style.touchAction = 'none';
-      } else if (e.touches.length === 1 && scale > 1 && stage) {
-        const t = e.touches[0];
-        panStart = {
-          x: t.clientX,
-          y: t.clientY,
-          scrollLeft: stage.scrollLeft,
-          scrollTop: stage.scrollTop
-        };
-        stage.style.touchAction = 'none';
-      }
-    };
-    const onTouchMove = (e) => {
-      if (e.touches.length === 2 && pinchStartDist) {
-        const dist = getDistance(e.touches);
-        if (!dist) return;
-        e.preventDefault();
-        const factor = dist / pinchStartDist;
-        scale = Math.min(3, Math.max(0.6, pinchStartScale * factor));
-        fitWidth = false;
-        queueRender(pageNum);
-      } else if (e.touches.length === 1 && panStart && stage) {
-        e.preventDefault();
-        const t = e.touches[0];
-        const dx = t.clientX - panStart.x;
-        const dy = t.clientY - panStart.y;
-        stage.scrollLeft = panStart.scrollLeft - dx;
-        stage.scrollTop = panStart.scrollTop - dy;
-      }
-    };
-    const onTouchEnd = () => {
-      pinchStartDist = null;
-      panStart = null;
-      if (stage && scale <= 1) stage.style.touchAction = 'auto';
-    };
-    stage?.addEventListener('touchstart', onTouchStart, { passive: false });
-    stage?.addEventListener('touchmove', onTouchMove, { passive: false });
-    stage?.addEventListener('touchend', onTouchEnd);
-    stage?.addEventListener('touchcancel', onTouchEnd);
-    const prevCleanup = activePdfCleanup;
-    activePdfCleanup = () => {
-      if (typeof prevCleanup === 'function') prevCleanup();
-      stage?.removeEventListener('touchstart', onTouchStart);
-      stage?.removeEventListener('touchmove', onTouchMove);
-      stage?.removeEventListener('touchend', onTouchEnd);
-      stage?.removeEventListener('touchcancel', onTouchEnd);
-      if (stage) stage.style.touchAction = 'auto';
-    };
-    return true;
   }
 
   async function openMediaPreview(media) {
@@ -1509,7 +1273,7 @@ export function initMessagesPane({
 
     const ct = (contentType || '').toLowerCase();
     if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-      const handled = await renderPdfPreview({ url, name: resolvedName });
+      const handled = await renderPdfViewer({ url, name: resolvedName, modalApi: { openModal: openPreviewModal, closeModal: closePreviewModal } });
       if (handled) return;
       const msg = document.createElement('div');
       msg.className = 'preview-message';
