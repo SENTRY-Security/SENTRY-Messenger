@@ -26,14 +26,17 @@ export function cleanupPdfViewer() {
 
 function triggerDownload(url, filename) {
   try {
-    const a = document.createElement('a');
-    a.href = url;
-    if (filename) a.download = filename;
-    a.rel = 'noopener';
-    a.target = '_blank';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    const win = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!win) {
+      const a = document.createElement('a');
+      a.href = url;
+      if (filename) a.download = filename;
+      a.rel = 'noopener';
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
   } catch (err) {
     log({ pdfDownloadError: err?.message || err });
   }
@@ -174,7 +177,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     overlay.innerHTML = `
       <div class="pdf-confirm-panel">
         <div class="pdf-confirm-title">下載 PDF</div>
-        <div class="pdf-confirm-msg">下載後會在外部開啟，返回通訊軟體需要重新感應。確定要下載嗎？</div>
+        <div class="pdf-confirm-msg">下載後會在外部開啟，返回通訊軟體可能需要重新感應。確定要下載嗎？</div>
         <div class="pdf-confirm-actions">
           <button type="button" class="secondary" id="pdfDlCancel">取消</button>
           <button type="button" class="primary" id="pdfDlOk">下載</button>
