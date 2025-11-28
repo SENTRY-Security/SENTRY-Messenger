@@ -74,7 +74,8 @@ export function initDrivePane({
     activePdfCleanup = null;
   }
 
-  async function renderPdfPreview({ url, name }) {
+  async function renderPdfPreview({ url, name, modalApi }) {
+    const { openModal, closeModal, showConfirmModal } = modalApi || {};
     let pdfjsLib;
     try {
       pdfjsLib = await getPdfJs();
@@ -192,6 +193,22 @@ export function initDrivePane({
 
     body.querySelector('#pdfPrev')?.addEventListener('click', () => queueRender(pageNum - 1));
     body.querySelector('#pdfNext')?.addEventListener('click', () => queueRender(pageNum + 1));
+    const downloadBtn = body.querySelector('#pdfDownload');
+    downloadBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      const proceed = () => triggerDownload(url, name || 'file.pdf');
+      if (typeof showConfirmModal === 'function') {
+        showConfirmModal({
+          title: '下載 PDF',
+          message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？',
+          confirmLabel: '下載',
+          onConfirm: proceed
+        });
+      } else {
+        const confirmed = window.confirm('下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？');
+        if (confirmed) proceed();
+      }
+    });
     body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
     closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
     closeArea?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
@@ -1003,7 +1020,11 @@ export function initDrivePane({
       body.appendChild(container);
 
       if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-        const handled = await renderPdfPreview({ url, name: resolvedName });
+        const handled = await renderPdfPreview({
+          url,
+          name: resolvedName,
+          modalApi: { openModal, closeModal, showConfirmModal }
+        });
         if (handled) return;
         const iframe = document.createElement('iframe');
         iframe.src = url;

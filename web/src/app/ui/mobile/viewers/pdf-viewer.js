@@ -44,7 +44,7 @@ export async function getPdfJsLibrary() {
 }
 
 export async function renderPdfViewer({ url, name, modalApi }) {
-  const { openModal, closeModal } = modalApi || {};
+  const { openModal, closeModal, showConfirmModal } = modalApi || {};
   let pdfjsLib;
   try {
     pdfjsLib = await getPdfJs();
@@ -165,9 +165,19 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   const downloadBtn = body.querySelector('#pdfDownload');
   downloadBtn?.addEventListener('click', (e) => {
     e.preventDefault();
-    const confirmed = window.confirm('下載後將在外部開啟 PDF，返回通訊軟體需重新感應。確定要下載嗎？');
-    if (!confirmed) return;
-    triggerDownload(url, name || 'file.pdf');
+    const proceed = () => triggerDownload(url, name || 'file.pdf');
+    if (typeof showConfirmModal === 'function') {
+      showConfirmModal({
+        title: '下載 PDF',
+        message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？',
+        confirmLabel: '下載',
+        onConfirm: proceed
+      });
+    } else {
+      const confirmed = window.confirm('下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？');
+      if (!confirmed) return;
+      proceed();
+    }
   });
   body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
   closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });

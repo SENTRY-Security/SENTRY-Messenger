@@ -1273,7 +1273,11 @@ export function initMessagesPane({
 
     const ct = (contentType || '').toLowerCase();
     if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-      const handled = await renderPdfViewer({ url, name: resolvedName, modalApi: { openModal: openPreviewModal, closeModal: closePreviewModal } });
+      const handled = await renderPdfViewer({
+        url,
+        name: resolvedName,
+        modalApi: { openModal: openPreviewModal, closeModal: closePreviewModal, showConfirmModal }
+      });
       if (handled) return;
       const msg = document.createElement('div');
       msg.className = 'preview-message';
