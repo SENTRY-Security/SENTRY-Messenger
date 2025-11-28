@@ -80,6 +80,8 @@ export function createToastController(element) {
     contentParts.push(`<div class="toast-body">${body.join('')}</div>`);
     toastEl.innerHTML = `<div class="toast-content">${contentParts.join('')}</div>`;
     toastEl.classList.add('show');
+    toastEl.setAttribute('aria-label', text);
+    toastEl.setAttribute('tabindex', '0');
     if (toastTimerId) clearTimeout(toastTimerId);
     toastTimerId = setTimeout(() => {
       hide();
@@ -87,7 +89,7 @@ export function createToastController(element) {
     }, Math.max(1200, Number(duration) || 0));
   }
 
-  toastEl?.addEventListener('click', () => {
+  const invokeHandler = () => {
     hide();
     if (toastTimerId) {
       clearTimeout(toastTimerId);
@@ -97,6 +99,14 @@ export function createToastController(element) {
     toastClickHandler = null;
     if (typeof handler === 'function') {
       try { handler(); } catch (err) { log({ toastCallbackError: err?.message || err }); }
+    }
+  };
+
+  toastEl?.addEventListener('click', invokeHandler);
+  toastEl?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      invokeHandler();
     }
   });
 

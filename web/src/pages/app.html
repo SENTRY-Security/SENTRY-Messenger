@@ -448,7 +448,7 @@
       .confirm-actions { display:flex; justify-content:flex-end; gap:10px; }
       .btn-danger { background:#ef4444; color:#fff; border:1px solid #ef4444; padding:8px 16px; border-radius:12px; cursor:pointer; box-shadow:0 6px 16px rgba(239,68,68,0.25); }
       .btn-danger:active { transform:translateY(1px); }
-      .toast { position:fixed; top:calc(12px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:5000; background:#fff; border-radius:16px; padding:10px 14px; box-shadow:0 12px 28px rgba(15,23,42,0.18); display:none; align-items:center; gap:10px; max-width:300px; width:calc(100vw - 56px); border:1px solid rgba(148,163,184,0.2); max-height:64px; }
+      .toast { position:fixed; top:calc(12px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:5000; background:#fff; border-radius:16px; padding:10px 14px; box-shadow:0 12px 28px rgba(15,23,42,0.18); display:none; align-items:center; gap:10px; max-width:300px; width:calc(100vw - 56px); border:1px solid rgba(148,163,184,0.2); max-height:64px; cursor:pointer; pointer-events:auto; }
       @media (min-width: 420px) { .toast { max-width:340px; } }
       .toast.show { display:flex; }
       .toast-avatar { width:32px; height:32px; border-radius:50%; overflow:hidden; flex-shrink:0; background:#e2e8f0; display:flex; align-items:center; justify-content:center; font-size:12px; color:#64748b; }
@@ -745,7 +745,7 @@
       </div>
     </div>
 
-    <div id="appToast" class="toast" role="status" aria-live="polite"></div>
+    <div id="appToast" class="toast" role="button" tabindex="0" aria-live="polite"></div>
 
     <nav class="navbar">
       <button id="nav-contacts" class="navbtn" aria-label="聯絡人">

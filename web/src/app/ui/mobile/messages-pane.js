@@ -2387,13 +2387,7 @@ export function initMessagesPane({
     const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
     const initialsToast = initialsFromName(nickname, peerUid).slice(0, 2);
     showToast?.(toastMessage, {
-      onClick: () => {
-        switchTab?.('messages');
-        const setPromise = setActiveConversation(peerUid);
-        if (setPromise && typeof setPromise.catch === 'function') {
-          setPromise.catch((err) => log({ toastOpenConversationError: err?.message || err }));
-        }
-      },
+      onClick: () => openConversationFromToast({ peerUid, convId, tokenB64 }),
       avatarUrl: avatarUrlToast,
       avatarInitials: initialsToast,
       subtitle: formatTimestamp(tsRaw)
@@ -2425,6 +2419,36 @@ export function initMessagesPane({
     }
     switchTab?.('messages');
     setActiveConversation(peerUid);
+  }
+
+  function openConversationFromToast({ peerUid, convId, tokenB64 }) {
+    try { log({ toastNavigate: { peerUid, convId } }); } catch {}
+    switchTab?.('messages');
+    syncConversationThreadsFromContacts();
+    const threads = getConversationThreads();
+    const threadByConv = convId ? threads.get(convId) : null;
+    const targetPeer = String(peerUid || threadByConv?.peerUid || '').toUpperCase();
+    const state = getMessageState();
+    const token = tokenB64 || threadByConv?.conversationToken || null;
+    const conversationId = convId || threadByConv?.conversationId || null;
+    if (targetPeer) {
+      const p = setActiveConversation(targetPeer);
+      if (p?.catch) p.catch((err) => log({ toastOpenConversationError: err?.message || err }));
+      return;
+    }
+    if (conversationId && token) {
+      state.activePeerUid = null;
+      state.conversationId = conversationId;
+      state.conversationToken = token;
+      loadActiveConversationMessages({ append: false })
+        .then(() => scrollMessagesToBottom())
+        .catch((err) => log({ toastOpenConversationError: err?.message || err }));
+      renderConversationList();
+      return;
+    }
+    log({ toastOpenConversationError: 'missing conversation info', peerUid, convId });
+    showToast?.('同步中，請稍後再試', { variant: 'warning' });
+    refreshConversationPreviews({ force: true }).catch((err) => log({ toastRefreshPreviewError: err?.message || err }));
   }
 
   function attachDomEvents() {
