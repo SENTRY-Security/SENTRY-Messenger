@@ -172,13 +172,6 @@ const customLogoutCancelBtn = document.getElementById('customLogoutCancel');
 const customLogoutErrorEl = document.getElementById('customLogoutError');
 let customLogoutModalContext = null;
 let customLogoutInvoker = null;
-
-initVersionInfoButton({
-  buttonId: 'userMenuVersionBtn',
-  popupId: 'versionInfoPopupAppMenu',
-  openModal,
-  closeModal
-});
 initRemoteConsoleRelay();
 initContactSecretsBackup();
 observeTopbarHeight();
@@ -1547,6 +1540,13 @@ const {
   setModalObjectUrl,
   showSecurityModal
 } = modalController;
+
+initVersionInfoButton({
+  buttonId: 'userMenuVersionBtn',
+  popupId: 'versionInfoPopupAppMenu',
+  openModal,
+  closeModal
+});
 
 const { setupSwipe, closeSwipe, closeOpenSwipe } = createSwipeManager();
 
