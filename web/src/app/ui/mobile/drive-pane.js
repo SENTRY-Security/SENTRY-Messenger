@@ -460,9 +460,6 @@ export function initDrivePane({
     closeOpenSwipe?.();
     renderCrumb();
     driveListEl.innerHTML = '';
-    driveListEl.style.overflowY = 'auto';
-    driveListEl.style.maxHeight = '100%';
-    driveListEl.style.webkitOverflowScrolling = 'touch';
     const currentPath = [...ensureSafeCwd()];
     if (btnUp) btnUp.style.display = currentPath.length ? 'inline-flex' : 'none';
     const folderSet = new Map();
