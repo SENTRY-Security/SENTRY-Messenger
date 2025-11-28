@@ -113,7 +113,8 @@
       .list-actions button:hover { background:#e2e8f0; }
       .list-actions button:active { transform:translateY(1px); }
       .list { list-style:none; padding-left:0; margin:0; display:flex; flex-direction:column; gap:8px; }
-      .file-item { position:relative; display:flex; align-items:center; gap:0; padding:0; border:1px solid var(--line); border-radius:16px; background:#fff; box-shadow:0 6px 20px rgba(15,23,42,0.05); transition:transform .15s ease, box-shadow .15s ease; cursor:pointer; outline:none; overflow:hidden; touch-action: pan-y; }
+      .file-item { position:relative; display:flex; align-items:center; gap:0; padding:0; border:1px solid var(--line); border-radius:16px; background:#fff; box-shadow:0 6px 20px rgba(15,23,42,0.05); transition:transform .15s ease, box-shadow .15s ease; cursor:pointer; outline:none; overflow:hidden; touch-action: pan-y; user-select:none; -webkit-user-select:none; }
+      .file-item * { user-select:none; -webkit-user-select:none; }
       .file-item.folder { background:#f8fafc; }
       .file-item:hover { transform:translateY(-1px); box-shadow:0 12px 28px rgba(15,23,42,0.08); }
       .file-item:focus-visible { box-shadow:0 0 0 2px rgba(37,99,235,0.35); transform:none; }

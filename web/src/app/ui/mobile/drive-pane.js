@@ -358,6 +358,168 @@ export function initDrivePane({
     return 'bx bx-file';
   }
 
+  function attachLongPressEdit(li, { type, name, key }) {
+    let pressTimer = null;
+    let active = false;
+    const start = () => {
+      if (pressTimer) clearTimeout(pressTimer);
+      pressTimer = setTimeout(() => {
+        active = true;
+        openRenameModal({ type, name, key, element: li });
+      }, 650);
+    };
+    const clear = () => {
+      if (pressTimer) clearTimeout(pressTimer);
+      pressTimer = null;
+    };
+    li.addEventListener('touchstart', start);
+    li.addEventListener('touchend', clear);
+    li.addEventListener('touchmove', clear);
+    li.addEventListener('mousedown', start);
+    li.addEventListener('mouseleave', clear);
+    li.addEventListener('mouseup', clear);
+    li.addEventListener('click', () => { if (active) { active = false; } });
+  }
+
+  function openRenameModal({ type, name, key, element }) {
+    const modalEl = document.getElementById('modal');
+    const body = document.getElementById('modalBody');
+    const title = document.getElementById('modalTitle');
+    if (!modalEl || !body) return;
+    modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'folder-modal');
+    modalEl.classList.add('nickname-modal');
+    if (title) title.textContent = type === 'folder' ? '重新命名資料夾' : '重新命名檔案';
+    body.innerHTML = `
+      <form id="renameForm" class="nickname-form">
+        <label for="renameInput">${type === 'folder' ? '資料夾名稱' : '檔案名稱'}</label>
+        <input id="renameInput" type="text" value="${escapeHtml(name || '')}" autocomplete="off" spellcheck="false" />
+        <p class="nickname-hint">長按觸發重命名。名稱不可為空。</p>
+        <div class="nickname-actions">
+          <button type="button" id="renameCancel" class="secondary">取消</button>
+          <button type="submit" class="primary">儲存</button>
+        </div>
+      </form>`;
+    openModal?.();
+    const input = body.querySelector('#renameInput');
+    const form = body.querySelector('#renameForm');
+    const cancelBtn = body.querySelector('#renameCancel');
+    cancelBtn?.addEventListener('click', () => closeModal?.(), { once: true });
+    setTimeout(() => input?.focus(), 30);
+    form?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const newName = String(input?.value || '').trim();
+      if (!newName) {
+        input?.focus();
+        return;
+      }
+      closeModal?.();
+      try {
+        if (type === 'folder') {
+          await renameFolder(name, newName);
+        } else if (type === 'file') {
+          await renameFile(key, newName);
+        }
+        await refreshDriveList();
+      } catch (err) {
+        log({ renameError: err?.message || err });
+      } finally {
+        if (element) closeSwipe?.(element);
+      }
+    }, { once: true });
+  }
+
+  async function renameFile(key, newName) {
+    const acct = (getAccountDigest() || '').toUpperCase();
+    if (!acct) throw new Error('Account missing');
+    const convId = driveState.currentConvId || `drive-${acct}`;
+    const envelope = findEnvelopeInMessages(driveState.currentMessages, key);
+    if (!envelope) throw new Error('找不到檔案封套，請重新整理');
+    const header = {
+      obj: key,
+      size: envelope?.ct_b64 ? (envelope.ct_b64.length * 3) / 4 : null,
+      name: newName,
+      contentType: envelope?.contentType || 'application/octet-stream',
+      env: {
+        iv_b64: envelope.iv_b64,
+        hkdf_salt_b64: envelope.hkdf_salt_b64,
+        info_tag: envelope.info_tag,
+        key_type: envelope.key_type
+      }
+    };
+    const msgPayload = {
+      convId,
+      type: 'media',
+      aead: 'aes-256-gcm',
+      header,
+      ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({
+        v: envelope.v,
+        aead: envelope.aead,
+        iv_b64: envelope.iv_b64,
+        hkdf_salt_b64: envelope.hkdf_salt_b64,
+        info_tag: envelope.info_tag,
+        key_type: envelope.key_type
+      })))
+    };
+    const body = buildAccountPayload({ overrides: msgPayload });
+    const { r, data } = await createMessage(body);
+    if (!r.ok) throw new Error('重新命名失敗：' + JSON.stringify(data));
+  }
+
+  async function renameFolder(oldName, newName) {
+    if (!oldName || !newName) return;
+    const acct = (getAccountDigest() || '').toUpperCase();
+    if (!acct) throw new Error('Account missing');
+    const convId = driveState.currentConvId || `drive-${acct}`;
+    const currentPath = [...ensureSafeCwd()];
+    const basePath = currentPath.slice(0, -1);
+    const targetPath = [...basePath, oldName];
+    const targetMessages = driveState.currentMessages
+      .map((msg) => {
+        const header = safeJSON(msg?.header_json || msg?.header || '{}');
+        const dirSegments = getDirSegmentsFromHeader(header);
+        if (!pathStartsWith(dirSegments, targetPath)) return null;
+        const objKey = typeof msg?.obj_key === 'string' && msg.obj_key ? msg.obj_key : (typeof header?.obj === 'string' ? header.obj : '');
+        if (!objKey) return null;
+        return { header, objKey };
+      })
+      .filter(Boolean);
+
+    const batch = targetMessages.map(({ header, objKey }) => {
+      const newDir = getDirSegmentsFromHeader(header).map((seg) => (seg === oldName ? newName : seg));
+      const env = header?.env || {};
+      const payload = {
+        convId,
+        type: 'media',
+        aead: 'aes-256-gcm',
+        header: {
+          ...header,
+          dir: newDir,
+          env: {
+            iv_b64: env.iv_b64,
+            hkdf_salt_b64: env.hkdf_salt_b64,
+            info_tag: env.info_tag,
+            key_type: env.key_type
+          }
+        },
+        ciphertext_b64: header?.ciphertext_b64 || b64(new TextEncoder().encode(JSON.stringify({
+          v: env.v,
+          aead: env.aead || 'aes-256-gcm',
+          iv_b64: env.iv_b64,
+          hkdf_salt_b64: env.hkdf_salt_b64,
+          info_tag: env.info_tag,
+          key_type: env.key_type
+        })))
+      };
+      return payload;
+    });
+
+    for (const msgPayload of batch) {
+      const body = buildAccountPayload({ overrides: msgPayload });
+      const { r, data } = await createMessage(body);
+      if (!r.ok) throw new Error('重新命名失敗：' + JSON.stringify(data));
+    }
+  }
+
   function openUploadModal() {
     const modalEl = document.getElementById('modal');
     const body = document.getElementById('modalBody');
