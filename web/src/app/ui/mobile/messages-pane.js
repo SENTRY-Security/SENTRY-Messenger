@@ -1235,11 +1235,6 @@ export function initMessagesPane({
               <span id="pdfPageLabel">– / –</span>
               <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
             </div>
-            <div class="pdf-page-info">
-              <button type="button" class="pdf-btn" id="pdfZoomOut" aria-label="縮小">−</button>
-              <span id="pdfZoomLabel">100%</span>
-              <button type="button" class="pdf-btn" id="pdfZoomIn" aria-label="放大">＋</button>
-            </div>
           </div>
         </div>
       </div>`;
@@ -1249,7 +1244,7 @@ export function initMessagesPane({
     const canvas = body.querySelector('#pdfCanvas');
     const loadingEl = body.querySelector('#pdfLoading');
     const pageLabel = body.querySelector('#pdfPageLabel');
-    const zoomLabel = body.querySelector('#pdfZoomLabel');
+    const zoomLabel = null;
     const stage = body.querySelector('.pdf-stage');
 
     let pdfDoc = null;
@@ -1325,8 +1320,6 @@ export function initMessagesPane({
 
     body.querySelector('#pdfPrev')?.addEventListener('click', () => queueRender(pageNum - 1));
     body.querySelector('#pdfNext')?.addEventListener('click', () => queueRender(pageNum + 1));
-    body.querySelector('#pdfZoomIn')?.addEventListener('click', () => zoom(0.15));
-    body.querySelector('#pdfZoomOut')?.addEventListener('click', () => zoom(-0.15));
     body.querySelector('#pdfFitBtn')?.addEventListener('click', () => {
       fitWidth = true;
       queueRender(pageNum);
@@ -1342,6 +1335,49 @@ export function initMessagesPane({
       window.removeEventListener('resize', handleResize);
       closePreviewModal?.();
       activePdfCleanup = null;
+    };
+
+    // Pinch zoom support
+    let pinchStartDist = null;
+    let pinchStartScale = scale;
+    const getDistance = (touches) => {
+      if (!touches || touches.length < 2) return null;
+      const [a, b] = touches;
+      const dx = a.clientX - b.clientX;
+      const dy = a.clientY - b.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+    const onTouchStart = (e) => {
+      if (e.touches.length === 2) {
+        pinchStartDist = getDistance(e.touches);
+        pinchStartScale = scale;
+      }
+    };
+    const onTouchMove = (e) => {
+      if (e.touches.length === 2 && pinchStartDist) {
+        const dist = getDistance(e.touches);
+        if (!dist) return;
+        e.preventDefault();
+        const factor = dist / pinchStartDist;
+        scale = Math.min(3, Math.max(0.6, pinchStartScale * factor));
+        fitWidth = false;
+        queueRender(pageNum);
+      }
+    };
+    const onTouchEnd = () => {
+      pinchStartDist = null;
+    };
+    stage?.addEventListener('touchstart', onTouchStart, { passive: false });
+    stage?.addEventListener('touchmove', onTouchMove, { passive: false });
+    stage?.addEventListener('touchend', onTouchEnd);
+    stage?.addEventListener('touchcancel', onTouchEnd);
+    const prevCleanup = activePdfCleanup;
+    activePdfCleanup = () => {
+      if (typeof prevCleanup === 'function') prevCleanup();
+      stage?.removeEventListener('touchstart', onTouchStart);
+      stage?.removeEventListener('touchmove', onTouchMove);
+      stage?.removeEventListener('touchend', onTouchEnd);
+      stage?.removeEventListener('touchcancel', onTouchEnd);
     };
     return true;
   }
