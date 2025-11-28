@@ -60,8 +60,10 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
-      'settings-modal'
+      'settings-modal',
+      'pdf-modal'
     );
+    document.querySelector('.pdf-confirm')?.remove();
 
     if (typeof modal.__avatarCleanup === 'function') {
       try { modal.__avatarCleanup(); } catch (err) { console.warn(err); }
@@ -135,7 +137,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
-      'settings-modal'
+      'settings-modal',
+      'pdf-modal'
     );
     modal.classList.add('security-modal');
     const modalTitle = document.getElementById('modalTitle');
@@ -172,7 +175,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
-      'settings-modal'
+      'settings-modal',
+      'pdf-modal'
     );
     modal.classList.add('loading-modal');
     const title = document.getElementById('modalTitle');
@@ -210,7 +214,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
-      'settings-modal'
+      'settings-modal',
+      'pdf-modal'
     );
     modal.classList.add('confirm-modal');
     const modalTitle = document.getElementById('modalTitle');
@@ -249,7 +254,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
-      'settings-modal'
+      'settings-modal',
+      'pdf-modal'
     );
     modal.classList.add('progress-modal');
     const modalTitle = document.getElementById('modalTitle');

@@ -649,7 +649,7 @@ export function initDrivePane({
     const body = document.getElementById('modalBody');
     const title = document.getElementById('modalTitle');
     if (!modalEl || !body) return;
-    modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'folder-modal');
+    modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'folder-modal', 'pdf-modal');
     modalEl.classList.add('nickname-modal');
     if (title) title.textContent = type === 'folder' ? '重新命名資料夾' : '重新命名檔案';
     body.innerHTML = `
@@ -765,7 +765,7 @@ export function initDrivePane({
     const body = document.getElementById('modalBody');
     const title = document.getElementById('modalTitle');
     if (!modalEl || !body) return;
-    modalEl.classList.remove('security-modal', 'progress-modal', 'folder-modal', 'nickname-modal');
+    modalEl.classList.remove('security-modal', 'progress-modal', 'folder-modal', 'nickname-modal', 'pdf-modal');
     modalEl.classList.add('upload-modal');
     if (title) title.textContent = '上傳檔案';
     body.innerHTML = `
@@ -845,7 +845,7 @@ export function initDrivePane({
     const body = document.getElementById('modalBody');
     const title = document.getElementById('modalTitle');
     if (!modalEl || !body) return;
-    modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal');
+    modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'pdf-modal');
     modalEl.classList.add('folder-modal');
     if (title) title.textContent = '新增資料夾';
     body.innerHTML = `
