@@ -74,6 +74,11 @@
       .contacts-refresh .icon.spin { animation: modal-spin .9s linear infinite; }
       .contacts-refresh.ready { color:#0f172a; font-weight:500; }
       .contacts-refresh.ready .icon { color:#0f172a; }
+      .drive-refresh { position: fixed; top: calc(var(--topbar-offset) + 20px); left: 0; right: 0; display:flex; align-items:center; justify-content:center; gap:8px; height:44px; color:#64748b; font-size:12px; letter-spacing:0.3px; opacity:0; pointer-events:none; z-index: 2; }
+      .drive-refresh .icon { font-size:18px; display:inline-flex; align-items:center; justify-content:center; }
+      .drive-refresh .icon.spin { animation: modal-spin .9s linear infinite; }
+      .drive-refresh.ready { color:#0f172a; font-weight:500; }
+      .drive-refresh.ready .icon { color:#0f172a; }
       .contact-list { list-style:none; padding-left:0; margin:5px 0 0; display:flex; flex-direction:column; gap:12px; flex:1 1 auto; overflow-y:auto; }
       #tab-drive,
       #tab-profile { overflow:auto; }
@@ -677,6 +682,10 @@
         </div>
       </section>
       <section id="tab-drive" class="tab">
+        <div id="driveRefreshHint" class="drive-refresh">
+          <i class='bx bx-refresh icon' aria-hidden="true"></i>
+          <span class="label">下拉更新檔案</span>
+        </div>
         <div class="drive-usage" aria-live="polite">
           <div class="drive-usage-top">
             <div class="drive-usage-label">雲端空間</div>

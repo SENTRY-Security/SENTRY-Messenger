@@ -26,12 +26,27 @@ export function initDrivePane({
   const usageNoteEl = dom.usageNote ?? document.getElementById('driveUsageNote');
   const usageProgressEl = dom.usageProgress ?? document.getElementById('driveUsageProgress');
   const usageBarEl = dom.usageBar ?? document.getElementById('driveUsageBar');
+  const driveSectionEl = dom.driveSection ?? document.getElementById('tab-drive');
+  const driveUsageEl = dom.driveUsage ?? document.querySelector('#tab-drive .drive-usage');
+  const driveCardEl = dom.driveCard ?? document.querySelector('#tab-drive .card');
+  const driveRefreshEl = dom.driveRefresh ?? document.getElementById('driveRefreshHint');
+  const driveRefreshLabelEl = dom.driveRefreshLabel ?? document.querySelector('#driveRefreshHint .label');
+  const driveScrollEl = dom.driveScroll ?? document.getElementById('tab-drive');
   let activePdfCleanup = null;
   let pdfJsLibPromise = null;
 
   const SYSTEM_DIR_SENT = '已傳送';
   const SYSTEM_DIR_RECEIVED = '已接收';
   const RESERVED_DIRS = new Set([SYSTEM_DIR_SENT, SYSTEM_DIR_RECEIVED]);
+  const DRIVE_PULL_THRESHOLD = 60;
+  const DRIVE_PULL_MAX = 140;
+  let drivePullTracking = false;
+  let drivePullDecided = false;
+  let drivePullInvalid = false;
+  let drivePullStartY = 0;
+  let drivePullStartX = 0;
+  let drivePullDistance = 0;
+  let driveRefreshing = false;
 
   function isReservedDir(name) {
     if (typeof name !== 'string') return false;
@@ -61,6 +76,116 @@ export function initDrivePane({
   function sanitizeHeaderDir(segments) {
     if (!Array.isArray(segments)) return [];
     return sanitizePathSegments(segments);
+  }
+
+  function applyDrivePullTransition(enable) {
+    const transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
+    if (driveRefreshEl) driveRefreshEl.style.transition = transition;
+    if (driveUsageEl) driveUsageEl.style.transition = enable ? 'transform 120ms ease-out' : 'none';
+    if (driveCardEl) driveCardEl.style.transition = enable ? 'transform 120ms ease-out' : 'none';
+  }
+
+  function updateDrivePull(offset) {
+    const clamped = Math.min(DRIVE_PULL_MAX, Math.max(0, offset));
+    if (driveRefreshEl) {
+      const fadeStart = 5;
+      const fadeRange = 25;
+      const alpha = Math.min(1, Math.max(0, (clamped - fadeStart) / fadeRange));
+      driveRefreshEl.style.opacity = String(alpha);
+      const spinner = driveRefreshEl.querySelector('.icon');
+      const labelEl = driveRefreshLabelEl || driveRefreshEl.querySelector('.label');
+      driveRefreshEl.classList.toggle('ready', clamped >= DRIVE_PULL_THRESHOLD);
+      if (spinner && labelEl) {
+        if (driveRefreshing) {
+          spinner.classList.add('spin');
+          labelEl.textContent = '刷新中…';
+        } else {
+          spinner.classList.remove('spin');
+          labelEl.textContent = clamped >= DRIVE_PULL_THRESHOLD ? '鬆開更新檔案' : '下拉更新檔案';
+        }
+      }
+    }
+    if (driveUsageEl) driveUsageEl.style.transform = `translateY(${clamped}px)`;
+    if (driveCardEl) driveCardEl.style.transform = `translateY(${clamped}px)`;
+  }
+
+  function resetDrivePull({ animate = true } = {}) {
+    drivePullDistance = 0;
+    applyDrivePullTransition(animate);
+    updateDrivePull(0);
+  }
+
+  async function handleDriveRefresh() {
+    if (driveRefreshing) return;
+    driveRefreshing = true;
+    updateDrivePull(DRIVE_PULL_THRESHOLD);
+    try {
+      await refreshDriveList();
+    } catch (err) {
+      log({ drivePullRefreshError: err?.message || err });
+    } finally {
+      driveRefreshing = false;
+      resetDrivePull({ animate: true });
+    }
+  }
+
+  function handleDrivePullStart(e) {
+    if (!driveScrollEl) return;
+    if (driveScrollEl.scrollTop > 0) {
+      drivePullInvalid = true;
+      return;
+    }
+    drivePullInvalid = false;
+    if (e.touches?.length !== 1) return;
+    drivePullTracking = true;
+    drivePullDecided = false;
+    drivePullStartY = e.touches[0].clientY;
+    drivePullStartX = e.touches[0].clientX;
+    drivePullDistance = 0;
+    applyDrivePullTransition(false);
+  }
+
+  function handleDrivePullMove(e) {
+    if (!drivePullTracking || drivePullInvalid || driveRefreshing) return;
+    if (e.touches?.length !== 1) return;
+    const dy = e.touches[0].clientY - drivePullStartY;
+    const dx = Math.abs(e.touches[0].clientX - drivePullStartX);
+    if (!drivePullDecided) {
+      if (Math.abs(dy) < 8 && dx < 8) return;
+      drivePullDecided = true;
+      if (dy <= 0 || dy < Math.abs(dx)) {
+        drivePullTracking = false;
+        drivePullInvalid = true;
+        resetDrivePull({ animate: true });
+        return;
+      }
+    }
+    drivePullDistance = dy;
+    if (drivePullDistance > 0) {
+      e.preventDefault();
+      updateDrivePull(drivePullDistance);
+    }
+  }
+
+  function handleDrivePullEnd() {
+    if (!drivePullTracking) return;
+    drivePullTracking = false;
+    if (driveRefreshing) return;
+    if (drivePullDistance >= DRIVE_PULL_THRESHOLD && !drivePullInvalid) {
+      handleDriveRefresh();
+    } else {
+      resetDrivePull({ animate: true });
+    }
+  }
+
+  function setupDrivePullToRefresh() {
+    if (!driveScrollEl || !driveRefreshEl) return;
+    driveScrollEl.style.webkitOverflowScrolling = 'touch';
+    driveScrollEl.addEventListener('touchstart', handleDrivePullStart, { passive: true });
+    driveScrollEl.addEventListener('touchmove', handleDrivePullMove, { passive: false });
+    driveScrollEl.addEventListener('touchend', handleDrivePullEnd, { passive: true });
+    driveScrollEl.addEventListener('touchcancel', handleDrivePullEnd, { passive: true });
+    resetDrivePull({ animate: false });
   }
 
   async function getPdfJs() {
@@ -1410,6 +1535,7 @@ export function initDrivePane({
   }
 
   bindDomEvents();
+  setupDrivePullToRefresh();
   renderCrumb();
   updateUsageSummary();
 

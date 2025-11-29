@@ -414,7 +414,11 @@ export async function signGet({ key }) {
  * If envelope is not provided, tries local cache (saveEnvelopeMeta/loadEnvelopeMeta).
  * Returns { blob, contentType, name, bytes } for callers to save/display.
  */
-export async function downloadAndDecrypt({ key, envelope, onStatus }) {
+export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, preferXhr, abortSignal }) {
+  // onStatus 為既有介面；onProgress 為別名，便於舊呼叫站上事件
+  const progress = typeof onStatus === 'function'
+    ? onStatus
+    : (typeof onProgress === 'function' ? onProgress : null);
   const meta = envelope || loadEnvelopeMeta(key);
   if (!meta) throw new Error('No envelope metadata available for key');
   const keyType = String(meta.key_type || meta.keyType || 'mk').toLowerCase();
@@ -430,43 +434,101 @@ export async function downloadAndDecrypt({ key, envelope, onStatus }) {
   }
   const infoTag = typeof meta.info_tag === 'string' && meta.info_tag ? meta.info_tag : 'media/v1';
 
-  onStatus?.({ stage: 'sign', message: '取得下載授權…' });
+  progress?.({ stage: 'sign', message: '取得下載授權…' });
   const { download } = await signGet({ key });
   if (!download?.url) throw new Error('sign-get returned no URL');
 
-  const res = await fetch(download.url);
-  if (!res.ok) throw new Error('download failed (status ' + res.status + ')');
+  const shouldUseXhr = preferXhr !== false && typeof XMLHttpRequest !== 'undefined' && typeof window !== 'undefined';
 
-  const total = Number(res.headers.get('content-length')) || 0;
-  onStatus?.({ stage: 'download-start', total });
+  const xhrDownload = async () => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', download.url, true);
+    xhr.responseType = 'arraybuffer';
+    let headerTotal = null;
+
+    if (abortSignal) {
+      const onAbort = () => {
+        try { xhr.abort(); } catch {}
+        reject(new DOMException('aborted', 'AbortError'));
+      };
+      if (abortSignal.aborted) return onAbort();
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
+        const len = Number(xhr.getResponseHeader('content-length')) || 0;
+        headerTotal = len > 0 ? len : null;
+        progress?.({ stage: 'download-start', total: headerTotal });
+      }
+    };
+
+    xhr.onprogress = (evt) => {
+      const loaded = evt.loaded || 0;
+      const total = evt.lengthComputable ? evt.total : headerTotal;
+      progress?.({ stage: 'download', loaded, total });
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const buf = xhr.response;
+        const u8 = buf ? new Uint8Array(buf) : new Uint8Array();
+        progress?.({ stage: 'download', loaded: u8.length, total: headerTotal || u8.length });
+        resolve(u8);
+      } else {
+        reject(new Error('download failed (status ' + xhr.status + ')'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('download network error'));
+    xhr.ontimeout = () => reject(new Error('download timeout'));
+    xhr.send();
+  });
 
   let cipherU8;
-  if (res.body && total) {
-    const reader = res.body.getReader();
-    const chunks = [];
-    let loaded = 0;
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value) {
-        chunks.push(value);
-        loaded += value.length;
-        onStatus?.({ stage: 'download', loaded, total });
-      }
+
+  if (shouldUseXhr) {
+    try {
+      cipherU8 = await xhrDownload();
+    } catch (err) {
+      // fallback to fetch if XHR failed
+      console.warn('download xhr failed, fallback to fetch', err?.message || err);
     }
-    cipherU8 = new Uint8Array(loaded);
-    let offset = 0;
-    for (const chunk of chunks) {
-      cipherU8.set(chunk, offset);
-      offset += chunk.length;
-    }
-  } else {
-    const buf = await res.arrayBuffer();
-    cipherU8 = new Uint8Array(buf);
-    onStatus?.({ stage: 'download', loaded: cipherU8.length, total: cipherU8.length });
   }
 
-  onStatus?.({ stage: 'decrypt', message: '解密檔案中…' });
+  if (!cipherU8) {
+    const res = await fetch(download.url);
+    if (!res.ok) throw new Error('download failed (status ' + res.status + ')');
+
+    const total = Number(res.headers.get('content-length')) || 0;
+    progress?.({ stage: 'download-start', total: total || null });
+
+    if (res.body && typeof res.body.getReader === 'function' && total) {
+      const reader = res.body.getReader();
+      const chunks = [];
+      let loaded = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          loaded += value.length;
+          progress?.({ stage: 'download', loaded, total });
+        }
+      }
+      cipherU8 = new Uint8Array(loaded);
+      let offset = 0;
+      for (const chunk of chunks) {
+        cipherU8.set(chunk, offset);
+        offset += chunk.length;
+      }
+    } else {
+      const buf = await res.arrayBuffer();
+      cipherU8 = new Uint8Array(buf);
+      progress?.({ stage: 'download', loaded: cipherU8.length, total: total || cipherU8.length });
+    }
+  }
+
+  progress?.({ stage: 'decrypt', message: '解密檔案中…' });
   const plain = await aeadDecryptWithMK(
     cipherU8,
     baseKey,
@@ -474,7 +536,7 @@ export async function downloadAndDecrypt({ key, envelope, onStatus }) {
     b64u8(meta.iv_b64),
     infoTag
   );
-  onStatus?.({ stage: 'done', bytes: plain.length });
+  progress?.({ stage: 'done', bytes: plain.length });
   const blob = new Blob([plain], { type: meta.contentType || 'application/octet-stream' });
   return { blob, contentType: meta.contentType || 'application/octet-stream', name: meta.name || 'decrypted.bin', bytes: plain.length };
 }
