@@ -1,6 +1,6 @@
 # SENTRY Message — 技術筆記
 
-> 近期進度：修復 logout→relogin 後分享面板持續顯示「缺少交友金鑰」造成 QR 無法重生的問題，重置 shareState 會清除補貨鎖定並恢復自動補貨；Drive 面板改以使用者資料夾為主並隱藏系統「已傳送 / 已接收」層，避免上傳檔案被困且可再次上傳 / 刪除；訊息附件新增「預覽」動作沿用 Modal 下載流程並於 Playwright 內實際執行 `downloadAndDecrypt` 驗證 SHA-256 digest，確認接收端確實可還原檔案；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過，後續將持續強化 Drive / 聊天 UI（#12~#15）。
+> 近期進度：雲端硬碟分頁新增容量資訊欄（預設 3GB 配額，隨 Drive 列表即時計算使用率並以進度條呈現）；修復 logout→relogin 後分享面板持續顯示「缺少交友金鑰」造成 QR 無法重生的問題，重置 shareState 會清除補貨鎖定並恢復自動補貨；Drive 面板改以使用者資料夾為主並隱藏系統「已傳送 / 已接收」層，避免上傳檔案被困且可再次上傳 / 刪除；訊息附件新增「預覽」動作沿用 Modal 下載流程並於 Playwright 內實際執行 `downloadAndDecrypt` 驗證 SHA-256 digest，確認接收端確實可還原檔案；`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 全數通過，後續將持續強化 Drive / 聊天 UI（#12~#15）。
 
 ## 目錄
 
@@ -258,6 +258,15 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-11-29 08:51** | Drive 上傳前後端皆檢查容量：前端以現有使用量 + 待上傳檔案預估超過 3GB 配額即彈窗阻擋；後端 `media/sign-put` 改用 3GB 空間上限（獨立於 500MB 單檔限制），超出直接 413；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:49** | Loading modal 去除旋轉圓形圖示，只保留進度條顯示載入狀態；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:45** | Drive 資料夾點擊/返回上一層會顯示「載入資料夾中…」modal，避免等待列表刷新時無提示；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:40** | 修正 Drive 重新命名功能未匯入 `createMessage` 導致動作無效，列表改以 obj_key 去重只保留最新版本避免重命名顯示為重複檔案，並移除重命名 modal 的「長按觸發」提示僅保留名稱規則；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:36** | Node API `media/sign-put` 改為完全不檢查 Content-Type（忽略 `UPLOAD_ALLOWED_TYPES`），所有類型都允許；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:55** | Drive 上傳前端加入 500MB 單檔尺寸檢查（選擇檔案即阻擋，並在送出/佇列前再次防呆），仍允許任意檔案類型；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:35** | Drive 容量面板移除外層 card，直接置於檔案列表上方同層呈現，避免雙卡片視覺；UI 調整未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:21** | Drive 空間使用面板移出檔案列表卡片，獨立同級顯示以避免列表捲動時被頂出；UI 變更未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
+| **2025-11-29 08:00** | 雲端硬碟頁面加入容量資訊欄與 3GB 配額進度條，依 Drive 列表累計檔案大小（排除佔位與重複 obj key）即時計算已用/剩餘並顯示百分比；前端 UI 變更未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續手動覆核 Drive 列表/進度條渲染與登入 e2e。 |
 | **2025-11-28 09:18** | 頭像編輯改用 Cropper.js（拖曳 / 滾輪 / 雙指縮放），裁切後直接輸出 512px JPEG 上傳並沿用舊的 profile 儲存 / 廣播流程；裁切 modal UI 改為簡化預覽 + 行動手勢提示，並載入新版 Cropper 樣式。 |
 | **2025-11-28 09:07** | 首次登入且尚未上傳頭像時，會直接以晶片 UID 同步生成登入頁 identicon、轉成 512px 圖檔上傳並寫入 profile，未來使用者自訂頭像仍會覆蓋；登入初始化工作清單改為固定高度可捲動容器，步驟完成後會淡出並收合，讓後續項目自動往上移動。 |
 | **2025-11-25 09:35** | 登入後的啟用語音通話 modal 加入 500 ms 輪詢 `navigator.permissions.query` + `enumerateDevices`，只要偵測到 `granted` 或具名 `audioinput` 就即時關閉提示並清空狀態；同時調整 Remote Console debug toast 顯示「已授權麥克風權限」，並保留「我已按下同意」按鈕作為手動 fallback。依需求未執行 `npm run test:*`，待 QA/實機覆核。 |

@@ -16,7 +16,9 @@ const defaultShareState = {
 const defaultDriveState = {
   cwd: [],
   currentMessages: [],
-  currentConvId: ''
+  currentConvId: '',
+  usageBytes: 0,
+  usageQuotaBytes: 3 * 1024 * 1024 * 1024
 };
 
 const defaultMessageState = {

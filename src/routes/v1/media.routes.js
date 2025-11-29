@@ -20,6 +20,7 @@ const r = Router();
 const nano = customAlphabet('1234567890abcdef', 32);
 
 const MAX_UPLOAD_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 524_288_000); // default 500MB
+const DRIVE_QUOTA_BYTES = Number(process.env.DRIVE_QUOTA_BYTES || 3 * 1024 * 1024 * 1024); // default 3GB total per system dir
 const DATA_API = process.env.DATA_API_URL;
 const HMAC_SECRET = process.env.DATA_API_HMAC;
 
@@ -191,26 +192,24 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
   const key = `${keyPrefix}/${uid}`;
 
-  const allowed = String(process.env.UPLOAD_ALLOWED_TYPES || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
+  // 不限制 Content-Type，全部允許；若要限制可透過 env 重啟後再加入檢查。
+  const allowed = [];
 
   const ct = input.contentType || 'application/octet-stream';
-  if (allowed.length && !allowed.some(rule => rule.endsWith('/*') ? ct.startsWith(rule.slice(0, -1)) : ct === rule)) {
-    return res.status(400).json({ error: 'UnsupportedType', message: `Content-Type ${ct} not allowed` });
-  }
 
   if (input.size != null) {
     try {
       const usage = await fetchMediaUsage({ convId: convIdClean, prefix: basePrefix });
       const totalBytes = Number(usage?.totalBytes ?? usage?.total_bytes ?? 0);
       const projected = totalBytes + Number(input.size);
-      if (Number.isFinite(totalBytes) && projected > maxBytes) {
+      const quotaBytes = Number.isFinite(DRIVE_QUOTA_BYTES) && DRIVE_QUOTA_BYTES > 0
+        ? DRIVE_QUOTA_BYTES
+        : 3 * 1024 * 1024 * 1024;
+      if (Number.isFinite(totalBytes) && projected > quotaBytes) {
         return res.status(413).json({
           error: 'FolderCapacityExceeded',
-          message: `系統資料夾儲存量已達上限 ${maxBytes} bytes`,
-          maxBytes,
+          message: `空間不足，上限 ${quotaBytes} bytes`,
+          maxBytes: quotaBytes,
           currentBytes: totalBytes
         });
       }

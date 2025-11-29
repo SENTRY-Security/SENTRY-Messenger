@@ -1,10 +1,13 @@
 import { log } from '../../core/log.js';
 import { getAccountDigest, buildAccountPayload } from '../../core/store.js';
-import { listMessages } from '../../api/messages.js';
+import { listMessages, createMessage } from '../../api/messages.js';
 import { encryptAndPutWithProgress, deleteEncryptedObjects, downloadAndDecrypt, loadEnvelopeMeta } from '../../features/media.js';
 import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
+
+const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500MB per file
 
 export function initDrivePane({
   dom = {},
@@ -17,6 +20,12 @@ export function initDrivePane({
   const btnUploadOpen = dom.btnUploadOpen ?? document.getElementById('btnUploadOpen');
   const btnNewFolder = dom.btnNewFolder ?? document.getElementById('btnNewFolder');
   const btnUp = dom.btnUp ?? document.getElementById('btnUp');
+  const usageValueEl = dom.usageValue ?? document.getElementById('driveUsageValue');
+  const usageTotalEl = dom.usageTotal ?? document.getElementById('driveUsageTotal');
+  const usagePercentEl = dom.usagePercent ?? document.getElementById('driveUsagePercent');
+  const usageNoteEl = dom.usageNote ?? document.getElementById('driveUsageNote');
+  const usageProgressEl = dom.usageProgress ?? document.getElementById('driveUsageProgress');
+  const usageBarEl = dom.usageBar ?? document.getElementById('driveUsageBar');
   let activePdfCleanup = null;
   let pdfJsLibPromise = null;
 
@@ -296,9 +305,27 @@ export function initDrivePane({
   const { setupSwipe, closeSwipe, closeOpenSwipe } = swipe;
 
   const driveState = sessionStore.driveState;
+  driveState.usageQuotaBytes = Number.isFinite(Number(driveState.usageQuotaBytes))
+    ? Number(driveState.usageQuotaBytes)
+    : DEFAULT_DRIVE_QUOTA_BYTES;
+  if (!Number.isFinite(Number(driveState.usageBytes))) driveState.usageBytes = 0;
   ensureSafeCwd();
   const PLACEHOLDER_NAME = '.empty-folder';
   const PLACEHOLDER_CT = 'application/x-empty-folder';
+
+  function showBlockingModal(message, { title = '無法上傳', confirmLabel = '知道了' } = {}) {
+    if (typeof showConfirmModal === 'function') {
+      showConfirmModal({
+        title,
+        message,
+        confirmLabel,
+        onConfirm: () => {},
+        onCancel: () => {}
+      });
+    } else {
+      alert(message);
+    }
+  }
 
   function isPlaceholder(header) {
     if (!header) return false;
@@ -306,6 +333,67 @@ export function initDrivePane({
     const name = String(header.name || '').trim();
     const ct = String(header.contentType || '').toLowerCase();
     return name === PLACEHOLDER_NAME && ct === PLACEHOLDER_CT;
+  }
+
+  function resolveDriveQuotaBytes() {
+    const quota = Number(driveState.usageQuotaBytes);
+    if (Number.isFinite(quota) && quota > 0) return quota;
+    driveState.usageQuotaBytes = DEFAULT_DRIVE_QUOTA_BYTES;
+    return driveState.usageQuotaBytes;
+  }
+
+  function computeDriveUsageBytes(messages) {
+    const items = Array.isArray(messages) ? messages : [];
+    const seenKeys = new Set();
+    let total = 0;
+    for (const msg of items) {
+      const header = safeJSON(msg?.header_json || msg?.header || '{}');
+      if (!header || isPlaceholder(header)) continue;
+      const objKey = typeof msg?.obj_key === 'string' && msg.obj_key
+        ? msg.obj_key
+        : (typeof header?.obj === 'string' ? header.obj : '');
+      if (!objKey || seenKeys.has(objKey)) continue;
+      seenKeys.add(objKey);
+      const size = Number(header?.size ?? header?.contentLength ?? header?.bytes);
+      if (Number.isFinite(size) && size > 0) total += size;
+    }
+    return total;
+  }
+
+  function formatPercentLabel(value) {
+    if (!Number.isFinite(value)) return '0%';
+    const rounded = Math.round(value * 10) / 10;
+    if (Math.abs(rounded - Math.round(rounded)) < 0.05) {
+      return `${Math.round(rounded)}%`;
+    }
+    return `${rounded.toFixed(1)}%`;
+  }
+
+  function updateUsageSummary() {
+    const usageBytes = computeDriveUsageBytes(driveState.currentMessages);
+    driveState.usageBytes = usageBytes;
+    const quotaBytes = resolveDriveQuotaBytes();
+    const percentRaw = quotaBytes > 0 ? (usageBytes / quotaBytes) * 100 : 0;
+    const percent = Number.isFinite(percentRaw) ? Math.min(100, Math.max(0, percentRaw)) : 0;
+    const percentLabel = formatPercentLabel(percent);
+    const remaining = Math.max(0, quotaBytes - usageBytes);
+
+    if (usageBarEl) {
+      usageBarEl.style.width = `${percent}%`;
+      usageBarEl.classList.toggle('alert', percent >= 90);
+    }
+    if (usagePercentEl) usagePercentEl.textContent = percentLabel;
+    if (usageValueEl) usageValueEl.textContent = fmtSize(usageBytes);
+    if (usageTotalEl) usageTotalEl.textContent = `/ ${fmtSize(quotaBytes)}`;
+    if (usageNoteEl) {
+      usageNoteEl.textContent = usageBytes > 0
+        ? `剩餘 ${fmtSize(remaining)}`
+        : `總容量 ${fmtSize(quotaBytes)}`;
+    }
+    if (usageProgressEl) {
+      usageProgressEl.setAttribute('aria-valuenow', String(Math.round(percent)));
+      usageProgressEl.setAttribute('aria-valuetext', `${fmtSize(usageBytes)} / ${fmtSize(quotaBytes)}`);
+    }
   }
 
   async function fetchDriveMessages({ convId, pageLimit = 200, maxPages = 25 } = {}) {
@@ -334,13 +422,34 @@ export function initDrivePane({
 
   function findMessageEntryByKey(messages, key) {
     const items = Array.isArray(messages) ? messages : [];
+    let best = null;
     for (const msg of items) {
       const header = safeJSON(msg?.header_json || msg?.header || '{}');
       if (header?.obj === key) {
-        return { msg, header };
+        if (!best || Number(msg?.ts || 0) > Number(best.msg?.ts || 0)) {
+          best = { msg, header };
+        }
       }
     }
-    return null;
+    return best;
+  }
+
+  function dedupeMessagesByObject(messages) {
+    if (!Array.isArray(messages)) return [];
+    const best = new Map();
+    for (const msg of messages) {
+      const header = safeJSON(msg?.header_json || msg?.header || '{}');
+      const objKey = typeof msg?.obj_key === 'string' && msg.obj_key
+        ? msg.obj_key
+        : (typeof header?.obj === 'string' ? header.obj : '');
+      if (!objKey) continue;
+      const ts = Number(msg?.ts || 0);
+      const prev = best.get(objKey);
+      if (!prev || ts > Number(prev.ts || 0)) {
+        best.set(objKey, { ...msg });
+      }
+    }
+    return Array.from(best.values()).sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
   }
 
   function findEnvelopeInMessages(messages, key) {
@@ -441,17 +550,35 @@ export function initDrivePane({
     return true;
   }
 
+  async function navigateToCwd(nextCwd) {
+    const cleaned = sanitizePathSegments(Array.isArray(nextCwd) ? nextCwd : []);
+    driveState.cwd = [...cleaned];
+    ensureSafeCwd();
+    showModalLoading?.('載入資料夾中…');
+    updateLoadingModal?.({ percent: 12, text: '同步列表…' });
+    try {
+      await refreshDriveList();
+      updateLoadingModal?.({ percent: 90, text: '完成' });
+    } catch (err) {
+      log({ driveNavigateError: err?.message || err, cwd: driveState.cwd });
+    } finally {
+      setTimeout(() => closeModal?.(), 120);
+    }
+  }
+
   async function refreshDriveList() {
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) throw new Error('Account missing');
     const convId = `drive-${acct}`;
     const { items, truncated } = await fetchDriveMessages({ convId });
+    const deduped = dedupeMessagesByObject(items);
     if (truncated) {
       log({ driveListWarning: '列表已截斷，僅顯示最新項目', convId, items: items.length });
     }
-    driveState.currentMessages = items;
+    driveState.currentMessages = deduped;
     driveState.currentConvId = convId;
-    renderDriveList(items);
+    updateUsageSummary();
+    renderDriveList(deduped);
     updateStats?.();
   }
 
@@ -509,25 +636,24 @@ export function initDrivePane({
           </div>
         </div>
         <button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`;
-      const open = () => {
+      const open = async () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
           return;
         }
         closeOpenSwipe?.();
-        driveState.cwd.push(name);
-        ensureSafeCwd();
-        refreshDriveList().catch(() => {});
+        const next = [...ensureSafeCwd(), name];
+        await navigateToCwd(next);
       };
       li.addEventListener('click', (e) => {
         if (e.target.closest('.item-delete')) return;
         if (li.classList.contains('show-delete')) { closeSwipe?.(li); return; }
         if (li.dataset.longPressActive === '1') { li.dataset.longPressActive = '0'; return; }
         e.preventDefault();
-        open();
+        open().catch((err) => log({ driveFolderOpenError: err?.message || err }));
       });
       li.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open().catch((err) => log({ driveFolderOpenError: err?.message || err })); }
         if (e.key === 'Delete') { handleItemDelete({ type: 'folder', name, element: li }); }
       });
       li.querySelector('.item-delete')?.addEventListener('click', (e) => {
@@ -653,7 +779,7 @@ export function initDrivePane({
       <form id="renameForm" class="nickname-form">
         <label for="renameInput">${type === 'folder' ? '資料夾名稱' : '檔案名稱'}</label>
         <input id="renameInput" type="text" value="${escapeHtml(name || '')}" autocomplete="off" spellcheck="false" />
-        <p class="nickname-hint">長按觸發重命名。名稱不可為空。</p>
+        <p class="nickname-hint">名稱不可為空。</p>
         <div class="nickname-actions">
           <button type="button" id="renameCancel" class="secondary">取消</button>
           <button type="submit" class="primary">儲存</button>
@@ -808,6 +934,16 @@ export function initDrivePane({
         if (errorEl) errorEl.textContent = '';
         return;
       }
+      const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
+      if (oversized.length) {
+        const msg = `單檔上限 500MB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        if (errorEl) errorEl.textContent = msg;
+        showBlockingModal(msg, { title: '檔案過大' });
+        input.value = '';
+        if (nameEl) nameEl.textContent = '尚未選擇檔案';
+        if (listEl) listEl.innerHTML = '';
+        return;
+      }
       const totalSize = files.reduce((sum, f) => sum + (typeof f.size === 'number' ? f.size : 0), 0);
       if (nameEl) {
         nameEl.textContent = files.length === 1
@@ -826,6 +962,13 @@ export function initDrivePane({
       const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
       if (!files.length) {
         if (errorEl) errorEl.textContent = '請先選擇要上傳的檔案。';
+        return;
+      }
+      const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
+      if (oversized.length) {
+        const msg = `單檔上限 500MB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        if (errorEl) errorEl.textContent = msg;
+        showBlockingModal(msg, { title: '檔案過大' });
         return;
       }
       closeModal?.();
@@ -903,9 +1046,27 @@ export function initDrivePane({
   async function startUploadQueue(selectedFiles) {
     const files = Array.isArray(selectedFiles) ? selectedFiles.filter(Boolean) : [];
     if (!files.length) return;
+    const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
+    if (oversized.length) {
+      const name = escapeHtml(oversized[0].name || '檔案');
+      showBlockingModal(`無法上傳：${name} 超過 500MB 單檔限制`, { title: '檔案過大' });
+      return;
+    }
+    const quotaBytes = resolveDriveQuotaBytes();
+    const currentUsage = Number(driveState?.usageBytes || 0);
+    let projected = currentUsage;
+    for (const file of files) {
+      const size = Number(file?.size || 0);
+      if (!Number.isFinite(size)) continue;
+      projected += size;
+      if (quotaBytes && projected > quotaBytes) {
+        showBlockingModal('雲端空間容量不足，請刪除檔案後再上傳。', { title: '空間不足' });
+        return;
+      }
+    }
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) {
-      alert('尚未登入，請重新登入後再試。');
+      showBlockingModal('尚未登入，請重新登入後再試。', { title: '尚未登入' });
       return;
     }
     const convId = driveState.currentConvId || `drive-${acct}`;
@@ -1200,6 +1361,7 @@ export function initDrivePane({
     const { items } = await fetchDriveMessages({ convId });
     driveState.currentMessages = items;
     driveState.currentConvId = convId;
+    updateUsageSummary();
     const hit = findEnvelopeInMessages(items, key);
     if (hit) return hit;
     throw new Error('找不到封套資料（此物件可能來自尚未更新索引格式的舊版本或尚未同步）');
@@ -1210,9 +1372,8 @@ export function initDrivePane({
     btnNewFolder?.addEventListener('click', openFolderModal);
     btnUp?.addEventListener('click', () => {
       if (!driveState.cwd.length) return;
-      driveState.cwd.pop();
-      ensureSafeCwd();
-      refreshDriveList().catch(() => {});
+      const next = driveState.cwd.slice(0, -1);
+      navigateToCwd(next).catch((err) => log({ driveFolderOpenError: err?.message || err }));
     });
   }
 
@@ -1250,6 +1411,7 @@ export function initDrivePane({
 
   bindDomEvents();
   renderCrumb();
+  updateUsageSummary();
 
   return {
     refreshDriveList,
@@ -1259,6 +1421,7 @@ export function initDrivePane({
     renderDriveList,
     renderCrumb,
     onDownloadByKey,
-    getEnvelopeForKey
+    getEnvelopeForKey,
+    updateUsageSummary
   };
 }

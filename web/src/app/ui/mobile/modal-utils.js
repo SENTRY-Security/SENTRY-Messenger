@@ -183,7 +183,6 @@ export function setupModalController({ shareButtonProvider } = {}) {
     if (title) title.textContent = '';
     body.innerHTML = `
       <div class="loading-wrap">
-        <div class="loading-spinner"></div>
         <div class="progress-bar" style="width:100%;"><div id="loadingBar" class="progress-inner" style="width:0%;"></div></div>
         <div id="loadingText" class="loading-text">${escapeHtml(text || '載入中…')}</div>
       </div>`;
