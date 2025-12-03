@@ -100,124 +100,6 @@ function persistLocalGroups() {
     localStorage.setItem(LOCAL_GROUP_STORAGE_KEY, JSON.stringify(localGroups));
   } catch {}
 }
-  async function handleCreateGroup() {
-    const btn = elements.createGroupBtn;
-    if (!btn) return;
-    const name = prompt('群組名稱？（可留空）') || '';
-    const trimmed = name.trim();
-    if (btn.dataset.busy === '1') return;
-    btn.dataset.busy = '1';
-    btn.disabled = true;
-    try {
-      const secret = new Uint8Array(32);
-      crypto.getRandomValues(secret);
-      const secretB64Url = bytesToB64Url(secret);
-      const { conversationId, tokenB64 } = await deriveConversationContextFromSecret(secretB64Url);
-      const groupId = `grp-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
-      let conversationFingerprint = null;
-      try {
-        const accountDigest = getAccountDigest();
-        conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
-      } catch {}
-      const { r, data } = await apiCreateGroup({
-        groupId,
-        conversationId,
-        name: trimmed || null,
-        conversationFingerprint
-      });
-      if (!r.ok) {
-        const msg = typeof data === 'string' ? data : data?.message || data?.error || '建立失敗';
-        showToast?.(`建立群組失敗：${msg}`);
-        return;
-      }
-      showToast?.(`群組已建立：${trimmed || groupId}`);
-      const summary = [
-        `群組ID: ${groupId}`,
-        `對話ID: ${conversationId}`,
-        `會話密鑰(token): ${tokenB64}`,
-        `邀請密鑰(seed): ${secretB64Url}`
-      ].join('\n');
-      const draft = {
-        groupId,
-        name: trimmed || `群組 ${groupId.slice(-4)}`,
-        conversationId,
-        tokenB64,
-        secretB64Url,
-        createdAt: Date.now()
-      };
-      localGroups = [draft, ...localGroups].slice(0, 20);
-      persistLocalGroups();
-      renderGroupDrafts();
-      try {
-        await navigator.clipboard.writeText(summary);
-        showToast?.('群組資訊已複製，請儲存或分享給成員');
-      } catch {
-        // fallback to alert if clipboard blocked
-        alert(summary);
-      }
-      console.log('[group-create]', { groupId, conversationId, tokenB64, secretB64Url, response: data });
-    } catch (err) {
-      showToast?.(`建立群組失敗：${err?.message || err}`);
-      log({ groupCreateError: err?.message || err });
-    } finally {
-      delete btn.dataset.busy;
-      btn.disabled = false;
-    }
-  }
-
-  async function copyGroupSummary(draft) {
-    if (!draft) return;
-    const summary = [
-      `群組ID: ${draft.groupId}`,
-      `群組名稱: ${draft.name || '(未命名)'}`,
-      `對話ID: ${draft.conversationId}`,
-      `會話密鑰(token): ${draft.tokenB64}`,
-      `邀請密鑰(seed): ${draft.secretB64Url}`
-    ].join('\n');
-    try {
-      await navigator.clipboard.writeText(summary);
-      showToast?.('群組資訊已複製');
-    } catch {
-      alert(summary);
-    }
-  }
-
-  function renderGroupDrafts() {
-    const container = elements.groupDraftsEl;
-    if (!container) return;
-    if (!localGroups.length) {
-      container.innerHTML = '';
-      return;
-    }
-    const items = localGroups.map((draft, idx) => {
-      const created = draft.createdAt ? new Date(draft.createdAt).toLocaleString() : '';
-      const label = escapeHtml(draft.name || draft.groupId);
-      const gid = escapeHtml(draft.groupId);
-      const cid = escapeHtml(draft.conversationId);
-      return `
-        <div class="group-draft-item" data-idx="${idx}">
-          <div class="group-draft-meta">
-            <div class="group-draft-name">${label}</div>
-            <div class="group-draft-id">ID ${gid}</div>
-            <div class="group-draft-cid">CID ${cid}</div>
-            ${created ? `<div class="group-draft-ts">${created}</div>` : ''}
-          </div>
-          <button type="button" class="group-draft-copy" aria-label="複製群組資訊">複製</button>
-        </div>
-      `;
-    }).join('');
-    container.innerHTML = `<div class="group-draft-header">我的群組（僅本機記錄）</div>${items}`;
-    container.querySelectorAll('.group-draft-copy').forEach((btn) => {
-      btn.addEventListener('click', (event) => {
-        const wrapper = event.target.closest('.group-draft-item');
-        const idx = Number(wrapper?.dataset?.idx ?? -1);
-        if (Number.isInteger(idx) && idx >= 0 && localGroups[idx]) {
-          copyGroupSummary(localGroups[idx]);
-        }
-      });
-    });
-  }
-
 export function initMessagesPane({
   dom = {},
   navbarEl,
@@ -280,6 +162,123 @@ export function initMessagesPane({
   const CONV_PULL_MAX = 140;
 
   const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+
+  async function copyGroupSummary(draft) {
+    if (!draft) return;
+    const summary = [
+      `群組ID: ${draft.groupId}`,
+      `群組名稱: ${draft.name || '(未命名)'}`,
+      `對話ID: ${draft.conversationId}`,
+      `會話密鑰(token): ${draft.tokenB64}`,
+      `邀請密鑰(seed): ${draft.secretB64Url}`
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(summary);
+      showToast?.('群組資訊已複製');
+    } catch {
+      alert(summary);
+    }
+  }
+
+  function renderGroupDrafts() {
+    const container = elements.groupDraftsEl;
+    if (!container) return;
+    if (!localGroups.length) {
+      container.innerHTML = '';
+      return;
+    }
+    const items = localGroups.map((draft, idx) => {
+      const created = draft.createdAt ? new Date(draft.createdAt).toLocaleString() : '';
+      const label = escapeHtml(draft.name || draft.groupId);
+      const gid = escapeHtml(draft.groupId);
+      const cid = escapeHtml(draft.conversationId);
+      return `
+        <div class="group-draft-item" data-idx="${idx}">
+          <div class="group-draft-meta">
+            <div class="group-draft-name">${label}</div>
+            <div class="group-draft-id">ID ${gid}</div>
+            <div class="group-draft-cid">CID ${cid}</div>
+            ${created ? `<div class="group-draft-ts">${created}</div>` : ''}
+          </div>
+          <button type="button" class="group-draft-copy" aria-label="複製群組資訊">複製</button>
+        </div>
+      `;
+    }).join('');
+    container.innerHTML = `<div class="group-draft-header">我的群組（僅本機記錄）</div>${items}`;
+    container.querySelectorAll('.group-draft-copy').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        const wrapper = event.target.closest('.group-draft-item');
+        const idx = Number(wrapper?.dataset?.idx ?? -1);
+        if (Number.isInteger(idx) && idx >= 0 && localGroups[idx]) {
+          copyGroupSummary(localGroups[idx]);
+        }
+      });
+    });
+  }
+
+  async function handleCreateGroup() {
+    const btn = elements.createGroupBtn;
+    if (!btn) return;
+    const name = prompt('群組名稱？（可留空）') || '';
+    const trimmed = name.trim();
+    if (btn.dataset.busy === '1') return;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    try {
+      const secret = new Uint8Array(32);
+      crypto.getRandomValues(secret);
+      const secretB64Url = bytesToB64Url(secret);
+      const { conversationId, tokenB64 } = await deriveConversationContextFromSecret(secretB64Url);
+      const groupId = `grp-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
+      let conversationFingerprint = null;
+      try {
+        const accountDigest = getAccountDigest();
+        conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
+      } catch {}
+      const { r, data } = await apiCreateGroup({
+        groupId,
+        conversationId,
+        name: trimmed || null,
+        conversationFingerprint
+      });
+      if (!r.ok) {
+        const msg = typeof data === 'string' ? data : data?.message || data?.error || '建立失敗';
+        showToast?.(`建立群組失敗：${msg}`);
+        return;
+      }
+      showToast?.(`群組已建立：${trimmed || groupId}`);
+      const summary = [
+        `群組ID: ${groupId}`,
+        `對話ID: ${conversationId}`,
+        `會話密鑰(token): ${tokenB64}`,
+        `邀請密鑰(seed): ${secretB64Url}`
+      ].join('\n');
+      const draft = {
+        groupId,
+        name: trimmed || `群組 ${groupId.slice(-4)}`,
+        conversationId,
+        tokenB64,
+        secretB64Url,
+        createdAt: Date.now()
+      };
+      localGroups = [draft, ...localGroups].slice(0, 20);
+      persistLocalGroups();
+      renderGroupDrafts();
+      try {
+        await navigator.clipboard.writeText(summary);
+        showToast?.('群組資訊已複製，請儲存或分享給成員');
+      } catch {
+        alert(summary);
+      }
+      console.log('[group-create]', { groupId, conversationId, tokenB64, secretB64Url, response: data });
+    } catch (err) {
+      showToast?.(`建立群組失敗：${err?.message || err}`);
+      log({ groupCreateError: err?.message || err });
+    } finally {
+      delete btn.dataset.busy;
+      btn.disabled = false;
+    }
+  }
 
   function createCallLogMessage(entry, { messageDirection = 'outgoing' } = {}) {
     const callLog = {
