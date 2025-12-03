@@ -45,6 +45,7 @@ import {
 import { bytesToB64Url } from './ui-utils.js';
 const sentCallLogIds = new Set();
 const callLogPlaceholders = new Map();
+const GROUPS_ENABLED = false;
 
 function makeCallLogPlaceholderKey(peerUidHex, callId) {
   if (!peerUidHex || !callId) return null;
@@ -183,6 +184,7 @@ export function initMessagesPane({
   }
 
   function renderGroupDrafts() {
+    if (!GROUPS_ENABLED) return;
     const container = elements.groupDraftsEl;
     if (!container) return;
     if (!localGroups.length) {
@@ -219,6 +221,7 @@ export function initMessagesPane({
   }
 
   async function handleCreateGroup() {
+    if (!GROUPS_ENABLED) return;
     const btn = elements.createGroupBtn;
     if (!btn) return;
     if (groupBuilderEl) {
@@ -229,6 +232,7 @@ export function initMessagesPane({
   }
 
   function openGroupBuilder() {
+    if (!GROUPS_ENABLED) return;
     closeGroupBuilder();
     const container = document.createElement('div');
     container.className = 'group-builder';
@@ -269,6 +273,7 @@ export function initMessagesPane({
   }
 
   function renderGroupMemberList() {
+    if (!GROUPS_ENABLED) return;
     if (!groupBuilderEl) return;
     const listEl = groupBuilderEl.querySelector('.group-builder-list');
     const emptyEl = groupBuilderEl.querySelector('.group-builder-empty');
@@ -298,6 +303,7 @@ export function initMessagesPane({
   }
 
   async function submitGroupBuilder() {
+    if (!GROUPS_ENABLED) return;
     if (!groupBuilderEl) return;
     const nameInput = groupBuilderEl.querySelector('.group-builder-name');
     const checkboxes = groupBuilderEl.querySelectorAll('input[type="checkbox"][data-uid]');
