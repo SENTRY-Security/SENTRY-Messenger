@@ -291,6 +291,14 @@ async function handleCallSignal(ws, msg) {
 
 function addClient(uid, ws) {
   const key = uid.toUpperCase();
+  // 單一活躍連線策略：同一 UID 只保留最新連線，先關閉舊連線。
+  const existing = clients.get(key);
+  if (existing && existing.size) {
+    for (const other of existing) {
+      try { other.close(4409, 'replaced'); } catch {}
+    }
+    existing.clear();
+  }
   if (!clients.has(key)) clients.set(key, new Set());
   clients.get(key).add(ws);
   ws.__uid = key;
