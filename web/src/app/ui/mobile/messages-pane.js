@@ -11,7 +11,11 @@ import {
   listSecureConversationStatuses
 } from '../../features/secure-conversation-manager.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from '../../features/secure-conversation-signals.js';
-import { conversationIdFromToken, computeConversationAccessFingerprint } from '../../features/conversation.js';
+import {
+  conversationIdFromToken,
+  computeConversationAccessFingerprint,
+  deriveConversationContextFromSecret
+} from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
@@ -38,7 +42,6 @@ import {
   describeCallLogForViewer,
   resolveViewerRole
 } from '../../features/calls/call-log.js';
-import { deriveConversationContextFromSecret, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { bytesToB64Url } from './ui-utils.js';
 const sentCallLogIds = new Set();
 const callLogPlaceholders = new Map();
