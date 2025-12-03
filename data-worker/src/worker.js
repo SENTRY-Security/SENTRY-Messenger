@@ -249,6 +249,180 @@ export default {
       return json({ ok: true, backups });
     }
 
+    if (req.method === 'POST' && url.pathname === '/d1/groups/create') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const groupId = normalizeGroupId(body?.groupId || body?.group_id);
+      const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+      const creatorAccountDigest = normalizeAccountDigest(body?.creatorAccountDigest || body?.creator_account_digest);
+      const creatorUid = normalizeUid(body?.creatorUid || body?.creator_uid);
+      const name = normalizeGroupName(body?.name);
+      const avatarJson = normalizeGroupAvatar(body?.avatar || body?.avatarJson || body?.avatar_json);
+      const membersInput = Array.isArray(body?.members) ? body.members : [];
+      if (!groupId || !conversationId || !creatorAccountDigest) {
+        return json({ error: 'BadRequest', message: 'groupId, conversationId, creatorAccountDigest required' }, { status: 400 });
+      }
+
+      await ensureDataTables(env);
+      const now = Math.floor(Date.now() / 1000);
+      try {
+        await env.DB.prepare(`
+          INSERT INTO groups (group_id, conversation_id, creator_account_digest, creator_uid, name, avatar_json, created_at, updated_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+          ON CONFLICT(group_id) DO UPDATE SET
+            conversation_id=excluded.conversation_id,
+            name=excluded.name,
+            avatar_json=excluded.avatar_json,
+            updated_at=strftime('%s','now')
+        `).bind(groupId, conversationId, creatorAccountDigest, creatorUid, name, avatarJson, now).run();
+      } catch (err) {
+        console.warn('group_create_failed', err?.message || err);
+        return json({ error: 'CreateFailed', message: err?.message || 'unable to create group' }, { status: 500 });
+      }
+
+      await upsertGroupMember(env, {
+        groupId,
+        accountDigest: creatorAccountDigest,
+        uid: creatorUid,
+        role: 'owner',
+        status: 'active',
+        inviterAccountDigest: creatorAccountDigest,
+        inviterUid: creatorUid,
+        joinedAt: now
+      });
+      await grantConversationAccess(env, { conversationId, accountDigest: creatorAccountDigest, fingerprint: body?.creatorFingerprint });
+
+      const seenDigests = new Set([creatorAccountDigest]);
+      for (const entry of membersInput) {
+        const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
+        if (!acct || seenDigests.has(acct)) continue;
+        seenDigests.add(acct);
+        const uid = normalizeUid(entry?.uid);
+        const role = normalizeGroupRole(entry?.role);
+        await upsertGroupMember(env, {
+          groupId,
+          accountDigest: acct,
+          uid,
+          role,
+          status: 'active',
+          inviterAccountDigest: creatorAccountDigest,
+          inviterUid: creatorUid,
+          joinedAt: now
+        });
+        await grantConversationAccess(env, { conversationId, accountDigest: acct });
+      }
+
+      const detail = await fetchGroupWithMembers(env, groupId);
+      return json(detail ? { ok: true, ...detail } : { ok: true, groupId });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/d1/groups/members/add') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const groupId = normalizeGroupId(body?.groupId || body?.group_id);
+      const membersInput = Array.isArray(body?.members) ? body.members : [];
+      if (!groupId || !membersInput.length) {
+        return json({ error: 'BadRequest', message: 'groupId and members required' }, { status: 400 });
+      }
+      await ensureDataTables(env);
+      const groupRow = await env.DB.prepare(`SELECT conversation_id FROM groups WHERE group_id=?1`).bind(groupId).all();
+      const group = groupRow?.results?.[0] || null;
+      if (!group) {
+        return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
+      }
+      const conversationId = group.conversation_id;
+      const now = Math.floor(Date.now() / 1000);
+      let added = 0;
+      for (const entry of membersInput) {
+        const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
+        if (!acct) continue;
+        const uid = normalizeUid(entry?.uid);
+        const role = normalizeGroupRole(entry?.role);
+        const inviterAcct = normalizeAccountDigest(entry?.inviterAccountDigest || entry?.inviter_account_digest);
+        const inviterUid = normalizeUid(entry?.inviterUid || entry?.inviter_uid);
+        await upsertGroupMember(env, {
+          groupId,
+          accountDigest: acct,
+          uid,
+          role,
+          status: 'active',
+          inviterAccountDigest: inviterAcct,
+          inviterUid,
+          joinedAt: now
+        });
+        await grantConversationAccess(env, { conversationId, accountDigest: acct });
+        added += 1;
+      }
+      const detail = await fetchGroupWithMembers(env, groupId);
+      return json(detail ? { ok: true, added, ...detail } : { ok: true, added });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/d1/groups/members/remove') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const groupId = normalizeGroupId(body?.groupId || body?.group_id);
+      const membersInput = Array.isArray(body?.members) ? body.members : [];
+      const statusOverride = normalizeGroupStatus(body?.status);
+      if (!groupId || !membersInput.length) {
+        return json({ error: 'BadRequest', message: 'groupId and members required' }, { status: 400 });
+      }
+      await ensureDataTables(env);
+      const groupRow = await env.DB.prepare(`SELECT conversation_id FROM groups WHERE group_id=?1`).bind(groupId).all();
+      const group = groupRow?.results?.[0] || null;
+      if (!group) {
+        return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
+      }
+      const conversationId = group.conversation_id;
+      const now = Math.floor(Date.now() / 1000);
+      let removed = 0;
+      for (const entry of membersInput) {
+        const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
+        if (!acct) continue;
+        const status = statusOverride || normalizeGroupStatus(entry?.status) || 'removed';
+        try {
+          await env.DB.prepare(`
+            UPDATE group_members
+               SET status=?3,
+                   updated_at=strftime('%s','now')
+             WHERE group_id=?1 AND account_digest=?2
+          `).bind(groupId, acct, status).run();
+          removed += 1;
+        } catch (err) {
+          console.warn('group_member_remove_failed', err?.message || err);
+        }
+        await removeConversationAccess(env, { conversationId, accountDigest: acct });
+      }
+      const detail = await fetchGroupWithMembers(env, groupId);
+      return json(detail ? { ok: true, removed, ...detail } : { ok: true, removed });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/d1/groups/get') {
+      const groupId = normalizeGroupId(
+        url.searchParams.get('groupId')
+        || url.searchParams.get('group_id')
+      );
+      if (!groupId) {
+        return json({ error: 'BadRequest', message: 'groupId required' }, { status: 400 });
+      }
+      const detail = await fetchGroupWithMembers(env, groupId);
+      if (!detail) {
+        return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
+      }
+      return json({ ok: true, ...detail });
+    }
+
     // 查詢訊息（游標=ts）
     if (req.method === 'GET' && url.pathname === '/d1/messages') {
       const secureConversation = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
@@ -1717,6 +1891,44 @@ function normalizeAccountDigest(value) {
   return cleaned;
 }
 
+function normalizeGroupId(value) {
+  const token = String(value || '').trim();
+  if (!token) return null;
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(token)) return null;
+  return token;
+}
+
+function normalizeGroupName(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 120);
+}
+
+function normalizeGroupRole(value) {
+  const role = String(value || '').toLowerCase();
+  if (role === 'owner' || role === 'admin') return role;
+  return 'member';
+}
+
+function normalizeGroupStatus(value) {
+  const status = String(value || '').toLowerCase();
+  if (['active', 'left', 'kicked', 'removed'].includes(status)) return status;
+  return null;
+}
+
+function normalizeGroupAvatar(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value); } catch { return null; }
+  }
+  return null;
+}
+
 function normalizeSecureEnvelope(obj) {
   if (!obj || typeof obj !== 'object') return null;
   const v = Number(obj.v ?? 1);
@@ -1819,6 +2031,109 @@ async function grantConversationAccess(env, { conversationId, accountDigest, fin
   } catch (err) {
     console.warn('conversation_acl_upsert_failed', err?.message || err);
   }
+}
+
+async function removeConversationAccess(env, { conversationId, accountDigest }) {
+  if (!conversationId || !accountDigest) return;
+  await ensureDataTables(env);
+  try {
+    await env.DB.prepare(
+      `DELETE FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2`
+    ).bind(conversationId, accountDigest).run();
+  } catch (err) {
+    console.warn('conversation_acl_delete_failed', err?.message || err);
+  }
+}
+
+async function upsertGroupMember(env, {
+  groupId,
+  accountDigest,
+  uid,
+  role = 'member',
+  status = 'active',
+  inviterAccountDigest = null,
+  inviterUid = null,
+  joinedAt = null
+} = {}) {
+  if (!groupId || !accountDigest) return false;
+  const normalizedRole = normalizeGroupRole(role);
+  const normalizedStatus = normalizeGroupStatus(status) || 'active';
+  const joined = Number.isFinite(Number(joinedAt)) && Number(joinedAt) > 0
+    ? Math.floor(Number(joinedAt))
+    : Math.floor(Date.now() / 1000);
+  try {
+    await env.DB.prepare(`
+      INSERT INTO group_members (
+        group_id, account_digest, uid, role, status,
+        inviter_account_digest, inviter_uid, joined_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+      ON CONFLICT(group_id, account_digest) DO UPDATE SET
+        role=excluded.role,
+        status=excluded.status,
+        uid=COALESCE(excluded.uid, group_members.uid),
+        inviter_account_digest=COALESCE(excluded.inviter_account_digest, group_members.inviter_account_digest),
+        inviter_uid=COALESCE(excluded.inviter_uid, group_members.inviter_uid),
+        joined_at=COALESCE(group_members.joined_at, excluded.joined_at),
+        updated_at=strftime('%s','now')
+    `).bind(
+      groupId,
+      accountDigest,
+      uid || null,
+      normalizedRole,
+      normalizedStatus,
+      inviterAccountDigest || null,
+      inviterUid || null,
+      joined
+    ).run();
+    return true;
+  } catch (err) {
+    console.warn('group_member_upsert_failed', err?.message || err);
+    return false;
+  }
+}
+
+async function fetchGroupWithMembers(env, groupId) {
+  if (!groupId) return null;
+  await ensureDataTables(env);
+  const groupRows = await env.DB.prepare(
+    `SELECT group_id, conversation_id, creator_account_digest, creator_uid, name, avatar_json, created_at, updated_at
+       FROM groups WHERE group_id=?1`
+  ).bind(groupId).all();
+  const group = groupRows?.results?.[0] || null;
+  if (!group) return null;
+  const membersRes = await env.DB.prepare(
+    `SELECT group_id, account_digest, uid, role, status, inviter_account_digest, inviter_uid,
+            joined_at, muted_until, last_read_ts, created_at, updated_at
+       FROM group_members
+      WHERE group_id=?1`
+  ).bind(groupId).all();
+  const members = (membersRes?.results || []).map((row) => ({
+    groupId: row.group_id,
+    accountDigest: row.account_digest,
+    uid: row.uid || null,
+    role: row.role || 'member',
+    status: row.status || 'active',
+    inviterAccountDigest: row.inviter_account_digest || null,
+    inviterUid: row.inviter_uid || null,
+    joinedAt: Number(row.joined_at) || null,
+    mutedUntil: Number(row.muted_until) || null,
+    lastReadTs: Number(row.last_read_ts) || null,
+    createdAt: Number(row.created_at) || null,
+    updatedAt: Number(row.updated_at) || null
+  }));
+  return {
+    group: {
+      groupId: group.group_id,
+      conversationId: group.conversation_id,
+      creatorAccountDigest: group.creator_account_digest,
+      creatorUid: group.creator_uid || null,
+      name: group.name || null,
+      avatar: safeJSON(group.avatar_json) || null,
+      createdAt: Number(group.created_at) || null,
+      updatedAt: Number(group.updated_at) || null
+    },
+    members
+  };
 }
 
 function normalizeOwnerPrekeyBundle(bundle) {
@@ -2427,7 +2742,55 @@ async function ensureDataTables(env) {
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_secret_backups_account_version
         ON contact_secret_backups (account_digest, version)`,
     `CREATE INDEX IF NOT EXISTS idx_contact_secret_backups_account_updated
-        ON contact_secret_backups (account_digest, updated_at DESC)`
+        ON contact_secret_backups (account_digest, updated_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS groups (
+        group_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        creator_account_digest TEXT NOT NULL,
+        creator_uid TEXT,
+        name TEXT,
+        avatar_json TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        FOREIGN KEY (creator_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_groups_conversation_id ON groups(conversation_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_groups_creator ON groups(creator_account_digest)`,
+    `CREATE TABLE IF NOT EXISTS group_members (
+        group_id TEXT NOT NULL,
+        account_digest TEXT NOT NULL,
+        uid TEXT,
+        role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('owner','admin','member')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','left','kicked','removed')),
+        inviter_account_digest TEXT,
+        inviter_uid TEXT,
+        joined_at INTEGER,
+        muted_until INTEGER,
+        last_read_ts INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        PRIMARY KEY (group_id, account_digest),
+        FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE,
+        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_group_members_account ON group_members(account_digest)`,
+    `CREATE INDEX IF NOT EXISTS idx_group_members_status ON group_members(group_id, status)`,
+    `CREATE TABLE IF NOT EXISTS group_invites (
+        invite_id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        issuer_account_digest TEXT,
+        issuer_uid TEXT,
+        secret TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE,
+        FOREIGN KEY (issuer_account_digest) REFERENCES accounts(account_digest) ON DELETE SET NULL
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_group_invites_group ON group_invites(group_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_group_invites_expires ON group_invites(expires_at)`
   ];
 
   for (const sql of statements) {
@@ -2458,6 +2821,18 @@ async function ensureDataTables(env) {
        FOR EACH ROW
        BEGIN
          UPDATE conversation_acl SET updated_at = strftime('%s','now') WHERE conversation_id = OLD.conversation_id AND account_digest = OLD.account_digest;
+       END;`,
+    `CREATE TRIGGER trg_groups_updated
+       AFTER UPDATE ON groups
+       FOR EACH ROW
+       BEGIN
+         UPDATE groups SET updated_at = strftime('%s','now') WHERE group_id = OLD.group_id;
+       END;`,
+    `CREATE TRIGGER trg_group_members_updated
+       AFTER UPDATE ON group_members
+       FOR EACH ROW
+       BEGIN
+         UPDATE group_members SET updated_at = strftime('%s','now') WHERE group_id = OLD.group_id AND account_digest = OLD.account_digest;
        END;`
   ];
 

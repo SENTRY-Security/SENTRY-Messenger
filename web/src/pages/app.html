@@ -643,12 +643,18 @@
       </section>
       <section id="tab-messages" class="tab">
         <div class="messages-pane">
-          <div class="messages-body">
+              <div class="messages-body">
             <aside class="messages-sidebar">
               <div id="conversationRefresh" class="conversation-refresh">
                 <i class='bx bx-refresh icon' aria-hidden="true"></i>
                 <span class="label">下拉更新對話</span>
               </div>
+              <div class="conversation-actions">
+                <button id="btnCreateGroup" type="button" class="secondary" aria-label="建立群組" title="建立群組">
+                  <i class='bx bx-group'></i> 建立群組
+                </button>
+              </div>
+              <div id="groupDrafts" class="conversation-group-drafts" aria-live="polite"></div>
               <ul id="conversationList" class="conversation-list"></ul>
             </aside>
       <div class="messages-thread">

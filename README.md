@@ -80,6 +80,15 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 3. 所有加密/解密在前端記憶體執行；後端只儲存密文與索引。
 4. 雙向訊息採 Double Ratchet；登出時會 flush snapshot，重新登入時由 `contactSecrets-v1` 還原。
 
+### 群組聊天擴充（設計筆記）
+
+- 群組 conversation 採獨立 `groupId` + `conversation_token`，不與 1:1 共用 ACL / DR state，原有單聊流程保持原樣。
+- 資料層預計新增 `groups` / `group_members` / `group_invites`，`conversation_acl` 以成員批次授權；訊息索引需帶 sender 標識（fingerprint / account_digest）。
+- API：新增群組 CRUD + 邀請 / 加入 / 退出；`messages.controller` 送 / 拉訊息時驗證群組成員資格並附帶 sender 資訊。
+- 前端：session/contactSecrets 新增 group store 與 `type:'group'` 對話列表；群組訊息渲染以成員表映射 sender 名稱 / 頭像；WS 增補 group-* 事件與 secure-message 分流。
+- 加密策略維持不干擾單聊：群組訊息以 per-member fan-out（每成員子封包）或群組共享 key 二選一，不覆寫既有單聊 DR 狀態。
+- UI/UX 方案（行動/桌面一致）：聊天列表提供「建立群組」入口；建群分步（命名/頭像 → 選好友 → 確認與 QR/連結分享）；群組對話標頭顯示名稱+成員數，訊息氣泡附 sender 頭像/名稱（連續訊息合併頭像）；列表預覽顯示未讀與 @提及徽章；右側/抽屜顯示成員清單與管理操作（靜音/退出/踢人/再發邀請）；被踢或離開時覆蓋提示可返回列表。
+
 ---
 
 ## 關鍵流程
@@ -258,6 +267,10 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-12-03 12:26** | 前端加入「建立群組」入口：生成 groupId/conv token/seed 呼叫 `/api/v1/groups/create`，並自動複製群組資訊至剪貼簿、本機列表備查；群組訊息流程仍未串接，待後續擴充。未跑 `npm run test:*`。 |
+| **2025-12-03 12:15** | 執行 `wrangler d1 migrations apply message_db --remote` 套用 0010 群組 schema，並 `scripts/deploy-prod.sh --apply-migrations` 全套部署（Worker/Node API/Pages）；未跑 `npm run test:*`。 |
+| **2025-12-03 12:15** | 群組聊天後端腳手架：新增 D1 `groups` / `group_members` / `group_invites` schema，Worker 提供 create/add/remove/get 端點並同步 conversation ACL，Node API 開出 `/api/v1/groups/*`（create/members add/remove/get）；僅程式更新未跑 `npm run test:*`。 |
+| **2025-12-03 12:04** | README 補群組聊天架構與 UI 筆記（區隔 1:1、規劃資料表/ACL/API/前端/WS、群組列表/建群/對話/成員抽屜/邀請 UI），僅文件更新未跑 `npm run test:*`。 |
 | **2025-11-29 08:51** | Drive 上傳前後端皆檢查容量：前端以現有使用量 + 待上傳檔案預估超過 3GB 配額即彈窗阻擋；後端 `media/sign-put` 改用 3GB 空間上限（獨立於 500MB 單檔限制），超出直接 413；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
 | **2025-11-29 08:49** | Loading modal 去除旋轉圓形圖示，只保留進度條顯示載入狀態；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
 | **2025-11-29 08:45** | Drive 資料夾點擊/返回上一層會顯示「載入資料夾中…」modal，避免等待列表刷新時無提示；未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需後續補測。 |
