@@ -80,6 +80,7 @@ function resetMessageStateWithPlaceholders() {
 
 const LOCAL_GROUP_STORAGE_KEY = 'groups-drafts-v1';
 let localGroups = loadLocalGroups();
+let groupBuilderEl = null;
 
 function loadLocalGroups() {
   try {
@@ -220,9 +221,99 @@ export function initMessagesPane({
   async function handleCreateGroup() {
     const btn = elements.createGroupBtn;
     if (!btn) return;
-    const name = prompt('群組名稱？（可留空）') || '';
-    const trimmed = name.trim();
-    if (btn.dataset.busy === '1') return;
+    if (groupBuilderEl) {
+      groupBuilderEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    openGroupBuilder();
+  }
+
+  function openGroupBuilder() {
+    closeGroupBuilder();
+    const container = document.createElement('div');
+    container.className = 'group-builder';
+    container.style.padding = '12px';
+    container.style.margin = '8px 12px';
+    container.style.border = '1px solid rgba(15,23,42,0.08)';
+    container.style.borderRadius = '12px';
+    container.style.background = '#f8fafc';
+    container.style.boxShadow = '0 8px 24px rgba(15,23,42,0.08)';
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;margin-bottom:8px;">
+        <strong style="font-size:14px;">建立群組</strong>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="group-builder-cancel secondary" style="padding:6px 10px;">取消</button>
+          <button type="button" class="group-builder-create primary" style="padding:6px 10px;">建立</button>
+        </div>
+      </div>
+      <label style="display:block;margin-bottom:8px;">
+        <div style="font-size:12px;color:#475569;margin-bottom:4px;">群組名稱</div>
+        <input type="text" class="group-builder-name" placeholder="輸入群組名稱" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;"/>
+      </label>
+      <div style="font-size:12px;color:#475569;margin:4px 0 6px;">選擇成員</div>
+      <div class="group-builder-list" style="max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:6px;"></div>
+      <div class="group-builder-empty" style="display:none;font-size:13px;color:#64748b;padding:8px 0;">尚無好友可加入，請先建立好友。</div>
+    `;
+    elements.conversationList?.parentElement?.insertBefore(container, elements.conversationList);
+    groupBuilderEl = container;
+    renderGroupMemberList();
+    container.querySelector('.group-builder-cancel')?.addEventListener('click', closeGroupBuilder);
+    container.querySelector('.group-builder-create')?.addEventListener('click', submitGroupBuilder);
+  }
+
+  function closeGroupBuilder() {
+    if (groupBuilderEl && groupBuilderEl.parentElement) {
+      groupBuilderEl.parentElement.removeChild(groupBuilderEl);
+    }
+    groupBuilderEl = null;
+  }
+
+  function renderGroupMemberList() {
+    if (!groupBuilderEl) return;
+    const listEl = groupBuilderEl.querySelector('.group-builder-list');
+    const emptyEl = groupBuilderEl.querySelector('.group-builder-empty');
+    if (!listEl || !emptyEl) return;
+    const contacts = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
+    if (!contacts.length) {
+      listEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+      return;
+    }
+    emptyEl.style.display = 'none';
+    listEl.innerHTML = contacts.map((c, idx) => {
+      const uid = String(c?.peerUid || '').toUpperCase();
+      const nickname = escapeHtml(c?.nickname || `好友 ${uid.slice(-4)}`);
+      const digest =
+        c?.accountDigest || c?.account_digest || c?.peerAccountDigest || c?.peer_account_digest || '';
+      return `
+        <label class="group-builder-item" style="display:flex;align-items:center;gap:10px;padding:8px;border:1px solid rgba(148,163,184,0.4);border-radius:10px;cursor:pointer;">
+          <input type="checkbox" data-uid="${uid}" data-digest="${escapeHtml(digest)}" style="width:16px;height:16px;"/>
+          <div style="display:flex;flex-direction:column;gap:2px;">
+            <span style="font-size:13px;font-weight:600;">${nickname}</span>
+            <span style="font-size:11px;color:#64748b;">${uid}</span>
+          </div>
+        </label>
+      `;
+    }).join('');
+  }
+
+  async function submitGroupBuilder() {
+    if (!groupBuilderEl) return;
+    const nameInput = groupBuilderEl.querySelector('.group-builder-name');
+    const checkboxes = groupBuilderEl.querySelectorAll('input[type="checkbox"][data-uid]');
+    const selected = [];
+    checkboxes.forEach((cb) => {
+      if (cb.checked) {
+        const uid = cb.getAttribute('data-uid') || '';
+        const digest = cb.getAttribute('data-digest') || '';
+        if (digest) {
+          selected.push({ accountDigest: digest, uid });
+        }
+      }
+    });
+    const nameVal = (nameInput?.value || '').trim();
+    const btn = groupBuilderEl.querySelector('.group-builder-create');
+    if (btn?.dataset.busy === '1') return;
     btn.dataset.busy = '1';
     btn.disabled = true;
     try {
@@ -239,18 +330,19 @@ export function initMessagesPane({
       const { r, data } = await apiCreateGroup({
         groupId,
         conversationId,
-        name: trimmed || null,
-        conversationFingerprint
+        name: nameVal || null,
+        conversationFingerprint,
+        members: selected
       });
       if (!r.ok) {
         const msg = typeof data === 'string' ? data : data?.message || data?.error || '建立失敗';
         showToast?.(`建立群組失敗：${msg}`);
         return;
       }
-      showToast?.(`群組已建立：${trimmed || groupId}`);
+      showToast?.(`群組已建立：${nameVal || groupId}`);
       const draft = {
         groupId,
-        name: trimmed || `群組 ${groupId.slice(-4)}`,
+        name: nameVal || `群組 ${groupId.slice(-4)}`,
         conversationId,
         tokenB64,
         secretB64Url,
@@ -277,8 +369,10 @@ export function initMessagesPane({
       showToast?.(`建立群組失敗：${err?.message || err}`);
       log({ groupCreateError: err?.message || err });
     } finally {
-      delete btn.dataset.busy;
-      btn.disabled = false;
+      if (btn) {
+        delete btn.dataset.busy;
+        btn.disabled = false;
+      }
     }
   }
 
@@ -2705,6 +2799,7 @@ export function initMessagesPane({
 
     elements.callBtn?.addEventListener('click', () => handleConversationAction('voice'));
     elements.videoBtn?.addEventListener('click', () => handleConversationAction('video'));
+    elements.createGroupBtn?.addEventListener('click', handleCreateGroup);
 
     if (elements.scrollEl) {
       elements.scrollEl.addEventListener('scroll', handleMessagesScroll, { passive: true });
