@@ -176,7 +176,8 @@ export function initMessagesPane({
       await navigator.clipboard.writeText(summary);
       showToast?.('群組資訊已複製');
     } catch {
-      alert(summary);
+      showToast?.('無法複製到剪貼簿，請確認權限', { variant: 'warning' });
+      log({ groupCopyClipboardError: 'clipboard-write-failed' });
     }
   }
 
@@ -247,12 +248,6 @@ export function initMessagesPane({
         return;
       }
       showToast?.(`群組已建立：${trimmed || groupId}`);
-      const summary = [
-        `群組ID: ${groupId}`,
-        `對話ID: ${conversationId}`,
-        `會話密鑰(token): ${tokenB64}`,
-        `邀請密鑰(seed): ${secretB64Url}`
-      ].join('\n');
       const draft = {
         groupId,
         name: trimmed || `群組 ${groupId.slice(-4)}`,
@@ -265,12 +260,19 @@ export function initMessagesPane({
       persistLocalGroups();
       renderGroupDrafts();
       try {
+        const summary = [
+          `群組ID: ${groupId}`,
+          `對話ID: ${conversationId}`,
+          `會話密鑰(token): ${tokenB64}`,
+          `邀請密鑰(seed): ${secretB64Url}`
+        ].join('\n');
         await navigator.clipboard.writeText(summary);
-        showToast?.('群組資訊已複製，請儲存或分享給成員');
+        showToast?.('群組資訊已複製，可貼給成員');
       } catch {
-        alert(summary);
+        showToast?.('群組已建立，複製剪貼簿失敗，請稍後再試', { variant: 'warning' });
+        log({ groupCreateClipboardError: 'clipboard-write-failed' });
       }
-      console.log('[group-create]', { groupId, conversationId, tokenB64, secretB64Url, response: data });
+      log({ groupCreate: { groupId, conversationId, hasClipboard: true } });
     } catch (err) {
       showToast?.(`建立群組失敗：${err?.message || err}`);
       log({ groupCreateError: err?.message || err });
