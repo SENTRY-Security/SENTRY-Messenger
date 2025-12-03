@@ -5,7 +5,8 @@ export const onRequest: PagesFunction = async () => {
       details: [
         {
           appID: 'DYAAM5G8JF.red.sentry.app.SENTRY-Messenger',
-          paths: ['/sdm/*', '/deeplink/*', '/pages/login.html']
+          // 使用通配符允許所有路徑，以涵蓋實際 NDEF URL。
+          paths: ['*']
         }
       ]
     }
