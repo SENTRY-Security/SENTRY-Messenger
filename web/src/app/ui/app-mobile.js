@@ -116,6 +116,7 @@ const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
 const navBadges = typeof document !== 'undefined' ? Array.from(document.querySelectorAll('.nav-badge')) : [];
 const logoutRedirectCover = document.getElementById('logoutRedirectCover');
+let forcedLogoutOverlay = null;
 const mediaPermissionOverlay = document.getElementById('mediaPermissionOverlay');
 const mediaPermissionAllowBtn = document.getElementById('mediaPermissionAllowBtn');
 const mediaPermissionAllowLabel = document.getElementById('mediaPermissionAllowLabel');
@@ -978,6 +979,53 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   setTimeout(() => {
     try { location.replace(logoutRedirectTarget); } catch { location.href = logoutRedirectTarget; }
   }, 60);
+}
+
+function showForcedLogoutModal(message = '帳號已在其他裝置登入') {
+  try {
+    if (forcedLogoutOverlay && forcedLogoutOverlay.parentElement) {
+      forcedLogoutOverlay.parentElement.removeChild(forcedLogoutOverlay);
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'forced-logout-overlay';
+    Object.assign(wrap.style, {
+      position: 'fixed',
+      inset: '0',
+      background: 'rgba(15,23,42,0.65)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: '2000',
+      padding: '16px'
+    });
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+      background: '#fff',
+      color: '#0f172a',
+      padding: '20px 22px',
+      borderRadius: '14px',
+      width: 'min(420px, 92vw)',
+      boxShadow: '0 16px 48px rgba(0,0,0,0.25)',
+      textAlign: 'center'
+    });
+    const title = document.createElement('div');
+    Object.assign(title.style, { fontSize: '16px', fontWeight: '700', marginBottom: '8px' });
+    title.textContent = '安全提示';
+    const msg = document.createElement('div');
+    Object.assign(msg.style, { fontSize: '14px', lineHeight: '1.6', marginBottom: '16px' });
+    msg.textContent = message;
+    const hint = document.createElement('div');
+    Object.assign(hint.style, { fontSize: '12px', color: '#475569' });
+    hint.textContent = '將登出此裝置，請重新感應晶片登入。';
+    panel.appendChild(title);
+    panel.appendChild(msg);
+    panel.appendChild(hint);
+    wrap.appendChild(panel);
+    document.body.appendChild(wrap);
+    forcedLogoutOverlay = wrap;
+  } catch (err) {
+    log({ forcedLogoutOverlayError: err?.message || err });
+  }
 }
 
 if (typeof window !== 'undefined') {
@@ -2473,6 +2521,11 @@ async function connectWebSocket() {
     wsConn = null;
     updateConnectionIndicator('offline');
     presenceManager.clearPresenceState();
+    if (evt.code === 4409) {
+      showForcedLogoutModal('帳號已在其他裝置登入');
+      secureLogout('帳號已在其他裝置登入', { auto: true });
+      return;
+    }
     if (evt.code === 4401) {
       wsAuthTokenInfo = null;
     }
