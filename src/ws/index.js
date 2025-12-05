@@ -5,6 +5,7 @@ import { normalizeCallId } from '../utils/call-validators.js';
 import { appendCallEvent } from '../services/call-worker.js';
 
 const clients = new Map(); // uid -> Set<WebSocket>
+const latestSessionTs = new Map(); // uid -> iat (seconds)
 const presenceWatchers = new Map(); // uid -> Set<WebSocket>
 let manager = null;
 const CALL_SIGNAL_TYPES = new Set([
@@ -289,8 +290,17 @@ async function handleCallSignal(ws, msg) {
   sendCallAck(ws, rawType, callId, { peerUid: targetUid });
 }
 
-function addClient(uid, ws) {
+function addClient(uid, ws, sessionTs) {
   const key = uid.toUpperCase();
+  const ts = Number(sessionTs) || Math.floor(Date.now() / 1000);
+  const latestTs = latestSessionTs.get(key) || 0;
+  if (latestTs && ts < latestTs) {
+    try {
+      ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'stale_session' }));
+    } catch {}
+    try { ws.close(4409, 'stale_session'); } catch {}
+    return false;
+  }
   // 單一活躍連線策略：同一 UID 只保留最新連線，先關閉舊連線。
   const existing = clients.get(key);
   if (existing && existing.size) {
@@ -302,8 +312,11 @@ function addClient(uid, ws) {
   if (!clients.has(key)) clients.set(key, new Set());
   clients.get(key).add(ws);
   ws.__uid = key;
+  ws.__sessionTs = ts;
+  latestSessionTs.set(key, ts);
   logger.info({ uid: key }, 'ws_client_registered');
   notifyPresence(key, true);
+  return true;
 }
 
 function removeClient(ws) {
@@ -312,7 +325,10 @@ function removeClient(ws) {
   const set = clients.get(uid);
   if (!set) return;
   set.delete(ws);
-  if (!set.size) clients.delete(uid);
+  if (!set.size) {
+    clients.delete(uid);
+    latestSessionTs.delete(uid);
+  }
   logger.info({ uid }, 'ws_client_removed');
   if (!set || set.size === 0) {
     notifyPresence(uid, false);
@@ -356,7 +372,9 @@ function handleClientMessage(ws, data) {
       return;
     }
     ws.__accountDigest = verification.payload.accountDigest;
-    addClient(claimedUid, ws);
+    const sessionTs = verification.payload.iat || Math.floor(Date.now() / 1000);
+    const ok = addClient(claimedUid, ws, sessionTs);
+    if (!ok) return;
     ws.send(JSON.stringify({ type: 'auth', ok: true, exp: verification.payload.exp }));
     return;
   }
