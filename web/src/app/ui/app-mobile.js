@@ -134,6 +134,19 @@ const SIM_STORAGE_PREFIX = (() => {
 const SIM_STORAGE_KEY = (() => {
   try { return getSimStorageKey(); } catch { return null; }
 })();
+const SESSION_LOGIN_TS_KEY = 'session-login-ts';
+function getLoginSessionTs() {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const existing = Number(sessionStorage.getItem(SESSION_LOGIN_TS_KEY) || '');
+      if (Number.isFinite(existing) && existing > 0) return existing;
+      const now = Math.floor(Date.now() / 1000);
+      sessionStorage.setItem(SESSION_LOGIN_TS_KEY, String(now));
+      return now;
+    }
+  } catch {}
+  return Math.floor(Date.now() / 1000);
+}
 
 function isSimStorageKey(key) {
   if (!key) return false;
@@ -2452,10 +2465,14 @@ async function getWsAuthToken({ force = false } = {}) {
   }
   const accountToken = getAccountToken();
   const accountDigest = getAccountDigest();
-  const { r, data } = await requestWsToken({ uidHex, accountToken, accountDigest });
+  const sessionTs = getLoginSessionTs();
+  const { r, data } = await requestWsToken({ uidHex, accountToken, accountDigest, sessionTs });
   if (!r.ok || !data?.token) {
     const message = typeof data === 'string' ? data : data?.message || data?.error || 'ws token failed';
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = r.status;
+    err.code = typeof data === 'object' ? (data?.error || null) : null;
+    throw err;
   }
   const expiresAt = Number(data.expiresAt || data.exp || 0) || null;
   wsAuthTokenInfo = { token: data.token, expiresAt };
@@ -2469,7 +2486,12 @@ async function connectWebSocket() {
   try {
     tokenInfo = await getWsAuthToken();
   } catch (err) {
-    log({ wsTokenError: err?.message || err });
+    log({ wsTokenError: err?.message || err, status: err?.status, code: err?.code });
+    if (err?.status === 409 || err?.code === 'StaleSession') {
+      showForcedLogoutModal('帳號已在其他裝置登入');
+      secureLogout('帳號已在其他裝置登入', { auto: true });
+      return;
+    }
     scheduleWsReconnect(4000);
     return;
   }

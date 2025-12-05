@@ -8,15 +8,16 @@ function sign(data) {
   return crypto.createHmac('sha256', TOKEN_SECRET).update(data).digest('base64url');
 }
 
-export function createWsToken({ uid, accountDigest, ttlMs = 5 * 60 * 1000 }) {
+export function createWsToken({ uid, accountDigest, ttlMs = 5 * 60 * 1000, issuedAt = null }) {
   if (!uid) throw new Error('uid required for ws token');
   if (!accountDigest) throw new Error('accountDigest required for ws token');
   const now = Math.floor(Date.now() / 1000);
-  const exp = now + Math.floor(ttlMs / 1000);
+  const iat = Number.isFinite(issuedAt) && issuedAt > 0 ? Math.floor(issuedAt) : now;
+  const exp = iat + Math.floor(ttlMs / 1000);
   const payload = {
     uid: String(uid).toUpperCase(),
     accountDigest: String(accountDigest).toUpperCase(),
-    iat: now,
+    iat,
     exp
   };
   const bodyB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');

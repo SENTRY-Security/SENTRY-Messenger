@@ -7,13 +7,15 @@ const r = Router();
 
 const DATA_API = process.env.DATA_API_URL;
 const HMAC_SECRET = process.env.DATA_API_HMAC;
+const latestLoginTs = new Map(); // accountDigest -> sessionTs
 
 const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const TokenRequestSchema = z.object({
   uidHex: z.string().min(14),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  sessionTs: z.number().int().optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -58,11 +60,19 @@ r.post('/ws/token', async (req, res) => {
     return res.status(500).json({ error: 'VerifyFailed', message: 'account digest missing' });
   }
 
-  const { token, payload: tokenPayload } = createWsToken({ uid: uidHex, accountDigest });
+  const sessionTs = Number.isFinite(input.sessionTs) ? Math.floor(input.sessionTs) : Math.floor(Date.now() / 1000);
+  const latest = latestLoginTs.get(accountDigest) || 0;
+  if (latest && sessionTs < latest) {
+    return res.status(409).json({ error: 'StaleSession', message: 'session superseded by newer login' });
+  }
+  latestLoginTs.set(accountDigest, sessionTs);
+
+  const { token, payload: tokenPayload } = createWsToken({ uid: uidHex, accountDigest, issuedAt: sessionTs });
   return res.json({
     token,
     expiresAt: tokenPayload.exp,
-    accountDigest: tokenPayload.accountDigest
+    accountDigest: tokenPayload.accountDigest,
+    sessionTs
   });
 });
 
