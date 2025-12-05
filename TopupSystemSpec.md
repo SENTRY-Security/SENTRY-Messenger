@@ -57,7 +57,7 @@
     "message": "描述（可選）"
   }
   ```
-- 錯誤碼建議：400 BadRequest（格式/簽章錯誤）、401 Unauthorized（HMAC 驗證失敗）、409 Conflict（token 已用）、410 Gone（token 過期/無效）、429 Too Many Requests（風控）。
+- 錯誤碼要求：400 BadRequest（格式/簽章錯誤）、401 Unauthorized（HMAC 驗證失敗）、409 Conflict（token 已用）、410 Gone（token 過期/無效）、429 Too Many Requests（風控）。
 
 ### 2) GET `/api/v1/subscription/status?digest=HEX64&limit=50`
 
@@ -86,7 +86,7 @@
 
 - 與 `redeem` 相同 Body，但強制 `dryRun=true`，回傳同樣的結果，只做驗簽與狀態檢查，不消耗 token。
 
-## Portal 側資料表（建議）
+## Portal 側資料表（要求）
 
 - `subscriptions(digest PK, expires_at INTEGER, updated_at INTEGER, created_at INTEGER)`
 - `tokens(token_id PK, digest, issued_at, valid_until, extend_to, nonce, key_id, signature_b64, status TEXT, used_at, used_by_digest, created_at)`
@@ -102,6 +102,6 @@
 
 ## 安全防護
 
-- 必須驗簽；token_id 必須唯一；`valid_until` 短時效（建議 10 分鐘）避免重放。
+- 必須驗簽；token_id 必須唯一；`valid_until` 短時效，期限不得超過 10 分鐘以避免重放。
 - 所有寫入操作在 Portal 端原子完成，前端不得自行寫狀態。
 - HMAC 秘密僅存於我們的後端，不外泄到前端。  
