@@ -168,6 +168,7 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 - **背景自動登出**：`autoLogoutOnBackground`（預設 true）在 App 退到背景時觸發 `secureLogout()`；若 `autoLogoutRedirectMode=custom` 且 `autoLogoutCustomUrl` 通過 HTTPS 驗證，登出後會導向指定網址。**即使此設定被關閉，只要 App 頁面被重新整理就會立即強制 `secureLogout()` 並導向登出頁**。
 - **Remote Console**：設 `REMOTE_CONSOLE_ENABLED=1` 可允許前端上報 `console.log` 至 `/api/v1/debug/console`（預設關閉）；僅於追查問題時啟用，並搭配 `?remoteConsole=1` 或 `window.RemoteConsoleRelay.enable()` 啟用個別裝置。
 - **環境變數**（常用）：`NTAG424_*`, `ACCOUNT_HMAC_KEY`, `OPAQUE_*`, `DATA_API_*`, `S3_*`, `UPLOAD_MAX_BYTES`, `SIGNED_{PUT,GET}_TTL`, `SERVICE_*`, `ACCOUNT_TOKEN_BYTES`, `CORS_ORIGIN` 等。
+- **儲值系統（訂閱延展）**：`PORTAL_API_ORIGIN`（例如 `https://portal.messenger.sentry.red`）、`PORTAL_HMAC_SECRET` 必填。Node API 透過 `/api/v1/subscription/{redeem,validate,status}` 代理至 Portal，HMAC 計算為 `HMAC-SHA256(secret, path + "\n" + body)`；憑證為 Ed25519 簽章、`extend_days` 天數延展，Portal 端負責唯一性與消耗，前端不直接呼叫 Portal。
 
 ---
 
