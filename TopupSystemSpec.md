@@ -13,12 +13,12 @@
     "digest": "HEX64",                  // 帳號 digest
     "issued_at": 1719999999,            // UNIX 秒
     "valid_until": 1720003599,          // UNIX 秒，過期後不得使用
-    "extend_to": 1722595599,            // UNIX 秒，延展後的到期時間
+    "extend_days": 30,                  // 要增加的天數（整數），延展方式為 max(expires_at, now) + extend_days*86400
     "nonce": "random-string",           // 任意隨機字串，加強唯一性
     "key_id": "v1"                      // 公鑰版本
   }
   ```
-- 簽章內容：`"${token_id}.${digest}.${issued_at}.${valid_until}.${extend_to}.${nonce}"` 以 UTF-8 串接後用 Ed25519 簽章，輸出 base64，放在 `signature_b64`。
+- 簽章內容：`"${token_id}.${digest}.${issued_at}.${valid_until}.${extend_days}.${nonce}"` 以 UTF-8 串接後用 Ed25519 簽章，輸出 base64，放在 `signature_b64`。
 
 ## API 鑑權
 
@@ -44,14 +44,14 @@
   4. 查 tokens 表：若 `token_id` 狀態為 `used/expired/invalid` → 回覆對應錯誤。
   5. `dryRun=true`：僅回驗證結果，不寫入、不中斷重放防護（token 仍維持原狀態）。
   6. `dryRun=false`：原子操作：
-     - `subscriptions.expires_at = max(current_expires_at, extend_to)`；如無紀錄則建立。
-     - tokens 標記 `status=used`、`used_at=now`、`used_by_digest=payload.digest`，並寫入 `extend_logs`。
+     - 計算 `base = max(current_expires_at, now)`；`new_expires_at = base + extend_days*86400`；更新/建立 `subscriptions.expires_at = new_expires_at`。
+     - tokens 標記 `status=used`、`used_at=now`、`used_by_digest=payload.digest`，並寫入 `extend_logs`（記錄 extend_days 與 new_expires_at）。
 - 回應：
   ```json
   {
     "status": "ok | used | expired | invalid",
-    "expires_at": 1722595599,   // 最新到期時間
-    "extend_to": 1722595599,    // 此次憑證帶入的延展值
+    "expires_at": 1722595599,   // 更新後到期時間
+    "added_days": 30,           // 此次實際增加的天數（同 extend_days）
     "used_at": 1720000000,      // 若為 used
     "token_id": "uuid-string",
     "message": "描述（可選）"
@@ -69,7 +69,8 @@
     "logs": [
       {
         "token_id": "uuid-string",
-        "extend_to": 1722595599,
+        "extend_days": 30,
+        "expires_at_after": 1722595599,
         "used_at": 1720000000,
         "status": "used | expired | invalid",
         "issued_at": 1719999999,
