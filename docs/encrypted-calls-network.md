@@ -14,7 +14,7 @@
 ## 2. 認證與金鑰
 
 - TURN 使用短期憑證（長度 16 bytes username + HMAC-based password）。
-- `POST /api/v1/calls/turn-credentials`：伺服器產生 `username = timestamp:uid`，`password = HMAC(shared_secret, username)`，TTL 5 分鐘。Node API 會驗證 `uidHex + accountToken/accountDigest` 後直接回傳 `iceServers` 結構，客戶端不需再呼叫 Worker。
+- `POST /api/v1/calls/turn-credentials`：伺服器產生 `username = timestamp:accountDigest`，`password = HMAC(shared_secret, username)`，TTL 5 分鐘。Node API 會驗證 `accountDigest/accountToken` 後直接回傳 `iceServers` 結構，客戶端不需再呼叫 Worker。
 - 回傳結構：
 
 ```jsonc
@@ -38,7 +38,7 @@
 
 ## 2.1 Network Config API
 
-- `GET /api/v1/calls/network-config` 需附帶 `uidHex + accountToken/accountDigest`，回傳與 `web/src/shared/calls/network-config.json` 相同 schema，並依照環境變數自動帶入：
+- `GET /api/v1/calls/network-config` 需附帶 `accountDigest/accountToken`，回傳與 `web/src/shared/calls/network-config.json` 相同 schema，並依照環境變數自動帶入：
   - TURN 憑證 TTL（沿用 `TURN_TTL_SECONDS`）
   - STUN/TURN 端點：`TURN_STUN_URIS`、`CALL_EXTRA_STUN_URIS`
   - ICE Policy：`CALL_ICE_TRANSPORT_POLICY`, `CALL_ICE_BUNDLE_POLICY`, `CALL_ICE_GATHER_POLICY`

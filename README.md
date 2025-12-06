@@ -215,49 +215,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 ## 測試與自動化
 
-> 修改程式碼後務必跑以下測試；若跳過，需在回報中說明原因與風險。
-> 正式釋出前，需再將 `ORIGIN_API`（及 `E2E_ORIGIN_API`）指向 Production，重跑同組測試確認線上環境也為綠燈。
-> **提醒**：每次跑測試（本機或線上）前，先執行 `./scripts/cleanup/wipe-all.sh` 清空舊的 D1 / R2 資料，避免舊資料干擾結果。
-
-
-| 指令                                                           | 腳本                                | 覆蓋範圍 / 期望                                                                                                          |
-| -------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `npm run test:prekeys-devkeys`                                 | `scripts/test-prekeys-devkeys.mjs`  | SDM → exchange →`/keys/publish` → `/devkeys/store                                                                     |
-| `npm run test:messages-secure`                                 | `scripts/test-messages-secure.mjs`  | 建立 secure envelope、列表至少一筆。                                                                                     |
-| `npm run test:friends-messages`                                | `scripts/test-friends-messages.mjs` | 兩位用戶註冊→邀請→互傳訊息並解密。需先啟動 Node API。                                                                  |
-| `npm run test:calls-encryption`                                | `scripts/test-calls-encryption.mjs` | 兩位用戶 bootstrap → call invite（含 call-key-envelope）→ callee 取得 session → 回報 metrics → cancel。              |
-| `npm run test:login-flow`                                      | `scripts/test-login-flow.mjs`       | SDM → OPAQUE（必要時註冊）→`/mk/store` → 再次 exchange 應 `hasMK=true`。                                              |
-| `npm run test:front:login`                                     | Playwright (`tests/e2e/*.spec.mjs`) | 驗證登入、暱稱/頭像、檔案操作、雙向訊息、對話/聯絡人刪除、登出。需啟動 API，首次請`npx playwright install --with-deps`。 |
-| `npm run test:front:call-audio`                                | Playwright                          | 兩個瀏覽器帳號以假音訊裝置建立好友→撥打語音通話→接聽→確認加密/靜音/掛斷流程。                                         |
-| `node --test tests/unit/messages.test.mjs`                     | Node.js test runner                 | 覆蓋`listSecureAndDecrypt` 控制訊息／replay 邏輯與安全 Modal 狀態。                                                      |
-| `npx playwright test tests/e2e/multi-account-friends.spec.mjs` | Playwright                          | 多帳號壓力測試：輪流建立好友、雙向訊息與附件傳送，包含登出/重登入行為並收集安全對話狀態。                                |
-
-**範例**
-
-```bash
-# 本機 API
-ORIGIN_API=http://127.0.0.1:3000 npm run test:prekeys-devkeys
-
-# 線上 API
-ORIGIN_API=https://api.message.sentry.red npm run test:messages-secure
-
-# Playwright
-NODE_ENV=development node src/server.js &
-API_PID=$!
-ORIGIN_API=http://127.0.0.1:3000 npm run test:front:login
-kill $API_PID
-
-# 多帳號好友壓力測試
-npx playwright test tests/e2e/multi-account-friends.spec.mjs
-```
-
-### GitHub Actions
-
-- Workflow：`.github/workflows/e2e.yml`
-- 觸發：PR → `main` 或 `workflow_dispatch`
-- 需設定 `E2E_ORIGIN_API`（建議指向 Staging）
-- 任務：`Prekeys & Devkeys`、`Messages Secure`
-- 建議在 Branch Protection 要求上述檢查通過才能合併。
+> **重要**：本輪大規模重構後，舊有 mjs 測試腳本已全部移除，現階段無可用的自動化測試套件。請在撰寫新功能前先重建對應的測試流程，並於 README/Docs 補充新的執行方式。
 
 ## 最新進度與工作項目
 

@@ -63,7 +63,7 @@ Worker 會定期（每分鐘）清理 7 天前的事件與已結束且過期的 
 | `TURN_STUN_URIS` | 逗號分隔的 STUN URL 清單 |
 | `TURN_RELAY_URIS` | 逗號分隔的 TURN URL 清單（含 `turn:` / `turns:`） |
 
-所有 API 需驗證 `accountToken + uidHex`，並與 `call_sessions` 比對。
+所有 API 僅驗證 `accountToken + accountDigest`，並與 `call_sessions` 比對。
 
 ## 3. 事件管道
 

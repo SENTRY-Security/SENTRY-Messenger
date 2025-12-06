@@ -1,6 +1,6 @@
 # Encrypted Voice / Video Call — 測試與安全審查計畫
 
-> 對應 README「Encrypted Voice / Video Call Roadmap」第七項。描述自動化測試、實機驗證與安全審查流程，涵蓋 PWA 與 iOS App。
+> 對應 README「Encrypted Voice / Video Call Roadmap」第七項。描述自動化測試、實機驗證與安全審查流程，涵蓋 PWA 與 iOS App。**目前舊版 mjs 測試已全數移除，本文件為待重建的目標規格，實作前需重新撰寫測試腳本與 CI。**
 
 ## 1. 測試金字塔
 
@@ -14,15 +14,15 @@
 
 ## 2. 單元測試
 
-- `calls/key-manager.test.mjs`：驗證 key ladder、輪換與銷毀 API。
-- `calls/signaling-state.test.mjs`：模擬 invite/accept/cancel/timeout 循環。
+- （待重建）`calls/key-manager.test.*`：驗證 key ladder、輪換與銷毀 API。
+- （待重建）`calls/signaling-state.test.*`：模擬 invite/accept/cancel/timeout 循環。
 - Swift 對應：使用 XCTest 驗證 `CallKeyManager` 與 `CallStateMachine`。
 
 ## 3. 整合測試
 
 - **Web**：使用 `@web/test-runner` 或 Jest + `wrtc` 模擬 RTCPeerConnection，檢查 Insertable Streams、ICE fallback。
 - **iOS**：在 Simulator 以 `XCTest` + WebRTC native stack 發起 loopback 通話。
-- `scripts/test-call-loopback.mjs`：
+- （待重建）`scripts/test-call-loopback.*`：
   - 啟動兩個 headless 客戶端
   - 從 TURN credentials API 取憑證
   - 檢查 `call_sessions` 更新、`call-events` 日誌
@@ -31,7 +31,7 @@
 
 ### 4.1 自動化（Playwright）
 
-- 新增 `tests/e2e/calls.spec.mjs`：
+- （待重建）`tests/e2e/calls.spec.*`：
   - 同時啟動兩個瀏覽器 context（caller/callee）
   - 使用 mock push 通知觸發來電
   - 驗證語音/視訊切換、掛斷、網路切換（模擬 `offline` → `online`）
@@ -80,7 +80,7 @@
 
 ## 7. 自動化報告
 
-- CI 任務 `npm run test:calls`：
+- （待重建）CI 任務 `npm run test:calls`：
   - 單元 + 整合測試
   - 匯出 coverage 報告
 - Playwright 端到端在 GitHub Actions nightly 跑，失敗時附影片。
