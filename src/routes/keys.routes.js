@@ -86,7 +86,6 @@ r.post('/keys/publish', async (req, res) => {
     const path = '/d1/prekeys/publish';
     const accountPayload = prepAccountPayload(input);
     console.log('[keys.publish] payload', {
-      uidHex: accountPayload.uidHex || null,
       hasAccountToken: !!accountPayload.accountToken,
       hasAccountDigest: !!accountPayload.accountDigest,
       inputBundleKeys: input.bundle ? Object.keys(input.bundle) : null,
