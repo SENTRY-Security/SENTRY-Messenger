@@ -226,6 +226,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 | 日期                 | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-12-07 10:00** | 完成 mobile `share-controller` / `contacts-view` / `app-mobile` digest-only 事件 payload 清理，移除 ownerUid/peerUid 輸出並統一 conversationIndex/通知欄位；`iOS-Development-Guids.md` 更新為 accountDigest-only（僅 SDM debug 仍保留 UID）。僅進行靜態檢查，未重跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`（前端欄位改名，預計後續 digest-only 收尾完畢後一併重驗）。                                                                                                                                                                                                                                                                                       |
 | **2025-12-06 19:33** | 前端 digest-only 清理持續中：DR/session/messages 層改以 account_digest 介面（移除 peerUidHex 參數）、mobile messages-pane 會話列表/通話/傳訊/媒體發送同步改傳 digest、contact loader 儲存 digest 為主並保留 alias、contacts view 事件與刪除流程調整為 digest 索引，dev app UI 輸入欄改為 peerAccountDigest。尚未處理 mobile share-controller，相關測試 (`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`) 未執行。 |
 | **2025-12-06 18:30** | 因本輪重構後既有腳本失效，已移除所有 mjs 測試檔（`scripts/test-*.mjs`、`tests/e2e/*.spec.mjs`、`tests/unit/messages.test.mjs` 等），後續需重建新版測試流程。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **2025-12-06 17:55** | 前端 digest-only 持續清理：Login → App handoff 以 account_digest 為主（app-ui/app-mobile/login-ui）、DR/訊息/通話 UI 去除本端 UID 依賴，remote-console/profile identicon/contacts 渲染改用 digest，測試腳本`scripts/test-messages-secure.mjs` / `tests/e2e/utils.mjs` / `tests/e2e/multi-account-helpers.mjs` 改用 digest 快照。尚未執行 `npm run test:*`。                                                                                                                                                                                                                                                                                                                            |
@@ -326,9 +327,9 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [X] 靜態輸入：`pages/login.html` 的隱藏 `uidHex` 欄位仍存在（SDM 用途）；確認是否需改為僅顯示/只讀或移除。  
   - [X] 模擬工具：`web/src/libs/ntag424-sim.js` 仍以 uidHex 驅動，保留於硬體模擬範圍（明確標註與 app 流程隔離，不納入 digest-only 清理）。
   - [X] `web/src/app/ui/mobile/messages-pane.js` — 對話/通話/事件均以 accountDigest 傳遞，不再接受 UID fallback。  
-  - [ ] `web/src/app/ui/mobile/share-controller.js` — 還保留 ownerUid/peerUid 字段與 event payload，需要再確認完全 digest-only。  
-  - [ ] `web/src/app/ui/mobile/contacts-view.js` — 事件欄位仍沿用 peerUid 命名，需調整為 digest-only 命名。  
-  - [ ] `web/src/app/ui/app-mobile.js` — 多處事件 payload/log 仍用 peerUid 名稱，需改 digest-only。  
+  - [X] `web/src/app/ui/mobile/share-controller.js` — 還保留 ownerUid/peerUid 字段與 event payload，需要再確認完全 digest-only。  
+  - [X] `web/src/app/ui/mobile/contacts-view.js` — 事件欄位仍沿用 peerUid 命名，需調整為 digest-only 命名。  
+  - [X] `web/src/app/ui/app-mobile.js` — 多處事件 payload/log 仍用 peerUid 名稱，需改 digest-only。  
   - [X] `web/src/app/features/messages.js` — 僅接受 peerAccountDigest。  
   - [X] `web/src/app/features/contacts.js` — contact secrets/state 改為純 digest。  
   - [X] `web/src/app/features/secure-conversation-manager.js` — resolvePeerKey 僅接受 digest。  
@@ -337,7 +338,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [X] `web/src/app/core/contact-secrets.js` — 解析/輸出僅保存 accountDigest，不再記錄 UID。  
   - [X] `web/src/shared/conversation/context.js` — fingerprint helper 接受 accountDigest。  
   - [X] `web/src/app/ui/app-ui.js` dev 區塊（DR 測試）改為 peerAccountDigest 輸入。
-- [ ] 文件：更新 `iOS-Development-Guids.md` 等仍提到 `uidHex/peerUid` 的說明，改為 account_digest-only（SDM 入口除外）。
+- [X] 文件：更新 `iOS-Development-Guids.md` 等仍提到 `uidHex/peerUid` 的說明，改為 account_digest-only（SDM 入口除外）。
 - [ ] 部署與驗證（最後進行）：清空 D1/R2 後重新部署 Worker/Node/Pages；跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 
 ## 授權條款

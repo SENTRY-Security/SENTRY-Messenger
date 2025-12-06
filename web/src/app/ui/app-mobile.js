@@ -1208,15 +1208,15 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     let attempted = 0;
     let persisted = 0;
     const missingState = [];
-    for (const peerUid of peerSet) {
+    for (const peerDigest of peerSet) {
       attempted += 1;
-      const state = drState(peerUid);
+      const state = drState(peerDigest);
       if (state?.rk) {
-        if (persistDrSnapshot({ peerAccountDigest: peerUid, state })) {
+        if (persistDrSnapshot({ peerAccountDigest: peerDigest, state })) {
           persisted += 1;
         }
       } else {
-        missingState.push(peerUid);
+        missingState.push(peerDigest);
       }
     }
     log({
@@ -1688,8 +1688,8 @@ document.addEventListener('contacts:broadcast-update', async (event) => {
   const detail = event?.detail || {};
   const targets = Array.isArray(detail?.targetPeers)
     ? detail.targetPeers
-    : detail?.peerUid
-      ? [detail.peerUid]
+    : detail?.peerAccountDigest
+      ? [detail.peerAccountDigest]
       : [];
   try {
     await shareController.broadcastContactUpdate({
@@ -1742,14 +1742,14 @@ async function addContactEntry(contact) {
   return result;
 }
 
-function removeContactLocal(peerUid) {
-  removeContactLocalRaw?.(peerUid);
-  shareController?.removeContactSecret?.(peerUid);
+function removeContactLocal(peerAccountDigest) {
+  removeContactLocalRaw?.(peerAccountDigest);
+  shareController?.removeContactSecret?.(peerAccountDigest);
   messagesPane.syncConversationThreadsFromContacts();
   messagesPane.renderConversationList();
 }
 
-removeContactLocalFn = (peerUid) => removeContactLocal(peerUid);
+removeContactLocalFn = (peerAccountDigest) => removeContactLocal(peerAccountDigest);
 
 const profileCard = initProfileCard({
   dom: {
@@ -2437,8 +2437,7 @@ function ensureWebSocket() {
 
 function resolveWsPeer(msg = {}) {
   return normalizePeerIdentity({
-    peerAccountDigest: msg.peerAccountDigest || msg.peer_account_digest || msg.accountDigest || msg.account_digest || msg.fromAccountDigest || msg.from_account_digest || null,
-    peerUid: msg.peerUid || msg.peer_uid || msg.uid || msg.fromUid || msg.from_uid || null
+    peerAccountDigest: msg.peerAccountDigest || msg.peer_account_digest || msg.accountDigest || msg.account_digest || msg.fromAccountDigest || msg.from_account_digest || null
   });
 }
 
@@ -2616,12 +2615,12 @@ function handleWebSocketMessage(msg) {
   }
   if (type === 'contact-removed') {
     const identity = resolveWsPeer(msg);
-    const peerUid = identity.key;
-    if (peerUid) {
+    const peerAccountDigest = identity.key;
+    if (peerAccountDigest) {
       try {
-        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid, notifyPeer: false } }));
+        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerAccountDigest, notifyPeer: false } }));
       } catch (err) {
-        log({ contactRemovedEventError: err?.message || err, peerUid });
+        log({ contactRemovedEventError: err?.message || err, peerAccountDigest });
       }
     }
     return;

@@ -279,10 +279,6 @@ function debugLog(event, payload) {
   }
 }
 
-function normalizeUid(value) {
-  return normalizePeerUid(value);
-}
-
 function trimString(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -502,8 +498,8 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     }
     const parsed = JSON.parse(snapshot);
     if (Array.isArray(parsed)) {
-      for (const [peerUid, value] of parsed) {
-        const { key } = resolvePeerKey(peerUid);
+      for (const [peerKeyRaw, value] of parsed) {
+        const { key } = resolvePeerKey(peerKeyRaw);
         if (!key) continue;
         const inviteId = typeof value?.inviteId === 'string' ? value.inviteId.trim() : null;
         const secret = typeof value?.secret === 'string' ? value.secret.trim() : null;
@@ -534,7 +530,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
           updatedAt: Number(value?.updatedAt || 0) || null
         });
         debugLog('restore-entry', {
-          peerUid: key,
+          peerAccountDigest: key,
           hasDrState: !!drState,
           historyLen: drHistory.length,
           cursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
@@ -562,7 +558,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
         map.set(peerKey, record);
         registerContactAliases(peerKey, aliases);
         debugLog('restore-entry', {
-          peerUid: peerKey,
+          peerAccountDigest: peerKey,
           hasDrState: !!record.drState,
           historyLen: Array.isArray(record.drHistory) ? record.drHistory.length : 0,
           cursorTs: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
@@ -731,15 +727,13 @@ function cloneContactSecretRecord(existing) {
 function derivePeerIdentityForEntry(peerKey) {
   const peerAccountDigest = normalizeAccountDigest(peerKey);
   return {
-    peerAccountDigest: peerAccountDigest || null,
-    peerUid: null
+    peerAccountDigest: peerAccountDigest || null
   };
 }
 
-function buildStructuredEntry(peerUid, record) {
-  const identity = derivePeerIdentityForEntry(peerUid);
+function buildStructuredEntry(peerAccountDigest, record) {
+  const identity = derivePeerIdentityForEntry(peerAccountDigest);
   return {
-    peerUid: identity.peerAccountDigest || null,
     peerAccountDigest: identity.peerAccountDigest || null,
     invite: {
       id: record.inviteId || null,
@@ -821,8 +815,7 @@ export function buildContactSecretsSnapshot() {
 function normalizeStructuredEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
   const identity = normalizePeerIdentity({
-    peerAccountDigest: entry.peerAccountDigest || entry.peer_account_digest || null,
-    peerUid: entry.peerUid || entry.peer_uid || null
+    peerAccountDigest: entry.peerAccountDigest || entry.peer_account_digest || null
   });
   if (!identity.key) return null;
   const invite = entry.invite || {};
@@ -1022,14 +1015,14 @@ function normalizeContactSecretUpdate(update = {}) {
   return structured;
 }
 
-export function setContactSecret(peerUid, opts = {}) {
+export function setContactSecret(peerAccountDigest, opts = {}) {
   if (contactSecretsLocked) {
-    const identity = normalizePeerIdentity(peerUid);
-    debugLog('set-skip-locked', { peerUid: identity.key || null, source: opts?.__debugSource || null });
+    const identity = normalizePeerIdentity(peerAccountDigest);
+    debugLog('set-skip-locked', { peerAccountDigest: identity.key || null, source: opts?.__debugSource || null });
     return;
   }
   const structured = normalizeContactSecretUpdate(opts);
-  const { key, aliases } = resolvePeerKey(peerUid);
+  const { key, aliases } = resolvePeerKey(peerAccountDigest);
   if (!key) return;
   const map = ensureMap();
   const existing = map.get(key) || null;
@@ -1062,8 +1055,7 @@ export function setContactSecret(peerUid, opts = {}) {
   registerContactAliases(key, aliases);
   persistContactSecrets();
   debugLog('set', {
-    peerUid: key,
-    peerAccountDigest: normalizeAccountDigest(key) || null,
+    peerAccountDigest: normalizeAccountDigest(key) || key || null,
     role: next.role || null,
     hasDrState: !!next.drState,
     drUpdatedAt: next.drState?.updatedAt || null,
@@ -1075,8 +1067,8 @@ export function setContactSecret(peerUid, opts = {}) {
   });
 }
 
-export function deleteContactSecret(peerUid) {
-  const { key } = resolvePeerKey(peerUid);
+export function deleteContactSecret(peerAccountDigest) {
+  const { key } = resolvePeerKey(peerAccountDigest);
   if (!key) return;
   const map = ensureMap();
   if (map.delete(key)) {
@@ -1085,15 +1077,15 @@ export function deleteContactSecret(peerUid) {
   }
 }
 
-export function getContactSecret(peerUid) {
-  const { key } = resolvePeerKey(peerUid);
+export function getContactSecret(peerAccountDigest) {
+  const { key } = resolvePeerKey(peerAccountDigest);
   if (!key) return null;
   const map = ensureMap();
   return map.get(key) || null;
 }
 
-export function getContactSecretSections(peerUid) {
-  const record = getContactSecret(peerUid);
+export function getContactSecretSections(peerAccountDigest) {
+  const record = getContactSecret(peerAccountDigest);
   if (!record) return null;
   return {
     invite: {

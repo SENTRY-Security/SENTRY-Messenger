@@ -5,36 +5,36 @@
 ## 0. API Endpoint 一覽（iOS 常用）
 - **Auth / OPAQUE**
   - `POST /api/v1/auth/sdm/exchange` — body `{uid, sdmmac, sdmcounter, nonce?}` → `{session, hasMK, wrapped_mk?, accountToken, accountDigest, uidDigest, opaqueServerId}`；一次性 session 60s。
-  - `POST /api/v1/mk/store` — `{session, uidHex, accountToken?, accountDigest?, wrapped_mk}` → 204；首次設定密碼用。
-  - `POST /api/v1/mk/update` — `{uidHex, accountToken, accountDigest, wrapped_mk}` → 204；登入後更改密碼。
+  - `POST /api/v1/mk/store` — `{session, accountDigest, accountToken?, wrapped_mk}` → 204；首次設定密碼用。
+  - `POST /api/v1/mk/update` — `{accountDigest, accountToken, wrapped_mk}` → 204；登入後更改密碼。
   - `POST /api/v1/auth/opaque/register-{init,finish}` — `{accountDigest, request_b64}` / `{accountDigest, record_b64, client_identity?}`。
   - `POST /api/v1/auth/opaque/login-{init,finish}` — `{accountDigest, ke1_b64, context?}` → `{ke2_b64, opaqueSession}`；`{opaqueSession, ke3_b64}` → `{ok, session_key_b64}`。
-  - `POST /api/v1/auth/sdm/debug-kit` — `{uidHex?}` 取得 SDM 偵錯套件（僅開發）。
+  - `POST /api/v1/auth/sdm/debug-kit` — `{uidHex?}` 取得 SDM 偵錯套件（僅開發；唯一保留 UID 的情境）。
 - **Keys / Device / Prekeys**
   - `POST /api/v1/devkeys/fetch` — `{accountToken? accountDigest?}` → `{wrapped_dev}` 或 404。
   - `POST /api/v1/devkeys/store` — `{wrapped_dev, session?, accountToken? accountDigest?}` → 204。
-  - `POST /api/v1/keys/publish` — `{uidHex?, accountToken/accountDigest, bundle:{ik_pub?, spk_pub?, spk_sig?, opks[]}}` → 204。
-  - `POST /api/v1/keys/bundle` — `{peer_uidHex? peer_accountDigest?}` → guest/owner bundle（會消耗 OPK）。
+  - `POST /api/v1/keys/publish` — `{accountToken/accountDigest, bundle:{ik_pub?, spk_pub?, spk_sig?, opks[]}}` → 204。
+  - `POST /api/v1/keys/bundle` — `{peer_accountDigest}` → guest/owner bundle（會消耗 OPK）。
 - **Friends / Contact Secrets**
   - `POST /api/v1/friends/invite` → `{inviteId, secret, prekey_bundle...}`。
   - `POST /api/v1/friends/invite/contact` — `{inviteId, secret, envelope}`（contact snapshot）。
-  - `POST /api/v1/friends/accept` — `{inviteId, secret, contactEnvelope?, guestBundle?, ownerUid?}` → `{owner_contact, guest_bundle, guest_contact, conversation_token, dr_init?}`。
-  - `POST /api/v1/friends/contact/share` — `{inviteId, secret, myUid, envelope, peerUid?, conversationId?, conversationFingerprint?}`。
-  - `POST /api/v1/friends/delete` — `{uidHex, peerUid, accountToken/accountDigest}`。
-  - `POST /api/v1/friends/bootstrap-session` — `{peerUid, uidHex?, roleHint?, inviteId?, accountToken/accountDigest}` → guestBundle + 最新 contact snapshots。
+  - `POST /api/v1/friends/accept` — `{inviteId, secret, contactEnvelope?, guestBundle?, ownerAccountDigest?}` → `{owner_contact, guest_bundle, guest_contact, conversation_token, dr_init?}`。
+  - `POST /api/v1/friends/contact/share` — `{inviteId, secret, envelope, peerAccountDigest?, conversationId?, conversationFingerprint?}`。
+  - `POST /api/v1/friends/delete` — `{peerAccountDigest, accountToken/accountDigest}`。
+  - `POST /api/v1/friends/bootstrap-session` — `{peerAccountDigest, roleHint?, inviteId?, accountToken/accountDigest}` → guestBundle + 最新 contact snapshots。
   - `POST /api/v1/contact-secrets/backup` / `GET /api/v1/contact-secrets/backup?limit=&version=` — 備份 / 取回 contactSecrets snapshot。
 - **Messages / Conversations**
-  - `POST /api/v1/messages/secure` — `{conversation_id, payload_envelope, id?, created_at?, uidHex, accountToken/accountDigest, conversationFingerprint?}`。
-  - `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=` — headers `X-Uid-Hex`, `X-Account-Token`/`X-Account-Digest`, `X-Conversation-Fingerprint?`。
-  - `POST /api/v1/messages` — 傳統媒體/索引（含 `ciphertext_b64`, `aead`, `header`, `convId`, `uidHex`, `accountToken/accountDigest`, `conversationFingerprint?`）。
+  - `POST /api/v1/messages/secure` — `{conversation_id, payload_envelope, id?, created_at?, accountToken/accountDigest, conversationFingerprint?}`。
+  - `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=` — headers `X-Account-Token`/`X-Account-Digest`, `X-Conversation-Fingerprint?`。
+  - `POST /api/v1/messages` — 傳統媒體/索引（含 `ciphertext_b64`, `aead`, `header`, `convId`, `accountToken/accountDigest`, `conversationFingerprint?`）。
   - `GET /api/v1/conversations/:convId/messages` — 文字/媒體列表（舊版，需 account headers）。
   - `POST /api/v1/messages/delete` — `{conversationId, ids?, keys?, accountToken/accountDigest}`。
   - `POST /api/v1/messages/secure/delete-conversation` — `{conversationId, accountToken/accountDigest, conversationFingerprint?}`。
 - **Media / Drive**
-  - `POST /api/v1/media/sign-put` — `{convId, contentType, size?, dir?, direction?, uidHex, accountToken/accountDigest, conversationFingerprint?}` → 上傳 URL + `objectPath`。
-  - `POST /api/v1/media/sign-get` — `{key, uidHex, accountToken/accountDigest, conversationFingerprint?, downloadName?}` → 下載 URL。
+  - `POST /api/v1/media/sign-put` — `{convId, contentType, size?, dir?, direction?, accountToken/accountDigest, conversationFingerprint?}` → 上傳 URL + `objectPath`。
+  - `POST /api/v1/media/sign-get` — `{key, accountToken/accountDigest, conversationFingerprint?, downloadName?}` → 下載 URL。
 - **WebSocket**
-  - `POST /api/v1/ws/token` — `{uidHex, accountToken/accountDigest}` → `{token, expiresAt}`；連線 `/ws` 後先送 `{type:'auth', uid, token}`。
+  - `POST /api/v1/ws/token` — `{accountDigest, accountToken?}` → `{token, expiresAt}`；連線 `/ws` 後先送 `{type:'auth', accountDigest, token}`。
   - 事件：`secure-message`, `contact-share`, `contact-removed`, `contacts-reload`, `presence`（需 `presence-subscribe`），通話信令 `call-*`。
 - **Calls**
   - `POST /api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}`（皆需 account headers）。
@@ -47,20 +47,20 @@
 
 ### 常見請求格式與 Header
 - 所有 REST 皆為 `application/json`，Body 為 JSON；列表查詢可帶 query string。
-- 驗證欄位：`uidHex`（14 hex）、`accountToken` 或 `accountDigest`（64 hex）；Conversation 相關需 `X-Conversation-Fingerprint` header（HMAC-SHA256(conversationToken, accountDigest/uidHex)）。
+- 驗證欄位：`accountDigest`（64 hex） + `accountToken`；UID 僅在 SDM 磁區交換或硬體模擬時使用。Conversation 相關需 `X-Conversation-Fingerprint` header（HMAC-SHA256(conversationToken, accountDigest)）。
 - Media 上傳 `sign-put` 取得 URL 後直傳；回傳的 `upload` 欄位可能包含 `method/headers/fields`（支援直傳與表單）。
-- WebSocket 連線後第一則訊息必須 `{type:'auth', uid, token}`，否則不會處理其他事件。
+- WebSocket 連線後第一則訊息必須 `{type:'auth', accountDigest, token}`，否則不會處理其他事件。
 
 ## 1. 角色與邊界
 - 端到端：所有解密、DR 狀態、主金鑰（MK）都僅存在裝置記憶體／Keychain；後端永遠只見到密文與索引。
-- 雙憑證：大多數 API 需要 `uidHex` + `accountToken` 或 `accountDigest`（請維持相同欄位名稱）。Conversation 相關 API 需額外帶 `X-Conversation-Fingerprint`。
+- 雙憑證：大多數 API 需要 `accountToken` + `accountDigest`，Conversation 相關 API 需額外帶 `X-Conversation-Fingerprint`。
 - 無長期登入：登出或 App 終止時需清除 MK、DR 狀態與快取，並將 `contactSecrets` 寫回 snapshot 以便下次手動載入。
 
 ## 2. 本地狀態與儲存
 - 內存（必要）：MK 明文、DR state、裝置私鑰、未上傳的訊息佇列。
 - Keychain（建議）：`wrapped_mk`、`wrapped_dev`、最新 `contactSecrets` snapshot checksum；避免存 MK 明文。
 - 檔案（加密後）：`contactSecrets` snapshot（JSON 以 MK 衍生密鑰 AES-GCM 包裝）。
-- `contactSecrets` v2 結構（Map<peerUid, record>）：
+- `contactSecrets` v2 結構（Map<peerAccountDigest, record>）：
   - `inviteId`, `secret`, `role`（owner/guest）
   - `conversationToken`、`conversationId`、`conversationDrInit`
   - `drState`（rk/ckS/ckR/Ns/Nr/ratchet pub/priv…，均為 b64）
@@ -79,35 +79,35 @@
 使用 `accountDigest` + `opaqueServerId` 進行 OPAQUE 認證（前端產生 KE1/KE3，後端代理 Worker）。成功後可刷新 `accountToken/accountDigest`。
 
 3) **MK 處理**  
-- 首次：產生 32-byte MK → Argon2id(m=64MB,t=3,p=1) 派生 KEK → AES-GCM 包裝成 `wrapped_mk` → `POST /api/v1/mk/store {session, uidHex, accountToken, accountDigest, wrapped_mk}`（204 成功）。
+- 首次：產生 32-byte MK → Argon2id(m=64MB,t=3,p=1) 派生 KEK → AES-GCM 包裝成 `wrapped_mk` → `POST /api/v1/mk/store {session, accountToken, accountDigest, wrapped_mk}`（204 成功）。
 - 已有：Argon2id + AES-GCM 解封 `wrapped_mk`，得 MK 明文。
 
 4) **裝置金鑰與 Prekeys**  
 - 備份取得：`POST /api/v1/devkeys/fetch {accountToken/accountDigest}`（404 表示缺）。解包 `wrapped_dev`（AES-GCM with MK）取得 devicePriv。  
-- 無備份：生成 IK/SPK（Ed25519->X25519）+ 100 OPKs → `POST /api/v1/keys/publish {uidHex, bundle}`（204）；將 `wrapped_dev` 存回 `/api/v1/devkeys/store`（session 僅首次必填）。  
+- 無備份：生成 IK/SPK（Ed25519->X25519）+ 100 OPKs → `POST /api/v1/keys/publish {accountDigest/accountToken, bundle}`（204）；將 `wrapped_dev` 存回 `/api/v1/devkeys/store`（session 僅首次必填）。  
 - 補貨：已備份時解包 devicePriv，`/keys/publish` 先同步 IK/SPK，再批次生成 20 OPKs 上傳，成功後更新 `wrapped_dev`。允許 409 fallback（缺 IK/SPK 時帶完整 bundle）。
 
 5) **登入交棒與儲存**  
 MK 明文、devicePriv 僅存 RAM；`wrapped_mk`、`wrapped_dev`、最新 `contactSecrets` snapshot 可存 Keychain。失敗時務必清除 MK/DR。
 
 ## 4. 好友邀請與 Conversation Token
-- **建立邀請**：`POST /api/v1/friends/invite {uidHex, accountToken/accountDigest, prekeyBundle?, ttlSeconds?}` → 回 `{inviteId, secret, ownerUid, prekey_bundle}`。同時將自己的 contact snapshot 以 invite secret AES-GCM 包裝後呼叫 `/api/v1/friends/invite/contact`。
-- **接受邀請**：`POST /api/v1/friends/accept {inviteId, secret, contactEnvelope?, guestBundle?, ownerUid?}` → 回 `{owner_contact, guest_bundle, guest_contact, conversation_token, dr_init?}`。成功後寫入 `contactSecrets`（role=guest / owner）。
-- **聯絡同步**：`POST /api/v1/friends/contact/share {inviteId, secret, myUid, envelope, peerUid?, conversationId?, conversationFingerprint?}` 更新最新 profile/conversation token；WS 事件 `contact-share` 會推播。
-- **Bootstrap 缺會話**：`POST /api/v1/friends/bootstrap-session {peerUid, roleHint?, inviteId?}` → guestBundle + 最新 contact snapshots，用於 DR 缺失時重建。
+- **建立邀請**：`POST /api/v1/friends/invite {accountToken/accountDigest, prekeyBundle?, ttlSeconds?}` → 回 `{inviteId, secret, ownerAccountDigest, prekey_bundle}`。同時將自己的 contact snapshot 以 invite secret AES-GCM 包裝後呼叫 `/api/v1/friends/invite/contact`。
+- **接受邀請**：`POST /api/v1/friends/accept {inviteId, secret, contactEnvelope?, guestBundle?, ownerAccountDigest?}` → 回 `{owner_contact, guest_bundle, guest_contact, conversation_token, dr_init?}`。成功後寫入 `contactSecrets`（role=guest / owner）。
+- **聯絡同步**：`POST /api/v1/friends/contact/share {inviteId, secret, envelope, peerAccountDigest?, conversationId?, conversationFingerprint?}` 更新最新 profile/conversation token；WS 事件 `contact-share` 會推播。
+- **Bootstrap 缺會話**：`POST /api/v1/friends/bootstrap-session {peerAccountDigest, roleHint?, inviteId?}` → guestBundle + 最新 contact snapshots，用於 DR 缺失時重建。
 - **邀請格式**：contact envelope 為 `{iv, ct}`（AES-GCM），secret / inviteId 以 URL-safe b64。
-- **Conversation Token / Id**：由 invite secret HKDF(SHA-256, salt=32zero, info='sentry/conv-token') 得 32-byte token → SHA-256 → conversationId（前 44 chars b64url）。`conversationFingerprint` = HMAC-SHA256(token, accountDigest 或 uid)。
+- **Conversation Token / Id**：由 invite secret HKDF(SHA-256, salt=32zero, info='sentry/conv-token') 得 32-byte token → SHA-256 → conversationId（前 44 chars b64url）。`conversationFingerprint` = HMAC-SHA256(token, accountDigest)。
 
 ## 5. Secure Conversation 與 DR
 - X3DH：Initiator `x3dhInitiate(devicePriv, peerBundle)`；Responder `x3dhRespond(devicePriv, guestBundle)`。兩端持有 DR state：`rk, ckS/ckR, Ns/Nr, PN, myRatchetPriv/Pub, theirRatchetPub, pendingSendRatchet, skippedKeys`.
 - Control message：`session-init` / `session-ack`（安全對話準備），狀態機 `idle → pending → ready/failed`，逾時 10s 會重送 init；連線前先檢查是否已有 receiver-ready（ckR存在）。
 - DR 快照：每則訊息可寫入 `drHistory`（messageKey_b64、snapshot、snapshotAfter、messageId、ts），重播時可直接用 message key 解密並回填 snapshot。
-- 送訊前必須 `ensureSecureConversationReady(peerUidHex, reason)`，缺鏈時觸發 bootstrap（guestBundle 或 prekeys bundle）。
+- 送訊前必須 `ensureSecureConversationReady(peerAccountDigest, reason)`，缺鏈時觸發 bootstrap（guestBundle 或 prekeys bundle）。
 
 ## 6. 訊息與附件流程
 ### 6.1 API
-- `POST /api/v1/messages/secure` body `{conversation_id, payload_envelope:{v,iv_b64,payload_b64}, id?, created_at?, uidHex, accountToken/accountDigest, conversationFingerprint?}` → {ok:true, id}。`payload_envelope` 是「conversation token AES-GCM」包的訊息物件。
-- `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=` headers `X-Uid-Hex`, `X-Account-Token`/`X-Account-Digest`, `X-Conversation-Fingerprint`.
+- `POST /api/v1/messages/secure` body `{conversation_id, payload_envelope:{v,iv_b64,payload_b64}, id?, created_at?, accountToken/accountDigest, conversationFingerprint?}` → {ok:true, id}。`payload_envelope` 是「conversation token AES-GCM」包的訊息物件。
+- `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=` headers `X-Account-Token`/`X-Account-Digest`, `X-Conversation-Fingerprint`.
 - `POST /api/v1/messages/secure/delete-conversation` body `buildAccountPayload({conversationId, conversationFingerprint})`。
 - 傳統媒體索引：`POST /api/v1/messages`（legacy，含 aead/header）仍可用於 R2 物件索引。
 
@@ -130,26 +130,26 @@ MK 明文、devicePriv 僅存 RAM；`wrapped_mk`、`wrapped_dev`、最新 `conta
 
 ### 6.5 附件 / Drive
 - 加密：MK 派生 AES-GCM；`encryptAndPutWithProgress` 產生 envelope（含 key、iv、aead、sha256）；可附 preview（縮圖同流程）。
-- 上傳：`POST /api/v1/media/sign-put {convId, contentType, size?, dir?, direction?, uidHex, accountToken/accountDigest, conversationFingerprint?}` → {upload:{url,method,headers/fields}, objectPath, expiresIn}；將密文 PUT 至 R2。Drive 目錄命名 `drive-<accountDigest>`，dir 可多層。
-- 索引訊息：`POST /api/v1/messages {convId, type:'media', ciphertext_b64, aead:'aes-256-gcm', header:{obj, size, preview?, dir, key_type?}, uidHex, accountToken/accountDigest, conversationFingerprint?}` 或直接寫入 secure payload meta.media。
-- 下載：`POST /api/v1/media/sign-get {key, uidHex, accountToken/accountDigest, conversationFingerprint?}` → 短期 GET URL；下載後用 envelope 解密。支援共享金鑰（`key_type`）與 MK。
+- 上傳：`POST /api/v1/media/sign-put {convId, contentType, size?, dir?, direction?, accountToken/accountDigest, conversationFingerprint?}` → {upload:{url,method,headers/fields}, objectPath, expiresIn}；將密文 PUT 至 R2。Drive 目錄命名 `drive-<accountDigest>`，dir 可多層。
+- 索引訊息：`POST /api/v1/messages {convId, type:'media', ciphertext_b64, aead:'aes-256-gcm', header:{obj, size, preview?, dir, key_type?}, accountToken/accountDigest, conversationFingerprint?}` 或直接寫入 secure payload meta.media。
+- 下載：`POST /api/v1/media/sign-get {key, accountToken/accountDigest, conversationFingerprint?}` → 短期 GET URL；下載後用 envelope 解密。支援共享金鑰（`key_type`）與 MK。
 - 清除：`POST /api/v1/messages/delete {conversationId, ids?, keys?, accountToken/accountDigest}`。
  - 伺服端限制：預設最大上傳 500MB（`UPLOAD_MAX_BYTES`），Drive 系統資料夾配額預設 3GB（`DRIVE_QUOTA_BYTES`）；超量會回 HTTP 413 或拒絕。
 
 ## 7. WebSocket 實時事件
-- 取得 token：`POST /api/v1/ws/token {uidHex, accountToken/accountDigest}` → `{token}`。
-- 連線 `/ws`，先送 `{type:'auth', uid, token}`，回 `{type:'auth', ok, exp}`。
+- 取得 token：`POST /api/v1/ws/token {accountDigest, accountToken?}` → `{token}`。
+- 連線 `/ws`，先送 `{type:'auth', accountDigest, token}`，回 `{type:'auth', ok, exp}`。
 - 支援訊息：
-  - `secure-message`: {conversationId, preview, ts, count, senderUid}（收到後去拉列表）
-  - `contact-share`: {fromUid, inviteId, envelope}
-  - `contact-removed`: {peerUid}
+  - `secure-message`: {conversationId, preview, ts, count, senderAccountDigest}（收到後去拉列表）
+  - `contact-share`: {fromAccountDigest, inviteId, envelope}
+  - `contact-removed`: {peerAccountDigest}
   - `contacts-reload`
-  - `presence`: 需先送 `{type:'presence-subscribe', uids:[...]}`；server 會推播 `online` 清單
-  - 通話信令：`call-invite/ringing/accept/reject/cancel/busy/end/ice-candidate/call-media-update/offer/answer`，每則含 `callId, fromUid, toUid, payload, traceId?`
+  - `presence`: 需先送 `{type:'presence-subscribe', digests:[...]}`；server 會推播 `online` 清單
+  - 通話信令：`call-invite/ringing/accept/reject/cancel/busy/end/ice-candidate/call-media-update/offer/answer`，每則含 `callId, fromAccountDigest, toAccountDigest, payload, traceId?`
 - Server 會鎖同時通話：若對方忙或自己已有 call lock，invite 會回 `CALL_TARGET_BUSY/CALL_ALREADY_IN_PROGRESS`。
 
 ## 8. 通話（Voice/Video）
-- API：`/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}`，`GET /api/v1/calls/:id`。皆需 `uidHex + accountToken/accountDigest`。
+- API：`/api/v1/calls/{invite,cancel,ack,report-metrics,turn-credentials}`，`GET /api/v1/calls/:id`。皆需 `accountToken/accountDigest`。
 - Signaling 走 WebSocket，並寫入 `call_events`：caller/ callee 皆會收到 mirror payload。
 - Call Key Envelope（Swift `docs/ios/CallSchemas.swift`）：
   - `CallKeyEnvelope`: `{type:'call-key-envelope', version, callId(UUID), epoch, cmkSalt, cmkProof, media:CallMediaDescriptor, capabilities?, metadata?, createdAt, expiresAt?}`
@@ -226,7 +226,7 @@ MK 明文、devicePriv 僅存 RAM；`wrapped_mk`、`wrapped_dev`、最新 `conta
   - Error Modal：顯示 API 失敗或解密錯誤，提供「重試 / 回報」；DR 解密錯誤可提示「重播訊息」。
 
 ## 12. 實作格式備忘
-- **Conversation Fingerprint**：`fingerprint = HMAC-SHA256(conversationToken, accountDigest 或 uidHex)`（base64url）；REST header `X-Conversation-Fingerprint`。
+- **Conversation Fingerprint**：`fingerprint = HMAC-SHA256(conversationToken, accountDigest)`（base64url）；REST header `X-Conversation-Fingerprint`。
 - **Payload Envelope（secure message）**：
   - 外層：`{v:1, iv_b64, payload_b64}` 用 conversation token AES-GCM 包裝。
   - 內層 payload：`{hdr_b64, ct_b64, meta}`；`hdr_b64` 是 DR header（含 `dr, ek_pub_b64, pn, n, iv_b64`），`ct_b64` 是 DR ciphertext（b64url），`meta` 自由欄位（至少有 `ts`，可含 `msg_type`, `media`, `sender_fingerprint`）。

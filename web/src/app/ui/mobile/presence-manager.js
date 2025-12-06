@@ -45,8 +45,8 @@ export function createPresenceManager(options) {
     }
   }
 
-  function setContactPresence(uid, online) {
-    const identity = normalizePeerIdentity(uid);
+  function setContactPresence(peerAccountDigest, online) {
+    const identity = normalizePeerIdentity(peerAccountDigest);
     const key = identity.key;
     if (!key) return;
     if (online) {
@@ -68,16 +68,16 @@ export function createPresenceManager(options) {
     onlineContacts.clear();
   }
 
-  function updateContactPresenceDom(uid, online) {
+  function updateContactPresenceDom(peerAccountDigest, online) {
     if (!contactsListEl) return;
-    const item = contactsListEl.querySelector(`.contact-item[data-peer-uid="${uid}"]`);
+    const item = contactsListEl.querySelector(`.contact-item[data-peer-account-digest="${peerAccountDigest}"]`);
     if (!item) return;
     const dot = item.querySelector('.presence-dot');
     if (dot) dot.classList.toggle('online', !!online);
   }
 
-  function removePresenceForContact(uid) {
-    const identity = normalizePeerIdentity(uid);
+  function removePresenceForContact(peerAccountDigest) {
+    const identity = normalizePeerIdentity(peerAccountDigest);
     const key = identity.key;
     if (!key) return;
     if (onlineContacts.has(key)) {

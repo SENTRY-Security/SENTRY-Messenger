@@ -10,7 +10,9 @@ export function encodeFriendInvite(invite = {}) {
   const secret = String(invite.secret || '').trim();
   if (!id || !secret) return '';
   const payload = { inviteId: id, secret };
-  if (invite.ownerUid) payload.ownerUid = String(invite.ownerUid || '').trim();
+  if (invite.ownerAccountDigest || invite.owner_account_digest) {
+    payload.ownerAccountDigest = String(invite.ownerAccountDigest || invite.owner_account_digest || '').trim();
+  }
   if (invite.prekeyBundle) payload.prekeyBundle = invite.prekeyBundle;
   if (invite.expiresAt) payload.expiresAt = Number(invite.expiresAt);
   try {
@@ -35,8 +37,9 @@ export function decodeFriendInvite(input) {
     const secret = String(input.secret || input.sig || '').trim();
     if (!inviteId || !secret) return null;
     const result = { inviteId, secret };
-    if (input.ownerUid || input.owner_uid) {
-      result.ownerUid = String(input.ownerUid || input.owner_uid || '').trim();
+    if (input.ownerAccountDigest || input.owner_account_digest) {
+      const owner = String(input.ownerAccountDigest || input.owner_account_digest || '').trim();
+      if (owner) result.ownerAccountDigest = owner;
     }
     if (input.prekeyBundle || input.prekey_bundle) {
       result.prekeyBundle = input.prekeyBundle || input.prekey_bundle;
@@ -88,8 +91,11 @@ export function decodeFriendInvite(input) {
   const secret = parsedUrl.searchParams.get('secret') || parsedUrl.searchParams.get('sig') || '';
   if (inviteId && secret) {
     const result = { inviteId, secret };
-    const ownerUid = parsedUrl.searchParams.get('ownerUid') || parsedUrl.searchParams.get('owner_uid') || '';
-    if (ownerUid) result.ownerUid = ownerUid.trim();
+    const ownerDigest =
+      parsedUrl.searchParams.get('ownerAccountDigest')
+      || parsedUrl.searchParams.get('owner_account_digest')
+      || '';
+    if (ownerDigest) result.ownerAccountDigest = ownerDigest.trim();
     return result;
   }
 

@@ -39,9 +39,9 @@ function pruneCallLocks() {
   const now = Date.now();
   if (now - lastCallLockSweep < 5000) return;
   lastCallLockSweep = now;
-  for (const [uid, entry] of callLocks) {
+  for (const [accountDigest, entry] of callLocks) {
     if (!entry || entry.expiresAt <= now) {
-      callLocks.delete(uid);
+      callLocks.delete(accountDigest);
     }
   }
 }
@@ -485,12 +485,12 @@ export function setupWebSocket(server) {
       const senderDigest = canonicalAccountDigest(fromAccountDigest);
       broadcastByDigest(ownerDigest, { type: 'invite-accepted', inviteId, fromAccountDigest: senderDigest, ts: Date.now() });
     },
-    notifyContactsReload(_uid, accountDigest = null) {
+    notifyContactsReload(_unused, accountDigest = null) {
       const digest = canonicalAccountDigest(accountDigest || null);
       if (!digest) return;
       broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    sendContactShare(_targetUid, { fromAccountDigest, inviteId, envelope, targetAccountDigest }) {
+    sendContactShare(_unused, { fromAccountDigest, inviteId, envelope, targetAccountDigest }) {
       const digest = canonicalAccountDigest(targetAccountDigest);
       if (!digest || !inviteId || !envelope) return;
       const senderDigest = canonicalAccountDigest(fromAccountDigest);

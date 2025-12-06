@@ -311,7 +311,7 @@ export function initMessagesPane({
       const nickname = escapeHtml(c?.nickname || `好友 ${digest.slice(-4)}`);
       return `
         <label class="group-builder-item" style="display:flex;align-items:center;gap:10px;padding:8px;border:1px solid rgba(148,163,184,0.4);border-radius:10px;cursor:pointer;">
-          <input type="checkbox" data-uid="${digest}" data-digest="${escapeHtml(digest)}" style="width:16px;height:16px;"/>
+          <input type="checkbox" data-peer-account-digest="${digest}" data-digest="${escapeHtml(digest)}" style="width:16px;height:16px;"/>
           <div style="display:flex;flex-direction:column;gap:2px;">
             <span style="font-size:13px;font-weight:600;">${nickname}</span>
             <span style="font-size:11px;color:#64748b;">${digest}</span>
@@ -325,13 +325,13 @@ export function initMessagesPane({
     if (!GROUPS_ENABLED) return;
     if (!groupBuilderEl) return;
     const nameInput = groupBuilderEl.querySelector('.group-builder-name');
-    const checkboxes = groupBuilderEl.querySelectorAll('input[type="checkbox"][data-uid]');
+    const checkboxes = groupBuilderEl.querySelectorAll('input[type="checkbox"][data-peer-account-digest]');
     const selected = [];
     checkboxes.forEach((cb) => {
       if (cb.checked) {
-        const digest = normalizePeerKey(cb.getAttribute('data-digest') || cb.getAttribute('data-uid') || '');
+        const digest = normalizePeerKey(cb.getAttribute('data-digest') || cb.getAttribute('data-peer-account-digest') || '');
         if (!digest) return;
-        selected.push({ accountDigest: digest, uid: digest });
+        selected.push({ accountDigest: digest });
       }
     });
     const nameVal = (nameInput?.value || '').trim();
@@ -714,13 +714,13 @@ export function initMessagesPane({
     const contacts = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
     const seen = new Set();
     for (const contact of contacts) {
-      const peerUid = normalizePeerKey(contact?.peerAccountDigest ?? contact?.peer_account_digest ?? contact?.accountDigest ?? contact?.account_digest);
+      const peerDigest = normalizePeerKey(contact?.peerAccountDigest ?? contact?.peer_account_digest ?? contact?.accountDigest ?? contact?.account_digest);
       const conversationId = contact?.conversation?.conversation_id;
       const tokenB64 = contact?.conversation?.token_b64;
-      if (!peerUid || !conversationId || !tokenB64) continue;
+      if (!peerDigest || !conversationId || !tokenB64) continue;
       seen.add(conversationId);
       upsertConversationThread({
-        peerAccountDigest: peerUid,
+        peerAccountDigest: peerDigest,
         conversationId,
         tokenB64,
         nickname: contact.nickname,
@@ -1327,7 +1327,7 @@ export function initMessagesPane({
       deleteBtn?.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        handleConversationDelete({ conversationId: thread.conversationId, peerUid: peerDigest, element: li });
+        handleConversationDelete({ conversationId: thread.conversationId, peerAccountDigest: peerDigest, element: li });
       });
 
       li.addEventListener('click', (e) => {
@@ -1340,7 +1340,7 @@ export function initMessagesPane({
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveConversation(peerDigest); }
         if (e.key === 'Delete') {
           e.preventDefault();
-          handleConversationDelete({ conversationId: thread.conversationId, peerUid: peerDigest, element: li });
+          handleConversationDelete({ conversationId: thread.conversationId, peerAccountDigest: peerDigest, element: li });
         }
       });
 
@@ -2515,8 +2515,8 @@ export function initMessagesPane({
     return true;
   }
 
-  function handleConversationDelete({ conversationId, peerUid, element }) {
-    const key = normalizePeerKey(peerUid);
+  function handleConversationDelete({ conversationId, peerAccountDigest, element }) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
     const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
     const nickname = contactEntry?.nickname || `好友 ${key.slice(-4)}`;
@@ -2610,19 +2610,19 @@ export function initMessagesPane({
       if (normalizedToken) convEntry.token_b64 = normalizedToken;
     }
 
-    const peerUid = convEntry.peerAccountDigest;
-    if (!peerUid) {
+    const peerDigest = convEntry.peerAccountDigest;
+    if (!peerDigest) {
       log({ secureMessageUnknownPeer: convId });
       return;
     }
 
-    const contactEntry = sessionStore.contactIndex?.get?.(peerUid) || null;
-    const nickname = contactEntry?.nickname || `好友 ${peerUid.slice(-4)}`;
+    const contactEntry = sessionStore.contactIndex?.get?.(peerDigest) || null;
+    const nickname = contactEntry?.nickname || `好友 ${peerDigest.slice(-4)}`;
     const avatar = contactEntry?.avatar || null;
     const tokenB64 = convEntry.token_b64 || contactEntry?.conversation?.token_b64 || null;
 
     const thread = upsertConversationThread({
-      peerAccountDigest: peerUid,
+      peerAccountDigest: peerDigest,
       conversationId: convId,
       tokenB64,
       nickname,
@@ -2640,7 +2640,7 @@ export function initMessagesPane({
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
     if (normalizedControlType) {
       handleSecureConversationControlMessage({
-        peerAccountDigest: peerUid,
+        peerAccountDigest: peerDigest,
         messageType: normalizedControlType,
         direction: isSelf ? 'outgoing' : 'incoming',
         source: 'ws:message-new'
@@ -2658,7 +2658,7 @@ export function initMessagesPane({
     if (messageId) thread.lastMessageId = messageId;
 
     const state = getMessageState();
-    const active = state.conversationId === convId && state.activePeerDigest === peerUid;
+    const active = state.conversationId === convId && state.activePeerDigest === peerDigest;
     const onMessagesTab = getCurrentTab?.() === 'messages';
 
     if (isSelf) {
@@ -2691,9 +2691,9 @@ export function initMessagesPane({
     const toastPreview = buildConversationSnippet(previewRaw) || '有新訊息';
     const toastMessage = toastPreview ? `${nickname}：${toastPreview}` : `${nickname} 有新訊息`;
     const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
-    const initialsToast = initialsFromName(nickname, peerUid).slice(0, 2);
+    const initialsToast = initialsFromName(nickname, peerDigest).slice(0, 2);
     showToast?.(toastMessage, {
-      onClick: () => openConversationFromToast({ peerAccountDigest: peerUid, convId, tokenB64 }),
+      onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64 }),
       avatarUrl: avatarUrlToast,
       avatarInitials: initialsToast,
       subtitle: formatTimestamp(tsRaw)
@@ -2701,8 +2701,8 @@ export function initMessagesPane({
   }
 
   function handleContactOpenConversation(detail) {
-    const peerUid = normalizePeerKey(detail?.peerAccountDigest);
-    if (!peerUid) return;
+    const peerDigest = normalizePeerKey(detail?.peerAccountDigest);
+    if (!peerDigest) return;
     syncConversationThreadsFromContacts();
     const conversation = detail?.conversation;
     if (conversation?.conversation_id && conversation?.token_b64) {
@@ -2712,8 +2712,8 @@ export function initMessagesPane({
         ...prev,
         conversationId: conversation.conversation_id,
         conversationToken: conversation.token_b64,
-        peerAccountDigest: peerUid,
-        nickname: prev.nickname || detail?.nickname || `好友 ${peerUid.slice(-4)}`,
+        peerAccountDigest: peerDigest,
+        nickname: prev.nickname || detail?.nickname || `好友 ${peerDigest.slice(-4)}`,
         avatar: prev.avatar || detail?.avatar || null,
         lastMessageText: typeof prev.lastMessageText === 'string' ? prev.lastMessageText : '',
         lastMessageTs: typeof prev.lastMessageTs === 'number' ? prev.lastMessageTs : null,
@@ -2724,7 +2724,7 @@ export function initMessagesPane({
       });
     }
     switchTab?.('messages');
-    setActiveConversation(peerUid);
+    setActiveConversation(peerDigest);
   }
 
   function openConversationFromToast({ peerAccountDigest, convId, tokenB64 }) {

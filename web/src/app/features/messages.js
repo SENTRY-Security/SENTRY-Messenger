@@ -382,7 +382,7 @@ export async function listSecureAndDecrypt(params = {}) {
   let fingerprintPeer = null;
   let fingerprintSelf = null;
   try {
-    const peerFingerprintSource = identity.accountDigest || identity.uid || peerKey;
+    const peerFingerprintSource = identity.accountDigest || peerKey;
     if (peerFingerprintSource) {
       fingerprintPeer = await deps.computeConversationFingerprint(tokenB64, peerFingerprintSource);
     }

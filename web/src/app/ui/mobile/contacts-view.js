@@ -88,7 +88,7 @@ export function initContactsView(options) {
 
       const li = document.createElement('li');
       li.className = 'contact-item';
-      li.dataset.peerUid = key;
+      li.dataset.peerAccountDigest = key;
       if (c.msgId) li.dataset.msgId = String(c.msgId);
       li.innerHTML = `
         <div class="item-content">
@@ -107,7 +107,7 @@ export function initContactsView(options) {
       deleteBtn?.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        confirmDeleteContact({ peerUid: key, element: li, name });
+        confirmDeleteContact({ peerAccountDigest: key, element: li, name });
       });
 
       li.addEventListener('click', (e) => {
@@ -117,7 +117,6 @@ export function initContactsView(options) {
           return;
         }
         const detail = {
-          peerUid: key,
           peerAccountDigest: key,
           nickname: name,
           avatar: c?.avatar || null,
@@ -159,8 +158,8 @@ export function initContactsView(options) {
     return true;
   }
 
-  function removeContactState(peerUid, { notifyPeer = true } = {}) {
-    const key = contactKey(peerUid);
+  function removeContactState(peerAccountDigest, { notifyPeer = true } = {}) {
+    const key = contactKey(peerAccountDigest);
     if (!key) return false;
     let mutated = false;
     const idx = sessionStore.contactState.findIndex((c) => {
@@ -194,7 +193,7 @@ export function initContactsView(options) {
     }
     if (mutated && notifyPeer) {
       try {
-        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: key, peerAccountDigest: key, notifyPeer: true } }));
+        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerAccountDigest: key, notifyPeer: true } }));
       } catch (err) {
         log({ contactRemovedEventError: err?.message || err });
       }
@@ -202,22 +201,22 @@ export function initContactsView(options) {
     return mutated;
   }
 
-  function removeContactLocal(peerUid) {
-    removeContactState(peerUid, { notifyPeer: true });
+  function removeContactLocal(peerAccountDigest) {
+    removeContactState(peerAccountDigest, { notifyPeer: true });
   }
 
-  function showDeleteForContact(peerUid) {
-    const key = contactKey(peerUid);
+  function showDeleteForContact(peerAccountDigest) {
+    const key = contactKey(peerAccountDigest);
     if (!key || !contactsListEl) return;
     contactsListEl.querySelectorAll('.contact-item').forEach((item) => {
       if (!item || !item.classList) return;
-      if (item.dataset.peerUid === key) item.classList.add('show-delete');
+      if (item.dataset.peerAccountDigest === key) item.classList.add('show-delete');
       else item.classList.remove('show-delete');
     });
   }
 
-  function confirmDeleteContact({ peerUid, element, name }) {
-    const key = contactKey(peerUid);
+  function confirmDeleteContact({ peerAccountDigest, element, name }) {
+    const key = contactKey(peerAccountDigest);
     if (!key) return;
     modal.showConfirmModal({
       title: '刪除好友',
@@ -347,8 +346,8 @@ export function initContactsView(options) {
     contactsScrollEl.addEventListener('touchcancel', handleTouchEnd, { passive: true });
   }
 
-  function scheduleDrBootstrap(peerUid, conversation) {
-    const key = contactKey(peerUid);
+  function scheduleDrBootstrap(peerAccountDigest, conversation) {
+    const key = contactKey(peerAccountDigest);
     if (!key || !conversation) return;
     const entry = sessionStore.contactIndex?.get?.(key) || null;
     const entryRole = typeof entry?.secretRole === 'string' ? entry.secretRole.toLowerCase() : null;
@@ -389,8 +388,7 @@ export function initContactsView(options) {
       }
       const normalizedEntry = {
         ...entry,
-        peerAccountDigest: key,
-        peerUid: key
+        peerAccountDigest: key
       };
       contactIndex.set(key, normalizedEntry);
       const conv = entry?.conversation;
@@ -398,7 +396,6 @@ export function initContactsView(options) {
         conversationIndex.set(conv.conversation_id, {
           token_b64: conv.token_b64,
           peerAccountDigest: key,
-          peerUid: key,
           dr_init: conv.dr_init || null,
           secretRole: entry?.secretRole || entry?.secret_role || null
         });
@@ -417,7 +414,7 @@ export function initContactsView(options) {
     for (const peer of prevPeers) {
       if (peer && !currentPeers.has(peer)) {
         try {
-          document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: peer, peerAccountDigest: peer, notifyPeer: false } }));
+          document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerAccountDigest: peer, notifyPeer: false } }));
         } catch (err) {
           log({ contactRemovedEventError: err?.message || err, peer });
         }
@@ -427,8 +424,16 @@ export function initContactsView(options) {
     presenceManager.sendPresenceSubscribe();
   }
 
-  async function addContactEntry({ peerUid, peerAccountDigest, nickname, avatar, conversation, contactSecret, inviteId, secretRole }) {
-    const key = contactKey({ peerAccountDigest, peerUid });
+  async function addContactEntry({
+    peerAccountDigest,
+    nickname,
+    avatar,
+    conversation,
+    contactSecret,
+    inviteId,
+    secretRole
+  } = {}) {
+    const key = contactKey(peerAccountDigest);
     if (!key) return;
     const selfDigest = (getAccountDigest() || '').toUpperCase();
     if (selfDigest && key === selfDigest) {
@@ -454,7 +459,6 @@ export function initContactsView(options) {
     } : null;
 
     const contact = {
-      peerUid: key,
       peerAccountDigest: key,
       nickname: nickname || `好友 ${key.slice(-4)}`,
       avatar: avatar || null,
@@ -479,7 +483,6 @@ export function initContactsView(options) {
         conversationIndex.set(entry.conversation.conversation_id, {
           token_b64: entry.conversation.token_b64,
           peerAccountDigest: key,
-          peerUid: key,
           dr_init: entry.conversation.dr_init || null,
           secretRole: entry.secretRole || entry.secret_role || null
         });
@@ -496,26 +499,25 @@ export function initContactsView(options) {
       renderContacts();
       presenceManager.sendPresenceSubscribe();
       updateStats?.();
-      emitContactEntryUpdated(entry, { peerUid: key, peerAccountDigest: key, isNew: existingIndex < 0 });
+      emitContactEntryUpdated(entry, { peerAccountDigest: key, isNew: existingIndex < 0 });
     } catch (err) {
       log({ contactAddError: err?.message || err });
     }
   }
 
-  function emitContactEntryUpdated(entry, { peerUid, peerAccountDigest, isNew } = {}) {
-    const key = contactKey(peerAccountDigest || peerUid);
+  function emitContactEntryUpdated(entry, { peerAccountDigest, isNew } = {}) {
+    const key = contactKey(peerAccountDigest);
     if (!key) return;
     try {
       document.dispatchEvent(new CustomEvent('contacts:entry-updated', {
         detail: {
-          peerUid: key,
           peerAccountDigest: key,
           isNew: !!isNew,
           entry
         }
       }));
     } catch (err) {
-      log({ contactEntryUpdateEventError: err?.message || err, peerUid: key });
+      log({ contactEntryUpdateEventError: err?.message || err, peerAccountDigest: key });
     }
   }
 
@@ -523,14 +525,14 @@ export function initContactsView(options) {
 
   document.addEventListener('contacts:show-delete', (event) => {
     const detail = event?.detail || {};
-    const targetPeer = contactKey(detail.peerAccountDigest || detail.peerUid || detail.peer_uid || detail.peer || detail.uid);
+    const targetPeer = contactKey(detail.peerAccountDigest || detail.peer_account_digest || detail.peer || detail.peerDigest);
     showDeleteForContact(targetPeer);
   });
 
   document.addEventListener('contacts:removed', (event) => {
     const detail = event?.detail || {};
     if (!detail || detail.notifyPeer) return;
-    const peer = contactKey(detail.peerAccountDigest || detail.peerUid || detail.peer_uid || detail.peer || detail.uid);
+    const peer = contactKey(detail.peerAccountDigest || detail.peer_account_digest || detail.peer || detail.peerDigest);
     if (!peer) return;
     removeContactState(peer, { notifyPeer: false });
   });

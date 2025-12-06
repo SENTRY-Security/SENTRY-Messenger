@@ -15,7 +15,7 @@
 // - ACCOUNT_DIGEST: hex digest identifying the account (HMAC(uid))
 // - MK_RAW: Uint8Array | null (decrypted MK, memory-only)
 // - DEVICE_PRIV: { ik_priv_b64, ik_pub_b64, spk_priv_b64, spk_pub_b64, spk_sig_b64, next_opk_id } | null
-// - DR_SESS: Map(peer_uidHex -> DR state object)
+// - DR_SESS: Map(peer_accountDigest -> DR state object)
 // - OPAQUE_SERVER_ID: server identity string for OPAQUE handshake (optional)
 
 // --- primitives ---
