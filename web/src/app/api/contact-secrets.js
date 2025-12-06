@@ -5,7 +5,6 @@ import { log } from '../core/log.js';
 function buildAccountHeaders() {
   const payload = buildAccountPayload();
   const headers = {};
-  if (payload.uidHex) headers['X-Uid-Hex'] = payload.uidHex;
   if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
   if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
   return headers;

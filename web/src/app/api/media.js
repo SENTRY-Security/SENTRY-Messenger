@@ -5,19 +5,17 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchJSON } from '../core/http.js';
-import { getUidHex, getAccountToken, getAccountDigest, buildAccountPayload } from '../core/store.js';
+import { getAccountToken, getAccountDigest, buildAccountPayload } from '../core/store.js';
 
 /**
  * Request a presigned PUT for uploading an encrypted object to R2.
  * @param {{ convId: string, contentType: string, dir?: string, conversationFingerprint?: string }} p
  * @returns {Promise<{ r: Response, data: any }>} data typically { upload:{url,key,fields?,headers?,method?}, objectPath, expiresIn }
  */
-export async function signPut({ convId, contentType, dir, size, direction, uidHex, accountToken, accountDigest, conversationFingerprint } = {}) {
+export async function signPut({ convId, contentType, dir, size, direction, accountToken, accountDigest, conversationFingerprint } = {}) {
   const resolvedConv = typeof convId === 'string' ? convId : '';
   if (!resolvedConv) throw new Error('convId required');
-  const resolvedUid = (uidHex || getUidHex() || '').toUpperCase();
-  if (!resolvedUid) throw new Error('Not unlocked: UID missing');
-  const body = { convId: resolvedConv, contentType, uidHex: resolvedUid };
+  const body = { convId: resolvedConv, contentType };
   if (dir) body.dir = dir;
   if (typeof size === 'number') body.size = size;
   if (direction) body.direction = direction;
@@ -34,12 +32,10 @@ export async function signPut({ convId, contentType, dir, size, direction, uidHe
  * @param {{ key: string }} p
  * @returns {Promise<{ r: Response, data: any }>} data: { download:{url,bucket,key}, expiresIn }
  */
-export async function signGet({ key, uidHex, accountToken, accountDigest, conversationFingerprint } = {}) {
+export async function signGet({ key, accountToken, accountDigest, conversationFingerprint } = {}) {
   const resolvedKey = typeof key === 'string' ? key : '';
   if (!resolvedKey) throw new Error('object key required');
-  const resolvedUid = (uidHex || getUidHex() || '').toUpperCase();
-  if (!resolvedUid) throw new Error('Not unlocked: UID missing');
-  const body = { key: resolvedKey, uidHex: resolvedUid };
+  const body = { key: resolvedKey };
   const token = accountToken || getAccountToken();
   if (token) body.accountToken = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();

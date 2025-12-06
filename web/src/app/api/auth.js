@@ -30,11 +30,11 @@ export async function sdmDebugKit({ uidHex } = {}) {
 
 /**
  * MK Store — first-time initialization: store wrapped MK on server.
- * @param {{session?:string, uidHex:string, wrapped_mk:object}} p
+ * @param {{session?:string, wrapped_mk:object}} p
  * @returns {Promise<{ r: Response, data: any }>} r.status === 204 on success
  */
-export async function mkStore({ session, uidHex, accountToken, accountDigest, wrapped_mk }) {
-  const body = { uidHex, wrapped_mk };
+export async function mkStore({ session, accountToken, accountDigest, wrapped_mk }) {
+  const body = { wrapped_mk };
   if (session && session.length >= 8) body.session = session; // optional; required only for first init
   if (accountToken) body.accountToken = accountToken;
   if (accountDigest) body.accountDigest = accountDigest;
@@ -43,9 +43,9 @@ export async function mkStore({ session, uidHex, accountToken, accountDigest, wr
 
 /**
  * MK Update — change password after login by updating wrapped MK.
- * @param {{uidHex:string, accountToken:string, accountDigest:string, wrapped_mk:object}} p
+ * @param {{accountToken:string, accountDigest:string, wrapped_mk:object}} p
  * @returns {Promise<{ r: Response, data: any }>} r.status === 204 on success
  */
-export async function mkUpdate({ uidHex, accountToken, accountDigest, wrapped_mk }) {
-  return await fetchJSON('/api/v1/mk/update', { uidHex, accountToken, accountDigest, wrapped_mk });
+export async function mkUpdate({ accountToken, accountDigest, wrapped_mk }) {
+  return await fetchJSON('/api/v1/mk/update', { accountToken, accountDigest, wrapped_mk });
 }
