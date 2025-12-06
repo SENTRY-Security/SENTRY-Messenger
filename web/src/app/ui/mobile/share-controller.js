@@ -7,7 +7,7 @@ import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { getUidHex, setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity } from '../../core/store.js';
+import { setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
@@ -401,8 +401,8 @@ export function setupShareController(options) {
   }
 
   async function onGenerateInvite({ auto = false, attempt = 0 } = {}) {
-    const uid = getUidHex();
-    if (!uid) {
+    const accountDigest = getAccountDigest();
+    if (!accountDigest) {
       setInviteStatus('尚未登入，無法生成交友邀請，請重新登入後再試。', {
         isError: true,
         showRetry: true,
@@ -426,7 +426,7 @@ export function setupShareController(options) {
       await ensureOwnerPrekeys({ force: attempt > 0, reason: attempt > 0 ? 'retry' : 'initial' });
 
       setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
-      const invite = await friendsCreateInvite({ uidHex: uid });
+      const invite = await friendsCreateInvite();
       log({ inviteCreateFetched: true });
       if (!invite || !invite.inviteId || !invite.secret || !invite.expiresAt) {
         throw new Error('伺服器回傳內容不完整');

@@ -23,13 +23,15 @@ const BaseAccountSchema = z.object({
   uidHex: z.string().regex(UidRegex).optional(), // legacy fallback
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
-}).superRefine((value, ctx) => {
+});
+
+const withAccountAuthGuard = (schema) => schema.superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
   }
 });
 
-const CallInviteSchema = BaseAccountSchema.extend({
+const CallInviteSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   peerAccountDigest: z.string().regex(AccountDigestRegex),
   peerUid: z.string().regex(UidRegex).optional(),
   callId: z.string().regex(CallIdRegex).optional(),
@@ -38,30 +40,30 @@ const CallInviteSchema = BaseAccountSchema.extend({
   metadata: z.record(z.any()).optional(),
   expiresInSeconds: z.number().int().min(30).max(600).optional(),
   traceId: z.string().min(6).max(64).optional()
-});
+}));
 
-const CallMutateSchema = BaseAccountSchema.extend({
+const CallMutateSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
   reason: z.string().max(48).optional(),
   traceId: z.string().max(64).optional()
-});
+}));
 
-const CallAckSchema = BaseAccountSchema.extend({
+const CallAckSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
   traceId: z.string().max(64).optional()
-});
+}));
 
-const CallMetricsSchema = BaseAccountSchema.extend({
+const CallMetricsSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
   metrics: z.record(z.any()),
   status: z.enum(['dialing', 'ringing', 'connected', 'ended', 'failed']).optional(),
   endReason: z.string().max(48).optional(),
   ended: z.boolean().optional()
-});
+}));
 
-const TurnCredentialSchema = BaseAccountSchema.extend({
+const TurnCredentialSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   ttlSeconds: z.number().int().min(60).max(600).optional()
-});
+}));
 
 function cloneNetworkConfigTemplate() {
   if (!RAW_CALL_NETWORK_CONFIG || typeof RAW_CALL_NETWORK_CONFIG !== 'object') {

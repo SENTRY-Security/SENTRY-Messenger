@@ -11,7 +11,7 @@ import {
 import { createCallInvite } from '../../api/calls.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
-import { getUidHex, normalizePeerIdentity } from '../../core/store.js';
+import { getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -193,7 +193,7 @@ export async function requestOutgoingCall({
   activeSession = createEmptySession();
   activeSession.traceId = traceId || createTraceId();
   activeSession.sessionId = activeSession.traceId;
-  activeSession.initiatorUidHex = getUidHex ? getUidHex() : null;
+  activeSession.initiatorUidHex = getAccountDigest ? getAccountDigest() : null;
   activeSession.direction = CALL_SESSION_DIRECTION.OUTGOING;
   activeSession.status = CALL_SESSION_STATUS.OUTGOING;
   activeSession.peerUidHex = peerKey;

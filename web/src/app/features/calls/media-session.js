@@ -139,18 +139,18 @@ export function disposeCallMediaSession() {
   cleanupPeerConnection('dispose');
 }
 
-export async function startOutgoingCallMedia({ callId, peerAccountDigest, peerUid } = {}) {
+export async function startOutgoingCallMedia({ callId, peerAccountDigest } = {}) {
   activeCallId = callId;
-  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest, peerUid }).key;
+  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest }).key;
   direction = 'outgoing';
   awaitingAnswer = true;
   await ensurePeerConnection();
   await createAndSendOffer();
 }
 
-export async function acceptIncomingCallMedia({ callId, peerAccountDigest, peerUid } = {}) {
+export async function acceptIncomingCallMedia({ callId, peerAccountDigest } = {}) {
   activeCallId = callId;
-  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest, peerUid }).key;
+  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest }).key;
   direction = 'incoming';
   awaitingOfferAfterAccept = true;
   await ensurePeerConnection();

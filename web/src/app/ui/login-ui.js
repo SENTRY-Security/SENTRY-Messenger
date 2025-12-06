@@ -209,7 +209,6 @@ loginBrand?.addEventListener('pointerleave', clearLoginBrandLongPressTimer);
 
 function getContactSecretKeyOptionsForLogin(uidOverride) {
   return {
-    uid: uidOverride || getUidHex(),
     accountDigest: getAccountDigest()
   };
 }
@@ -895,10 +894,11 @@ async function onUnlock() {
       const accountDigest = getAccountDigest();
       const uidDigest = getUidDigest();
       const wrappedMk = getWrappedMK();
+      const identityForHandoff = accountDigest || uid || null;
       log({
         loginHandoff: {
           mk: !!mk,
-          uid: !!uid,
+          uid: !!identityForHandoff,
           accountToken: !!accountToken,
           accountDigest: !!accountDigest,
           uidDigest: !!uidDigest,
@@ -907,7 +907,7 @@ async function onUnlock() {
         }
       });
       if (mk && mk.length) sessionStorage.setItem('mk_b64', b64(mk));
-      if (uid) sessionStorage.setItem('uid_hex', uid);
+      if (identityForHandoff) sessionStorage.setItem('uid_hex', identityForHandoff);
       if (accountToken) sessionStorage.setItem('account_token', accountToken);
       if (accountDigest) sessionStorage.setItem('account_digest', accountDigest);
       if (uidDigest) sessionStorage.setItem('uid_digest', uidDigest);

@@ -4,10 +4,7 @@ import { AccountDigestRegex } from '../utils/account-verify.js';
 import { ensureCallWorkerConfig, callWorkerRequest } from '../services/call-worker.js';
 import { logger } from '../utils/logger.js';
 
-const UidRegex = /^[0-9A-Fa-f]{14,}$/;
-
 const BackupRequestSchema = z.object({
-  uidHex: z.string().regex(UidRegex),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   payload: z.any(),
@@ -37,10 +34,9 @@ function firstHeader(req, ...names) {
 }
 
 function extractAccountFromHeaders(req) {
-  const uidHex = firstHeader(req, 'x-uid-hex', 'x-uid');
   const accountToken = firstHeader(req, 'x-account-token');
   const accountDigest = firstHeader(req, 'x-account-digest');
-  return { uidHex, accountToken, accountDigest };
+  return { accountToken, accountDigest };
 }
 
 function respondAccountError(res, err, fallback = 'authorization failed') {
@@ -67,7 +63,6 @@ export const backupContactSecrets = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -112,9 +107,6 @@ export const fetchContactSecretsBackup = async (req, res) => {
   if (!ensureCallWorkerConfig(res)) return;
 
   const creds = extractAccountFromHeaders(req);
-  if (!creds.uidHex) {
-    return res.status(400).json({ error: 'BadRequest', message: 'X-Uid-Hex header required' });
-  }
   if (!creds.accountToken && !creds.accountDigest) {
     return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Token or X-Account-Digest required' });
   }
@@ -122,7 +114,6 @@ export const fetchContactSecretsBackup = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: creds.uidHex,
       accountToken: creds.accountToken,
       accountDigest: creds.accountDigest
     });

@@ -19,7 +19,8 @@ const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 const AccountSelectorSchema = z.object({
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
-}).superRefine((value, ctx) => {
+});
+const withAccountSelectorGuard = (schema) => schema.superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
   }
@@ -41,9 +42,9 @@ const BundleOpksOnlySchema = z.object({
   opks: z.array(OpkSchema).min(1)
 });
 
-const PublishSchema = AccountSelectorSchema.extend({
+const PublishSchema = withAccountSelectorGuard(AccountSelectorSchema.extend({
   bundle: z.union([BundleFullSchema, BundleOpksOnlySchema])
-});
+}));
 
 const BundleSchema = z.object({
   peer_accountDigest: z.string().regex(AccountDigestRegex)

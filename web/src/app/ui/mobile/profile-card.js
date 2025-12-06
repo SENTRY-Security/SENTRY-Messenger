@@ -2,7 +2,7 @@ import { log } from '../../core/log.js';
 import Cropper from '../../lib/vendor/cropper.esm.js';
 import { ensureProfileNickname, saveProfile, normalizeNickname, generateRandomNickname, uploadAvatar, loadAvatarBlob } from '../../features/profile.js';
 import { buildIdenticonImage } from '../../lib/identicon.js';
-import { getUidHex } from '../../core/store.js';
+import { getAccountDigest } from '../../core/store.js';
 import { sessionStore } from './session-store.js';
 import { escapeHtml, blobToDataURL } from './ui-utils.js';
 
@@ -82,10 +82,10 @@ export function initProfileCard(options) {
   async function maybeAutogenerateAvatar() {
     const state = sessionStore.profileState;
     if (!state || state.avatar?.objKey) return;
-    const uid = getUidHex();
-    if (!uid) return;
+    const digest = getAccountDigest();
+    if (!digest) return;
     try {
-      const identicon = await buildIdenticonImage(uid, { size: 512, format: 'image/jpeg', quality: 0.88 });
+      const identicon = await buildIdenticonImage(digest, { size: 512, format: 'image/jpeg', quality: 0.88 });
       if (!identicon?.blob) return;
       const file = new File([identicon.blob], 'avatar-identicon.jpg', { type: identicon.blob.type || 'image/jpeg' });
       const avatarMeta = await uploadAvatar({ file, thumbDataUrl: identicon.dataUrl });

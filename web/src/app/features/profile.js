@@ -4,7 +4,7 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
-import { getMkRaw, getUidHex, getAccountDigest, buildAccountPayload } from '../core/store.js';
+import { getMkRaw, getAccountDigest, buildAccountPayload } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';

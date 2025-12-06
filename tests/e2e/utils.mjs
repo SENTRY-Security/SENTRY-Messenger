@@ -9,16 +9,20 @@ export const WEB_PORT = Number(process.env.E2E_WEB_PORT || 8788);
 export const ARTIFACTS_ROOT = path.resolve('artifacts');
 export const E2E_ARTIFACT_DIR = path.join(ARTIFACTS_ROOT, 'e2e');
 
-const normalizeUid = (uid) => (uid ? String(uid).replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null);
-
-export const buildContactSecretsKey = (uid) => {
-  const normalized = normalizeUid(uid);
-  return normalized ? `contactSecrets-v1:uid-${normalized}` : 'contactSecrets-v1';
+const normalizeAccountDigest = (digest) => {
+  if (!digest) return null;
+  const cleaned = String(digest).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  return cleaned && cleaned.length === 64 ? cleaned : null;
 };
 
-export const buildContactSecretsLatestKey = (uid) => {
-  const normalized = normalizeUid(uid);
-  return normalized ? `contactSecrets-v1-latest:uid-${normalized}` : 'contactSecrets-v1-latest';
+export const buildContactSecretsKey = (accountDigest) => {
+  const normalized = normalizeAccountDigest(accountDigest);
+  return normalized ? `contactSecrets-v1:acct-${normalized}` : 'contactSecrets-v1';
+};
+
+export const buildContactSecretsLatestKey = (accountDigest) => {
+  const normalized = normalizeAccountDigest(accountDigest);
+  return normalized ? `contactSecrets-v1-latest:acct-${normalized}` : 'contactSecrets-v1-latest';
 };
 
 async function waitForHealthz(url, timeoutMs = 10000) {
@@ -80,9 +84,10 @@ export async function ensureDir(targetPath) {
   await fs.mkdir(absPath, { recursive: true });
 }
 
-export async function performLogin(page, { password = 'test1234', uidHex, contactSecretsSnapshot } = {}) {
-  const contactKey = buildContactSecretsKey(uidHex);
-  const latestKey = buildContactSecretsLatestKey(uidHex);
+export async function performLogin(page, { password = 'test1234', accountDigest, uidHex, contactSecretsSnapshot } = {}) {
+  const identityForSecrets = accountDigest || uidHex || null;
+  const contactKey = buildContactSecretsKey(identityForSecrets);
+  const latestKey = buildContactSecretsLatestKey(identityForSecrets);
   await page.addInitScript(() => {
     try {
       window.__DEBUG_CONTACT_SECRETS__ = true;
@@ -183,7 +188,7 @@ export async function performLogin(page, { password = 'test1234', uidHex, contac
 
   const cleared = await page.evaluate(() => (
     sessionStorage.getItem('mk_b64') === null &&
-    sessionStorage.getItem('uid_hex') === null &&
+    sessionStorage.getItem('account_digest') === null &&
     sessionStorage.getItem('account_token') === null
   ));
   expect(cleared).toBeTruthy();

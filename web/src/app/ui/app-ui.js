@@ -8,7 +8,8 @@ import {
   setMkRaw, setUidHex,
   setAccountToken, setAccountDigest, setUidDigest,
   setDevicePriv,
-  clearSecrets, resetAll
+  clearSecrets, resetAll,
+  getAccountDigest
 } from '../core/store.js';
 import { encryptAndPut, signGet, downloadAndDecrypt } from '../features/media.js';
 import { listSecureAndDecrypt } from '../features/messages.js';
@@ -42,7 +43,8 @@ function isSimStorageKey(key) {
     const accountToken = sessionStorage.getItem('account_token');
     const accountDigest = sessionStorage.getItem('account_digest');
     const uidDigest = sessionStorage.getItem('uid_digest');
-    if (uid) setUidHex(uid);
+    const identityKey = accountDigest || uid || null;
+    if (identityKey) setUidHex(identityKey);
     if (accountToken) setAccountToken(accountToken);
     if (accountDigest) setAccountDigest(accountDigest);
     if (uidDigest) setUidDigest(uidDigest);
@@ -109,14 +111,14 @@ const convEl = $('#convId'); const fileEl = $('#file'); const lastKeyEl = $('#la
       <h2>(Dev) 訊息列表</h2>
       <div class="row">
         <button id="btnLoadMsgs">載入最近 20 則</button>
-        <span class="muted">需要輸入對方 UID（用於 DR 會話解密）</span>
+        <span class="muted">需要輸入對方帳號 digest（用於 DR 會話解密）</span>
       </div>
       <ul id="msgList" style="list-style: none; padding-left: 0; margin: 8px 0;"></ul>
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:12px 0;" />
       <h3>(Dev) DR 文字訊息</h3>
       <div class="row">
-        <label>Peer UID</label>
-        <input id="peerUidHex" placeholder="對方 UID（14 hex）" style="min-width:220px" />
+        <label>Peer Account Digest</label>
+        <input id="peerUidHex" placeholder="對方帳號 digest（hex）" style="min-width:220px" />
         <button id="btnInitDr">初始化會話</button>
       </div>
       <div class="row">
@@ -190,9 +192,10 @@ if (btnEncryptUpload) btnEncryptUpload.onclick = onEncryptUpload;
 async function onEncryptUpload() {
   try {
     if (!getMkRaw()) return log('Not unlocked: please login (MK not ready).');
-    if (!getUidHex()) return log('Run SDM Exchange / Login first.');
+    if (!getAccountDigest()) return log('請先完成 SDM Exchange / Login 取得帳號 digest。');
 
-    const convId = (convEl?.value || 'conv_demo').trim() || 'conv_demo';
+    const identity = getAccountDigest() || getUidHex();
+    const convId = (convEl?.value || '').trim() || (identity ? `conv-${identity.slice(-8)}` : 'conv_demo');
     const f = fileEl?.files?.[0];
     if (!f) return log('Choose a file first.');
     log({ file: { name: f.name, type: f.type || 'application/octet-stream', size: f.size } });
@@ -254,7 +257,7 @@ async function onLoadMessages() {
   try {
     const conversationId = prompt('輸入 conversationId（base64url）:');
     const tokenB64 = prompt('輸入 conversation token（base64url）:');
-    const peer = prompt('輸入對方 UID HEX（14 hex）：');
+    const peer = prompt('輸入對方帳號 digest（hex）：');
     if (!conversationId || !tokenB64 || !peer) return;
     const peerUidHex = String(peer).replace(/[^0-9a-f]/gi, '').toUpperCase();
     const { items, nextCursorTs, errors } = await listSecureAndDecrypt({ conversationId, tokenB64, peerUidHex, limit: 20 });
@@ -303,7 +306,7 @@ function getPeerFromInput(){
 async function onInitDr(){
   try {
     if (!getMkRaw()) return log('Not unlocked: MK not ready.');
-    const peer = getPeerFromInput(); if (!peer) return log('請輸入對方 UID（14 hex）');
+    const peer = getPeerFromInput(); if (!peer) return log('請輸入對方帳號 digest');
     await ensureDrSession({ peerUidHex: peer });
     log({ drSession: 'initialized', peer });
   } catch (e) {
@@ -313,11 +316,12 @@ async function onInitDr(){
 async function onSendText(){
   try {
     if (!getMkRaw()) return log('Not unlocked: MK not ready.');
-    const peer = getPeerFromInput(); if (!peer) return log('請輸入對方 UID（14 hex）');
+    const peer = getPeerFromInput(); if (!peer) return log('請輸入對方帳號 digest');
     const textEl = document.querySelector('#drText');
     const text = (textEl?.value || '').toString();
     if (!text) return log('請輸入要傳送的文字');
-    const convId = (convEl?.value || '').trim() || `dm-${getUidHex()}-to-${peer}`;
+    const identity = getAccountDigest() || getUidHex();
+    const convId = (convEl?.value || '').trim() || (identity ? `dm-${identity}-to-${peer}` : 'dm-demo');
     const res = await sendDrText({ peerUidHex: peer, text, convId });
     log({ drSend: true, msg: res.msg, convId: res.convId });
     if (textEl) textEl.value = '';

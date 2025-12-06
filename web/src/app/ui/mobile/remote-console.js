@@ -1,4 +1,4 @@
-import { buildAccountPayload, getUidHex, getAccountToken, getAccountDigest } from '../../core/store.js';
+import { buildAccountPayload, getAccountToken, getAccountDigest } from '../../core/store.js';
 
 const STORAGE_KEY_ENABLED = 'remoteConsole:enabled';
 const STORAGE_KEY_ENDPOINT = 'remoteConsole:endpoint';
@@ -122,7 +122,7 @@ function disableFlushTimer() {
 
 async function flushBuffer() {
   if (!state.enabled || state.buffer.length === 0 || state.flushing) return;
-  if (!getUidHex() || (!getAccountToken() && !getAccountDigest())) {
+  if (!getAccountDigest() && !getAccountToken()) {
     scheduleFlush();
     return;
   }
@@ -130,7 +130,7 @@ async function flushBuffer() {
   disableFlushTimer();
   const entries = state.buffer.splice(0, MAX_BUFFER_SIZE);
   const payload = buildAccountPayload({
-    includeUid: true,
+    includeUid: false,
     overrides: {
       entries,
       clientTs: Date.now(),

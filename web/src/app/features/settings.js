@@ -3,7 +3,7 @@
 
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
-import { getMkRaw, getUidHex, getAccountDigest, buildAccountPayload } from '../core/store.js';
+import { getMkRaw, getAccountDigest, buildAccountPayload } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 
 const SETTINGS_INFO_TAG = 'settings/v1';

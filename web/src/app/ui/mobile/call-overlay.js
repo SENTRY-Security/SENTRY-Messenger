@@ -366,7 +366,8 @@ function ensureOverlayElements() {
   }
 
 function resolveRemoteProfile(session) {
-  const fallback = session?.peerUidHex ? `好友 ${session.peerUidHex.slice(-4)}` : '好友';
+  const peerKey = session?.peerAccountDigest || session?.peerUidHex || null;
+  const fallback = peerKey ? `好友 ${peerKey.slice(-4)}` : '好友';
   const name = session?.remoteDisplayName
     || session?.peerDisplayName
     || fallback;
@@ -391,7 +392,8 @@ function renderAvatarContent(el, session) {
     el.appendChild(img);
     return;
   }
-  const initials = (profile.name || session?.peerUidHex || '?')
+  const peerKey = session?.peerAccountDigest || session?.peerUidHex || '?';
+  const initials = (profile.name || peerKey || '?')
     .replace(/\s+/g, '')
     .slice(0, 2)
     .toUpperCase() || '?';

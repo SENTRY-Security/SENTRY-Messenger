@@ -47,10 +47,8 @@ async function main() {
   const ex = await sdmExchange(dbg);
   assert(ex.accountDigest, 'missing account');
 
-  const uidHex = String(dbg.uidHex || ex.uidHex || ex.uid_hex || '').toUpperCase();
   const accountToken = ex.accountToken || ex.account_token || null;
   const accountDigest = String(ex.accountDigest || ex.account_digest || '').toUpperCase();
-  assert(uidHex, 'uidHex missing');
   assert(accountToken || accountDigest, 'account credentials missing');
 
   const convId = `contacts-${ex.accountDigest}`;
@@ -62,7 +60,6 @@ async function main() {
     conversation_id: convId,
     payload_envelope: fakeEnvelope(),
     created_at: ts,
-    uidHex,
     accountToken,
     accountDigest
   };
@@ -72,7 +69,6 @@ async function main() {
 
   console.log('[3] list secure messages');
   const headers = {
-    'X-Uid-Hex': uidHex,
     'X-Account-Digest': accountDigest
   };
   if (accountToken) headers['X-Account-Token'] = accountToken;

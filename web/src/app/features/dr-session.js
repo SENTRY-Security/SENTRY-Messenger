@@ -6,11 +6,7 @@ import { createSecureMessage } from '../api/messages.js';
 import { friendsBootstrapSession } from '../api/friends.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
-import {
-  getUidHex,
-  getAccountDigest,
-  drState
-} from '../core/store.js';
+import { getAccountDigest, drState } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
@@ -497,9 +493,7 @@ async function ensureDevicePrivLoaded() {
  * @returns {Promise<{ initialized: boolean }>} 
  */
 export async function ensureDrSession({ peerUidHex }) {
-  const me = getUidHex();
   const peer = normHex(peerUidHex);
-  if (!me) throw new Error('UID not set (run SDM exchange)');
   if (!peer) throw new Error('peerUidHex required');
 
   const holder = drState(peer);
@@ -509,7 +503,7 @@ export async function ensureDrSession({ peerUidHex }) {
 
   const priv = await ensureDevicePrivLoaded();
 
-  const { r: rb, data: bundle } = await prekeysBundle({ peer_uidHex: peer });
+  const { r: rb, data: bundle } = await prekeysBundle({ peer_accountDigest: peer });
   if (!rb.ok) throw new Error('prekeys.bundle failed: ' + (typeof bundle === 'string' ? bundle : JSON.stringify(bundle)));
 
   const st = await x3dhInitiate(priv, bundle);
@@ -551,9 +545,7 @@ function conversationContextForPeer(peerUid) {
 }
 
 async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOverrides = {} }) {
-  const me = getUidHex();
   const peer = normHex(peerUidHex);
-  if (!me) throw new Error('UID not set');
   if (!peer) throw new Error('peerUidHex required');
 
   const convContext = conversation || conversationContextForPeer(peer);
@@ -852,9 +844,7 @@ function blobToNamedFile(blob, nameHint) {
 }
 
 export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir, onProgress, abortSignal } = {}) {
-  const me = getUidHex();
   const peer = normHex(peerUidHex);
-  if (!me) throw new Error('UID not set');
   if (!peer) throw new Error('peerUidHex required');
   if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
     throw new Error('file required');

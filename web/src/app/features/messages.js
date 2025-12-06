@@ -6,7 +6,6 @@ import { listSecureMessages as apiListSecureMessages } from '../api/messages.js'
 import { drDecryptText as cryptoDrDecryptText } from '../crypto/dr.js';
 import {
   drState as storeDrState,
-  getUidHex as storeGetUidHex,
   getAccountDigest as storeGetAccountDigest,
   normalizePeerIdentity as storeNormalizePeerIdentity
 } from '../core/store.js';
@@ -40,7 +39,6 @@ const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
   drDecryptText: cryptoDrDecryptText,
   drState: storeDrState,
-  getUidHex: storeGetUidHex,
   getAccountDigest: storeGetAccountDigest,
   persistDrSnapshot: sessionPersistDrSnapshot,
   recoverDrState: sessionRecoverDrState,
@@ -322,8 +320,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
   if (!conversationId) throw new Error('conversationId required');
   if (!tokenB64) throw new Error('conversation token required');
   const identity = storeNormalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest ?? null,
-    peerUid: peerUidHex
+    peerAccountDigest: peerAccountDigest ?? peerUidHex ?? null
   });
   const peerKey = identity.key;
   if (!peerKey) throw new Error('peer identity required');
@@ -385,7 +382,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
     }
   } catch {}
   try {
-    const selfFingerprintSource = deps.getAccountDigest() || deps.getUidHex();
+const selfFingerprintSource = deps.getAccountDigest();
     if (selfFingerprintSource) fingerprintSelf = await deps.computeConversationFingerprint(tokenB64, selfFingerprintSource);
   } catch {}
 

@@ -4,7 +4,7 @@ import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
-import { getUidHex, getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
+import { getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
 
 export function initContactsView(options) {
@@ -67,13 +67,12 @@ export function initContactsView(options) {
       return;
     }
 
-    const selfUid = (getUidHex() || '').toUpperCase();
     const selfDigest = (getAccountDigest() || '').toUpperCase();
 
     sessionStore.contactState.forEach((c) => {
       const key = String(c?.peerUid || '').toUpperCase();
       if (!key) return;
-      if ((selfUid && key === selfUid) || (selfDigest && key === selfDigest)) return;
+      if (selfDigest && key === selfDigest) return;
       const name = normalizeNickname(c.nickname || '') || c.nickname || `好友 ${key.slice(-4)}`;
       const avatarSrc = c.avatar?.thumbDataUrl || c.avatar?.previewDataUrl || '';
       const initials = name ? name.slice(0, 2) : key.slice(-2);
@@ -432,9 +431,8 @@ export function initContactsView(options) {
     const identity = normalizePeerIdentity({ peerAccountDigest, peerUid });
     const key = identity.key;
     if (!key) return;
-    const selfUid = (getUidHex() || '').toUpperCase();
     const selfDigest = (getAccountDigest() || '').toUpperCase();
-    if ((selfUid && key === selfUid) || (selfDigest && key === selfDigest)) {
+    if (selfDigest && key === selfDigest) {
       log({ contactSkipSelfEntry: key });
       return;
     }

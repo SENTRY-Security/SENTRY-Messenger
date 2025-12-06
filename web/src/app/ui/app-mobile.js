@@ -5,7 +5,7 @@
 import { log, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import {
-  getUidHex, getMkRaw,
+  getMkRaw,
   setMkRaw, setUidHex,
   setAccountToken, setAccountDigest, setUidDigest,
   setDevicePriv,
@@ -264,7 +264,6 @@ const hasAudioPermission = () => audioManager.hasPermission();
 
 function getContactSecretKeyOptions() {
   return {
-    uid: getUidHex(),
     accountDigest: getAccountDigest()
   };
 }
@@ -1283,7 +1282,8 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
         wrappedMk: !!wrappedMkRaw
       }
     });
-    if (uid) setUidHex(uid);
+    const identityKey = accountDigest || uid || uidDigest || null;
+    if (identityKey) setUidHex(identityKey);
     if (accountToken) setAccountToken(accountToken);
     if (accountDigest) setAccountDigest(accountDigest);
     if (uidDigest) setUidDigest(uidDigest);

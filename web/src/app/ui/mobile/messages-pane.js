@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getUidHex, getAccountToken, getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
+import { getAccountToken, getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
 import {
@@ -463,14 +463,9 @@ export function initMessagesPane({
       if (session.direction === CALL_SESSION_DIRECTION.INCOMING || session.direction === CALL_SESSION_DIRECTION.OUTGOING) {
         return session.direction;
       }
-      const myUid = getUidHex();
       const myAcct = getAccountDigest?.() || null;
       const callerAcct = session.initiatorAccountDigest || session.callerAccountDigest || null;
-      if (myAcct && callerAcct && String(callerAcct).toUpperCase() !== String(myAcct).toUpperCase()) {
-        return CALL_SESSION_DIRECTION.INCOMING;
-      }
-      const callerUid = session.initiatorUidHex || session.initiatorUid || session.callerUid || session.fromUid || session.fromUidHex || null;
-      if (myUid && callerUid && String(callerUid).replace(/[^0-9a-f]/gi, '').toUpperCase() !== String(myUid || '').toUpperCase()) {
+      if (callerAcct && (!myAcct || String(callerAcct).toUpperCase() !== String(myAcct).toUpperCase())) {
         return CALL_SESSION_DIRECTION.INCOMING;
       }
       return CALL_SESSION_DIRECTION.OUTGOING;
@@ -1120,8 +1115,8 @@ export function initMessagesPane({
     const capabilities = getCallCapability() || null;
     const callerSummary = getSelfProfileSummary() || {};
     const fallbackCallerName = (() => {
-      const uid = getUidHex();
-      return uid ? `好友 ${uid.slice(-4)}` : null;
+      const digest = getAccountDigest();
+      return digest ? `好友 ${digest.slice(-4)}` : null;
     })();
     const callerDisplayName = callerSummary.displayName || fallbackCallerName || null;
     const callerAvatarUrl = callerSummary.avatarUrl || sessionStore.currentAvatarUrl || null;
@@ -2535,10 +2530,9 @@ export function initMessagesPane({
           sessionStore.deletedConversations?.add?.(conversationId);
           try {
             const payload = {
-              uidHex: getUidHex() || undefined,
               accountToken: getAccountToken() || undefined,
               accountDigest: getAccountDigest() || undefined,
-              peerUid: '00000000000000'
+              peerAccountDigest: key
             };
             await fetch('/api/v1/friends/delete', {
               method: 'POST',
@@ -2627,16 +2621,11 @@ export function initMessagesPane({
     }) || getConversationThreads().get(convId);
     if (!thread) return;
 
-    const myUid = getUidHex();
-    const myAcct = getAccountDigest();
-    const senderUidRaw = event?.senderUid || event?.sender_uid || null;
-    const senderUid = senderUidRaw ? String(senderUidRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
+    const myAcctRaw = getAccountDigest();
+    const myAcct = myAcctRaw ? String(myAcctRaw).toUpperCase() : null;
     const senderAcctRaw = event?.senderAccountDigest || event?.sender_account_digest || null;
     const senderAcct = senderAcctRaw ? String(senderAcctRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
-    const isSelf = !!(
-      (myUid && senderUid && myUid === senderUid) ||
-      (myAcct && senderAcct && myAcct === senderAcct)
-    );
+    const isSelf = !!(myAcct && senderAcct && myAcct === senderAcct);
 
     const rawMsgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
