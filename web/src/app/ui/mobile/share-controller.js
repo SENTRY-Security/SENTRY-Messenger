@@ -7,7 +7,7 @@ import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { getUidHex, setDevicePriv, getMkRaw, getAccountDigest, clearDrState } from '../../core/store.js';
+import { getUidHex, setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
@@ -364,12 +364,14 @@ export function setupShareController(options) {
   document.addEventListener('contacts:removed', (event) => {
     const detail = event?.detail || {};
     const peer = detail.peerUid || detail.peer_uid || detail.peer || detail.uid;
+    const identity = normalizePeerIdentity({ peerAccountDigest: peer, peerUid: peer });
     markPeerRecentlyDeleted(peer);
-    if (detail?.notifyPeer !== false && wsTransport && peer) {
+    if (detail?.notifyPeer !== false && wsTransport && identity.key) {
       try {
         wsTransport({
           type: 'contact-removed',
-          targetUid: String(peer).toUpperCase()
+          targetUid: identity.uid || identity.key,
+          targetAccountDigest: identity.accountDigest || null
         });
       } catch (err) {
         log({ contactRemovedNotifyError: err?.message || err, peer });
@@ -900,21 +902,26 @@ export function setupShareController(options) {
 
   async function handleContactShareEvent(msg) {
     const inviteId = String(msg?.inviteId || '').trim();
-    const fromUid = String(msg?.fromUid || '').toUpperCase();
-    if (!inviteId || !fromUid) return;
-    const existingContact = sessionStore.contactIndex?.get?.(fromUid) || null;
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: msg?.fromAccountDigest || msg?.from_account_digest || msg?.peerAccountDigest || msg?.peer_account_digest || null,
+      peerUid: msg?.fromUid || msg?.from_uid || msg?.peerUid || msg?.peer_uid || null
+    });
+    const fromUid = identity.uid || null;
+    const peerKey = identity.key;
+    if (!inviteId || !peerKey) return;
+    const existingContact = sessionStore.contactIndex?.get?.(peerKey) || null;
     const hadContact = !!existingContact;
     const record = inviteSecrets.get(inviteId);
     let secret = record?.secret;
     let stored = null;
     if (!secret) {
-      stored = getSecretForPeer(fromUid);
+      stored = getSecretForPeer(peerKey);
       if (stored && stored.inviteId === inviteId && stored.secret) {
         secret = stored.secret;
       }
     }
     if (!secret) {
-      log({ contactShareMissingSecret: inviteId, fromUid });
+      log({ contactShareMissingSecret: inviteId, fromUid: peerKey });
       return;
     }
     const envelope = msg?.envelope;
@@ -924,9 +931,9 @@ export function setupShareController(options) {
       const payload = await decryptContactPayload(secret, envelope);
       const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
       const reasonKey = reasonRaw ? reasonRaw.toLowerCase() : null;
-      if (reasonKey === 'conversation-delete' && wasPeerRecentlyDeleted(fromUid)) {
-        log({ contactShareIgnoredForDeleted: fromUid, reason: reasonKey });
-        recentlyDeletedPeers.delete(fromUid);
+      if (reasonKey === 'conversation-delete' && wasPeerRecentlyDeleted(peerKey)) {
+        log({ contactShareIgnoredForDeleted: peerKey, reason: reasonKey });
+        recentlyDeletedPeers.delete(peerKey);
         return;
       }
       let conversation = null;
@@ -951,7 +958,7 @@ export function setupShareController(options) {
         conversation.dr_init = existingContact?.conversation?.dr_init || stored?.conversationDrInit || record?.conversationDrInit || null;
       }
       await addContactEntry({
-        peerUid: fromUid,
+        peerUid: peerKey,
         nickname: payload.nickname,
         avatar: payload.avatar || null,
         conversation,
@@ -962,13 +969,13 @@ export function setupShareController(options) {
       if (conversation?.conversation_id && conversation?.token_b64) {
         sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
           token_b64: conversation.token_b64,
-          peerUid: fromUid,
+          peerUid: peerKey,
           dr_init: conversation.dr_init || null,
           secretRole: record?.role || stored?.role || null
         });
       }
       storeContactSecretMapping({
-        peerUid: fromUid,
+        peerUid: peerKey,
         inviteId,
         secret,
         role: record?.role || stored?.role || null,
@@ -977,7 +984,7 @@ export function setupShareController(options) {
       const drInitRaw = conversation?.dr_init || conversation?.drInit || null;
       let validatedDrInit = drInitRaw ? normalizeDrInit(drInitRaw) : null;
       if (!validatedDrInit && drInitRaw) {
-        log({ contactShareGuestBundleInvalid: { fromUid, inviteId, hasBundle: true } });
+        log({ contactShareGuestBundleInvalid: { fromUid: peerKey, inviteId, hasBundle: true } });
       }
       if (!validatedDrInit && conversation?.dr_init) {
         const normalized = normalizeDrInit(conversation.dr_init);
@@ -995,17 +1002,17 @@ export function setupShareController(options) {
       ].find((value) => typeof value === 'string' && value.length);
       const selfRole = candidateRole ? candidateRole.toLowerCase() : null;
       if (bundleRaw && !normalizedBundle) {
-        log({ contactShareGuestBundleMissingSig: { fromUid, inviteId } });
+        log({ contactShareGuestBundleMissingSig: { fromUid: peerKey, inviteId } });
         if (notifyToast) {
           notifyToast('好友金鑰資料缺失，請請對方重新邀請', { variant: 'error' });
         }
       } else if (normalizedBundle && selfRole !== 'guest') {
         if (hasPendingInvite) {
-          clearDrState(fromUid);
+          clearDrState(peerKey);
         }
         try {
           await bootstrapDrFromGuestBundle({
-            peerUidHex: fromUid,
+            peerUidHex: peerKey,
             guestBundle: normalizedBundle,
             force: hasPendingInvite
           });
@@ -1049,7 +1056,7 @@ export function setupShareController(options) {
           switchTab('contacts');
         }
       }
-      recentlyDeletedPeers.delete(fromUid);
+      recentlyDeletedPeers.delete(peerKey);
     } catch (err) {
       log({ contactShareDecryptError: err?.message || err });
     }
@@ -1083,6 +1090,9 @@ export function setupShareController(options) {
       const secret = info?.secret;
       if (!inviteId || !secret) continue;
       const contactEntry = sessionStore.contactIndex?.get?.(peerUid) || null;
+      const targetIdentity = normalizePeerIdentity({ peerAccountDigest: peerUid, peerUid });
+      const targetUid = targetIdentity.uid || targetIdentity.key;
+      const targetAccountDigest = targetIdentity.accountDigest || null;
       let conversation = contactEntry?.conversation && contactEntry.conversation.token_b64 && contactEntry.conversation.conversation_id
         ? {
             tokenB64: contactEntry.conversation.token_b64,
@@ -1141,7 +1151,8 @@ export function setupShareController(options) {
           try {
             wsTransport({
               type: 'contacts-reload',
-              targetUid: peerUid
+              targetUid,
+              targetAccountDigest
             });
           } catch (err) {
             log({ contactsReloadNotifyError: err?.message || err, peerUid });
@@ -1158,7 +1169,8 @@ export function setupShareController(options) {
             if (wsTransport && envelope) {
               wsTransport({
                 type: 'contact-share',
-                targetUid: peerUid,
+                targetUid,
+                targetAccountDigest,
                 inviteId,
                 envelope
               });
@@ -1172,7 +1184,8 @@ export function setupShareController(options) {
             try {
               wsTransport({
                 type: 'contacts-reload',
-                targetUid: peerUid
+                targetUid,
+                targetAccountDigest
               });
               success += 1;
               continue;

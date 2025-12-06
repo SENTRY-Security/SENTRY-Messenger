@@ -268,6 +268,8 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-12-06 13:05** | contact / session 狀態以 account_digest 為主索引：contacts view 載入/新增/刪除、conversationIndex、presence 訂閱改以 digest 儲存並保留 UID fallback，contactState 也記錄 peerAccountDigest；WS/call digest 化同前。未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，待群組/部署流程完成後一併補跑。 |
+| **2025-12-06 12:50** | 前端 peer 鍵值改以 account_digest 為主：`core/store` DR session 與 `contact-secrets` 以 digest 為主鍵並維護 UID alias，contacts convId 改優先 `contacts-<account_digest>`（UID 兼容），`features/messages` 接受 `peerAccountDigest` 取得 DR/指紋；WS contact-share/contacts-reload/presence/call 信令帶 digest，通話邀請/接聽與金鑰派生亦改用 digest 主索引。未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，待群組/Session digest 化完成後整批補跑。 |
 | **2025-12-03 13:45** | 呼叫事件表新增 account_digest 欄位（`call_events.from_account_digest/to_account_digest`），WS/Node 呼叫事件寫入與查詢同步帶 digest；後續仍需將好友/聯絡人/群組等流程改為僅用 account_digest。 |
 | **2025-12-03 13:05** | `scripts/cleanup/wipe-all.sh` 與 `scripts/cleanup/d1-wipe-all.sql` 補齊 D1 清除清單，新增 `call_*` / `group_*` / `contact_secret_backups` / `conversation_acl` / `conversations` / `subscriptions` / `tokens` / `extend_logs` 等表，確保重置時不殘留新 schema 資料；未執行 `npm run test:*`。 |
 | **2025-12-03 12:26** | 前端加入「建立群組」入口：生成 groupId/conv token/seed 呼叫 `/api/v1/groups/create`，並自動複製群組資訊至剪貼簿、本機列表備查；群組訊息流程仍未串接，待後續擴充。未跑 `npm run test:*`。 |
@@ -352,10 +354,10 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 - [x] Worker friends：invite/create/accept/bootstrap 以 digest 優先（查找/回傳 owner/guest_account_digest，contact/share/delete 支援 digest，/d1/friends/bootstrap 已實作），WS 通知帶 digest。
 - [x] Worker 群組：群組建立/成員增刪/查詢以 account_digest 為主（保留 UID 兼容），WS payload 待前端改造時一併更新。
 - [x] WS：身份/Presence/事件 payload 以 account_digest 為主（保留 UID），online list 回 digest。
-- [ ] 前端核心鍵值：`core/store` / `core/contact-secrets` / `features/contacts` / `features/messages` 改以 `peerAccountDigest` 為鍵，convId 以 `contacts-<account_digest>` 為主，保留 UID 讀寫過渡。
-- [ ] 前端 WS/事件：所有 WS 發送/接收事件（contact-share / contacts-reload / presence / secure-message / call）改為 digest 為主（保留 UID）。
-- [ ] 前端 呼叫/群組：API payload、本地 state、列表鍵值改用 account_digest，保留 UID fallback。
-- [ ] 前端 UI/Session：session-store/index/listener 等使用 digest 索引，convId 雙寫容錯。
+- [x] 前端核心鍵值：`core/store` / `core/contact-secrets` / `features/contacts` / `features/messages` 改以 `peerAccountDigest` 為鍵，convId 以 `contacts-<account_digest>` 為主，保留 UID 讀寫過渡。
+- [x] 前端 WS/事件：所有 WS 發送/接收事件（contact-share / contacts-reload / presence / secure-message / call）改為 digest 為主（保留 UID）。
+- [x] 前端 呼叫/群組：API payload、本地 state、列表鍵值改用 account_digest，保留 UID fallback。
+- [x] 前端 UI/Session：session-store/index/listener 等使用 digest 索引，convId 雙寫容錯。
 - [ ] 清空 D1/R2 + 部署：套用遷移，wipe 後重新部署 Worker/Node/Pages。
 - [ ] 測試：跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 

@@ -1,5 +1,6 @@
 import { log } from '../../core/log.js';
 import { getContactSecret } from '../../core/contact-secrets.js';
+import { normalizePeerIdentity } from '../../core/store.js';
 import { bytesToB64, b64ToBytes, b64UrlToBytes } from '/shared/utils/base64.js';
 import {
   CALL_EVENT,
@@ -98,6 +99,7 @@ export function supportsInsertableStreams() {
 export async function prepareCallKeyEnvelope({
   callId,
   peerUidHex,
+  peerAccountDigest = null,
   epoch = 1,
   media = null,
   capabilities = null,
@@ -106,7 +108,11 @@ export async function prepareCallKeyEnvelope({
   if (!hasWebCrypto()) throw new Error('此瀏覽器不支援 WebCrypto');
   if (!callId) throw new Error('callId required');
   const session = getCallSessionSnapshot();
-  const peerUid = (peerUidHex || session?.peerUidHex || '').toUpperCase();
+  const identity = normalizePeerIdentity({
+    peerAccountDigest: peerAccountDigest || session?.peerAccountDigest || null,
+    peerUid: peerUidHex || session?.peerUidHex || null
+  });
+  const peerUid = identity.key;
   if (!peerUid) throw new Error('peer uid required');
   const saltBytes = crypto.getRandomValues(new Uint8Array(32));
   const mediaState = getCallMediaState();
@@ -122,6 +128,7 @@ export async function prepareCallKeyEnvelope({
   };
   const effectiveSession = {
     peerUidHex: peerUid,
+    peerAccountDigest: identity.accountDigest || session?.peerAccountDigest || null,
     callId,
     direction: direction || session?.direction || CALL_SESSION_DIRECTION.OUTGOING
   };
@@ -167,9 +174,13 @@ async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
 }
 
 async function buildKeyContext({ session, envelope, saltBytes = null }) {
-  const peerUid = (session?.peerUidHex || '').toUpperCase();
+  const identity = normalizePeerIdentity({
+    peerAccountDigest: session?.peerAccountDigest || null,
+    peerUid: session?.peerUidHex || null
+  });
+  const peerUid = identity.key;
   if (!peerUid) throw new Error('缺少好友識別');
-  const secretRecord = getContactSecret(peerUid);
+  const secretRecord = getContactSecret(identity.key);
   if (!secretRecord?.secret) throw new Error('缺少好友密鑰，請重新同步聯絡人');
   const baseSecret = b64UrlToBytes(secretRecord.secret);
   if (!baseSecret || !baseSecret.length) throw new Error('無法解析好友密鑰');

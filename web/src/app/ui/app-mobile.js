@@ -15,7 +15,8 @@ import {
   getAccountDigest,
   getWrappedMK,
   setWrappedMK,
-  getOpaqueServerId
+  getOpaqueServerId,
+  normalizePeerIdentity
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -2437,9 +2438,16 @@ function updateProfileStats() {
 
 function ensureWebSocket() {
   if (wsConn || wsReconnectTimer) return;
-  if (!getUidHex()) return;
+  if (!getUidHex() && !getAccountDigest()) return;
   connectWebSocket().catch((err) => {
     log({ wsConnectError: err?.message || err });
+  });
+}
+
+function resolveWsPeer(msg = {}) {
+  return normalizePeerIdentity({
+    peerAccountDigest: msg.peerAccountDigest || msg.peer_account_digest || msg.accountDigest || msg.account_digest || msg.fromAccountDigest || msg.from_account_digest || null,
+    peerUid: msg.peerUid || msg.peer_uid || msg.uid || msg.fromUid || msg.from_uid || null
   });
 }
 
@@ -2481,7 +2489,8 @@ async function getWsAuthToken({ force = false } = {}) {
 
 async function connectWebSocket() {
   const uid = getUidHex();
-  if (!uid) return;
+  const accountDigest = getAccountDigest();
+  if (!uid && !accountDigest) return;
   let tokenInfo;
   try {
     tokenInfo = await getWsAuthToken();
@@ -2522,7 +2531,7 @@ async function connectWebSocket() {
     log({ wsState: 'open' });
     wsReconnectTimer = null;
     try {
-      ws.send(JSON.stringify({ type: 'auth', uid, token: tokenInfo.token }));
+      ws.send(JSON.stringify({ type: 'auth', uid, accountDigest, token: tokenInfo.token }));
     } catch (err) {
       log({ wsAuthSendError: err?.message || err });
     }
@@ -2617,7 +2626,8 @@ function handleWebSocketMessage(msg) {
     return;
   }
   if (type === 'contact-removed') {
-    const peerUid = String(msg?.peerUid || msg?.peer_uid || msg?.uid || '').toUpperCase();
+    const identity = resolveWsPeer(msg);
+    const peerUid = identity.key;
     if (peerUid) {
       try {
         document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid, notifyPeer: false } }));
@@ -2636,14 +2646,17 @@ function handleWebSocketMessage(msg) {
     return;
   }
   if (type === 'presence') {
-    const online = Array.isArray(msg?.online) ? msg.online : [];
+    const online = Array.isArray(msg?.onlineDigests) ? msg.onlineDigests
+      : Array.isArray(msg?.online_accounts) ? msg.online_accounts
+      : Array.isArray(msg?.online) ? msg.online
+      : [];
     presenceManager.applyPresenceSnapshot(online);
     return;
   }
   if (type === 'presence-update') {
-    const uid = String(msg?.uid || '').trim().toUpperCase();
-    if (!uid) return;
-    presenceManager.setContactPresence(uid, !!msg?.online);
+    const identity = resolveWsPeer(msg);
+    if (!identity.key) return;
+    presenceManager.setContactPresence(identity, !!msg?.online);
     return;
   }
   if (type === 'secure-message' || type === 'message-new') {

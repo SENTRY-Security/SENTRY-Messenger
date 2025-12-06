@@ -2,17 +2,35 @@
 // API wrappers for group management (create/add/remove/get).
 
 import { fetchWithTimeout, jsonReq } from '../core/http.js';
-import { buildAccountPayload } from '../core/store.js';
+import { buildAccountPayload, normalizePeerIdentity } from '../core/store.js';
+
+function normalizeMembers(list = []) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const entry of list) {
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: entry?.accountDigest || entry?.account_digest || entry?.peerAccountDigest || entry?.peer_account_digest || null,
+      peerUid: entry?.uid || entry?.peerUid || entry?.peer_uid || null
+    });
+    if (!identity.key) continue;
+    out.push({
+      accountDigest: identity.accountDigest || null,
+      uid: identity.uid || null
+    });
+  }
+  return out;
+}
 
 export async function createGroup({ groupId, conversationId, name, avatar, members = [], conversationFingerprint } = {}) {
   if (!groupId) throw new Error('groupId required');
   if (!conversationId) throw new Error('conversationId required');
+  const normalizedMembers = normalizeMembers(members);
   const overrides = {
     groupId,
     conversationId,
     name,
     avatar,
-    members
+    members: normalizedMembers
   };
   if (conversationFingerprint) overrides.conversationFingerprint = conversationFingerprint;
   const payload = buildAccountPayload({ overrides });
@@ -25,7 +43,7 @@ export async function createGroup({ groupId, conversationId, name, avatar, membe
 export async function addGroupMembers({ groupId, members = [] } = {}) {
   if (!groupId) throw new Error('groupId required');
   if (!members.length) throw new Error('members required');
-  const payload = buildAccountPayload({ overrides: { groupId, members } });
+  const payload = buildAccountPayload({ overrides: { groupId, members: normalizeMembers(members) } });
   const r = await fetchWithTimeout('/api/v1/groups/members/add', jsonReq(payload), 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -35,7 +53,7 @@ export async function addGroupMembers({ groupId, members = [] } = {}) {
 export async function removeGroupMembers({ groupId, members = [], status } = {}) {
   if (!groupId) throw new Error('groupId required');
   if (!members.length) throw new Error('members required');
-  const overrides = { groupId, members };
+  const overrides = { groupId, members: normalizeMembers(members) };
   if (status) overrides.status = status;
   const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout('/api/v1/groups/members/remove', jsonReq(payload), 15000);

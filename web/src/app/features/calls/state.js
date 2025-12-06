@@ -11,7 +11,7 @@ import {
 import { createCallInvite } from '../../api/calls.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
-import { getUidHex } from '../../core/store.js';
+import { getUidHex, normalizePeerIdentity } from '../../core/store.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -141,17 +141,6 @@ function normalizeKind(kind) {
   return kind === CALL_REQUEST_KIND.VIDEO ? CALL_REQUEST_KIND.VIDEO : CALL_REQUEST_KIND.VOICE;
 }
 
-function normalizePeerUid(value) {
-  const str = String(value || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  return str || null;
-}
-
-function normalizeAccountDigest(value) {
-  if (!value) return null;
-  const str = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  return str.length === 64 ? str : null;
-}
-
 function resetMediaState() {
   activeSession.mediaState = createCallMediaState({
     capabilities: activeSession.localCapability
@@ -191,14 +180,18 @@ export async function requestOutgoingCall({
   kind = CALL_REQUEST_KIND.VOICE,
   traceId = null
 } = {}) {
-  const peerKey = normalizePeerUid(peerUidHex);
+  const identity = normalizePeerIdentity({
+    peerAccountDigest: peerAccountDigest || null,
+    peerUid: peerUidHex
+  });
+  const peerKey = identity.key;
   if (!peerKey) {
     return { ok: false, error: 'MISSING_PEER' };
   }
   if (!canStartCall()) {
     return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
   }
-  const peerDigest = normalizeAccountDigest(peerAccountDigest);
+  const peerDigest = identity.accountDigest || null;
   activeSession = createEmptySession();
   activeSession.traceId = traceId || createTraceId();
   activeSession.sessionId = activeSession.traceId;
@@ -235,7 +228,7 @@ export async function requestOutgoingCall({
       metadata.callerAvatarUrl = selfProfile.avatarUrl;
     }
     const response = await createCallInvite({
-      peerUid: peerKey,
+      peerUid: identity.uid || peerKey,
       peerAccountDigest: peerDigest,
       mode: activeSession.kind === CALL_REQUEST_KIND.VIDEO ? 'video' : 'voice',
       capabilities: activeSession.localCapability,
@@ -273,15 +266,19 @@ export function markIncomingCall({
   envelope,
   traceId
 } = {}) {
-  const peerKey = normalizePeerUid(peerUidHex);
+  const identity = normalizePeerIdentity({
+    peerAccountDigest: peerAccountDigest || null,
+    peerUid: peerUidHex
+  });
+  const peerKey = identity.key;
   if (!peerKey) return { ok: false, error: 'MISSING_PEER' };
   if (!canStartCall()) return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
   activeSession = createEmptySession();
-  activeSession.initiatorUidHex = peerKey;
+  activeSession.initiatorUidHex = identity.uid || peerKey;
   activeSession.direction = CALL_SESSION_DIRECTION.INCOMING;
   activeSession.status = CALL_SESSION_STATUS.INCOMING;
   activeSession.peerUidHex = peerKey;
-  activeSession.peerAccountDigest = peerAccountDigest ? peerAccountDigest.toUpperCase() : null;
+  activeSession.peerAccountDigest = identity.accountDigest || null;
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
   activeSession.remoteDisplayName = peerDisplayName || null;

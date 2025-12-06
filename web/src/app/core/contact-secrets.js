@@ -4,7 +4,13 @@
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { log } from './log.js';
 import { b64 } from '../crypto/nacl.js';
-import { getUidHex, getAccountDigest } from './store.js';
+import {
+  getUidHex,
+  getAccountDigest,
+  normalizePeerIdentity,
+  normalizeAccountDigest,
+  normalizePeerUid
+} from './store.js';
 
 const STORAGE_KEY_BASE = 'contactSecrets-v1';
 const LATEST_KEY_BASE = 'contactSecrets-v1-latest';
@@ -14,6 +20,8 @@ const CONTACT_SECRETS_VERSION = 2;
 let restored = false;
 let contactSecretsLocked = false;
 const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+const contactAliasToPrimary = new Map(); // alias -> primary key (accountDigest preferred)
+const contactPrimaryToAliases = new Map(); // primary -> Set(alias)
 
 function getLocalStorageSafe() {
   if (typeof window === 'undefined') return null;
@@ -42,22 +50,10 @@ function parseJsonSafe(raw) {
   }
 }
 
-function normalizeHex(value) {
-  if (!value) return null;
-  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  return cleaned || null;
-}
-
-function normalizeAccountDigest(value) {
-  if (!value) return null;
-  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  return cleaned && cleaned.length === 64 ? cleaned : null;
-}
-
 function resolveContactSecretsNamespace({ uid, accountDigest } = {}) {
-  const digest = normalizeHex(accountDigest) || normalizeHex(getAccountDigest?.());
+  const digest = normalizeAccountDigest(accountDigest) || normalizeAccountDigest(getAccountDigest?.());
   if (digest) return `acct-${digest}`;
-  const uidHex = normalizeUid(uid ?? getUidHex?.());
+  const uidHex = normalizePeerUid(uid ?? getUidHex?.());
   if (uidHex) return `uid-${uidHex}`;
   return null;
 }
@@ -288,15 +284,7 @@ function debugLog(event, payload) {
 }
 
 function normalizeUid(value) {
-  return String(value || '')
-    .replace(/[^0-9a-f]/gi, '')
-    .toUpperCase() || null;
-}
-
-function normalizePeerKey(value) {
-  const digest = normalizeAccountDigest(value);
-  if (digest) return digest;
-  return normalizeUid(value);
+  return normalizePeerUid(value);
 }
 
 function trimString(value) {
@@ -436,6 +424,79 @@ function ensureMap() {
   return sessionStore.contactSecrets;
 }
 
+function registerContactAliases(primary, aliases = []) {
+  if (!primary) return;
+  let aliasSet = contactPrimaryToAliases.get(primary);
+  if (!aliasSet) {
+    aliasSet = new Set();
+    contactPrimaryToAliases.set(primary, aliasSet);
+  }
+  for (const alias of aliases) {
+    if (!alias || alias === primary) continue;
+    contactAliasToPrimary.set(alias, primary);
+    aliasSet.add(alias);
+  }
+}
+
+function clearContactAliases(primary) {
+  const aliasSet = contactPrimaryToAliases.get(primary);
+  if (aliasSet) {
+    for (const alias of aliasSet) {
+      contactAliasToPrimary.delete(alias);
+    }
+  }
+  contactPrimaryToAliases.delete(primary);
+  contactAliasToPrimary.delete(primary);
+}
+
+function resolvePeerKey(input) {
+  const identity = normalizePeerIdentity(input);
+  if (!identity.key) return { key: null, aliases: [], identity };
+  const aliases = identity.aliases || [];
+  let key = identity.key;
+  const map = ensureMap();
+  const preferredKey = identity.accountDigest || null;
+
+  if (preferredKey) {
+    if (map.has(preferredKey)) {
+      key = preferredKey;
+    } else {
+      const legacyAlias = identity.uid && map.has(identity.uid) ? identity.uid : null;
+      if (legacyAlias) {
+        const legacyValue = map.get(legacyAlias);
+        map.delete(legacyAlias);
+        key = preferredKey;
+        map.set(key, legacyValue);
+        registerContactAliases(key, [legacyAlias]);
+      } else {
+        key = preferredKey;
+      }
+    }
+  }
+
+  if (contactAliasToPrimary.has(key)) {
+    key = contactAliasToPrimary.get(key) || key;
+  }
+
+  if (!map.has(key)) {
+    for (const alias of aliases) {
+      if (!alias) continue;
+      const mapped = contactAliasToPrimary.get(alias);
+      if (mapped && map.has(mapped)) {
+        key = mapped;
+        break;
+      }
+      if (map.has(alias)) {
+        key = alias;
+        break;
+      }
+    }
+  }
+
+  registerContactAliases(key, aliases);
+  return { key, aliases, identity };
+}
+
 export function restoreContactSecrets() {
   if (restored) return ensureMap();
   restored = true;
@@ -479,11 +540,15 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     return null;
   }
   try {
-    if (replace) map.clear();
+    if (replace) {
+      map.clear();
+      contactAliasToPrimary.clear();
+      contactPrimaryToAliases.clear();
+    }
     const parsed = JSON.parse(snapshot);
     if (Array.isArray(parsed)) {
       for (const [peerUid, value] of parsed) {
-        const key = normalizeUid(peerUid);
+        const { key } = resolvePeerKey(peerUid);
         if (!key) continue;
         const inviteId = typeof value?.inviteId === 'string' ? value.inviteId.trim() : null;
         const secret = typeof value?.secret === 'string' ? value.secret.trim() : null;
@@ -533,15 +598,16 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       for (const entry of structured.entries) {
         const normalized = normalizeStructuredEntry(entry);
         if (!normalized) continue;
-        const { peerUid, record } = normalized;
+        const { peerKey, aliases, record } = normalized;
         if (!record.inviteId || !record.secret) continue;
         totalEntries += 1;
         if (record.drState) withDrState += 1;
         if (Array.isArray(record.drHistory) && record.drHistory.length) withHistory += 1;
         if (record.drSeed) withSeed += 1;
-        map.set(peerUid, record);
+        map.set(peerKey, record);
+        registerContactAliases(peerKey, aliases);
         debugLog('restore-entry', {
-          peerUid,
+          peerUid: peerKey,
           hasDrState: !!record.drState,
           historyLen: Array.isArray(record.drHistory) ? record.drHistory.length : 0,
           cursorTs: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
@@ -707,9 +773,36 @@ function cloneContactSecretRecord(existing) {
   };
 }
 
-function buildStructuredEntry(peerUid, record) {
+function derivePeerIdentityForEntry(peerKey) {
+  const peerAccountDigest = normalizeAccountDigest(peerKey);
+  const aliasSet = contactPrimaryToAliases.get(peerKey);
+  let peerUid = null;
+  if (aliasSet) {
+    for (const alias of aliasSet) {
+      const normalized = normalizePeerUid(alias);
+      if (normalized && normalized !== peerAccountDigest) {
+        peerUid = normalized;
+        break;
+      }
+    }
+  }
+  if (!peerUid) {
+    const normalizedKey = normalizePeerUid(peerKey);
+    if (normalizedKey && normalizedKey !== peerAccountDigest) {
+      peerUid = normalizedKey;
+    }
+  }
   return {
-    peerUid,
+    peerAccountDigest: peerAccountDigest || null,
+    peerUid: peerUid || (peerAccountDigest ? null : normalizePeerUid(peerKey) || null)
+  };
+}
+
+function buildStructuredEntry(peerUid, record) {
+  const identity = derivePeerIdentityForEntry(peerUid);
+  return {
+    peerUid: identity.peerUid || identity.peerAccountDigest || null,
+    peerAccountDigest: identity.peerAccountDigest || null,
     invite: {
       id: record.inviteId || null,
       secret: record.secret || null,
@@ -748,9 +841,9 @@ function serializeContactSecretsMap(map) {
     maxHistory: 0
   };
   if (map instanceof Map) {
-    for (const [peerUid, record] of map.entries()) {
-      if (!peerUid || !record?.inviteId || !record?.secret) continue;
-      const entry = buildStructuredEntry(peerUid, record);
+    for (const [peerKey, record] of map.entries()) {
+      if (!peerKey || !record?.inviteId || !record?.secret) continue;
+      const entry = buildStructuredEntry(peerKey, record);
       entries.push(entry);
       summary.entries += 1;
       if (entry.dr?.state && typeof entry.dr.state === 'object') {
@@ -789,10 +882,11 @@ export function buildContactSecretsSnapshot() {
 
 function normalizeStructuredEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
-  const peerAccountDigest = normalizeAccountDigest(entry.peerAccountDigest || entry.peer_account_digest || null);
-  const peerUid = normalizeUid(entry.peerUid || entry.peer_uid || null);
-  const peerKey = peerAccountDigest || peerUid;
-  if (!peerKey) return null;
+  const identity = normalizePeerIdentity({
+    peerAccountDigest: entry.peerAccountDigest || entry.peer_account_digest || null,
+    peerUid: entry.peerUid || entry.peer_uid || null
+  });
+  if (!identity.key) return null;
   const invite = entry.invite || {};
   const inviteId = normalizeOptionalString(invite.id);
   const secret = normalizeOptionalString(invite.secret);
@@ -841,7 +935,7 @@ function normalizeStructuredEntry(entry) {
     record.updatedAt = Number.isFinite(updated) ? updated : null;
   }
 
-  return { peerUid: peerKey, record };
+  return { peerKey: identity.key, aliases: identity.aliases || [], record };
 }
 
 function parseStructuredSnapshot(payloadObj) {
@@ -992,11 +1086,12 @@ function normalizeContactSecretUpdate(update = {}) {
 
 export function setContactSecret(peerUid, opts = {}) {
   if (contactSecretsLocked) {
-    debugLog('set-skip-locked', { peerUid: normalizeUid(peerUid), source: opts?.__debugSource || null });
+    const identity = normalizePeerIdentity(peerUid);
+    debugLog('set-skip-locked', { peerUid: identity.key || null, source: opts?.__debugSource || null });
     return;
   }
   const structured = normalizeContactSecretUpdate(opts);
-  const key = normalizePeerKey(peerUid);
+  const { key, aliases } = resolvePeerKey(peerUid);
   if (!key) return;
   const map = ensureMap();
   const existing = map.get(key) || null;
@@ -1026,9 +1121,11 @@ export function setContactSecret(peerUid, opts = {}) {
   }
 
   map.set(key, next);
+  registerContactAliases(key, aliases);
   persistContactSecrets();
   debugLog('set', {
     peerUid: key,
+    peerAccountDigest: normalizeAccountDigest(key) || null,
     role: next.role || null,
     hasDrState: !!next.drState,
     drUpdatedAt: next.drState?.updatedAt || null,
@@ -1041,14 +1138,17 @@ export function setContactSecret(peerUid, opts = {}) {
 }
 
 export function deleteContactSecret(peerUid) {
-  const key = normalizePeerKey(peerUid);
+  const { key } = resolvePeerKey(peerUid);
   if (!key) return;
   const map = ensureMap();
-  if (map.delete(key)) persistContactSecrets();
+  if (map.delete(key)) {
+    clearContactAliases(key);
+    persistContactSecrets();
+  }
 }
 
 export function getContactSecret(peerUid) {
-  const key = normalizePeerKey(peerUid);
+  const { key } = resolvePeerKey(peerUid);
   if (!key) return null;
   const map = ensureMap();
   return map.get(key) || null;

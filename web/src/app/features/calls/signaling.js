@@ -1,5 +1,6 @@
 import { log } from '../../core/log.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
+import { normalizePeerIdentity } from '../../core/store.js';
 import { emitCallEvent, CALL_EVENT } from './events.js';
 import {
   CALL_SESSION_STATUS,
@@ -17,9 +18,10 @@ function normalizeUidKey(uid) {
   return String(uid || '').toUpperCase() || null;
 }
 
-function resolveContactSnapshot(uid) {
-  const key = normalizeUidKey(uid);
-  if (!key || !(sessionStore?.contactIndex instanceof Map)) return { key: null, nickname: null, avatarUrl: null };
+function resolveContactSnapshot(peer) {
+  const identity = normalizePeerIdentity(peer);
+  const key = identity.key;
+  if (!key || !(sessionStore?.contactIndex instanceof Map)) return { key: null, nickname: null, avatarUrl: null, accountDigest: identity.accountDigest || null };
   const entry = sessionStore.contactIndex.get(key);
   if (!entry) return { key, nickname: null, avatarUrl: null };
   const nickname =
@@ -45,7 +47,7 @@ function resolveContactSnapshot(uid) {
       break;
     }
   }
-  return { key, nickname, avatarUrl };
+  return { key, nickname, avatarUrl, accountDigest: identity.accountDigest || entry.peerAccountDigest || null };
 }
 
 export function setCallSignalSender(fn) {
@@ -70,6 +72,7 @@ function emitSignal(payload) {
 export function sendCallInviteSignal({
   callId,
   peerUidHex,
+  peerAccountDigest = null,
   mode = 'voice',
   metadata = {},
   traceId = null,
@@ -85,6 +88,7 @@ export function sendCallInviteSignal({
     type: 'call-invite',
     callId,
     targetUid: String(peerUidHex).trim().toUpperCase(),
+    targetAccountDigest: peerAccountDigest || null,
     mode: mode === 'video' ? 'video' : 'voice',
     metadata,
     capabilities: normalizedCapabilities,
@@ -95,20 +99,36 @@ export function sendCallInviteSignal({
 
 export function sendCallSignal(type, payload = {}) {
   if (!type) return false;
-  return emitSignal({ type, ...payload });
+  let normalizedPayload = payload;
+  if (payload?.targetUid || payload?.targetAccountDigest) {
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: payload.targetAccountDigest || payload.target_account_digest || null,
+      peerUid: payload.targetUid || payload.target_uid || null
+    });
+    normalizedPayload = {
+      ...payload,
+      targetUid: identity.uid || identity.key || payload.targetUid || payload.target_uid || null,
+      targetAccountDigest: identity.accountDigest || payload.targetAccountDigest || payload.target_account_digest || null
+    };
+  }
+  return emitSignal({ type, ...normalizedPayload });
 }
 
 function handleIncomingInvite(msg) {
   const payload = msg?.payload || {};
   const metadata = payload.metadata || payload.meta || {};
   const envelope = payload.envelope || null;
-  const contactSnapshot = resolveContactSnapshot(msg?.fromUid);
+  const contactSnapshot = resolveContactSnapshot({
+    peerAccountDigest: msg?.fromAccountDigest || msg?.from_account_digest || null,
+    peerUid: msg?.fromUid || null
+  });
   const fallbackName = contactSnapshot.nickname
     || (contactSnapshot.key ? `好友 ${contactSnapshot.key.slice(-4)}` : null);
   const fallbackAvatar = contactSnapshot.avatarUrl || null;
   const result = markIncomingCall({
     callId: msg.callId,
-    peerUidHex: msg.fromUid,
+    peerUidHex: contactSnapshot.key || msg.fromUid,
+    peerAccountDigest: contactSnapshot.accountDigest || msg.fromAccountDigest || msg.from_account_digest || null,
     peerDisplayName: metadata.displayName
       || metadata.callerDisplayName
       || metadata.name

@@ -1,4 +1,5 @@
 import { sessionStore } from './session-store.js';
+import { normalizePeerIdentity } from '../../core/store.js';
 
 export function createPresenceManager(options) {
   const {
@@ -12,17 +13,29 @@ export function createPresenceManager(options) {
   const contactIndex = sessionStore.contactIndex;
 
   function sendPresenceSubscribe() {
-    const peers = Array.from(new Set(sessionStore.contactState
-      .map((c) => String(c?.peerUid || '').toUpperCase())
-      .filter(Boolean)));
-    wsSend({ type: 'presence-subscribe', uids: peers });
+    const digests = new Set();
+    const uids = new Set();
+    for (const c of sessionStore.contactState || []) {
+      const identity = normalizePeerIdentity({
+        peerAccountDigest: c?.peerAccountDigest || c?.peerUid,
+        peerUid: c?.peerUid
+      });
+      if (identity.accountDigest) digests.add(identity.accountDigest);
+      if (identity.uid) uids.add(identity.uid);
+    }
+    wsSend({
+      type: 'presence-subscribe',
+      accountDigests: Array.from(digests),
+      uids: Array.from(uids)
+    });
   }
 
   function applyPresenceSnapshot(list) {
+    const entries = Array.isArray(list) ? list : [];
     const normalized = new Set();
-    for (const uid of list) {
-      const key = String(uid || '').trim().toUpperCase();
-      if (key) normalized.add(key);
+    for (const entry of entries) {
+      const identity = normalizePeerIdentity(entry);
+      if (identity.key) normalized.add(identity.key);
     }
     const previous = new Set(onlineContacts);
     for (const key of normalized) {
@@ -40,7 +53,8 @@ export function createPresenceManager(options) {
   }
 
   function setContactPresence(uid, online) {
-    const key = String(uid || '').toUpperCase();
+    const identity = normalizePeerIdentity(uid);
+    const key = identity.key;
     if (!key) return;
     if (online) {
       if (!onlineContacts.has(key)) {
@@ -70,7 +84,8 @@ export function createPresenceManager(options) {
   }
 
   function removePresenceForContact(uid) {
-    const key = String(uid || '').toUpperCase();
+    const identity = normalizePeerIdentity(uid);
+    const key = identity.key;
     if (!key) return;
     if (onlineContacts.has(key)) {
       onlineContacts.delete(key);

@@ -30,7 +30,8 @@ let _UID_DIGEST = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
 const _DEVICE_PRIV_WAITERS = new Set();
-const _DR_SESS = new Map(); // peer_uidHex -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
+const _DR_SESS = new Map(); // peerKey (accountDigest preferred) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
+const _DR_PEER_ALIASES = new Map(); // alias -> primary peerKey
 let _OPAQUE_SERVER_ID = null;
 
 function settleDevicePrivWaiter(entry, value) {
@@ -65,13 +66,68 @@ export function getAccountToken() { return _ACCOUNT_TOKEN; }
 export function setAccountToken(v) { _ACCOUNT_TOKEN = v ? String(v) : null; }
 
 export function getAccountDigest() { return _ACCOUNT_DIGEST; }
-export function setAccountDigest(v) {
-  if (!v) {
-    _ACCOUNT_DIGEST = null;
-    return;
+export function normalizeAccountDigest(value) {
+  if (!value) return null;
+  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  return cleaned && cleaned.length === 64 ? cleaned : null;
+}
+export function normalizePeerUid(value) {
+  if (!value) return null;
+  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  return cleaned || null;
+}
+export function normalizePeerIdentity(peer) {
+  if (peer && typeof peer === 'object') {
+    const digest = normalizeAccountDigest(peer.peerAccountDigest ?? peer.accountDigest ?? peer.peer_account_digest ?? peer.account_digest);
+    const uid = normalizePeerUid(peer.peerUid ?? peer.peer_uid ?? peer.uidHex ?? peer.uid);
+    const primary = digest || uid || null;
+    const aliases = [];
+    if (digest) aliases.push(digest);
+    if (uid && uid !== digest) aliases.push(uid);
+    return { key: primary, accountDigest: digest, uid, aliases };
   }
-  const cleaned = String(v).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  _ACCOUNT_DIGEST = cleaned || null;
+  const digest = normalizeAccountDigest(peer);
+  const uid = normalizePeerUid(peer);
+  const primary = digest || uid || null;
+  const aliases = [];
+  if (digest) aliases.push(digest);
+  if (uid && uid !== digest) aliases.push(uid);
+  return { key: primary, accountDigest: digest, uid, aliases };
+}
+function registerDrAliases(primary, aliases = []) {
+  if (!primary) return;
+  for (const alias of aliases) {
+    if (!alias || alias === primary) continue;
+    _DR_PEER_ALIASES.set(alias, primary);
+  }
+}
+function resolveDrKey(peerInput) {
+  const identity = normalizePeerIdentity(peerInput);
+  if (!identity.key) return { key: null, aliases: [] };
+  const aliases = identity.aliases || [];
+  let key = identity.key;
+  if (_DR_PEER_ALIASES.has(key)) {
+    key = _DR_PEER_ALIASES.get(key) || key;
+  }
+  if (!_DR_SESS.has(key)) {
+    for (const alias of aliases) {
+      if (!alias) continue;
+      const mapped = _DR_PEER_ALIASES.get(alias);
+      if (mapped && _DR_SESS.has(mapped)) {
+        key = mapped;
+        break;
+      }
+      if (_DR_SESS.has(alias)) {
+        key = alias;
+        break;
+      }
+    }
+  }
+  registerDrAliases(key, aliases);
+  return { key, aliases };
+}
+export function setAccountDigest(v) {
+  _ACCOUNT_DIGEST = normalizeAccountDigest(v);
 }
 
 export function getUidDigest() { return _UID_DIGEST; }
@@ -113,8 +169,9 @@ export function waitForDevicePriv({ timeoutMs = 5000 } = {}) {
 }
 
 export function getDrSessMap() { return _DR_SESS; }
-export function drState(peerUidHex) {
-  const key = (peerUidHex || '').toUpperCase();
+export function drState(peerInput) {
+  const { key } = resolveDrKey(peerInput);
+  if (!key) return null;
   if (!_DR_SESS.has(key)) {
     _DR_SESS.set(key, {
       rk: null,
@@ -143,9 +200,18 @@ export function drState(peerUidHex) {
   }
   return state;
 }
-export function clearDrState(peerUidHex) {
-  if (!peerUidHex) { _DR_SESS.clear(); return; }
-  _DR_SESS.delete((peerUidHex || '').toUpperCase());
+export function clearDrState(peerInput) {
+  if (!peerInput) {
+    _DR_SESS.clear();
+    _DR_PEER_ALIASES.clear();
+    return;
+  }
+  const { key } = resolveDrKey(peerInput);
+  if (!key) return;
+  _DR_SESS.delete(key);
+  for (const [alias, primary] of Array.from(_DR_PEER_ALIASES.entries())) {
+    if (alias === key || primary === key) _DR_PEER_ALIASES.delete(alias);
+  }
 }
 
 // --- clear helpers ---
@@ -175,6 +241,7 @@ export function resetAll() {
   _MK_RAW = null;
   setDevicePriv(null);
   _DR_SESS.clear();
+  _DR_PEER_ALIASES.clear();
 }
 
 /**

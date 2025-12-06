@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getUidHex, getAccountToken, getAccountDigest } from '../../core/store.js';
+import { getUidHex, getAccountToken, getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
 import {
@@ -43,6 +43,7 @@ import {
   resolveViewerRole
 } from '../../features/calls/call-log.js';
 import { bytesToB64Url } from './ui-utils.js';
+import { normalizePeerIdentity } from '../../core/store.js';
 const sentCallLogIds = new Set();
 const callLogPlaceholders = new Map();
 const GROUPS_ENABLED = false;
@@ -286,16 +287,19 @@ export function initMessagesPane({
     }
     emptyEl.style.display = 'none';
     listEl.innerHTML = contacts.map((c, idx) => {
-      const uid = String(c?.peerUid || '').toUpperCase();
-      const nickname = escapeHtml(c?.nickname || `好友 ${uid.slice(-4)}`);
-      const digest =
-        c?.accountDigest || c?.account_digest || c?.peerAccountDigest || c?.peer_account_digest || '';
+      const identity = normalizePeerIdentity({
+        peerAccountDigest: c?.peerAccountDigest || c?.peer_account_digest || c?.accountDigest || c?.account_digest || null,
+        peerUid: c?.peerUid || c?.peer_uid || null
+      });
+      const uid = identity.uid || identity.key || '';
+      const nickname = escapeHtml(c?.nickname || `好友 ${(uid || identity.key || '').slice(-4)}`);
+      const digest = identity.accountDigest || '';
       return `
         <label class="group-builder-item" style="display:flex;align-items:center;gap:10px;padding:8px;border:1px solid rgba(148,163,184,0.4);border-radius:10px;cursor:pointer;">
           <input type="checkbox" data-uid="${uid}" data-digest="${escapeHtml(digest)}" style="width:16px;height:16px;"/>
           <div style="display:flex;flex-direction:column;gap:2px;">
             <span style="font-size:13px;font-weight:600;">${nickname}</span>
-            <span style="font-size:11px;color:#64748b;">${uid}</span>
+            <span style="font-size:11px;color:#64748b;">${digest || uid || ''}</span>
           </div>
         </label>
       `;
@@ -312,9 +316,9 @@ export function initMessagesPane({
       if (cb.checked) {
         const uid = cb.getAttribute('data-uid') || '';
         const digest = cb.getAttribute('data-digest') || '';
-        if (digest) {
-          selected.push({ accountDigest: digest, uid });
-        }
+        const identity = normalizePeerIdentity({ peerAccountDigest: digest || null, peerUid: uid || null });
+        if (!identity.key) return;
+        selected.push({ accountDigest: identity.accountDigest || null, uid: identity.uid || identity.key });
       }
     });
     const nameVal = (nameInput?.value || '').trim();
@@ -1131,6 +1135,7 @@ export function initMessagesPane({
     const sent = sendCallInviteSignal({
       callId,
       peerUidHex: state.activePeerUid,
+      peerAccountDigest,
       mode: actionType === 'video' ? 'video' : 'voice',
       metadata,
       capabilities,
@@ -2582,13 +2587,16 @@ export function initMessagesPane({
 
     const convIndex = ensureConversationIndex();
     let convEntry = convIndex.get(convId) || null;
-    const peerFromEventRaw = event?.peerUid || event?.peer_uid || event?.fromUid || event?.from_uid || null;
-    const peerFromEvent = peerFromEventRaw ? String(peerFromEventRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
+    const peerFromEventIdentity = normalizePeerIdentity({
+      peerAccountDigest: event?.peerAccountDigest || event?.peer_account_digest || event?.fromAccountDigest || event?.from_account_digest || null,
+      peerUid: event?.peerUid || event?.peer_uid || event?.fromUid || event?.from_uid || null
+    });
+    const peerFromEvent = peerFromEventIdentity.key;
 
     if (!convEntry) {
       convEntry = { token_b64: null, peerUid: peerFromEvent || null };
       convIndex.set(convId, convEntry);
-    } else if (!convEntry.peerUid && peerFromEvent) {
+    } else if (peerFromEvent && convEntry.peerUid !== peerFromEvent) {
       convEntry.peerUid = peerFromEvent;
     }
 
@@ -2619,9 +2627,15 @@ export function initMessagesPane({
     if (!thread) return;
 
     const myUid = getUidHex();
+    const myAcct = getAccountDigest();
     const senderUidRaw = event?.senderUid || event?.sender_uid || null;
     const senderUid = senderUidRaw ? String(senderUidRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
-    const isSelf = !!(myUid && senderUid && myUid === senderUid);
+    const senderAcctRaw = event?.senderAccountDigest || event?.sender_account_digest || null;
+    const senderAcct = senderAcctRaw ? String(senderAcctRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
+    const isSelf = !!(
+      (myUid && senderUid && myUid === senderUid) ||
+      (myAcct && senderAcct && myAcct === senderAcct)
+    );
 
     const rawMsgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);

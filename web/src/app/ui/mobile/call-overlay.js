@@ -705,6 +705,7 @@ export function initCallOverlay({ showToast }) {
       sendCallSignal('call-accept', {
         callId: session.callId,
         targetUid: session.peerUidHex,
+        targetAccountDigest: session.peerAccountDigest || null,
         metadata: { acceptedAt: Date.now() }
       });
     } catch (err) {
@@ -726,6 +727,7 @@ export function initCallOverlay({ showToast }) {
         sendCallSignal('call-reject', {
           callId: session.callId,
           targetUid: session.peerUidHex,
+          targetAccountDigest: session.peerAccountDigest || null,
           reason: 'user_reject'
         });
       }
@@ -749,6 +751,7 @@ export function initCallOverlay({ showToast }) {
         sendCallSignal('call-cancel', {
           callId: session.callId,
           targetUid: session.peerUidHex,
+          targetAccountDigest: session.peerAccountDigest || null,
           reason: 'caller_cancelled'
         });
       }
@@ -775,6 +778,7 @@ export function initCallOverlay({ showToast }) {
         sendCallSignal('call-end', {
           callId: session.callId,
           targetUid: session.peerUidHex,
+          targetAccountDigest: session.peerAccountDigest || null,
           reason: 'hangup'
         });
       }

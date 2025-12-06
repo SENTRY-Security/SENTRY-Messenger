@@ -4,7 +4,7 @@ import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
-import { getUidHex, getAccountDigest } from '../../core/store.js';
+import { getUidHex, getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
 
 export function initContactsView(options) {
@@ -154,10 +154,14 @@ export function initContactsView(options) {
   }
 
   function removeContactState(peerUid, { notifyPeer = true } = {}) {
-    const key = String(peerUid || '').toUpperCase();
+    const identity = normalizePeerIdentity({ peerAccountDigest: peerUid, peerUid });
+    const key = identity.key;
     if (!key) return false;
     let mutated = false;
-    const idx = sessionStore.contactState.findIndex((c) => String(c?.peerUid || '').toUpperCase() === key);
+    const idx = sessionStore.contactState.findIndex((c) => {
+      const id = normalizePeerIdentity({ peerAccountDigest: c?.peerAccountDigest, peerUid: c?.peerUid });
+      return id.key === key;
+    });
     if (idx >= 0) {
       sessionStore.contactState.splice(idx, 1);
       mutated = true;
@@ -357,7 +361,7 @@ export function initContactsView(options) {
     const prevPeers = new Set(
       Array.isArray(sessionStore.contactState)
         ? sessionStore.contactState
-            .map((entry) => String(entry?.peerUid || '').toUpperCase())
+            .map((entry) => normalizePeerIdentity({ peerAccountDigest: entry?.peerAccountDigest, peerUid: entry?.peerUid }).key)
             .filter(Boolean)
         : []
     );
@@ -373,13 +377,22 @@ export function initContactsView(options) {
     conversationIndex?.clear();
     const sanitized = [];
     for (const entry of fetched) {
-      const key = String(entry?.peerUid || '').toUpperCase();
+      const identity = normalizePeerIdentity({
+        peerAccountDigest: entry?.peerAccountDigest || entry?.peer_account_digest || null,
+        peerUid: entry?.peerUid || entry?.peer_uid || null
+      });
+      const key = identity.key;
       if (!key) continue;
       if (isRecentlyRemoved(key)) {
         presenceManager.removePresenceForContact(key);
         continue;
       }
-      contactIndex.set(key, entry);
+      const normalizedEntry = {
+        ...entry,
+        peerAccountDigest: identity.accountDigest || entry?.peerAccountDigest || null,
+        peerUid: identity.uid || identity.key || entry?.peerUid || null
+      };
+      contactIndex.set(key, normalizedEntry);
       const conv = entry?.conversation;
       if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
         conversationIndex.set(conv.conversation_id, {
@@ -396,11 +409,11 @@ export function initContactsView(options) {
       if (entry?.hidden === true || entry?.isSelfContact === true) {
         continue;
       }
-      sanitized.push(entry);
+      sanitized.push(normalizedEntry);
     }
     sessionStore.contactState = sanitized;
     const currentPeers = new Set(
-      sanitized.map((entry) => String(entry?.peerUid || '').toUpperCase()).filter(Boolean)
+      sanitized.map((entry) => normalizePeerIdentity({ peerAccountDigest: entry?.peerAccountDigest, peerUid: entry?.peerUid }).key).filter(Boolean)
     );
     for (const peer of prevPeers) {
       if (peer && !currentPeers.has(peer)) {
@@ -415,8 +428,9 @@ export function initContactsView(options) {
     presenceManager.sendPresenceSubscribe();
   }
 
-  async function addContactEntry({ peerUid, nickname, avatar, conversation, contactSecret, inviteId, secretRole }) {
-    const key = String(peerUid || '').toUpperCase();
+  async function addContactEntry({ peerUid, peerAccountDigest, nickname, avatar, conversation, contactSecret, inviteId, secretRole }) {
+    const identity = normalizePeerIdentity({ peerAccountDigest, peerUid });
+    const key = identity.key;
     if (!key) return;
     const selfUid = (getUidHex() || '').toUpperCase();
     const selfDigest = (getAccountDigest() || '').toUpperCase();
@@ -443,7 +457,8 @@ export function initContactsView(options) {
     } : null;
 
     const contact = {
-      peerUid: key,
+      peerUid: identity.uid || key,
+      peerAccountDigest: identity.accountDigest || null,
       nickname: nickname || `好友 ${key.slice(-4)}`,
       avatar: avatar || null,
       addedAt: now,
@@ -472,7 +487,10 @@ export function initContactsView(options) {
         });
         scheduleDrBootstrap(key, entry.conversation);
       }
-      const existingIndex = sessionStore.contactState.findIndex((c) => c.peerUid === key);
+      const existingIndex = sessionStore.contactState.findIndex((c) => {
+        const id = normalizePeerIdentity({ peerAccountDigest: c?.peerAccountDigest, peerUid: c?.peerUid });
+        return id.key === key;
+      });
       if (existingIndex >= 0) {
         sessionStore.contactState[existingIndex] = entry;
       } else {
