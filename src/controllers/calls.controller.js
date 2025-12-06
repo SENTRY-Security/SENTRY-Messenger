@@ -436,9 +436,7 @@ export async function getCallSession(req, res) {
     return res.status(404).json({ error: 'NotFound', message: 'call session absent' });
   }
   const requesterMatches = (session.callerAccountDigest && session.callerAccountDigest === auth.accountDigest)
-    || (session.calleeAccountDigest && session.calleeAccountDigest === auth.accountDigest)
-    || session.callerUid === auth.uidHex
-    || session.calleeUid === auth.uidHex;
+    || (session.calleeAccountDigest && session.calleeAccountDigest === auth.accountDigest);
   if (!requesterMatches) {
     return res.status(403).json({ error: 'Forbidden', message: 'not a participant of this call' });
   }

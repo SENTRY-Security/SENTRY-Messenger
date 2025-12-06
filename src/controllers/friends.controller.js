@@ -408,13 +408,14 @@ export const acceptInvite = async (req, res) => {
   }
 
   const data = await upstream.json();
+  const ownerUidResolved = normalizeUidHex(data?.owner_uid || ownerUid || null);
   try {
     const manager = getWebSocketManager();
-    manager?.notifyInviteAccepted(data?.owner_uid, input.inviteId, guestUid);
+    if (ownerUidResolved) manager?.notifyInviteAccepted(ownerUidResolved, input.inviteId, guestUid);
     if (guestUid) manager?.notifyContactsReload(guestUid, data?.guest_account_digest || auth.accountDigest || null);
-    if (data?.owner_uid) manager?.notifyContactsReload(String(data.owner_uid).toUpperCase(), data?.owner_account_digest || null);
-    if (data?.owner_uid && input.contactEnvelope && guestUid) {
-      manager?.sendContactShare(String(data.owner_uid).toUpperCase(), {
+    if (ownerUidResolved) manager?.notifyContactsReload(ownerUidResolved, data?.owner_account_digest || null);
+    if (ownerUidResolved && input.contactEnvelope && guestUid) {
+      manager?.sendContactShare(ownerUidResolved, {
         fromUid: guestUid,
         inviteId: input.inviteId,
         envelope: input.contactEnvelope
@@ -424,7 +425,6 @@ export const acceptInvite = async (req, res) => {
     logger.warn({ err: err?.message || err }, 'ws_notify_failed');
   }
   try {
-    const ownerUidResolved = normalizeUidHex(data?.owner_uid || ownerUid || null);
     setBootstrapCache({
       ownerUid: ownerUidResolved,
       guestUid,
@@ -696,8 +696,10 @@ export const bootstrapFriendSession = async (req, res) => {
   const responseBase = {
     role: typeof record.role === 'string' ? record.role : null,
     inviteId: record.invite_id || record.inviteId || null,
-    ownerUid: formatUid(record.owner_uid || record.ownerUid),
-    guestUid: formatUid(record.guest_uid || record.guestUid),
+    ownerUid: null,
+    guestUid: null,
+    ownerAccountDigest: record.owner_account_digest || record.ownerAccountDigest || null,
+    guestAccountDigest: record.guest_account_digest || record.guestAccountDigest || null,
     guestContact: record.guest_contact || record.guestContact || null,
     ownerContact: record.owner_contact || record.ownerContact || null,
     guestContactTs: record.guest_contact_ts || record.guestContactTs || null,

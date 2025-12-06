@@ -359,6 +359,14 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 - [x] 前端 WS/事件：所有 WS 發送/接收事件（contact-share / contacts-reload / presence / secure-message / call）改為 digest 為主（保留 UID）。
 - [x] 前端 呼叫/群組：API payload、本地 state、列表鍵值改用 account_digest，保留 UID fallback。
 - [x] 前端 UI/Session：session-store/index/listener 等使用 digest 索引，convId 雙寫容錯。
+- [x] Schema 清理：移除仍保存 UID/uid_digest 的欄位，執行時需同步全面掃描 Worker/Node/前端的使用點並改成 account_digest：
+  - [x] `accounts.uid_plain`：確認登入/備份/交棒流程不再依賴 UID 明文後刪除欄位。
+  - [x] `friend_invites.owner_uid`、`friend_invites.guest_uid`：邀請建立/接受/續期/Bootstrap API 全改 digest。
+  - [x] `call_sessions.caller_uid`、`call_sessions.callee_uid`：通話建立/狀態查詢/WS 事件改讀寫 account_digest。
+  - [x] `call_events.from_uid`、`call_events.to_uid`：事件寫入/查詢/稽核改用 `from_account_digest` / `to_account_digest` 後移除舊欄位。
+  - [x] `groups.creator_uid`：建群/列表/ACL 同步移除 UID 欄位。
+  - [x] `group_members.uid`、`group_members.inviter_uid`：成員新增/查詢/邀請與 WS payload 改 digest 後刪除。
+  - [x] `group_invites.issuer_uid`：群組邀請建立/驗證/使用紀錄改 digest 後移除。
 - [ ] 清空 D1/R2 + 部署：套用遷移，wipe 後重新部署 Worker/Node/Pages。
 - [ ] 測試：跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 

@@ -9,8 +9,8 @@
 | 欄位 | 型別 | 說明 |
 | ---- | ---- | ---- |
 | `call_id` | TEXT (PK) | UUID |
-| `caller_uid` | TEXT | 呼叫方 |
-| `callee_uid` | TEXT | 被叫方 |
+| `caller_account_digest` | TEXT | 呼叫方 account digest |
+| `callee_account_digest` | TEXT | 被叫方 account digest |
 | `status` | TEXT | `dialing`, `ringing`, `connected`, `ended`, `failed` |
 | `mode` | TEXT | `voice`, `video` |
 | `capabilities` | JSON | audio/video/screenshare |
@@ -29,6 +29,7 @@
 | `event_id` (PK) | UUID |
 | `call_id` | |
 | `type` | `invite`, `accept`, `media-update`… |
+| `from_account_digest` / `to_account_digest` | 事件來源 / 目標 digest |
 | `payload` | JSON 簡要資訊 |
 | `ts` | epoch ms |
 

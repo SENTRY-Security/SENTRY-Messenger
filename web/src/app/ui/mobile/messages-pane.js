@@ -464,6 +464,11 @@ export function initMessagesPane({
         return session.direction;
       }
       const myUid = getUidHex();
+      const myAcct = getAccountDigest?.() || null;
+      const callerAcct = session.initiatorAccountDigest || session.callerAccountDigest || null;
+      if (myAcct && callerAcct && String(callerAcct).toUpperCase() !== String(myAcct).toUpperCase()) {
+        return CALL_SESSION_DIRECTION.INCOMING;
+      }
       const callerUid = session.initiatorUidHex || session.initiatorUid || session.callerUid || session.fromUid || session.fromUidHex || null;
       if (myUid && callerUid && String(callerUid).replace(/[^0-9a-f]/gi, '').toUpperCase() !== String(myUid || '').toUpperCase()) {
         return CALL_SESSION_DIRECTION.INCOMING;
