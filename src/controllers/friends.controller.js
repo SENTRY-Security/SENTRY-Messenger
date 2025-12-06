@@ -639,7 +639,6 @@ export const bootstrapFriendSession = async (req, res) => {
   const normalizedWorkerGuestBundle = normalizeGuestBundlePayload(workerGuestBundle);
   if (!normalizedWorkerGuestBundle) {
     logger.warn({
-      peerUid,
       inviteId: responseBase.inviteId || payload.inviteId || null
     }, 'guest_bundle_missing_from_worker');
     return res.status(409).json({

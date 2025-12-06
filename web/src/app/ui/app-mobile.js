@@ -6,7 +6,7 @@ import { log, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import {
   getMkRaw,
-  setMkRaw, setUidHex,
+  setMkRaw,
   setAccountToken, setAccountDigest,
   setDevicePriv,
   resetAll, clearSecrets,
@@ -1281,8 +1281,6 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     const identityKey = accountDigest || null;
     if (identityKey) setAccountDigest(identityKey);
     if (accountToken) setAccountToken(accountToken);
-    // 兼容舊邏輯：digest 也寫入 uidHex 欄位供舊代碼使用
-    if (identityKey) setUidHex(identityKey);
     if (mkb64 && !getMkRaw()) setMkRaw(b64u8(mkb64));
     if (wrappedMkRaw) {
       try {

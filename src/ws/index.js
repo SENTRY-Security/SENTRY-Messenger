@@ -312,7 +312,6 @@ function addClient(accountDigest, ws, sessionTs) {
 }
 
 function removeClient(ws) {
-  const uid = ws.__uid;
   const acct = ws.__accountDigest;
   if (!acct) return;
   const set = clients.get(acct);
@@ -322,7 +321,7 @@ function removeClient(ws) {
     clients.delete(acct);
     latestSessionTs.delete(acct);
   }
-  logger.info({ uid, accountDigest: acct }, 'ws_client_removed');
+  logger.info({ accountDigest: acct }, 'ws_client_removed');
   if (!set || set.size === 0) {
     notifyPresence(acct, false);
   }
@@ -360,7 +359,6 @@ function handleClientMessage(ws, data) {
       return;
     }
     ws.__accountDigest = tokenDigest;
-    ws.__uid = null;
     const sessionTs = verification.payload.iat || Math.floor(Date.now() / 1000);
     const ok = addClient(tokenDigest, ws, sessionTs);
     if (!ok) return;
@@ -372,7 +370,7 @@ function handleClientMessage(ws, data) {
   }
   if (!ws.__accountDigest) return;
   if (msg.type === 'presence-subscribe') {
-    const list = Array.isArray(msg.accountDigests) ? msg.accountDigests : Array.isArray(msg.uids) ? msg.uids : [];
+    const list = Array.isArray(msg.accountDigests) ? msg.accountDigests : [];
     const normalized = registerPresenceWatchers(ws, list);
     const online = normalized.filter(isDigestOnline);
     try {
@@ -455,7 +453,6 @@ export function setupWebSocket(server) {
   });
 
   wss.on('connection', (ws) => {
-    ws.__uid = null;
     ws.__accountDigest = null;
     ws.__watching = new Set();
     ws.on('message', (data) => {
@@ -486,20 +483,19 @@ export function setupWebSocket(server) {
       const ownerDigest = canonicalAccountDigest(ownerAccountDigest);
       if (!ownerDigest) return;
       const senderDigest = canonicalAccountDigest(fromAccountDigest);
-      broadcastByDigest(ownerDigest, { type: 'invite-accepted', inviteId, fromUid: null, fromAccountDigest: senderDigest, ts: Date.now() });
+      broadcastByDigest(ownerDigest, { type: 'invite-accepted', inviteId, fromAccountDigest: senderDigest, ts: Date.now() });
     },
     notifyContactsReload(_uid, accountDigest = null) {
       const digest = canonicalAccountDigest(accountDigest || null);
       if (!digest) return;
       broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    sendContactShare(_targetUid, { fromUid, fromAccountDigest, inviteId, envelope, targetAccountDigest }) {
+    sendContactShare(_targetUid, { fromAccountDigest, inviteId, envelope, targetAccountDigest }) {
       const digest = canonicalAccountDigest(targetAccountDigest);
       if (!digest || !inviteId || !envelope) return;
-      const senderDigest = canonicalAccountDigest(fromAccountDigest || fromUid);
+      const senderDigest = canonicalAccountDigest(fromAccountDigest);
       broadcastByDigest(digest, {
         type: 'contact-share',
-        fromUid: null,
         fromAccountDigest: senderDigest,
         inviteId,
         envelope,

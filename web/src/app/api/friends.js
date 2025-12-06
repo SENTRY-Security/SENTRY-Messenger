@@ -121,8 +121,6 @@ export async function friendsBootstrapSession({ peerAccountDigest, roleHint, inv
   const result = {
     role: typeof record.role === 'string' ? record.role : null,
     inviteId: pick(record.inviteId, record.invite_id) || null,
-    ownerUid: pick(record.ownerUid, record.owner_uid) || null,
-    guestUid: pick(record.guestUid, record.guest_uid) || null,
     ownerAccountDigest: record.ownerAccountDigest || record.owner_account_digest || null,
     guestAccountDigest: record.guestAccountDigest || record.guest_account_digest || null,
     guestBundle: pick(record.guestBundle, record.guest_bundle) || null,

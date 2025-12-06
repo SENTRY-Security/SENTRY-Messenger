@@ -68,7 +68,7 @@ export async function callWorkerRequest(path, { method = 'POST', body = null, ti
   return withTimeout(fetcher, timeout);
 }
 
-export async function appendCallEvent({ callId, type, payload, fromUid, toUid, fromAccountDigest, toAccountDigest, traceId }) {
+export async function appendCallEvent({ callId, type, payload, fromAccountDigest, toAccountDigest, traceId }) {
   if (!hasCallWorkerConfig()) {
     logger.warn({ callId, type }, 'call_event_append_skipped_missing_config');
     return null;
@@ -80,8 +80,6 @@ export async function appendCallEvent({ callId, type, payload, fromUid, toUid, f
         callId,
         type,
         payload,
-        fromUid,
-        toUid,
         fromAccountDigest,
         toAccountDigest,
         traceId

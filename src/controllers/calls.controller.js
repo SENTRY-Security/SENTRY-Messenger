@@ -235,8 +235,6 @@ export async function inviteCall(req, res) {
   const expiresAt = Date.now() + ttlSeconds * 1000;
   const sessionPayload = {
     callId,
-    callerUid: null,
-    calleeUid: null,
     callerAccountDigest: auth.accountDigest,
     calleeAccountDigest: peerDigest,
     status: 'dialing',
@@ -259,8 +257,6 @@ export async function inviteCall(req, res) {
     callId,
     type: 'call-invite',
     payload: { traceId: input.traceId || null, mode: input.mode || 'voice', capabilities: input.capabilities || null },
-    fromUid: null,
-    toUid: null,
     fromAccountDigest: auth.accountDigest,
     toAccountDigest: peerDigest,
     traceId: input.traceId || null
@@ -334,7 +330,7 @@ export async function acknowledgeCall(req, res) {
     status: 'ringing',
     expiresAt: Date.now() + 90_000,
     metadata: {
-      lastAckUid: auth.accountDigest
+      lastAckAccountDigest: auth.accountDigest
     }
   };
   let workerRes;
@@ -346,7 +342,7 @@ export async function acknowledgeCall(req, res) {
   await appendCallEvent({
     callId: input.callId,
     type: 'call-ack',
-    payload: { ackUid: auth.accountDigest },
+    payload: { ackAccountDigest: auth.accountDigest },
     fromAccountDigest: auth.accountDigest,
     traceId: input.traceId || null
   });

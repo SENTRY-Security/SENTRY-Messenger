@@ -319,9 +319,9 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 - [X] Schema / 後端：表結構與 Worker/Node/WS/controller 均已改為 account_digest-only（含 prekeys/devkeys/calls/friends/groups/media），UID 只保留於 SDM HMAC 驗證。
 - [X] 前端：核心 store/WS/呼叫/群組/API payload 改 digest-only；預鍵/裝置備援工具改為不帶 UID 的流程；呼叫 network-config API 驗證改用 digest/token。
 - [ ] 前端 UID 殘留（除 SDM URL 入口與 ntag424 模擬/顯示）：  
-  - [ ] Login/SDM：`web/src/app/features/{login-flow,sdm}.js`、`web/src/app/ui/login-ui.js` 仍以 uidHex 做 SDM 驗證與 Debug UI；需明確限制 UID 僅用於 CMAC/顯示，後續狀態/交棒全部用 accountDigest，並移除不必要的 setUidHex/getUidHex 交互。  
-  - [ ] Store 相容欄位：`core/store` 仍保留 `_UID_HEX` 與 buildAccountPayload(includeUid) 兼容選項；評估移除或僅於 SDM debug path 暴露。  
-  - [ ] App 邊界：`app-ui` / `app-mobile` 仍把 digest 寫回 uidHex 供舊代碼；後續可刪除 uidHex 別名並改用 accountDigest 唯一鍵。  
+  - [X] Login/SDM：`web/src/app/features/{login-flow,sdm}.js`、`web/src/app/ui/login-ui.js` 僅在 SDM 驗證/顯示中使用 uidHex，後續狀態與交棒均以 accountDigest，移除不必要的 setUidHex/getUidHex 交互。  
+  - [X] Store 相容欄位：`core/store` 預設不再附帶 UID，includeUid 僅供 SDM/debug 顯式使用。  
+  - [X] App 邊界：`app-ui` / `app-mobile` 不再把 digest 寫回 uidHex，也不再從 handoff 讀取 uid_hex/uid_digest。  
   - [ ] 靜態輸入：`pages/login.html` 的隱藏 `uidHex` 欄位仍存在（SDM 用途）；確認是否需改為僅顯示/只讀或移除。  
   - [ ] 模擬工具：`web/src/libs/ntag424-sim.js` 仍以 uidHex 驅動（允許保留於硬體模擬範圍，但需標註與 app 流程隔離）。
 - [ ] 文件：更新 `iOS-Development-Guids.md` 等仍提到 `uidHex/peerUid` 的說明，改為 account_digest-only（SDM 入口除外）。
