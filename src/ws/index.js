@@ -6,7 +6,6 @@ import { appendCallEvent } from '../services/call-worker.js';
 
 const clients = new Map(); // accountDigest -> Set<WebSocket>
 const latestSessionTs = new Map(); // accountDigest -> iat (seconds)
-const accountDigestByUid = new Map(); // uid -> accountDigest
 const presenceWatchers = new Map(); // account_digest -> Set<WebSocket>
 let manager = null;
 const CALL_SIGNAL_TYPES = new Set([
@@ -27,7 +26,7 @@ const CALL_RENEW_EVENTS = new Set(['call-ringing', 'call-accept', 'call-media-up
 const CALL_LOCK_TTL_MS = Math.max(30_000, Number(process.env.CALL_LOCK_TTL_MS || 120000));
 const MAX_SIGNAL_JSON_BYTES = 16 * 1024;
 const MAX_SIGNAL_STRING_BYTES = 4096;
-const callLocks = new Map(); // uid -> { callId, expiresAt }
+const callLocks = new Map(); // accountDigest -> { callId, expiresAt }
 let lastCallLockSweep = 0;
 
 function canonicalAccountDigest(value) {
@@ -47,8 +46,8 @@ function pruneCallLocks() {
   }
 }
 
-function isUidLocked(uid, callId = null) {
-  const key = canonicalUid(uid);
+function isAccountDigestLocked(accountDigest, callId = null) {
+  const key = canonicalAccountDigest(accountDigest);
   if (!key) return false;
   pruneCallLocks();
   const entry = callLocks.get(key);
@@ -63,8 +62,8 @@ function isUidLocked(uid, callId = null) {
   return true;
 }
 
-function lockUidForCall(uid, callId) {
-  const key = canonicalAccountDigest(uid);
+function lockAccountDigestForCall(accountDigest, callId) {
+  const key = canonicalAccountDigest(accountDigest);
   if (!key || !callId) return;
   callLocks.set(key, {
     callId,
@@ -72,8 +71,8 @@ function lockUidForCall(uid, callId) {
   });
 }
 
-function renewCallLock(uid, callId) {
-  const key = canonicalAccountDigest(uid);
+function renewCallLock(accountDigest, callId) {
+  const key = canonicalAccountDigest(accountDigest);
   if (!key || !callId) return;
   pruneCallLocks();
   const entry = callLocks.get(key);
@@ -82,8 +81,8 @@ function renewCallLock(uid, callId) {
   }
 }
 
-function releaseCallLock(uid, callId) {
-  const key = canonicalAccountDigest(uid);
+function releaseCallLock(accountDigest, callId) {
+  const key = canonicalAccountDigest(accountDigest);
   if (!key) return;
   const entry = callLocks.get(key);
   if (entry && (!callId || entry.callId === callId)) {
@@ -91,9 +90,9 @@ function releaseCallLock(uid, callId) {
   }
 }
 
-function releaseCallLocksForPair(callId, fromUid, toUid) {
-  releaseCallLock(fromUid, callId);
-  releaseCallLock(toUid, callId);
+function releaseCallLocksForPair(callId, fromAccountDigest, toAccountDigest) {
+  releaseCallLock(fromAccountDigest, callId);
+  releaseCallLock(toAccountDigest, callId);
 }
 
 function normalizeTraceId(value) {
@@ -167,13 +166,6 @@ function buildCallDetail(msg = {}) {
   return Object.keys(detail).length ? detail : null;
 }
 
-function normalizeSignalUid(value) {
-  if (!value) return null;
-  const cleaned = String(value).trim().toUpperCase();
-  if (!cleaned) return null;
-  return cleaned.length > 128 ? cleaned.slice(0, 128) : cleaned;
-}
-
 function extractPeerAccountDigest(msg = {}) {
   const candidates = [
     msg.targetAccountDigest,
@@ -236,7 +228,7 @@ async function handleCallSignal(ws, msg) {
     sendCallError(ws, 'CALL_INVALID_ID', 'callId required', { event: rawType });
     return;
   }
-  const targetAccountDigest = extractPeerAccountDigest(msg) || accountDigestByUid.get(normalizeSignalUid(msg.targetUid || msg.peerUid));
+  const targetAccountDigest = extractPeerAccountDigest(msg);
   if (!targetAccountDigest) {
     sendCallError(ws, 'CALL_TARGET_REQUIRED', 'target accountDigest required', { event: rawType, callId });
     return;
@@ -247,16 +239,16 @@ async function handleCallSignal(ws, msg) {
   }
 
   if (rawType === 'call-invite') {
-    if (isUidLocked(ws.__accountDigest, callId)) {
+    if (isAccountDigestLocked(ws.__accountDigest, callId)) {
       sendCallError(ws, 'CALL_ALREADY_IN_PROGRESS', 'caller already has an active call', { event: rawType, callId });
       return;
     }
-    if (isUidLocked(targetAccountDigest, callId)) {
+    if (isAccountDigestLocked(targetAccountDigest, callId)) {
       sendCallError(ws, 'CALL_TARGET_BUSY', 'target already has an active call', { event: rawType, callId, peerUid: targetAccountDigest });
       return;
     }
-    lockUidForCall(ws.__accountDigest, callId);
-    lockUidForCall(targetAccountDigest, callId);
+    lockAccountDigestForCall(ws.__accountDigest, callId);
+    lockAccountDigestForCall(targetAccountDigest, callId);
   } else if (CALL_RELEASE_EVENTS.has(rawType)) {
     releaseCallLocksForPair(callId, ws.__accountDigest, targetAccountDigest);
   } else if (CALL_RENEW_EVENTS.has(rawType)) {
@@ -357,7 +349,7 @@ function handleClientMessage(ws, data) {
   let msg;
   try { msg = JSON.parse(data); } catch { return; }
   if (!msg || typeof msg !== 'object') return;
-  logger.debug({ raw: msg, uid: ws.__uid || null }, 'ws_message_received');
+  logger.debug({ raw: msg, accountDigest: ws.__accountDigest || null }, 'ws_message_received');
   if (msg.type === 'auth') {
     const token = typeof msg.token === 'string' ? msg.token : '';
     const verification = verifyWsToken(token);
@@ -366,7 +358,6 @@ function handleClientMessage(ws, data) {
       try { ws.close(4401, 'invalid_token'); } catch {}
       return;
     }
-    const tokenUid = verification.payload.uid ? String(verification.payload.uid).toUpperCase() : null;
     const tokenDigest = canonicalAccountDigest(verification.payload.accountDigest);
     if (!tokenDigest) {
       ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'account_digest_required' }));
@@ -374,8 +365,7 @@ function handleClientMessage(ws, data) {
       return;
     }
     ws.__accountDigest = tokenDigest;
-    ws.__uid = tokenUid || null;
-    if (tokenUid) accountDigestByUid.set(tokenUid, tokenDigest);
+    ws.__uid = null;
     const sessionTs = verification.payload.iat || Math.floor(Date.now() / 1000);
     const ok = addClient(tokenDigest, ws, sessionTs);
     if (!ok) return;
@@ -385,7 +375,7 @@ function handleClientMessage(ws, data) {
   if (isCallSignalType(msg.type)) {
     return handleCallSignal(ws, msg);
   }
-  if (!ws.__uid) return;
+  if (!ws.__accountDigest) return;
   if (msg.type === 'presence-subscribe') {
     const list = Array.isArray(msg.accountDigests) ? msg.accountDigests : Array.isArray(msg.uids) ? msg.uids : [];
     const normalized = registerPresenceWatchers(ws, list);
@@ -488,7 +478,7 @@ export function setupWebSocket(server) {
       }
     });
     ws.on('close', (code, reason) => {
-      logger.info({ uid: ws.__uid || null, code, reason: reason ? reason.toString() : undefined }, 'ws_client_closed');
+      logger.info({ accountDigest: ws.__accountDigest || null, code, reason: reason ? reason.toString() : undefined }, 'ws_client_closed');
       clearPresenceWatchers(ws);
       removeClient(ws);
     });
@@ -501,26 +491,25 @@ export function setupWebSocket(server) {
   });
 
   manager = {
-    notifyInviteAccepted(_ownerUid, inviteId, fromUid) {
-      const fromDigest = fromUid ? accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null : null;
-      const ownerDigest = null; // ownerUid no longer routed; rely on accountDigest where available
-      if (ownerDigest) {
-        broadcastByDigest(ownerDigest, { type: 'invite-accepted', inviteId, fromUid, fromAccountDigest: fromDigest, ts: Date.now() });
-      }
+    notifyInviteAccepted(ownerAccountDigest = null, inviteId, fromAccountDigest = null) {
+      const ownerDigest = canonicalAccountDigest(ownerAccountDigest);
+      if (!ownerDigest) return;
+      const senderDigest = canonicalAccountDigest(fromAccountDigest);
+      broadcastByDigest(ownerDigest, { type: 'invite-accepted', inviteId, fromUid: null, fromAccountDigest: senderDigest, ts: Date.now() });
     },
     notifyContactsReload(_uid, accountDigest = null) {
-      const digest = accountDigest || null;
+      const digest = canonicalAccountDigest(accountDigest || null);
       if (!digest) return;
       broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    sendContactShare(_targetUid, { fromUid, inviteId, envelope, targetAccountDigest }) {
+    sendContactShare(_targetUid, { fromUid, fromAccountDigest, inviteId, envelope, targetAccountDigest }) {
       const digest = canonicalAccountDigest(targetAccountDigest);
       if (!digest || !inviteId || !envelope) return;
-      const fromDigest = fromUid ? accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null : null;
+      const senderDigest = canonicalAccountDigest(fromAccountDigest || fromUid);
       broadcastByDigest(digest, {
         type: 'contact-share',
-        fromUid: fromUid ? String(fromUid || '').toUpperCase() : null,
-        fromAccountDigest: fromDigest,
+        fromUid: null,
+        fromAccountDigest: senderDigest,
         inviteId,
         envelope,
         ts: Date.now()
@@ -556,40 +545,30 @@ function registerPresenceWatchers(ws, digests) {
 
 function clearPresenceWatchers(ws) {
   if (!ws.__watching || ws.__watching.size === 0) return;
-  for (const uid of ws.__watching) {
-    const set = presenceWatchers.get(uid);
+  for (const digest of ws.__watching) {
+    const set = presenceWatchers.get(digest);
     if (!set) continue;
     set.delete(ws);
-    if (!set.size) presenceWatchers.delete(uid);
+    if (!set.size) presenceWatchers.delete(digest);
   }
   ws.__watching.clear();
-}
-
-function isUidOnline(uid) {
-  const key = String(uid || '').toUpperCase();
-  const set = clients.get(key);
-  return !!(set && set.size > 0);
 }
 
 function isDigestOnline(digest) {
   const key = canonicalAccountDigest(digest);
   if (!key) return false;
-  for (const [uid, acct] of accountDigestByUid.entries()) {
-    if (acct === key && isUidOnline(uid)) return true;
-  }
-  return false;
+  const set = clients.get(key);
+  return !!(set && set.size > 0);
 }
 
-function notifyPresence(uid, online) {
-  const key = String(uid || '').toUpperCase();
-  const accountDigest = accountDigestByUid.get(key) || null;
-  if (!accountDigest) return;
-  const watchers = presenceWatchers.get(accountDigest);
+function notifyPresence(accountDigest, online) {
+  const digest = canonicalAccountDigest(accountDigest);
+  if (!digest) return;
+  const watchers = presenceWatchers.get(digest);
   if (!watchers || !watchers.size) return;
   const payload = JSON.stringify({
     type: 'presence-update',
-    uid: key,
-    accountDigest,
+    accountDigest: digest,
     online: !!online,
     ts: Date.now()
   });
@@ -600,5 +579,5 @@ function notifyPresence(uid, online) {
       watchers.delete(ws);
     }
   }
-  if (!watchers.size) presenceWatchers.delete(accountDigest);
+  if (!watchers.size) presenceWatchers.delete(digest);
 }

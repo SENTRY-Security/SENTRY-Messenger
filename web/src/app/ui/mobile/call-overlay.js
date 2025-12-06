@@ -692,7 +692,7 @@ export function initCallOverlay({ showToast }) {
   async function handleAccept() {
     const session = getCallSessionSnapshot();
     if (!session?.callId || state.actionBusy) return;
-    if (!session.peerUidHex) {
+    if (!session.peerAccountDigest && !session.peerUidHex) {
       showToast?.('缺少通話對象', { variant: 'error' });
       return;
     }
@@ -701,10 +701,9 @@ export function initCallOverlay({ showToast }) {
     try {
       await acknowledgeCall({ callId: session.callId, traceId: session.traceId });
       updateCallSessionStatus(CALL_SESSION_STATUS.CONNECTING, { callId: session.callId });
-      await acceptIncomingCallMedia({ callId: session.callId, peerUid: session.peerUidHex });
+      await acceptIncomingCallMedia({ callId: session.callId, peerAccountDigest: session.peerAccountDigest || session.peerUidHex });
       sendCallSignal('call-accept', {
         callId: session.callId,
-        targetUid: session.peerUidHex,
         targetAccountDigest: session.peerAccountDigest || null,
         metadata: { acceptedAt: Date.now() }
       });
@@ -723,11 +722,10 @@ export function initCallOverlay({ showToast }) {
     state.actionBusy = true;
     render(session);
     try {
-      if (session.peerUidHex) {
+      if (session.peerAccountDigest || session.peerUidHex) {
         sendCallSignal('call-reject', {
           callId: session.callId,
-          targetUid: session.peerUidHex,
-          targetAccountDigest: session.peerAccountDigest || null,
+          targetAccountDigest: session.peerAccountDigest || session.peerUidHex || null,
           reason: 'user_reject'
         });
       }
@@ -747,11 +745,10 @@ export function initCallOverlay({ showToast }) {
     try {
       await cancelCall({ callId: session.callId, reason: 'caller_cancelled' });
       endCallMediaSession('cancelled');
-      if (session.peerUidHex) {
+      if (session.peerAccountDigest || session.peerUidHex) {
         sendCallSignal('call-cancel', {
           callId: session.callId,
-          targetUid: session.peerUidHex,
-          targetAccountDigest: session.peerAccountDigest || null,
+          targetAccountDigest: session.peerAccountDigest || session.peerUidHex || null,
           reason: 'caller_cancelled'
         });
       }
@@ -774,11 +771,10 @@ export function initCallOverlay({ showToast }) {
     state.actionBusy = true;
     render(session);
     try {
-      if (session.peerUidHex) {
+      if (session.peerAccountDigest || session.peerUidHex) {
         sendCallSignal('call-end', {
           callId: session.callId,
-          targetUid: session.peerUidHex,
-          targetAccountDigest: session.peerAccountDigest || null,
+          targetAccountDigest: session.peerAccountDigest || session.peerUidHex || null,
           reason: 'hangup'
         });
       }

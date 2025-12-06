@@ -22,8 +22,16 @@ export async function verifyAccount(payload) {
   if (!DATA_API || !HMAC_SECRET) {
     throw new Error('DATA_API_URL or DATA_API_HMAC not configured');
   }
+  const accountToken = typeof payload?.accountToken === 'string' ? payload.accountToken.trim() : null;
+  const accountDigest = normalizeAccountDigest(payload?.accountDigest);
+  if (!accountToken && !accountDigest) {
+    throw new Error('accountToken or accountDigest required');
+  }
   const path = '/d1/accounts/verify';
-  const body = JSON.stringify(payload);
+  const bodyPayload = {};
+  if (accountToken) bodyPayload.accountToken = accountToken;
+  if (accountDigest) bodyPayload.accountDigest = accountDigest;
+  const body = JSON.stringify(bodyPayload);
   const sig = signHmac(path, body, HMAC_SECRET);
   const res = await fetch(`${DATA_API}${path}`, {
     method: 'POST',

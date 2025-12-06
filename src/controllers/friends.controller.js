@@ -726,9 +726,9 @@ export const deleteContact = async (req, res) => {
   const data = await upstream.json();
   try {
     const manager = getWebSocketManager();
-    manager?.notifyContactsReload(ownerUid, ownerAccountDigest);
+    manager?.notifyContactsReload(null, ownerAccountDigest);
     const peerTargetDigest = peerAccountDigest || normalizeAccountDigest(data?.results?.[0]?.target || null);
-    if (peerUid || peerTargetDigest) manager?.notifyContactsReload(peerUid || null, peerTargetDigest || null);
+    if (peerTargetDigest) manager?.notifyContactsReload(null, peerTargetDigest);
   } catch (err) {
     logger.warn({ err: err?.message || err }, 'ws_contact_delete_notify_failed');
   }

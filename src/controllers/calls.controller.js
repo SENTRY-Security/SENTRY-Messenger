@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { z } from 'zod';
 import baseCallNetworkConfig from '../../web/src/shared/calls/network-config.json' with { type: 'json' };
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
-import { normalizeUidHex, normalizeAccountDigest, AccountDigestRegex } from '../utils/account-verify.js';
+import { normalizeAccountDigest, AccountDigestRegex } from '../utils/account-verify.js';
 import { appendCallEvent, callWorkerRequest, ensureCallWorkerConfig } from '../services/call-worker.js';
 import { CallIdRegex } from '../utils/call-validators.js';
 
@@ -20,38 +20,36 @@ const RAW_CALL_NETWORK_CONFIG = baseCallNetworkConfig?.default ?? baseCallNetwor
 const UidRegex = /^[0-9A-Fa-f]{14,}$/;
 
 const BaseAccountSchema = z.object({
-  uidHex: z.string().regex(UidRegex),
+  uidHex: z.string().regex(UidRegex).optional(), // legacy fallback
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
-});
-
-function ensureAccountCredentials(value, ctx) {
+}).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
   }
-}
+});
 
 const CallInviteSchema = BaseAccountSchema.extend({
-  peerUid: z.string().regex(UidRegex),
-  peerAccountDigest: z.string().regex(AccountDigestRegex).optional(),
+  peerAccountDigest: z.string().regex(AccountDigestRegex),
+  peerUid: z.string().regex(UidRegex).optional(),
   callId: z.string().regex(CallIdRegex).optional(),
   mode: z.enum(['voice', 'video']).optional(),
   capabilities: z.record(z.any()).optional(),
   metadata: z.record(z.any()).optional(),
   expiresInSeconds: z.number().int().min(30).max(600).optional(),
   traceId: z.string().min(6).max(64).optional()
-}).superRefine(ensureAccountCredentials);
+});
 
 const CallMutateSchema = BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
   reason: z.string().max(48).optional(),
   traceId: z.string().max(64).optional()
-}).superRefine(ensureAccountCredentials);
+});
 
 const CallAckSchema = BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
   traceId: z.string().max(64).optional()
-}).superRefine(ensureAccountCredentials);
+});
 
 const CallMetricsSchema = BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
@@ -59,11 +57,11 @@ const CallMetricsSchema = BaseAccountSchema.extend({
   status: z.enum(['dialing', 'ringing', 'connected', 'ended', 'failed']).optional(),
   endReason: z.string().max(48).optional(),
   ended: z.boolean().optional()
-}).superRefine(ensureAccountCredentials);
+});
 
 const TurnCredentialSchema = BaseAccountSchema.extend({
   ttlSeconds: z.number().int().min(60).max(600).optional()
-}).superRefine(ensureAccountCredentials);
+});
 
 function cloneNetworkConfigTemplate() {
   if (!RAW_CALL_NETWORK_CONFIG || typeof RAW_CALL_NETWORK_CONFIG !== 'object') {
@@ -208,10 +206,6 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, num));
 }
 
-function normalizeUid(value) {
-  return normalizeUidHex(value);
-}
-
 function respondAccountError(res, err, fallback = 'authorization failed') {
   if (err instanceof AccountAuthError) {
     return res.status(err.status || 400).json({ error: err.name, message: err.message, details: err.details || null });
@@ -226,10 +220,12 @@ export async function inviteCall(req, res) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
   }
   const input = parsed.data;
-  const callerUid = normalizeUid(input.uidHex);
+  const peerDigest = normalizeAccountDigest(input.peerAccountDigest);
+  if (!peerDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'peerAccountDigest required' });
+  }
   try {
     var auth = await resolveAccountAuth({
-      uidHex: callerUid,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -239,21 +235,19 @@ export async function inviteCall(req, res) {
   const callId = (input.callId && input.callId.toLowerCase()) || crypto.randomUUID();
   const ttlSeconds = clamp(input.expiresInSeconds ?? DEFAULT_SESSION_TTL, 30, 600);
   const expiresAt = Date.now() + ttlSeconds * 1000;
-  const calleeUid = normalizeUid(input.peerUid);
-  const calleeDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
   const sessionPayload = {
     callId,
-    callerUid: auth.uidHex,
-    calleeUid,
+    callerUid: null,
+    calleeUid: null,
     callerAccountDigest: auth.accountDigest,
-    calleeAccountDigest: calleeDigest,
+    calleeAccountDigest: peerDigest,
     status: 'dialing',
     mode: input.mode || 'voice',
     capabilities: input.capabilities || null,
     metadata: {
       ...(input.metadata || {}),
       traceId: input.traceId || null,
-      initiatedBy: auth.uidHex
+      initiatedBy: auth.accountDigest
     },
     expiresAt
   };
@@ -267,10 +261,10 @@ export async function inviteCall(req, res) {
     callId,
     type: 'call-invite',
     payload: { traceId: input.traceId || null, mode: input.mode || 'voice', capabilities: input.capabilities || null },
-    fromUid: auth.uidHex,
-    toUid: calleeUid,
+    fromUid: null,
+    toUid: null,
     fromAccountDigest: auth.accountDigest,
-    toAccountDigest: calleeDigest,
+    toAccountDigest: peerDigest,
     traceId: input.traceId || null
   });
   return res.status(200).json({
@@ -290,7 +284,6 @@ export async function cancelCall(req, res) {
   const input = parsed.data;
   try {
     var auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -304,7 +297,7 @@ export async function cancelCall(req, res) {
     endedAt: Date.now(),
     expiresAt: Date.now() + 30_000,
     metadata: {
-      cancelledBy: auth.uidHex
+      cancelledBy: auth.accountDigest
     }
   };
   let workerRes;
@@ -317,7 +310,6 @@ export async function cancelCall(req, res) {
     callId: input.callId,
     type: 'call-cancel',
     payload: { reason: input.reason || 'cancelled' },
-    fromUid: auth.uidHex,
     fromAccountDigest: auth.accountDigest,
     traceId: input.traceId || null
   });
@@ -333,7 +325,6 @@ export async function acknowledgeCall(req, res) {
   const input = parsed.data;
   try {
     var auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -345,7 +336,7 @@ export async function acknowledgeCall(req, res) {
     status: 'ringing',
     expiresAt: Date.now() + 90_000,
     metadata: {
-      lastAckUid: auth.uidHex
+      lastAckUid: auth.accountDigest
     }
   };
   let workerRes;
@@ -357,8 +348,7 @@ export async function acknowledgeCall(req, res) {
   await appendCallEvent({
     callId: input.callId,
     type: 'call-ack',
-    payload: { ackUid: auth.uidHex },
-    fromUid: auth.uidHex,
+    payload: { ackUid: auth.accountDigest },
     fromAccountDigest: auth.accountDigest,
     traceId: input.traceId || null
   });
@@ -374,7 +364,6 @@ export async function reportCallMetrics(req, res) {
   const input = parsed.data;
   try {
     var auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -398,7 +387,6 @@ export async function reportCallMetrics(req, res) {
     callId: input.callId,
     type: 'call-report-metrics',
     payload: input.metrics,
-    fromUid: auth.uidHex,
     fromAccountDigest: auth.accountDigest
   });
   return res.status(200).json({ ok: true, session: workerRes?.session || null });
@@ -410,15 +398,13 @@ export async function getCallSession(req, res) {
   if (!CallIdRegex.test(callId)) {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid call id' });
   }
-  const uidHex = req.query.uidHex || req.query.uid || req.query.uid_hex;
   const accountToken = req.query.accountToken || req.query.account_token;
   const accountDigest = req.query.accountDigest || req.query.account_digest;
-  if (!uidHex || (!accountToken && !accountDigest)) {
-    return res.status(400).json({ error: 'BadRequest', message: 'uidHex and account credential required' });
+  if (!accountToken && !accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'accountToken or accountDigest required' });
   }
   try {
     var auth = await resolveAccountAuth({
-      uidHex,
       accountToken,
       accountDigest
     });
@@ -444,18 +430,13 @@ export async function getCallSession(req, res) {
 }
 
 export async function getCallNetworkConfig(req, res) {
-  const uidHexRaw = req.query.uidHex || req.query.uid || req.query.uid_hex;
   const accountToken = req.query.accountToken || req.query.account_token;
   const accountDigest = req.query.accountDigest || req.query.account_digest;
-  if (!uidHexRaw || (!accountToken && !accountDigest)) {
-    return res.status(400).json({ error: 'BadRequest', message: 'uidHex and account credential required' });
-  }
-  const uidHex = normalizeUid(uidHexRaw);
-  if (!uidHex) {
-    return res.status(400).json({ error: 'BadRequest', message: 'invalid uid' });
+  if (!accountToken && !accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'accountToken or accountDigest required' });
   }
   try {
-    await resolveAccountAuth({ uidHex, accountToken, accountDigest });
+    await resolveAccountAuth({ accountToken, accountDigest });
   } catch (err) {
     return respondAccountError(res, err);
   }
@@ -474,7 +455,6 @@ export async function issueTurnCredentials(req, res) {
   const input = parsed.data;
   try {
     var auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -483,7 +463,7 @@ export async function issueTurnCredentials(req, res) {
   }
   const ttlSeconds = clamp(input.ttlSeconds ?? TURN_TTL_SECONDS, 60, 600);
   const expiresAt = Math.floor(Date.now() / 1000) + ttlSeconds;
-  const username = `${expiresAt}:${auth.uidHex}`;
+  const username = `${expiresAt}:${auth.accountDigest}`;
   const credential = crypto.createHmac('sha1', TURN_SHARED_SECRET).update(username).digest('base64');
   const iceServers = [];
   if (TURN_STUN_URIS.length) {

@@ -1151,7 +1151,7 @@ export function initMessagesPane({
       return;
     }
     try {
-      await startOutgoingCallMedia({ callId, peerUid: state.activePeerUid });
+      await startOutgoingCallMedia({ callId, peerAccountDigest: state.activePeerUid });
     } catch (err) {
       log({ callMediaStartError: err?.message || err });
       showToast?.('無法啟動通話媒體：' + (err?.message || err), { variant: 'error' });

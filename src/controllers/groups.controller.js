@@ -9,7 +9,6 @@ const HMAC_SECRET = process.env.DATA_API_HMAC;
 const FETCH_TIMEOUT_MS = Number(process.env.DATA_API_TIMEOUT_MS || 8000);
 
 const GroupIdRegex = /^[A-Za-z0-9_-]{8,128}$/;
-const UidHexRegex = /^[0-9A-Fa-f]{14,}$/;
 
 async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -23,10 +22,8 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
 
 const GroupMemberSchema = z.object({
   accountDigest: z.string().regex(AccountDigestRegex),
-  uid: z.string().regex(UidHexRegex).optional(),
   role: z.enum(['owner', 'admin', 'member']).optional(),
   inviterAccountDigest: z.string().regex(AccountDigestRegex).optional(),
-  inviterUid: z.string().regex(UidHexRegex).optional(),
   status: z.enum(['active', 'left', 'kicked', 'removed']).optional()
 });
 
@@ -38,7 +35,6 @@ const CreateGroupSchema = z.object({
   members: z.array(GroupMemberSchema).optional(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  uidHex: z.string().regex(UidHexRegex).optional(),
   conversationFingerprint: z.string().min(8).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
@@ -50,8 +46,7 @@ const AddMembersSchema = z.object({
   groupId: z.string().regex(GroupIdRegex),
   members: z.array(GroupMemberSchema).min(1),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  uidHex: z.string().regex(UidHexRegex).optional()
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -66,8 +61,7 @@ const RemoveMembersSchema = z.object({
   })).min(1),
   status: z.enum(['active', 'left', 'kicked', 'removed']).optional(),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  uidHex: z.string().regex(UidHexRegex).optional()
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -100,7 +94,6 @@ export const createGroup = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -112,11 +105,9 @@ export const createGroup = async (req, res) => {
     groupId: input.groupId,
     conversationId: input.conversationId,
     creatorAccountDigest: auth.accountDigest,
-    creatorUid: auth.uidHex,
     name: input.name || null,
     avatar: input.avatar ?? null,
     members: (input.members || []).map((m) => ({
-      uid: m.uid,
       accountDigest: m.accountDigest
     })),
     creatorFingerprint: input.conversationFingerprint || null
@@ -157,7 +148,6 @@ export const addGroupMembers = async (req, res) => {
 
   try {
     await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -168,7 +158,6 @@ export const addGroupMembers = async (req, res) => {
   const payload = {
     groupId: input.groupId,
     members: (input.members || []).map((m) => ({
-      uid: m.uid,
       accountDigest: m.accountDigest
     }))
   };
@@ -207,7 +196,6 @@ export const removeGroupMembers = async (req, res) => {
 
   try {
     await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -218,7 +206,6 @@ export const removeGroupMembers = async (req, res) => {
   const payload = {
     groupId: input.groupId,
     members: (input.members || []).map((m) => ({
-      uid: m.uid,
       accountDigest: m.accountDigest
     })),
     status: input.status || null
@@ -257,10 +244,11 @@ export const getGroup = async (req, res) => {
 
   const query = new URLSearchParams();
   query.set('groupId', groupId);
-  const uidHex = req.query?.uidHex || req.query?.uid || req.query?.uid_hex;
   const accountDigest = req.query?.accountDigest || req.query?.account_digest;
-  if (uidHex) query.set('uid', uidHex);
-  if (accountDigest) query.set('accountDigest', accountDigest);
+  if (!accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'accountDigest required' });
+  }
+  query.set('accountDigest', accountDigest);
   const path = `/d1/groups/get?${query.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
   let upstream;

@@ -2644,7 +2644,8 @@ function handleWebSocketMessage(msg) {
     return;
   }
   if (type === 'presence') {
-    const online = Array.isArray(msg?.onlineDigests) ? msg.onlineDigests
+    const online = Array.isArray(msg?.onlineAccountDigests) ? msg.onlineAccountDigests
+      : Array.isArray(msg?.onlineDigests) ? msg.onlineDigests
       : Array.isArray(msg?.online_accounts) ? msg.online_accounts
       : Array.isArray(msg?.online) ? msg.online
       : [];

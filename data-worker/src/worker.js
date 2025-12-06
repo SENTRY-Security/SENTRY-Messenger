@@ -1197,7 +1197,6 @@ export default {
       } catch {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
-      const uidHex = normalizeUid(body?.uidHex || body?.uid_hex || body?.uid);
       const accountTokenRaw = body?.accountToken || body?.account_token;
       const accountDigestRaw = body?.accountDigest || body?.account_digest;
       const accountToken = typeof accountTokenRaw === 'string' && accountTokenRaw.trim().length ? accountTokenRaw.trim() : null;
@@ -1208,25 +1207,15 @@ export default {
       try {
         const account = await resolveAccount(
           env,
-          { uidHex, accountToken, accountDigest },
+          { accountToken, accountDigest },
           { allowCreate: false, preferredAccountToken: accountToken || null, preferredAccountDigest: accountDigest || null }
         );
         if (!account) {
           return json({ error: 'NotFound' }, { status: 404 });
         }
-        if (accountToken && account.account_token !== accountToken) {
-          return json({ error: 'Forbidden', message: 'account token mismatch' }, { status: 403 });
-        }
-        if (uidHex) {
-          const digestFromUid = await hashUidToDigest(env, uidHex);
-          if (digestFromUid !== account.uid_digest) {
-            return json({ error: 'Forbidden', message: 'uid mismatch' }, { status: 403 });
-          }
-        }
         return json({
           ok: true,
-          account_digest: account.account_digest,
-          uid_hex: uidHex ? normalizeUid(uidHex) : null
+          account_digest: account.account_digest
         });
       } catch (err) {
         return json({ error: 'VerifyFailed', message: err?.message || 'resolveAccount failed' }, { status: 500 });

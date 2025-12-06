@@ -16,6 +16,7 @@ import {
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { CALL_SESSION_STATUS } from './state.js';
+import { normalizePeerIdentity } from '../../core/store.js';
 
 let sendSignal = null;
 let showToast = () => {};
@@ -26,7 +27,7 @@ let remoteStream = null;
 let pendingOffer = null;
 let awaitingAnswer = false;
 let activeCallId = null;
-let activePeerUid = null; // holds accountDigest now
+let activePeerAccountDigest = null; // holds accountDigest now
 let direction = 'outgoing';
 let unsubscribers = [];
 let awaitingOfferAfterAccept = false;
@@ -138,18 +139,18 @@ export function disposeCallMediaSession() {
   cleanupPeerConnection('dispose');
 }
 
-export async function startOutgoingCallMedia({ callId, peerUid }) {
+export async function startOutgoingCallMedia({ callId, peerAccountDigest, peerUid } = {}) {
   activeCallId = callId;
-  activePeerUid = peerUid;
+  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest, peerUid }).key;
   direction = 'outgoing';
   awaitingAnswer = true;
   await ensurePeerConnection();
   await createAndSendOffer();
 }
 
-export async function acceptIncomingCallMedia({ callId, peerUid }) {
+export async function acceptIncomingCallMedia({ callId, peerAccountDigest, peerUid } = {}) {
   activeCallId = callId;
-  activePeerUid = peerUid;
+  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest, peerUid }).key;
   direction = 'incoming';
   awaitingOfferAfterAccept = true;
   await ensurePeerConnection();
@@ -230,7 +231,7 @@ async function ensurePeerConnection() {
       : event.candidate;
     sendSignal('call-ice-candidate', {
       callId: activeCallId,
-      targetUid: activePeerUid,
+      targetAccountDigest: activePeerAccountDigest,
       candidate: candidateInit
     });
   };
@@ -341,7 +342,7 @@ async function createAndSendOffer() {
   if (sendSignal) {
     sendSignal('call-offer', {
       callId: activeCallId,
-      targetUid: activePeerUid,
+      targetAccountDigest: activePeerAccountDigest,
       description: { sdp: offer.sdp, type: offer.type }
     });
   }
@@ -355,7 +356,7 @@ async function applyRemoteOfferAndAnswer(msg) {
   if (sendSignal) {
     sendSignal('call-answer', {
       callId: activeCallId,
-      targetUid: activePeerUid,
+      targetAccountDigest: activePeerAccountDigest,
       description: { sdp: answer.sdp, type: answer.type }
     });
   }
@@ -365,7 +366,7 @@ async function applyRemoteOfferAndAnswer(msg) {
 async function handleIncomingOffer(msg) {
   if (!activeCallId) {
     activeCallId = msg.callId;
-    activePeerUid = msg.fromAccountDigest || msg.from_account_digest || null;
+    activePeerAccountDigest = msg.fromAccountDigest || msg.from_account_digest || null;
     direction = 'incoming';
   }
   if (awaitingOfferAfterAccept) {
@@ -445,7 +446,7 @@ function cleanupPeerConnection(reason) {
   awaitingOfferAfterAccept = false;
   pendingRemoteCandidates = [];
   activeCallId = null;
-  activePeerUid = null;
+  activePeerAccountDigest = null;
   if (remoteAudioEl) {
     try {
       remoteAudioEl.srcObject = null;

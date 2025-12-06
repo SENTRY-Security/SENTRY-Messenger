@@ -103,6 +103,8 @@ export function sendCallSignal(type, payload = {}) {
       ...payload,
       targetAccountDigest: identity.accountDigest || payload.targetAccountDigest || payload.target_account_digest || null
     };
+    delete normalizedPayload.targetUid;
+    delete normalizedPayload.target_uid;
   }
   return emitSignal({ type, ...normalizedPayload });
 }
@@ -112,15 +114,13 @@ function handleIncomingInvite(msg) {
   const metadata = payload.metadata || payload.meta || {};
   const envelope = payload.envelope || null;
   const contactSnapshot = resolveContactSnapshot({
-    peerAccountDigest: msg?.fromAccountDigest || msg?.from_account_digest || null,
-    peerUid: msg?.fromUid || null
+    peerAccountDigest: msg?.fromAccountDigest || msg?.from_account_digest || null
   });
   const fallbackName = contactSnapshot.nickname
     || (contactSnapshot.key ? `好友 ${contactSnapshot.key.slice(-4)}` : null);
   const fallbackAvatar = contactSnapshot.avatarUrl || null;
   const result = markIncomingCall({
     callId: msg.callId,
-    peerUidHex: contactSnapshot.key || msg.fromUid,
     peerAccountDigest: contactSnapshot.accountDigest || msg.fromAccountDigest || msg.from_account_digest || null,
     peerDisplayName: metadata.displayName
       || metadata.callerDisplayName
@@ -195,7 +195,7 @@ export function handleCallAuxMessage(msg) {
   if (!msg || typeof msg !== 'object') return false;
   if (msg.type === 'call-error') {
     emitCallEvent(CALL_EVENT.ERROR, { error: msg, session: getCallSessionSnapshot() });
-    log({ callSignalError: msg.code || 'unknown', callId: msg.callId || null, peerUid: msg.peerUid || null });
+    log({ callSignalError: msg.code || 'unknown', callId: msg.callId || null, peerAccountDigest: msg.targetAccountDigest || msg.toAccountDigest || msg.peerAccountDigest || null });
     return true;
   }
   if (msg.type === 'call-event-ack') {

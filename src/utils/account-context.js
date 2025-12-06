@@ -20,7 +20,6 @@ export async function resolveAccountAuth({ uidHex, accountToken, accountDigest }
     throw new AccountAuthError('accountToken or accountDigest required', 400);
   }
   const payload = {};
-  if (normalizedUid) payload.uidHex = normalizedUid;
   if (token) payload.accountToken = token;
   if (digestInput) payload.accountDigest = digestInput;
 
@@ -41,7 +40,7 @@ export async function resolveAccountAuth({ uidHex, accountToken, accountDigest }
   if (!resolvedDigest) {
     throw new AccountAuthError('account digest missing', 502);
   }
-  const resolvedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || normalizedUid) || normalizedUid || null;
+  const resolvedUid = normalizedUid || null;
 
   return {
     uidHex: resolvedUid,
