@@ -7,7 +7,7 @@ import { appendCallEvent } from '../services/call-worker.js';
 const clients = new Map(); // uid -> Set<WebSocket>
 const latestSessionTs = new Map(); // uid -> iat (seconds)
 const accountDigestByUid = new Map(); // uid -> accountDigest
-const presenceWatchers = new Map(); // uid -> Set<WebSocket>
+const presenceWatchers = new Map(); // account_digest -> Set<WebSocket>
 let manager = null;
 const CALL_SIGNAL_TYPES = new Set([
   'call-invite',
@@ -33,6 +33,12 @@ let lastCallLockSweep = 0;
 function canonicalUid(uid) {
   if (!uid) return null;
   return String(uid).trim().toUpperCase() || null;
+}
+
+function canonicalAccountDigest(value) {
+  if (!value) return null;
+  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  return cleaned && cleaned.length === 64 ? cleaned : null;
 }
 
 function pruneCallLocks() {
@@ -392,12 +398,11 @@ function handleClientMessage(ws, data) {
   }
   if (!ws.__uid) return;
   if (msg.type === 'presence-subscribe') {
-    const list = Array.isArray(msg.uids) ? msg.uids : [];
+    const list = Array.isArray(msg.accountDigests) ? msg.accountDigests : Array.isArray(msg.uids) ? msg.uids : [];
     const normalized = registerPresenceWatchers(ws, list);
-    const online = normalized.filter(isUidOnline);
-    const onlineDigests = online.map((uidVal) => accountDigestByUid.get(String(uidVal || '').toUpperCase()) || null);
+    const online = normalized.filter(isDigestOnline);
     try {
-      ws.send(JSON.stringify({ type: 'presence', online, onlineAccountDigests: onlineDigests, ts: Date.now() }));
+      ws.send(JSON.stringify({ type: 'presence', online, onlineAccountDigests: normalized, ts: Date.now() }));
     } catch (err) {
       logger.warn({ err: err?.message || err }, 'ws_presence_send_failed');
     }
@@ -539,13 +544,13 @@ export function getWebSocketManager() {
   return manager;
 }
 
-function registerPresenceWatchers(ws, uids) {
+function registerPresenceWatchers(ws, digests) {
   clearPresenceWatchers(ws);
-  if (!Array.isArray(uids) || !uids.length) return [];
+  if (!Array.isArray(digests) || !digests.length) return [];
   const normalized = [];
   const seen = new Set();
-  for (const raw of uids) {
-    const key = String(raw || '').trim().toUpperCase();
+  for (const raw of digests) {
+    const key = canonicalAccountDigest(raw);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     if (!presenceWatchers.has(key)) presenceWatchers.set(key, new Set());
@@ -574,12 +579,28 @@ function isUidOnline(uid) {
   return !!(set && set.size > 0);
 }
 
+function isDigestOnline(digest) {
+  const key = canonicalAccountDigest(digest);
+  if (!key) return false;
+  for (const [uid, acct] of accountDigestByUid.entries()) {
+    if (acct === key && isUidOnline(uid)) return true;
+  }
+  return false;
+}
+
 function notifyPresence(uid, online) {
   const key = String(uid || '').toUpperCase();
-  const watchers = presenceWatchers.get(key);
-  if (!watchers || !watchers.size) return;
   const accountDigest = accountDigestByUid.get(key) || null;
-  const payload = JSON.stringify({ type: 'presence-update', uid: key, accountDigest, online: !!online, ts: Date.now() });
+  if (!accountDigest) return;
+  const watchers = presenceWatchers.get(accountDigest);
+  if (!watchers || !watchers.size) return;
+  const payload = JSON.stringify({
+    type: 'presence-update',
+    uid: key,
+    accountDigest,
+    online: !!online,
+    ts: Date.now()
+  });
   for (const ws of [...watchers]) {
     if (ws.readyState === ws.OPEN) {
       try { ws.send(payload); } catch (err) { logger.warn({ err: err?.message || err }, 'ws_presence_broadcast_failed'); }
@@ -587,5 +608,5 @@ function notifyPresence(uid, online) {
       watchers.delete(ws);
     }
   }
-  if (!watchers.size) presenceWatchers.delete(key);
+  if (!watchers.size) presenceWatchers.delete(accountDigest);
 }

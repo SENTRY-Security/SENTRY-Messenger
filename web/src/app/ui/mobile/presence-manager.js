@@ -10,23 +10,19 @@ export function createPresenceManager(options) {
   if (typeof wsSend !== 'function') throw new Error('presence manager requires wsSend');
 
   const onlineContacts = sessionStore.onlineContacts;
-  const contactIndex = sessionStore.contactIndex;
 
   function sendPresenceSubscribe() {
     const digests = new Set();
-    const uids = new Set();
     for (const c of sessionStore.contactState || []) {
       const identity = normalizePeerIdentity({
         peerAccountDigest: c?.peerAccountDigest || c?.peerUid,
         peerUid: c?.peerUid
       });
       if (identity.accountDigest) digests.add(identity.accountDigest);
-      if (identity.uid) uids.add(identity.uid);
     }
     wsSend({
       type: 'presence-subscribe',
-      accountDigests: Array.from(digests),
-      uids: Array.from(uids)
+      accountDigests: Array.from(digests)
     });
   }
 

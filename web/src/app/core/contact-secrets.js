@@ -53,8 +53,6 @@ function parseJsonSafe(raw) {
 function resolveContactSecretsNamespace({ uid, accountDigest } = {}) {
   const digest = normalizeAccountDigest(accountDigest) || normalizeAccountDigest(getAccountDigest?.());
   if (digest) return `acct-${digest}`;
-  const uidHex = normalizePeerUid(uid ?? getUidHex?.());
-  if (uidHex) return `uid-${uidHex}`;
   return null;
 }
 

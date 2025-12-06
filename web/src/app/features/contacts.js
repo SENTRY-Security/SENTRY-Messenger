@@ -4,7 +4,7 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
-import { getMkRaw, getUidHex, getAccountDigest, buildAccountPayload, normalizePeerIdentity } from '../core/store.js';
+import { getMkRaw, getAccountDigest, buildAccountPayload, normalizePeerIdentity } from '../core/store.js';
 import { normalizeNickname, generateRandomNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
@@ -17,8 +17,6 @@ function contactConvIds() {
   const ids = [];
   const acct = (getAccountDigest() || '').toUpperCase();
   if (acct) ids.push(`contacts-${acct}`);
-  const uid = (getUidHex() || '').toUpperCase();
-  if (uid && uid !== acct) ids.push(`contacts-${uid}`);
   return ids;
 }
 
@@ -30,7 +28,6 @@ export async function loadContacts() {
   const mk = getMkRaw();
   const convIds = contactConvIds();
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
-  const selfUid = (getUidHex() || '').toUpperCase();
   const selfDigest = (getAccountDigest() || '').toUpperCase();
 
   restoreContactSecrets();
@@ -67,6 +64,10 @@ export async function loadContacts() {
       let peerAccountDigest = identityFromHeader.accountDigest || null;
       let peerUid = identityFromHeader.uid || null;
       let peerKey = identityFromHeader.key || null;
+      if (!peerKey) {
+        log({ contactMissingDigest: item?.id || null });
+        continue;
+      }
       let contact = null;
       let conversation = null;
       let pendingSecretUpdate = null;
@@ -144,14 +145,13 @@ export async function loadContacts() {
       const storedInviteId = typeof contact?.inviteId === 'string' ? contact.inviteId.trim() : null;
       const storedRole = typeof contact?.contactSecret_role === 'string' ? contact.contactSecret_role : null;
       const resolvedPeerUid = peerUid || normalizePeerIdentity({ peerUid: contact?.peerUid || contact?.peer_uid || null }).uid || null;
-      if (!resolvedPeerUid && !peerAccountDigest) continue;
       const finalIdentity = normalizePeerIdentity({
         peerAccountDigest,
         peerUid: resolvedPeerUid || peerUid
       });
-      peerKey = finalIdentity.key || peerKey || resolvedPeerUid;
-      peerAccountDigest = finalIdentity.accountDigest || peerAccountDigest || null;
-      peerUid = finalIdentity.uid || resolvedPeerUid || peerUid || null;
+      peerKey = finalIdentity.key;
+      peerAccountDigest = finalIdentity.accountDigest || null;
+      peerUid = finalIdentity.uid || null;
       if (!peerKey) continue;
       if (pendingSecretUpdate) {
         setContactSecret({ peerAccountDigest, peerUid }, pendingSecretUpdate);
@@ -168,12 +168,8 @@ export async function loadContacts() {
         inviteId: storedInviteId,
         secretRole: storedRole
       };
-      const selfKeys = new Set([selfUid, selfDigest].filter(Boolean));
-      const isSelfContact = !!peerKey && (
-        selfKeys.has(peerKey) ||
-        (peerAccountDigest && selfKeys.has(peerAccountDigest)) ||
-        (peerUid && selfKeys.has(peerUid))
-      );
+      const selfKeys = new Set([selfDigest].filter(Boolean));
+      const isSelfContact = !!peerKey && selfKeys.has(peerKey);
       if (isSelfContact) {
         entry.isSelfContact = true;
         entry.hidden = true;

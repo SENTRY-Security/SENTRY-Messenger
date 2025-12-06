@@ -80,19 +80,17 @@ export function normalizePeerIdentity(peer) {
   if (peer && typeof peer === 'object') {
     const digest = normalizeAccountDigest(peer.peerAccountDigest ?? peer.accountDigest ?? peer.peer_account_digest ?? peer.account_digest);
     const uid = normalizePeerUid(peer.peerUid ?? peer.peer_uid ?? peer.uidHex ?? peer.uid);
-    const primary = digest || uid || null;
     const aliases = [];
     if (digest) aliases.push(digest);
     if (uid && uid !== digest) aliases.push(uid);
-    return { key: primary, accountDigest: digest, uid, aliases };
+    return { key: digest || null, accountDigest: digest, uid, aliases };
   }
   const digest = normalizeAccountDigest(peer);
   const uid = normalizePeerUid(peer);
-  const primary = digest || uid || null;
   const aliases = [];
   if (digest) aliases.push(digest);
   if (uid && uid !== digest) aliases.push(uid);
-  return { key: primary, accountDigest: digest, uid, aliases };
+  return { key: digest || null, accountDigest: digest, uid, aliases };
 }
 function registerDrAliases(primary, aliases = []) {
   if (!primary) return;
@@ -103,8 +101,17 @@ function registerDrAliases(primary, aliases = []) {
 }
 function resolveDrKey(peerInput) {
   const identity = normalizePeerIdentity(peerInput);
-  if (!identity.key) return { key: null, aliases: [] };
   const aliases = identity.aliases || [];
+  if (!identity.key) {
+    for (const alias of aliases) {
+      if (!alias) continue;
+      const mapped = _DR_PEER_ALIASES.get(alias);
+      if (mapped) {
+        return { key: mapped, aliases };
+      }
+    }
+    return { key: null, aliases };
+  }
   let key = identity.key;
   if (_DR_PEER_ALIASES.has(key)) {
     key = _DR_PEER_ALIASES.get(key) || key;

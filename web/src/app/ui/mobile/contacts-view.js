@@ -220,7 +220,7 @@ export function initContactsView(options) {
       confirmLabel: '刪除',
       onConfirm: async () => {
         try {
-          await friendsDeleteContact({ peerUid: key });
+          await friendsDeleteContact({ peerAccountDigest: key });
           removeContactState(key, { notifyPeer: true });
           if (element) swipe.closeSwipe(element);
           updateStats?.();

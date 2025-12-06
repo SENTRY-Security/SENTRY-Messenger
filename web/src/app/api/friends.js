@@ -67,16 +67,16 @@ export async function friendsAttachInviteContact({ inviteId, secret, envelope } 
   return data;
 }
 
-export async function friendsDeleteContact({ peerUid } = {}) {
-  const uidHex = getUidHex();
-  if (!uidHex) throw new Error('Not unlocked: UID missing');
-  const payload = withAccount({ uidHex, peerUid });
+export async function friendsDeleteContact({ peerAccountDigest } = {}) {
+  const digest = getAccountDigest();
+  if (!digest) throw new Error('Not unlocked: account missing');
+  const payload = withAccount({ peerAccountDigest }, { includeUid: false });
   const { r, data } = await fetchJSON('/api/v1/friends/delete', payload);
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'delete contact failed', r.status);
     throw new Error(msg);
   }
-  log({ friendsDeleteResult: data, payloadPeer: peerUid });
+  log({ friendsDeleteResult: data, payloadPeerDigest: peerAccountDigest });
   return data;
 }
 
