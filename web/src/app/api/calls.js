@@ -1,20 +1,14 @@
 import { fetchJSON, fetchWithTimeout } from '../core/http.js';
 import { buildAccountPayload } from '../core/store.js';
 
-function normalizeUid(value) {
-  if (!value) return null;
-  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  return cleaned.length >= 14 ? cleaned : null;
-}
-
 function normalizeDigest(value) {
   if (!value) return null;
   const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return cleaned.length === 64 ? cleaned : null;
 }
 
-function buildPayload(overrides = {}, { includeUid = true } = {}) {
-  const payload = buildAccountPayload({ includeUid, overrides });
+function buildPayload(overrides = {}) {
+  const payload = buildAccountPayload({ includeUid: false, overrides });
   for (const key of Object.keys(payload)) {
     if (payload[key] === undefined || payload[key] === null) delete payload[key];
   }
@@ -45,7 +39,6 @@ async function postJSON(path, payload, fallbackMessage) {
 }
 
 export async function createCallInvite({
-  peerUid,
   peerAccountDigest,
   mode = 'voice',
   capabilities,
@@ -53,18 +46,16 @@ export async function createCallInvite({
   expiresInSeconds,
   traceId
 } = {}) {
-  const normalizedPeer = normalizeUid(peerUid);
-  if (!normalizedPeer) throw new Error('peerUid required');
+  const digest = normalizeDigest(peerAccountDigest);
+  if (!digest) throw new Error('peerAccountDigest required');
   const overrides = {
-    peerUid: normalizedPeer,
+    peerAccountDigest: digest,
     mode,
     capabilities,
     metadata,
     expiresInSeconds,
     traceId
   };
-  const digest = normalizeDigest(peerAccountDigest);
-  if (digest) overrides.peerAccountDigest = digest;
   const payload = buildPayload(overrides);
   return postJSON('/api/v1/calls/invite', payload, 'call invite failed');
 }
@@ -89,9 +80,8 @@ export async function reportCallMetrics({ callId, metrics, status, endReason, en
 
 export async function fetchCallSession({ callId } = {}) {
   if (!callId) throw new Error('callId required');
-  const auth = buildPayload({}, { includeUid: true });
+  const auth = buildPayload();
   const params = new URLSearchParams();
-  if (auth.uidHex) params.set('uidHex', auth.uidHex);
   if (auth.accountToken) params.set('accountToken', auth.accountToken);
   if (auth.accountDigest) params.set('accountDigest', auth.accountDigest);
   const qs = params.toString();

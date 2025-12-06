@@ -5,11 +5,9 @@ import { sessionStore } from '../ui/mobile/session-store.js';
 import { log } from './log.js';
 import { b64 } from '../crypto/nacl.js';
 import {
-  getUidHex,
   getAccountDigest,
   normalizePeerIdentity,
-  normalizeAccountDigest,
-  normalizePeerUid
+  normalizeAccountDigest
 } from './store.js';
 
 const STORAGE_KEY_BASE = 'contactSecrets-v1';
@@ -50,7 +48,7 @@ function parseJsonSafe(raw) {
   }
 }
 
-function resolveContactSecretsNamespace({ uid, accountDigest } = {}) {
+function resolveContactSecretsNamespace({ accountDigest } = {}) {
   const digest = normalizeAccountDigest(accountDigest) || normalizeAccountDigest(getAccountDigest?.());
   if (digest) return `acct-${digest}`;
   return null;

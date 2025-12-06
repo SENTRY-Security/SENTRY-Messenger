@@ -2438,7 +2438,7 @@ function updateProfileStats() {
 
 function ensureWebSocket() {
   if (wsConn || wsReconnectTimer) return;
-  if (!getUidHex() && !getAccountDigest()) return;
+  if (!getAccountDigest()) return;
   connectWebSocket().catch((err) => {
     log({ wsConnectError: err?.message || err });
   });
@@ -2462,8 +2462,8 @@ function scheduleWsReconnect(delay = 2000) {
 }
 
 async function getWsAuthToken({ force = false } = {}) {
-  const uidHex = getUidHex();
-  if (!uidHex) throw new Error('缺少 UID');
+  const accountDigest = getAccountDigest();
+  if (!accountDigest) throw new Error('缺少 accountDigest');
   const nowSec = Math.floor(Date.now() / 1000);
   if (!force && wsAuthTokenInfo && wsAuthTokenInfo.token) {
     const exp = Number(wsAuthTokenInfo.expiresAt || 0);
@@ -2472,9 +2472,8 @@ async function getWsAuthToken({ force = false } = {}) {
     }
   }
   const accountToken = getAccountToken();
-  const accountDigest = getAccountDigest();
   const sessionTs = getLoginSessionTs();
-  const { r, data } = await requestWsToken({ uidHex, accountToken, accountDigest, sessionTs });
+  const { r, data } = await requestWsToken({ accountToken, accountDigest, sessionTs });
   if (!r.ok || !data?.token) {
     const message = typeof data === 'string' ? data : data?.message || data?.error || 'ws token failed';
     const err = new Error(message);
@@ -2488,9 +2487,8 @@ async function getWsAuthToken({ force = false } = {}) {
 }
 
 async function connectWebSocket() {
-  const uid = getUidHex();
   const accountDigest = getAccountDigest();
-  if (!uid && !accountDigest) return;
+  if (!accountDigest) return;
   let tokenInfo;
   try {
     tokenInfo = await getWsAuthToken();
@@ -2531,7 +2529,7 @@ async function connectWebSocket() {
     log({ wsState: 'open' });
     wsReconnectTimer = null;
     try {
-      ws.send(JSON.stringify({ type: 'auth', uid, accountDigest, token: tokenInfo.token }));
+      ws.send(JSON.stringify({ type: 'auth', accountDigest, token: tokenInfo.token }));
     } catch (err) {
       log({ wsAuthSendError: err?.message || err });
     }

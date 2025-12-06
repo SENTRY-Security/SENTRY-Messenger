@@ -10,7 +10,7 @@
 // - SESSION: one-time token from /auth/sdm/exchange (60s, single-use)
 // - HAS_MK: boolean (server has wrapped_mk)
 // - WRAPPED_MK: object | null (from exchange)
-// - UID_HEX: normalized 7-byte UID hex (14 hex chars)
+// - UID_HEX: normalized 7-byte UID hex (14 hex chars) — legacy (will be removed)
 // - ACCOUNT_TOKEN: opaque token from /auth/sdm/exchange
 // - ACCOUNT_DIGEST: hex digest identifying the account (HMAC(uid))
 // - UID_DIGEST: optional hashed UID from backend (for diagnostics only)
@@ -79,18 +79,13 @@ export function normalizePeerUid(value) {
 export function normalizePeerIdentity(peer) {
   if (peer && typeof peer === 'object') {
     const digest = normalizeAccountDigest(peer.peerAccountDigest ?? peer.accountDigest ?? peer.peer_account_digest ?? peer.account_digest);
-    const uid = normalizePeerUid(peer.peerUid ?? peer.peer_uid ?? peer.uidHex ?? peer.uid);
-    const aliases = [];
-    if (digest) aliases.push(digest);
-    if (uid && uid !== digest) aliases.push(uid);
+    const uid = null; // UID deprecated
+    const aliases = digest ? [digest] : [];
     return { key: digest || null, accountDigest: digest, uid, aliases };
   }
   const digest = normalizeAccountDigest(peer);
-  const uid = normalizePeerUid(peer);
-  const aliases = [];
-  if (digest) aliases.push(digest);
-  if (uid && uid !== digest) aliases.push(uid);
-  return { key: digest || null, accountDigest: digest, uid, aliases };
+  const aliases = digest ? [digest] : [];
+  return { key: digest || null, accountDigest: digest, uid: null, aliases };
 }
 function registerDrAliases(primary, aliases = []) {
   if (!primary) return;

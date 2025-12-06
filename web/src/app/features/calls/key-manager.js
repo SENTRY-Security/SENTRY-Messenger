@@ -98,7 +98,6 @@ export function supportsInsertableStreams() {
 
 export async function prepareCallKeyEnvelope({
   callId,
-  peerUidHex,
   peerAccountDigest = null,
   epoch = 1,
   media = null,
@@ -109,11 +108,10 @@ export async function prepareCallKeyEnvelope({
   if (!callId) throw new Error('callId required');
   const session = getCallSessionSnapshot();
   const identity = normalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest || session?.peerAccountDigest || null,
-    peerUid: peerUidHex || session?.peerUidHex || null
+    peerAccountDigest: peerAccountDigest || session?.peerAccountDigest || null
   });
   const peerUid = identity.key;
-  if (!peerUid) throw new Error('peer uid required');
+  if (!peerUid) throw new Error('peer account digest required');
   const saltBytes = crypto.getRandomValues(new Uint8Array(32));
   const mediaState = getCallMediaState();
   const envelope = {
@@ -175,11 +173,10 @@ async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
 
 async function buildKeyContext({ session, envelope, saltBytes = null }) {
   const identity = normalizePeerIdentity({
-    peerAccountDigest: session?.peerAccountDigest || null,
-    peerUid: session?.peerUidHex || null
+    peerAccountDigest: session?.peerAccountDigest || null
   });
   const peerUid = identity.key;
-  if (!peerUid) throw new Error('缺少好友識別');
+  if (!peerUid) throw new Error('缺少好友 account digest');
   const secretRecord = getContactSecret(identity.key);
   if (!secretRecord?.secret) throw new Error('缺少好友密鑰，請重新同步聯絡人');
   const baseSecret = b64UrlToBytes(secretRecord.secret);

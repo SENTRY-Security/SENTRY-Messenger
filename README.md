@@ -367,6 +367,12 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
   - [x] `groups.creator_uid`：建群/列表/ACL 同步移除 UID 欄位。
   - [x] `group_members.uid`、`group_members.inviter_uid`：成員新增/查詢/邀請與 WS payload 改 digest 後刪除。
   - [x] `group_invites.issuer_uid`：群組邀請建立/驗證/使用紀錄改 digest 後移除。
+- [ ] 帳號驗證/WS token：`src/utils/account-context.js` / `src/utils/account-verify.js` / `src/routes/ws-token.routes.js` / `src/utils/ws-token.js` / Worker `/d1/accounts/{verify,created}` 仍以 UID/uid_digest 驗證與簽 token；需改為只接受 account_digest/account_token（登入外不再帶 UID），同步調整 token claims。**進度：Worker/Node 已改 digest-only；WS server 以 digest 為鍵但暫留 `accountDigestByUid` 映射；前端 WS/呼叫/聯絡同步多數改 digest，DR/Presence/Call Overlay/Key Manager 等仍有 `peerUid` 鍵值待換。**
+- [ ] Node API 契約：`src/controllers/{friends,messages,calls,groups}.controller.js`、`src/routes/v1/media.routes.js` 的 schema/payload 仍必填 `uidHex`/`peerUid`，`resolveAccountAuth` 只能透過 UID；需改用 accountDigest 為主、peer 攜帶 accountDigest，並移除 Worker 呼叫中的 UID 欄位。**進度：messages/media/friends API 已大幅改成 digest-only，calls/groups 尚待收斂。**
+- [ ] Worker 好友/聯絡人：`data-worker/src/worker.js` 的 `/d1/friends/{bootstrap,accept,contact/share,contact-delete}`、`insertContactMessage`/`deleteContactByPeer` 仍寫入 `peerUid` / `contacts-<uid>` convo；需改成僅用 account_digest（header、convo id、ACL/通知）。**進度：已改為 digest-only（header/convo/ACL 無 UID）。**
+- [ ] Worker 其他端點：`/d1/prekeys/bundle`、`upsertCallSession`/`insertCallEvent`、好友 bootstrap peer 篩選仍接受 UID 並自動 hash；需改為只接受 accountDigest，移除 UID fallback。
+- [ ] WebSocket 流：`src/ws/index.js` 以 UID 為連線鍵（call locks/presence/secure-message event）且 payload 帶 `peerUid`，`web/src/app/api/ws.js` 要求 `uidHex`；需改為 accountDigest 為主的身份與事件欄位。**進度：WS server 已改 digest 連線/廣播但保留 UID 映射；前端事件部分已改 digest，仍有 UID 變數名/payload 待清。**
+- [ ] 前端狀態/客戶端：`web/src/app/ui/{app-ui.js,app-mobile.js}` handoff/重啟仍讀寫 `uid_hex`/`uid_digest`，`web/src/app/api/*`（media/prekeys/friends/groups/calls/ws）及 call/訊息 UI 模組多處以 `peerUid` 為鍵；需改為 accountDigest 為主的鍵值/ payload，並同步調整測試腳本（如 `scripts/test-messages-secure.mjs`, `tests/e2e/utils.mjs`, `tests/e2e/multi-account-helpers.mjs` 等仍讀寫 `uid_hex`）。**進度：好友/呼叫 API 多數已改 digest-only；呼叫媒體層/DR/contacts/presence 仍大量使用 `peerUidHex` 變數名（內容實為 digest），待全面替換並更新測試。**
 - [ ] 清空 D1/R2 + 部署：套用遷移，wipe 後重新部署 Worker/Node/Pages。
 - [ ] 測試：跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 

@@ -5,7 +5,7 @@ import { signHmac } from '../utils/hmac.js';
 import { logger } from '../utils/logger.js';
 import { getWebSocketManager } from '../ws/index.js';
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
-import { normalizeAccountDigest, normalizeUidHex, AccountDigestRegex } from '../utils/account-verify.js';
+import { normalizeAccountDigest, AccountDigestRegex } from '../utils/account-verify.js';
 
 const DATA_API = process.env.DATA_API_URL;
 const HMAC_SECRET = process.env.DATA_API_HMAC;
@@ -21,10 +21,7 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
   }
 }
 
-const UidHexRegex = /^[0-9A-Fa-f]{14,}$/;
-
 const CreateInviteSchema = z.object({
-  uidHex: z.string().regex(UidHexRegex),
   ttlSeconds: z.number().int().min(30).max(600).optional(),
   prekeyBundle: z.any().optional(),
   accountToken: z.string().min(8).optional(),
@@ -43,19 +40,13 @@ const ContactEnvelopeSchema = z.object({
 const AcceptInviteSchema = z.object({
   inviteId: z.string().min(8),
   secret: z.string().min(8),
-  myUid: z.string().regex(UidHexRegex).optional(),
-  uidHex: z.string().regex(UidHexRegex).optional(),
   contactEnvelope: ContactEnvelopeSchema.optional(),
   guestBundle: z.any().optional(),
-  ownerUid: z.string().regex(UidHexRegex).optional(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
-  }
-  if (!value.myUid && !value.uidHex) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'myUid or uidHex required' });
   }
 });
 
@@ -63,7 +54,6 @@ const AttachInviteContactSchema = z.object({
   inviteId: z.string().min(8),
   secret: z.string().min(8),
   envelope: ContactEnvelopeSchema,
-  uidHex: z.string().regex(UidHexRegex),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
@@ -73,11 +63,9 @@ const AttachInviteContactSchema = z.object({
 });
 
 const DeleteContactSchema = z.object({
-  uidHex: z.string().regex(UidHexRegex),
-  peerUid: z.string().regex(UidHexRegex),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  peerAccountDigest: z.string().min(14).optional()
+  accountDigest: z.string().regex(AccountDigestRegex),
+  peerAccountDigest: z.string().regex(AccountDigestRegex),
+  accountToken: z.string().min(8).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -87,10 +75,8 @@ const DeleteContactSchema = z.object({
 const ShareContactSchema = z.object({
   inviteId: z.string().min(8),
   secret: z.string().min(8),
-  myUid: z.string().regex(UidHexRegex),
   envelope: ContactEnvelopeSchema,
-  peerUid: z.string().regex(UidHexRegex).optional(),
-  peerAccountDigest: z.string().regex(AccountDigestRegex).optional(),
+  peerAccountDigest: z.string().regex(AccountDigestRegex),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   conversationId: z.string().min(8).optional(),
@@ -102,19 +88,14 @@ const ShareContactSchema = z.object({
 });
 
 const BootstrapSessionSchema = z.object({
-  uidHex: z.string().regex(UidHexRegex),
-  peerUid: z.string().regex(UidHexRegex).optional(),
-  peerAccountDigest: z.string().regex(AccountDigestRegex).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex),
+  peerAccountDigest: z.string().regex(AccountDigestRegex),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
   roleHint: z.enum(['owner', 'guest']).optional(),
   inviteId: z.string().min(8).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
-  }
-  if (!value.peerUid && !value.peerAccountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'peerUid or peerAccountDigest required' });
   }
 });
 
@@ -140,15 +121,13 @@ function normalizeGuestBundlePayload(bundle) {
   return normalized;
 }
 
-function makeBootstrapKey(ownerUid, guestUid) {
-  return `${ownerUid}::${guestUid}`;
+function makeBootstrapKey(owner, guest) {
+  return `${owner}::${guest}`;
 }
 
-function normalizeBootstrapId({ uid, digest }) {
+function normalizeBootstrapId({ digest }) {
   const normDigest = digest ? normalizeAccountDigest(digest) : null;
-  if (normDigest) return normDigest;
-  const normUid = uid ? normalizeUidHex(uid) : null;
-  return normUid || null;
+  return normDigest || null;
 }
 
 function pruneBootstrapCache(now = Date.now()) {
@@ -161,8 +140,6 @@ function pruneBootstrapCache(now = Date.now()) {
 }
 
 function setBootstrapCache({
-  ownerUid,
-  guestUid,
   ownerAccountDigest,
   guestAccountDigest,
   guestBundle,
@@ -174,23 +151,19 @@ function setBootstrapCache({
   usedAt = null,
   createdAt = null
 } = {}) {
-  const owner = ownerUid ? normalizeUidHex(ownerUid) : null;
-  const guest = guestUid ? normalizeUidHex(guestUid) : null;
   const ownerDigestNorm = ownerAccountDigest ? normalizeAccountDigest(ownerAccountDigest) : null;
   const guestDigestNorm = guestAccountDigest ? normalizeAccountDigest(guestAccountDigest) : null;
-  const keyOwner = normalizeBootstrapId({ uid: owner, digest: ownerDigestNorm });
-  const keyGuest = normalizeBootstrapId({ uid: guest, digest: guestDigestNorm });
+  const keyOwner = normalizeBootstrapId({ digest: ownerDigestNorm });
+  const keyGuest = normalizeBootstrapId({ digest: guestDigestNorm });
   if (!keyOwner || !keyGuest) return;
   const normalizedGuestBundle = normalizeGuestBundlePayload(guestBundle);
   if (!normalizedGuestBundle) {
-    logger.warn({ ownerUid: owner, guestUid: guest }, 'guest_bundle_cache_rejected');
+    logger.warn({ ownerDigest: ownerDigestNorm, guestDigest: guestDigestNorm }, 'guest_bundle_cache_rejected');
     return;
   }
   pruneBootstrapCache();
   const key = makeBootstrapKey(keyOwner, keyGuest);
   sessionBootstrapCache.set(key, {
-    ownerUid: owner,
-    guestUid: guest,
     ownerAccountDigest: ownerDigestNorm,
     guestAccountDigest: guestDigestNorm,
     guestBundle: normalizedGuestBundle,
@@ -206,10 +179,10 @@ function setBootstrapCache({
   });
 }
 
-function getBootstrapCache({ requesterUid, requesterDigest, peerUid, peerAccountDigest }) {
+function getBootstrapCache({ requesterDigest, peerAccountDigest }) {
   pruneBootstrapCache();
-  const requester = normalizeBootstrapId({ uid: requesterUid, digest: requesterDigest });
-  const peer = normalizeBootstrapId({ uid: peerUid, digest: peerAccountDigest });
+  const requester = normalizeBootstrapId({ digest: requesterDigest });
+  const peer = normalizeBootstrapId({ digest: peerAccountDigest });
   if (!requester || !peer) return null;
 
   const forwardKey = makeBootstrapKey(requester, peer);
@@ -270,7 +243,6 @@ export const createInvite = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -286,7 +258,6 @@ export const createInvite = async (req, res) => {
   const path = '/d1/friends/invite';
   const bodyPayload = {
     inviteId,
-    ownerUid: auth.uidHex,
     secret,
     expiresAt,
     prekeyBundle: input.prekeyBundle ?? null,
@@ -336,7 +307,6 @@ export const createInvite = async (req, res) => {
     inviteId,
     secret,
     expiresAt,
-    ownerUid: auth.uidHex || payload?.owner_uid || null,
     ownerAccountDigest: auth.accountDigest || payload?.owner_account_digest || null,
     prekeyBundle: payload?.prekey_bundle || null
   });
@@ -357,7 +327,6 @@ export const acceptInvite = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.uidHex || input.myUid,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -365,22 +334,12 @@ export const acceptInvite = async (req, res) => {
     return respondAccountError(res, err, 'account verification failed');
   }
 
-  const guestUid = auth.uidHex;
-  const requestedMyUid = input.myUid ? normalizeUidHex(input.myUid) : null;
-  if (requestedMyUid && requestedMyUid !== guestUid) {
-    return res.status(403).json({ error: 'AccountMismatch', message: 'myUid does not match verified account' });
-  }
-  const ownerUid = input.ownerUid ? normalizeUidHex(input.ownerUid) : undefined;
-
   const path = '/d1/friends/accept';
   const bodyPayload = {
     inviteId: input.inviteId,
     secret: input.secret,
     guestContact: input.contactEnvelope || undefined,
-    guestUid,
-    myUid: guestUid,
     guestBundle: input.guestBundle || undefined,
-    ownerUid: ownerUid || undefined,
     accountDigest: auth.accountDigest,
     accountToken: input.accountToken ? String(input.accountToken).trim() : undefined
   };
@@ -408,26 +367,18 @@ export const acceptInvite = async (req, res) => {
   }
 
   const data = await upstream.json();
-  const ownerUidResolved = normalizeUidHex(data?.owner_uid || ownerUid || null);
+  const ownerAccountDigest = data?.owner_account_digest || auth.accountDigest || null;
   try {
     const manager = getWebSocketManager();
-    if (ownerUidResolved) manager?.notifyInviteAccepted(ownerUidResolved, input.inviteId, guestUid);
-    if (guestUid) manager?.notifyContactsReload(guestUid, data?.guest_account_digest || auth.accountDigest || null);
-    if (ownerUidResolved) manager?.notifyContactsReload(ownerUidResolved, data?.owner_account_digest || null);
-    if (ownerUidResolved && input.contactEnvelope && guestUid) {
-      manager?.sendContactShare(ownerUidResolved, {
-        fromUid: guestUid,
-        inviteId: input.inviteId,
-        envelope: input.contactEnvelope
-      });
+    if (ownerAccountDigest) {
+      manager?.notifyContactsReload(null, ownerAccountDigest);
     }
   } catch (err) {
     logger.warn({ err: err?.message || err }, 'ws_notify_failed');
   }
   try {
     setBootstrapCache({
-      ownerUid: ownerUidResolved,
-      guestUid,
+      ownerAccountDigest,
       ownerAccountDigest: data?.owner_account_digest || null,
       guestAccountDigest: data?.guest_account_digest || auth.accountDigest || null,
       guestBundle: input.guestBundle || data?.guest_bundle || null,
@@ -460,7 +411,6 @@ export const attachInviteContact = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -473,7 +423,6 @@ export const attachInviteContact = async (req, res) => {
     inviteId: input.inviteId,
     secret: input.secret,
     envelope: input.envelope,
-    ownerUid: auth.uidHex,
     accountDigest: auth.accountDigest
   };
   if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
@@ -519,7 +468,6 @@ export const shareContactUpdate = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.myUid,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -527,8 +475,6 @@ export const shareContactUpdate = async (req, res) => {
     return respondAccountError(res, err, 'account verification failed');
   }
 
-  const myUid = auth.uidHex;
-  const peerUid = input.peerUid ? normalizeUidHex(input.peerUid) : null;
   const peerAccountDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
   const accountDigest = auth.accountDigest;
 
@@ -536,12 +482,10 @@ export const shareContactUpdate = async (req, res) => {
   const payload = {
     inviteId: input.inviteId,
     secret: input.secret,
-    myUid,
-    envelope: input.envelope
+    envelope: input.envelope,
+    accountDigest
   };
-  if (peerUid) payload.peerUid = peerUid;
   if (peerAccountDigest) payload.peerAccountDigest = peerAccountDigest;
-  if (accountDigest) payload.accountDigest = accountDigest;
   if (input.conversationId) payload.conversationId = String(input.conversationId);
   if (input.conversationFingerprint) payload.conversationFingerprint = String(input.conversationFingerprint);
   const body = JSON.stringify(payload);
@@ -576,15 +520,9 @@ export const shareContactUpdate = async (req, res) => {
 
   try {
     const manager = getWebSocketManager();
-    const targetUid = normalizeUidHex(data?.targetUid || input.peerUid || '');
     const targetDigest = normalizeAccountDigest(data?.targetAccountDigest || input.peerAccountDigest || null);
-    if (targetUid) {
-      manager?.sendContactShare(targetUid, {
-        fromUid: myUid,
-        inviteId: input.inviteId,
-        envelope: input.envelope
-      });
-      manager?.notifyContactsReload(targetUid, targetDigest);
+    if (targetDigest) {
+      manager?.notifyContactsReload(null, targetDigest);
     }
   } catch (err) {
     logger.warn({ err: err?.message || err }, 'ws_contact_share_notify_failed');
@@ -608,7 +546,6 @@ export const bootstrapFriendSession = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -616,16 +553,13 @@ export const bootstrapFriendSession = async (req, res) => {
     return respondAccountError(res, err, 'account verification failed');
   }
 
-  const peerUid = normalizeUidHex(input.peerUid);
-  const peerAccountDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
-  if (!peerUid && !peerAccountDigest) {
-    return res.status(400).json({ error: 'BadRequest', message: 'peer identity required' });
+  const peerAccountDigest = normalizeAccountDigest(input.peerAccountDigest);
+  if (!peerAccountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'peer account digest required' });
   }
 
   const cacheHit = getBootstrapCache({
-    requesterUid: auth.uidHex,
     requesterDigest: auth.accountDigest,
-    peerUid,
     peerAccountDigest
   });
   if (cacheHit?.record?.guestBundle) {
@@ -633,8 +567,6 @@ export const bootstrapFriendSession = async (req, res) => {
     const response = {
       role,
       inviteId: record.inviteId || null,
-      ownerUid: record.ownerUid || null,
-      guestUid: record.guestUid || null,
       guestBundle: record.guestBundle,
       guestContact: record.guestContact || null,
       ownerContact: record.ownerContact || null,
@@ -649,10 +581,8 @@ export const bootstrapFriendSession = async (req, res) => {
   const path = '/d1/friends/bootstrap';
   const payload = {
     accountDigest: auth.accountDigest,
-    peerUid,
     peerAccountDigest
   };
-  if (input.peerAccountDigest) payload.peerAccountDigest = normalizeAccountDigest(input.peerAccountDigest);
   if (input.roleHint) payload.roleHint = input.roleHint;
   if (input.inviteId) payload.inviteId = input.inviteId;
   const body = JSON.stringify(payload);
@@ -692,12 +622,9 @@ export const bootstrapFriendSession = async (req, res) => {
   }
 
   const record = (data && typeof data === 'object' ? (data.record || data) : {}) || {};
-  const formatUid = (value) => normalizeUidHex(value) || null;
   const responseBase = {
     role: typeof record.role === 'string' ? record.role : null,
     inviteId: record.invite_id || record.inviteId || null,
-    ownerUid: null,
-    guestUid: null,
     ownerAccountDigest: record.owner_account_digest || record.ownerAccountDigest || null,
     guestAccountDigest: record.guest_account_digest || record.guestAccountDigest || null,
     guestContact: record.guest_contact || record.guestContact || null,
@@ -725,8 +652,6 @@ export const bootstrapFriendSession = async (req, res) => {
 
   try {
     setBootstrapCache({
-      ownerUid: response.ownerUid,
-      guestUid: response.guestUid || peerUid,
       ownerAccountDigest: record.owner_account_digest || null,
       guestAccountDigest: record.guest_account_digest || null,
       guestBundle: normalizedWorkerGuestBundle,
@@ -760,7 +685,6 @@ export const deleteContact = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
@@ -768,17 +692,14 @@ export const deleteContact = async (req, res) => {
     return respondAccountError(res, err, 'account verification failed');
   }
 
-  const ownerUid = auth.uidHex;
-  const peerUid = normalizeUidHex(input.peerUid);
-  if (!peerUid) {
-    return res.status(400).json({ error: 'BadRequest', message: 'invalid peerUid' });
-  }
   const ownerAccountDigest = auth.accountDigest;
   const peerAccountDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
+  if (!peerAccountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'peerAccountDigest required' });
+  }
 
   const path = '/d1/friends/contact-delete';
-  const payload = { ownerUid, peerUid, ownerAccountDigest };
-  if (peerAccountDigest) payload.peerAccountDigest = peerAccountDigest;
+  const payload = { ownerAccountDigest, peerAccountDigest };
   const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 

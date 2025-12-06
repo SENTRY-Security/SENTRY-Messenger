@@ -27,24 +27,14 @@ export default {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
       const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
-      const peerUid = normalizeUid(body?.peerUid || body?.peer_uid);
       const peerAccountDigest = normalizeAccountDigest(body?.peerAccountDigest || body?.peer_account_digest);
       const inviteId = typeof body?.inviteId === 'string' ? body.inviteId.trim() : null;
       const roleHint = typeof body?.roleHint === 'string' ? body.roleHint.trim().toLowerCase() : null;
       if (!accountDigest) {
         return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
       }
-      if (!peerAccountDigest && !peerUid && !inviteId) {
-        return json({ error: 'BadRequest', message: 'peer identity or inviteId required' }, { status: 400 });
-      }
-
-      let peerDigestFromUid = null;
-      if (peerUid) {
-        try {
-          peerDigestFromUid = await hashUidToDigest(env, peerUid);
-        } catch (err) {
-          console.warn('friends_bootstrap_peer_hash_failed', err?.message || err);
-        }
+      if (!peerAccountDigest && !inviteId) {
+        return json({ error: 'BadRequest', message: 'peer accountDigest or inviteId required' }, { status: 400 });
       }
 
       const rows = await env.DB.prepare(
@@ -67,7 +57,6 @@ export default {
           if (!requesterIsOwner && !requesterIsGuest) continue;
           const peerDigest = requesterIsOwner ? guestDigest : ownerDigest;
           if (peerAccountDigest && peerDigest && peerAccountDigest !== peerDigest) continue;
-          if (peerDigestFromUid && peerDigest && peerDigestFromUid !== peerDigest) continue;
           if (roleHint === 'owner' && !requesterIsOwner) continue;
           if (roleHint === 'guest' && !requesterIsGuest) continue;
           return { row, requesterIsOwner, ownerDigest, guestDigest };
@@ -644,7 +633,6 @@ export default {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
       const inviteId = String(body?.inviteId || '').trim();
-      const ownerUid = normalizeUid(body?.ownerUid || body?.owner_uid);
       const secret = String(body?.secret || '').trim();
       const expiresAt = Number(body?.expiresAt || 0);
       const accountTokenRaw = body?.accountToken || body?.account_token || null;
@@ -652,13 +640,13 @@ export default {
       const accountToken = typeof accountTokenRaw === 'string' && accountTokenRaw.length ? accountTokenRaw : null;
       const accountDigest = typeof accountDigestRaw === 'string' && accountDigestRaw.length ? String(accountDigestRaw).replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null;
 
-      if (!inviteId || !ownerUid || !secret || !Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) {
+      if (!inviteId || !secret || !Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) {
         return json({ error: 'BadRequest', message: 'invalid invite payload' }, { status: 400 });
       }
 
       let ownerAccount;
       try {
-        ownerAccount = await resolveAccount(env, { uidHex: ownerUid, accountToken, accountDigest }, { allowCreate: !!(accountToken || accountDigest), preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
+        ownerAccount = await resolveAccount(env, { accountToken, accountDigest }, { allowCreate: !!(accountToken || accountDigest), preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
       }
@@ -783,16 +771,14 @@ export default {
 
       const inviteId = String(body?.inviteId || '').trim();
       const secret = String(body?.secret || '').trim();
-      const myUid = normalizeUid(body?.myUid || body?.my_uid);
       const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
-      const peerUidBody = normalizeUid(body?.peerUid || body?.peer_uid);
       const peerAccountDigestBody = normalizeAccountDigest(body?.peerAccountDigest || body?.peer_account_digest);
       const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
       const conversationFingerprintRaw = typeof body?.conversationFingerprint === 'string' ? body.conversationFingerprint.trim() : '';
       const conversationFingerprint = conversationFingerprintRaw ? conversationFingerprintRaw : null;
       const envelope = normalizeEnvelope(body?.envelope);
-      if (!inviteId || !secret || !envelope || (!myUid && !accountDigest)) {
-        return json({ error: 'BadRequest', message: 'inviteId, secret, sender identity and envelope required' }, { status: 400 });
+      if (!inviteId || !secret || !envelope || !accountDigest) {
+        return json({ error: 'BadRequest', message: 'inviteId, secret, accountDigest and envelope required' }, { status: 400 });
       }
 
       const rows = await env.DB.prepare(
@@ -809,25 +795,7 @@ export default {
       const ownerDigest = normalizeAccountDigest(row.owner_account_digest);
       const guestDigest = normalizeAccountDigest(row.guest_account_digest);
 
-      let myUidDigest = null;
-      if (myUid) {
-        try {
-          myUidDigest = await hashUidToDigest(env, myUid);
-        } catch (err) {
-          console.warn('contact_share_hash_self_failed', err?.message || err);
-        }
-      }
-
-      let peerUidDigest = peerAccountDigestBody || null;
-      if (peerUidBody && !peerUidDigest) {
-        try {
-          peerUidDigest = await hashUidToDigest(env, peerUidBody);
-        } catch (err) {
-          console.warn('contact_share_hash_peer_failed', err?.message || err);
-        }
-      }
-
-      const senderDigest = accountDigest || myUidDigest || null;
+      const senderDigest = accountDigest;
       const senderRole = (() => {
         if (senderDigest && ownerDigest && senderDigest === ownerDigest) return 'owner';
         if (senderDigest && guestDigest && senderDigest === guestDigest) return 'guest';
@@ -839,7 +807,7 @@ export default {
       }
 
       const targetDigest = senderRole === 'owner'
-        ? (guestDigest || peerAccountDigestBody || peerUidDigest || null)
+        ? (guestDigest || peerAccountDigestBody || null)
         : ownerDigest;
 
       if (!targetDigest) {
@@ -848,9 +816,7 @@ export default {
 
       const ts = Math.floor(Date.now() / 1000);
       await insertContactMessage(env, {
-        convUid: null,
         convAccountDigest: targetDigest,
-        peerUid: myUid || null,
         peerAccountDigest: senderDigest,
         envelope,
         ts
@@ -890,44 +856,33 @@ export default {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
 
-      const ownerUid = normalizeUid(body?.ownerUid || body?.owner_uid);
-      const peerUid = normalizeUid(body?.peerUid || body?.peer_uid);
       let ownerAccountDigest = normalizeAccountDigest(body?.ownerAccountDigest || body?.owner_account_digest || body?.accountDigest || body?.account_digest);
       let peerAccountDigest = normalizeAccountDigest(body?.peerAccountDigest || body?.peer_account_digest);
-
-      if (!ownerAccountDigest && ownerUid) {
-        try { ownerAccountDigest = await hashUidToDigest(env, ownerUid); } catch {}
-      }
-      if (!peerAccountDigest && peerUid) {
-        try { peerAccountDigest = await hashUidToDigest(env, peerUid); } catch {}
-      }
 
       if (!ownerAccountDigest) {
         return json({ error: 'BadRequest', message: 'ownerAccountDigest required' }, { status: 400 });
       }
-      if (!peerAccountDigest && !peerUid) {
-        return json({ error: 'BadRequest', message: 'peerAccountDigest or peerUid required' }, { status: 400 });
+      if (!peerAccountDigest) {
+        return json({ error: 'BadRequest', message: 'peerAccountDigest required' }, { status: 400 });
       }
 
       const results = [];
       const now = Math.floor(Date.now() / 1000);
 
       const targets = new Map();
-      const addTarget = (convId, targetUid) => {
+      const addTarget = (convId, targetAccountDigest) => {
         if (!convId) return;
-        const key = `${convId}::${targetUid || peerAccountDigest || ''}`;
-        if (!targets.has(key)) targets.set(key, { convId, targetUid, targetAccountDigest: peerAccountDigest || null });
+        const key = `${convId}::${targetAccountDigest || peerAccountDigest || ''}`;
+        if (!targets.has(key)) targets.set(key, { convId, targetAccountDigest: targetAccountDigest || peerAccountDigest || null });
       };
 
-      addTarget(`contacts-${ownerAccountDigest}`, peerUid);
-      if (ownerUid) addTarget(`contacts-${ownerUid}`, peerUid);
-      if (peerAccountDigest) addTarget(`contacts-${peerAccountDigest}`, ownerUid);
-      if (peerUid) addTarget(`contacts-${peerUid}`, ownerUid);
+      addTarget(`contacts-${ownerAccountDigest}`, peerAccountDigest);
+      addTarget(`contacts-${peerAccountDigest}`, ownerAccountDigest);
 
       const targetList = Array.from(targets.values());
       for (const entry of targetList) {
-        const removed = await deleteContactByPeer(env, entry.convId, entry.targetUid, entry.targetAccountDigest);
-        results.push({ convId: entry.convId, removed, target: entry.targetUid || entry.targetAccountDigest || null });
+        const removed = await deleteContactByPeer(env, entry.convId, null, entry.targetAccountDigest);
+        results.push({ convId: entry.convId, removed, target: entry.targetAccountDigest || null });
       }
 
       return json({ ok: true, ts: now, results });
@@ -943,8 +898,7 @@ export default {
       }
       const inviteId = String(body?.inviteId || '').trim();
       const secret = String(body?.secret || '').trim();
-      const ownerUid = normalizeUid(body?.ownerUid || body?.owner_uid);
-      const guestUid = normalizeUid(body?.guestUid || body?.myUid);
+      const guestAccountDigestBody = normalizeAccountDigest(body?.accountDigest || body?.account_digest || body?.guestAccountDigest || body?.guest_account_digest);
       const guestContact = normalizeEnvelope(body?.guestContact || body?.guest_contact);
       const guestBundle = normalizeGuestBundle(body?.guestBundle || body?.guest_bundle);
       if (!inviteId || !secret) {
@@ -963,19 +917,10 @@ export default {
       if (row.expires_at < now) return json({ error: 'Expired' }, { status: 410 });
       if (row.used_at) return json({ error: 'AlreadyUsed' }, { status: 409 });
 
-      let guestAccount = null;
-      if (guestUid) {
-        try {
-          guestAccount = await resolveAccount(env, { uidHex: guestUid });
-        } catch (err) {
-          return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
-        }
-        if (!guestAccount) {
-          return json({ error: 'AccountNotFound' }, { status: 404 });
-        }
+      const guestDigestNormalized = guestAccountDigestBody || normalizeAccountDigest(row.guest_account_digest) || null;
+      if (!guestDigestNormalized) {
+        return json({ error: 'BadRequest', message: 'guest account digest required' }, { status: 400 });
       }
-
-      const guestDigestNormalized = guestAccount ? guestAccount.account_digest : normalizeAccountDigest(row.guest_account_digest) || null;
 
       await env.DB.prepare(
         `UPDATE friend_invites
@@ -1011,9 +956,7 @@ export default {
 
       if (guestEnvelope && ownerDigestResolved && guestDigestResolved) {
         await insertContactMessage(env, {
-          convUid: null,
           convAccountDigest: ownerDigestResolved,
-          peerUid: guestUid || null,
           peerAccountDigest: guestDigestResolved,
           envelope: guestEnvelope,
           ts: now
@@ -1022,9 +965,7 @@ export default {
 
       if (ownerEnvelope && guestDigestResolved) {
         await insertContactMessage(env, {
-          convUid: null,
           convAccountDigest: guestDigestResolved,
-          peerUid: null,
           peerAccountDigest: ownerDigestResolved,
           envelope: ownerEnvelope,
           ts: now
@@ -1033,7 +974,6 @@ export default {
 
       return json({
         ok: true,
-        owner_uid: ownerUid || null,
         owner_account_digest: row.owner_account_digest,
         guest_account_digest: guestDigestResolved,
         expires_at: row.expires_at,
@@ -1258,32 +1198,35 @@ export default {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
       const uidHex = normalizeUid(body?.uidHex || body?.uid_hex || body?.uid);
-      if (!uidHex) {
-        return json({ error: 'BadRequest', message: 'uidHex required' }, { status: 400 });
-      }
       const accountTokenRaw = body?.accountToken || body?.account_token;
       const accountDigestRaw = body?.accountDigest || body?.account_digest;
       const accountToken = typeof accountTokenRaw === 'string' && accountTokenRaw.trim().length ? accountTokenRaw.trim() : null;
-      const accountDigest = typeof accountDigestRaw === 'string' && accountDigestRaw.trim().length ? accountDigestRaw.trim() : null;
+      const accountDigest = typeof accountDigestRaw === 'string' && accountDigestRaw.trim().length ? normalizeAccountDigest(accountDigestRaw) : null;
       if (!accountToken && !accountDigest) {
         return json({ error: 'BadRequest', message: 'accountToken or accountDigest required' }, { status: 400 });
       }
       try {
-        const account = await resolveAccount(env, { uidHex, accountToken, accountDigest }, { allowCreate: false, preferredAccountToken: accountToken || null, preferredAccountDigest: accountDigest || null });
+        const account = await resolveAccount(
+          env,
+          { uidHex, accountToken, accountDigest },
+          { allowCreate: false, preferredAccountToken: accountToken || null, preferredAccountDigest: accountDigest || null }
+        );
         if (!account) {
           return json({ error: 'NotFound' }, { status: 404 });
         }
         if (accountToken && account.account_token !== accountToken) {
           return json({ error: 'Forbidden', message: 'account token mismatch' }, { status: 403 });
         }
-        const digestFromUid = await hashUidToDigest(env, uidHex);
-        if (digestFromUid !== account.uid_digest) {
-          return json({ error: 'Forbidden', message: 'uid mismatch' }, { status: 403 });
+        if (uidHex) {
+          const digestFromUid = await hashUidToDigest(env, uidHex);
+          if (digestFromUid !== account.uid_digest) {
+            return json({ error: 'Forbidden', message: 'uid mismatch' }, { status: 403 });
+          }
         }
         return json({
           ok: true,
-          uid_hex: normalizeUid(uidHex),
-          account_digest: account.account_digest
+          account_digest: account.account_digest,
+          uid_hex: uidHex ? normalizeUid(uidHex) : null
         });
       } catch (err) {
         return json({ error: 'VerifyFailed', message: err?.message || 'resolveAccount failed' }, { status: 500 });
@@ -1296,23 +1239,13 @@ export default {
         || url.searchParams.get('account_digest')
         || url.searchParams.get('digest')
       );
-      const uidDigestRaw = url.searchParams.get('uidDigest') || url.searchParams.get('uid_digest');
-      const uidDigest = uidDigestRaw ? normalizeAccountDigest(uidDigestRaw) : null; // same format: 64 hex
 
-      let resolvedAccountDigest = accountDigest;
-      if (!resolvedAccountDigest && uidDigest) {
-        const lookup = await env.DB.prepare(
-          `SELECT account_digest FROM accounts WHERE uid_digest=?1`
-        ).bind(uidDigest).all();
-        resolvedAccountDigest = lookup?.results?.[0]?.account_digest || null;
-      }
-
-      if (!resolvedAccountDigest) {
-        return json({ error: 'BadRequest', message: 'accountDigest or uidDigest required' }, { status: 400 });
+      if (!accountDigest) {
+        return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
       }
       const rows = await env.DB.prepare(
         `SELECT account_digest, created_at FROM accounts WHERE account_digest=?1`
-      ).bind(resolvedAccountDigest).all();
+      ).bind(accountDigest).all();
       const row = rows?.results?.[0] || null;
       if (!row) {
         return json({ error: 'NotFound', message: 'account not found' }, { status: 404 });
@@ -1819,34 +1752,29 @@ function bytesToBase64Url(u8) {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-async function deleteContactByPeer(env, convId, targetUid, targetAccountDigest = null) {
-  if (!convId || (!targetUid && !targetAccountDigest)) return 0;
-  const uidParam = targetUid ? targetUid.toUpperCase() : null;
+async function deleteContactByPeer(env, convId, _targetUid, targetAccountDigest = null) {
+  if (!convId || !targetAccountDigest) return 0;
   const acctParam = targetAccountDigest ? targetAccountDigest.toUpperCase() : null;
   const stmt = env.DB.prepare(`
     DELETE FROM messages
      WHERE conv_id=?1
        AND json_extract(header_json,'$.contact') = 1
        AND (
-         ( ?2 IS NOT NULL AND UPPER(json_extract(header_json,'$.peerUid')) = ?2 )
-         OR ( ?3 IS NOT NULL AND UPPER(json_extract(header_json,'$.peerAccountDigest')) = ?3 )
+         ( ?2 IS NOT NULL AND UPPER(json_extract(header_json,'$.peerAccountDigest')) = ?2 )
        )
-  `).bind(convId, uidParam, acctParam);
+  `).bind(convId, acctParam);
   const res = await stmt.run();
   return res?.meta?.changes || 0;
 }
 
-async function insertContactMessage(env, { convUid, convAccountDigest, peerUid, peerAccountDigest, envelope, ts }) {
+async function insertContactMessage(env, { convAccountDigest, peerAccountDigest, envelope, ts }) {
   await ensureDataTables(env);
   const normalized = normalizeEnvelope(envelope);
   if (!normalized) return;
   const targets = new Set();
-  const convUidNorm = normalizeUid(convUid);
   const convAcctNorm = normalizeAccountDigest(convAccountDigest);
   if (convAcctNorm) targets.add(`contacts-${convAcctNorm}`);
-  if (convUidNorm) targets.add(`contacts-${convUidNorm}`);
   if (!targets.size) return;
-  const peerUidNorm = normalizeUid(peerUid);
   const peerAcctNorm = normalizeAccountDigest(peerAccountDigest);
 
   for (const convId of targets) {
@@ -1854,7 +1782,6 @@ async function insertContactMessage(env, { convUid, convAccountDigest, peerUid, 
     const header = {
       contact: 1,
       v: 1,
-      peerUid: peerUidNorm,
       peerAccountDigest: peerAcctNorm,
       ts,
       envelope: normalized

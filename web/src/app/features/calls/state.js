@@ -80,7 +80,7 @@ function createEmptySession() {
     initiatorUidHex: null,
     direction: null,
     status: CALL_SESSION_STATUS.IDLE,
-    peerUidHex: null,
+    peerUidHex: null, // holds accountDigest now
     peerDisplayName: null,
     peerAvatarUrl: null,
     peerAccountDigest: null,
@@ -173,16 +173,14 @@ export function resetCallSession(reason = 'reset') {
 }
 
 export async function requestOutgoingCall({
-  peerUidHex,
+  peerAccountDigest,
   peerDisplayName,
   peerAvatarUrl,
-  peerAccountDigest,
   kind = CALL_REQUEST_KIND.VOICE,
   traceId = null
 } = {}) {
   const identity = normalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest || null,
-    peerUid: peerUidHex
+    peerAccountDigest: peerAccountDigest || null
   });
   const peerKey = identity.key;
   if (!peerKey) {
@@ -228,7 +226,6 @@ export async function requestOutgoingCall({
       metadata.callerAvatarUrl = selfProfile.avatarUrl;
     }
     const response = await createCallInvite({
-      peerUid: identity.uid || peerKey,
       peerAccountDigest: peerDigest,
       mode: activeSession.kind === CALL_REQUEST_KIND.VIDEO ? 'video' : 'voice',
       capabilities: activeSession.localCapability,
@@ -259,7 +256,6 @@ export async function requestOutgoingCall({
 
 export function markIncomingCall({
   callId,
-  peerUidHex,
   peerAccountDigest = null,
   peerDisplayName,
   peerAvatarUrl,
@@ -267,14 +263,13 @@ export function markIncomingCall({
   traceId
 } = {}) {
   const identity = normalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest || null,
-    peerUid: peerUidHex
+    peerAccountDigest: peerAccountDigest || null
   });
   const peerKey = identity.key;
   if (!peerKey) return { ok: false, error: 'MISSING_PEER' };
   if (!canStartCall()) return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
   activeSession = createEmptySession();
-  activeSession.initiatorUidHex = identity.uid || peerKey;
+  activeSession.initiatorUidHex = null;
   activeSession.direction = CALL_SESSION_DIRECTION.INCOMING;
   activeSession.status = CALL_SESSION_STATUS.INCOMING;
   activeSession.peerUidHex = peerKey;

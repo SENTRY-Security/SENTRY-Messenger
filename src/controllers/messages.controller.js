@@ -52,12 +52,9 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
   }
 }
 
-const UidHexRegex = /^[0-9A-Fa-f]{14,}$/;
-
 const DeleteMessagesSchema = z.object({
   ids: z.array(z.string().min(1)),
   conversationId: z.string().min(1),
-  uidHex: z.string().regex(UidHexRegex),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   conversationFingerprint: z.string().min(8).optional()
@@ -69,7 +66,6 @@ const DeleteMessagesSchema = z.object({
 
 const DeleteSecureConversationSchema = z.object({
   conversationId: z.string().min(8),
-  uidHex: z.string().regex(UidHexRegex),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   conversationFingerprint: z.string().min(8).optional()
@@ -96,13 +92,6 @@ function firstString(value) {
 function extractAccountFromRequest(req) {
   const header = (name) => firstString(req.get(name));
   const queryVal = (name) => firstString(req.query?.[name]);
-  const uidHex = firstString(
-    header('x-uid-hex'),
-    header('x-uid'),
-    queryVal('uidHex'),
-    queryVal('uid_hex'),
-    queryVal('uid')
-  );
   const accountToken = firstString(
     header('x-account-token'),
     queryVal('accountToken'),
@@ -118,22 +107,21 @@ function extractAccountFromRequest(req) {
     queryVal('conversationFingerprint'),
     queryVal('conversation_fingerprint')
   );
-  return { uidHex, accountToken, accountDigest, conversationFingerprint };
+  return { accountToken, accountDigest, conversationFingerprint };
 }
 
-async function authorizeAccountForConversation({ conversationId, uidHex, accountToken, accountDigest, fingerprint }) {
+async function authorizeAccountForConversation({ conversationId, accountToken, accountDigest, fingerprint }) {
   const normalizedConv = normalizeConversationId(conversationId);
   if (!normalizedConv) {
     throw new AccountAuthError('invalid conversationId', 400);
   }
 
   const { uidHex: resolvedUid, accountDigest: resolvedDigest } = await resolveAccountAuth({
-    uidHex,
     accountToken,
     accountDigest
   });
 
-  if (!isSystemOwnedConversation({ convId: normalizedConv, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
+  if (!isSystemOwnedConversation({ convId: normalizedConv, accountDigest: resolvedDigest })) {
     try {
       await authorizeConversationAccess({
         convId: normalizedConv,
@@ -148,7 +136,7 @@ async function authorizeAccountForConversation({ conversationId, uidHex, account
     }
   }
 
-  return { conversationId: normalizedConv, uidHex: resolvedUid, accountDigest: resolvedDigest };
+  return { conversationId: normalizedConv, uidHex: resolvedUid || null, accountDigest: resolvedDigest };
 }
 
 function respondAccountError(res, err, fallback = 'authorization failed') {
@@ -171,7 +159,6 @@ export const createMessage = async (req, res) => {
   const input = CreateMessageSchema.parse(req.body);
   const {
     convId: rawConvId,
-    uidHex,
     accountToken,
     accountDigest,
     conversationFingerprint,
@@ -182,7 +169,6 @@ export const createMessage = async (req, res) => {
   try {
     auth = await authorizeAccountForConversation({
       conversationId: rawConvId,
-      uidHex,
       accountToken,
       accountDigest,
       fingerprint: conversationFingerprint
@@ -195,7 +181,7 @@ export const createMessage = async (req, res) => {
   const payload = {
     msgId: crypto.randomUUID(),
     convId: auth.conversationId,
-    senderId: req.headers['x-client-id'] || auth.uidHex || 'unknown',
+    senderId: req.headers['x-client-id'] || auth.accountDigest || 'unknown',
     type: messageInput.type,
     aead: messageInput.aead,
     headerJson: JSON.stringify(messageInput.header || {}),
@@ -245,7 +231,6 @@ export const createSecureMessage = async (req, res) => {
 
   const {
     conversation_id: rawConversationId,
-    uidHex,
     accountToken,
     accountDigest,
     conversationFingerprint,
@@ -256,7 +241,6 @@ export const createSecureMessage = async (req, res) => {
   try {
     auth = await authorizeAccountForConversation({
       conversationId: rawConversationId,
-      uidHex,
       accountToken,
       accountDigest,
       fingerprint: conversationFingerprint
@@ -323,7 +307,6 @@ export const listMessages = async (req, res) => {
   try {
     auth = await authorizeAccountForConversation({
       conversationId: convIdRaw,
-      uidHex: account.uidHex,
       accountToken: account.accountToken,
       accountDigest: account.accountDigest,
       fingerprint: account.conversationFingerprint
@@ -378,7 +361,6 @@ export const listSecureMessages = async (req, res) => {
   try {
     auth = await authorizeAccountForConversation({
       conversationId: conversationIdRaw,
-      uidHex: account.uidHex,
       accountToken: account.accountToken,
       accountDigest: account.accountDigest,
       fingerprint: account.conversationFingerprint
@@ -497,7 +479,6 @@ export const deleteMessages = async (req, res) => {
   try {
     auth = await authorizeAccountForConversation({
       conversationId: input.conversationId,
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest,
       fingerprint: input.conversationFingerprint
@@ -556,7 +537,6 @@ export const deleteSecureConversation = async (req, res) => {
   try {
     auth = await authorizeAccountForConversation({
       conversationId: input.conversationId,
-      uidHex: input.uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest,
       fingerprint: input.conversationFingerprint
@@ -567,7 +547,6 @@ export const deleteSecureConversation = async (req, res) => {
 
   const payload = {
     conversationId: auth.conversationId,
-    uidHex: auth.uidHex,
     accountDigest: auth.accountDigest
   };
   if (input.accountToken) payload.accountToken = String(input.accountToken).trim();

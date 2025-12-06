@@ -1079,7 +1079,6 @@ export function initMessagesPane({
     let result;
     try {
       result = await requestOutgoingCall({
-        peerUidHex: state.activePeerUid,
         peerDisplayName: displayName,
         peerAvatarUrl: avatarUrl,
         peerAccountDigest,
@@ -1139,8 +1138,7 @@ export function initMessagesPane({
     if (avatarUrl) metadata.peerAvatarUrl = avatarUrl;
     const sent = sendCallInviteSignal({
       callId,
-      peerUidHex: state.activePeerUid,
-      peerAccountDigest,
+      peerAccountDigest: peerAccountDigest || state.activePeerUid,
       mode: actionType === 'video' ? 'video' : 'voice',
       metadata,
       capabilities,
@@ -2350,15 +2348,13 @@ export function initMessagesPane({
               preview: res?.msg?.media?.preview || msg.media.preview || null
             };
           }
-          const senderUid = getUidHex();
-          if (state.activePeerUid && senderUid) {
+          if (state.activePeerUid) {
             wsSendFn({
               type: 'message-new',
-              targetUid: state.activePeerUid,
+              targetAccountDigest: state.activePeerUid,
               conversationId: state.conversationId,
               preview: msg?.text || previewText,
-              ts: msg?.ts || Math.floor(Date.now() / 1000),
-              senderUid
+              ts: msg?.ts || Math.floor(Date.now() / 1000)
             });
           }
         } catch (err) {
@@ -2881,15 +2877,13 @@ export function initMessagesPane({
           elements.input.focus();
         }
         setMessagesStatus('');
-        const senderUid = getUidHex();
-        if (convId && state.activePeerUid && senderUid) {
+        if (convId && state.activePeerUid) {
           wsSendFn({
             type: 'message-new',
-            targetUid: state.activePeerUid,
+            targetAccountDigest: state.activePeerUid,
             conversationId: convId,
             preview: text,
-            ts,
-            senderUid
+            ts
           });
         }
       } catch (err) {

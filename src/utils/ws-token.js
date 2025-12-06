@@ -9,17 +9,17 @@ function sign(data) {
 }
 
 export function createWsToken({ uid, accountDigest, ttlMs = 5 * 60 * 1000, issuedAt = null }) {
-  if (!uid) throw new Error('uid required for ws token');
   if (!accountDigest) throw new Error('accountDigest required for ws token');
   const now = Math.floor(Date.now() / 1000);
   const iat = Number.isFinite(issuedAt) && issuedAt > 0 ? Math.floor(issuedAt) : now;
   const exp = iat + Math.floor(ttlMs / 1000);
   const payload = {
-    uid: String(uid).toUpperCase(),
     accountDigest: String(accountDigest).toUpperCase(),
     iat,
     exp
   };
+  const normalizedUid = uid ? String(uid).toUpperCase() : null;
+  if (normalizedUid) payload.uid = normalizedUid;
   const bodyB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const token = `${HEADER_B64}.${bodyB64}.${sign(`${HEADER_B64}.${bodyB64}`)}`;
   return { token, payload };
@@ -50,13 +50,11 @@ export function verifyWsToken(token) {
   if (typeof payload.exp !== 'number' || now >= payload.exp) {
     return { ok: false, reason: 'expired' };
   }
-  if (!payload.uid || !payload.accountDigest) {
-    return { ok: false, reason: 'claims' };
-  }
+  if (!payload.accountDigest) return { ok: false, reason: 'claims' };
   return {
     ok: true,
     payload: {
-      uid: String(payload.uid).toUpperCase(),
+      uid: payload.uid ? String(payload.uid).toUpperCase() : null,
       accountDigest: String(payload.accountDigest).toUpperCase(),
       exp: payload.exp,
       iat: payload.iat || null

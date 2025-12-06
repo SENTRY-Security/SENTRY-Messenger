@@ -1135,7 +1135,7 @@ export function setupShareController(options) {
             log({ contactConversationFingerprintError: fpErr?.message || fpErr, peerUid });
           }
         }
-        const sharePayload = { inviteId, secret, peerUid, envelope };
+        const sharePayload = { inviteId, secret, peerAccountDigest: targetAccountDigest, envelope };
         if (conversationId) sharePayload.conversationId = conversationId;
         if (conversationFingerprint) sharePayload.conversationFingerprint = conversationFingerprint;
         await friendsShareContactUpdate(sharePayload);
@@ -1151,7 +1151,6 @@ export function setupShareController(options) {
           try {
             wsTransport({
               type: 'contacts-reload',
-              targetUid,
               targetAccountDigest
             });
           } catch (err) {
@@ -1169,7 +1168,6 @@ export function setupShareController(options) {
             if (wsTransport && envelope) {
               wsTransport({
                 type: 'contact-share',
-                targetUid,
                 targetAccountDigest,
                 inviteId,
                 envelope
@@ -1184,7 +1182,6 @@ export function setupShareController(options) {
             try {
               wsTransport({
                 type: 'contacts-reload',
-                targetUid,
                 targetAccountDigest
               });
               success += 1;

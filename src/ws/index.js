@@ -4,8 +4,8 @@ import { verifyWsToken } from '../utils/ws-token.js';
 import { normalizeCallId } from '../utils/call-validators.js';
 import { appendCallEvent } from '../services/call-worker.js';
 
-const clients = new Map(); // uid -> Set<WebSocket>
-const latestSessionTs = new Map(); // uid -> iat (seconds)
+const clients = new Map(); // accountDigest -> Set<WebSocket>
+const latestSessionTs = new Map(); // accountDigest -> iat (seconds)
 const accountDigestByUid = new Map(); // uid -> accountDigest
 const presenceWatchers = new Map(); // account_digest -> Set<WebSocket>
 let manager = null;
@@ -29,11 +29,6 @@ const MAX_SIGNAL_JSON_BYTES = 16 * 1024;
 const MAX_SIGNAL_STRING_BYTES = 4096;
 const callLocks = new Map(); // uid -> { callId, expiresAt }
 let lastCallLockSweep = 0;
-
-function canonicalUid(uid) {
-  if (!uid) return null;
-  return String(uid).trim().toUpperCase() || null;
-}
 
 function canonicalAccountDigest(value) {
   if (!value) return null;
@@ -69,7 +64,7 @@ function isUidLocked(uid, callId = null) {
 }
 
 function lockUidForCall(uid, callId) {
-  const key = canonicalUid(uid);
+  const key = canonicalAccountDigest(uid);
   if (!key || !callId) return;
   callLocks.set(key, {
     callId,
@@ -78,7 +73,7 @@ function lockUidForCall(uid, callId) {
 }
 
 function renewCallLock(uid, callId) {
-  const key = canonicalUid(uid);
+  const key = canonicalAccountDigest(uid);
   if (!key || !callId) return;
   pruneCallLocks();
   const entry = callLocks.get(key);
@@ -88,7 +83,7 @@ function renewCallLock(uid, callId) {
 }
 
 function releaseCallLock(uid, callId) {
-  const key = canonicalUid(uid);
+  const key = canonicalAccountDigest(uid);
   if (!key) return;
   const entry = callLocks.get(key);
   if (entry && (!callId || entry.callId === callId)) {
@@ -179,19 +174,17 @@ function normalizeSignalUid(value) {
   return cleaned.length > 128 ? cleaned.slice(0, 128) : cleaned;
 }
 
-function extractPeerUid(msg = {}) {
+function extractPeerAccountDigest(msg = {}) {
   const candidates = [
-    msg.targetUid,
-    msg.target_uid,
-    msg.peerUid,
-    msg.peer_uid,
-    msg.toUid,
-    msg.to_uid,
-    msg.to,
-    msg.peer
+    msg.targetAccountDigest,
+    msg.target_account_digest,
+    msg.accountDigest,
+    msg.account_digest,
+    msg.peerAccountDigest,
+    msg.peer_account_digest
   ];
   for (const candidate of candidates) {
-    const normalized = normalizeSignalUid(candidate);
+    const normalized = canonicalAccountDigest(candidate);
     if (normalized) return normalized;
   }
   return null;
@@ -235,7 +228,7 @@ function sendCallAck(ws, eventType, callId, meta = {}) {
 }
 
 async function handleCallSignal(ws, msg) {
-  if (!ws || !ws.__uid) return;
+  if (!ws || !ws.__accountDigest) return;
   const rawType = String(msg?.type || '').toLowerCase();
   if (!CALL_SIGNAL_TYPES.has(rawType)) return;
   const callId = normalizeCallId(msg.callId || msg.call_id || msg.id);
@@ -243,32 +236,32 @@ async function handleCallSignal(ws, msg) {
     sendCallError(ws, 'CALL_INVALID_ID', 'callId required', { event: rawType });
     return;
   }
-  const targetUid = extractPeerUid(msg);
-  if (!targetUid) {
-    sendCallError(ws, 'CALL_TARGET_REQUIRED', 'target uid required', { event: rawType, callId });
+  const targetAccountDigest = extractPeerAccountDigest(msg) || accountDigestByUid.get(normalizeSignalUid(msg.targetUid || msg.peerUid));
+  if (!targetAccountDigest) {
+    sendCallError(ws, 'CALL_TARGET_REQUIRED', 'target accountDigest required', { event: rawType, callId });
     return;
   }
-  if (targetUid === ws.__uid) {
-    sendCallError(ws, 'CALL_TARGET_INVALID', 'target uid must differ from sender', { event: rawType, callId });
+  if (targetAccountDigest === ws.__accountDigest) {
+    sendCallError(ws, 'CALL_TARGET_INVALID', 'target must differ from sender', { event: rawType, callId });
     return;
   }
 
   if (rawType === 'call-invite') {
-    if (isUidLocked(ws.__uid, callId)) {
+    if (isUidLocked(ws.__accountDigest, callId)) {
       sendCallError(ws, 'CALL_ALREADY_IN_PROGRESS', 'caller already has an active call', { event: rawType, callId });
       return;
     }
-    if (isUidLocked(targetUid, callId)) {
-      sendCallError(ws, 'CALL_TARGET_BUSY', 'target already has an active call', { event: rawType, callId, peerUid: targetUid });
+    if (isUidLocked(targetAccountDigest, callId)) {
+      sendCallError(ws, 'CALL_TARGET_BUSY', 'target already has an active call', { event: rawType, callId, peerUid: targetAccountDigest });
       return;
     }
-    lockUidForCall(ws.__uid, callId);
-    lockUidForCall(targetUid, callId);
+    lockUidForCall(ws.__accountDigest, callId);
+    lockUidForCall(targetAccountDigest, callId);
   } else if (CALL_RELEASE_EVENTS.has(rawType)) {
-    releaseCallLocksForPair(callId, ws.__uid, targetUid);
+    releaseCallLocksForPair(callId, ws.__accountDigest, targetAccountDigest);
   } else if (CALL_RENEW_EVENTS.has(rawType)) {
-    renewCallLock(ws.__uid, callId);
-    renewCallLock(targetUid, callId);
+    renewCallLock(ws.__accountDigest, callId);
+    renewCallLock(targetAccountDigest, callId);
   }
 
   const detail = buildCallDetail(msg);
@@ -277,9 +270,9 @@ async function handleCallSignal(ws, msg) {
     type: rawType,
     callId,
     fromUid: ws.__uid,
-    toUid: targetUid,
+    toUid: null,
     fromAccountDigest: ws.__accountDigest || null,
-    toAccountDigest: accountDigestByUid.get(targetUid) || null,
+    toAccountDigest: targetAccountDigest || null,
     traceId: traceId || null,
     ts: Date.now(),
     payload: detail || null
@@ -290,19 +283,19 @@ async function handleCallSignal(ws, msg) {
     type: rawType,
     payload: detail || null,
     fromUid: ws.__uid,
-    toUid: targetUid,
+    toUid: null,
     fromAccountDigest: ws.__accountDigest || null,
-    toAccountDigest: accountDigestByUid.get(targetUid) || null,
+    toAccountDigest: targetAccountDigest || null,
     traceId
   });
 
-  broadcast(targetUid, payload);
-  broadcast(ws.__uid, payload, { exclude: ws });
-  sendCallAck(ws, rawType, callId, { peerUid: targetUid });
+  broadcastByDigest(targetAccountDigest, payload);
+  broadcastByDigest(ws.__accountDigest, payload, { exclude: ws });
+  sendCallAck(ws, rawType, callId, { peerUid: targetAccountDigest });
 }
 
-function addClient(uid, ws, sessionTs) {
-  const key = uid.toUpperCase();
+function addClient(accountDigest, ws, sessionTs) {
+  const key = canonicalAccountDigest(accountDigest);
   const ts = Number(sessionTs) || Math.floor(Date.now() / 1000);
   const latestTs = latestSessionTs.get(key) || 0;
   if (latestTs && ts < latestTs) {
@@ -312,7 +305,7 @@ function addClient(uid, ws, sessionTs) {
     try { ws.close(4409, 'stale_session'); } catch {}
     return false;
   }
-  // 單一活躍連線策略：同一 UID 只保留最新連線，先關閉舊連線。
+  // 單一活躍連線策略：同一 accountDigest 只保留最新連線，先關閉舊連線。
   const existing = clients.get(key);
   if (existing && existing.size) {
     for (const other of existing) {
@@ -322,36 +315,34 @@ function addClient(uid, ws, sessionTs) {
   }
   if (!clients.has(key)) clients.set(key, new Set());
   clients.get(key).add(ws);
-  ws.__uid = key;
+  ws.__uid = ws.__uid || null;
+  ws.__accountDigest = key;
   ws.__sessionTs = ts;
-  if (ws.__accountDigest) {
-    accountDigestByUid.set(key, ws.__accountDigest);
-  }
   latestSessionTs.set(key, ts);
-  logger.info({ uid: key }, 'ws_client_registered');
+  logger.info({ accountDigest: key, uid: ws.__uid || null }, 'ws_client_registered');
   notifyPresence(key, true);
   return true;
 }
 
 function removeClient(ws) {
   const uid = ws.__uid;
-  if (!uid) return;
-  const set = clients.get(uid);
+  const acct = ws.__accountDigest;
+  if (!acct) return;
+  const set = clients.get(acct);
   if (!set) return;
   set.delete(ws);
   if (!set.size) {
-    clients.delete(uid);
-    latestSessionTs.delete(uid);
-    accountDigestByUid.delete(uid);
+    clients.delete(acct);
+    latestSessionTs.delete(acct);
   }
-  logger.info({ uid }, 'ws_client_removed');
+  logger.info({ uid, accountDigest: acct }, 'ws_client_removed');
   if (!set || set.size === 0) {
-    notifyPresence(uid, false);
+    notifyPresence(acct, false);
   }
 }
 
-function broadcast(uid, payload, { exclude } = {}) {
-  const set = clients.get(String(uid || '').toUpperCase());
+function broadcastByDigest(accountDigest, payload, { exclude } = {}) {
+  const set = clients.get(String(accountDigest || '').toUpperCase());
   if (!set) return;
   const data = JSON.stringify(payload);
   for (const ws of set) {
@@ -368,27 +359,25 @@ function handleClientMessage(ws, data) {
   if (!msg || typeof msg !== 'object') return;
   logger.debug({ raw: msg, uid: ws.__uid || null }, 'ws_message_received');
   if (msg.type === 'auth') {
-    const uid = String(msg.uid || '').trim();
     const token = typeof msg.token === 'string' ? msg.token : '';
-    if (!uid) {
-      ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'uid_required' }));
-      return;
-    }
     const verification = verifyWsToken(token);
     if (!verification.ok) {
       ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'invalid_token' }));
       try { ws.close(4401, 'invalid_token'); } catch {}
       return;
     }
-    const claimedUid = uid.toUpperCase();
-    if (verification.payload.uid !== claimedUid) {
-      ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'uid_mismatch' }));
-      try { ws.close(4401, 'uid_mismatch'); } catch {}
+    const tokenUid = verification.payload.uid ? String(verification.payload.uid).toUpperCase() : null;
+    const tokenDigest = canonicalAccountDigest(verification.payload.accountDigest);
+    if (!tokenDigest) {
+      ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'account_digest_required' }));
+      try { ws.close(4401, 'account_digest_missing'); } catch {}
       return;
     }
-    ws.__accountDigest = verification.payload.accountDigest;
+    ws.__accountDigest = tokenDigest;
+    ws.__uid = tokenUid || null;
+    if (tokenUid) accountDigestByUid.set(tokenUid, tokenDigest);
     const sessionTs = verification.payload.iat || Math.floor(Date.now() / 1000);
-    const ok = addClient(claimedUid, ws, sessionTs);
+    const ok = addClient(tokenDigest, ws, sessionTs);
     if (!ok) return;
     ws.send(JSON.stringify({ type: 'auth', ok: true, exp: verification.payload.exp }));
     return;
@@ -409,10 +398,10 @@ function handleClientMessage(ws, data) {
     return;
   }
   if (msg.type === 'contact-share') {
-    const targetUid = String(msg.targetUid || '').trim();
-    if (!targetUid) return;
-    const fromDigest = accountDigestByUid.get(ws.__uid || '') || null;
-    broadcast(targetUid, {
+    const targetDigest = extractPeerAccountDigest(msg);
+    if (!targetDigest) return;
+    const fromDigest = ws.__accountDigest || null;
+    broadcastByDigest(targetDigest, {
       type: 'contact-share',
       fromUid: ws.__uid,
       fromAccountDigest: fromDigest,
@@ -423,10 +412,10 @@ function handleClientMessage(ws, data) {
     return;
   }
   if (msg.type === 'contact-removed') {
-    const targetUid = String(msg.targetUid || msg.peerUid || '').trim().toUpperCase();
-    if (!targetUid) return;
-    const peerAcct = accountDigestByUid.get(ws.__uid || '') || null;
-    broadcast(targetUid, {
+    const targetDigest = extractPeerAccountDigest(msg);
+    if (!targetDigest) return;
+    const peerAcct = ws.__accountDigest || null;
+    broadcastByDigest(targetDigest, {
       type: 'contact-removed',
       peerUid: ws.__uid,
       peerAccountDigest: peerAcct,
@@ -435,16 +424,15 @@ function handleClientMessage(ws, data) {
     return;
   }
   if (msg.type === 'message-new') {
-    if (!ws.__uid) return;
-    const targetUid = String(msg.targetUid || msg.peerUid || msg.peer_uid || '').trim().toUpperCase();
+    if (!ws.__accountDigest) return;
+    const targetDigest = extractPeerAccountDigest(msg);
     const conversationId = String(msg.conversationId || msg.conversation_id || '').trim();
-    if (!targetUid || !conversationId) return;
+    if (!targetDigest || !conversationId) return;
     const preview = typeof msg.preview === 'string' ? msg.preview : '';
     const ts = Number(msg.ts) || Date.now();
     const count = Number.isFinite(Number(msg.count)) ? Number(msg.count) : 1;
-    const senderAcct = accountDigestByUid.get(ws.__uid || '') || null;
-    const targetAcct = accountDigestByUid.get(targetUid) || null;
-    broadcast(targetUid, {
+    const senderAcct = ws.__accountDigest || null;
+    broadcastByDigest(targetDigest, {
       type: 'secure-message',
       conversationId,
       preview,
@@ -454,15 +442,14 @@ function handleClientMessage(ws, data) {
       senderAccountDigest: senderAcct,
       peerUid: ws.__uid,
       peerAccountDigest: senderAcct,
-      targetAccountDigest: targetAcct
+      targetAccountDigest: targetDigest
     });
     return;
   }
   if (msg.type === 'contacts-reload') {
-    const targetUid = String(msg.targetUid || msg.peerUid || '').trim().toUpperCase();
-    if (!targetUid) return;
-    const acct = accountDigestByUid.get(targetUid) || null;
-    broadcast(targetUid, { type: 'contacts-reload', ts: Date.now(), accountDigest: acct });
+    const targetDigest = extractPeerAccountDigest(msg);
+    if (!targetDigest) return;
+    broadcastByDigest(targetDigest, { type: 'contacts-reload', ts: Date.now(), accountDigest: targetDigest });
     return;
   }
 }
@@ -514,20 +501,25 @@ export function setupWebSocket(server) {
   });
 
   manager = {
-    notifyInviteAccepted(ownerUid, inviteId, fromUid) {
-      const fromDigest = accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null;
-      broadcast(ownerUid, { type: 'invite-accepted', inviteId, fromUid, fromAccountDigest: fromDigest, ts: Date.now() });
+    notifyInviteAccepted(_ownerUid, inviteId, fromUid) {
+      const fromDigest = fromUid ? accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null : null;
+      const ownerDigest = null; // ownerUid no longer routed; rely on accountDigest where available
+      if (ownerDigest) {
+        broadcastByDigest(ownerDigest, { type: 'invite-accepted', inviteId, fromUid, fromAccountDigest: fromDigest, ts: Date.now() });
+      }
     },
-    notifyContactsReload(uid, accountDigest = null) {
-      const digest = accountDigest || accountDigestByUid.get(String(uid || '').toUpperCase()) || null;
-      broadcast(uid, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
+    notifyContactsReload(_uid, accountDigest = null) {
+      const digest = accountDigest || null;
+      if (!digest) return;
+      broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    sendContactShare(targetUid, { fromUid, inviteId, envelope }) {
-      if (!targetUid || !inviteId || !envelope) return;
-      const fromDigest = accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null;
-      broadcast(targetUid, {
+    sendContactShare(_targetUid, { fromUid, inviteId, envelope, targetAccountDigest }) {
+      const digest = canonicalAccountDigest(targetAccountDigest);
+      if (!digest || !inviteId || !envelope) return;
+      const fromDigest = fromUid ? accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null : null;
+      broadcastByDigest(digest, {
         type: 'contact-share',
-        fromUid: String(fromUid || '').toUpperCase() || null,
+        fromUid: fromUid ? String(fromUid || '').toUpperCase() : null,
         fromAccountDigest: fromDigest,
         inviteId,
         envelope,

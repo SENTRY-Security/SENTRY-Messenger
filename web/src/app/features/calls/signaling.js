@@ -14,10 +14,6 @@ import {
 
 let wsSend = null;
 
-function normalizeUidKey(uid) {
-  return String(uid || '').toUpperCase() || null;
-}
-
 function resolveContactSnapshot(peer) {
   const identity = normalizePeerIdentity(peer);
   const key = identity.key;
@@ -71,23 +67,21 @@ function emitSignal(payload) {
 
 export function sendCallInviteSignal({
   callId,
-  peerUidHex,
-  peerAccountDigest = null,
+  peerAccountDigest,
   mode = 'voice',
   metadata = {},
   traceId = null,
   capabilities = null,
   envelope = null
 } = {}) {
-  if (!callId || !peerUidHex) {
-    log({ callSignalSendSkipped: 'call-invite', reason: 'missing-call-or-peer' });
+  if (!callId || !peerAccountDigest) {
+    log({ callSignalSendSkipped: 'call-invite', reason: 'missing-call-or-peer-digest' });
     return false;
   }
   const normalizedCapabilities = capabilities || getCallCapability() || null;
   return emitSignal({
     type: 'call-invite',
     callId,
-    targetUid: String(peerUidHex).trim().toUpperCase(),
     targetAccountDigest: peerAccountDigest || null,
     mode: mode === 'video' ? 'video' : 'voice',
     metadata,
@@ -100,14 +94,13 @@ export function sendCallInviteSignal({
 export function sendCallSignal(type, payload = {}) {
   if (!type) return false;
   let normalizedPayload = payload;
-  if (payload?.targetUid || payload?.targetAccountDigest) {
+  if (payload?.targetAccountDigest || payload?.targetUid) {
     const identity = normalizePeerIdentity({
       peerAccountDigest: payload.targetAccountDigest || payload.target_account_digest || null,
       peerUid: payload.targetUid || payload.target_uid || null
     });
     normalizedPayload = {
       ...payload,
-      targetUid: identity.uid || identity.key || payload.targetUid || payload.target_uid || null,
       targetAccountDigest: identity.accountDigest || payload.targetAccountDigest || payload.target_account_digest || null
     };
   }

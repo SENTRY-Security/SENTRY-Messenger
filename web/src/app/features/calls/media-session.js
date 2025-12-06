@@ -1,6 +1,5 @@
 import { issueTurnCredentials } from '../../api/calls.js';
 import { log } from '../../core/log.js';
-import { getUidHex } from '../../core/store.js';
 import { loadCallNetworkConfig } from './network-config.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
 import {
@@ -27,7 +26,7 @@ let remoteStream = null;
 let pendingOffer = null;
 let awaitingAnswer = false;
 let activeCallId = null;
-let activePeerUid = null;
+let activePeerUid = null; // holds accountDigest now
 let direction = 'outgoing';
 let unsubscribers = [];
 let awaitingOfferAfterAccept = false;
@@ -364,10 +363,9 @@ async function applyRemoteOfferAndAnswer(msg) {
 }
 
 async function handleIncomingOffer(msg) {
-  if (msg.fromUid === getUidHex()) return;
   if (!activeCallId) {
     activeCallId = msg.callId;
-    activePeerUid = msg.fromUid;
+    activePeerUid = msg.fromAccountDigest || msg.from_account_digest || null;
     direction = 'incoming';
   }
   if (awaitingOfferAfterAccept) {
@@ -380,7 +378,7 @@ async function handleIncomingOffer(msg) {
 }
 
 async function handleIncomingAnswer(msg) {
-  if (!peerConnection || msg.fromUid === getUidHex()) return;
+  if (!peerConnection) return;
   if (!awaitingAnswer) return;
   if (!msg?.description) return;
   awaitingAnswer = false;
@@ -394,7 +392,7 @@ async function handleIncomingAnswer(msg) {
 }
 
 async function handleIncomingCandidate(msg) {
-  if (!peerConnection || msg.fromUid === getUidHex()) return;
+  if (!peerConnection) return;
   const candidate = msg.candidate;
   if (!candidate) return;
   if (!peerConnection.remoteDescription || !peerConnection.remoteDescription.type) {

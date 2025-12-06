@@ -6,7 +6,6 @@ import { createDownloadGet, createUploadPut } from '../../services/s3.js';
 import { signHmac } from '../../utils/hmac.js';
 import {
   verifyAccount,
-  normalizeUidHex,
   normalizeAccountDigest,
   AccountDigestRegex
 } from '../../utils/account-verify.js';
@@ -29,7 +28,6 @@ const SYSTEM_DIR_RECEIVED = '已接收';
 
 const SignPutSchema = z.object({
   convId: z.string().min(1),
-  uidHex: z.string().min(14),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   conversationFingerprint: z.string().min(16).optional(),
@@ -46,7 +44,6 @@ const SignPutSchema = z.object({
 
 const SignGetSchema = z.object({
   key: z.string().min(3),
-  uidHex: z.string().min(14),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   conversationFingerprint: z.string().min(16).optional(),
@@ -106,13 +103,9 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   const ttlSec = Number(process.env.SIGNED_PUT_TTL || 900);
   const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 524_288_000;
 
-  const uidHex = normalizeUidHex(input.uidHex);
-  if (!uidHex) {
-    return res.status(400).json({ error: 'BadRequest', message: 'invalid uidHex' });
-  }
   const tokenClean = input.accountToken ? String(input.accountToken).trim() : undefined;
   const digestClean = input.accountDigest ? normalizeAccountDigest(input.accountDigest) : undefined;
-  const accountPayload = { uidHex };
+  const accountPayload = {};
   if (tokenClean) accountPayload.accountToken = tokenClean;
   if (digestClean) accountPayload.accountDigest = digestClean;
 
@@ -130,14 +123,12 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   if (!resolvedDigest) {
     return res.status(502).json({ error: 'VerifyFailed', message: 'account digest missing' });
   }
-  const resolvedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || uidHex) || uidHex;
-
   const convId = normalizeConversationId(input.convId);
   if (!convId) {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid convId' });
   }
 
-  if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
+  if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest })) {
     try {
       await authorizeConversationAccess({
         convId,
@@ -230,13 +221,9 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
 r.post('/media/sign-get', asyncH(async (req, res) => {
   const input = SignGetSchema.parse(req.body);
 
-  const uidHex = normalizeUidHex(input.uidHex);
-  if (!uidHex) {
-    return res.status(400).json({ error: 'BadRequest', message: 'invalid uidHex' });
-  }
   const tokenClean = input.accountToken ? String(input.accountToken).trim() : undefined;
   const digestClean = input.accountDigest ? normalizeAccountDigest(input.accountDigest) : undefined;
-  const accountPayload = { uidHex };
+  const accountPayload = {};
   if (tokenClean) accountPayload.accountToken = tokenClean;
   if (digestClean) accountPayload.accountDigest = digestClean;
 
@@ -254,15 +241,13 @@ r.post('/media/sign-get', asyncH(async (req, res) => {
   if (!resolvedDigest) {
     return res.status(502).json({ error: 'VerifyFailed', message: 'account digest missing' });
   }
-  const resolvedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || uidHex) || uidHex;
-
   const convIdFragment = extractConversationIdFromKey(input.key);
   const convId = convIdFragment ? normalizeConversationId(convIdFragment) : null;
   if (!convId) {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid object key' });
   }
 
-  if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest, uidHex: resolvedUid })) {
+  if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest })) {
     try {
       await authorizeConversationAccess({
         convId,

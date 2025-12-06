@@ -1,18 +1,10 @@
 import { fetchJSON } from '../core/http.js';
 import { log } from '../core/log.js';
 import { decodeFriendInvite } from '../lib/invite.js';
-import { getUidHex, getAccountToken, getAccountDigest } from '../core/store.js';
+import { getAccountToken, getAccountDigest } from '../core/store.js';
 
-function withAccount(payload = {}, { includeUid = true } = {}) {
+function withAccount(payload = {}) {
   const out = { ...payload };
-  if (includeUid && out.uidHex == null) {
-    const uid = getUidHex();
-    if (uid) out.uidHex = uid;
-  }
-  if (out.uidHex != null) {
-    const cleanedUid = String(out.uidHex).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-    if (cleanedUid) out.uidHex = cleanedUid; else delete out.uidHex;
-  }
   if (out.accountToken == null) {
     const token = getAccountToken();
     if (token) out.accountToken = token;
@@ -28,8 +20,8 @@ function withAccount(payload = {}, { includeUid = true } = {}) {
   return out;
 }
 
-export async function friendsCreateInvite({ uidHex, ttlSeconds, prekeyBundle } = {}) {
-  const payload = withAccount({ uidHex });
+export async function friendsCreateInvite({ ttlSeconds, prekeyBundle } = {}) {
+  const payload = withAccount({});
   if (ttlSeconds) payload.ttlSeconds = ttlSeconds;
   if (prekeyBundle) payload.prekeyBundle = prekeyBundle;
   const res = await postInvite('/api/v1/friends/invite', payload);
@@ -37,15 +29,12 @@ export async function friendsCreateInvite({ uidHex, ttlSeconds, prekeyBundle } =
   return res;
 }
 
-export async function friendsAcceptInvite({ inviteId, secret, contactEnvelope, guestBundle, ownerUid } = {}) {
-  const myUid = getUidHex();
+export async function friendsAcceptInvite({ inviteId, secret, contactEnvelope, guestBundle } = {}) {
   const payload = withAccount({ inviteId, secret });
-  if (myUid) payload.myUid = myUid;
   if (contactEnvelope && contactEnvelope.iv && contactEnvelope.ct) {
     payload.contactEnvelope = contactEnvelope;
   }
   if (guestBundle) payload.guestBundle = guestBundle;
-  if (ownerUid) payload.ownerUid = ownerUid;
   const { r, data } = await fetchJSON('/api/v1/friends/accept', payload);
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'accept failed', r.status);
@@ -70,7 +59,7 @@ export async function friendsAttachInviteContact({ inviteId, secret, envelope } 
 export async function friendsDeleteContact({ peerAccountDigest } = {}) {
   const digest = getAccountDigest();
   if (!digest) throw new Error('Not unlocked: account missing');
-  const payload = withAccount({ peerAccountDigest }, { includeUid: false });
+  const payload = withAccount({ peerAccountDigest });
   const { r, data } = await fetchJSON('/api/v1/friends/delete', payload);
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'delete contact failed', r.status);
@@ -80,19 +69,17 @@ export async function friendsDeleteContact({ peerAccountDigest } = {}) {
   return data;
 }
 
-export async function friendsShareContactUpdate({ inviteId, secret, peerUid, envelope, conversationId, conversationFingerprint } = {}) {
-  const myUid = getUidHex();
-  if (!myUid) throw new Error('Not unlocked: UID missing');
+export async function friendsShareContactUpdate({ inviteId, secret, peerAccountDigest, envelope, conversationId, conversationFingerprint } = {}) {
+  if (!getAccountDigest()) throw new Error('Not unlocked: account missing');
   if (!inviteId || !secret || !envelope?.iv || !envelope?.ct) {
     throw new Error('invalid envelope payload');
   }
-  const payload = withAccount({ inviteId, secret, myUid, envelope });
-  if (peerUid) payload.peerUid = peerUid;
+  const payload = withAccount({ inviteId, secret, envelope, peerAccountDigest });
   if (conversationId) payload.conversationId = conversationId;
   if (conversationFingerprint) payload.conversationFingerprint = conversationFingerprint;
   try {
     // eslint-disable-next-line no-console
-    console.log('[contact-share-request]', { inviteId, myUid, peerUid: peerUid || null });
+    console.log('[contact-share-request]', { inviteId });
   } catch {}
   const { r, data } = await fetchJSON('/api/v1/friends/contact/share', payload);
   if (!r.ok) {
@@ -117,8 +104,8 @@ export async function friendsAcceptInviteFromInput(input) {
   return friendsAcceptInvite(payload);
 }
 
-export async function friendsBootstrapSession({ peerUid, uidHex, roleHint, inviteId } = {}) {
-  const payload = withAccount({ peerUid, uidHex });
+export async function friendsBootstrapSession({ peerAccountDigest, roleHint, inviteId } = {}) {
+  const payload = withAccount({ peerAccountDigest });
   if (roleHint && typeof roleHint === 'string') {
     const lowered = roleHint.trim().toLowerCase();
     if (lowered === 'owner' || lowered === 'guest') payload.roleHint = lowered;
@@ -148,7 +135,7 @@ export async function friendsBootstrapSession({ peerUid, uidHex, roleHint, invit
   };
   log({
     friendBootstrapSession: {
-      peerUid: payload.peerUid || null,
+      peerAccountDigest: payload.peerAccountDigest || null,
       role: result.role,
       hasGuestBundle: !!result.guestBundle
     }

@@ -10,8 +10,8 @@ export class AccountAuthError extends Error {
 }
 
 export async function resolveAccountAuth({ uidHex, accountToken, accountDigest }) {
-  const normalizedUid = normalizeUidHex(uidHex);
-  if (!normalizedUid) {
+  const normalizedUid = uidHex ? normalizeUidHex(uidHex) : null;
+  if (uidHex && !normalizedUid) {
     throw new AccountAuthError('invalid uidHex', 400);
   }
   const token = typeof accountToken === 'string' ? accountToken.trim() : '';
@@ -19,7 +19,8 @@ export async function resolveAccountAuth({ uidHex, accountToken, accountDigest }
   if (!token && !digestInput) {
     throw new AccountAuthError('accountToken or accountDigest required', 400);
   }
-  const payload = { uidHex: normalizedUid };
+  const payload = {};
+  if (normalizedUid) payload.uidHex = normalizedUid;
   if (token) payload.accountToken = token;
   if (digestInput) payload.accountDigest = digestInput;
 
@@ -40,7 +41,7 @@ export async function resolveAccountAuth({ uidHex, accountToken, accountDigest }
   if (!resolvedDigest) {
     throw new AccountAuthError('account digest missing', 502);
   }
-  const resolvedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || normalizedUid) || normalizedUid;
+  const resolvedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || normalizedUid) || normalizedUid || null;
 
   return {
     uidHex: resolvedUid,

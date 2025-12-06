@@ -12,7 +12,7 @@ const latestLoginTs = new Map(); // accountDigest -> sessionTs
 const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const TokenRequestSchema = z.object({
-  uidHex: z.string().min(14),
+  uidHex: z.string().min(14).optional(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   sessionTs: z.number().int().optional()
@@ -32,12 +32,13 @@ r.post('/ws/token', async (req, res) => {
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
-  const uidHex = normalizeUidHex(input.uidHex);
-  if (!uidHex) {
+  const uidHex = input.uidHex ? normalizeUidHex(input.uidHex) : null;
+  if (input.uidHex && !uidHex) {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid uidHex' });
   }
 
-  const payload = { uidHex };
+  const payload = {};
+  if (uidHex) payload.uidHex = uidHex;
   if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
   if (input.accountDigest) {
     const normalizedDigest = normalizeAccountDigest(input.accountDigest);
@@ -59,6 +60,10 @@ r.post('/ws/token', async (req, res) => {
   if (!accountDigest) {
     return res.status(500).json({ error: 'VerifyFailed', message: 'account digest missing' });
   }
+  const verifiedUid = normalizeUidHex(verified.data?.uid_hex || verified.data?.uidHex || null);
+  if (uidHex && verifiedUid && uidHex !== verifiedUid) {
+    return res.status(403).json({ error: 'UidMismatch', message: 'uid mismatch' });
+  }
 
   const sessionTs = Number.isFinite(input.sessionTs) ? Math.floor(input.sessionTs) : Math.floor(Date.now() / 1000);
   const latest = latestLoginTs.get(accountDigest) || 0;
@@ -67,7 +72,7 @@ r.post('/ws/token', async (req, res) => {
   }
   latestLoginTs.set(accountDigest, sessionTs);
 
-  const { token, payload: tokenPayload } = createWsToken({ uid: uidHex, accountDigest, issuedAt: sessionTs });
+  const { token, payload: tokenPayload } = createWsToken({ uid: verifiedUid || uidHex, accountDigest, issuedAt: sessionTs });
   return res.json({
     token,
     expiresAt: tokenPayload.exp,

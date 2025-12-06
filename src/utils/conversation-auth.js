@@ -13,10 +13,9 @@ export function normalizeConversationId(value) {
   return token;
 }
 
-export function isSystemOwnedConversation({ convId, accountDigest, uidHex }) {
+export function isSystemOwnedConversation({ convId, accountDigest }) {
   if (!convId) return false;
   const acct = (accountDigest || '').toUpperCase();
-  const uid = (uidHex || '').toUpperCase();
   if (acct) {
     if (convId === `drive-${acct}`) return true;
     if (convId === `profile-${acct}`) return true;
@@ -24,7 +23,6 @@ export function isSystemOwnedConversation({ convId, accountDigest, uidHex }) {
     if (convId === `avatar-${acct}`) return true;
     if (convId === `contacts-${acct}`) return true;
   }
-  if (uid && convId === `contacts-${uid}`) return true;
   return false;
 }
 
