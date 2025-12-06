@@ -6,7 +6,7 @@ import { createSecureMessage } from '../api/messages.js';
 import { friendsBootstrapSession } from '../api/friends.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
-import { getAccountDigest, drState } from '../core/store.js';
+import { getAccountDigest, drState, normalizePeerIdentity } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
@@ -21,7 +21,13 @@ import { ensureDevicePrivAvailable } from './device-priv.js';
 import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
 import { encryptAndPutWithProgress } from './media.js';
 
-function normHex(s) { return String(s || '').replace(/[^0-9a-f]/gi, '').toUpperCase(); }
+function normHex(value) {
+  const identity = normalizePeerIdentity({
+    peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value?.peerUidHex ?? value?.peerUid ?? value,
+    peerUid: value?.peerUid
+  });
+  return identity.key || null;
+}
 
 function cloneU8(src) {
   if (!(src instanceof Uint8Array)) return src;
@@ -110,8 +116,8 @@ function compareHistoryKeys(aTs, aId, bTs, bId) {
   return 0;
 }
 
-function appendDrHistoryEntry({ peerUidHex, ts, snapshot, snapshotNext, messageId, messageKeyB64 }) {
-  const peer = normHex(peerUidHex);
+function appendDrHistoryEntry({ peerAccountDigest, peerUidHex, ts, snapshot, snapshotNext, messageId, messageKeyB64 }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   const stamp = Number(ts);
   if (!peer || !snapshot || !Number.isFinite(stamp)) return false;
   const info = getContactSecret(peer);
@@ -154,8 +160,8 @@ function appendDrHistoryEntry({ peerUidHex, ts, snapshot, snapshotNext, messageI
   return true;
 }
 
-function restoreDrStateFromHistory({ peerUidHex, ts, messageId, targetState = null, reasonTag = null }) {
-  const peer = normHex(peerUidHex);
+function restoreDrStateFromHistory({ peerAccountDigest, peerUidHex, ts, messageId, targetState = null, reasonTag = null }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer && !targetState) return false;
   const info = getContactSecret(peer);
   if (!info?.drHistory?.length) return false;
@@ -199,12 +205,12 @@ function restoreDrStateFromHistory({ peerUidHex, ts, messageId, targetState = nu
   return restored;
 }
 
-export function restoreDrStateToHistoryPoint({ peerUidHex, ts, messageId }) {
-  return restoreDrStateFromHistory({ peerUidHex, ts, messageId });
+export function restoreDrStateToHistoryPoint({ peerAccountDigest, peerUidHex, ts, messageId }) {
+  return restoreDrStateFromHistory({ peerAccountDigest, peerUidHex, ts, messageId });
 }
 
-function updateHistoryCursor({ peerUidHex, ts, messageId }) {
-  const peer = normHex(peerUidHex);
+function updateHistoryCursor({ peerAccountDigest, peerUidHex, ts, messageId }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer) return;
   const info = getContactSecret(peer);
   if (!info?.inviteId || !info?.secret) return;
@@ -255,16 +261,16 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
   return snap;
 }
 
-export function snapshotDrStateForPeer(peerUidHex) {
-  const peer = normHex(peerUidHex);
+export function snapshotDrStateForPeer(peerAccountDigest) {
+  const peer = normHex(peerAccountDigest);
   if (!peer) return null;
   const holder = drState(peer);
   if (!holder?.rk) return null;
   return snapshotDrState(holder);
 }
 
-export function restoreDrStateFromSnapshot({ peerUidHex, snapshot, force = false, targetState = null, sourceTag = 'snapshot' } = {}) {
-  const peer = normHex(peerUidHex);
+export function restoreDrStateFromSnapshot({ peerAccountDigest, peerUidHex, snapshot, force = false, targetState = null, sourceTag = 'snapshot' } = {}) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer && !targetState) return false;
   const data = sanitizeSnapshotInput(snapshot);
   if (!data) return false;
@@ -306,8 +312,8 @@ export function restoreDrStateFromSnapshot({ peerUidHex, snapshot, force = false
   return true;
 }
 
-export function persistDrSnapshot({ peerUidHex, state, snapshot } = {}) {
-  const peer = normHex(peerUidHex);
+export function persistDrSnapshot({ peerAccountDigest, peerUidHex, state, snapshot } = {}) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer) return false;
   const holder = state || drState(peer);
   if (!holder?.rk) return false;
@@ -316,7 +322,7 @@ export function persistDrSnapshot({ peerUidHex, state, snapshot } = {}) {
   const info = getContactSecret(peer);
   if (!info?.inviteId || !info?.secret) {
     if (isAutomationEnv()) {
-      console.warn('[dr] persist snapshot skipped (missing contact secret)', { peerUidHex: peer, hasInfo: !!info });
+      console.warn('[dr] persist snapshot skipped (missing contact secret)', { peerAccountDigest: peer, hasInfo: !!info });
     }
     return false;
   }
@@ -384,7 +390,7 @@ export function hydrateDrStatesFromContactSecrets() {
       skippedInvalidRole += 1;
       continue;
     }
-    const applied = restoreDrStateFromSnapshot({ peerUidHex: peerUid, snapshot });
+    const applied = restoreDrStateFromSnapshot({ peerAccountDigest: peerUid, snapshot });
     if (applied) {
       const holder = drState(peerUid);
       if (holder) {
@@ -484,17 +490,17 @@ async function ensureDevicePrivLoaded() {
   return ensureDevicePrivAvailable();
 }
 
-/**
- * 確保（本端→對方）的 DR 會話已初始化。
- * 會：
- *  - 若記憶體中尚無 devicePriv，等待登入 handoff（sessionStorage）或拋錯提醒重新登入
- *  - 呼叫 /keys/bundle 取得對方 bundle，執行 x3dhInitiate()，把狀態寫回 store.drState(peer)
- * @param {{ peerUidHex: string }} p
- * @returns {Promise<{ initialized: boolean }>} 
- */
-export async function ensureDrSession({ peerUidHex }) {
-  const peer = normHex(peerUidHex);
-  if (!peer) throw new Error('peerUidHex required');
+ /**
+  * 確保（本端→對方）的 DR 會話已初始化。
+  * 會：
+  *  - 若記憶體中尚無 devicePriv，等待登入 handoff（sessionStorage）或拋錯提醒重新登入
+  *  - 呼叫 /keys/bundle 取得對方 bundle，執行 x3dhInitiate()，把狀態寫回 store.drState(peer)
+ * @param {{ peerAccountDigest?: string, peerUidHex?: string }} p
+  * @returns {Promise<{ initialized: boolean }>} 
+  */
+export async function ensureDrSession({ peerAccountDigest, peerUidHex }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
+  if (!peer) throw new Error('peerAccountDigest required');
 
   const holder = drState(peer);
   if (holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub) {
@@ -510,13 +516,13 @@ export async function ensureDrSession({ peerUidHex }) {
   copyDrState(holder, st);
   holder.baseKey = { role: 'initiator', initializedAt: Date.now() };
   markHolderSnapshot(holder, 'initiator', Date.now());
-  persistDrSnapshot({ peerUidHex: peer, state: holder });
+  persistDrSnapshot({ peerAccountDigest: peer, state: holder });
   return { initialized: true };
 }
 
-function conversationContextForPeer(peerUid) {
+function conversationContextForPeer(peerAccountDigest) {
   try {
-    const key = String(peerUid || '').toUpperCase();
+    const key = normHex(peerAccountDigest);
     if (!key) return null;
     const entry = sessionStore.contactIndex?.get?.(key);
     if (entry?.conversation?.token_b64) {
@@ -544,9 +550,9 @@ function conversationContextForPeer(peerUid) {
   return null;
 }
 
-async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOverrides = {} }) {
-  const peer = normHex(peerUidHex);
-  if (!peer) throw new Error('peerUidHex required');
+async function sendDrPlaintext({ peerAccountDigest, peerUidHex, text, conversation, convId, metaOverrides = {} }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
+  if (!peer) throw new Error('peerAccountDigest required');
 
   const convContext = conversation || conversationContextForPeer(peer);
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
@@ -558,7 +564,7 @@ async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOve
 
   if (!hasDrState) {
     try {
-      await ensureDrSession({ peerUidHex: peer });
+      await ensureDrSession({ peerAccountDigest: peer });
     } catch (err) {
       if (!hasDrInit) {
         throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
@@ -574,7 +580,7 @@ async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOve
   }
 
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
-  logDrSend('encrypt-before', { peerUidHex: peer, snapshot: preSnapshot || null });
+  logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: preSnapshot || null });
   const pkt = await drEncryptText(state, text);
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
@@ -589,7 +595,7 @@ async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOve
     try {
       conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
     } catch (err) {
-      logDrSend('fingerprint-error', { peerUidHex: peer, error: err?.message || err });
+      logDrSend('fingerprint-error', { peerAccountDigest: peer, error: err?.message || err });
     }
   }
 
@@ -597,7 +603,9 @@ async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOve
   const headerJson = JSON.stringify(headerPayload);
   const hdrB64 = bytesToB64Url(new TextEncoder().encode(headerJson));
   const ctB64 = base64ToUrl(pkt.ciphertext_b64);
-  const fingerprint = await computeConversationFingerprint(tokenB64, me);
+  const fingerprint = accountDigest
+    ? await computeConversationFingerprint(tokenB64, accountDigest)
+    : null;
 
   const meta = {
     ts: now,
@@ -631,7 +639,7 @@ async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOve
   if (!r.ok) throw new Error('sendText failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
   if (preSnapshot) {
     recordDrMessageHistory({
-      peerUidHex: peer,
+      peerAccountDigest: peer,
       messageTs: now,
       messageId: data?.id || null,
       snapshot: preSnapshot,
@@ -639,22 +647,23 @@ async function sendDrPlaintext({ peerUidHex, text, conversation, convId, metaOve
       messageKeyB64
     });
   }
-  persistDrSnapshot({ peerUidHex: peer, state });
-  logDrSend('encrypt-after', { peerUidHex: peer, snapshot: postSnapshot });
+  persistDrSnapshot({ peerAccountDigest: peer, state });
+  logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: postSnapshot });
   return { msg: data, convId: conversationId, secure: true };
 }
 
 /**
  * 發送 DR 文字訊息（必要時會先初始化會話）。
- * @param {{ peerUidHex: string, text: string, conversation?: { token_b64?:string, conversation_id?:string }, convId?: string }} p
+ * @param {{ peerAccountDigest?: string, peerUidHex?: string, text: string, conversation?: { token_b64?:string, conversation_id?:string }, convId?: string }} p
  * @returns {Promise<{ msg: any, convId: string }>}
  */
-export async function sendDrText({ peerUidHex, text, conversation, convId }) {
-  return sendDrPlaintext({ peerUidHex, text, conversation, convId });
+export async function sendDrText({ peerAccountDigest, peerUidHex, text, conversation, convId }) {
+  return sendDrPlaintext({ peerAccountDigest, peerUidHex, text, conversation, convId });
 }
 
-export async function sendDrSessionInit({ peerUidHex, conversation, convId }) {
+export async function sendDrSessionInit({ peerAccountDigest, peerUidHex, conversation, convId }) {
   return sendDrPlaintext({
+    peerAccountDigest,
     peerUidHex,
     conversation,
     convId,
@@ -666,8 +675,9 @@ export async function sendDrSessionInit({ peerUidHex, conversation, convId }) {
   });
 }
 
-export async function sendDrSessionAck({ peerUidHex, conversation, convId }) {
+export async function sendDrSessionAck({ peerAccountDigest, peerUidHex, conversation, convId }) {
   return sendDrPlaintext({
+    peerAccountDigest,
     peerUidHex,
     conversation,
     convId,
@@ -843,9 +853,9 @@ function blobToNamedFile(blob, nameHint) {
   return blob;
 }
 
-export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir, onProgress, abortSignal } = {}) {
-  const peer = normHex(peerUidHex);
-  if (!peer) throw new Error('peerUidHex required');
+export async function sendDrMedia({ peerAccountDigest, peerUidHex, file, conversation, convId, dir, onProgress, abortSignal } = {}) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
+  if (!peer) throw new Error('peerAccountDigest required');
   if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
     throw new Error('file required');
   }
@@ -860,7 +870,7 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
 
   if (!hasDrState) {
     try {
-      await ensureDrSession({ peerUidHex: peer });
+      await ensureDrSession({ peerAccountDigest: peer });
     } catch (err) {
       if (!hasDrInit) {
         throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
@@ -884,7 +894,7 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
     try {
       conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
     } catch (err) {
-      logDrSend('fingerprint-error', { peerUidHex: peer, error: err?.message || err });
+      logDrSend('fingerprint-error', { peerAccountDigest: peer, error: err?.message || err });
     }
   }
 
@@ -920,7 +930,7 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
       if (previewLocalUrl) previewInfo.localUrl = previewLocalUrl;
     }
   } catch (err) {
-    logDrSend('preview-generate-failed', { peerUidHex: peer, error: err?.message || err });
+    logDrSend('preview-generate-failed', { peerAccountDigest: peer, error: err?.message || err });
   }
 
   const uploadResult = await encryptAndPutWithProgress({
@@ -967,7 +977,7 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   });
 
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
-  logDrSend('encrypt-media-before', { peerUidHex: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
+  logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
   const pkt = await drEncryptText(state, payloadText);
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
@@ -977,7 +987,9 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   const headerJson = JSON.stringify(headerPayload);
   const hdrB64 = bytesToB64Url(new TextEncoder().encode(headerJson));
   const ctB64 = base64ToUrl(pkt.ciphertext_b64);
-  const fingerprint = await computeConversationFingerprint(tokenB64, me);
+  const fingerprint = accountDigest
+    ? await computeConversationFingerprint(tokenB64, accountDigest)
+    : null;
 
   const securePayload = {
     v: 1,
@@ -1015,7 +1027,7 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
   if (!r.ok) throw new Error('sendMedia failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
   if (preSnapshot) {
     recordDrMessageHistory({
-      peerUidHex: peer,
+      peerAccountDigest: peer,
       messageTs: now,
       messageId: data?.id || null,
       snapshot: preSnapshot,
@@ -1023,8 +1035,8 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
       messageKeyB64
     });
   }
-  persistDrSnapshot({ peerUidHex: peer, state });
-  logDrSend('encrypt-media-after', { peerUidHex: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
+  persistDrSnapshot({ peerAccountDigest: peer, state });
+  logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
 
   return {
     msg: {
@@ -1055,6 +1067,7 @@ export async function sendDrMedia({ peerUidHex, file, conversation, convId, dir,
 }
 
 export async function sendDrCallLog({
+  peerAccountDigest,
   peerUidHex,
   callId,
   outcome,
@@ -1079,11 +1092,11 @@ export async function sendDrCallLog({
     call_reason: reason || null
   };
   const text = JSON.stringify(payload);
-  return sendDrPlaintext({ peerUidHex, text, metaOverrides });
+  return sendDrPlaintext({ peerAccountDigest, peerUidHex, text, metaOverrides });
 }
 
-export async function bootstrapDrFromGuestBundle({ peerUidHex, guestBundle, force = false }) {
-  const peer = normHex(peerUidHex);
+export async function bootstrapDrFromGuestBundle({ peerAccountDigest, peerUidHex, guestBundle, force = false }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer) return false;
   if (!guestBundle || typeof guestBundle !== 'object') return false;
   const holder = drState(peer);
@@ -1094,7 +1107,7 @@ export async function bootstrapDrFromGuestBundle({ peerUidHex, guestBundle, forc
     copyDrState(holder, st);
     holder.baseKey = { role: 'responder', initializedAt: Date.now(), guestBundle };
     markHolderSnapshot(holder, 'responder', Date.now());
-    persistDrSnapshot({ peerUidHex: peer, state: holder });
+    persistDrSnapshot({ peerAccountDigest: peer, state: holder });
     return true;
   } catch (err) {
     console.warn('[dr] responder bootstrap failed', err);
@@ -1102,8 +1115,8 @@ export async function bootstrapDrFromGuestBundle({ peerUidHex, guestBundle, forc
   }
 }
 
-export function primeDrStateFromInitiator({ peerUidHex, state }) {
-  const peer = normHex(peerUidHex);
+export function primeDrStateFromInitiator({ peerAccountDigest, peerUidHex, state }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer || !state) return false;
   const holder = drState(peer);
   if (holder?.rk) return false;
@@ -1113,8 +1126,8 @@ export function primeDrStateFromInitiator({ peerUidHex, state }) {
   return true;
 }
 
-async function ensureRemoteBootstrap({ peerUidHex, reason = 'dr-session', force = false } = {}) {
-  const peer = normHex(peerUidHex);
+async function ensureRemoteBootstrap({ peerAccountDigest, peerUidHex, reason = 'dr-session', force = false } = {}) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer) return null;
   const existing = getContactSecret(peer);
   if (!existing) return null;
@@ -1139,7 +1152,7 @@ async function ensureRemoteBootstrap({ peerUidHex, reason = 'dr-session', force 
           ? 'owner'
           : (relationshipRole === 'guest' ? 'guest' : undefined);
       const res = await friendsBootstrapSession({
-        peerUid: peer,
+        peerAccountDigest: peer,
         roleHint,
         inviteId: existing?.inviteId || null
       });
@@ -1174,7 +1187,7 @@ async function ensureRemoteBootstrap({ peerUidHex, reason = 'dr-session', force 
         }
       }
 
-      return { guestBundle, role: res?.role || null };
+      return { guestBundle, role: res?.role || null, peerAccountDigest: peer };
     } catch (err) {
       console.warn('[dr] remote bootstrap fetch failed', err?.message || err);
       return null;
@@ -1187,15 +1200,15 @@ async function ensureRemoteBootstrap({ peerUidHex, reason = 'dr-session', force 
   return worker;
 }
 
-export async function ensureDrReceiverState({ peerUidHex }) {
-  const peer = normHex(peerUidHex);
+export async function ensureDrReceiverState({ peerAccountDigest, peerUidHex }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer) return false;
   const secretInfo = getContactSecret(peer);
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   let state = drState(peer);
   if (!state?.rk && secretInfo?.drState) {
     try {
-      restoreDrStateFromSnapshot({ peerUidHex: peer, snapshot: secretInfo.drState });
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: secretInfo.drState });
     } catch (err) {
       console.warn('[dr] ensure receiver restore failed', err);
     }
@@ -1209,14 +1222,14 @@ export async function ensureDrReceiverState({ peerUidHex }) {
     for (const entry of candidates) {
       try {
         const snap = entry.snapshotAfter || entry.snapshot;
-        const ok = restoreDrStateFromSnapshot({ peerUidHex: peer, snapshot: snap, force: true });
+        const ok = restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: snap, force: true });
         if (ok) {
           const holder = drState(peer);
           if (holder) {
             if (Number.isFinite(entry.ts)) holder.historyCursorTs = entry.ts;
             if (entry.messageId) holder.historyCursorId = entry.messageId;
             markHolderSnapshot(holder, 'ensure-history', Date.now());
-            persistDrSnapshot({ peerUidHex: peer, state: holder });
+            persistDrSnapshot({ peerAccountDigest: peer, state: holder });
           }
           state = drState(peer);
           if (
@@ -1252,7 +1265,7 @@ export async function ensureDrReceiverState({ peerUidHex }) {
 
   if (!guestBundle && relationshipRole !== 'guest') {
     try {
-      const remote = await ensureRemoteBootstrap({ peerUidHex: peer, reason: 'ensureDrReceiverState' });
+      const remote = await ensureRemoteBootstrap({ peerAccountDigest: peer, reason: 'ensureDrReceiverState' });
       if (remote?.guestBundle) {
         const refreshedSecret = getContactSecret(peer);
         const refreshedContext = conversationContextForPeer(peer) || {};
@@ -1281,7 +1294,7 @@ export async function ensureDrReceiverState({ peerUidHex }) {
     const roleNow = holderNow?.baseKey?.role;
     const hasReceiveChain = holderNow?.ckR instanceof Uint8Array && holderNow.ckR.length > 0 && roleNow === 'responder';
     const shouldForce = !hasReceiveChain || roleNow !== 'responder';
-    const ok = await bootstrapDrFromGuestBundle({ peerUidHex: peer, guestBundle, force: shouldForce });
+    const ok = await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: shouldForce });
     if (ok || shouldForce) {
       const refreshed = drState(peer);
       const refreshedRole = typeof refreshed?.baseKey?.role === 'string' ? refreshed.baseKey.role.toLowerCase() : null;
@@ -1311,8 +1324,8 @@ export async function ensureDrReceiverState({ peerUidHex }) {
   throw new Error('缺少安全會話狀態，請重新同步好友或重新建立邀請');
 }
 
-export async function recoverDrState({ peerUidHex } = {}) {
-  const peer = normHex(peerUidHex);
+export async function recoverDrState({ peerAccountDigest, peerUidHex } = {}) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer) return false;
   const hasReceiveChain = () => {
     const holder = drState(peer);
@@ -1329,10 +1342,10 @@ export async function recoverDrState({ peerUidHex } = {}) {
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   if (secretInfo?.drState) {
     try {
-      const ok = restoreDrStateFromSnapshot({ peerUidHex: peer, snapshot: secretInfo.drState, force: true });
+      const ok = restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: secretInfo.drState, force: true });
       if (ok && hasReceiveChain()) {
         markHolderSnapshot(drState(peer), 'recover-snapshot', Date.now());
-        if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerUidHex: peer, source: 'snapshot' }));
+        if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'snapshot' }));
         return true;
       }
     } catch (err) {
@@ -1345,10 +1358,10 @@ export async function recoverDrState({ peerUidHex } = {}) {
   const guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
   if (guestBundle && relationshipRole !== 'guest') {
     try {
-      const ok = await bootstrapDrFromGuestBundle({ peerUidHex: peer, guestBundle, force: true });
+      const ok = await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: true });
       if (ok && hasReceiveChain()) {
         markHolderSnapshot(drState(peer), 'recover-guest', Date.now());
-        if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerUidHex: peer, source: 'guest-bundle' }));
+        if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'guest-bundle' }));
         return true;
       }
     } catch (err) {
@@ -1359,14 +1372,14 @@ export async function recoverDrState({ peerUidHex } = {}) {
   if (hasReceiveChain()) {
     const holder = drState(peer);
     markHolderSnapshot(holder, 'recover', Date.now());
-    if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerUidHex: peer, source: 'in-place' }));
+    if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'in-place' }));
     return true;
   }
   return false;
 }
 
-export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCursorReplay = false, stateOverride = null, mutate = true }) {
-  const peer = normHex(peerUidHex);
+export function prepareDrForMessage({ peerAccountDigest, peerUidHex, messageTs, messageId, allowCursorReplay = false, stateOverride = null, mutate = true }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   if (!peer) return { restored: false, duplicate: false };
   const secretInfo = getContactSecret(peer);
   const holder = stateOverride || drState(peer);
@@ -1381,7 +1394,7 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCur
 
   if (!allowReplay && cursorId && messageId && cursorId === messageId) {
     if (isAutomationEnv()) {
-      console.log('[dr-skip-duplicate]', JSON.stringify({ peerUidHex: peer, messageId, cursorTs }));
+      console.log('[dr-skip-duplicate]', JSON.stringify({ peerAccountDigest: peer, messageId, cursorTs }));
     }
     return { restored: false, duplicate: true };
   }
@@ -1391,7 +1404,7 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCur
   let restored = false;
   const tryHistoryRestore = (reason) => {
     const ok = restoreDrStateFromHistory({
-      peerUidHex: peer,
+      peerAccountDigest: peer,
       ts: stamp,
       messageId,
       targetState: mutate ? null : holder,
@@ -1425,7 +1438,7 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCur
       restored = tryHistoryRestore(reason);
     } else if (hasMatchingHistory && !allowReplay) {
       if (isAutomationEnv()) {
-        console.log('[dr-skip-duplicate]', JSON.stringify({ peerUidHex: peer, messageId, cursorTs }));
+        console.log('[dr-skip-duplicate]', JSON.stringify({ peerAccountDigest: peer, messageId, cursorTs }));
       }
       return { restored: false, duplicate: true };
     }
@@ -1437,21 +1450,21 @@ export function prepareDrForMessage({ peerUidHex, messageTs, messageId, allowCur
   return { restored, duplicate: false, historyEntry: hasMatchingHistory ? historyEntry : null };
 }
 
-export function recordDrMessageHistory({ peerUidHex, messageTs, messageId, snapshot, snapshotNext, messageKeyB64 }) {
-  const peer = normHex(peerUidHex);
+export function recordDrMessageHistory({ peerAccountDigest, peerUidHex, messageTs, messageId, snapshot, snapshotNext, messageKeyB64 }) {
+  const peer = normHex(peerAccountDigest ?? peerUidHex);
   const stamp = Number(messageTs);
   if (!peer || !snapshot || !Number.isFinite(stamp)) return false;
   appendDrHistoryEntry({
-    peerUidHex: peer,
+    peerAccountDigest: peer,
     ts: stamp,
     snapshot,
     snapshotNext,
     messageId,
     messageKeyB64
   });
-  updateHistoryCursor({ peerUidHex: peer, ts: stamp, messageId });
+  updateHistoryCursor({ peerAccountDigest: peer, ts: stamp, messageId });
   if (isAutomationEnv()) {
-    console.log('[dr-history-record]', JSON.stringify({ peerUidHex: peer, ts: stamp, messageId: messageId || null }));
+    console.log('[dr-history-record]', JSON.stringify({ peerAccountDigest: peer, ts: stamp, messageId: messageId || null }));
   }
   const holder = drState(peer);
   if (holder) {

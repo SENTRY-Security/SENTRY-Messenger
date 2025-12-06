@@ -322,9 +322,17 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [X] Login/SDM：`web/src/app/features/{login-flow,sdm}.js`、`web/src/app/ui/login-ui.js` 僅在 SDM 驗證/顯示中使用 uidHex，後續狀態與交棒均以 accountDigest，移除不必要的 setUidHex/getUidHex 交互。  
   - [X] Store 相容欄位：`core/store` 預設不再附帶 UID，includeUid 僅供 SDM/debug 顯式使用。  
   - [X] App 邊界：`app-ui` / `app-mobile` 不再把 digest 寫回 uidHex，也不再從 handoff 讀取 uid_hex/uid_digest。  
-  - [ ] 靜態輸入：`pages/login.html` 的隱藏 `uidHex` 欄位仍存在（SDM 用途）；確認是否需改為僅顯示/只讀或移除。  
+  - [X] 靜態輸入：`pages/login.html` 的隱藏 `uidHex` 欄位仍存在（SDM 用途）；確認是否需改為僅顯示/只讀或移除。  
   - [X] 模擬工具：`web/src/libs/ntag424-sim.js` 仍以 uidHex 驅動，保留於硬體模擬範圍（明確標註與 app 流程隔離，不納入 digest-only 清理）。
-  - [ ] 前端模組殘留 peerUid/ownerUid/peerUidHex 鍵值（需改 digest-only 或移除 alias）：`web/src/app/ui/mobile/messages-pane.js`、`web/src/app/ui/mobile/share-controller.js`、`web/src/app/ui/mobile/contacts-view.js`、`web/src/app/features/messages.js`、`web/src/app/features/contacts.js`、`web/src/app/features/secure-conversation-manager.js`、`web/src/app/features/dr-session.js`、`web/src/shared/conversation/context.js`、`web/src/app/ui/app-ui.js` dev DR 區塊等。
+  - [ ] `web/src/app/ui/mobile/messages-pane.js` — peerUid/peerUidHex 仍用於會話鍵值、信令、狀態顯示，需改為 accountDigest 或僅保留別名。  
+  - [ ] `web/src/app/ui/mobile/share-controller.js` — contact-share/DR bootstrap 仍傳/存 peerUid/ownerUid，需改 digest-only。  
+  - [ ] `web/src/app/ui/mobile/contacts-view.js` — contact 列表/刪除/同步事件使用 peerUid 鍵，需轉換或移除 alias。  
+  - [ ] `web/src/app/features/messages.js` — list/decrypt 等參數仍接受 peerUidHex，需改為 accountDigest 主鍵並清理 log。  
+  - [ ] `web/src/app/features/contacts.js` — contact secrets/state 仍混用 peerUid，需改 digest-only。  
+  - [ ] `web/src/app/features/secure-conversation-manager.js` — DR 狀態鍵/事件使用 peerUidHex，需改 digest-only。  
+  - [ ] `web/src/app/features/dr-session.js` — DR snapshot/history API 仍以 peerUidHex 命名，需改 digest-only（或僅保留 log）。  
+  - [ ] `web/src/shared/conversation/context.js` — fingerprint helper 仍接受 uid，需改 digest-only 或標註 legacy。  
+  - [ ] `web/src/app/ui/app-ui.js` dev 區塊（DR 測試）仍用 peerUidHex 欄位，需改 digest-only 或移除。
 - [ ] 文件：更新 `iOS-Development-Guids.md` 等仍提到 `uidHex/peerUid` 的說明，改為 account_digest-only（SDM 入口除外）。
 - [ ] 部署與驗證（最後進行）：清空 D1/R2 後重新部署 Worker/Node/Pages；跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 

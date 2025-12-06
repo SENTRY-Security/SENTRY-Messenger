@@ -48,6 +48,14 @@ export function setupShareController(options) {
   let lastPrekeyEnsureTs = 0;
   let lastPrekeyEnsureResult = false;
 
+  function normalizePeerKey(value) {
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value?.peerUid ?? value?.peer_uid ?? value,
+      peerUid: value?.peerUid ?? value?.peer_uid
+    });
+    return identity.key || null;
+  }
+
   if (!dom) throw new Error('分享控制器缺少必要的 DOM 參照');
   const contactSecretMap = restoreContactSecrets();
   primeStoredDrSnapshots(contactSecretMap);
@@ -56,16 +64,19 @@ export function setupShareController(options) {
     if (!(map instanceof Map)) return;
     for (const [peerUid, info] of map.entries()) {
       if (!info?.drState) continue;
+      const key = normalizePeerKey(peerUid);
+      if (!key) continue;
       try {
-        restoreDrStateFromSnapshot({ peerUidHex: peerUid, snapshot: info.drState });
+        restoreDrStateFromSnapshot({ peerAccountDigest: key, snapshot: info.drState });
       } catch (err) {
-        log({ drSnapshotRestoreError: err?.message || err, peerUid });
+        log({ drSnapshotRestoreError: err?.message || err, peerUid: key });
       }
     }
   }
 
-  function storeContactSecretMapping({ peerUid, inviteId, secret, role, conversation, drState }) {
-    if (!peerUid || !inviteId || !secret) return;
+  function storeContactSecretMapping({ peerAccountDigest, peerUid, inviteId, secret, role, conversation, drState }) {
+    const key = normalizePeerKey(peerAccountDigest ?? peerUid);
+    if (!key || !inviteId || !secret) return;
     let conversationToken = null;
     let conversationId = null;
     let conversationDrInit = null;
@@ -74,7 +85,7 @@ export function setupShareController(options) {
       conversationId = conversation.conversationId || conversation.conversation_id || null;
       conversationDrInit = conversation.dr_init || conversation.drInit || null;
     }
-    const existing = getContactSecret(peerUid) || {};
+    const existing = getContactSecret(key) || {};
     const update = {
       invite: {
         id: inviteId,
@@ -94,11 +105,11 @@ export function setupShareController(options) {
         update.dr = { state: snapshot };
       }
     }
-    setContactSecret(peerUid, update);
+    setContactSecret(key, update);
   }
 
-  async function ensureSessionBootstrap(peerUid, conversation) {
-    const key = String(peerUid || '').toUpperCase();
+  async function ensureSessionBootstrap(peerAccountDigest, conversation) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key || !conversation) return;
     const secretInfo = getContactSecret(key);
     if (!secretInfo?.inviteId || !secretInfo?.secret) return;
@@ -106,9 +117,9 @@ export function setupShareController(options) {
     if (role !== 'guest') return;
     if (Number.isFinite(secretInfo.sessionBootstrapTs) && secretInfo.sessionBootstrapTs > 0) return;
     try {
-      await sendDrSessionInit({ peerUidHex: key, conversation });
+      await sendDrSessionInit({ peerAccountDigest: key, conversation });
       handleSecureConversationControlMessage({
-        peerUidHex: key,
+        peerAccountDigest: key,
         messageType: CONTROL_MESSAGE_TYPES.SESSION_INIT,
         direction: 'outgoing',
         source: 'share-controller:ensureSessionBootstrap'
@@ -123,14 +134,14 @@ export function setupShareController(options) {
   }
 
   function markPeerRecentlyDeleted(peerUid) {
-    const key = String(peerUid || '').toUpperCase();
+    const key = normalizePeerKey(peerUid);
     if (!key) return;
     recentlyDeletedPeers.set(key, Date.now());
     log({ contactRecentlyDeletedMarked: key });
   }
 
   function wasPeerRecentlyDeleted(peerUid) {
-    const key = String(peerUid || '').toUpperCase();
+    const key = normalizePeerKey(peerUid);
     if (!key) return false;
     const ts = recentlyDeletedPeers.get(key);
     if (!ts) return false;
@@ -143,8 +154,9 @@ export function setupShareController(options) {
   }
 
   function getSecretForPeer(peerUid) {
-    if (!peerUid) return null;
-    return getContactSecret(peerUid);
+    const key = normalizePeerKey(peerUid);
+    if (!key) return null;
+    return getContactSecret(key);
   }
 
   async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
@@ -328,11 +340,13 @@ export function setupShareController(options) {
       const expiresAt = Number(record.expiresAt ?? record.expires_at ?? 0);
       if (!Number.isFinite(expiresAt) || expiresAt * 1000 <= Date.now()) continue;
       if (!freshest || expiresAt > freshest.expiresAt) {
+        const ownerKey = normalizePeerKey(record.ownerAccountDigest || record.owner_account_digest || record.ownerUid || record.owner_uid);
         freshest = {
           inviteId: String(inviteId),
           secret: String(record.secret),
           expiresAt,
-          ownerUid: record.ownerUid ? String(record.ownerUid).toUpperCase() : null,
+          ownerAccountDigest: ownerKey,
+          ownerUid: ownerKey,
           prekeyBundle: record.prekeyBundle || null,
           conversationToken: record.conversationToken || null,
           conversationId: record.conversationId || null,
@@ -365,16 +379,16 @@ export function setupShareController(options) {
     const detail = event?.detail || {};
     const peer = detail.peerUid || detail.peer_uid || detail.peer || detail.uid;
     const identity = normalizePeerIdentity({ peerAccountDigest: peer, peerUid: peer });
-    markPeerRecentlyDeleted(peer);
-    if (detail?.notifyPeer !== false && wsTransport && identity.key) {
+    const key = identity.key || null;
+    markPeerRecentlyDeleted(key);
+    if (detail?.notifyPeer !== false && wsTransport && key) {
       try {
         wsTransport({
           type: 'contact-removed',
-          targetUid: identity.uid || identity.key,
-          targetAccountDigest: identity.accountDigest || null
+          targetAccountDigest: key
         });
       } catch (err) {
-        log({ contactRemovedNotifyError: err?.message || err, peer });
+        log({ contactRemovedNotifyError: err?.message || err, peer: key });
       }
     }
   });
@@ -389,7 +403,10 @@ export function setupShareController(options) {
     showShareMode,
     handleInviteScan,
     broadcastContactUpdate,
-    removeContactSecret: (peerUid) => deleteContactSecret(peerUid),
+    removeContactSecret: (peerUid) => {
+      const key = normalizePeerKey(peerUid);
+      if (key) deleteContactSecret(key);
+    },
     getCurrentInvite: () => shareState.currentInvite,
     setWsSend(fn) {
       wsTransport = typeof fn === 'function' ? fn : null;
@@ -434,12 +451,16 @@ export function setupShareController(options) {
       log({ inviteCreateResponse: invite });
 
       const conversation = await deriveConversationContextFromSecret(invite.secret);
+      const ownerKey = normalizePeerKey(
+        invite.ownerAccountDigest || invite.owner_account_digest || invite.ownerUid || invite.owner_uid || getAccountDigest()
+      );
 
       shareState.currentInvite = {
         inviteId: String(invite.inviteId),
         secret: String(invite.secret),
         expiresAt: Number(invite.expiresAt),
-        ownerUid: String(invite.ownerUid || uid).toUpperCase(),
+        ownerAccountDigest: ownerKey,
+        ownerUid: ownerKey,
         prekeyBundle: invite.prekeyBundle || null,
         conversationToken: conversation.tokenB64,
         conversationId: conversation.conversationId,
@@ -448,7 +469,7 @@ export function setupShareController(options) {
       inviteSecrets.set(shareState.currentInvite.inviteId, {
         secret: shareState.currentInvite.secret,
         role: 'owner',
-        ownerUid: shareState.currentInvite.ownerUid,
+        ownerAccountDigest: shareState.currentInvite.ownerAccountDigest || null,
         prekeyBundle: shareState.currentInvite.prekeyBundle || null,
         expiresAt: shareState.currentInvite.expiresAt,
         conversationToken: shareState.currentInvite.conversationToken,
@@ -774,7 +795,11 @@ export function setupShareController(options) {
       }
       log({ inviteScanParsed: parsed });
       if (!parsed) throw new Error('無法解析好友邀請內容');
-      if (parsed.ownerUid) parsed.ownerUid = String(parsed.ownerUid).toUpperCase();
+      const ownerIdentity = normalizePeerIdentity({
+        peerAccountDigest: parsed.ownerAccountDigest || parsed.owner_account_digest || parsed.ownerUid || null,
+        peerUid: parsed.ownerUid || null
+      });
+      const ownerKey = ownerIdentity.key || null;
       const ownerBundle = normalizeInviteOwnerBundle(parsed.prekeyBundle);
       if (!ownerBundle) throw new Error('邀請缺少預共享金鑰資料，請請好友重新生成');
 
@@ -783,7 +808,7 @@ export function setupShareController(options) {
       const entry = {
         secret: parsed.secret,
         role: 'guest',
-        ownerUid: parsed.ownerUid || null,
+        ownerAccountDigest: ownerKey,
         ownerBundle,
         conversationToken: conversation.tokenB64,
         conversationId: conversation.conversationId,
@@ -793,7 +818,7 @@ export function setupShareController(options) {
       persistInviteSecrets();
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
-        peerUid: parsed.ownerUid || null,
+        peerUid: ownerKey,
         secretRole: 'guest'
       });
 
@@ -813,7 +838,7 @@ export function setupShareController(options) {
       };
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
-        peerUid: parsed.ownerUid || null,
+        peerUid: ownerKey,
         dr_init: drInitPayload,
         secretRole: 'guest'
       });
@@ -828,9 +853,14 @@ export function setupShareController(options) {
         log({ contactEnvelopeEncryptError: err?.message || err });
         contactEnvelope = null;
       }
-      const res = await friendsAcceptInvite({ inviteId: parsed.inviteId, secret: parsed.secret, contactEnvelope, guestBundle, ownerUid: parsed.ownerUid });
+      const res = await friendsAcceptInvite({ inviteId: parsed.inviteId, secret: parsed.secret, contactEnvelope, guestBundle });
       log({ inviteScanAccepted: res });
-      if (res?.owner_uid) {
+      const resolvedOwner = normalizePeerIdentity({
+        peerAccountDigest: res?.ownerAccountDigest || res?.owner_account_digest || res?.owner_uid || ownerKey,
+        peerUid: res?.owner_uid || ownerKey
+      });
+      const ownerDigest = resolvedOwner.key || ownerKey;
+      if (ownerDigest) {
         let ownerContact = null;
         if (res?.owner_contact?.iv && res?.owner_contact?.ct) {
           try {
@@ -856,7 +886,7 @@ export function setupShareController(options) {
           };
         }
         await addContactEntry({
-          peerUid: res.owner_uid,
+          peerUid: ownerDigest,
           nickname,
           avatar,
           conversation: conversationInfo,
@@ -865,20 +895,20 @@ export function setupShareController(options) {
           secretRole: 'guest'
         });
         try {
-          clearDrState(res.owner_uid);
-          primeDrStateFromInitiator({ peerUidHex: res.owner_uid, state: x3dhState });
+          clearDrState(ownerDigest);
+          primeDrStateFromInitiator({ peerAccountDigest: ownerDigest, state: x3dhState });
         } catch (err) {
-          log({ drPrimeError: err?.message || err });
+          log({ drPrimeError: err?.message || err, peer: ownerDigest });
         }
         storeContactSecretMapping({
-          peerUid: res.owner_uid,
+          peerAccountDigest: ownerDigest,
           inviteId: parsed.inviteId,
           secret: parsed.secret,
           role: 'guest',
           conversation: conversationInfo,
           drState: x3dhState
         });
-        await ensureSessionBootstrap(res.owner_uid, conversationInfo);
+        await ensureSessionBootstrap(ownerDigest, conversationInfo);
       }
       inviteSecrets.delete(parsed.inviteId);
       persistInviteSecrets();
@@ -975,7 +1005,7 @@ export function setupShareController(options) {
         });
       }
       storeContactSecretMapping({
-        peerUid: peerKey,
+        peerAccountDigest: peerKey,
         inviteId,
         secret,
         role: record?.role || stored?.role || null,
@@ -1012,7 +1042,7 @@ export function setupShareController(options) {
         }
         try {
           await bootstrapDrFromGuestBundle({
-            peerUidHex: peerKey,
+            peerAccountDigest: peerKey,
             guestBundle: normalizedBundle,
             force: hasPendingInvite
           });
@@ -1067,7 +1097,7 @@ export function setupShareController(options) {
     const targetSet = Array.isArray(targetPeers)
       ? new Set(
           targetPeers
-            .map((value) => (typeof value === 'string' ? value.trim().toUpperCase() : null))
+            .map((value) => normalizePeerKey(value))
             .filter(Boolean)
         )
       : null;
@@ -1078,9 +1108,11 @@ export function setupShareController(options) {
     const errors = [];
 
     for (const [peerUid, info] of entries) {
-      if (targetSet && !targetSet.has(String(peerUid || '').toUpperCase())) continue;
+      const peerKey = normalizePeerKey(peerUid);
+      if (!peerKey) continue;
+      if (targetSet && !targetSet.has(peerKey)) continue;
       log({ contactBroadcastCandidate: {
-        peerUid,
+        peerUid: peerKey,
         hasInviteId: !!info?.inviteId,
         hasSecret: !!info?.secret,
         hasConversation: !!(info?.conversationToken && info?.conversationId),
@@ -1089,10 +1121,8 @@ export function setupShareController(options) {
       const inviteId = info?.inviteId;
       const secret = info?.secret;
       if (!inviteId || !secret) continue;
-      const contactEntry = sessionStore.contactIndex?.get?.(peerUid) || null;
-      const targetIdentity = normalizePeerIdentity({ peerAccountDigest: peerUid, peerUid });
-      const targetUid = targetIdentity.uid || targetIdentity.key;
-      const targetAccountDigest = targetIdentity.accountDigest || null;
+      const contactEntry = sessionStore.contactIndex?.get?.(peerKey) || null;
+      const targetAccountDigest = normalizePeerIdentity({ peerAccountDigest: peerKey }).key || null;
       let conversation = contactEntry?.conversation && contactEntry.conversation.token_b64 && contactEntry.conversation.conversation_id
         ? {
             tokenB64: contactEntry.conversation.token_b64,
@@ -1125,14 +1155,14 @@ export function setupShareController(options) {
       try {
         payload = await buildLocalContactPayload({ conversation, drInit, overrides });
         payload.reason = reason || 'update';
-        log({ contactBroadcastPayload: { peerUid, hasConversation: !!payload?.conversation, drInit: payload?.conversation?.dr_init ? 'yes' : 'no' } });
+        log({ contactBroadcastPayload: { peerUid: peerKey, hasConversation: !!payload?.conversation, drInit: payload?.conversation?.dr_init ? 'yes' : 'no' } });
         envelope = await encryptContactPayload(secret, payload);
         let conversationFingerprint = null;
         if (conversationToken && accountDigest) {
           try {
             conversationFingerprint = await computeConversationAccessFingerprint(conversationToken, accountDigest);
           } catch (fpErr) {
-            log({ contactConversationFingerprintError: fpErr?.message || fpErr, peerUid });
+            log({ contactConversationFingerprintError: fpErr?.message || fpErr, peerUid: peerKey });
           }
         }
         const sharePayload = { inviteId, secret, peerAccountDigest: targetAccountDigest, envelope };
@@ -1140,7 +1170,7 @@ export function setupShareController(options) {
         if (conversationFingerprint) sharePayload.conversationFingerprint = conversationFingerprint;
         await friendsShareContactUpdate(sharePayload);
         storeContactSecretMapping({
-          peerUid,
+          peerAccountDigest: peerKey,
           inviteId,
           secret,
           role: info?.role || null,
@@ -1154,13 +1184,13 @@ export function setupShareController(options) {
               targetAccountDigest
             });
           } catch (err) {
-            log({ contactsReloadNotifyError: err?.message || err, peerUid });
+            log({ contactsReloadNotifyError: err?.message || err, peerUid: peerKey });
           }
         }
       } catch (err) {
         const message = err?.message || '';
         if (message.includes('NotFound')) {
-          log({ contactBroadcastFallback: message, peerUid, reason: reason || null });
+          log({ contactBroadcastFallback: message, peerUid: peerKey, reason: reason || null });
           try {
             if (!envelope && secret && payload) {
               envelope = await encryptContactPayload(secret, payload);
@@ -1176,7 +1206,7 @@ export function setupShareController(options) {
               continue;
             }
           } catch (notifyErr) {
-            log({ contactShareFallbackError: notifyErr?.message || notifyErr, peerUid });
+            log({ contactShareFallbackError: notifyErr?.message || notifyErr, peerUid: peerKey });
           }
           if (wsTransport) {
             try {
@@ -1187,12 +1217,12 @@ export function setupShareController(options) {
               success += 1;
               continue;
             } catch (notifyErr) {
-              log({ contactsReloadNotifyError: notifyErr?.message || notifyErr, peerUid });
+              log({ contactsReloadNotifyError: notifyErr?.message || notifyErr, peerUid: peerKey });
             }
           }
         }
-        errors.push({ peerUid, error: err });
-        log({ contactBroadcastError: message || err, peerUid, reason: reason || null });
+        errors.push({ peerUid: peerKey, error: err });
+        log({ contactBroadcastError: message || err, peerUid: peerKey, reason: reason || null });
       }
     }
 
@@ -1227,8 +1257,10 @@ export function setupShareController(options) {
           secret: String(info.secret),
           role: info.role === 'owner' ? 'owner' : 'guest'
         };
-        if (info.ownerUid || info.owner_uid) {
-          record.ownerUid = String(info.ownerUid || info.owner_uid || '').trim();
+        const ownerKey = normalizePeerKey(info.ownerAccountDigest || info.owner_account_digest || info.ownerUid || info.owner_uid);
+        if (ownerKey) {
+          record.ownerAccountDigest = ownerKey;
+          record.ownerUid = ownerKey;
         }
         if (info.prekeyBundle || info.ownerBundle || info.prekey_bundle) {
           record.prekeyBundle = info.prekeyBundle || info.ownerBundle || info.prekey_bundle;

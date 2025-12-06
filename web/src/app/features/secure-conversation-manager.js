@@ -1,7 +1,7 @@
 // /app/features/secure-conversation-manager.js
 // Central hub to coordinate Double Ratchet session readiness for each conversation peer.
 
-import { drState } from '../core/store.js';
+import { drState, normalizePeerIdentity } from '../core/store.js';
 import { getContactSecret } from '../core/contact-secrets.js';
 import { ensureDrReceiverState, sendDrSessionAck, sendDrSessionInit } from './dr-session.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
@@ -20,10 +20,13 @@ const SESSION_INIT_RETRY_BACKOFF_MS = 5_000;
 const listeners = new Set();
 const peerStates = new Map();
 
-function normalizePeer(value) {
-  return String(value || '')
-    .replace(/[^0-9a-f]/gi, '')
-    .toUpperCase() || null;
+function resolvePeerKey(value) {
+  if (!value) return null;
+  const identity = normalizePeerIdentity({
+    peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value?.peerUidHex ?? value?.peerUid ?? value,
+    peerUid: value?.peerUid
+  });
+  return identity.key || null;
 }
 
 function toErrorMessage(error) {
@@ -38,8 +41,8 @@ function toErrorMessage(error) {
   }
 }
 
-function ensureEntry(peerUidHex) {
-  const key = normalizePeer(peerUidHex);
+function ensureEntry(peerAccountDigest) {
+  const key = resolvePeerKey(peerAccountDigest);
   if (!key) return null;
   let entry = peerStates.get(key);
   if (!entry) {
@@ -75,7 +78,7 @@ function cloneStatus(key, entry) {
       lastAckTimeoutAt: null
     };
     return {
-      peerUidHex: key,
+      peerAccountDigest: key,
       status: STATUS_IDLE,
       error: null,
       updatedAt: null,
@@ -98,7 +101,7 @@ function cloneStatus(key, entry) {
     lastAckTimeoutAt: ctrl.lastAckTimeoutAt || null
   };
   return {
-    peerUidHex: key,
+    peerAccountDigest: key,
     status: entry.status,
     error: entry.error,
     updatedAt: entry.updatedAt || null,
@@ -114,7 +117,7 @@ function emitStatus(key, entry, extra = {}) {
   if (!entry) return;
   const ctrl = entry.control || initControlState();
   const payload = {
-    peerUidHex: key,
+    peerAccountDigest: key,
     status: entry.status,
     error: entry.error,
     updatedAt: entry.updatedAt,
@@ -143,8 +146,9 @@ function emitStatus(key, entry, extra = {}) {
 }
 
 function setStatus(key, nextStatus, { reason = null, source = null, attempts = null, error = null } = {}) {
-  if (!key) return null;
-  const entry = ensureEntry(key);
+  const peerKey = resolvePeerKey(key);
+  if (!peerKey) return null;
+  const entry = ensureEntry(peerKey);
   if (!entry) return null;
   entry.status = nextStatus;
   entry.updatedAt = Date.now();
@@ -159,12 +163,12 @@ function setStatus(key, nextStatus, { reason = null, source = null, attempts = n
   } else {
     entry.error = null;
   }
-  emitStatus(key, entry, { reason, source });
+  emitStatus(peerKey, entry, { reason, source });
   return entry;
 }
 
-function hasReceiverReady(peerUidHex) {
-  const key = normalizePeer(peerUidHex);
+function hasReceiverReady(peerAccountDigest) {
+  const key = resolvePeerKey(peerAccountDigest);
   if (!key) return false;
   const holder = drState(key);
   if (!holder?.rk || !(holder.myRatchetPriv instanceof Uint8Array) || !(holder.myRatchetPub instanceof Uint8Array)) {
@@ -281,7 +285,7 @@ async function sendAckIfPending(key, { source = 'control-message' } = {}) {
   if (entry.control.awaitingAck) return; // already handling outgoing ack
   entry.control.pendingAckResponse = false;
   try {
-    await sendDrSessionAck({ peerUidHex: key });
+    await sendDrSessionAck({ peerAccountDigest: key });
     markControlMessage(key, CONTROL_MESSAGE_TYPES.SESSION_ACK, 'outgoing');
     setStatus(key, STATUS_READY, { reason: 'session-ack-sent', source });
   } catch (err) {
@@ -328,7 +332,7 @@ async function triggerSessionInit(
 
   ctrl.retryInFlight = true;
   try {
-    await sendDrSessionInit({ peerUidHex: key });
+    await sendDrSessionInit({ peerAccountDigest: key });
     markControlMessage(key, CONTROL_MESSAGE_TYPES.SESSION_INIT, 'outgoing');
     setStatus(key, STATUS_PENDING, { reason, source, attempts: target.attempts || 0 });
     return true;
@@ -386,22 +390,22 @@ export function subscribeSecureConversation(listener) {
   };
 }
 
-export function getSecureConversationStatus(peerUidHex) {
-  const key = normalizePeer(peerUidHex);
+export function getSecureConversationStatus(peerAccountDigest) {
+  const key = resolvePeerKey(peerAccountDigest);
   if (!key) return null;
   const entry = peerStates.get(key);
   return cloneStatus(key, entry);
 }
 
 export async function ensureSecureConversationReady({
-  peerUidHex,
+  peerAccountDigest,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   reason = 'ensure',
   source = 'ensureSecureConversationReady'
 } = {}) {
-  const key = normalizePeer(peerUidHex);
-  if (!key) throw new Error('peerUidHex required');
+  const key = resolvePeerKey(peerAccountDigest);
+  if (!key) throw new Error('peerAccountDigest required');
   const entry = ensureEntry(key);
   if (!entry) throw new Error('無法建立狀態容器');
 
@@ -432,7 +436,7 @@ export async function ensureSecureConversationReady({
     while (Date.now() <= deadline) {
       entry.attempts += 1;
       try {
-        await ensureDrReceiverState({ peerUidHex: key });
+        await ensureDrReceiverState({ peerAccountDigest: key });
         setStatus(key, STATUS_READY, { reason: 'ensure-success', source, attempts: entry.attempts });
         return cloneStatus(key, peerStates.get(key));
       } catch (err) {
@@ -468,12 +472,12 @@ export async function ensureSecureConversationReady({
 }
 
 export function handleSecureConversationControlMessage({
-  peerUidHex,
+  peerAccountDigest,
   messageType,
   direction,
   source = 'control-message'
 } = {}) {
-  const key = normalizePeer(peerUidHex);
+  const key = resolvePeerKey(peerAccountDigest);
   if (!key) return;
   const normalizedType = normalizeControlMessageType(messageType);
   if (!normalizedType) return;
@@ -490,7 +494,7 @@ export function handleSecureConversationControlMessage({
     });
     if (resolvedDirection !== 'outgoing') {
       ensureSecureConversationReady({
-        peerUidHex: key,
+        peerAccountDigest: key,
         reason: 'session-init',
         source
       })
@@ -515,8 +519,8 @@ export function handleSecureConversationControlMessage({
   }
 }
 
-export function resetSecureConversation(peerUidHex, { reason = 'reset', source = 'resetSecureConversation' } = {}) {
-  const key = normalizePeer(peerUidHex);
+export function resetSecureConversation(peerAccountDigest, { reason = 'reset', source = 'resetSecureConversation' } = {}) {
+  const key = resolvePeerKey(peerAccountDigest);
   if (!key) return;
   const entry = ensureEntry(key);
   if (!entry) return;

@@ -316,7 +316,7 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
   return base;
 }
 
-export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHex, peerAccountDigest, limit = 20, cursorTs, mutateState = true, allowReplay = false }) {
+export async function listSecureAndDecrypt({ conversationId, tokenB64, peerAccountDigest, peerUidHex, limit = 20, cursorTs, mutateState = true, allowReplay = false }) {
   if (!conversationId) throw new Error('conversationId required');
   if (!tokenB64) throw new Error('conversation token required');
   const identity = storeNormalizePeerIdentity({
@@ -325,8 +325,7 @@ export async function listSecureAndDecrypt({ conversationId, tokenB64, peerUidHe
   const peerKey = identity.key;
   if (!peerKey) throw new Error('peer identity required');
   const peerRef = {
-    peerAccountDigest: identity.accountDigest || null,
-    peerUid: identity.uid || peerUidHex
+    peerAccountDigest: identity.accountDigest || peerKey
   };
 
   const now = Date.now();
@@ -387,7 +386,7 @@ const selfFingerprintSource = deps.getAccountDigest();
   } catch {}
 
   await deps.ensureSecureConversationReady({
-    peerUidHex: peerKey,
+    peerAccountDigest: peerKey,
     reason: 'list-messages',
     source: 'messages:listSecureAndDecrypt'
   });
@@ -401,7 +400,7 @@ const selfFingerprintSource = deps.getAccountDigest();
   if (drDebug) {
     try {
       console.log('[dr-list]', JSON.stringify({
-        peerUidHex: peerKey,
+        peerAccountDigest: peerKey,
         conversationId,
         mutateState: shouldTrackState,
         mode: shouldTrackState ? 'live' : 'preview',
@@ -448,7 +447,7 @@ const selfFingerprintSource = deps.getAccountDigest();
       else if (senderFingerprint && fingerprintPeer && senderFingerprint === fingerprintPeer) direction = 'incoming';
       if (shouldTrackState && !isMediaMessage && wasMessageProcessed(conversationId, messageId)) {
         if (drDebug) {
-          console.log('[dr-skip-message]', JSON.stringify({ peerUidHex: peerKey, messageId, reason: 'processed-cache' }));
+          console.log('[dr-skip-message]', JSON.stringify({ peerAccountDigest: peerKey, messageId, reason: 'processed-cache' }));
         }
         continue;
       }
@@ -460,7 +459,7 @@ const selfFingerprintSource = deps.getAccountDigest();
           state = deps.drState(peerKey);
         }
         prepResult = deps.prepareDrForMessage({
-          peerUidHex: peerKey,
+          peerAccountDigest: peerKey,
           messageTs: msgTs,
           messageId,
           allowCursorReplay,
@@ -470,7 +469,7 @@ const selfFingerprintSource = deps.getAccountDigest();
         const historyEntry = prepResult?.historyEntry || null;
         if (prepResult?.duplicate) {
           if (drDebug) {
-            console.log('[dr-skip-message]', JSON.stringify({ peerUidHex: peerKey, messageId, reason: 'duplicate' }));
+            console.log('[dr-skip-message]', JSON.stringify({ peerAccountDigest: peerKey, messageId, reason: 'duplicate' }));
           }
           continue;
         }
@@ -489,7 +488,7 @@ const selfFingerprintSource = deps.getAccountDigest();
             try {
               if (historyEntry?.snapshotAfter) {
                 const restored = deps.restoreDrStateFromSnapshot({
-                  peerUidHex: peerKey,
+                  peerAccountDigest: peerKey,
                   snapshot: historyEntry.snapshotAfter,
                   force: true,
                   targetState: shouldTrackState ? null : state,
@@ -503,7 +502,7 @@ const selfFingerprintSource = deps.getAccountDigest();
                 }
               } else if (historyEntry?.snapshot) {
                 const restored = deps.restoreDrStateFromSnapshot({
-                  peerUidHex: peerKey,
+                  peerAccountDigest: peerKey,
                   snapshot: historyEntry.snapshot,
                   force: true,
                   targetState: shouldTrackState ? null : state,
@@ -534,7 +533,7 @@ const selfFingerprintSource = deps.getAccountDigest();
               markMessageProcessed(conversationId, messageId);
               if (stateSynced && state) {
                 try {
-                  deps.persistDrSnapshot({ peerUidHex: peerKey, state });
+                  deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
                 } catch (persistErr) {
                   if (drDebug) {
                     console.warn('[messages] replay persist snapshot failed', persistErr);
@@ -561,7 +560,7 @@ const selfFingerprintSource = deps.getAccountDigest();
             }
             if (drDebug) {
               console.warn('[messages] replay decrypt failed, falling back to ratchet', {
-                peerUidHex: peerKey,
+                peerAccountDigest: peerKey,
                 messageId,
                 cursorTs,
                 iv_b64: pkt.iv_b64
@@ -590,7 +589,7 @@ const selfFingerprintSource = deps.getAccountDigest();
           const snapshotAfter = deps.snapshotDrState(state, { setDefaultUpdatedAt: false });
           if (shouldTrackState && snapshotBefore && Number.isFinite(msgTs)) {
             deps.recordDrMessageHistory({
-              peerUidHex: peerKey,
+              peerAccountDigest: peerKey,
               messageTs: msgTs,
               messageId,
               snapshot: snapshotBefore,
@@ -600,7 +599,7 @@ const selfFingerprintSource = deps.getAccountDigest();
           }
           if (shouldTrackState) {
             markMessageProcessed(conversationId, messageId);
-            deps.persistDrSnapshot({ peerUidHex: peerKey, state });
+            deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
           }
           const messageObj = buildMessageObject({
             plaintext: text,
@@ -620,7 +619,7 @@ const selfFingerprintSource = deps.getAccountDigest();
           const isOpError = typeof msg === 'string' && msg.includes('OperationError');
           if (isOpError) {
             logDrDebug('decrypt-operation-error', {
-              peerUidHex: peerKey,
+              peerAccountDigest: peerKey,
               messageId: raw?.id || null,
               ts: Number.isFinite(msgTs) ? msgTs : null,
               header,
@@ -630,7 +629,7 @@ const selfFingerprintSource = deps.getAccountDigest();
             if (snapshotBefore) {
               try {
                 deps.restoreDrStateFromSnapshot({
-                  peerUidHex: peerKey,
+                  peerAccountDigest: peerKey,
                   snapshot: snapshotBefore,
                   force: true,
                   targetState: shouldTrackState ? null : state,
@@ -649,7 +648,7 @@ const selfFingerprintSource = deps.getAccountDigest();
             if (Number.isFinite(msgTs) || messageId) {
               try {
                 restoredFromHistory = deps.restoreDrStateToHistoryPoint({
-                  peerUidHex: peerKey,
+                  peerAccountDigest: peerKey,
                   ts: Number.isFinite(msgTs) ? msgTs : null,
                   messageId: messageId || null
                 });
@@ -661,7 +660,7 @@ const selfFingerprintSource = deps.getAccountDigest();
               if (!restoredFromHistory && Number.isFinite(msgTs)) {
                 try {
                   restoredFromHistory = deps.restoreDrStateToHistoryPoint({
-                    peerUidHex: peerKey,
+                    peerAccountDigest: peerKey,
                     ts: msgTs - 1,
                     messageId: null
                   });
@@ -677,7 +676,7 @@ const selfFingerprintSource = deps.getAccountDigest();
               continue;
             }
             if (shouldTrackState) {
-              const recovered = await deps.recoverDrState({ peerUidHex: peerKey });
+              const recovered = await deps.recoverDrState({ peerAccountDigest: peerKey });
               if (recovered) {
                 state = deps.drState(peerKey);
                 continue;

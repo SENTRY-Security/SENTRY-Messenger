@@ -252,7 +252,7 @@ async function onLoadMessages() {
     const peer = prompt('輸入對方帳號 digest（hex）：');
     if (!conversationId || !tokenB64 || !peer) return;
     const peerUidHex = String(peer).replace(/[^0-9a-f]/gi, '').toUpperCase();
-    const { items, nextCursorTs, errors } = await listSecureAndDecrypt({ conversationId, tokenB64, peerUidHex, limit: 20 });
+    const { items, nextCursorTs, errors } = await listSecureAndDecrypt({ conversationId, tokenB64, peerAccountDigest: peerUidHex, limit: 20 });
     renderMessages(items);
     if (errors && errors.length) log({ decryptErrors: errors });
     if (nextCursorTs) log({ nextCursorTs });
@@ -299,7 +299,7 @@ async function onInitDr(){
   try {
     if (!getMkRaw()) return log('Not unlocked: MK not ready.');
     const peer = getPeerFromInput(); if (!peer) return log('請輸入對方帳號 digest');
-    await ensureDrSession({ peerUidHex: peer });
+    await ensureDrSession({ peerAccountDigest: peer });
     log({ drSession: 'initialized', peer });
   } catch (e) {
     log({ drInitError: String(e?.message || e) });
@@ -314,7 +314,7 @@ async function onSendText(){
     if (!text) return log('請輸入要傳送的文字');
     const identity = getAccountDigest() || null;
     const convId = (convEl?.value || '').trim() || (identity ? `dm-${identity}-to-${peer}` : 'dm-demo');
-    const res = await sendDrText({ peerUidHex: peer, text, convId });
+    const res = await sendDrText({ peerAccountDigest: peer, text, convId });
     log({ drSend: true, msg: res.msg, convId: res.convId });
     if (textEl) textEl.value = '';
   } catch (e) {

@@ -42,10 +42,10 @@ export async function conversationIdFromToken(tokenB64) {
   return bytesToB64Url(new Uint8Array(digest)).slice(0, 44);
 }
 
-export async function computeConversationFingerprint(tokenB64, uid) {
+export async function computeConversationFingerprint(tokenB64, accountDigest) {
   const keyBytes = b64UrlToBytes(tokenB64);
   const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const data = encoder.encode(String(uid).toUpperCase());
+  const data = encoder.encode(String(accountDigest).toUpperCase());
   const sig = await crypto.subtle.sign('HMAC', key, data);
   return bytesToB64Url(new Uint8Array(sig));
 }

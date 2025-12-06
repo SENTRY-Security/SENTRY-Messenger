@@ -164,6 +164,14 @@ export function initMessagesPane({
   const CONV_PULL_THRESHOLD = 60;
   const CONV_PULL_MAX = 140;
 
+  function normalizePeerKey(value) {
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: value?.peerAccountDigest ?? value?.peerUid ?? value?.peerUidHex ?? value,
+      peerUid: value?.peerUid
+    });
+    return identity.key || null;
+  }
+
   const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
   async function copyGroupSummary(draft) {
@@ -561,7 +569,7 @@ export function initMessagesPane({
   unsubscribeSecureStatus = subscribeSecureConversation(handleSecureStatusEvent);
 
   function cacheSecureStatus(peerUidHex, status, error) {
-    const key = String(peerUidHex || '').toUpperCase();
+    const key = normalizePeerKey(peerUidHex);
     if (!key) return null;
     const entry = {
       status: status || SECURE_CONVERSATION_STATUS.IDLE,
@@ -572,7 +580,7 @@ export function initMessagesPane({
   }
 
   function getCachedSecureStatus(peerUidHex) {
-    const key = String(peerUidHex || '').toUpperCase();
+    const key = normalizePeerKey(peerUidHex);
     if (!key) return null;
     const cached = secureStatusCache.get(key);
     if (cached) return cached;
@@ -590,7 +598,7 @@ export function initMessagesPane({
   function updateSecurityModalForPeer(peerUidHex, statusInfo) {
     if (!showSecurityModal) return;
     const status = statusInfo?.status || null;
-    const key = String(peerUidHex || '').toUpperCase();
+    const key = normalizePeerKey(peerUidHex);
     const shouldShow = status === SECURE_CONVERSATION_STATUS.PENDING;
     if (shouldShow) {
       if (activeSecurityModalPeer !== key) {
@@ -611,7 +619,7 @@ export function initMessagesPane({
 
   function applySecureStatusForActivePeer(peerUidHex, statusInfo) {
     const state = getMessageState();
-    const key = String(peerUidHex || '').toUpperCase();
+    const key = normalizePeerKey(peerUidHex);
     if (state.activePeerUid !== key) {
       if (!state.activePeerUid) hideSecurityModal();
       return;
@@ -632,7 +640,7 @@ export function initMessagesPane({
   }
 
   function handleSecureStatusEvent(event) {
-    const key = String(event?.peerUidHex || '').toUpperCase();
+    const key = normalizePeerKey(event?.peerAccountDigest ?? event?.peerUidHex);
     if (!key) return;
     const entry = cacheSecureStatus(key, event?.status, event?.error);
     if (!entry) return;
@@ -2043,7 +2051,7 @@ export function initMessagesPane({
   }
 
   async function setActiveConversation(peerUid) {
-    const key = String(peerUid || '').toUpperCase();
+    const key = normalizePeerKey(peerUid);
     if (!key) return;
     const desktopLayout = isDesktopLayout();
     const entry = sessionStore.contactIndex?.get?.(key);
@@ -2122,7 +2130,7 @@ export function initMessagesPane({
     }
     try {
       await ensureSecureConversationReady({
-        peerUidHex: key,
+        peerAccountDigest: key,
         reason: 'open-conversation',
         source: 'messages-pane:setActiveConversation'
       });
@@ -2631,7 +2639,7 @@ export function initMessagesPane({
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
     if (normalizedControlType) {
       handleSecureConversationControlMessage({
-        peerUidHex: peerUid,
+        peerAccountDigest: peerUid,
         messageType: normalizedControlType,
         direction: isSelf ? 'outgoing' : 'incoming',
         source: 'ws:message-new'

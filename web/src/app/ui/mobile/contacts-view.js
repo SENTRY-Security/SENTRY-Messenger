@@ -70,7 +70,7 @@ export function initContactsView(options) {
     const selfDigest = (getAccountDigest() || '').toUpperCase();
 
     sessionStore.contactState.forEach((c) => {
-      const key = String(c?.peerUid || '').toUpperCase();
+      const key = normalizePeerIdentity({ peerAccountDigest: c?.peerAccountDigest, peerUid: c?.peerUid }).key;
       if (!key) return;
       if (selfDigest && key === selfDigest) return;
       const name = normalizeNickname(c.nickname || '') || c.nickname || `好友 ${key.slice(-4)}`;

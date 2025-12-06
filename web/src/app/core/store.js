@@ -10,7 +10,7 @@
 // - SESSION: one-time token from /auth/sdm/exchange (60s, single-use)
 // - HAS_MK: boolean (server has wrapped_mk)
 // - WRAPPED_MK: object | null (from exchange)
-// - UID_HEX: normalized 7-byte UID hex (14 hex chars) — legacy (will be removed)
+// - UID_HEX: normalized 7-byte UID hex（僅 SDM/硬體模擬使用，其他流程已改 accountDigest-only）
 // - ACCOUNT_TOKEN: opaque token from /auth/sdm/exchange
 // - ACCOUNT_DIGEST: hex digest identifying the account (HMAC(uid))
 // - MK_RAW: Uint8Array | null (decrypted MK, memory-only)
@@ -28,7 +28,7 @@ let _ACCOUNT_DIGEST = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
 const _DEVICE_PRIV_WAITERS = new Set();
-const _DR_SESS = new Map(); // peerKey (accountDigest preferred) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
+const _DR_SESS = new Map(); // peerKey (accountDigest) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
 const _DR_PEER_ALIASES = new Map(); // alias -> primary peerKey
 let _OPAQUE_SERVER_ID = null;
 
@@ -235,7 +235,7 @@ export function resetAll() {
 
 /**
  * Helper to build a payload including account credentials (accountToken/accountDigest).
- * UID hex is legacy and opt-in for rare SDM/debug paths.
+ * UID hex is legacy and僅供 SDM/debug opt-in；預設僅回填 accountDigest/accountToken。
  * @param {{ includeUid?: boolean, overrides?: Record<string, any> }} [opts]
  */
 export function buildAccountPayload(opts = {}) {
