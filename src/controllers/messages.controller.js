@@ -116,7 +116,7 @@ async function authorizeAccountForConversation({ conversationId, accountToken, a
     throw new AccountAuthError('invalid conversationId', 400);
   }
 
-  const { uidHex: resolvedUid, accountDigest: resolvedDigest } = await resolveAccountAuth({
+  const { accountDigest: resolvedDigest } = await resolveAccountAuth({
     accountToken,
     accountDigest
   });
@@ -136,7 +136,7 @@ async function authorizeAccountForConversation({ conversationId, accountToken, a
     }
   }
 
-  return { conversationId: normalizedConv, uidHex: resolvedUid || null, accountDigest: resolvedDigest };
+  return { conversationId: normalizedConv, accountDigest: resolvedDigest };
 }
 
 function respondAccountError(res, err, fallback = 'authorization failed') {

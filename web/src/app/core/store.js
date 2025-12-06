@@ -13,7 +13,6 @@
 // - UID_HEX: normalized 7-byte UID hex (14 hex chars) — legacy (will be removed)
 // - ACCOUNT_TOKEN: opaque token from /auth/sdm/exchange
 // - ACCOUNT_DIGEST: hex digest identifying the account (HMAC(uid))
-// - UID_DIGEST: optional hashed UID from backend (for diagnostics only)
 // - MK_RAW: Uint8Array | null (decrypted MK, memory-only)
 // - DEVICE_PRIV: { ik_priv_b64, ik_pub_b64, spk_priv_b64, spk_pub_b64, spk_sig_b64, next_opk_id } | null
 // - DR_SESS: Map(peer_uidHex -> DR state object)
@@ -26,7 +25,6 @@ let _WRAPPED_MK = null;
 let _UID_HEX = null;
 let _ACCOUNT_TOKEN = null;
 let _ACCOUNT_DIGEST = null;
-let _UID_DIGEST = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
 const _DEVICE_PRIV_WAITERS = new Set();
@@ -132,16 +130,6 @@ export function setAccountDigest(v) {
   _ACCOUNT_DIGEST = normalizeAccountDigest(v);
 }
 
-export function getUidDigest() { return _UID_DIGEST; }
-export function setUidDigest(v) {
-  if (!v) {
-    _UID_DIGEST = null;
-    return;
-  }
-  const cleaned = String(v).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  _UID_DIGEST = cleaned || null;
-}
-
 export function getMkRaw() { return _MK_RAW; }
 export function setMkRaw(u8) { _MK_RAW = u8 || null; }
 
@@ -239,7 +227,6 @@ export function resetAll() {
   _UID_HEX = null;
   _ACCOUNT_TOKEN = null;
   _ACCOUNT_DIGEST = null;
-  _UID_DIGEST = null;
   _MK_RAW = null;
   setDevicePriv(null);
   _DR_SESS.clear();
@@ -247,17 +234,16 @@ export function resetAll() {
 }
 
 /**
- * Helper to build a payload including account credentials (accountToken/accountDigest)
- * and, optionally, the UID hex for backward compatibility.
+ * Helper to build a payload including account credentials (accountToken/accountDigest).
+ * UID hex is legacy and opt-in for rare SDM/debug paths.
  * @param {{ includeUid?: boolean, overrides?: Record<string, any> }} [opts]
  */
 export function buildAccountPayload(opts = {}) {
-  const { includeUid = true, overrides = {} } = opts;
+  const { includeUid = false, overrides = {} } = opts;
   const payload = { ...overrides };
   if (_ACCOUNT_TOKEN && payload.accountToken == null) payload.accountToken = _ACCOUNT_TOKEN;
   if (_ACCOUNT_DIGEST && payload.accountDigest == null) payload.accountDigest = _ACCOUNT_DIGEST;
   if (includeUid && _UID_HEX && payload.uidHex == null) payload.uidHex = _UID_HEX;
-  if (_UID_DIGEST && payload.uidDigest == null) payload.uidDigest = _UID_DIGEST;
   return payload;
 }
 

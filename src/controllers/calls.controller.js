@@ -17,10 +17,7 @@ const TURN_RELAY_URIS = parseUriList(
 const DEFAULT_TURN_ENDPOINT = '/api/v1/calls/turn-credentials';
 const RAW_CALL_NETWORK_CONFIG = baseCallNetworkConfig?.default ?? baseCallNetworkConfig ?? {};
 
-const UidRegex = /^[0-9A-Fa-f]{14,}$/;
-
 const BaseAccountSchema = z.object({
-  uidHex: z.string().regex(UidRegex).optional(), // legacy fallback
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 });
@@ -33,7 +30,6 @@ const withAccountAuthGuard = (schema) => schema.superRefine((value, ctx) => {
 
 const CallInviteSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   peerAccountDigest: z.string().regex(AccountDigestRegex),
-  peerUid: z.string().regex(UidRegex).optional(),
   callId: z.string().regex(CallIdRegex).optional(),
   mode: z.enum(['voice', 'video']).optional(),
   capabilities: z.record(z.any()).optional(),

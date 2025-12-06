@@ -10,7 +10,7 @@ import {
   getHasMK, setHasMK,
   getWrappedMK, setWrappedMK,
   getUidHex, setUidHex,
-  getAccountToken, getAccountDigest, getUidDigest
+  getAccountToken, getAccountDigest
 } from '../core/store.js';
 
 /** Normalize hex string (keep 0-9a-f, uppercased) */
@@ -60,8 +60,7 @@ export async function exchangeFromURLIfPresent(url) {
     wrapped: !!getWrappedMK(),
     uidHex: getUidHex(),
     accountToken: getAccountToken() || null,
-    accountDigest: getAccountDigest() || null,
-    uidDigest: getUidDigest() || null
+    accountDigest: getAccountDigest() || null
   };
 }
 
@@ -86,7 +85,6 @@ export async function exchangeWithParams(p) {
     hasMK: getHasMK(),
     wrapped: !!getWrappedMK(),
     accountToken: getAccountToken() || null,
-    accountDigest: getAccountDigest() || null,
-    uidDigest: getUidDigest() || null
+    accountDigest: getAccountDigest() || null
   };
 }

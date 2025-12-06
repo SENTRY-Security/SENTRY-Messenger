@@ -226,7 +226,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 | 日期                 | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **2025-12-06 18:30** | 因本輪重構後既有腳本失效，已移除所有 mjs 測試檔（`scripts/test-*.mjs`、`tests/e2e/*.spec.mjs`、`tests/unit/messages.test.mjs` 等），後續需重建新版測試流程。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **2025-12-06 18:30** | 因本輪重構後既有腳本失效，已移除所有 mjs 測試檔（`scripts/test-*.mjs`、`tests/e2e/*.spec.mjs`、`tests/unit/messages.test.mjs` 等），後續需重建新版測試流程。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **2025-12-06 17:55** | 前端 digest-only 持續清理：Login → App handoff 以 account_digest 為主（app-ui/app-mobile/login-ui）、DR/訊息/通話 UI 去除本端 UID 依賴，remote-console/profile identicon/contacts 渲染改用 digest，測試腳本`scripts/test-messages-secure.mjs` / `tests/e2e/utils.mjs` / `tests/e2e/multi-account-helpers.mjs` 改用 digest 快照。尚未執行 `npm run test:*`。                                                                                                                                                                                                                                                                                                                            |
 | **2025-12-06 16:05** | Node API calls/groups digest-only：通話邀請/取消/ACK/metrics/TURN 憑證移除 UID 需求，僅驗證 account_token/account_digest；群組建立/成員增刪/查詢 payload 不再送 UID，僅保留 account_digest 與指紋；好友刪除 WS reload 改以 digest 廣播。未執行`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需在可清空 D1/R2 的環境補跑。                                                                                                                                                                                                                                                                                                                   |
 | **2025-12-06 16:01** | Worker 端 prekeys bundle / call session / call events 改為 digest-only：`/d1/prekeys/bundle` 僅接受 peer account_digest，不再 hash UID；`upsertCallSession` / `insertCallEvent` 移除 UID fallback、要求雙端 digest；Node `/api/v1/keys/bundle` schema 改為必填 peer_accountDigest。未執行 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，待清空 D1/R2 的隔離環境補測。                                                                                                                                                                                                                                                                       |
@@ -314,40 +314,18 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 | **2025-10-26**       | Login 頁清除 localStorage 前會回寫`contactSecrets-v1`；`share-controller` 不再覆寫既有角色；`dr-session.js` / `messages.js` 增加 snapshot 還原與 `dr-debug` log。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **2025-10-10**       | 裝置私鑰備援流程：若備份缺失，會重新發佈預共享金鑰並儲存`wrapped_dev`，避免 DR 初始化因 404 中斷。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
-### TODO — 去除 D1 UID/uid_digest（只存 account_digest）
+### TODO — digest-only 收尾（統一 UID/uid_hex/uid_digest 清理）
 
-- [X]  Schema 過渡：所有含 UID 的表新增 `*_account_digest`（friend_invites / call_sessions / call_events / groups / group_members / group_invites / messages header），contacts convId 雙寫 `contacts-<account_digest>` / UID。
-- [X]  Worker friends：invite/create/accept/bootstrap 以 digest 優先（查找/回傳 owner/guest_account_digest，contact/share/delete 支援 digest，/d1/friends/bootstrap 已實作），WS 通知帶 digest。
-- [X]  Worker 群組：群組建立/成員增刪/查詢以 account_digest 為主（保留 UID 兼容），WS payload 待前端改造時一併更新。
-- [X]  WS：身份/Presence/事件 payload 以 account_digest 為主（保留 UID），online list 回 digest。
-- [X]  前端核心鍵值：`core/store` / `core/contact-secrets` / `features/contacts` / `features/messages` 改以 `peerAccountDigest` 為鍵，convId 以 `contacts-<account_digest>` 為主，保留 UID 讀寫過渡。
-- [X]  前端 WS/事件：所有 WS 發送/接收事件（contact-share / contacts-reload / presence / secure-message / call）改為 digest 為主（保留 UID）。
-- [X]  前端 呼叫/群組：API payload、本地 state、列表鍵值改用 account_digest，保留 UID fallback。
-- [X]  前端 UI/Session：session-store/index/listener 等使用 digest 索引，convId 雙寫容錯。
-- [X]  Schema 清理：移除仍保存 UID/uid_digest 的欄位，執行時需同步全面掃描 Worker/Node/前端的使用點並改成 account_digest：
-  - [X]  `accounts.uid_plain`：確認登入/備份/交棒流程不再依賴 UID 明文後刪除欄位。
-  - [X]  `friend_invites.owner_uid`、`friend_invites.guest_uid`：邀請建立/接受/續期/Bootstrap API 全改 digest。
-  - [X]  `call_sessions.caller_uid`、`call_sessions.callee_uid`：通話建立/狀態查詢/WS 事件改讀寫 account_digest。
-  - [X]  `call_events.from_uid`、`call_events.to_uid`：事件寫入/查詢/稽核改用 `from_account_digest` / `to_account_digest` 後移除舊欄位。
-  - [X]  `groups.creator_uid`：建群/列表/ACL 同步移除 UID 欄位。
-  - [X]  `group_members.uid`、`group_members.inviter_uid`：成員新增/查詢/邀請與 WS payload 改 digest 後刪除。
-  - [X]  `group_invites.issuer_uid`：群組邀請建立/驗證/使用紀錄改 digest 後移除。
-- [X]  帳號驗證/WS token：`src/utils/account-context.js` / `src/utils/account-verify.js` / `src/routes/ws-token.routes.js` / `src/utils/ws-token.js` / Worker `/d1/accounts/{verify,created}` 改為只接受 account_digest/account_token，WS token claims 移除 uid。**進度：token/verify/WS server 皆以 digest-only 運作，已移除 `accountDigestByUid` 映射。**
-- [X]  Node API 契約：`src/controllers/{friends,messages,calls,groups}.controller.js`、`src/routes/v1/media.routes.js` 改以 accountDigest 為主，移除 `uidHex`/`peerUid` 必填並以 digest 廣播（通話/群組/好友刪除均改 digest-only）。
-- [X]  Worker 好友/聯絡人：`data-worker/src/worker.js` 的 `/d1/friends/{bootstrap,accept,contact/share,contact-delete}`、`insertContactMessage`/`deleteContactByPeer` 仍寫入 `peerUid` / `contacts-<uid>` convo；需改成僅用 account_digest（header、convo id、ACL/通知）。**進度：已改為 digest-only（header/convo/ACL 無 UID）。**
-- [X]  Worker 其他端點：`/d1/prekeys/bundle`、`upsertCallSession`/`insertCallEvent`、好友 bootstrap peer 篩選仍接受 UID 並自動 hash；需改為只接受 accountDigest，移除 UID fallback。
-- [X]  WebSocket 流：`src/ws/index.js` 以 UID 為連線鍵（call locks/presence/secure-message event）且 payload 帶 `peerUid`，`web/src/app/api/ws.js` 要求 `uidHex`；需改為 accountDigest 為主的身份與事件欄位。**進度：WS server 連線/鎖定/事件 payload 全改 digest-only（去除 peerUid/senderUid），前端 WS token/API 已以 accountDigest 為主，仍需持續清理前端殘留變數名。**
-  - [ ]  前端狀態/客戶端：`web/src/app/ui/{app-ui.js,app-mobile.js}` handoff/重啟仍讀寫 `uid_hex`/`uid_digest`，`web/src/app/api/*`（media/prekeys/friends/groups/calls/ws）及 call/訊息 UI 模組多處以 `peerUid` 為鍵；需改為 accountDigest 為主的鍵值/ payload，並同步調整測試腳本（如 `scripts/test-messages-secure.mjs`, `tests/e2e/utils.mjs`, `tests/e2e/multi-account-helpers.mjs` 等仍讀寫 `uid_hex`）。**進度：已將 app-ui/app-mobile/login-ui/profile-card/remote-console/messages-pane/contacts-view 等介面改用 digest，測試腳本與 secure/message API 亦切到 digest；仍需續清理 call/DR/其他模組變數命名與 payload。****
-- [ ]  清空 D1/R2 + 部署：套用遷移，wipe 後重新部署 Worker/Node/Pages。
-- [ ]  測試：跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
-
-### TODO — UID/uid_hex 殘留清理（digest-only 後續工作）
-- [ ] Worker：`data-worker/src/worker.js` 多數 account 解析與 prekeys/device backup 流程仍要求 `uidHex`（如 resolveAccount、/d1/prekeys/publish/bundle 等），需改為 digest-only 或確認例外。
-- [ ] Node routes：`src/routes/auth.routes.js` / `src/routes/v1/debug.routes.js` 仍以 `uidHex` 維持 session/debug-kit，`src/utils/account-context.js` 仍回傳 `uidHex`；需評估是否改為 digest-only 或限制於 SDM/開發模式。
-- [ ] Controllers：`src/controllers/messages.controller.js` 回傳 `uidHex`，`src/controllers/calls.controller.js` schema 仍允許 `uidHex/peerUid`；需同步移除或明確標記僅作兼容。
-- [ ] 前端 SDM/Login：`web/src/app/features/{login-flow,sdm}.js`、`login-ui.js`、`web/src/app/api/auth.js` 仍以 `uidHex` 為核心（交換/模擬/交棒）；需定義與 digest-only 的邊界（僅硬體交換保留，其他流程改 digest）。
-- [ ] 共享/預鍵：`web/src/shared/crypto/prekeys.js` 等仍以 `uidHex` 作為 key，需改為 digest 或加入兼容 alias。
-- [ ] 文件：`iOS-Development-Guids.md` 等仍描述 `uidHex`/`peerUid` 為必填；待後端/前端清理後更新 API 契約說明。
+- [X] Schema / 後端：表結構與 Worker/Node/WS/controller 均已改為 account_digest-only（含 prekeys/devkeys/calls/friends/groups/media），UID 只保留於 SDM HMAC 驗證。
+- [X] 前端：核心 store/WS/呼叫/群組/API payload 改 digest-only；預鍵/裝置備援工具改為不帶 UID 的流程；呼叫 network-config API 驗證改用 digest/token。
+- [ ] 前端 UID 殘留（除 SDM URL 入口與 ntag424 模擬/顯示）：  
+  - [ ] Login/SDM：`web/src/app/features/{login-flow,sdm}.js`、`web/src/app/ui/login-ui.js` 仍以 uidHex 做 SDM 驗證與 Debug UI；需明確限制 UID 僅用於 CMAC/顯示，後續狀態/交棒全部用 accountDigest，並移除不必要的 setUidHex/getUidHex 交互。  
+  - [ ] Store 相容欄位：`core/store` 仍保留 `_UID_HEX` 與 buildAccountPayload(includeUid) 兼容選項；評估移除或僅於 SDM debug path 暴露。  
+  - [ ] App 邊界：`app-ui` / `app-mobile` 仍把 digest 寫回 uidHex 供舊代碼；後續可刪除 uidHex 別名並改用 accountDigest 唯一鍵。  
+  - [ ] 靜態輸入：`pages/login.html` 的隱藏 `uidHex` 欄位仍存在（SDM 用途）；確認是否需改為僅顯示/只讀或移除。  
+  - [ ] 模擬工具：`web/src/libs/ntag424-sim.js` 仍以 uidHex 驅動（允許保留於硬體模擬範圍，但需標註與 app 流程隔離）。
+- [ ] 文件：更新 `iOS-Development-Guids.md` 等仍提到 `uidHex/peerUid` 的說明，改為 account_digest-only（SDM 入口除外）。
+- [ ] 部署與驗證（最後進行）：清空 D1/R2 後重新部署 Worker/Node/Pages；跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 
 ## 授權條款
 

@@ -15,7 +15,7 @@ const DATA_API = process.env.DATA_API_URL;     // 例：https://message-data.<wo
 const HMAC_SECRET = process.env.DATA_API_HMAC; // 與 worker 的 HMAC_SECRET 相同
 
 // 簡單的一次性 session（先用記憶體 TTL；之後換 KV/Redis）
-const SESS = new Map(); // sessionId -> { uidHex, accountToken, accountDigest, uidDigest, exp }
+const SESS = new Map(); // sessionId -> { accountToken, accountDigest, uidDigest, exp }
 const TTL_SECONDS = 60;
 const DEBUG_COUNTERS = new Map(); // uidHex -> last counter used
 const OPAQUE_EXPECTED = new Map(); // opaqueSession -> expected auth result (for finish)
@@ -140,14 +140,12 @@ const WrappedMkSchema = z.object({
 
 const StoreMkSchema = z.object({
   session: z.string().min(8),
-  uidHex: z.string().min(14),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   wrapped_mk: WrappedMkSchema
 });
 
 const UpdateMkSchema = z.object({
-  uidHex: z.string().min(14),
   accountToken: z.string().min(8),
   accountDigest: z.string().regex(AccountDigestRegex),
   wrapped_mk: WrappedMkSchema
@@ -257,7 +255,7 @@ r.post('/auth/sdm/exchange', async (req, res) => {
     if (!accountToken || !accountDigest) {
       return res.status(502).json({ error: 'AccountInfoMissing', message: 'worker did not return account token' });
     }
-    SESS.set(session, { uidHex, accountToken, accountDigest: accountDigest.toUpperCase(), uidDigest, exp });
+    SESS.set(session, { accountToken, accountDigest: accountDigest.toUpperCase(), uidDigest, exp });
 
     return res.json({
       session,
@@ -285,12 +283,6 @@ r.post('/mk/store', async (req, res) => {
     if (!sess || sess.exp < Math.floor(Date.now() / 1000)) {
       return res.status(401).json({ error: 'SessionExpired', message: 'please re-tap the tag' });
     }
-    // 防止偽造 uid
-    const uidHex = String(input.uidHex).replace(/[^0-9a-f]/gi, '').toUpperCase();
-    if (uidHex !== sess.uidHex) {
-      return res.status(401).json({ error: 'SessionMismatch', message: 'uid mismatch' });
-    }
-
     const accountToken = sess.accountToken || input.accountToken;
     const accountDigest = (sess.accountDigest || input.accountDigest || '').toUpperCase();
     if (!accountToken || !accountDigest) {
@@ -308,12 +300,7 @@ r.post('/mk/store', async (req, res) => {
     }
 
     const path = '/d1/tags/store-mk';
-    const body = JSON.stringify({
-      uidHex,
-      accountToken,
-      accountDigest,
-      wrapped_mk: input.wrapped_mk
-    });
+    const body = JSON.stringify({ accountToken, accountDigest, wrapped_mk: input.wrapped_mk });
     const sig = signHmac(path, body, HMAC_SECRET);
     const w = await fetch(`${DATA_API}${path}`, {
       method: 'POST',
@@ -337,13 +324,8 @@ r.post('/mk/update', async (req, res) => {
   }
   try {
     const input = UpdateMkSchema.parse(req.body || {});
-    const uidHex = normalizeUidHex(input.uidHex);
-    if (!uidHex) {
-      return res.status(400).json({ error: 'BadRequest', message: 'invalid uidHex' });
-    }
     const path = '/d1/tags/store-mk';
     const body = JSON.stringify({
-      uidHex,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest,
       wrapped_mk: input.wrapped_mk

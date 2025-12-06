@@ -1,4 +1,4 @@
-import { verifyAccount, normalizeUidHex, normalizeAccountDigest } from './account-verify.js';
+import { verifyAccount, normalizeAccountDigest } from './account-verify.js';
 
 export class AccountAuthError extends Error {
   constructor(message, status = 400, details = null) {
@@ -9,11 +9,7 @@ export class AccountAuthError extends Error {
   }
 }
 
-export async function resolveAccountAuth({ uidHex, accountToken, accountDigest }) {
-  const normalizedUid = uidHex ? normalizeUidHex(uidHex) : null;
-  if (uidHex && !normalizedUid) {
-    throw new AccountAuthError('invalid uidHex', 400);
-  }
+export async function resolveAccountAuth({ accountToken, accountDigest }) {
   const token = typeof accountToken === 'string' ? accountToken.trim() : '';
   const digestInput = normalizeAccountDigest(accountDigest);
   if (!token && !digestInput) {
@@ -40,10 +36,8 @@ export async function resolveAccountAuth({ uidHex, accountToken, accountDigest }
   if (!resolvedDigest) {
     throw new AccountAuthError('account digest missing', 502);
   }
-  const resolvedUid = normalizedUid || null;
 
   return {
-    uidHex: resolvedUid,
     accountDigest: resolvedDigest
   };
 }

@@ -54,7 +54,7 @@ export async function unwrapDevicePrivWithMK(wrappedDevEnvelope, mkRawU8) {
   return unwrapWithMK_JSON(wrappedDevEnvelope, ensureBuffer(mkRawU8));
 }
 
-export async function ensureKeysAfterUnlock(mkRawU8, uidHex, opts = {}) {
+export async function ensureKeysAfterUnlock(mkRawU8, opts = {}) {
   const {
     fetchDevkeys,
     publishBundle,
@@ -68,14 +68,14 @@ export async function ensureKeysAfterUnlock(mkRawU8, uidHex, opts = {}) {
     throw new Error('ensureKeysAfterUnlock requires fetchDevkeys, publishBundle and storeDevkeys callbacks');
   }
 
-  const existing = await fetchDevkeys(uidHex).catch(() => null);
+  const existing = await fetchDevkeys().catch(() => null);
   if (existing && existing.wrapped_dev) return { wrapped_dev: existing.wrapped_dev, existed: true };
 
   const { devicePriv, bundlePub } = await generateInitialBundle(1, initialOpkCount);
   await publishBundle(bundlePub);
 
   const wrapped_dev = await wrapDevicePrivWithMK(devicePriv, mkRawU8);
-  await storeDevkeys(session, uidHex, wrapped_dev);
+  await storeDevkeys(session, wrapped_dev);
 
   return { wrapped_dev, bundlePub, devicePriv };
 }

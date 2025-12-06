@@ -13,7 +13,6 @@ import {
   getMkRaw, setMkRaw,
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
-  getUidDigest, setUidDigest,
   getDevicePriv,
   resetAll, clearSecrets,
   setOpaqueServerId
@@ -889,28 +888,24 @@ async function onUnlock() {
     // handoff MK/UID to next page (sessionStorage, same-tab only)
     try {
       const mk = getMkRaw();
-      const uid = getUidHex();
       const accountToken = getAccountToken();
       const accountDigest = getAccountDigest();
-      const uidDigest = getUidDigest();
       const wrappedMk = getWrappedMK();
-      const identityForHandoff = accountDigest || uid || null;
+      const identityForHandoff = accountDigest || null;
       log({
         loginHandoff: {
           mk: !!mk,
           uid: !!identityForHandoff,
           accountToken: !!accountToken,
           accountDigest: !!accountDigest,
-          uidDigest: !!uidDigest,
           wrappedMk: !!wrappedMk,
           wrappedDev: !!r?.wrapped_dev
         }
       });
       if (mk && mk.length) sessionStorage.setItem('mk_b64', b64(mk));
-      if (identityForHandoff) sessionStorage.setItem('uid_hex', identityForHandoff);
+      // handoff 以 accountDigest 為主（不再使用 uid_hex）
       if (accountToken) sessionStorage.setItem('account_token', accountToken);
       if (accountDigest) sessionStorage.setItem('account_digest', accountDigest);
-      if (uidDigest) sessionStorage.setItem('uid_digest', uidDigest);
       if (wrappedMk) {
         try {
           sessionStorage.setItem('wrapped_mk', JSON.stringify(wrappedMk));
@@ -973,12 +968,10 @@ function invalidateExchange() {
   setUidHex(null);
   setAccountToken(null);
   setAccountDigest(null);
-  setUidDigest(null);
   setOpaqueServerId(null);
   try {
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
-    sessionStorage.removeItem('uid_digest');
   } catch {}
   newAccount = false;
   welcomeAcknowledged = false;

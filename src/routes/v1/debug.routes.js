@@ -2,9 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { logger } from '../../utils/logger.js';
 import { resolveAccountAuth, AccountAuthError } from '../../utils/account-context.js';
-import { normalizeUidHex, normalizeAccountDigest, AccountDigestRegex } from '../../utils/account-verify.js';
-
-const UidRegex = /^[0-9A-Fa-f]{14,}$/;
+import { normalizeAccountDigest, AccountDigestRegex } from '../../utils/account-verify.js';
 
 const router = Router();
 
@@ -17,12 +15,6 @@ function ensureAccountCredentials(value, ctx) {
   }
 }
 
-const BaseSchema = z.object({
-  uidHex: z.string().regex(UidRegex),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
-});
-
 const ConsoleEntrySchema = z.object({
   level: z.string().optional(),
   message: z.string().optional(),
@@ -31,7 +23,9 @@ const ConsoleEntrySchema = z.object({
   ts: z.number().optional()
 });
 
-const ConsolePayloadSchema = BaseSchema.extend({
+const ConsolePayloadSchema = z.object({
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional(),
   entries: z.array(ConsoleEntrySchema).min(1),
   clientTs: z.number().optional(),
   meta: z.record(z.any()).optional()
@@ -60,11 +54,9 @@ router.post('/debug/console', async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
   }
   const input = parsed.data;
-  const uidHex = normalizeUidHex(input.uidHex);
   const accountDigest = normalizeAccountDigest(input.accountDigest);
   try {
     await resolveAccountAuth({
-      uidHex,
       accountToken: input.accountToken,
       accountDigest
     });
@@ -76,7 +68,6 @@ router.post('/debug/console', async (req, res) => {
   for (const entry of safeEntries) {
     logger.info({
       remoteConsole: {
-        uidHex,
         accountDigest,
         level: entry.level || 'log',
         message: entry.message || '',

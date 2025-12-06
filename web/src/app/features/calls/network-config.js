@@ -119,13 +119,12 @@ async function fetchFromApi({ signal } = {}) {
   if (typeof fetch !== 'function') {
     throw new Error('fetch unavailable');
   }
-  const auth = buildAccountPayload({ includeUid: true });
-  const hasCredentials = auth.uidHex && (auth.accountToken || auth.accountDigest);
+  const auth = buildAccountPayload({ includeUid: false });
+  const hasCredentials = (auth.accountToken || auth.accountDigest);
   if (!hasCredentials) {
     throw new Error('call network config auth missing');
   }
   const params = new URLSearchParams();
-  if (auth.uidHex) params.set('uidHex', auth.uidHex);
   if (auth.accountToken) params.set('accountToken', auth.accountToken);
   if (auth.accountDigest) params.set('accountDigest', auth.accountDigest);
   const url = `${API_CONFIG_URL}?${params.toString()}`;

@@ -18,7 +18,6 @@ import {
   getDevicePriv, setDevicePriv,
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
-  getUidDigest, setUidDigest,
   getOpaqueServerId, setOpaqueServerId
 } from '../core/store.js';
 
@@ -103,8 +102,6 @@ export async function exchangeSDM(p) {
   if (data.account_token) setAccountToken(data.account_token);
   if (data.accountDigest) setAccountDigest(data.accountDigest);
   if (data.account_digest) setAccountDigest(data.account_digest);
-  if (data.uidDigest) setUidDigest(data.uidDigest);
-  if (data.uid_digest) setUidDigest(data.uid_digest);
   if (Object.prototype.hasOwnProperty.call(data, 'opaqueServerId') || Object.prototype.hasOwnProperty.call(data, 'opaque_server_id')) {
     setOpaqueServerId(data.opaqueServerId || data.opaque_server_id || null);
   } else {
@@ -116,8 +113,7 @@ export async function exchangeSDM(p) {
     hasMK: getHasMK(),
     wrapped_mk: getWrappedMK() || undefined,
     accountToken: getAccountToken() || data.accountToken || data.account_token || null,
-    accountDigest: getAccountDigest() || data.accountDigest || data.account_digest || null,
-    uidDigest: getUidDigest() || data.uidDigest || data.uid_digest || null
+    accountDigest: getAccountDigest() || data.accountDigest || data.account_digest || null
   };
 }
 
@@ -155,8 +151,6 @@ export async function unlockAndInit({ password, onProgress } = {}) {
   };
 
   const hadWrappedMK = getHasMK();
-  const uidHex = getUidHex();
-  if (!uidHex) throw new Error('uid not set');
   let accountToken = getAccountToken();
   let accountDigest = getAccountDigest();
   if (!accountToken || !accountDigest) throw new Error('Account info missing: please redo SDM exchange');
@@ -201,7 +195,6 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       report('mk-store', 'start');
       const { r } = await mkStore({
         session: getSession(),
-        uidHex,
         accountToken,
         accountDigest,
         wrapped_mk
@@ -236,7 +229,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
 
   const publishBundle = async (bundlePub, { devicePriv = null, allowFallback = true } = {}) => {
     const send = async (payload) => {
-      const { r, data } = await prekeysPublish({ uidHex, accountToken, accountDigest, bundle: payload });
+      const { r, data } = await prekeysPublish({ accountToken, accountDigest, bundle: payload });
       if (r.status === 204) return { ok: true };
       let detail = '';
       if (data && typeof data === 'object') {

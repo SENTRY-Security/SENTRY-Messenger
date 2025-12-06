@@ -7,7 +7,7 @@ import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import {
   getMkRaw,
   setMkRaw, setUidHex,
-  setAccountToken, setAccountDigest, setUidDigest,
+  setAccountToken, setAccountDigest,
   setDevicePriv,
   resetAll, clearSecrets,
   drState,
@@ -831,7 +831,7 @@ function clearLocalEncryptedCaches() {
 }
 
 function clearSessionHandoff() {
-  const baseKeys = ['mk_b64', 'uid_hex', 'account_token', 'account_digest', 'uid_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
+const baseKeys = ['mk_b64', 'account_token', 'account_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
   const opts = getContactSecretKeyOptions();
   const contactKeys = mergeUniqueKeyLists(
     getContactSecretsStorageKeys(opts),
@@ -1267,26 +1267,22 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
 (function restoreMkAndUidFromSession() {
   try {
     const mkb64 = sessionStorage.getItem('mk_b64');
-    const uid = sessionStorage.getItem('uid_hex');
     const accountToken = sessionStorage.getItem('account_token');
     const accountDigest = sessionStorage.getItem('account_digest');
-    const uidDigest = sessionStorage.getItem('uid_digest');
     const wrappedMkRaw = sessionStorage.getItem('wrapped_mk');
     log({
       restoreSession: {
         mk: !!mkb64,
-        uid: !!uid,
         accountToken: !!accountToken,
         accountDigest: !!accountDigest,
-        uidDigest: !!uidDigest,
         wrappedMk: !!wrappedMkRaw
       }
     });
-    const identityKey = accountDigest || uid || uidDigest || null;
-    if (identityKey) setUidHex(identityKey);
+    const identityKey = accountDigest || null;
+    if (identityKey) setAccountDigest(identityKey);
     if (accountToken) setAccountToken(accountToken);
-    if (accountDigest) setAccountDigest(accountDigest);
-    if (uidDigest) setUidDigest(uidDigest);
+    // 兼容舊邏輯：digest 也寫入 uidHex 欄位供舊代碼使用
+    if (identityKey) setUidHex(identityKey);
     if (mkb64 && !getMkRaw()) setMkRaw(b64u8(mkb64));
     if (wrappedMkRaw) {
       try {
@@ -1300,10 +1296,8 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
       setWrappedMK(null);
     }
     sessionStorage.removeItem('mk_b64');
-    sessionStorage.removeItem('uid_hex');
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
-    sessionStorage.removeItem('uid_digest');
     sessionStorage.removeItem('wrapped_mk');
   } catch (e) { log({ restoreError: String(e?.message || e) }); }
 })();

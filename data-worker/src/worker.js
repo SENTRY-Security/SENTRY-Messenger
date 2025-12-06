@@ -1002,8 +1002,7 @@ export default {
       try {
         await resolveAccount(env, {
           accountToken: body.accountToken,
-          accountDigest: body.accountDigest,
-          uidHex: body.uidHex
+          accountDigest: body.accountDigest || body.account_digest
         });
       } catch (err) {
         console.warn('secure_delete_conversation_resolve_failed', err?.message || err);
@@ -1254,8 +1253,11 @@ export default {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
       const uidHex = normalizeUid(body.uidHex || body.uid);
-      if (!uidHex) {
-        return json({ error: 'BadRequest', message: 'uidHex required (7-byte UID hex)' }, { status: 400 });
+      const accountTokenRaw = body.accountToken || body.account_token;
+      const accountDigest = normalizeAccountDigest(body.accountDigest || body.account_digest);
+      const accountToken = typeof accountTokenRaw === 'string' && accountTokenRaw.trim().length ? accountTokenRaw.trim() : null;
+      if (!uidHex && !accountDigest && !accountToken) {
+        return json({ error: 'BadRequest', message: 'accountDigest/accountToken or uidHex required' }, { status: 400 });
       }
       const ctrNum = Number(body.ctr ?? body.counter ?? body.sdmcounter ?? 0);
       if (!Number.isFinite(ctrNum) || ctrNum < 0) {
@@ -1264,13 +1266,18 @@ export default {
 
       let account;
       try {
-        account = await resolveAccount(env, { uidHex }, { allowCreate: true });
+        account = await resolveAccount(
+          env,
+          { uidHex, accountToken, accountDigest },
+          { allowCreate: true, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest }
+        );
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
       }
 
       if (!account) {
-        return json({ error: 'AccountCreateFailed' }, { status: 500 });
+        const errCode = uidHex ? 'AccountCreateFailed' : 'AccountNotFound';
+        return json({ error: errCode }, { status: uidHex ? 500 : 404 });
       }
 
       if (!account.newlyCreated && !(ctrNum > account.last_ctr)) {
@@ -1322,8 +1329,7 @@ export default {
       try {
         account = await resolveAccount(env, {
           accountToken: body.accountToken,
-          accountDigest: body.accountDigest,
-          uidHex: body.uidHex
+          accountDigest: body.accountDigest || body.account_digest
         });
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
@@ -1360,8 +1366,7 @@ export default {
       try {
         account = await resolveAccount(env, {
           accountToken: body.accountToken,
-          accountDigest: body.accountDigest,
-          uidHex: body.uidHex
+          accountDigest: body.accountDigest || body.account_digest
         });
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
@@ -1506,8 +1511,7 @@ export default {
       try {
         account = await resolveAccount(env, {
           accountToken: body.accountToken,
-          accountDigest: body.accountDigest,
-          uidHex: body.uidHex
+          accountDigest: body.accountDigest || body.account_digest
         });
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
@@ -1548,8 +1552,7 @@ export default {
       try {
         account = await resolveAccount(env, {
           accountToken: body.accountToken,
-          accountDigest: body.accountDigest,
-          uidHex: body.uidHex
+          accountDigest: body.accountDigest || body.account_digest
         });
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
@@ -2261,83 +2264,86 @@ async function digestAccountToken(token) {
 async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {}, { allowCreate = false, preferredAccountToken = null, preferredAccountDigest = null } = {}) {
   const db = env.DB;
   const normalizedUid = uidHex ? normalizeUid(uidHex) : null;
-  let uidDigest = null;
+  const normalizedAccountDigest = normalizeAccountDigest(preferredAccountDigest || accountDigest);
+  const tokenInput = preferredAccountToken ?? accountToken;
+  const normalizedToken = typeof tokenInput === 'string' && tokenInput.trim().length ? tokenInput.trim() : null;
+  const uidDigest = normalizedUid ? await hashUidToDigest(env, normalizedUid) : null;
 
-  if (normalizedUid) {
-    uidDigest = await hashUidToDigest(env, normalizedUid);
+  let lookupDigest = normalizedAccountDigest || null;
+  if (!lookupDigest && normalizedToken) {
+    lookupDigest = await digestAccountToken(normalizedToken);
   }
 
-  let lookupDigest = null;
-
-  if (accountDigest) {
-    lookupDigest = accountDigest;
-  } else if (accountToken) {
-    lookupDigest = await digestAccountToken(accountToken);
-  } else if (uidDigest) {
-    const rows = await db.prepare(
-      `SELECT account_digest FROM accounts WHERE uid_digest=?1`
-    ).bind(uidDigest).all();
-    lookupDigest = rows?.results?.[0]?.account_digest || null;
-  }
-
+  let accountRow = null;
   if (lookupDigest) {
     const rows = await db.prepare(
       `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
          FROM accounts
         WHERE account_digest=?1`
     ).bind(lookupDigest).all();
-    const row = rows?.results?.[0];
-    if (row) {
-      if (accountToken && row.account_token !== accountToken) {
-        return null;
-      }
-      return {
-        account_digest: row.account_digest,
-        account_token: row.account_token,
-        uid_digest: row.uid_digest,
-        last_ctr: Number(row.last_ctr || 0),
-        wrapped_mk_json: row.wrapped_mk_json,
-        newlyCreated: false
-      };
+    accountRow = rows?.results?.[0] || null;
+  }
+
+  if (!accountRow && uidDigest) {
+    const rows = await db.prepare(
+      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
+         FROM accounts
+        WHERE uid_digest=?1`
+    ).bind(uidDigest).all();
+    accountRow = rows?.results?.[0] || null;
+  }
+
+  if (accountRow) {
+    if (normalizedToken && accountRow.account_token !== normalizedToken) {
+      return null;
     }
+    return {
+      account_digest: accountRow.account_digest,
+      account_token: accountRow.account_token,
+      uid_digest: accountRow.uid_digest,
+      last_ctr: Number(accountRow.last_ctr || 0),
+      wrapped_mk_json: accountRow.wrapped_mk_json,
+      newlyCreated: false
+    };
   }
 
   if (!allowCreate) {
     return null;
   }
 
-  if (!normalizedUid) {
-    throw new Error('resolveAccount: uidHex required to create account');
-  }
+  let acctToken = normalizedToken || null;
+  let acctDigest = normalizedAccountDigest || null;
 
-  uidDigest = uidDigest || await hashUidToDigest(env, normalizedUid);
-  let token = preferredAccountToken || accountToken || null;
-  if (token) token = String(token);
-  let acctDigest = preferredAccountDigest || accountDigest || null;
-  if (acctDigest) {
-    acctDigest = String(acctDigest).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-    if (!acctDigest) acctDigest = null;
+  if (acctToken && !acctDigest) {
+    acctDigest = await digestAccountToken(acctToken);
   }
-  if (token && !acctDigest) {
-    acctDigest = await digestAccountToken(token);
-  }
-  if (!token) {
-    token = generateAccountToken(env);
+  if (!acctToken) {
+    acctToken = generateAccountToken(env);
   }
   if (!acctDigest) {
-    acctDigest = await digestAccountToken(token);
+    acctDigest = await digestAccountToken(acctToken);
   }
+
+  let acctUidDigest = uidDigest || null;
+  if (!acctUidDigest) {
+    acctUidDigest = acctDigest;
+  }
+
+  if (!acctDigest || !acctUidDigest) {
+    throw new Error('resolveAccount: account identity required to create account');
+  }
+
   const now = Math.floor(Date.now() / 1000);
 
   try {
     await db.prepare(
       `INSERT INTO accounts (account_digest, account_token, uid_digest, last_ctr, created_at, updated_at)
        VALUES (?1, ?2, ?3, 0, ?4, ?4)`
-    ).bind(acctDigest, token, uidDigest, now).run();
+    ).bind(acctDigest, acctToken, acctUidDigest, now).run();
     return {
       account_digest: acctDigest,
-      account_token: token,
-      uid_digest: uidDigest,
+      account_token: acctToken,
+      uid_digest: acctUidDigest,
       last_ctr: 0,
       wrapped_mk_json: null,
       newlyCreated: true
@@ -2348,8 +2354,8 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       const rows = await db.prepare(
         `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
            FROM accounts
-          WHERE uid_digest=?1`
-      ).bind(uidDigest).all();
+          WHERE account_digest=?1 OR uid_digest=?2`
+      ).bind(acctDigest, acctUidDigest).all();
       const row = rows?.results?.[0];
       if (row) {
         return {

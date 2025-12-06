@@ -4,9 +4,9 @@
 
 import { log, setLogSink } from '../core/log.js';
 import {
-  getUidHex, getMkRaw,
+  getMkRaw,
   setMkRaw, setUidHex,
-  setAccountToken, setAccountDigest, setUidDigest,
+  setAccountToken, setAccountDigest,
   setDevicePriv,
   clearSecrets, resetAll,
   getAccountDigest
@@ -39,24 +39,20 @@ function isSimStorageKey(key) {
 (function restoreMkAndUidFromSession() {
   try {
     const mkb64 = sessionStorage.getItem('mk_b64');
-    const uid = sessionStorage.getItem('uid_hex');
     const accountToken = sessionStorage.getItem('account_token');
     const accountDigest = sessionStorage.getItem('account_digest');
-    const uidDigest = sessionStorage.getItem('uid_digest');
-    const identityKey = accountDigest || uid || null;
-    if (identityKey) setUidHex(identityKey);
+    const identityKey = accountDigest || null;
+    if (identityKey) setAccountDigest(identityKey);
     if (accountToken) setAccountToken(accountToken);
-    if (accountDigest) setAccountDigest(accountDigest);
-    if (uidDigest) setUidDigest(uidDigest);
+    // 兼容舊邏輯：仍將 digest 寫入 uidHex 欄位供舊代碼使用
+    if (identityKey) setUidHex(identityKey);
     if (mkb64 && !getMkRaw()) {
       setMkRaw(b64u8(mkb64));
     }
     // one-time handoff; clear after restore
     sessionStorage.removeItem('mk_b64');
-    sessionStorage.removeItem('uid_hex');
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
-    sessionStorage.removeItem('uid_digest');
   } catch (e) {
     log({ restoreError: String(e?.message || e) });
   }
@@ -159,10 +155,8 @@ function onLogout() {
   try {
     // clear ephemeral handoff storage
     sessionStorage.removeItem('mk_b64');
-    sessionStorage.removeItem('uid_hex');
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
-    sessionStorage.removeItem('uid_digest');
     sessionStorage.removeItem('wrapped_dev');
   } catch {}
   try {
@@ -194,7 +188,7 @@ async function onEncryptUpload() {
     if (!getMkRaw()) return log('Not unlocked: please login (MK not ready).');
     if (!getAccountDigest()) return log('請先完成 SDM Exchange / Login 取得帳號 digest。');
 
-    const identity = getAccountDigest() || getUidHex();
+    const identity = getAccountDigest() || null;
     const convId = (convEl?.value || '').trim() || (identity ? `conv-${identity.slice(-8)}` : 'conv_demo');
     const f = fileEl?.files?.[0];
     if (!f) return log('Choose a file first.');
@@ -320,7 +314,7 @@ async function onSendText(){
     const textEl = document.querySelector('#drText');
     const text = (textEl?.value || '').toString();
     if (!text) return log('請輸入要傳送的文字');
-    const identity = getAccountDigest() || getUidHex();
+    const identity = getAccountDigest() || null;
     const convId = (convEl?.value || '').trim() || (identity ? `dm-${identity}-to-${peer}` : 'dm-demo');
     const res = await sendDrText({ peerUidHex: peer, text, convId });
     log({ drSend: true, msg: res.msg, convId: res.convId });
