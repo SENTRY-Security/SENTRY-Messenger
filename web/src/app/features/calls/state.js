@@ -77,10 +77,10 @@ function createEmptySession() {
     traceId: null,
     sessionId: null,
     callId: null,
-    initiatorUidHex: null,
+    initiatorAccountDigest: null,
     direction: null,
     status: CALL_SESSION_STATUS.IDLE,
-    peerUidHex: null, // holds accountDigest now
+    peerAccountDigest: null,
     peerDisplayName: null,
     peerAvatarUrl: null,
     peerAccountDigest: null,
@@ -193,10 +193,10 @@ export async function requestOutgoingCall({
   activeSession = createEmptySession();
   activeSession.traceId = traceId || createTraceId();
   activeSession.sessionId = activeSession.traceId;
-  activeSession.initiatorUidHex = getAccountDigest ? getAccountDigest() : null;
+  activeSession.initiatorAccountDigest = getAccountDigest ? getAccountDigest() : null;
   activeSession.direction = CALL_SESSION_DIRECTION.OUTGOING;
   activeSession.status = CALL_SESSION_STATUS.OUTGOING;
-  activeSession.peerUidHex = peerKey;
+  activeSession.peerAccountDigest = peerKey;
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
   activeSession.peerAccountDigest = peerDigest || null;
@@ -209,7 +209,7 @@ export async function requestOutgoingCall({
   emitCallEvent(CALL_EVENT.REQUEST, {
     direction: CALL_SESSION_DIRECTION.OUTGOING,
     kind: activeSession.kind,
-    peerUidHex: activeSession.peerUidHex,
+    peerAccountDigest: activeSession.peerAccountDigest,
     traceId: activeSession.traceId
   });
   try {
@@ -269,11 +269,10 @@ export function markIncomingCall({
   if (!peerKey) return { ok: false, error: 'MISSING_PEER' };
   if (!canStartCall()) return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
   activeSession = createEmptySession();
-  activeSession.initiatorUidHex = null;
+  activeSession.initiatorAccountDigest = null;
   activeSession.direction = CALL_SESSION_DIRECTION.INCOMING;
   activeSession.status = CALL_SESSION_STATUS.INCOMING;
-  activeSession.peerUidHex = peerKey;
-  activeSession.peerAccountDigest = identity.accountDigest || null;
+  activeSession.peerAccountDigest = identity.accountDigest || peerKey || null;
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
   activeSession.remoteDisplayName = peerDisplayName || null;
@@ -407,7 +406,7 @@ export function getCallSummary() {
     status: activeSession.status,
     direction: activeSession.direction,
     kind: activeSession.kind,
-    peerUidHex: activeSession.peerUidHex,
+    peerAccountDigest: activeSession.peerAccountDigest,
     requestedAt: activeSession.requestedAt,
     connectedAt: activeSession.connectedAt,
     endedAt: activeSession.endedAt,

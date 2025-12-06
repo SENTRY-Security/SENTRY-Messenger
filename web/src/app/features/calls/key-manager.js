@@ -110,8 +110,8 @@ export async function prepareCallKeyEnvelope({
   const identity = normalizePeerIdentity({
     peerAccountDigest: peerAccountDigest || session?.peerAccountDigest || null
   });
-  const peerUid = identity.key;
-  if (!peerUid) throw new Error('peer account digest required');
+  const peerKey = identity.key;
+  if (!peerKey) throw new Error('peer account digest required');
   const saltBytes = crypto.getRandomValues(new Uint8Array(32));
   const mediaState = getCallMediaState();
   const envelope = {
@@ -125,8 +125,7 @@ export async function prepareCallKeyEnvelope({
     createdAt: Date.now()
   };
   const effectiveSession = {
-    peerUidHex: peerUid,
-    peerAccountDigest: identity.accountDigest || session?.peerAccountDigest || null,
+    peerAccountDigest: identity.accountDigest || session?.peerAccountDigest || peerKey || null,
     callId,
     direction: direction || session?.direction || CALL_SESSION_DIRECTION.OUTGOING
   };
@@ -148,7 +147,7 @@ async function maybeDeriveKeys(trigger = 'auto') {
   if (suppressAutoDerive) return null;
   const session = getCallSessionSnapshot();
   const mediaState = getCallMediaState();
-  if (!session?.peerUidHex || !mediaState?.pendingEnvelope) return null;
+  if (!session?.peerAccountDigest || !mediaState?.pendingEnvelope) return null;
   if (deriveTask) return deriveTask;
   deriveTask = deriveKeysFromEnvelope({ session, envelope: mediaState.pendingEnvelope, trigger })
     .catch((err) => {
@@ -175,8 +174,8 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   const identity = normalizePeerIdentity({
     peerAccountDigest: session?.peerAccountDigest || null
   });
-  const peerUid = identity.key;
-  if (!peerUid) throw new Error('缺少好友 account digest');
+  const peerKey = identity.key;
+  if (!peerKey) throw new Error('缺少好友 account digest');
   const secretRecord = getContactSecret(identity.key);
   if (!secretRecord?.secret) throw new Error('缺少好友密鑰，請重新同步聯絡人');
   const baseSecret = b64UrlToBytes(secretRecord.secret);
@@ -201,7 +200,7 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   };
   return {
     callId,
-    peerUidHex: peerUid,
+    peerAccountDigest: peerKey,
     direction: session?.direction || CALL_SESSION_DIRECTION.OUTGOING,
     epoch,
     envelope,
@@ -280,7 +279,7 @@ async function finalizeContext(context) {
       proof: context.proofB64,
       epoch: context.epoch,
       callId: context.callId,
-      peerUidHex: context.peerUidHex,
+      peerAccountDigest: context.peerAccountDigest,
       salt: context.envelope?.cmkSalt || null
     }
   });
