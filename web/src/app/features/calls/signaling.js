@@ -93,19 +93,13 @@ export function sendCallInviteSignal({
 
 export function sendCallSignal(type, payload = {}) {
   if (!type) return false;
-  let normalizedPayload = payload;
-  if (payload?.targetAccountDigest || payload?.targetUid) {
-    const identity = normalizePeerIdentity({
-      peerAccountDigest: payload.targetAccountDigest || payload.target_account_digest || null,
-      peerUid: payload.targetUid || payload.target_uid || null
-    });
-    normalizedPayload = {
-      ...payload,
-      targetAccountDigest: identity.accountDigest || payload.targetAccountDigest || payload.target_account_digest || null
-    };
-    delete normalizedPayload.targetUid;
-    delete normalizedPayload.target_uid;
-  }
+  const identity = normalizePeerIdentity(payload?.targetAccountDigest || payload?.target_account_digest || null);
+  const normalizedPayload = {
+    ...payload,
+    ...(identity?.accountDigest ? { targetAccountDigest: identity.accountDigest } : {})
+  };
+  delete normalizedPayload.targetUid;
+  delete normalizedPayload.target_uid;
   return emitSignal({ type, ...normalizedPayload });
 }
 

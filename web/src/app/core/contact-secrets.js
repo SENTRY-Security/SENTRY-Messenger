@@ -448,49 +448,8 @@ function clearContactAliases(primary) {
 function resolvePeerKey(input) {
   const identity = normalizePeerIdentity(input);
   if (!identity.key) return { key: null, aliases: [], identity };
-  const aliases = identity.aliases || [];
-  let key = identity.key;
-  const map = ensureMap();
-  const preferredKey = identity.accountDigest || null;
-
-  if (preferredKey) {
-    if (map.has(preferredKey)) {
-      key = preferredKey;
-    } else {
-      const legacyAlias = identity.uid && map.has(identity.uid) ? identity.uid : null;
-      if (legacyAlias) {
-        const legacyValue = map.get(legacyAlias);
-        map.delete(legacyAlias);
-        key = preferredKey;
-        map.set(key, legacyValue);
-        registerContactAliases(key, [legacyAlias]);
-      } else {
-        key = preferredKey;
-      }
-    }
-  }
-
-  if (contactAliasToPrimary.has(key)) {
-    key = contactAliasToPrimary.get(key) || key;
-  }
-
-  if (!map.has(key)) {
-    for (const alias of aliases) {
-      if (!alias) continue;
-      const mapped = contactAliasToPrimary.get(alias);
-      if (mapped && map.has(mapped)) {
-        key = mapped;
-        break;
-      }
-      if (map.has(alias)) {
-        key = alias;
-        break;
-      }
-    }
-  }
-
-  registerContactAliases(key, aliases);
-  return { key, aliases, identity };
+  const key = identity.accountDigest || identity.key || null;
+  return { key, aliases: [], identity };
 }
 
 export function restoreContactSecrets() {
@@ -771,33 +730,16 @@ function cloneContactSecretRecord(existing) {
 
 function derivePeerIdentityForEntry(peerKey) {
   const peerAccountDigest = normalizeAccountDigest(peerKey);
-  const aliasSet = contactPrimaryToAliases.get(peerKey);
-  let peerUid = null;
-  if (aliasSet) {
-    for (const alias of aliasSet) {
-      const normalized = normalizePeerUid(alias);
-      if (normalized && normalized !== peerAccountDigest) {
-        peerUid = normalized;
-        break;
-      }
-    }
-  }
-  if (!peerUid) {
-    const normalizedKey = normalizePeerUid(peerKey);
-    if (normalizedKey && normalizedKey !== peerAccountDigest) {
-      peerUid = normalizedKey;
-    }
-  }
   return {
     peerAccountDigest: peerAccountDigest || null,
-    peerUid: peerUid || (peerAccountDigest ? null : normalizePeerUid(peerKey) || null)
+    peerUid: null
   };
 }
 
 function buildStructuredEntry(peerUid, record) {
   const identity = derivePeerIdentityForEntry(peerUid);
   return {
-    peerUid: identity.peerUid || identity.peerAccountDigest || null,
+    peerUid: identity.peerAccountDigest || null,
     peerAccountDigest: identity.peerAccountDigest || null,
     invite: {
       id: record.inviteId || null,

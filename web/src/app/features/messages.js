@@ -328,9 +328,7 @@ export async function listSecureAndDecrypt(params = {}) {
   } = params;
   if (!conversationId) throw new Error('conversationId required');
   if (!tokenB64) throw new Error('conversation token required');
-  const identity = storeNormalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest ?? params.peerUidHex ?? params.peerUid ?? null
-  });
+  const identity = storeNormalizePeerIdentity({ peerAccountDigest });
   const peerKey = identity.key;
   if (!peerKey) throw new Error('peer identity required');
   const peerRef = {

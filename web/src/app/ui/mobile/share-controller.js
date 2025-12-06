@@ -49,10 +49,7 @@ export function setupShareController(options) {
   let lastPrekeyEnsureResult = false;
 
   function normalizePeerKey(value) {
-    const identity = normalizePeerIdentity({
-      peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value?.peerUid ?? value?.peer_uid ?? value,
-      peerUid: value?.peerUid ?? value?.peer_uid
-    });
+    const identity = normalizePeerIdentity(value?.peerAccountDigest ?? value?.accountDigest ?? value);
     return identity.key || null;
   }
 
@@ -74,8 +71,8 @@ export function setupShareController(options) {
     }
   }
 
-  function storeContactSecretMapping({ peerAccountDigest, peerUid, inviteId, secret, role, conversation, drState }) {
-    const key = normalizePeerKey(peerAccountDigest ?? peerUid);
+  function storeContactSecretMapping({ peerAccountDigest, inviteId, secret, role, conversation, drState }) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key || !inviteId || !secret) return;
     let conversationToken = null;
     let conversationId = null;

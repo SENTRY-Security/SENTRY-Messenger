@@ -23,7 +23,7 @@ import { encryptAndPutWithProgress } from './media.js';
 
 function normHex(value) {
   const identity = normalizePeerIdentity(
-    value?.peerAccountDigest ?? value?.accountDigest ?? value?.peerUidHex ?? value?.peerUid ?? value
+    value?.peerAccountDigest ?? value?.accountDigest ?? value
   );
   return identity.key || null;
 }
@@ -32,7 +32,7 @@ function resolvePeerDigest(input) {
   if (!input) return null;
   if (typeof input === 'string') return normHex(input);
   if (typeof input !== 'object') return normHex(input);
-  const candidate = input.peerAccountDigest ?? input.accountDigest ?? input.peerUidHex ?? input.peerUid ?? input;
+  const candidate = input.peerAccountDigest ?? input.accountDigest ?? input;
   return normHex(candidate);
 }
 
@@ -547,7 +547,7 @@ function conversationContextForPeer(peerAccountDigest) {
     const map = sessionStore.conversationIndex;
     if (map && typeof map.get === 'function') {
       for (const [convId, info] of map.entries()) {
-        const peerMatch = String(info?.peerAccountDigest || info?.peerUid || '').toUpperCase();
+        const peerMatch = String(info?.peerAccountDigest || '').toUpperCase();
         if (peerMatch === key && info?.token_b64) {
           return {
             token_b64: info.token_b64,
@@ -1185,7 +1185,7 @@ async function ensureRemoteBootstrap(params = {}) {
       const convIndex = sessionStore.conversationIndex;
       if (convIndex && typeof convIndex.forEach === 'function') {
         for (const info of convIndex.values()) {
-          const peerMatch = String(info?.peerAccountDigest || info?.peerUid || '').toUpperCase();
+          const peerMatch = String(info?.peerAccountDigest || '').toUpperCase();
           if (!peerMatch || peerMatch !== peer) continue;
           if (!info.dr_init) info.dr_init = {};
           info.dr_init.guest_bundle = guestBundle;

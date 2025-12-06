@@ -146,7 +146,6 @@ export async function loadContacts() {
         setContactSecret({ peerAccountDigest }, pendingSecretUpdate);
       }
       const entry = {
-        peerUid: peerDigest,
         peerAccountDigest,
         nickname: normalized,
         avatar: contact?.avatar || null,
@@ -163,7 +162,7 @@ export async function loadContacts() {
         entry.isSelfContact = true;
         entry.hidden = true;
       }
-      const mapKey = entry.peerAccountDigest || entry.peerUid;
+      const mapKey = entry.peerAccountDigest;
       const existing = peerMap.get(mapKey);
       if (existing && (existing.addedAt || 0) >= (entry.addedAt || 0)) {
         continue;
@@ -200,7 +199,7 @@ export async function saveContact(contact) {
   const convIds = contactConvIds();
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const identity = normalizePeerIdentity({
-    peerAccountDigest: contact?.peerAccountDigest ?? contact?.peerUid ?? null
+    peerAccountDigest: contact?.peerAccountDigest ?? null
   });
   const peerAccountDigest = identity.accountDigest || identity.key || null;
   if (!peerAccountDigest) throw new Error('peerAccountDigest required');
@@ -217,9 +216,7 @@ export async function saveContact(contact) {
   const inviteId = typeof contact?.inviteId === 'string' ? contact.inviteId.trim() : null;
   const secretRole = typeof contact?.secretRole === 'string' ? contact.secretRole : null;
 
-  const headerPeerUid = peerAccountDigest;
   const payload = {
-    peerUid: headerPeerUid,
     peerAccountDigest,
     nickname: normalizeNickname(contact?.nickname || '') || generateRandomNickname(),
     avatar: contact?.avatar || null,
@@ -231,7 +228,7 @@ export async function saveContact(contact) {
   if (secretRole) payload.contactSecret_role = secretRole;
 
   const envelope = await wrapWithMK_JSON(payload, mk, CONTACT_INFO_TAG);
-  const header = { contact: 1, v: 1, peerUid: headerPeerUid, peerAccountDigest, ts: payload.addedAt, envelope };
+  const header = { contact: 1, v: 1, peerAccountDigest, ts: payload.addedAt, envelope };
 
   let firstMsgId = null;
   for (const convId of convIds) {
