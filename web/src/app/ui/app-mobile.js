@@ -2368,16 +2368,15 @@ async function changeAccountPassword(currentPassword, newPassword) {
     throw err;
   }
   const newWrapped = await wrapMKWithPasswordArgon2id(newPassword, mk);
-  const uidHex = getUidHex();
   const accountToken = getAccountToken();
   const accountDigest = getAccountDigest();
   const serverId = getOpaqueServerId();
-  if (!uidHex || !accountToken || !accountDigest) {
+  if (!accountToken || !accountDigest) {
     const err = new Error('帳號資訊不足，請重新登入後再試。');
     err.userMessage = err.message;
     throw err;
   }
-  const { r, data } = await mkUpdate({ uidHex, accountToken, accountDigest, wrapped_mk: newWrapped });
+  const { r, data } = await mkUpdate({ accountToken, accountDigest, wrapped_mk: newWrapped });
   if (r.status !== 204) {
     const userMessage = typeof data === 'object' && data?.message
       ? data.message

@@ -377,6 +377,7 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 - [x] Worker 其他端點：`/d1/prekeys/bundle`、`upsertCallSession`/`insertCallEvent`、好友 bootstrap peer 篩選仍接受 UID 並自動 hash；需改為只接受 accountDigest，移除 UID fallback。
 - [x] WebSocket 流：`src/ws/index.js` 以 UID 為連線鍵（call locks/presence/secure-message event）且 payload 帶 `peerUid`，`web/src/app/api/ws.js` 要求 `uidHex`；需改為 accountDigest 為主的身份與事件欄位。**進度：WS server 連線/鎖定/事件 payload 全改 digest-only（去除 peerUid/senderUid），前端 WS token/API 已以 accountDigest 為主，仍需持續清理前端殘留變數名。**
 - [ ] 前端狀態/客戶端：`web/src/app/ui/{app-ui.js,app-mobile.js}` handoff/重啟仍讀寫 `uid_hex`/`uid_digest`，`web/src/app/api/*`（media/prekeys/friends/groups/calls/ws）及 call/訊息 UI 模組多處以 `peerUid` 為鍵；需改為 accountDigest 為主的鍵值/ payload，並同步調整測試腳本（如 `scripts/test-messages-secure.mjs`, `tests/e2e/utils.mjs`, `tests/e2e/multi-account-helpers.mjs` 等仍讀寫 `uid_hex`）。**進度：好友/呼叫 API 多數已改 digest-only；呼叫媒體層/DR/contacts/presence 仍大量使用 `peerUidHex` 變數名（內容實為 digest），待全面替換並更新測試。**
+- [ ] 前端狀態/客戶端：`web/src/app/ui/{app-ui.js,app-mobile.js}` handoff/重啟仍讀寫 `uid_hex`/`uid_digest`，`web/src/app/api/*`（media/prekeys/friends/groups/calls/ws）及 call/訊息 UI 模組多處以 `peerUid` 為鍵；需改為 accountDigest 為主的鍵值/ payload，並同步調整測試腳本（如 `scripts/test-messages-secure.mjs`, `tests/e2e/utils.mjs`, `tests/e2e/multi-account-helpers.mjs` 等仍讀寫 `uid_hex`）。**進度：API headers 已改 digest-only，變更 MK 更新流程不再依賴 uidHex；仍需清理 handoff/測試腳本與 peer 變數名。**
 - [ ] 清空 D1/R2 + 部署：套用遷移，wipe 後重新部署 Worker/Node/Pages。
 - [ ] 測試：跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 
