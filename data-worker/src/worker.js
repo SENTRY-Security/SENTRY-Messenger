@@ -1478,12 +1478,23 @@ export default {
         || url.searchParams.get('account_digest')
         || url.searchParams.get('digest')
       );
-      if (!accountDigest) {
-        return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+      const uidDigestRaw = url.searchParams.get('uidDigest') || url.searchParams.get('uid_digest');
+      const uidDigest = uidDigestRaw ? normalizeAccountDigest(uidDigestRaw) : null; // same format: 64 hex
+
+      let resolvedAccountDigest = accountDigest;
+      if (!resolvedAccountDigest && uidDigest) {
+        const lookup = await env.DB.prepare(
+          `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+        ).bind(uidDigest).all();
+        resolvedAccountDigest = lookup?.results?.[0]?.account_digest || null;
+      }
+
+      if (!resolvedAccountDigest) {
+        return json({ error: 'BadRequest', message: 'accountDigest or uidDigest required' }, { status: 400 });
       }
       const rows = await env.DB.prepare(
         `SELECT account_digest, created_at FROM accounts WHERE account_digest=?1`
-      ).bind(accountDigest).all();
+      ).bind(resolvedAccountDigest).all();
       const row = rows?.results?.[0] || null;
       if (!row) {
         return json({ error: 'NotFound', message: 'account not found' }, { status: 404 });
