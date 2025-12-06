@@ -268,6 +268,8 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 
 | 日期                          | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-12-03 13:45** | 呼叫事件表新增 account_digest 欄位（`call_events.from_account_digest/to_account_digest`），WS/Node 呼叫事件寫入與查詢同步帶 digest；後續仍需將好友/聯絡人/群組等流程改為僅用 account_digest。 |
+| **2025-12-03 13:05** | `scripts/cleanup/wipe-all.sh` 與 `scripts/cleanup/d1-wipe-all.sql` 補齊 D1 清除清單，新增 `call_*` / `group_*` / `contact_secret_backups` / `conversation_acl` / `conversations` / `subscriptions` / `tokens` / `extend_logs` 等表，確保重置時不殘留新 schema 資料；未執行 `npm run test:*`。 |
 | **2025-12-03 12:26** | 前端加入「建立群組」入口：生成 groupId/conv token/seed 呼叫 `/api/v1/groups/create`，並自動複製群組資訊至剪貼簿、本機列表備查；群組訊息流程仍未串接，待後續擴充。未跑 `npm run test:*`。 |
 | **2025-12-03 12:15** | 執行 `wrangler d1 migrations apply message_db --remote` 套用 0010 群組 schema，並 `scripts/deploy-prod.sh --apply-migrations` 全套部署（Worker/Node API/Pages）；未跑 `npm run test:*`。 |
 | **2025-12-03 12:15** | 群組聊天後端腳手架：新增 D1 `groups` / `group_members` / `group_invites` schema，Worker 提供 create/add/remove/get 端點並同步 conversation ACL，Node API 開出 `/api/v1/groups/*`（create/members add/remove/get）；僅程式更新未跑 `npm run test:*`。 |
@@ -345,12 +347,17 @@ npx playwright test tests/e2e/multi-account-friends.spec.mjs
 | **2025-10-26**                | Login 頁清除 localStorage 前會回寫`contactSecrets-v1`；`share-controller` 不再覆寫既有角色；`dr-session.js` / `messages.js` 增加 snapshot 還原與 `dr-debug` log。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **2025-10-10**                | 裝置私鑰備援流程：若備份缺失，會重新發佈預共享金鑰並儲存`wrapped_dev`，避免 DR 初始化因 404 中斷。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
-### TODO — Drive 檔名/資料夾名全加密（伺服器不可見）
-- [ ] 上傳／佔位檔：header 明文 `name/dir` 改為 placeholder，實際名稱改以 MK AEAD 加密後寫入 `name_enc` / `dir_enc`。
-- [ ] 列表／刪除：`getDirSegmentsFromHeader` 與路徑比較改用解密後的名稱，placeholder 不影響 UI。
-- [ ] 預覽：下載時優先使用列表已解密名稱；缺失時再 fallback 舊欄位（便於驗證）。
-- [ ] 重命名：檔案重命名只更新 `name_enc`；資料夾重命名批次更新其子項 `dir_enc`，明文欄位維持 placeholder。
-- [ ] 清空 D1 / R2 後重新部署並驗證：新增空資料夾、上傳/預覽、檔案/資料夾重命名流程。
+### TODO — 去除 D1 UID/uid_digest（只存 account_digest）
+- [x] Schema 過渡：所有含 UID 的表新增 `*_account_digest`（friend_invites / call_sessions / call_events / groups / group_members / group_invites / messages header），contacts convId 雙寫 `contacts-<account_digest>` / UID。
+- [x] Worker friends：invite/create/accept/bootstrap 以 digest 優先（查找/回傳 owner/guest_account_digest，contact/share/delete 支援 digest，/d1/friends/bootstrap 已實作），WS 通知帶 digest。
+- [x] Worker 群組：群組建立/成員增刪/查詢以 account_digest 為主（保留 UID 兼容），WS payload 待前端改造時一併更新。
+- [x] WS：身份/Presence/事件 payload 以 account_digest 為主（保留 UID），online list 回 digest。
+- [ ] 前端核心鍵值：`core/store` / `core/contact-secrets` / `features/contacts` / `features/messages` 改以 `peerAccountDigest` 為鍵，convId 以 `contacts-<account_digest>` 為主，保留 UID 讀寫過渡。
+- [ ] 前端 WS/事件：所有 WS 發送/接收事件（contact-share / contacts-reload / presence / secure-message / call）改為 digest 為主（保留 UID）。
+- [ ] 前端 呼叫/群組：API payload、本地 state、列表鍵值改用 account_digest，保留 UID fallback。
+- [ ] 前端 UI/Session：session-store/index/listener 等使用 digest 索引，convId 雙寫容錯。
+- [ ] 清空 D1/R2 + 部署：套用遷移，wipe 後重新部署 Worker/Node/Pages。
+- [ ] 測試：跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 
 ## 授權條款
 

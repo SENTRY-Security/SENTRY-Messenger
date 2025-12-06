@@ -60,20 +60,22 @@ export async function loadContacts() {
       const header = item?.header_json ? JSON.parse(item.header_json) : item?.header;
       const envelope = header?.envelope;
       if (!header?.contact || !envelope) continue;
+      const peerAccountDigest = String(header?.peerAccountDigest || header?.peer_account_digest || '').toUpperCase() || null;
       let peerUid = String(header?.peerUid || header?.peer_uid || '').toUpperCase();
+      const peerKey = peerAccountDigest || peerUid;
       let contact = null;
       let conversation = null;
       let pendingSecretUpdate = null;
       if (envelope?.aead === 'aes-256-gcm') {
         contact = await unwrapWithMK_JSON(envelope, mk);
       } else if (isContactShareEnvelope(envelope) && peerUid) {
-        const secretInfo = getContactSecret(peerUid);
+        const secretInfo = getContactSecret(peerKey || peerUid);
         const secret = secretInfo?.secret;
         if (!secret) {
-          if (!missingSecretWarned.has(peerUid)) {
-            missingSecretWarned.add(peerUid);
-            log({ contactMissingSecret: peerUid });
-            console.warn('[contacts] missing contact secret for', peerUid);
+          if (!missingSecretWarned.has(peerKey || peerUid)) {
+            missingSecretWarned.add(peerKey || peerUid);
+            log({ contactMissingSecret: peerKey || peerUid });
+            console.warn('[contacts] missing contact secret for', peerKey || peerUid);
           }
           continue;
         }
@@ -140,10 +142,11 @@ export async function loadContacts() {
       if (!resolvedPeerUid) continue;
       peerUid = resolvedPeerUid;
       if (pendingSecretUpdate) {
-        setContactSecret(peerUid, pendingSecretUpdate);
+        setContactSecret(peerKey, pendingSecretUpdate);
       }
       const entry = {
-        peerUid,
+        peerUid: peerKey,
+        peerAccountDigest,
         nickname: normalized,
         avatar: contact?.avatar || null,
         addedAt: Number(contact?.addedAt || item?.ts || nowTs()),
@@ -153,9 +156,9 @@ export async function loadContacts() {
         inviteId: storedInviteId,
         secretRole: storedRole
       };
-      const isSelfContact = !!peerUid && (
-        (selfUid && peerUid === selfUid) ||
-        (selfDigest && peerUid === selfDigest)
+      const isSelfContact = !!peerKey && (
+        (selfUid && peerKey === selfUid) ||
+        (selfDigest && peerKey === selfDigest)
       );
       if (isSelfContact) {
         entry.isSelfContact = true;
@@ -197,7 +200,9 @@ export async function saveContact(contact) {
   const convIds = contactConvIds();
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const peerUid = String(contact?.peerUid || '').toUpperCase();
-  if (!peerUid) throw new Error('peerUid required');
+  const peerAccountDigest = contact?.peerAccountDigest ? String(contact.peerAccountDigest).toUpperCase() : null;
+  const peerKey = peerAccountDigest || peerUid;
+  if (!peerKey) throw new Error('peerUid or peerAccountDigest required');
 
   const conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
     ? {
@@ -223,7 +228,7 @@ export async function saveContact(contact) {
   if (secretRole) payload.contactSecret_role = secretRole;
 
   const envelope = await wrapWithMK_JSON(payload, mk, CONTACT_INFO_TAG);
-  const header = { contact: 1, v: 1, peerUid, ts: payload.addedAt, envelope };
+  const header = { contact: 1, v: 1, peerUid, peerAccountDigest, ts: payload.addedAt, envelope };
 
   let firstMsgId = null;
   for (const convId of convIds) {

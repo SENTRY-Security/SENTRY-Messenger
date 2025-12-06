@@ -115,7 +115,10 @@ export const createGroup = async (req, res) => {
     creatorUid: auth.uidHex,
     name: input.name || null,
     avatar: input.avatar ?? null,
-    members: input.members || [],
+    members: (input.members || []).map((m) => ({
+      uid: m.uid,
+      accountDigest: m.accountDigest
+    })),
     creatorFingerprint: input.conversationFingerprint || null
   };
 
@@ -164,7 +167,10 @@ export const addGroupMembers = async (req, res) => {
 
   const payload = {
     groupId: input.groupId,
-    members: input.members
+    members: (input.members || []).map((m) => ({
+      uid: m.uid,
+      accountDigest: m.accountDigest
+    }))
   };
   const path = '/d1/groups/members/add';
   const body = JSON.stringify(payload);
@@ -211,7 +217,10 @@ export const removeGroupMembers = async (req, res) => {
 
   const payload = {
     groupId: input.groupId,
-    members: input.members,
+    members: (input.members || []).map((m) => ({
+      uid: m.uid,
+      accountDigest: m.accountDigest
+    })),
     status: input.status || null
   };
 
@@ -246,7 +255,13 @@ export const getGroup = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid groupId' });
   }
 
-  const path = `/d1/groups/get?groupId=${encodeURIComponent(groupId)}`;
+  const query = new URLSearchParams();
+  query.set('groupId', groupId);
+  const uidHex = req.query?.uidHex || req.query?.uid || req.query?.uid_hex;
+  const accountDigest = req.query?.accountDigest || req.query?.account_digest;
+  if (uidHex) query.set('uid', uidHex);
+  if (accountDigest) query.set('accountDigest', accountDigest);
+  const path = `/d1/groups/get?${query.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
   let upstream;
   try {

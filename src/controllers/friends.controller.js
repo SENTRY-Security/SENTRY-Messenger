@@ -90,6 +90,7 @@ const ShareContactSchema = z.object({
   myUid: z.string().regex(UidHexRegex),
   envelope: ContactEnvelopeSchema,
   peerUid: z.string().regex(UidHexRegex).optional(),
+  peerAccountDigest: z.string().regex(AccountDigestRegex).optional(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   conversationId: z.string().min(8).optional(),
@@ -102,7 +103,8 @@ const ShareContactSchema = z.object({
 
 const BootstrapSessionSchema = z.object({
   uidHex: z.string().regex(UidHexRegex),
-  peerUid: z.string().regex(UidHexRegex),
+  peerUid: z.string().regex(UidHexRegex).optional(),
+  peerAccountDigest: z.string().regex(AccountDigestRegex).optional(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
   roleHint: z.enum(['owner', 'guest']).optional(),
@@ -110,6 +112,9 @@ const BootstrapSessionSchema = z.object({
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
+  if (!value.peerUid && !value.peerAccountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'peerUid or peerAccountDigest required' });
   }
 });
 
@@ -139,6 +144,13 @@ function makeBootstrapKey(ownerUid, guestUid) {
   return `${ownerUid}::${guestUid}`;
 }
 
+function normalizeBootstrapId({ uid, digest }) {
+  const normDigest = digest ? normalizeAccountDigest(digest) : null;
+  if (normDigest) return normDigest;
+  const normUid = uid ? normalizeUidHex(uid) : null;
+  return normUid || null;
+}
+
 function pruneBootstrapCache(now = Date.now()) {
   for (const [key, entry] of sessionBootstrapCache.entries()) {
     if (!entry || !Number.isFinite(entry.cachedAt)) continue;
@@ -164,19 +176,23 @@ function setBootstrapCache({
 } = {}) {
   const owner = ownerUid ? normalizeUidHex(ownerUid) : null;
   const guest = guestUid ? normalizeUidHex(guestUid) : null;
-  if (!owner || !guest) return;
+  const ownerDigestNorm = ownerAccountDigest ? normalizeAccountDigest(ownerAccountDigest) : null;
+  const guestDigestNorm = guestAccountDigest ? normalizeAccountDigest(guestAccountDigest) : null;
+  const keyOwner = normalizeBootstrapId({ uid: owner, digest: ownerDigestNorm });
+  const keyGuest = normalizeBootstrapId({ uid: guest, digest: guestDigestNorm });
+  if (!keyOwner || !keyGuest) return;
   const normalizedGuestBundle = normalizeGuestBundlePayload(guestBundle);
   if (!normalizedGuestBundle) {
     logger.warn({ ownerUid: owner, guestUid: guest }, 'guest_bundle_cache_rejected');
     return;
   }
   pruneBootstrapCache();
-  const key = makeBootstrapKey(owner, guest);
+  const key = makeBootstrapKey(keyOwner, keyGuest);
   sessionBootstrapCache.set(key, {
     ownerUid: owner,
     guestUid: guest,
-    ownerAccountDigest: ownerAccountDigest ? normalizeAccountDigest(ownerAccountDigest) : null,
-    guestAccountDigest: guestAccountDigest ? normalizeAccountDigest(guestAccountDigest) : null,
+    ownerAccountDigest: ownerDigestNorm,
+    guestAccountDigest: guestDigestNorm,
     guestBundle: normalizedGuestBundle,
     ownerContact: ownerContact || null,
     guestContact: guestContact || null,
@@ -190,10 +206,10 @@ function setBootstrapCache({
   });
 }
 
-function getBootstrapCache({ requesterUid, requesterDigest, peerUid }) {
+function getBootstrapCache({ requesterUid, requesterDigest, peerUid, peerAccountDigest }) {
   pruneBootstrapCache();
-  const requester = requesterUid ? normalizeUidHex(requesterUid) : null;
-  const peer = peerUid ? normalizeUidHex(peerUid) : null;
+  const requester = normalizeBootstrapId({ uid: requesterUid, digest: requesterDigest });
+  const peer = normalizeBootstrapId({ uid: peerUid, digest: peerAccountDigest });
   if (!requester || !peer) return null;
 
   const forwardKey = makeBootstrapKey(requester, peer);
@@ -321,6 +337,7 @@ export const createInvite = async (req, res) => {
     secret,
     expiresAt,
     ownerUid: auth.uidHex || payload?.owner_uid || null,
+    ownerAccountDigest: auth.accountDigest || payload?.owner_account_digest || null,
     prekeyBundle: payload?.prekey_bundle || null
   });
 };
@@ -394,8 +411,8 @@ export const acceptInvite = async (req, res) => {
   try {
     const manager = getWebSocketManager();
     manager?.notifyInviteAccepted(data?.owner_uid, input.inviteId, guestUid);
-    if (guestUid) manager?.notifyContactsReload(guestUid);
-    if (data?.owner_uid) manager?.notifyContactsReload(String(data.owner_uid).toUpperCase());
+    if (guestUid) manager?.notifyContactsReload(guestUid, data?.guest_account_digest || auth.accountDigest || null);
+    if (data?.owner_uid) manager?.notifyContactsReload(String(data.owner_uid).toUpperCase(), data?.owner_account_digest || null);
     if (data?.owner_uid && input.contactEnvelope && guestUid) {
       manager?.sendContactShare(String(data.owner_uid).toUpperCase(), {
         fromUid: guestUid,
@@ -512,6 +529,7 @@ export const shareContactUpdate = async (req, res) => {
 
   const myUid = auth.uidHex;
   const peerUid = input.peerUid ? normalizeUidHex(input.peerUid) : null;
+  const peerAccountDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
   const accountDigest = auth.accountDigest;
 
   const path = '/d1/friends/contact/share';
@@ -522,6 +540,7 @@ export const shareContactUpdate = async (req, res) => {
     envelope: input.envelope
   };
   if (peerUid) payload.peerUid = peerUid;
+  if (peerAccountDigest) payload.peerAccountDigest = peerAccountDigest;
   if (accountDigest) payload.accountDigest = accountDigest;
   if (input.conversationId) payload.conversationId = String(input.conversationId);
   if (input.conversationFingerprint) payload.conversationFingerprint = String(input.conversationFingerprint);
@@ -558,13 +577,14 @@ export const shareContactUpdate = async (req, res) => {
   try {
     const manager = getWebSocketManager();
     const targetUid = normalizeUidHex(data?.targetUid || input.peerUid || '');
+    const targetDigest = normalizeAccountDigest(data?.targetAccountDigest || input.peerAccountDigest || null);
     if (targetUid) {
       manager?.sendContactShare(targetUid, {
         fromUid: myUid,
         inviteId: input.inviteId,
         envelope: input.envelope
       });
-      manager?.notifyContactsReload(targetUid);
+      manager?.notifyContactsReload(targetUid, targetDigest);
     }
   } catch (err) {
     logger.warn({ err: err?.message || err }, 'ws_contact_share_notify_failed');
@@ -597,14 +617,16 @@ export const bootstrapFriendSession = async (req, res) => {
   }
 
   const peerUid = normalizeUidHex(input.peerUid);
-  if (!peerUid) {
-    return res.status(400).json({ error: 'BadRequest', message: 'peerUid invalid' });
+  const peerAccountDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
+  if (!peerUid && !peerAccountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'peer identity required' });
   }
 
   const cacheHit = getBootstrapCache({
     requesterUid: auth.uidHex,
     requesterDigest: auth.accountDigest,
-    peerUid
+    peerUid,
+    peerAccountDigest
   });
   if (cacheHit?.record?.guestBundle) {
     const { record, role } = cacheHit;
@@ -627,8 +649,10 @@ export const bootstrapFriendSession = async (req, res) => {
   const path = '/d1/friends/bootstrap';
   const payload = {
     accountDigest: auth.accountDigest,
-    peerUid
+    peerUid,
+    peerAccountDigest
   };
+  if (input.peerAccountDigest) payload.peerAccountDigest = normalizeAccountDigest(input.peerAccountDigest);
   if (input.roleHint) payload.roleHint = input.roleHint;
   if (input.inviteId) payload.inviteId = input.inviteId;
   const body = JSON.stringify(payload);
@@ -779,8 +803,9 @@ export const deleteContact = async (req, res) => {
   const data = await upstream.json();
   try {
     const manager = getWebSocketManager();
-    manager?.notifyContactsReload(ownerUid);
-    if (peerUid) manager?.notifyContactsReload(peerUid);
+    manager?.notifyContactsReload(ownerUid, ownerAccountDigest);
+    const peerTargetDigest = peerAccountDigest || normalizeAccountDigest(data?.results?.[0]?.target || null);
+    if (peerUid || peerTargetDigest) manager?.notifyContactsReload(peerUid || null, peerTargetDigest || null);
   } catch (err) {
     logger.warn({ err: err?.message || err }, 'ws_contact_delete_notify_failed');
   }

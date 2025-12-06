@@ -6,6 +6,7 @@ import { appendCallEvent } from '../services/call-worker.js';
 
 const clients = new Map(); // uid -> Set<WebSocket>
 const latestSessionTs = new Map(); // uid -> iat (seconds)
+const accountDigestByUid = new Map(); // uid -> accountDigest
 const presenceWatchers = new Map(); // uid -> Set<WebSocket>
 let manager = null;
 const CALL_SIGNAL_TYPES = new Set([
@@ -271,6 +272,8 @@ async function handleCallSignal(ws, msg) {
     callId,
     fromUid: ws.__uid,
     toUid: targetUid,
+    fromAccountDigest: ws.__accountDigest || null,
+    toAccountDigest: accountDigestByUid.get(targetUid) || null,
     traceId: traceId || null,
     ts: Date.now(),
     payload: detail || null
@@ -282,6 +285,8 @@ async function handleCallSignal(ws, msg) {
     payload: detail || null,
     fromUid: ws.__uid,
     toUid: targetUid,
+    fromAccountDigest: ws.__accountDigest || null,
+    toAccountDigest: accountDigestByUid.get(targetUid) || null,
     traceId
   });
 
@@ -313,6 +318,9 @@ function addClient(uid, ws, sessionTs) {
   clients.get(key).add(ws);
   ws.__uid = key;
   ws.__sessionTs = ts;
+  if (ws.__accountDigest) {
+    accountDigestByUid.set(key, ws.__accountDigest);
+  }
   latestSessionTs.set(key, ts);
   logger.info({ uid: key }, 'ws_client_registered');
   notifyPresence(key, true);
@@ -328,6 +336,7 @@ function removeClient(ws) {
   if (!set.size) {
     clients.delete(uid);
     latestSessionTs.delete(uid);
+    accountDigestByUid.delete(uid);
   }
   logger.info({ uid }, 'ws_client_removed');
   if (!set || set.size === 0) {
@@ -386,8 +395,9 @@ function handleClientMessage(ws, data) {
     const list = Array.isArray(msg.uids) ? msg.uids : [];
     const normalized = registerPresenceWatchers(ws, list);
     const online = normalized.filter(isUidOnline);
+    const onlineDigests = online.map((uidVal) => accountDigestByUid.get(String(uidVal || '').toUpperCase()) || null);
     try {
-      ws.send(JSON.stringify({ type: 'presence', online, ts: Date.now() }));
+      ws.send(JSON.stringify({ type: 'presence', online, onlineAccountDigests: onlineDigests, ts: Date.now() }));
     } catch (err) {
       logger.warn({ err: err?.message || err }, 'ws_presence_send_failed');
     }
@@ -396,9 +406,11 @@ function handleClientMessage(ws, data) {
   if (msg.type === 'contact-share') {
     const targetUid = String(msg.targetUid || '').trim();
     if (!targetUid) return;
+    const fromDigest = accountDigestByUid.get(ws.__uid || '') || null;
     broadcast(targetUid, {
       type: 'contact-share',
       fromUid: ws.__uid,
+      fromAccountDigest: fromDigest,
       inviteId: msg.inviteId || null,
       envelope: msg.envelope || null,
       ts: Date.now()
@@ -408,9 +420,11 @@ function handleClientMessage(ws, data) {
   if (msg.type === 'contact-removed') {
     const targetUid = String(msg.targetUid || msg.peerUid || '').trim().toUpperCase();
     if (!targetUid) return;
+    const peerAcct = accountDigestByUid.get(ws.__uid || '') || null;
     broadcast(targetUid, {
       type: 'contact-removed',
       peerUid: ws.__uid,
+      peerAccountDigest: peerAcct,
       ts: Date.now()
     });
     return;
@@ -423,6 +437,8 @@ function handleClientMessage(ws, data) {
     const preview = typeof msg.preview === 'string' ? msg.preview : '';
     const ts = Number(msg.ts) || Date.now();
     const count = Number.isFinite(Number(msg.count)) ? Number(msg.count) : 1;
+    const senderAcct = accountDigestByUid.get(ws.__uid || '') || null;
+    const targetAcct = accountDigestByUid.get(targetUid) || null;
     broadcast(targetUid, {
       type: 'secure-message',
       conversationId,
@@ -430,14 +446,18 @@ function handleClientMessage(ws, data) {
       ts,
       count,
       senderUid: ws.__uid,
-      peerUid: ws.__uid
+      senderAccountDigest: senderAcct,
+      peerUid: ws.__uid,
+      peerAccountDigest: senderAcct,
+      targetAccountDigest: targetAcct
     });
     return;
   }
   if (msg.type === 'contacts-reload') {
     const targetUid = String(msg.targetUid || msg.peerUid || '').trim().toUpperCase();
     if (!targetUid) return;
-    broadcast(targetUid, { type: 'contacts-reload', ts: Date.now() });
+    const acct = accountDigestByUid.get(targetUid) || null;
+    broadcast(targetUid, { type: 'contacts-reload', ts: Date.now(), accountDigest: acct });
     return;
   }
 }
@@ -490,16 +510,20 @@ export function setupWebSocket(server) {
 
   manager = {
     notifyInviteAccepted(ownerUid, inviteId, fromUid) {
-      broadcast(ownerUid, { type: 'invite-accepted', inviteId, fromUid, ts: Date.now() });
+      const fromDigest = accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null;
+      broadcast(ownerUid, { type: 'invite-accepted', inviteId, fromUid, fromAccountDigest: fromDigest, ts: Date.now() });
     },
-    notifyContactsReload(uid) {
-      broadcast(uid, { type: 'contacts-reload', ts: Date.now() });
+    notifyContactsReload(uid, accountDigest = null) {
+      const digest = accountDigest || accountDigestByUid.get(String(uid || '').toUpperCase()) || null;
+      broadcast(uid, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
     sendContactShare(targetUid, { fromUid, inviteId, envelope }) {
       if (!targetUid || !inviteId || !envelope) return;
+      const fromDigest = accountDigestByUid.get(String(fromUid || '').toUpperCase()) || null;
       broadcast(targetUid, {
         type: 'contact-share',
         fromUid: String(fromUid || '').toUpperCase() || null,
+        fromAccountDigest: fromDigest,
         inviteId,
         envelope,
         ts: Date.now()
@@ -554,7 +578,8 @@ function notifyPresence(uid, online) {
   const key = String(uid || '').toUpperCase();
   const watchers = presenceWatchers.get(key);
   if (!watchers || !watchers.size) return;
-  const payload = JSON.stringify({ type: 'presence-update', uid: key, online: !!online, ts: Date.now() });
+  const accountDigest = accountDigestByUid.get(key) || null;
+  const payload = JSON.stringify({ type: 'presence-update', uid: key, accountDigest, online: !!online, ts: Date.now() });
   for (const ws of [...watchers]) {
     if (ws.readyState === ws.OPEN) {
       try { ws.send(payload); } catch (err) { logger.warn({ err: err?.message || err }, 'ws_presence_broadcast_failed'); }

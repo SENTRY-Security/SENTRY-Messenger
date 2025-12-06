@@ -267,6 +267,7 @@ export async function requestOutgoingCall({
 export function markIncomingCall({
   callId,
   peerUidHex,
+  peerAccountDigest = null,
   peerDisplayName,
   peerAvatarUrl,
   envelope,
@@ -280,6 +281,7 @@ export function markIncomingCall({
   activeSession.direction = CALL_SESSION_DIRECTION.INCOMING;
   activeSession.status = CALL_SESSION_STATUS.INCOMING;
   activeSession.peerUidHex = peerKey;
+  activeSession.peerAccountDigest = peerAccountDigest ? peerAccountDigest.toUpperCase() : null;
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
   activeSession.remoteDisplayName = peerDisplayName || null;

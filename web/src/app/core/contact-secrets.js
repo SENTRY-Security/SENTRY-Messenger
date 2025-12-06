@@ -48,6 +48,12 @@ function normalizeHex(value) {
   return cleaned || null;
 }
 
+function normalizeAccountDigest(value) {
+  if (!value) return null;
+  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  return cleaned && cleaned.length === 64 ? cleaned : null;
+}
+
 function resolveContactSecretsNamespace({ uid, accountDigest } = {}) {
   const digest = normalizeHex(accountDigest) || normalizeHex(getAccountDigest?.());
   if (digest) return `acct-${digest}`;
@@ -285,6 +291,12 @@ function normalizeUid(value) {
   return String(value || '')
     .replace(/[^0-9a-f]/gi, '')
     .toUpperCase() || null;
+}
+
+function normalizePeerKey(value) {
+  const digest = normalizeAccountDigest(value);
+  if (digest) return digest;
+  return normalizeUid(value);
 }
 
 function trimString(value) {
@@ -777,8 +789,10 @@ export function buildContactSecretsSnapshot() {
 
 function normalizeStructuredEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
+  const peerAccountDigest = normalizeAccountDigest(entry.peerAccountDigest || entry.peer_account_digest || null);
   const peerUid = normalizeUid(entry.peerUid || entry.peer_uid || null);
-  if (!peerUid) return null;
+  const peerKey = peerAccountDigest || peerUid;
+  if (!peerKey) return null;
   const invite = entry.invite || {};
   const inviteId = normalizeOptionalString(invite.id);
   const secret = normalizeOptionalString(invite.secret);
@@ -827,7 +841,7 @@ function normalizeStructuredEntry(entry) {
     record.updatedAt = Number.isFinite(updated) ? updated : null;
   }
 
-  return { peerUid, record };
+  return { peerUid: peerKey, record };
 }
 
 function parseStructuredSnapshot(payloadObj) {
@@ -982,7 +996,7 @@ export function setContactSecret(peerUid, opts = {}) {
     return;
   }
   const structured = normalizeContactSecretUpdate(opts);
-  const key = normalizeUid(peerUid);
+  const key = normalizePeerKey(peerUid);
   if (!key) return;
   const map = ensureMap();
   const existing = map.get(key) || null;
@@ -1027,14 +1041,14 @@ export function setContactSecret(peerUid, opts = {}) {
 }
 
 export function deleteContactSecret(peerUid) {
-  const key = normalizeUid(peerUid);
+  const key = normalizePeerKey(peerUid);
   if (!key) return;
   const map = ensureMap();
   if (map.delete(key)) persistContactSecrets();
 }
 
 export function getContactSecret(peerUid) {
-  const key = normalizeUid(peerUid);
+  const key = normalizePeerKey(peerUid);
   if (!key) return null;
   const map = ensureMap();
   return map.get(key) || null;

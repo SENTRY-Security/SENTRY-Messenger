@@ -57,19 +57,29 @@ export CLOUDFLARE_ACCOUNT_ID
 D1_DB_NAME="message_db"
 WRANGLER_CMD=(npx wrangler --config "$DATA_WORKER_DIR/wrangler.toml")
 
-# 清除 D1 中的資料表
+# 清除 D1 中的資料表（先子表再父表，避免 FK 影響）
 D1_TABLES=(
-  messages
+  call_events
+  call_sessions
+  group_invites
+  group_members
+  groups
+  contact_secret_backups
   messages_secure
+  messages
+  media_objects
+  conversation_acl
   conversations
   friend_invites
-  tags
   prekey_opk
   prekey_users
   device_backup
-  media_objects
-  accounts
   opaque_records
+  extend_logs
+  tokens
+  subscriptions
+  tags
+  accounts
 )
 
 echo "[wipe-all] 開始清除 D1 ($D1_DB_NAME)"

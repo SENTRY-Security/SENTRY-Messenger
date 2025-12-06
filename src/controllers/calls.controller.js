@@ -269,6 +269,8 @@ export async function inviteCall(req, res) {
     payload: { traceId: input.traceId || null, mode: input.mode || 'voice', capabilities: input.capabilities || null },
     fromUid: auth.uidHex,
     toUid: calleeUid,
+    fromAccountDigest: auth.accountDigest,
+    toAccountDigest: calleeDigest,
     traceId: input.traceId || null
   });
   return res.status(200).json({
@@ -316,6 +318,7 @@ export async function cancelCall(req, res) {
     type: 'call-cancel',
     payload: { reason: input.reason || 'cancelled' },
     fromUid: auth.uidHex,
+    fromAccountDigest: auth.accountDigest,
     traceId: input.traceId || null
   });
   return res.status(200).json({ ok: true, session: workerRes?.session || null });
@@ -356,6 +359,7 @@ export async function acknowledgeCall(req, res) {
     type: 'call-ack',
     payload: { ackUid: auth.uidHex },
     fromUid: auth.uidHex,
+    fromAccountDigest: auth.accountDigest,
     traceId: input.traceId || null
   });
   return res.status(200).json({ ok: true, session: workerRes?.session || null });
@@ -394,7 +398,8 @@ export async function reportCallMetrics(req, res) {
     callId: input.callId,
     type: 'call-report-metrics',
     payload: input.metrics,
-    fromUid: auth.uidHex
+    fromUid: auth.uidHex,
+    fromAccountDigest: auth.accountDigest
   });
   return res.status(200).json({ ok: true, session: workerRes?.session || null });
 }
@@ -430,10 +435,10 @@ export async function getCallSession(req, res) {
   if (!session) {
     return res.status(404).json({ error: 'NotFound', message: 'call session absent' });
   }
-  const requesterMatches = session.callerUid === auth.uidHex
-    || session.calleeUid === auth.uidHex
-    || (session.callerAccountDigest && session.callerAccountDigest === auth.accountDigest)
-    || (session.calleeAccountDigest && session.calleeAccountDigest === auth.accountDigest);
+  const requesterMatches = (session.callerAccountDigest && session.callerAccountDigest === auth.accountDigest)
+    || (session.calleeAccountDigest && session.calleeAccountDigest === auth.accountDigest)
+    || session.callerUid === auth.uidHex
+    || session.calleeUid === auth.uidHex;
   if (!requesterMatches) {
     return res.status(403).json({ error: 'Forbidden', message: 'not a participant of this call' });
   }
