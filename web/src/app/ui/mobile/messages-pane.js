@@ -43,30 +43,29 @@ import {
   resolveViewerRole
 } from '../../features/calls/call-log.js';
 import { bytesToB64Url } from './ui-utils.js';
-import { normalizePeerIdentity } from '../../core/store.js';
 const sentCallLogIds = new Set();
 const callLogPlaceholders = new Map();
 const GROUPS_ENABLED = false;
 
-function makeCallLogPlaceholderKey(peerUidHex, callId) {
-  if (!peerUidHex || !callId) return null;
-  return `${peerUidHex}:${callId}`;
+function makeCallLogPlaceholderKey(peerDigest, callId) {
+  if (!peerDigest || !callId) return null;
+  return `${peerDigest}:${callId}`;
 }
 
-function trackCallLogPlaceholder(peerUidHex, callId, message) {
-  const key = makeCallLogPlaceholderKey(peerUidHex, callId);
+function trackCallLogPlaceholder(peerDigest, callId, message) {
+  const key = makeCallLogPlaceholderKey(peerDigest, callId);
   if (!key || !message) return;
   callLogPlaceholders.set(key, message);
 }
 
-function resolveCallLogPlaceholder(peerUidHex, callId) {
-  const key = makeCallLogPlaceholderKey(peerUidHex, callId);
+function resolveCallLogPlaceholder(peerDigest, callId) {
+  const key = makeCallLogPlaceholderKey(peerDigest, callId);
   if (!key) return null;
   return callLogPlaceholders.get(key) || null;
 }
 
-function releaseCallLogPlaceholder(peerUidHex, callId) {
-  const key = makeCallLogPlaceholderKey(peerUidHex, callId);
+function releaseCallLogPlaceholder(peerDigest, callId) {
+  const key = makeCallLogPlaceholderKey(peerDigest, callId);
   if (!key) return;
   callLogPlaceholders.delete(key);
 }
@@ -165,11 +164,24 @@ export function initMessagesPane({
   const CONV_PULL_MAX = 140;
 
   function normalizePeerKey(value) {
-    const identity = normalizePeerIdentity({
-      peerAccountDigest: value?.peerAccountDigest ?? value?.peerUid ?? value?.peerUidHex ?? value,
-      peerUid: value?.peerUid
-    });
+    const identity = normalizePeerIdentity(value?.peerAccountDigest ?? value?.accountDigest ?? value);
     return identity.key || null;
+  }
+
+  function threadPeer(thread) {
+    if (!thread) return null;
+    return normalizePeerKey(thread.peerAccountDigest ?? thread);
+  }
+
+  function ensureThreadPeer(thread, value) {
+    const key = normalizePeerKey(value);
+    if (!thread || !key) return null;
+    thread.peerAccountDigest = key;
+    return key;
+  }
+
+  function contactPeerKey(contact) {
+    return normalizePeerKey(contact?.peerAccountDigest ?? contact?.peer_account_digest ?? contact?.accountDigest ?? contact?.account_digest);
   }
 
   const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
@@ -295,19 +307,14 @@ export function initMessagesPane({
     }
     emptyEl.style.display = 'none';
     listEl.innerHTML = contacts.map((c, idx) => {
-      const identity = normalizePeerIdentity({
-        peerAccountDigest: c?.peerAccountDigest || c?.peer_account_digest || c?.accountDigest || c?.account_digest || null,
-        peerUid: c?.peerUid || c?.peer_uid || null
-      });
-      const uid = identity.uid || identity.key || '';
-      const nickname = escapeHtml(c?.nickname || `好友 ${(uid || identity.key || '').slice(-4)}`);
-      const digest = identity.accountDigest || '';
+      const digest = contactPeerKey(c) || '';
+      const nickname = escapeHtml(c?.nickname || `好友 ${digest.slice(-4)}`);
       return `
         <label class="group-builder-item" style="display:flex;align-items:center;gap:10px;padding:8px;border:1px solid rgba(148,163,184,0.4);border-radius:10px;cursor:pointer;">
-          <input type="checkbox" data-uid="${uid}" data-digest="${escapeHtml(digest)}" style="width:16px;height:16px;"/>
+          <input type="checkbox" data-uid="${digest}" data-digest="${escapeHtml(digest)}" style="width:16px;height:16px;"/>
           <div style="display:flex;flex-direction:column;gap:2px;">
             <span style="font-size:13px;font-weight:600;">${nickname}</span>
-            <span style="font-size:11px;color:#64748b;">${digest || uid || ''}</span>
+            <span style="font-size:11px;color:#64748b;">${digest}</span>
           </div>
         </label>
       `;
@@ -322,11 +329,9 @@ export function initMessagesPane({
     const selected = [];
     checkboxes.forEach((cb) => {
       if (cb.checked) {
-        const uid = cb.getAttribute('data-uid') || '';
-        const digest = cb.getAttribute('data-digest') || '';
-        const identity = normalizePeerIdentity({ peerAccountDigest: digest || null, peerUid: uid || null });
-        if (!identity.key) return;
-        selected.push({ accountDigest: identity.accountDigest || null, uid: identity.uid || identity.key });
+        const digest = normalizePeerKey(cb.getAttribute('data-digest') || cb.getAttribute('data-uid') || '');
+        if (!digest) return;
+        selected.push({ accountDigest: digest, uid: digest });
       }
     });
     const nameVal = (nameInput?.value || '').trim();
@@ -419,11 +424,11 @@ export function initMessagesPane({
     };
   }
 
-  function updateThreadsWithCallLogDisplay({ peerUidHex, label, ts, direction }) {
+  function updateThreadsWithCallLogDisplay({ peerAccountDigest, label, ts, direction }) {
     const threads = getConversationThreads();
     let touched = false;
     for (const thread of threads.values()) {
-      if (thread.peerUid === peerUidHex) {
+      if (threadPeer(thread) === normalizePeerKey(peerAccountDigest)) {
         thread.lastMessageText = label;
         thread.lastMessageTs = ts;
         thread.lastDirection = direction;
@@ -438,13 +443,13 @@ export function initMessagesPane({
     }
   }
 
-  function updateThreadAvatar(peerUid, avatarData) {
-    const key = String(peerUid || '').toUpperCase();
+  function updateThreadAvatar(peerAccountDigest, avatarData) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
     const threads = getConversationThreads();
     let touched = false;
     for (const thread of threads.values()) {
-      if (thread.peerUid === key) {
+      if (threadPeer(thread) === key) {
         thread.avatar = avatarData || null;
         touched = true;
       }
@@ -456,12 +461,11 @@ export function initMessagesPane({
 
   function handleCallStateEvent(detail = {}) {
     const session = detail.session || null;
-    if (!session?.peerUidHex) return;
+    const peerDigest = normalizePeerKey(session?.peerAccountDigest ?? session?.peer_account_digest);
+    if (!peerDigest) return;
     const status = session.status;
     if (![CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(status)) return;
-    const key = String(session.peerUidHex || '').toUpperCase();
-    if (!key) return;
-    const identifier = session.callId || session.traceId || `${key}-${session.requestedAt || Date.now()}`;
+    const identifier = session.callId || session.traceId || `${peerDigest}-${session.requestedAt || Date.now()}`;
     if (sentCallLogIds.has(identifier)) return;
     sentCallLogIds.add(identifier);
     const endedAt = session.endedAt || Date.now();
@@ -496,7 +500,7 @@ export function initMessagesPane({
       id: session.callId ? `call-log-${session.callId}` : `call-log-${identifier}`,
       callId: session.callId || identifier,
       ts: Math.floor(endedAt / 1000),
-      peerUidHex: key,
+      peerAccountDigest: peerDigest,
       direction,
       durationSeconds,
       outcome,
@@ -504,7 +508,7 @@ export function initMessagesPane({
     };
     const state = getMessageState();
     const isOutgoing = direction === CALL_SESSION_DIRECTION.OUTGOING;
-    const isActive = state.activePeerDigest === key;
+    const isActive = state.activePeerDigest === peerDigest;
     const viewerMessage = createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
     let localMessage = null;
     if (isActive) {
@@ -512,35 +516,31 @@ export function initMessagesPane({
       localMessage.id = localMessage.id || entry.id;
       localMessage.pending = true;
       state.messages.push(localMessage);
-      trackCallLogPlaceholder(key, entry.callId, localMessage);
+      trackCallLogPlaceholder(peerDigest, entry.callId, localMessage);
       updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
     }
     updateThreadsWithCallLogDisplay({
-      peerUidHex: key,
+      peerAccountDigest: peerDigest,
       label: viewerMessage.text,
       ts: entry.ts,
       direction: isOutgoing ? 'outgoing' : 'incoming'
     });
-    if (!isOutgoing) return;
-    sendDrCallLog({
-      peerUidHex: key,
-      callId: entry.callId,
-      outcome: entry.outcome,
-      durationSeconds: entry.durationSeconds,
-      direction: entry.direction,
-      reason: entry.reason
-    })
-      .then(({ msg }) => {
-        if (localMessage && msg?.id) {
-          localMessage.id = msg.id;
-          localMessage.pending = false;
-          releaseCallLogPlaceholder(key, entry.callId);
-        }
-      })
-      .catch((err) => {
-        log({ callLogSendError: err?.message || err });
-        showToast?.('通話紀錄同步失敗', { variant: 'warning' });
+    if (!sentCallLogIds.has(entry.id) && entry.id) sentCallLogIds.add(entry.id);
+    if (entry.id && !sentCallLogIds.has(entry.id)) {
+      sentCallLogIds.add(entry.id);
+      sendDrCallLog({
+        peerAccountDigest: peerDigest,
+        callId: entry.callId,
+        outcome,
+        durationSeconds,
+        direction: entry.direction,
+        reason: normalizedReason || null,
+        ts: entry.ts
+      }).catch((err) => {
+        log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest });
       });
+    }
+    releaseCallLogPlaceholder(peerDigest, entry.callId);
   }
 
   const showModalLoading = typeof modalOptions.showModalLoading === 'function' ? modalOptions.showModalLoading : null;
@@ -560,16 +560,17 @@ export function initMessagesPane({
   unsubscribeCallState = subscribeCallEvent(CALL_EVENT.STATE, handleCallStateEvent);
 
   for (const info of listSecureConversationStatuses()) {
-    if (!info?.peerUidHex) continue;
-    secureStatusCache.set(info.peerUidHex, { status: info.status, error: info.error });
+    const key = normalizePeerKey(info?.peerAccountDigest);
+    if (!key) continue;
+    secureStatusCache.set(key, { status: info.status, error: info.error });
   }
   if (typeof unsubscribeSecureStatus === 'function') {
     unsubscribeSecureStatus();
   }
   unsubscribeSecureStatus = subscribeSecureConversation(handleSecureStatusEvent);
 
-  function cacheSecureStatus(peerUidHex, status, error) {
-    const key = normalizePeerKey(peerUidHex);
+  function cacheSecureStatus(peerAccountDigest, status, error) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key) return null;
     const entry = {
       status: status || SECURE_CONVERSATION_STATUS.IDLE,
@@ -579,8 +580,8 @@ export function initMessagesPane({
     return entry;
   }
 
-  function getCachedSecureStatus(peerUidHex) {
-    const key = normalizePeerKey(peerUidHex);
+  function getCachedSecureStatus(peerAccountDigest) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key) return null;
     const cached = secureStatusCache.get(key);
     if (cached) return cached;
@@ -595,10 +596,10 @@ export function initMessagesPane({
     activeSecurityModalPeer = null;
   }
 
-  function updateSecurityModalForPeer(peerUidHex, statusInfo) {
+  function updateSecurityModalForPeer(peerAccountDigest, statusInfo) {
     if (!showSecurityModal) return;
     const status = statusInfo?.status || null;
-    const key = normalizePeerKey(peerUidHex);
+    const key = normalizePeerKey(peerAccountDigest);
     const shouldShow = status === SECURE_CONVERSATION_STATUS.PENDING;
     if (shouldShow) {
       if (activeSecurityModalPeer !== key) {
@@ -617,9 +618,9 @@ export function initMessagesPane({
     }
   }
 
-  function applySecureStatusForActivePeer(peerUidHex, statusInfo) {
+  function applySecureStatusForActivePeer(peerAccountDigest, statusInfo) {
     const state = getMessageState();
-    const key = normalizePeerKey(peerUidHex);
+    const key = normalizePeerKey(peerAccountDigest);
     if (state.activePeerDigest !== key) {
       if (!state.activePeerDigest) hideSecurityModal();
       return;
@@ -640,7 +641,7 @@ export function initMessagesPane({
   }
 
   function handleSecureStatusEvent(event) {
-    const key = normalizePeerKey(event?.peerAccountDigest ?? event?.peerUidHex);
+    const key = normalizePeerKey(event?.peerAccountDigest);
     if (!key) return;
     const entry = cacheSecureStatus(key, event?.status, event?.error);
     if (!entry) return;
@@ -682,8 +683,8 @@ export function initMessagesPane({
     return sessionStore.conversationThreads;
   }
 
-  function upsertConversationThread({ peerUid, conversationId, tokenB64, nickname, avatar }) {
-    const key = String(peerUid || '').toUpperCase();
+  function upsertConversationThread({ peerAccountDigest, conversationId, tokenB64, nickname, avatar }) {
+    const key = normalizePeerKey(peerAccountDigest);
     const convId = String(conversationId || '').trim();
     if (!key || !convId) return null;
     if (sessionStore.deletedConversations?.has?.(convId)) return null;
@@ -691,7 +692,7 @@ export function initMessagesPane({
     const prev = threads.get(convId) || {};
     const entry = {
       ...prev,
-      peerUid: key,
+      peerAccountDigest: key,
       conversationId: convId,
       conversationToken: tokenB64 || prev.conversationToken || null,
       nickname: nickname || prev.nickname || `好友 ${key.slice(-4)}`,
@@ -713,13 +714,13 @@ export function initMessagesPane({
     const contacts = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
     const seen = new Set();
     for (const contact of contacts) {
-      const peerUid = String(contact?.peerUid || '').toUpperCase();
+      const peerUid = normalizePeerKey(contact?.peerAccountDigest ?? contact?.peer_account_digest ?? contact?.accountDigest ?? contact?.account_digest);
       const conversationId = contact?.conversation?.conversation_id;
       const tokenB64 = contact?.conversation?.token_b64;
       if (!peerUid || !conversationId || !tokenB64) continue;
       seen.add(conversationId);
       upsertConversationThread({
-        peerUid,
+        peerAccountDigest: peerUid,
         conversationId,
         tokenB64,
         nickname: contact.nickname,
@@ -737,14 +738,15 @@ export function initMessagesPane({
     const threads = Array.from(threadsMap.values());
     const tasks = [];
     for (const thread of threads) {
-      if (!thread?.conversationId || !thread?.conversationToken || !thread?.peerUid) continue;
+      const peerDigest = threadPeer(thread);
+      if (!thread?.conversationId || !thread?.conversationToken || !peerDigest) continue;
       if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
       tasks.push((async () => {
         try {
           const { items } = await listSecureAndDecrypt({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
-            peerUidHex: thread.peerUid,
+            peerAccountDigest: peerDigest,
             limit: 20,
             mutateState: false
           });
@@ -912,7 +914,7 @@ export function initMessagesPane({
     const avatar = contactEntry?.avatar || null;
     const tokenB64 = state.conversationToken || contactEntry?.conversation?.token_b64 || null;
     const thread = upsertConversationThread({
-      peerUid: state.activePeerDigest,
+      peerAccountDigest: state.activePeerDigest,
       conversationId: state.conversationId,
       tokenB64,
       nickname,
@@ -1103,7 +1105,7 @@ export function initMessagesPane({
     const snapshot = getCallSessionSnapshot();
     const callId = result.callId || snapshot?.callId || null;
     if (!callId) {
-      log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerUid: state.activePeerDigest });
+      log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerAccountDigest: state.activePeerDigest });
       showToast?.('無法建立通話：缺少識別碼', { variant: 'error' });
       return;
     }
@@ -1111,11 +1113,11 @@ export function initMessagesPane({
     try {
       envelope = await prepareCallKeyEnvelope({
         callId,
-        peerUidHex: state.activePeerDigest,
+        peerAccountDigest: state.activePeerDigest,
         direction: CALL_SESSION_DIRECTION.OUTGOING
       });
     } catch (err) {
-      log({ callKeyEnvelopeError: err?.message || err, peerUid: state.activePeerDigest });
+      log({ callKeyEnvelopeError: err?.message || err, peerAccountDigest: state.activePeerDigest });
       showToast?.('無法建立通話加密金鑰', { variant: 'error' });
       return;
     }
@@ -1149,7 +1151,7 @@ export function initMessagesPane({
       traceId
     });
     if (!sent) {
-      log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerDigest });
+      log({ callInviteSignalFailed: true, callId, peerAccountDigest: state.activePeerDigest });
       showToast?.('通話信令傳送失敗', { variant: 'error' });
       return;
     }
@@ -1260,7 +1262,7 @@ export function initMessagesPane({
     const contacts = Array.isArray(sessionStore.contactState) ? [...sessionStore.contactState] : [];
     let state = getMessageState();
     if (state.activePeerDigest) {
-      const exists = contacts.some((c) => String(c?.peerUid || '').toUpperCase() === state.activePeerDigest);
+      const exists = contacts.some((c) => contactPeerKey(c) === state.activePeerDigest);
       if (!exists) {
         resetMessageStateWithPlaceholders();
         state = getMessageState();
@@ -1276,7 +1278,7 @@ export function initMessagesPane({
     refreshContactsUnreadBadges();
     elements.conversationList.innerHTML = '';
     const threadEntries = Array.from(getConversationThreads().values())
-      .filter((thread) => thread?.conversationId && thread?.peerUid)
+      .filter((thread) => thread?.conversationId && threadPeer(thread))
       .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
     const totalUnread = threadEntries.reduce((sum, thread) => sum + Number(thread.unreadCount || 0), 0);
     updateNavBadge?.('messages', totalUnread > 0 ? totalUnread : null);
@@ -1288,15 +1290,16 @@ export function initMessagesPane({
       return;
     }
     for (const thread of threadEntries) {
-      const peerUid = thread.peerUid;
+      const peerDigest = threadPeer(thread);
+      if (!peerDigest) continue;
       const li = document.createElement('li');
       li.className = 'conversation-item';
-      li.dataset.peer = peerUid;
+      li.dataset.peer = peerDigest;
       li.dataset.conversationId = thread.conversationId;
-      if (state.activePeerDigest === peerUid) li.classList.add('active');
-      if (openPeer && openPeer === peerUid) li.classList.add('show-delete');
-      const nickname = thread.nickname || `好友 ${peerUid.slice(-4)}`;
-      const initials = initialsFromName(nickname, peerUid);
+      if (state.activePeerDigest === peerDigest) li.classList.add('active');
+      if (openPeer && openPeer === peerDigest) li.classList.add('show-delete');
+      const nickname = thread.nickname || `好友 ${peerDigest.slice(-4)}`;
+      const initials = initialsFromName(nickname, peerDigest);
       const avatarSrc = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
       const timeLabel = Number.isFinite(thread.lastMessageTs) ? formatConversationPreviewTime(thread.lastMessageTs) : '';
       const snippet = formatThreadPreview(thread);
@@ -1324,20 +1327,20 @@ export function initMessagesPane({
       deleteBtn?.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        handleConversationDelete({ conversationId: thread.conversationId, peerUid, element: li });
+        handleConversationDelete({ conversationId: thread.conversationId, peerUid: peerDigest, element: li });
       });
 
       li.addEventListener('click', (e) => {
         if (e.target.closest('.item-delete')) return;
         if (li.classList.contains('show-delete')) { closeSwipe?.(li); return; }
-        setActiveConversation(peerUid);
+        setActiveConversation(peerDigest);
       });
 
       li.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveConversation(peerUid); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActiveConversation(peerDigest); }
         if (e.key === 'Delete') {
           e.preventDefault();
-          handleConversationDelete({ conversationId: thread.conversationId, peerUid, element: li });
+          handleConversationDelete({ conversationId: thread.conversationId, peerUid: peerDigest, element: li });
         }
       });
 
@@ -1962,7 +1965,7 @@ export function initMessagesPane({
       const { items, nextCursorTs, errors } = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
-        peerUidHex: state.activePeerDigest,
+        peerAccountDigest: state.activePeerDigest,
         limit: 50,
         cursorTs: cursor,
         mutateState: forceReplay ? false : !append,
@@ -2050,8 +2053,8 @@ export function initMessagesPane({
     }
   }
 
-  async function setActiveConversation(peerUid) {
-    const key = normalizePeerKey(peerUid);
+  async function setActiveConversation(peerAccountDigest) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
     const desktopLayout = isDesktopLayout();
     const entry = sessionStore.contactIndex?.get?.(key);
@@ -2079,8 +2082,7 @@ export function initMessagesPane({
       applyMessagesLayout();
       return;
     }
-    log({ setActiveConversation: { peer: key, conversationId: conversation.conversation_id || null, hasDrInit: !!(conversation.dr_init || conversation.drInit) } });
-    log({ setActiveConversation: { peer: key, conversationId: conversation.conversation_id || null } });
+    log({ setActiveConversation: { peerAccountDigest: key, conversationId: conversation.conversation_id || null, hasDrInit: !!(conversation.dr_init || conversation.drInit) } });
     const state = getMessageState();
     const hadExistingMessages = Array.isArray(state.messages) && state.messages.length > 0;
     state.activePeerDigest = key;
@@ -2107,7 +2109,7 @@ export function initMessagesPane({
     state.hasMore = true;
     state.loading = false;
     const thread = upsertConversationThread({
-      peerUid: key,
+      peerAccountDigest: key,
       conversationId: state.conversationId,
       tokenB64: state.conversationToken,
       nickname,
@@ -2136,7 +2138,7 @@ export function initMessagesPane({
       });
     } catch (err) {
       const errorMsg = err?.message || err || '建立安全對話失敗，請稍後再試。';
-      log({ ensureSecureConversationError: errorMsg, peerUid: key });
+      log({ ensureSecureConversationError: errorMsg, peerAccountDigest: key });
       const cached = cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
       applySecureStatusForActivePeer(key, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
       applyMessagesLayout();
@@ -2154,8 +2156,8 @@ export function initMessagesPane({
     await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
   }
 
-  function refreshActivePeerMetadata(peerUid, { fallbackName } = {}) {
-    const key = String(peerUid || '').toUpperCase();
+  function refreshActivePeerMetadata(peerAccountDigest, { fallbackName } = {}) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
     const entry = sessionStore.contactIndex?.get?.(key) || null;
     const nickname = entry?.nickname || fallbackName || `好友 ${key.slice(-4)}`;
@@ -2171,28 +2173,28 @@ export function initMessagesPane({
     } else {
       elements.peerAvatar.textContent = initialsFromName(nickname, key).slice(0, 2);
     }
-    updateThreadAvatar(peerUid, avatarData || null);
+    updateThreadAvatar(key, avatarData || null);
   }
 
   function handleContactEntryUpdated(detail = {}) {
-    const peerUid = String(detail?.peerUid || '').toUpperCase();
-    if (!peerUid) return;
-    const entry = sessionStore.contactIndex?.get?.(peerUid) || detail.entry || null;
+    const peerDigest = normalizePeerKey(detail?.peerAccountDigest);
+    if (!peerDigest) return;
+    const entry = sessionStore.contactIndex?.get?.(peerDigest) || detail.entry || null;
     if (!entry) return;
     const hasConversation = entry.conversation?.conversation_id && entry.conversation?.token_b64;
     if (hasConversation) {
       upsertConversationThread({
-        peerUid,
+        peerAccountDigest: peerDigest,
         conversationId: entry.conversation.conversation_id,
         tokenB64: entry.conversation.token_b64,
         nickname: entry.nickname,
         avatar: entry.avatar || null
       });
-      updateThreadAvatar(peerUid, entry.avatar || null);
+      updateThreadAvatar(peerDigest, entry.avatar || null);
     }
     const state = getMessageState();
-    if (state.activePeerDigest === peerUid) {
-      refreshActivePeerMetadata(peerUid);
+    if (state.activePeerDigest === peerDigest) {
+      refreshActivePeerMetadata(peerDigest);
     }
     if (!hasConversation) {
       renderConversationList();
@@ -2318,7 +2320,7 @@ export function initMessagesPane({
 
         try {
           const res = await sendDrMedia({
-            peerUidHex: state.activePeerDigest,
+            peerAccountDigest: state.activePeerDigest,
             file,
             conversation,
             convId: state.conversationId,
@@ -2484,7 +2486,7 @@ export function initMessagesPane({
   function refreshContactsUnreadBadges() {
     if (!sessionStore.contactState?.length) return;
     for (const contact of sessionStore.contactState) {
-      const key = String(contact?.peerUid || '').toUpperCase();
+      const key = contactPeerKey(contact);
       if (!key) continue;
       const thread = getConversationThreads().get(contact?.conversation?.conversation_id || '') || null;
       const unread = thread?.unreadCount || 0;
@@ -2494,8 +2496,8 @@ export function initMessagesPane({
     }
   }
 
-  function showDeleteForPeer(peerUid) {
-    const key = String(peerUid || '').toUpperCase();
+  function showDeleteForPeer(peerAccountDigest) {
+    const key = normalizePeerKey(peerAccountDigest);
     if (!key || !elements.conversationList) return false;
     const item = elements.conversationList.querySelector(`.conversation-item[data-peer="${key}"]`);
     if (!item) return false;
@@ -2514,7 +2516,7 @@ export function initMessagesPane({
   }
 
   function handleConversationDelete({ conversationId, peerUid, element }) {
-    const key = String(peerUid || '').toUpperCase();
+    const key = normalizePeerKey(peerUid);
     if (!key) return;
     const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
     const nickname = contactEntry?.nickname || `好友 ${key.slice(-4)}`;
@@ -2557,7 +2559,7 @@ export function initMessagesPane({
             contactEntryAfter.conversation = null;
             contactEntryAfter.unreadCount = 0;
           }
-          const contactStateEntry = sessionStore.contactState?.find?.((c) => String(c?.peerUid || '').toUpperCase() === key) || null;
+          const contactStateEntry = sessionStore.contactState?.find?.((c) => contactPeerKey(c) === key) || null;
           if (contactStateEntry) {
             contactStateEntry.conversation = null;
             contactStateEntry.unreadCount = 0;
@@ -2590,17 +2592,16 @@ export function initMessagesPane({
 
     const convIndex = ensureConversationIndex();
     let convEntry = convIndex.get(convId) || null;
-    const peerFromEventIdentity = normalizePeerIdentity({
-      peerAccountDigest: event?.peerAccountDigest || event?.peer_account_digest || event?.fromAccountDigest || event?.from_account_digest || null,
-      peerUid: event?.peerUid || event?.peer_uid || event?.fromUid || event?.from_uid || null
-    });
+    const peerFromEventIdentity = normalizePeerIdentity(
+      event?.peerAccountDigest || event?.peer_account_digest || event?.fromAccountDigest || event?.from_account_digest || null
+    );
     const peerFromEvent = peerFromEventIdentity.key;
 
     if (!convEntry) {
-      convEntry = { token_b64: null, peerUid: peerFromEvent || null };
+      convEntry = { token_b64: null, peerAccountDigest: peerFromEvent || null };
       convIndex.set(convId, convEntry);
-    } else if (peerFromEvent && convEntry.peerUid !== peerFromEvent) {
-      convEntry.peerUid = peerFromEvent;
+    } else if (peerFromEvent && convEntry.peerAccountDigest !== peerFromEvent) {
+      convEntry.peerAccountDigest = peerFromEvent;
     }
 
     const tokenFromEvent = event?.tokenB64 || event?.token_b64 || null;
@@ -2609,7 +2610,7 @@ export function initMessagesPane({
       if (normalizedToken) convEntry.token_b64 = normalizedToken;
     }
 
-    const peerUid = convEntry.peerUid;
+    const peerUid = convEntry.peerAccountDigest;
     if (!peerUid) {
       log({ secureMessageUnknownPeer: convId });
       return;
@@ -2621,7 +2622,7 @@ export function initMessagesPane({
     const tokenB64 = convEntry.token_b64 || contactEntry?.conversation?.token_b64 || null;
 
     const thread = upsertConversationThread({
-      peerUid,
+      peerAccountDigest: peerUid,
       conversationId: convId,
       tokenB64,
       nickname,
@@ -2692,7 +2693,7 @@ export function initMessagesPane({
     const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
     const initialsToast = initialsFromName(nickname, peerUid).slice(0, 2);
     showToast?.(toastMessage, {
-      onClick: () => openConversationFromToast({ peerUid, convId, tokenB64 }),
+      onClick: () => openConversationFromToast({ peerAccountDigest: peerUid, convId, tokenB64 }),
       avatarUrl: avatarUrlToast,
       avatarInitials: initialsToast,
       subtitle: formatTimestamp(tsRaw)
@@ -2700,7 +2701,7 @@ export function initMessagesPane({
   }
 
   function handleContactOpenConversation(detail) {
-    const peerUid = String(detail?.peerUid || '').toUpperCase();
+    const peerUid = normalizePeerKey(detail?.peerAccountDigest);
     if (!peerUid) return;
     syncConversationThreadsFromContacts();
     const conversation = detail?.conversation;
@@ -2711,7 +2712,7 @@ export function initMessagesPane({
         ...prev,
         conversationId: conversation.conversation_id,
         conversationToken: conversation.token_b64,
-        peerUid,
+        peerAccountDigest: peerUid,
         nickname: prev.nickname || detail?.nickname || `好友 ${peerUid.slice(-4)}`,
         avatar: prev.avatar || detail?.avatar || null,
         lastMessageText: typeof prev.lastMessageText === 'string' ? prev.lastMessageText : '',
@@ -2726,15 +2727,15 @@ export function initMessagesPane({
     setActiveConversation(peerUid);
   }
 
-  function openConversationFromToast({ peerUid, convId, tokenB64 }) {
-    try { log({ toastNavigate: { peerUid, convId } }); } catch {}
+  function openConversationFromToast({ peerAccountDigest, convId, tokenB64 }) {
+    try { log({ toastNavigate: { peerAccountDigest, convId } }); } catch {}
     switchTab?.('messages');
     syncConversationThreadsFromContacts();
     const threads = getConversationThreads();
     const threadByConv = convId ? threads.get(convId) : null;
-    const targetPeer = String(peerUid || threadByConv?.peerUid || '').toUpperCase();
+    const targetPeer = normalizePeerKey(peerAccountDigest ?? threadPeer(threadByConv));
     const contactStateEntry = Array.isArray(sessionStore.contactState)
-      ? sessionStore.contactState.find((c) => String(c?.peerUid || '').toUpperCase() === targetPeer)
+      ? sessionStore.contactState.find((c) => contactPeerKey(c) === targetPeer)
       : null;
     const contactStateConv = contactStateEntry?.conversation || null;
     const state = getMessageState();
@@ -2751,7 +2752,11 @@ export function initMessagesPane({
     if (conversationId) {
       const convIndex = ensureConversationIndex();
       const prevConv = convIndex.get(conversationId) || {};
-      convIndex.set(conversationId, { ...prevConv, peerUid: targetPeer || prevConv.peerUid || null, token_b64: token || prevConv.token_b64 || null });
+      convIndex.set(conversationId, {
+        ...prevConv,
+        peerAccountDigest: targetPeer || prevConv.peerAccountDigest || null,
+        token_b64: token || prevConv.token_b64 || null
+      });
     }
     if (targetPeer) {
       // 若 contactIndex 尚未有此人，先以 thread 資料補一筆避免 setActiveConversation 直接失敗。
@@ -2765,7 +2770,7 @@ export function initMessagesPane({
         const prev = sessionStore.contactIndex.get(targetPeer) || {};
         sessionStore.contactIndex.set(targetPeer, {
           ...prev,
-          peerUid: targetPeer,
+          peerAccountDigest: targetPeer,
           nickname: threadByConv?.nickname || contactStateEntry?.nickname || prev.nickname || `好友 ${targetPeer.slice(-4)}`,
           avatar: threadByConv?.avatar || contactStateEntry?.avatar || prev.avatar || null,
           conversation: {
@@ -2788,7 +2793,7 @@ export function initMessagesPane({
       renderConversationList();
       return;
     }
-    log({ toastOpenConversationError: 'missing conversation info', peerUid, convId });
+    log({ toastOpenConversationError: 'missing conversation info', peerAccountDigest: targetPeer, convId });
     showToast?.('同步中，請稍後再試', { variant: 'warning' });
     refreshConversationPreviews({ force: true }).catch((err) => log({ toastRefreshPreviewError: err?.message || err }));
   }
@@ -2863,7 +2868,7 @@ export function initMessagesPane({
       }
       if (elements.sendBtn) elements.sendBtn.disabled = true;
       try {
-        const res = await sendDrText({ peerUidHex: state.activePeerDigest, text });
+        const res = await sendDrText({ peerAccountDigest: state.activePeerDigest, text });
         log({ messageComposerSent: { peer: state.activePeerDigest, convId: res?.convId || null, msgId: res?.msg?.id || res?.id || null } });
         const ts = Math.floor(Date.now() / 1000);
         appendLocalOutgoingMessage({ text, ts, id: res?.msg?.id || res?.id });

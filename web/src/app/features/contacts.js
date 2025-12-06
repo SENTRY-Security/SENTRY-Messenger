@@ -58,26 +58,24 @@ export async function loadContacts() {
       const envelope = header?.envelope;
       if (!header?.contact || !envelope) continue;
       const identityFromHeader = normalizePeerIdentity({
-        peerAccountDigest: header?.peerAccountDigest || header?.peer_account_digest || null,
-        peerUid: header?.peerUid || header?.peer_uid || null
+        peerAccountDigest: header?.peerAccountDigest || header?.peer_account_digest || header?.accountDigest || header?.account_digest || null
       });
-      let peerAccountDigest = identityFromHeader.accountDigest || null;
-      let peerUid = identityFromHeader.uid || null;
-      let peerKey = identityFromHeader.key || null;
-      if (!peerKey) {
+      const peerDigest = identityFromHeader.key || identityFromHeader.accountDigest || null;
+      if (!peerDigest) {
         log({ contactMissingDigest: item?.id || null });
         continue;
       }
+      const peerAccountDigest = peerDigest;
       let contact = null;
       let conversation = null;
       let pendingSecretUpdate = null;
       if (envelope?.aead === 'aes-256-gcm') {
         contact = await unwrapWithMK_JSON(envelope, mk);
-      } else if (isContactShareEnvelope(envelope) && peerUid) {
-        const secretInfo = getContactSecret(peerKey || peerUid);
+      } else if (isContactShareEnvelope(envelope) && peerDigest) {
+        const secretInfo = getContactSecret(peerDigest);
         const secret = secretInfo?.secret;
         if (!secret) {
-          const warnKey = peerKey || peerUid;
+          const warnKey = peerDigest;
           if (!missingSecretWarned.has(warnKey)) {
             missingSecretWarned.add(warnKey);
             log({ contactMissingSecret: warnKey });
@@ -92,9 +90,9 @@ export async function loadContacts() {
           continue;
         }
         try {
-          console.log('[contacts] decrypted contact-share', peerUid, JSON.stringify(contact));
+          console.log('[contacts] decrypted contact-share', peerDigest, JSON.stringify(contact));
         } catch {
-          console.log('[contacts] decrypted contact-share', peerUid, contact);
+          console.log('[contacts] decrypted contact-share', peerDigest, contact);
         }
         if (!contact) continue;
         conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
@@ -144,20 +142,11 @@ export async function loadContacts() {
       const storedSecret = typeof contact?.contactSecret_b64 === 'string' ? contact.contactSecret_b64.trim() : null;
       const storedInviteId = typeof contact?.inviteId === 'string' ? contact.inviteId.trim() : null;
       const storedRole = typeof contact?.contactSecret_role === 'string' ? contact.contactSecret_role : null;
-      const resolvedPeerUid = peerUid || normalizePeerIdentity({ peerUid: contact?.peerUid || contact?.peer_uid || null }).uid || null;
-      const finalIdentity = normalizePeerIdentity({
-        peerAccountDigest,
-        peerUid: resolvedPeerUid || peerUid
-      });
-      peerKey = finalIdentity.key;
-      peerAccountDigest = finalIdentity.accountDigest || null;
-      peerUid = finalIdentity.uid || null;
-      if (!peerKey) continue;
       if (pendingSecretUpdate) {
-        setContactSecret({ peerAccountDigest, peerUid }, pendingSecretUpdate);
+        setContactSecret({ peerAccountDigest }, pendingSecretUpdate);
       }
       const entry = {
-        peerUid: peerKey,
+        peerUid: peerDigest,
         peerAccountDigest,
         nickname: normalized,
         avatar: contact?.avatar || null,
@@ -169,12 +158,13 @@ export async function loadContacts() {
         secretRole: storedRole
       };
       const selfKeys = new Set([selfDigest].filter(Boolean));
-      const isSelfContact = !!peerKey && selfKeys.has(peerKey);
+      const isSelfContact = !!peerDigest && selfKeys.has(peerDigest);
       if (isSelfContact) {
         entry.isSelfContact = true;
         entry.hidden = true;
       }
-      const existing = peerMap.get(entry.peerUid);
+      const mapKey = entry.peerAccountDigest || entry.peerUid;
+      const existing = peerMap.get(mapKey);
       if (existing && (existing.addedAt || 0) >= (entry.addedAt || 0)) {
         continue;
       }
@@ -193,9 +183,9 @@ export async function loadContacts() {
         if (Object.keys(conversationUpdate).length) {
           updatePayload.conversation = conversationUpdate;
         }
-        setContactSecret({ peerAccountDigest, peerUid }, updatePayload);
+        setContactSecret({ peerAccountDigest }, updatePayload);
       }
-      peerMap.set(entry.peerUid, entry);
+      peerMap.set(mapKey, entry);
     } catch (err) {
       console.error('[contacts] decode failed', err);
     }
@@ -210,13 +200,10 @@ export async function saveContact(contact) {
   const convIds = contactConvIds();
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const identity = normalizePeerIdentity({
-    peerAccountDigest: contact?.peerAccountDigest || null,
-    peerUid: contact?.peerUid || null
+    peerAccountDigest: contact?.peerAccountDigest ?? contact?.peerUid ?? null
   });
-  const peerAccountDigest = identity.accountDigest || null;
-  const peerUid = identity.uid || null;
-  const peerKey = identity.key;
-  if (!peerKey) throw new Error('peerUid or peerAccountDigest required');
+  const peerAccountDigest = identity.accountDigest || identity.key || null;
+  if (!peerAccountDigest) throw new Error('peerAccountDigest required');
 
   const conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
     ? {
@@ -230,9 +217,10 @@ export async function saveContact(contact) {
   const inviteId = typeof contact?.inviteId === 'string' ? contact.inviteId.trim() : null;
   const secretRole = typeof contact?.secretRole === 'string' ? contact.secretRole : null;
 
-  const headerPeerUid = peerUid || peerKey;
+  const headerPeerUid = peerAccountDigest;
   const payload = {
     peerUid: headerPeerUid,
+    peerAccountDigest,
     nickname: normalizeNickname(contact?.nickname || '') || generateRandomNickname(),
     avatar: contact?.avatar || null,
     addedAt: Number(contact?.addedAt || nowTs())

@@ -23,8 +23,7 @@ const peerStates = new Map();
 function resolvePeerKey(value) {
   if (!value) return null;
   const identity = normalizePeerIdentity({
-    peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value?.peerUidHex ?? value?.peerUid ?? value,
-    peerUid: value?.peerUid
+    peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value?.peerUidHex ?? value
   });
   return identity.key || null;
 }

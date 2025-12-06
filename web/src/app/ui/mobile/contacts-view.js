@@ -53,6 +53,12 @@ export function initContactsView(options) {
   let pullDistance = 0;
   let contactsRefreshing = false;
 
+  const contactKey = (entry) => {
+    return normalizePeerIdentity(
+      entry?.peerAccountDigest ?? entry?.peer_account_digest ?? entry?.accountDigest ?? entry?.account_digest ?? entry
+    ).key;
+  };
+
   function renderContacts() {
     contactsListEl.innerHTML = '';
 
@@ -70,7 +76,7 @@ export function initContactsView(options) {
     const selfDigest = (getAccountDigest() || '').toUpperCase();
 
     sessionStore.contactState.forEach((c) => {
-      const key = normalizePeerIdentity({ peerAccountDigest: c?.peerAccountDigest, peerUid: c?.peerUid }).key;
+      const key = contactKey(c);
       if (!key) return;
       if (selfDigest && key === selfDigest) return;
       const name = normalizeNickname(c.nickname || '') || c.nickname || `好友 ${key.slice(-4)}`;
@@ -112,6 +118,7 @@ export function initContactsView(options) {
         }
         const detail = {
           peerUid: key,
+          peerAccountDigest: key,
           nickname: name,
           avatar: c?.avatar || null,
           conversation: c?.conversation && c.conversation.token_b64 && c.conversation.conversation_id
@@ -153,13 +160,11 @@ export function initContactsView(options) {
   }
 
   function removeContactState(peerUid, { notifyPeer = true } = {}) {
-    const identity = normalizePeerIdentity({ peerAccountDigest: peerUid, peerUid });
-    const key = identity.key;
+    const key = contactKey(peerUid);
     if (!key) return false;
     let mutated = false;
     const idx = sessionStore.contactState.findIndex((c) => {
-      const id = normalizePeerIdentity({ peerAccountDigest: c?.peerAccountDigest, peerUid: c?.peerUid });
-      return id.key === key;
+      return contactKey(c) === key;
     });
     if (idx >= 0) {
       sessionStore.contactState.splice(idx, 1);
@@ -168,19 +173,20 @@ export function initContactsView(options) {
     if (contactIndex.delete(key)) mutated = true;
     if (conversationIndex) {
       for (const [convId, info] of conversationIndex.entries()) {
-        if (info?.peerUid === key) {
+        const peerMatch = contactKey(info);
+        if (peerMatch === key) {
           conversationIndex.delete(convId);
           mutated = true;
         }
       }
     }
-    if (mutated) {
-      deleteContactSecret(key);
-      try {
-        resetSecureConversation(key, { reason: 'contact-removed', source: 'contacts-view' });
-      } catch (err) {
-        log({ resetSecureConversationError: err?.message || err, peerUid: key });
-      }
+      if (mutated) {
+        deleteContactSecret(key);
+        try {
+          resetSecureConversation(key, { reason: 'contact-removed', source: 'contacts-view' });
+        } catch (err) {
+          log({ resetSecureConversationError: err?.message || err, peerAccountDigest: key });
+        }
       presenceManager.removePresenceForContact(key);
       renderContacts();
       updateStats?.();
@@ -188,7 +194,7 @@ export function initContactsView(options) {
     }
     if (mutated && notifyPeer) {
       try {
-        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: key, notifyPeer: true } }));
+        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: key, peerAccountDigest: key, notifyPeer: true } }));
       } catch (err) {
         log({ contactRemovedEventError: err?.message || err });
       }
@@ -201,7 +207,7 @@ export function initContactsView(options) {
   }
 
   function showDeleteForContact(peerUid) {
-    const key = String(peerUid || '').toUpperCase();
+    const key = contactKey(peerUid);
     if (!key || !contactsListEl) return;
     contactsListEl.querySelectorAll('.contact-item').forEach((item) => {
       if (!item || !item.classList) return;
@@ -211,7 +217,7 @@ export function initContactsView(options) {
   }
 
   function confirmDeleteContact({ peerUid, element, name }) {
-    const key = String(peerUid || '').toUpperCase();
+    const key = contactKey(peerUid);
     if (!key) return;
     modal.showConfirmModal({
       title: '刪除好友',
@@ -342,16 +348,17 @@ export function initContactsView(options) {
   }
 
   function scheduleDrBootstrap(peerUid, conversation) {
-    if (!peerUid || !conversation) return;
-    const entry = sessionStore.contactIndex?.get?.(peerUid) || null;
+    const key = contactKey(peerUid);
+    if (!key || !conversation) return;
+    const entry = sessionStore.contactIndex?.get?.(key) || null;
     const entryRole = typeof entry?.secretRole === 'string' ? entry.secretRole.toLowerCase() : null;
-    const secretInfo = getContactSecret(peerUid);
+    const secretInfo = getContactSecret(key);
     const secretRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
     const selfRole = entryRole || secretRole;
     if (selfRole === 'guest') return;
     const bundle = conversation?.dr_init?.guest_bundle || conversation?.drInit?.guestBundle;
     if (!bundle) return;
-    bootstrapDrFromGuestBundle({ peerUidHex: peerUid, guestBundle: bundle }).catch((err) => {
+    bootstrapDrFromGuestBundle({ peerAccountDigest: key, guestBundle: bundle }).catch((err) => {
       log({ drBootstrapLoadError: err?.message || err });
     });
   }
@@ -359,9 +366,7 @@ export function initContactsView(options) {
   async function loadInitialContacts() {
     const prevPeers = new Set(
       Array.isArray(sessionStore.contactState)
-        ? sessionStore.contactState
-            .map((entry) => normalizePeerIdentity({ peerAccountDigest: entry?.peerAccountDigest, peerUid: entry?.peerUid }).key)
-            .filter(Boolean)
+        ? sessionStore.contactState.map((entry) => contactKey(entry)).filter(Boolean)
         : []
     );
     let fetched = [];
@@ -376,11 +381,7 @@ export function initContactsView(options) {
     conversationIndex?.clear();
     const sanitized = [];
     for (const entry of fetched) {
-      const identity = normalizePeerIdentity({
-        peerAccountDigest: entry?.peerAccountDigest || entry?.peer_account_digest || null,
-        peerUid: entry?.peerUid || entry?.peer_uid || null
-      });
-      const key = identity.key;
+      const key = contactKey(entry);
       if (!key) continue;
       if (isRecentlyRemoved(key)) {
         presenceManager.removePresenceForContact(key);
@@ -388,14 +389,15 @@ export function initContactsView(options) {
       }
       const normalizedEntry = {
         ...entry,
-        peerAccountDigest: identity.accountDigest || entry?.peerAccountDigest || null,
-        peerUid: identity.uid || identity.key || entry?.peerUid || null
+        peerAccountDigest: key,
+        peerUid: key
       };
       contactIndex.set(key, normalizedEntry);
       const conv = entry?.conversation;
       if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
         conversationIndex.set(conv.conversation_id, {
           token_b64: conv.token_b64,
+          peerAccountDigest: key,
           peerUid: key,
           dr_init: conv.dr_init || null,
           secretRole: entry?.secretRole || entry?.secret_role || null
@@ -411,13 +413,11 @@ export function initContactsView(options) {
       sanitized.push(normalizedEntry);
     }
     sessionStore.contactState = sanitized;
-    const currentPeers = new Set(
-      sanitized.map((entry) => normalizePeerIdentity({ peerAccountDigest: entry?.peerAccountDigest, peerUid: entry?.peerUid }).key).filter(Boolean)
-    );
+    const currentPeers = new Set(sanitized.map((entry) => contactKey(entry)).filter(Boolean));
     for (const peer of prevPeers) {
       if (peer && !currentPeers.has(peer)) {
         try {
-          document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: peer, notifyPeer: false } }));
+          document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerUid: peer, peerAccountDigest: peer, notifyPeer: false } }));
         } catch (err) {
           log({ contactRemovedEventError: err?.message || err, peer });
         }
@@ -428,8 +428,7 @@ export function initContactsView(options) {
   }
 
   async function addContactEntry({ peerUid, peerAccountDigest, nickname, avatar, conversation, contactSecret, inviteId, secretRole }) {
-    const identity = normalizePeerIdentity({ peerAccountDigest, peerUid });
-    const key = identity.key;
+    const key = contactKey({ peerAccountDigest, peerUid });
     if (!key) return;
     const selfDigest = (getAccountDigest() || '').toUpperCase();
     if (selfDigest && key === selfDigest) {
@@ -455,8 +454,8 @@ export function initContactsView(options) {
     } : null;
 
     const contact = {
-      peerUid: identity.uid || key,
-      peerAccountDigest: identity.accountDigest || null,
+      peerUid: key,
+      peerAccountDigest: key,
       nickname: nickname || `好友 ${key.slice(-4)}`,
       avatar: avatar || null,
       addedAt: now,
@@ -479,6 +478,7 @@ export function initContactsView(options) {
       if (entry?.conversation?.conversation_id && entry?.conversation?.token_b64 && conversationIndex) {
         conversationIndex.set(entry.conversation.conversation_id, {
           token_b64: entry.conversation.token_b64,
+          peerAccountDigest: key,
           peerUid: key,
           dr_init: entry.conversation.dr_init || null,
           secretRole: entry.secretRole || entry.secret_role || null
@@ -486,8 +486,7 @@ export function initContactsView(options) {
         scheduleDrBootstrap(key, entry.conversation);
       }
       const existingIndex = sessionStore.contactState.findIndex((c) => {
-        const id = normalizePeerIdentity({ peerAccountDigest: c?.peerAccountDigest, peerUid: c?.peerUid });
-        return id.key === key;
+        return contactKey(c) === key;
       });
       if (existingIndex >= 0) {
         sessionStore.contactState[existingIndex] = entry;
@@ -497,24 +496,26 @@ export function initContactsView(options) {
       renderContacts();
       presenceManager.sendPresenceSubscribe();
       updateStats?.();
-      emitContactEntryUpdated(entry, { peerUid: key, isNew: existingIndex < 0 });
+      emitContactEntryUpdated(entry, { peerUid: key, peerAccountDigest: key, isNew: existingIndex < 0 });
     } catch (err) {
       log({ contactAddError: err?.message || err });
     }
   }
 
-  function emitContactEntryUpdated(entry, { peerUid, isNew } = {}) {
-    if (!peerUid) return;
+  function emitContactEntryUpdated(entry, { peerUid, peerAccountDigest, isNew } = {}) {
+    const key = contactKey(peerAccountDigest || peerUid);
+    if (!key) return;
     try {
       document.dispatchEvent(new CustomEvent('contacts:entry-updated', {
         detail: {
-          peerUid,
+          peerUid: key,
+          peerAccountDigest: key,
           isNew: !!isNew,
           entry
         }
       }));
     } catch (err) {
-      log({ contactEntryUpdateEventError: err?.message || err, peerUid });
+      log({ contactEntryUpdateEventError: err?.message || err, peerUid: key });
     }
   }
 
@@ -522,14 +523,14 @@ export function initContactsView(options) {
 
   document.addEventListener('contacts:show-delete', (event) => {
     const detail = event?.detail || {};
-    const targetPeer = detail.peerUid || detail.peer_uid || detail.peer || detail.uid;
+    const targetPeer = contactKey(detail.peerAccountDigest || detail.peerUid || detail.peer_uid || detail.peer || detail.uid);
     showDeleteForContact(targetPeer);
   });
 
   document.addEventListener('contacts:removed', (event) => {
     const detail = event?.detail || {};
     if (!detail || detail.notifyPeer) return;
-    const peer = detail.peerUid || detail.peer_uid || detail.peer || detail.uid;
+    const peer = contactKey(detail.peerAccountDigest || detail.peerUid || detail.peer_uid || detail.peer || detail.uid);
     if (!peer) return;
     removeContactState(peer, { notifyPeer: false });
   });

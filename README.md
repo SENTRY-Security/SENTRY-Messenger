@@ -226,6 +226,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 | 日期                 | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **2025-12-06 19:33** | 前端 digest-only 清理持續中：DR/session/messages 層改以 account_digest 介面（移除 peerUidHex 參數）、mobile messages-pane 會話列表/通話/傳訊/媒體發送同步改傳 digest、contact loader 儲存 digest 為主並保留 alias、contacts view 事件與刪除流程調整為 digest 索引，dev app UI 輸入欄改為 peerAccountDigest。尚未處理 mobile share-controller，相關測試 (`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`) 未執行。 |
 | **2025-12-06 18:30** | 因本輪重構後既有腳本失效，已移除所有 mjs 測試檔（`scripts/test-*.mjs`、`tests/e2e/*.spec.mjs`、`tests/unit/messages.test.mjs` 等），後續需重建新版測試流程。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **2025-12-06 17:55** | 前端 digest-only 持續清理：Login → App handoff 以 account_digest 為主（app-ui/app-mobile/login-ui）、DR/訊息/通話 UI 去除本端 UID 依賴，remote-console/profile identicon/contacts 渲染改用 digest，測試腳本`scripts/test-messages-secure.mjs` / `tests/e2e/utils.mjs` / `tests/e2e/multi-account-helpers.mjs` 改用 digest 快照。尚未執行 `npm run test:*`。                                                                                                                                                                                                                                                                                                                            |
 | **2025-12-06 16:05** | Node API calls/groups digest-only：通話邀請/取消/ACK/metrics/TURN 憑證移除 UID 需求，僅驗證 account_token/account_digest；群組建立/成員增刪/查詢 payload 不再送 UID，僅保留 account_digest 與指紋；好友刪除 WS reload 改以 digest 廣播。未執行`npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}`，需在可清空 D1/R2 的環境補跑。                                                                                                                                                                                                                                                                                                                   |
@@ -324,15 +325,15 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [X] App 邊界：`app-ui` / `app-mobile` 不再把 digest 寫回 uidHex，也不再從 handoff 讀取 uid_hex/uid_digest。  
   - [X] 靜態輸入：`pages/login.html` 的隱藏 `uidHex` 欄位仍存在（SDM 用途）；確認是否需改為僅顯示/只讀或移除。  
   - [X] 模擬工具：`web/src/libs/ntag424-sim.js` 仍以 uidHex 驅動，保留於硬體模擬範圍（明確標註與 app 流程隔離，不納入 digest-only 清理）。
-  - [ ] `web/src/app/ui/mobile/messages-pane.js` — peerUid/peerUidHex 仍用於會話鍵值、信令、狀態顯示，需改為 accountDigest 或僅保留別名。  
-  - [ ] `web/src/app/ui/mobile/share-controller.js` — contact-share/DR bootstrap 仍傳/存 peerUid/ownerUid，需改 digest-only。  
-  - [ ] `web/src/app/ui/mobile/contacts-view.js` — contact 列表/刪除/同步事件使用 peerUid 鍵，需轉換或移除 alias。  
-  - [ ] `web/src/app/features/messages.js` — list/decrypt 等參數仍接受 peerUidHex，需改為 accountDigest 主鍵並清理 log。  
-  - [ ] `web/src/app/features/contacts.js` — contact secrets/state 仍混用 peerUid，需改 digest-only。  
-  - [ ] `web/src/app/features/secure-conversation-manager.js` — DR 狀態鍵/事件使用 peerUidHex，需改 digest-only。  
-  - [ ] `web/src/app/features/dr-session.js` — DR snapshot/history API 仍以 peerUidHex 命名，需改 digest-only（或僅保留 log）。  
-  - [ ] `web/src/shared/conversation/context.js` — fingerprint helper 仍接受 uid，需改 digest-only 或標註 legacy。  
-  - [ ] `web/src/app/ui/app-ui.js` dev 區塊（DR 測試）仍用 peerUidHex 欄位，需改 digest-only 或移除。
+  - [ ] `web/src/app/ui/mobile/messages-pane.js` — 尚有 peerUid 事件欄位相容用法，需完全移除 UID fallback。  
+  - [ ] `web/src/app/ui/mobile/share-controller.js` — 還保留 ownerUid/peerUid 字段與 event payload，需要再確認完全 digest-only。  
+  - [ ] `web/src/app/ui/mobile/contacts-view.js` — 仍接受 peerUid 事件欄位，需純粹 digest。  
+  - [ ] `web/src/app/features/messages.js` — 仍保留 peerUidHex/peerUid 參數相容，需改為僅接受 peerAccountDigest。  
+  - [ ] `web/src/app/features/contacts.js` — 部分欄位仍使用 peerUid/peerUid header，需移除 UID 混用。  
+  - [ ] `web/src/app/features/secure-conversation-manager.js` — resolvePeerKey 仍接受 peerUidHex/peerUid，相容邏輯待移除。  
+  - [ ] `web/src/app/features/dr-session.js` — normHex/resolvePeerDigest 仍接受 peerUidHex/peerUid 相容，需去除 UID fallback。  
+  - [X] `web/src/shared/conversation/context.js` — fingerprint helper 接受 accountDigest。  
+  - [X] `web/src/app/ui/app-ui.js` dev 區塊（DR 測試）改為 peerAccountDigest 輸入。
 - [ ] 文件：更新 `iOS-Development-Guids.md` 等仍提到 `uidHex/peerUid` 的說明，改為 account_digest-only（SDM 入口除外）。
 - [ ] 部署與驗證（最後進行）：清空 D1/R2 後重新部署 Worker/Node/Pages；跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 

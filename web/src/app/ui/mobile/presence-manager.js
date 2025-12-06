@@ -14,10 +14,7 @@ export function createPresenceManager(options) {
   function sendPresenceSubscribe() {
     const digests = new Set();
     for (const c of sessionStore.contactState || []) {
-      const identity = normalizePeerIdentity({
-        peerAccountDigest: c?.peerAccountDigest || c?.peerUid,
-        peerUid: c?.peerUid
-      });
+      const identity = normalizePeerIdentity(c?.peerAccountDigest || c?.peer_account_digest || c?.accountDigest || c?.account_digest || null);
       if (identity.accountDigest) digests.add(identity.accountDigest);
     }
     wsSend({

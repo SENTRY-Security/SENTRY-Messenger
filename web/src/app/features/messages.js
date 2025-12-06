@@ -316,11 +316,20 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
   return base;
 }
 
-export async function listSecureAndDecrypt({ conversationId, tokenB64, peerAccountDigest, peerUidHex, limit = 20, cursorTs, mutateState = true, allowReplay = false }) {
+export async function listSecureAndDecrypt(params = {}) {
+  const {
+    conversationId,
+    tokenB64,
+    peerAccountDigest,
+    limit = 20,
+    cursorTs,
+    mutateState = true,
+    allowReplay = false
+  } = params;
   if (!conversationId) throw new Error('conversationId required');
   if (!tokenB64) throw new Error('conversation token required');
   const identity = storeNormalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest ?? peerUidHex ?? null
+    peerAccountDigest: peerAccountDigest ?? params.peerUidHex ?? params.peerUid ?? null
   });
   const peerKey = identity.key;
   if (!peerKey) throw new Error('peer identity required');

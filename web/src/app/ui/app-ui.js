@@ -112,7 +112,7 @@ const convEl = $('#convId'); const fileEl = $('#file'); const lastKeyEl = $('#la
       <h3>(Dev) DR 文字訊息</h3>
       <div class="row">
         <label>Peer Account Digest</label>
-        <input id="peerUidHex" placeholder="對方帳號 digest（hex）" style="min-width:220px" />
+        <input id="peerAccountDigest" placeholder="對方帳號 digest（hex）" style="min-width:220px" />
         <button id="btnInitDr">初始化會話</button>
       </div>
       <div class="row">
@@ -251,8 +251,8 @@ async function onLoadMessages() {
     const tokenB64 = prompt('輸入 conversation token（base64url）:');
     const peer = prompt('輸入對方帳號 digest（hex）：');
     if (!conversationId || !tokenB64 || !peer) return;
-    const peerUidHex = String(peer).replace(/[^0-9a-f]/gi, '').toUpperCase();
-    const { items, nextCursorTs, errors } = await listSecureAndDecrypt({ conversationId, tokenB64, peerAccountDigest: peerUidHex, limit: 20 });
+    const peerDigest = String(peer).replace(/[^0-9a-f]/gi, '').toUpperCase();
+    const { items, nextCursorTs, errors } = await listSecureAndDecrypt({ conversationId, tokenB64, peerAccountDigest: peerDigest, limit: 20 });
     renderMessages(items);
     if (errors && errors.length) log({ decryptErrors: errors });
     if (nextCursorTs) log({ nextCursorTs });
@@ -291,7 +291,7 @@ function b64u8(b64s){ const bin=atob(String(b64s||'')); const u8=new Uint8Array(
 
 // ---- DR helpers (UI) ----
 function getPeerFromInput(){
-  const el = document.querySelector('#peerUidHex');
+  const el = document.querySelector('#peerAccountDigest');
   const v = (el?.value || '').replace(/[^0-9a-f]/gi,'').toUpperCase();
   return v;
 }

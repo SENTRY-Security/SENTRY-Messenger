@@ -1212,7 +1212,7 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
       attempted += 1;
       const state = drState(peerUid);
       if (state?.rk) {
-        if (persistDrSnapshot({ peerUidHex: peerUid, state })) {
+        if (persistDrSnapshot({ peerAccountDigest: peerUid, state })) {
           persisted += 1;
         }
       } else {
