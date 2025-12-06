@@ -3,6 +3,7 @@ import { logger } from '../utils/logger.js';
 import { verifyWsToken } from '../utils/ws-token.js';
 import { normalizeCallId } from '../utils/call-validators.js';
 import { appendCallEvent } from '../services/call-worker.js';
+import { normalizeSessionTs } from '../utils/session-utils.js';
 
 const clients = new Map(); // accountDigest -> Set<WebSocket>
 const latestSessionTs = new Map(); // accountDigest -> iat (seconds)
@@ -284,9 +285,13 @@ async function handleCallSignal(ws, msg) {
 
 function addClient(accountDigest, ws, sessionTs) {
   const key = canonicalAccountDigest(accountDigest);
-  const ts = Number(sessionTs) || Math.floor(Date.now() / 1000);
-  const latestTs = latestSessionTs.get(key) || 0;
-  if (latestTs && ts < latestTs) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sessionInfo = normalizeSessionTs(sessionTs, { now: nowSec });
+  const ts = sessionInfo.ts ?? nowSec;
+  const latestInfo = normalizeSessionTs(latestSessionTs.get(key), { now: nowSec });
+  const latestTs = latestInfo.ts || 0;
+  const latestReliable = !!latestTs && latestInfo.clamped !== true;
+  if (latestReliable && ts < latestTs) {
     try {
       ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'stale_session' }));
     } catch {}

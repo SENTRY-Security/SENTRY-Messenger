@@ -14,7 +14,7 @@ const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 const TokenRequestSchema = z.object({
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  sessionTs: z.number().int().optional()
+  sessionTs: z.number().int().optional() // client-supplied timestamp; informational only
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -55,11 +55,9 @@ r.post('/ws/token', async (req, res) => {
     return res.status(500).json({ error: 'VerifyFailed', message: 'account digest missing' });
   }
 
-  const sessionTs = Number.isFinite(input.sessionTs) ? Math.floor(input.sessionTs) : Math.floor(Date.now() / 1000);
-  const latest = latestLoginTs.get(accountDigest) || 0;
-  if (latest && sessionTs < latest) {
-    return res.status(409).json({ error: 'StaleSession', message: 'session superseded by newer login' });
-  }
+  // Use server-side time to order logins; ignore client clock to avoid false stale kicks.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sessionTs = nowSec;
   latestLoginTs.set(accountDigest, sessionTs);
 
   const { token, payload: tokenPayload } = createWsToken({ accountDigest, issuedAt: sessionTs });
@@ -67,7 +65,8 @@ r.post('/ws/token', async (req, res) => {
     token,
     expiresAt: tokenPayload.exp,
     accountDigest: tokenPayload.accountDigest,
-    sessionTs
+    sessionTs,
+    clientSessionTs: input.sessionTs ?? null
   });
 });
 

@@ -197,13 +197,14 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
 
   // 2) Get presigned PUT
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
+  const normalizedDirection = direction === 'received' ? 'received' : (direction === 'sent' ? 'sent' : null);
   const signPayload = {
     convId,
     contentType,
     dir: storageDir || undefined,
-    size: fileSize ?? plainBuf.byteLength,
-    direction: direction === 'received' ? 'received' : 'sent'
+    size: fileSize ?? plainBuf.byteLength
   };
+  if (normalizedDirection) signPayload.direction = normalizedDirection;
   if (conversationFingerprint) signPayload.conversationFingerprint = conversationFingerprint;
   const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));
@@ -308,13 +309,14 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   const ct = await aeadEncryptWithMK(plainBuf, ctKey, infoTag);
 
   const storageDir = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
+  const normalizedDirection = direction === 'received' ? 'received' : (direction === 'sent' ? 'sent' : null);
   const signPayload = {
     convId,
     contentType,
     dir: storageDir || undefined,
-    size: fileSize ?? plainBuf.byteLength,
-    direction: direction === 'received' ? 'received' : 'sent'
+    size: fileSize ?? plainBuf.byteLength
   };
+  if (normalizedDirection) signPayload.direction = normalizedDirection;
   if (conversationFingerprint) signPayload.conversationFingerprint = conversationFingerprint;
   const { r: rSign, data: sign } = await apiSignPut(signPayload);
   if (!rSign.ok) throw new Error('sign-put failed: ' + JSON.stringify(sign));

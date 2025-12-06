@@ -142,7 +142,13 @@ export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {
   const acct = (getAccountDigest() || '').toUpperCase();
   if (!acct) throw new Error('Account missing');
   const convId = `${AVATAR_CONV_PREFIX}${acct}`;
-  const { objectKey, envelope, size } = await encryptAndPutWithProgress({ convId, file, onProgress, dir: 'avatars' });
+  const { objectKey, envelope, size } = await encryptAndPutWithProgress({
+    convId,
+    file,
+    onProgress,
+    dir: 'avatars',
+    direction: 'drive'
+  });
   const now = Math.floor(Date.now() / 1000);
   return {
     objKey: objectKey,

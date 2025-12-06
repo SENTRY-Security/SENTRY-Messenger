@@ -35,8 +35,12 @@ export function initDrivePane({
   let activePdfCleanup = null;
   let pdfJsLibPromise = null;
 
-  const SYSTEM_DIR_SENT = '已傳送';
-  const SYSTEM_DIR_RECEIVED = '已接收';
+  const SYSTEM_DIR_SENT = '__SYS_SENT__';
+  const SYSTEM_DIR_RECEIVED = '__SYS_RECV__';
+  const SYSTEM_DIR_LABELS = Object.freeze({
+    [SYSTEM_DIR_SENT]: '已傳送',
+    [SYSTEM_DIR_RECEIVED]: '已接收'
+  });
   const RESERVED_DIRS = new Set([SYSTEM_DIR_SENT, SYSTEM_DIR_RECEIVED]);
   const DRIVE_PULL_THRESHOLD = 60;
   const DRIVE_PULL_MAX = 140;
@@ -54,11 +58,15 @@ export function initDrivePane({
     return RESERVED_DIRS.has(normalized);
   }
 
+  function displayFolderName(name) {
+    return SYSTEM_DIR_LABELS[name] || name;
+  }
+
   function sanitizePathSegments(input) {
     if (!Array.isArray(input)) return [];
     return input
       .map((seg) => String(seg || '').trim())
-      .filter((seg) => seg && !isReservedDir(seg));
+      .filter((seg) => !!seg);
   }
 
   function ensureSafeCwd() {
@@ -615,7 +623,7 @@ export function initDrivePane({
   function renderCrumb() {
     if (!crumbEl) return;
     const cwd = ensureSafeCwd();
-    const parts = [{ name: '根目錄', path: '' }, ...cwd.map((seg, idx) => ({ name: seg, path: cwd.slice(0, idx + 1).join('/') }))];
+    const parts = [{ name: '根目錄', path: '' }, ...cwd.map((seg, idx) => ({ name: displayFolderName(seg), path: cwd.slice(0, idx + 1).join('/') }))];
     crumbEl.innerHTML = '';
     parts.forEach((p, i) => {
       const isLast = i === parts.length - 1;
@@ -651,20 +659,27 @@ export function initDrivePane({
     return cleaned.slice(0, 96);
   }
 
-  function getDirSegmentsFromHeader(header) {
-    if (!header) return [];
-    const dir = header.dir;
-    if (Array.isArray(dir)) {
-      return sanitizeHeaderDir(dir);
+  function getDirSegments({ header, objKey, convId }) {
+    if (header) {
+      const dir = header.dir;
+      if (Array.isArray(dir)) {
+        const segments = sanitizeHeaderDir(dir);
+        if (segments.length) return segments;
+      } else if (typeof dir === 'string') {
+        const segments = String(dir)
+          .split('/')
+          .map((seg) => String(seg || '').trim())
+          .filter(Boolean);
+        const cleaned = sanitizeHeaderDir(segments);
+        if (cleaned.length) return cleaned;
+      }
     }
-    if (typeof dir === 'string') {
-      const segments = String(dir)
-        .split('/')
-        .map((seg) => String(seg || '').trim())
-        .filter(Boolean);
-      return sanitizeHeaderDir(segments);
-    }
-    return [];
+    const key = typeof objKey === 'string' ? objKey : '';
+    if (!key) return [];
+    const parts = key.split('/').filter(Boolean);
+    if (convId && parts[0] === convId) parts.shift();
+    if (parts.length > 0) parts.pop(); // last segment is object key (filename/id)
+    return sanitizeHeaderDir(parts);
   }
 
   function pathStartsWith(pathSegments, prefixSegments) {
@@ -709,6 +724,7 @@ export function initDrivePane({
 
   function renderDriveList(items) {
     if (!driveListEl) return;
+    const convId = driveState.currentConvId || '';
     closeOpenSwipe?.();
     renderCrumb();
     driveListEl.innerHTML = '';
@@ -719,12 +735,12 @@ export function initDrivePane({
     for (const it of items) {
       const header = safeJSON(it.header_json || it.header || '{}');
       const isPlaceholderItem = isPlaceholder(header);
-      const dirSegments = getDirSegmentsFromHeader(header);
       const objKey = typeof it?.obj_key === 'string' && it.obj_key ? it.obj_key : (typeof header?.obj === 'string' ? header.obj : '');
+      const dirSegments = getDirSegments({ header, objKey, convId });
       if (!pathStartsWith(dirSegments, currentPath)) continue;
       if (dirSegments.length > currentPath.length) {
         const next = dirSegments[currentPath.length];
-        if (next && !isReservedDir(next)) {
+        if (next) {
           const summary = folderSet.get(next) || { files: 0, placeholders: 0, subfolders: new Set() };
           if (dirSegments.length > currentPath.length + 1) {
             const childName = dirSegments[currentPath.length + 1];
@@ -741,6 +757,8 @@ export function initDrivePane({
     }
     const folders = Array.from(folderSet.entries()).sort((a, b) => a[0].localeCompare(b[0]));
     for (const [name, summary] of folders) {
+      const isSystem = isReservedDir(name);
+      const displayName = SYSTEM_DIR_LABELS[name] || name;
       const fileCount = Number(summary?.files || 0);
       const folderCount = summary?.subfolders instanceof Set ? summary.subfolders.size : 0;
       const parts = [];
@@ -748,19 +766,22 @@ export function initDrivePane({
       if (fileCount > 0) parts.push(`${fileCount} 個檔案`);
       const subLabel = parts.length ? parts.join(' · ') : '空資料夾';
       const li = document.createElement('li');
-      li.className = 'file-item folder';
+      li.className = 'file-item folder' + (isSystem ? ' system-folder' : '');
       li.dataset.type = 'folder';
       li.dataset.folderName = name;
       li.setAttribute('role', 'button');
       li.tabIndex = 0;
+      const badge = isSystem
+        ? `<span class="badge badge-system" style="margin-left:6px;padding:2px 8px;border-radius:10px;background:#e0f2ff;color:#0b6bcb;font-weight:600;font-size:12px;">系統資料夾</span>`
+        : '';
       li.innerHTML = `
         <div class="item-content">
           <div class="meta">
-            <div class="name"><i class='bx bx-folder' aria-hidden="true"></i><span class="label">${escapeHtml(name)}</span></div>
+            <div class="name"><i class='bx bx-folder' aria-hidden="true"></i><span class="label">${escapeHtml(displayName)}</span>${badge}</div>
             <div class="sub">${subLabel}</div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`;
+        ${isSystem ? '' : `<button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`}`;
       const open = async () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
@@ -977,16 +998,16 @@ export function initDrivePane({
     const targetMessages = driveState.currentMessages
       .map((msg) => {
         const header = safeJSON(msg?.header_json || msg?.header || '{}');
-        const dirSegments = getDirSegmentsFromHeader(header);
-        if (!pathStartsWith(dirSegments, targetPath)) return null;
         const objKey = typeof msg?.obj_key === 'string' && msg.obj_key ? msg.obj_key : (typeof header?.obj === 'string' ? header.obj : '');
+        const dirSegments = getDirSegments({ header, objKey, convId });
+        if (!pathStartsWith(dirSegments, targetPath)) return null;
         if (!objKey) return null;
         return { header, objKey, msg };
       })
       .filter(Boolean);
 
     const batch = targetMessages.map(({ header, objKey, msg }) => {
-      const newDir = getDirSegmentsFromHeader(header).map((seg) => (seg === oldName ? newName : seg));
+      const newDir = getDirSegments({ header, objKey, convId }).map((seg) => (seg === oldName ? newName : seg));
       const payload = {
         convId,
         type: msg?.type || 'media',
@@ -1141,7 +1162,7 @@ export function initDrivePane({
         return;
       }
       if (isReservedDir(safeName)) {
-        if (errorEl) errorEl.textContent = '「已傳送」與「已接收」為系統保留資料夾，請改用其他名稱。';
+        if (errorEl) errorEl.textContent = '此名稱為系統保留資料夾，請改用其他名稱。';
         input?.focus();
         input?.select?.();
         return;
@@ -1210,6 +1231,7 @@ export function initDrivePane({
           convId,
           file,
           dir: [...ensureSafeCwd()],
+          direction: 'drive',
           onProgress: (progress) => {
             if (!progress) return;
             const loaded = typeof progress.loaded === 'number' ? progress.loaded : 0;
@@ -1249,6 +1271,7 @@ export function initDrivePane({
       convId,
       file: blob,
       dir,
+      direction: 'drive',
       extraHeader: { placeholder: true }
     });
   }
@@ -1405,15 +1428,17 @@ export function initDrivePane({
     if (isReservedDir(folderName)) return;
     const basePath = [...ensureSafeCwd()];
     const targetPath = [...basePath, folderName];
+    const convId = driveState.currentConvId || '';
     const targetMessages = driveState.currentMessages
       .map((msg) => {
         const header = safeJSON(msg?.header_json || msg?.header || '{}');
         const placeholder = isPlaceholder(header);
-        const dirSegments = getDirSegmentsFromHeader(header);
-        if (!pathStartsWith(dirSegments, targetPath)) return null;
-        const objKey = typeof msg?.obj_key === 'string' && msg.obj_key
+        const objKeyRaw = typeof msg?.obj_key === 'string' && msg.obj_key
           ? msg.obj_key
           : (typeof header?.obj === 'string' ? header.obj : '');
+        const dirSegments = getDirSegments({ header, objKey: objKeyRaw, convId });
+        if (!pathStartsWith(dirSegments, targetPath)) return null;
+        const objKey = objKeyRaw;
         if (!objKey) return null;
         const id = String(msg?.id || '');
         return { objKey, id, placeholder };

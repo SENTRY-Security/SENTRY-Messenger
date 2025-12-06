@@ -23,8 +23,8 @@ const DRIVE_QUOTA_BYTES = Number(process.env.DRIVE_QUOTA_BYTES || 3 * 1024 * 102
 const DATA_API = process.env.DATA_API_URL;
 const HMAC_SECRET = process.env.DATA_API_HMAC;
 
-const SYSTEM_DIR_SENT = '已傳送';
-const SYSTEM_DIR_RECEIVED = '已接收';
+const SYSTEM_DIR_SENT = '__SYS_SENT__';
+const SYSTEM_DIR_RECEIVED = '__SYS_RECV__';
 
 const SignPutSchema = z.object({
   convId: z.string().min(1),
@@ -176,10 +176,14 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
       .filter(Boolean);
     if (segments.length) dirClean = segments.join('/');
   }
-  const direction = input.direction === 'received' ? 'received' : 'sent';
-  const systemDir = direction === 'received' ? SYSTEM_DIR_RECEIVED : SYSTEM_DIR_SENT;
+  const direction = input.direction === 'received' ? 'received' : (input.direction === 'sent' ? 'sent' : null);
   const convIdClean = convId;
-  const basePrefix = `${convIdClean}/${systemDir}`;
+  let basePrefix = convIdClean;
+  if (direction === 'received') {
+    basePrefix = `${convIdClean}/${SYSTEM_DIR_RECEIVED}`;
+  } else if (direction === 'sent') {
+    basePrefix = `${convIdClean}/${SYSTEM_DIR_SENT}`;
+  }
   const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
   const key = `${keyPrefix}/${uid}`;
 

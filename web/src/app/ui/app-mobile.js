@@ -137,16 +137,19 @@ const SIM_STORAGE_KEY = (() => {
 })();
 const SESSION_LOGIN_TS_KEY = 'session-login-ts';
 function getLoginSessionTs() {
+  const now = Math.floor(Date.now() / 1000);
   try {
     if (typeof sessionStorage !== 'undefined') {
       const existing = Number(sessionStorage.getItem(SESSION_LOGIN_TS_KEY) || '');
-      if (Number.isFinite(existing) && existing > 0) return existing;
-      const now = Math.floor(Date.now() / 1000);
-      sessionStorage.setItem(SESSION_LOGIN_TS_KEY, String(now));
-      return now;
+      let ts = now;
+      if (Number.isFinite(existing) && existing > 0 && existing <= now + 3600) {
+        ts = Math.max(existing, now); // always move forward to current login time
+      }
+      sessionStorage.setItem(SESSION_LOGIN_TS_KEY, String(ts));
+      return ts;
     }
   } catch {}
-  return Math.floor(Date.now() / 1000);
+  return now;
 }
 
 function isSimStorageKey(key) {
@@ -831,7 +834,7 @@ function clearLocalEncryptedCaches() {
 }
 
 function clearSessionHandoff() {
-const baseKeys = ['mk_b64', 'account_token', 'account_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY];
+  const baseKeys = ['mk_b64', 'account_token', 'account_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY, SESSION_LOGIN_TS_KEY];
   const opts = getContactSecretKeyOptions();
   const contactKeys = mergeUniqueKeyLists(
     getContactSecretsStorageKeys(opts),
@@ -2516,6 +2519,7 @@ async function connectWebSocket() {
   wsConn = ws;
   updateConnectionIndicator('connecting');
   ws.onopen = () => {
+    if (ws !== wsConn) return; // stale socket
     log({ wsState: 'open' });
     wsReconnectTimer = null;
     try {
@@ -2530,12 +2534,14 @@ async function connectWebSocket() {
     }
   };
   ws.onmessage = (event) => {
+    if (ws !== wsConn) return; // stale socket
     log({ wsMessageRaw: event.data });
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     handleWebSocketMessage(msg);
   };
   ws.onclose = (evt) => {
+    if (ws !== wsConn) return; // stale socket (likely replaced)
     log({ wsClose: { code: evt.code, reason: evt.reason } });
     wsConn = null;
     updateConnectionIndicator('offline');
@@ -2551,6 +2557,7 @@ async function connectWebSocket() {
     scheduleWsReconnect();
   };
   ws.onerror = () => {
+    if (ws !== wsConn) return; // stale socket
     log({ wsError: true });
     updateConnectionIndicator('offline');
     wsAuthTokenInfo = null;
