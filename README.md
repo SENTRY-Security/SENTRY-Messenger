@@ -341,6 +341,14 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 - [ ]  清空 D1/R2 + 部署：套用遷移，wipe 後重新部署 Worker/Node/Pages。
 - [ ]  測試：跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 
+### TODO — UID/uid_hex 殘留清理（digest-only 後續工作）
+- [ ] Worker：`data-worker/src/worker.js` 多數 account 解析與 prekeys/device backup 流程仍要求 `uidHex`（如 resolveAccount、/d1/prekeys/publish/bundle 等），需改為 digest-only 或確認例外。
+- [ ] Node routes：`src/routes/auth.routes.js` / `src/routes/v1/debug.routes.js` 仍以 `uidHex` 維持 session/debug-kit，`src/utils/account-context.js` 仍回傳 `uidHex`；需評估是否改為 digest-only 或限制於 SDM/開發模式。
+- [ ] Controllers：`src/controllers/messages.controller.js` 回傳 `uidHex`，`src/controllers/calls.controller.js` schema 仍允許 `uidHex/peerUid`；需同步移除或明確標記僅作兼容。
+- [ ] 前端 SDM/Login：`web/src/app/features/{login-flow,sdm}.js`、`login-ui.js`、`web/src/app/api/auth.js` 仍以 `uidHex` 為核心（交換/模擬/交棒）；需定義與 digest-only 的邊界（僅硬體交換保留，其他流程改 digest）。
+- [ ] 共享/預鍵：`web/src/shared/crypto/prekeys.js` 等仍以 `uidHex` 作為 key，需改為 digest 或加入兼容 alias。
+- [ ] 文件：`iOS-Development-Guids.md` 等仍描述 `uidHex`/`peerUid` 為必填；待後端/前端清理後更新 API 契約說明。
+
 ## 授權條款
 
 本專案採用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-only）。若部署於可供他人透過網路存取的服務，請公開對應來源碼與修改內容，以確保社群共享與使用者權益。
