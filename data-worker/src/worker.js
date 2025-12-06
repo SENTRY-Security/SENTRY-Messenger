@@ -1433,13 +1433,20 @@ export default {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
 
+      const peerAccountDigest = normalizeAccountDigest(
+        body.peerAccountDigest
+        || body.peer_accountDigest
+        || body.peer_account_digest
+        || body.accountDigest
+        || body.account_digest
+      );
+      if (!peerAccountDigest) {
+        return json({ error: 'BadRequest', message: 'peerAccountDigest required' }, { status: 400 });
+      }
+
       let account;
       try {
-        account = await resolveAccount(env, {
-          accountToken: body.accountToken,
-          accountDigest: body.accountDigest,
-          uidHex: body.peer_uidHex || body.peerUid || body.uidHex
-        });
+        account = await resolveAccount(env, { accountDigest: peerAccountDigest }, { allowCreate: false, preferredAccountDigest: peerAccountDigest });
       } catch (err) {
         return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
       }
@@ -2023,14 +2030,6 @@ async function upsertCallSession(env, payload = {}) {
   const mode = normalizeCallMode(payload.mode) || existing?.mode || 'voice';
   let callerDigest = normalizeAccountDigest(payload.callerAccountDigest || payload.caller_account_digest) || existing?.caller_account_digest || null;
   let calleeDigest = normalizeAccountDigest(payload.calleeAccountDigest || payload.callee_account_digest) || existing?.callee_account_digest || null;
-  const callerUid = normalizeUid(payload.callerUid || payload.caller_uid);
-  const calleeUid = normalizeUid(payload.calleeUid || payload.callee_uid);
-  if (!callerDigest && callerUid) {
-    try { callerDigest = await hashUidToDigest(env, callerUid); } catch {}
-  }
-  if (!calleeDigest && calleeUid) {
-    try { calleeDigest = await hashUidToDigest(env, calleeUid); } catch {}
-  }
   if (!callerDigest || !calleeDigest) {
     return { ok: false, status: 400, error: 'BadRequest', message: 'callerAccountDigest and calleeAccountDigest required' };
   }
@@ -2119,14 +2118,6 @@ async function insertCallEvent(env, payload = {}) {
   const payloadJson = eventPayload === null ? null : jsonStringOrNull(eventPayload);
   let fromAccountDigest = fromAccountDigestInput || null;
   let toAccountDigest = toAccountDigestInput || null;
-  const fromUid = normalizeUid(payload.fromUid || payload.from_uid);
-  const toUid = normalizeUid(payload.toUid || payload.to_uid);
-  if (!fromAccountDigest && fromUid) {
-    try { fromAccountDigest = await hashUidToDigest(env, fromUid); } catch {}
-  }
-  if (!toAccountDigest && toUid) {
-    try { toAccountDigest = await hashUidToDigest(env, toUid); } catch {}
-  }
   if (!fromAccountDigest || !toAccountDigest) {
     try {
       const sessionRow = await env.DB.prepare(
@@ -2138,6 +2129,10 @@ async function insertCallEvent(env, payload = {}) {
     } catch (err) {
       console.warn('call_session_lookup_for_event_failed', err?.message || err);
     }
+  }
+
+  if (!fromAccountDigest || !toAccountDigest) {
+    return { ok: false, status: 400, error: 'BadRequest', message: 'fromAccountDigest and toAccountDigest required' };
   }
 
   await env.DB.prepare(`
