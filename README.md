@@ -323,7 +323,8 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [X] Store 相容欄位：`core/store` 預設不再附帶 UID，includeUid 僅供 SDM/debug 顯式使用。  
   - [X] App 邊界：`app-ui` / `app-mobile` 不再把 digest 寫回 uidHex，也不再從 handoff 讀取 uid_hex/uid_digest。  
   - [ ] 靜態輸入：`pages/login.html` 的隱藏 `uidHex` 欄位仍存在（SDM 用途）；確認是否需改為僅顯示/只讀或移除。  
-  - [ ] 模擬工具：`web/src/libs/ntag424-sim.js` 仍以 uidHex 驅動（允許保留於硬體模擬範圍，但需標註與 app 流程隔離）。
+  - [X] 模擬工具：`web/src/libs/ntag424-sim.js` 仍以 uidHex 驅動，保留於硬體模擬範圍（明確標註與 app 流程隔離，不納入 digest-only 清理）。
+  - [ ] 前端模組殘留 peerUid/ownerUid/peerUidHex 鍵值（需改 digest-only 或移除 alias）：`web/src/app/ui/mobile/messages-pane.js`、`web/src/app/ui/mobile/share-controller.js`、`web/src/app/ui/mobile/contacts-view.js`、`web/src/app/features/messages.js`、`web/src/app/features/contacts.js`、`web/src/app/features/secure-conversation-manager.js`、`web/src/app/features/dr-session.js`、`web/src/shared/conversation/context.js`、`web/src/app/ui/app-ui.js` dev DR 區塊等。
 - [ ] 文件：更新 `iOS-Development-Guids.md` 等仍提到 `uidHex/peerUid` 的說明，改為 account_digest-only（SDM 入口除外）。
 - [ ] 部署與驗證（最後進行）：清空 D1/R2 後重新部署 Worker/Node/Pages；跑 `npm run test:{prekeys-devkeys,messages-secure,friends-messages,login-flow,front:login}` 並記錄結果。
 
