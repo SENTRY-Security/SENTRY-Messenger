@@ -1,5 +1,5 @@
 // /app/api/groups.js
-// API wrappers for group management (create/add/remove/get).
+// API wrappers for group management (create/add/remove/get) using accountDigest-only identities.
 
 import { fetchWithTimeout, jsonReq } from '../core/http.js';
 import { buildAccountPayload, normalizePeerIdentity } from '../core/store.js';
@@ -8,15 +8,15 @@ function normalizeMembers(list = []) {
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const entry of list) {
-    const identity = normalizePeerIdentity({
-      peerAccountDigest: entry?.accountDigest || entry?.account_digest || entry?.peerAccountDigest || entry?.peer_account_digest || null,
-      peerUid: entry?.uid || entry?.peerUid || entry?.peer_uid || null
-    });
+    const identity = normalizePeerIdentity(
+      entry?.accountDigest ||
+      entry?.account_digest ||
+      entry?.peerAccountDigest ||
+      entry?.peer_account_digest ||
+      entry
+    );
     if (!identity.key) continue;
-    out.push({
-      accountDigest: identity.accountDigest || null,
-      uid: identity.uid || null
-    });
+    out.push({ accountDigest: identity.accountDigest || null });
   }
   return out;
 }

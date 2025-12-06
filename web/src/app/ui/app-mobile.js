@@ -1414,7 +1414,7 @@ function switchTab(name, options = {}){
     const state = messagesPane.getMessageState();
     const isDesktop = typeof window === 'undefined' ? true : window.innerWidth >= 960;
     if (!state.viewMode) {
-      state.viewMode = state.activePeerUid ? 'detail' : 'list';
+      state.viewMode = state.activePeerDigest ? 'detail' : 'list';
     }
     if (options.fromBack && !isDesktop) {
       state.viewMode = 'list';
@@ -1423,8 +1423,8 @@ function switchTab(name, options = {}){
     messagesPane.refreshConversationPreviews({ force: true }).catch((err) => log({ conversationPreviewRefreshError: err?.message || err }));
     messagesPane.renderConversationList();
     const isAutomation = typeof navigator !== 'undefined' && !!navigator.webdriver;
-    if (options.fromBack && !isDesktop && isAutomation && state.activePeerUid) {
-      messagesPane.showDeleteForPeer(state.activePeerUid);
+    if (options.fromBack && !isDesktop && isAutomation && state.activePeerDigest) {
+      messagesPane.showDeleteForPeer(state.activePeerDigest);
     }
     messagesPane.updateComposerAvailability();
     messagesPane.updateMessagesUI({ scrollToEnd: true });

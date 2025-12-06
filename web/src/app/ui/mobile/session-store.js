@@ -22,7 +22,7 @@ const defaultDriveState = {
 };
 
 const defaultMessageState = {
-  activePeerUid: null,
+  activePeerDigest: null,
   conversationId: null,
   conversationToken: null,
   messages: [],

@@ -504,7 +504,7 @@ export function initMessagesPane({
     };
     const state = getMessageState();
     const isOutgoing = direction === CALL_SESSION_DIRECTION.OUTGOING;
-    const isActive = state.activePeerUid === key;
+    const isActive = state.activePeerDigest === key;
     const viewerMessage = createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
     let localMessage = null;
     if (isActive) {
@@ -620,8 +620,8 @@ export function initMessagesPane({
   function applySecureStatusForActivePeer(peerUidHex, statusInfo) {
     const state = getMessageState();
     const key = normalizePeerKey(peerUidHex);
-    if (state.activePeerUid !== key) {
-      if (!state.activePeerUid) hideSecurityModal();
+    if (state.activePeerDigest !== key) {
+      if (!state.activePeerDigest) hideSecurityModal();
       return;
     }
     const status = statusInfo?.status || null;
@@ -645,7 +645,7 @@ export function initMessagesPane({
     const entry = cacheSecureStatus(key, event?.status, event?.error);
     if (!entry) return;
     const state = getMessageState();
-    if (state.activePeerUid === key) {
+    if (state.activePeerDigest === key) {
       applySecureStatusForActivePeer(key, entry);
     }
   }
@@ -906,13 +906,13 @@ export function initMessagesPane({
 
   function syncThreadFromActiveMessages() {
     const state = getMessageState();
-    if (!state.conversationId || !state.activePeerUid) return;
-    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerUid) || null;
-    const nickname = contactEntry?.nickname || `好友 ${state.activePeerUid.slice(-4)}`;
+    if (!state.conversationId || !state.activePeerDigest) return;
+    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
+    const nickname = contactEntry?.nickname || `好友 ${state.activePeerDigest.slice(-4)}`;
     const avatar = contactEntry?.avatar || null;
     const tokenB64 = state.conversationToken || contactEntry?.conversation?.token_b64 || null;
     const thread = upsertConversationThread({
-      peerUid: state.activePeerUid,
+      peerUid: state.activePeerDigest,
       conversationId: state.conversationId,
       tokenB64,
       nickname,
@@ -1013,7 +1013,7 @@ export function initMessagesPane({
 
   function updateConversationActionsAvailability() {
     const state = getMessageState();
-    const enabled = !!(state.activePeerUid && state.conversationToken);
+    const enabled = !!(state.activePeerDigest && state.conversationToken);
     const buttons = [elements.callBtn, elements.videoBtn];
     for (const btn of buttons) {
       if (!btn) continue;
@@ -1028,15 +1028,15 @@ export function initMessagesPane({
       updateConversationActionsAvailability();
       return;
     }
-    const key = state.activePeerUid ? String(state.activePeerUid).toUpperCase() : null;
+    const key = state.activePeerDigest ? String(state.activePeerDigest).toUpperCase() : null;
     const statusInfo = key ? getCachedSecureStatus(key) : null;
     const status = statusInfo?.status || null;
     const blocked = status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
-    const enabled = !!(state.conversationToken && state.activePeerUid && !blocked);
+    const enabled = !!(state.conversationToken && state.activePeerDigest && !blocked);
     elements.input.disabled = !enabled;
     elements.sendBtn.disabled = !enabled;
     let placeholder = '輸入訊息…';
-    if (!state.conversationToken || !state.activePeerUid) {
+    if (!state.conversationToken || !state.activePeerDigest) {
       placeholder = '選擇好友開始聊天';
     } else if (status === SECURE_CONVERSATION_STATUS.PENDING) {
       placeholder = '正在建立安全對話…';
@@ -1068,10 +1068,10 @@ export function initMessagesPane({
 
   async function handleConversationAction(type) {
     const state = getMessageState();
-    if (!state.activePeerUid || !state.conversationToken) return;
+    if (!state.activePeerDigest || !state.conversationToken) return;
     const actionType = type === 'video' ? 'voice' : type; // 視訊暫時停用，強制走語音
-    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerUid) || null;
-    const fallbackName = `好友 ${state.activePeerUid.slice(-4)}`;
+    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
+    const fallbackName = `好友 ${state.activePeerDigest.slice(-4)}`;
     const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
     const avatarUrl = resolveContactAvatarUrl(contactEntry);
     const peerAccountDigest = contactEntry?.accountDigest
@@ -1103,7 +1103,7 @@ export function initMessagesPane({
     const snapshot = getCallSessionSnapshot();
     const callId = result.callId || snapshot?.callId || null;
     if (!callId) {
-      log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerUid: state.activePeerUid });
+      log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerUid: state.activePeerDigest });
       showToast?.('無法建立通話：缺少識別碼', { variant: 'error' });
       return;
     }
@@ -1111,11 +1111,11 @@ export function initMessagesPane({
     try {
       envelope = await prepareCallKeyEnvelope({
         callId,
-        peerUidHex: state.activePeerUid,
+        peerUidHex: state.activePeerDigest,
         direction: CALL_SESSION_DIRECTION.OUTGOING
       });
     } catch (err) {
-      log({ callKeyEnvelopeError: err?.message || err, peerUid: state.activePeerUid });
+      log({ callKeyEnvelopeError: err?.message || err, peerUid: state.activePeerDigest });
       showToast?.('無法建立通話加密金鑰', { variant: 'error' });
       return;
     }
@@ -1141,7 +1141,7 @@ export function initMessagesPane({
     if (avatarUrl) metadata.peerAvatarUrl = avatarUrl;
     const sent = sendCallInviteSignal({
       callId,
-      peerAccountDigest: peerAccountDigest || state.activePeerUid,
+      peerAccountDigest: peerAccountDigest || state.activePeerDigest,
       mode: actionType === 'video' ? 'video' : 'voice',
       metadata,
       capabilities,
@@ -1149,12 +1149,12 @@ export function initMessagesPane({
       traceId
     });
     if (!sent) {
-      log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerUid });
+      log({ callInviteSignalFailed: true, callId, peerUid: state.activePeerDigest });
       showToast?.('通話信令傳送失敗', { variant: 'error' });
       return;
     }
     try {
-      await startOutgoingCallMedia({ callId, peerAccountDigest: state.activePeerUid });
+      await startOutgoingCallMedia({ callId, peerAccountDigest: state.activePeerDigest });
     } catch (err) {
       log({ callMediaStartError: err?.message || err });
       showToast?.('無法啟動通話媒體：' + (err?.message || err), { variant: 'error' });
@@ -1259,8 +1259,8 @@ export function initMessagesPane({
     const openPeer = elements.conversationList.querySelector('.conversation-item.show-delete')?.dataset?.peer || null;
     const contacts = Array.isArray(sessionStore.contactState) ? [...sessionStore.contactState] : [];
     let state = getMessageState();
-    if (state.activePeerUid) {
-      const exists = contacts.some((c) => String(c?.peerUid || '').toUpperCase() === state.activePeerUid);
+    if (state.activePeerDigest) {
+      const exists = contacts.some((c) => String(c?.peerUid || '').toUpperCase() === state.activePeerDigest);
       if (!exists) {
         resetMessageStateWithPlaceholders();
         state = getMessageState();
@@ -1293,7 +1293,7 @@ export function initMessagesPane({
       li.className = 'conversation-item';
       li.dataset.peer = peerUid;
       li.dataset.conversationId = thread.conversationId;
-      if (state.activePeerUid === peerUid) li.classList.add('active');
+      if (state.activePeerDigest === peerUid) li.classList.add('active');
       if (openPeer && openPeer === peerUid) li.classList.add('show-delete');
       const nickname = thread.nickname || `好友 ${peerUid.slice(-4)}`;
       const initials = initialsFromName(nickname, peerUid);
@@ -1897,7 +1897,7 @@ export function initMessagesPane({
         if (msg.direction === 'incoming') {
           const avatar = document.createElement('div');
           avatar.className = 'message-avatar';
-          const contact = msg.direction === 'incoming' ? sessionStore.contactIndex?.get?.(state.activePeerUid || '') : null;
+          const contact = msg.direction === 'incoming' ? sessionStore.contactIndex?.get?.(state.activePeerDigest || '') : null;
           const name = contact?.nickname || '';
           const initials = name ? name.slice(0, 1) : '好友';
           avatar.textContent = initials;
@@ -1950,7 +1950,7 @@ export function initMessagesPane({
 
   async function loadActiveConversationMessages({ append = false, replay = false } = {}) {
     const state = getMessageState();
-    if (!state.conversationId || !state.conversationToken || !state.activePeerUid) return;
+    if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
     if (state.loading) return;
     if (append && (!state.hasMore || !state.nextCursorTs)) return;
 
@@ -1962,7 +1962,7 @@ export function initMessagesPane({
       const { items, nextCursorTs, errors } = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
-        peerUidHex: state.activePeerUid,
+        peerUidHex: state.activePeerDigest,
         limit: 50,
         cursorTs: cursor,
         mutateState: forceReplay ? false : !append,
@@ -1984,7 +1984,7 @@ export function initMessagesPane({
         chunk = chunk.filter((entry) => {
           if (entry?.type === 'call-log') {
             const callId = entry.callLog?.callId || entry.meta?.call_id || null;
-            const placeholder = resolveCallLogPlaceholder(state.activePeerUid, callId);
+            const placeholder = resolveCallLogPlaceholder(state.activePeerDigest, callId);
             if (placeholder && callId) {
               placeholder.id = entry.id || placeholder.id;
               placeholder.ts = entry.ts || placeholder.ts;
@@ -1996,7 +1996,7 @@ export function initMessagesPane({
                 };
               }
               placeholder.pending = false;
-              releaseCallLogPlaceholder(state.activePeerUid, callId);
+              releaseCallLogPlaceholder(state.activePeerDigest, callId);
               placeholderUpdated = true;
               return false;
             }
@@ -2083,7 +2083,7 @@ export function initMessagesPane({
     log({ setActiveConversation: { peer: key, conversationId: conversation.conversation_id || null } });
     const state = getMessageState();
     const hadExistingMessages = Array.isArray(state.messages) && state.messages.length > 0;
-    state.activePeerUid = key;
+    state.activePeerDigest = key;
     state.conversationToken = conversation.token_b64;
     try {
       state.conversationId = conversation.conversation_id || await conversationIdFromToken(conversation.token_b64);
@@ -2191,7 +2191,7 @@ export function initMessagesPane({
       updateThreadAvatar(peerUid, entry.avatar || null);
     }
     const state = getMessageState();
-    if (state.activePeerUid === peerUid) {
+    if (state.activePeerDigest === peerUid) {
       refreshActivePeerMetadata(peerUid);
     }
     if (!hasConversation) {
@@ -2276,11 +2276,11 @@ export function initMessagesPane({
     const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
     if (!files.length) return;
     const state = getMessageState();
-    if (!state.activePeerUid || !state.conversationToken) {
+    if (!state.activePeerDigest || !state.conversationToken) {
       setMessagesStatus('請先選擇已建立安全對話的好友', true);
       return;
     }
-    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerUid) || null;
+    const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
     const conversation = contactEntry?.conversation || null;
     try {
       for (const file of files) {
@@ -2318,7 +2318,7 @@ export function initMessagesPane({
 
         try {
           const res = await sendDrMedia({
-            peerUidHex: state.activePeerUid,
+            peerUidHex: state.activePeerDigest,
             file,
             conversation,
             convId: state.conversationId,
@@ -2351,10 +2351,10 @@ export function initMessagesPane({
               preview: res?.msg?.media?.preview || msg.media.preview || null
             };
           }
-          if (state.activePeerUid) {
+          if (state.activePeerDigest) {
             wsSendFn({
               type: 'message-new',
-              targetAccountDigest: state.activePeerUid,
+              targetAccountDigest: state.activePeerDigest,
               conversationId: state.conversationId,
               preview: msg?.text || previewText,
               ts: msg?.ts || Math.floor(Date.now() / 1000)
@@ -2473,9 +2473,9 @@ export function initMessagesPane({
     lastLayoutIsDesktop = desktop;
     const state = getMessageState();
     if (!state.viewMode) {
-      state.viewMode = state.activePeerUid ? 'detail' : 'list';
+      state.viewMode = state.activePeerDigest ? 'detail' : 'list';
     }
-    if (!desktop && !state.activePeerUid && state.viewMode !== 'list') {
+    if (!desktop && !state.activePeerDigest && state.viewMode !== 'list') {
       state.viewMode = 'list';
     }
     applyMessagesLayout();
@@ -2564,7 +2564,7 @@ export function initMessagesPane({
           }
           if (element) closeSwipe?.(element);
           const state = getMessageState();
-          if (state.activePeerUid === key) {
+          if (state.activePeerDigest === key) {
             resetMessageStateWithPlaceholders();
             if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
             clearMessagesView();
@@ -2657,7 +2657,7 @@ export function initMessagesPane({
     if (messageId) thread.lastMessageId = messageId;
 
     const state = getMessageState();
-    const active = state.conversationId === convId && state.activePeerUid === peerUid;
+    const active = state.conversationId === convId && state.activePeerDigest === peerUid;
     const onMessagesTab = getCurrentTab?.() === 'messages';
 
     if (isSelf) {
@@ -2779,7 +2779,7 @@ export function initMessagesPane({
       return;
     }
     if (conversationId && token) {
-      state.activePeerUid = null;
+      state.activePeerDigest = null;
       state.conversationId = conversationId;
       state.conversationToken = token;
       loadActiveConversationMessages({ append: false })
@@ -2851,20 +2851,20 @@ export function initMessagesPane({
       const text = (elements.input?.value || '').trim();
       if (!text) return;
       const state = getMessageState();
-      const contactEntryLog = state.activePeerUid ? sessionStore.contactIndex?.get?.(state.activePeerUid) : null;
+      const contactEntryLog = state.activePeerDigest ? sessionStore.contactIndex?.get?.(state.activePeerDigest) : null;
       log({ messageComposerSubmit: {
-        peer: state.activePeerUid,
+        peer: state.activePeerDigest,
         hasToken: !!state.conversationToken,
         contactHasToken: !!contactEntryLog?.conversation?.token_b64
       } });
-      if (!state.conversationToken || !state.activePeerUid) {
+      if (!state.conversationToken || !state.activePeerDigest) {
         setMessagesStatus('請先選擇已建立安全對話的好友', true);
         return;
       }
       if (elements.sendBtn) elements.sendBtn.disabled = true;
       try {
-        const res = await sendDrText({ peerUidHex: state.activePeerUid, text });
-        log({ messageComposerSent: { peer: state.activePeerUid, convId: res?.convId || null, msgId: res?.msg?.id || res?.id || null } });
+        const res = await sendDrText({ peerUidHex: state.activePeerDigest, text });
+        log({ messageComposerSent: { peer: state.activePeerDigest, convId: res?.convId || null, msgId: res?.msg?.id || res?.id || null } });
         const ts = Math.floor(Date.now() / 1000);
         appendLocalOutgoingMessage({ text, ts, id: res?.msg?.id || res?.id });
         const convId = res?.convId || state.conversationId;
@@ -2874,10 +2874,10 @@ export function initMessagesPane({
           elements.input.focus();
         }
         setMessagesStatus('');
-        if (convId && state.activePeerUid) {
+        if (convId && state.activePeerDigest) {
           wsSendFn({
             type: 'message-new',
-            targetAccountDigest: state.activePeerUid,
+            targetAccountDigest: state.activePeerDigest,
             conversationId: convId,
             preview: text,
             ts
