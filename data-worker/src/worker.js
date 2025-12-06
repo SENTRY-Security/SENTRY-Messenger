@@ -1472,6 +1472,28 @@ export default {
       }
     }
 
+    if (req.method === 'GET' && url.pathname === '/d1/accounts/created') {
+      const accountDigest = normalizeAccountDigest(
+        url.searchParams.get('accountDigest')
+        || url.searchParams.get('account_digest')
+        || url.searchParams.get('digest')
+      );
+      if (!accountDigest) {
+        return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+      }
+      const rows = await env.DB.prepare(
+        `SELECT account_digest, created_at FROM accounts WHERE account_digest=?1`
+      ).bind(accountDigest).all();
+      const row = rows?.results?.[0] || null;
+      if (!row) {
+        return json({ error: 'NotFound', message: 'account not found' }, { status: 404 });
+      }
+      return json({
+        account_digest: row.account_digest,
+        created_at: Number(row.created_at) || null
+      });
+    }
+
     // 交換：建立 / 更新 account、檢查 counter、回傳 MK 包裝資訊
     if (req.method === 'POST' && url.pathname === '/d1/tags/exchange') {
       let body;
