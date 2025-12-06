@@ -244,7 +244,7 @@ async function handleCallSignal(ws, msg) {
       return;
     }
     if (isAccountDigestLocked(targetAccountDigest, callId)) {
-      sendCallError(ws, 'CALL_TARGET_BUSY', 'target already has an active call', { event: rawType, callId, peerUid: targetAccountDigest });
+      sendCallError(ws, 'CALL_TARGET_BUSY', 'target already has an active call', { event: rawType, callId, peerAccountDigest: targetAccountDigest });
       return;
     }
     lockAccountDigestForCall(ws.__accountDigest, callId);
@@ -261,8 +261,6 @@ async function handleCallSignal(ws, msg) {
   const payload = {
     type: rawType,
     callId,
-    fromUid: ws.__uid,
-    toUid: null,
     fromAccountDigest: ws.__accountDigest || null,
     toAccountDigest: targetAccountDigest || null,
     traceId: traceId || null,
@@ -274,8 +272,6 @@ async function handleCallSignal(ws, msg) {
     callId,
     type: rawType,
     payload: detail || null,
-    fromUid: ws.__uid,
-    toUid: null,
     fromAccountDigest: ws.__accountDigest || null,
     toAccountDigest: targetAccountDigest || null,
     traceId
@@ -283,7 +279,7 @@ async function handleCallSignal(ws, msg) {
 
   broadcastByDigest(targetAccountDigest, payload);
   broadcastByDigest(ws.__accountDigest, payload, { exclude: ws });
-  sendCallAck(ws, rawType, callId, { peerUid: targetAccountDigest });
+  sendCallAck(ws, rawType, callId, { peerAccountDigest: targetAccountDigest });
 }
 
 function addClient(accountDigest, ws, sessionTs) {
@@ -307,11 +303,10 @@ function addClient(accountDigest, ws, sessionTs) {
   }
   if (!clients.has(key)) clients.set(key, new Set());
   clients.get(key).add(ws);
-  ws.__uid = ws.__uid || null;
   ws.__accountDigest = key;
   ws.__sessionTs = ts;
   latestSessionTs.set(key, ts);
-  logger.info({ accountDigest: key, uid: ws.__uid || null }, 'ws_client_registered');
+  logger.info({ accountDigest: key }, 'ws_client_registered');
   notifyPresence(key, true);
   return true;
 }
@@ -393,7 +388,6 @@ function handleClientMessage(ws, data) {
     const fromDigest = ws.__accountDigest || null;
     broadcastByDigest(targetDigest, {
       type: 'contact-share',
-      fromUid: ws.__uid,
       fromAccountDigest: fromDigest,
       inviteId: msg.inviteId || null,
       envelope: msg.envelope || null,
@@ -407,7 +401,6 @@ function handleClientMessage(ws, data) {
     const peerAcct = ws.__accountDigest || null;
     broadcastByDigest(targetDigest, {
       type: 'contact-removed',
-      peerUid: ws.__uid,
       peerAccountDigest: peerAcct,
       ts: Date.now()
     });
@@ -428,9 +421,7 @@ function handleClientMessage(ws, data) {
       preview,
       ts,
       count,
-      senderUid: ws.__uid,
       senderAccountDigest: senderAcct,
-      peerUid: ws.__uid,
       peerAccountDigest: senderAcct,
       targetAccountDigest: targetDigest
     });
