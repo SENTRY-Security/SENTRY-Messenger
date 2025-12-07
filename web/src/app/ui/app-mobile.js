@@ -1555,6 +1555,49 @@ function stopSubscriptionScanner() {
   subscriptionScannerActive = false;
 }
 
+async function openSubscriptionScanModal() {
+  const modal = document.getElementById('modal');
+  const body = document.getElementById('modalBody');
+  const title = document.getElementById('modalTitle');
+  if (!modal || !body) return;
+  stopSubscriptionScanner();
+  resetModalVariants(modal);
+  modal.classList.add('settings-modal');
+  if (title) title.textContent = '掃描 QRCode 儲值';
+  body.innerHTML = `
+    <div class="subscription-card">
+      <div class="title">請將憑證置中</div>
+      <video id="subscriptionScanVideo" style="width:100%; max-height:260px; border:1px solid var(--line); border-radius:12px; background:#0f172a0d;" muted playsinline></video>
+      <div id="subscriptionScanStatus" class="sub-meta" style="margin-top:8px;">正在啟動相機…</div>
+    </div>
+  `;
+  modal.__subscriptionCleanup = () => {
+    stopSubscriptionScanner();
+  };
+  openModal();
+  const scanVideo = document.getElementById('subscriptionScanVideo');
+  const scanStatus = document.getElementById('subscriptionScanStatus');
+  if (!scanVideo) return;
+  QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
+  try {
+    if (!subscriptionScanner) {
+      subscriptionScanner = new QrScanner(scanVideo, (res) => {
+        const text = typeof res === 'string' ? res : res?.data || '';
+        if (text) {
+          stopSubscriptionScanner();
+          closeModal();
+          handleRedeemToken(text);
+        }
+      });
+    }
+    await subscriptionScanner.start();
+    subscriptionScannerActive = true;
+    if (scanStatus) scanStatus.textContent = '請將憑證 QR 對準框線';
+  } catch (err) {
+    if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
+  }
+}
+
 function startSubscriptionCountdown(expiresAt) {
   stopSubscriptionCountdown();
   const statusText = document.getElementById('subscriptionStatusText');
@@ -1630,18 +1673,11 @@ async function openSubscriptionModal() {
       <div class="subscription-card">
         <div class="title">QR 憑證展期</div>
         <div class="sub-actions">
-          <button id="subscriptionScanBtn" type="button" class="secondary">開啟掃描器</button>
+          <button id="subscriptionScanBtn" type="button" class="secondary">掃描 QRCode 儲值</button>
           <button id="subscriptionUploadBtn" type="button" class="secondary">上傳/匯入</button>
         </div>
         <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
-        <div class="sub-scan">
-          <video id="subscriptionScanVideo" style="width:100%; max-height:220px; display:none; border:1px solid var(--line); border-radius:12px;" muted playsinline></video>
-          <div id="subscriptionScanStatus" class="sub-meta"></div>
-        </div>
-        <div class="sub-textarea">
-          <textarea id="subscriptionTokenInput" rows="3" placeholder="貼上憑證 JWT"></textarea>
-          <button id="subscriptionRedeemBtn" type="button" class="primary full">使用憑證展期</button>
-        </div>
+        <div class="sub-meta" id="subscriptionScanStatus"></div>
       </div>
     </div>
   `;
@@ -1653,37 +1689,11 @@ async function openSubscriptionModal() {
   const fileInput = document.getElementById('subscriptionFileInput');
   const uploadBtn = document.getElementById('subscriptionUploadBtn');
   const scanBtn = document.getElementById('subscriptionScanBtn');
-  const redeemBtn = document.getElementById('subscriptionRedeemBtn');
-  const tokenInput = document.getElementById('subscriptionTokenInput');
-  const scanVideo = document.getElementById('subscriptionScanVideo');
   const scanStatus = document.getElementById('subscriptionScanStatus');
 
   uploadBtn?.addEventListener('click', () => fileInput?.click());
   fileInput?.addEventListener('change', (e) => handleSubscriptionFile(e.target.files));
-  scanBtn?.addEventListener('click', async () => {
-    if (!scanVideo) return;
-    QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
-    try {
-      if (!subscriptionScanner) {
-        subscriptionScanner = new QrScanner(scanVideo, (res) => {
-          const text = typeof res === 'string' ? res : res?.data || '';
-          if (text) {
-            handleRedeemToken(text);
-            stopSubscriptionScanner();
-            scanVideo.style.display = 'none';
-            scanStatus.textContent = '已讀取憑證，正在處理…';
-          }
-        });
-      }
-      await subscriptionScanner.start();
-      subscriptionScannerActive = true;
-      scanVideo.style.display = 'block';
-      if (scanStatus) scanStatus.textContent = '請將憑證 QR 對準框線';
-    } catch (err) {
-      scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
-    }
-  });
-  redeemBtn?.addEventListener('click', () => handleRedeemToken(tokenInput?.value?.trim()));
+  scanBtn?.addEventListener('click', () => openSubscriptionScanModal());
 
   refreshSubscriptionStatus({ silent: true }).then((state) => {
     const { expired, text } = computeSubscriptionCountdown(state.expiresAt || 0);
