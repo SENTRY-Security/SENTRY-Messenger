@@ -28,6 +28,7 @@ import {
   getContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
+import { ensureDefaultAvatarFromSeed } from '../features/profile.js';
 
 // ---- UI elements ----
 const $ = (sel) => document.querySelector(sel);
@@ -445,7 +446,8 @@ const bootstrapStepDefs = [
   { key: 'generate-bundle', label: '產生預共享金鑰' },
   { key: 'prekeys-publish', label: '上傳預共享金鑰' },
   { key: 'wrap-device', label: '備份裝置金鑰' },
-  { key: 'devkeys-store', label: '儲存裝置備份' }
+  { key: 'devkeys-store', label: '儲存裝置備份' },
+  { key: 'avatar-init', label: '設定初始頭像中' }
 ];
 const bootstrapStepMap = new Map();
 let bootstrapInitialized = false;
@@ -494,6 +496,7 @@ function initBootstrapProgress() {
   bootstrapStepMap.clear();
   for (const def of bootstrapStepDefs) {
     if (newAccount && def.key === 'prekeys-sync') continue;
+    if (!newAccount && def.key === 'avatar-init') continue;
     const li = document.createElement('li');
     li.dataset.step = def.key;
     const row = document.createElement('div');
@@ -882,6 +885,25 @@ async function onUnlock() {
       loginInProgress = false;
       log('預共享金鑰尚未就緒，請稍後再試。');
       return;
+    }
+    if (newAccount) {
+      const avatarSeed = getUidHex?.() || getAccountDigest();
+      if (avatarSeed) {
+        updateBootstrapStep('avatar-init', 'start');
+        try {
+          const res = await ensureDefaultAvatarFromSeed({ seed: avatarSeed });
+          if (res?.skipped) {
+            updateBootstrapStep('avatar-init', 'skip', '已存在頭像');
+          } else {
+            updateBootstrapStep('avatar-init', 'success', '預設頭像已設定');
+          }
+        } catch (err) {
+          log({ avatarInitError: err?.message || err });
+          updateBootstrapStep('avatar-init', 'error', err?.message || err);
+        }
+      } else {
+        updateBootstrapStep('avatar-init', 'skip', '缺少識別種子');
+      }
     }
     updateUidDisplay();
     updateLoading('登入成功，正在導向…');

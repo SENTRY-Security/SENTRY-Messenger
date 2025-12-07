@@ -370,6 +370,18 @@ export const acceptInvite = async (req, res) => {
   const ownerAccountDigest = data?.owner_account_digest || auth.accountDigest || null;
   try {
     const manager = getWebSocketManager();
+    if (manager && ownerAccountDigest && input?.contactEnvelope) {
+      try {
+        manager.sendContactShare(null, {
+          fromAccountDigest: auth.accountDigest,
+          inviteId: input.inviteId,
+          envelope: input.contactEnvelope,
+          targetAccountDigest: ownerAccountDigest
+        });
+      } catch (err) {
+        logger.warn({ err: err?.message || err }, 'ws_contact_share_owner_notify_failed');
+      }
+    }
     if (ownerAccountDigest) {
       manager?.notifyContactsReload(null, ownerAccountDigest);
     }

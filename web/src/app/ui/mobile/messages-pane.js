@@ -525,7 +525,6 @@ export function initMessagesPane({
       ts: entry.ts,
       direction: isOutgoing ? 'outgoing' : 'incoming'
     });
-    if (!sentCallLogIds.has(entry.id) && entry.id) sentCallLogIds.add(entry.id);
     if (entry.id && !sentCallLogIds.has(entry.id)) {
       sentCallLogIds.add(entry.id);
       sendDrCallLog({
