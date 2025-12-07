@@ -1673,8 +1673,8 @@ async function openSubscriptionModal() {
       <div class="subscription-card">
         <div class="title">QR 憑證展期</div>
         <div class="sub-actions">
-          <button id="subscriptionScanBtn" type="button" class="secondary">掃描 QRCode 儲值</button>
-          <button id="subscriptionUploadBtn" type="button" class="secondary">上傳/匯入</button>
+          <button id="subscriptionScanBtn" type="button" class="secondary"><i class='bx bx-qr-scan'></i> 掃描 QRCode 儲值</button>
+          <button id="subscriptionUploadBtn" type="button" class="secondary"><i class='bx bx-upload'></i> 上傳/匯入</button>
         </div>
         <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
         <div class="sub-meta" id="subscriptionScanStatus"></div>
