@@ -550,6 +550,148 @@ export default {
       return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
     }
 
+    if (req.method === 'POST' && url.pathname === '/d1/subscription/redeem') {
+      await ensureDataTables(env);
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const digest = normalizeAccountDigest(body?.digest || body?.accountDigest || body?.account_digest || body?.usedByDigest || body?.used_by_digest);
+      const tokenId = typeof body?.tokenId === 'string' ? body.tokenId.trim() : (typeof body?.token_id === 'string' ? body.token_id.trim() : (typeof body?.voucherId === 'string' ? body.voucherId.trim() : null));
+      const jti = typeof body?.jti === 'string' ? body.jti.trim() : null;
+      const agentId = typeof body?.agentId === 'string' ? body.agentId.trim() : null;
+      const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : 'default';
+      const signatureB64 = typeof body?.signatureB64 === 'string' ? body.signatureB64.trim() : (typeof body?.signature_b64 === 'string' ? body.signature_b64.trim() : null);
+      const issuedAt = Number(body?.issuedAt || body?.issued_at || 0);
+      const durationDays = Number(body?.durationDays || body?.extend_days || 0);
+      const dryRun = body?.dryRun === true;
+      if (!digest) {
+        return json({ error: 'BadRequest', message: 'digest required' }, { status: 400 });
+      }
+      if (!tokenId && !jti) {
+        return json({ error: 'BadRequest', message: 'tokenId required' }, { status: 400 });
+      }
+      const tokenKey = tokenId || jti;
+      if (!Number.isFinite(durationDays) || durationDays <= 0) {
+        return json({ error: 'BadRequest', message: 'durationDays required' }, { status: 400 });
+      }
+      const now = Math.floor(Date.now() / 1000);
+      const durationSeconds = Math.floor(durationDays * 86400);
+
+      let currentExpires = 0;
+      try {
+        const row = await env.DB.prepare(`SELECT expires_at FROM subscriptions WHERE digest=?1`).bind(digest).all();
+        currentExpires = Number(row?.results?.[0]?.expires_at || 0);
+      } catch (err) {
+        console.warn('subscription_lookup_failed', err?.message || err);
+      }
+      const base = Math.max(currentExpires, now);
+      const newExpires = base + durationSeconds;
+
+      if (dryRun) {
+        return json({
+          ok: true,
+          dryRun: true,
+          tokenId: tokenKey,
+          digest,
+          currentExpires,
+          expiresAt: newExpires,
+          durationDays
+        });
+      }
+
+      try {
+        const existingToken = await env.DB.prepare(
+          `SELECT token_id, status, used_at, used_by_digest FROM tokens WHERE token_id=?1`
+        ).bind(tokenKey).all();
+        const tokenRow = existingToken?.results?.[0] || null;
+        if (tokenRow && tokenRow.status === 'used') {
+          return json({
+            error: 'TokenUsed',
+            message: 'token already used',
+            tokenId: tokenKey,
+            used_at: tokenRow.used_at || null,
+            used_by_digest: tokenRow.used_by_digest || null
+          }, { status: 409 });
+        }
+
+        const batch = [];
+        batch.push(env.DB.prepare(
+          `INSERT INTO subscriptions (digest, expires_at, updated_at, created_at)
+             VALUES (?1, ?2, strftime('%s','now'), strftime('%s','now'))
+             ON CONFLICT(digest) DO UPDATE SET expires_at=excluded.expires_at, updated_at=strftime('%s','now')`
+        ).bind(digest, newExpires));
+
+        batch.push(env.DB.prepare(
+          `INSERT INTO tokens (token_id, digest, issued_at, extend_days, nonce, key_id, signature_b64, status, used_at, used_by_digest, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'used', ?8, ?9, strftime('%s','now'))
+             ON CONFLICT(token_id) DO UPDATE SET digest=excluded.digest, extend_days=excluded.extend_days, key_id=excluded.key_id, signature_b64=excluded.signature_b64, status='used', used_at=excluded.used_at, used_by_digest=excluded.used_by_digest`
+        ).bind(
+          tokenKey,
+          digest,
+          Number.isFinite(issuedAt) && issuedAt > 0 ? issuedAt : now,
+          durationDays,
+          typeof body?.nonce === 'string' ? body.nonce.trim() : null,
+          keyId,
+          signatureB64 || '',
+          now,
+          digest
+        ));
+
+        batch.push(env.DB.prepare(
+          `INSERT INTO extend_logs (token_id, digest, extend_days, expires_at_after, used_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, strftime('%s','now'))`
+        ).bind(tokenKey, digest, durationDays, newExpires, now));
+
+        await env.DB.batch(batch);
+      } catch (err) {
+        console.error('subscription_redeem_failed', err?.message || err);
+        return json({ error: 'RedeemFailed', message: err?.message || 'redeem failed' }, { status: 500 });
+      }
+
+      return json({
+        ok: true,
+        tokenId: tokenKey,
+        digest,
+        currentExpires,
+        expiresAt: newExpires,
+        durationDays,
+        usedAt: now,
+        agentId: agentId || null
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/d1/subscription/status') {
+      await ensureDataTables(env);
+      const digest = normalizeAccountDigest(url.searchParams.get('digest'));
+      if (!digest) {
+        return json({ error: 'BadRequest', message: 'digest required' }, { status: 400 });
+      }
+      let record = null;
+      try {
+        const row = await env.DB.prepare(
+          `SELECT digest, expires_at, updated_at FROM subscriptions WHERE digest=?1`
+        ).bind(digest).all();
+        record = row?.results?.[0] || null;
+      } catch (err) {
+        console.warn('subscription_status_query_failed', err?.message || err);
+      }
+      if (!record) {
+        return json({ ok: true, found: false, digest, now: Math.floor(Date.now() / 1000) });
+      }
+      const now = Math.floor(Date.now() / 1000);
+      return json({
+        ok: true,
+        found: true,
+        digest,
+        expires_at: Number(record.expires_at || 0),
+        updated_at: Number(record.updated_at || 0),
+        now
+      });
+    }
+
     if (req.method === 'POST' && url.pathname === '/d1/calls/session') {
       await cleanupCallTables(env);
       let body;
@@ -2571,7 +2713,41 @@ async function ensureDataTables(env) {
         FOREIGN KEY (issuer_account_digest) REFERENCES accounts(account_digest) ON DELETE SET NULL
       )`,
     `CREATE INDEX IF NOT EXISTS idx_group_invites_group ON group_invites(group_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_group_invites_expires ON group_invites(expires_at)`
+    `CREATE INDEX IF NOT EXISTS idx_group_invites_expires ON group_invites(expires_at)`,
+    `CREATE TABLE IF NOT EXISTS subscriptions (
+        digest TEXT PRIMARY KEY,
+        expires_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+      )`,
+    `CREATE TABLE IF NOT EXISTS tokens (
+        token_id TEXT PRIMARY KEY,
+        digest TEXT NOT NULL,
+        issued_at INTEGER NOT NULL,
+        extend_days INTEGER NOT NULL,
+        nonce TEXT,
+        key_id TEXT NOT NULL,
+        signature_b64 TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('issued','used','invalid')),
+        used_at INTEGER,
+        used_by_digest TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        FOREIGN KEY (digest) REFERENCES subscriptions(digest) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_tokens_digest ON tokens(digest)`,
+    `CREATE INDEX IF NOT EXISTS idx_tokens_status ON tokens(status)`,
+    `CREATE TABLE IF NOT EXISTS extend_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        extend_days INTEGER NOT NULL,
+        expires_at_after INTEGER NOT NULL,
+        used_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        FOREIGN KEY (token_id) REFERENCES tokens(token_id) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_extend_logs_digest ON extend_logs(digest)`,
+    `CREATE INDEX IF NOT EXISTS idx_extend_logs_token ON extend_logs(token_id)`
   ];
 
   for (const sql of statements) {

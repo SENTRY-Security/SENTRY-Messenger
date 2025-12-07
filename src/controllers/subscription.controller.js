@@ -1,12 +1,13 @@
 import { z } from 'zod';
-import { redeemSubscription, validateSubscription, getSubscriptionStatus } from '../services/portal-subscription.js';
+import { redeemVoucher, validateVoucher, subscriptionStatus } from '../services/subscription-local.js';
 
 const DigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const RedeemSchema = z.object({
-  payload: z.any(),
-  signature_b64: z.string().min(8),
-  dryRun: z.boolean().optional()
+  token: z.string().min(8),
+  dryRun: z.boolean().optional(),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(DigestRegex).optional()
 });
 
 export const redeem = async (req, res) => {
@@ -17,11 +18,11 @@ export const redeem = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid payload' });
   }
   try {
-    const data = await redeemSubscription(input);
+    const data = await redeemVoucher(input);
     return res.json(data);
   } catch (err) {
     const status = err?.status || 502;
-    const payload = err?.payload && typeof err.payload === 'object' ? err.payload : { error: 'PortalError', detail: err?.message || err };
+    const payload = err?.payload && typeof err.payload === 'object' ? err.payload : { error: err?.code || 'RedeemFailed', detail: err?.message || err };
     return res.status(status).json(payload);
   }
 };
@@ -34,11 +35,11 @@ export const validate = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid payload' });
   }
   try {
-    const data = await validateSubscription(input);
+    const data = await validateVoucher({ ...input, dryRun: true });
     return res.json(data);
   } catch (err) {
     const status = err?.status || 502;
-    const payload = err?.payload && typeof err.payload === 'object' ? err.payload : { error: 'PortalError', detail: err?.message || err };
+    const payload = err?.payload && typeof err.payload === 'object' ? err.payload : { error: err?.code || 'ValidateFailed', detail: err?.message || err };
     return res.status(status).json(payload);
   }
 };
@@ -46,16 +47,13 @@ export const validate = async (req, res) => {
 export const status = async (req, res) => {
   const digest = typeof req.query?.digest === 'string' ? req.query.digest.trim() : '';
   const limitRaw = req.query?.limit;
-  if (!DigestRegex.test(digest)) {
-    return res.status(400).json({ error: 'BadRequest', message: 'invalid digest' });
-  }
   const limit = Number.isFinite(Number(limitRaw)) ? Math.min(Math.max(Math.floor(Number(limitRaw)), 1), 200) : undefined;
   try {
-    const data = await getSubscriptionStatus({ digest, limit });
+    const data = await subscriptionStatus({ digest, limit });
     return res.json(data);
   } catch (err) {
     const statusCode = err?.status || 502;
-    const payload = err?.payload && typeof err.payload === 'object' ? err.payload : { error: 'PortalError', detail: err?.message || err };
+    const payload = err?.payload && typeof err.payload === 'object' ? err.payload : { error: err?.code || 'StatusFailed', detail: err?.message || err };
     return res.status(statusCode).json(payload);
   }
 };
