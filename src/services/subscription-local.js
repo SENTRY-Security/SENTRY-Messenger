@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { signHmac } from '../utils/hmac.js';
 import { logger } from '../utils/logger.js';
@@ -11,10 +10,7 @@ const PUBLIC_KEY = process.env.PRIVATE_KEY_PUBLIC_PEM || '';
 
 function normalizePublicKey(keyRaw) {
   if (!keyRaw) return null;
-  // allow literal \n in env
-  if (keyRaw.includes('\\n')) {
-    return keyRaw.replace(/\\n/g, '\n');
-  }
+  if (keyRaw.includes('\\n')) return keyRaw.replace(/\\n/g, '\n');
   if (keyRaw.includes('-----BEGIN')) return keyRaw;
   const chunks = keyRaw.replace(/\\s+/g, '').match(/.{1,64}/g) || [];
   return ['-----BEGIN PUBLIC KEY-----', ...chunks, '-----END PUBLIC KEY-----'].join('\n');
@@ -40,19 +36,19 @@ function verifyJwt(token) {
   }
 }
 
-async function callWorker({ path, body }) {
+async function callWorker({ path, body, method = 'POST' }) {
   if (!DATA_API || !HMAC_SECRET) {
     const err = new Error('DATA_API_URL or DATA_API_HMAC not configured');
     err.status = 500;
     throw err;
   }
   const url = `${DATA_API}${path}`;
-  const bodyStr = JSON.stringify(body || {});
+  const bodyStr = method === 'GET' ? '' : JSON.stringify(body || {});
   const sig = signHmac(path, bodyStr, HMAC_SECRET);
   const res = await fetch(url, {
-    method: 'POST',
+    method,
     headers: { 'content-type': 'application/json', 'x-auth': sig },
-    body: bodyStr
+    body: method === 'GET' ? undefined : bodyStr
   });
   const txt = await res.text().catch(() => '');
   let data = null;
@@ -74,16 +70,14 @@ export async function redeemVoucher(input = {}) {
     throw err;
   }
 
-  let auth = null;
+  let auth;
   try {
     auth = await resolveAccountAuth({
       accountToken: input.accountToken,
       accountDigest: input.accountDigest
     });
   } catch (err) {
-    if (err instanceof AccountAuthError) {
-      throw err;
-    }
+    if (err instanceof AccountAuthError) throw err;
     const e = new Error('account auth failed');
     e.status = 400;
     throw e;
@@ -154,25 +148,19 @@ export async function subscriptionStatus({ digest, limit } = {}) {
     err.status = 400;
     throw err;
   }
-  if (!DATA_API || !HMAC_SECRET) {
-    const err = new Error('DATA_API_URL or DATA_API_HMAC not configured');
-    err.status = 500;
-    throw err;
-  }
   const params = new URLSearchParams();
   params.set('digest', targetDigest);
   if (limit) params.set('limit', String(limit));
   const path = `/d1/subscription/status?${params.toString()}`;
-  const sig = signHmac(path, '', HMAC_SECRET);
-  const res = await fetch(`${DATA_API}${path}`, { headers: { 'x-auth': sig } });
-  const txt = await res.text().catch(() => '');
-  let data = null;
-  try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-  if (!res.ok) {
-    const err = new Error(typeof data === 'object' && data?.message ? data.message : 'worker error');
-    err.status = res.status;
-    err.payload = data;
+  return callWorker({ path, method: 'GET' });
+}
+
+export async function voucherStatus({ tokenId } = {}) {
+  if (!tokenId) {
+    const err = new Error('tokenId required');
+    err.status = 400;
     throw err;
   }
-  return data;
+  const path = `/d1/subscription/token-status?tokenId=${encodeURIComponent(tokenId)}`;
+  return callWorker({ path, method: 'GET' });
 }

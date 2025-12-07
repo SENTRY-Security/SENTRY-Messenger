@@ -692,6 +692,58 @@ export default {
       });
     }
 
+    if (req.method === 'GET' && url.pathname === '/d1/subscription/token-status') {
+      await ensureDataTables(env);
+      const tokenId = url.searchParams.get('tokenId') || url.searchParams.get('voucherId') || url.searchParams.get('jti');
+      const tokenKey = typeof tokenId === 'string' ? tokenId.trim() : '';
+      if (!tokenKey) {
+        return json({ error: 'BadRequest', message: 'tokenId required' }, { status: 400 });
+      }
+      try {
+        const row = await env.DB.prepare(
+          `SELECT token_id, digest, issued_at, extend_days, nonce, key_id, signature_b64, status, used_at, used_by_digest, created_at
+             FROM tokens
+            WHERE token_id=?1`
+        ).bind(tokenKey).all();
+        const token = row?.results?.[0] || null;
+        if (!token) {
+          return json({ ok: true, found: false, tokenId: tokenKey });
+        }
+        let lastLog = null;
+        try {
+          const logRow = await env.DB.prepare(
+            `SELECT expires_at_after, used_at, extend_days
+               FROM extend_logs
+              WHERE token_id=?1
+              ORDER BY used_at DESC
+              LIMIT 1`
+          ).bind(tokenKey).all();
+          lastLog = logRow?.results?.[0] || null;
+        } catch (err) {
+          console.warn('token_log_query_failed', err?.message || err);
+        }
+        return json({
+          ok: true,
+          found: true,
+          tokenId: token.token_id,
+          digest: token.digest,
+          issued_at: Number(token.issued_at || 0),
+          extend_days: Number(token.extend_days || 0),
+          key_id: token.key_id || null,
+          signature_b64: token.signature_b64 || null,
+          status: token.status || null,
+          used_at: token.used_at ? Number(token.used_at) : null,
+          used_by_digest: token.used_by_digest || null,
+          created_at: Number(token.created_at || 0) || null,
+          expires_at_after: lastLog?.expires_at_after || null,
+          last_extend_days: lastLog?.extend_days || null
+        });
+      } catch (err) {
+        console.error('token_status_failed', err?.message || err);
+        return json({ error: 'TokenStatusFailed', message: err?.message || 'query failed' }, { status: 500 });
+      }
+    }
+
     if (req.method === 'POST' && url.pathname === '/d1/calls/session') {
       await cleanupCallTables(env);
       let body;
