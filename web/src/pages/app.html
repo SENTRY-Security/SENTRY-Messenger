@@ -43,6 +43,21 @@
       .user-menu-item:hover, .user-menu-item:focus { background:#f1f5f9; outline:none; }
       .user-menu-item.logout { color:#b91c1c; }
       .user-menu-divider { height:1px; background:rgba(148,163,184,0.35); margin:6px 0; }
+      .user-avatar-wrap { position:relative; display:inline-flex; }
+      .user-menu-badge { position:absolute; top:-2px; right:-2px; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:#ef4444; color:#fff; font-size:10px; font-weight:700; line-height:14px; display:none; box-shadow:0 4px 10px rgba(239,68,68,0.35); }
+      .user-avatar-wrap.has-alert .user-menu-badge { display:inline-flex; align-items:center; justify-content:center; }
+      .subscription-status-block { padding:12px; border:1px solid var(--line); border-radius:12px; margin-bottom:12px; }
+      .sub-status { font-weight:700; margin-bottom:6px; }
+      .sub-status.ok { color:#15803d; }
+      .sub-status.error { color:#dc2626; }
+      .sub-meta { color:#475569; font-size:13px; }
+      .subscription-actions { display:flex; flex-direction:column; gap:12px; }
+      .subscription-card { border:1px solid var(--line); border-radius:12px; padding:12px; }
+      .subscription-card .title { font-weight:700; margin-bottom:6px; }
+      .subscription-card.disabled { opacity:0.6; }
+      .sub-actions { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+      .sub-textarea textarea { width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:10px; padding:10px; resize:vertical; min-height:72px; }
+      .sub-textarea .primary.full { width:100%; margin-top:8px; }
       .icon-btn { display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid var(--line); border-radius:12px; background:#fff; }
       .icon-btn i { font-size:18px; }
       .icon-btn.danger { background:linear-gradient(180deg,#ef4444,#b91c1c); color:#fff; border-color:#b91c1c; box-shadow:0 6px 16px rgba(185,28,28,0.25); }
@@ -615,10 +630,14 @@
       <div class="actions">
         <div id="userMenu" class="user-menu">
           <button id="btnUserMenu" class="user-avatar-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="開啟使用者選單">
-            <img id="headerAvatarImg" src="/assets/images/avatar.png" alt="使用者頭像" />
+            <span class="user-avatar-wrap" id="userAvatarWrap">
+              <img id="headerAvatarImg" src="/assets/images/avatar.png" alt="使用者頭像" />
+              <span class="user-menu-badge" id="userMenuBadge" aria-hidden="true">!</span>
+            </span>
           </button>
         <div id="userMenuDropdown" class="user-menu-dropdown" role="menu" aria-hidden="true">
           <button class="user-menu-item" type="button" data-action="settings" role="menuitem">系統設定</button>
+          <button class="user-menu-item" type="button" data-action="subscription" id="userMenuSubscriptionBtn" role="menuitem">訂閱狀態</button>
           <button class="user-menu-item" type="button" data-action="version-info" id="userMenuVersionBtn" role="menuitem">版本資訊</button>
           <div class="version-info-menu" id="versionInfoPopupAppMenu" aria-hidden="true"></div>
           <div class="user-menu-divider" role="presentation"></div>

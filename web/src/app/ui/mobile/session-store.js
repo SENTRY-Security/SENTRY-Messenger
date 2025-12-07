@@ -44,6 +44,14 @@ const defaultWsState = {
   reconnectTimer: null
 };
 
+const defaultSubscriptionState = {
+  found: false,
+  expiresAt: null,
+  lastChecked: null,
+  loading: false,
+  expired: true
+};
+
 function resetState(target, defaults) {
   if (!target || typeof target !== 'object' || !defaults) return;
   const defaultClone = cloneValue(defaults);
@@ -71,7 +79,8 @@ export const sessionStore = {
   driveState: cloneValue(defaultDriveState),
   messageState: cloneValue(defaultMessageState),
   uiState: cloneValue(defaultUiState),
-  wsState: cloneValue(defaultWsState)
+  wsState: cloneValue(defaultWsState),
+  subscriptionState: cloneValue(defaultSubscriptionState)
 };
 
 export function resetShareState() {

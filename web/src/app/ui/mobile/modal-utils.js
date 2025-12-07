@@ -69,6 +69,10 @@ export function setupModalController({ shareButtonProvider } = {}) {
       try { modal.__avatarCleanup(); } catch (err) { console.warn(err); }
       delete modal.__avatarCleanup;
     }
+    if (typeof modal.__subscriptionCleanup === 'function') {
+      try { modal.__subscriptionCleanup(); } catch (err) { console.warn(err); }
+      delete modal.__subscriptionCleanup;
+    }
 
     const body = document.getElementById('modalBody');
     if (body) {

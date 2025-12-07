@@ -76,6 +76,8 @@ import {
   initContactSecretsBackup,
   triggerContactSecretsBackup
 } from '../features/contact-backup.js';
+import { subscriptionStatus, redeemSubscription } from '../api/subscription.js';
+import QrScanner from '../lib/vendor/qr-scanner.min.js';
 
 const MEDIA_PERMISSION_KEY = 'media-permission-v1';
 const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
@@ -1447,11 +1449,17 @@ const userMenu = document.getElementById('userMenu');
 const userMenuBtn = document.getElementById('btnUserMenu');
 const userMenuDropdown = document.getElementById('userMenuDropdown');
 const userMenuSettingsBtn = userMenuDropdown?.querySelector('[data-action="settings"]') || null;
+const userMenuSubscriptionBtn = userMenuDropdown?.querySelector('[data-action="subscription"]') || null;
 const userMenuVersionBtn = userMenuDropdown?.querySelector('[data-action="version-info"]') || null;
 const userMenuVersionPopup = document.getElementById('versionInfoPopupAppMenu');
 const userMenuLogoutBtn = userMenuDropdown?.querySelector('[data-action="logout"]') || null;
+const userMenuBadge = document.getElementById('userMenuBadge');
+const userAvatarWrap = document.getElementById('userAvatarWrap');
 const topbarTitleEl = document.querySelector('.topbar .title');
 let remoteConsolePressTimer = null;
+let subscriptionCountdownTimer = null;
+let subscriptionScanner = null;
+let subscriptionScannerActive = false;
 
 let userMenuOpen = false;
 function setUserMenuOpen(next) {
@@ -1478,6 +1486,220 @@ userMenuBtn?.addEventListener('click', (event) => {
     }, 20);
   }
 });
+
+userMenuSubscriptionBtn?.addEventListener('click', (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  openSubscriptionModal();
+});
+
+function updateSubscriptionBadge(expired) {
+  if (!userAvatarWrap || !userMenuBadge) return;
+  const show = !!expired;
+  userAvatarWrap.classList.toggle('has-alert', show);
+  userMenuBadge.style.display = show ? 'inline-flex' : 'none';
+}
+
+function computeSubscriptionCountdown(expiresAt) {
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return { expired: true, text: '已到期', seconds: 0 };
+  const diff = expiresAt - now;
+  if (diff <= 0) return { expired: true, text: '已到期', seconds: 0 };
+  const days = Math.floor(diff / 86400);
+  const hours = Math.floor((diff % 86400) / 3600);
+  const mins = Math.floor((diff % 3600) / 60);
+  if (days > 0) return { expired: false, text: `剩餘 ${days} 天`, seconds: diff };
+  if (hours > 0) return { expired: false, text: `剩餘 ${hours} 小時`, seconds: diff };
+  return { expired: false, text: `剩餘 ${Math.max(mins, 1)} 分鐘`, seconds: diff };
+}
+
+async function refreshSubscriptionStatus({ silent = false } = {}) {
+  const state = sessionStore.subscriptionState;
+  state.loading = true;
+  try {
+    const { r, data } = await subscriptionStatus();
+    if (!r.ok || !data?.ok) throw new Error(typeof data === 'string' ? data : data?.message || 'status failed');
+    state.lastChecked = Date.now();
+    if (data.found && Number.isFinite(Number(data.expires_at))) {
+      state.found = true;
+      state.expiresAt = Number(data.expires_at);
+      state.expired = !(state.expiresAt && state.expiresAt > Math.floor(Date.now() / 1000));
+    } else {
+      state.found = false;
+      state.expiresAt = null;
+      state.expired = true;
+    }
+  } catch (err) {
+    if (!silent) showToast?.(`查詢訂閱失敗：${err?.message || err}`, { variant: 'error' });
+    state.found = false;
+    state.expiresAt = null;
+    state.expired = true;
+  } finally {
+    state.loading = false;
+    updateSubscriptionBadge(state.expired);
+  }
+  return sessionStore.subscriptionState;
+}
+
+function stopSubscriptionCountdown() {
+  if (subscriptionCountdownTimer) {
+    clearInterval(subscriptionCountdownTimer);
+    subscriptionCountdownTimer = null;
+  }
+}
+
+function stopSubscriptionScanner() {
+  if (subscriptionScanner && subscriptionScannerActive) {
+    try { subscriptionScanner.stop(); } catch {}
+  }
+  subscriptionScannerActive = false;
+}
+
+function startSubscriptionCountdown(expiresAt) {
+  stopSubscriptionCountdown();
+  const statusText = document.getElementById('subscriptionStatusText');
+  if (!statusText) return;
+  const tick = () => {
+    const { expired, text } = computeSubscriptionCountdown(expiresAt);
+    statusText.textContent = expired ? '已到期' : text;
+    statusText.className = expired ? 'sub-status error' : 'sub-status ok';
+    if (expired) updateSubscriptionBadge(true);
+  };
+  tick();
+  const interval = Math.max(30, Math.min(300, Math.floor(Math.max(expiresAt - Math.floor(Date.now() / 1000), 60) / 2)));
+  subscriptionCountdownTimer = setInterval(tick, interval * 1000);
+}
+
+async function handleRedeemToken(token) {
+  if (!token) {
+    showToast?.('請輸入或掃描憑證', { variant: 'warning' });
+    return;
+  }
+  const redeemBtn = document.getElementById('subscriptionRedeemBtn');
+  if (redeemBtn) redeemBtn.disabled = true;
+  try {
+    const { r, data } = await redeemSubscription({ token });
+    if (!r.ok || !data?.ok) throw new Error(typeof data === 'string' ? data : data?.message || 'redeem failed');
+    sessionStore.subscriptionState.expiresAt = Number(data.expiresAt || data.expires_at || 0);
+    sessionStore.subscriptionState.found = true;
+    sessionStore.subscriptionState.expired = !(sessionStore.subscriptionState.expiresAt > Math.floor(Date.now() / 1000));
+    updateSubscriptionBadge(sessionStore.subscriptionState.expired);
+    const statusText = document.getElementById('subscriptionStatusText');
+    if (statusText) statusText.textContent = '展期成功，正在更新狀態…';
+    await refreshSubscriptionStatus({ silent: true });
+    showToast?.('展期成功', { variant: 'success' });
+  } catch (err) {
+    showToast?.(`展期失敗：${err?.message || err}`, { variant: 'error' });
+  } finally {
+    if (redeemBtn) redeemBtn.disabled = false;
+  }
+}
+
+async function handleSubscriptionFile(files) {
+  if (!files || !files.length) return;
+  const file = files[0];
+  try {
+    const token = await QrScanner.scanImage(file, { returnDetailedScanResult: false });
+    const text = typeof token === 'string' ? token : (token?.data || '');
+    await handleRedeemToken(text);
+  } catch (err) {
+    showToast?.(`檔案解析失敗：${err?.message || err}`, { variant: 'error' });
+  }
+}
+
+async function openSubscriptionModal() {
+  const modal = document.getElementById('modal');
+  const body = document.getElementById('modalBody');
+  const title = document.getElementById('modalTitle');
+  if (!modal || !body) return;
+  stopSubscriptionScanner();
+  stopSubscriptionCountdown();
+  resetModalVariants(modal);
+  modal.classList.add('settings-modal'); // reuse style
+  if (title) title.textContent = '訂閱狀態';
+  body.innerHTML = `
+    <div class="subscription-status-block">
+      <div id="subscriptionStatusText" class="sub-status">查詢中…</div>
+      <div class="sub-meta" id="subscriptionMeta"></div>
+    </div>
+    <div class="subscription-actions">
+      <div class="subscription-card disabled">
+        <div class="title">線上付款（即將開放）</div>
+        <p>即將開放信用卡/金流付款，敬請期待。</p>
+      </div>
+      <div class="subscription-card">
+        <div class="title">QR 憑證展期</div>
+        <div class="sub-actions">
+          <button id="subscriptionScanBtn" type="button" class="secondary">開啟掃描器</button>
+          <button id="subscriptionUploadBtn" type="button" class="secondary">上傳/匯入</button>
+        </div>
+        <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
+        <div class="sub-scan">
+          <video id="subscriptionScanVideo" style="width:100%; max-height:220px; display:none; border:1px solid var(--line); border-radius:12px;" muted playsinline></video>
+          <div id="subscriptionScanStatus" class="sub-meta"></div>
+        </div>
+        <div class="sub-textarea">
+          <textarea id="subscriptionTokenInput" rows="3" placeholder="貼上憑證 JWT"></textarea>
+          <button id="subscriptionRedeemBtn" type="button" class="primary full">使用憑證展期</button>
+        </div>
+      </div>
+    </div>
+  `;
+  modal.__subscriptionCleanup = () => {
+    stopSubscriptionCountdown();
+    stopSubscriptionScanner();
+  };
+  openModal();
+  const fileInput = document.getElementById('subscriptionFileInput');
+  const uploadBtn = document.getElementById('subscriptionUploadBtn');
+  const scanBtn = document.getElementById('subscriptionScanBtn');
+  const redeemBtn = document.getElementById('subscriptionRedeemBtn');
+  const tokenInput = document.getElementById('subscriptionTokenInput');
+  const scanVideo = document.getElementById('subscriptionScanVideo');
+  const scanStatus = document.getElementById('subscriptionScanStatus');
+
+  uploadBtn?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', (e) => handleSubscriptionFile(e.target.files));
+  scanBtn?.addEventListener('click', async () => {
+    if (!scanVideo) return;
+    QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
+    try {
+      if (!subscriptionScanner) {
+        subscriptionScanner = new QrScanner(scanVideo, (res) => {
+          const text = typeof res === 'string' ? res : res?.data || '';
+          if (text) {
+            handleRedeemToken(text);
+            stopSubscriptionScanner();
+            scanVideo.style.display = 'none';
+            scanStatus.textContent = '已讀取憑證，正在處理…';
+          }
+        });
+      }
+      await subscriptionScanner.start();
+      subscriptionScannerActive = true;
+      scanVideo.style.display = 'block';
+      if (scanStatus) scanStatus.textContent = '請將憑證 QR 對準框線';
+    } catch (err) {
+      scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
+    }
+  });
+  redeemBtn?.addEventListener('click', () => handleRedeemToken(tokenInput?.value?.trim()));
+
+  refreshSubscriptionStatus({ silent: true }).then((state) => {
+    const { expired, text } = computeSubscriptionCountdown(state.expiresAt || 0);
+    const statusText = document.getElementById('subscriptionStatusText');
+    const meta = document.getElementById('subscriptionMeta');
+    if (statusText) {
+      statusText.textContent = state.found ? text : '尚未儲值';
+      statusText.className = expired ? 'sub-status error' : 'sub-status ok';
+    }
+    if (meta) {
+      const expires = state.expiresAt ? new Date(state.expiresAt * 1000).toLocaleString() : '—';
+      meta.textContent = state.found ? `到期時間：${expires}` : '尚無訂閱紀錄';
+    }
+    if (state.found && state.expiresAt) startSubscriptionCountdown(state.expiresAt);
+  });
+}
 
 function handleRemoteConsoleLongPressStart() {
   if (remoteConsolePressTimer) return;
@@ -1604,6 +1826,10 @@ initVersionInfoButton({
   openModal,
   closeModal
 });
+
+setTimeout(() => {
+  refreshSubscriptionStatus({ silent: true });
+}, 1200);
 
 const { setupSwipe, closeSwipe, closeOpenSwipe } = createSwipeManager();
 
