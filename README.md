@@ -349,10 +349,10 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [x] outbox 送訊改用 header_json/ciphertext_b64/counter/sender_device_id/receiver_account_digest(+device)（移除 payloadEnvelope/conversationFingerprint）
   - [x] dr-session 送出路徑改用新版封包（直接用 pkt.header/iv/ciphertext）並帶 deviceId/counter
   - [x] messages 解密路徑改解析 header_json/ciphertext_b64，不再 decryptConversationEnvelope 或用 conversation token/fingerprint
-- [ ] 會話/ACL 與封套：去除 conversation fingerprint 授權；conversation token 如保留僅作 envelope AES-GCM 金鑰；WS payload 改用 digest+conversation_id(+device_id)；清理前端 conversationIndex/contactSecrets 結構以支援 per-device DR 狀態。
-  - [x] 設計完成（見 `docs/signal-migration-plan.md`），待實作。
-  - [ ] 前端 conversationIndex/contactSecrets 以 peerAccountDigest+peerDeviceId 為鍵；contactSecrets 已改 per-device(v3)，conversationIndex/列表尚未帶 peerDeviceId。
-  - [ ] WS payload/handlers 改為 digest+conversation_id(+device_id)，移除 fingerprint 依賴（message-new 已帶 senderDeviceId，其餘待補）。
+  - [ ] 會話/ACL 與封套：去除 conversation fingerprint 授權；conversation token 如保留僅作 envelope AES-GCM 金鑰；WS payload 改用 digest+conversation_id(+device_id)；清理前端 conversationIndex/contactSecrets 結構以支援 per-device DR 狀態。
+    - [x] 設計完成（見 `docs/signal-migration-plan.md`），待實作。
+    - [ ] 前端 conversationIndex/contactSecrets 以 peerAccountDigest+peerDeviceId 為鍵；contactSecrets 已改 per-device(v3)，conversationIndex/列表僅部分帶 peerDeviceId（message-new/threads），尚待全面化。
+    - [ ] WS payload/handlers 改為 digest+conversation_id(+device_id)，移除 fingerprint 依賴（message-new 已帶 sender/targetDeviceId，其餘事件待補）。
   - [x] 封套：若保留 conversation token，僅作 envelope key；其餘授權走 digest/device ACL；移除前端 fingerprint/payload_envelope 分支（文件仍待更新）。
 - [ ] 媒體路徑：統一文字/附件封包流程，附件使用 message key 或 per-message 派生鍵（meta 帶 key_type）；下載時以 header 的 message_key_b64 或共享鍵解密；R2 簽名/索引保持 digest ACL。
   - [x] 設計完成（見 `docs/signal-migration-plan.md`）
