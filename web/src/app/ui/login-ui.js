@@ -41,6 +41,7 @@ const welcomeModal = document.getElementById('welcomeModal');
 const welcomeNextBtn = document.getElementById('welcomeNext');
 const welcomeCloseBtn = document.getElementById('welcomeClose');
 const loginBrand = document.getElementById('loginBrand');
+const remoteConsoleMask = document.getElementById('remoteConsoleMask');
 const remoteConsoleToast = document.getElementById('remoteConsoleToast');
 const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
 const loginShellEl = document.querySelector('.login-shell');
@@ -201,11 +202,12 @@ function clearLoginBrandLongPressTimer() {
   loginBrandPressTimer = null;
 }
 
-loginBrand?.addEventListener('pointerdown', () => {
+const consoleTriggerEl = remoteConsoleMask || loginBrand;
+consoleTriggerEl?.addEventListener('pointerdown', () => {
   handleLoginBrandLongPressStart();
 });
-loginBrand?.addEventListener('pointerup', clearLoginBrandLongPressTimer);
-loginBrand?.addEventListener('pointerleave', clearLoginBrandLongPressTimer);
+consoleTriggerEl?.addEventListener('pointerup', clearLoginBrandLongPressTimer);
+consoleTriggerEl?.addEventListener('pointerleave', clearLoginBrandLongPressTimer);
 
 function getContactSecretKeyOptionsForLogin(uidOverride) {
   return {
@@ -839,6 +841,22 @@ async function onSimDebugClick() {
 
 // ---- Unlock / Reset ----
 if (unlockBtn) unlockBtn.onclick = onUnlock;
+if (pwdEl) {
+  pwdEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      onUnlock();
+    }
+  });
+}
+if (pwdConfirmEl) {
+  pwdConfirmEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      onUnlock();
+    }
+  });
+}
 const btnResetMK = document.getElementById('btnResetMK');
 if (btnResetMK) btnResetMK.onclick = () => { try { setMkRaw(null); log('Local MK cleared.'); } catch {} };
 

@@ -7,7 +7,7 @@ import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity } from '../../core/store.js';
+import { setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity, drState } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret, computeConversationAccessFingerprint } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
@@ -56,6 +56,17 @@ export function setupShareController(options) {
   if (!dom) throw new Error('分享控制器缺少必要的 DOM 參照');
   const contactSecretMap = restoreContactSecrets();
   primeStoredDrSnapshots(contactSecretMap);
+
+  function hasLiveDrState(peerDigest) {
+    const holder = drState(peerDigest);
+    return !!(
+      holder?.rk &&
+      holder?.myRatchetPriv instanceof Uint8Array &&
+      holder?.myRatchetPub instanceof Uint8Array &&
+      ((holder?.ckR instanceof Uint8Array && holder.ckR.length > 0) ||
+        (holder?.ckS instanceof Uint8Array && holder.ckS.length > 0))
+    );
+  }
 
   function primeStoredDrSnapshots(map) {
     if (!(map instanceof Map)) return;
@@ -888,8 +899,11 @@ export function setupShareController(options) {
           secretRole: 'guest'
         });
         try {
-          clearDrState(ownerDigest);
-          primeDrStateFromInitiator({ peerAccountDigest: ownerDigest, state: x3dhState });
+          const alreadyLive = hasLiveDrState(ownerDigest);
+          if (!alreadyLive) {
+            clearDrState(ownerDigest);
+            primeDrStateFromInitiator({ peerAccountDigest: ownerDigest, state: x3dhState });
+          }
         } catch (err) {
           log({ drPrimeError: err?.message || err, peer: ownerDigest });
         }
@@ -1028,28 +1042,31 @@ export function setupShareController(options) {
           notifyToast('好友金鑰資料缺失，請請對方重新邀請', { variant: 'error' });
         }
       } else if (normalizedBundle && selfRole !== 'guest') {
-        if (hasPendingInvite) {
-          clearDrState(peerKey);
-        }
-        try {
-          await bootstrapDrFromGuestBundle({
-            peerAccountDigest: peerKey,
-            guestBundle: normalizedBundle,
-            force: hasPendingInvite
-          });
-        } catch (err) {
-          log({ drBootstrapError: err?.message || err });
+        const alreadyLive = hasLiveDrState(peerKey);
+        if (!alreadyLive) {
+          if (hasPendingInvite) {
+            clearDrState(peerKey);
+          }
+          try {
+            await bootstrapDrFromGuestBundle({
+              peerAccountDigest: peerKey,
+              guestBundle: normalizedBundle,
+              force: hasPendingInvite
+            });
+          } catch (err) {
+            log({ drBootstrapError: err?.message || err });
+          }
         }
       }
       inviteSecrets.delete(inviteId);
       persistInviteSecrets();
       shareState.currentInvite = null;
       if (!shareState.inviteBlockedDueToKeys) {
-        try {
-          await onGenerateInvite({ auto: true });
-        } catch (err) {
-          log({ autoInviteRefreshError: err?.message || err });
-        }
+    try {
+      await onGenerateInvite({ auto: true });
+    } catch (err) {
+      log({ autoInviteRefreshError: err?.message || err });
+    }
       } else if (shareState.open) {
         setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', { isError: true });
       }

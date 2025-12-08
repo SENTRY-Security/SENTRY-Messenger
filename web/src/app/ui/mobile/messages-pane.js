@@ -1,7 +1,7 @@
 import { log } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages } from '../../features/messages.js';
-import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
+import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered } from '../../features/messages.js';
+import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
   ensureSecureConversationReady,
   subscribeSecureConversation,
@@ -44,6 +44,7 @@ import {
 } from '../../features/calls/call-log.js';
 import { bytesToB64Url } from './ui-utils.js';
 const sentCallLogIds = new Set();
+const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
 const GROUPS_ENABLED = false;
 
@@ -140,9 +141,14 @@ export function initMessagesPane({
     loadMoreBtn: dom.messagesLoadMoreBtn ?? document.getElementById('messagesLoadMore'),
     loadMoreLabel: dom.messagesLoadMoreLabel ?? document.querySelector('#messagesLoadMore .label'),
     loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('#messagesLoadMore .spinner'),
+    resyncBtn: dom.messagesResyncBtn ?? document.getElementById('messagesResyncBtn'),
     callBtn: dom.messagesCallBtn ?? document.getElementById('messagesCallBtn'),
     videoBtn: dom.messagesVideoBtn ?? document.getElementById('messagesVideoBtn')
   };
+  let pendingWsRefresh = 0;
+  let keyboardOffsetPx = 0;
+  let keyboardActive = false;
+  let viewportGuardTimer = null;
 
   const secureStatusCache = new Map();
   let unsubscribeSecureStatus = null;
@@ -509,9 +515,10 @@ export function initMessagesPane({
     const state = getMessageState();
     const isOutgoing = direction === CALL_SESSION_DIRECTION.OUTGOING;
     const isActive = state.activePeerDigest === peerDigest;
+    const exists = hasCallLog(entry.callId);
     const viewerMessage = createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
     let localMessage = null;
-    if (isActive) {
+    if (isActive && !exists) {
       localMessage = { ...viewerMessage };
       localMessage.id = localMessage.id || entry.id;
       localMessage.pending = true;
@@ -525,7 +532,7 @@ export function initMessagesPane({
       ts: entry.ts,
       direction: isOutgoing ? 'outgoing' : 'incoming'
     });
-    if (entry.id && !sentCallLogIds.has(entry.id)) {
+    if (entry.id && !sentCallLogIds.has(entry.id) && !exists) {
       sentCallLogIds.add(entry.id);
       sendDrCallLog({
         peerAccountDigest: peerDigest,
@@ -979,6 +986,18 @@ export function initMessagesPane({
     }
   }
 
+  function formatTimeShort(ts) {
+    if (!Number.isFinite(ts)) return '';
+    try {
+      const date = new Date(ts * 1000);
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      return `${hours}:${minutes}`;
+    } catch {
+      return '';
+    }
+  }
+
   function formatConversationPreviewTime(ts) {
     if (!Number.isFinite(ts)) return '';
     try {
@@ -1006,6 +1025,29 @@ export function initMessagesPane({
     return String(text || '').replace(/\s+/g, ' ').trim();
   }
 
+  function isSubscriptionActive() {
+    const s = sessionStore.subscriptionState;
+    if (!s || s.loading) return true;
+    if (!s.lastChecked) return true; // 尚未查詢完成時不阻擋
+    return !!(s.found && !s.expired);
+  }
+
+  function requireSubscriptionActive() {
+    if (isSubscriptionActive()) return true;
+    document.dispatchEvent(new CustomEvent('subscription:gate'));
+    return false;
+  }
+
+  function hasCallLog(callId) {
+    if (!callId) return false;
+    const state = getMessageState();
+    return Array.isArray(state.messages) && state.messages.some((msg) => {
+      if (!msg || msg.type !== 'call-log') return false;
+      const mid = msg.id || msg.callId || msg.callLog?.callId || msg.meta?.call_id || null;
+      return mid && mid === callId;
+    });
+  }
+
   function setMessagesStatus(message, isError = false) {
     if (!elements.statusLabel) return;
     elements.statusLabel.textContent = message || '';
@@ -1014,7 +1056,7 @@ export function initMessagesPane({
 
   function updateConversationActionsAvailability() {
     const state = getMessageState();
-    const enabled = !!(state.activePeerDigest && state.conversationToken);
+    const enabled = !!(state.activePeerDigest && state.conversationToken && isSubscriptionActive());
     const buttons = [elements.callBtn, elements.videoBtn];
     for (const btn of buttons) {
       if (!btn) continue;
@@ -1029,16 +1071,22 @@ export function initMessagesPane({
       updateConversationActionsAvailability();
       return;
     }
+    const subscriptionOk = isSubscriptionActive();
     const key = state.activePeerDigest ? String(state.activePeerDigest).toUpperCase() : null;
     const statusInfo = key ? getCachedSecureStatus(key) : null;
     const status = statusInfo?.status || null;
-    const blocked = status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
-    const enabled = !!(state.conversationToken && state.activePeerDigest && !blocked);
-    elements.input.disabled = !enabled;
-    elements.sendBtn.disabled = !enabled;
+    const conversationReady = !!(state.conversationToken && state.activePeerDigest);
+    const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
+    const enabled = conversationReady && !blocked;
+    elements.input.disabled = !conversationReady || blocked;
+    elements.sendBtn.disabled = !conversationReady; // 仍允許過期時點擊觸發 modal
+    elements.sendBtn.classList.toggle('disabled', !enabled);
+    elements.sendBtn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
     let placeholder = '輸入訊息…';
     if (!state.conversationToken || !state.activePeerDigest) {
       placeholder = '選擇好友開始聊天';
+    } else if (!subscriptionOk) {
+      placeholder = '帳號已到期，請儲值後再聊天';
     } else if (status === SECURE_CONVERSATION_STATUS.PENDING) {
       placeholder = '正在建立安全對話…';
     } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
@@ -1046,6 +1094,12 @@ export function initMessagesPane({
     }
     elements.input.placeholder = placeholder;
     updateConversationActionsAvailability();
+  }
+
+  function setResyncButtonVisible(show = false) {
+    if (!elements.resyncBtn) return;
+    elements.resyncBtn.style.display = show ? 'inline-flex' : 'none';
+    elements.resyncBtn.setAttribute('aria-hidden', show ? 'false' : 'true');
   }
 
   function resolveContactAvatarUrl(entry) {
@@ -1070,6 +1124,7 @@ export function initMessagesPane({
   async function handleConversationAction(type) {
     const state = getMessageState();
     if (!state.activePeerDigest || !state.conversationToken) return;
+    if (!requireSubscriptionActive()) return;
     const actionType = type === 'video' ? 'voice' : type; // 視訊暫時停用，強制走語音
     const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
     const fallbackName = `好友 ${state.activePeerDigest.slice(-4)}`;
@@ -1195,6 +1250,9 @@ export function initMessagesPane({
 
   function handleMessagesScroll() {
     if (!elements.scrollEl) return;
+    if (elements.input && document.activeElement === elements.input) {
+      elements.input.blur();
+    }
     const state = getMessageState();
     if (!state.hasMore || state.loading) return;
     if (autoLoadOlderInProgress) return;
@@ -1210,6 +1268,9 @@ export function initMessagesPane({
 
   function handleMessagesTouchEnd() {
     if (!elements.scrollEl) return;
+    if (elements.input && document.activeElement === elements.input) {
+      elements.input.blur();
+    }
     if (elements.scrollEl.scrollTop <= 0) {
       triggerAutoLoadOlder();
     }
@@ -1217,6 +1278,9 @@ export function initMessagesPane({
 
   function handleMessagesWheel() {
     if (!elements.scrollEl) return;
+    if (elements.input && document.activeElement === elements.input) {
+      elements.input.blur();
+    }
     if (elements.scrollEl.scrollTop <= 0) {
       triggerAutoLoadOlder();
     }
@@ -1247,6 +1311,36 @@ export function initMessagesPane({
     } else {
       setTimeout(() => scrollMessagesToBottom(), 0);
     }
+  }
+
+  function applyKeyboardOffset() {
+    const kbOffset = Math.max(0, Math.min(360, Math.floor(keyboardOffsetPx)));
+    keyboardActive = kbOffset > 120;
+    document.documentElement.style.setProperty('--kb-offset', `${kbOffset}px`);
+    try {
+      document.body.classList.toggle('keyboard-open', keyboardActive);
+    } catch {}
+    if (keyboardActive && elements.scrollEl) {
+      // 確保 header 在可視範圍頂部，並避免被拖動
+      elements.scrollEl.scrollTop = elements.scrollEl.scrollHeight;
+    }
+  }
+
+  function startViewportGuard() {
+    if (viewportGuardTimer) return;
+    const tick = () => {
+      applyKeyboardOffset();
+      if (elements.headerEl) {
+        elements.headerEl.style.transform = 'translateY(0)';
+        elements.headerEl.style.top = '0';
+      }
+      if (elements.composer) {
+        elements.composer.style.transform = 'translateY(0)';
+        elements.composer.style.bottom = 'env(safe-area-inset-bottom)';
+      }
+    };
+    viewportGuardTimer = setInterval(tick, 100);
+    tick();
   }
 
   function updateMessagesScrollOverflow() {
@@ -1843,6 +1937,7 @@ export function initMessagesPane({
       elements.messagesEmpty?.classList.add('hidden');
       let prevTs = null;
       let prevDateKey = null;
+      const visibleStatusIndex = computeVisibleStatusIndex(timelineMessages);
       for (const msg of timelineMessages) {
         const tsVal = Number(msg.ts || null);
         const hasTs = Number.isFinite(tsVal);
@@ -1924,6 +2019,37 @@ export function initMessagesPane({
         }
         row.appendChild(bubble);
         li.appendChild(row);
+
+        const metaRow = document.createElement('div');
+        metaRow.className = 'message-meta';
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'message-meta-time';
+        timeSpan.textContent = formatTimeShort(tsVal);
+        metaRow.appendChild(timeSpan);
+        if (msg.direction === 'outgoing' && typeof visibleStatusIndex === 'number' && timelineMessages[visibleStatusIndex] === msg) {
+          const statusSpan = document.createElement('span');
+          const status = msg.status || (msg.read ? 'read' : 'sent');
+          let label = '';
+          if (status === 'pending') {
+            statusSpan.className = 'message-status pending';
+            label = '';
+          } else if (status === 'failed') {
+            statusSpan.className = 'message-status failed';
+            label = '!';
+          } else if (status === 'delivered') {
+            statusSpan.className = 'message-status delivered';
+            label = '✓✓';
+          } else if (status === 'read') {
+            statusSpan.className = 'message-status read';
+            label = '✓✓';
+          } else {
+            statusSpan.className = 'message-status sent';
+            label = '✓';
+          }
+          statusSpan.textContent = label;
+          metaRow.appendChild(statusSpan);
+        }
+        li.appendChild(metaRow);
         elements.messagesList.appendChild(li);
       }
     }
@@ -1950,25 +2076,27 @@ export function initMessagesPane({
     }
   }
 
-  async function loadActiveConversationMessages({ append = false, replay = false } = {}) {
+  async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
     if (state.loading) return;
-    if (append && (!state.hasMore || !state.nextCursorTs)) return;
+    if (append && (!state.hasMore || !state.nextCursor)) return;
 
     state.loading = true;
     if (!append) setMessagesStatus('載入中…');
     try {
-      const cursor = append ? state.nextCursorTs : undefined;
+      const cursor = append ? state.nextCursor : undefined;
       const forceReplay = !append && replay;
-      const { items, nextCursorTs, errors } = await listSecureAndDecrypt({
+      const { items, nextCursor, nextCursorTs, errors, receiptUpdates, deadLetters, hasMoreAtCursor } = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
         limit: 50,
-        cursorTs: cursor,
+        cursorTs: cursor?.ts ?? cursor ?? undefined,
+        cursorId: cursor?.id ?? undefined,
         mutateState: forceReplay ? false : !append,
-        allowReplay: !append || forceReplay
+        allowReplay: !append || forceReplay,
+        onMessageDecrypted: handleMessageDecrypted
       });
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
       let placeholderUpdated = false;
@@ -2039,15 +2167,65 @@ export function initMessagesPane({
       if (placeholderUpdated) {
         updateMessagesUI({ scrollToEnd: true });
       }
-      state.nextCursorTs = nextCursorTs;
-      state.hasMore = !!nextCursorTs;
-      if (errors?.length) setMessagesStatus(`部分訊息無法解密，請重新建立安全對話（${errors.length}）`, true);
-      else setMessagesStatus('', false);
+      state.nextCursor = nextCursor || (nextCursorTs != null ? { ts: nextCursorTs, id: null } : null);
+      state.nextCursorTs = state.nextCursor?.ts ?? nextCursorTs ?? null;
+      state.hasMore = !!state.nextCursor || !!hasMoreAtCursor;
+      if (errors?.length) {
+        setMessagesStatus(`部分訊息無法解密，嘗試重新同步（${errors.length}）`, true);
+        setResyncButtonVisible(true);
+        if (!state.replayInProgress && retryOnError) {
+          state.replayInProgress = true;
+          try {
+            await loadActiveConversationMessages({ append: false, replay: true, retryOnError: false });
+          } catch (err) {
+            setMessagesStatus('重新同步失敗：' + (err?.message || err), true);
+            setResyncButtonVisible(true);
+          } finally {
+            state.replayInProgress = false;
+          }
+        }
+      } else if (Array.isArray(deadLetters) && deadLetters.length) {
+        setMessagesStatus('部分訊息解密失敗，已排程重試，若仍無法顯示請點擊重新同步。', true);
+        setResyncButtonVisible(true);
+      } else {
+        setMessagesStatus('', false);
+        setResyncButtonVisible(false);
+      }
+      let receiptsChanged = false;
+      if (Array.isArray(receiptUpdates)) {
+        for (const msg of state.messages) {
+          if (msg?.id && receiptUpdates.includes(msg.id)) {
+            msg.read = true;
+            msg.status = 'read';
+            receiptsChanged = true;
+          }
+        }
+      }
+      applyReceiptsToMessages(state.messages);
+      if (receiptsChanged) {
+        updateMessagesUI({ preserveScroll: true });
+      }
+      if (state.activePeerDigest) {
+        for (const msg of state.messages) {
+          if (msg?.direction === 'incoming') {
+            sendReadReceiptForMessage(msg);
+          }
+        }
+      }
       syncThreadFromActiveMessages();
     } catch (err) {
       setMessagesStatus('載入失敗：' + (err?.message || err), true);
     } finally {
       state.loading = false;
+      if (!append && pendingWsRefresh > 0) {
+        const queued = pendingWsRefresh;
+        pendingWsRefresh = 0;
+        // 再執行一次以消化 WS 期間累積的訊息。
+        loadActiveConversationMessages({ append: false })
+          .then(() => scrollMessagesToBottom())
+          .catch((err) => log({ wsRefreshAfterLoadError: err?.message || err }))
+          .finally(() => { pendingWsRefresh = 0; });
+      }
       updateLoadMoreVisibility();
     }
   }
@@ -2084,6 +2262,10 @@ export function initMessagesPane({
     log({ setActiveConversation: { peerAccountDigest: key, conversationId: conversation.conversation_id || null, hasDrInit: !!(conversation.dr_init || conversation.drInit) } });
     const state = getMessageState();
     const hadExistingMessages = Array.isArray(state.messages) && state.messages.length > 0;
+    // 清掉舊對話的 processed cache，以免略過新訊息
+    if (state.conversationId && state.conversationId !== conversation.conversation_id) {
+      resetProcessedMessages(state.conversationId);
+    }
     state.activePeerDigest = key;
     state.conversationToken = conversation.token_b64;
     try {
@@ -2104,8 +2286,10 @@ export function initMessagesPane({
     const resolvedConvId = conversation?.conversation_id || conversation?.conversationId || state.conversationId || null;
     if (resolvedConvId) resetProcessedMessages(resolvedConvId);
     state.messages = [];
+    state.nextCursor = null;
     state.nextCursorTs = null;
     state.hasMore = true;
+    setResyncButtonVisible(false);
     state.loading = false;
     const thread = upsertConversationThread({
       peerAccountDigest: key,
@@ -2209,7 +2393,9 @@ export function initMessagesPane({
       direction: 'outgoing',
       type,
       media: media ? { ...media } : null,
-      abortController: null
+      abortController: null,
+      status: 'pending',
+      read: false
     };
     if (message.type === 'media' && message.media) {
       if (!message.text) message.text = `[檔案] ${message.media.name || '附件'}`;
@@ -2225,6 +2411,80 @@ export function initMessagesPane({
     scrollMessagesToBottomSoon();
     syncThreadFromActiveMessages();
     return message;
+  }
+
+  function applyReceiptState(message) {
+    if (!message || message.direction !== 'outgoing' || !message.id) return;
+    const state = getMessageState();
+    const receipt = state.conversationId ? getMessageReceipt(state.conversationId, message.id) : null;
+    const delivered = state.conversationId ? getMessageDelivery(state.conversationId, message.id) : null;
+    if (receipt?.read) {
+      // 有 read 收據視為成功，覆寫失敗狀態。
+      message.read = true;
+      message.status = 'read';
+      return;
+    }
+    if (delivered?.delivered) {
+      // 有 delivered 收據也視為成功，清除失敗驚嘆號。
+      message.read = false;
+      message.status = 'delivered';
+      return;
+    }
+    if (message.status !== 'failed' && !message.status) {
+      message.read = false;
+      message.status = 'sent';
+    }
+  }
+
+  function applyReceiptsToMessages(list) {
+    if (!Array.isArray(list)) return;
+    for (const msg of list) applyReceiptState(msg);
+  }
+
+  function handleMessageDecrypted({ message }) {
+    if (!message) return;
+    if (message.direction === 'incoming') {
+      sendReadReceiptForMessage(message);
+    } else if (message.direction === 'outgoing') {
+      applyReceiptState(message);
+    }
+  }
+
+  function computeVisibleStatusIndex(messages) {
+    if (!Array.isArray(messages) || !messages.length) return null;
+    let lastIncomingTs = null;
+    let lastIncomingIndex = -1;
+    messages.forEach((m, idx) => {
+      if (m?.direction === 'incoming') {
+        lastIncomingTs = m.ts || null;
+        lastIncomingIndex = idx;
+      }
+    });
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      if (msg?.direction !== 'outgoing') continue;
+      // 若在最後一則 incoming 之後的 outgoing，顯示這一則的狀態。
+      if (i > lastIncomingIndex) return i;
+      // 若全是 outgoing（沒有 incoming），找到最後一個 outgoing。
+      if (lastIncomingIndex === -1) return i;
+      break;
+    }
+    return null;
+  }
+
+  async function sendReadReceiptForMessage(message) {
+    if (!message || message.direction !== 'incoming' || !message.id) return;
+    const state = getMessageState();
+    if (!state.activePeerDigest || !state.conversationId) return;
+    const dedupeKey = `${state.conversationId}:${message.id}`;
+    if (sentReadReceiptIds.has(dedupeKey)) return;
+    sentReadReceiptIds.add(dedupeKey);
+    try {
+      await sendDrReadReceipt({ peerAccountDigest: state.activePeerDigest, messageId: message.id });
+    } catch (err) {
+      log({ readReceiptError: err?.message || err, messageId: message.id });
+      sentReadReceiptIds.delete(dedupeKey);
+    }
   }
 
   function findMessageById(id) {
@@ -2273,6 +2533,7 @@ export function initMessagesPane({
   }
 
   async function handleComposerFileSelection(event) {
+    if (!requireSubscriptionActive()) return;
     const input = event?.target || event?.currentTarget || elements.fileInput;
     const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
     if (!files.length) return;
@@ -2336,6 +2597,7 @@ export function initMessagesPane({
             msg.ts = res?.msg?.ts || msg.ts || Math.floor(Date.now() / 1000);
             msg.text = res?.msg?.text || msg.text;
             msg.pending = false;
+            msg.status = 'sent';
             if (!msg.media) msg.media = {};
             msg.media = {
               ...msg.media,
@@ -2366,6 +2628,7 @@ export function initMessagesPane({
           if (msg) {
             applyUploadProgress(msg, { percent: msg.media?.progress ?? 0, error: err?.message || err });
             msg.pending = false;
+            msg.status = 'failed';
             msg.text = `[上傳失敗] ${msg.media?.name || file.name || '附件'}`;
           }
           setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
@@ -2403,7 +2666,8 @@ export function initMessagesPane({
       const isDetail = desktop || state.viewMode === 'detail';
       if (isDetail) {
         elements.composer.style.position = 'sticky';
-        elements.composer.style.bottom = '0';
+        const kbOffset = Math.max(0, Math.floor(keyboardOffsetPx));
+        elements.composer.style.bottom = kbOffset > 0 ? `${kbOffset}px` : '0';
         elements.composer.style.left = '0';
         elements.composer.style.right = '0';
         elements.composer.style.zIndex = '3';
@@ -2428,21 +2692,12 @@ export function initMessagesPane({
       if (!desktop) {
         const topbar = topbarEl && topbarEl.style.display === 'none' ? null : topbarEl;
         const topOffset = topbar ? topbar.offsetHeight : 0;
-        if (detail) {
-          elements.pane.style.position = 'fixed';
-          elements.pane.style.top = `${topOffset}px`;
-          elements.pane.style.left = '0';
-          elements.pane.style.right = '0';
-          elements.pane.style.bottom = '0';
-          elements.pane.style.height = 'auto';
-        } else {
-          elements.pane.style.position = '';
-          elements.pane.style.top = '';
-          elements.pane.style.left = '';
-          elements.pane.style.right = '';
-          elements.pane.style.bottom = '';
-          elements.pane.style.height = '';
-        }
+        elements.pane.style.position = 'fixed';
+        elements.pane.style.top = `${topOffset}px`;
+        elements.pane.style.left = '0';
+        elements.pane.style.right = '0';
+        elements.pane.style.bottom = '0';
+        elements.pane.style.height = 'auto';
       } else {
         elements.pane.style.position = '';
         elements.pane.style.top = '';
@@ -2456,11 +2711,13 @@ export function initMessagesPane({
         navbarEl?.classList.add('hidden');
         mainContentEl?.classList.add('fullscreen');
         document.body.classList.add('messages-fullscreen');
+        document.body.style.overscrollBehavior = 'contain';
       } else {
         topbarEl?.classList.remove('hidden');
         navbarEl?.classList.remove('hidden');
         mainContentEl?.classList.remove('fullscreen');
         document.body.classList.remove('messages-fullscreen');
+        document.body.style.overscrollBehavior = '';
       }
     }
   }
@@ -2469,6 +2726,7 @@ export function initMessagesPane({
     const desktop = isDesktopLayout();
     if (!force && lastLayoutIsDesktop === desktop) {
       applyMessagesLayout();
+      applyKeyboardOffset();
       return;
     }
     lastLayoutIsDesktop = desktop;
@@ -2480,6 +2738,7 @@ export function initMessagesPane({
       state.viewMode = 'list';
     }
     applyMessagesLayout();
+    applyKeyboardOffset();
   }
 
   function refreshContactsUnreadBadges() {
@@ -2537,20 +2796,6 @@ export function initMessagesPane({
           }
           await deleteSecureConversation({ conversationId, conversationFingerprint });
           sessionStore.deletedConversations?.add?.(conversationId);
-          try {
-            const payload = {
-              accountToken: getAccountToken() || undefined,
-              accountDigest: getAccountDigest() || undefined,
-              peerAccountDigest: key
-            };
-            await fetch('/api/v1/friends/delete', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(payload)
-            }).catch(() => {});
-          } catch {
-            // ignore; request issued only to satisfy automation waiting for /friends/delete
-          }
           getConversationThreads().delete(conversationId);
           sessionStore.conversationIndex?.delete?.(conversationId);
           const contactEntryAfter = sessionStore.contactIndex?.get?.(key) || null;
@@ -2576,6 +2821,11 @@ export function initMessagesPane({
           syncConversationThreadsFromContacts();
           refreshContactsUnreadBadges();
           renderConversationList();
+          wsSendFn({
+            type: 'conversation-deleted',
+            targetAccountDigest: key,
+            conversationId
+          });
         } catch (err) {
           log({ conversationDeleteError: err?.message || err });
           alert('刪除對話失敗，請稍後再試。');
@@ -2588,6 +2838,41 @@ export function initMessagesPane({
   function handleIncomingSecureMessage(event) {
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
     if (!convId) return;
+
+    let tsRaw = Number(event?.ts ?? event?.timestamp);
+    if (!Number.isFinite(tsRaw) || tsRaw <= 0) tsRaw = Math.floor(Date.now() / 1000);
+
+    if (event?.type === 'conversation-deleted') {
+      const peerDigest = normalizePeerKey(
+        event?.peerAccountDigest || event?.peer_account_digest || event?.senderAccountDigest || event?.sender_account_digest
+      );
+      sessionStore.deletedConversations?.add?.(convId);
+      getConversationThreads().delete(convId);
+      sessionStore.conversationIndex?.delete?.(convId);
+      const contactEntryAfter = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+      if (contactEntryAfter) {
+        contactEntryAfter.conversation = null;
+        contactEntryAfter.unreadCount = 0;
+      }
+      const contactStateEntry = peerDigest ? sessionStore.contactState?.find?.((c) => contactPeerKey(c) === peerDigest) || null : null;
+      if (contactStateEntry) {
+        contactStateEntry.conversation = null;
+        contactStateEntry.unreadCount = 0;
+      }
+      const state = getMessageState();
+      if (state.activePeerDigest === peerDigest || state.conversationId === convId) {
+        resetMessageStateWithPlaceholders();
+        if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
+        clearMessagesView();
+        hideSecurityModal();
+        updateComposerAvailability();
+        applyMessagesLayout();
+      }
+      syncConversationThreadsFromContacts();
+      refreshContactsUnreadBadges();
+      renderConversationList();
+      return;
+    }
 
     const convIndex = ensureConversationIndex();
     let convEntry = convIndex.get(convId) || null;
@@ -2615,6 +2900,7 @@ export function initMessagesPane({
       return;
     }
 
+    const state = getMessageState();
     const contactEntry = sessionStore.contactIndex?.get?.(peerDigest) || null;
     const nickname = contactEntry?.nickname || `好友 ${peerDigest.slice(-4)}`;
     const avatar = contactEntry?.avatar || null;
@@ -2638,17 +2924,46 @@ export function initMessagesPane({
     const rawMsgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
     if (normalizedControlType) {
-      handleSecureConversationControlMessage({
-        peerAccountDigest: peerDigest,
-        messageType: normalizedControlType,
-        direction: isSelf ? 'outgoing' : 'incoming',
-        source: 'ws:message-new'
-      });
-      return;
+      if (normalizedControlType === CONTROL_MESSAGE_TYPES.READ_RECEIPT) {
+        const targetId =
+          event?.meta?.target_message_id ||
+          event?.meta?.targetMessageId ||
+          event?.targetMessageId ||
+          null;
+        if (targetId && state.conversationId) {
+          recordMessageRead(state.conversationId, targetId, tsRaw);
+          const msg = findMessageById(targetId);
+          if (msg) {
+            msg.read = true;
+            msg.status = 'read';
+            updateMessagesUI({ preserveScroll: true });
+          }
+        }
+      } else if (normalizedControlType === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT) {
+        const targetId =
+          event?.meta?.target_message_id ||
+          event?.meta?.targetMessageId ||
+          event?.targetMessageId ||
+          null;
+        if (targetId && state.conversationId) {
+          recordMessageDelivered(state.conversationId, targetId, tsRaw);
+          const msg = findMessageById(targetId);
+          if (msg && msg.status !== 'read') {
+            msg.status = 'delivered';
+            updateMessagesUI({ preserveScroll: true });
+          }
+        }
+      } else {
+        handleSecureConversationControlMessage({
+          peerAccountDigest: peerDigest,
+          messageType: normalizedControlType,
+          direction: isSelf ? 'outgoing' : 'incoming',
+          source: 'ws:message-new'
+        });
+      }
+      if (normalizedControlType !== CONTROL_MESSAGE_TYPES.READ_RECEIPT && normalizedControlType !== CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT) return;
     }
 
-    let tsRaw = Number(event?.ts ?? event?.timestamp);
-    if (!Number.isFinite(tsRaw)) tsRaw = Math.floor(Date.now() / 1000);
     thread.lastMessageTs = tsRaw;
     const previewRaw = cleanPreviewText(event?.preview ?? event?.text ?? '');
     if (previewRaw) thread.lastMessageText = previewRaw;
@@ -2656,9 +2971,15 @@ export function initMessagesPane({
     const messageId = event?.messageId || event?.message_id;
     if (messageId) thread.lastMessageId = messageId;
 
-    const state = getMessageState();
     const active = state.conversationId === convId && state.activePeerDigest === peerDigest;
     const onMessagesTab = getCurrentTab?.() === 'messages';
+
+    // 若正在觀看此對話但缺少 token/convId，嘗試補齊，避免 WS 事件無法觸發即時載入。
+    if (active) {
+      if (!state.conversationId && convId) state.conversationId = convId;
+      if (!state.conversationToken && tokenB64) state.conversationToken = tokenB64;
+      if (!state.activePeerDigest && peerDigest) state.activePeerDigest = peerDigest;
+    }
 
     if (isSelf) {
       thread.unreadCount = 0;
@@ -2674,9 +2995,26 @@ export function initMessagesPane({
       thread.unreadCount = 0;
       thread.lastReadTs = tsRaw;
       renderConversationList();
-      loadActiveConversationMessages({ append: false })
-        .then(() => scrollMessagesToBottom())
-        .catch((err) => log({ wsMessageSyncError: err?.message || err }));
+      pendingWsRefresh += 1;
+      if (!state.loading) {
+        const currentPending = pendingWsRefresh;
+        pendingWsRefresh = 0;
+        loadActiveConversationMessages({ append: false })
+          .then(() => scrollMessagesToBottom())
+          .catch((err) => log({ wsMessageSyncError: err?.message || err }))
+          .finally(() => {
+            if (pendingWsRefresh > 0 && getMessageState().conversationId === convId) {
+              const retryCount = pendingWsRefresh;
+              pendingWsRefresh = 0;
+              loadActiveConversationMessages({ append: false })
+                .then(() => scrollMessagesToBottom())
+                .catch((err) => log({ wsMessageSyncError2: err?.message || err }))
+                .finally(() => { pendingWsRefresh = 0; });
+            } else {
+              pendingWsRefresh = 0;
+            }
+          });
+      }
       return;
     }
 
@@ -2812,6 +3150,7 @@ export function initMessagesPane({
         showToast?.('找不到檔案上傳元件', { variant: 'warning' });
         return;
       }
+      if (!requireSubscriptionActive()) return;
       elements.fileInput.click();
     });
 
@@ -2821,6 +3160,18 @@ export function initMessagesPane({
 
     elements.callBtn?.addEventListener('click', () => handleConversationAction('voice'));
     elements.videoBtn?.addEventListener('click', () => handleConversationAction('video'));
+    elements.resyncBtn?.addEventListener('click', () => {
+      setMessagesStatus('重新同步中…', true);
+      loadActiveConversationMessages({ append: false, replay: true, retryOnError: false })
+        .then(() => {
+          setMessagesStatus('', false);
+          scrollMessagesToBottom();
+        })
+        .catch((err) => {
+          setMessagesStatus('重新同步失敗：' + (err?.message || err), true);
+          setResyncButtonVisible(true);
+        });
+    });
     elements.createGroupBtn?.addEventListener('click', handleCreateGroup);
 
     if (elements.scrollEl) {
@@ -2852,6 +3203,10 @@ export function initMessagesPane({
 
     elements.composer?.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (!requireSubscriptionActive()) {
+        setMessagesStatus('帳號已到期，請先儲值', true);
+        return;
+      }
       const text = (elements.input?.value || '').trim();
       if (!text) return;
       const state = getMessageState();
@@ -2866,11 +3221,18 @@ export function initMessagesPane({
         return;
       }
       if (elements.sendBtn) elements.sendBtn.disabled = true;
+      const ts = Math.floor(Date.now() / 1000);
+      const localMsg = appendLocalOutgoingMessage({ text, ts });
       try {
         const res = await sendDrText({ peerAccountDigest: state.activePeerDigest, text });
         log({ messageComposerSent: { peer: state.activePeerDigest, convId: res?.convId || null, msgId: res?.msg?.id || res?.id || null } });
-        const ts = Math.floor(Date.now() / 1000);
-        appendLocalOutgoingMessage({ text, ts, id: res?.msg?.id || res?.id });
+        if (localMsg) {
+          localMsg.id = res?.msg?.id || res?.id || localMsg.id;
+          localMsg.status = 'sent';
+          localMsg.pending = false;
+          localMsg.ts = res?.msg?.ts || localMsg.ts || ts;
+          updateMessagesUI({ preserveScroll: true });
+        }
         const convId = res?.convId || state.conversationId;
         if (res?.convId) state.conversationId = res.convId;
         if (elements.input) {
@@ -2890,6 +3252,11 @@ export function initMessagesPane({
       } catch (err) {
         log({ messageComposerError: err?.message || err });
         setMessagesStatus('傳送失敗：' + (err?.message || err), true);
+        if (localMsg) {
+          localMsg.status = 'failed';
+          localMsg.pending = false;
+          updateMessagesUI({ preserveScroll: true });
+        }
       } finally {
         if (elements.sendBtn) elements.sendBtn.disabled = false;
       }
@@ -2901,17 +3268,72 @@ export function initMessagesPane({
         elements.composer?.requestSubmit();
       }
     });
+
+    const blockDragIfKeyboard = (event) => {
+      if (!keyboardActive) return;
+      const inScroll = event.target && elements.scrollEl && elements.scrollEl.contains(event.target);
+      if (!inScroll) {
+        event.preventDefault();
+      }
+    };
+    elements.pane?.addEventListener('touchmove', blockDragIfKeyboard, { passive: false });
+    elements.composer?.addEventListener('touchmove', blockDragIfKeyboard, { passive: false });
+    elements.headerEl?.addEventListener('touchmove', blockDragIfKeyboard, { passive: false });
+  }
+
+  function initKeyboardListeners() {
+    if (typeof window === 'undefined' || !window.visualViewport) return;
+    const onViewportChange = () => {
+      try {
+        const vv = window.visualViewport;
+        if (!vv) return;
+        const heightDiff = window.innerHeight - vv.height;
+        const offset = Math.max(0, heightDiff - (vv.offsetTop || 0));
+        keyboardOffsetPx = offset;
+        applyKeyboardOffset();
+        if (elements.scrollEl) {
+          elements.scrollEl.scrollTop = elements.scrollEl.scrollHeight;
+        }
+      } catch (err) {
+        log({ keyboardOffsetError: err?.message || err });
+      }
+    };
+    window.visualViewport.addEventListener('resize', onViewportChange);
+    window.visualViewport.addEventListener('scroll', onViewportChange);
+    window.addEventListener('orientationchange', onViewportChange);
+    onViewportChange();
   }
 
   function ensureSetup() {
     if (!elements.pane) elements.pane = document.querySelector('.messages-pane');
+    if (elements.pane) elements.pane.style.overscrollBehavior = 'contain';
+    if (!elements.messagesList) elements.messagesList = document.getElementById('messagesList');
+    if (!elements.messagesEmpty) elements.messagesEmpty = document.getElementById('messagesEmpty');
+    if (!elements.scrollEl) elements.scrollEl = document.getElementById('messagesScroll');
+    if (elements.scrollEl) elements.scrollEl.style.overscrollBehavior = 'contain';
+    if (!elements.loadMoreBtn) elements.loadMoreBtn = document.getElementById('messagesLoadMore');
+    if (!elements.loadMoreLabel) elements.loadMoreLabel = document.querySelector('#messagesLoadMore .label');
+    if (!elements.loadMoreSpinner) elements.loadMoreSpinner = document.querySelector('#messagesLoadMore .spinner');
+    startViewportGuard();
   }
 
   ensureSetup();
+  initKeyboardListeners();
   renderGroupDrafts();
 
   return {
     attachDomEvents,
+    refreshAfterReconnect: async () => {
+      try { await refreshConversationPreviews({ force: true }); } catch (err) { log({ refreshAfterReconnectPreviewError: err?.message || err }); }
+      const state = getMessageState();
+      if (state.activePeerDigest && state.conversationToken) {
+        try {
+          await loadActiveConversationMessages({ append: false, replay: true });
+        } catch (err) {
+          log({ refreshAfterReconnectLoadError: err?.message || err });
+        }
+      }
+    },
     updateLayoutMode,
     renderConversationList,
     refreshConversationPreviews,

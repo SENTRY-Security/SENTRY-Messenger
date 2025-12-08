@@ -38,7 +38,7 @@ function verifyJwt(token) {
 
 async function callWorker({ path, body, method = 'POST' }) {
   if (!DATA_API || !HMAC_SECRET) {
-    const err = new Error('DATA_API_URL or DATA_API_HMAC not configured');
+    const err = new Error('後端尚未設定訂閱服務憑證');
     err.status = 500;
     throw err;
   }
@@ -54,7 +54,10 @@ async function callWorker({ path, body, method = 'POST' }) {
   let data = null;
   try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
   if (!res.ok) {
-    const err = new Error(typeof data === 'object' && data?.message ? data.message : 'worker error');
+    const errMsg = typeof data === 'object' && data?.message
+      ? data.message
+      : '服務暫時無法處理，請稍後再試';
+    const err = new Error(errMsg);
     err.status = res.status;
     err.payload = data;
     throw err;
@@ -92,14 +95,14 @@ export async function redeemVoucher(input = {}) {
   const { payload, header, signatureB64 } = verifyJwt(token);
   const durationDays = Number(payload?.durationDays || payload?.extendDays || 0);
   if (!Number.isFinite(durationDays) || durationDays <= 0) {
-    const err = new Error('durationDays missing in voucher');
+    const err = new Error('憑證缺少展期天數');
     err.status = 400;
     err.code = 'InvalidVoucher';
     throw err;
   }
   const tokenId = payload?.voucherId || payload?.sub || payload?.jti;
   if (!tokenId) {
-    const err = new Error('voucherId/jti missing');
+    const err = new Error('憑證缺少 voucherId/jti');
     err.status = 400;
     err.code = 'InvalidVoucher';
     throw err;
@@ -131,9 +134,10 @@ export async function validateVoucher(input = {}) {
   return redeemVoucher({ ...input, dryRun: true });
 }
 
-export async function subscriptionStatus({ digest, limit } = {}) {
+export async function subscriptionStatus({ digest, uidDigest, limit } = {}) {
   let targetDigest = normalizeAccountDigest(digest);
-  if (!targetDigest) {
+  const targetUidDigest = normalizeAccountDigest(uidDigest);
+  if (!targetDigest && !targetUidDigest) {
     try {
       const auth = await resolveAccountAuth({});
       targetDigest = auth?.accountDigest || null;
@@ -143,13 +147,14 @@ export async function subscriptionStatus({ digest, limit } = {}) {
       throw e;
     }
   }
-  if (!targetDigest) {
+  if (!targetDigest && !targetUidDigest) {
     const err = new Error('digest required');
     err.status = 400;
     throw err;
   }
   const params = new URLSearchParams();
-  params.set('digest', targetDigest);
+  if (targetDigest) params.set('digest', targetDigest);
+  if (!targetDigest && targetUidDigest) params.set('uidDigest', targetUidDigest);
   if (limit) params.set('limit', String(limit));
   const path = `/d1/subscription/status?${params.toString()}`;
   return callWorker({ path, method: 'GET' });

@@ -56,9 +56,15 @@
         box-shadow:0 26px 60px rgba(15,23,42,0.45);
         position:relative;
       }
-      .brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+      .brand { position:relative; display:flex; align-items:center; gap:12px; margin-bottom:18px; }
       .brand img { height:30px; width:auto; }
       .brand h1 { margin:0; font-size:22px; font-weight:700; letter-spacing:0.4px; color:var(--fg); }
+      .brand .remote-console-mask {
+        position:absolute;
+        inset:-6px;
+        z-index:2;
+        background:transparent;
+      }
       .subtitle { margin:0 0 24px; color:var(--muted); font-size:13px; line-height:1.5; }
       form { display:flex; flex-direction:column; gap:16px; }
       .form-group { display:flex; flex-direction:column; gap:6px; }
@@ -326,6 +332,7 @@
     </div>
     <main class="login-shell">
       <div class="brand" id="loginBrand">
+        <div class="remote-console-mask" id="remoteConsoleMask" aria-hidden="true"></div>
         <img src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
         <h1>SENTRY MESSENGER</h1>
       </div>

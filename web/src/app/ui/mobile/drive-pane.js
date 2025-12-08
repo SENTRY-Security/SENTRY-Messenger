@@ -34,6 +34,23 @@ export function initDrivePane({
   const driveScrollEl = dom.driveScroll ?? document.getElementById('tab-drive');
   let activePdfCleanup = null;
   let pdfJsLibPromise = null;
+  const isSubscriptionActive = () => {
+    const s = sessionStore.subscriptionState;
+    if (!s || s.loading) return true;
+    if (!s.lastChecked) return true; // 尚未查詢完成時不阻擋
+    return !!(s && s.found && !s.expired);
+  };
+  const requireSubscriptionActive = () => {
+    if (isSubscriptionActive()) return true;
+    document.dispatchEvent(new CustomEvent('subscription:gate'));
+    return false;
+  };
+
+  function showSubscriptionGateIfExpired() {
+    if (!isSubscriptionActive()) {
+      document.dispatchEvent(new CustomEvent('subscription:gate'));
+    }
+  }
 
   const SYSTEM_DIR_SENT = '__SYS_SENT__';
   const SYSTEM_DIR_RECEIVED = '__SYS_RECV__';
@@ -194,6 +211,18 @@ export function initDrivePane({
     driveScrollEl.addEventListener('touchend', handleDrivePullEnd, { passive: true });
     driveScrollEl.addEventListener('touchcancel', handleDrivePullEnd, { passive: true });
     resetDrivePull({ animate: false });
+  }
+
+  function updateDriveActionAvailability() {
+    const active = isSubscriptionActive();
+    const controls = [btnUploadOpen, btnNewFolder];
+    for (const btn of controls) {
+      if (!btn) continue;
+      btn.disabled = false; // 允許點擊觸發 modal
+      btn.classList.toggle('disabled', !active);
+      btn.setAttribute('aria-disabled', active ? 'false' : 'true');
+      btn.style.opacity = active ? '1' : '0.6';
+    }
   }
 
   async function getPdfJs() {
@@ -1030,6 +1059,7 @@ export function initDrivePane({
   }
 
   function openUploadModal() {
+    if (!requireSubscriptionActive()) return;
     const modalEl = document.getElementById('modal');
     const body = document.getElementById('modalBody');
     const title = document.getElementById('modalTitle');
@@ -1127,6 +1157,7 @@ export function initDrivePane({
   }
 
   function openFolderModal() {
+    if (!requireSubscriptionActive()) return;
     const modalEl = document.getElementById('modal');
     const body = document.getElementById('modalBody');
     const title = document.getElementById('modalTitle');
@@ -1563,6 +1594,7 @@ export function initDrivePane({
   setupDrivePullToRefresh();
   renderCrumb();
   updateUsageSummary();
+  updateDriveActionAvailability();
 
   return {
     refreshDriveList,
@@ -1573,6 +1605,8 @@ export function initDrivePane({
     renderCrumb,
     onDownloadByKey,
     getEnvelopeForKey,
-    updateUsageSummary
+    updateUsageSummary,
+    updateDriveActionAvailability,
+    showSubscriptionGateIfExpired
   };
 }

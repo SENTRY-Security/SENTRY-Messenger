@@ -1,13 +1,6 @@
 // /app/ui/version-info.js
 // Small helper to attach a floating version info button & popup.
 
-const STATUS_ENDPOINT = '/status';
-const HEALTH_ENDPOINT = '/api/health';
-let cachedInfo = null;
-let pendingFetch = null;
-let cachedHealth = null;
-let pendingHealth = null;
-
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -49,10 +42,192 @@ function collectStorageStats() {
     }
   };
 
-  addStats(window.localStorage, 'localStorage');
-  addStats(window.sessionStorage, 'sessionStorage');
+  addStats(window.localStorage, '本機儲存 (localStorage)');
+  addStats(window.sessionStorage, '工作階段 (sessionStorage)');
+  try {
+    const indexedDBSize = window.indexedDB ? '支援 IndexedDB' : '不支援 IndexedDB';
+    results.push({
+      label: '資料庫 (IndexedDB)',
+      keyCount: indexedDBSize === '支援 IndexedDB' ? 1 : 0,
+      totalBytes: 0,
+      note: indexedDBSize
+    });
+  } catch {
+    results.push({
+      label: '資料庫 (IndexedDB)',
+      keyCount: 0,
+      totalBytes: 0,
+      note: '不支援 IndexedDB'
+    });
+  }
 
   return results;
+}
+
+function collectStorageEntries(label) {
+  if (typeof window === 'undefined') return { label, error: 'no-window' };
+  const encoder = new TextEncoder();
+  const isSession = label && label.includes('sessionStorage') || label?.includes('工作階段');
+  const storage = isSession ? window.sessionStorage : window.localStorage;
+  if (!storage) return { label, error: 'storage-unavailable' };
+  try {
+    const entries = [];
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (key == null) continue;
+      const value = storage.getItem(key);
+      entries.push({
+        key,
+        value,
+        sizeBytes: encoder.encode(String(key)).length + (value != null ? encoder.encode(String(value)).length : 0)
+      });
+    }
+    return { label, entries };
+  } catch (err) {
+    return { label, error: err?.message || String(err) };
+  }
+}
+
+function renderStorageDetailModal(detail) {
+  const existing = document.getElementById('versionStorageDetail');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'versionStorageDetail';
+  Object.assign(overlay.style, {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.55)',
+    zIndex: 9999,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '16px'
+  });
+  const box = document.createElement('div');
+  Object.assign(box.style, {
+    background: '#0f172a',
+    color: '#e2e8f0',
+    borderRadius: '12px',
+    width: 'min(90vw, 720px)',
+    maxHeight: '80vh',
+    overflow: 'hidden',
+    boxShadow: '0 10px 40px rgba(0,0,0,0.35)',
+    border: '1px solid rgba(255,255,255,0.08)'
+  });
+  const header = document.createElement('div');
+  header.style.display = 'flex';
+  header.style.justifyContent = 'space-between';
+  header.style.alignItems = 'center';
+  header.style.padding = '12px 16px';
+  header.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
+  header.innerHTML = `<div style="font-weight:700;">${escapeHtml(detail.label || '儲存')}</div>`;
+  const btnRow = document.createElement('div');
+  btnRow.style.display = 'flex';
+  btnRow.style.gap = '8px';
+  const clearBtn = document.createElement('button');
+  clearBtn.textContent = '清除此儲存';
+  Object.assign(clearBtn.style, {
+    background: 'transparent',
+    color: '#facc15',
+    border: '1px solid rgba(250,204,21,0.4)',
+    borderRadius: '8px',
+    padding: '6px 10px',
+    cursor: 'pointer'
+  });
+  clearBtn.addEventListener('click', () => {
+    try {
+      const isSession = (detail.label || '').toLowerCase().includes('session');
+      const storage = isSession ? window.sessionStorage : window.localStorage;
+      storage?.clear();
+      // 清除後登出
+      window.location.href = '/logout';
+    } catch (err) {
+      alert('清除失敗：' + (err?.message || err));
+    }
+  });
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '關閉';
+  Object.assign(closeBtn.style, {
+    background: 'transparent',
+    color: '#e2e8f0',
+    border: '1px solid rgba(255,255,255,0.25)',
+    borderRadius: '8px',
+    padding: '6px 10px',
+    cursor: 'pointer'
+  });
+  closeBtn.addEventListener('click', () => overlay.remove());
+  btnRow.appendChild(clearBtn);
+  btnRow.appendChild(closeBtn);
+  header.appendChild(btnRow);
+  const body = document.createElement('div');
+  body.style.padding = '12px 16px';
+  body.style.maxHeight = 'calc(80vh - 60px)';
+  body.style.overflow = 'auto';
+  if (detail.error) {
+    body.innerHTML = `<div style="color:#f87171;">載入失敗：${escapeHtml(detail.error)}</div>`;
+  } else if (!detail.entries || !detail.entries.length) {
+    body.innerHTML = `<div style="color:#94a3b8;">無資料</div>`;
+  } else {
+    const total = detail.entries.reduce((sum, e) => sum + (e.sizeBytes || 0), 0);
+    const formatValue = (value) => {
+      if (value == null) return '';
+      let parsed = null;
+      if (typeof value === 'string') {
+        try { parsed = JSON.parse(value); } catch {}
+      }
+      if (parsed && typeof parsed === 'object') {
+        try {
+          return JSON.stringify(parsed, null, 2);
+        } catch {}
+      }
+      return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    };
+    const list = detail.entries.map((entry, idx) => {
+      const pretty = formatValue(entry.value);
+      const display = typeof pretty === 'string' && pretty.length > 12000
+        ? `${pretty.slice(0, 12000)}…`
+        : pretty;
+      return `
+        <li class="storage-entry-row" style="list-style: none; margin: 0 0 10px 0;">
+          <details style="border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.02);">
+            <summary style="padding: 10px 12px; display:flex; justify-content:space-between; align-items:center; gap:8px; cursor:pointer; list-style:none;">
+              <span class="storage-key" style="font-weight:700;word-break:break-all;">${escapeHtml(entry.key)}</span>
+              <span class="storage-meta" style="color:#94a3b8;font-size:12px;">${formatBytes(entry.sizeBytes || 0)}</span>
+            </summary>
+            <div style="padding: 0 12px 12px 12px;">
+              <pre class="storage-entry-value" style="margin:0; padding:10px; background: rgba(255,255,255,0.04); border-radius:8px; color:#e2e8f0; word-break:break-all; white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:13px;">${escapeHtml(display ?? '')}</pre>
+            </div>
+          </details>
+        </li>
+      `;
+    }).join('');
+    body.innerHTML = `
+      <div style="margin-bottom:8px;color:#cbd5e1;">共 ${detail.entries.length} 筆，約 ${formatBytes(total)}</div>
+      <ul class="storage-entry-list" style="padding:0; margin:0;">${list}</ul>
+    `;
+  }
+  overlay.appendChild(box);
+  box.appendChild(header);
+  box.appendChild(body);
+  document.body.appendChild(overlay);
+}
+
+function attachStorageDetailHandlers(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-storage-label]').forEach((el) => {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const label = el.dataset.storageLabel || 'storage';
+      if (label.includes('IndexedDB')) {
+        const message = window.indexedDB ? 'IndexedDB 資料由瀏覽器管理，目前僅顯示狀態。' : '此瀏覽器不支援 IndexedDB。';
+        renderStorageDetailModal({ label, entries: [], error: null, note: message });
+      } else {
+        const detail = collectStorageEntries(label);
+        renderStorageDetailModal(detail);
+      }
+    });
+  });
 }
 
 function getAppVersion() {
@@ -67,84 +242,16 @@ function getAppBuildTime() {
   try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); }
 }
 
-function summarizeStatus(info) {
-  if (!info) return '－';
-  if (info.error) return `錯誤：${info.error}`;
-  if (info.status && info.status !== 200 && info.status !== 'ok') {
-    return `HTTP ${info.status}`;
-  }
-  return '正常';
-}
-
-function summarizeHealth(health) {
-  if (!health) return '－';
-  if (health.error) return `錯誤：${health.error}`;
-  if (health.ok === false) {
-    return health.message ? `失敗：${health.message}` : '失敗';
-  }
-  return '正常';
-}
-
 function formatInfo(info) {
   const now = new Date();
   const fetchedAt = info?.fetchedAt ? new Date(info.fetchedAt) : now;
-  const hasWindow = typeof window !== 'undefined';
   return {
     version: info?.version || info?.build || 'unknown',
-    statusSummary: summarizeStatus(info),
-    healthSummary: summarizeHealth(info?.apiHealth),
     appVersion: getAppVersion(),
     appBuildAt: getAppBuildTime(),
     fetchedAt: fetchedAt.toLocaleString('zh-TW', { hour12: false }),
     clientLoadedAt: now.toLocaleString('zh-TW', { hour12: false })
   };
-}
-
-async function fetchStatus() {
-  if (cachedInfo) return cachedInfo;
-  if (pendingFetch) return pendingFetch;
-  pendingFetch = fetch(STATUS_ENDPOINT, { cache: 'no-store' })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json().catch(() => ({}));
-      data.fetchedAt = new Date().toISOString();
-      cachedInfo = data;
-      return cachedInfo;
-    })
-    .catch((err) => {
-      cachedInfo = {
-        error: err?.message || 'Unknown error',
-        fetchedAt: new Date().toISOString()
-      };
-      return cachedInfo;
-    })
-    .finally(() => {
-      pendingFetch = null;
-    });
-  return pendingFetch;
-}
-
-async function fetchApiHealth() {
-  if (cachedHealth) return cachedHealth;
-  if (pendingHealth) return pendingHealth;
-  pendingHealth = fetch(HEALTH_ENDPOINT, { cache: 'no-store' })
-    .then(async (res) => {
-      if (!res.ok) {
-        cachedHealth = { error: `HTTP ${res.status}` };
-        return cachedHealth;
-      }
-      const data = await res.json().catch(() => ({}));
-      cachedHealth = data;
-      return cachedHealth;
-    })
-    .catch((err) => {
-      cachedHealth = { error: err?.message || 'Unknown error' };
-      return cachedHealth;
-    })
-    .finally(() => {
-      pendingHealth = null;
-    });
-  return pendingHealth;
 }
 
 function renderPopup(popup, info) {
@@ -153,13 +260,13 @@ function renderPopup(popup, info) {
   const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
   const storageRows = storageStats.map((item) => {
     const detail = item.error
-      ? `<span style="color:#f87171;">錯誤：${item.error}</span>`
+      ? `<span style="color:#f87171;">錯誤：${escapeHtml(item.error)}</span>`
       : `<span>${item.keyCount} keys / ${formatBytes(item.totalBytes)}</span>`;
     return `
-      <div class="version-storage-row">
-        <span>${item.label}</span>
+      <button type="button" class="version-storage-row" data-storage-label="${escapeHtml(item.label)}" aria-label="檢視 ${escapeHtml(item.label)}">
+        <span>${escapeHtml(item.label)}</span>
         ${detail}
-      </div>`;
+      </button>`;
   }).join('') || '<div class="version-storage-row">無可用資料</div>';
 
   popup.innerHTML = `
@@ -168,8 +275,6 @@ function renderPopup(popup, info) {
     <div>前端建置：${details.appBuildAt}</div>
     <div>前端載入：${details.clientLoadedAt}</div>
     <div>版本：${details.version}</div>
-    <div>服務狀態：${details.statusSummary}</div>
-    <div>API 健康：${details.healthSummary}</div>
     <div style="margin-top:10px;font-weight:600;">前端儲存資訊</div>
     <div class="version-storage-list">
       ${storageRows}
@@ -213,15 +318,13 @@ function renderModalContent(container, info) {
     ['前端建置', details.appBuildAt],
     ['前端載入', details.clientLoadedAt],
     ['版本', details.version],
-    ['服務狀態', details.statusSummary],
-    ['API 健康', details.healthSummary],
     ['更新時間', details.fetchedAt]
   ];
   const storageRows = storageStats.map((item) => {
     const detail = item.error
       ? `<span class="version-value error">錯誤：${escapeHtml(item.error)}</span>`
       : `<span class="version-value">${item.keyCount} keys / ${formatBytes(item.totalBytes)}</span>`;
-    return `<div class="version-row"><span class="version-label">${escapeHtml(item.label)}</span>${detail}</div>`;
+    return `<button type="button" class="version-row version-storage-button" data-storage-label="${escapeHtml(item.label)}"><span class="version-label">${escapeHtml(item.label)}</span>${detail}</button>`;
   }).join('') || '<div class="version-row"><span class="version-label">儲存</span><span class="version-value">無可用資料</span></div>';
 
   container.innerHTML = `
@@ -233,6 +336,7 @@ function renderModalContent(container, info) {
         <div class="version-row version-storage-total"><span class="version-label">總計</span><span class="version-value">${formatBytes(totalBytes)}</span></div>
       </div>
     </div>`;
+  attachStorageDetailHandlers(container);
 }
 
 export async function showVersionModal({ openModal, closeModal } = {}) {
@@ -256,19 +360,8 @@ export async function showVersionModal({ openModal, closeModal } = {}) {
   if (title) title.textContent = '版本資訊';
   body.innerHTML = `<div class="version-modal loading"><div class="loading-spinner"></div><div class="version-loading-text">載入版本資訊…</div></div>`;
   openModal?.();
-  try {
-    const [statusInfo, healthInfo] = await Promise.all([fetchStatus(), fetchApiHealth()]);
-    if (statusInfo) statusInfo.apiHealth = healthInfo;
-    const info = statusInfo || { apiHealth: healthInfo };
-    if (info?.error) {
-      renderModalContent(body, info);
-      body.querySelector('.version-value')?.classList?.add('error');
-    } else {
-      renderModalContent(body, info);
-    }
-  } catch (err) {
-    body.innerHTML = `<div class="version-modal"><div class="version-row"><span class="version-label">載入失敗</span><span class="version-value error">${escapeHtml(err?.message || '未知錯誤')}</span></div></div>`;
-  }
+  const info = { fetchedAt: new Date().toISOString() };
+  renderModalContent(body, info);
   const modalClose = document.getElementById('modalClose');
   const modalCloseArea = document.getElementById('modalCloseArea');
   modalClose?.addEventListener('click', () => closeModal?.(), { once: true });
@@ -301,18 +394,9 @@ export function initVersionInfoButton({ buttonId, popupId, openModal, closeModal
     popup.innerHTML = `<strong>版本資訊</strong><div>載入中…</div>`;
     popup.setAttribute('aria-hidden', 'false');
     popup.dataset.open = 'true';
-    try {
-      const [statusInfo, healthInfo] = await Promise.all([fetchStatus(), fetchApiHealth()]);
-      if (statusInfo) statusInfo.apiHealth = healthInfo;
-      const info = statusInfo || { apiHealth: healthInfo };
-      if (info?.error) {
-        renderError(popup, info.error);
-      } else {
-        renderPopup(popup, info);
-      }
-    } catch (err) {
-      renderError(popup, err?.message || '未知錯誤');
-    }
+    const info = { fetchedAt: new Date().toISOString() };
+    renderPopup(popup, info);
+    attachStorageDetailHandlers(popup);
   };
 
   button.addEventListener('click', (event) => {

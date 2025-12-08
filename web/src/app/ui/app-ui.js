@@ -252,10 +252,16 @@ async function onLoadMessages() {
     const peer = prompt('輸入對方帳號 digest（hex）：');
     if (!conversationId || !tokenB64 || !peer) return;
     const peerDigest = String(peer).replace(/[^0-9a-f]/gi, '').toUpperCase();
-    const { items, nextCursorTs, errors } = await listSecureAndDecrypt({ conversationId, tokenB64, peerAccountDigest: peerDigest, limit: 20 });
+    const { items, nextCursor, nextCursorTs, errors } = await listSecureAndDecrypt({
+      conversationId,
+      tokenB64,
+      peerAccountDigest: peerDigest,
+      limit: 20,
+      sendReadReceipt: true
+    });
     renderMessages(items);
     if (errors && errors.length) log({ decryptErrors: errors });
-    if (nextCursorTs) log({ nextCursorTs });
+    if (nextCursor || nextCursorTs) log({ nextCursor: nextCursor || { ts: nextCursorTs, id: null } });
   } catch (e) {
     log({ loadMessagesError: String(e?.message || e) });
   }

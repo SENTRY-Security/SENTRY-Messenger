@@ -32,7 +32,16 @@ const corsOrigin = allowList.length
 app.use(cors({ origin: corsOrigin, credentials: false }));
 
 // 解析 JSON
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buf) => {
+    try {
+      req.rawBody = buf.toString('utf8');
+    } catch {
+      req.rawBody = '';
+    }
+  }
+}));
 
 // 日誌
 app.use(pinoHttp({ logger }));

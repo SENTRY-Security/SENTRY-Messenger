@@ -1,4 +1,12 @@
-import { S3Client, GetObjectCommand, HeadObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const endpoint = process.env.S3_ENDPOINT;
@@ -60,4 +68,29 @@ export async function deleteObject({ key }) {
     Bucket: bucket,
     Key: key
   }));
+}
+
+export async function deleteAllWithPrefix({ prefix }) {
+  if (!prefix) return { deleted: 0 };
+  let continuationToken = null;
+  let deleted = 0;
+  do {
+    const listRes = await s3.send(new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken || undefined
+    }));
+    const objects = Array.isArray(listRes.Contents)
+      ? listRes.Contents.map((item) => ({ Key: item.Key })).filter((obj) => obj.Key)
+      : [];
+    if (objects.length) {
+      await s3.send(new DeleteObjectsCommand({
+        Bucket: bucket,
+        Delete: { Objects: objects }
+      }));
+      deleted += objects.length;
+    }
+    continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : null;
+  } while (continuationToken);
+  return { deleted };
 }

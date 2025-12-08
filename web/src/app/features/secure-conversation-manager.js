@@ -6,6 +6,9 @@ import { getContactSecret } from '../core/contact-secrets.js';
 import { ensureDrReceiverState, sendDrSessionAck, sendDrSessionInit } from './dr-session.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 
+// Re-export for consumers that already depend on manager namespace (e.g., messages.js)
+export { ensureDrReceiverState } from './dr-session.js';
+
 const STATUS_IDLE = 'idle';
 const STATUS_PENDING = 'pending';
 const STATUS_READY = 'ready';
@@ -14,8 +17,9 @@ const STATUS_FAILED = 'failed';
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_POLL_INTERVAL_MS = 400;
 const ACK_TIMEOUT_MS = 10_000;
-const SESSION_INIT_RETRY_LIMIT = 3;
+const SESSION_INIT_RETRY_LIMIT = 6;
 const SESSION_INIT_RETRY_BACKOFF_MS = 5_000;
+const SESSION_INIT_LONG_BACKOFF_MS = 20_000;
 
 const listeners = new Set();
 const peerStates = new Map();
@@ -324,7 +328,12 @@ async function triggerSessionInit(
   if (!force) {
     if (ctrl.awaitingAck || ctrl.retryInFlight) return false;
     if (sentCount >= SESSION_INIT_RETRY_LIMIT) return false;
-    if (ctrl.lastInitAt && Date.now() - ctrl.lastInitAt < SESSION_INIT_RETRY_BACKOFF_MS) return false;
+    if (ctrl.lastAckAt && Date.now() - ctrl.lastAckAt < SESSION_INIT_RETRY_BACKOFF_MS) return false;
+    if (ctrl.lastInitAt) {
+      const elapsed = Date.now() - ctrl.lastInitAt;
+      if (sentCount >= 3 && elapsed < SESSION_INIT_LONG_BACKOFF_MS) return false;
+      if (elapsed < SESSION_INIT_RETRY_BACKOFF_MS) return false;
+    }
   } else if (sentCount >= SESSION_INIT_RETRY_LIMIT) {
     return false;
   }

@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
  * @returns {string} - base64url encoded HMAC signature
  */
 export function signHmac(pathWithQS, body, secret) {
+  // 支援舊版文件 path + "\n" + body，也可用 "|"。這裡保持 "|"，Worker 端會同時接受兩者。
   const msg = `${pathWithQS}|${body || ''}`;
   return crypto.createHmac('sha256', secret).update(msg).digest('base64url');
 }

@@ -26,12 +26,14 @@ const defaultMessageState = {
   conversationId: null,
   conversationToken: null,
   messages: [],
+  nextCursor: null,
   nextCursorTs: null,
   loading: false,
   hasMore: true,
   viewMode: 'list',
   pendingDeletePeer: null,
-  deletePreviewPeer: null
+  deletePreviewPeer: null,
+  replayInProgress: false
 };
 
 const defaultUiState = {
@@ -49,7 +51,9 @@ const defaultSubscriptionState = {
   expiresAt: null,
   lastChecked: null,
   loading: false,
-  expired: true
+  expired: true,
+  logs: [],
+  accountCreatedAt: null
 };
 
 function resetState(target, defaults) {

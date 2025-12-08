@@ -83,7 +83,6 @@ function createEmptySession() {
     peerAccountDigest: null,
     peerDisplayName: null,
     peerAvatarUrl: null,
-    peerAccountDigest: null,
     kind: CALL_REQUEST_KIND.VOICE,
     requestedAt: null,
     connectedAt: null,

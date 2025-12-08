@@ -276,6 +276,15 @@ async function handleCallSignal(ws, msg) {
     fromAccountDigest: ws.__accountDigest || null,
     toAccountDigest: targetAccountDigest || null,
     traceId
+  }).catch((err) => {
+    releaseCallLocksForPair(callId, ws.__accountDigest, targetAccountDigest);
+    logger.warn({ err: err?.message || err, callId, rawType }, 'ws_call_event_append_failed');
+    sendCallError(ws, 'CALL_EVENT_FAILED', 'unable to persist call event', {
+      event: rawType,
+      callId,
+      peerAccountDigest: targetAccountDigest
+    });
+    throw err;
   });
 
   broadcastByDigest(targetAccountDigest, payload);
@@ -363,6 +372,22 @@ function handleClientMessage(ws, data) {
       try { ws.close(4401, 'account_digest_missing'); } catch {}
       return;
     }
+    if (ws.__accountDigest) {
+      if (ws.__accountDigest === tokenDigest) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const normalized = normalizeSessionTs(verification.payload.iat || nowSec, { now: nowSec });
+        if (normalized.ts && (!ws.__sessionTs || normalized.ts > ws.__sessionTs)) {
+          ws.__sessionTs = normalized.ts;
+          latestSessionTs.set(tokenDigest, normalized.ts);
+        }
+        ws.send(JSON.stringify({ type: 'auth', ok: true, exp: verification.payload.exp, reused: true }));
+        return;
+      }
+      clearPresenceWatchers(ws);
+      removeClient(ws);
+      ws.__accountDigest = null;
+      ws.__sessionTs = null;
+    }
     ws.__accountDigest = tokenDigest;
     const sessionTs = verification.payload.iat || Math.floor(Date.now() / 1000);
     const ok = addClient(tokenDigest, ws, sessionTs);
@@ -427,6 +452,21 @@ function handleClientMessage(ws, data) {
       senderAccountDigest: senderAcct,
       peerAccountDigest: senderAcct,
       targetAccountDigest: targetDigest
+    });
+    return;
+  }
+  if (msg.type === 'conversation-deleted') {
+    if (!ws.__accountDigest) return;
+    const targetDigest = extractPeerAccountDigest(msg);
+    const conversationId = String(msg.conversationId || msg.conversation_id || '').trim();
+    if (!targetDigest || !conversationId) return;
+    const senderAcct = ws.__accountDigest || null;
+    broadcastByDigest(targetDigest, {
+      type: 'conversation-deleted',
+      conversationId,
+      senderAccountDigest: senderAcct,
+      peerAccountDigest: senderAcct,
+      ts: Date.now()
     });
     return;
   }
@@ -506,6 +546,18 @@ export function setupWebSocket(server) {
         envelope,
         ts: Date.now()
       });
+    },
+    forceLogout(accountDigest = null, { reason = 'account removed' } = {}) {
+      const digest = canonicalAccountDigest(accountDigest);
+      if (!digest) return;
+      const payload = { type: 'force-logout', reason, ts: Date.now() };
+      broadcastByDigest(digest, payload);
+      const set = clients.get(digest);
+      if (set) {
+        for (const ws of set) {
+          try { ws.close(4409, 'account_purged'); } catch {}
+        }
+      }
     }
   };
   logger.info('WebSocket server initialized');

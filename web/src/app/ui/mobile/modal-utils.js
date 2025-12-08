@@ -61,7 +61,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'avatar-modal',
       'avatar-preview-modal',
       'settings-modal',
-      'pdf-modal'
+      'pdf-modal',
+      'subscription-modal-shell'
     );
     document.querySelector('.pdf-confirm')?.remove();
 

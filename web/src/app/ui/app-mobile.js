@@ -57,6 +57,7 @@ import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
+import { resetAllProcessedMessages, resetReceiptStore } from '../features/messages.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
@@ -76,11 +77,13 @@ import {
   initContactSecretsBackup,
   triggerContactSecretsBackup
 } from '../features/contact-backup.js';
-import { subscriptionStatus, redeemSubscription } from '../api/subscription.js';
+import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
 
 const MEDIA_PERMISSION_KEY = 'media-permission-v1';
 const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
+const REMOTE_CONSOLE_ENABLED_KEY = 'remoteConsole:enabled';
+const REMOTE_CONSOLE_ENDPOINT_KEY = 'remoteConsole:endpoint';
 const out = document.getElementById('out');
 setLogSink(out);
 try {
@@ -835,6 +838,14 @@ function clearLocalEncryptedCaches() {
   }
 }
 
+function clearRemoteConsoleConfig() {
+  try { window.RemoteConsoleRelay?.disable?.(); } catch {}
+  remoteConsoleAutoEnabled = false;
+  try { localStorage.removeItem(REMOTE_CONSOLE_ENABLED_KEY); } catch {}
+  try { localStorage.removeItem(REMOTE_CONSOLE_ENDPOINT_KEY); } catch {}
+  try { sessionStorage.removeItem(REMOTE_CONSOLE_HANDOFF_KEY); } catch {}
+}
+
 function clearSessionHandoff() {
   const baseKeys = ['mk_b64', 'account_token', 'account_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY, SESSION_LOGIN_TS_KEY];
   const opts = getContactSecretKeyOptions();
@@ -852,6 +863,50 @@ function clearSessionHandoff() {
   for (const key of keys) {
     try { sessionStorage.removeItem(key); } catch {}
   }
+}
+
+function clearAllBrowserStorage(logoutMessage) {
+  try {
+    if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
+      caches.keys()
+        .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+        .catch((err) => log({ secureLogoutCacheClearError: err?.message || err }));
+    }
+  } catch (err) {
+    log({ secureLogoutCacheClearError: err?.message || err });
+  }
+
+  try {
+    if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+      indexedDB.databases()
+        .then((dbs) => Promise.all(
+          dbs
+            .map((db) => db?.name)
+            .filter((name) => typeof name === 'string' && name.length)
+            .map((name) => new Promise((resolve) => {
+              try {
+                const req = indexedDB.deleteDatabase(name);
+                req.onsuccess = () => resolve();
+                req.onblocked = () => resolve();
+                req.onerror = () => {
+                  log({ secureLogoutIndexedDbDeleteError: req.error?.message || req.error || name, name });
+                  resolve();
+                };
+              } catch {
+                resolve();
+              }
+            }))
+        ))
+        .catch((err) => log({ secureLogoutIndexedDbClearError: err?.message || err }));
+    }
+  } catch (err) {
+    log({ secureLogoutIndexedDbClearError: err?.message || err });
+  }
+
+  try { localStorage.clear?.(); } catch (err) { log({ secureLogoutLocalClearError: err?.message || err }); }
+  try { sessionStorage.clear?.(); } catch (err) { log({ secureLogoutSessionClearError: err?.message || err }); }
+
+  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || '已登出'); } catch {}
 }
 
 function secureLogout(message = '已登出', { auto = false } = {}) {
@@ -907,12 +962,15 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   resetInviteSecrets();
   resetShareState();
   resetDriveState();
+  resetAllProcessedMessages();
+  resetReceiptStore();
   resetMessageState();
   resetUiState();
   resetWsState();
   resetContacts();
   resetProfileState();
   resetSettingsState();
+  clearRemoteConsoleConfig();
 
   clearSessionHandoff();
   try {
@@ -982,8 +1040,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
     log({ contactSecretsHandoffError: err?.message || err });
   }
   clearLocalEncryptedCaches();
-
-  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, safeMessage); } catch {}
+  clearAllBrowserStorage(safeMessage);
 
   try { resetAll(); } catch (err) {
     log({ secureLogoutResetError: err?.message || err });
@@ -1450,12 +1507,15 @@ const userMenuBtn = document.getElementById('btnUserMenu');
 const userMenuDropdown = document.getElementById('userMenuDropdown');
 const userMenuSettingsBtn = userMenuDropdown?.querySelector('[data-action="settings"]') || null;
 const userMenuSubscriptionBtn = userMenuDropdown?.querySelector('[data-action="subscription"]') || null;
+const userMenuSubscriptionBadge = userMenuSubscriptionBtn?.querySelector('.menu-item-badge') || null;
 const userMenuVersionBtn = userMenuDropdown?.querySelector('[data-action="version-info"]') || null;
 const userMenuVersionPopup = document.getElementById('versionInfoPopupAppMenu');
+const userMenuVersionModalBtn = document.getElementById('userMenuVersionBtn');
 const userMenuLogoutBtn = userMenuDropdown?.querySelector('[data-action="logout"]') || null;
 const userMenuBadge = document.getElementById('userMenuBadge');
 const userAvatarWrap = document.getElementById('userAvatarWrap');
 const topbarTitleEl = document.querySelector('.topbar .title');
+const topbarRemoteConsoleMask = document.getElementById('remoteConsoleMaskApp');
 let remoteConsolePressTimer = null;
 let subscriptionCountdownTimer = null;
 let subscriptionScanner = null;
@@ -1498,6 +1558,26 @@ function updateSubscriptionBadge(expired) {
   const show = !!expired;
   userAvatarWrap.classList.toggle('has-alert', show);
   userMenuBadge.style.display = show ? 'inline-flex' : 'none';
+  if (userMenuSubscriptionBadge) {
+    userMenuSubscriptionBadge.style.display = show ? 'inline-flex' : 'none';
+  }
+}
+
+function normalizeSubscriptionLogs(logsRaw) {
+  if (!Array.isArray(logsRaw)) return [];
+  return logsRaw.map((log, idx) => {
+    const extendDays = Number(log?.extend_days ?? log?.extendDays ?? log?.duration_days ?? log?.durationDays ?? 0) || 0;
+    const expiresAfter = Number(log?.expires_at_after ?? log?.expiresAtAfter ?? log?.expires_at ?? log?.expiresAt ?? 0) || null;
+    const usedAt = Number(log?.used_at ?? log?.usedAt ?? log?.updated_at ?? log?.redeemed_at ?? 0) || null;
+    const issuedAt = Number(log?.issued_at ?? log?.issuedAt ?? 0) || null;
+    const status = typeof log?.status === 'string' ? log.status : (extendDays ? 'used' : 'active');
+    const tokenId = log?.token_id || log?.tokenId || log?.voucher_id || log?.jti || `token-${idx + 1}`;
+    let channel = log?.channel || log?.gateway || null;
+    if (!channel && (log?.key_id || log?.keyId)) channel = `憑證 ${log?.key_id || log?.keyId}`;
+    if (!channel) channel = 'QR 憑證';
+    const type = extendDays > 0 ? 'extend' : 'activate';
+    return { tokenId, extendDays, expiresAfter, usedAt, issuedAt, status, channel, type };
+  });
 }
 
 function computeSubscriptionCountdown(expiresAt) {
@@ -1516,10 +1596,13 @@ function computeSubscriptionCountdown(expiresAt) {
 async function refreshSubscriptionStatus({ silent = false } = {}) {
   const state = sessionStore.subscriptionState;
   state.loading = true;
+  state.logs = [];
   try {
     const { r, data } = await subscriptionStatus();
     if (!r.ok || !data?.ok) throw new Error(typeof data === 'string' ? data : data?.message || 'status failed');
     state.lastChecked = Date.now();
+    state.logs = normalizeSubscriptionLogs(data?.logs);
+    state.accountCreatedAt = Number(data?.account_created_at ?? data?.accountCreatedAt ?? 0) || null;
     if (data.found && Number.isFinite(Number(data.expires_at))) {
       state.found = true;
       state.expiresAt = Number(data.expires_at);
@@ -1528,15 +1611,21 @@ async function refreshSubscriptionStatus({ silent = false } = {}) {
       state.found = false;
       state.expiresAt = null;
       state.expired = true;
+      if (!state.logs.length) state.accountCreatedAt = state.accountCreatedAt || null;
     }
   } catch (err) {
     if (!silent) showToast?.(`查詢訂閱失敗：${err?.message || err}`, { variant: 'error' });
     state.found = false;
     state.expiresAt = null;
     state.expired = true;
+    state.logs = [];
+    state.accountCreatedAt = state.accountCreatedAt || null;
   } finally {
     state.loading = false;
     updateSubscriptionBadge(state.expired);
+    try {
+      document.dispatchEvent(new CustomEvent('subscription:state', { detail: { state: { ...state } } }));
+    } catch {}
   }
   return sessionStore.subscriptionState;
 }
@@ -1548,64 +1637,54 @@ function stopSubscriptionCountdown() {
   }
 }
 
-function stopSubscriptionScanner() {
-  if (subscriptionScanner && subscriptionScannerActive) {
-    try { subscriptionScanner.stop(); } catch {}
-  }
-  subscriptionScannerActive = false;
-}
-
-async function openSubscriptionScanModal() {
+function showSubscriptionGateModal() {
   const modal = document.getElementById('modal');
   const body = document.getElementById('modalBody');
   const title = document.getElementById('modalTitle');
   if (!modal || !body) return;
-  stopSubscriptionScanner();
+  stopSubscriptionScanner({ destroy: true });
+  stopSubscriptionCountdown();
   resetModalVariants(modal);
-  modal.classList.add('settings-modal');
-  if (title) title.textContent = '掃描 QRCode 儲值';
+  modal.classList.add('confirm-modal', 'subscription-modal-shell');
+  if (title) title.textContent = '帳號已到期';
   body.innerHTML = `
-    <div class="subscription-card">
-      <div class="title">請將憑證置中</div>
-      <video id="subscriptionScanVideo" style="width:100%; max-height:260px; border:1px solid var(--line); border-radius:12px; background:#0f172a0d;" muted playsinline></video>
-      <div id="subscriptionScanStatus" class="sub-meta" style="margin-top:8px;">正在啟動相機…</div>
+    <div class="confirm-message">帳號已到期，請進行儲值。</div>
+    <div class="confirm-actions">
+      <button type="button" class="secondary" id="subscriptionGateClose">關閉</button>
+      <button type="button" class="primary" id="subscriptionGateOpen">點我儲值</button>
     </div>
   `;
-  modal.__subscriptionCleanup = () => {
-    stopSubscriptionScanner();
-  };
   openModal();
-  const scanVideo = document.getElementById('subscriptionScanVideo');
-  const scanStatus = document.getElementById('subscriptionScanStatus');
-  if (!scanVideo) return;
-  QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
-  try {
-    if (!subscriptionScanner) {
-      subscriptionScanner = new QrScanner(scanVideo, (res) => {
-        const text = typeof res === 'string' ? res : res?.data || '';
-        if (text) {
-          stopSubscriptionScanner();
-          closeModal();
-          handleRedeemToken(text);
-        }
-      });
-    }
-    await subscriptionScanner.start();
-    subscriptionScannerActive = true;
-    if (scanStatus) scanStatus.textContent = '請將憑證 QR 對準框線';
-  } catch (err) {
-    if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
+  document.getElementById('subscriptionGateClose')?.addEventListener('click', () => closeModal());
+  document.getElementById('subscriptionGateOpen')?.addEventListener('click', () => {
+    closeModal();
+    openSubscriptionModal();
+  });
+}
+
+document.addEventListener('subscription:gate', showSubscriptionGateModal);
+
+function stopSubscriptionScanner({ destroy = false } = {}) {
+  if (subscriptionScanner && subscriptionScannerActive) {
+    try { subscriptionScanner.stop(); } catch {}
+  }
+  subscriptionScannerActive = false;
+  if (destroy && subscriptionScanner) {
+    try { subscriptionScanner.destroy?.(); } catch {}
+    subscriptionScanner = null;
   }
 }
 
 function startSubscriptionCountdown(expiresAt) {
   stopSubscriptionCountdown();
   const statusText = document.getElementById('subscriptionStatusText');
+  const countdownHint = document.getElementById('subscriptionCountdownHint');
   if (!statusText) return;
   const tick = () => {
     const { expired, text } = computeSubscriptionCountdown(expiresAt);
     statusText.textContent = expired ? '已到期' : text;
     statusText.className = expired ? 'sub-status error' : 'sub-status ok';
+    if (countdownHint) countdownHint.textContent = expired ? '請儲值以延長使用' : '狀態會自動同步，無需手動刷新';
     if (expired) updateSubscriptionBadge(true);
   };
   tick();
@@ -1613,13 +1692,17 @@ function startSubscriptionCountdown(expiresAt) {
   subscriptionCountdownTimer = setInterval(tick, interval * 1000);
 }
 
-async function handleRedeemToken(token) {
+async function handleRedeemToken(token, hooks = {}) {
   if (!token) {
     showToast?.('請輸入或掃描憑證', { variant: 'warning' });
-    return;
+    const err = new Error('token missing');
+    hooks.onError?.(err);
+    return { ok: false, error: err };
   }
+  const { onStart, onSuccess, onError } = hooks;
   const redeemBtn = document.getElementById('subscriptionRedeemBtn');
   if (redeemBtn) redeemBtn.disabled = true;
+  onStart?.();
   try {
     const { r, data } = await redeemSubscription({ token });
     if (!r.ok || !data?.ok) throw new Error(typeof data === 'string' ? data : data?.message || 'redeem failed');
@@ -1630,23 +1713,37 @@ async function handleRedeemToken(token) {
     const statusText = document.getElementById('subscriptionStatusText');
     if (statusText) statusText.textContent = '展期成功，正在更新狀態…';
     await refreshSubscriptionStatus({ silent: true });
-    showToast?.('展期成功', { variant: 'success' });
+    const msg = typeof data?.message === 'string' ? data.message : '展期成功';
+    showToast?.(msg, { variant: 'success' });
+    onSuccess?.(data);
+    return { ok: true, data };
   } catch (err) {
-    showToast?.(`展期失敗：${err?.message || err}`, { variant: 'error' });
+    const detail = err?.message || err;
+    const msg = typeof detail === 'string' ? detail : '展期失敗，請稍後再試';
+    showToast?.(msg, { variant: 'error' });
+    onError?.(err);
+    return { ok: false, error: err };
   } finally {
     if (redeemBtn) redeemBtn.disabled = false;
   }
 }
 
-async function handleSubscriptionFile(files) {
-  if (!files || !files.length) return;
-  const file = files[0];
+async function handleSubscriptionFile(files, hooks = {}) {
+  const list = files && typeof files.length === 'number' ? files : [];
+  const file = list[0] || null;
+  if (!file) return { ok: false, error: new Error('file missing') };
   try {
-    const token = await QrScanner.scanImage(file, { returnDetailedScanResult: false });
-    const text = typeof token === 'string' ? token : (token?.data || '');
-    await handleRedeemToken(text);
+    hooks.onStart?.();
+    const { r, data } = await uploadSubscriptionQr({ file });
+    if (!r.ok || !data?.ok) {
+      const msg = typeof data === 'object' && data?.message ? data.message : '展期失敗，請稍後再試';
+      throw new Error(msg);
+    }
+    return { ok: true, data };
   } catch (err) {
-    showToast?.(`檔案解析失敗：${err?.message || err}`, { variant: 'error' });
+    if (hooks?.onError) hooks.onError(err);
+    else showToast?.(`檔案解析失敗：${err?.message || err}`, { variant: 'error' });
+    return { ok: false, error: err };
   }
 }
 
@@ -1655,59 +1752,317 @@ async function openSubscriptionModal() {
   const body = document.getElementById('modalBody');
   const title = document.getElementById('modalTitle');
   if (!modal || !body) return;
-  stopSubscriptionScanner();
+  stopSubscriptionScanner({ destroy: true });
   stopSubscriptionCountdown();
   resetModalVariants(modal);
-  modal.classList.add('settings-modal'); // reuse style
-  if (title) title.textContent = '訂閱狀態';
+  modal.classList.add('settings-modal', 'subscription-modal-shell');
+  if (title) title.textContent = '訂閱 / 儲值';
   body.innerHTML = `
-    <div class="subscription-status-block">
-      <div id="subscriptionStatusText" class="sub-status">查詢中…</div>
-      <div class="sub-meta" id="subscriptionMeta"></div>
-    </div>
-    <div class="subscription-actions">
-      <div class="subscription-card disabled">
-        <div class="title">線上付款（即將開放）</div>
-        <p>即將開放信用卡/金流付款，敬請期待。</p>
+    <div class="subscription-modal">
+      <div class="sub-tabs" role="tablist">
+        <button type="button" class="sub-tab active" data-tab="status" aria-selected="true" role="tab">訂閱狀態</button>
+        <button type="button" class="sub-tab" data-tab="topup" aria-selected="false" role="tab">儲值 / 展期</button>
       </div>
-      <div class="subscription-card">
-        <div class="title">QR 憑證展期</div>
-        <div class="sub-actions">
-          <button id="subscriptionScanBtn" type="button" class="secondary"><i class='bx bx-qr-scan'></i> 掃描 QRCode 儲值</button>
-          <button id="subscriptionUploadBtn" type="button" class="secondary"><i class='bx bx-upload'></i> 上傳/匯入</button>
+      <div class="sub-tabpanel" data-tabpanel="status" role="tabpanel">
+        <div class="subscription-hero">
+          <div class="hero-text">
+            <div class="hero-label">目前狀態</div>
+            <div id="subscriptionStatusText" class="sub-status">查詢中…</div>
+            <div class="sub-meta" id="subscriptionMeta"></div>
+          </div>
         </div>
-        <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
-        <div class="sub-meta" id="subscriptionScanStatus"></div>
+        <div class="sub-table-block">
+          <div class="sub-table-head">
+            <div class="sub-table-title">開通 / 儲值紀錄</div>
+            <button type="button" class="ghost-btn" id="subscriptionRefreshBtn"><i class='bx bx-sync'></i> 重新整理</button>
+          </div>
+          <div class="sub-table" id="subscriptionCombinedTable"></div>
+        </div>
+      </div>
+      <div class="sub-tabpanel" data-tabpanel="topup" role="tabpanel" hidden>
+        <div class="sub-steps" id="subscriptionWizardSteps">
+          <div class="sub-step" data-step="1"><span class="step-number">1</span><small>選擇管道</small></div>
+          <div class="sub-step" data-step="2"><span class="step-number">2</span><small>掃描 / 上傳</small></div>
+          <div class="sub-step" data-step="3"><span class="step-number">3</span><small>結果</small></div>
+        </div>
+        <div id="subscriptionWizardContent" class="sub-wizard-content"></div>
       </div>
     </div>
   `;
   modal.__subscriptionCleanup = () => {
     stopSubscriptionCountdown();
-    stopSubscriptionScanner();
+    stopSubscriptionScanner({ destroy: true });
   };
   openModal();
-  const fileInput = document.getElementById('subscriptionFileInput');
-  const uploadBtn = document.getElementById('subscriptionUploadBtn');
-  const scanBtn = document.getElementById('subscriptionScanBtn');
-  const scanStatus = document.getElementById('subscriptionScanStatus');
+  const wizard = { step: 1, channel: null, result: null, busy: false };
 
-  uploadBtn?.addEventListener('click', () => fileInput?.click());
-  fileInput?.addEventListener('change', (e) => handleSubscriptionFile(e.target.files));
-  scanBtn?.addEventListener('click', () => openSubscriptionScanModal());
+  const tabButtons = Array.from(body.querySelectorAll('.sub-tab'));
+  const tabPanels = Array.from(body.querySelectorAll('.sub-tabpanel'));
+  const wizardContent = document.getElementById('subscriptionWizardContent');
 
-  refreshSubscriptionStatus({ silent: true }).then((state) => {
-    const { expired, text } = computeSubscriptionCountdown(state.expiresAt || 0);
-    const statusText = document.getElementById('subscriptionStatusText');
-    const meta = document.getElementById('subscriptionMeta');
-    if (statusText) {
-      statusText.textContent = state.found ? text : '尚未儲值';
-      statusText.className = expired ? 'sub-status error' : 'sub-status ok';
+  function switchTab(target) {
+    tabButtons.forEach((btn) => {
+      const active = btn.dataset.tab === target;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    tabPanels.forEach((panel) => {
+      const active = panel.dataset.tabpanel === target;
+      panel.hidden = !active;
+    });
+    if (target !== 'topup') stopSubscriptionScanner({ destroy: true });
+    if (target === 'topup') renderWizard();
+  }
+
+  function fmt(ts) {
+    if (!Number.isFinite(ts) || ts <= 0) return '—';
+    return new Date(ts * 1000).toLocaleString();
+  }
+
+  function renderTables(logs = []) {
+    const table = document.getElementById('subscriptionCombinedTable');
+    if (!table) return;
+    const activationTs = Number(sessionStore?.subscriptionState?.accountCreatedAt
+      ?? sessionStore?.profileState?.createdAt
+      ?? sessionStore?.profileState?.created_at
+      ?? sessionStore?.profileState?.created
+      ?? 0);
+    const baseRows = [];
+    if (Number.isFinite(activationTs) && activationTs > 0) {
+      baseRows.push({
+        usedAt: activationTs,
+        issuedAt: activationTs,
+        type: 'account',
+        status: 'active',
+        channel: '帳號建立',
+        tokenId: '—',
+        extendDays: 0
+      });
     }
-    if (meta) {
-      const expires = state.expiresAt ? new Date(state.expiresAt * 1000).toLocaleString() : '—';
-      meta.textContent = state.found ? `到期時間：${expires}` : '尚無訂閱紀錄';
+    const sorted = [...baseRows, ...(Array.isArray(logs) ? logs : [])].sort((a, b) => {
+      const ta = Number(a.usedAt || a.issuedAt || 0);
+      const tb = Number(b.usedAt || b.issuedAt || 0);
+      return tb - ta;
+    });
+    if (!sorted.length) {
+      table.innerHTML = `<div class="sub-empty">尚無開通/儲值紀錄</div>`;
+      return;
     }
-    if (state.found && state.expiresAt) startSubscriptionCountdown(state.expiresAt);
+    table.innerHTML = sorted.map((log) => {
+      const statusLabel = (() => {
+        if (log.status === 'used' || log.status === 'active') return '成功';
+        if (log.status === 'invalid') return '無效';
+        if (log.status === 'expired') return '已過期';
+        return log.status || '未知';
+      })();
+      const actionLabel = log.type === 'account'
+        ? '帳號啟用'
+        : (log.type === 'activate' ? '開通' : `展期 ${log.extendDays ? `+${log.extendDays} 天` : ''}`.trim());
+      const channel = log.channel || (log.type === 'account' ? '帳號建立' : 'QR 憑證');
+      const expiresAfter = log.expiresAfter ? fmt(log.expiresAfter) : null;
+      const ts = Number(log.usedAt || log.issuedAt || 0) * 1000;
+      const dt = Number.isFinite(ts) && ts > 0 ? new Date(ts) : null;
+      const dateStr = dt ? dt.toLocaleDateString() : '—';
+      const timeStr = dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      return `
+        <div class="sub-table-row">
+          <div class="cell primary">
+            <div class="cell-title">${dateStr}${timeStr ? `<span class="sub-time"> ${timeStr}</span>` : ''}</div>
+            <div class="cell-sub"></div>
+          </div>
+          <div class="cell">
+            <div class="cell-title">${actionLabel}${statusLabel ? ` ｜ ${statusLabel}` : ''}</div>
+            <div class="cell-sub"></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+function renderStatusTab() {
+  const current = sessionStore.subscriptionState;
+  stopSubscriptionCountdown();
+  const statusText = document.getElementById('subscriptionStatusText');
+  const meta = document.getElementById('subscriptionMeta');
+  if (statusText) {
+    const { expired, text } = computeSubscriptionCountdown(current.expiresAt || 0);
+    statusText.textContent = current.found ? text : '尚未儲值';
+    statusText.className = expired ? 'sub-status error' : 'sub-status ok';
+  }
+  if (meta) {
+    meta.textContent = current.found ? '狀態自動同步' : '尚無訂閱紀錄';
+  }
+  renderTables(current.logs || []);
+}
+
+  function renderWizard() {
+    const steps = Array.from(document.querySelectorAll('#subscriptionWizardSteps .sub-step'));
+    steps.forEach((stepEl) => {
+      const n = Number(stepEl.dataset.step || 0);
+      stepEl.classList.toggle('active', wizard.step === n);
+      stepEl.classList.toggle('done', wizard.step > n);
+    });
+    if (!wizardContent) return;
+    if (wizard.step === 1) {
+      wizardContent.innerHTML = `
+        <div class="channel-grid">
+          <button type="button" class="channel-card" data-channel="qr">
+            <div class="channel-icon"><i class='bx bx-qr-scan'></i></div>
+            <div class="channel-body">
+              <div class="channel-title">QRCode 儲值</div>
+              <div class="channel-sub">使用憑證 QR 展期，支援掃描與圖檔上傳。</div>
+            </div>
+          </button>
+          <div class="channel-card disabled" data-channel="ecpay">
+            <div class="channel-icon"><i class='bx bx-credit-card'></i></div>
+            <div class="channel-body">
+              <div class="channel-title">綠界金流</div>
+              <div class="channel-sub">即將開放，敬請期待。</div>
+            </div>
+            <span class="channel-badge">即將開放</span>
+          </div>
+        </div>
+      `;
+      wizardContent.querySelector('[data-channel="qr"]')?.addEventListener('click', () => {
+        wizard.channel = 'qr';
+        wizard.step = 2;
+        wizard.result = null;
+        renderWizard();
+      });
+      wizardContent.querySelector('[data-channel="ecpay"]')?.addEventListener('click', () => {
+        showToast?.('綠界管道即將開放，請先使用 QR 憑證儲值', { variant: 'info' });
+      });
+      stopSubscriptionScanner({ destroy: true });
+      return;
+    }
+
+    if (wizard.step === 2) {
+      wizardContent.innerHTML = `
+        <div class="scan-pane">
+          <div class="scan-video-wrap">
+            <video id="subscriptionScanVideo" class="scan-video" muted playsinline></video>
+            <div class="scan-overlay">請將 QR 憑證置中</div>
+          </div>
+          <div class="scan-actions">
+            <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
+            <button id="subscriptionUploadBtn" type="button" class="wide-btn" ${wizard.busy ? 'disabled' : ''}>
+              <i class='bx bx-upload'></i> 點擊上傳 QRCode 圖像
+            </button>
+            <div id="subscriptionScanStatus" class="sub-meta">正在啟動相機…</div>
+          </div>
+        </div>
+      `;
+      const fileInput = document.getElementById('subscriptionFileInput');
+      const uploadBtn = document.getElementById('subscriptionUploadBtn');
+      const scanStatus = document.getElementById('subscriptionScanStatus');
+      uploadBtn?.addEventListener('click', () => fileInput?.click());
+      fileInput?.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0];
+        if (!file || wizard.busy) return;
+        wizard.busy = true;
+        stopSubscriptionScanner({ destroy: true });
+        uploadBtn.disabled = true;
+        if (scanStatus) scanStatus.textContent = '上傳並解析中…';
+        const tokenRes = await handleSubscriptionFile([file], {
+          onError: (err) => {
+            wizard.result = { ok: false, message: `解析失敗：${err?.message || err}` };
+            wizard.step = 3;
+            renderWizard();
+          }
+        });
+        wizard.busy = false;
+        uploadBtn.disabled = false;
+        if (tokenRes?.ok) {
+          wizard.step = 3;
+          wizard.result = { ok: true, expiresAt: sessionStore.subscriptionState.expiresAt };
+          renderWizard();
+          renderStatusTab();
+        } else if (!wizard.result) {
+          wizard.step = 3;
+          wizard.result = { ok: false, message: tokenRes?.error?.message || '儲值失敗，請重試' };
+          renderWizard();
+        }
+      });
+      const scanVideo = document.getElementById('subscriptionScanVideo');
+      if (scanStatus) scanStatus.textContent = '正在啟動相機…';
+      if (scanVideo) {
+        QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
+        stopSubscriptionScanner({ destroy: true });
+        try {
+          subscriptionScanner = new QrScanner(scanVideo, async (res) => {
+            const text = typeof res === 'string' ? res : res?.data || '';
+            if (!text || wizard.busy) return;
+            wizard.busy = true;
+            if (scanStatus) scanStatus.textContent = '辨識到憑證，驗證中…';
+            stopSubscriptionScanner();
+            const result = await handleRedeemToken(text);
+            wizard.busy = false;
+            wizard.result = result?.ok
+              ? { ok: true, expiresAt: sessionStore.subscriptionState.expiresAt }
+              : { ok: false, message: result?.error?.message || '儲值失敗' };
+            wizard.step = 3;
+            renderWizard();
+            if (result?.ok) renderStatusTab();
+          });
+          subscriptionScanner.start().then(() => {
+            subscriptionScannerActive = true;
+            if (scanStatus) scanStatus.textContent = '請將憑證 QR 對準框線，或上傳圖檔';
+          }).catch((err) => {
+            if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
+          });
+        } catch (err) {
+          if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
+        }
+      }
+      return;
+    }
+
+    wizardContent.innerHTML = `
+      <div class="result-card ${wizard.result?.ok ? 'success' : 'error'}">
+        <div class="result-icon">${wizard.result?.ok ? '✅' : '⚠️'}</div>
+        <div class="result-title">${wizard.result?.ok ? '儲值完成' : '儲值失敗'}</div>
+        <div class="result-meta">
+          ${wizard.result?.ok
+            ? `最新到期：${wizard.result?.expiresAt ? fmt(wizard.result.expiresAt) : '已更新'}`
+            : (wizard.result?.message || '請確認憑證是否有效或已使用')}
+        </div>
+        <div class="result-actions">
+          <button type="button" class="secondary" id="subscriptionWizardRetry">再儲值一次</button>
+          <button type="button" class="primary" id="subscriptionWizardViewStatus">查看訂閱狀態</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('subscriptionWizardRetry')?.addEventListener('click', () => {
+      wizard.step = 1;
+      wizard.result = null;
+      wizard.channel = null;
+      stopSubscriptionScanner({ destroy: true });
+      renderWizard();
+    });
+    document.getElementById('subscriptionWizardViewStatus')?.addEventListener('click', () => {
+      switchTab('status');
+      renderStatusTab();
+    });
+    stopSubscriptionScanner({ destroy: true });
+  }
+
+  tabButtons.forEach((btn) => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  document.getElementById('subscriptionRefreshBtn')?.addEventListener('click', async (event) => {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    btn.classList.add('loading');
+    await refreshSubscriptionStatus();
+    renderStatusTab();
+    btn.disabled = false;
+    btn.classList.remove('loading');
+  });
+
+  renderWizard();
+  refreshSubscriptionStatus({ silent: true }).then(() => {
+    renderStatusTab();
   });
 }
 
@@ -1732,13 +2087,14 @@ function handleRemoteConsoleLongPressEnd() {
   remoteConsolePressTimer = null;
 }
 
-topbarTitleEl?.addEventListener('pointerdown', (event) => {
+const consoleTriggerEl = topbarRemoteConsoleMask || topbarTitleEl;
+consoleTriggerEl?.addEventListener('pointerdown', (event) => {
   if (event.pointerType === 'touch' || event.pointerType === 'mouse') {
     handleRemoteConsoleLongPressStart();
   }
 });
-topbarTitleEl?.addEventListener('pointerup', handleRemoteConsoleLongPressEnd);
-topbarTitleEl?.addEventListener('pointerleave', handleRemoteConsoleLongPressEnd);
+consoleTriggerEl?.addEventListener('pointerup', handleRemoteConsoleLongPressEnd);
+consoleTriggerEl?.addEventListener('pointerleave', handleRemoteConsoleLongPressEnd);
 
 userMenuDropdown?.addEventListener('click', (event) => {
   event.stopPropagation();
@@ -1837,8 +2193,18 @@ initVersionInfoButton({
   closeModal
 });
 
+// 讓主畫面選單的版本資訊強制使用 modal（同登入頁）
+if (userMenuVersionBtn) {
+  userMenuVersionBtn.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    showVersionModal({ openModal, closeModal });
+  });
+}
+
 setTimeout(() => {
   refreshSubscriptionStatus({ silent: true });
+  if (drivePane?.showSubscriptionGateIfExpired) drivePane.showSubscriptionGateIfExpired();
 }, 1200);
 
 const { setupSwipe, closeSwipe, closeOpenSwipe } = createSwipeManager();
@@ -1920,6 +2286,14 @@ document.addEventListener('contacts:entry-updated', (event) => {
   const detail = event?.detail || {};
   if (typeof messagesPane.handleContactEntryUpdated === 'function') {
     messagesPane.handleContactEntryUpdated(detail);
+  }
+});
+document.addEventListener('subscription:state', () => {
+  if (typeof messagesPane.updateComposerAvailability === 'function') {
+    messagesPane.updateComposerAvailability();
+  }
+  if (typeof drivePane.updateDriveActionAvailability === 'function') {
+    drivePane.updateDriveActionAvailability();
   }
 });
 document.addEventListener('contacts:broadcast-update', async (event) => {
@@ -2220,6 +2594,7 @@ const MODAL_VARIANTS = [
   'avatar-modal',
   'avatar-preview-modal',
   'settings-modal',
+  'subscription-modal-shell',
   'change-password-modal'
 ];
 
@@ -2360,6 +2735,14 @@ async function openSystemSettingsModal() {
     const state = getEffectiveSettingsState();
     if (logoutDefaultRadio) logoutDefaultRadio.checked = state.autoLogoutRedirectMode !== 'custom';
     if (logoutCustomRadio) logoutCustomRadio.checked = state.autoLogoutRedirectMode === 'custom';
+  };
+
+  const syncLogoutSaveButton = () => {
+    if (!customLogoutSaveBtn) return;
+    const state = getEffectiveSettingsState();
+    const url = sanitizeLogoutRedirectUrl(state.autoLogoutCustomUrl);
+    const enabled = !!url && state.autoLogoutRedirectMode === 'custom';
+    customLogoutSaveBtn.disabled = !enabled;
   };
 
   const refreshLogoutSummary = () => {
@@ -2844,7 +3227,16 @@ function handleWebSocketMessage(msg) {
   if (type === 'auth') {
     if (msg?.ok) updateConnectionIndicator('online');
     else updateConnectionIndicator('offline');
-    if (msg?.ok) presenceManager.sendPresenceSubscribe();
+    if (msg?.ok) {
+      presenceManager.sendPresenceSubscribe();
+      messagesPane.refreshAfterReconnect?.();
+    }
+    return;
+  }
+  if (type === 'force-logout') {
+    const reason = msg?.reason || '帳號已被清除';
+    showForcedLogoutModal(reason);
+    secureLogout(reason, { auto: true });
     return;
   }
   if (handleCallSignalMessage(msg) || handleCallAuxMessage(msg)) {

@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import { logger } from '../../utils/logger.js';
 import { resolveAccountAuth, AccountAuthError } from '../../utils/account-context.js';
@@ -8,6 +10,9 @@ const router = Router();
 
 const REMOTE_CONSOLE_ENABLED = /^(1|true|yes)$/i.test(process.env.REMOTE_CONSOLE_ENABLED || '');
 const CONSOLE_ENDPOINT_PATH = '/api/v1/debug/console';
+const REMOTE_CONSOLE_LOG_PATH = process.env.REMOTE_CONSOLE_LOG
+  ? path.resolve(process.env.REMOTE_CONSOLE_LOG)
+  : path.resolve(process.cwd(), 'logs', 'remote-console.log');
 
 function ensureAccountCredentials(value, ctx) {
   if (!value.accountToken && !value.accountDigest) {
@@ -20,6 +25,7 @@ const ConsoleEntrySchema = z.object({
   message: z.string().optional(),
   args: z.array(z.any()).optional(),
   source: z.string().optional(),
+  device: z.string().optional(),
   ts: z.number().optional()
 });
 
@@ -73,10 +79,29 @@ router.post('/debug/console', async (req, res) => {
         message: entry.message || '',
         args: entry.args || [],
         source: entry.source || 'app',
+        device: entry.device || null,
         ts: entry.ts || Date.now(),
         meta: input.meta || null
       }
     }, entry.message || 'remote-console');
+
+    // 追加寫入本地檔案，便於離線比對與長期保存。
+    try {
+      const payload = {
+        ts: entry.ts || Date.now(),
+        level: entry.level || 'log',
+        message: entry.message || '',
+        args: entry.args || [],
+        source: entry.source || 'app',
+        device: entry.device || null,
+        accountDigest,
+        meta: input.meta || null
+      };
+      await fs.mkdir(path.dirname(REMOTE_CONSOLE_LOG_PATH), { recursive: true });
+      await fs.appendFile(REMOTE_CONSOLE_LOG_PATH, `${JSON.stringify(payload)}\n`);
+    } catch (fileErr) {
+      logger.warn({ remoteConsoleWriteError: fileErr?.message || fileErr, path: REMOTE_CONSOLE_LOG_PATH });
+    }
   }
 
   return res.status(200).json({ ok: true, stored: safeEntries.length });

@@ -216,12 +216,10 @@ async function fetchServerConfig() {
     if (!res.ok) return;
     const data = await res.json();
     state.serverEnabled = !!data?.enabled;
-    if (state.serverEnabled && !state.userPreferenceSet) {
-      const endpoint = data.endpoint || state.endpoint || getDefaultEndpoint();
-      enableRelay({ endpoint, persist: false });
-    }
-    if (!state.serverEnabled && !state.userPreferenceSet) {
+    // 伺服端即便允許上報，也不自動開啟；必須使用者主動（query/localStorage/handoff）才啟用。
+    if (!state.userPreferenceSet && !state.enabled) {
       disableRelay({ persist: false });
+      state.endpoint = data?.endpoint || state.endpoint || getDefaultEndpoint();
     }
   } catch {}
 }

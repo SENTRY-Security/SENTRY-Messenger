@@ -1,7 +1,7 @@
 import { log } from '../../core/log.js';
 import { getContactSecret } from '../../core/contact-secrets.js';
 import { normalizePeerIdentity } from '../../core/store.js';
-import { bytesToB64, b64ToBytes, b64UrlToBytes } from '/shared/utils/base64.js';
+import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/base64.js';
 import {
   CALL_EVENT,
   subscribeCallEvent
@@ -16,7 +16,7 @@ import {
   updateCallMedia,
   setCallMediaStatus
 } from './state.js';
-import { CALL_MEDIA_STATE_STATUS } from '/shared/calls/schemas.js';
+import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 
 const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 const ZERO_SALT = new Uint8Array(32);

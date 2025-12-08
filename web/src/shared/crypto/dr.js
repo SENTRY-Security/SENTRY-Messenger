@@ -1,6 +1,8 @@
 import { loadNacl, scalarMult, genX25519Keypair, b64, b64u8 } from './nacl.js';
 import { convertEd25519PublicKey, convertEd25519SecretKey } from './ed2curve.js';
 
+const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
+
 async function hkdfBytes(ikmU8, saltStr, infoStr, outLen = 32) {
   const key = await crypto.subtle.importKey('raw', ikmU8, 'HKDF', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits(
@@ -35,7 +37,7 @@ function ensureSkipStore(st) {
   return st.skippedKeys || null;
 }
 
-function rememberSkippedKey(st, chainId, index, keyB64, maxPerChain = 20) {
+function rememberSkippedKey(st, chainId, index, keyB64, maxPerChain = SKIPPED_KEYS_PER_CHAIN_MAX) {
   if (!chainId || !Number.isFinite(index)) return;
   const store = ensureSkipStore(st);
   if (!store) return;
@@ -216,7 +218,27 @@ export async function drEncryptText(st, plaintext) {
 export async function drDecryptText(st, packet, opts = {}) {
   const onMessageKey = typeof opts?.onMessageKey === 'function' ? opts.onMessageKey : null;
   const theirPub = b64u8(packet.header.ek_pub_b64);
+  const pn = Number(packet?.header?.pn);
+  const prevChainId = st.theirRatchetPub ? b64(st.theirRatchetPub) : null;
   if (!st.theirRatchetPub || b64(st.theirRatchetPub) !== packet.header.ek_pub_b64) {
+    // Before switching to the new ratchet key, fill skipped message keys on the previous receiving chain up to pn.
+    if (prevChainId && st.ckR && Number.isFinite(pn) && pn > st.Nr) {
+      const gap = pn - st.Nr;
+      if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) {
+        console.warn('[dr] skipped-key gap too large', { gap, pn, nr: st.Nr, chain: prevChainId });
+      }
+      let ckR = st.ckR;
+      let nr = st.Nr;
+      while (ckR && nr < pn) {
+        const skippedOut = await kdfCK(ckR);
+        const { a: skippedMk, b: skippedNext } = split64(skippedOut);
+        rememberSkippedKey(st, prevChainId, nr + 1, b64(skippedMk));
+        ckR = skippedNext;
+        nr += 1;
+      }
+      st.ckR = ckR;
+      st.Nr = nr;
+    }
     await drRatchet(st, theirPub);
   } else {
     st.theirRatchetPub = theirPub;
