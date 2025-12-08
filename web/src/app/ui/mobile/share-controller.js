@@ -7,7 +7,7 @@ import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
-import { setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity, drState } from '../../core/store.js';
+import { setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity, drState, getDeviceId } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
@@ -69,13 +69,15 @@ export function setupShareController(options) {
   }
 
   function primeStoredDrSnapshots(map) {
+    const deviceId = getDeviceId() || 'default';
     if (!(map instanceof Map)) return;
     for (const [peerKey, info] of map.entries()) {
-      if (!info?.drState) continue;
       const digest = normalizePeerKey(peerKey);
       if (!digest) continue;
+      const merged = getContactSecret(digest, { deviceId });
+      if (!merged?.drState) continue;
       try {
-        restoreDrStateFromSnapshot({ peerAccountDigest: digest, snapshot: info.drState });
+        restoreDrStateFromSnapshot({ peerAccountDigest: digest, snapshot: merged.drState });
       } catch (err) {
         log({ drSnapshotRestoreError: err?.message || err, peerAccountDigest: digest });
       }
@@ -85,6 +87,7 @@ export function setupShareController(options) {
   function storeContactSecretMapping({ peerAccountDigest, inviteId, secret, role, conversation, drState }) {
     const key = normalizePeerKey(peerAccountDigest);
     if (!key || !inviteId || !secret) return;
+    const deviceId = getDeviceId() || 'default';
     let conversationToken = null;
     let conversationId = null;
     let conversationDrInit = null;
@@ -93,7 +96,7 @@ export function setupShareController(options) {
       conversationId = conversation.conversationId || conversation.conversation_id || null;
       conversationDrInit = conversation.dr_init || conversation.drInit || null;
     }
-    const existing = getContactSecret(key) || {};
+    const existing = getContactSecret(key, { deviceId }) || {};
     const update = {
       invite: {
         id: inviteId,
@@ -113,13 +116,14 @@ export function setupShareController(options) {
         update.dr = { state: snapshot };
       }
     }
-    setContactSecret(key, update);
+    setContactSecret(key, { ...update, deviceId });
   }
 
   async function ensureSessionBootstrap(peerAccountDigest, conversation) {
     const key = normalizePeerKey(peerAccountDigest);
     if (!key || !conversation) return;
-    const secretInfo = getContactSecret(key);
+    const deviceId = getDeviceId() || 'default';
+    const secretInfo = getContactSecret(key, { deviceId });
     if (!secretInfo?.inviteId || !secretInfo?.secret) return;
     const role = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
     if (role !== 'guest') return;
@@ -133,6 +137,7 @@ export function setupShareController(options) {
         source: 'share-controller:ensureSessionBootstrap'
       });
       setContactSecret(key, {
+        deviceId,
         session: { bootstrapTs: Math.floor(Date.now() / 1000) },
         meta: { source: 'share-controller:session-bootstrap' }
       });

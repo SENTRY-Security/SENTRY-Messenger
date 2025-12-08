@@ -4,7 +4,7 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
-import { getMkRaw, getAccountDigest, buildAccountPayload, normalizePeerIdentity } from '../core/store.js';
+import { getMkRaw, getAccountDigest, buildAccountPayload, normalizePeerIdentity, getDeviceId } from '../core/store.js';
 import { normalizeNickname, generateRandomNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
@@ -29,6 +29,7 @@ export async function loadContacts() {
   const convIds = contactConvIds();
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const selfDigest = (getAccountDigest() || '').toUpperCase();
+  const deviceId = getDeviceId() || 'default';
 
   restoreContactSecrets();
 
@@ -143,7 +144,7 @@ export async function loadContacts() {
       const storedInviteId = typeof contact?.inviteId === 'string' ? contact.inviteId.trim() : null;
       const storedRole = typeof contact?.contactSecret_role === 'string' ? contact.contactSecret_role : null;
       if (pendingSecretUpdate) {
-        setContactSecret({ peerAccountDigest }, pendingSecretUpdate);
+        setContactSecret({ peerAccountDigest }, { ...pendingSecretUpdate, deviceId });
       }
       const entry = {
         peerAccountDigest,
@@ -182,7 +183,7 @@ export async function loadContacts() {
         if (Object.keys(conversationUpdate).length) {
           updatePayload.conversation = conversationUpdate;
         }
-        setContactSecret({ peerAccountDigest }, updatePayload);
+        setContactSecret({ peerAccountDigest }, { ...updatePayload, deviceId });
       }
       peerMap.set(mapKey, entry);
     } catch (err) {

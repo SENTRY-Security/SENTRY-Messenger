@@ -137,7 +137,8 @@ function appendDrHistoryEntry(params = {}) {
   const peer = resolvePeerDigest(params);
   const stamp = Number(ts);
   if (!peer || !snapshot || !Number.isFinite(stamp)) return false;
-  const info = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const info = getContactSecret(peer, { deviceId });
   if (!info?.inviteId || !info?.secret) return false;
   const history = Array.isArray(info.drHistory) ? info.drHistory.slice() : [];
   const idx = history.findIndex((entry) => {
@@ -161,6 +162,7 @@ function appendDrHistoryEntry(params = {}) {
   history.sort((a, b) => compareHistoryKeys(Number(a?.ts), a?.messageId || null, Number(b?.ts), b?.messageId || null));
   while (history.length > MAX_HISTORY_ENTRIES) history.shift();
   setContactSecret(peer, {
+    deviceId,
     dr: { history },
     meta: { source: 'dr-history-append' }
   });
@@ -181,7 +183,8 @@ function restoreDrStateFromHistory(params = {}) {
   const { ts, messageId, targetState = null, reasonTag = null } = params;
   const peer = resolvePeerDigest(params);
   if (!peer && !targetState) return false;
-  const info = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const info = getContactSecret(peer, { deviceId });
   if (!info?.drHistory?.length) return false;
   const stamp = Number(ts);
   let entry = null;
@@ -231,7 +234,8 @@ function updateHistoryCursor(params = {}) {
   const { ts, messageId } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) return;
-  const info = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const info = getContactSecret(peer, { deviceId });
   if (!info?.inviteId || !info?.secret) return;
   const stamp = Number(ts);
   const currentTs = Number.isFinite(info.drHistoryCursorTs) ? Number(info.drHistoryCursorTs) : null;
@@ -242,6 +246,7 @@ function updateHistoryCursor(params = {}) {
     return;
   }
   setContactSecret(peer, {
+    deviceId,
     dr: {
       cursor: {
         ts: Number.isFinite(stamp) ? stamp : null,
@@ -340,7 +345,8 @@ export function persistDrSnapshot(params = {}) {
   if (!holder?.rk) return false;
   const snap = snapshot || snapshotDrState(holder);
   if (!snap) return false;
-  const info = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const info = getContactSecret(peer, { deviceId });
   if (!info?.inviteId || !info?.secret) {
     if (isAutomationEnv()) {
       console.warn('[dr] persist snapshot skipped (missing contact secret)', { peerAccountDigest: peer, hasInfo: !!info });
@@ -360,7 +366,7 @@ export function persistDrSnapshot(params = {}) {
     if (info.conversationId) conversationUpdate.id = info.conversationId;
     if (info.conversationDrInit) conversationUpdate.drInit = info.conversationDrInit;
     if (Object.keys(conversationUpdate).length) update.conversation = conversationUpdate;
-    setContactSecret(peer, update);
+    setContactSecret(peer, { ...update, deviceId });
     markHolderSnapshot(holder, 'persist', snap.updatedAt || Date.now());
     return true;
   } catch (err) {
@@ -372,12 +378,14 @@ export function persistDrSnapshot(params = {}) {
 export function hydrateDrStatesFromContactSecrets() {
   const map = restoreContactSecrets();
   if (!(map instanceof Map)) return 0;
+  const deviceId = getDeviceId() || 'default';
   let restoredCount = 0;
   let eligibleEntries = 0;
   let skippedInvalidRole = 0;
   let missingSnapshotEntries = 0;
   let historyFallbackCount = 0;
-  for (const [peerDigest, info] of map.entries()) {
+  for (const [peerDigest] of map.entries()) {
+    const info = getContactSecret(peerDigest, { deviceId });
     if (!info) continue;
     let snapshot = info.drState || null;
     let snapshotFromHistory = false;
@@ -422,6 +430,7 @@ export function hydrateDrStatesFromContactSecrets() {
       if (snapshotFromHistory) {
         historyFallbackCount += 1;
         setContactSecret(peerDigest, {
+          deviceId,
           dr: { state: snapshot },
           meta: { source: 'hydrateDrStateFallback' }
         });
@@ -1195,7 +1204,8 @@ async function ensureRemoteBootstrap(params = {}) {
   const { reason = 'dr-session', force = false } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) return null;
-  const existing = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const existing = getContactSecret(peer, { deviceId });
   if (!existing) return null;
   const relationshipRole = typeof existing?.role === 'string' ? existing.role.toLowerCase() : null;
 
@@ -1230,6 +1240,7 @@ async function ensureRemoteBootstrap(params = {}) {
       mergedDrInit.guestBundle = guestBundle;
 
       setContactSecret(peer, {
+        deviceId,
         conversation: { drInit: mergedDrInit },
         session: { bootstrapTs: Math.floor(Date.now() / 1000) },
         meta: { source: `remote-bootstrap:${reason}` }
@@ -1271,7 +1282,8 @@ export async function ensureDrReceiverState(params = {}) {
   const { force = false } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) return false;
-  const secretInfo = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const secretInfo = getContactSecret(peer, { deviceId });
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   let state = drState(peer);
   if (!state?.rk && secretInfo?.drState) {
@@ -1335,7 +1347,7 @@ export async function ensureDrReceiverState(params = {}) {
     try {
       const remote = await ensureRemoteBootstrap({ peerAccountDigest: peer, reason: 'ensureDrReceiverState', force });
       if (remote?.guestBundle) {
-        const refreshedSecret = getContactSecret(peer);
+        const refreshedSecret = getContactSecret(peer, { deviceId });
         const refreshedContext = conversationContextForPeer(peer) || {};
         drInit = refreshedContext?.dr_init || refreshedSecret?.conversationDrInit || drInit;
         guestBundle =
@@ -1396,7 +1408,8 @@ export async function recoverDrState(params = {}) {
   const { force = false } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) return false;
-  const secretInfo = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const secretInfo = getContactSecret(peer, { deviceId });
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   const normalizeRole = (role) => (typeof role === 'string' ? role.toLowerCase() : null);
   const hasUsableState = (holder, roleHint = null) => {
@@ -1440,6 +1453,7 @@ export async function recoverDrState(params = {}) {
       if (remote?.guestBundle) {
         resolvedGuestBundle = remote.guestBundle;
         setContactSecret(peer, {
+          deviceId,
           conversation: { drInit: { ...(drInit || {}), guest_bundle: resolvedGuestBundle, guestBundle: resolvedGuestBundle } },
           meta: { source: 'recoverDrState-remote-bootstrap' }
         });
@@ -1483,7 +1497,8 @@ export function prepareDrForMessage(params = {}) {
   } = params;
   const peer = resolvePeerDigest({ peerAccountDigest, ...params });
   if (!peer) return { restored: false, duplicate: false };
-  const secretInfo = getContactSecret(peer);
+  const deviceId = getDeviceId() || 'default';
+  const secretInfo = getContactSecret(peer, { deviceId });
   const holder = stateOverride || drState(peer);
   const stamp = Number(messageTs);
   const stampIsFinite = Number.isFinite(stamp);
