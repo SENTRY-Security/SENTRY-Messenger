@@ -3022,8 +3022,9 @@ export function initMessagesPane({
     const toastMessage = toastPreview ? `${nickname}：${toastPreview}` : `${nickname} 有新訊息`;
     const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
     const initialsToast = initialsFromName(nickname, peerDigest).slice(0, 2);
+    const peerDeviceId = convEntry?.peerDeviceId || senderDeviceId || null;
     showToast?.(toastMessage, {
-      onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64 }),
+      onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId }),
       avatarUrl: avatarUrlToast,
       avatarInitials: initialsToast,
       subtitle: formatTimestamp(tsRaw)
@@ -3057,13 +3058,14 @@ export function initMessagesPane({
     setActiveConversation(peerDigest);
   }
 
-  function openConversationFromToast({ peerAccountDigest, convId, tokenB64 }) {
+  function openConversationFromToast({ peerAccountDigest, convId, tokenB64, peerDeviceId }) {
     try { log({ toastNavigate: { peerAccountDigest, convId } }); } catch {}
     switchTab?.('messages');
     syncConversationThreadsFromContacts();
     const threads = getConversationThreads();
     const threadByConv = convId ? threads.get(convId) : null;
     const targetPeer = normalizePeerKey(peerAccountDigest ?? threadPeer(threadByConv));
+    const targetPeerDeviceId = peerDeviceId || threadByConv?.peerDeviceId || null;
     const contactStateEntry = Array.isArray(sessionStore.contactState)
       ? sessionStore.contactState.find((c) => contactPeerKey(c) === targetPeer)
       : null;
@@ -3085,6 +3087,7 @@ export function initMessagesPane({
       convIndex.set(conversationId, {
         ...prevConv,
         peerAccountDigest: targetPeer || prevConv.peerAccountDigest || null,
+        peerDeviceId: targetPeerDeviceId || prevConv.peerDeviceId || null,
         token_b64: token || prevConv.token_b64 || null
       });
     }

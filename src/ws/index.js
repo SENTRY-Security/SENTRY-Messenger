@@ -414,9 +414,11 @@ function handleClientMessage(ws, data) {
     const targetDigest = extractPeerAccountDigest(msg);
     if (!targetDigest) return;
     const fromDigest = ws.__accountDigest || null;
+    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
     broadcastByDigest(targetDigest, {
       type: 'contact-share',
       fromAccountDigest: fromDigest,
+      senderDeviceId,
       inviteId: msg.inviteId || null,
       envelope: msg.envelope || null,
       ts: Date.now()

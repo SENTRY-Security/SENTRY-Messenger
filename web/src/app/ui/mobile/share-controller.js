@@ -1207,6 +1207,7 @@ export function setupShareController(options) {
               wsTransport({
                 type: 'contact-share',
                 targetAccountDigest,
+                senderDeviceId: getDeviceId() || 'default',
                 inviteId,
                 envelope
               });
