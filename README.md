@@ -353,7 +353,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [x] 設計完成（見 `docs/signal-migration-plan.md`），待實作。
   - [ ] 前端 conversationIndex/contactSecrets 以 peerAccountDigest+peerDeviceId 為鍵；contactSecrets 需存 per-device DR state/history。
   - [ ] WS payload/handlers 改為 digest+conversation_id(+device_id)，移除 fingerprint 依賴。
-  - [ ] 封套：若保留 conversation token，僅作 envelope key；其餘授權走 digest/device ACL。
+  - [ ] 封套：若保留 conversation token，僅作 envelope key；其餘授權走 digest/device ACL；移除前端/文件 fingerprint 描述與 payload_envelope 分支。
 - [ ] 媒體路徑：統一文字/附件封包流程，附件使用 message key 或 per-message 派生鍵（meta 帶 key_type）；下載時以 header 的 message_key_b64 或共享鍵解密；R2 簽名/索引保持 digest ACL。
   - [x] 設計完成（見 `docs/signal-migration-plan.md`）
   - [x] media outbox job 改用新版 payload（header_json/ciphertext_b64）與 messageKey 傳遞
