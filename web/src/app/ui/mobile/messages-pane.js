@@ -682,7 +682,7 @@ export function initMessagesPane({
     return sessionStore.conversationThreads;
   }
 
-  function upsertConversationThread({ peerAccountDigest, conversationId, tokenB64, nickname, avatar }) {
+  function upsertConversationThread({ peerAccountDigest, peerDeviceId = null, conversationId, tokenB64, nickname, avatar }) {
     const key = normalizePeerKey(peerAccountDigest);
     const convId = String(conversationId || '').trim();
     if (!key || !convId) return null;
@@ -692,6 +692,7 @@ export function initMessagesPane({
     const entry = {
       ...prev,
       peerAccountDigest: key,
+      peerDeviceId: peerDeviceId || prev.peerDeviceId || null,
       conversationId: convId,
       conversationToken: tokenB64 || prev.conversationToken || null,
       nickname: nickname || prev.nickname || `好友 ${key.slice(-4)}`,
@@ -716,10 +717,12 @@ export function initMessagesPane({
       const peerDigest = normalizePeerKey(contact?.peerAccountDigest ?? contact?.peer_account_digest ?? contact?.accountDigest ?? contact?.account_digest);
       const conversationId = contact?.conversation?.conversation_id;
       const tokenB64 = contact?.conversation?.token_b64;
+      const peerDeviceId = contact?.conversation?.peerDeviceId || contact?.conversation?.peer_device_id || null;
       if (!peerDigest || !conversationId || !tokenB64) continue;
       seen.add(conversationId);
       upsertConversationThread({
         peerAccountDigest: peerDigest,
+        peerDeviceId,
         conversationId,
         tokenB64,
         nickname: contact.nickname,
