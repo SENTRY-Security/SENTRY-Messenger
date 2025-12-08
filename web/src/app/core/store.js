@@ -25,6 +25,7 @@ let _WRAPPED_MK = null;
 let _UID_HEX = null;
 let _ACCOUNT_TOKEN = null;
 let _ACCOUNT_DIGEST = null;
+let _DEVICE_ID = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
 const _DEVICE_PRIV_WAITERS = new Set();
@@ -128,6 +129,15 @@ function resolveDrKey(peerInput) {
 }
 export function setAccountDigest(v) {
   _ACCOUNT_DIGEST = normalizeAccountDigest(v);
+}
+
+export function getDeviceId() { return _DEVICE_ID; }
+export function setDeviceId(v) {
+  if (typeof v === 'string' && v.trim()) {
+    _DEVICE_ID = v.trim();
+  } else {
+    _DEVICE_ID = null;
+  }
 }
 
 export function getMkRaw() { return _MK_RAW; }

@@ -5,7 +5,7 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchWithTimeout, jsonReq } from '../core/http.js';
-import { buildAccountPayload } from '../core/store.js';
+import { buildAccountPayload, getDeviceId } from '../core/store.js';
 export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrapper
 
 function buildAccountHeaders(opts = {}) {
@@ -14,24 +14,44 @@ function buildAccountHeaders(opts = {}) {
   const headers = {};
   if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
   if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
+  const deviceId = getDeviceId ? getDeviceId() : null;
+  if (deviceId) headers['X-Device-Id'] = deviceId;
   if (conversationFingerprint) headers['X-Conversation-Fingerprint'] = conversationFingerprint;
   return headers;
 }
 
 /**
  * 送出隱匿式訊息（conversation token 模型）。
- * @param {{ conversationId:string, payloadEnvelope:any, id?:string, createdAt?:number, conversationFingerprint?:string }} p
+ * @param {{ conversationId:string, header:any, ciphertextB64:string, counter:number, senderDeviceId?:string, receiverAccountDigest?:string, receiverDeviceId?:string, id?:string, createdAt?:number }} p
  */
-export async function createSecureMessage({ conversationId, payloadEnvelope, id, createdAt, conversationFingerprint } = {}) {
+export async function createSecureMessage({
+  conversationId,
+  header,
+  ciphertextB64,
+  counter,
+  senderDeviceId,
+  receiverAccountDigest,
+  receiverDeviceId,
+  id,
+  createdAt
+} = {}) {
   if (!conversationId) throw new Error('conversationId required');
-  if (!payloadEnvelope) throw new Error('payloadEnvelope required');
+  if (!header) throw new Error('header required');
+  if (!ciphertextB64) throw new Error('ciphertextB64 required');
+  if (!Number.isFinite(counter)) throw new Error('counter required');
+  const senderDevice = senderDeviceId || getDeviceId();
+  if (!senderDevice) throw new Error('senderDeviceId required');
   const overrides = {
     conversation_id: conversationId,
-    payload_envelope: payloadEnvelope
+    header_json: JSON.stringify(header),
+    ciphertext_b64: ciphertextB64,
+    counter,
+    sender_device_id: senderDevice
   };
+  if (receiverAccountDigest) overrides.receiver_account_digest = receiverAccountDigest;
+  if (receiverDeviceId) overrides.receiver_device_id = receiverDeviceId;
   if (id) overrides.id = id;
   if (createdAt) overrides.created_at = createdAt;
-  if (conversationFingerprint) overrides.conversationFingerprint = conversationFingerprint;
   const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout('/api/v1/messages/secure', jsonReq(payload), 15000);
   const text = await r.text();
@@ -59,14 +79,15 @@ export async function listMessages({ convId, limit = 20, cursorTs, conversationF
   return { r, data };
 }
 
-export async function listSecureMessages({ conversationId, limit = 20, cursorTs, conversationFingerprint } = {}) {
+export async function listSecureMessages({ conversationId, limit = 20, cursorTs, cursorId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const qs = new URLSearchParams();
   qs.set('conversationId', conversationId);
   if (limit) qs.set('limit', String(limit));
   if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursorTs', String(cursorTs));
+  if (cursorId !== undefined && cursorId !== null && cursorId !== '') qs.set('cursorId', String(cursorId));
   const url = `/api/v1/messages/secure?${qs.toString()}`;
-  const headers = buildAccountHeaders({ conversationFingerprint });
+  const headers = buildAccountHeaders();
   const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }

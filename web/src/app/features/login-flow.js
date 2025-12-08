@@ -18,7 +18,8 @@ import {
   getDevicePriv, setDevicePriv,
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
-  getOpaqueServerId, setOpaqueServerId
+  getOpaqueServerId, setOpaqueServerId,
+  getDeviceId, setDeviceId
 } from '../core/store.js';
 
 // crypto deps
@@ -227,10 +228,18 @@ export async function unlockAndInit({ password, onProgress } = {}) {
     return data;
   };
 
-  const publishBundle = async (bundlePub, { devicePriv = null, allowFallback = true } = {}) => {
+  const publishBundle = async (bundlePub, { devicePriv = null, deviceId = null, allowFallback = true } = {}) => {
     const send = async (payload) => {
-      const { r, data } = await prekeysPublish({ accountToken, accountDigest, bundle: payload });
-      if (r.status === 204) return { ok: true };
+      const { r, data } = await prekeysPublish({
+        accountToken,
+        accountDigest,
+        deviceId,
+        signedPrekey: payload.signedPrekey || (payload.spk_pub
+          ? { id: payload.spk_id || payload.spkId || 1, pub: payload.spk_pub, sig: payload.spk_sig }
+          : undefined),
+        opks: payload.opks || []
+      });
+      if (r.ok) return { ok: true };
       let detail = '';
       if (data && typeof data === 'object') {
         if (typeof data.details === 'string') {
@@ -250,18 +259,6 @@ export async function unlockAndInit({ password, onProgress } = {}) {
 
     const attempt = await send(bundlePub);
     if (attempt.ok) return true;
-    const missingKeys = !bundlePub?.ik_pub || !bundlePub?.spk_pub || !bundlePub?.spk_sig;
-    if (allowFallback && attempt.status === 409 && devicePriv && missingKeys) {
-      const fallbackPayload = {
-        ik_pub: devicePriv.ik_pub_b64,
-        spk_pub: devicePriv.spk_pub_b64,
-        spk_sig: devicePriv.spk_sig_b64,
-        opks: Array.isArray(bundlePub?.opks) ? bundlePub.opks : []
-      };
-      const retry = await send(fallbackPayload);
-      if (retry.ok) return true;
-      throw new Error(`keys.publish failed: ${retry.message}`);
-    }
     throw new Error(`keys.publish failed: ${attempt.message}`);
   };
 
@@ -309,10 +306,12 @@ export async function unlockAndInit({ password, onProgress } = {}) {
     // full init path: generate bundle (+100), publish, store backup
     try {
       report('generate-bundle', 'start');
+      const deviceId = getDeviceId() || crypto.randomUUID();
+      setDeviceId(deviceId);
       const { devicePriv, bundlePub } = await generateInitialBundle(1, 100);
       report('generate-bundle', 'success', { opkCount: bundlePub?.opks?.length || 0 });
       setDevicePriv(devicePriv);
-      await runStep('prekeys-publish', () => publishBundle(bundlePub, { devicePriv }));
+      await runStep('prekeys-publish', () => publishBundle(bundlePub, { devicePriv, deviceId }));
       const wrapped_dev = await runStep('wrap-device', () => wrapDevicePrivWithMK(devicePriv, getMkRaw()));
       await runStep('devkeys-store', () => storeDevkeys(getSession(), wrapped_dev));
       initialized = true;
@@ -335,17 +334,19 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       });
 
       setDevicePriv(devicePriv);
+      const deviceId = getDeviceId() || crypto.randomUUID();
+      setDeviceId(deviceId);
       await runStep('prekeys-sync', () => publishBundle({
         ik_pub: devicePriv.ik_pub_b64,
         spk_pub: devicePriv.spk_pub_b64,
         spk_sig: devicePriv.spk_sig_b64
-      }, { devicePriv, allowFallback: false }));
+      }, { devicePriv, deviceId, allowFallback: false }));
       const { opks, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
       if (opks.length > 0) {
         report('generate-bundle', 'start');
         report('prekeys-publish', 'start');
         try {
-          await publishBundle({ opks }, { devicePriv });
+          await publishBundle({ opks }, { devicePriv, deviceId });
         } catch (e) {
           report('prekeys-publish', 'error', e?.message || e);
           report('generate-bundle', 'error', e?.message || e);

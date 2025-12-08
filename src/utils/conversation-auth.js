@@ -26,14 +26,14 @@ export function isSystemOwnedConversation({ convId, accountDigest }) {
   return false;
 }
 
-export async function authorizeConversationAccess({ convId, accountDigest, fingerprint }) {
+export async function authorizeConversationAccess({ convId, accountDigest, deviceId = null }) {
   if (!DATA_API || !HMAC_SECRET) {
     const err = new Error('DATA_API_URL or DATA_API_HMAC not configured');
     err.status = 500;
     throw err;
   }
   const bodyObj = { conversationId: convId, accountDigest };
-  if (fingerprint) bodyObj.fingerprint = fingerprint;
+  if (deviceId) bodyObj.deviceId = deviceId;
   const path = '/d1/conversations/authorize';
   const body = JSON.stringify(bodyObj);
   const sig = signHmac(path, body, HMAC_SECRET);

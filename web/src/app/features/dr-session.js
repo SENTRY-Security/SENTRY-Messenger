@@ -2,24 +2,27 @@
 // X3DH 初始化與 DR 文字訊息發送（功能層，無 UI）。
 
 import { prekeysBundle } from '../api/prekeys.js';
-import { createSecureMessage } from '../api/messages.js';
 import { friendsBootstrapSession } from '../api/friends.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
-import { getAccountDigest, drState, normalizePeerIdentity } from '../core/store.js';
+import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   computeConversationFingerprint,
-  computeConversationAccessFingerprint,
-  encryptConversationEnvelope,
-  conversationIdFromToken,
-  base64ToUrl
+  conversationIdFromToken
 } from './conversation.js';
-import { bytesToB64Url } from '../ui/mobile/ui-utils.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
 import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
 import { encryptAndPutWithProgress } from './media.js';
+import {
+  enqueueOutboxJob,
+  processOutboxJobNow,
+  setOutboxHooks,
+  startOutboxProcessor
+} from './queue/outbox.js';
+import { enqueueReceiptJob } from './queue/receipts.js';
+import { enqueueMediaMetaJob } from './queue/media.js';
 
 function normHex(value) {
   const identity = normalizePeerIdentity(
@@ -74,6 +77,13 @@ function decodeB64(str) {
   } catch {
     return null;
   }
+}
+
+function buildReceiptMessageId(targetMessageId) {
+  const base = typeof targetMessageId === 'string' && targetMessageId.trim()
+    ? targetMessageId.trim()
+    : 'receipt';
+  return `receipt-${base}-${crypto.randomUUID()}`;
 }
 
 function sanitizeSnapshotInput(snapshot) {
@@ -577,13 +587,28 @@ async function sendDrPlaintext(params = {}) {
   const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
 
   if (!hasDrState) {
-    try {
-      await ensureDrSession({ peerAccountDigest: peer });
-    } catch (err) {
-      if (!hasDrInit) {
-        throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+    // 若已有 guest bundle / dr_init，優先以 responder 流程恢復，避免誤用 initiator 重新開新鏈。
+    let restored = false;
+    if (hasDrInit) {
+      try {
+        await ensureDrReceiverState({ peerAccountDigest: peer });
+        restored = true;
+      } catch (err) {
+        // 僅記錄，仍可嘗試 initiator 流程作為最後手段。
+        console.warn('[dr] ensure receiver state failed, fallback to initiator', err?.message || err);
       }
-      throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+      state = drState(peer);
+      hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+    }
+    if (!hasDrState) {
+      try {
+        await ensureDrSession({ peerAccountDigest: peer });
+      } catch (err) {
+        if (!hasDrInit && !restored) {
+          throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+        }
+        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+      }
     }
     state = drState(peer);
     hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
@@ -604,19 +629,6 @@ async function sendDrPlaintext(params = {}) {
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
   const accountDigest = (getAccountDigest() || '').toUpperCase();
-  let conversationFingerprint = null;
-  if (accountDigest && tokenB64) {
-    try {
-      conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
-    } catch (err) {
-      logDrSend('fingerprint-error', { peerAccountDigest: peer, error: err?.message || err });
-    }
-  }
-
-  const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64 };
-  const headerJson = JSON.stringify(headerPayload);
-  const hdrB64 = bytesToB64Url(new TextEncoder().encode(headerJson));
-  const ctB64 = base64ToUrl(pkt.ciphertext_b64);
   const fingerprint = accountDigest
     ? await computeConversationFingerprint(tokenB64, accountDigest)
     : null;
@@ -636,34 +648,51 @@ async function sendDrPlaintext(params = {}) {
     }
   }
 
-  const securePayload = {
-    v: 1,
-    hdr_b64: hdrB64,
-    ct_b64: ctB64,
-    meta
-  };
+  const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64, meta };
+  const headerJson = JSON.stringify(headerPayload);
+  const ctB64 = pkt.ciphertext_b64;
 
-  const envelope = await encryptConversationEnvelope(tokenB64, securePayload);
-  const { r, data } = await createSecureMessage({
-    conversationId,
-    payloadEnvelope: envelope,
-    createdAt: now,
-    conversationFingerprint
-  });
-  if (!r.ok) throw new Error('sendText failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
-  if (preSnapshot) {
-    recordDrMessageHistory({
+  const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
+    ? params.messageId.trim()
+    : crypto.randomUUID();
+
+  try {
+    startOutboxProcessor();
+    const senderDeviceId = getDeviceId() || 'device-default';
+    const job = await enqueueOutboxJob({
+      conversationId,
+      messageId,
+      headerJson,
+      header: headerPayload,
+      ciphertextB64: ctB64,
+      counter: pkt.header?.n ?? null,
+      senderDeviceId,
+      receiverAccountDigest: peer,
+      receiverDeviceId: null,
+      createdAt: now,
       peerAccountDigest: peer,
-      messageTs: now,
-      messageId: data?.id || null,
-      snapshot: preSnapshot,
-      snapshotNext: postSnapshot,
-      messageKeyB64
+      meta: { msg_type: meta.msg_type },
+      dr: preSnapshot
+        ? {
+            snapshotBefore: preSnapshot,
+            snapshotAfter: postSnapshot,
+            messageKeyB64
+          }
+        : null
     });
+    const result = await processOutboxJobNow(job.jobId);
+    if (!result.ok) {
+      const status = Number.isFinite(result?.status) ? ` (status=${result.status})` : '';
+      throw new Error((result.error || 'sendText failed') + status);
+    }
+    logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: postSnapshot });
+    const msg = result.data && typeof result.data === 'object' ? result.data : {};
+    if (!msg.id) msg.id = messageId;
+    return { msg, convId: conversationId, secure: true };
+  } catch (err) {
+    if (preSnapshot) restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+    throw err;
   }
-  persistDrSnapshot({ peerAccountDigest: peer, state });
-  logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: postSnapshot });
-  return { msg: data, convId: conversationId, secure: true };
 }
 
 /**
@@ -693,6 +722,36 @@ export async function sendDrSessionAck(params = {}) {
     metaOverrides: {
       msg_type: CONTROL_MESSAGE_TYPES.SESSION_ACK,
       control: 'ack'
+    }
+  });
+}
+
+export async function sendDrDeliveryReceipt(params = {}) {
+  const { messageId: targetMessageId, ...rest } = params;
+  if (!targetMessageId) throw new Error('messageId required for delivery receipt');
+  return sendDrPlaintext({
+    ...rest,
+    messageId: buildReceiptMessageId(targetMessageId),
+    text: JSON.stringify({ type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT, messageId: targetMessageId }),
+    metaOverrides: {
+      msg_type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
+      control: 'receipt',
+      target_message_id: targetMessageId
+    }
+  });
+}
+
+export async function sendDrReadReceipt(params = {}) {
+  const { messageId: targetMessageId, ...rest } = params;
+  if (!targetMessageId) throw new Error('messageId required for read receipt');
+  return sendDrPlaintext({
+    ...rest,
+    messageId: buildReceiptMessageId(targetMessageId),
+    text: JSON.stringify({ type: CONTROL_MESSAGE_TYPES.READ_RECEIPT, messageId: targetMessageId }),
+    metaOverrides: {
+      msg_type: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
+      control: 'receipt',
+      target_message_id: targetMessageId
     }
   });
 }
@@ -898,14 +957,6 @@ export async function sendDrMedia(params = {}) {
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
   const accountDigest = (getAccountDigest() || '').toUpperCase();
-  let conversationFingerprint = null;
-  if (accountDigest && tokenB64) {
-    try {
-      conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
-    } catch (err) {
-      logDrSend('fingerprint-error', { peerAccountDigest: peer, error: err?.message || err });
-    }
-  }
 
   const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
   let previewInfo = null;
@@ -925,8 +976,7 @@ export async function sendDrMedia(params = {}) {
         onProgress: null,
         skipIndex: true,
         encryptionKey: { key: sharedMediaKey, type: 'shared' },
-        encryptionInfoTag: 'media/preview-v1',
-        conversationFingerprint
+        encryptionInfoTag: 'media/preview-v1'
       });
       previewInfo = {
         objectKey: previewUpload.objectKey,
@@ -950,8 +1000,7 @@ export async function sendDrMedia(params = {}) {
     abortSignal,
     skipIndex: true,
     encryptionKey: { key: sharedMediaKey, type: 'shared' },
-    encryptionInfoTag: 'media/v1',
-    conversationFingerprint
+    encryptionInfoTag: 'media/v1'
   });
 
   const metadata = {
@@ -992,32 +1041,23 @@ export async function sendDrMedia(params = {}) {
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
 
-  const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64 };
-  const headerJson = JSON.stringify(headerPayload);
-  const hdrB64 = bytesToB64Url(new TextEncoder().encode(headerJson));
-  const ctB64 = base64ToUrl(pkt.ciphertext_b64);
   const fingerprint = accountDigest
     ? await computeConversationFingerprint(tokenB64, accountDigest)
     : null;
 
-  const securePayload = {
-    v: 1,
-    hdr_b64: hdrB64,
-    ct_b64: ctB64,
-    meta: {
-      ts: now,
-      sender_fingerprint: fingerprint,
-      msg_type: 'media',
-      media: {
-        object_key: metadata.objectKey,
-        size: metadata.size,
-        name: metadata.name,
-        content_type: metadata.contentType
-      }
+  const meta = {
+    ts: now,
+    sender_fingerprint: fingerprint,
+    msg_type: 'media',
+    media: {
+      object_key: metadata.objectKey,
+      size: metadata.size,
+      name: metadata.name,
+      content_type: metadata.contentType
     }
   };
   if (metadata.preview?.objectKey) {
-    securePayload.meta.media.preview = {
+    meta.media.preview = {
       object_key: metadata.preview.objectKey,
       size: metadata.preview.size,
       content_type: metadata.preview.contentType,
@@ -1025,31 +1065,57 @@ export async function sendDrMedia(params = {}) {
       height: metadata.preview.height
     };
   }
+  const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64, meta };
+  const headerJson = JSON.stringify(headerPayload);
+  const ctB64 = pkt.ciphertext_b64;
 
-  const envelope = await encryptConversationEnvelope(tokenB64, securePayload);
-  const { r, data } = await createSecureMessage({
+  startOutboxProcessor();
+  const senderDeviceId = getDeviceId() || 'device-default';
+  const job = await enqueueMediaMetaJob({
     conversationId,
-    payloadEnvelope: envelope,
+    messageId: crypto.randomUUID(),
+    headerJson,
+    header: headerPayload,
+    ciphertextB64: ctB64,
+    counter: pkt.header?.n ?? null,
+    senderDeviceId,
+    receiverAccountDigest: peer,
+    receiverDeviceId: null,
     createdAt: now,
-    conversationFingerprint
+    meta: { msg_type: 'media', media: metadata },
+    peerAccountDigest: peer,
+    dr: preSnapshot
+      ? {
+          snapshotBefore: preSnapshot,
+          snapshotAfter: postSnapshot,
+          messageKeyB64
+        }
+      : null
   });
-  if (!r.ok) throw new Error('sendMedia failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));
+  const result = await processOutboxJobNow(job.jobId);
+  if (!result.ok) {
+    if (preSnapshot) restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+    throw new Error(result.error || 'sendMedia failed');
+  }
+  logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
+
+  const data = result.data && typeof result.data === 'object' ? result.data : {};
+  const messageId = data?.id || job.messageId;
   if (preSnapshot) {
     recordDrMessageHistory({
       peerAccountDigest: peer,
       messageTs: now,
-      messageId: data?.id || null,
+      messageId,
       snapshot: preSnapshot,
       snapshotNext: postSnapshot,
       messageKeyB64
     });
   }
   persistDrSnapshot({ peerAccountDigest: peer, state });
-  logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
 
   return {
     msg: {
-      id: data?.id || null,
+      id: messageId,
       ts: now,
       text: `[檔案] ${metadata.name}`,
       type: 'media',
@@ -1207,6 +1273,7 @@ async function ensureRemoteBootstrap(params = {}) {
 }
 
 export async function ensureDrReceiverState(params = {}) {
+  const { force = false } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) return false;
   const secretInfo = getContactSecret(peer);
@@ -1258,10 +1325,10 @@ export async function ensureDrReceiverState(params = {}) {
   const stateHasReceiveChain = state?.ckR instanceof Uint8Array && state.ckR.length > 0;
   const stateHasSendChain = state?.ckS instanceof Uint8Array && state.ckS.length > 0;
   const isGuestLike = relationshipRole === 'guest' || stateRole === 'initiator';
-  if (stateHasRatchet && stateHasReceiveChain) {
+  if (!force && stateHasRatchet && stateHasReceiveChain) {
     return true;
   }
-  if (stateHasRatchet && isGuestLike && (stateHasSendChain || stateHasReceiveChain)) {
+  if (!force && stateHasRatchet && isGuestLike && (stateHasSendChain || stateHasReceiveChain)) {
     return true;
   }
 
@@ -1271,7 +1338,7 @@ export async function ensureDrReceiverState(params = {}) {
 
   if (!guestBundle && relationshipRole !== 'guest') {
     try {
-      const remote = await ensureRemoteBootstrap({ peerAccountDigest: peer, reason: 'ensureDrReceiverState' });
+      const remote = await ensureRemoteBootstrap({ peerAccountDigest: peer, reason: 'ensureDrReceiverState', force });
       if (remote?.guestBundle) {
         const refreshedSecret = getContactSecret(peer);
         const refreshedContext = conversationContextForPeer(peer) || {};
@@ -1299,7 +1366,7 @@ export async function ensureDrReceiverState(params = {}) {
     const holderNow = drState(peer);
     const roleNow = holderNow?.baseKey?.role;
     const hasReceiveChain = holderNow?.ckR instanceof Uint8Array && holderNow.ckR.length > 0 && roleNow === 'responder';
-    const shouldForce = !hasReceiveChain || roleNow !== 'responder';
+    const shouldForce = force || !hasReceiveChain || roleNow !== 'responder';
     const ok = await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: shouldForce });
     if (ok || shouldForce) {
       const refreshed = drState(peer);
@@ -1331,26 +1398,34 @@ export async function ensureDrReceiverState(params = {}) {
 }
 
 export async function recoverDrState(params = {}) {
+  const { force = false } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) return false;
-  const hasReceiveChain = () => {
-    const holder = drState(peer);
-    return !!(
-      holder?.rk &&
-      holder?.ckR instanceof Uint8Array &&
-      holder.ckR.length > 0 &&
-      holder.myRatchetPriv instanceof Uint8Array &&
-      holder?.baseKey?.role === 'responder'
-    );
-  };
-
   const secretInfo = getContactSecret(peer);
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
+  const normalizeRole = (role) => (typeof role === 'string' ? role.toLowerCase() : null);
+  const hasUsableState = (holder, roleHint = null) => {
+    if (
+      !holder?.rk ||
+      !(holder.myRatchetPriv instanceof Uint8Array) ||
+      !(holder.myRatchetPub instanceof Uint8Array)
+    ) {
+      return false;
+    }
+    const hasReceive = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0;
+    const hasSend = holder?.ckS instanceof Uint8Array && holder.ckS.length > 0;
+    if (!hasReceive && !hasSend) return false;
+    const role = normalizeRole(holder?.baseKey?.role) || normalizeRole(roleHint);
+    if (role === 'initiator') return hasSend || hasReceive;
+    if (role === 'responder') return hasReceive || hasSend;
+    return hasReceive || hasSend;
+  };
   if (secretInfo?.drState) {
     try {
       const ok = restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: secretInfo.drState, force: true });
-      if (ok && hasReceiveChain()) {
-        markHolderSnapshot(drState(peer), 'recover-snapshot', Date.now());
+      const holder = drState(peer);
+      if (ok && hasUsableState(holder, relationshipRole)) {
+        markHolderSnapshot(holder, 'recover-snapshot', Date.now());
         if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'snapshot' }));
         return true;
       }
@@ -1362,11 +1437,29 @@ export async function recoverDrState(params = {}) {
   const context = conversationContextForPeer(peer) || {};
   const drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
   const guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
-  if (guestBundle && relationshipRole !== 'guest') {
+  let resolvedGuestBundle = guestBundle;
+
+  if (!resolvedGuestBundle && relationshipRole !== 'guest') {
     try {
-      const ok = await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: true });
-      if (ok && hasReceiveChain()) {
-        markHolderSnapshot(drState(peer), 'recover-guest', Date.now());
+      const remote = await ensureRemoteBootstrap({ peerAccountDigest: peer, reason: 'recoverDrState', force });
+      if (remote?.guestBundle) {
+        resolvedGuestBundle = remote.guestBundle;
+        setContactSecret(peer, {
+          conversation: { drInit: { ...(drInit || {}), guest_bundle: resolvedGuestBundle, guestBundle: resolvedGuestBundle } },
+          meta: { source: 'recoverDrState-remote-bootstrap' }
+        });
+      }
+    } catch (err) {
+      console.warn('[dr] recover remote bootstrap failed', err?.message || err);
+    }
+  }
+
+  if (resolvedGuestBundle && relationshipRole !== 'guest') {
+    try {
+      const ok = await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle: resolvedGuestBundle, force: true });
+      const holder = drState(peer);
+      if (ok && hasUsableState(holder, relationshipRole)) {
+        markHolderSnapshot(holder, 'recover-guest', Date.now());
         if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'guest-bundle' }));
         return true;
       }
@@ -1375,8 +1468,8 @@ export async function recoverDrState(params = {}) {
     }
   }
 
-  if (hasReceiveChain()) {
-    const holder = drState(peer);
+  const holder = drState(peer);
+  if (hasUsableState(holder, relationshipRole)) {
     markHolderSnapshot(holder, 'recover', Date.now());
     if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'in-place' }));
     return true;
@@ -1487,4 +1580,31 @@ export function recordDrMessageHistory(params = {}) {
     if (messageId) holder.historyCursorId = messageId;
   }
   return true;
+}
+
+// Outbox integration: persist DR snapshots/history once送出成功。
+try {
+  setOutboxHooks({
+    onSent: async (job) => {
+      const peer = job?.peerAccountDigest || null;
+      const dr = job?.dr || {};
+      const messageTs = Number(job?.createdAt);
+      if (peer && dr.snapshotBefore && Number.isFinite(messageTs)) {
+        recordDrMessageHistory({
+          peerAccountDigest: peer,
+          messageTs,
+          messageId: job?.messageId || null,
+          snapshot: dr.snapshotBefore,
+          snapshotNext: dr.snapshotAfter || null,
+          messageKeyB64: dr.messageKeyB64 || null
+        });
+      }
+      if (peer && dr.snapshotAfter) {
+        persistDrSnapshot({ peerAccountDigest: peer, snapshot: dr.snapshotAfter });
+      }
+    }
+  });
+  startOutboxProcessor();
+} catch (err) {
+  console.warn('[outbox] init failed', err);
 }

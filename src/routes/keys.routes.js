@@ -3,6 +3,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { signHmac } from '../utils/hmac.js';
+import { resolveAccountAuth } from '../utils/account-context.js';
 
 const r = Router();
 
@@ -31,23 +32,21 @@ const OpkSchema = z.object({
   pub: z.string().min(8)
 });
 
-const BundleFullSchema = z.object({
-  ik_pub: z.string().min(8),
-  spk_pub: z.string().min(8),
-  spk_sig: z.string().min(8),
-  opks: z.array(OpkSchema).optional().default([])
-});
-
-const BundleOpksOnlySchema = z.object({
-  opks: z.array(OpkSchema).min(1)
+const SignedPrekeySchema = z.object({
+  id: z.number().int().nonnegative(),
+  pub: z.string().min(8),
+  sig: z.string().min(8)
 });
 
 const PublishSchema = withAccountSelectorGuard(AccountSelectorSchema.extend({
-  bundle: z.union([BundleFullSchema, BundleOpksOnlySchema])
+  deviceId: z.string().min(1),
+  signedPrekey: SignedPrekeySchema,
+  opks: z.array(OpkSchema).optional().default([])
 }));
 
 const BundleSchema = z.object({
-  peer_accountDigest: z.string().regex(AccountDigestRegex)
+  peer_accountDigest: z.string().regex(AccountDigestRegex),
+  peer_deviceId: z.string().min(1).optional()
 });
 
 // ---- Helpers ----
@@ -70,6 +69,14 @@ async function callWorker(path, bodyObj) {
   return resp;
 }
 
+async function callWorkerGet(pathWithQuery) {
+  const sig = signHmac(pathWithQuery, '', HMAC_SECRET);
+  return fetch(`${DATA_API}${pathWithQuery}`, {
+    method: 'GET',
+    headers: { 'x-auth': sig }
+  });
+}
+
 function prepAccountPayload({ accountToken, accountDigest }) {
   const payload = {};
   if (accountToken) payload.accountToken = String(accountToken).trim();
@@ -84,23 +91,24 @@ r.post('/keys/publish', async (req, res) => {
   try {
     const input = PublishSchema.parse(req.body || {});
 
-    const path = '/d1/prekeys/publish';
-    const accountPayload = prepAccountPayload(input);
-    console.log('[keys.publish] payload', {
-      hasAccountToken: !!accountPayload.accountToken,
-      hasAccountDigest: !!accountPayload.accountDigest,
-      inputBundleKeys: input.bundle ? Object.keys(input.bundle) : null,
-      opkCount: Array.isArray(input.bundle?.opks) ? input.bundle.opks.length : null,
-      hasIK: !!input.bundle?.ik_pub,
-      hasSPK: !!input.bundle?.spk_pub,
-      hasSPKSig: !!input.bundle?.spk_sig
+    const { accountDigest } = await resolveAccountAuth({
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
     });
-    const w = await callWorker(path, { ...accountPayload, bundle: input.bundle });
+
+    const path = '/d1/prekeys/publish';
+    const payload = {
+      accountDigest,
+      deviceId: input.deviceId,
+      signedPrekey: input.signedPrekey,
+      opks: input.opks || []
+    };
+    const w = await callWorker(path, payload);
     if (!w.ok) {
       const data = await w.text().catch(() => '');
       return res.status(w.status).json({ error: 'PublishFailed', details: data });
     }
-    return res.status(204).end();
+    return res.status(200).json({ ok: true });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });
   }
@@ -112,11 +120,11 @@ r.post('/keys/bundle', async (req, res) => {
   try {
     const input = BundleSchema.parse(req.body || {});
 
-    const path = '/d1/prekeys/bundle';
-    const payload = {
-      peer_accountDigest: String(input.peer_accountDigest).trim().toUpperCase()
-    };
-    const w = await callWorker(path, payload);
+    const qs = new URLSearchParams();
+    qs.set('peerAccountDigest', String(input.peer_accountDigest).trim().toUpperCase());
+    if (input.peer_deviceId) qs.set('peerDeviceId', String(input.peer_deviceId).trim());
+    const path = `/d1/prekeys/bundle?${qs.toString()}`;
+    const w = await callWorkerGet(path);
     const data = await w.json().catch(async () => ({ text: await w.text().catch(() => '') }));
     if (!w.ok) {
       return res.status(w.status).json({ error: 'FetchBundleFailed', details: data });

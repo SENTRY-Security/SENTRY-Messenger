@@ -90,7 +90,118 @@ export default {
 
     await ensureDataTables(env);
 
-    // 新增訊息索引
+    // Signal-style prekey publish
+    if (req.method === 'POST' && url.pathname === '/d1/prekeys/publish') {
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+      const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id);
+      const signedPrekey = normalizeSignedPrekey(body?.signedPrekey || body?.signed_prekey || body?.spk);
+      const opks = Array.isArray(body?.opks) ? body.opks.map(normalizeOpk).filter(Boolean) : [];
+      if (!accountDigest || !deviceId || !signedPrekey) {
+        return json({ error: 'BadRequest', message: 'accountDigest, deviceId, signedPrekey required' }, { status: 400 });
+      }
+      await ensureDataTables(env);
+      const now = Math.floor(Date.now() / 1000);
+      await env.DB.prepare(`
+        INSERT INTO devices (account_digest, device_id, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?3)
+        ON CONFLICT(account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
+      `).bind(accountDigest, deviceId, now).run();
+      await env.DB.prepare(`
+        INSERT INTO device_signed_prekeys (account_digest, device_id, spk_id, spk_pub, spk_sig, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(account_digest, device_id, spk_id) DO UPDATE SET
+          spk_pub=excluded.spk_pub,
+          spk_sig=excluded.spk_sig
+      `).bind(accountDigest, deviceId, signedPrekey.id, signedPrekey.pub, signedPrekey.sig, now).run();
+      if (opks.length) {
+        const stmt = env.DB.prepare(`
+          INSERT OR REPLACE INTO device_opks (account_digest, device_id, opk_id, opk_pub, issued_at, consumed_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+        `);
+        for (const opk of opks) {
+          await stmt.bind(accountDigest, deviceId, opk.id, opk.pub, now).run();
+        }
+      }
+      const nextRow = await env.DB.prepare(`
+        SELECT MAX(opk_id) as max_id FROM device_opks WHERE account_digest=?1 AND device_id=?2
+      `).bind(accountDigest, deviceId).first();
+      const nextOpkId = Number(nextRow?.max_id || 0) + 1;
+      return json({ ok: true, next_opk_id: nextOpkId });
+    }
+
+    // Signal-style prekey bundle fetch
+    if (req.method === 'GET' && url.pathname === '/d1/prekeys/bundle') {
+      const peerAccountDigest = normalizeAccountDigest(
+        url.searchParams.get('peerAccountDigest')
+        || url.searchParams.get('peer_account_digest')
+        || url.searchParams.get('accountDigest')
+      );
+      let peerDeviceId = normalizeDeviceId(
+        url.searchParams.get('peerDeviceId')
+        || url.searchParams.get('peer_device_id')
+        || url.searchParams.get('deviceId')
+      );
+      if (!peerAccountDigest) {
+        return json({ error: 'BadRequest', message: 'peerAccountDigest required' }, { status: 400 });
+      }
+      await ensureDataTables(env);
+      if (!peerDeviceId) {
+        const deviceRow = await env.DB.prepare(`
+          SELECT device_id FROM devices
+           WHERE account_digest=?1
+           ORDER BY updated_at DESC, created_at DESC
+           LIMIT 1
+        `).bind(peerAccountDigest).first();
+        peerDeviceId = normalizeDeviceId(deviceRow?.device_id);
+      }
+      if (!peerDeviceId) {
+        return json({ error: 'PrekeyUnavailable', message: 'peer device not found' }, { status: 404 });
+      }
+      const spkRow = await env.DB.prepare(`
+        SELECT spk_id, spk_pub, spk_sig
+          FROM device_signed_prekeys
+         WHERE account_digest=?1 AND device_id=?2
+         ORDER BY spk_id DESC
+         LIMIT 1
+      `).bind(peerAccountDigest, peerDeviceId).first();
+      if (!spkRow) {
+        return json({ error: 'PrekeyUnavailable', message: 'signed prekey missing' }, { status: 404 });
+      }
+      const opkRow = await env.DB.prepare(`
+        SELECT opk_id, opk_pub FROM device_opks
+         WHERE account_digest=?1 AND device_id=?2 AND consumed_at IS NULL
+         ORDER BY opk_id ASC
+         LIMIT 1
+      `).bind(peerAccountDigest, peerDeviceId).first();
+      if (!opkRow) {
+        return json({ error: 'PrekeyUnavailable', message: 'one-time prekey missing' }, { status: 404 });
+      }
+      await env.DB.prepare(`
+        UPDATE device_opks SET consumed_at=strftime('%s','now')
+         WHERE account_digest=?1 AND device_id=?2 AND opk_id=?3
+      `).bind(peerAccountDigest, peerDeviceId, opkRow.opk_id).run();
+      return json({
+        ok: true,
+        deviceId: peerDeviceId,
+        signedPrekey: {
+          id: spkRow.spk_id,
+          pub: spkRow.spk_pub,
+          sig: spkRow.spk_sig
+        },
+        opk: {
+          id: opkRow.opk_id,
+          pub: opkRow.opk_pub
+        }
+      });
+    }
+
+    // 新版 secure messages（Signal header）
     if (req.method === 'POST' && url.pathname === '/d1/messages') {
       let body;
       try {
@@ -98,108 +209,64 @@ export default {
       } catch {
         return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
       }
-
-      if (body && (body.conversation_id || body.conversationId) && (body.payload_envelope || body.payloadEnvelope || body.payload)) {
-        const conversationId = normalizeConversationId(body.conversation_id ?? body.conversationId);
-        if (!conversationId) {
-          return json({ error: 'BadRequest', message: 'invalid conversation_id' }, { status: 400 });
-        }
-
-        const envelope = normalizeSecureEnvelope(body.payload_envelope ?? body.payloadEnvelope ?? body.payload);
-        if (!envelope) {
-          return json({ error: 'BadRequest', message: 'invalid payload_envelope' }, { status: 400 });
-        }
-
-        const messageId = typeof body.id === 'string' && body.id.trim().length
-          ? body.id.trim()
-          : crypto.randomUUID();
-        const createdAt = Number(body.created_at || body.ts || 0);
-        const ts = Number.isFinite(createdAt) && createdAt > 0
-          ? createdAt
-          : Math.floor(Date.now() / 1000);
-
+      const conversationId = normalizeConversationId(body?.conversation_id || body?.conversationId);
+      const senderAccountDigest = normalizeAccountDigest(body?.sender_account_digest || body?.senderAccountDigest);
+      const senderDeviceId = normalizeDeviceId(body?.sender_device_id || body?.senderDeviceId);
+      const receiverAccountDigest = normalizeAccountDigest(body?.receiver_account_digest || body?.receiverAccountDigest);
+      const receiverDeviceId = normalizeDeviceId(body?.receiver_device_id || body?.receiverDeviceId);
+      const headerJson = typeof body?.header_json === 'string' ? body.header_json : (body?.header ? JSON.stringify(body.header) : null);
+      const ciphertextB64 = typeof body?.ciphertext_b64 === 'string' ? body.ciphertext_b64 : null;
+      const counter = Number(body?.counter);
+      if (!conversationId || !senderAccountDigest || !senderDeviceId || !receiverAccountDigest || !headerJson || !ciphertextB64 || !Number.isFinite(counter)) {
+        return json({ error: 'BadRequest', message: 'conversationId, sender/receiver digest+device, header_json, ciphertext_b64, counter required' }, { status: 400 });
+      }
+      await ensureDataTables(env);
+      await env.DB.prepare(`
+        INSERT INTO conversations (id)
+        VALUES (?1)
+        ON CONFLICT(id) DO NOTHING
+      `).bind(conversationId).run();
+      // ACL upsert (device_id 可為 NULL，這裡記錄實際 sender/receiver device)
+      await env.DB.prepare(`
+        INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
+        VALUES (?1, ?2, ?3, 'member')
+        ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
+      `).bind(conversationId, senderAccountDigest, senderDeviceId).run();
+      await env.DB.prepare(`
+        INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
+        VALUES (?1, ?2, ?3, 'member')
+        ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
+      `).bind(conversationId, receiverAccountDigest, receiverDeviceId || null).run();
+      const messageId = typeof body?.id === 'string' && body.id.trim().length ? body.id.trim() : crypto.randomUUID();
+      const createdAtInput = Number(body?.created_at || body?.ts || 0);
+      const createdAt = Number.isFinite(createdAtInput) && createdAtInput > 0 ? createdAtInput : Math.floor(Date.now() / 1000);
+      try {
         await env.DB.prepare(`
-          DELETE FROM messages
-           WHERE conv_id NOT LIKE 'contacts-%'
-             AND conv_id NOT LIKE 'profile-%'
-             AND conv_id NOT LIKE 'settings-%'
-             AND conv_id NOT LIKE 'drive-%'
-        `).run();
-
-        await env.DB.prepare(`
-          INSERT INTO messages_secure (id, conversation_id, payload_json, created_at)
-          VALUES (?1, ?2, ?3, ?4)
+          INSERT INTO messages_secure (
+            id, conversation_id, sender_account_digest, sender_device_id,
+            receiver_account_digest, receiver_device_id, header_json, ciphertext_b64, counter, created_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         `).bind(
           messageId,
           conversationId,
-          JSON.stringify(envelope),
-          ts
+          senderAccountDigest,
+          senderDeviceId,
+          receiverAccountDigest,
+          receiverDeviceId || null,
+          headerJson,
+          ciphertextB64,
+          counter,
+          createdAt
         ).run();
-
-        return json({ ok: true, id: messageId, created_at: ts });
-      }
-
-      const {
-        msgId, convId, senderId, type, aead,
-        headerJson, objKey, sizeBytes, ts
-      } = body || {};
-
-      if (!msgId || !convId || !senderId || !type || !aead || !ts || !isInternalConv(convId)) {
-        return json({ error: 'BadRequest', message: 'secure payload required' }, { status: 400 });
-      }
-
-      await env.DB.prepare(
-        `INSERT OR IGNORE INTO conversations(id) VALUES (?1)`
-      ).bind(convId).run();
-
-      await env.DB.prepare(`
-        INSERT INTO messages
-          (id, conv_id, sender_id, type, aead, header_json, obj_key, size_bytes, ts)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-      `).bind(
-        msgId, convId, senderId, type, aead, headerJson ?? null,
-        objKey ?? null, sizeBytes ?? null, ts
-      ).run();
-
-      if (type === 'media') {
-        let headerObj = null;
-        try {
-          headerObj = headerJson ? JSON.parse(headerJson) : (headerJson === null ? null : {});
-        } catch {
-          headerObj = null;
+      } catch (err) {
+        const msg = String(err?.message || '').toLowerCase();
+        if (msg.includes('unique') || msg.includes('primary')) {
+          return json({ ok: true, id: messageId, created_at: createdAt });
         }
-        const headerObjKey = headerObj && typeof headerObj === 'object' ? headerObj.obj : null;
-        const headerSize = headerObj && typeof headerObj === 'object' ? headerObj.size : null;
-        const recordedKey = typeof headerObjKey === 'string' && headerObjKey.trim().length ? headerObjKey.trim() : (typeof objKey === 'string' ? objKey : null);
-        const recordedSize = (() => {
-          const fromHeader = Number(headerSize);
-          if (Number.isFinite(fromHeader) && fromHeader >= 0) return fromHeader;
-          const fromBody = Number(sizeBytes);
-          if (Number.isFinite(fromBody) && fromBody >= 0) return fromBody;
-          return null;
-        })();
-        if (recordedKey) {
-          try {
-            await env.DB.prepare(`
-              INSERT INTO media_objects (obj_key, conv_id, size_bytes, created_at)
-              VALUES (?1, ?2, ?3, ?4)
-              ON CONFLICT(obj_key) DO UPDATE SET
-                conv_id=excluded.conv_id,
-                size_bytes=excluded.size_bytes,
-                created_at=excluded.created_at
-            `).bind(
-              recordedKey,
-              convId,
-              Number.isFinite(recordedSize) ? recordedSize : null,
-              ts
-            ).run();
-          } catch (err) {
-            console.warn('media_objects upsert failed', err?.message || err);
-          }
-        }
+        console.warn('messages_secure insert failed', err);
+        return json({ error: 'InsertFailed', message: err?.message || 'insert failed' }, { status: 500 });
       }
-
-      return json({ ok: true, msgId });
+      return json({ ok: true, id: messageId, created_at: createdAt });
     }
 
     // Contact Secrets backup (encrypted payload only)
@@ -361,7 +428,7 @@ export default {
         inviterAccountDigest: creatorAccountDigest,
         joinedAt: now
       });
-      await grantConversationAccess(env, { conversationId, accountDigest: creatorAccountDigest, fingerprint: body?.creatorFingerprint });
+      await grantConversationAccess(env, { conversationId, accountDigest: creatorAccountDigest });
 
       const seenDigests = new Set([creatorAccountDigest]);
       for (const entry of membersInput) {
@@ -483,71 +550,57 @@ export default {
       return json({ ok: true, ...detail });
     }
 
-    // 查詢訊息（游標=ts）
+    // 查詢新版 secure messages（游標=ts/id）
     if (req.method === 'GET' && url.pathname === '/d1/messages') {
-      const secureConversation = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+      const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
       const cursorTs = Number(url.searchParams.get('cursorTs') || url.searchParams.get('cursor_ts') || 0);
-      const limit = Math.min(Number(url.searchParams.get('limit') || 50), 200);
-
-      if (secureConversation) {
-        const conversationId = normalizeConversationId(secureConversation);
-        if (!conversationId) {
-          return json({ error: 'BadRequest', message: 'invalid conversation_id' }, { status: 400 });
-        }
-        let stmt;
-        if (cursorTs) {
-          stmt = env.DB.prepare(`
-            SELECT id, conversation_id, payload_json, created_at
-              FROM messages_secure
-             WHERE conversation_id=?1 AND created_at < ?2
-             ORDER BY created_at DESC
-             LIMIT ?3
-          `).bind(conversationId, cursorTs, limit);
-        } else {
-          stmt = env.DB.prepare(`
-            SELECT id, conversation_id, payload_json, created_at
-              FROM messages_secure
-             WHERE conversation_id=?1
-             ORDER BY created_at DESC
-             LIMIT ?2
-          `).bind(conversationId, limit);
-        }
-        const { results } = await stmt.all();
-        const items = results.map((row) => ({
-          id: row.id,
-          conversation_id: row.conversation_id,
-          payload_envelope: safeJSON(row.payload_json),
-          created_at: row.created_at
-        }));
-        return json({
-          items,
-          nextCursorTs: results.at(-1)?.created_at ?? null
-        });
+      const cursorId = url.searchParams.get('cursorId') || url.searchParams.get('cursor_id') || '';
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 50), 1), 200);
+      const conversationId = normalizeConversationId(conversationIdRaw);
+      if (!conversationId) {
+        return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
       }
-
-      const convId = url.searchParams.get('convId');
-      if (convId && isInternalConv(convId)) {
-        let stmt;
-        if (cursorTs) {
-          stmt = env.DB.prepare(
-            `SELECT * FROM messages
-             WHERE conv_id=?1 AND ts < ?2
-             ORDER BY ts DESC
-             LIMIT ?3`
-          ).bind(convId, cursorTs, limit);
-        } else {
-          stmt = env.DB.prepare(
-            `SELECT * FROM messages
-             WHERE conv_id=?1
-             ORDER BY ts DESC
-             LIMIT ?2`
-          ).bind(convId, limit);
-        }
-        const { results } = await stmt.all();
-        return json({ items: results, nextCursorTs: results.at(-1)?.ts ?? null });
+      await ensureDataTables(env);
+      const params = [conversationId];
+      let cursorClause = '';
+      if (cursorTs) {
+        params.push(cursorTs, cursorId);
+        cursorClause = 'AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))';
       }
-
-      return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
+      params.push(limit + 1);
+      const stmt = env.DB.prepare(`
+        SELECT id, conversation_id, sender_account_digest, sender_device_id, receiver_account_digest, receiver_device_id,
+               header_json, ciphertext_b64, counter, created_at
+          FROM messages_secure
+         WHERE conversation_id=?1
+           ${cursorClause}
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?${params.length}
+      `).bind(...params);
+      const { results } = await stmt.all();
+      const hasMore = results.length > limit;
+      const trimmed = results.slice(0, limit);
+      const items = trimmed.map((row) => ({
+        id: row.id,
+        conversation_id: row.conversation_id,
+        sender_account_digest: row.sender_account_digest,
+        sender_device_id: row.sender_device_id,
+        receiver_account_digest: row.receiver_account_digest,
+        receiver_device_id: row.receiver_device_id,
+        header_json: row.header_json,
+        ciphertext_b64: row.ciphertext_b64,
+        counter: row.counter,
+        created_at: row.created_at
+      }));
+      const last = trimmed.at(-1) || null;
+      const nextCursor = last ? { ts: last.created_at, id: last.id } : null;
+      return json({
+        ok: true,
+        items,
+        nextCursor,
+        nextCursorTs: nextCursor?.ts || null,
+        hasMoreAtCursor: hasMore
+      });
     }
 
     if (req.method === 'POST' && url.pathname === '/d1/subscription/redeem') {
@@ -610,7 +663,7 @@ export default {
         if (tokenRow && tokenRow.status === 'used') {
           return json({
             error: 'TokenUsed',
-            message: 'token already used',
+            message: '憑證已被使用',
             tokenId: tokenKey,
             used_at: tokenRow.used_at || null,
             used_by_digest: tokenRow.used_by_digest || null
@@ -648,7 +701,8 @@ export default {
         await env.DB.batch(batch);
       } catch (err) {
         console.error('subscription_redeem_failed', err?.message || err);
-        return json({ error: 'RedeemFailed', message: err?.message || 'redeem failed' }, { status: 500 });
+        const msg = err?.message || '展期失敗，請稍後再試';
+        return json({ error: 'RedeemFailed', message: msg }, { status: 500 });
       }
 
       return json({
@@ -666,29 +720,69 @@ export default {
     if (req.method === 'GET' && url.pathname === '/d1/subscription/status') {
       await ensureDataTables(env);
       const digest = normalizeAccountDigest(url.searchParams.get('digest'));
-      if (!digest) {
+      const uidDigest = normalizeAccountDigest(url.searchParams.get('uidDigest') || url.searchParams.get('uid_digest'));
+      const limitRaw = url.searchParams.get('limit');
+      const limit = Number.isFinite(Number(limitRaw)) ? Math.min(Math.max(Math.floor(Number(limitRaw)), 1), 200) : 50;
+      let targetDigest = digest || null;
+      if (!targetDigest && uidDigest) {
+        try {
+          const acct = await env.DB.prepare(
+            `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+          ).bind(uidDigest).first();
+          targetDigest = acct?.account_digest || null;
+        } catch (err) {
+          console.warn('subscription_uid_lookup_failed', err?.message || err);
+        }
+      }
+      if (!targetDigest) {
         return json({ error: 'BadRequest', message: 'digest required' }, { status: 400 });
       }
       let record = null;
+      let accountCreatedAt = null;
+      let logs = [];
       try {
         const row = await env.DB.prepare(
           `SELECT digest, expires_at, updated_at FROM subscriptions WHERE digest=?1`
-        ).bind(digest).all();
+        ).bind(targetDigest).all();
         record = row?.results?.[0] || null;
       } catch (err) {
         console.warn('subscription_status_query_failed', err?.message || err);
       }
+      try {
+        const acctRow = await env.DB.prepare(
+          `SELECT created_at FROM accounts WHERE account_digest=?1`
+        ).bind(targetDigest).all();
+        const acct = acctRow?.results?.[0] || null;
+        accountCreatedAt = acct?.created_at ? Number(acct.created_at) : null;
+      } catch (err) {
+        console.warn('subscription_account_query_failed', err?.message || err);
+      }
+      try {
+        const logRows = await env.DB.prepare(
+          `SELECT l.token_id, l.extend_days, l.expires_at_after, l.used_at, t.status, t.key_id, t.created_at
+             FROM extend_logs l
+             LEFT JOIN tokens t ON l.token_id = t.token_id
+            WHERE l.digest=?1
+            ORDER BY l.used_at DESC
+            LIMIT ?2`
+        ).bind(targetDigest, limit).all();
+        logs = Array.isArray(logRows?.results) ? logRows.results : [];
+      } catch (err) {
+        console.warn('subscription_logs_query_failed', err?.message || err);
+      }
       if (!record) {
-        return json({ ok: true, found: false, digest, now: Math.floor(Date.now() / 1000) });
+        return json({ ok: true, found: false, digest: targetDigest, now: Math.floor(Date.now() / 1000), account_created_at: accountCreatedAt, logs });
       }
       const now = Math.floor(Date.now() / 1000);
       return json({
         ok: true,
         found: true,
-        digest,
+        digest: targetDigest,
         expires_at: Number(record.expires_at || 0),
         updated_at: Number(record.updated_at || 0),
-        now
+        now,
+        account_created_at: accountCreatedAt,
+        logs
       });
     }
 
@@ -1020,15 +1114,13 @@ export default {
         if (senderDigest) {
           await grantConversationAccess(env, {
             conversationId,
-            accountDigest: senderDigest,
-            fingerprint: conversationFingerprint
+            accountDigest: senderDigest
           });
         }
         if (targetDigest) {
           await grantConversationAccess(env, {
             conversationId,
-            accountDigest: targetDigest,
-            fingerprint: null
+            accountDigest: targetDigest
           });
         }
       }
@@ -1253,6 +1345,15 @@ export default {
       const results = [];
       for (const id of ids) {
         let secureCount = 0;
+        let attachmentCount = 0;
+        try {
+          const resAttach = await env.DB.prepare(
+            `DELETE FROM attachments WHERE message_id=?1`
+          ).bind(id).run();
+          attachmentCount = resAttach?.meta?.changes || 0;
+        } catch (err) {
+          console.warn('delete attachments failed', err);
+        }
         try {
           const resSecure = await env.DB.prepare(
             `DELETE FROM messages_secure WHERE id=?1`
@@ -1261,29 +1362,7 @@ export default {
         } catch (err) {
           console.warn('delete messages_secure failed', err);
         }
-
-        let generalCount = 0;
-        let mediaCount = 0;
-        try {
-          const row = await env.DB.prepare(
-            `SELECT obj_key FROM messages WHERE id=?1`
-          ).bind(id).all();
-          const objKey = row?.results?.[0]?.obj_key || null;
-          const resGeneral = await env.DB.prepare(
-            `DELETE FROM messages WHERE id=?1`
-          ).bind(id).run();
-          generalCount = resGeneral?.meta?.changes || 0;
-          if (objKey) {
-            const resMedia = await env.DB.prepare(
-              `DELETE FROM media_objects WHERE obj_key=?1`
-            ).bind(objKey).run();
-            mediaCount = resMedia?.meta?.changes || 0;
-          }
-        } catch (err) {
-          console.warn('delete messages/media failed', err);
-        }
-
-        results.push({ id, secure: secureCount, general: generalCount, media: mediaCount });
+        results.push({ id, secure: secureCount, attachments: attachmentCount });
       }
 
       return json({ ok: true, results });
@@ -1311,9 +1390,6 @@ export default {
         prefix = convId;
       }
       const ensureSlash = prefix.endsWith('/') ? prefix : `${prefix}/`;
-      const rangeStart = ensureSlash;
-      // 將上界設為 prefix + U+FFFF，確保涵蓋所有以 prefix 開頭的 obj_key
-      const rangeEnd = `${ensureSlash}\uFFFF`;
       let totalBytes = 0;
       let objectCount = 0;
       try {
@@ -1321,11 +1397,10 @@ export default {
           SELECT
             COALESCE(SUM(COALESCE(size_bytes, 0)), 0) AS total_bytes,
             COUNT(*) AS object_count
-          FROM media_objects
-          WHERE conv_id=?1
-            AND obj_key >= ?2
-            AND obj_key < ?3
-        `).bind(convId, rangeStart, rangeEnd).all();
+          FROM attachments
+          WHERE conversation_id=?1
+            AND object_key LIKE ?2
+        `).bind(convId, `${ensureSlash}%`).all();
         const row = stmt?.results?.[0] || null;
         totalBytes = Number(row?.total_bytes ?? 0);
         objectCount = Number(row?.object_count ?? 0);
@@ -1357,28 +1432,21 @@ export default {
       if (!accountDigest) {
         return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
       }
-      const fingerprint = typeof body?.fingerprint === 'string' ? body.fingerprint.trim() : null;
+      const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id) || null;
       await ensureDataTables(env);
       let row;
       try {
         const res = await env.DB.prepare(
-          `SELECT fingerprint FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2`
-        ).bind(conversationId, accountDigest).all();
+          `SELECT 1 FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2 AND (device_id IS ?3 OR device_id IS NULL)`
+        ).bind(conversationId, accountDigest, deviceId).all();
         row = res?.results?.[0] || null;
       } catch (err) {
         console.warn('conversation_acl_query_failed', err?.message || err);
         return json({ error: 'ConversationLookupFailed', message: err?.message || 'lookup failed' }, { status: 500 });
       }
       if (!row) {
-        if (!fingerprint) {
-          return json({ error: 'Forbidden', message: 'conversation access not granted' }, { status: 403 });
-        }
-        await grantConversationAccess(env, { conversationId, accountDigest, fingerprint });
+        await grantConversationAccess(env, { conversationId, accountDigest, deviceId });
         return json({ ok: true, created: true });
-      }
-      const storedFp = typeof row.fingerprint === 'string' ? row.fingerprint.trim() : '';
-      if (fingerprint && storedFp && fingerprint !== storedFp) {
-        return json({ error: 'Forbidden', message: 'fingerprint mismatch' }, { status: 403 });
       }
       return json({ ok: true });
     }
@@ -1416,11 +1484,26 @@ export default {
     }
 
     if (req.method === 'GET' && url.pathname === '/d1/accounts/created') {
-      const accountDigest = normalizeAccountDigest(
+      let accountDigest = normalizeAccountDigest(
         url.searchParams.get('accountDigest')
         || url.searchParams.get('account_digest')
         || url.searchParams.get('digest')
       );
+      const uidDigest = normalizeAccountDigest(
+        url.searchParams.get('uidDigest')
+        || url.searchParams.get('uid_digest')
+      );
+
+      if (!accountDigest && uidDigest) {
+        try {
+          const row = await env.DB.prepare(
+            `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+          ).bind(uidDigest).first();
+          accountDigest = row?.account_digest || null;
+        } catch (err) {
+          console.warn('accounts_created_uid_lookup_failed', err?.message || err);
+        }
+      }
 
       if (!accountDigest) {
         return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
@@ -1435,6 +1518,280 @@ export default {
       return json({
         account_digest: row.account_digest,
         created_at: Number(row.created_at) || null
+      });
+    }
+
+    // 管理端：清除帳號及所有相關資料（D1 為主，R2 交由上游處理）
+    if (req.method === 'POST' && url.pathname === '/d1/accounts/purge') {
+      await ensureDataTables(env);
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      }
+      let accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+      const uidDigest = normalizeAccountDigest(body?.uidDigest || body?.uid_digest);
+      const dryRun = body?.dryRun === true;
+
+      if (!accountDigest && uidDigest) {
+        try {
+          const row = await env.DB.prepare(
+            `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+          ).bind(uidDigest).first();
+          accountDigest = normalizeAccountDigest(row?.account_digest);
+        } catch (err) {
+          console.warn('account_purge_uid_lookup_failed', err?.message || err);
+        }
+      }
+
+      if (!accountDigest) {
+        return json({ ok: true, skipped: true, reason: 'accountDigest not found' });
+      }
+
+      const convIds = new Set([
+        `contacts-${accountDigest}`,
+        `profile-${accountDigest}`,
+        `settings-${accountDigest}`,
+        `drive-${accountDigest}`,
+        `avatar-${accountDigest}`
+      ]);
+      const groupIds = new Set();
+      const prefixes = new Set();
+
+      const addConv = (id) => {
+        if (!id) return;
+        const normalized = normalizeConversationId(id);
+        if (normalized) convIds.add(normalized);
+      };
+
+      const addGroup = (id) => {
+        if (!id) return;
+        const norm = String(id || '').trim();
+        if (norm) groupIds.add(norm);
+      };
+
+      // 會話 ACL 參與的 conv
+      try {
+        const rows = await env.DB.prepare(
+          `SELECT conversation_id FROM conversation_acl WHERE account_digest=?1`
+        ).bind(accountDigest).all();
+        for (const row of rows?.results || []) addConv(row?.conversation_id);
+      } catch (err) {
+        console.warn('account_purge_conv_acl_lookup_failed', err?.message || err);
+      }
+
+      // 群組：創建者 / 成員
+      try {
+        const creatorGroups = await env.DB.prepare(
+          `SELECT group_id, conversation_id FROM groups WHERE creator_account_digest=?1`
+        ).bind(accountDigest).all();
+        for (const row of creatorGroups?.results || []) {
+          addGroup(row?.group_id);
+          addConv(row?.conversation_id);
+        }
+        const memberGroups = await env.DB.prepare(
+          `SELECT gm.group_id, g.conversation_id
+             FROM group_members gm
+             JOIN groups g ON gm.group_id = g.group_id
+            WHERE gm.account_digest=?1`
+        ).bind(accountDigest).all();
+        for (const row of memberGroups?.results || []) {
+          addGroup(row?.group_id);
+          addConv(row?.conversation_id);
+        }
+      } catch (err) {
+        console.warn('account_purge_group_lookup_failed', err?.message || err);
+      }
+
+      // 依 conv 找 media object keys
+      const mediaKeys = new Set();
+      if (convIds.size) {
+        const convList = Array.from(convIds);
+        const placeholders = convList.map((_, i) => `?${i + 1}`).join(',');
+        try {
+          const rows = await env.DB.prepare(
+            `SELECT obj_key FROM media_objects WHERE conv_id IN (${placeholders})`
+          ).bind(...convList).all();
+          for (const row of rows?.results || []) {
+            if (row?.obj_key) mediaKeys.add(row.obj_key);
+          }
+        } catch (err) {
+          console.warn('account_purge_media_lookup_failed', err?.message || err);
+        }
+      }
+
+      for (const convId of convIds) {
+        prefixes.add(`${convId}/`);
+      }
+
+      if (dryRun) {
+        return json({
+          ok: true,
+          dryRun: true,
+          accountDigest,
+          convIds: Array.from(convIds),
+          groupIds: Array.from(groupIds),
+          mediaKeys: Array.from(mediaKeys),
+          prefixes: Array.from(prefixes)
+        });
+      }
+
+      const del = async (sql, params = []) => {
+        try {
+          const res = await env.DB.prepare(sql).bind(...params).run();
+          return res?.meta?.changes || 0;
+        } catch (err) {
+          console.warn('account_purge_delete_failed', { sql: sql.slice(0, 64), error: err?.message || err });
+          return 0;
+        }
+      };
+
+      const convList = Array.from(convIds);
+      const convPlaceholders = convList.length ? convList.map((_, i) => `?${i + 1}`).join(',') : '';
+      const groupList = Array.from(groupIds);
+      const groupPlaceholders = groupList.length ? groupList.map((_, i) => `?${i + 1}`).join(',') : '';
+
+      const summary = {};
+      if (convList.length) {
+        summary.messagesSecure = await del(
+          `DELETE FROM messages_secure WHERE conversation_id IN (${convPlaceholders})`,
+          convList
+        );
+        summary.messages = await del(
+          `DELETE FROM messages WHERE conv_id IN (${convPlaceholders})`,
+          convList
+        );
+        summary.mediaObjects = await del(
+          `DELETE FROM media_objects WHERE conv_id IN (${convPlaceholders})`,
+          convList
+        );
+        summary.conversationAcl = await del(
+          `DELETE FROM conversation_acl WHERE conversation_id IN (${convPlaceholders})`,
+          convList
+        );
+        summary.conversations = await del(
+          `DELETE FROM conversations WHERE id IN (${convPlaceholders})`,
+          convList
+        );
+      }
+
+      // call sessions/events
+      let callIds = [];
+      try {
+        const rows = await env.DB.prepare(
+          `SELECT call_id FROM call_sessions WHERE caller_account_digest=?1 OR callee_account_digest=?1`
+        ).bind(accountDigest).all();
+        callIds = (rows?.results || []).map(r => r?.call_id).filter(Boolean);
+      } catch (err) {
+        console.warn('account_purge_call_lookup_failed', err?.message || err);
+      }
+      if (callIds.length) {
+        const placeholders = callIds.map((_, i) => `?${i + 1}`).join(',');
+        summary.callEvents = await del(
+          `DELETE FROM call_events WHERE call_id IN (${placeholders})`,
+          callIds
+        );
+        summary.callSessions = await del(
+          `DELETE FROM call_sessions WHERE call_id IN (${placeholders})`,
+          callIds
+        );
+      } else {
+        summary.callEvents = await del(
+          `DELETE FROM call_events WHERE from_account_digest=?1 OR to_account_digest=?1`,
+          [accountDigest]
+        );
+        summary.callSessions = await del(
+          `DELETE FROM call_sessions WHERE caller_account_digest=?1 OR callee_account_digest=?1`,
+          [accountDigest]
+        );
+      }
+
+      // friend invites
+      summary.friendInvites = await del(
+        `DELETE FROM friend_invites WHERE owner_account_digest=?1 OR guest_account_digest=?1`,
+        [accountDigest]
+      );
+
+      // contact secrets backup
+      summary.contactSecretBackups = await del(
+        `DELETE FROM contact_secret_backups WHERE account_digest=?1`,
+        [accountDigest]
+      );
+
+      // groups & members
+      if (groupList.length) {
+        summary.groupInvites = await del(
+          `DELETE FROM group_invites WHERE group_id IN (${groupPlaceholders})`,
+          groupList
+        );
+        summary.groupMembers = await del(
+          `DELETE FROM group_members WHERE group_id IN (${groupPlaceholders})`,
+          groupList
+        );
+        summary.groups = await del(
+          `DELETE FROM groups WHERE group_id IN (${groupPlaceholders})`,
+          groupList
+        );
+      } else {
+        summary.groupMembers = await del(
+          `DELETE FROM group_members WHERE account_digest=?1`,
+          [accountDigest]
+        );
+      }
+
+      // subscriptions & tokens
+      summary.extendLogs = await del(
+        `DELETE FROM extend_logs WHERE digest=?1`,
+        [accountDigest]
+      );
+      summary.tokens = await del(
+        `DELETE FROM tokens WHERE digest=?1`,
+        [accountDigest]
+      );
+      summary.subscriptions = await del(
+        `DELETE FROM subscriptions WHERE digest=?1`,
+        [accountDigest]
+      );
+
+      // device/prekey/account
+      summary.prekeyOpk = await del(
+        `DELETE FROM prekey_opk WHERE account_digest=?1`,
+        [accountDigest]
+      );
+      summary.prekeyUsers = await del(
+        `DELETE FROM prekey_users WHERE account_digest=?1`,
+        [accountDigest]
+      );
+      summary.deviceBackup = await del(
+        `DELETE FROM device_backup WHERE account_digest=?1`,
+        [accountDigest]
+      );
+      summary.opaqueRecords = await del(
+        `DELETE FROM opaque_records WHERE account_digest=?1`,
+        [accountDigest]
+      );
+      summary.accounts = await del(
+        `DELETE FROM accounts WHERE account_digest=?1`,
+        [accountDigest]
+      );
+
+      // conversation ACL 殘留（其他帳號）
+      if (convList.length) {
+        summary.conversationAclCleanup = await del(
+          `DELETE FROM conversation_acl WHERE conversation_id IN (${convPlaceholders})`,
+          convList
+        );
+      }
+
+      return json({
+        ok: true,
+        accountDigest,
+        convIds: Array.from(convIds),
+        groupIds: Array.from(groupIds),
+        mediaKeys: Array.from(mediaKeys),
+        prefixes: Array.from(prefixes),
+        summary
       });
     }
 
@@ -1861,6 +2218,30 @@ function normalizeConversationId(value) {
   return token;
 }
 
+function normalizeDeviceId(value) {
+  if (!value || typeof value !== 'string') return null;
+  const token = value.trim();
+  if (!token) return null;
+  return token.slice(0, 120);
+}
+
+function normalizeSignedPrekey(spk) {
+  if (!spk || typeof spk !== 'object') return null;
+  const id = Number(spk.id ?? spk.spk_id);
+  const pub = typeof spk.pub === 'string' ? spk.pub.trim() : (typeof spk.spk_pub === 'string' ? spk.spk_pub.trim() : null);
+  const sig = typeof spk.sig === 'string' ? spk.sig.trim() : (typeof spk.spk_sig === 'string' ? spk.spk_sig.trim() : null);
+  if (!Number.isFinite(id) || !pub || !sig) return null;
+  return { id, pub: pub.slice(0, 4096), sig: sig.slice(0, 4096) };
+}
+
+function normalizeOpk(opk) {
+  if (!opk || typeof opk !== 'object') return null;
+  const id = Number(opk.id ?? opk.opk_id);
+  const pub = typeof opk.pub === 'string' ? opk.pub.trim() : (typeof opk.opk_pub === 'string' ? opk.opk_pub.trim() : null);
+  if (!Number.isFinite(id) || !pub) return null;
+  return { id, pub: pub.slice(0, 4096) };
+}
+
 function normalizeAccountDigest(value) {
   const cleaned = String(value || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   if (cleaned.length !== 64) return null;
@@ -1999,21 +2380,17 @@ async function insertContactMessage(env, { convAccountDigest, peerAccountDigest,
   }
 }
 
-async function grantConversationAccess(env, { conversationId, accountDigest, fingerprint }) {
+async function grantConversationAccess(env, { conversationId, accountDigest, deviceId = null, role = 'member' }) {
   if (!conversationId || !accountDigest) return;
   await ensureDataTables(env);
-  const fp = fingerprint && String(fingerprint).trim() ? String(fingerprint).trim() : null;
   try {
     await env.DB.prepare(`
-      INSERT INTO conversation_acl (conversation_id, account_digest, fingerprint)
-      VALUES (?1, ?2, ?3)
-      ON CONFLICT(conversation_id, account_digest) DO UPDATE SET
-        fingerprint = CASE
-          WHEN excluded.fingerprint IS NOT NULL AND excluded.fingerprint != '' THEN excluded.fingerprint
-          ELSE conversation_acl.fingerprint
-        END,
+      INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
+      VALUES (?1, ?2, ?3, ?4)
+      ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET
+        role = COALESCE(excluded.role, conversation_acl.role),
         updated_at = strftime('%s','now')
-    `).bind(conversationId, accountDigest, fp).run();
+    `).bind(conversationId, accountDigest, deviceId, role || null).run();
   } catch (err) {
     console.warn('conversation_acl_upsert_failed', err?.message || err);
   }
@@ -2570,55 +2947,6 @@ async function ensureDataTables(env) {
   if (dataTablesReady) return;
 
   const statements = [
-    `CREATE TABLE IF NOT EXISTS conversations (
-        id TEXT PRIMARY KEY,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    `CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        conv_id TEXT NOT NULL,
-        sender_id TEXT NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('text','media')),
-        aead TEXT NOT NULL,
-        header_json TEXT,
-        obj_key TEXT,
-        size_bytes INTEGER,
-        ts INTEGER NOT NULL,
-        FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_messages_conv_ts ON messages (conv_id, ts)`,
-    `CREATE TABLE IF NOT EXISTS media_objects (
-        obj_key TEXT PRIMARY KEY,
-        conv_id TEXT NOT NULL,
-        size_bytes INTEGER,
-        created_at INTEGER NOT NULL
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_media_conv ON media_objects (conv_id)`,
-    `CREATE TABLE IF NOT EXISTS conversation_acl (
-        conversation_id TEXT NOT NULL,
-        account_digest TEXT NOT NULL,
-        fingerprint TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        PRIMARY KEY (conversation_id, account_digest),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_conversation_acl_account ON conversation_acl (account_digest)`,
-    `CREATE TABLE IF NOT EXISTS messages_secure (
-        id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_messages_secure_conv_created ON messages_secure (conversation_id, created_at DESC)`,
-    `CREATE TABLE IF NOT EXISTS opaque_records (
-        account_digest TEXT PRIMARY KEY,
-        record_b64     TEXT NOT NULL,
-        client_identity TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
     `CREATE TABLE IF NOT EXISTS accounts (
         account_digest TEXT PRIMARY KEY,
         account_token TEXT NOT NULL,
@@ -2628,6 +2956,38 @@ async function ensureDataTables(env) {
         created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
       )`,
+    `CREATE TABLE IF NOT EXISTS devices (
+        account_digest TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        label TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        PRIMARY KEY (account_digest, device_id),
+        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
+      )`,
+    `CREATE TABLE IF NOT EXISTS device_signed_prekeys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_digest TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        spk_id INTEGER NOT NULL,
+        spk_pub TEXT NOT NULL,
+        spk_sig TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        UNIQUE (account_digest, device_id, spk_id),
+        FOREIGN KEY (account_digest, device_id) REFERENCES devices(account_digest, device_id) ON DELETE CASCADE
+      )`,
+    `CREATE TABLE IF NOT EXISTS device_opks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_digest TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        opk_id INTEGER NOT NULL,
+        opk_pub TEXT NOT NULL,
+        issued_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        consumed_at INTEGER,
+        UNIQUE (account_digest, device_id, opk_id),
+        FOREIGN KEY (account_digest, device_id) REFERENCES devices(account_digest, device_id) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_device_opks_fetch ON device_opks (account_digest, device_id, consumed_at, opk_id)`,
     `CREATE TABLE IF NOT EXISTS prekey_users (
         account_digest TEXT PRIMARY KEY,
         ik_pub      TEXT NOT NULL,
@@ -2648,6 +3008,77 @@ async function ensureDataTables(env) {
         FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
       )`,
     `CREATE INDEX IF NOT EXISTS idx_prekey_opk_unused ON prekey_opk (account_digest, used, opk_id)`,
+    `CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        token_b64 TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+      )`,
+    `CREATE TABLE IF NOT EXISTS conversation_acl (
+        conversation_id TEXT NOT NULL,
+        account_digest TEXT NOT NULL,
+        device_id TEXT,
+        role TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        PRIMARY KEY (conversation_id, account_digest, device_id),
+        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_conversation_acl_account_device ON conversation_acl (account_digest, device_id)`,
+    `CREATE TABLE IF NOT EXISTS messages_secure (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        sender_account_digest TEXT NOT NULL,
+        sender_device_id TEXT NOT NULL,
+        receiver_account_digest TEXT NOT NULL,
+        receiver_device_id TEXT,
+        header_json TEXT NOT NULL,
+        ciphertext_b64 TEXT NOT NULL,
+        counter INTEGER NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_secure_conv_created ON messages_secure (conversation_id, created_at DESC, id DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_secure_sender_counter ON messages_secure (sender_account_digest, sender_device_id, counter)`,
+    `CREATE TABLE IF NOT EXISTS attachments (
+        object_key TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        sender_account_digest TEXT NOT NULL,
+        sender_device_id TEXT NOT NULL,
+        envelope_json TEXT,
+        size_bytes INTEGER,
+        content_type TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_attachments_conv ON attachments (conversation_id, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments (message_id)`,
+    `CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conv_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('text','media')),
+        aead TEXT NOT NULL,
+        header_json TEXT,
+        obj_key TEXT,
+        size_bytes INTEGER,
+        ts INTEGER NOT NULL,
+        FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_conv_ts ON messages (conv_id, ts)`,
+    `CREATE TABLE IF NOT EXISTS media_objects (
+        obj_key TEXT PRIMARY KEY,
+        conv_id TEXT NOT NULL,
+        size_bytes INTEGER,
+        created_at INTEGER NOT NULL
+      )`,
+    `CREATE INDEX IF NOT EXISTS idx_media_conv ON media_objects (conv_id)`,
+    `CREATE TABLE IF NOT EXISTS opaque_records (
+        account_digest TEXT PRIMARY KEY,
+        record_b64     TEXT NOT NULL,
+        client_identity TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
+      )`,
     `CREATE TABLE IF NOT EXISTS device_backup (
         account_digest   TEXT PRIMARY KEY,
         wrapped_dev_json TEXT NOT NULL,
@@ -2813,12 +3244,6 @@ async function ensureDataTables(env) {
 
   // Optional triggers: attempt creation but ignore "already exists" errors
   const triggers = [
-    `CREATE TRIGGER trg_prekey_users_updated
-       AFTER UPDATE ON prekey_users
-       FOR EACH ROW
-       BEGIN
-         UPDATE prekey_users SET updated_at = strftime('%s','now') WHERE account_digest = OLD.account_digest;
-       END;`,
     `CREATE TRIGGER trg_device_backup_updated
        AFTER UPDATE ON device_backup
        FOR EACH ROW
@@ -2829,7 +3254,14 @@ async function ensureDataTables(env) {
        AFTER UPDATE ON conversation_acl
        FOR EACH ROW
        BEGIN
-         UPDATE conversation_acl SET updated_at = strftime('%s','now') WHERE conversation_id = OLD.conversation_id AND account_digest = OLD.account_digest;
+         UPDATE conversation_acl
+            SET updated_at = strftime('%s','now')
+          WHERE conversation_id = OLD.conversation_id
+            AND account_digest = OLD.account_digest
+            AND (
+              (device_id IS NULL AND OLD.device_id IS NULL) OR
+              device_id = OLD.device_id
+            );
        END;`,
     `CREATE TRIGGER trg_groups_updated
        AFTER UPDATE ON groups
@@ -2908,16 +3340,26 @@ async function verifyHMAC(req, env) {
   const sig = req.headers.get('x-auth') || '';
   const url = new URL(req.url);
   const body = req.method === 'GET' ? '' : await req.clone().text();
-  const msg = url.pathname + url.search + '|' + body;
+  const msgPipe = url.pathname + url.search + '|' + body;
+  const msgNewline = url.pathname + url.search + '\n' + body;
 
   const key = await crypto.subtle.importKey(
     'raw', new TextEncoder().encode(env.HMAC_SECRET),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
   );
-  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
-  const b64 = btoa(String.fromCharCode(...new Uint8Array(mac)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  return timingSafeEqual(sig, b64);
+  const encode = (input) => {
+    const mac = crypto.sign?.('hmac-sha256', new TextEncoder().encode(input), key)
+      ?? crypto.subtle.sign('HMAC', key, new TextEncoder().encode(input));
+    if (mac instanceof Promise) {
+      return mac.then((buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+    }
+    const buf = mac;
+    return btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  const [sigPipe, sigNewline] = await Promise.all([encode(msgPipe), encode(msgNewline)]);
+  return timingSafeEqual(sig, sigPipe) || timingSafeEqual(sig, sigNewline);
 }
 
 function timingSafeEqual(a, b) {

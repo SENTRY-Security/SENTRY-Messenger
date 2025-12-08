@@ -32,8 +32,8 @@ function appendSecureDebug(entry) {
 }
 
 const inflightSecureRequests = new Map();
-function inflightKey({ conversationId, cursorTs, limit }) {
-  return `${conversationId || ''}::${cursorTs || 'null'}::${limit || 'null'}`;
+function inflightKey({ conversationId, cursorTs, cursorId, limit }) {
+  return `${conversationId || ''}::${cursorTs || 'null'}::${cursorId || 'null'}::${limit || 'null'}`;
 }
 function trackInflight({ key, controller }) {
   inflightSecureRequests.set(key, { startedAt: Date.now(), controller });
@@ -56,8 +56,7 @@ const DeleteMessagesSchema = z.object({
   ids: z.array(z.string().min(1)),
   conversationId: z.string().min(1),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  conversationFingerprint: z.string().min(8).optional()
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -67,8 +66,7 @@ const DeleteMessagesSchema = z.object({
 const DeleteSecureConversationSchema = z.object({
   conversationId: z.string().min(8),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  conversationFingerprint: z.string().min(8).optional()
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -102,15 +100,15 @@ function extractAccountFromRequest(req) {
     queryVal('accountDigest'),
     queryVal('account_digest')
   );
-  const conversationFingerprint = firstString(
-    header('x-conversation-fingerprint'),
-    queryVal('conversationFingerprint'),
-    queryVal('conversation_fingerprint')
+  const deviceId = firstString(
+    header('x-device-id'),
+    queryVal('deviceId'),
+    queryVal('device_id')
   );
-  return { accountToken, accountDigest, conversationFingerprint };
+  return { accountToken, accountDigest, deviceId };
 }
 
-async function authorizeAccountForConversation({ conversationId, accountToken, accountDigest, fingerprint }) {
+async function authorizeAccountForConversation({ conversationId, accountToken, accountDigest, deviceId = null }) {
   const normalizedConv = normalizeConversationId(conversationId);
   if (!normalizedConv) {
     throw new AccountAuthError('invalid conversationId', 400);
@@ -126,7 +124,7 @@ async function authorizeAccountForConversation({ conversationId, accountToken, a
       await authorizeConversationAccess({
         convId: normalizedConv,
         accountDigest: resolvedDigest,
-        fingerprint: fingerprint || null
+        deviceId: deviceId || null
       });
     } catch (err) {
       const status = err?.status || 502;
@@ -161,7 +159,6 @@ export const createMessage = async (req, res) => {
     convId: rawConvId,
     accountToken,
     accountDigest,
-    conversationFingerprint,
     ...messageInput
   } = input;
 
@@ -171,7 +168,7 @@ export const createMessage = async (req, res) => {
       conversationId: rawConvId,
       accountToken,
       accountDigest,
-      fingerprint: conversationFingerprint
+      deviceId: null
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -233,8 +230,15 @@ export const createSecureMessage = async (req, res) => {
     conversation_id: rawConversationId,
     accountToken,
     accountDigest,
-    conversationFingerprint,
-    ...messageInput
+    sender_device_id,
+    receiver_device_id,
+    receiver_account_digest,
+    header_json,
+    header,
+    ciphertext_b64,
+    counter,
+    id,
+    created_at
   } = input;
 
   let auth;
@@ -243,19 +247,32 @@ export const createSecureMessage = async (req, res) => {
       conversationId: rawConversationId,
       accountToken,
       accountDigest,
-      fingerprint: conversationFingerprint
+      deviceId: sender_device_id || null
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
   }
 
-  const messageId = messageInput.id || crypto.randomUUID();
-  const createdAt = Number.isFinite(messageInput.created_at) ? messageInput.created_at : Math.floor(Date.now() / 1000);
+  if (!receiver_account_digest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'receiver_account_digest required' });
+  }
+  const messageId = id || crypto.randomUUID();
+  const createdAt = Number.isFinite(created_at) ? created_at : Math.floor(Date.now() / 1000);
+  const headerJson = header_json || (header ? JSON.stringify(header) : null);
+  if (!headerJson) {
+    return res.status(400).json({ error: 'BadRequest', message: 'header_json required' });
+  }
 
   const payload = {
     id: messageId,
     conversation_id: auth.conversationId,
-    payload_envelope: messageInput.payload_envelope,
+    sender_account_digest: auth.accountDigest,
+    sender_device_id,
+    receiver_account_digest,
+    receiver_device_id: receiver_device_id || null,
+    header_json: headerJson,
+    ciphertext_b64,
+    counter,
     created_at: createdAt
   };
 
@@ -309,7 +326,7 @@ export const listMessages = async (req, res) => {
       conversationId: convIdRaw,
       accountToken: account.accountToken,
       accountDigest: account.accountDigest,
-      fingerprint: account.conversationFingerprint
+      deviceId: account.deviceId || null
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -363,7 +380,7 @@ export const listSecureMessages = async (req, res) => {
       conversationId: conversationIdRaw,
       accountToken: account.accountToken,
       accountDigest: account.accountDigest,
-      fingerprint: account.conversationFingerprint
+      deviceId: account.deviceId || null
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -372,6 +389,7 @@ export const listSecureMessages = async (req, res) => {
   const params = new URLSearchParams();
   params.set('conversationId', auth.conversationId);
   if (req.query.cursorTs) params.set('cursorTs', String(req.query.cursorTs));
+  if (req.query.cursorId) params.set('cursorId', String(req.query.cursorId));
   if (req.query.limit) params.set('limit', String(req.query.limit));
 
   const path = `/d1/messages?${params.toString()}`;
@@ -379,6 +397,7 @@ export const listSecureMessages = async (req, res) => {
   const inflightInfo = {
     conversationId: auth.conversationId,
     cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+    cursorId: req.query.cursorId ? String(req.query.cursorId) : null,
     limit: req.query.limit ? Number(req.query.limit) : null
   };
   const key = inflightKey(inflightInfo);
@@ -395,12 +414,14 @@ export const listSecureMessages = async (req, res) => {
       event: 'd1.listSecureMessages.request',
       conversationId: auth.conversationId,
       cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      cursorId: req.query.cursorId ? String(req.query.cursorId) : null,
       limit: req.query.limit ? Number(req.query.limit) : null
     }, 'fetching secure messages from D1');
     appendSecureDebug({
       stage: 'request',
       conversationId: auth.conversationId,
       cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      cursorId: req.query.cursorId ? String(req.query.cursorId) : null,
       limit: req.query.limit ? Number(req.query.limit) : null
     });
     const controller = new AbortController();
@@ -417,6 +438,7 @@ export const listSecureMessages = async (req, res) => {
         conversationId: auth.conversationId,
         status: r.status,
         cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+        cursorId: req.query.cursorId ? String(req.query.cursorId) : null,
         limit: req.query.limit ? Number(req.query.limit) : null,
         details: typeof data === 'string' ? data.slice(0, 200) : data
       }, 'D1 returned error for secure message list');
@@ -425,6 +447,7 @@ export const listSecureMessages = async (req, res) => {
         conversationId: auth.conversationId,
         status: r.status,
         cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+        cursorId: req.query.cursorId ? String(req.query.cursorId) : null,
         limit: req.query.limit ? Number(req.query.limit) : null,
         details: typeof data === 'string' ? data.slice(0, 200) : data
       });
@@ -435,6 +458,7 @@ export const listSecureMessages = async (req, res) => {
       conversationId: auth.conversationId,
       status: r.status,
       itemCount: Array.isArray(data?.items) ? data.items.length : null,
+      nextCursor: data?.nextCursor ?? null,
       nextCursorTs: data?.nextCursorTs ?? null
     }, 'received secure messages from D1');
     appendSecureDebug({
@@ -442,6 +466,7 @@ export const listSecureMessages = async (req, res) => {
       conversationId: auth.conversationId,
       status: r.status,
       itemCount: Array.isArray(data?.items) ? data.items.length : null,
+      nextCursor: data?.nextCursor ?? null,
       nextCursorTs: data?.nextCursorTs ?? null
     });
     return res.json(data);
@@ -450,6 +475,7 @@ export const listSecureMessages = async (req, res) => {
       event: 'd1.listSecureMessages.fetch-failed',
       conversationId: auth.conversationId,
       cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      cursorId: req.query.cursorId ? String(req.query.cursorId) : null,
       limit: req.query.limit ? Number(req.query.limit) : null,
       error: err?.message || err
     }, 'fetch to D1 failed');
@@ -457,6 +483,7 @@ export const listSecureMessages = async (req, res) => {
       stage: 'fetch-failed',
       conversationId: auth.conversationId,
       cursorTs: req.query.cursorTs ? Number(req.query.cursorTs) : null,
+      cursorId: req.query.cursorId ? String(req.query.cursorId) : null,
       limit: req.query.limit ? Number(req.query.limit) : null,
       error: err?.message || String(err)
     });
@@ -481,7 +508,7 @@ export const deleteMessages = async (req, res) => {
       conversationId: input.conversationId,
       accountToken: input.accountToken,
       accountDigest: input.accountDigest,
-      fingerprint: input.conversationFingerprint
+      deviceId: null
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -538,8 +565,7 @@ export const deleteSecureConversation = async (req, res) => {
     auth = await authorizeAccountForConversation({
       conversationId: input.conversationId,
       accountToken: input.accountToken,
-      accountDigest: input.accountDigest,
-      fingerprint: input.conversationFingerprint
+      accountDigest: input.accountDigest
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -550,7 +576,6 @@ export const deleteSecureConversation = async (req, res) => {
     accountDigest: auth.accountDigest
   };
   if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
-  if (input.conversationFingerprint) payload.conversationFingerprint = String(input.conversationFingerprint).trim();
 
   const path = '/d1/messages/secure/delete-conversation';
   const body = JSON.stringify(payload);
