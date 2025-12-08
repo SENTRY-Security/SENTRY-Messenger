@@ -351,8 +351,8 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [x] messages 解密路徑改解析 header_json/ciphertext_b64，不再 decryptConversationEnvelope 或用 conversation token/fingerprint
 - [ ] 會話/ACL 與封套：去除 conversation fingerprint 授權；conversation token 如保留僅作 envelope AES-GCM 金鑰；WS payload 改用 digest+conversation_id(+device_id)；清理前端 conversationIndex/contactSecrets 結構以支援 per-device DR 狀態。
   - [x] 設計完成（見 `docs/signal-migration-plan.md`），待實作。
-  - [ ] 前端 conversationIndex/contactSecrets 以 peerAccountDigest+peerDeviceId 為鍵；contactSecrets 需存 per-device DR state/history。
-  - [ ] WS payload/handlers 改為 digest+conversation_id(+device_id)，移除 fingerprint 依賴。
+  - [ ] 前端 conversationIndex/contactSecrets 以 peerAccountDigest+peerDeviceId 為鍵；contactSecrets 已改 per-device(v3)，conversationIndex/列表尚未帶 peerDeviceId。
+  - [ ] WS payload/handlers 改為 digest+conversation_id(+device_id)，移除 fingerprint 依賴（message-new 已帶 senderDeviceId，其餘待補）。
   - [x] 封套：若保留 conversation token，僅作 envelope key；其餘授權走 digest/device ACL；移除前端 fingerprint/payload_envelope 分支（文件仍待更新）。
 - [ ] 媒體路徑：統一文字/附件封包流程，附件使用 message key 或 per-message 派生鍵（meta 帶 key_type）；下載時以 header 的 message_key_b64 或共享鍵解密；R2 簽名/索引保持 digest ACL。
   - [x] 設計完成（見 `docs/signal-migration-plan.md`）
@@ -360,8 +360,8 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [ ] 下載/解密流程對應新版 header/messageKey，驗證附件收發。
 - [ ] 快照/備份策略：contactSecrets/backup 改存 per-peerDevice DR snapshot + messageKey 歷史，仍以 MK 封裝；logout 前寫回，登入後完整還原以支撐「新裝置感應登入復原全部訊息」。
   - [x] 設計完成（見 `docs/signal-migration-plan.md`），待實作。
-  - [ ] contactSecrets 序列化格式擴充 per-device 區塊，沿用 checksum/最新版本選擇規則。
-  - [ ] logout flush / login hydrate 邏輯更新為 per-device，確保 replay 可用。
+  - [x] contactSecrets 序列化格式擴充 per-device 區塊（v3 devices），沿用 checksum/最新版本選擇規則；備份文件待更新。
+  - [ ] logout flush / login hydrate 邏輯更新為 per-device，確保 replay 可用（需驗證備份/restore 行為）。
 - [ ] 測試與驗證：重建端到端腳本（互加好友→雙向文字→附件→登出→新裝置登入重播）；新增單元/集成測試覆蓋 prekey 配發、DR counter 跳號、游標分頁；撰寫手動驗證清單。
 - [ ] 部署與收尾：停機後執行 D1 wipe+遷移→部署 Worker/Node/Pages→跑新測試組→煙囪驗證（送/收/附件/重播）；更新文件與 changelog，解除凍結。
 
