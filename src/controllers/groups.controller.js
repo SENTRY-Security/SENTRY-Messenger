@@ -34,8 +34,7 @@ const CreateGroupSchema = z.object({
   avatar: z.any().optional(),
   members: z.array(GroupMemberSchema).optional(),
   accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  conversationFingerprint: z.string().min(8).optional()
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -109,8 +108,7 @@ export const createGroup = async (req, res) => {
     avatar: input.avatar ?? null,
     members: (input.members || []).map((m) => ({
       accountDigest: m.accountDigest
-    })),
-    creatorFingerprint: input.conversationFingerprint || null
+    }))
   };
 
   const path = '/d1/groups/create';

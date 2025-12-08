@@ -79,8 +79,7 @@ const ShareContactSchema = z.object({
   peerAccountDigest: z.string().regex(AccountDigestRegex),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  conversationId: z.string().min(8).optional(),
-  conversationFingerprint: z.string().min(8).optional()
+  conversationId: z.string().min(8).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -499,7 +498,6 @@ export const shareContactUpdate = async (req, res) => {
   };
   if (peerAccountDigest) payload.peerAccountDigest = peerAccountDigest;
   if (input.conversationId) payload.conversationId = String(input.conversationId);
-  if (input.conversationFingerprint) payload.conversationFingerprint = String(input.conversationFingerprint);
   const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 

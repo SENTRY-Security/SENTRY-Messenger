@@ -30,7 +30,6 @@ const SignPutSchema = z.object({
   convId: z.string().min(1),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  conversationFingerprint: z.string().min(16).optional(),
   ext: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i).optional(),
   contentType: z.string().min(1).optional(),
   dir: z.string().max(200).optional(), // optional subdirectory inside convId (already hashed client-side)
@@ -46,7 +45,6 @@ const SignGetSchema = z.object({
   key: z.string().min(3),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  conversationFingerprint: z.string().min(16).optional(),
   downloadName: z.string().min(1).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
@@ -133,7 +131,7 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
       await authorizeConversationAccess({
         convId,
         accountDigest: resolvedDigest,
-        fingerprint: input.conversationFingerprint ? String(input.conversationFingerprint).trim() || null : null
+        deviceId: req.get('x-device-id') || null
       });
     } catch (err) {
       const status = err?.status || 502;
