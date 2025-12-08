@@ -505,56 +505,8 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     }
     const parsed = JSON.parse(snapshot);
     if (Array.isArray(parsed)) {
-      for (const [peerKeyRaw, value] of parsed) {
-        const { key } = resolvePeerKey(peerKeyRaw);
-        if (!key) continue;
-        const inviteId = typeof value?.inviteId === 'string' ? value.inviteId.trim() : null;
-        const secret = typeof value?.secret === 'string' ? value.secret.trim() : null;
-        if (!inviteId || !secret) continue;
-        const record = createEmptyContactSecret();
-        record.inviteId = inviteId;
-        record.secret = secret;
-        record.role = typeof value?.role === 'string' ? value.role : null;
-        record.conversationToken = typeof value?.conversationToken === 'string' ? value.conversationToken : null;
-        record.conversationId = typeof value?.conversationId === 'string' ? value.conversationId : null;
-        record.conversationDrInit = value?.conversationDrInit || null;
-        const deviceId = normalizeDeviceId(value?.deviceId || value?.device_id || getDeviceId?.()) || 'default';
-        const deviceRecord = ensureDeviceRecord(record, deviceId, { create: true });
-        const drState = normalizeDrSnapshot(value?.drState || value?.dr_state || null, { setDefaultUpdatedAt: false });
-        const drSeed = chooseString(value?.drSeed ?? value?.dr_seed, null);
-        const drHistory = normalizeDrHistory(value?.drHistory || value?.dr_history || null);
-        const drHistoryCursorTs = Number(value?.drHistoryCursorTs ?? value?.dr_history_cursor_ts ?? null);
-        const drHistoryCursorId = chooseString(value?.drHistoryCursorId ?? value?.dr_history_cursor_id, null);
-        const sessionBootstrapTs = Number(value?.sessionBootstrapTs ?? value?.session_bootstrap_ts ?? null);
-        totalEntries += 1;
-        if (drState) {
-          withDrState += 1;
-          deviceRecord.drState = drState;
-        }
-        if (drHistory.length) {
-          withHistory += 1;
-          deviceRecord.drHistory = drHistory;
-        }
-        if (drSeed) {
-          withSeed += 1;
-          deviceRecord.drSeed = drSeed;
-        }
-        deviceRecord.drHistoryCursorTs = Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null;
-        deviceRecord.drHistoryCursorId = drHistoryCursorId || null;
-        deviceRecord.sessionBootstrapTs = Number.isFinite(sessionBootstrapTs) ? sessionBootstrapTs : null;
-        deviceRecord.updatedAt = Number(value?.updatedAt || 0) || null;
-        record.updatedAt = Number(value?.updatedAt || 0) || null;
-        map.set(key, record);
-        debugLog('restore-entry', {
-          peerAccountDigest: key,
-          hasDrState: !!deviceRecord.drState,
-          historyLen: Array.isArray(deviceRecord.drHistory) ? deviceRecord.drHistory.length : 0,
-          cursorTs: Number.isFinite(drHistoryCursorTs) ? drHistoryCursorTs : null,
-          cursorId: drHistoryCursorId || null,
-          deviceId,
-          source: reason
-        });
-      }
+      debugLog('restore-skip', { reason: 'legacy-array-format', source: reason });
+      return null;
     } else {
       const structured = parseStructuredSnapshot(parsed);
       if (!structured) {
@@ -764,21 +716,14 @@ function ensureDeviceRecord(record, deviceId, { create = false } = {}) {
   if (!record || !deviceId) return null;
   if (!record.devices || typeof record.devices !== 'object') record.devices = {};
   if (!record.devices[deviceId] && create) {
-    const legacyDrState = record.drState || record.dr_state || null;
-    const legacyDrSeed = record.drSeed || record.dr_seed || null;
-    const legacyDrHistory = record.drHistory || record.dr_history || [];
-    const legacyCursorTs = record.drHistoryCursorTs ?? record.dr_history_cursor_ts ?? null;
-    const legacyCursorId = record.drHistoryCursorId ?? record.dr_history_cursor_id ?? null;
-    const legacyBootstrap = record.sessionBootstrapTs ?? record.session_bootstrap_ts ?? null;
-    const legacyUpdated = record.updatedAt ?? null;
     record.devices[deviceId] = {
-      drState: legacyDrState || null,
-      drSeed: legacyDrSeed || null,
-      drHistory: Array.isArray(legacyDrHistory) ? legacyDrHistory.slice() : [],
-      drHistoryCursorTs: Number.isFinite(legacyCursorTs) ? legacyCursorTs : null,
-      drHistoryCursorId: legacyCursorId || null,
-      sessionBootstrapTs: Number.isFinite(legacyBootstrap) ? legacyBootstrap : null,
-      updatedAt: Number.isFinite(legacyUpdated) ? legacyUpdated : null
+      drState: null,
+      drSeed: null,
+      drHistory: [],
+      drHistoryCursorTs: null,
+      drHistoryCursorId: null,
+      sessionBootstrapTs: null,
+      updatedAt: null
     };
   }
   return record.devices[deviceId] || null;
@@ -930,66 +875,37 @@ function normalizeStructuredEntry(entry) {
   }
 
   const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : null;
-  if (devices) {
-    for (const [devIdRaw, devVal] of Object.entries(devices)) {
-      const devId = normalizeDeviceId(devIdRaw);
-      if (!devId) continue;
-      const slot = ensureDeviceRecord(record, devId, { create: true });
-      if (Object.prototype.hasOwnProperty.call(devVal, 'drState')) {
-        const normalizedState = devVal.drState ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false }) : null;
-        if (normalizedState) slot.drState = normalizedState;
-      }
-      if (Object.prototype.hasOwnProperty.call(devVal, 'drSeed')) {
-        slot.drSeed = normalizeOptionalString(devVal.drSeed) || null;
-      }
-      if (Object.prototype.hasOwnProperty.call(devVal, 'drHistory')) {
-        slot.drHistory = normalizeDrHistory(devVal.drHistory);
-      }
-      const cursorTsRaw = devVal.drHistoryCursorTs ?? devVal.cursorTs ?? devVal?.dr?.cursor?.ts;
-      const cursorIdRaw = devVal.drHistoryCursorId ?? devVal.cursorId ?? devVal?.dr?.cursor?.id;
-      if (cursorTsRaw !== undefined) {
-        const cursorTs = Number(cursorTsRaw);
-        slot.drHistoryCursorTs = Number.isFinite(cursorTs) ? cursorTs : null;
-      }
-      if (cursorIdRaw !== undefined) {
-        slot.drHistoryCursorId = normalizeOptionalString(cursorIdRaw) || null;
-      }
-      if (Object.prototype.hasOwnProperty.call(devVal, 'sessionBootstrapTs')) {
-        const bootstrapTs = Number(devVal.sessionBootstrapTs);
-        slot.sessionBootstrapTs = Number.isFinite(bootstrapTs) ? bootstrapTs : null;
-      }
-      if (Object.prototype.hasOwnProperty.call(devVal, 'updatedAt')) {
-        const updated = Number(devVal.updatedAt);
-        slot.updatedAt = Number.isFinite(updated) ? updated : null;
-      }
-    }
-  } else {
-    // Legacy: single-device fields
-    const dr = entry.dr || {};
-    const defaultDeviceId = normalizeDeviceId(entry.deviceId || entry.device_id || getDeviceId?.()) || 'default';
-    const slot = ensureDeviceRecord(record, defaultDeviceId, { create: true });
-    if (Object.prototype.hasOwnProperty.call(dr, 'state')) {
-      const normalizedState = dr.state ? normalizeDrSnapshot(dr.state, { setDefaultUpdatedAt: false }) : null;
+  if (!devices || !Object.keys(devices).length) return null;
+  for (const [devIdRaw, devVal] of Object.entries(devices)) {
+    const devId = normalizeDeviceId(devIdRaw);
+    if (!devId) continue;
+    const slot = ensureDeviceRecord(record, devId, { create: true });
+    if (Object.prototype.hasOwnProperty.call(devVal, 'drState')) {
+      const normalizedState = devVal.drState ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false }) : null;
       if (normalizedState) slot.drState = normalizedState;
     }
-    if (Object.prototype.hasOwnProperty.call(dr, 'seed')) {
-      slot.drSeed = normalizeOptionalString(dr.seed) || null;
+    if (Object.prototype.hasOwnProperty.call(devVal, 'drSeed')) {
+      slot.drSeed = normalizeOptionalString(devVal.drSeed) || null;
     }
-    if (Object.prototype.hasOwnProperty.call(dr, 'history')) {
-      slot.drHistory = normalizeDrHistory(dr.history);
+    if (Object.prototype.hasOwnProperty.call(devVal, 'drHistory')) {
+      slot.drHistory = normalizeDrHistory(devVal.drHistory);
     }
-    const cursor = dr.cursor || {};
-    if (Object.prototype.hasOwnProperty.call(cursor, 'ts')) {
-      const cursorTs = Number(cursor.ts);
+    const cursorTsRaw = devVal.drHistoryCursorTs ?? devVal.cursorTs ?? devVal?.dr?.cursor?.ts;
+    const cursorIdRaw = devVal.drHistoryCursorId ?? devVal.cursorId ?? devVal?.dr?.cursor?.id;
+    if (cursorTsRaw !== undefined) {
+      const cursorTs = Number(cursorTsRaw);
       slot.drHistoryCursorTs = Number.isFinite(cursorTs) ? cursorTs : null;
     }
-    if (Object.prototype.hasOwnProperty.call(cursor, 'id')) {
-      slot.drHistoryCursorId = normalizeOptionalString(cursor.id) || null;
+    if (cursorIdRaw !== undefined) {
+      slot.drHistoryCursorId = normalizeOptionalString(cursorIdRaw) || null;
     }
-    const session = entry.session || {};
-    if (Object.prototype.hasOwnProperty.call(session, 'bootstrapTs')) {
-      const bootstrapTs = Number(session.bootstrapTs);
+    if (Object.prototype.hasOwnProperty.call(devVal, 'sessionBootstrapTs')) {
+      const bootstrapTs = Number(devVal.sessionBootstrapTs);
       slot.sessionBootstrapTs = Number.isFinite(bootstrapTs) ? bootstrapTs : null;
+    }
+    if (Object.prototype.hasOwnProperty.call(devVal, 'updatedAt')) {
+      const updated = Number(devVal.updatedAt);
+      slot.updatedAt = Number.isFinite(updated) ? updated : null;
     }
   }
 
@@ -1343,25 +1259,7 @@ export function summarizeContactSecretsPayload(payload) {
   }
   try {
     const parsed = JSON.parse(payload);
-    if (Array.isArray(parsed)) {
-      for (const entry of parsed) {
-        if (!Array.isArray(entry) || entry.length < 2) continue;
-        const value = entry[1] || {};
-        summary.entries += 1;
-        if (value?.drState && typeof value.drState === 'object') {
-          const rk = value.drState.rk_b64 || value.drState.rk;
-          if (typeof rk === 'string' && rk.length) summary.withDrState += 1;
-        }
-        const historyLen = Array.isArray(value?.drHistory) ? value.drHistory.length : 0;
-        if (historyLen > 0) {
-          summary.withHistory += 1;
-          if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
-        }
-        if (typeof value?.drSeed === 'string' && value.drSeed.length) {
-          summary.withSeed += 1;
-        }
-      }
-    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
       summary.version = Number.isFinite(Number(parsed.v ?? parsed.version)) ? Number(parsed.v ?? parsed.version) : CONTACT_SECRETS_VERSION;
       for (const entry of parsed.entries) {
         if (!entry || typeof entry !== 'object') continue;
