@@ -829,6 +829,7 @@ export function setupShareController(options) {
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
         peerAccountDigest: ownerKey,
+        peerDeviceId: null,
         secretRole: 'guest'
       });
 
@@ -849,6 +850,7 @@ export function setupShareController(options) {
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
         peerAccountDigest: ownerKey,
+        peerDeviceId: null,
         dr_init: drInitPayload,
         secretRole: 'guest'
       });
@@ -1010,6 +1012,7 @@ export function setupShareController(options) {
         sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
           token_b64: conversation.token_b64,
           peerAccountDigest: peerKey,
+          peerDeviceId: null,
           dr_init: conversation.dr_init || null,
           secretRole: record?.role || stored?.role || null
         });

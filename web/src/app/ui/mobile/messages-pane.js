@@ -2822,6 +2822,7 @@ export function initMessagesPane({
   function handleIncomingSecureMessage(event) {
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
     if (!convId) return;
+    const senderDeviceId = typeof event?.senderDeviceId === 'string' && event.senderDeviceId.trim().length ? event.senderDeviceId.trim() : null;
 
     let tsRaw = Number(event?.ts ?? event?.timestamp);
     if (!Number.isFinite(tsRaw) || tsRaw <= 0) tsRaw = Math.floor(Date.now() / 1000);
@@ -2866,10 +2867,13 @@ export function initMessagesPane({
     const peerFromEvent = peerFromEventIdentity.key;
 
     if (!convEntry) {
-      convEntry = { token_b64: null, peerAccountDigest: peerFromEvent || null };
+      convEntry = { token_b64: null, peerAccountDigest: peerFromEvent || null, peerDeviceId: senderDeviceId || null };
       convIndex.set(convId, convEntry);
     } else if (peerFromEvent && convEntry.peerAccountDigest !== peerFromEvent) {
       convEntry.peerAccountDigest = peerFromEvent;
+      if (senderDeviceId) convEntry.peerDeviceId = senderDeviceId;
+    } else if (senderDeviceId && !convEntry.peerDeviceId) {
+      convEntry.peerDeviceId = senderDeviceId;
     }
 
     const tokenFromEvent = event?.tokenB64 || event?.token_b64 || null;

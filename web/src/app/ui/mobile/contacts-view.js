@@ -396,6 +396,7 @@ export function initContactsView(options) {
         conversationIndex.set(conv.conversation_id, {
           token_b64: conv.token_b64,
           peerAccountDigest: key,
+          peerDeviceId: null,
           dr_init: conv.dr_init || null,
           secretRole: entry?.secretRole || entry?.secret_role || null
         });
