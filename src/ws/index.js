@@ -443,6 +443,8 @@ function handleClientMessage(ws, data) {
     const ts = Number(msg.ts) || Date.now();
     const count = Number.isFinite(Number(msg.count)) ? Number(msg.count) : 1;
     const senderAcct = ws.__accountDigest || null;
+    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
+    const targetDeviceId = typeof msg.targetDeviceId === 'string' && msg.targetDeviceId.trim().length ? msg.targetDeviceId.trim() : null;
     broadcastByDigest(targetDigest, {
       type: 'secure-message',
       conversationId,
@@ -450,6 +452,8 @@ function handleClientMessage(ws, data) {
       ts,
       count,
       senderAccountDigest: senderAcct,
+      senderDeviceId,
+      targetDeviceId,
       peerAccountDigest: senderAcct,
       targetAccountDigest: targetDigest
     });
@@ -461,11 +465,13 @@ function handleClientMessage(ws, data) {
     const conversationId = String(msg.conversationId || msg.conversation_id || '').trim();
     if (!targetDigest || !conversationId) return;
     const senderAcct = ws.__accountDigest || null;
+    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
     broadcastByDigest(targetDigest, {
       type: 'conversation-deleted',
       conversationId,
       senderAccountDigest: senderAcct,
       peerAccountDigest: senderAcct,
+      senderDeviceId,
       ts: Date.now()
     });
     return;

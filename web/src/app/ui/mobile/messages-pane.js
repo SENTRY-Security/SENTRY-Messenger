@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getAccountToken, getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
+import { getAccountToken, getAccountDigest, normalizePeerIdentity, getDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
@@ -2613,7 +2613,8 @@ export function initMessagesPane({
               targetAccountDigest: state.activePeerDigest,
               conversationId: state.conversationId,
               preview: msg?.text || previewText,
-              ts: msg?.ts || Math.floor(Date.now() / 1000)
+              ts: msg?.ts || Math.floor(Date.now() / 1000),
+              senderDeviceId: getDeviceId() || 'default'
             });
           }
         } catch (err) {
@@ -3229,7 +3230,8 @@ export function initMessagesPane({
             targetAccountDigest: state.activePeerDigest,
             conversationId: convId,
             preview: text,
-            ts
+            ts,
+            senderDeviceId: getDeviceId() || 'default'
           });
         }
       } catch (err) {
