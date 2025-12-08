@@ -2897,8 +2897,10 @@ export function initMessagesPane({
     const avatar = contactEntry?.avatar || null;
     const tokenB64 = convEntry.token_b64 || contactEntry?.conversation?.token_b64 || null;
 
+    const peerDeviceId = convEntry.peerDeviceId || senderDeviceId || null;
     const thread = upsertConversationThread({
       peerAccountDigest: peerDigest,
+      peerDeviceId,
       conversationId: convId,
       tokenB64,
       nickname,
@@ -3226,6 +3228,8 @@ export function initMessagesPane({
         }
         const convId = res?.convId || state.conversationId;
         if (res?.convId) state.conversationId = res.convId;
+        const thread = convId ? getConversationThreads().get(convId) : null;
+        const targetDeviceId = thread?.peerDeviceId || null;
         if (elements.input) {
           elements.input.value = '';
           elements.input.focus();
@@ -3238,6 +3242,7 @@ export function initMessagesPane({
             conversationId: convId,
             preview: text,
             ts,
+            targetDeviceId,
             senderDeviceId: getDeviceId() || 'default'
           });
         }
