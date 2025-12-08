@@ -169,7 +169,8 @@ export function setupShareController(options) {
   function getSecretForPeer(peerAccountDigest) {
     const key = normalizePeerKey(peerAccountDigest);
     if (!key) return null;
-    return getContactSecret(key);
+    const deviceId = getDeviceId() || 'default';
+    return getContactSecret(key, { deviceId });
   }
 
   async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
