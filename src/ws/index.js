@@ -481,7 +481,8 @@ function handleClientMessage(ws, data) {
   if (msg.type === 'contacts-reload') {
     const targetDigest = extractPeerAccountDigest(msg);
     if (!targetDigest) return;
-    broadcastByDigest(targetDigest, { type: 'contacts-reload', ts: Date.now(), accountDigest: targetDigest });
+    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
+    broadcastByDigest(targetDigest, { type: 'contacts-reload', ts: Date.now(), accountDigest: targetDigest, senderDeviceId });
     return;
   }
 }

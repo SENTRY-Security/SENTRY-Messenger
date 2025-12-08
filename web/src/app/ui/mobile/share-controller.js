@@ -951,6 +951,7 @@ export function setupShareController(options) {
       peerAccountDigest: msg?.fromAccountDigest || msg?.from_account_digest || msg?.peerAccountDigest || msg?.peer_account_digest || null
     });
     const peerKey = identity.key;
+    const peerDeviceId = typeof msg?.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
     if (!inviteId || !peerKey) return;
     const existingContact = sessionStore.contactIndex?.get?.(peerKey) || null;
     const hadContact = !!existingContact;
@@ -1000,6 +1001,9 @@ export function setupShareController(options) {
       if (conversation && !conversation.dr_init) {
         conversation.dr_init = existingContact?.conversation?.dr_init || stored?.conversationDrInit || record?.conversationDrInit || null;
       }
+      if (peerDeviceId && !conversation?.peer_device_id) {
+        conversation = { ...(conversation || {}), peer_device_id: peerDeviceId };
+      }
       await addContactEntry({
         peerAccountDigest: peerKey,
         nickname: payload.nickname,
@@ -1013,7 +1017,7 @@ export function setupShareController(options) {
         sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
           token_b64: conversation.token_b64,
           peerAccountDigest: peerKey,
-          peerDeviceId: null,
+          peerDeviceId: peerDeviceId || null,
           dr_init: conversation.dr_init || null,
           secretRole: record?.role || stored?.role || null
         });
