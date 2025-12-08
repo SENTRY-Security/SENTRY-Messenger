@@ -353,11 +353,11 @@ bash ./scripts/deploy-prod.sh --apply-migrations
   - [x] 設計完成（見 `docs/signal-migration-plan.md`），待實作。
   - [ ] 前端 conversationIndex/contactSecrets 以 peerAccountDigest+peerDeviceId 為鍵；contactSecrets 已改 per-device(v3)，conversationIndex/列表僅部分帶 peerDeviceId（message-new/threads），尚待全面化。
     - [ ] conversationIndex: contacts-view/threads 讀寫都帶 peerDeviceId，列表渲染與狀態同步更新。
-    - [ ] WS 事件: secure-message/contacts-reload/conversation-deleted 解析/儲存 peerDeviceId，發送時帶 targetDeviceId。
+    - [ ] WS 事件: secure-message/contacts-reload/conversation-deleted/contact-share 解析/儲存 peerDeviceId，發送時帶 targetDeviceId（secure-message/message-new 已帶，contacts-reload/contact-share senderDeviceId 已加，其餘待補）。
     - [ ] UI 狀態：sessionStore.conversationThreads/列表篩選與去重時納入 peerDeviceId，避免多裝置混淆。
-  - [ ] WS payload/handlers 改為 digest+conversation_id(+device_id)，移除 fingerprint 依賴（message-new 已帶 sender/targetDeviceId，其餘事件待補）。
-    - [ ] contact-share/contact-removed/contacts-reload WS payload 增加 sender/targetDeviceId；前端處理。
-    - [ ] conversation-deleted WS payload/前端處理帶 deviceId。
+  - [ ] WS payload/handlers 改為 digest+conversation_id(+device_id)，移除 fingerprint 依賴（message-new/contacts-reload/contact-share 已帶 senderDeviceId；conversation-deleted 等待補 targetDeviceId）。
+    - [ ] contact-share/contact-removed/contacts-reload WS payload 增加 sender/targetDeviceId；前端處理（contacts-reload/contact-share 已加 senderDeviceId；targetDeviceId 及 contact-removed 待處理）。
+    - [ ] conversation-deleted WS payload/前端處理帶 deviceId（目前僅 senderDeviceId；需補 targetDeviceId/peerDeviceId）。
     - [ ] call/presence 事件確認是否需裝置維度或保留帳號維度。
   - [x] 封套：若保留 conversation token，僅作 envelope key；其餘授權走 digest/device ACL；移除前端 fingerprint/payload_envelope 分支（文件仍待更新）。
 - [ ] 媒體路徑：統一文字/附件封包流程，附件使用 message key 或 per-message 派生鍵（meta 帶 key_type）；下載時以 header 的 message_key_b64 或共享鍵解密；R2 簽名/索引保持 digest ACL。
