@@ -2,6 +2,8 @@
 
 目的：讓 iOS 專案在未讀過原始 Web/PWA 程式碼的情況下，完整實作並驗證 SENTRY Messenger（登入、好友、對話、附件、通話）。本文件以「客戶端要做什麼」為主，並列出後端 API、加解密流程與 UI 指南。
 
+> ⚠️ 正在重構：下列介面仍描述舊版 conversation fingerprint/payload_envelope 流程。新版改採 per-device Signal header (`header_json`/`ciphertext_b64`/`counter` + deviceId、digest ACL)，conversation token 若保留僅作 envelope key，文件待更新。
+
 ## 0. API Endpoint 一覽（iOS 常用）
 - **Auth / OPAQUE**
   - `POST /api/v1/auth/sdm/exchange` — body `{uid, sdmmac, sdmcounter, nonce?}` → `{session, hasMK, wrapped_mk?, accountToken, accountDigest, uidDigest, opaqueServerId}`；一次性 session 60s。

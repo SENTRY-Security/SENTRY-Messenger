@@ -9,7 +9,7 @@ import { x3dhInitiate } from '../../crypto/dr.js';
 import { b64 } from '../../crypto/nacl.js';
 import { setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity, drState } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
-import { deriveConversationContextFromSecret, computeConversationAccessFingerprint } from '../../features/conversation.js';
+import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore } from './session-store.js';
@@ -1165,17 +1165,8 @@ export function setupShareController(options) {
         payload.reason = reason || 'update';
         log({ contactBroadcastPayload: { peerAccountDigest: peerKey, hasConversation: !!payload?.conversation, drInit: payload?.conversation?.dr_init ? 'yes' : 'no' } });
         envelope = await encryptContactPayload(secret, payload);
-        let conversationFingerprint = null;
-        if (conversationToken && accountDigest) {
-          try {
-            conversationFingerprint = await computeConversationAccessFingerprint(conversationToken, accountDigest);
-          } catch (fpErr) {
-            log({ contactConversationFingerprintError: fpErr?.message || fpErr, peerAccountDigest: peerKey });
-          }
-        }
         const sharePayload = { inviteId, secret, peerAccountDigest: targetAccountDigest, envelope };
         if (conversationId) sharePayload.conversationId = conversationId;
-        if (conversationFingerprint) sharePayload.conversationFingerprint = conversationFingerprint;
         await friendsShareContactUpdate(sharePayload);
         storeContactSecretMapping({
           peerAccountDigest: peerKey,

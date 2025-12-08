@@ -9,7 +9,6 @@ import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId } from '.
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
-  computeConversationFingerprint,
   conversationIdFromToken
 } from './conversation.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
@@ -629,20 +628,19 @@ async function sendDrPlaintext(params = {}) {
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
   const accountDigest = (getAccountDigest() || '').toUpperCase();
-  const fingerprint = accountDigest
-    ? await computeConversationFingerprint(tokenB64, accountDigest)
-    : null;
+  const senderDeviceId = getDeviceId() || 'device-default';
 
   const meta = {
     ts: now,
-    sender_fingerprint: fingerprint,
+    sender_digest: accountDigest || null,
+    sender_device_id: senderDeviceId || null,
     msg_type: typeof metaOverrides?.msg_type === 'string' && metaOverrides.msg_type.length
       ? metaOverrides.msg_type
       : 'text'
   };
   if (metaOverrides && typeof metaOverrides === 'object') {
     for (const [key, value] of Object.entries(metaOverrides)) {
-      if (key === 'msg_type' || key === 'ts' || key === 'sender_fingerprint') continue;
+      if (key === 'msg_type' || key === 'ts' || key === 'sender_digest' || key === 'sender_device_id') continue;
       if (value === undefined) continue;
       meta[key] = value;
     }
@@ -658,7 +656,6 @@ async function sendDrPlaintext(params = {}) {
 
   try {
     startOutboxProcessor();
-    const senderDeviceId = getDeviceId() || 'device-default';
     const job = await enqueueOutboxJob({
       conversationId,
       messageId,
@@ -1041,13 +1038,12 @@ export async function sendDrMedia(params = {}) {
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
 
-  const fingerprint = accountDigest
-    ? await computeConversationFingerprint(tokenB64, accountDigest)
-    : null;
+  const senderDeviceId = getDeviceId() || 'device-default';
 
   const meta = {
     ts: now,
-    sender_fingerprint: fingerprint,
+    sender_digest: accountDigest || null,
+    sender_device_id: senderDeviceId || null,
     msg_type: 'media',
     media: {
       object_key: metadata.objectKey,
@@ -1070,7 +1066,6 @@ export async function sendDrMedia(params = {}) {
   const ctB64 = pkt.ciphertext_b64;
 
   startOutboxProcessor();
-  const senderDeviceId = getDeviceId() || 'device-default';
   const job = await enqueueMediaMetaJob({
     conversationId,
     messageId: crypto.randomUUID(),

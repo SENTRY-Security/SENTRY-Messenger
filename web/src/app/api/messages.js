@@ -8,15 +8,13 @@ import { fetchWithTimeout, jsonReq } from '../core/http.js';
 import { buildAccountPayload, getDeviceId } from '../core/store.js';
 export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrapper
 
-function buildAccountHeaders(opts = {}) {
-  const { conversationFingerprint } = opts;
+function buildAccountHeaders() {
   const payload = buildAccountPayload();
   const headers = {};
   if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
   if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
   const deviceId = getDeviceId ? getDeviceId() : null;
   if (deviceId) headers['X-Device-Id'] = deviceId;
-  if (conversationFingerprint) headers['X-Conversation-Fingerprint'] = conversationFingerprint;
   return headers;
 }
 
@@ -62,17 +60,17 @@ export async function createSecureMessage({
 /**
  * List messages in a conversation (newest first by server implementation).
  * GET /api/v1/conversations/:convId/messages?limit=&cursorTs=
- * @param {{ convId: string, limit?: number, cursorTs?: number|string, conversationFingerprint?: string }} p
+ * @param {{ convId: string, limit?: number, cursorTs?: number|string }} p
  * @returns {Promise<{ r: Response, data: any }>} data typically { items: [...], nextCursorTs }
  */
-export async function listMessages({ convId, limit = 20, cursorTs, conversationFingerprint } = {}) {
+export async function listMessages({ convId, limit = 20, cursorTs } = {}) {
   if (!convId) throw new Error('convId required');
   const qs = new URLSearchParams();
   if (limit) qs.set('limit', String(limit));
   if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursorTs', String(cursorTs));
   const url = `/api/v1/conversations/${encodeURIComponent(convId)}/messages?${qs.toString()}`;
 
-  const headers = buildAccountHeaders({ conversationFingerprint });
+  const headers = buildAccountHeaders();
   const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -94,10 +92,9 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
   return { r, data };
 }
 
-export async function deleteSecureConversation({ conversationId, conversationFingerprint } = {}) {
+export async function deleteSecureConversation({ conversationId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const overrides = { conversationId };
-  if (conversationFingerprint) overrides.conversationFingerprint = conversationFingerprint;
   const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout('/api/v1/messages/secure/delete-conversation', jsonReq(payload), 15000);
   const text = await r.text();

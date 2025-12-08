@@ -254,7 +254,7 @@ r.post('/media/sign-get', asyncH(async (req, res) => {
       await authorizeConversationAccess({
         convId,
         accountDigest: resolvedDigest,
-        fingerprint: input.conversationFingerprint ? String(input.conversationFingerprint).trim() || null : null
+        deviceId: req.get('x-device-id') || null
       });
     } catch (err) {
       const status = err?.status || 502;

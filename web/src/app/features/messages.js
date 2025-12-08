@@ -20,9 +20,6 @@ import {
   restoreDrStateToHistoryPoint as sessionRestoreDrStateToHistoryPoint,
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
-import {
-  computeConversationFingerprint as convComputeConversationFingerprint
-} from './conversation.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
@@ -53,7 +50,6 @@ const defaultDeps = {
   restoreDrStateFromSnapshot: sessionRestoreDrStateFromSnapshot,
   restoreDrStateToHistoryPoint: sessionRestoreDrStateToHistoryPoint,
   cloneDrStateHolder: sessionCloneDrStateHolder,
-  computeConversationFingerprint: convComputeConversationFingerprint,
   b64UrlToBytes: uiB64UrlToBytes,
   b64u8: naclB64u8,
   saveEnvelopeMeta: mediaSaveEnvelopeMeta,
@@ -394,7 +390,7 @@ function parseMediaMessage({ plaintext, meta }) {
       height: Number.isFinite(previewHeight) ? previewHeight : null
     } : null,
     dir,
-    senderFingerprint: meta?.sender_fingerprint || null
+    senderDigest: (typeof meta?.sender_digest === 'string' && meta.sender_digest.trim()) ? meta.sender_digest.trim() : null
   };
 
   if (parsed?.sha256) mediaInfo.sha256 = parsed.sha256;
@@ -455,14 +451,17 @@ function hasUsableDrState(holder, roleHint = null) {
   return hasReceive || hasSend;
 }
 
-function recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, tokenB64 = null, payloadEnvelope = null, raw = null, reason = 'decrypt-fail' } = {}) {
+function recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, tokenB64 = null, packet = null, raw = null, reason = 'decrypt-fail' } = {}) {
   const envelope =
-    payloadEnvelope ||
-    raw?.payload_envelope ||
-    raw?.payloadEnvelope ||
-    raw?.payload ||
-    null;
-  if (!envelope) return;
+    packet ||
+    (raw
+      ? {
+          header_json: raw?.header_json || raw?.headerJson || null,
+          ciphertext_b64: raw?.ciphertext_b64 || raw?.ciphertextB64 || null,
+          counter: raw?.counter ?? raw?.n ?? null
+        }
+      : null);
+  if (!envelope || (!envelope.header_json && !envelope.ciphertext_b64)) return;
   const entry = {
     ts: Date.now(),
     conversationId: conversationId || null,
@@ -506,7 +505,7 @@ async function recoverAndEnsureDrState({
   conversationId,
   peerAccountDigest,
   tokenB64 = null,
-  payloadEnvelope = null,
+  packet = null,
   raw = null,
   reason = 'dr-recover',
   recordPayloadOnFail = false
@@ -533,7 +532,7 @@ async function recoverAndEnsureDrState({
     ready = hasUsableDrState(holder);
   } catch {}
   if (!ready && recordPayloadOnFail) {
-    recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, tokenB64, payloadEnvelope, raw, reason });
+    recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, tokenB64, packet, raw, reason });
   }
   return ready;
 }
@@ -542,7 +541,7 @@ async function attemptDrRecovery({
   peerAccountDigest,
   conversationId = null,
   tokenB64 = null,
-  payloadEnvelope = null,
+  packet = null,
   raw = null,
   reason = 'decrypt-recover',
   recordPayloadOnFail = false
@@ -553,7 +552,7 @@ async function attemptDrRecovery({
       conversationId,
       peerAccountDigest,
       tokenB64,
-      payloadEnvelope,
+      packet,
       raw,
       reason,
       recordPayloadOnFail
@@ -761,20 +760,6 @@ export async function listSecureAndDecrypt(params = {}) {
     }
   }
   const selfDigest = (deps.getAccountDigest && deps.getAccountDigest()) ? String(deps.getAccountDigest()).toUpperCase() : null;
-  let fingerprintPeer = null;
-  let fingerprintSelf = null;
-  if (tokenB64) {
-    try {
-      const peerFingerprintSource = identity.accountDigest || peerKey;
-      if (peerFingerprintSource) {
-        fingerprintPeer = await deps.computeConversationFingerprint(tokenB64, peerFingerprintSource);
-      }
-    } catch {}
-    try {
-      const selfFingerprintSource = deps.getAccountDigest();
-      if (selfFingerprintSource) fingerprintSelf = await deps.computeConversationFingerprint(tokenB64, selfFingerprintSource);
-    } catch {}
-  }
 
   const sortedItems = sortMessagesByTimeline(items);
   const shouldTrackState = mutateState !== false;
@@ -794,7 +779,7 @@ export async function listSecureAndDecrypt(params = {}) {
     source = 'decrypt-precheck',
     trackState = shouldTrackState,
     stateOverride = null,
-    payloadEnvelope = null,
+    packet = null,
     raw = null,
     recordPayloadOnFail = false,
     updateSharedState = true
@@ -808,7 +793,7 @@ export async function listSecureAndDecrypt(params = {}) {
         conversationId,
         peerAccountDigest: peerKey,
         tokenB64,
-        payloadEnvelope,
+        packet,
         raw,
         reason: source,
         recordPayloadOnFail
@@ -821,7 +806,7 @@ export async function listSecureAndDecrypt(params = {}) {
           conversationId,
           peerAccountDigest: peerKey,
           tokenB64,
-          payloadEnvelope,
+          packet,
           raw,
           reason: source
         });
@@ -863,27 +848,28 @@ export async function listSecureAndDecrypt(params = {}) {
       state = opts.stateOverride;
     }
     const raw = job?.raw || {};
+    const jobPacket = job?.payloadEnvelope || null;
     let payloadMsgType = null;
       try {
         let decrypted = false;
         let lastError = null;
-        let payloadEnvelope = null;
-        const headerRaw = raw?.header_json || raw?.headerJson || raw?.header || null;
+        let packet = null;
+        const headerRaw = jobPacket?.header_json || raw?.header_json || raw?.headerJson || raw?.header || null;
         let header = null;
         if (typeof headerRaw === 'string') {
           try { header = JSON.parse(headerRaw); } catch {}
         } else if (headerRaw && typeof headerRaw === 'object') {
           header = headerRaw;
         }
-        const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
+        const ciphertextB64 = jobPacket?.ciphertext_b64 || raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
         if (!header || !ciphertextB64 || !header.iv_b64) {
           throw new Error('缺少訊息標頭或密文，無法進行 DR 解密');
         }
         if (header?.fallback) throw new Error('偵測到舊版 fallback 封包，已不再支援');
-        payloadEnvelope = {
+        packet = {
           header_json: headerRaw,
           ciphertext_b64: ciphertextB64,
-          counter: header?.n ?? null
+          counter: jobPacket?.counter ?? header?.n ?? null
         };
         const pkt = {
           aead: 'aes-256-gcm',
@@ -899,14 +885,12 @@ export async function listSecureAndDecrypt(params = {}) {
       const messageId = job?.messageId || toMessageId(raw);
       const meta = payload?.meta || null;
       payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
-      const senderFingerprint = meta?.sender_fingerprint || meta?.fingerprint || null;
       const isMediaMessage = !!(meta?.media);
-      const senderDigest = (raw?.sender_account_digest || raw?.senderAccountDigest || '').toUpperCase();
+      const senderDigestRaw = raw?.sender_account_digest || raw?.senderAccountDigest || meta?.sender_digest || meta?.senderDigest || '';
+      const senderDigest = typeof senderDigestRaw === 'string' ? senderDigestRaw.toUpperCase() : '';
       let direction = 'unknown';
       if (senderDigest && selfDigest && senderDigest === selfDigest) direction = 'outgoing';
       else if (senderDigest && peerKey && senderDigest === peerKey.toUpperCase()) direction = 'incoming';
-      else if (senderFingerprint && fingerprintSelf && senderFingerprint === fingerprintSelf) direction = 'outgoing';
-      else if (senderFingerprint && fingerprintPeer && senderFingerprint === fingerprintPeer) direction = 'incoming';
       const stateCandidate = trackState ? state : (state || deps.drState(peerKey));
       if (!hasUsableDrState(stateCandidate)) {
         const ensured = await ensureReceiverStateReady({
@@ -914,7 +898,7 @@ export async function listSecureAndDecrypt(params = {}) {
           source: 'decrypt-message',
           trackState,
           stateOverride: state,
-          payloadEnvelope,
+          packet,
           raw,
           updateSharedState: !restoreStateAfter
         });
@@ -1184,7 +1168,7 @@ export async function listSecureAndDecrypt(params = {}) {
                 source: 'decrypt-op-error',
                 trackState,
                 stateOverride: state,
-                payloadEnvelope,
+                packet,
                 raw,
                 updateSharedState: !restoreStateAfter,
                 recordPayloadOnFail: true
@@ -1214,7 +1198,7 @@ export async function listSecureAndDecrypt(params = {}) {
           conversationId,
           peerAccountDigest: peerKey,
           tokenB64,
-          payloadEnvelope,
+          packet,
           raw,
           reason: 'decrypt-fail'
         });
@@ -1223,7 +1207,7 @@ export async function listSecureAndDecrypt(params = {}) {
             peerAccountDigest: peerKey,
             conversationId,
             tokenB64,
-            payloadEnvelope,
+            packet,
             raw,
             reason: 'inbox-decrypt-fail',
             recordPayloadOnFail: true
@@ -1238,7 +1222,7 @@ export async function listSecureAndDecrypt(params = {}) {
               conversationId,
               peerAccountDigest: peerKey,
               tokenB64,
-              payloadEnvelope,
+              packet,
               raw,
               reason: 'dr-op-error-reset',
               recordPayloadOnFail: true
@@ -1285,12 +1269,13 @@ export async function listSecureAndDecrypt(params = {}) {
   };
 
   for (const raw of sortedItems) {
-    const payloadEnvelope = raw?.payload_envelope || raw?.payloadEnvelope || raw?.payload;
-    if (!payloadEnvelope) continue;
     const msgTs = toMessageTimestamp(raw);
+    const headerJson = raw?.header_json || raw?.headerJson || (raw?.header ? JSON.stringify(raw.header) : null);
+    const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
+    const packet = { header_json: headerJson, ciphertext_b64: ciphertextB64, counter: raw?.counter ?? raw?.n ?? null };
     await enqueueInboxJob({
       conversationId,
-      payloadEnvelope,
+      payloadEnvelope: packet,
       raw,
       messageId: toMessageId(raw) || crypto.randomUUID(),
       createdAt: Number.isFinite(msgTs) ? msgTs : null,
@@ -1329,12 +1314,13 @@ export async function listSecureAndDecrypt(params = {}) {
       });
       const replayState = deps.cloneDrStateHolder(deps.drState(peerKey));
       for (const raw of sortedItems) {
-        const payloadEnvelope = raw?.payload_envelope || raw?.payloadEnvelope || raw?.payload;
-        if (!payloadEnvelope) continue;
         const msgTs = toMessageTimestamp(raw);
+        const headerJson = raw?.header_json || raw?.headerJson || (raw?.header ? JSON.stringify(raw.header) : null);
+        const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
+        const packet = { header_json: headerJson, ciphertext_b64: ciphertextB64, counter: raw?.counter ?? raw?.n ?? null };
         const job = {
           conversationId,
-          payloadEnvelope,
+          payloadEnvelope: packet,
           raw,
           messageId: toMessageId(raw) || crypto.randomUUID(),
           createdAt: Number.isFinite(msgTs) ? msgTs : null,

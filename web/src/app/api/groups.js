@@ -21,7 +21,7 @@ function normalizeMembers(list = []) {
   return out;
 }
 
-export async function createGroup({ groupId, conversationId, name, avatar, members = [], conversationFingerprint } = {}) {
+export async function createGroup({ groupId, conversationId, name, avatar, members = [] } = {}) {
   if (!groupId) throw new Error('groupId required');
   if (!conversationId) throw new Error('conversationId required');
   const normalizedMembers = normalizeMembers(members);
@@ -32,7 +32,6 @@ export async function createGroup({ groupId, conversationId, name, avatar, membe
     avatar,
     members: normalizedMembers
   };
-  if (conversationFingerprint) overrides.conversationFingerprint = conversationFingerprint;
   const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout('/api/v1/groups/create', jsonReq(payload), 15000);
   const text = await r.text();

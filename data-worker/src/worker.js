@@ -1062,8 +1062,6 @@ export default {
       const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
       const peerAccountDigestBody = normalizeAccountDigest(body?.peerAccountDigest || body?.peer_account_digest);
       const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
-      const conversationFingerprintRaw = typeof body?.conversationFingerprint === 'string' ? body.conversationFingerprint.trim() : '';
-      const conversationFingerprint = conversationFingerprintRaw ? conversationFingerprintRaw : null;
       const envelope = normalizeEnvelope(body?.envelope);
       if (!inviteId || !secret || !envelope || !accountDigest) {
         return json({ error: 'BadRequest', message: 'inviteId, secret, accountDigest and envelope required' }, { status: 400 });

@@ -69,14 +69,13 @@ export async function friendsDeleteContact({ peerAccountDigest } = {}) {
   return data;
 }
 
-export async function friendsShareContactUpdate({ inviteId, secret, peerAccountDigest, envelope, conversationId, conversationFingerprint } = {}) {
+export async function friendsShareContactUpdate({ inviteId, secret, peerAccountDigest, envelope, conversationId } = {}) {
   if (!getAccountDigest()) throw new Error('Not unlocked: account missing');
   if (!inviteId || !secret || !envelope?.iv || !envelope?.ct) {
     throw new Error('invalid envelope payload');
   }
   const payload = withAccount({ inviteId, secret, envelope, peerAccountDigest });
   if (conversationId) payload.conversationId = conversationId;
-  if (conversationFingerprint) payload.conversationFingerprint = conversationFingerprint;
   try {
     // eslint-disable-next-line no-console
     console.log('[contact-share-request]', { inviteId });

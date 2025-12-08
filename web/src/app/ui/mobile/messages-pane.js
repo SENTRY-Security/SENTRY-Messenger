@@ -13,7 +13,6 @@ import {
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from '../../features/secure-conversation-signals.js';
 import {
   conversationIdFromToken,
-  computeConversationAccessFingerprint,
   deriveConversationContextFromSecret
 } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
@@ -351,16 +350,10 @@ export function initMessagesPane({
       const secretB64Url = bytesToB64Url(secret);
       const { conversationId, tokenB64 } = await deriveConversationContextFromSecret(secretB64Url);
       const groupId = `grp-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
-      let conversationFingerprint = null;
-      try {
-        const accountDigest = getAccountDigest();
-        conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
-      } catch {}
       const { r, data } = await apiCreateGroup({
         groupId,
         conversationId,
         name: nameVal || null,
-        conversationFingerprint,
         members: selected
       });
       if (!r.ok) {
@@ -2784,17 +2777,7 @@ export function initMessagesPane({
       confirmLabel: '刪除',
       onConfirm: async () => {
         try {
-          let conversationFingerprint = null;
-          const tokenB64 = contactEntry?.conversation?.token_b64 || contactEntry?.conversation?.tokenB64 || null;
-          const accountDigest = (getAccountDigest() || '').toUpperCase();
-          if (tokenB64 && accountDigest) {
-            try {
-              conversationFingerprint = await computeConversationAccessFingerprint(tokenB64, accountDigest);
-            } catch (err) {
-              console.warn('[messages-pane] compute conversation fingerprint failed', err?.message || err);
-            }
-          }
-          await deleteSecureConversation({ conversationId, conversationFingerprint });
+          await deleteSecureConversation({ conversationId });
           sessionStore.deletedConversations?.add?.(conversationId);
           getConversationThreads().delete(conversationId);
           sessionStore.conversationIndex?.delete?.(conversationId);
