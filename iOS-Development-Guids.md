@@ -2,7 +2,7 @@
 
 目的：讓 iOS 專案在未讀過原始 Web/PWA 程式碼的情況下，完整實作並驗證 SENTRY Messenger（登入、好友、對話、附件、通話）。本文件以「客戶端要做什麼」為主，並列出後端 API、加解密流程與 UI 指南。
 
-> ⚠️ 正在重構：下列介面仍描述舊版 conversation fingerprint/payload_envelope 流程。新版改採 per-device Signal header (`header_json`/`ciphertext_b64`/`counter` + deviceId、digest ACL)，conversation token 若保留僅作 envelope key，文件待更新。
+> ⚠️ 已改寫為新版 per-device Signal header（`header_json`/`ciphertext_b64`/`counter` + deviceId、digest ACL）；若有遺漏以程式碼為準，避免再使用 conversation fingerprint/payload_envelope。
 
 ## 0. API Endpoint 一覽（iOS 常用）
 - **Auth / OPAQUE**
@@ -21,20 +21,20 @@
   - `POST /api/v1/friends/invite` → `{inviteId, secret, prekey_bundle...}`。
   - `POST /api/v1/friends/invite/contact` — `{inviteId, secret, envelope}`（contact snapshot）。
   - `POST /api/v1/friends/accept` — `{inviteId, secret, contactEnvelope?, guestBundle?, ownerAccountDigest?}` → `{owner_contact, guest_bundle, guest_contact, conversation_token, dr_init?}`。
-  - `POST /api/v1/friends/contact/share` — `{inviteId, secret, envelope, peerAccountDigest?, conversationId?, conversationFingerprint?}`。
+  - `POST /api/v1/friends/contact/share` — `{inviteId, secret, envelope, peerAccountDigest?, conversationId?}`（無 fingerprint）。
   - `POST /api/v1/friends/delete` — `{peerAccountDigest, accountToken/accountDigest}`。
   - `POST /api/v1/friends/bootstrap-session` — `{peerAccountDigest, roleHint?, inviteId?, accountToken/accountDigest}` → guestBundle + 最新 contact snapshots。
   - `POST /api/v1/contact-secrets/backup` / `GET /api/v1/contact-secrets/backup?limit=&version=` — 備份 / 取回 contactSecrets snapshot。
 - **Messages / Conversations**
-  - `POST /api/v1/messages/secure` — `{conversation_id, payload_envelope, id?, created_at?, accountToken/accountDigest, conversationFingerprint?}`。
-  - `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=` — headers `X-Account-Token`/`X-Account-Digest`, `X-Conversation-Fingerprint?`。
-  - `POST /api/v1/messages` — 傳統媒體/索引（含 `ciphertext_b64`, `aead`, `header`, `convId`, `accountToken/accountDigest`, `conversationFingerprint?`）。
+  - `POST /api/v1/messages/secure` — `{conversation_id, header_json, ciphertext_b64, counter, sender_device_id, receiver_account_digest?, receiver_device_id?, id?, created_at?, accountToken/accountDigest}`。
+  - `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=&cursorId=` — headers `X-Account-Token`/`X-Account-Digest`/`X-Device-Id`。
+  - `POST /api/v1/messages` — 傳統媒體/索引（含 `ciphertext_b64`, `aead`, `header`, `convId`, `accountToken/accountDigest`；無 fingerprint）。
   - `GET /api/v1/conversations/:convId/messages` — 文字/媒體列表（舊版，需 account headers）。
   - `POST /api/v1/messages/delete` — `{conversationId, ids?, keys?, accountToken/accountDigest}`。
-  - `POST /api/v1/messages/secure/delete-conversation` — `{conversationId, accountToken/accountDigest, conversationFingerprint?}`。
+  - `POST /api/v1/messages/secure/delete-conversation` — `{conversationId, accountToken/accountDigest}`。
 - **Media / Drive**
-  - `POST /api/v1/media/sign-put` — `{convId, contentType, size?, dir?, direction?, accountToken/accountDigest, conversationFingerprint?}` → 上傳 URL + `objectPath`。
-  - `POST /api/v1/media/sign-get` — `{key, accountToken/accountDigest, conversationFingerprint?, downloadName?}` → 下載 URL。
+  - `POST /api/v1/media/sign-put` — `{convId, contentType, size?, dir?, direction?, accountToken/accountDigest}`（需 header `X-Device-Id`）→ 上傳 URL + `objectPath`。
+  - `POST /api/v1/media/sign-get` — `{key, accountToken/accountDigest, downloadName?}`（需 header `X-Device-Id`）→ 下載 URL。
 - **WebSocket**
   - `POST /api/v1/ws/token` — `{accountDigest, accountToken?}` → `{token, expiresAt}`；連線 `/ws` 後先送 `{type:'auth', accountDigest, token}`。
   - 事件：`secure-message`, `contact-share`, `contact-removed`, `contacts-reload`, `presence`（需 `presence-subscribe`），通話信令 `call-*`。
@@ -49,7 +49,7 @@
 
 ### 常見請求格式與 Header
 - 所有 REST 皆為 `application/json`，Body 為 JSON；列表查詢可帶 query string。
-- 驗證欄位：`accountDigest`（64 hex） + `accountToken`；UID 僅在 SDM 磁區交換或硬體模擬時使用。Conversation 相關需 `X-Conversation-Fingerprint` header（HMAC-SHA256(conversationToken, accountDigest)）。
+- 驗證欄位：`accountDigest`（64 hex） + `accountToken`；會話相關 API 需一併帶 `X-Device-Id`（per-device ACL）。
 - Media 上傳 `sign-put` 取得 URL 後直傳；回傳的 `upload` 欄位可能包含 `method/headers/fields`（支援直傳與表單）。
 - WebSocket 連線後第一則訊息必須 `{type:'auth', accountDigest, token}`，否則不會處理其他事件。
 
@@ -95,46 +95,44 @@ MK 明文、devicePriv 僅存 RAM；`wrapped_mk`、`wrapped_dev`、最新 `conta
 ## 4. 好友邀請與 Conversation Token
 - **建立邀請**：`POST /api/v1/friends/invite {accountToken/accountDigest, prekeyBundle?, ttlSeconds?}` → 回 `{inviteId, secret, ownerAccountDigest, prekey_bundle}`。同時將自己的 contact snapshot 以 invite secret AES-GCM 包裝後呼叫 `/api/v1/friends/invite/contact`。
 - **接受邀請**：`POST /api/v1/friends/accept {inviteId, secret, contactEnvelope?, guestBundle?, ownerAccountDigest?}` → 回 `{owner_contact, guest_bundle, guest_contact, conversation_token, dr_init?}`。成功後寫入 `contactSecrets`（role=guest / owner）。
-- **聯絡同步**：`POST /api/v1/friends/contact/share {inviteId, secret, envelope, peerAccountDigest?, conversationId?, conversationFingerprint?}` 更新最新 profile/conversation token；WS 事件 `contact-share` 會推播。
+- **聯絡同步**：`POST /api/v1/friends/contact/share {inviteId, secret, envelope, peerAccountDigest?, conversationId?}` 更新最新 profile/conversation token；WS 事件 `contact-share` 會推播。
 - **Bootstrap 缺會話**：`POST /api/v1/friends/bootstrap-session {peerAccountDigest, roleHint?, inviteId?}` → guestBundle + 最新 contact snapshots，用於 DR 缺失時重建。
 - **邀請格式**：contact envelope 為 `{iv, ct}`（AES-GCM），secret / inviteId 以 URL-safe b64。
-- **Conversation Token / Id**：由 invite secret HKDF(SHA-256, salt=32zero, info='sentry/conv-token') 得 32-byte token → SHA-256 → conversationId（前 44 chars b64url）。`conversationFingerprint` = HMAC-SHA256(token, accountDigest)。
+- **Conversation Token / Id**：由 invite secret HKDF(SHA-256, salt=32zero, info='sentry/conv-token') 得 32-byte token → SHA-256 → conversationId（前 44 chars b64url）。Token 僅作封套金鑰，不再產生/驗證 conversation fingerprint。
 
-## 5. Secure Conversation 與 DR
-- X3DH：Initiator `x3dhInitiate(devicePriv, peerBundle)`；Responder `x3dhRespond(devicePriv, guestBundle)`。兩端持有 DR state：`rk, ckS/ckR, Ns/Nr, PN, myRatchetPriv/Pub, theirRatchetPub, pendingSendRatchet, skippedKeys`.
-- Control message：`session-init` / `session-ack`（安全對話準備），狀態機 `idle → pending → ready/failed`，逾時 10s 會重送 init；連線前先檢查是否已有 receiver-ready（ckR存在）。
-- DR 快照：每則訊息可寫入 `drHistory`（messageKey_b64、snapshot、snapshotAfter、messageId、ts），重播時可直接用 message key 解密並回填 snapshot。
-- 送訊前必須 `ensureSecureConversationReady(peerAccountDigest, reason)`，缺鏈時觸發 bootstrap（guestBundle 或 prekeys bundle）。
+## 5. Secure Conversation 與 DR（新版）
+- X3DH：Initiator `x3dhInitiate(devicePriv, peerBundle)`；Responder `x3dhRespond(devicePriv, guestBundle)`。DR state 以 peer_account_digest（預留 peer_device_id）為鍵：`rk, ckS/ckR, Ns/Nr, PN, myRatchetPriv/Pub, theirRatchetPub, pendingSendRatchet, skippedKeys`。
+- 不再有 session-init/ack 控制包，也不使用 conversation fingerprint；只要 DR state 有效即可收發。
+- 每則訊息 header_json = `{dr, ek_pub_b64, pn, n, iv_b64, meta:{ts, msg_type, sender_digest, sender_device_id, media?}}`，ciphertext_b64 為 DR 密文，counter = header.n。
+- DR 快照與 messageKey 歷史可用於跳號重播；解密失敗先嘗試歷史 snapshot / messageKey，再嘗試 recover。
 
 ## 6. 訊息與附件流程
 ### 6.1 API
-- `POST /api/v1/messages/secure` body `{conversation_id, payload_envelope:{v,iv_b64,payload_b64}, id?, created_at?, accountToken/accountDigest, conversationFingerprint?}` → {ok:true, id}。`payload_envelope` 是「conversation token AES-GCM」包的訊息物件。
-- `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=` headers `X-Account-Token`/`X-Account-Digest`, `X-Conversation-Fingerprint`.
-- `POST /api/v1/messages/secure/delete-conversation` body `buildAccountPayload({conversationId, conversationFingerprint})`。
+- `POST /api/v1/messages/secure` body `{conversation_id, header_json, ciphertext_b64, counter, sender_device_id, receiver_account_digest?, receiver_device_id?, id?, created_at?, accountToken/accountDigest}` → {ok:true, id}。
+- `GET /api/v1/messages/secure?conversationId=&limit=&cursorTs=&cursorId=` headers `X-Account-Token`/`X-Account-Digest`/`X-Device-Id`。
+- `POST /api/v1/messages/secure/delete-conversation` body `buildAccountPayload({conversationId})`。
 - 傳統媒體索引：`POST /api/v1/messages`（legacy，含 aead/header）仍可用於 R2 物件索引。
 
-### 6.2 Conversation Payload 內容（`payload_envelope` 解開後）
-- `hdr_b64`: DR header（含 `dr, ek_pub_b64, pn, n, iv_b64`）。
-- `ct_b64`: DR ciphertext（base64url）。
-- `meta`: `{ ts, msg_type?, media?, sender_fingerprint?, preview? }`
-  - `msg_type`: control / text / call-log …（透過 `secure-conversation-signals`）。
-  - `media`: 若為附件，含 `{object_key, envelope, size, content_type, preview{object_key,envelope,size,width,height}}`，並保存於 `saveEnvelopeMeta(objectKey, envelope)`.
+### 6.2 訊息封包結構
+- `header_json`: `{ dr, ek_pub_b64, pn, n, iv_b64, meta }`；meta 至少含 `ts`，並帶 `msg_type`（text/control/call-log/media）、`sender_digest`、`sender_device_id`，若為附件則有 `media` 欄位。
+- `ciphertext_b64`: DR 密文（text/附件索引/控制包皆是 DR 加密後的字串）。
+- `counter`: 對應 header.n。
 
 ### 6.3 送出文字
-1. 以 DR state `drEncryptText(state, plaintext)` → `{aead:'aes-256-gcm', header, iv_b64, ciphertext_b64, message_key_b64}`。  
-2. 以 conversation token AES-GCM 包成 `{hdr_b64, ct_b64, meta:{ts, msg_type:'text', sender_fingerprint}}` → `payload_envelope`。  
-3. `POST /api/v1/messages/secure`，必要時帶 `conversationFingerprint`。
+1. 以 DR state `drEncryptText(state, plaintext)` → `{aead:'aes-256-gcm', header, iv_b64, ciphertext_b64, message_key_b64}`。
+2. 組成 header_payload = `{...header, iv_b64, meta:{ts, msg_type:'text', sender_digest, sender_device_id}}`，counter = header.n。
+3. `POST /api/v1/messages/secure {conversation_id, header_json, ciphertext_b64, counter, sender_device_id, receiver_account_digest?, accountToken/accountDigest}`。
 
 ### 6.4 接收/解密
-1. 取得列表後依時間排序；以 `conversation token` 解封。  
-2. 若 `drHistory` 命中 messageKey，優先用 messageKey 解密並套用 snapshotAfter；否則以 live DR 解。  
-3. 成功解密後記錄 `drHistory`（含 messageKey_b64）並 persist snapshot + contactSecrets。
+1. 取得列表後依時間排序；每則項目含 `header_json`/`ciphertext_b64`/`counter`。
+2. 優先比對 `drHistory`（messageKey/snapshot），若無則以 live DR 解；解密失敗可嘗試歷史 snapshot 或強制 recover。
+3. 成功後記錄 `drHistory`（含 messageKey_b64）並 persist snapshot + contactSecrets。
 
 ### 6.5 附件 / Drive
 - 加密：MK 派生 AES-GCM；`encryptAndPutWithProgress` 產生 envelope（含 key、iv、aead、sha256）；可附 preview（縮圖同流程）。
-- 上傳：`POST /api/v1/media/sign-put {convId, contentType, size?, dir?, direction?, accountToken/accountDigest, conversationFingerprint?}` → {upload:{url,method,headers/fields}, objectPath, expiresIn}；將密文 PUT 至 R2。Drive 目錄命名 `drive-<accountDigest>`，dir 可多層。
-- 索引訊息：`POST /api/v1/messages {convId, type:'media', ciphertext_b64, aead:'aes-256-gcm', header:{obj, size, preview?, dir, key_type?}, accountToken/accountDigest, conversationFingerprint?}` 或直接寫入 secure payload meta.media。
-- 下載：`POST /api/v1/media/sign-get {key, accountToken/accountDigest, conversationFingerprint?}` → 短期 GET URL；下載後用 envelope 解密。支援共享金鑰（`key_type`）與 MK。
+- 上傳：`POST /api/v1/media/sign-put {convId, contentType, size?, dir?, direction?, accountToken/accountDigest}`（header `X-Device-Id`）→ {upload:{url,method,headers/fields}, objectPath, expiresIn}；將密文 PUT 至 R2。Drive 目錄命名 `drive-<accountDigest>`，dir 可多層。
+- 索引訊息：`POST /api/v1/messages {convId, type:'media', ciphertext_b64, aead:'aes-256-gcm', header:{obj, size, preview?, dir, key_type?}, accountToken/accountDigest}` 或直接寫入 secure payload meta.media。
+- 下載：`POST /api/v1/media/sign-get {key, accountToken/accountDigest, downloadName?}`（header `X-Device-Id`）→ 短期 GET URL；下載後用 envelope 解密。支援共享金鑰（`key_type`）與 MK。
 - 清除：`POST /api/v1/messages/delete {conversationId, ids?, keys?, accountToken/accountDigest}`。
  - 伺服端限制：預設最大上傳 500MB（`UPLOAD_MAX_BYTES`），Drive 系統資料夾配額預設 3GB（`DRIVE_QUOTA_BYTES`）；超量會回 HTTP 413 或拒絕。
 
@@ -182,7 +180,7 @@ MK 明文、devicePriv 僅存 RAM；`wrapped_mk`、`wrapped_dev`、最新 `conta
 
 - **App Shell（app.html）**
   - 元件：頂部狀態區（網路/安全提示、版本資訊入口）、底部導覽（Contacts / Messages / Drive / Profile；含 badge）、全域 toast、modal/backdrop、媒體權限 overlay、logout redirect cover。
-  - 安全對話提示：`session-init` / `session-ack` Modal，顯示「建立安全對話」/「失敗」與重試。
+  - 安全對話提示：~~`session-init` / `session-ack` Modal~~（新版 DR 就緒即開聊，不再顯示控制包提示）。
 
 - **Contacts 分頁**
   - 清單：好友卡片（頭像、暱稱、狀態/最後上線、加密狀態 badge）、支援左滑刪除（呼叫 `/friends/delete`），自我聯絡項隱藏。
@@ -199,7 +197,7 @@ MK 明文、devicePriv 僅存 RAM；`wrapped_mk`、`wrapped_dev`、最新 `conta
   - 標頭：好友頭像、暱稱、安全狀態（鎖圖示 + 文案）、通話捷徑（語音/視訊），返回按鈕。
   - 泡泡：左右對齊（incoming/outgoing），顯示時間、已讀（可由收到對方回送或 presence 推算）、安全提示（DR 重建時顯示「重播中」）。
   - 附件：預覽卡（檔名、大小、縮圖），下載進度條，完成後顯示 SHA-256 驗證結果；失敗時提供重試按鈕。
-  - 控制訊息：session-init/ack、call-log、系統提示以灰色氣泡置中顯示。
+  - 控制訊息：call-log、系統提示以灰色氣泡置中顯示（不再有 session-init/ack 氣泡）。
   - Composer：文字輸入、附件按鈕（相機/檔案/照片庫）、發送鍵；無 DR Ready 時鎖定並顯示提示。
 
 - **Drive 分頁**
@@ -231,13 +229,13 @@ MK 明文、devicePriv 僅存 RAM；`wrapped_mk`、`wrapped_dev`、最新 `conta
 - **Conversation Fingerprint**：`fingerprint = HMAC-SHA256(conversationToken, accountDigest)`（base64url）；REST header `X-Conversation-Fingerprint`。
 - **Payload Envelope（secure message）**：
   - 外層：`{v:1, iv_b64, payload_b64}` 用 conversation token AES-GCM 包裝。
-  - 內層 payload：`{hdr_b64, ct_b64, meta}`；`hdr_b64` 是 DR header（含 `dr, ek_pub_b64, pn, n, iv_b64`），`ct_b64` 是 DR ciphertext（b64url），`meta` 自由欄位（至少有 `ts`，可含 `msg_type`, `media`, `sender_fingerprint`）。
+  - 內層 payload：`{hdr_b64, ct_b64, meta}`；`hdr_b64` 是 DR header（含 `dr, ek_pub_b64, pn, n, iv_b64`），`ct_b64` 是 DR ciphertext（b64url），`meta` 自由欄位（至少有 `ts`，可含 `msg_type`, `media`, `sender_digest`, `sender_device_id`）。
 - **Device/Prekey Bundle**：
   - 發佈：`{ik_pub, spk_pub, spk_sig, opks:[{id, pub}]}`；replenish 可只送 `opks`。
   - 取得：`{ik_pub, spk_pub, spk_sig, opk?}`；Responder guest bundle另含 `ek_pub`。
 - **連線與逾時**：
   - OPAQUE 期望 ke1/ke2/ke3 長度需符合 opaque-ts；session TTL 60s；WebSocket call lock TTL 預設 120s。
-  - Secure conversation `session-init` 逾時 10s 重送，最多 3 次；未 ready 時阻擋輸入。
+  - Secure conversation 依 DR state 即時收發，不再有 session-init 重送；若 DR 缺失需先 recover 會話再允許輸入。
 
 ## 13. 限制與錯誤碼備忘
 - **HTTP 狀態**：驗證失敗 401/403，缺權限 400/409，Worker 失敗多回 502；`/devkeys/fetch` 404 代表無備份；超過上傳限制 413。
