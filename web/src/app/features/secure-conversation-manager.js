@@ -1,7 +1,7 @@
 // /app/features/secure-conversation-manager.js
 // Central hub to coordinate Double Ratchet session readiness for each conversation peer.
 
-import { drState, normalizePeerIdentity } from '../core/store.js';
+import { drState, normalizePeerIdentity, getDeviceId } from '../core/store.js';
 import { getContactSecret } from '../core/contact-secrets.js';
 import { ensureDrReceiverState, sendDrSessionAck, sendDrSessionInit } from './dr-session.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
@@ -180,7 +180,8 @@ function hasReceiverReady(peerAccountDigest) {
   const hasReceiveChain = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0;
   if (hasReceiveChain) return true;
   const hasSendChain = holder?.ckS instanceof Uint8Array && holder.ckS.length > 0;
-  const secretInfo = getContactSecret(key);
+  const deviceId = getDeviceId() || 'default';
+  const secretInfo = getContactSecret(key, { deviceId });
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   const holderRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
   const isGuestLike = relationshipRole === 'guest' || holderRole === 'initiator';
@@ -306,7 +307,8 @@ function isSessionMissingError(err) {
 }
 
 function isLocalInitiator(key) {
-  const secret = getContactSecret(key);
+  const deviceId = getDeviceId() || 'default';
+  const secret = getContactSecret(key, { deviceId });
   const role = typeof secret?.role === 'string' ? secret.role.toLowerCase() : null;
   if (role === 'owner') return true;
   const holder = drState(key);

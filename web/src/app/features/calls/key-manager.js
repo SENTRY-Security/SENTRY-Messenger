@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { getContactSecret } from '../../core/contact-secrets.js';
-import { normalizePeerIdentity } from '../../core/store.js';
+import { normalizePeerIdentity, getDeviceId } from '../../core/store.js';
 import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/base64.js';
 import {
   CALL_EVENT,
@@ -176,7 +176,8 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   });
   const peerKey = identity.key;
   if (!peerKey) throw new Error('缺少好友 account digest');
-  const secretRecord = getContactSecret(identity.key);
+  const deviceId = getDeviceId() || 'default';
+  const secretRecord = getContactSecret(identity.key, { deviceId });
   if (!secretRecord?.secret) throw new Error('缺少好友密鑰，請重新同步聯絡人');
   const baseSecret = b64UrlToBytes(secretRecord.secret);
   if (!baseSecret || !baseSecret.length) throw new Error('無法解析好友密鑰');

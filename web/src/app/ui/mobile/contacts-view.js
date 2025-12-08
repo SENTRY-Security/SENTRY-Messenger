@@ -4,7 +4,7 @@ import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
-import { getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
+import { getAccountDigest, getDeviceId, normalizePeerIdentity } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
 
 export function initContactsView(options) {
@@ -351,7 +351,8 @@ export function initContactsView(options) {
     if (!key || !conversation) return;
     const entry = sessionStore.contactIndex?.get?.(key) || null;
     const entryRole = typeof entry?.secretRole === 'string' ? entry.secretRole.toLowerCase() : null;
-    const secretInfo = getContactSecret(key);
+    const deviceId = getDeviceId() || 'default';
+    const secretInfo = getContactSecret(key, { deviceId });
     const secretRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
     const selfRole = entryRole || secretRole;
     if (selfRole === 'guest') return;

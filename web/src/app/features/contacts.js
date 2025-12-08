@@ -73,7 +73,7 @@ export async function loadContacts() {
       if (envelope?.aead === 'aes-256-gcm') {
         contact = await unwrapWithMK_JSON(envelope, mk);
       } else if (isContactShareEnvelope(envelope) && peerDigest) {
-        const secretInfo = getContactSecret(peerDigest);
+        const secretInfo = getContactSecret(peerDigest, { deviceId });
         const secret = secretInfo?.secret;
         if (!secret) {
           const warnKey = peerDigest;
