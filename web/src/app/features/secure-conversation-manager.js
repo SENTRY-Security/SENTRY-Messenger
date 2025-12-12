@@ -29,6 +29,11 @@ function resolvePeerIdentity(value) {
   return { key: identity.key || null, deviceId: identity.deviceId || null };
 }
 
+function toPeerKey(value) {
+  const { key } = resolvePeerIdentity(value);
+  return key || null;
+}
+
 function toErrorMessage(error) {
   if (!error) return null;
   if (typeof error === 'string') return error;
@@ -42,7 +47,7 @@ function toErrorMessage(error) {
 }
 
 function ensureEntry(peerAccountDigest) {
-  const key = resolvePeerKey(peerAccountDigest);
+  const key = toPeerKey({ peerAccountDigest });
   if (!key) return null;
   let entry = peerStates.get(key);
   if (!entry) {
@@ -108,7 +113,7 @@ function emitStatus(key, entry, extra = {}) {
 }
 
 function setStatus(key, nextStatus, { reason = null, source = null, attempts = null, error = null } = {}) {
-  const peerKey = resolvePeerKey(key);
+  const peerKey = toPeerKey({ peerAccountDigest: key });
   if (!peerKey) return null;
   const entry = ensureEntry(peerKey);
   if (!entry) return null;
@@ -231,7 +236,7 @@ export function handleSecureConversationControlMessage({
   messageType,
   source = 'control-message'
 } = {}) {
-  const key = resolvePeerKey(peerAccountDigest);
+  const key = toPeerKey({ peerAccountDigest });
   if (!key) return;
   const normalizedType = normalizeControlMessageType(messageType);
   if (!normalizedType) return;
@@ -242,7 +247,7 @@ export function handleSecureConversationControlMessage({
 }
 
 export function resetSecureConversation(peerAccountDigest, { reason = 'reset', source = 'resetSecureConversation' } = {}) {
-  const key = resolvePeerKey(peerAccountDigest);
+  const key = toPeerKey({ peerAccountDigest });
   if (!key) return;
   const entry = ensureEntry(key);
   if (!entry) return;

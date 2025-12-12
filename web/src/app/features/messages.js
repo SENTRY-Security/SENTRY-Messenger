@@ -23,7 +23,8 @@ import {
   drState as storeDrState,
   getAccountDigest as storeGetAccountDigest,
   normalizePeerIdentity as storeNormalizePeerIdentity,
-  clearDrState as storeClearDrState
+  clearDrState as storeClearDrState,
+  ensureDeviceId as storeEnsureDeviceId
 } from '../core/store.js';
 import {
   persistDrSnapshot as sessionPersistDrSnapshot,
@@ -663,6 +664,7 @@ export async function listSecureAndDecrypt(params = {}) {
     conversationId,
     tokenB64,
     peerAccountDigest,
+    peerDeviceId,
     limit = 20,
     cursorTs,
     cursorId,
@@ -683,10 +685,11 @@ export async function listSecureAndDecrypt(params = {}) {
       receiptUpdates: []
     };
   }
-  const identity = storeNormalizePeerIdentity({ peerAccountDigest });
+  const identity = storeNormalizePeerIdentity({ peerAccountDigest, peerDeviceId });
   const peerKey = identity.key;
-  const peerDeviceId = identity.deviceId || null;
-  if (!peerKey || !peerDeviceId) throw new Error('peer identity required (digest + deviceId)');
+  const peerAccountDigestNormalized = identity.accountDigest || (peerKey && peerKey.includes('::') ? peerKey.split('::')[0] : peerKey) || null;
+  const peerDevice = identity.deviceId || null;
+  if (!peerKey || !peerDevice) throw new Error('peer identity required (digest + deviceId)');
   const clearAfter = getConversationClearAfter(conversationId);
   if (secureFetchLocks.has(conversationId)) {
     return {
@@ -703,8 +706,9 @@ export async function listSecureAndDecrypt(params = {}) {
   try {
   const peerRef = {
     peerAccountDigest: identity.accountDigest || peerKey,
-    peerDeviceId
+    peerDeviceId: peerDevice
   };
+  const selfDeviceId = typeof storeEnsureDeviceId === 'function' ? storeEnsureDeviceId() : null;
 
   const now = Date.now();
   const backoffUntil = secureFetchBackoff.get(conversationId) || 0;
@@ -873,13 +877,56 @@ export async function listSecureAndDecrypt(params = {}) {
       payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
       const isMediaMessage = !!(meta?.media);
 
-      // Receiver/peer sanity: only accept packets targeting this account and expected peer.
+      // Sender/target判斷：先看 direction，再套用目標驗證（避免把自己送出的封包誤判）。
+      const senderDigestRaw = raw?.senderAccountDigest || meta?.senderDigest || '';
+      const senderDigest = typeof senderDigestRaw === 'string' ? senderDigestRaw.toUpperCase() : '';
+      let direction = 'unknown';
+      if (senderDigest && selfDigest && senderDigest === selfDigest) direction = 'outgoing';
+      else if (senderDigest && peerAccountDigestNormalized && senderDigest === peerAccountDigestNormalized) direction = 'incoming';
+
       const targetDigestRaw = raw?.targetAccountDigest
         || raw?.target_account_digest
         || meta?.targetAccountDigest
         || meta?.target_account_digest
+        || meta?.receiverAccountDigest
+        || meta?.receiver_account_digest
+        || raw?.receiverAccountDigest
+        || raw?.receiver_account_digest
         || null;
-      const targetDigest = targetDigestRaw ? String(targetDigestRaw).toUpperCase() : null;
+      const targetDeviceRaw = raw?.targetDeviceId
+        || raw?.target_device_id
+        || meta?.targetDeviceId
+        || meta?.target_device_id
+        || meta?.receiverDeviceId
+        || meta?.receiver_device_id
+        || raw?.receiverDeviceId
+        || raw?.receiver_device_id
+        || null;
+      const targetDeviceId = targetDeviceRaw ? String(targetDeviceRaw) : null;
+      let targetDigest = targetDigestRaw ? String(targetDigestRaw).toUpperCase() : null;
+
+      // 方向未知時，若目標裝置是本機，視為 incoming。
+      if (direction === 'unknown' && targetDeviceId && selfDeviceId && targetDeviceId === selfDeviceId) {
+        direction = 'incoming';
+      }
+      // 若方向尚未判定，利用 targetDigest 判斷：目標是對方 => 視為自己送出的封包，目標是自己 => 視為 incoming。
+      if (direction === 'unknown' && targetDigest && peerAccountDigestNormalized && targetDigest === String(peerAccountDigestNormalized).toUpperCase()) {
+        direction = 'outgoing';
+      } else if (direction === 'unknown' && targetDigest && selfDigest && targetDigest === selfDigest) {
+        direction = 'incoming';
+      }
+
+      if (direction === 'outgoing') {
+        return;
+      }
+      if (targetDeviceId && selfDeviceId && targetDeviceId !== selfDeviceId) {
+        console.warn('[dr-message-skip:target-device-mismatch]', { conversationId, targetDeviceId, selfDeviceId });
+        return;
+      }
+      // 若對方把 targetDigest 填成自己，且目標裝置是本機，視為我們的封包：覆寫成 selfDigest。
+      if (direction === 'incoming' && targetDigest && senderDigest && targetDigest === senderDigest && targetDeviceId && selfDeviceId && targetDeviceId === selfDeviceId) {
+        targetDigest = selfDigest || targetDigest;
+      }
       if (!targetDigest) {
         console.warn('[dr-message-skip:missing-target-digest]', { conversationId });
         return;
@@ -900,15 +947,11 @@ export async function listSecureAndDecrypt(params = {}) {
       } catch {}
       const headerPeerDigestRaw = header?.peerAccountDigest || header?.peer_account_digest || null;
       const headerPeerDigest = headerPeerDigestRaw ? String(headerPeerDigestRaw).toUpperCase() : null;
-      if (peerKey && headerPeerDigest && headerPeerDigest !== String(peerKey).toUpperCase()) {
-        console.warn('[dr-message-skip:peer-mismatch]', { conversationId, headerPeerDigest, expected: peerKey });
+      const expectedPeerDigest = senderDigest || (peerAccountDigestNormalized ? String(peerAccountDigestNormalized).toUpperCase() : null);
+      if (direction !== 'outgoing' && expectedPeerDigest && headerPeerDigest && headerPeerDigest !== expectedPeerDigest) {
+        console.warn('[dr-message-skip:peer-mismatch]', { conversationId, headerPeerDigest, expected: expectedPeerDigest });
         return;
       }
-      const senderDigestRaw = raw?.senderAccountDigest || meta?.senderDigest || '';
-      const senderDigest = typeof senderDigestRaw === 'string' ? senderDigestRaw.toUpperCase() : '';
-      let direction = 'unknown';
-      if (senderDigest && selfDigest && senderDigest === selfDigest) direction = 'outgoing';
-      else if (senderDigest && peerKey && senderDigest === peerKey.toUpperCase()) direction = 'incoming';
 
       if (!state) {
         state = trackState

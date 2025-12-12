@@ -681,13 +681,16 @@ async function sendDrPlaintext(params = {}) {
     }
   }
   // 強制對端指向目標 guest：禁止自動補救路徑
+  meta.targetAccountDigest = peer;
+  meta.receiverAccountDigest = peer;
   meta.targetDeviceId = receiverDeviceId;
   meta.receiverDeviceId = receiverDeviceId;
 
   const headerPayload = {
     ...pkt.header,
-    peerAccountDigest: peer || null,
-    peerDeviceId: receiverDeviceId || null,
+    // peerAccountDigest 定義為「寄件者」身份，便於接收端驗證，不做任何 fallback
+    peerAccountDigest: accountDigest || null,
+    peerDeviceId: senderDeviceId || null,
     iv_b64: pkt.iv_b64,
     meta
   };

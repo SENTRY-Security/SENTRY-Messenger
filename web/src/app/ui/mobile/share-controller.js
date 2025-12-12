@@ -281,6 +281,7 @@ export function setupShareController(options) {
         inviteQrBox.appendChild(canvas);
         inviteQrBox.setAttribute('data-qr-build-version', QR_BUILD_VERSION);
         console.log('[share-controller]', { qrBuildVersion: QR_BUILD_VERSION, inviteId: invite?.inviteId || null });
+        log({ qrBuildVersion: QR_BUILD_VERSION, inviteId: invite?.inviteId || null });
       } else {
         inviteQrBox.textContent = '無法產生 QR，請稍後再試。';
       }
@@ -318,6 +319,14 @@ export function setupShareController(options) {
       version: 2
     };
     console.log('[share-controller]', {
+      inviteGenerated: {
+        inviteId: shareState.currentInvite.inviteId,
+        expiresAt: shareState.currentInvite.expiresAt,
+        ownerDeviceId,
+        qrVersion: QR_BUILD_VERSION
+      }
+    });
+    log({
       inviteGenerated: {
         inviteId: shareState.currentInvite.inviteId,
         expiresAt: shareState.currentInvite.expiresAt,
