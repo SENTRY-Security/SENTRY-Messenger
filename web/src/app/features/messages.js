@@ -874,7 +874,15 @@ export async function listSecureAndDecrypt(params = {}) {
       const isMediaMessage = !!(meta?.media);
 
       // Receiver/peer sanity: only accept packets targeting this account and expected peer.
-      const receiverDigestRaw = raw?.receiverAccountDigest || raw?.receiver_account_digest || meta?.receiverAccountDigest || meta?.receiver_account_digest || null;
+      const receiverDigestRaw = raw?.receiverAccountDigest
+        || raw?.receiver_account_digest
+        || raw?.targetAccountDigest
+        || raw?.target_account_digest
+        || meta?.receiverAccountDigest
+        || meta?.receiver_account_digest
+        || meta?.targetAccountDigest
+        || meta?.target_account_digest
+        || null;
       const receiverDigest = receiverDigestRaw ? String(receiverDigestRaw).toUpperCase() : null;
       if (selfDigest && receiverDigest && receiverDigest !== selfDigest) {
         console.warn('[dr-message-skip:receiver-mismatch]', { conversationId, receiverDigest, selfDigest });
