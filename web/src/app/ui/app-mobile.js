@@ -3312,6 +3312,13 @@ function handleWebSocketMessage(msg) {
       log({ contactShareMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
       return;
     }
+    const receiverDigestRaw = msg?.receiverAccountDigest || msg?.receiver_account_digest || null;
+    const receiverDigest = receiverDigestRaw ? String(receiverDigestRaw).toUpperCase() : null;
+    const selfDigest = (getAccountDigest() || '').toUpperCase();
+    if (selfDigest && receiverDigest && receiverDigest !== selfDigest) {
+      log({ contactShareReceiverMismatch: { receiverDigest, selfDigest } });
+      return;
+    }
     handleContactShareEvent(msg).catch((err) => log({ contactShareError: err?.message || err }));
     return;
   }
@@ -3319,6 +3326,13 @@ function handleWebSocketMessage(msg) {
     if (!isTargetingThisDevice(msg)) return;
     if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
       log({ contactInitMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
+      return;
+    }
+    const receiverDigestRaw = msg?.receiverAccountDigest || msg?.receiver_account_digest || null;
+    const receiverDigest = receiverDigestRaw ? String(receiverDigestRaw).toUpperCase() : null;
+    const selfDigest = (getAccountDigest() || '').toUpperCase();
+    if (selfDigest && receiverDigest && receiverDigest !== selfDigest) {
+      log({ contactInitReceiverMismatch: { receiverDigest, selfDigest } });
       return;
     }
     handleContactInitEvent(msg).catch((err) => log({ contactInitError: err?.message || err }));

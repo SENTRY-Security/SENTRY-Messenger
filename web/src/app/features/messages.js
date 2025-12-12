@@ -872,7 +872,21 @@ export async function listSecureAndDecrypt(params = {}) {
       const meta = payload?.meta || null;
       payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
       const isMediaMessage = !!(meta?.media);
-  const senderDigestRaw = raw?.senderAccountDigest || meta?.senderDigest || '';
+
+      // Receiver/peer sanity: only accept packets targeting this account and expected peer.
+      const receiverDigestRaw = raw?.receiverAccountDigest || raw?.receiver_account_digest || meta?.receiverAccountDigest || meta?.receiver_account_digest || null;
+      const receiverDigest = receiverDigestRaw ? String(receiverDigestRaw).toUpperCase() : null;
+      if (selfDigest && receiverDigest && receiverDigest !== selfDigest) {
+        console.warn('[dr-message-skip:receiver-mismatch]', { conversationId, receiverDigest, selfDigest });
+        return;
+      }
+      const headerPeerDigestRaw = header?.peerAccountDigest || header?.peer_account_digest || null;
+      const headerPeerDigest = headerPeerDigestRaw ? String(headerPeerDigestRaw).toUpperCase() : null;
+      if (peerKey && headerPeerDigest && headerPeerDigest !== String(peerKey).toUpperCase()) {
+        console.warn('[dr-message-skip:peer-mismatch]', { conversationId, headerPeerDigest, expected: peerKey });
+        return;
+      }
+      const senderDigestRaw = raw?.senderAccountDigest || meta?.senderDigest || '';
       const senderDigest = typeof senderDigestRaw === 'string' ? senderDigestRaw.toUpperCase() : '';
       let direction = 'unknown';
       if (senderDigest && selfDigest && senderDigest === selfDigest) direction = 'outgoing';

@@ -280,6 +280,7 @@ export function setupShareController(options) {
         removeQrPlaceholder();
         inviteQrBox.appendChild(canvas);
         inviteQrBox.setAttribute('data-qr-build-version', QR_BUILD_VERSION);
+        console.log('[share-controller]', { qrBuildVersion: QR_BUILD_VERSION, inviteId: invite?.inviteId || null });
       } else {
         inviteQrBox.textContent = '無法產生 QR，請稍後再試。';
       }
@@ -539,9 +540,16 @@ export function setupShareController(options) {
     const targetIdentity = normalizePeerIdentity({ peerAccountDigest });
     const targetDigest = targetIdentity.accountDigest || targetIdentity.key || null;
     const senderDeviceId = ensureDeviceId();
+    const selfDigest = (getAccountDigest() || '').toUpperCase();
+    if (selfDigest && targetDigest && selfDigest === targetDigest) {
+      throw new Error('contact-share target peer resolves to self');
+    }
     const conversationToken = conversation?.token_b64 || conversation?.tokenB64 || sessionKey || null;
     const conversationId = conversation?.conversation_id || conversation?.conversationId || null;
     const resolvedPeerDeviceId = peerDeviceId || null; // 嚴格要求顯式指定對方裝置
+    if (senderDeviceId && resolvedPeerDeviceId && String(resolvedPeerDeviceId) === String(senderDeviceId)) {
+      throw new Error('contact-share target device resolves to self');
+    }
     console.log('[share-controller]', {
       contactShareValidate: {
         peerAccountDigest: peerAccountDigest || null,

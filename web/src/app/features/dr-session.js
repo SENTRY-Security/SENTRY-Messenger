@@ -614,6 +614,11 @@ async function sendDrPlaintext(params = {}) {
   const peer = resolvePeerDigest(params);
   if (!peer) throw new Error('peerAccountDigest required');
 
+  const selfDigest = (getAccountDigest() || '').toUpperCase();
+  if (selfDigest && peer && selfDigest === String(peer).toUpperCase()) {
+    throw new Error('peerAccountDigest resolved to self (invalid)');
+  }
+
   const convContext = conversation || conversationContextForPeer(peer);
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
