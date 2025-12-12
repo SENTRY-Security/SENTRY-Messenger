@@ -3373,6 +3373,17 @@ function handleWebSocketMessage(msg) {
       log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
       return;
     }
+    try {
+      console.log('[ws-dispatch]', {
+        type,
+        conversationId: msg?.conversationId || null,
+        senderAccountDigest: msg?.senderAccountDigest || null,
+        senderDeviceId: msg?.senderDeviceId || null,
+        targetDeviceId: msg?.targetDeviceId || null,
+        targetAccountDigest: msg?.targetAccountDigest || null,
+        peerAccountDigest: msg?.peerAccountDigest || null
+      });
+    } catch {}
     messagesPane.handleIncomingSecureMessage(msg);
     return;
   }

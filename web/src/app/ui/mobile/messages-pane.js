@@ -2979,6 +2979,9 @@ export function initMessagesPane({
       : null;
     const selfDeviceId = ensureDeviceId();
     if (!selfDeviceId || targetDeviceId !== String(selfDeviceId).trim()) {
+      try {
+        console.log('[messages-pane] skip secure-message (target mismatch)', { convId, targetDeviceId, selfDeviceId });
+      } catch {}
       return;
     }
     const senderDeviceId = typeof event?.senderDeviceId === 'string' && event.senderDeviceId.trim().length

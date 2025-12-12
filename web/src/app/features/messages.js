@@ -888,6 +888,16 @@ export async function listSecureAndDecrypt(params = {}) {
         console.warn('[dr-message-skip:target-mismatch]', { conversationId, targetDigest, selfDigest });
         return;
       }
+      try {
+        console.log('[dr-inbox:receive]', {
+          conversationId,
+          peerAccountDigest: peerKey,
+          messageId,
+          msgType: meta?.msg_type || meta?.msgType || null,
+          targetDigest,
+          senderDigest: meta?.sender_digest || meta?.senderDigest || null
+        });
+      } catch {}
       const headerPeerDigestRaw = header?.peerAccountDigest || header?.peer_account_digest || null;
       const headerPeerDigest = headerPeerDigestRaw ? String(headerPeerDigestRaw).toUpperCase() : null;
       if (peerKey && headerPeerDigest && headerPeerDigest !== String(peerKey).toUpperCase()) {
@@ -919,6 +929,14 @@ export async function listSecureAndDecrypt(params = {}) {
       const text = await deps.drDecryptText(state, pkt, {
         onMessageKey: (mk) => { messageKeyB64 = mk; }
       });
+      try {
+        console.log('[dr-inbox:decrypted]', {
+          conversationId,
+          peerAccountDigest: peerKey,
+          messageId,
+          msgType: meta?.msg_type || meta?.msgType || null
+        });
+      } catch {}
 
       if (trackState) {
         markMessageProcessed(conversationId, messageId);
@@ -946,6 +964,13 @@ export async function listSecureAndDecrypt(params = {}) {
         }
       } else if (messageObj) {
         if (messageObj.type === 'contact-share') {
+          try {
+            console.log('[dr-inbox:contact-share]', {
+              conversationId,
+              peerAccountDigest: peerKey,
+              messageId
+            });
+          } catch {}
           try {
             if (typeof document !== 'undefined' && document?.dispatchEvent) {
               document.dispatchEvent(new CustomEvent('contact-share', {
