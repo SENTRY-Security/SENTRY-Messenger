@@ -2973,6 +2973,17 @@ export function initMessagesPane({
 
   function handleIncomingSecureMessage(event) {
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
+    try {
+      console.log('[ws-secure-message]', {
+        convId,
+        senderAccountDigest: event?.senderAccountDigest || null,
+        senderDeviceId: event?.senderDeviceId || null,
+        targetDeviceId: event?.targetDeviceId || null,
+        targetAccountDigest: event?.targetAccountDigest || event?.target_account_digest || null,
+        peerAccountDigest: event?.peerAccountDigest || null,
+        type: event?.type || null
+      });
+    } catch {}
     if (!convId) return;
     const targetDeviceId = typeof event?.targetDeviceId === 'string' && event.targetDeviceId.trim().length
       ? event.targetDeviceId.trim()
