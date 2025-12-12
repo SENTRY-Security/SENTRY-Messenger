@@ -1031,6 +1031,14 @@ export async function listSecureAndDecrypt(params = {}) {
     const headerJson = raw?.header_json || raw?.headerJson || (raw?.header ? JSON.stringify(raw.header) : null);
     const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
     const packet = { header_json: headerJson, ciphertext_b64: ciphertextB64, counter: raw?.counter ?? raw?.n ?? null };
+    try {
+      console.log('[dr-inbox:enqueue]', {
+        conversationId,
+        messageId: toMessageId(raw) || null,
+        counter: packet.counter || null,
+        ts: Number.isFinite(msgTs) ? msgTs : null
+      });
+    } catch {}
     await enqueueInboxJob({
       conversationId,
       payloadEnvelope: packet,
@@ -1047,6 +1055,14 @@ export async function listSecureAndDecrypt(params = {}) {
     conversationId,
     handler: async (job) => {
       try {
+        try {
+          console.log('[dr-inbox:process-job]', {
+            jobId: job?.jobId || null,
+            conversationId,
+            messageId: job?.messageId || null,
+            createdAt: job?.createdAt || null
+          });
+        } catch {}
         await handleInboxJob(job);
       } catch (err) {
         deadLetters.push({
