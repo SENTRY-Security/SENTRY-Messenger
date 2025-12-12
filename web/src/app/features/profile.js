@@ -4,7 +4,7 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
-import { getMkRaw, getAccountDigest, buildAccountPayload } from '../core/store.js';
+import { getMkRaw, getAccountDigest, buildAccountPayload, ensureDeviceId } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 import { buildIdenticonImage } from '../lib/identicon.js';
 
@@ -103,21 +103,72 @@ export async function saveProfile(profile) {
   const convId = convIdForProfile();
   if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
   const obj = { ...profile, updatedAt: profile?.updatedAt || Math.floor(Date.now() / 1000) };
+  const overridesForContacts = {
+    nickname: obj.nickname || null,
+    avatar: obj.avatar || null,
+    updatedAt: obj.updatedAt
+  };
 
   const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
-  const header = { profile: 1, v: 1, ts: obj.updatedAt, envelope };
+  const deviceId = ensureDeviceId();
+  const counter = Math.floor(Date.now() / 1000);
+  const header = {
+    profile: 1,
+    v: 1,
+    ts: obj.updatedAt,
+    envelope,
+    iv_b64: envelope?.iv_b64,
+    device_id: deviceId || undefined,
+    n: counter
+  };
   const payload = {
     convId,
     type: 'text',
     aead: 'aes-256-gcm',
     header,
-    ciphertext_b64: envelope?.ct_b64 || 'profile'
+    ciphertext_b64: envelope?.ct_b64 || 'profile',
+    counter,
+    receiverAccountDigest: (getAccountDigest() || '').toUpperCase(),
+    receiverDeviceId: deviceId
   };
   const body = buildAccountPayload({ overrides: payload });
   const { r, data } = await createMessage(body);
   if (!r.ok) {
     const msg = typeof data === 'string' ? data : data?.error || data?.message || 'profile save failed';
     throw new Error(msg);
+  }
+  // 對所有已知好友推播 contacts-reload，讓對方同步暱稱/頭像
+  try {
+    const contacts = Array.isArray(window.sessionStore?.contactState) ? window.sessionStore.contactState : [];
+    const wsSend = typeof window.wsSend === 'function' ? window.wsSend : null;
+    const deviceId = window.getDeviceId ? window.getDeviceId() : null;
+    if (wsSend && contacts.length) {
+      contacts
+        .map((c) => c?.peerAccountDigest || c?.accountDigest || c?.account_digest || null)
+        .filter((d) => typeof d === 'string' && d.trim().length === 64)
+        .forEach((peer) => {
+          wsSend({
+            type: 'contacts-reload',
+            accountDigest: peer,
+            senderDeviceId: deviceId || null
+          });
+        });
+    }
+  } catch (err) {
+    console.warn('[profile] ws contacts-reload notify failed', err?.message || err);
+  }
+
+  // 透過共用的 broadcast pipeline 將最新暱稱/頭像同步給好友（contact-share）
+  try {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      document.dispatchEvent(
+        new CustomEvent('contacts:broadcast-update', {
+          detail: { reason: 'profile', overrides: overridesForContacts }
+        })
+      );
+    }
+  } catch (err) {
+    console.warn('[profile] broadcast-update event failed', err?.message || err);
   }
   return { ...obj, msgId: data?.id || null };
 }

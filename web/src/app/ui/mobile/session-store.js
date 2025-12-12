@@ -23,6 +23,7 @@ const defaultDriveState = {
 
 const defaultMessageState = {
   activePeerDigest: null,
+  activePeerDeviceId: null,
   conversationId: null,
   conversationToken: null,
   messages: [],
@@ -77,7 +78,6 @@ export const sessionStore = {
   conversationThreads: new Map(),
   contactSecrets: new Map(),
   onlineContacts: new Set(),
-  inviteSecrets: new Map(),
   deletedConversations: new Set(),
   shareState: cloneValue(defaultShareState),
   driveState: cloneValue(defaultDriveState),
@@ -124,8 +124,4 @@ export function resetProfileState() {
 
 export function resetSettingsState() {
   sessionStore.settingsState = null;
-}
-
-export function resetInviteSecrets() {
-  sessionStore.inviteSecrets.clear();
 }

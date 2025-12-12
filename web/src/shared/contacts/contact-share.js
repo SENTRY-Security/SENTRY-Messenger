@@ -8,19 +8,21 @@ export function isEnvelope(envelope) {
   return envelope && typeof envelope.iv === 'string' && typeof envelope.ct === 'string';
 }
 
-export async function encryptContactPayload({ secret, payload }) {
-  if (!secret) throw new Error('contact secret required');
-  const key = await deriveKey(secret, ['encrypt']);
+export async function encryptContactPayload({ sessionKey, secret, payload }) {
+  const keyInput = sessionKey || secret;
+  if (!keyInput) throw new Error('contact session key required');
+  const key = await deriveKey(keyInput, ['encrypt']);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = encoder.encode(JSON.stringify(payload || {}));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data));
   return { iv: bytesToB64(iv), ct: bytesToB64(ct) };
 }
 
-export async function decryptContactPayload({ secret, envelope }) {
-  if (!secret) throw new Error('contact secret required');
+export async function decryptContactPayload({ sessionKey, secret, envelope }) {
+  const keyInput = sessionKey || secret;
+  if (!keyInput) throw new Error('contact session key required');
   if (!isEnvelope(envelope)) throw new Error('invalid contact envelope');
-  const key = await deriveKey(secret, ['decrypt']);
+  const key = await deriveKey(keyInput, ['decrypt']);
   const iv = b64ToBytes(envelope.iv);
   const ct = b64ToBytes(envelope.ct);
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);

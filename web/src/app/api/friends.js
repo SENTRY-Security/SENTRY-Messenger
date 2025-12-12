@@ -1,7 +1,7 @@
 import { fetchJSON } from '../core/http.js';
 import { log } from '../core/log.js';
 import { decodeFriendInvite } from '../lib/invite.js';
-import { getAccountToken, getAccountDigest } from '../core/store.js';
+import { getAccountToken, getAccountDigest, ensureDeviceId } from '../core/store.js';
 
 function withAccount(payload = {}) {
   const out = { ...payload };
@@ -20,37 +20,29 @@ function withAccount(payload = {}) {
   return out;
 }
 
-export async function friendsCreateInvite({ ttlSeconds, prekeyBundle } = {}) {
+function withDeviceHeaders() {
+  const deviceId = ensureDeviceId();
+  return deviceId ? { 'x-device-id': deviceId } : {};
+}
+
+export async function friendsCreateInvite({ ttlSeconds, prekeyBundle, deviceId, tokenHash, inviteToken } = {}) {
   const payload = withAccount({});
   if (ttlSeconds) payload.ttlSeconds = ttlSeconds;
+  if (deviceId) payload.deviceId = deviceId;
   if (prekeyBundle) payload.prekeyBundle = prekeyBundle;
+  if (tokenHash) payload.tokenHash = tokenHash;
+  if (inviteToken) payload.inviteToken = inviteToken;
   const res = await postInvite('/api/v1/friends/invite', payload);
   log({ inviteAPIResult: res });
   return res;
 }
 
-export async function friendsAcceptInvite({ inviteId, secret, contactEnvelope, guestBundle } = {}) {
-  const payload = withAccount({ inviteId, secret });
-  if (contactEnvelope && contactEnvelope.iv && contactEnvelope.ct) {
-    payload.contactEnvelope = contactEnvelope;
-  }
+export async function friendsAcceptInvite({ inviteId, inviteToken, guestBundle } = {}) {
+  const payload = withAccount({ inviteId, inviteToken });
   if (guestBundle) payload.guestBundle = guestBundle;
-  const { r, data } = await fetchJSON('/api/v1/friends/accept', payload);
+  const { r, data } = await fetchJSON('/api/v1/friends/accept', payload, withDeviceHeaders());
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'accept failed', r.status);
-    throw new Error(msg);
-  }
-  return data;
-}
-
-export async function friendsAttachInviteContact({ inviteId, secret, envelope } = {}) {
-  if (!inviteId || !secret || !envelope?.iv || !envelope?.ct) {
-    throw new Error('invalid envelope payload');
-  }
-  const payload = withAccount({ inviteId, secret, envelope });
-  const { r, data } = await fetchJSON('/api/v1/friends/invite/contact', payload);
-  if (!r.ok) {
-    const msg = formatErrorMessage(data, 'attach contact failed', r.status);
     throw new Error(msg);
   }
   return data;
@@ -60,35 +52,12 @@ export async function friendsDeleteContact({ peerAccountDigest } = {}) {
   const digest = getAccountDigest();
   if (!digest) throw new Error('Not unlocked: account missing');
   const payload = withAccount({ peerAccountDigest });
-  const { r, data } = await fetchJSON('/api/v1/friends/delete', payload);
+  const { r, data } = await fetchJSON('/api/v1/friends/delete', payload, withDeviceHeaders());
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'delete contact failed', r.status);
     throw new Error(msg);
   }
   log({ friendsDeleteResult: data, payloadPeerDigest: peerAccountDigest });
-  return data;
-}
-
-export async function friendsShareContactUpdate({ inviteId, secret, peerAccountDigest, envelope, conversationId } = {}) {
-  if (!getAccountDigest()) throw new Error('Not unlocked: account missing');
-  if (!inviteId || !secret || !envelope?.iv || !envelope?.ct) {
-    throw new Error('invalid envelope payload');
-  }
-  const payload = withAccount({ inviteId, secret, envelope, peerAccountDigest });
-  if (conversationId) payload.conversationId = conversationId;
-  try {
-    // eslint-disable-next-line no-console
-    console.log('[contact-share-request]', { inviteId });
-  } catch {}
-  const { r, data } = await fetchJSON('/api/v1/friends/contact/share', payload);
-  if (!r.ok) {
-    try {
-      // eslint-disable-next-line no-console
-      console.log('[contact-share-error]', r.status, data);
-    } catch {}
-    const msg = formatErrorMessage(data, 'contact share failed', r.status);
-    throw new Error(msg);
-  }
   return data;
 }
 
@@ -103,46 +72,9 @@ export async function friendsAcceptInviteFromInput(input) {
   return friendsAcceptInvite(payload);
 }
 
-export async function friendsBootstrapSession({ peerAccountDigest, roleHint, inviteId } = {}) {
-  const payload = withAccount({ peerAccountDigest });
-  if (roleHint && typeof roleHint === 'string') {
-    const lowered = roleHint.trim().toLowerCase();
-    if (lowered === 'owner' || lowered === 'guest') payload.roleHint = lowered;
-  }
-  if (inviteId) payload.inviteId = inviteId;
-  const { r, data } = await fetchJSON('/api/v1/friends/bootstrap-session', payload);
-  if (!r.ok) {
-    const msg = formatErrorMessage(data, 'bootstrap session failed', r.status);
-    throw new Error(msg);
-  }
-  const record = data && typeof data === 'object' ? data : {};
-  const pick = (primary, fallback) => (primary !== undefined ? primary : fallback);
-  const result = {
-    role: typeof record.role === 'string' ? record.role : null,
-    inviteId: pick(record.inviteId, record.invite_id) || null,
-    ownerAccountDigest: record.ownerAccountDigest || record.owner_account_digest || null,
-    guestAccountDigest: record.guestAccountDigest || record.guest_account_digest || null,
-    guestBundle: pick(record.guestBundle, record.guest_bundle) || null,
-    guestContact: pick(record.guestContact, record.guest_contact) || null,
-    ownerContact: pick(record.ownerContact, record.owner_contact) || null,
-    guestContactTs: pick(record.guestContactTs, record.guest_contact_ts) || null,
-    ownerContactTs: pick(record.ownerContactTs, record.owner_contact_ts) || null,
-    usedAt: pick(record.usedAt, record.used_at) || null,
-    createdAt: pick(record.createdAt, record.created_at) || null
-  };
-  log({
-    friendBootstrapSession: {
-      peerAccountDigest: payload.peerAccountDigest || null,
-      role: result.role,
-      hasGuestBundle: !!result.guestBundle
-    }
-  });
-  return result;
-}
-
 async function postInvite(path, payload) {
   log({ inviteFetchStart: path, payload });
-  const { r, data } = await fetchJSON(path, payload);
+  const { r, data } = await fetchJSON(path, payload, withDeviceHeaders());
   log({ inviteFetchDone: path, status: r.status, data });
   if (r.ok) return data;
 

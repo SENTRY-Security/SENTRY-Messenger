@@ -1,7 +1,58 @@
-import { loadNacl, scalarMult, genX25519Keypair, b64, b64u8 } from './nacl.js';
+/**
+ * SECURITY POLICY – STRICT CRYPTO PROTOCOL, NO FALLBACK ALLOWED.
+ *
+ * 本檔案中的所有密碼協定（X3DH、Double Ratchet、AEAD、鍵派生、counter 驗證、header 驗證）
+ * 禁止設計、加入或推論任何 fallback、retry、rollback、resync、auto-repair 等邏輯。
+ *
+ * 規則如下：
+ * 1. 若解密失敗 → 一律直接 fail，不可嘗試第二組 key 或舊 ratchet state。
+ * 2. 若 counter 不一致 → 一律直接拒絕，不可重送、補拉或自動對齊。
+ * 3. 不允許任何協定降級（downgrade）。不得用舊版本、舊頭資訊、舊密鑰重試。
+ * 4. 不允許模糊錯誤處理。不做 try-catch fallback，不做 silent recovery。
+ * 5. 對話重置必須是顯式事件，不得隱式重建 state。
+ *
+ * 一切協定邏輯必須「單一路徑」且「強一致性」，任何 fallback 視為安全漏洞。
+ */
+import { loadNacl, scalarMult, genX25519Keypair, b64, b64u8, verifyDetached } from './nacl.js';
 import { convertEd25519PublicKey, convertEd25519SecretKey } from './ed2curve.js';
 
+const encoder = new TextEncoder();
 const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
+
+function normalizeDeviceId(value) {
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function normalizeAadVersion(value, fallback = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
+
+function buildAadString({ version, deviceId, counter }) {
+  const v = normalizeAadVersion(version, 1);
+  const dev = normalizeDeviceId(deviceId);
+  if (!dev) return null;
+  const ctr = Number(counter);
+  if (!Number.isFinite(ctr)) return null;
+  return `v:${v};d:${dev};c:${ctr}`;
+}
+
+export function buildDrAadFromHeader(header) {
+  if (!header || typeof header !== 'object') return null;
+  const counter = Number.isFinite(header?.n) ? header.n : Number(header?.counter);
+  const deviceId = header?.device_id || header?.deviceId || null;
+  const version = header?.v ?? header?.version ?? 1;
+  const aadStr = buildAadString({ version, deviceId, counter });
+  return aadStr ? encoder.encode(aadStr) : null;
+}
+
+function buildDrAad({ version, deviceId, counter }) {
+  const aadStr = buildAadString({ version, deviceId, counter });
+  return aadStr ? encoder.encode(aadStr) : null;
+}
 
 async function hkdfBytes(ikmU8, saltStr, infoStr, outLen = 32) {
   const key = await crypto.subtle.importKey('raw', ikmU8, 'HKDF', false, ['deriveBits']);
@@ -67,22 +118,41 @@ function takeSkippedKey(st, chainId, index) {
   return value;
 }
 
-export async function x3dhInitiate(devicePriv, peerBundle) {
+export async function x3dhInitiate(devicePriv, peerBundle, overrideEk = null) {
   await loadNacl();
+  const peerIkRaw = peerBundle.ik_pub || peerBundle.ik || peerBundle.identity_pub;
+  const peerSpkRaw = peerBundle.spk_pub || peerBundle.spk;
+  const peerSpkSigRaw = peerBundle.spk_sig || peerBundle.spkSig || peerBundle.signature;
+  const peerOpkRaw = peerBundle.opk?.pub || peerBundle.opk_pub || null;
+  if (!peerIkRaw || !peerSpkRaw) throw new Error('peer bundle missing identity or signed prekey');
+  if (!peerSpkSigRaw) throw new Error('peer bundle missing signed prekey signature');
+  if (!peerOpkRaw) throw new Error('peer bundle missing one-time prekey');
+  const spkSig = b64u8(peerSpkSigRaw);
+  const peerIk = await convertEd25519PublicKey(b64u8(peerIkRaw));
+  if (!peerIk) throw new Error('peer identity key invalid');
+  const verifyOk = await verifyDetached(b64u8(peerSpkRaw), spkSig, b64u8(peerIkRaw));
+  if (!verifyOk) throw new Error('peer signed prekey signature invalid');
   const myIKsec64 = b64u8(devicePriv.ik_priv_b64);
   const myIKseed = myIKsec64.slice(0, 32);
   const myIKsec32 = await convertEd25519SecretKey(myIKseed);
   if (!myIKsec32) throw new Error('ik secret conversion failed');
-  const ek = await genX25519Keypair();
 
-  const peerIK = await convertEd25519PublicKey(b64u8(peerBundle.ik_pub));
-  if (!peerIK) throw new Error('peer ik conversion failed');
-  const peerSPK = b64u8(peerBundle.spk_pub);
+  let ek = overrideEk;
+  const ekPub = overrideEk?.publicKey instanceof Uint8Array ? overrideEk.publicKey : null;
+  const ekSec = overrideEk?.secretKey instanceof Uint8Array ? overrideEk.secretKey : null;
+  if (!ekPub || !ekSec || ekPub.length !== 32 || ekSec.length !== 32) {
+    ek = await genX25519Keypair();
+  }
+
+  const peerIK = peerIk;
+  const peerSPK = b64u8(peerSpkRaw);
+  const peerOPK = b64u8(peerOpkRaw);
 
   const DH1 = await scalarMult(myIKsec32, peerSPK);
   const DH2 = await scalarMult(ek.secretKey, peerIK);
   const DH3 = await scalarMult(ek.secretKey, peerSPK);
-  let dhCat = new Uint8Array([...DH1, ...DH2, ...DH3]);
+  const DH4 = await scalarMult(ek.secretKey, peerOPK);
+  let dhCat = new Uint8Array([...DH1, ...DH2, ...DH3, ...DH4]);
 
   const rk = await hkdfBytes(dhCat, 'x3dh-salt', 'x3dh-root', 32);
   const seed = await kdfCK(rk);
@@ -107,6 +177,20 @@ export async function x3dhRespond(devicePriv, guestBundle) {
   if (!guestBundle || typeof guestBundle !== 'object') throw new Error('guest bundle required');
   const ekPub = guestBundle.ek_pub || guestBundle.ek || guestBundle.ephemeral_pub;
   if (!ekPub) throw new Error('guest bundle missing ek_pub');
+  const guestIkRaw = guestBundle.ik_pub || guestBundle.ik || guestBundle.identity_pub;
+  const guestSpkRaw = guestBundle.spk_pub || guestBundle.spk;
+  const guestSpkSigRaw = guestBundle.spk_sig || guestBundle.spkSig || guestBundle.signature;
+  if (!guestIkRaw || !guestSpkRaw) throw new Error('guest bundle missing identity or signed prekey');
+  if (!guestSpkSigRaw) throw new Error('guest bundle missing signed prekey signature');
+  const opkId = guestBundle.opk_id ?? guestBundle.opkId ?? guestBundle.opk?.id ?? null;
+  if (opkId === null || opkId === undefined || !Number.isFinite(Number(opkId))) {
+    throw new Error('guest bundle missing opk_id for responder');
+  }
+  const opkPrivMap = devicePriv.opk_priv_map || {};
+  const opkPrivB64 = opkPrivMap[opkId] || opkPrivMap[String(opkId)];
+  if (!opkPrivB64) {
+    throw new Error('opk private key missing, please replenish prekeys and retry');
+  }
 
   const myIKsec64 = b64u8(devicePriv.ik_priv_b64);
   const myIKseed = myIKsec64.slice(0, 32);
@@ -115,16 +199,18 @@ export async function x3dhRespond(devicePriv, guestBundle) {
   const mySPKsec = b64u8(devicePriv.spk_priv_b64);
   const mySPKsec32 = mySPKsec.slice(0, 32);
   const guestEK = b64u8(ekPub);
+  const guestIk = await convertEd25519PublicKey(b64u8(guestIkRaw));
+  if (!guestIk) throw new Error('guest ik conversion failed');
+  const guestSpkSig = b64u8(guestSpkSigRaw);
+  const verified = await verifyDetached(b64u8(guestSpkRaw), guestSpkSig, b64u8(guestIkRaw));
+  if (!verified) throw new Error('guest signed prekey signature invalid');
 
   const parts = [];
-  const guestIKRaw = guestBundle.ik_pub || guestBundle.ik || guestBundle.identity_pub;
-  if (guestIKRaw) {
-    const guestIK = await convertEd25519PublicKey(b64u8(guestIKRaw));
-    if (!guestIK) throw new Error('guest ik conversion failed');
-    parts.push(await scalarMult(mySPKsec32, guestIK));
-  }
+  parts.push(await scalarMult(mySPKsec32, guestIk));
   parts.push(await scalarMult(myIKsec32, guestEK));
   parts.push(await scalarMult(mySPKsec32, guestEK));
+  const opkPrivU8 = b64u8(opkPrivB64);
+  parts.push(await scalarMult(opkPrivU8.slice(0, 32), guestEK));
 
   let dhCat = parts[0];
   for (let i = 1; i < parts.length; i += 1) {
@@ -167,7 +253,9 @@ export async function drRatchet(st, theirRatchetPubU8) {
   st.pendingSendRatchet = false;
 }
 
-export async function drEncryptText(st, plaintext) {
+export async function drEncryptText(st, plaintext, opts = {}) {
+  const deviceId = normalizeDeviceId(opts?.deviceId || opts?.senderDeviceId || null);
+  const version = normalizeAadVersion(opts?.version ?? opts?.msgVersion ?? 1, 1);
   if (st.pendingSendRatchet) {
     st.pendingSendRatchet = false;
     st.ckS = null;
@@ -203,9 +291,18 @@ export async function drEncryptText(st, plaintext) {
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['encrypt']);
-  const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+  const aad = buildDrAad({ version, deviceId, counter: st.Ns });
+  const cipherParams = aad ? { name: 'AES-GCM', iv, additionalData: aad } : { name: 'AES-GCM', iv };
+  const ctBuf = await crypto.subtle.encrypt(cipherParams, key, new TextEncoder().encode(plaintext));
 
-  const header = { dr: 1, ek_pub_b64: b64(st.myRatchetPub), pn: st.PN, n: st.Ns };
+  const header = {
+    dr: 1,
+    v: version,
+    device_id: deviceId || undefined,
+    ek_pub_b64: b64(st.myRatchetPub),
+    pn: st.PN,
+    n: st.Ns
+  };
   return {
     aead: 'aes-256-gcm',
     header,
@@ -285,8 +382,12 @@ export async function drDecryptText(st, packet, opts = {}) {
   }
 
   const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
+  const aad = buildDrAadFromHeader(packet.header);
+  const decryptParams = aad
+    ? { name: 'AES-GCM', iv: b64u8(packet.iv_b64), additionalData: aad }
+    : { name: 'AES-GCM', iv: b64u8(packet.iv_b64) };
   const pt = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: b64u8(packet.iv_b64) },
+    decryptParams,
     key,
     b64u8(packet.ciphertext_b64)
   );

@@ -252,6 +252,7 @@ async function onLoadMessages() {
     const peer = prompt('輸入對方帳號 digest（hex）：');
     if (!conversationId || !tokenB64 || !peer) return;
     const peerDigest = String(peer).replace(/[^0-9a-f]/gi, '').toUpperCase();
+    throw new Error('peerDeviceId missing: UI 不應以手動輸入方式取得，請從既有會話資料提供');
     const { items, nextCursor, nextCursorTs, errors } = await listSecureAndDecrypt({
       conversationId,
       tokenB64,
@@ -315,12 +316,15 @@ async function onSendText(){
   try {
     if (!getMkRaw()) return log('Not unlocked: MK not ready.');
     const peer = getPeerFromInput(); if (!peer) return log('請輸入對方帳號 digest');
+    const deviceInput = document.querySelector('#peerDeviceId');
+    const peerDeviceId = (deviceInput?.value || '').trim();
+    if (!peerDeviceId) return log('請輸入對方裝置 ID');
     const textEl = document.querySelector('#drText');
     const text = (textEl?.value || '').toString();
     if (!text) return log('請輸入要傳送的文字');
     const identity = getAccountDigest() || null;
     const convId = (convEl?.value || '').trim() || (identity ? `dm-${identity}-to-${peer}` : 'dm-demo');
-    const res = await sendDrText({ peerAccountDigest: peer, text, convId });
+    const res = await sendDrText({ peerAccountDigest: peer, peerDeviceId, text, convId });
     log({ drSend: true, msg: res.msg, convId: res.convId });
     if (textEl) textEl.value = '';
   } catch (e) {

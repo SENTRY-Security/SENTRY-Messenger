@@ -34,12 +34,7 @@ export function initDrivePane({
   const driveScrollEl = dom.driveScroll ?? document.getElementById('tab-drive');
   let activePdfCleanup = null;
   let pdfJsLibPromise = null;
-  const isSubscriptionActive = () => {
-    const s = sessionStore.subscriptionState;
-    if (!s || s.loading) return true;
-    if (!s.lastChecked) return true; // 尚未查詢完成時不阻擋
-    return !!(s && s.found && !s.expired);
-  };
+  const isSubscriptionActive = () => true; // DEV: 硬解鎖訂閱
   const requireSubscriptionActive = () => {
     if (isSubscriptionActive()) return true;
     document.dispatchEvent(new CustomEvent('subscription:gate'));

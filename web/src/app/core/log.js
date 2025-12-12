@@ -50,18 +50,17 @@ function stringify(x) {
  */
 export function log(x) {
   const line = stringify(x);
+  // Write to configured sink (UI panel or custom handler)
   if (_sinkIsFn && typeof _sink === 'function') {
-    try { _sink(line); return; } catch { /* fallthrough */ }
-  }
-  if (_sink && typeof _sink.textContent === 'string') {
+    try { _sink(line); } catch { /* ignore sink errors */ }
+  } else if (_sink && typeof _sink.textContent === 'string') {
     try {
       const needsNL = _sink.textContent && !_sink.textContent.endsWith('\n');
       _sink.textContent += (needsNL ? '\n' : '') + line;
-      return;
-    } catch { /* fallthrough */ }
+    } catch { /* ignore sink errors */ }
   }
-  // fallback
-  try { console.log(line); } catch {}
+  // Always mirror to native console for debugging.
+  try { console.log(line); } catch { /* ignore console errors */ }
 }
 
 /**

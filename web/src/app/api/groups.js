@@ -8,13 +8,7 @@ function normalizeMembers(list = []) {
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const entry of list) {
-    const identity = normalizePeerIdentity(
-      entry?.accountDigest ||
-      entry?.account_digest ||
-      entry?.peerAccountDigest ||
-      entry?.peer_account_digest ||
-      entry
-    );
+    const identity = normalizePeerIdentity(entry?.accountDigest || entry?.peerAccountDigest || entry);
     if (!identity.key) continue;
     out.push({ accountDigest: identity.accountDigest || null });
   }

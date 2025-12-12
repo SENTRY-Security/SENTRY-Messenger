@@ -232,6 +232,8 @@ async function ensurePeerConnection() {
     sendSignal('call-ice-candidate', {
       callId: activeCallId,
       targetAccountDigest: activePeerAccountDigest,
+      senderDeviceId: ensureDeviceId(),
+      targetDeviceId: activePeerDeviceId,
       candidate: candidateInit
     });
   };
@@ -343,6 +345,8 @@ async function createAndSendOffer() {
     sendSignal('call-offer', {
       callId: activeCallId,
       targetAccountDigest: activePeerAccountDigest,
+      senderDeviceId: ensureDeviceId(),
+      targetDeviceId: activePeerDeviceId,
       description: { sdp: offer.sdp, type: offer.type }
     });
   }
@@ -357,6 +361,8 @@ async function applyRemoteOfferAndAnswer(msg) {
     sendSignal('call-answer', {
       callId: activeCallId,
       targetAccountDigest: activePeerAccountDigest,
+      senderDeviceId: ensureDeviceId(),
+      targetDeviceId: activePeerDeviceId,
       description: { sdp: answer.sdp, type: answer.type }
     });
   }

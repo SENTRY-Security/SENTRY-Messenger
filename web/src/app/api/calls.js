@@ -1,5 +1,5 @@
 import { fetchJSON, fetchWithTimeout } from '../core/http.js';
-import { buildAccountPayload } from '../core/store.js';
+import { buildAccountPayload, ensureDeviceId } from '../core/store.js';
 
 function normalizeDigest(value) {
   if (!value) return null;
@@ -13,6 +13,20 @@ function buildPayload(overrides = {}) {
     if (payload[key] === undefined || payload[key] === null) delete payload[key];
   }
   return payload;
+}
+
+function buildHeaders() {
+  const auth = buildAccountPayload({ includeUid: false });
+  const headers = {};
+  if (auth.accountToken) headers['X-Account-Token'] = auth.accountToken;
+  if (auth.accountDigest) headers['X-Account-Digest'] = auth.accountDigest;
+  try {
+    const deviceId = ensureDeviceId();
+    if (deviceId) headers['X-Device-Id'] = deviceId;
+  } catch {
+    // allow backend to reject if missing
+  }
+  return headers;
 }
 
 function formatErrorMessage(data, fallback, status) {
@@ -31,7 +45,8 @@ function formatErrorMessage(data, fallback, status) {
 }
 
 async function postJSON(path, payload, fallbackMessage) {
-  const { r, data } = await fetchJSON(path, payload);
+  const headers = buildHeaders();
+  const { r, data } = await fetchJSON(path, payload, headers);
   if (!r.ok) {
     throw new Error(formatErrorMessage(data, fallbackMessage, r.status));
   }
@@ -80,13 +95,9 @@ export async function reportCallMetrics({ callId, metrics, status, endReason, en
 
 export async function fetchCallSession({ callId } = {}) {
   if (!callId) throw new Error('callId required');
-  const auth = buildPayload();
-  const params = new URLSearchParams();
-  if (auth.accountToken) params.set('accountToken', auth.accountToken);
-  if (auth.accountDigest) params.set('accountDigest', auth.accountDigest);
-  const qs = params.toString();
-  const url = `/api/v1/calls/${encodeURIComponent(callId)}${qs ? `?${qs}` : ''}`;
-  const r = await fetchWithTimeout(url, { method: 'GET' }, 15000);
+  const url = `/api/v1/calls/${encodeURIComponent(callId)}`;
+  const headers = buildHeaders();
+  const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
   const text = await r.text();
   let data;
   try {

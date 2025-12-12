@@ -5,7 +5,7 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchJSON } from '../core/http.js';
-import { getAccountToken, getAccountDigest, buildAccountPayload } from '../core/store.js';
+import { getAccountToken, getAccountDigest, buildAccountPayload, ensureDeviceId, allocateDeviceCounter, setDeviceCounter } from '../core/store.js';
 
 /**
  * Request a presigned PUT for uploading an encrypted object to R2.
@@ -39,7 +39,7 @@ export async function signGet({ key, accountToken, accountDigest } = {}) {
   if (token) body.accountToken = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
   if (digest) body.accountDigest = digest;
-  return await fetchJSON('/api/v1/media/sign-get', body);
+ return await fetchJSON('/api/v1/media/sign-get', body);
 }
 
 /**
@@ -49,7 +49,61 @@ export async function signGet({ key, accountToken, accountDigest } = {}) {
  * @returns {Promise<{ r: Response, data: any }>} data: backend response JSON
  */
 export async function createMessage(body) {
-  return await fetchJSON('/api/v1/messages', body, { 'X-Client-Id': 'webdemo' });
+  const headers = { 'X-Client-Id': 'webdemo' };
+  let attempt = 0;
+  let lastRes = null;
+  while (attempt < 2) {
+    const { deviceId, counter, commit } = allocateDeviceCounter();
+    headers['X-Device-Id'] = deviceId;
+
+    const payload = { ...body };
+    const accountDigest = (payload.accountDigest || getAccountDigest() || '').toUpperCase();
+    if (!accountDigest) throw new Error('accountDigest required');
+    payload.accountDigest = accountDigest;
+    payload.counter = counter;
+    const receiverDigest = (payload.receiverAccountDigest || accountDigest || '').toUpperCase();
+    if (!receiverDigest) throw new Error('receiverAccountDigest required');
+    payload.receiver_account_digest = receiverDigest;
+    const receiverDeviceId = payload.receiverDeviceId || deviceId;
+    if (!receiverDeviceId) throw new Error('receiverDeviceId required');
+    payload.receiver_device_id = receiverDeviceId;
+
+    if (payload.header && typeof payload.header === 'object') {
+      const headerObj = { ...payload.header };
+      headerObj.n = counter;
+      if (!headerObj.v) headerObj.v = 1;
+      if (deviceId) headerObj.device_id = headerObj.device_id || deviceId;
+      payload.header = headerObj;
+      payload.header_json = JSON.stringify(headerObj);
+    }
+    try {
+      console.log('[media.api] createMessage', { deviceId, convId: payload.convId || null, counter, attempt });
+    } catch {}
+    const res = await fetchJSON('/api/v1/messages', payload, headers);
+    lastRes = res;
+    if (res?.r?.ok) {
+      try { commit(); } catch {}
+      return res;
+    }
+    try {
+      console.warn('[media.api] createMessage failed', {
+        status: res?.r?.status,
+        convId: payload.convId || null,
+        error: res?.data || res
+      });
+    } catch {}
+    const detail = res?.data || res;
+    const errCode = detail?.error || detail?.code || null;
+    const maxCounter = detail?.details?.maxCounter;
+    if (res?.r?.status === 409 && errCode === 'CounterTooLow' && Number.isFinite(maxCounter)) {
+      // bump local counter and retry once
+      try { setDeviceCounter(Number(maxCounter)); } catch {}
+      attempt += 1;
+      continue;
+    }
+    return res;
+  }
+  return lastRes;
 }
 
 export async function deleteMediaKeys({ ids = [], keys = [], conversationId } = {}) {
@@ -57,7 +111,14 @@ export async function deleteMediaKeys({ ids = [], keys = [], conversationId } = 
   const overrides = { conversationId, ids };
   if (keys && keys.length) overrides.keys = keys;
   const payload = buildAccountPayload({ overrides });
-  const { r, data } = await fetchJSON('/api/v1/messages/delete', payload, { 'X-Client-Id': 'webdemo' });
+  const headers = { 'X-Client-Id': 'webdemo' };
+  try {
+    const deviceId = ensureDeviceId();
+    if (deviceId) headers['X-Device-Id'] = deviceId;
+  } catch {
+    // keep headers without deviceId; backend will reject if missing
+  }
+  const { r, data } = await fetchJSON('/api/v1/messages/delete', payload, headers);
   if (!r.ok) {
     const msg = typeof data === 'string' ? data : data?.message || data?.error || 'delete failed';
     throw new Error(msg);

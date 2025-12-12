@@ -5,7 +5,7 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchWithTimeout, jsonReq } from '../core/http.js';
-import { buildAccountPayload, getDeviceId } from '../core/store.js';
+import { buildAccountPayload, ensureDeviceId } from '../core/store.js';
 export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrapper
 
 function buildAccountHeaders() {
@@ -13,8 +13,12 @@ function buildAccountHeaders() {
   const headers = {};
   if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
   if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
-  const deviceId = getDeviceId ? getDeviceId() : null;
-  if (deviceId) headers['X-Device-Id'] = deviceId;
+  try {
+    const deviceId = ensureDeviceId();
+    if (deviceId) headers['X-Device-Id'] = deviceId;
+  } catch {
+    /* header 留空，讓上層錯誤自行拋出 */
+  }
   return headers;
 }
 
@@ -25,10 +29,10 @@ function buildAccountHeaders() {
 export async function createSecureMessage({
   conversationId,
   header,
-  ciphertextB64,
-  counter,
-  senderDeviceId,
-  receiverAccountDigest,
+ ciphertextB64,
+ counter,
+ senderDeviceId,
+ receiverAccountDigest,
   receiverDeviceId,
   id,
   createdAt
@@ -37,17 +41,23 @@ export async function createSecureMessage({
   if (!header) throw new Error('header required');
   if (!ciphertextB64) throw new Error('ciphertextB64 required');
   if (!Number.isFinite(counter)) throw new Error('counter required');
-  const senderDevice = senderDeviceId || getDeviceId();
+  const senderDevice = senderDeviceId || ensureDeviceId();
   if (!senderDevice) throw new Error('senderDeviceId required');
+  if (!receiverDeviceId) throw new Error('receiverDeviceId required');
+  if (!receiverAccountDigest) throw new Error('receiverAccountDigest required');
+  const headerPayload = { ...header };
+  if (headerPayload.deviceId && !headerPayload.device_id) {
+    headerPayload.device_id = headerPayload.deviceId;
+  }
   const overrides = {
     conversation_id: conversationId,
-    header_json: JSON.stringify(header),
+    header_json: JSON.stringify(headerPayload),
     ciphertext_b64: ciphertextB64,
     counter,
     sender_device_id: senderDevice
   };
-  if (receiverAccountDigest) overrides.receiver_account_digest = receiverAccountDigest;
-  if (receiverDeviceId) overrides.receiver_device_id = receiverDeviceId;
+  overrides.receiver_account_digest = receiverAccountDigest;
+  overrides.receiver_device_id = receiverDeviceId;
   if (id) overrides.id = id;
   if (createdAt) overrides.created_at = createdAt;
   const payload = buildAccountPayload({ overrides });
@@ -92,9 +102,11 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
   return { r, data };
 }
 
-export async function deleteSecureConversation({ conversationId } = {}) {
+export async function deleteSecureConversation({ conversationId, peerAccountDigest, targetDeviceId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
-  const overrides = { conversationId };
+  if (!peerAccountDigest) throw new Error('peerAccountDigest required');
+  if (!targetDeviceId) throw new Error('targetDeviceId required');
+  const overrides = { conversationId, peerAccountDigest, targetDeviceId };
   const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout('/api/v1/messages/secure/delete-conversation', jsonReq(payload), 15000);
   const text = await r.text();

@@ -78,11 +78,19 @@ export function sendCallInviteSignal({
     log({ callSignalSendSkipped: 'call-invite', reason: 'missing-call-or-peer-digest' });
     return false;
   }
+  const senderDeviceId = ensureDeviceId();
+  const targetDeviceId = resolveActivePeerDeviceId() || null;
+  if (!targetDeviceId) {
+    log({ callSignalSendSkipped: 'call-invite', reason: 'missing-peer-device' });
+    return false;
+  }
   const normalizedCapabilities = capabilities || getCallCapability() || null;
   return emitSignal({
     type: 'call-invite',
     callId,
     targetAccountDigest: peerAccountDigest || null,
+    senderDeviceId,
+    targetDeviceId,
     mode: mode === 'video' ? 'video' : 'voice',
     metadata,
     capabilities: normalizedCapabilities,
@@ -94,9 +102,17 @@ export function sendCallInviteSignal({
 export function sendCallSignal(type, payload = {}) {
   if (!type) return false;
   const identity = normalizePeerIdentity(payload?.targetAccountDigest || payload?.target_account_digest || null);
+  const senderDeviceId = ensureDeviceId();
+  const targetDeviceId = payload.targetDeviceId || resolveActivePeerDeviceId() || null;
+  if (!targetDeviceId) {
+    log({ callSignalSendSkipped: type, reason: 'missing-peer-device' });
+    return false;
+  }
   const normalizedPayload = {
     ...payload,
-    ...(identity?.accountDigest ? { targetAccountDigest: identity.accountDigest } : {})
+    ...(identity?.accountDigest ? { targetAccountDigest: identity.accountDigest } : {}),
+    senderDeviceId,
+    targetDeviceId
   };
   delete normalizedPayload.targetUid;
   delete normalizedPayload.target_uid;

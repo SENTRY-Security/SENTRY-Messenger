@@ -1,31 +1,58 @@
-import { friendsCreateInvite, friendsAcceptInvite, friendsAttachInviteContact, parseFriendInvite, friendsShareContactUpdate } from '../../api/friends.js';
+// Share controller (Signal-style): QR only carries inviteId + secret + owner deviceId.
+// Flow: generate invite -> scan -> accept -> X3DH -> derive conversation token -> DR init -> contact-share.
+
+import { friendsCreateInvite, friendsAcceptInvite } from '../../api/friends.js';
 import { prekeysPublish } from '../../api/prekeys.js';
 import { devkeysStore } from '../../api/devkeys.js';
-import { encodeFriendInvite } from '../../lib/invite.js';
+import { encodeFriendInvite, decodeFriendInvite } from '../../lib/invite.js';
 import { generateQR } from '../../lib/qr.js';
 import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
+import { genX25519Keypair } from '../../crypto/nacl.js';
 import { b64 } from '../../crypto/nacl.js';
-import { setDevicePriv, getMkRaw, getAccountDigest, clearDrState, normalizePeerIdentity, drState, getDeviceId } from '../../core/store.js';
-import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
+import {
+  setDevicePriv,
+  getMkRaw,
+  getAccountDigest,
+  getDeviceId,
+  ensureDeviceId,
+  clearDrState,
+  normalizePeerIdentity
+} from '../../core/store.js';
+import { generateRandomNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
-import { restoreContactSecrets, setContactSecret, deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
+import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore } from './session-store.js';
-import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState, sendDrSessionInit } from '../../features/dr-session.js';
-import { handleSecureConversationControlMessage } from '../../features/secure-conversation-manager.js';
-import { CONTROL_MESSAGE_TYPES } from '../../features/secure-conversation-signals.js';
+import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState, sendDrText } from '../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
+import { bytesToB64Url, b64UrlToBytes } from '../../../shared/utils/base64.js';
 
-const INVITE_SECRET_STORAGE_KEY = 'inviteSecrets-v1';
+const INVITE_INFO = new TextEncoder().encode('invite-token');
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'manual']);
+// 手動標記目前 QR/聯絡人分享流程的版本，用來追蹤是否為最新部署
+const QR_BUILD_VERSION = 'qr-20250212-01';
+
+async function deriveInviteTokenB64Url(secretB64Url) {
+  const secretBytes = b64UrlToBytes(secretB64Url);
+  if (!secretBytes) throw new Error('invalid invite secret');
+  const baseKey = await crypto.subtle.importKey('raw', secretBytes, 'HKDF', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: INVITE_INFO }, baseKey, 256);
+  return bytesToB64Url(new Uint8Array(bits));
+}
+
+async function hashInviteTokenHex(inviteTokenB64Url) {
+  const tokenBytes = b64UrlToBytes(inviteTokenB64Url);
+  if (!tokenBytes) throw new Error('invalid invite token');
+  const digest = await crypto.subtle.digest('SHA-256', tokenBytes);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 export function setupShareController(options) {
   const {
     dom,
-    inviteSecrets,
     shareState,
     getProfileState,
     profileInitPromise,
@@ -38,225 +65,18 @@ export function setupShareController(options) {
     wsSend
   } = options;
 
+  if (!dom) throw new Error('分享控制器缺少必要的 DOM 參照');
+
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
-  const recentlyDeletedPeers = new Map();
-  const CONTACT_READD_COOLDOWN_MS = 30_000;
-  const PREKEY_ENSURE_INTERVAL_MS = 120_000;
-  const PREKEY_REPLENISH_COUNT = 24;
-  let prekeyEnsurePromise = null;
-  let lastPrekeyEnsureTs = 0;
-  let lastPrekeyEnsureResult = false;
 
-  function normalizePeerKey(value) {
-    const identity = normalizePeerIdentity(value?.peerAccountDigest ?? value?.accountDigest ?? value);
-    return identity.key || null;
-  }
-
-  if (!dom) throw new Error('分享控制器缺少必要的 DOM 參照');
   const contactSecretMap = restoreContactSecrets();
   primeStoredDrSnapshots(contactSecretMap);
 
-  function hasLiveDrState(peerDigest) {
-    const holder = drState(peerDigest);
-    return !!(
-      holder?.rk &&
-      holder?.myRatchetPriv instanceof Uint8Array &&
-      holder?.myRatchetPub instanceof Uint8Array &&
-      ((holder?.ckR instanceof Uint8Array && holder.ckR.length > 0) ||
-        (holder?.ckS instanceof Uint8Array && holder.ckS.length > 0))
-    );
-  }
-
-  function primeStoredDrSnapshots(map) {
-    const deviceId = getDeviceId() || 'default';
-    if (!(map instanceof Map)) return;
-    for (const [peerKey, info] of map.entries()) {
-      const digest = normalizePeerKey(peerKey);
-      if (!digest) continue;
-      const merged = getContactSecret(digest, { deviceId });
-      if (!merged?.drState) continue;
-      try {
-        restoreDrStateFromSnapshot({ peerAccountDigest: digest, snapshot: merged.drState });
-      } catch (err) {
-        log({ drSnapshotRestoreError: err?.message || err, peerAccountDigest: digest });
-      }
-    }
-  }
-
-  function storeContactSecretMapping({ peerAccountDigest, inviteId, secret, role, conversation, drState }) {
-    const key = normalizePeerKey(peerAccountDigest);
-    if (!key || !inviteId || !secret) return;
-    const deviceId = getDeviceId() || 'default';
-    let conversationToken = null;
-    let conversationId = null;
-    let conversationDrInit = null;
-    if (conversation) {
-      conversationToken = conversation.tokenB64 || conversation.token_b64 || null;
-      conversationId = conversation.conversationId || conversation.conversation_id || null;
-      conversationDrInit = conversation.dr_init || conversation.drInit || null;
-    }
-    const existing = getContactSecret(key, { deviceId }) || {};
-    const update = {
-      invite: {
-        id: inviteId,
-        secret,
-        ...(role ? { role } : {})
-      },
-      conversation: {
-        token: conversationToken || existing.conversationToken || null,
-        id: conversationId || existing.conversationId || null,
-        drInit: conversationDrInit || existing.conversationDrInit || null
-      },
-      meta: { source: 'share-controller:storeContactSecret' }
-    };
-    if (drState) {
-      const snapshot = snapshotDrState(drState);
-      if (snapshot) {
-        update.dr = { state: snapshot };
-      }
-    }
-    setContactSecret(key, { ...update, deviceId });
-  }
-
-  async function ensureSessionBootstrap(peerAccountDigest, conversation) {
-    const key = normalizePeerKey(peerAccountDigest);
-    if (!key || !conversation) return;
-    const deviceId = getDeviceId() || 'default';
-    const secretInfo = getContactSecret(key, { deviceId });
-    if (!secretInfo?.inviteId || !secretInfo?.secret) return;
-    const role = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
-    if (role !== 'guest') return;
-    if (Number.isFinite(secretInfo.sessionBootstrapTs) && secretInfo.sessionBootstrapTs > 0) return;
-    try {
-      await sendDrSessionInit({ peerAccountDigest: key, conversation });
-      handleSecureConversationControlMessage({
-        peerAccountDigest: key,
-        messageType: CONTROL_MESSAGE_TYPES.SESSION_INIT,
-        direction: 'outgoing',
-        source: 'share-controller:ensureSessionBootstrap'
-      });
-      setContactSecret(key, {
-        deviceId,
-        session: { bootstrapTs: Math.floor(Date.now() / 1000) },
-        meta: { source: 'share-controller:session-bootstrap' }
-      });
-    } catch (err) {
-      log({ sessionBootstrapSendError: err?.message || err, peerAccountDigest: key });
-    }
-  }
-
-  function markPeerRecentlyDeleted(peerAccountDigest) {
-    const key = normalizePeerKey(peerAccountDigest);
-    if (!key) return;
-    recentlyDeletedPeers.set(key, Date.now());
-    log({ contactRecentlyDeletedMarked: key });
-  }
-
-  function wasPeerRecentlyDeleted(peerAccountDigest) {
-    const key = normalizePeerKey(peerAccountDigest);
-    if (!key) return false;
-    const ts = recentlyDeletedPeers.get(key);
-    if (!ts) return false;
-    if (Date.now() - ts > CONTACT_READD_COOLDOWN_MS) {
-      recentlyDeletedPeers.delete(key);
-      return false;
-    }
-    log({ contactRecentlyDeletedCheck: key });
-    return true;
-  }
-
-  function getSecretForPeer(peerAccountDigest) {
-    const key = normalizePeerKey(peerAccountDigest);
-    if (!key) return null;
-    const deviceId = getDeviceId() || 'default';
-    return getContactSecret(key, { deviceId });
-  }
-
-  async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
-    const now = Date.now();
-    if (prekeyEnsurePromise) return prekeyEnsurePromise;
-    if (!force && lastPrekeyEnsureResult && now - lastPrekeyEnsureTs < PREKEY_ENSURE_INTERVAL_MS) {
-      return false;
-    }
-    prekeyEnsurePromise = (async () => {
-      const devicePriv = await ensureDevicePrivLoaded();
-      if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入完成初始化');
-      const mk = getMkRaw();
-      if (!mk) throw new Error('尚未解鎖主金鑰，請重新登入完成初始化');
-      const startId = Number(devicePriv.next_opk_id || 1);
-      const { opks, next } = await generateOpksFrom(startId, PREKEY_REPLENISH_COUNT);
-      if (!opks.length) {
-        lastPrekeyEnsureResult = false;
-        throw new Error('交友金鑰生成失敗');
-      }
-      const publishBundle = async ({ includeIdentity } = {}) => {
-        const bundle = includeIdentity
-          ? {
-              ik_pub: devicePriv.ik_pub_b64,
-              spk_pub: devicePriv.spk_pub_b64,
-              spk_sig: devicePriv.spk_sig_b64,
-              opks
-            }
-          : { opks };
-        const { r, data } = await prekeysPublish({ bundle });
-        if (!r.ok) {
-          const detail = typeof data === 'string'
-            ? data
-            : (data?.details || data?.message || data?.error || '');
-          const err = new Error(detail || 'prekey publish failed');
-          err.status = r.status;
-          err.payload = data;
-          throw err;
-        }
-        return true;
-      };
-      let published = false;
-      try {
-        await publishBundle({ includeIdentity: false });
-        published = true;
-      } catch (err) {
-        const reason = String(err?.message || '').toLowerCase();
-        const needFullBundle =
-          reason.includes('prekeyunavailable') ||
-          reason.includes('prekey user not found') ||
-          reason.includes('prekey user missing') ||
-          err?.status === 404 ||
-          err?.status === 409;
-        log({
-          invitePrekeyPublishOpkOnlyFailed: err?.message || err,
-          status: err?.status || null,
-          fallback: needFullBundle
-        });
-        if (!needFullBundle) throw err;
-        await publishBundle({ includeIdentity: true });
-        published = true;
-      }
-      if (!published) throw new Error('交友金鑰補貨未完成');
-      devicePriv.next_opk_id = next;
-      setDevicePriv(devicePriv);
-      const wrapped = await wrapDevicePrivWithMK(devicePriv, mk);
-      await devkeysStore({ wrapped_dev: wrapped });
-      lastPrekeyEnsureTs = Date.now();
-      lastPrekeyEnsureResult = true;
-      log({ invitePrekeyReplenished: { count: opks.length, next, reason } });
-      return true;
-    })()
-      .catch((err) => {
-        lastPrekeyEnsureResult = false;
-        log({ invitePrekeyEnsureError: err?.message || err, reason });
-        throw err;
-      })
-      .finally(() => {
-        prekeyEnsurePromise = null;
-      });
-    return prekeyEnsurePromise;
-  }
-
   const {
+    inviteBtn,
     inviteCountdownEl,
     inviteQrBox,
-    inviteRetryBtn,
     inviteRefreshBtn,
     btnShareModal,
     shareModal,
@@ -271,20 +91,12 @@ export function setupShareController(options) {
   shareState.mode = shareState.mode || 'qr';
   shareState.open = shareState.open || false;
   shareState.currentInvite = null;
-  shareState.inviteTimerId = shareState.inviteTimerId || null;
-  shareState.scanner = shareState.scanner || null;
-  shareState.scannerActive = shareState.scannerActive || false;
-  shareState.scannerOpen = shareState.scannerOpen || false;
-  shareState.inviteBlockedDueToKeys = !!shareState.inviteBlockedDueToKeys;
-  shareState.lastInviteError = shareState.lastInviteError || null;
-  shareState.retryHandler = shareState.retryHandler || null;
 
   if (shareModal) shareModal.setAttribute('data-share-mode', shareState.mode);
 
   const shareModalCloseButtons = shareModal
     ? Array.from(shareModal.querySelectorAll('[data-share-close-btn]'))
     : [];
-
   const shareBackdrop = shareModalBackdrop || (shareModal ? shareModal.querySelector('.modal-backdrop') : null);
 
   if (btnShareModal) btnShareModal.addEventListener('click', () => openShareModal('qr'));
@@ -292,301 +104,143 @@ export function setupShareController(options) {
   btnShareSwitchQr?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); showShareMode('qr'); });
   btnShareSwitchScan?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); showShareMode('scan'); });
   shareModalCloseButtons.forEach((btn) => btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closeShareModal(); }));
-
   document.addEventListener('keydown', handleEscapeKey);
   ensureQrPlaceholder();
 
-  inviteRetryBtn?.addEventListener('click', () => {
-    if (inviteRetryBtn.disabled) return;
-    const handler = typeof shareState.retryHandler === 'function' ? shareState.retryHandler : null;
-    if (handler) {
-      inviteRetryBtn.disabled = true;
-      handler();
-    }
-  });
   inviteRefreshBtn?.addEventListener('click', () => {
     if (inviteRefreshBtn.disabled) return;
     inviteRefreshBtn.disabled = true;
-    onGenerateInvite({ auto: false }).finally(() => {
+    onGenerateInvite().finally(() => {
       inviteRefreshBtn.disabled = false;
     });
   });
 
-  const AUTO_REFRESH_BUFFER_MS = 5_000;
-  let bodyScrollLocked = false;
-  let bodyScrollY = 0;
-
   function lockBodyScroll() {
-    if (bodyScrollLocked) return;
-    bodyScrollY = typeof window !== 'undefined' ? (window.scrollY || document.documentElement?.scrollTop || 0) : 0;
-    const body = document.body;
-    body.style.position = 'fixed';
-    body.style.top = `-${bodyScrollY}px`;
-    body.style.left = '0';
-    body.style.right = '0';
-    body.style.width = '100%';
-    bodyScrollLocked = true;
+    document.body.classList.add('modal-open');
   }
-
   function unlockBodyScroll() {
-    if (!bodyScrollLocked) return;
-    const body = document.body;
-    body.style.position = '';
-    body.style.top = '';
-    body.style.left = '';
-    body.style.right = '';
-    body.style.width = '';
-    if (typeof window !== 'undefined') {
-      window.scrollTo({ top: bodyScrollY || 0, behavior: 'auto' });
-    }
-    bodyScrollLocked = false;
+    document.body.classList.remove('modal-open');
   }
 
-  function isInviteActive(invite) {
-    if (!invite || !Number.isFinite(invite.expiresAt)) return false;
-    return invite.expiresAt * 1000 - Date.now() > AUTO_REFRESH_BUFFER_MS;
+  function currentOwnerDigest() {
+    const digest = getAccountDigest();
+    return digest ? String(digest).toUpperCase() : null;
   }
 
-  function getStoredActiveInvite() {
-    let freshest = null;
-    for (const [inviteId, record] of inviteSecrets.entries()) {
-      if (!record || record.role !== 'owner' || !record.secret) continue;
-      const expiresAt = Number(record.expiresAt ?? record.expires_at ?? 0);
-      if (!Number.isFinite(expiresAt) || expiresAt * 1000 <= Date.now()) continue;
-      if (!freshest || expiresAt > freshest.expiresAt) {
-        const ownerKey = normalizePeerKey(record.ownerAccountDigest || record.owner_account_digest);
-        freshest = {
-          inviteId: String(inviteId),
-          secret: String(record.secret),
-          expiresAt,
-          ownerAccountDigest: ownerKey,
-          prekeyBundle: record.prekeyBundle || null,
-          conversationToken: record.conversationToken || null,
-          conversationId: record.conversationId || null,
-          conversationDrInit: record.conversationDrInit || null
-        };
-      }
-    }
-    return freshest;
+  function normalizePeerKey(value, { peerDeviceId } = {}) {
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value,
+      peerDeviceId
+    });
+    if (!identity.key || !identity.deviceId) return null;
+    return identity.key;
   }
 
-  async function ensureActiveInvite({ force = false } = {}) {
-    if (!shareModal) return;
-    if (shareState.inviteBlockedDueToKeys && !force) {
-      setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', { isError: true });
-      return;
-    }
-    if (!shareState.currentInvite || force) {
-      const stored = getStoredActiveInvite();
-      if (stored) shareState.currentInvite = stored;
-    }
-    if (shareState.currentInvite && !force && isInviteActive(shareState.currentInvite)) {
-      renderInviteQr(shareState.currentInvite);
-      startInviteCountdown(shareState.currentInvite.expiresAt);
-      return;
-    }
-    await onGenerateInvite({ auto: true });
-  }
-
-  document.addEventListener('contacts:removed', (event) => {
-    const detail = event?.detail || {};
-    const peer = detail.peerAccountDigest || detail.peer_account_digest || detail.peer || detail.peerDigest || null;
-    const identity = normalizePeerIdentity({ peerAccountDigest: peer });
-    const key = identity.key || null;
-    markPeerRecentlyDeleted(key);
-    if (detail?.notifyPeer !== false && wsTransport && key) {
+  function primeStoredDrSnapshots(map) {
+    const deviceId = getDeviceId() || 'default';
+    if (!(map instanceof Map)) return;
+    for (const [peerKey, info] of map.entries()) {
+      const digest = normalizePeerKey(peerKey);
+      if (!digest) continue;
+      const merged = getContactSecret(digest, { deviceId });
+      if (!merged?.drState) continue;
       try {
-        wsTransport({
-          type: 'contact-removed',
-          targetAccountDigest: key
-        });
+        restoreDrStateFromSnapshot({ peerAccountDigest: digest, snapshot: merged.drState });
       } catch (err) {
-        log({ contactRemovedNotifyError: err?.message || err, peer: key });
+        console.error('[share-controller]', { drSnapshotRestoreError: err?.message || err, peerAccountDigest: digest });
       }
-    }
-  });
-
-  return {
-    persistInviteSecrets,
-    restoreInviteSecrets,
-    clearInviteSecrets,
-    handleContactShareEvent,
-    openShareModal,
-    closeShareModal,
-    showShareMode,
-    handleInviteScan,
-    broadcastContactUpdate,
-    removeContactSecret: (peerAccountDigest) => {
-      const key = normalizePeerKey(peerAccountDigest);
-      if (key) deleteContactSecret(key);
-    },
-    getCurrentInvite: () => shareState.currentInvite,
-    setWsSend(fn) {
-      wsTransport = typeof fn === 'function' ? fn : null;
-    }
-  };
-
-  function handleEscapeKey(e) {
-    if (e.key === 'Escape' && shareState.open) closeShareModal();
-  }
-
-  async function onGenerateInvite({ auto = false, attempt = 0 } = {}) {
-    const accountDigest = getAccountDigest();
-    if (!accountDigest) {
-      setInviteStatus('尚未登入，無法生成交友邀請，請重新登入後再試。', {
-        isError: true,
-        showRetry: true,
-        retryHandler: () => window.location.reload()
-      });
-      return;
-    }
-
-    if (shareState.retryTimerId) {
-      clearTimeout(shareState.retryTimerId);
-      shareState.retryTimerId = null;
-    }
-
-    setInviteStatus(auto ? '更新交友邀請中…' : '建立交友邀請中…', { loading: true });
-    shareState.retryHandler = null;
-    clearInviteView();
-    log({ inviteBegin: { auto, attempt } });
-
-    try {
-      setInviteStatus('檢查交友金鑰配置…', { loading: true });
-      await ensureOwnerPrekeys({ force: attempt > 0, reason: attempt > 0 ? 'retry' : 'initial' });
-
-      setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
-      const invite = await friendsCreateInvite();
-      log({ inviteCreateFetched: true });
-      if (!invite || !invite.inviteId || !invite.secret || !invite.expiresAt) {
-        throw new Error('伺服器回傳內容不完整');
-      }
-      log({ inviteCreateResponse: invite });
-
-      const conversation = await deriveConversationContextFromSecret(invite.secret);
-      const ownerKey = normalizePeerKey(
-        invite.ownerAccountDigest || invite.owner_account_digest || getAccountDigest()
-      );
-
-      shareState.currentInvite = {
-        inviteId: String(invite.inviteId),
-        secret: String(invite.secret),
-        expiresAt: Number(invite.expiresAt),
-        ownerAccountDigest: ownerKey,
-        prekeyBundle: invite.prekeyBundle || null,
-        conversationToken: conversation.tokenB64,
-        conversationId: conversation.conversationId,
-        conversationDrInit: conversation.drInit || conversation.dr_init || null
-      };
-      inviteSecrets.set(shareState.currentInvite.inviteId, {
-        secret: shareState.currentInvite.secret,
-        role: 'owner',
-        ownerAccountDigest: shareState.currentInvite.ownerAccountDigest || null,
-        prekeyBundle: shareState.currentInvite.prekeyBundle || null,
-        expiresAt: shareState.currentInvite.expiresAt,
-        conversationToken: shareState.currentInvite.conversationToken,
-        conversationId: shareState.currentInvite.conversationId,
-        conversationDrInit: shareState.currentInvite.conversationDrInit || null
-      });
-      persistInviteSecrets();
-      shareState.inviteBlockedDueToKeys = false;
-      shareState.lastInviteError = null;
-      shareState.retryHandler = null;
-
-      setInviteStatus('邀請已生成，載入 QR 中…', { loading: true });
-      await attachInviteOwnerContact(shareState.currentInvite);
-      renderInviteQr(shareState.currentInvite);
-      startInviteCountdown(shareState.currentInvite.expiresAt);
-    } catch (err) {
-      const msg = err?.message || String(err);
-      log({ inviteError: msg, attempt });
-      shareState.currentInvite = null;
-      shareState.lastInviteError = msg;
-      shareState.inviteBlockedDueToKeys = false;
-
-      if (shareState.retryTimerId) {
-        clearTimeout(shareState.retryTimerId);
-        shareState.retryTimerId = null;
-      }
-
-      if (isPrekeyRecoveryError(msg)) {
-        shareState.inviteBlockedDueToKeys = true;
-        const nextAttempt = attempt + 1;
-        const maxAutoRetries = 3;
-        if (nextAttempt <= maxAutoRetries) {
-          const delayMs = Math.min(4000, 1000 * Math.pow(2, attempt));
-          setInviteStatus(`補貨交友金鑰失敗，${(delayMs / 1000).toFixed(1)} 秒後自動重試（第 ${nextAttempt}/${maxAutoRetries} 次）。`, {
-            isError: true,
-            loading: true
-          });
-          shareState.retryTimerId = setTimeout(() => {
-            shareState.retryTimerId = null;
-            onGenerateInvite({ auto: true, attempt: nextAttempt });
-          }, delayMs);
-          return;
-        }
-      }
-
-      const normalized = msg.toLowerCase();
-      let userMessage = msg;
-      if (normalized.includes('裝置金鑰')) {
-        userMessage = '生成失敗：找不到裝置金鑰，請確認晶片交棒或重新登入。';
-      } else if (normalized.includes('主金鑰') || normalized.includes('尚未解鎖')) {
-        userMessage = '生成失敗：主金鑰尚未解鎖，請重新登入完成初始化。';
-      } else if (normalized.includes('prekey') || normalized.includes('bundle')) {
-        userMessage = `生成失敗：補貨交友金鑰失敗（${msg}），請稍後再試或檢查網路。`;
-      } else if (normalized.includes('network') || normalized.includes('fetch')) {
-        userMessage = `生成失敗：網路請求失敗（${msg}），請檢查連線後重試。`;
-      } else {
-        userMessage = `生成失敗：${msg}`;
-      }
-      const manualRetry = () => {
-        shareState.retryHandler = null;
-        setInviteStatus('重新嘗試生成交友邀請…', { loading: true });
-        onGenerateInvite({ auto: false, attempt: 0 });
-      };
-      setInviteStatus(userMessage, {
-        isError: true,
-        showRetry: true,
-        retryHandler: manualRetry
-      });
-    } finally {
-      updateProfileStats?.();
     }
   }
 
-  function renderInviteQr(invite) {
-    if (!inviteQrBox) return;
-    const payload = encodeFriendInvite(invite);
-    clearInviteView();
-    try {
-      const canvas = generateQR(payload, 220);
-      if (canvas) {
-        removeQrPlaceholder();
-        inviteQrBox.appendChild(canvas);
-      } else {
-        inviteQrBox.textContent = '無法產生 QR，請稍後再試。';
-      }
-    } catch (err) {
-      const msg = err?.message || String(err);
-      log({ qrRenderError: msg });
-      inviteQrBox.textContent = '生成 QR 時發生錯誤';
-    }
+  function hasLiveDrState(peerDigest) {
+    const identity = normalizePeerIdentity(peerDigest);
+    const digest = identity.accountDigest || normalizePeerKey(peerDigest);
+    const peerDeviceId = identity.deviceId || null;
+    if (!digest || !peerDeviceId) return false;
+    const holder = sessionStore.drStates?.get?.(`${digest}::${peerDeviceId}`) || null;
+    return !!(
+      holder?.rk &&
+      holder?.myRatchetPriv instanceof Uint8Array &&
+      holder?.myRatchetPub instanceof Uint8Array &&
+      ((holder?.ckR instanceof Uint8Array && holder.ckR.length > 0) ||
+        (holder?.ckS instanceof Uint8Array && holder.ckS.length > 0))
+    );
   }
 
-  async function attachInviteOwnerContact(invite) {
-    if (!invite?.inviteId || !invite?.secret) return;
-    const conversation = invite.conversationToken && invite.conversationId
-      ? { tokenB64: invite.conversationToken, conversationId: invite.conversationId }
-      : null;
-    const payload = await buildLocalContactPayload({ conversation });
-    try {
-      const envelope = await encryptContactPayload(invite.secret, payload);
-      await friendsAttachInviteContact({ inviteId: invite.inviteId, secret: invite.secret, envelope });
-      log({ inviteContactAttached: invite.inviteId });
-    } catch (err) {
-      log({ inviteContactAttachError: err?.message || err, inviteId: invite?.inviteId });
+  function storeContactSecretMapping({ peerAccountDigest, peerDeviceId, sessionKey, conversation, drState }) {
+    const conversationPeerDeviceId = conversation?.peerDeviceId || null;
+    const deviceHint = peerDeviceId || conversationPeerDeviceId || null;
+    const key = normalizePeerKey(peerAccountDigest, { peerDeviceId: deviceHint });
+    if (!key || !sessionKey || !deviceHint) {
+      console.warn('[share-controller]', { contactSecretStoreSkipped: true, reason: 'missing-key-or-device', peerAccountDigest, peerDeviceId: deviceHint });
+      throw new Error('contact secret requires peer device id and session key');
     }
+    const existing = getContactSecret(key, { deviceId: deviceHint }) || {};
+    const update = {
+      conversation: {
+        token: conversation?.token_b64 || sessionKey || existing.conversationToken || null,
+        id: conversation?.conversation_id || existing.conversationId || null,
+        drInit: conversation?.dr_init || existing.conversationDrInit || null,
+        peerDeviceId: conversationPeerDeviceId || deviceHint
+      },
+      meta: { source: 'share-controller:storeContactSecret' }
+    };
+    if (drState) {
+      const snapshot = snapshotDrState(drState);
+      if (snapshot) {
+        update.dr = { state: snapshot };
+      }
+    }
+    setContactSecret(key, { ...update, deviceId: deviceHint });
+  }
+
+  async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
+    const devicePriv = await ensureDevicePrivLoaded();
+    if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入完成初始化');
+    const mk = getMkRaw();
+    if (!mk) throw new Error('尚未解鎖主金鑰，請重新登入完成初始化');
+    const opkCount = devicePriv.opk_priv_map && typeof devicePriv.opk_priv_map === 'object'
+      ? Object.keys(devicePriv.opk_priv_map).length
+      : 0;
+    if (!force && opkCount >= 20) {
+      return true;
+    }
+    const startId = Number(devicePriv.next_opk_id || 1);
+    const { opks, opkPrivMap, next } = await generateOpksFrom(startId, 24);
+    if (!opks.length) {
+      throw new Error('交友金鑰生成失敗');
+    }
+    const deviceId = ensureDeviceId();
+    if (!deviceId) throw new Error('找不到裝置 ID，請重新登入完成初始化');
+    const signedPrekey = {
+      id: devicePriv.spk_id || devicePriv.spkId || 1,
+      pub: devicePriv.spk_pub_b64,
+      sig: devicePriv.spk_sig_b64,
+      ik: devicePriv.ik_pub_b64,
+      ik_pub: devicePriv.ik_pub_b64
+    };
+    const payload = {
+      deviceId,
+      signedPrekey,
+      opks
+    };
+    const { r, data } = await prekeysPublish(payload);
+    if (!r.ok) {
+      const detail = typeof data === 'string'
+        ? data
+        : (data?.details || data?.message || data?.error || '');
+      const err = new Error(detail || 'prekey publish failed');
+      err.status = r.status;
+      err.payload = data;
+      throw err;
+    }
+    devicePriv.next_opk_id = next;
+    if (!devicePriv.opk_priv_map) devicePriv.opk_priv_map = {};
+    Object.assign(devicePriv.opk_priv_map, opkPrivMap || {});
+    setDevicePriv(devicePriv);
+    const wrapped = await wrapDevicePrivWithMK(devicePriv, mk);
+    await devkeysStore({ wrapped_dev: wrapped });
+    return true;
   }
 
   function ensureQrPlaceholder() {
@@ -594,7 +248,7 @@ export function setupShareController(options) {
     if (!inviteQrBox.querySelector('.qr-placeholder')) {
       const div = document.createElement('div');
       div.className = 'qr-placeholder';
-      div.textContent = '生成交友邀請後會顯示 QR';
+      div.textContent = '伺服端無法解密，掃描 QR 即可安全交換';
       inviteQrBox.appendChild(div);
     }
   }
@@ -606,81 +260,113 @@ export function setupShareController(options) {
   }
 
   function setInviteStatus(message, opts = {}) {
-    if (typeof opts === 'boolean') {
-      opts = { isError: opts };
-    }
     const {
       isError = false,
-      loading = false,
-      showRetry = false,
-      retryHandler = null
+      loading = false
     } = opts || {};
     if (!inviteCountdownEl) return;
-    inviteCountdownEl.textContent = message || '';
+    inviteCountdownEl.textContent = message || '伺服端無法解密，僅雙方裝置可還原內容。';
     inviteCountdownEl.classList.toggle('is-error', !!isError && !!message);
     inviteCountdownEl.classList.toggle('is-loading', !!loading && !!message);
-    shareState.retryHandler = typeof retryHandler === 'function' ? retryHandler : null;
-    if (inviteRetryBtn) {
-      if (message && showRetry && shareState.retryHandler) {
-        inviteRetryBtn.style.display = 'inline-flex';
-        inviteRetryBtn.disabled = !!loading;
+  }
+
+  function renderInviteQr(invite) {
+    if (!inviteQrBox) return;
+    const payload = encodeFriendInvite(invite);
+    inviteQrBox.innerHTML = '';
+    try {
+      const canvas = generateQR(payload, 220);
+      if (canvas) {
+        removeQrPlaceholder();
+        inviteQrBox.appendChild(canvas);
+        inviteQrBox.setAttribute('data-qr-build-version', QR_BUILD_VERSION);
       } else {
-        inviteRetryBtn.style.display = 'none';
-        inviteRetryBtn.disabled = false;
+        inviteQrBox.textContent = '無法產生 QR，請稍後再試。';
       }
-    }
-    if (inviteRefreshBtn) {
-      inviteRefreshBtn.disabled = !!loading;
+    } catch (err) {
+      const msg = err?.message || String(err);
+      console.error('[share-controller]', { qrRenderError: msg });
+      inviteQrBox.textContent = '生成 QR 時發生錯誤';
     }
   }
 
-  function startInviteCountdown(expiresAt) {
-    stopInviteCountdown();
-    if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
-      setInviteStatus('邀請資訊不完整，請重新生成。', { isError: true });
+  async function onGenerateInvite() {
+    const ownerAccountDigest = currentOwnerDigest();
+    const ownerDeviceId = ensureDeviceId();
+    if (!ownerAccountDigest || !ownerDeviceId) {
+      setInviteStatus('尚未登入，無法生成交友邀請，請重新登入後再試。', { isError: true });
       return;
     }
-    const tick = () => {
-    const remainingMs = Math.floor(expiresAt * 1000 - Date.now());
-    if (remainingMs <= 0) {
-      stopInviteCountdown();
-      shareState.currentInvite = null;
-      clearInviteView();
-      if (inviteBtn) inviteBtn.textContent = '生成交友邀請';
-      if (shareState.open) {
-        if (shareState.inviteBlockedDueToKeys) {
-          setInviteStatus('交友邀請已過期，請重新登入完成初始化。', { isError: true });
-        } else {
-          setInviteStatus('交友邀請已過期，正在重新生成…');
-          setTimeout(() => onGenerateInvite({ auto: true }), 220);
-        }
-      } else {
-        setInviteStatus('交友邀請已過期，請重新生成。', { isError: true });
-      }
-      return;
+    setInviteStatus('檢查交友金鑰配置…', { loading: true });
+    await ensureOwnerPrekeys({ force: false, reason: 'invite' });
+    setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
+    const secretBytes = crypto.getRandomValues(new Uint8Array(32));
+    const secretB64Url = bytesToB64Url(secretBytes);
+    const inviteToken = await deriveInviteTokenB64Url(secretB64Url);
+    const tokenHash = await hashInviteTokenHex(inviteToken);
+    const invite = await friendsCreateInvite({ deviceId: ownerDeviceId, inviteToken });
+    if (!invite || !invite.inviteId || !invite.expiresAt) {
+      throw new Error('伺服器回傳內容不完整');
     }
-      const seconds = Math.ceil(remainingMs / 1000);
-      const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
-      const ss = String(seconds % 60).padStart(2, '0');
-      setInviteStatus(`交友邀請將在 ${mm}:${ss} 後過期。`);
+    shareState.currentInvite = {
+      inviteId: String(invite.inviteId),
+      secret: String(secretB64Url),
+      expiresAt: Number(invite.expiresAt),
+      ownerAccountDigest,
+      ownerDeviceId,
+      version: 2
     };
-    tick();
-    shareState.inviteTimerId = setInterval(tick, 1000);
+    console.log('[share-controller]', {
+      inviteGenerated: {
+        inviteId: shareState.currentInvite.inviteId,
+        expiresAt: shareState.currentInvite.expiresAt,
+        ownerDeviceId,
+        qrVersion: QR_BUILD_VERSION
+      }
+    });
+    setInviteStatus(`安全邀請通道已生成 (QR 版本 ${QR_BUILD_VERSION})，建立 QR 中…`, { loading: true });
+    renderInviteQr(shareState.currentInvite);
+    setInviteStatus(`安全邀請通道已生成 (QR 版本 ${QR_BUILD_VERSION})，請好友掃描 QR`, { loading: false });
   }
 
-  function stopInviteCountdown() {
-    if (shareState.inviteTimerId) {
-      clearInterval(shareState.inviteTimerId);
-      shareState.inviteTimerId = null;
+  function openShareModal(defaultMode = 'qr') {
+    if (!shareModal) return;
+    shareState.open = true;
+    shareModal.style.display = 'flex';
+    shareModal.setAttribute('aria-hidden', 'false');
+    lockBodyScroll();
+    const target = defaultMode === 'scan' ? 'scan' : 'qr';
+    showShareMode(target);
+    onGenerateInvite().catch((err) => console.error('[share-controller]', { inviteEnsureError: err?.message || err }));
+  }
+
+  function closeShareModal() {
+    if (!shareModal) return;
+    shareState.open = false;
+    shareModal.style.display = 'none';
+    shareModal.setAttribute('aria-hidden', 'true');
+    shareFlip?.classList.remove('flipped');
+    stopInviteScanner();
+    unlockBodyScroll();
+  }
+
+  function showShareMode(mode) {
+    if (!shareModal) return;
+    const target = mode === 'scan' ? 'scan' : 'qr';
+    shareState.mode = target;
+    shareModal.setAttribute('data-share-mode', target);
+    if (target === 'scan') {
+      shareFlip?.classList.add('flipped');
+      if (shareState.open) startInviteScanner();
+    } else {
+      shareFlip?.classList.remove('flipped');
+      stopInviteScanner();
+      onGenerateInvite().catch((err) => console.error('[share-controller]', { inviteEnsureError: err?.message || err }));
     }
   }
 
-  function clearInviteView() {
-    stopInviteCountdown();
-    if (inviteQrBox) {
-      inviteQrBox.innerHTML = '';
-      ensureQrPlaceholder();
-    }
+  function handleEscapeKey(e) {
+    if (e.key === 'Escape' && shareState.open) closeShareModal();
   }
 
   async function ensureInviteScanner() {
@@ -709,7 +395,7 @@ export function setupShareController(options) {
     if (!inviteScanStatus) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       inviteScanStatus.textContent = '此裝置不支援相機存取。';
-      log('invite scanner not supported');
+      console.warn('[share-controller] invite scanner not supported');
       shareState.scannerOpen = false;
       return;
     }
@@ -719,224 +405,128 @@ export function setupShareController(options) {
       await scanner.start();
       shareState.scannerActive = true;
       shareState.scannerOpen = true;
-      log('invite scanner started');
+      console.log('[share-controller] invite scanner started');
     } catch (err) {
       const msg = err?.message || String(err);
       inviteScanStatus.textContent = `無法開啟相機：${msg}`;
-      log({ inviteScannerError: msg });
+      console.error('[share-controller]', { inviteScannerError: msg });
       shareState.scannerOpen = false;
     }
   }
 
   async function stopInviteScanner() {
     if (shareState.scanner && shareState.scannerActive) {
-      try { await shareState.scanner.stop(); } catch (err) { log({ inviteScannerStopError: err?.message || err }); }
+      try { await shareState.scanner.stop(); } catch (err) { console.error('[share-controller]', { inviteScannerStopError: err?.message || err }); }
     }
     shareState.scannerActive = false;
     shareState.scannerOpen = false;
     if (inviteScanStatus) inviteScanStatus.textContent = '';
   }
 
-  async function restartInviteScannerWithMessage(message) {
-    if (inviteScanStatus) inviteScanStatus.textContent = message;
-    await startInviteScanner();
-  }
-
-  function openShareModal(defaultMode = 'qr') {
-    if (!shareModal) return;
-    shareState.open = true;
-    shareModal.style.display = 'flex';
-    shareModal.setAttribute('aria-hidden', 'false');
-    document.body.classList.add('modal-open');
-    lockBodyScroll();
-    if (btnShareModal) {
-      btnShareModal.dataset.hiddenByModal = '1';
-      btnShareModal.style.visibility = 'hidden';
-    }
-    const target = defaultMode === 'scan' ? 'scan' : 'qr';
-    showShareMode(target);
-    ensureActiveInvite().catch((err) => log({ inviteEnsureError: err?.message || err }));
-  }
-
-  function closeShareModal() {
-    if (!shareModal) return;
-    shareState.open = false;
-    shareModal.style.display = 'none';
-    shareModal.setAttribute('aria-hidden', 'true');
-    document.body.classList.remove('modal-open');
-    unlockBodyScroll();
-    shareModal.removeAttribute('data-share-mode');
-    shareFlip?.classList.remove('flipped');
-    stopInviteScanner();
-    if (btnShareModal && btnShareModal.dataset.hiddenByModal === '1') {
-      btnShareModal.style.visibility = '';
-      delete btnShareModal.dataset.hiddenByModal;
-    }
-  }
-
-  function showShareMode(mode) {
-    if (!shareModal) return;
-    const target = mode === 'scan' ? 'scan' : 'qr';
-    shareState.mode = target;
-    shareModal.setAttribute('data-share-mode', target);
-    if (target === 'scan') {
-      shareFlip?.classList.add('flipped');
-      if (shareState.open) startInviteScanner();
-    } else {
-      shareFlip?.classList.remove('flipped');
-      stopInviteScanner();
-      ensureActiveInvite().catch((err) => log({ inviteEnsureError: err?.message || err }));
-    }
-  }
-
   async function handleInviteScan(raw) {
     if (!raw) return;
-    log({ inviteScanRaw: raw });
+    console.log('[share-controller]', { inviteScanRaw: raw });
     if (shareState.scanner && shareState.scannerActive) {
-      try { await shareState.scanner.stop(); } catch (err) { log({ inviteScannerStopError: err?.message || err }); }
+      try { await shareState.scanner.stop(); } catch (err) { console.error('[share-controller]', { inviteScannerStopError: err?.message || err }); }
       shareState.scannerActive = false;
     }
     if (inviteScanStatus) inviteScanStatus.textContent = '解析中…';
     try {
-      let parsed;
-      try {
-        parsed = parseFriendInvite(raw);
-      } catch (err) {
-        log({ inviteScanParseError: err?.message || String(err) });
-        parsed = null;
-      }
-      log({ inviteScanParsed: parsed });
+      const parsed = decodeFriendInvite(raw);
+      console.log('[share-controller]', { inviteScanParsed: parsed });
       if (!parsed) throw new Error('無法解析好友邀請內容');
+      const version = Number.isFinite(parsed.version) ? Number(parsed.version) : 1;
+      if (version !== 2) {
+        throw new Error('邀請版本不符，請請好友重新生成 (需要 v2)');
+      }
       const ownerIdentity = normalizePeerIdentity({
-        peerAccountDigest: parsed.ownerAccountDigest || parsed.owner_account_digest || null
+        peerAccountDigest: parsed.ownerAccountDigest || null,
+        peerDeviceId: parsed.ownerDeviceId || null
       });
-      const ownerKey = ownerIdentity.key || null;
-      const ownerBundle = normalizeInviteOwnerBundle(parsed.prekeyBundle);
-      if (!ownerBundle) throw new Error('邀請缺少預共享金鑰資料，請請好友重新生成');
-
-      const conversation = await deriveConversationContextFromSecret(parsed.secret);
-
-      const entry = {
-        secret: parsed.secret,
-        role: 'guest',
-        ownerAccountDigest: ownerKey,
-        ownerBundle,
-        conversationToken: conversation.tokenB64,
-        conversationId: conversation.conversationId,
-        conversationDrInit: conversation.drInit || conversation.dr_init || null
-      };
-      inviteSecrets.set(parsed.inviteId, entry);
-      persistInviteSecrets();
-      sessionStore.conversationIndex?.set?.(conversation.conversationId, {
-        token_b64: conversation.tokenB64,
-        peerAccountDigest: ownerKey,
-        peerDeviceId: null,
-        secretRole: 'guest'
-      });
+      const ownerAccountDigest = ownerIdentity.accountDigest || null;
+      const ownerDeviceId = ownerIdentity.deviceId || parsed.ownerDeviceId || null;
+      if (!ownerDeviceId) throw new Error('invite 缺少 ownerDeviceId');
 
       const devicePriv = await ensureDevicePrivLoaded();
       if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入後再試');
-      const x3dhState = await x3dhInitiate(devicePriv, ownerBundle);
-      const guestBundle = buildGuestBundle(devicePriv, ownerBundle, x3dhState);
-      const drInitPayload = { guest_bundle: guestBundle, role: 'initiator' };
-      entry.guestBundle = guestBundle;
-      entry.conversationDrInit = drInitPayload;
-      inviteSecrets.set(parsed.inviteId, entry);
-      persistInviteSecrets();
+      const inviteToken = await deriveInviteTokenB64Url(parsed.secret);
+      const ekPair = await genX25519Keypair();
+      const guestBundle = buildGuestBundleForAccept(devicePriv, ekPair);
+      const res = await friendsAcceptInvite({ inviteId: parsed.inviteId, inviteToken, guestBundle });
+      console.log('[share-controller]', { inviteScanAccepted: res });
+
+      const ownerBundle = normalizeInviteOwnerBundle(res?.ownerPrekeyBundle || res?.owner_prekey_bundle);
+      const resolvedOwnerDigest = ownerAccountDigest || ownerBundle?.account_digest || null;
+      const resolvedOwnerDeviceId = ownerDeviceId || ownerBundle?.device_id || null;
+      if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
+      const x3dhState = await x3dhInitiate(devicePriv, ownerBundle, ekPair);
+      const conversation = await deriveConversationContextFromSecret(x3dhState.rk, { deviceId: resolvedOwnerDeviceId });
+
+      const drInitPayload = { guest_bundle: buildGuestBundle(devicePriv, ownerBundle, x3dhState), role: 'initiator' };
       const conversationContext = {
         token_b64: conversation.tokenB64,
         conversation_id: conversation.conversationId,
+        peerDeviceId: resolvedOwnerDeviceId,
         dr_init: drInitPayload
       };
+
+      const contactInitPayload = {
+        type: 'contact-init',
+        guestAccountDigest: (getAccountDigest() || '').toUpperCase(),
+        guestDeviceId: ensureDeviceId(),
+        guestBundle: drInitPayload.guest_bundle,
+        conversation: conversationContext
+      };
+      sendContactInit(resolvedOwnerDigest, resolvedOwnerDeviceId, contactInitPayload);
+      console.log('[share-controller]', { contactInitSent: { targetDigest: resolvedOwnerDigest, targetDeviceId: resolvedOwnerDeviceId, conversationId: conversationContext.conversation_id } });
+
+      await addContactEntry({
+        peerAccountDigest: resolvedOwnerDigest,
+        peerDeviceId: resolvedOwnerDeviceId,
+        nickname: '',
+        avatar: null,
+        conversation: conversationContext,
+        contactSecret: conversation.tokenB64
+      });
+      const alreadyLive = hasLiveDrState(resolvedOwnerDigest);
+      if (!alreadyLive) {
+        clearDrState(resolvedOwnerDigest);
+        primeDrStateFromInitiator({ peerAccountDigest: resolvedOwnerDigest, peerDeviceId: resolvedOwnerDeviceId, state: x3dhState });
+      }
+      storeContactSecretMapping({
+        peerAccountDigest: resolvedOwnerDigest,
+        peerDeviceId: resolvedOwnerDeviceId,
+        sessionKey: conversation.tokenB64,
+        conversation: conversationContext,
+        drState: x3dhState
+      });
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
-        peerAccountDigest: ownerKey,
-        peerDeviceId: null,
-        dr_init: drInitPayload,
-        secretRole: 'guest'
+        peerAccountDigest: resolvedOwnerDigest,
+        peerDeviceId: resolvedOwnerDeviceId,
+        dr_init: drInitPayload
       });
-      let contactEnvelope = null;
-      try {
-        const payload = await buildLocalContactPayload({
-          conversation: conversationContext,
-          drInit: drInitPayload
-        });
-        contactEnvelope = await encryptContactPayload(parsed.secret, payload);
-      } catch (err) {
-        log({ contactEnvelopeEncryptError: err?.message || err });
-        contactEnvelope = null;
-      }
-      const res = await friendsAcceptInvite({ inviteId: parsed.inviteId, secret: parsed.secret, contactEnvelope, guestBundle });
-      log({ inviteScanAccepted: res });
-      const resolvedOwner = normalizePeerIdentity({
-        peerAccountDigest: res?.ownerAccountDigest || res?.owner_account_digest || ownerKey
+
+      await sendContactShare({
+        peerAccountDigest: resolvedOwnerDigest,
+        conversation: conversationContext,
+        sessionKey: conversation.tokenB64,
+        peerDeviceId: resolvedOwnerDeviceId,
+        drInit: drInitPayload
       });
-      const ownerDigest = resolvedOwner.key || ownerKey;
-      if (ownerDigest) {
-        let ownerContact = null;
-        if (res?.owner_contact?.iv && res?.owner_contact?.ct) {
-          try {
-            ownerContact = await decryptContactPayload(parsed.secret, res.owner_contact);
-          } catch (err) {
-            log({ ownerContactDecryptError: err?.message || err });
-            ownerContact = null;
-          }
-        }
-        const nickname = ownerContact?.nickname || '';
-        const avatar = ownerContact?.avatar || null;
-        let conversationInfo = ownerContact?.conversation && ownerContact.conversation.token_b64 && ownerContact.conversation.conversation_id
-          ? {
-              token_b64: ownerContact.conversation.token_b64,
-              conversation_id: ownerContact.conversation.conversation_id,
-              ...(ownerContact.conversation.dr_init ? { dr_init: ownerContact.conversation.dr_init } : null)
-            }
-          : conversationContext;
-        if (!conversationInfo?.dr_init && conversationContext?.dr_init) {
-          conversationInfo = {
-            ...(conversationInfo || {}),
-            dr_init: conversationContext.dr_init
-          };
-        }
-        await addContactEntry({
-          peerAccountDigest: ownerDigest,
-          nickname,
-          avatar,
-          conversation: conversationInfo,
-          contactSecret: parsed.secret,
-          inviteId: parsed.inviteId,
-          secretRole: 'guest'
-        });
-        try {
-          const alreadyLive = hasLiveDrState(ownerDigest);
-          if (!alreadyLive) {
-            clearDrState(ownerDigest);
-            primeDrStateFromInitiator({ peerAccountDigest: ownerDigest, state: x3dhState });
-          }
-        } catch (err) {
-          log({ drPrimeError: err?.message || err, peer: ownerDigest });
-        }
-        storeContactSecretMapping({
-          peerAccountDigest: ownerDigest,
-          inviteId: parsed.inviteId,
-          secret: parsed.secret,
-          role: 'guest',
-          conversation: conversationInfo,
-          drState: x3dhState
-        });
-        await ensureSessionBootstrap(ownerDigest, conversationInfo);
-      }
-      inviteSecrets.delete(parsed.inviteId);
-      persistInviteSecrets();
-      showShareMode('qr');
+
       if (inviteScanStatus) inviteScanStatus.textContent = '成功加入好友！';
       switchTab('contacts');
       setTimeout(() => {
         if (shareState.open) closeShareModal();
-      }, 1400);
+      }, 700);
     } catch (err) {
       const msg = err?.message || String(err);
-      log({ inviteScanError: msg });
-      if (inviteScanStatus) inviteScanStatus.textContent = `無法解析：${msg}`;
+      const friendly = msg.toLowerCase().includes('expired')
+        ? '邀請已過期，請請好友重新生成 QR。'
+        : msg;
+      console.error('[share-controller]', { inviteScanError: msg });
+      if (inviteScanStatus) inviteScanStatus.textContent = friendly || '無法解析邀請內容';
       setTimeout(() => {
         if (shareState.open && shareState.mode === 'scan') {
           restartInviteScannerWithMessage('請再試一次，將 QR 置中掃描');
@@ -945,404 +535,46 @@ export function setupShareController(options) {
     }
   }
 
-  async function handleContactShareEvent(msg) {
-    const inviteId = String(msg?.inviteId || '').trim();
-    const identity = normalizePeerIdentity({
-      peerAccountDigest: msg?.fromAccountDigest || msg?.from_account_digest || msg?.peerAccountDigest || msg?.peer_account_digest || null
+  async function sendContactShare({ peerAccountDigest, conversation, sessionKey, peerDeviceId, drInit }) {
+    const targetIdentity = normalizePeerIdentity({ peerAccountDigest });
+    const targetDigest = targetIdentity.accountDigest || targetIdentity.key || null;
+    const senderDeviceId = ensureDeviceId();
+    const conversationToken = conversation?.token_b64 || conversation?.tokenB64 || sessionKey || null;
+    const conversationId = conversation?.conversation_id || conversation?.conversationId || null;
+    const resolvedPeerDeviceId = peerDeviceId || null; // 嚴格要求顯式指定對方裝置
+    console.log('[share-controller]', {
+      contactShareValidate: {
+        peerAccountDigest: peerAccountDigest || null,
+        targetDigest: targetDigest || null,
+        conversationId: conversationId || null,
+        hasToken: !!conversationToken,
+        peerDeviceId: resolvedPeerDeviceId || null
+      }
     });
-    const peerKey = identity.key;
-    const peerDeviceId = typeof msg?.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
-    if (!inviteId || !peerKey) return;
-    const existingContact = sessionStore.contactIndex?.get?.(peerKey) || null;
-    const hadContact = !!existingContact;
-    const record = inviteSecrets.get(inviteId);
-    let secret = record?.secret;
-    let stored = null;
-    if (!secret) {
-      stored = getSecretForPeer(peerKey);
-      if (stored && stored.inviteId === inviteId && stored.secret) {
-        secret = stored.secret;
-      }
+    if (!targetDigest || !conversationToken || !conversationId) {
+      throw new Error('contact-share missing required fields');
     }
-    if (!secret) {
-      log({ contactShareMissingSecret: inviteId, fromAccountDigest: peerKey });
-      return;
+    if (!resolvedPeerDeviceId) {
+      throw new Error('contact-share missing peerDeviceId (strict path)');
     }
-    const envelope = msg?.envelope;
-    if (!envelope?.iv || !envelope?.ct) return;
-    const hasPendingInvite = !!record;
-    try {
-      const payload = await decryptContactPayload(secret, envelope);
-      const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
-      const reasonKey = reasonRaw ? reasonRaw.toLowerCase() : null;
-      if (reasonKey === 'conversation-delete' && wasPeerRecentlyDeleted(peerKey)) {
-        log({ contactShareIgnoredForDeleted: peerKey, reason: reasonKey });
-        recentlyDeletedPeers.delete(peerKey);
-        return;
-      }
-      let conversation = null;
-      if (payload?.conversation && payload.conversation.token_b64 && payload.conversation.conversation_id) {
-        conversation = payload.conversation;
-      } else if (record?.conversationToken && record?.conversationId) {
-        conversation = { token_b64: record.conversationToken, conversation_id: record.conversationId };
-      } else if (stored?.conversationToken && stored?.conversationId) {
-        conversation = {
-          token_b64: stored.conversationToken,
-          conversation_id: stored.conversationId,
-          dr_init: stored.conversationDrInit || null
-        };
-      } else if (existingContact?.conversation?.token_b64 && existingContact?.conversation?.conversation_id) {
-        conversation = {
-          token_b64: existingContact.conversation.token_b64,
-          conversation_id: existingContact.conversation.conversation_id,
-          dr_init: existingContact.conversation.dr_init || null
-        };
-      }
-      if (conversation && !conversation.dr_init) {
-        conversation.dr_init = existingContact?.conversation?.dr_init || stored?.conversationDrInit || record?.conversationDrInit || null;
-      }
-      if (peerDeviceId && !conversation?.peer_device_id) {
-        conversation = { ...(conversation || {}), peer_device_id: peerDeviceId };
-      }
-      await addContactEntry({
-        peerAccountDigest: peerKey,
-        nickname: payload.nickname,
-        avatar: payload.avatar || null,
-        conversation,
-        contactSecret: secret,
-        inviteId,
-        secretRole: record?.role || stored?.role || null
-      });
-      if (conversation?.conversation_id && conversation?.token_b64) {
-        sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
-          token_b64: conversation.token_b64,
-          peerAccountDigest: peerKey,
-          peerDeviceId: peerDeviceId || null,
-          dr_init: conversation.dr_init || null,
-          secretRole: record?.role || stored?.role || null
-        });
-      }
-      storeContactSecretMapping({
-        peerAccountDigest: peerKey,
-        inviteId,
-        secret,
-        role: record?.role || stored?.role || null,
-        conversation
-      });
-      const drInitRaw = conversation?.dr_init || conversation?.drInit || null;
-      let validatedDrInit = drInitRaw ? normalizeDrInit(drInitRaw) : null;
-      if (!validatedDrInit && drInitRaw) {
-        log({ contactShareGuestBundleInvalid: { fromAccountDigest: peerKey, inviteId, hasBundle: true } });
-      }
-      if (!validatedDrInit && conversation?.dr_init) {
-        const normalized = normalizeDrInit(conversation.dr_init);
-        if (normalized) validatedDrInit = normalized;
-      }
-      if (conversation && validatedDrInit) {
-        conversation.dr_init = validatedDrInit;
-      }
-      const bundleRaw = validatedDrInit?.guest_bundle || drInitRaw?.guest_bundle || drInitRaw?.guestBundle || null;
-      const normalizedBundle = bundleRaw ? normalizeGuestBundle(bundleRaw) : null;
-      const candidateRole = [
-        existingContact?.secretRole,
-        record?.role,
-        stored?.role
-      ].find((value) => typeof value === 'string' && value.length);
-      const selfRole = candidateRole ? candidateRole.toLowerCase() : null;
-      if (bundleRaw && !normalizedBundle) {
-        log({ contactShareGuestBundleMissingSig: { fromAccountDigest: peerKey, inviteId } });
-        if (notifyToast) {
-          notifyToast('好友金鑰資料缺失，請請對方重新邀請', { variant: 'error' });
-        }
-      } else if (normalizedBundle && selfRole !== 'guest') {
-        const alreadyLive = hasLiveDrState(peerKey);
-        if (!alreadyLive) {
-          if (hasPendingInvite) {
-            clearDrState(peerKey);
-          }
-          try {
-            await bootstrapDrFromGuestBundle({
-              peerAccountDigest: peerKey,
-              guestBundle: normalizedBundle,
-              force: hasPendingInvite
-            });
-          } catch (err) {
-            log({ drBootstrapError: err?.message || err });
-          }
-        }
-      }
-      inviteSecrets.delete(inviteId);
-      persistInviteSecrets();
-      shareState.currentInvite = null;
-      if (!shareState.inviteBlockedDueToKeys) {
-    try {
-      await onGenerateInvite({ auto: true });
-    } catch (err) {
-      log({ autoInviteRefreshError: err?.message || err });
-    }
-      } else if (shareState.open) {
-        setInviteStatus('缺少交友金鑰，請重新登入完成初始化。', { isError: true });
-      }
-      if (shareState.open) {
-        closeShareModal();
-      }
-      const isProfileUpdateReason = reasonKey && CONTACT_UPDATE_REASONS.has(reasonKey);
-      const isNewlyAdded = !hadContact;
-      if (notifyToast) {
-        if (isNewlyAdded) {
-          notifyToast('已成功加入好友', { variant: 'success' });
-        } else if (isProfileUpdateReason) {
-          const updateMessage =
-            reasonKey === 'avatar'
-              ? '好友頭像已更新'
-              : reasonKey === 'nickname'
-                ? '好友暱稱已更新'
-                : '好友資料已更新';
-          notifyToast(updateMessage, { variant: 'success' });
-        }
-      }
-      if (isNewlyAdded) {
-        const tab = typeof getCurrentTab === 'function' ? getCurrentTab() : null;
-        if (typeof switchTab === 'function' && tab !== 'contacts') {
-          switchTab('contacts');
-        }
-      }
-      recentlyDeletedPeers.delete(peerKey);
-    } catch (err) {
-      log({ contactShareDecryptError: err?.message || err });
-    }
-  }
-
-  async function broadcastContactUpdate({ reason, targetPeers, overrides } = {}) {
-    const secretMap = restoreContactSecrets();
-    const targetSet = Array.isArray(targetPeers)
-      ? new Set(
-          targetPeers
-            .map((value) => normalizePeerKey(value))
-            .filter(Boolean)
-        )
-      : null;
-    const entries = Array.from(secretMap.entries());
-    if (!entries.length) return { total: 0, success: 0, errors: [] };
-
-    let success = 0;
-    const errors = [];
-
-    for (const [peerKeyRaw, info] of entries) {
-      const peerKey = normalizePeerKey(peerKeyRaw);
-      if (!peerKey) continue;
-      if (targetSet && !targetSet.has(peerKey)) continue;
-      log({ contactBroadcastCandidate: {
-        peerAccountDigest: peerKey,
-        hasInviteId: !!info?.inviteId,
-        hasSecret: !!info?.secret,
-        hasConversation: !!(info?.conversationToken && info?.conversationId),
-        role: info?.role || null
-      } });
-      const inviteId = info?.inviteId;
-      const secret = info?.secret;
-      if (!inviteId || !secret) continue;
-      const contactEntry = sessionStore.contactIndex?.get?.(peerKey) || null;
-      const targetAccountDigest = normalizePeerIdentity({ peerAccountDigest: peerKey }).key || null;
-      let conversation = contactEntry?.conversation && contactEntry.conversation.token_b64 && contactEntry.conversation.conversation_id
-        ? {
-            tokenB64: contactEntry.conversation.token_b64,
-            conversationId: contactEntry.conversation.conversation_id,
-            dr_init: contactEntry.conversation.dr_init || null
-          }
-        : (info?.conversationToken && info?.conversationId
-            ? {
-                tokenB64: info.conversationToken,
-                conversationId: info.conversationId
-              }
-            : null);
-      const conversationId = conversation?.conversationId || conversation?.conversation_id || null;
-      if (conversationId && (!conversation?.dr_init || !conversation.dr_init?.guest_bundle)) {
-        const storedConv = sessionStore.conversationIndex?.get?.(conversationId);
-        if (storedConv?.dr_init) {
-          conversation = {
-            ...(conversation || {}),
-            tokenB64: conversation?.tokenB64 || storedConv.token_b64,
-            conversationId,
-            dr_init: storedConv.dr_init
-          };
-        }
-      }
-      const drInit = conversation?.dr_init || conversation?.drInit || info?.conversationDrInit || null;
-      const conversationToken = conversation?.tokenB64 || conversation?.token_b64 || null;
-      const accountDigest = (getAccountDigest() || '').toUpperCase();
-      let payload = null;
-      let envelope = null;
-      try {
-        payload = await buildLocalContactPayload({ conversation, drInit, overrides });
-        payload.reason = reason || 'update';
-        log({ contactBroadcastPayload: { peerAccountDigest: peerKey, hasConversation: !!payload?.conversation, drInit: payload?.conversation?.dr_init ? 'yes' : 'no' } });
-        envelope = await encryptContactPayload(secret, payload);
-        const sharePayload = { inviteId, secret, peerAccountDigest: targetAccountDigest, envelope };
-        if (conversationId) sharePayload.conversationId = conversationId;
-        await friendsShareContactUpdate(sharePayload);
-        storeContactSecretMapping({
-          peerAccountDigest: peerKey,
-          inviteId,
-          secret,
-          role: info?.role || null,
-          conversation
-        });
-        success += 1;
-        if (wsTransport) {
-          try {
-            wsTransport({
-              type: 'contacts-reload',
-              targetAccountDigest
-            });
-          } catch (err) {
-            log({ contactsReloadNotifyError: err?.message || err, peerAccountDigest: peerKey });
-          }
-        }
-      } catch (err) {
-        const message = err?.message || '';
-        if (message.includes('NotFound')) {
-          log({ contactBroadcastFallback: message, peerAccountDigest: peerKey, reason: reason || null });
-          try {
-            if (!envelope && secret && payload) {
-              envelope = await encryptContactPayload(secret, payload);
-            }
-            if (wsTransport && envelope) {
-              wsTransport({
-                type: 'contact-share',
-                targetAccountDigest,
-                senderDeviceId: getDeviceId() || 'default',
-                inviteId,
-                envelope
-              });
-              success += 1;
-              continue;
-            }
-          } catch (notifyErr) {
-            log({ contactShareFallbackError: notifyErr?.message || notifyErr, peerAccountDigest: peerKey });
-          }
-          if (wsTransport) {
-            try {
-              wsTransport({
-                type: 'contacts-reload',
-                targetAccountDigest
-              });
-              success += 1;
-              continue;
-            } catch (notifyErr) {
-              log({ contactsReloadNotifyError: notifyErr?.message || notifyErr, peerAccountDigest: peerKey });
-            }
-          }
-        }
-        errors.push({ peerAccountDigest: peerKey, error: err });
-        log({ contactBroadcastError: message || err, peerAccountDigest: peerKey, reason: reason || null });
-      }
-    }
-
-    if (success > 0 && notifyToast) {
-      const message = reason === 'avatar' ? '好友頭像已更新' : '好友資料已更新';
-      notifyToast(message, { variant: 'success' });
-    }
-
-    return { total: entries.length, success, errors };
-  }
-
-  function persistInviteSecrets() {
-    try {
-      const payload = JSON.stringify(Array.from(inviteSecrets.entries()));
-      sessionStorage.setItem(INVITE_SECRET_STORAGE_KEY, payload);
-    } catch (err) {
-      log({ inviteSecretPersistError: err?.message || err });
-    }
-    updateProfileStats?.();
-  }
-
-  function restoreInviteSecrets() {
-    try {
-      const raw = sessionStorage.getItem(INVITE_SECRET_STORAGE_KEY);
-      if (!raw) return;
-      const items = JSON.parse(raw);
-      if (!Array.isArray(items)) return;
-      inviteSecrets.clear();
-      for (const [inviteId, info] of items) {
-        if (!inviteId || !info?.secret) continue;
-        const record = {
-          secret: String(info.secret),
-          role: info.role === 'owner' ? 'owner' : 'guest'
-        };
-        const ownerKey = normalizePeerKey(info.ownerAccountDigest || info.owner_account_digest);
-        if (ownerKey) {
-          record.ownerAccountDigest = ownerKey;
-        }
-        if (info.prekeyBundle || info.ownerBundle || info.prekey_bundle) {
-          record.prekeyBundle = info.prekeyBundle || info.ownerBundle || info.prekey_bundle;
-        }
-        if (info.guestBundle || info.guest_bundle) {
-          const normalizedBundle = normalizeGuestBundle(info.guestBundle || info.guest_bundle);
-          if (normalizedBundle) record.guestBundle = normalizedBundle;
-        }
-        if (info.conversationDrInit || info.conversation_dr_init) {
-          record.conversationDrInit = info.conversationDrInit || info.conversation_dr_init;
-        }
-        if (info.expiresAt || info.expires_at) {
-          const ts = Number(info.expiresAt ?? info.expires_at);
-          if (Number.isFinite(ts)) record.expiresAt = ts;
-        }
-        if (info.conversationToken || info.conversation_token) {
-          const token = String(info.conversationToken || info.conversation_token || '').trim();
-          if (token) record.conversationToken = token;
-        }
-        if (info.conversationId || info.conversation_id) {
-          const cid = String(info.conversationId || info.conversation_id || '').trim();
-          if (cid) record.conversationId = cid;
-        }
-        inviteSecrets.set(String(inviteId), record);
-      }
-    } catch (err) {
-      log({ inviteSecretRestoreError: err?.message || err });
-    }
-    const stored = getStoredActiveInvite();
-    if (stored) shareState.currentInvite = stored;
-    updateProfileStats?.();
-  }
-
-  function clearInviteSecrets() {
-    inviteSecrets.clear();
-    shareState.currentInvite = null;
-    clearInviteView();
-    try { sessionStorage.removeItem(INVITE_SECRET_STORAGE_KEY); } catch (err) { log({ inviteSecretClearError: err?.message || err }); }
-    updateProfileStats?.();
-  }
-
-  function normalizeGuestBundle(bundle) {
-    if (!bundle || typeof bundle !== 'object') return null;
-    const clean = (value) => (typeof value === 'string' ? value.trim() : '');
-    const ek = clean(bundle.ek_pub || bundle.ek || bundle.ephemeral_pub || '');
-    const sig = clean(bundle.spk_sig || bundle.spkSig || bundle.signature || '');
-    if (!ek || !sig) return null;
-    const normalized = { ek_pub: ek, spk_sig: sig };
-    const ik = clean(bundle.ik_pub || bundle.ik || bundle.identity_pub || '');
-    if (ik) normalized.ik_pub = ik;
-    const spk = clean(bundle.spk_pub || bundle.spk || '');
-    if (spk) normalized.spk_pub = spk;
-    const opkIdRaw = bundle.opk_id ?? bundle.opkId ?? bundle.opk?.id;
-    if (opkIdRaw !== undefined && opkIdRaw !== null && opkIdRaw !== '') {
-      const parsed = Number(opkIdRaw);
-      if (Number.isFinite(parsed)) normalized.opk_id = parsed;
-    }
-    return normalized;
-  }
-
-  function normalizeDrInit(info) {
-    if (!info || typeof info !== 'object') return null;
-    if (info.guest_bundle || info.guestBundle) {
-      const normalizedBundle = normalizeGuestBundle(info.guest_bundle || info.guestBundle);
-      if (!normalizedBundle) return null;
-      const out = { guest_bundle: normalizedBundle };
-      if (info.role) out.role = info.role;
-      return out;
-    }
-    return null;
+    const payload = await buildLocalContactPayload({ conversation, drInit });
+    payload.reason = payload.reason || 'invite-accept';
+    const contactPayload = { ...payload };
+    const envelope = await encryptContactPayload(sessionKey || conversationToken, contactPayload);
+    const metaOverrides = {
+      msg_type: 'contact-share',
+      targetDeviceId: resolvedPeerDeviceId || null,
+      receiverDeviceId: resolvedPeerDeviceId || null,
+      peerDeviceId: resolvedPeerDeviceId || null
+    };
+    await sendDrText({
+      peerAccountDigest: targetDigest,
+      conversation,
+      convId: conversationId,
+      peerDeviceId: resolvedPeerDeviceId,
+      text: JSON.stringify({ type: 'contact-share', envelope }),
+      metaOverrides
+    });
   }
 
   async function buildLocalContactPayload({ conversation, drInit, overrides } = {}) {
@@ -1368,7 +600,7 @@ export function setupShareController(options) {
       try {
         await profileInitPromise;
       } catch (err) {
-        log({ profileInitAwaitError: err?.message || err });
+        console.error('[share-controller]', { profileInitAwaitError: err?.message || err });
       }
       const loadedProfile = typeof getProfileState === 'function' ? getProfileState() : null;
       profileState = pickPreferredProfile(initialProfile, loadedProfile);
@@ -1379,17 +611,18 @@ export function setupShareController(options) {
 
     const nickname = profileState?.nickname || '';
     let avatar = null;
-    const baseAvatar = profileState?.avatar || initialProfile?.avatar || null;
+    const overrideAvatar = overrides?.avatar || null;
+    const baseAvatar = overrideAvatar || profileState?.avatar || initialProfile?.avatar || null;
     if (baseAvatar) {
       let ensuredAvatar = null;
-      if (ensureAvatarThumbnail) {
+      if (!overrideAvatar && ensureAvatarThumbnail) {
         try {
           ensuredAvatar = await ensureAvatarThumbnail();
         } catch (err) {
-          log({ ensureAvatarThumbError: err?.message || err });
+          console.error('[share-controller]', { ensureAvatarThumbError: err?.message || err });
         }
       }
-      const effectiveAvatar = ensuredAvatar || baseAvatar;
+      const effectiveAvatar = overrideAvatar || ensuredAvatar || baseAvatar;
       const thumb = effectiveAvatar?.thumbDataUrl || effectiveAvatar?.previewDataUrl || null;
       if (thumb) {
         avatar = {
@@ -1399,13 +632,15 @@ export function setupShareController(options) {
         if (!avatar.previewDataUrl && effectiveAvatar?.previewDataUrl) {
           avatar.previewDataUrl = effectiveAvatar.previewDataUrl;
         }
-        if (!profileState?.avatar?.thumbDataUrl && thumb) {
+        if (!profileState?.avatar?.thumbDataUrl && thumb && !overrideAvatar) {
           sessionStore.profileState = {
             ...(sessionStore.profileState || {}),
             avatar: { ...(sessionStore.profileState?.avatar || effectiveAvatar), thumbDataUrl: thumb }
           };
           profileState = sessionStore.profileState;
         }
+      } else if (overrideAvatar) {
+        avatar = { ...overrideAvatar };
       }
     }
 
@@ -1413,16 +648,24 @@ export function setupShareController(options) {
     if (conversation) {
       const convToken = conversation.tokenB64 || conversation.token_b64 || null;
       const convId = conversation.conversationId || conversation.conversation_id || null;
+      const peerDeviceId =
+        conversation.peerDeviceId ||
+        conversation.peerDeviceId ||
+        ensureDeviceId() ||
+        null;
       if (convToken && convId) {
         conversationInfo = {
           token_b64: convToken,
           conversation_id: convId
         };
-        const drInitPayload = normalizeDrInit(drInit) || normalizeDrInit(conversation.dr_init || conversation.drInit);
+        if (peerDeviceId) {
+          conversationInfo.peerDeviceId = peerDeviceId;
+        }
+        const drInitPayload = drInit || conversation.dr_init || conversation.drInit || null;
         if (drInitPayload) conversationInfo.dr_init = drInitPayload;
       }
     }
-    const overrideNickname = overrides?.nickname ? normalizeNickname(overrides.nickname) : null;
+    const overrideNickname = overrides?.nickname;
     const effectiveNickname = overrideNickname || nickname || generateRandomNickname();
     const payload = {
       nickname: effectiveNickname,
@@ -1432,35 +675,253 @@ export function setupShareController(options) {
     if (conversationInfo) payload.conversation = conversationInfo;
     return payload;
   }
-  async function ensureDevicePrivLoaded() {
+
+  async function handleContactShareEvent(msg) {
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: msg?.fromAccountDigest || msg?.peerAccountDigest || null,
+      peerDeviceId: msg?.senderDeviceId || msg?.peerDeviceId || null
+    });
+    const peerKey = identity.key;
+    const peerDeviceId = identity.deviceId || null;
+    console.log('[share-controller]', {
+      contactShareHandleStart: {
+        peerAccountDigest: peerKey || null,
+        peerDeviceId: peerDeviceId || null,
+        hasEnvelope: !!msg?.envelope
+      }
+    });
+    if (!peerKey || !peerDeviceId) return;
+    const stored = getContactSecret(peerKey, { deviceId: peerDeviceId });
+    const sessionKey = stored?.conversationToken || null;
+    if (!sessionKey) {
+      console.warn('[share-controller]', { contactShareMissingSession: peerKey, peerDeviceId });
+      return;
+    }
+    const envelope = msg?.envelope;
+    if (!envelope?.iv || !envelope?.ct) {
+      console.warn('[share-controller]', { contactShareMissingEnvelope: true, peerAccountDigest: peerKey, peerDeviceId });
+      return;
+    }
     try {
-      return await ensureDevicePrivAvailable();
+      const payload = await decryptContactPayload(sessionKey, envelope);
+      const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
+      const reasonKey = reasonRaw ? reasonRaw.toLowerCase() : null;
+      const conversationRaw = payload?.conversation || null;
+      const conversationTokenB64 = conversationRaw?.token_b64 || conversationRaw?.tokenB64 || null;
+      const conversationIdFromPayload = conversationRaw?.conversation_id || conversationRaw?.conversationId || null;
+      if (!conversationRaw || !conversationTokenB64 || !conversationIdFromPayload) {
+        console.warn('[share-controller]', { contactShareMissingConversation: peerKey });
+        return;
+      }
+      const conversation = {
+        token_b64: conversationTokenB64,
+        conversation_id: conversationIdFromPayload,
+        dr_init: conversationRaw?.dr_init || conversationRaw?.drInit || null,
+        peerDeviceId
+      };
+
+      await addContactEntry({
+        peerAccountDigest: peerKey,
+        nickname: payload.nickname,
+        avatar: payload.avatar || null,
+        conversation,
+        contactSecret: conversation.token_b64
+      });
+      sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
+        token_b64: conversation.token_b64,
+        peerAccountDigest: peerKey,
+        peerDeviceId: peerDeviceId || null,
+        dr_init: conversation.dr_init || null
+      });
+      console.log('[share-controller]', {
+        contactShareDecryptSuccess: {
+          peerAccountDigest: peerKey,
+          peerDeviceId,
+          hasAvatar: !!payload.avatar,
+          nickname: payload.nickname || null,
+          conversationId: conversation.conversation_id
+        }
+      });
+      storeContactSecretMapping({
+        peerAccountDigest: peerKey,
+        sessionKey: conversation.token_b64,
+        conversation
+      });
+      const drInitRaw = conversation.dr_init || null;
+      const normalizedBundle = drInitRaw?.guest_bundle ? normalizeGuestBundle(drInitRaw.guest_bundle) : null;
+      if (normalizedBundle) {
+        const alreadyLive = hasLiveDrState(peerKey);
+        if (!alreadyLive) {
+          try {
+            await bootstrapDrFromGuestBundle({
+              peerAccountDigest: peerKey,
+              peerDeviceId,
+              guestBundle: normalizedBundle
+            });
+          } catch (err) {
+            console.error('[share-controller]', { drBootstrapError: err?.message || err });
+          }
+        }
+      }
+
+      const isProfileUpdateReason = reasonKey && CONTACT_UPDATE_REASONS.has(reasonKey);
+      if (notifyToast) {
+        if (!stored) {
+          notifyToast('已成功加入好友', { variant: 'success' });
+        } else if (isProfileUpdateReason) {
+          const updateMessage =
+            reasonKey === 'avatar'
+              ? '好友頭像已更新'
+              : reasonKey === 'nickname'
+                ? '好友暱稱已更新'
+                : '好友資料已更新';
+          notifyToast(updateMessage, { variant: 'success' });
+        }
+      }
+      const tab = typeof getCurrentTab === 'function' ? getCurrentTab() : null;
+      if (typeof switchTab === 'function' && tab !== 'contacts') {
+        switchTab('contacts');
+      }
     } catch (err) {
-      const msg = err?.message || '找不到裝置金鑰，請重新登入完成初始化';
-      throw new Error(msg);
+      console.error('[share-controller]', { contactShareDecryptError: err?.message || err });
     }
   }
 
-  function isPrekeyRecoveryError(message) {
-    if (!message) return false;
-    const lower = String(message).toLowerCase();
-    return lower.includes('prekey') || lower.includes('bundle');
+  function normalizeGuestBundle(bundle) {
+    if (!bundle || typeof bundle !== 'object') return null;
+    const clean = (value) => (typeof value === 'string' ? value.trim() : '');
+    const ek = clean(bundle.ek_pub || bundle.ek || bundle.ephemeral_pub || '');
+    const sig = clean(bundle.spk_sig || bundle.spkSig || bundle.signature || '');
+    if (!ek || !sig) return null;
+    const normalized = { ek_pub: ek, spk_sig: sig };
+    const ik = clean(bundle.ik_pub || bundle.ik || bundle.identity_pub || '');
+    if (ik) normalized.ik_pub = ik;
+    const spk = clean(bundle.spk_pub || bundle.spk || '');
+    if (spk) normalized.spk_pub = spk;
+    const opkIdRaw = bundle.opk_id ?? bundle.opkId ?? bundle.opk?.id;
+    if (opkIdRaw !== undefined && opkIdRaw !== null && opkIdRaw !== '') {
+      const parsed = Number(opkIdRaw);
+      if (Number.isFinite(parsed)) normalized.opk_id = parsed;
+    }
+    return normalized;
+  }
+
+  function sendContactInit(ownerDigest, ownerDeviceId, payload) {
+    if (!wsTransport || typeof wsTransport !== 'function') {
+      throw new Error('無法建立安全通道（WS 未連線），請稍後重試');
+    }
+    if (!ownerDigest || !ownerDeviceId) {
+      throw new Error('缺少目標帳號或裝置資訊，無法送出安全邀請');
+    }
+    if (!payload?.guestBundle || !payload?.conversation?.conversation_id || !payload?.conversation?.token_b64) {
+      throw new Error('安全邀請內容不完整');
+    }
+    const guestAccountDigest = (getAccountDigest() || '').toUpperCase();
+    if (!guestAccountDigest) {
+      throw new Error('缺少 guestAccountDigest，請重新登入後再試');
+    }
+    wsTransport({
+      type: 'contact-init',
+      targetAccountDigest: ownerDigest,
+      targetDeviceId: ownerDeviceId,
+      senderAccountDigest: guestAccountDigest,
+      guestAccountDigest,
+      senderDeviceId: ensureDeviceId(),
+      conversation: payload.conversation,
+      guestBundle: payload.guestBundle
+    });
+  }
+
+  async function handleContactInitEvent(msg = {}) {
+    const guestIdentity = normalizePeerIdentity(msg.guestAccountDigest || msg.senderAccountDigest || msg.peerAccountDigest || null);
+    const peerDigest = guestIdentity.accountDigest || null;
+    const peerDeviceId = msg.senderDeviceId || msg.guestDeviceId || msg.peerDeviceId || guestIdentity.deviceId || null;
+    const conversation = msg.conversation ? { ...msg.conversation } : {};
+    const guestBundle = msg.guestBundle || null;
+    if (!peerDigest || !peerDeviceId) {
+      console.warn('[share-controller]', { contactInitMissingFields: true, reason: 'missing-guest-digest-or-device', peerDigest, peerDeviceId });
+      return;
+    }
+    if (!conversation?.conversation_id || !conversation?.token_b64 || !guestBundle) {
+      console.warn('[share-controller]', { contactInitMissingFields: true, reason: 'conversation-or-bundle', peerDigest, peerDeviceId, hasConv: !!conversation?.conversation_id });
+      return;
+    }
+    console.log('[share-controller]', { contactInitReceived: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
+    sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
+      token_b64: conversation.token_b64,
+      peerAccountDigest: peerDigest,
+      peerDeviceId: peerDeviceId || conversation.peerDeviceId || null,
+      dr_init: conversation.dr_init || null
+    });
+    storeContactSecretMapping({
+      peerAccountDigest: peerDigest,
+      peerDeviceId, // 這裡代表對端（guest）的裝置
+      sessionKey: conversation.token_b64,
+      conversation,
+      drState: null
+    });
+    try {
+      await bootstrapDrFromGuestBundle({ peerAccountDigest: peerDigest, peerDeviceId, guestBundle });
+    } catch (err) {
+      console.error('[share-controller]', { contactInitBootstrapError: err?.message || err, peerAccountDigest: peerDigest });
+    }
+    try {
+      await sendContactShare({
+        peerAccountDigest: peerDigest,
+        conversation,
+        sessionKey: conversation.token_b64,
+        peerDeviceId, // 對端裝置
+        drInit: conversation.dr_init || null
+      });
+      console.log('[share-controller]', { contactInitContactShareSent: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
+    } catch (err) {
+      console.error('[share-controller]', { contactInitContactShareError: err?.message || err, peerDigest, peerDeviceId });
+    }
   }
 
   function normalizeInviteOwnerBundle(bundle) {
-    if (!bundle || typeof bundle !== 'object') return null;
-    const ik = String(bundle.ik_pub || bundle.ik || '').trim();
-    const spk = String(bundle.spk_pub || bundle.spk || '').trim();
-    const sig = String(bundle.spk_sig || '').trim();
+    if (!bundle) return null;
+    let obj = bundle;
+    if (typeof bundle === 'string') {
+      let rawStr = bundle;
+      const tryParse = (str) => {
+        try { return JSON.parse(str); } catch { return null; }
+      };
+      obj = tryParse(rawStr);
+      if (!obj) {
+        try {
+          const norm = rawStr.replace(/-/g, '+').replace(/_/g, '/');
+          const padded = norm.padEnd(norm.length + ((4 - (norm.length % 4)) % 4), '=');
+          const decoded = atob(padded);
+          obj = tryParse(decoded);
+        } catch {
+          obj = null;
+        }
+      }
+    }
+    if (!obj || typeof obj !== 'object') return null;
+    const ik = String(obj.ik_pub || obj.ik || '').trim();
+    const spk = String(obj.spk_pub || obj.spk || '').trim();
+    const sig = String(obj.spk_sig || '').trim();
     if (!ik || !spk || !sig) return null;
     let opk = null;
-    if (bundle.opk && typeof bundle.opk === 'object') {
-      const pub = String(bundle.opk.pub || bundle.opk.opk_pub || '').trim();
-      const rawId = bundle.opk.id ?? bundle.opk.opk_id;
+    if (obj.opk && typeof obj.opk === 'object') {
+      const pub = String(obj.opk.pub || obj.opk.opk_pub || '').trim();
+      const rawId = obj.opk.id ?? obj.opk.opk_id;
       const id = Number(rawId);
       if (pub) opk = { id: Number.isFinite(id) ? id : null, pub };
     }
     return { ik_pub: ik, spk_pub: spk, spk_sig: sig, opk };
+  }
+
+  function buildGuestBundleForAccept(devicePriv, ekPair) {
+    const bundle = {
+      ik_pub: devicePriv.ik_pub_b64,
+      ek_pub: b64(ekPair?.publicKey || new Uint8Array())
+    };
+    if (devicePriv.spk_pub_b64) bundle.spk_pub = devicePriv.spk_pub_b64;
+    if (devicePriv.spk_sig_b64) bundle.spk_sig = devicePriv.spk_sig_b64;
+    return bundle;
   }
 
   function buildGuestBundle(devicePriv, ownerBundle, x3dhState) {
@@ -1470,9 +931,34 @@ export function setupShareController(options) {
       ek_pub: b64(ekPub)
     };
     if (devicePriv.spk_pub_b64) bundle.spk_pub = devicePriv.spk_pub_b64;
-     if (devicePriv.spk_sig_b64) bundle.spk_sig = devicePriv.spk_sig_b64;
+    if (devicePriv.spk_sig_b64) bundle.spk_sig = devicePriv.spk_sig_b64;
     if (ownerBundle?.opk && ownerBundle.opk.id != null) bundle.opk_id = ownerBundle.opk.id;
     return bundle;
   }
 
+  async function ensureDevicePrivLoaded() {
+    try {
+      return await ensureDevicePrivAvailable();
+    } catch (err) {
+      const msg = err?.message || '找不到裝置金鑰，請重新登入完成初始化';
+      throw new Error(msg);
+    }
+  }
+
+  function restartInviteScannerWithMessage(message) {
+    if (inviteScanStatus) inviteScanStatus.textContent = message;
+    startInviteScanner();
+  }
+
+  return {
+    openShareModal,
+    closeShareModal,
+    showShareMode,
+    handleInviteScan,
+    handleContactShareEvent,
+    handleContactInitEvent,
+    setWsSend(fn) {
+      wsTransport = typeof fn === 'function' ? fn : null;
+    }
+  };
 }

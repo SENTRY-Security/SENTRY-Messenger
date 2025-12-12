@@ -4,8 +4,9 @@ import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
-import { getAccountDigest, getDeviceId, normalizePeerIdentity } from '../../core/store.js';
+import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
+import { markConversationTombstone } from '../../features/messages.js';
 
 export function initContactsView(options) {
   const {
@@ -54,11 +55,19 @@ export function initContactsView(options) {
   let contactsRefreshing = false;
 
   const contactKey = (entry) => {
-    return normalizePeerIdentity(
-      entry?.peerAccountDigest ?? entry?.peer_account_digest ?? entry?.accountDigest ?? entry?.account_digest ?? entry
-    ).key;
+    // entry 可能是 digest、digest::deviceId 或物件
+    if (typeof entry === 'string' && entry.includes('::')) {
+      const [digestPart, devicePart] = entry.split('::');
+      const digest = normalizeAccountDigest(digestPart);
+      const deviceId = normalizeDeviceId(devicePart);
+      if (digest && deviceId) return `${digest}::${deviceId}`;
+      if (digest) return digest;
+      return null;
+    }
+    const identity = normalizePeerIdentity(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
+    // 優先使用 digest+deviceId，若裝置 ID 缺失則退回僅 digest，避免整條流程直接早退
+    return identity.key || identity.accountDigest || null;
   };
-
   function renderContacts() {
     contactsListEl.innerHTML = '';
 
@@ -116,16 +125,17 @@ export function initContactsView(options) {
           swipe.closeSwipe(li);
           return;
         }
+        const conversation = c?.conversation && c.conversation.token_b64 && c.conversation.conversation_id
+          ? {
+              token_b64: c.conversation.token_b64,
+              conversation_id: c.conversation.conversation_id
+            }
+          : null;
         const detail = {
           peerAccountDigest: key,
           nickname: name,
           avatar: c?.avatar || null,
-          conversation: c?.conversation && c.conversation.token_b64 && c.conversation.conversation_id
-            ? {
-                token_b64: c.conversation.token_b64,
-                conversation_id: c.conversation.conversation_id
-              }
-            : null
+          conversation
         };
         try {
           document.dispatchEvent(new CustomEvent('contacts:open-conversation', { detail }));
@@ -224,7 +234,13 @@ export function initContactsView(options) {
       confirmLabel: '刪除',
       onConfirm: async () => {
         try {
+          const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
+          const convId = contactEntry?.conversation?.conversation_id || contactEntry?.conversation?.id || null;
+          const peerDeviceId = contactEntry?.conversation?.peerDeviceId || null;
           await friendsDeleteContact({ peerAccountDigest: key });
+          if (convId) markConversationTombstone(convId);
+          clearDrState({ peerAccountDigest: key, peerDeviceId });
+          deleteContactSecret(key, { deviceId: ensureDeviceId() });
           removeContactState(key, { notifyPeer: true });
           if (element) swipe.closeSwipe(element);
           updateStats?.();
@@ -349,21 +365,16 @@ export function initContactsView(options) {
   function scheduleDrBootstrap(peerAccountDigest, conversation) {
     const key = contactKey(peerAccountDigest);
     if (!key || !conversation) return;
-    const entry = sessionStore.contactIndex?.get?.(key) || null;
-    const entryRole = typeof entry?.secretRole === 'string' ? entry.secretRole.toLowerCase() : null;
-    const deviceId = getDeviceId() || 'default';
-    const secretInfo = getContactSecret(key, { deviceId });
-    const secretRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
-    const selfRole = entryRole || secretRole;
-    if (selfRole === 'guest') return;
     const bundle = conversation?.dr_init?.guest_bundle || conversation?.drInit?.guestBundle;
+    const peerDeviceId = conversation?.peerDeviceId || null;
     if (!bundle) return;
-    bootstrapDrFromGuestBundle({ peerAccountDigest: key, guestBundle: bundle }).catch((err) => {
+    bootstrapDrFromGuestBundle({ peerAccountDigest: key, peerDeviceId, guestBundle: bundle }).catch((err) => {
       log({ drBootstrapLoadError: err?.message || err });
     });
   }
 
   async function loadInitialContacts() {
+    console.log('[contacts-view]', { contactsReloadStart: true });
     const prevPeers = new Set(
       Array.isArray(sessionStore.contactState)
         ? sessionStore.contactState.map((entry) => contactKey(entry)).filter(Boolean)
@@ -379,6 +390,9 @@ export function initContactsView(options) {
     }
     contactIndex.clear();
     conversationIndex?.clear();
+    let missingConv = 0;
+    let missingConvToken = 0;
+    let missingConvDevice = 0;
     const sanitized = [];
     for (const entry of fetched) {
       const key = contactKey(entry);
@@ -393,24 +407,45 @@ export function initContactsView(options) {
       };
       contactIndex.set(key, normalizedEntry);
       const conv = entry?.conversation;
+      if (!conv) {
+        missingConv += 1;
+      }
       if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
-        conversationIndex.set(conv.conversation_id, {
-          token_b64: conv.token_b64,
-          peerAccountDigest: key,
-          peerDeviceId: null,
-          dr_init: conv.dr_init || null,
-          secretRole: entry?.secretRole || entry?.secret_role || null
-        });
-        const isHidden = entry?.hidden === true || entry?.isSelfContact === true;
-        if (!isHidden) {
-          scheduleDrBootstrap(key, conv);
+        const peerDeviceId = conv.peerDeviceId || null;
+        if (peerDeviceId) {
+          conversationIndex.set(conv.conversation_id, {
+            token_b64: conv.token_b64,
+            peerAccountDigest: key,
+            peerDeviceId,
+            dr_init: conv.dr_init || null
+          });
+          const isHidden = entry?.hidden === true || entry?.isSelfContact === true;
+          if (!isHidden) {
+            scheduleDrBootstrap(key, conv);
+          }
+        } else {
+          missingConvDevice += 1;
+          log({ contactMissingPeerDevice: key });
         }
+      } else if (conv?.conversation_id || conv?.token_b64) {
+        missingConvToken += 1;
+        console.warn('[contacts-view]', {
+          contactMissingConversationToken: key,
+          hasConversationId: !!conv?.conversation_id,
+          hasToken: !!conv?.token_b64
+        });
       }
       if (entry?.hidden === true || entry?.isSelfContact === true) {
         continue;
       }
       sanitized.push(normalizedEntry);
     }
+    console.log('[contacts-view]', {
+      contactsReloadFetched: sanitized.length,
+      missingConversation: missingConv,
+      missingConversationToken: missingConvToken,
+      missingConversationDevice: missingConvDevice
+    });
     sessionStore.contactState = sanitized;
     const currentPeers = new Set(sanitized.map((entry) => contactKey(entry)).filter(Boolean));
     for (const peer of prevPeers) {
@@ -424,30 +459,56 @@ export function initContactsView(options) {
     }
     renderContacts();
     presenceManager.sendPresenceSubscribe();
+    console.log('[contacts-view]', { contactsReloadDone: sanitized.length });
   }
 
   async function addContactEntry({
     peerAccountDigest,
+    peerDeviceId,
     nickname,
     avatar,
     conversation,
-    contactSecret,
-    inviteId,
-    secretRole
+    contactSecret
   } = {}) {
-    const key = contactKey(peerAccountDigest);
-    if (!key) return;
+    let digest = null;
+    let peerDeviceIdFromKey = null;
+    if (typeof peerAccountDigest === 'string' && peerAccountDigest.includes('::')) {
+      const [dPart, devPart] = peerAccountDigest.split('::');
+      digest = normalizeAccountDigest(dPart);
+      peerDeviceIdFromKey = normalizeDeviceId(devPart);
+    }
+    const identity = normalizePeerIdentity({
+      peerAccountDigest,
+      peerDeviceId
+    });
+    digest = digest || identity.accountDigest || null;
+    peerDeviceIdFromKey = peerDeviceIdFromKey || identity.deviceId || null;
+    if (!digest || !peerDeviceIdFromKey) {
+      console.warn('[contacts-view]', { contactAddEarlyReturn: 'missing-peer-device', peerAccountDigest });
+      throw new Error('peerDeviceId required for contact');
+    }
+    console.log('[contacts-view]', {
+      contactAddEntryStart: {
+        peerAccountDigest: digest || peerAccountDigest || null,
+        hasConversation: !!(conversation?.conversation_id && conversation?.token_b64),
+        hasSecret: !!contactSecret
+      }
+    });
+    const key = `${digest}::${peerDeviceIdFromKey}`;
+    if (!key) {
+      console.warn('[contacts-view]', { contactAddEarlyReturn: 'missing-key', peerAccountDigest });
+      return;
+    }
     const selfDigest = (getAccountDigest() || '').toUpperCase();
     if (selfDigest && key === selfDigest) {
-      log({ contactSkipSelfEntry: key });
+      console.log('[contacts-view]', { contactSkipSelfEntry: key });
       return;
     }
     const bypassRemovalGuard =
       !!(conversation && conversation.token_b64 && conversation.conversation_id) ||
-      (typeof contactSecret === 'string' && contactSecret.length > 0) ||
-      (typeof inviteId === 'string' && inviteId.length > 0);
+      (typeof contactSecret === 'string' && contactSecret.length > 0);
     if (isRecentlyRemoved(key) && !bypassRemovalGuard) {
-      log({ contactSuppressedAfterAddition: key, reason: 'recently-removed' });
+      console.log('[contacts-view]', { contactSuppressedAfterAddition: key, reason: 'recently-removed' });
       return;
     }
     if (bypassRemovalGuard && isRecentlyRemoved(key)) {
@@ -457,38 +518,68 @@ export function initContactsView(options) {
     const conversationPayload = conversation && conversation.conversation_id && conversation.token_b64 ? {
       token_b64: conversation.token_b64,
       conversation_id: conversation.conversation_id,
-      ...(conversation.dr_init ? { dr_init: conversation.dr_init } : null)
+      ...(conversation.dr_init ? { dr_init: conversation.dr_init } : null),
+      peerDeviceId: conversation.peerDeviceId || peerDeviceIdFromKey || null
     } : null;
+    if (conversation && !conversationPayload?.peerDeviceId) {
+      throw new Error('peerDeviceId required for conversation');
+    }
 
     const contact = {
-      peerAccountDigest: key,
+      peerAccountDigest: digest || key,
       nickname: nickname || `好友 ${key.slice(-4)}`,
       avatar: avatar || null,
       addedAt: now,
       conversation: conversationPayload,
-      contactSecret: typeof contactSecret === 'string' ? contactSecret : null,
-      inviteId: typeof inviteId === 'string' ? inviteId : null,
-      secretRole: typeof secretRole === 'string' ? secretRole : null
+      contactSecret: typeof contactSecret === 'string' ? contactSecret : null
     };
     try {
+      console.log('[contacts-view]', {
+        contactAddPreSave: {
+          peerAccountDigest: key,
+          conversationId: conversationPayload?.conversation_id || null,
+          hasDrInit: !!conversationPayload?.dr_init
+        }
+      });
+      console.log('[contacts-view]', {
+        contactAddAttempt: key,
+        hasConversation: !!conversationPayload,
+        hasSecret: !!contact.contactSecret
+      });
+      console.log('[contacts-view]', {
+        contactSaveDispatch: {
+          peerAccountDigest: key,
+          conversationId: conversationPayload?.conversation_id || null,
+          hasDrInit: !!conversationPayload?.dr_init
+        }
+      });
       const saved = await saveContactApi(contact);
       const entry = saved ? {
         ...contact,
         conversation: saved.conversation || contact.conversation,
         contactSecret: saved.contactSecret_b64 || contact.contactSecret || null,
-        inviteId: saved.inviteId || contact.inviteId || null,
-        secretRole: saved.contactSecret_role || contact.secretRole || null,
         msgId: saved.msgId || saved.id || contact.msgId || null
       } : contact;
+      console.log('[contacts-view]', {
+        contactAddSaved: key,
+        msgId: entry.msgId || null,
+        hasConversation: !!entry?.conversation?.conversation_id,
+        peerDeviceId: entry?.conversation?.peerDeviceId || null
+      });
       contactIndex.set(key, entry);
       if (entry?.conversation?.conversation_id && entry?.conversation?.token_b64 && conversationIndex) {
-        conversationIndex.set(entry.conversation.conversation_id, {
-          token_b64: entry.conversation.token_b64,
-          peerAccountDigest: key,
-          dr_init: entry.conversation.dr_init || null,
-          secretRole: entry.secretRole || entry.secret_role || null
-        });
-        scheduleDrBootstrap(key, entry.conversation);
+        const peerDeviceId = entry.conversation.peerDeviceId || peerDeviceIdFromKey || null;
+        if (peerDeviceId) {
+          conversationIndex.set(entry.conversation.conversation_id, {
+            token_b64: entry.conversation.token_b64,
+            peerAccountDigest: key,
+            peerDeviceId,
+            dr_init: entry.conversation.dr_init || null
+          });
+          scheduleDrBootstrap(key, entry.conversation);
+        } else {
+          console.warn('[contacts-view]', { contactMissingPeerDevice: key });
+        }
       }
       const existingIndex = sessionStore.contactState.findIndex((c) => {
         return contactKey(c) === key;
@@ -502,8 +593,17 @@ export function initContactsView(options) {
       presenceManager.sendPresenceSubscribe();
       updateStats?.();
       emitContactEntryUpdated(entry, { peerAccountDigest: key, isNew: existingIndex < 0 });
+      console.log('[contacts-view]', {
+        contactAddReturn: {
+          peerAccountDigest: key,
+          msgId: entry.msgId || null,
+          conversationId: entry?.conversation?.conversation_id || null
+        }
+      });
+      return entry;
     } catch (err) {
-      log({ contactAddError: err?.message || err });
+      console.error('[contacts-view]', { contactAddError: err?.message || err, peerAccountDigest: key });
+      throw err;
     }
   }
 
@@ -527,14 +627,14 @@ export function initContactsView(options) {
 
   document.addEventListener('contacts:show-delete', (event) => {
     const detail = event?.detail || {};
-    const targetPeer = contactKey(detail.peerAccountDigest || detail.peer_account_digest || detail.peer || detail.peerDigest);
+    const targetPeer = contactKey(detail.peerAccountDigest || detail.peer || detail.peerDigest);
     showDeleteForContact(targetPeer);
   });
 
   document.addEventListener('contacts:removed', (event) => {
     const detail = event?.detail || {};
     if (!detail || detail.notifyPeer) return;
-    const peer = contactKey(detail.peerAccountDigest || detail.peer_account_digest || detail.peer || detail.peerDigest);
+    const peer = contactKey(detail.peerAccountDigest || detail.peer || detail.peerDigest);
     if (!peer) return;
     removeContactState(peer, { notifyPeer: false });
   });

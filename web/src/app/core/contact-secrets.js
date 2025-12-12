@@ -6,21 +6,32 @@ import { log } from './log.js';
 import { b64 } from '../crypto/nacl.js';
 import {
   getAccountDigest,
-  getDeviceId,
+  ensureDeviceId,
   normalizePeerIdentity,
-  normalizeAccountDigest
+  normalizeAccountDigest,
+  normalizePeerDeviceId
 } from './store.js';
 
-const STORAGE_KEY_BASE = 'contactSecrets-v1';
-const LATEST_KEY_BASE = 'contactSecrets-v1-latest';
-const META_KEY_BASE = 'contactSecrets-v1-meta';
-const CHECKSUM_KEY_BASE = 'contactSecrets-v1-checksum';
-const CONTACT_SECRETS_VERSION = 3;
+const STORAGE_KEY_BASE = 'contactSecrets-v2';
+const LATEST_KEY_BASE = 'contactSecrets-v2-latest';
+const META_KEY_BASE = 'contactSecrets-v2-meta';
+const CHECKSUM_KEY_BASE = 'contactSecrets-v2-checksum';
+const CONTACT_SECRETS_VERSION = 4;
+const LEGACY_STORAGE_KEY_BASE = 'contactSecrets-v1';
+const LEGACY_LATEST_KEY_BASE = 'contactSecrets-v1-latest';
+const LEGACY_META_KEY_BASE = 'contactSecrets-v1-meta';
+const LEGACY_CHECKSUM_KEY_BASE = 'contactSecrets-v1-checksum';
 let restored = false;
 let contactSecretsLocked = false;
 const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
-const contactAliasToPrimary = new Map(); // alias -> primary key (accountDigest preferred)
+const contactAliasToPrimary = new Map(); // alias -> primary key (accountDigest::deviceId preferred)
 const contactPrimaryToAliases = new Map(); // primary -> Set(alias)
+
+function normalizeDeviceId(value) {
+  if (!value) return null;
+  const v = String(value).trim();
+  return v || null;
+}
 
 function getLocalStorageSafe() {
   if (typeof window === 'undefined') return null;
@@ -49,12 +60,6 @@ function parseJsonSafe(raw) {
   }
 }
 
-function normalizeDeviceId(value) {
-  if (!value) return null;
-  const v = String(value).trim();
-  return v || null;
-}
-
 function resolveContactSecretsNamespace({ accountDigest } = {}) {
   const digest = normalizeAccountDigest(accountDigest) || normalizeAccountDigest(getAccountDigest?.());
   if (digest) return `acct-${digest}`;
@@ -77,28 +82,52 @@ function uniqueKeys(list) {
   return Array.from(new Set(list.filter(Boolean)));
 }
 
-function getKeyVariants(base, opts = {}) {
+function getKeyVariants(base, opts = {}, { includeLegacyFallback = false, includeBase = true } = {}) {
   const namespace = resolveContactSecretsNamespace(opts);
   const keys = [];
   if (namespace) keys.push(buildKey(base, namespace));
-  keys.push(base);
+  if (includeLegacyFallback && namespace) {
+    if (base === STORAGE_KEY_BASE) keys.push(buildKey(LEGACY_STORAGE_KEY_BASE, namespace));
+    if (base === LATEST_KEY_BASE) keys.push(buildKey(LEGACY_LATEST_KEY_BASE, namespace));
+    if (base === META_KEY_BASE) keys.push(buildKey(LEGACY_META_KEY_BASE, namespace));
+    if (base === CHECKSUM_KEY_BASE) keys.push(buildKey(LEGACY_CHECKSUM_KEY_BASE, namespace));
+  }
+  if (includeBase !== false) {
+    keys.push(base);
+  }
   return uniqueKeys(keys);
 }
 
-export function getContactSecretsStorageKeys(opts = {}) {
-  return getKeyVariants(STORAGE_KEY_BASE, opts);
+export function getContactSecretsStorageKeys(opts = {}, { includeLegacy = false } = {}) {
+  return getKeyVariants(STORAGE_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
 }
 
-export function getContactSecretsLatestKeys(opts = {}) {
-  return getKeyVariants(LATEST_KEY_BASE, opts);
+export function getContactSecretsLatestKeys(opts = {}, { includeLegacy = false } = {}) {
+  return getKeyVariants(LATEST_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
 }
 
-export function getContactSecretsMetaKeys(opts = {}) {
-  return getKeyVariants(META_KEY_BASE, opts);
+export function getContactSecretsMetaKeys(opts = {}, { includeLegacy = false } = {}) {
+  return getKeyVariants(META_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
 }
 
-export function getContactSecretsChecksumKeys(opts = {}) {
-  return getKeyVariants(CHECKSUM_KEY_BASE, opts);
+export function getContactSecretsChecksumKeys(opts = {}, { includeLegacy = false } = {}) {
+  return getKeyVariants(CHECKSUM_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
+}
+
+export function getLegacyContactSecretsStorageKeys(opts = {}) {
+  return getKeyVariants(LEGACY_STORAGE_KEY_BASE, opts, { includeLegacyFallback: false });
+}
+
+export function getLegacyContactSecretsLatestKeys(opts = {}) {
+  return getKeyVariants(LEGACY_LATEST_KEY_BASE, opts, { includeLegacyFallback: false });
+}
+
+export function getLegacyContactSecretsMetaKeys(opts = {}) {
+  return getKeyVariants(LEGACY_META_KEY_BASE, opts, { includeLegacyFallback: false });
+}
+
+export function getLegacyContactSecretsChecksumKeys(opts = {}) {
+  return getKeyVariants(LEGACY_CHECKSUM_KEY_BASE, opts, { includeLegacyFallback: false });
 }
 
 function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSessionIfCopied = true } = {}) {
@@ -207,16 +236,6 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
       log({ contactSecretSessionCopyError: err?.message || err });
       wroteToLocal = false;
     }
-    // Legacy fallback for older builds – keep base key in sync
-    if (resolvedNamespace) {
-      try { local.setItem(STORAGE_KEY_BASE, sessionPayload); } catch {}
-      if (sessionMeta) {
-        try { local.setItem(META_KEY_BASE, JSON.stringify(sessionMeta)); } catch {}
-      }
-      if (sessionChecksum) {
-        try { local.setItem(CHECKSUM_KEY_BASE, JSON.stringify(sessionChecksum)); } catch {}
-      }
-    }
   }
 
   if (shouldPromote) {
@@ -255,7 +274,7 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
   try {
     pullLatestSnapshot({ forcePromote: false, reason: 'module-init' });
   } catch {
-    // ignore hydration errors; rely on restoreContactSecrets fallback
+    // ignore hydration errors
   }
 })();
 
@@ -448,11 +467,35 @@ function clearContactAliases(primary) {
   contactAliasToPrimary.delete(primary);
 }
 
-function resolvePeerKey(input) {
+function parsePeerKey(key) {
+  if (!key || typeof key !== 'string') return { accountDigest: null, deviceId: null };
+  const [digestPart, devicePart] = key.includes('::') ? key.split('::') : [key, null];
+  const accountDigest = normalizeAccountDigest(digestPart);
+  const deviceId = normalizePeerDeviceId(devicePart);
+  return { accountDigest, deviceId };
+}
+
+function resolvePeerKey(input, { peerDeviceIdHint = null, conversationId = null } = {}) {
   const identity = normalizePeerIdentity(input);
-  if (!identity.key) return { key: null, aliases: [], identity };
-  const key = identity.accountDigest || identity.key || null;
-  return { key, aliases: [], identity };
+  let key = identity.key;
+  const aliases = [];
+  if (!key && identity.accountDigest) {
+    const hintDeviceId = normalizePeerDeviceId(peerDeviceIdHint);
+    const deviceId = hintDeviceId || identity.deviceId || null;
+    if (deviceId) {
+      identity.deviceId = deviceId;
+      key = `${identity.accountDigest}::${deviceId}`;
+    }
+  }
+  if (key) {
+    const parsed = parsePeerKey(key);
+    if (!identity.accountDigest) identity.accountDigest = parsed.accountDigest;
+    if (!identity.deviceId) identity.deviceId = parsed.deviceId;
+  }
+  if (!key) return { key: null, aliases: [], identity };
+  if (identity.accountDigest) aliases.push(identity.accountDigest);
+  if (identity.deviceId) aliases.push(identity.deviceId);
+  return { key, aliases, identity };
 }
 
 export function restoreContactSecrets() {
@@ -519,7 +562,6 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
         const normalized = normalizeStructuredEntry(entry);
         if (!normalized) continue;
         const { peerKey, aliases, record } = normalized;
-        if (!record.inviteId || !record.secret) continue;
         totalEntries += 1;
         const devices = record.devices && typeof record.devices === 'object' ? record.devices : {};
         let hasDr = false;
@@ -658,7 +700,13 @@ export function persistContactSecrets() {
     if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
       try {
         const evt = new CustomEvent('contactSecrets:persisted', {
-          detail: { payload, summary, checksum }
+          detail: {
+            payload,
+            summary,
+            checksum,
+            snapshotVersion: summary.version || CONTACT_SECRETS_VERSION,
+            generatedAt: summary.generatedAt || Date.now()
+          }
         });
         window.dispatchEvent(evt);
       } catch (err) {
@@ -672,13 +720,11 @@ export function persistContactSecrets() {
 
 function createEmptyContactSecret() {
   return {
-    inviteId: null,
-    secret: null,
-    role: null,
+    peerDeviceId: null,
     conversationToken: null,
     conversationId: null,
     conversationDrInit: null,
-    devices: {}, // deviceId -> { drState, drSeed, drHistory, drHistoryCursorTs, drHistoryCursorId, sessionBootstrapTs, updatedAt }
+    devices: {}, // deviceId -> { drState, drSeed, drHistory, drHistoryCursorTs, drHistoryCursorId, updatedAt }
     updatedAt: null
   };
 }
@@ -695,15 +741,12 @@ function cloneContactSecretRecord(existing) {
         drHistory: Array.isArray(devVal?.drHistory) ? devVal.drHistory.slice() : [],
         drHistoryCursorTs: Number.isFinite(devVal?.drHistoryCursorTs) ? devVal.drHistoryCursorTs : null,
         drHistoryCursorId: devVal?.drHistoryCursorId || null,
-        sessionBootstrapTs: Number.isFinite(devVal?.sessionBootstrapTs) ? devVal.sessionBootstrapTs : null,
         updatedAt: Number.isFinite(devVal?.updatedAt) ? devVal.updatedAt : null
       };
     }
   }
   return {
-    inviteId: existing.inviteId || null,
-    secret: existing.secret || null,
-    role: existing.role || null,
+    peerDeviceId: existing.peerDeviceId || null,
     conversationToken: existing.conversationToken || null,
     conversationId: existing.conversationId || null,
     conversationDrInit: existing.conversationDrInit || null,
@@ -722,7 +765,6 @@ function ensureDeviceRecord(record, deviceId, { create = false } = {}) {
       drHistory: [],
       drHistoryCursorTs: null,
       drHistoryCursorId: null,
-      sessionBootstrapTs: null,
       updatedAt: null
     };
   }
@@ -737,55 +779,45 @@ function selectDeviceRecord(record, deviceId = null) {
   return { deviceId: keys[0], deviceRecord: record.devices[keys[0]] };
 }
 
-function derivePeerIdentityForEntry(peerKey) {
-  const peerAccountDigest = normalizeAccountDigest(peerKey);
+function derivePeerIdentityForEntry(peerKey, record = {}) {
+  const parsed = parsePeerKey(peerKey);
+  const peerAccountDigest = parsed.accountDigest || normalizeAccountDigest(peerKey);
+  const peerDeviceId = normalizePeerDeviceId(record?.peerDeviceId || parsed.deviceId || null);
   return {
-    peerAccountDigest: peerAccountDigest || null
+    peerAccountDigest: peerAccountDigest || null,
+    peerDeviceId: peerDeviceId || null
   };
 }
 
 function buildStructuredEntry(peerAccountDigest, record) {
-  const identity = derivePeerIdentityForEntry(peerAccountDigest);
+  const identity = derivePeerIdentityForEntry(peerAccountDigest, record);
+  if (!identity.peerAccountDigest) return null;
   const devicesObj = {};
   const sourceDevices = record.devices && typeof record.devices === 'object' ? record.devices : {};
   const deviceEntries = Object.keys(sourceDevices);
-  const legacyDeviceId = normalizeDeviceId(getDeviceId?.()) || 'default';
-  if (deviceEntries.length) {
-    for (const devId of deviceEntries) {
-      if (!devId) continue;
-      const dev = sourceDevices[devId] || {};
-      devicesObj[devId] = {
-        drState: dev.drState || null,
-        drSeed: dev.drSeed || null,
-        drHistory: Array.isArray(dev.drHistory) ? dev.drHistory : [],
-        drHistoryCursorTs: Number.isFinite(dev.drHistoryCursorTs) ? dev.drHistoryCursorTs : null,
-        drHistoryCursorId: dev.drHistoryCursorId || null,
-        sessionBootstrapTs: Number.isFinite(dev.sessionBootstrapTs) ? dev.sessionBootstrapTs : null,
-        updatedAt: Number.isFinite(dev.updatedAt) ? dev.updatedAt : null
-      };
-    }
-  } else {
-    devicesObj[legacyDeviceId] = {
-      drState: record.drState || null,
-      drSeed: record.drSeed || null,
-      drHistory: Array.isArray(record.drHistory) ? record.drHistory : [],
-      drHistoryCursorTs: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
-      drHistoryCursorId: record.drHistoryCursorId || null,
-      sessionBootstrapTs: Number.isFinite(record.sessionBootstrapTs) ? record.sessionBootstrapTs : null,
-      updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : null
+  if (!deviceEntries.length) return null;
+  for (const devId of deviceEntries) {
+    if (!devId) continue;
+    const dev = sourceDevices[devId] || {};
+    devicesObj[devId] = {
+      drState: dev.drState || null,
+      drSeed: dev.drSeed || null,
+      drHistory: Array.isArray(dev.drHistory) ? dev.drHistory : [],
+      drHistoryCursorTs: Number.isFinite(dev.drHistoryCursorTs) ? dev.drHistoryCursorTs : null,
+      drHistoryCursorId: dev.drHistoryCursorId || null,
+      updatedAt: Number.isFinite(dev.updatedAt) ? dev.updatedAt : null
     };
   }
+  const peerDeviceId = identity.peerDeviceId || record.peerDeviceId || null;
+  if (!peerDeviceId) return null;
   return {
     peerAccountDigest: identity.peerAccountDigest || null,
-    invite: {
-      id: record.inviteId || null,
-      secret: record.secret || null,
-      role: record.role || null
-    },
+    peerDeviceId,
     conversation: {
       token: record.conversationToken || null,
       id: record.conversationId || null,
-      drInit: record.conversationDrInit || null
+      drInit: record.conversationDrInit || null,
+      peerDeviceId
     },
     devices: devicesObj,
     meta: {
@@ -805,8 +837,9 @@ function serializeContactSecretsMap(map) {
   };
   if (map instanceof Map) {
     for (const [peerKey, record] of map.entries()) {
-      if (!peerKey || !record?.inviteId || !record?.secret) continue;
+      if (!peerKey) continue;
       const entry = buildStructuredEntry(peerKey, record);
+      if (!entry) continue;
       entries.push(entry);
       summary.entries += 1;
       const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : {};
@@ -854,28 +887,35 @@ export function buildContactSecretsSnapshot() {
 
 function normalizeStructuredEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
+  const peerAccountDigest = normalizeAccountDigest(entry.peerAccountDigest || null);
+  if (!peerAccountDigest) return null;
+  const conversation = entry.conversation || {};
+  const explicitPeerDeviceId = normalizePeerDeviceId(
+    entry.peerDeviceId
+    || conversation.peerDeviceId
+    || null
+  );
+  const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : null;
+  const deviceKeys = devices ? Object.keys(devices).map((k) => normalizePeerDeviceId(k)).filter(Boolean) : [];
+  const peerDeviceId =
+    explicitPeerDeviceId
+    || (conversation.peerDeviceId ? normalizePeerDeviceId(conversation.peerDeviceId) : null)
+    || (deviceKeys.length === 1 ? deviceKeys[0] : null);
+  if (!peerDeviceId) return null;
   const identity = normalizePeerIdentity({
-    peerAccountDigest: entry.peerAccountDigest || entry.peer_account_digest || null
+    peerAccountDigest,
+    peerDeviceId
   });
   if (!identity.key) return null;
-  const invite = entry.invite || {};
-  const inviteId = normalizeOptionalString(invite.id);
-  const secret = normalizeOptionalString(invite.secret);
-  if (!inviteId || !secret) return null;
   const record = createEmptyContactSecret();
-  record.inviteId = inviteId;
-  record.secret = secret;
-  record.role = normalizeOptionalString(invite.role) || null;
+  record.peerDeviceId = identity.deviceId || peerDeviceId || null;
 
-  const conversation = entry.conversation || {};
   record.conversationToken = normalizeOptionalString(conversation.token) || null;
   record.conversationId = normalizeOptionalString(conversation.id) || null;
   if (Object.prototype.hasOwnProperty.call(conversation, 'drInit')) {
     record.conversationDrInit = conversation.drInit || null;
   }
-
-  const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : null;
-  if (!devices || !Object.keys(devices).length) return null;
+  if (!devices || !deviceKeys.length) return null;
   for (const [devIdRaw, devVal] of Object.entries(devices)) {
     const devId = normalizeDeviceId(devIdRaw);
     if (!devId) continue;
@@ -899,10 +939,6 @@ function normalizeStructuredEntry(entry) {
     if (cursorIdRaw !== undefined) {
       slot.drHistoryCursorId = normalizeOptionalString(cursorIdRaw) || null;
     }
-    if (Object.prototype.hasOwnProperty.call(devVal, 'sessionBootstrapTs')) {
-      const bootstrapTs = Number(devVal.sessionBootstrapTs);
-      slot.sessionBootstrapTs = Number.isFinite(bootstrapTs) ? bootstrapTs : null;
-    }
     if (Object.prototype.hasOwnProperty.call(devVal, 'updatedAt')) {
       const updated = Number(devVal.updatedAt);
       slot.updatedAt = Number.isFinite(updated) ? updated : null;
@@ -915,7 +951,11 @@ function normalizeStructuredEntry(entry) {
     record.updatedAt = Number.isFinite(updated) ? updated : null;
   }
 
-  return { peerKey: identity.key, aliases: identity.aliases || [], record };
+  const aliases = [];
+  if (identity.accountDigest) aliases.push(identity.accountDigest);
+  if (identity.deviceId) aliases.push(identity.deviceId);
+
+  return { peerKey: identity.key, aliases, record };
 }
 
 function parseStructuredSnapshot(payloadObj) {
@@ -935,19 +975,13 @@ function parseStructuredSnapshot(payloadObj) {
 
 function normalizeContactSecretUpdate(update = {}) {
   const structured = {
+    peerDeviceId: { has: false, value: null },
     deviceId: { has: false, value: null },
-    invite: {
-      id: { has: false, value: null },
-      secret: { has: false, value: null },
-      role: { has: false, value: null }
-    },
     conversation: {
       token: { has: false, value: null },
       id: { has: false, value: null },
-      drInit: { has: false, value: null }
-    },
-    session: {
-      bootstrapTs: { has: false, value: null }
+      drInit: { has: false, value: null },
+      peerDeviceId: { has: false, value: null }
     },
     dr: {
       state: { has: false, value: null },
@@ -982,6 +1016,11 @@ function normalizeContactSecretUpdate(update = {}) {
     structured.deviceId = { has: true, value: normalizeDeviceId(raw) };
   };
 
+  const applyPeerDeviceId = (raw) => {
+    if (raw === undefined) return;
+    structured.peerDeviceId = { has: true, value: normalizePeerDeviceId(raw) };
+  };
+
   function applyDrState(raw) {
     if (raw === undefined) return;
     if (raw === null) {
@@ -1009,14 +1048,14 @@ function normalizeContactSecretUpdate(update = {}) {
   }
 
   // New structured payload
-  if (update?.invite && typeof update.invite === 'object') {
-    applyString(structured.invite, 'id', update.invite.id);
-    applyString(structured.invite, 'secret', update.invite.secret);
-    applyString(structured.invite, 'role', update.invite.role);
-  }
   if (update?.conversation && typeof update.conversation === 'object') {
     applyString(structured.conversation, 'token', update.conversation.token);
     applyString(structured.conversation, 'id', update.conversation.id);
+    if (Object.prototype.hasOwnProperty.call(update.conversation, 'peerDeviceId')) {
+      const peerDev = update.conversation.peerDeviceId;
+      structured.conversation.peerDeviceId = { has: true, value: normalizePeerDeviceId(peerDev) };
+      applyPeerDeviceId(peerDev);
+    }
     if (Object.prototype.hasOwnProperty.call(update.conversation, 'drInit')) {
       structured.conversation.drInit = { has: true, value: update.conversation.drInit || null };
     }
@@ -1040,11 +1079,6 @@ function normalizeContactSecretUpdate(update = {}) {
       if (Object.prototype.hasOwnProperty.call(update.dr, 'cursorId')) applyString(structured.dr, 'cursorId', update.dr.cursorId);
     }
   }
-  if (update?.session && typeof update.session === 'object') {
-    if (Object.prototype.hasOwnProperty.call(update.session, 'bootstrapTs')) {
-      applyTimestamp(structured.session, 'bootstrapTs', update.session.bootstrapTs);
-    }
-  }
   if (update?.meta && typeof update.meta === 'object') {
     if (Object.prototype.hasOwnProperty.call(update.meta, 'updatedAt')) {
       applyTimestamp(structured.meta, 'updatedAt', update.meta.updatedAt);
@@ -1054,16 +1088,13 @@ function normalizeContactSecretUpdate(update = {}) {
     }
   }
 
-  // Backwards compatibility (legacy top-level fields)
-  applyString(structured.invite, 'id', update.inviteId);
-  applyString(structured.invite, 'secret', update.secret);
-  applyString(structured.invite, 'role', update.role);
+  // Legacy invite fields removed
   applyString(structured.conversation, 'token', update.conversationToken);
   applyString(structured.conversation, 'id', update.conversationId);
+  applyPeerDeviceId(update.peerDeviceId);
   if (Object.prototype.hasOwnProperty.call(update, 'conversationDrInit')) {
     structured.conversation.drInit = { has: true, value: update.conversationDrInit || null };
   }
-  applyTimestamp(structured.session, 'bootstrapTs', update.sessionBootstrapTs);
   if (Object.prototype.hasOwnProperty.call(update, 'drState')) applyDrState(update.drState);
   if (Object.prototype.hasOwnProperty.call(update, 'drSeed')) applyDrSeed(update.drSeed);
   if (Object.prototype.hasOwnProperty.call(update, 'drHistory')) applyDrHistory(update.drHistory);
@@ -1086,29 +1117,43 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     return;
   }
   const structured = normalizeContactSecretUpdate(opts);
-  const { key, aliases } = resolvePeerKey(peerAccountDigest);
+  const peerDeviceIdHint =
+    (structured.peerDeviceId.has ? structured.peerDeviceId.value : null)
+    || (structured.conversation.peerDeviceId?.has ? structured.conversation.peerDeviceId.value : null)
+    || normalizePeerDeviceId(
+      opts?.peerDeviceId
+      ?? opts?.conversation?.peerDeviceId
+      ?? null
+    );
+  const conversationIdHint =
+    (structured.conversation.id.has ? structured.conversation.id.value : null)
+    || opts?.conversationId
+    || opts?.conversation_id
+    || opts?.conversation?.id
+    || opts?.conversation?.conversation_id
+    || null;
+  const { key, aliases, identity } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint, conversationId: conversationIdHint });
   if (!key) return;
   const map = ensureMap();
   const existing = map.get(key) || null;
   const next = cloneContactSecretRecord(existing);
+  if (identity?.deviceId) {
+    next.peerDeviceId = identity.deviceId;
+  } else if (peerDeviceIdHint) {
+    next.peerDeviceId = peerDeviceIdHint;
+  }
   const resolvedDeviceId =
-    normalizeDeviceId(structured.deviceId.has ? structured.deviceId.value : null) ||
-    normalizeDeviceId(opts.deviceId) ||
-    normalizeDeviceId(getDeviceId?.()) ||
-    'default';
+    (structured.deviceId.has ? structured.deviceId.value : null)
+    || opts.deviceId
+    || ensureDeviceId();
   const deviceRecord = ensureDeviceRecord(next, resolvedDeviceId, { create: true });
 
-  const resolvedInviteId = structured.invite.id.has ? structured.invite.id.value : next.inviteId;
-  const resolvedSecret = structured.invite.secret.has ? structured.invite.secret.value : next.secret;
-  if (!resolvedInviteId || !resolvedSecret) return;
-  next.inviteId = resolvedInviteId;
-  next.secret = resolvedSecret;
-
-  if (structured.invite.role.has) next.role = structured.invite.role.value;
   if (structured.conversation.token.has) next.conversationToken = structured.conversation.token.value;
   if (structured.conversation.id.has) next.conversationId = structured.conversation.id.value;
   if (structured.conversation.drInit.has) next.conversationDrInit = structured.conversation.drInit.value;
-  if (structured.session.bootstrapTs.has) deviceRecord.sessionBootstrapTs = structured.session.bootstrapTs.value;
+  if (structured.conversation.peerDeviceId?.has && structured.conversation.peerDeviceId.value) {
+    next.peerDeviceId = structured.conversation.peerDeviceId.value;
+  }
   if (structured.dr.state.has) deviceRecord.drState = structured.dr.state.value;
   if (structured.dr.seed.has) deviceRecord.drSeed = structured.dr.seed.value;
   if (structured.dr.history.has) deviceRecord.drHistory = structured.dr.history.value || [];
@@ -1130,6 +1175,7 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
   persistContactSecrets();
   debugLog('set', {
     peerAccountDigest: normalizeAccountDigest(key) || key || null,
+    peerDeviceId: next.peerDeviceId || identity?.deviceId || null,
     role: next.role || null,
     deviceId: resolvedDeviceId,
     hasDrState: !!deviceRecord.drState,
@@ -1137,8 +1183,7 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     historyLen: Array.isArray(deviceRecord.drHistory) ? deviceRecord.drHistory.length : 0,
     cursorTs: deviceRecord.drHistoryCursorTs || null,
     cursorId: deviceRecord.drHistoryCursorId || null,
-    source: structured.debugSource || opts?.__debugSource || 'unknown',
-    sessionBootstrapTs: deviceRecord.sessionBootstrapTs || null
+    source: structured.debugSource || opts?.__debugSource || 'unknown'
   });
 }
 
@@ -1153,15 +1198,21 @@ export function deleteContactSecret(peerAccountDigest) {
 }
 
 export function getContactSecret(peerAccountDigest, opts = {}) {
-  const { key } = resolvePeerKey(peerAccountDigest);
+  const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || opts.peer_device_id || opts.peerDeviceIdHint || null);
+  const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
   if (!key) return null;
+  const parsedKey = parsePeerKey(key);
   const map = ensureMap();
   const record = map.get(key);
   if (!record) return null;
-  const desiredDeviceId = normalizeDeviceId(opts.deviceId) || normalizeDeviceId(getDeviceId?.()) || null;
+  const desiredDeviceId = normalizeDeviceId(opts.deviceId) || normalizeDeviceId(ensureDeviceId());
   const { deviceId, deviceRecord } = selectDeviceRecord(record, desiredDeviceId);
+  if (desiredDeviceId && deviceId !== desiredDeviceId) return null;
+  if (!deviceRecord) return null;
+
   const merged = {
     ...record,
+    peerDeviceId: record.peerDeviceId || parsedKey.deviceId || null,
     deviceId: deviceId || desiredDeviceId || null
   };
   merged.drState = deviceRecord?.drState || null;
@@ -1169,7 +1220,6 @@ export function getContactSecret(peerAccountDigest, opts = {}) {
   merged.drHistory = Array.isArray(deviceRecord?.drHistory) ? deviceRecord.drHistory : [];
   merged.drHistoryCursorTs = Number.isFinite(deviceRecord?.drHistoryCursorTs) ? deviceRecord.drHistoryCursorTs : null;
   merged.drHistoryCursorId = deviceRecord?.drHistoryCursorId || null;
-  merged.sessionBootstrapTs = Number.isFinite(deviceRecord?.sessionBootstrapTs) ? deviceRecord.sessionBootstrapTs : null;
   merged.updatedAt = Number.isFinite(deviceRecord?.updatedAt) ? deviceRecord.updatedAt : (Number.isFinite(record.updatedAt) ? record.updatedAt : null);
   return merged;
 }
@@ -1178,11 +1228,6 @@ export function getContactSecretSections(peerAccountDigest, opts = {}) {
   const record = getContactSecret(peerAccountDigest, opts);
   if (!record) return null;
   return {
-    invite: {
-      id: record.inviteId || null,
-      secret: record.secret || null,
-      role: record.role || null
-    },
     conversation: {
       token: record.conversationToken || null,
       id: record.conversationId || null,
@@ -1196,9 +1241,6 @@ export function getContactSecretSections(peerAccountDigest, opts = {}) {
         ts: Number.isFinite(record.drHistoryCursorTs) ? record.drHistoryCursorTs : null,
         id: record.drHistoryCursorId || null
       }
-    },
-    session: {
-      bootstrapTs: Number.isFinite(record.sessionBootstrapTs) ? record.sessionBootstrapTs : null
     },
     meta: {
       updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : null
@@ -1259,43 +1301,38 @@ export function summarizeContactSecretsPayload(payload) {
   }
   try {
     const parsed = JSON.parse(payload);
-    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.entries)) {
-      summary.version = Number.isFinite(Number(parsed.v ?? parsed.version)) ? Number(parsed.v ?? parsed.version) : CONTACT_SECRETS_VERSION;
-      for (const entry of parsed.entries) {
-        if (!entry || typeof entry !== 'object') continue;
-        const invite = entry.invite || {};
-        if (!invite.secret || !invite.id) continue;
-        summary.entries += 1;
-        const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : {};
-        let hasDr = false;
-        let hasHistory = false;
-        let hasSeed = false;
-        const dr = entry.dr || {}; // legacy fields
-        const deviceList = Object.keys(devices).length ? Object.values(devices) : [dr];
-        for (const dev of deviceList) {
-          const rk = dev?.drState?.rk_b64 || dev?.drState?.rk || dev?.state?.rk || dev?.state?.rk_b64;
-          if (!hasDr && typeof rk === 'string' && rk.length) hasDr = true;
-          const history = dev?.drHistory || dev?.history || [];
-          const historyLen = Array.isArray(history) ? history.length : 0;
-          if (historyLen > 0) {
-            hasHistory = true;
-            if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
-          }
-          const seedVal = dev?.drSeed || dev?.seed;
-          if (!hasSeed && typeof seedVal === 'string' && seedVal.length) hasSeed = true;
-        }
-        if (hasDr) summary.withDrState += 1;
-        if (hasHistory) summary.withHistory += 1;
-        if (hasSeed) summary.withSeed += 1;
-      }
-    } else {
+    const entries = parsed && typeof parsed === 'object' && Array.isArray(parsed.entries) ? parsed.entries : null;
+    if (!entries) {
       summary.parseError = 'unsupported-format';
       return summary;
     }
-    summary.withoutDrState = Math.max(0, summary.entries - summary.withDrState);
-    if (!summary.version) {
-      summary.version = Array.isArray(parsed) ? 1 : CONTACT_SECRETS_VERSION;
+    summary.version = Number.isFinite(Number(parsed.v ?? parsed.version)) ? Number(parsed.v ?? parsed.version) : CONTACT_SECRETS_VERSION;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      summary.entries += 1;
+      const devices = entry.devices && typeof entry.devices === 'object' ? Object.values(entry.devices) : [];
+      if (!devices.length && entry.dr) devices.push(entry.dr); // legacy single-device snapshot
+      let hasDr = false;
+      let hasHistory = false;
+      let hasSeed = false;
+      for (const dev of devices) {
+        const rk = dev?.drState?.rk_b64 || dev?.drState?.rk || dev?.state?.rk || dev?.state?.rk_b64;
+        if (!hasDr && typeof rk === 'string' && rk.length) hasDr = true;
+        const history = dev?.drHistory || dev?.history || [];
+        const historyLen = Array.isArray(history) ? history.length : 0;
+        if (historyLen > 0) {
+          hasHistory = true;
+          if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
+        }
+        const seedVal = dev?.drSeed || dev?.seed;
+        if (!hasSeed && typeof seedVal === 'string' && seedVal.length) hasSeed = true;
+      }
+      if (hasDr) summary.withDrState += 1;
+      if (hasHistory) summary.withHistory += 1;
+      if (hasSeed) summary.withSeed += 1;
     }
+    summary.withoutDrState = Math.max(0, summary.entries - summary.withDrState);
+    if (!summary.version) summary.version = CONTACT_SECRETS_VERSION;
   } catch (err) {
     summary.parseError = err?.message || String(err);
   }

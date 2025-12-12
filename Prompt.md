@@ -30,6 +30,5 @@
 - 預設擁有 Git push、Cloudflare 部署、D1 / R2 操作等權限；確認動作安全後直接執行，勿假設需要額外授權。
 - 測試或部署完成後，依 README 指示執行健康檢查（如 `curl` 檢查 API/Pages）。
 - 若流程中斷或重啟 session，就再讀本檔 + README，照上述步驟重新接手。
-- 遠端裝置除錯：前端可呼叫 `/api/v1/debug/console` 上報 log，伺服端寫入 PM2 stdout 及 `logs/remote-console.log`（可用環境變數 `REMOTE_CONSOLE_LOG` 覆寫）。協作時先清空此檔再重現，避免舊訊息干擾；log 會附帶 `accountDigest`（可選 `device`）。收到新紀錄後請立即分析，勿要求使用者貼 Console。
 
 > TL;DR：每一輪必做「讀 README → 按最新優先修 → 自己跑相關測試 → 成功後更新 README 紀錄 → 回報詳細結果」。任何少一步都視為未完成。*** End Patch***

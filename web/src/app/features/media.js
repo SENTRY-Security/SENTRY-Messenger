@@ -246,6 +246,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
         name,
         contentType,
         dir: dirSegments,
+        iv_b64: envelope.iv_b64,
         env: {
           iv_b64: envelope.iv_b64,
           hkdf_salt_b64: envelope.hkdf_salt_b64,
@@ -362,21 +363,22 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
 
   let dataMsg = null;
   if (!skipIndex) {
-    const msgPayload = {
-      convId,
-      type: 'media',
-      aead: 'aes-256-gcm',
-      header: {
-        obj: objectKey,
-        size: ct.cipherBuf.byteLength,
-        name,
-        contentType,
-        dir: dirSegments,
-        env: {
-          iv_b64: envelope.iv_b64,
-          hkdf_salt_b64: envelope.hkdf_salt_b64,
-          info_tag: envelope.info_tag,
-          key_type: envelope.key_type
+  const msgPayload = {
+    convId,
+    type: 'media',
+    aead: 'aes-256-gcm',
+    header: {
+      obj: objectKey,
+      size: ct.cipherBuf.byteLength,
+      name,
+      contentType,
+      dir: dirSegments,
+      iv_b64: envelope.iv_b64,
+      env: {
+        iv_b64: envelope.iv_b64,
+        hkdf_salt_b64: envelope.hkdf_salt_b64,
+        info_tag: envelope.info_tag,
+        key_type: envelope.key_type
         }
       },
       ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({
@@ -412,7 +414,7 @@ export async function signGet({ key }) {
  * If envelope is not provided, tries local cache (saveEnvelopeMeta/loadEnvelopeMeta).
  * Returns { blob, contentType, name, bytes } for callers to save/display.
  */
-export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, preferXhr, abortSignal }) {
+export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, preferXhr, abortSignal, messageKeyB64 }) {
   // onStatus 為既有介面；onProgress 為別名，便於舊呼叫站上事件
   const progress = typeof onStatus === 'function'
     ? onStatus
@@ -426,6 +428,11 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
     if (!keyB64) throw new Error('No shared media key available');
     baseKey = normalizeSharedKey(keyB64);
     if (!baseKey) throw new Error('Shared media key invalid');
+  } else if (keyType === 'message') {
+    const mkB64 = messageKeyB64 || meta.messageKey_b64 || meta.message_key_b64 || null;
+    if (!mkB64) throw new Error('No message key available');
+    baseKey = normalizeSharedKey(mkB64);
+    if (!baseKey) throw new Error('Message key invalid');
   } else {
     baseKey = getMkRaw();
     if (!baseKey) throw new Error('Not unlocked: MK not ready');

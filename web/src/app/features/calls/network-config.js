@@ -1,4 +1,4 @@
-import { buildAccountPayload } from '../../core/store.js';
+import { buildAccountPayload, ensureDeviceId } from '../../core/store.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
 import { setCallNetworkConfig } from './state.js';
 
@@ -124,13 +124,20 @@ async function fetchFromApi({ signal } = {}) {
   if (!hasCredentials) {
     throw new Error('call network config auth missing');
   }
-  const params = new URLSearchParams();
-  if (auth.accountToken) params.set('accountToken', auth.accountToken);
-  if (auth.accountDigest) params.set('accountDigest', auth.accountDigest);
-  const url = `${API_CONFIG_URL}?${params.toString()}`;
+  const headers = {};
+  if (auth.accountToken) headers['X-Account-Token'] = auth.accountToken;
+  if (auth.accountDigest) headers['X-Account-Digest'] = auth.accountDigest;
+  try {
+    const deviceId = ensureDeviceId();
+    if (deviceId) headers['X-Device-Id'] = deviceId;
+  } catch {
+    /* let backend enforce */
+  }
+  const url = API_CONFIG_URL;
   const response = await fetch(url, {
     cache: 'no-store',
     credentials: 'same-origin',
+    headers,
     signal
   });
   if (!response.ok) {

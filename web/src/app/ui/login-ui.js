@@ -13,7 +13,7 @@ import {
   getMkRaw, setMkRaw,
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
-  getDevicePriv,
+  getDevicePriv, ensureDeviceId,
   resetAll, clearSecrets,
   setOpaqueServerId
 } from '../core/store.js';
@@ -25,7 +25,11 @@ import {
   getContactSecretsStorageKeys,
   getContactSecretsLatestKeys,
   getContactSecretsMetaKeys,
-  getContactSecretsChecksumKeys
+  getContactSecretsChecksumKeys,
+  getLegacyContactSecretsStorageKeys,
+  getLegacyContactSecretsLatestKeys,
+  getLegacyContactSecretsMetaKeys,
+  getLegacyContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
 import { ensureDefaultAvatarFromSeed } from '../features/profile.js';
@@ -40,16 +44,10 @@ const modalBackdrop = document.getElementById('loginModalBackdrop');
 const welcomeModal = document.getElementById('welcomeModal');
 const welcomeNextBtn = document.getElementById('welcomeNext');
 const welcomeCloseBtn = document.getElementById('welcomeClose');
-const loginBrand = document.getElementById('loginBrand');
-const remoteConsoleMask = document.getElementById('remoteConsoleMask');
-const remoteConsoleToast = document.getElementById('remoteConsoleToast');
-const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
 const loginShellEl = document.querySelector('.login-shell');
 const uidIdenticonEl = document.getElementById('uidIdenticon');
 const uidCardEl = document.getElementById('uidCard');
 const passwordAreaEl = document.getElementById('passwordArea');
-let loginBrandPressTimer = null;
-let remoteConsoleToastTimer = null;
 
 initVersionInfoButton({ buttonId: 'versionInfoBtnLogin', popupId: 'versionInfoPopupLogin' });
 
@@ -149,66 +147,6 @@ async function renderIdenticon(uid, { pending = false } = {}) {
   }
 }
 
-function showRemoteConsoleToast(message, { variant = 'success' } = {}) {
-  if (!remoteConsoleToast) return;
-  remoteConsoleToast.textContent = message || '';
-  remoteConsoleToast.classList.remove('success', 'warn');
-  if (variant === 'warn') remoteConsoleToast.classList.add('warn');
-  else remoteConsoleToast.classList.add('success');
-  remoteConsoleToast.classList.add('show');
-  if (remoteConsoleToastTimer) clearTimeout(remoteConsoleToastTimer);
-  remoteConsoleToastTimer = setTimeout(() => {
-    remoteConsoleToast?.classList.remove('show');
-  }, 2600);
-}
-
-function isRemoteConsoleHandoffEnabled() {
-  try {
-    return sessionStorage.getItem(REMOTE_CONSOLE_HANDOFF_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function setRemoteConsoleHandoffEnabled(next) {
-  try {
-    if (next) {
-      sessionStorage.setItem(REMOTE_CONSOLE_HANDOFF_KEY, '1');
-    } else {
-      sessionStorage.removeItem(REMOTE_CONSOLE_HANDOFF_KEY);
-    }
-  } catch {}
-  const message = next ? '登入後將自動啟用遠端 Console。' : '已取消遠端 Console 模式。';
-  showRemoteConsoleToast(message, { variant: next ? 'success' : 'warn' });
-  log(next ? '遠端除錯模式將於登入後自動啟用。' : '遠端除錯模式已取消。');
-}
-
-function handleLoginBrandLongPressTrigger() {
-  const next = !isRemoteConsoleHandoffEnabled();
-  setRemoteConsoleHandoffEnabled(next);
-}
-
-function handleLoginBrandLongPressStart() {
-  if (loginBrandPressTimer) return;
-  loginBrandPressTimer = setTimeout(() => {
-    loginBrandPressTimer = null;
-    handleLoginBrandLongPressTrigger();
-  }, 1500);
-}
-
-function clearLoginBrandLongPressTimer() {
-  if (!loginBrandPressTimer) return;
-  clearTimeout(loginBrandPressTimer);
-  loginBrandPressTimer = null;
-}
-
-const consoleTriggerEl = remoteConsoleMask || loginBrand;
-consoleTriggerEl?.addEventListener('pointerdown', () => {
-  handleLoginBrandLongPressStart();
-});
-consoleTriggerEl?.addEventListener('pointerup', clearLoginBrandLongPressTimer);
-consoleTriggerEl?.addEventListener('pointerleave', clearLoginBrandLongPressTimer);
-
 function getContactSecretKeyOptionsForLogin(uidOverride) {
   return {
     accountDigest: getAccountDigest()
@@ -227,110 +165,109 @@ function readContactSnapshotFrom(storage, keys = []) {
 }
 
 function purgeLoginStorage() {
+  const seedCache = typeof window !== 'undefined' && window.__LOGIN_SEED_LOCALSTORAGE && typeof window.__LOGIN_SEED_LOCALSTORAGE === 'object'
+    ? { ...window.__LOGIN_SEED_LOCALSTORAGE }
+    : null;
   let seeds = null;
-  if (typeof window !== 'undefined' && window.__LOGIN_SEED_LOCALSTORAGE && typeof window.__LOGIN_SEED_LOCALSTORAGE === 'object') {
-    seeds = { ...window.__LOGIN_SEED_LOCALSTORAGE };
-  }
+  const keyOptions = getContactSecretKeyOptionsForLogin();
+  const storageKeys = Array.from(new Set([
+    ...getContactSecretsStorageKeys(keyOptions),
+    ...getContactSecretsStorageKeys({})
+  ]));
+  const latestKeys = Array.from(new Set([
+    ...getContactSecretsLatestKeys(keyOptions),
+    ...getContactSecretsLatestKeys({})
+  ]));
+  const legacyStorageKeys = Array.from(new Set([
+    ...getLegacyContactSecretsStorageKeys(keyOptions),
+    ...getLegacyContactSecretsStorageKeys({})
+  ]));
+  const legacyLatestKeys = Array.from(new Set([
+    ...getLegacyContactSecretsLatestKeys(keyOptions),
+    ...getLegacyContactSecretsLatestKeys({})
+  ]));
+  const legacyMetaKeys = Array.from(new Set([
+    ...getLegacyContactSecretsMetaKeys(keyOptions),
+    ...getLegacyContactSecretsMetaKeys({})
+  ]));
+  const legacyChecksumKeys = Array.from(new Set([
+    ...getLegacyContactSecretsChecksumKeys(keyOptions),
+    ...getLegacyContactSecretsChecksumKeys({})
+  ]));
+  const candidates = [];
+  const addCandidate = (store, keys, source, isLegacy = false) => {
+    const record = readContactSnapshotFrom(store, keys);
+    if (record?.value) {
+      candidates.push({
+        value: record.value,
+        source: `${source}:${record.key}`,
+        isLegacy
+      });
+    }
+  };
+  const addSeedCandidate = (cache, keys, source, isLegacy = false) => {
+    if (!cache) return;
+    for (const key of keys) {
+      if (typeof cache[key] === 'string') {
+        candidates.push({ value: cache[key], source, isLegacy });
+        break;
+      }
+    }
+  };
   try {
     const storage = localStorage;
-    const contactSecretsSnapshot = storage.getItem('contactSecrets-v1');
-    const latestHandoffSnapshot = storage.getItem('contactSecrets-v1-latest');
-    if (contactSecretsSnapshot) {
-      log({ contactSecretsLocalSummary: summarizeContactSecretsPayload(contactSecretsSnapshot) });
-    }
-    if (latestHandoffSnapshot) {
-      log({ contactSecretsLatestSummary: summarizeContactSecretsPayload(latestHandoffSnapshot) });
-    }
-    const pickBestSnapshot = () => {
-      const currentLen = seeds && Object.prototype.hasOwnProperty.call(seeds, 'contactSecrets-v1')
-        ? (seeds['contactSecrets-v1']?.length || 0)
-        : 0;
-      let best = contactSecretsSnapshot && typeof contactSecretsSnapshot === 'string' ? contactSecretsSnapshot : null;
-      let bestSource = 'local';
-      if (latestHandoffSnapshot && typeof latestHandoffSnapshot === 'string') {
-        if (!best || latestHandoffSnapshot.length >= (best?.length || 0)) {
-          best = latestHandoffSnapshot;
-          bestSource = 'latest';
-        }
-      }
-      if (best && best.length > currentLen) {
-        if (!seeds) seeds = {};
-        seeds['contactSecrets-v1'] = best;
-        seeds['contactSecrets-v1-latest'] = best;
-        seeds.__CONTACT_SECRET_SOURCE = bestSource;
-      }
-    };
-    pickBestSnapshot();
-    let handoffSummary = null;
+    addCandidate(storage, storageKeys, 'local', false);
+    addCandidate(storage, latestKeys, 'local-latest', false);
+    addCandidate(storage, legacyStorageKeys, 'legacy-local', true);
+    addCandidate(storage, legacyLatestKeys, 'legacy-local-latest', true);
+    addSeedCandidate(seedCache, storageKeys, 'seed-v2', false);
+    addSeedCandidate(seedCache, legacyStorageKeys, 'seed-v1', true);
     let handoffChecksum = null;
     if (typeof sessionStorage !== 'undefined') {
-      const handoffSnapshot = sessionStorage.getItem('contactSecrets-v1');
-      if (handoffSnapshot && (typeof handoffSnapshot === 'string')) {
-        if (!seeds) seeds = {};
-        const existingLen = Object.prototype.hasOwnProperty.call(seeds, 'contactSecrets-v1') ? (seeds['contactSecrets-v1']?.length || 0) : 0;
-        if (!existingLen || handoffSnapshot.length >= existingLen) {
-          seeds['contactSecrets-v1'] = handoffSnapshot;
-          seeds.__CONTACT_SECRET_SOURCE = 'session';
-        }
-        if (isAutomationEnv()) {
-          try {
-            console.log('[login-session-snapshot]', JSON.stringify({
-              sessionBytes: handoffSnapshot.length,
-              existingSeedBytes: existingLen
-            }));
-          } catch {}
-        }
-      }
+      addCandidate(sessionStorage, storageKeys, 'session', false);
+      addCandidate(sessionStorage, latestKeys, 'session-latest', false);
+      addCandidate(sessionStorage, legacyStorageKeys, 'legacy-session', true);
+      addCandidate(sessionStorage, legacyLatestKeys, 'legacy-session-latest', true);
       try {
-        const metaRaw = sessionStorage.getItem('contactSecrets-v1-meta');
-        if (metaRaw) handoffSummary = JSON.parse(metaRaw);
-      } catch {}
-      try {
-        const checksumRaw = sessionStorage.getItem('contactSecrets-v1-checksum');
+        const checksumRaw = readContactSnapshotFrom(sessionStorage, legacyChecksumKeys)?.value || null;
         if (checksumRaw) handoffChecksum = JSON.parse(checksumRaw);
       } catch {}
-      if (handoffSummary) {
-        log({ contactSecretsHandoffSummary: handoffSummary });
-      }
       if (handoffChecksum) {
         log({ contactSecretsHandoffChecksum: handoffChecksum });
       }
-      try { sessionStorage.removeItem('contactSecrets-v1-meta'); } catch {}
-      try { sessionStorage.removeItem('contactSecrets-v1-checksum'); } catch {}
+      [...legacyMetaKeys, ...legacyChecksumKeys, ...legacyStorageKeys, ...legacyLatestKeys].forEach((key) => {
+        try { sessionStorage.removeItem(key); } catch {}
+      });
     }
-    if (isAutomationEnv() && seeds?.['contactSecrets-v1']) {
-      log({
-        loginStorageSeedPrepared: true,
-        contactSecretsBytes: seeds['contactSecrets-v1'].length,
-        contactSecretsSource: seeds.__CONTACT_SECRET_SOURCE || 'local'
-      });
-      log({
-        contactSecretsSeedSources: {
-          localBytes: contactSecretsSnapshot?.length || 0,
-          latestBytes: latestHandoffSnapshot?.length || 0,
-          sessionBytes: seeds.__CONTACT_SECRET_SOURCE === 'session' ? seeds['contactSecrets-v1']?.length || 0 : 0
-        }
-      });
-      log({
-        contactSecretsSeedSummary: summarizeContactSecretsPayload(seeds['contactSecrets-v1'])
-      });
-      if (handoffSummary && handoffSummary.bytes && seeds['contactSecrets-v1']) {
-        log({
-          contactSecretsSeedDeltaBytes: seeds['contactSecrets-v1'].length - handoffSummary.bytes
-        });
+    const best = candidates.reduce((prev, cand) => {
+      const len = typeof cand.value === 'string' ? cand.value.length : 0;
+      if (!len) return prev;
+      if (!prev) return { ...cand, len };
+      if (len > prev.len) return { ...cand, len };
+      if (len === prev.len && prev.isLegacy && !cand.isLegacy) return { ...cand, len };
+      return prev;
+    }, null);
+    if (best?.value) {
+      seeds = {};
+      storageKeys.forEach((key) => { seeds[key] = best.value; });
+      latestKeys.forEach((key) => { seeds[key] = best.value; });
+      seeds.__CONTACT_SECRET_SOURCE = best.source;
+      seeds.__CONTACT_SECRET_VERSION = best.isLegacy ? 'migrated-v1' : 'v2';
+      const summary = summarizeContactSecretsPayload(best.value);
+      log({ contactSecretsSeedPrepared: summary });
+      if (isAutomationEnv()) {
+        log({ contactSecretsSeedSource: best.source, contactSecretsSeedBytes: best.value.length });
       }
     }
     storage.clear();
     if (seeds) {
-      if (seeds['contactSecrets-v1'] && !seeds['contactSecrets-v1-latest']) {
-        seeds['contactSecrets-v1-latest'] = seeds['contactSecrets-v1'];
-      }
       for (const [key, value] of Object.entries(seeds)) {
         if (key.startsWith('__')) continue;
         try { storage.setItem(key, value); } catch (err) { log({ loginStorageSeedWriteError: err?.message || err, key }); }
       }
-      if (seeds['contactSecrets-v1']) {
-        log({ contactSecretsSeedApplied: summarizeContactSecretsPayload(seeds['contactSecrets-v1']) });
+      const primarySeed = Object.entries(seeds).find(([key]) => !key.startsWith('__'));
+      if (primarySeed && typeof primarySeed[1] === 'string') {
+        log({ contactSecretsSeedApplied: summarizeContactSecretsPayload(primarySeed[1]) });
       }
     }
   } catch (err) {
@@ -353,7 +290,15 @@ function purgeLoginStorage() {
       ...getContactSecretsMetaKeys(keyOptions),
       ...getContactSecretsMetaKeys({}),
       ...getContactSecretsChecksumKeys(keyOptions),
-      ...getContactSecretsChecksumKeys({})
+      ...getContactSecretsChecksumKeys({}),
+      ...getLegacyContactSecretsStorageKeys(keyOptions),
+      ...getLegacyContactSecretsStorageKeys({}),
+      ...getLegacyContactSecretsLatestKeys(keyOptions),
+      ...getLegacyContactSecretsLatestKeys({}),
+      ...getLegacyContactSecretsMetaKeys(keyOptions),
+      ...getLegacyContactSecretsMetaKeys({}),
+      ...getLegacyContactSecretsChecksumKeys(keyOptions),
+      ...getLegacyContactSecretsChecksumKeys({})
     ]);
     keysToRemove.forEach((key) => {
       try { sessionStorage.removeItem(key); } catch {}
@@ -686,6 +631,11 @@ function setUidVerifyingState(active) {
 
 function isLikelyDesktop() {
   try {
+    // e2e: allow forcing debug UI via ?e2e=1
+    if (typeof window !== 'undefined' && window.location && window.location.search) {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get('e2e') === '1') return true;
+    }
     const mm = typeof window.matchMedia === 'function' ? window.matchMedia.bind(window) : null;
     const pointerFine = mm ? mm('(pointer: fine)').matches : false;
     const pointerCoarse = mm ? mm('(pointer: coarse)').matches : false;
@@ -904,11 +854,27 @@ async function onUnlock() {
       log('預共享金鑰尚未就緒，請稍後再試。');
       return;
     }
+    let deviceIdAfterUnlock = null;
+    try {
+      deviceIdAfterUnlock = ensureDeviceId();
+      console.log('[login-ui] deviceId:ensure:post-unlock', deviceIdAfterUnlock);
+    } catch (err) {
+      log({ deviceIdError: err?.message || err });
+      throw err;
+    }
+    let deviceIdForAvatar = deviceIdAfterUnlock;
+    try {
+      const stored = sessionStorage?.getItem('device_id');
+      console.log('[login-ui] deviceId:sessionStorage', stored || null);
+    } catch (err) {
+      log({ deviceIdStorageError: err?.message || err });
+    }
     if (newAccount) {
       const avatarSeed = getUidHex?.() || getAccountDigest();
       if (avatarSeed) {
         updateBootstrapStep('avatar-init', 'start');
         try {
+          console.log('[login-ui] deviceId:avatar-init:start', deviceIdForAvatar, 'seed', avatarSeed);
           const res = await ensureDefaultAvatarFromSeed({ seed: avatarSeed });
           if (res?.skipped) {
             updateBootstrapStep('avatar-init', 'skip', '已存在頭像');
@@ -922,6 +888,13 @@ async function onUnlock() {
       } else {
         updateBootstrapStep('avatar-init', 'skip', '缺少識別種子');
       }
+    }
+    try {
+      const deviceIdBeforeRedirect = ensureDeviceId();
+      console.log('[login-ui] deviceId:ensure:before-redirect', deviceIdBeforeRedirect);
+    } catch (err) {
+      log({ deviceIdBeforeRedirectError: err?.message || err });
+      throw err;
     }
     updateUidDisplay();
     updateLoading('登入成功，正在導向…');

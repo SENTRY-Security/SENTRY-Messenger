@@ -5,7 +5,7 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchJSON } from '../core/http.js';
-import { getAccountToken, getAccountDigest, getDeviceId } from '../core/store.js';
+import { getAccountToken, getAccountDigest, ensureDeviceId, getDevicePriv } from '../core/store.js';
 
 const AccountDigestRegex = /^[0-9A-F]{64}$/;
 
@@ -30,9 +30,17 @@ function buildAccountPayload({ accountToken, accountDigest } = {}) {
  */
 export async function prekeysPublish({ accountToken, accountDigest, deviceId, signedPrekey, opks } = {}) {
   const body = buildAccountPayload({ accountToken, accountDigest });
-  const device = deviceId || getDeviceId();
+  const device = deviceId || ensureDeviceId();
   if (device) body.deviceId = device;
-  if (signedPrekey) body.signedPrekey = signedPrekey;
+  if (signedPrekey) {
+    const enriched = { ...signedPrekey };
+    if (!enriched.ik && !enriched.ik_pub) {
+      const priv = getDevicePriv?.();
+      if (priv?.ik_pub_b64) enriched.ik_pub = priv.ik_pub_b64;
+    }
+    if (!enriched.ik && !enriched.ik_pub && enriched.ikPub) enriched.ik_pub = enriched.ikPub;
+    body.signedPrekey = enriched;
+  }
   if (Array.isArray(opks)) body.opks = opks;
   return await fetchJSON('/api/v1/keys/publish', body);
 }

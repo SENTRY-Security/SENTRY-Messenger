@@ -16,10 +16,7 @@ const RedeemSchema = z.object({
 export const redeem = async (req, res) => {
   let input;
   try {
-    const headerAccountToken = typeof req.headers['x-account-token'] === 'string' ? req.headers['x-account-token'] : null;
-    const headerAccountDigest = typeof req.headers['x-account-digest'] === 'string' ? req.headers['x-account-digest'] : null;
-    const merged = { accountToken: headerAccountToken, accountDigest: headerAccountDigest, ...(req.body || {}) };
-    input = RedeemSchema.parse(merged);
+    input = RedeemSchema.parse(req.body || {});
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid payload' });
   }
@@ -36,10 +33,7 @@ export const redeem = async (req, res) => {
 export const validate = async (req, res) => {
   let input;
   try {
-    const headerAccountToken = typeof req.headers['x-account-token'] === 'string' ? req.headers['x-account-token'] : null;
-    const headerAccountDigest = typeof req.headers['x-account-digest'] === 'string' ? req.headers['x-account-digest'] : null;
-    const merged = { accountToken: headerAccountToken, accountDigest: headerAccountDigest, ...(req.body || {}) };
-    input = RedeemSchema.parse(merged);
+    input = RedeemSchema.parse(req.body || {});
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid payload' });
   }
@@ -56,11 +50,13 @@ export const validate = async (req, res) => {
 export const status = async (req, res) => {
   const digest = typeof req.query?.digest === 'string' ? req.query.digest.trim() : '';
   const uidDigest = typeof req.query?.uidDigest === 'string' ? req.query.uidDigest.trim() : '';
-  const headerAccountDigest = typeof req.headers['x-account-digest'] === 'string' ? req.headers['x-account-digest'].trim() : '';
+  if (!digest && !uidDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'digest or uidDigest required' });
+  }
   const limitRaw = req.query?.limit;
   const limit = Number.isFinite(Number(limitRaw)) ? Math.min(Math.max(Math.floor(Number(limitRaw)), 1), 200) : undefined;
   try {
-    const data = await subscriptionStatus({ digest: digest || headerAccountDigest, uidDigest, limit });
+    const data = await subscriptionStatus({ digest, uidDigest, limit });
     return res.json(data);
   } catch (err) {
     const statusCode = err?.status || 502;

@@ -114,9 +114,12 @@ r.post('/admin/purge-account', async (req, res) => {
 
   try {
     const manager = getWebSocketManager();
-    manager.forceLogout(workerJson?.accountDigest || accountDigest || uidDigest || null, {
-      reason: 'account purged'
-    });
+    const logoutDigest = workerJson?.accountDigest || null;
+    if (logoutDigest) {
+      manager.forceLogout(logoutDigest, {
+        reason: 'account purged'
+      });
+    }
   } catch (err) {
     logger.warn({ event: 'admin.purge.ws-notify-failed', error: err?.message || err });
   }

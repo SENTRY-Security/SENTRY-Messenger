@@ -1,3 +1,18 @@
+/**
+ * SECURITY POLICY – STRICT CRYPTO PROTOCOL, NO FALLBACK ALLOWED.
+ *
+ * 本檔案中的所有密碼協定（X3DH、Double Ratchet、AEAD、鍵派生、counter 驗證、header 驗證）
+ * 禁止設計、加入或推論任何 fallback、retry、rollback、resync、auto-repair 等邏輯。
+ *
+ * 規則如下：
+ * 1. 若解密失敗 → 一律直接 fail，不可嘗試第二組 key 或舊 ratchet state。
+ * 2. 若 counter 不一致 → 一律直接拒絕，不可重送、補拉或自動對齊。
+ * 3. 不允許任何協定降級（downgrade）。不得用舊版本、舊頭資訊、舊密鑰重試。
+ * 4. 不允許模糊錯誤處理。不做 try-catch fallback，不做 silent recovery。
+ * 5. 對話重置必須是顯式事件，不得隱式重建 state。
+ *
+ * 一切協定邏輯必須「單一路徑」且「強一致性」，任何 fallback 視為安全漏洞。
+ */
 import { CreateMessageSchema, CreateSecureMessageSchema } from '../schemas/message.schema.js';
 import crypto from 'node:crypto';
 import { signHmac } from '../utils/hmac.js';
@@ -7,6 +22,7 @@ import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.j
 import { logger } from '../utils/logger.js';
 import { normalizeConversationId, authorizeConversationAccess, isSystemOwnedConversation } from '../utils/conversation-auth.js';
 import { AccountDigestRegex } from '../utils/account-verify.js';
+import { getWebSocketManager } from '../ws/index.js';
 
 export const getHealth = (req, res) => {
   res.json({ ok: true, ts: Date.now() });
@@ -30,6 +46,13 @@ function appendSecureDebug(entry) {
   const payload = { ts: Date.now(), ...entry };
   fs.appendFile(SECURE_DEBUG_LOG, `${JSON.stringify(payload)}\n`).catch(() => {});
 }
+
+const canonAccount = (v) => (typeof v === 'string' ? v.replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null);
+const canonDevice = (v) => {
+  if (typeof v !== 'string') return null;
+  const trimmed = v.trim();
+  return trimmed || null;
+};
 
 const inflightSecureRequests = new Map();
 function inflightKey({ conversationId, cursorTs, cursorId, limit }) {
@@ -65,6 +88,8 @@ const DeleteMessagesSchema = z.object({
 
 const DeleteSecureConversationSchema = z.object({
   conversationId: z.string().min(8),
+  peerAccountDigest: z.string().regex(AccountDigestRegex),
+  targetDeviceId: z.string().min(1),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
@@ -73,45 +98,31 @@ const DeleteSecureConversationSchema = z.object({
   }
 });
 
-function firstString(value) {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-  }
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const resolved = firstString(entry);
-      if (resolved) return resolved;
-    }
-  }
-  return null;
-}
-
 function extractAccountFromRequest(req) {
-  const header = (name) => firstString(req.get(name));
-  const queryVal = (name) => firstString(req.query?.[name]);
-  const accountToken = firstString(
-    header('x-account-token'),
-    queryVal('accountToken'),
-    queryVal('account_token')
-  );
-  const accountDigest = firstString(
-    header('x-account-digest'),
-    queryVal('accountDigest'),
-    queryVal('account_digest')
-  );
-  const deviceId = firstString(
-    header('x-device-id'),
-    queryVal('deviceId'),
-    queryVal('device_id')
-  );
-  return { accountToken, accountDigest, deviceId };
+  const readHeader = (name) => {
+    const value = req.get(name);
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed || null;
+  };
+  const accountToken = readHeader('x-account-token');
+  const accountDigestRaw = readHeader('x-account-digest');
+  const accountDigestValid = accountDigestRaw && AccountDigestRegex.test(accountDigestRaw);
+  const accountDigest = accountDigestValid ? accountDigestRaw : null;
+  const accountDigestInvalid = !!(accountDigestRaw && !accountDigestValid);
+  const deviceId = readHeader('x-device-id');
+  return { accountToken, accountDigest, accountDigestInvalid, deviceId };
 }
 
-async function authorizeAccountForConversation({ conversationId, accountToken, accountDigest, deviceId = null }) {
+async function authorizeAccountForConversation({ conversationId, accountToken, accountDigest, deviceId = null, requireDeviceId = false }) {
   const normalizedConv = normalizeConversationId(conversationId);
   if (!normalizedConv) {
     throw new AccountAuthError('invalid conversationId', 400);
+  }
+
+  const normalizedDeviceId = deviceId ? String(deviceId).trim() : null;
+  if (requireDeviceId && !normalizedDeviceId) {
+    throw new AccountAuthError('deviceId required', 400);
   }
 
   const { accountDigest: resolvedDigest } = await resolveAccountAuth({
@@ -124,7 +135,7 @@ async function authorizeAccountForConversation({ conversationId, accountToken, a
       await authorizeConversationAccess({
         convId: normalizedConv,
         accountDigest: resolvedDigest,
-        deviceId: deviceId || null
+        deviceId: normalizedDeviceId || null
       });
     } catch (err) {
       const status = err?.status || 502;
@@ -153,14 +164,14 @@ export const createMessage = async (req, res) => {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
 
-  // Validate body
+  // Validate body（legacy schema，轉送到新版 secure messages）
   const input = CreateMessageSchema.parse(req.body);
-  const {
-    convId: rawConvId,
-    accountToken,
-    accountDigest,
-    ...messageInput
-  } = input;
+  const { convId: rawConvId, accountToken, accountDigest, ...messageInput } = input;
+  const account = extractAccountFromRequest(req);
+  const deviceId = account.deviceId || null;
+  if (!deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
 
   let auth;
   try {
@@ -168,27 +179,46 @@ export const createMessage = async (req, res) => {
       conversationId: rawConvId,
       accountToken,
       accountDigest,
-      deviceId: null
+      deviceId,
+      requireDeviceId: true
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
   }
 
-  // Build payload to D1 (index only, never plaintext)
-  const payload = {
-    msgId: crypto.randomUUID(),
-    convId: auth.conversationId,
-    senderId: req.headers['x-client-id'] || auth.accountDigest || 'unknown',
-    type: messageInput.type,
-    aead: messageInput.aead,
-    headerJson: JSON.stringify(messageInput.header || {}),
-    objKey: messageInput.header?.obj || null,
-    sizeBytes: messageInput.header?.size ?? null,
-    ts: Math.floor(Date.now() / 1000)
-  };
-
+  // 轉成新版 Signal-style secure message格式（系統對話預設自寄自收）
+  const headerJson = messageInput.header_json || JSON.stringify(messageInput.header || {});
+  const ciphertextB64 = messageInput.ciphertext_b64
+    || messageInput.ciphertext
+    || Buffer.from(headerJson).toString('base64');
+  const counter = Number.isFinite(messageInput.counter)
+    ? Number(messageInput.counter)
+    : Math.floor(Date.now() / 1000);
+  const receiverDigest = messageInput.receiver_account_digest || null;
+  if (!receiverDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'receiver_account_digest required' });
+  }
+  const receiverDeviceId = messageInput.receiver_device_id || null;
+  if (!receiverDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'receiver_device_id required' });
+  }
+  const senderDeviceId = canonDevice(deviceId);
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
   const path = '/d1/messages';
-  const body = JSON.stringify(payload);
+  const body = JSON.stringify({
+    conversation_id: auth.conversationId,
+    sender_account_digest: auth.accountDigest,
+    sender_device_id: senderDeviceId,
+    receiver_account_digest: receiverDigest,
+    receiver_device_id: receiverDeviceId,
+    header_json: headerJson,
+    ciphertext_b64: ciphertextB64,
+    counter,
+    id: messageInput.id || undefined,
+    created_at: messageInput.created_at || messageInput.ts || undefined
+  });
   const sig = signHmac(path, body, HMAC_SECRET);
 
   try {
@@ -197,17 +227,40 @@ export const createMessage = async (req, res) => {
       headers: { 'content-type': 'application/json', 'x-auth': sig },
       body
     });
-
+    const text = await r.text().catch(() => '');
+    let workerJson = null;
+    try { workerJson = text ? JSON.parse(text) : null; } catch { workerJson = text || null; }
+    if (r.status === 409 && typeof workerJson === 'object' && workerJson?.error === 'CounterTooLow') {
+      return res.status(409).json({ error: 'CounterTooLow', details: workerJson });
+    }
     if (!r.ok) {
-      const text = await r.text().catch(() => '');
-      return res.status(502).json({ error: 'D1WriteFailed', status: r.status, details: text });
+      return res.status(502).json({ error: 'D1WriteFailed', status: r.status, details: workerJson });
+    }
+
+    // WS 通知接收者有新訊息
+    try {
+      const mgr = getWebSocketManager();
+      mgr.notifySecureMessage({
+        targetAccountDigest: receiverDigest,
+        conversationId: auth.conversationId,
+        preview: messageInput.preview || messageInput.text || '',
+        ts: Number(messageInput.created_at || messageInput.ts || Date.now()),
+        senderAccountDigest: auth.accountDigest,
+        senderDeviceId,
+        targetDeviceId: canonDevice(receiverDeviceId)
+      });
+    } catch (err) {
+      logger.warn({ ws_notify_error: err?.message || err });
     }
 
     // Accepted: index stored (async any downstream processing)
-    return res.status(202).json({
+    const messageId = workerJson?.id || workerJson?.message_id || messageInput.id || undefined;
+    const createdAt = messageInput.created_at || messageInput.ts || undefined;
+    return res.status(202).json(workerJson || {
       accepted: true,
-      convId: payload.convId,
-      msgId: payload.msgId
+      id: messageId,
+      created_at: createdAt,
+      receipt: messageId ? { type: 'delivery', message_id: messageId, delivered_at: createdAt || Math.floor(Date.now() / 1000) } : undefined
     });
   } catch (err) {
     return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
@@ -218,6 +271,8 @@ export const createSecureMessage = async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
+
+  const account = extractAccountFromRequest(req);
 
   let input;
   try {
@@ -247,7 +302,8 @@ export const createSecureMessage = async (req, res) => {
       conversationId: rawConversationId,
       accountToken,
       accountDigest,
-      deviceId: sender_device_id || null
+      deviceId: sender_device_id || null,
+      requireDeviceId: true
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -262,17 +318,53 @@ export const createSecureMessage = async (req, res) => {
   if (!headerJson) {
     return res.status(400).json({ error: 'BadRequest', message: 'header_json required' });
   }
+  let headerObj = null;
+  try {
+    headerObj = JSON.parse(headerJson);
+  } catch {
+    return res.status(400).json({ error: 'BadRequest', message: 'header_json invalid' });
+  }
+  const senderDeviceId = canonDevice(sender_device_id);
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'sender_device_id required' });
+  }
+  const targetDeviceId = canonDevice(receiver_device_id || null);
+  if (!targetDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'receiver_device_id required' });
+  }
+  const headerCounter = Number.isFinite(headerObj?.n) ? headerObj.n : Number(headerObj?.counter);
+  const messageCounter = Number.isFinite(counter) ? counter : headerCounter;
+  if (!Number.isFinite(messageCounter)) {
+    return res.status(400).json({ error: 'BadRequest', message: 'counter required' });
+  }
+  if (Number.isFinite(headerCounter) && headerCounter !== messageCounter) {
+    return res.status(400).json({ error: 'BadRequest', message: 'header counter mismatch' });
+  }
+  const headerDeviceId = canonDevice(headerObj?.device_id || null);
+  if (!headerDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'header device_id required' });
+  }
+  if (senderDeviceId && headerDeviceId !== senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'header device_id mismatch' });
+  }
+  const headerVersion = Number(headerObj?.v ?? headerObj?.version ?? 1);
+  if (!Number.isFinite(headerVersion) || headerVersion <= 0) {
+    return res.status(400).json({ error: 'BadRequest', message: 'header version invalid' });
+  }
+  if (!headerObj?.iv_b64) {
+    return res.status(400).json({ error: 'BadRequest', message: 'header.iv_b64 required' });
+  }
 
   const payload = {
     id: messageId,
     conversation_id: auth.conversationId,
     sender_account_digest: auth.accountDigest,
-    sender_device_id,
+    sender_device_id: senderDeviceId,
     receiver_account_digest,
-    receiver_device_id: receiver_device_id || null,
+    receiver_device_id: targetDeviceId,
     header_json: headerJson,
     ciphertext_b64,
-    counter,
+    counter: messageCounter,
     created_at: createdAt
   };
 
@@ -302,12 +394,28 @@ export const createSecureMessage = async (req, res) => {
       });
     }
 
+    try {
+      const mgr = getWebSocketManager();
+      mgr.notifySecureMessage({
+        targetAccountDigest: receiver_account_digest,
+        conversationId: auth.conversationId,
+        preview: '',
+        ts: createdAt,
+        senderAccountDigest: auth.accountDigest,
+        senderDeviceId: canonDevice(senderDeviceId),
+        targetDeviceId: canonDevice(targetDeviceId)
+      });
+    } catch (err) {
+      logger.warn({ ws_notify_error: err?.message || err }, 'ws_notify_secure_message_failed');
+    }
+
     return res.status(202).json({
       accepted: true,
       id: messageId,
       conversation_id: input.conversation_id,
       created_at: createdAt,
-      worker: workerJson
+      worker: workerJson,
+      receipt: { type: 'delivery', message_id: messageId, delivered_at: createdAt }
     });
   } catch (err) {
     return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
@@ -320,13 +428,24 @@ export const listMessages = async (req, res) => {
   const convIdRaw = req.params.convId;
   const account = extractAccountFromRequest(req);
 
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Token or X-Account-Digest required' });
+  }
+  if (account.accountDigestInvalid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Digest invalid format' });
+  }
+  if (!account.deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Device-Id header required' });
+  }
+
   let auth;
   try {
     auth = await authorizeAccountForConversation({
       conversationId: convIdRaw,
       accountToken: account.accountToken,
       accountDigest: account.accountDigest,
-      deviceId: account.deviceId || null
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -334,7 +453,7 @@ export const listMessages = async (req, res) => {
 
   // Build query string
   const params = new URLSearchParams();
-  params.append('convId', auth.conversationId);
+  params.append('conversationId', auth.conversationId);
   if (req.query.cursorTs) params.append('cursorTs', req.query.cursorTs);
   if (req.query.limit) params.append('limit', req.query.limit);
   const path = `/d1/messages?${params.toString()}`;
@@ -354,7 +473,13 @@ export const listMessages = async (req, res) => {
     }
     try {
       const data = await r.json();
-      return res.json(data);
+      const items = Array.isArray(data?.items)
+        ? data.items.map((it) => ({
+            ...it,
+            ts: typeof it.ts === 'number' ? it.ts : (typeof it.created_at === 'number' ? it.created_at : null)
+          }))
+        : null;
+      return res.json(items ? { ...data, items } : data);
     } catch (err) {
       return res.status(502).json({ error: 'ParseError', message: err?.message || 'invalid JSON from worker' });
     }
@@ -374,13 +499,23 @@ export const listSecureMessages = async (req, res) => {
   }
 
   const account = extractAccountFromRequest(req);
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Token or X-Account-Digest required' });
+  }
+  if (account.accountDigestInvalid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Digest invalid format' });
+  }
+  if (!account.deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Device-Id header required' });
+  }
   let auth;
   try {
     auth = await authorizeAccountForConversation({
       conversationId: conversationIdRaw,
       accountToken: account.accountToken,
       accountDigest: account.accountDigest,
-      deviceId: account.deviceId || null
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -390,6 +525,7 @@ export const listSecureMessages = async (req, res) => {
   params.set('conversationId', auth.conversationId);
   if (req.query.cursorTs) params.set('cursorTs', String(req.query.cursorTs));
   if (req.query.cursorId) params.set('cursorId', String(req.query.cursorId));
+  if (req.query.cursorCounter) params.set('cursorCounter', String(req.query.cursorCounter));
   if (req.query.limit) params.set('limit', String(req.query.limit));
 
   const path = `/d1/messages?${params.toString()}`;
@@ -502,13 +638,15 @@ export const deleteMessages = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
+  const account = extractAccountFromRequest(req);
   let auth;
   try {
     auth = await authorizeAccountForConversation({
       conversationId: input.conversationId,
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest,
-      deviceId: null
+      accountToken: input.accountToken || account.accountToken,
+      accountDigest: input.accountDigest || account.accountDigest,
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -560,12 +698,15 @@ export const deleteSecureConversation = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
 
+  const account = extractAccountFromRequest(req);
   let auth;
   try {
     auth = await authorizeAccountForConversation({
       conversationId: input.conversationId,
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.accountToken || account.accountToken,
+      accountDigest: input.accountDigest || account.accountDigest,
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
     });
   } catch (err) {
     return respondAccountError(res, err, 'conversation authorization failed');
@@ -576,6 +717,15 @@ export const deleteSecureConversation = async (req, res) => {
     accountDigest: auth.accountDigest
   };
   if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
+  const peerAccountDigest = input.peerAccountDigest ? input.peerAccountDigest.toUpperCase() : null;
+  if (!peerAccountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'peerAccountDigest required' });
+  }
+  const senderDeviceId = account.deviceId || null;
+  const targetDeviceId = canonDevice(input.targetDeviceId || null);
+  if (!targetDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'targetDeviceId required' });
+  }
 
   const path = '/d1/messages/secure/delete-conversation';
   const body = JSON.stringify(payload);
@@ -594,6 +744,20 @@ export const deleteSecureConversation = async (req, res) => {
     }
     if (!upstream.ok) {
       return res.status(upstream.status).json({ error: 'DeleteConversationFailed', details: data });
+    }
+    try {
+      const manager = getWebSocketManager();
+      if (manager && peerAccountDigest) {
+        manager.notifyConversationDeleted({
+          targetAccountDigest: peerAccountDigest,
+          conversationId: payload.conversationId,
+          senderAccountDigest: auth.accountDigest,
+          senderDeviceId,
+          targetDeviceId
+        });
+      }
+    } catch (err) {
+      logger.warn({ err: err?.message || err }, 'ws_notify_conversation_deleted_failed');
     }
     return res.json(data);
   } catch (err) {

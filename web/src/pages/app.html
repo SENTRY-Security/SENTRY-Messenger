@@ -17,7 +17,14 @@
     <link rel="stylesheet" href="/assets/profile-extra.css" />
     <link rel="stylesheet" href="/assets/cropper.css" />
     <script>
-      window.APP_VERSION = '0.1.0';
+      // 防止未初始化時的全域 ReferenceError（Safari 會因 inviteBtn 未宣告而中斷）
+      if (typeof inviteBtn === 'undefined') {
+        // eslint-disable-next-line no-var
+        var inviteBtn = null;
+      }
+    </script>
+    <script>
+      window.APP_VERSION = '0.1.10';
       window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
     </script>
     <style>
@@ -27,12 +34,6 @@
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans TC', sans-serif; margin: 0; background:var(--bg); color:var(--fg); padding-top: var(--topbar-offset); padding-bottom: 0; overflow:hidden; overscroll-behavior:none; position:fixed; inset:0; }
       .topbar { position: fixed; top: 0; left: 0; right: 0; z-index:10; display:flex; justify-content:space-between; align-items:center; padding:calc(12px + env(safe-area-inset-top, 0px)) 16px 12px; border-bottom:none; background:#fff; backdrop-filter:saturate(180%) blur(6px); box-shadow:0 1px 0 rgba(15,23,42,0.04); }
       .topbar .title { position:relative; display:flex; align-items:center; gap:10px; font-size:16px; font-weight:700; letter-spacing:0.4px; }
-      .topbar .title .remote-console-mask {
-        position:absolute;
-        inset:-10px;
-        z-index:2;
-        background:transparent;
-      }
       .topbar .actions { display:flex; align-items:center; }
       .topbar .title img.brand { height:20px; width:auto; display:block; }
       .connection-indicator { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:500; color:#94a3b8; }
@@ -149,6 +150,14 @@
       .nav-badge { position:absolute; top:2px; right:12px; min-width:18px; padding:1px 4px; border-radius:999px; background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; font-size:10px; font-weight:600; line-height:1.2; display:none; box-shadow:0 4px 10px rgba(37,99,235,0.25); }
       .navbtn.has-badge .nav-badge { display:inline-flex; align-items:center; justify-content:center; }
       .navbtn.active, .navbtn:focus { color:#111827; }
+      /* 減少初始旋轉動畫（測試/視覺安定） */
+      html.no-anim .loading-spinner,
+      html.no-anim .spinner,
+      html.no-anim .icon.spin,
+      html.no-anim .message-status.pending::after,
+      html.no-anim .cover-spinner {
+        animation: none !important;
+      }
       .tab { display:none; height:auto; }
       /* Fallback: show Drive tab by default in case JS fails */
       #tab-drive { display:block; }
@@ -716,7 +725,6 @@
     </div>
     <header class="topbar">
       <div class="title">
-        <div class="remote-console-mask" id="remoteConsoleMaskApp" aria-hidden="true"></div>
         <img class="brand" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
         <span>SENTRY</span>
         <span id="connectionIndicator" class="connection-indicator" aria-live="polite" data-ws-path="/api/ws" data-ws-host="api.message.sentry.red"><span class="dot" aria-hidden="true"></span>離線</span>

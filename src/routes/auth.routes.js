@@ -16,7 +16,8 @@ const HMAC_SECRET = process.env.DATA_API_HMAC; // 與 worker 的 HMAC_SECRET 相
 
 // 簡單的一次性 session（先用記憶體 TTL；之後換 KV/Redis）
 const SESS = new Map(); // sessionId -> { accountToken, accountDigest, uidDigest, exp }
-const TTL_SECONDS = 60;
+// SDM exchange session TTL：給使用者輸入密碼與初始化預留緩衝，避免逾時。
+const TTL_SECONDS = 300;
 const DEBUG_COUNTERS = new Map(); // uidHex -> last counter used
 const OPAQUE_EXPECTED = new Map(); // opaqueSession -> expected auth result (for finish)
 
@@ -278,25 +279,32 @@ r.post('/mk/store', async (req, res) => {
   }
   try {
     const input = StoreMkSchema.parse(req.body || {});
+    const now = Math.floor(Date.now() / 1000);
     const sess = SESS.get(input.session);
     SESS.delete(input.session); // 單次使用
-    if (!sess || sess.exp < Math.floor(Date.now() / 1000)) {
+
+    const sessionValid = !!(sess && sess.exp > now);
+    let accountToken = null;
+    let accountDigest = null;
+
+    if (sessionValid) {
+      accountToken = sess.accountToken || input.accountToken || null;
+      accountDigest = (sess.accountDigest || input.accountDigest || '').toUpperCase();
+      if (input.accountToken && input.accountToken !== accountToken) {
+        return res.status(401).json({ error: 'SessionMismatch', message: 'account token mismatch' });
+      }
+      if (input.accountDigest && input.accountDigest.toUpperCase() !== accountDigest) {
+        return res.status(401).json({ error: 'SessionMismatch', message: 'account digest mismatch' });
+      }
+    } else {
       return res.status(401).json({ error: 'SessionExpired', message: 'please re-tap the tag' });
     }
-    const accountToken = sess.accountToken || input.accountToken;
-    const accountDigest = (sess.accountDigest || input.accountDigest || '').toUpperCase();
+
     if (!accountToken || !accountDigest) {
       return res.status(400).json({ error: 'AccountInfoMissing', message: 'account token missing, please redo exchange' });
     }
     if (!AccountDigestRegex.test(accountDigest)) {
       return res.status(400).json({ error: 'BadRequest', message: 'invalid accountDigest' });
-    }
-
-    if (input.accountToken && input.accountToken !== accountToken) {
-      return res.status(401).json({ error: 'SessionMismatch', message: 'account token mismatch' });
-    }
-    if (input.accountDigest && input.accountDigest.toUpperCase() !== accountDigest) {
-      return res.status(401).json({ error: 'SessionMismatch', message: 'account digest mismatch' });
     }
 
     const path = '/d1/tags/store-mk';

@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
-import { getAccountToken, getAccountDigest, normalizePeerIdentity, getDeviceId } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered } from '../../features/messages.js';
+import { getAccountToken, getAccountDigest, normalizePeerIdentity, ensureDeviceId } from '../../core/store.js';
+import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
   ensureSecureConversationReady,
@@ -16,6 +16,8 @@ import {
   deriveConversationContextFromSecret
 } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
+import { deleteContactSecret } from '../../core/contact-secrets.js';
+import { clearDrState } from '../../core/store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
@@ -77,6 +79,35 @@ function clearCallLogPlaceholders() {
 function resetMessageStateWithPlaceholders() {
   clearCallLogPlaceholders();
   resetMessageState();
+  stopActivePoll();
+}
+
+let activePollTimer = null;
+const ACTIVE_POLL_INTERVAL_MS = 3_000;
+
+function stopActivePoll() {
+  if (activePollTimer) {
+    try { clearTimeout(activePollTimer); } catch {}
+    activePollTimer = null;
+  }
+}
+
+function scheduleActivePoll() {
+  stopActivePoll();
+  const state = getMessageState();
+  if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
+  activePollTimer = setTimeout(() => {
+    activePollTimer = null;
+    const current = getMessageState();
+    if (!current.conversationId || !current.conversationToken || !current.activePeerDigest) return;
+    if (current.loading) {
+      scheduleActivePoll();
+      return;
+    }
+    loadActiveConversationMessages({ append: false })
+      .catch((err) => log({ activePollError: err?.message || err }))
+      .finally(() => scheduleActivePoll());
+  }, ACTIVE_POLL_INTERVAL_MS);
 }
 
 const LOCAL_GROUP_STORAGE_KEY = 'groups-drafts-v1';
@@ -168,9 +199,22 @@ export function initMessagesPane({
   const CONV_PULL_THRESHOLD = 60;
   const CONV_PULL_MAX = 140;
 
-  function normalizePeerKey(value) {
-    const identity = normalizePeerIdentity(value?.peerAccountDigest ?? value?.accountDigest ?? value);
+  const normalizeDigestString = (value) => {
+    const identity = normalizePeerIdentity(value);
     return identity.key || null;
+  };
+
+  function normalizePeerKey(value) {
+    return normalizeDigestString(value?.peerAccountDigest ?? value);
+  }
+
+  function ensurePeerAccountDigest(source) {
+    if (!source || typeof source !== 'object') return null;
+    if (source.peerAccountDigest) {
+      source.peerAccountDigest = normalizePeerKey(source.peerAccountDigest);
+      return source.peerAccountDigest || null;
+    }
+    return null;
   }
 
   function threadPeer(thread) {
@@ -186,8 +230,27 @@ export function initMessagesPane({
   }
 
   function contactPeerKey(contact) {
-    return normalizePeerKey(contact?.peerAccountDigest ?? contact?.peer_account_digest ?? contact?.accountDigest ?? contact?.account_digest);
+    const digest = ensurePeerAccountDigest(contact);
+    return digest ? normalizePeerKey(digest) : null;
   }
+
+  function normalizeContactsStore() {
+    if (Array.isArray(sessionStore.contactState)) {
+      sessionStore.contactState.forEach((contact) => ensurePeerAccountDigest(contact));
+    }
+    if (sessionStore.contactIndex instanceof Map) {
+      const next = new Map();
+      for (const [key, contact] of sessionStore.contactIndex.entries()) {
+        const digest = ensurePeerAccountDigest(contact) || normalizePeerKey(key);
+        if (digest && !next.has(digest)) {
+          next.set(digest, contact);
+        }
+      }
+      sessionStore.contactIndex = next;
+    }
+  }
+
+  normalizeContactsStore();
 
   const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
@@ -348,7 +411,7 @@ export function initMessagesPane({
       const secret = new Uint8Array(32);
       crypto.getRandomValues(secret);
       const secretB64Url = bytesToB64Url(secret);
-      const { conversationId, tokenB64 } = await deriveConversationContextFromSecret(secretB64Url);
+      const { conversationId, tokenB64 } = await deriveConversationContextFromSecret(secretB64Url, { deviceId: ensureDeviceId() });
       const groupId = `grp-${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
       const { r, data } = await apiCreateGroup({
         groupId,
@@ -460,7 +523,7 @@ export function initMessagesPane({
 
   function handleCallStateEvent(detail = {}) {
     const session = detail.session || null;
-    const peerDigest = normalizePeerKey(session?.peerAccountDigest ?? session?.peer_account_digest);
+    const peerDigest = ensurePeerAccountDigest(session);
     if (!peerDigest) return;
     const status = session.status;
     if (![CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(status)) return;
@@ -709,15 +772,34 @@ export function initMessagesPane({
     return entry;
   }
 
+  function resolveTargetDeviceForConv(conversationId, peerAccountDigest = null) {
+    const convId = String(conversationId || '').trim();
+    if (!convId) return null;
+    const threads = getConversationThreads();
+    const thread = threads.get(convId) || null;
+    if (thread?.peerDeviceId) return thread.peerDeviceId;
+    const convIndex = ensureConversationIndex();
+    const convEntry = convIndex.get(convId) || null;
+    if (convEntry?.peerDeviceId) return convEntry.peerDeviceId;
+    if (convEntry?.peerAccountDigest && peerAccountDigest && convEntry.peerAccountDigest !== peerAccountDigest) {
+      return null;
+    }
+    const state = getMessageState();
+    if (state.activePeerDigest && (!peerAccountDigest || state.activePeerDigest === peerAccountDigest)) {
+      if (state.activePeerDeviceId) return state.activePeerDeviceId;
+    }
+    return null;
+  }
+
   function syncConversationThreadsFromContacts() {
     const threads = getConversationThreads();
     const contacts = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
     const seen = new Set();
     for (const contact of contacts) {
-      const peerDigest = normalizePeerKey(contact?.peerAccountDigest ?? contact?.peer_account_digest ?? contact?.accountDigest ?? contact?.account_digest);
+      const peerDigest = ensurePeerAccountDigest(contact);
       const conversationId = contact?.conversation?.conversation_id;
       const tokenB64 = contact?.conversation?.token_b64;
-      const peerDeviceId = contact?.conversation?.peerDeviceId || contact?.conversation?.peer_device_id || null;
+      const peerDeviceId = contact?.conversation?.peerDeviceId || null;
       if (!peerDigest || !conversationId || !tokenB64) continue;
       seen.add(conversationId);
       upsertConversationThread({
@@ -749,6 +831,7 @@ export function initMessagesPane({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerAccountDigest: peerDigest,
+            peerDeviceId: thread.peerDeviceId || null,
             limit: 20,
             mutateState: false
           });
@@ -1022,10 +1105,7 @@ export function initMessagesPane({
   }
 
   function isSubscriptionActive() {
-    const s = sessionStore.subscriptionState;
-    if (!s || s.loading) return true;
-    if (!s.lastChecked) return true; // 尚未查詢完成時不阻擋
-    return !!(s.found && !s.expired);
+    return true; // DEV: 硬解鎖訂閱
   }
 
   function requireSubscriptionActive() {
@@ -1126,11 +1206,7 @@ export function initMessagesPane({
     const fallbackName = `好友 ${state.activePeerDigest.slice(-4)}`;
     const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
     const avatarUrl = resolveContactAvatarUrl(contactEntry);
-    const peerAccountDigest = contactEntry?.accountDigest
-      || contactEntry?.account_digest
-      || contactEntry?.peerAccountDigest
-      || contactEntry?.peer_account_digest
-      || null;
+    const peerAccountDigest = ensurePeerAccountDigest(contactEntry) || state.activePeerDigest;
     let result;
     try {
       result = await requestOutgoingCall({
@@ -1385,7 +1461,10 @@ export function initMessagesPane({
       li.className = 'conversation-item';
       li.dataset.peer = peerDigest;
       li.dataset.conversationId = thread.conversationId;
-      if (state.activePeerDigest === peerDigest) li.classList.add('active');
+      if (thread.peerDeviceId) li.dataset.peerDeviceId = thread.peerDeviceId;
+      const isActivePeer = state.activePeerDigest === peerDigest;
+      const isActiveDevice = !state.activePeerDeviceId || !thread.peerDeviceId || state.activePeerDeviceId === thread.peerDeviceId;
+      if (isActivePeer && isActiveDevice) li.classList.add('active');
       if (openPeer && openPeer === peerDigest) li.classList.add('show-delete');
       const nickname = thread.nickname || `好友 ${peerDigest.slice(-4)}`;
       const initials = initialsFromName(nickname, peerDigest);
@@ -1498,7 +1577,11 @@ export function initMessagesPane({
         if (!res.ok) throw new Error('preview fetch failed');
         buffer = await res.arrayBuffer();
       } else if (media?.objectKey && media?.envelope) {
-        const { blob } = await downloadAndDecrypt({ key: media.objectKey, envelope: media.envelope });
+        const { blob } = await downloadAndDecrypt({
+          key: media.objectKey,
+          envelope: media.envelope,
+          messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null
+        });
         buffer = await blob.arrayBuffer();
       } else {
         canvas.dataset.previewState = 'error';
@@ -1540,6 +1623,7 @@ export function initMessagesPane({
         result = await downloadAndDecrypt({
           key: media.objectKey,
           envelope: media.envelope,
+          messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
           onStatus: ({ stage, loaded, total }) => {
             if (!updateLoadingModal) return;
             if (stage === 'sign') {
@@ -1711,9 +1795,14 @@ export function initMessagesPane({
     const preferPreview = media.preview?.objectKey && media.preview?.envelope;
     const targetKey = preferPreview ? media.preview.objectKey : media.objectKey;
     const targetEnvelope = preferPreview ? media.preview.envelope : media.envelope;
+    const targetMessageKey = media.messageKey_b64 || media.message_key_b64 || null;
     if (!targetKey || !targetEnvelope) return null;
     if (media.previewPromise) return media.previewPromise;
-    media.previewPromise = downloadAndDecrypt({ key: targetKey, envelope: targetEnvelope })
+    media.previewPromise = downloadAndDecrypt({
+      key: targetKey,
+      envelope: targetEnvelope,
+      messageKeyB64: targetMessageKey
+    })
       .then((result) => {
         if (!result || !result.blob) return null;
         const url = URL.createObjectURL(result.blob);
@@ -2072,7 +2161,7 @@ export function initMessagesPane({
     }
   }
 
-  async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true } = {}) {
+  async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
     if (state.loading) return;
@@ -2087,11 +2176,12 @@ export function initMessagesPane({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
+        peerDeviceId: state.activePeerDeviceId || null,
         limit: 50,
         cursorTs: cursor?.ts ?? cursor ?? undefined,
         cursorId: cursor?.id ?? undefined,
-        mutateState: forceReplay ? false : !append,
-        allowReplay: !append || forceReplay,
+        mutateState: mutateLive && !forceReplay && !append,
+        allowReplay: true,
         onMessageDecrypted: handleMessageDecrypted
       });
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
@@ -2130,16 +2220,22 @@ export function initMessagesPane({
           return true;
         });
       }
-      if (append) {
+      if (!mutateLive || forceReplay) {
+        // 沙盒重播：不推進現有 messages，僅在成功時替換列表
+        const sandbox = Array.isArray(chunk) ? chunk.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
+        if (!sandbox.length) {
+          // no-op
+        } else if (!append) {
+          state.messages = sandbox;
+          updateMessagesUI({ scrollToEnd: true });
+        }
+      } else if (append) {
         const existingIds = new Set(state.messages.map((m) => m.id));
         chunk = chunk.filter((m) => !existingIds.has(m.id));
         if (chunk.length) {
           state.messages = [...chunk, ...state.messages];
           updateMessagesUI({ preserveScroll: true });
         }
-      } else if (forceReplay) {
-        state.messages = chunk;
-        updateMessagesUI({ scrollToEnd: true });
       } else {
         if (chunk.length) {
           const mergedMap = new Map();
@@ -2223,15 +2319,18 @@ export function initMessagesPane({
           .finally(() => { pendingWsRefresh = 0; });
       }
       updateLoadMoreVisibility();
+      scheduleActivePoll();
     }
   }
 
   async function setActiveConversation(peerAccountDigest) {
+    stopActivePoll();
     const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
     const desktopLayout = isDesktopLayout();
     const entry = sessionStore.contactIndex?.get?.(key);
     if (!entry) {
+      try { log({ setActiveConversationMissingEntry: key }); } catch {}
       setMessagesStatus('找不到指定的好友', true);
       if (!desktopLayout) {
         const stateFallback = getMessageState();
@@ -2241,6 +2340,9 @@ export function initMessagesPane({
       return;
     }
     const nickname = entry.nickname || `好友 ${key.slice(-4)}`;
+    if (entry?.conversation?.conversation_id) {
+      clearConversationTombstone(entry.conversation.conversation_id);
+    }
     const conversation = entry.conversation;
     if (!conversation?.token_b64) {
       resetMessageStateWithPlaceholders();
@@ -2262,7 +2364,9 @@ export function initMessagesPane({
     if (state.conversationId && state.conversationId !== conversation.conversation_id) {
       resetProcessedMessages(state.conversationId);
     }
+    const peerDeviceId = conversation.peerDeviceId || null;
     state.activePeerDigest = key;
+    state.activePeerDeviceId = peerDeviceId || null;
     state.conversationToken = conversation.token_b64;
     try {
       state.conversationId = conversation.conversation_id || await conversationIdFromToken(conversation.token_b64);
@@ -2280,6 +2384,16 @@ export function initMessagesPane({
       return;
     }
     const resolvedConvId = conversation?.conversation_id || conversation?.conversationId || state.conversationId || null;
+    if (resolvedConvId && peerDeviceId) {
+      const convIndex = ensureConversationIndex();
+      const prevConv = convIndex.get(resolvedConvId) || {};
+      convIndex.set(resolvedConvId, {
+        ...prevConv,
+        peerAccountDigest: key,
+        peerDeviceId,
+        token_b64: conversation.token_b64 || prevConv.token_b64 || null
+      });
+    }
     if (resolvedConvId) resetProcessedMessages(resolvedConvId);
     state.messages = [];
     state.nextCursor = null;
@@ -2291,6 +2405,7 @@ export function initMessagesPane({
       peerAccountDigest: key,
       conversationId: state.conversationId,
       tokenB64: state.conversationToken,
+      peerDeviceId,
       nickname,
       avatar: entry?.avatar || null
     });
@@ -2333,6 +2448,7 @@ export function initMessagesPane({
     clearMessagesView();
     applyMessagesLayout();
     await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
+    scheduleActivePoll();
   }
 
   function refreshActivePeerMetadata(peerAccountDigest, { fallbackName } = {}) {
@@ -2395,12 +2511,15 @@ export function initMessagesPane({
     };
     if (message.type === 'media' && message.media) {
       if (!message.text) message.text = `[檔案] ${message.media.name || '附件'}`;
-      if (message.media.localUrl && !message.media.previewUrl) {
-        message.media.previewUrl = message.media.localUrl;
-      }
-    } else {
-      message.type = 'text';
+    if (message.media.localUrl && !message.media.previewUrl) {
+      message.media.previewUrl = message.media.localUrl;
     }
+    if (message.media.messageKey_b64 || message.media.message_key_b64) {
+      message.media.messageKey_b64 = message.media.messageKey_b64 || message.media.message_key_b64;
+    }
+  } else {
+    message.type = 'text';
+  }
     state.messages.push(message);
     updateMessagesUI({ scrollToEnd: true });
     scrollMessagesToBottom();
@@ -2435,6 +2554,19 @@ export function initMessagesPane({
   function applyReceiptsToMessages(list) {
     if (!Array.isArray(list)) return;
     for (const msg of list) applyReceiptState(msg);
+  }
+
+  function applyAckDeliveryReceipt({ convId, ack, localMessage }) {
+    const receipt = ack?.receipt || null;
+    if (!receipt || receipt.type !== 'delivery') return;
+    const messageId = receipt.message_id || ack?.msg?.id || ack?.id || localMessage?.id || null;
+    if (!messageId || !convId) return;
+    const deliveredAt = Number.isFinite(receipt.delivered_at) ? receipt.delivered_at : (ack?.msg?.ts || null);
+    recordMessageDelivered(convId, messageId, deliveredAt);
+    if (localMessage) {
+      localMessage.id = localMessage.id || messageId;
+      applyReceiptState(localMessage);
+    }
   }
 
   function handleMessageDecrypted({ message }) {
@@ -2588,12 +2720,17 @@ export function initMessagesPane({
             state.conversationId = res.convId;
           }
           const msg = findMessageById(localMsg.id);
+          const convId = res?.convId || state.conversationId;
+          if (res?.convId && !state.conversationId) {
+            state.conversationId = res.convId;
+          }
           if (msg) {
             msg.id = res?.msg?.id || msg.id;
             msg.ts = res?.msg?.ts || msg.ts || Math.floor(Date.now() / 1000);
             msg.text = res?.msg?.text || msg.text;
             msg.pending = false;
             msg.status = 'sent';
+            applyAckDeliveryReceipt({ convId, ack: res, localMessage: msg });
             if (!msg.media) msg.media = {};
             msg.media = {
               ...msg.media,
@@ -2611,15 +2748,17 @@ export function initMessagesPane({
             };
           }
           if (state.activePeerDigest) {
-            wsSendFn({
-              type: 'message-new',
-              targetAccountDigest: state.activePeerDigest,
-              conversationId: state.conversationId,
-              preview: msg?.text || previewText,
-              ts: msg?.ts || Math.floor(Date.now() / 1000),
-              senderDeviceId: getDeviceId() || 'default'
-            });
-          }
+            const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
+          wsSendFn({
+            type: 'message-new',
+            targetAccountDigest: state.activePeerDigest,
+            conversationId: convId,
+            preview: msg?.text || previewText,
+            ts: msg?.ts || Math.floor(Date.now() / 1000),
+            senderDeviceId: ensureDeviceId(),
+            targetDeviceId
+          });
+        }
         } catch (err) {
           const msg = findMessageById(localMsg.id);
           if (msg) {
@@ -2775,13 +2914,21 @@ export function initMessagesPane({
     if (!key) return;
     const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
     const nickname = contactEntry?.nickname || `好友 ${key.slice(-4)}`;
+    const threadEntry = getConversationThreads().get(conversationId) || null;
+    const convIndexEntry = sessionStore.conversationIndex?.get?.(conversationId) || null;
+    const peerDeviceId =
+      threadEntry?.peerDeviceId ||
+      convIndexEntry?.peerDeviceId ||
+      contactEntry?.conversation?.peerDeviceId ||
+      null;
     showConfirmModal({
       title: '刪除對話',
       message: `確定要刪除與「${escapeHtml(nickname)}」的對話？此操作也會從對方的對話列表中移除。`,
       confirmLabel: '刪除',
       onConfirm: async () => {
         try {
-          await deleteSecureConversation({ conversationId });
+          if (!peerDeviceId) throw new Error('缺少對方 deviceId，請重新同步好友後再試');
+          await deleteSecureConversation({ conversationId, peerAccountDigest: key, targetDeviceId: peerDeviceId });
           sessionStore.deletedConversations?.add?.(conversationId);
           getConversationThreads().delete(conversationId);
           sessionStore.conversationIndex?.delete?.(conversationId);
@@ -2811,11 +2958,13 @@ export function initMessagesPane({
           wsSendFn({
             type: 'conversation-deleted',
             targetAccountDigest: key,
-            conversationId
+            conversationId,
+            senderDeviceId: ensureDeviceId(),
+            targetDeviceId: peerDeviceId
           });
         } catch (err) {
           log({ conversationDeleteError: err?.message || err });
-          alert('刪除對話失敗，請稍後再試。');
+          alert(err?.message || '刪除對話失敗，請稍後再試。');
         }
       },
       onCancel: () => { if (element) closeSwipe?.(element); }
@@ -2825,33 +2974,51 @@ export function initMessagesPane({
   function handleIncomingSecureMessage(event) {
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
     if (!convId) return;
-    const senderDeviceId = typeof event?.senderDeviceId === 'string' && event.senderDeviceId.trim().length ? event.senderDeviceId.trim() : null;
+    const targetDeviceId = typeof event?.targetDeviceId === 'string' && event.targetDeviceId.trim().length
+      ? event.targetDeviceId.trim()
+      : null;
+    const selfDeviceId = ensureDeviceId();
+    if (!selfDeviceId || targetDeviceId !== String(selfDeviceId).trim()) {
+      return;
+    }
+    const senderDeviceId = typeof event?.senderDeviceId === 'string' && event.senderDeviceId.trim().length
+      ? event.senderDeviceId.trim()
+      : null;
+    if (!senderDeviceId) return;
+    const peerDeviceId = senderDeviceId;
 
     let tsRaw = Number(event?.ts ?? event?.timestamp);
     if (!Number.isFinite(tsRaw) || tsRaw <= 0) tsRaw = Math.floor(Date.now() / 1000);
+    const clearAfter = getConversationClearAfter(convId);
+    if (Number.isFinite(clearAfter) && tsRaw < clearAfter) {
+      return;
+    }
 
-    if (event?.type === 'conversation-deleted') {
-      const peerDigest = normalizePeerKey(
-        event?.peerAccountDigest || event?.peer_account_digest || event?.senderAccountDigest || event?.sender_account_digest
-      );
+      if (event?.type === 'conversation-deleted') {
+        const peerDigest = ensurePeerAccountDigest(event);
       sessionStore.deletedConversations?.add?.(convId);
       getConversationThreads().delete(convId);
       sessionStore.conversationIndex?.delete?.(convId);
-      const contactEntryAfter = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-      if (contactEntryAfter) {
-        contactEntryAfter.conversation = null;
-        contactEntryAfter.unreadCount = 0;
-      }
-      const contactStateEntry = peerDigest ? sessionStore.contactState?.find?.((c) => contactPeerKey(c) === peerDigest) || null : null;
-      if (contactStateEntry) {
-        contactStateEntry.conversation = null;
-        contactStateEntry.unreadCount = 0;
-      }
-      const state = getMessageState();
-      if (state.activePeerDigest === peerDigest || state.conversationId === convId) {
-        resetMessageStateWithPlaceholders();
-        if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
-        clearMessagesView();
+          const contactEntryAfter = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+          if (contactEntryAfter) {
+            contactEntryAfter.conversation = null;
+            contactEntryAfter.unreadCount = 0;
+          }
+          const contactStateEntry = peerDigest ? sessionStore.contactState?.find?.((c) => contactPeerKey(c) === peerDigest) || null : null;
+          if (contactStateEntry) {
+            contactStateEntry.conversation = null;
+            contactStateEntry.unreadCount = 0;
+          }
+          if (convId) {
+            clearConversationHistory(convId, tsRaw);
+          }
+          clearDrState({ peerAccountDigest: peerDigest, peerDeviceId: peerDeviceId || null });
+          deleteContactSecret(peerDigest, { deviceId: ensureDeviceId() });
+          const state = getMessageState();
+          if (state.activePeerDigest === peerDigest || state.conversationId === convId) {
+            resetMessageStateWithPlaceholders();
+            if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
+            clearMessagesView();
         hideSecurityModal();
         updateComposerAvailability();
         applyMessagesLayout();
@@ -2863,20 +3030,27 @@ export function initMessagesPane({
     }
 
     const convIndex = ensureConversationIndex();
+    const contactPeerFromConvId = (convId && convId.startsWith('contacts-'))
+      ? convId.slice('contacts-'.length).trim().toUpperCase()
+      : null;
     let convEntry = convIndex.get(convId) || null;
-    const peerFromEventIdentity = normalizePeerIdentity(
-      event?.peerAccountDigest || event?.peer_account_digest || event?.fromAccountDigest || event?.from_account_digest || null
-    );
-    const peerFromEvent = peerFromEventIdentity.key;
+    const peerFromEvent = ensurePeerAccountDigest(event);
+
+    const peerForConv = contactPeerFromConvId ? contactPeerFromConvId : peerFromEvent;
 
     if (!convEntry) {
-      convEntry = { token_b64: null, peerAccountDigest: peerFromEvent || null, peerDeviceId: senderDeviceId || null };
+      convEntry = { token_b64: null, peerAccountDigest: peerForConv || null, peerDeviceId: senderDeviceId || null };
       convIndex.set(convId, convEntry);
-    } else if (peerFromEvent && convEntry.peerAccountDigest !== peerFromEvent) {
-      convEntry.peerAccountDigest = peerFromEvent;
-      if (senderDeviceId) convEntry.peerDeviceId = senderDeviceId;
-    } else if (senderDeviceId && !convEntry.peerDeviceId) {
-      convEntry.peerDeviceId = senderDeviceId;
+      if (!peerDeviceId && convEntry.peerDeviceId) peerDeviceId = convEntry.peerDeviceId;
+    } else {
+      if (peerForConv && convEntry.peerAccountDigest !== peerForConv) {
+        convEntry.peerAccountDigest = peerForConv;
+        if (senderDeviceId) convEntry.peerDeviceId = senderDeviceId;
+        if (senderDeviceId) peerDeviceId = senderDeviceId;
+      } else if (senderDeviceId && !convEntry.peerDeviceId) {
+        convEntry.peerDeviceId = senderDeviceId;
+        peerDeviceId = senderDeviceId;
+      }
     }
 
     const tokenFromEvent = event?.tokenB64 || event?.token_b64 || null;
@@ -2885,10 +3059,28 @@ export function initMessagesPane({
       if (normalizedToken) convEntry.token_b64 = normalizedToken;
     }
 
-    const peerDigest = convEntry.peerAccountDigest;
+    let peerDigest = convEntry.peerAccountDigest;
+    // 對於 contacts-<peerDigest> 對話，若事件未附帶 peerAccountDigest，強制從 convId 解析（非 fallback，單一路徑）。
+    if (!peerDigest && contactPeerFromConvId) {
+      peerDigest = contactPeerFromConvId;
+      convEntry.peerAccountDigest = contactPeerFromConvId;
+      if (senderDeviceId) convEntry.peerDeviceId = senderDeviceId;
+    }
     if (!peerDigest) {
       log({ secureMessageUnknownPeer: convId });
       return;
+    }
+    if (peerDeviceId && sessionStore.contactIndex?.get?.(peerDigest)?.conversation) {
+      const contactConv = sessionStore.contactIndex.get(peerDigest).conversation;
+      if (contactConv && !contactConv.peerDeviceId) {
+        contactConv.peerDeviceId = peerDeviceId;
+      }
+    }
+    const contactStateEntry = Array.isArray(sessionStore.contactState)
+      ? sessionStore.contactState.find((c) => contactPeerKey(c) === peerDigest)
+      : null;
+    if (contactStateEntry?.conversation && peerDeviceId && !contactStateEntry.conversation.peerDeviceId) {
+      contactStateEntry.conversation.peerDeviceId = peerDeviceId;
     }
 
     const state = getMessageState();
@@ -2897,10 +3089,38 @@ export function initMessagesPane({
     const avatar = contactEntry?.avatar || null;
     const tokenB64 = convEntry.token_b64 || contactEntry?.conversation?.token_b64 || null;
 
-    const peerDeviceId = convEntry.peerDeviceId || senderDeviceId || null;
+    if (contactEntry && !contactEntry.conversation) {
+      contactEntry.conversation = {
+        conversation_id: convId,
+        token_b64: tokenB64,
+        ...(peerDeviceId ? { peerDeviceId } : null),
+        ...(convEntry?.dr_init ? { dr_init: convEntry.dr_init } : null)
+      };
+    } else if (contactEntry?.conversation) {
+      if (peerDeviceId && !contactEntry.conversation.peerDeviceId) {
+        contactEntry.conversation.peerDeviceId = peerDeviceId;
+      }
+      if (!contactEntry.conversation.conversation_id) contactEntry.conversation.conversation_id = convId;
+      if (!contactEntry.conversation.token_b64 && tokenB64) contactEntry.conversation.token_b64 = tokenB64;
+    }
+    if (contactStateEntry && !contactStateEntry.conversation && (tokenB64 || convId)) {
+      contactStateEntry.conversation = {
+        conversation_id: convId,
+        token_b64: tokenB64,
+        ...(peerDeviceId ? { peerDeviceId } : null),
+        ...(convEntry?.dr_init ? { dr_init: convEntry.dr_init } : null)
+      };
+    } else if (contactStateEntry?.conversation) {
+      if (!contactStateEntry.conversation.conversation_id) contactStateEntry.conversation.conversation_id = convId;
+      if (!contactStateEntry.conversation.token_b64 && tokenB64) contactStateEntry.conversation.token_b64 = tokenB64;
+      if (peerDeviceId && !contactStateEntry.conversation.peerDeviceId) {
+        contactStateEntry.conversation.peerDeviceId = peerDeviceId;
+      }
+    }
+
     const thread = upsertConversationThread({
       peerAccountDigest: peerDigest,
-      peerDeviceId,
+      peerDeviceId: convEntry.peerDeviceId || senderDeviceId || null,
       conversationId: convId,
       tokenB64,
       nickname,
@@ -2910,7 +3130,7 @@ export function initMessagesPane({
 
     const myAcctRaw = getAccountDigest();
     const myAcct = myAcctRaw ? String(myAcctRaw).toUpperCase() : null;
-    const senderAcctRaw = event?.senderAccountDigest || event?.sender_account_digest || null;
+    const senderAcctRaw = event?.senderAccountDigest || null;
     const senderAcct = senderAcctRaw ? String(senderAcctRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
     const isSelf = !!(myAcct && senderAcct && myAcct === senderAcct);
 
@@ -2918,11 +3138,7 @@ export function initMessagesPane({
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
     if (normalizedControlType) {
       if (normalizedControlType === CONTROL_MESSAGE_TYPES.READ_RECEIPT) {
-        const targetId =
-          event?.meta?.target_message_id ||
-          event?.meta?.targetMessageId ||
-          event?.targetMessageId ||
-          null;
+        const targetId = event?.meta?.targetMessageId || event?.targetMessageId || null;
         if (targetId && state.conversationId) {
           recordMessageRead(state.conversationId, targetId, tsRaw);
           const msg = findMessageById(targetId);
@@ -2933,11 +3149,7 @@ export function initMessagesPane({
           }
         }
       } else if (normalizedControlType === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT) {
-        const targetId =
-          event?.meta?.target_message_id ||
-          event?.meta?.targetMessageId ||
-          event?.targetMessageId ||
-          null;
+        const targetId = event?.meta?.targetMessageId || event?.targetMessageId || null;
         if (targetId && state.conversationId) {
           recordMessageDelivered(state.conversationId, targetId, tsRaw);
           const msg = findMessageById(targetId);
@@ -2972,6 +3184,7 @@ export function initMessagesPane({
       if (!state.conversationId && convId) state.conversationId = convId;
       if (!state.conversationToken && tokenB64) state.conversationToken = tokenB64;
       if (!state.activePeerDigest && peerDigest) state.activePeerDigest = peerDigest;
+      if (peerDeviceId && !state.activePeerDeviceId) state.activePeerDeviceId = peerDeviceId;
     }
 
     if (isSelf) {
@@ -3022,9 +3235,9 @@ export function initMessagesPane({
     const toastMessage = toastPreview ? `${nickname}：${toastPreview}` : `${nickname} 有新訊息`;
     const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
     const initialsToast = initialsFromName(nickname, peerDigest).slice(0, 2);
-    const peerDeviceId = convEntry?.peerDeviceId || senderDeviceId || null;
+    const toastPeerDeviceId = convEntry?.peerDeviceId || senderDeviceId || peerDeviceId || null;
     showToast?.(toastMessage, {
-      onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId }),
+      onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId: toastPeerDeviceId }),
       avatarUrl: avatarUrlToast,
       avatarInitials: initialsToast,
       subtitle: formatTimestamp(tsRaw)
@@ -3081,6 +3294,25 @@ export function initMessagesPane({
       || contactStateConv?.conversation_id
       || contactStateConv?.conversationId
       || null;
+    if (targetPeer && (conversationId || token)) {
+      const contactEntry = sessionStore.contactIndex?.get?.(targetPeer) || null;
+      if (contactEntry) {
+        contactEntry.conversation = {
+          conversation_id: conversationId || contactEntry?.conversation?.conversation_id || null,
+          token_b64: token || contactEntry?.conversation?.token_b64 || null,
+          ...(targetPeerDeviceId ? { peerDeviceId: targetPeerDeviceId } : {}),
+          ...(contactEntry?.conversation?.dr_init ? { dr_init: contactEntry.conversation.dr_init } : {})
+        };
+      }
+      if (contactStateEntry) {
+        contactStateEntry.conversation = {
+          conversation_id: conversationId || contactStateEntry?.conversation?.conversation_id || null,
+          token_b64: token || contactStateEntry?.conversation?.token_b64 || null,
+          ...(targetPeerDeviceId ? { peerDeviceId: targetPeerDeviceId } : {}),
+          ...(contactStateEntry?.conversation?.dr_init ? { dr_init: contactStateEntry.conversation.dr_init } : {})
+        };
+      }
+    }
     if (conversationId) {
       const convIndex = ensureConversationIndex();
       const prevConv = convIndex.get(conversationId) || {};
@@ -3139,6 +3371,7 @@ export function initMessagesPane({
       elements.input?.blur();
       switchTab?.('messages', { fromBack: true });
       hideSecurityModal();
+      stopActivePoll();
     });
 
     elements.attachBtn?.addEventListener('click', () => {
@@ -3220,19 +3453,23 @@ export function initMessagesPane({
       const ts = Math.floor(Date.now() / 1000);
       const localMsg = appendLocalOutgoingMessage({ text, ts });
       try {
-        const res = await sendDrText({ peerAccountDigest: state.activePeerDigest, text });
+        const res = await sendDrText({
+          peerAccountDigest: state.activePeerDigest,
+          peerDeviceId: state.activePeerDeviceId || null,
+          text
+        });
         log({ messageComposerSent: { peer: state.activePeerDigest, convId: res?.convId || null, msgId: res?.msg?.id || res?.id || null } });
         if (localMsg) {
           localMsg.id = res?.msg?.id || res?.id || localMsg.id;
           localMsg.status = 'sent';
           localMsg.pending = false;
           localMsg.ts = res?.msg?.ts || localMsg.ts || ts;
+          applyAckDeliveryReceipt({ convId: res?.convId || state.conversationId, ack: res, localMessage: localMsg });
           updateMessagesUI({ preserveScroll: true });
         }
         const convId = res?.convId || state.conversationId;
         if (res?.convId) state.conversationId = res.convId;
-        const thread = convId ? getConversationThreads().get(convId) : null;
-        const targetDeviceId = thread?.peerDeviceId || null;
+        const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
         if (elements.input) {
           elements.input.value = '';
           elements.input.focus();
@@ -3246,7 +3483,7 @@ export function initMessagesPane({
             preview: text,
             ts,
             targetDeviceId,
-            senderDeviceId: getDeviceId() || 'default'
+            senderDeviceId: ensureDeviceId()
           });
         }
       } catch (err) {

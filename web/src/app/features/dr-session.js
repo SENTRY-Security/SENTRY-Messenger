@@ -1,18 +1,31 @@
+/**
+ * SECURITY POLICY – STRICT CRYPTO PROTOCOL, NO FALLBACK ALLOWED.
+ *
+ * 本檔案中的所有密碼協定（X3DH、Double Ratchet、AEAD、鍵派生、counter 驗證、header 驗證）
+ * 禁止設計、加入或推論任何 fallback、retry、rollback、resync、auto-repair 等邏輯。
+ *
+ * 規則如下：
+ * 1. 若解密失敗 → 一律直接 fail，不可嘗試第二組 key 或舊 ratchet state。
+ * 2. 若 counter 不一致 → 一律直接拒絕，不可重送、補拉或自動對齊。
+ * 3. 不允許任何協定降級（downgrade）。不得用舊版本、舊頭資訊、舊密鑰重試。
+ * 4. 不允許模糊錯誤處理。不做 try-catch fallback，不做 silent recovery。
+ * 5. 對話重置必須是顯式事件，不得隱式重建 state。
+ *
+ * 一切協定邏輯必須「單一路徑」且「強一致性」，任何 fallback 視為安全漏洞。
+ */
 // /app/features/dr-session.js
 // X3DH 初始化與 DR 文字訊息發送（功能層，無 UI）。
 
 import { prekeysBundle } from '../api/prekeys.js';
-import { friendsBootstrapSession } from '../api/friends.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
-import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId } from '../core/store.js';
+import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   conversationIdFromToken
 } from './conversation.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
-import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
 import { encryptAndPutWithProgress } from './media.js';
 import {
   enqueueOutboxJob,
@@ -21,21 +34,68 @@ import {
   startOutboxProcessor
 } from './queue/outbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
+
+const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 import { enqueueMediaMetaJob } from './queue/media.js';
 
 function normHex(value) {
-  const identity = normalizePeerIdentity(
+  const digest = normalizeAccountDigest(
     value?.peerAccountDigest ?? value?.accountDigest ?? value
   );
-  return identity.key || null;
+  return digest || null;
 }
 
 function resolvePeerDigest(input) {
   if (!input) return null;
-  if (typeof input === 'string') return normHex(input);
-  if (typeof input !== 'object') return normHex(input);
+  const extractDigest = (value) => {
+    if (!value) return null;
+    if (typeof value === 'string' && value.includes('::')) {
+      const [dPart] = value.split('::');
+      return normHex(dPart);
+    }
+    return normHex(value);
+  };
+  if (typeof input === 'string') return extractDigest(input);
+  if (typeof input !== 'object') return extractDigest(input);
   const candidate = input.peerAccountDigest ?? input.accountDigest ?? input;
-  return normHex(candidate);
+  return extractDigest(candidate);
+}
+
+function ensurePeerIdentity({ peerAccountDigest, peerDeviceId, conversationId = null }) {
+  const digest = resolvePeerDigest(peerAccountDigest);
+  const device = peerDeviceId || resolvePeerDeviceId(peerAccountDigest, conversationId);
+  if (!digest || !device) throw new Error('peerAccountDigest and peerDeviceId are required');
+  return { digest, deviceId: device };
+}
+
+function resolvePeerDeviceId(peerAccountDigest = null, conversationId = null) {
+  const peer = resolvePeerDigest(peerAccountDigest);
+  if (!peer) return null;
+  const convIndex = sessionStore.conversationIndex;
+  if (conversationId && convIndex?.get?.(conversationId)?.peerDeviceId) {
+    return convIndex.get(conversationId).peerDeviceId;
+  }
+  if (convIndex && typeof convIndex.values === 'function') {
+    for (const info of convIndex.values()) {
+      const peerMatch = normHex(info?.peerAccountDigest || null);
+      if (peerMatch && peerMatch === peer && info?.peerDeviceId) {
+        return info.peerDeviceId;
+      }
+    }
+  }
+  const threads = sessionStore.conversationThreads;
+  if (conversationId && threads?.get?.(conversationId)?.peerDeviceId) {
+    return threads.get(conversationId).peerDeviceId;
+  }
+  if (threads && typeof threads.values === 'function') {
+    for (const info of threads.values()) {
+      const peerMatch = normHex(info?.peerAccountDigest || null);
+      if (peerMatch && peerMatch === peer && info?.peerDeviceId) {
+        return info.peerDeviceId;
+      }
+    }
+  }
+  return null;
 }
 
 function cloneU8(src) {
@@ -116,10 +176,6 @@ function sanitizeSnapshotInput(snapshot) {
 }
 
 const MAX_HISTORY_ENTRIES = 120;
-const SESSION_BOOTSTRAP_REFRESH_INTERVAL_MS = 180_000;
-
-const remoteBootstrapLocks = new Map();
-
 function compareHistoryKeys(aTs, aId, bTs, bId) {
   const aHasTs = Number.isFinite(aTs);
   const bHasTs = Number.isFinite(bTs);
@@ -137,9 +193,8 @@ function appendDrHistoryEntry(params = {}) {
   const peer = resolvePeerDigest(params);
   const stamp = Number(ts);
   if (!peer || !snapshot || !Number.isFinite(stamp)) return false;
-  const deviceId = getDeviceId() || 'default';
+  const deviceId = ensureDeviceId();
   const info = getContactSecret(peer, { deviceId });
-  if (!info?.inviteId || !info?.secret) return false;
   const history = Array.isArray(info.drHistory) ? info.drHistory.slice() : [];
   const idx = history.findIndex((entry) => {
     if (messageId && entry?.messageId) return entry.messageId === messageId;
@@ -180,50 +235,7 @@ function appendDrHistoryEntry(params = {}) {
 }
 
 function restoreDrStateFromHistory(params = {}) {
-  const { ts, messageId, targetState = null, reasonTag = null } = params;
-  const peer = resolvePeerDigest(params);
-  if (!peer && !targetState) return false;
-  const deviceId = getDeviceId() || 'default';
-  const info = getContactSecret(peer, { deviceId });
-  if (!info?.drHistory?.length) return false;
-  const stamp = Number(ts);
-  let entry = null;
-  const normalizedHistory = info.drHistory.slice().sort((a, b) => compareHistoryKeys(Number(a?.ts), a?.messageId || null, Number(b?.ts), b?.messageId || null));
-  if (messageId) {
-    entry = normalizedHistory.find((item) => item?.messageId === messageId) || null;
-  }
-  if (!entry && Number.isFinite(stamp)) {
-    for (let i = normalizedHistory.length - 1; i >= 0; i -= 1) {
-      const candidate = normalizedHistory[i];
-      if (!candidate) continue;
-      const candidateTs = Number(candidate.ts);
-      if (!Number.isFinite(candidateTs)) continue;
-      if (candidateTs <= stamp) {
-        entry = candidate;
-        break;
-      }
-    }
-  }
-  if (!entry) entry = normalizedHistory[normalizedHistory.length - 1];
-  if (!entry?.snapshot) return false;
-  const restored = restoreDrStateFromSnapshot({
-    peerAccountDigest: peer,
-    snapshot: entry.snapshot,
-    force: true,
-    targetState,
-    sourceTag: reasonTag || 'history-restore'
-  });
-  if (restored && isAutomationEnv()) {
-    console.log('[dr-history-apply]', JSON.stringify({
-      peerAccountDigest: peer,
-      appliedTs: entry.ts,
-      appliedMessageId: entry.messageId || null,
-      requestedTs: stamp,
-      requestedMessageId: messageId || null,
-      mode: targetState ? 'preview' : 'live'
-    }));
-  }
-  return restored;
+  throw new Error('DR history restore disabled；請重新同步好友或重新建立邀請');
 }
 
 export function restoreDrStateToHistoryPoint(params = {}) {
@@ -233,10 +245,10 @@ export function restoreDrStateToHistoryPoint(params = {}) {
 function updateHistoryCursor(params = {}) {
   const { ts, messageId } = params;
   const peer = resolvePeerDigest(params);
-  if (!peer) return;
-  const deviceId = getDeviceId() || 'default';
+  const peerDeviceId = params?.peerDeviceId ?? null;
+  if (!peer || !peerDeviceId) return;
+  const deviceId = ensureDeviceId();
   const info = getContactSecret(peer, { deviceId });
-  if (!info?.inviteId || !info?.secret) return;
   const stamp = Number(ts);
   const currentTs = Number.isFinite(info.drHistoryCursorTs) ? Number(info.drHistoryCursorTs) : null;
   const cursorId = info.drHistoryCursorId || null;
@@ -285,10 +297,13 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
   return snap;
 }
 
-export function snapshotDrStateForPeer(peerAccountDigest) {
-  const peer = normHex(peerAccountDigest);
-  if (!peer) return null;
-  const holder = drState(peer);
+export function snapshotDrStateForPeer(params = {}) {
+  const { digest, deviceId } = ensurePeerIdentity({
+    peerAccountDigest: params?.peerAccountDigest ?? params,
+    peerDeviceId: params?.peerDeviceId ?? null,
+    conversationId: params?.conversationId ?? null
+  });
+  const holder = drState({ peerAccountDigest: digest, peerDeviceId: deviceId });
   if (!holder?.rk) return null;
   return snapshotDrState(holder);
 }
@@ -296,10 +311,11 @@ export function snapshotDrStateForPeer(peerAccountDigest) {
 export function restoreDrStateFromSnapshot(params = {}) {
   const { snapshot, force = false, targetState = null, sourceTag = 'snapshot' } = params;
   const peer = resolvePeerDigest(params);
+  const peerDeviceId = params?.peerDeviceId ?? null;
   if (!peer && !targetState) return false;
   const data = sanitizeSnapshotInput(snapshot);
   if (!data) return false;
-  const holder = targetState || drState(peer);
+  const holder = targetState || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!holder) return false;
   if (!targetState && !force && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
     return false;
@@ -339,18 +355,20 @@ export function restoreDrStateFromSnapshot(params = {}) {
 
 export function persistDrSnapshot(params = {}) {
   const { state, snapshot } = params;
-  const peer = resolvePeerDigest(params);
-  if (!peer) return false;
-  const holder = state || drState(peer);
+  const { digest: peer, deviceId: peerDeviceId } = ensurePeerIdentity({
+    peerAccountDigest: params?.peerAccountDigest ?? params,
+    peerDeviceId: params?.peerDeviceId ?? (state?.baseKey?.peerDeviceId || null),
+    conversationId: params?.conversationId ?? null
+  });
+  const holder = state || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!holder?.rk) return false;
   const snap = snapshot || snapshotDrState(holder);
   if (!snap) return false;
-  const deviceId = getDeviceId() || 'default';
-  const info = getContactSecret(peer, { deviceId });
-  if (!info?.inviteId || !info?.secret) {
-    if (isAutomationEnv()) {
-      console.warn('[dr] persist snapshot skipped (missing contact secret)', { peerAccountDigest: peer, hasInfo: !!info });
-    }
+  // contact secret 以「對端裝置」為 key 儲存，必須用 peerDeviceId 查詢與寫回。
+  const deviceId = peerDeviceId;
+  const info = getContactSecret(peer, { deviceId, peerDeviceId });
+  if (!info) {
+    console.warn('[dr] persist snapshot skipped: missing contact secret', { peerAccountDigest: peer, deviceId: peerDeviceId });
     return false;
   }
   try {
@@ -358,9 +376,6 @@ export function persistDrSnapshot(params = {}) {
       dr: { state: snap },
       meta: { source: 'persistDrSnapshot' }
     };
-    const inviteUpdate = {};
-    if (info.role) inviteUpdate.role = info.role;
-    if (Object.keys(inviteUpdate).length) update.invite = inviteUpdate;
     const conversationUpdate = {};
     if (info.conversationToken) conversationUpdate.token = info.conversationToken;
     if (info.conversationId) conversationUpdate.id = info.conversationId;
@@ -378,13 +393,21 @@ export function persistDrSnapshot(params = {}) {
 export function hydrateDrStatesFromContactSecrets() {
   const map = restoreContactSecrets();
   if (!(map instanceof Map)) return 0;
-  const deviceId = getDeviceId() || 'default';
+  const deviceId = ensureDeviceId();
+  const resolvePeerDeviceIdStrict = (peerDigest) => {
+    const conv = sessionStore.contactIndex?.get?.(peerDigest)?.conversation;
+    const convDev = conv?.peerDeviceId || null;
+    if (convDev) return convDev;
+    return resolvePeerDeviceId(peerDigest, null);
+  };
   let restoredCount = 0;
   let eligibleEntries = 0;
   let skippedInvalidRole = 0;
   let missingSnapshotEntries = 0;
   let historyFallbackCount = 0;
   for (const [peerDigest] of map.entries()) {
+    const peerDeviceIdResolved = resolvePeerDeviceIdStrict(peerDigest);
+    if (!peerDeviceIdResolved) continue;
     const info = getContactSecret(peerDigest, { deviceId });
     if (!info) continue;
     let snapshot = info.drState || null;
@@ -419,9 +442,9 @@ export function hydrateDrStatesFromContactSecrets() {
       skippedInvalidRole += 1;
       continue;
     }
-    const applied = restoreDrStateFromSnapshot({ peerAccountDigest: peerDigest, snapshot });
+    const applied = restoreDrStateFromSnapshot({ peerAccountDigest: peerDigest, peerDeviceId: peerDeviceIdResolved, snapshot });
     if (applied) {
-      const holder = drState(peerDigest);
+      const holder = drState({ peerAccountDigest: peerDigest, peerDeviceId: peerDeviceIdResolved });
       if (holder) {
         holder.historyCursorTs = Number.isFinite(info?.drHistoryCursorTs) ? info.drHistoryCursorTs : null;
         holder.historyCursorId = info?.drHistoryCursorId || null;
@@ -529,10 +552,13 @@ async function ensureDevicePrivLoaded() {
  * @returns {Promise<{ initialized: boolean }>} 
  */
 export async function ensureDrSession(params = {}) {
-  const peer = resolvePeerDigest(params);
-  if (!peer) throw new Error('peerAccountDigest required');
+  const { digest: peer, deviceId: peerDeviceId } = ensurePeerIdentity({
+    peerAccountDigest: params?.peerAccountDigest ?? params,
+    peerDeviceId: params?.peerDeviceId ?? null,
+    conversationId: params?.conversationId ?? null
+  });
 
-  const holder = drState(peer);
+  const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub) {
     return { initialized: true, reused: true };
   }
@@ -543,10 +569,12 @@ export async function ensureDrSession(params = {}) {
   if (!rb.ok) throw new Error('prekeys.bundle failed: ' + (typeof bundle === 'string' ? bundle : JSON.stringify(bundle)));
 
   const st = await x3dhInitiate(priv, bundle);
-  copyDrState(holder, st);
-  holder.baseKey = { role: 'initiator', initializedAt: Date.now() };
-  markHolderSnapshot(holder, 'initiator', Date.now());
-  persistDrSnapshot({ peerAccountDigest: peer, state: holder });
+  const targetHolder = holder || drState({ peerAccountDigest: peer, peerDeviceId });
+  if (!targetHolder) throw new Error('DR holder missing for peer device');
+  copyDrState(targetHolder, st);
+  targetHolder.baseKey = { role: 'initiator', initializedAt: Date.now(), peerDeviceId };
+  markHolderSnapshot(targetHolder, 'initiator', Date.now());
+  persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state: targetHolder });
   return { initialized: true };
 }
 
@@ -582,7 +610,7 @@ function conversationContextForPeer(peerAccountDigest) {
 }
 
 async function sendDrPlaintext(params = {}) {
-  const { text, conversation, convId, metaOverrides = {} } = params;
+  const { text, conversation, convId, metaOverrides = {}, peerDeviceId: peerDeviceInput = null } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) throw new Error('peerAccountDigest required');
 
@@ -590,35 +618,27 @@ async function sendDrPlaintext(params = {}) {
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
-  let state = drState(peer);
+  const peerDeviceId = peerDeviceInput || null;
+  if (!peerDeviceId) {
+    throw new Error('peerDeviceId required for secure send');
+  }
+  const selfDeviceId = ensureDeviceId();
+  if (selfDeviceId && peerDeviceId === selfDeviceId) {
+    throw new Error('peerDeviceId resolved to self device (invalid)');
+  }
+
+  let state = drState({ peerAccountDigest: peer, peerDeviceId });
   let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
 
   if (!hasDrState) {
-    // 若已有 guest bundle / dr_init，優先以 responder 流程恢復，避免誤用 initiator 重新開新鏈。
-    let restored = false;
+    // 嚴禁 fallback：若缺會話，僅允許顯式重建，直接報錯。
     if (hasDrInit) {
-      try {
-        await ensureDrReceiverState({ peerAccountDigest: peer });
-        restored = true;
-      } catch (err) {
-        // 僅記錄，仍可嘗試 initiator 流程作為最後手段。
-        console.warn('[dr] ensure receiver state failed, fallback to initiator', err?.message || err);
-      }
-      state = drState(peer);
-      hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+      await ensureDrReceiverState({ peerAccountDigest: peer, peerDeviceId });
+    } else {
+      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
     }
-    if (!hasDrState) {
-      try {
-        await ensureDrSession({ peerAccountDigest: peer });
-      } catch (err) {
-        if (!hasDrInit && !restored) {
-          throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
-        }
-        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
-      }
-    }
-    state = drState(peer);
+    state = drState({ peerAccountDigest: peer, peerDeviceId });
     hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   }
 
@@ -626,9 +646,10 @@ async function sendDrPlaintext(params = {}) {
     throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
   }
 
-  const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
+  const senderDeviceId = ensureDeviceId();
+  const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
   logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: preSnapshot || null });
-  const pkt = await drEncryptText(state, text);
+  const pkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
@@ -637,7 +658,7 @@ async function sendDrPlaintext(params = {}) {
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
   const accountDigest = (getAccountDigest() || '').toUpperCase();
-  const senderDeviceId = getDeviceId() || 'device-default';
+  const receiverDeviceId = peerDeviceId;
 
   const meta = {
     ts: now,
@@ -654,8 +675,17 @@ async function sendDrPlaintext(params = {}) {
       meta[key] = value;
     }
   }
+  // 強制對端指向目標 guest：禁止自動補救路徑
+  meta.targetDeviceId = receiverDeviceId;
+  meta.receiverDeviceId = receiverDeviceId;
 
-  const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64, meta };
+  const headerPayload = {
+    ...pkt.header,
+    peerAccountDigest: peer || null,
+    peerDeviceId: receiverDeviceId || null,
+    iv_b64: pkt.iv_b64,
+    meta
+  };
   const headerJson = JSON.stringify(headerPayload);
   const ctB64 = pkt.ciphertext_b64;
 
@@ -674,9 +704,10 @@ async function sendDrPlaintext(params = {}) {
       counter: pkt.header?.n ?? null,
       senderDeviceId,
       receiverAccountDigest: peer,
-      receiverDeviceId: null,
+      receiverDeviceId: receiverDeviceId || null,
       createdAt: now,
       peerAccountDigest: peer,
+      peerDeviceId: receiverDeviceId || null,
       meta: { msg_type: meta.msg_type },
       dr: preSnapshot
         ? {
@@ -691,11 +722,20 @@ async function sendDrPlaintext(params = {}) {
       const status = Number.isFinite(result?.status) ? ` (status=${result.status})` : '';
       throw new Error((result.error || 'sendText failed') + status);
     }
+    sendFailureCounter.delete(`${peer}::${receiverDeviceId || 'unknown'}`);
     logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: postSnapshot });
     const msg = result.data && typeof result.data === 'object' ? result.data : {};
     if (!msg.id) msg.id = messageId;
     return { msg, convId: conversationId, secure: true };
   } catch (err) {
+    const key = `${peer}::${receiverDeviceId || 'unknown'}`;
+    const nextFail = (sendFailureCounter.get(key) || 0) + 1;
+    sendFailureCounter.set(key, nextFail);
+    if (nextFail >= 3) {
+      clearDrState({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId || null });
+      sendFailureCounter.delete(key);
+      throw new Error('DR 送出連續失敗已重置會話，請重新同步好友或重新建立邀請');
+    }
     if (preSnapshot) restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
     throw err;
   }
@@ -708,28 +748,6 @@ async function sendDrPlaintext(params = {}) {
  */
 export async function sendDrText(params = {}) {
   return sendDrPlaintext(params);
-}
-
-export async function sendDrSessionInit(params = {}) {
-  return sendDrPlaintext({
-    ...params,
-    text: 'session-init',
-    metaOverrides: {
-      msg_type: CONTROL_MESSAGE_TYPES.SESSION_INIT,
-      control: 'bootstrap'
-    }
-  });
-}
-
-export async function sendDrSessionAck(params = {}) {
-  return sendDrPlaintext({
-    ...params,
-    text: 'session-ack',
-    metaOverrides: {
-      msg_type: CONTROL_MESSAGE_TYPES.SESSION_ACK,
-      control: 'ack'
-    }
-  });
 }
 
 export async function sendDrDeliveryReceipt(params = {}) {
@@ -927,7 +945,7 @@ function blobToNamedFile(blob, nameHint) {
 }
 
 export async function sendDrMedia(params = {}) {
-  const { file, conversation, convId, dir, onProgress, abortSignal } = params;
+  const { file, conversation, convId, dir, onProgress, abortSignal, peerDeviceId: peerDeviceInput = null } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) throw new Error('peerAccountDigest required');
   if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
@@ -938,20 +956,26 @@ export async function sendDrMedia(params = {}) {
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
-  let state = drState(peer);
+  const { deviceId: peerDeviceId } = ensurePeerIdentity({
+    peerAccountDigest: peer,
+    peerDeviceId: peerDeviceInput || conversation?.peerDeviceId || convContext?.peerDeviceId || null,
+    conversationId: convId || convContext?.conversation_id || convContext?.conversationId || null
+  });
+
+  let state = drState({ peerAccountDigest: peer, peerDeviceId });
   let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
 
   if (!hasDrState) {
     try {
-      await ensureDrSession({ peerAccountDigest: peer });
+      await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
     } catch (err) {
       if (!hasDrInit) {
         throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
       }
       throw new Error('DR 會話初始化失敗：' + (err?.message || err));
     }
-    state = drState(peer);
+    state = drState({ peerAccountDigest: peer, peerDeviceId });
     hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   }
 
@@ -1040,14 +1064,15 @@ export async function sendDrMedia(params = {}) {
       : undefined
   });
 
-  const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
+  const senderDeviceId = ensureDeviceId();
+  const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
   logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
-  const pkt = await drEncryptText(state, payloadText);
+  const pkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
 
-  const senderDeviceId = getDeviceId() || 'device-default';
+  const receiverDeviceId = peerDeviceId;
 
   const meta = {
     ts: now,
@@ -1084,7 +1109,7 @@ export async function sendDrMedia(params = {}) {
     counter: pkt.header?.n ?? null,
     senderDeviceId,
     receiverAccountDigest: peer,
-    receiverDeviceId: null,
+    receiverDeviceId: receiverDeviceId || null,
     createdAt: now,
     meta: { msg_type: 'media', media: metadata },
     peerAccountDigest: peer,
@@ -1170,29 +1195,29 @@ export async function sendDrCallLog(params = {}) {
 export async function bootstrapDrFromGuestBundle(params = {}) {
   const { guestBundle, force = false } = params;
   const peer = resolvePeerDigest(params);
-  if (!peer) return false;
-  if (!guestBundle || typeof guestBundle !== 'object') return false;
-  const holder = drState(peer);
+  if (!peer) throw new Error('peerAccountDigest required for DR bootstrap');
+  if (!guestBundle || typeof guestBundle !== 'object') throw new Error('guest bundle missing for DR bootstrap');
+  const peerDeviceId = params?.peerDeviceId ?? null;
+  const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder?.rk && !force) return false;
-  try {
-    const priv = await ensureDevicePrivLoaded();
-    const st = await x3dhRespond(priv, guestBundle);
-    copyDrState(holder, st);
-    holder.baseKey = { role: 'responder', initializedAt: Date.now(), guestBundle };
-    markHolderSnapshot(holder, 'responder', Date.now());
-    persistDrSnapshot({ peerAccountDigest: peer, state: holder });
-    return true;
-  } catch (err) {
-    console.warn('[dr] responder bootstrap failed', err);
-    return false;
+  const priv = await ensureDevicePrivLoaded();
+  const st = await x3dhRespond(priv, guestBundle);
+  if (!st?.rk || !(st?.ckR instanceof Uint8Array) || !(st?.myRatchetPriv instanceof Uint8Array)) {
+    throw new Error('guest bundle did not produce valid DR state');
   }
+  copyDrState(holder, st);
+  holder.baseKey = { role: 'responder', initializedAt: Date.now(), guestBundle };
+  markHolderSnapshot(holder, 'responder', Date.now());
+  persistDrSnapshot({ peerAccountDigest: peer, state: holder });
+  return true;
 }
 
 export function primeDrStateFromInitiator(params = {}) {
   const { state } = params;
   const peer = resolvePeerDigest(params);
-  if (!peer || !state) return false;
-  const holder = drState(peer);
+  const peerDeviceId = params?.peerDeviceId ?? null;
+  if (!peer || !peerDeviceId || !state) return false;
+  const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder?.rk) return false;
   copyDrState(holder, state);
   holder.baseKey = { role: 'initiator', initializedAt: Date.now(), primed: true };
@@ -1200,132 +1225,20 @@ export function primeDrStateFromInitiator(params = {}) {
   return true;
 }
 
-async function ensureRemoteBootstrap(params = {}) {
-  const { reason = 'dr-session', force = false } = params;
-  const peer = resolvePeerDigest(params);
-  if (!peer) return null;
-  const deviceId = getDeviceId() || 'default';
-  const existing = getContactSecret(peer, { deviceId });
-  if (!existing) return null;
-  const relationshipRole = typeof existing?.role === 'string' ? existing.role.toLowerCase() : null;
-
-  const lastTs = Number(existing.sessionBootstrapTs);
-  if (!force && Number.isFinite(lastTs)) {
-    const elapsed = Date.now() - lastTs * 1000;
-    if (elapsed < SESSION_BOOTSTRAP_REFRESH_INTERVAL_MS) {
-      return null;
-    }
-  }
-
-  if (remoteBootstrapLocks.has(peer)) {
-    return remoteBootstrapLocks.get(peer);
-  }
-
-  const worker = (async () => {
-    try {
-      const roleHint =
-        relationshipRole === 'owner'
-          ? 'owner'
-          : (relationshipRole === 'guest' ? 'guest' : undefined);
-      const res = await friendsBootstrapSession({
-        peerAccountDigest: peer,
-        roleHint,
-        inviteId: existing?.inviteId || null
-      });
-      const guestBundle = res?.guestBundle || res?.guest_bundle || null;
-      if (!guestBundle) return null;
-
-      const mergedDrInit = { ...(existing.conversationDrInit || {}) };
-      mergedDrInit.guest_bundle = guestBundle;
-      mergedDrInit.guestBundle = guestBundle;
-
-      setContactSecret(peer, {
-        deviceId,
-        conversation: { drInit: mergedDrInit },
-        session: { bootstrapTs: Math.floor(Date.now() / 1000) },
-        meta: { source: `remote-bootstrap:${reason}` }
-      });
-
-      const contactEntry = sessionStore.contactIndex?.get?.(peer);
-      if (contactEntry) {
-        if (!contactEntry.conversation) contactEntry.conversation = {};
-        if (!contactEntry.conversation.dr_init) contactEntry.conversation.dr_init = {};
-        contactEntry.conversation.dr_init.guest_bundle = guestBundle;
-        contactEntry.conversation.dr_init.guestBundle = guestBundle;
-      }
-
-      const convIndex = sessionStore.conversationIndex;
-      if (convIndex && typeof convIndex.forEach === 'function') {
-        for (const info of convIndex.values()) {
-          const peerMatch = String(info?.peerAccountDigest || '').toUpperCase();
-          if (!peerMatch || peerMatch !== peer) continue;
-          if (!info.dr_init) info.dr_init = {};
-          info.dr_init.guest_bundle = guestBundle;
-          info.dr_init.guestBundle = guestBundle;
-        }
-      }
-
-      return { guestBundle, role: res?.role || null, peerAccountDigest: peer };
-    } catch (err) {
-      console.warn('[dr] remote bootstrap fetch failed', err?.message || err);
-      return null;
-    } finally {
-      remoteBootstrapLocks.delete(peer);
-    }
-  })();
-
-  remoteBootstrapLocks.set(peer, worker);
-  return worker;
-}
-
 export async function ensureDrReceiverState(params = {}) {
   const { force = false } = params;
-  const peer = resolvePeerDigest(params);
-  if (!peer) return false;
-  const deviceId = getDeviceId() || 'default';
+  const { digest: peer, deviceId: peerDeviceId } = ensurePeerIdentity({
+    peerAccountDigest: params?.peerAccountDigest ?? params,
+    peerDeviceId: params?.peerDeviceId ?? null,
+    conversationId: params?.conversationId ?? null
+  });
+  const deviceId = ensureDeviceId();
   const secretInfo = getContactSecret(peer, { deviceId });
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
-  let state = drState(peer);
+  let state = drState({ peerAccountDigest: peer, peerDeviceId });
   if (!state?.rk && secretInfo?.drState) {
-    try {
-      restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: secretInfo.drState });
-    } catch (err) {
-      console.warn('[dr] ensure receiver restore failed', err);
-    }
-    state = drState(peer);
-  }
-  if (!state?.rk && Array.isArray(secretInfo?.drHistory) && secretInfo.drHistory.length) {
-    const candidates = secretInfo.drHistory
-      .slice()
-      .reverse()
-      .filter((entry) => entry && (entry.snapshotAfter || entry.snapshot));
-    for (const entry of candidates) {
-      try {
-        const snap = entry.snapshotAfter || entry.snapshot;
-        const ok = restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: snap, force: true });
-        if (ok) {
-          const holder = drState(peer);
-          if (holder) {
-            if (Number.isFinite(entry.ts)) holder.historyCursorTs = entry.ts;
-            if (entry.messageId) holder.historyCursorId = entry.messageId;
-            markHolderSnapshot(holder, 'ensure-history', Date.now());
-            persistDrSnapshot({ peerAccountDigest: peer, state: holder });
-          }
-          state = drState(peer);
-          if (
-            state?.rk &&
-            state.myRatchetPriv instanceof Uint8Array &&
-            state.myRatchetPub instanceof Uint8Array &&
-            (state.ckR instanceof Uint8Array || state.ckS instanceof Uint8Array)
-          ) {
-            break;
-          }
-        }
-      } catch (err) {
-        console.warn('[dr] ensure receiver history restore failed', err);
-      }
-    }
-    state = drState(peer);
+    restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: secretInfo.drState });
+    state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
   const stateRole = typeof state?.baseKey?.role === 'string' ? state.baseKey.role.toLowerCase() : null;
   const stateHasRatchet = !!(state?.rk && state?.myRatchetPriv && state?.myRatchetPub);
@@ -1340,26 +1253,8 @@ export async function ensureDrReceiverState(params = {}) {
   }
 
   const context = conversationContextForPeer(peer) || {};
-  let drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
-  let guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
-
-  if (!guestBundle && relationshipRole !== 'guest') {
-    try {
-      const remote = await ensureRemoteBootstrap({ peerAccountDigest: peer, reason: 'ensureDrReceiverState', force });
-      if (remote?.guestBundle) {
-        const refreshedSecret = getContactSecret(peer, { deviceId });
-        const refreshedContext = conversationContextForPeer(peer) || {};
-        drInit = refreshedContext?.dr_init || refreshedSecret?.conversationDrInit || drInit;
-        guestBundle =
-          drInit?.guest_bundle ||
-          drInit?.guestBundle ||
-          remote.guestBundle ||
-          null;
-      }
-    } catch (err) {
-      console.warn('[dr] ensure remote bootstrap failed', err?.message || err);
-    }
-  }
+  const drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
+  const guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
 
   const allowResponderBootstrap = (() => {
     if (relationshipRole === 'guest') return false;
@@ -1370,27 +1265,26 @@ export async function ensureDrReceiverState(params = {}) {
     return true;
   })();
   if (guestBundle && allowResponderBootstrap) {
-    const holderNow = drState(peer);
+    const holderNow = drState({ peerAccountDigest: peer, peerDeviceId });
     const roleNow = holderNow?.baseKey?.role;
     const hasReceiveChain = holderNow?.ckR instanceof Uint8Array && holderNow.ckR.length > 0 && roleNow === 'responder';
     const shouldForce = force || !hasReceiveChain || roleNow !== 'responder';
-    const ok = await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: shouldForce });
-    if (ok || shouldForce) {
-      const refreshed = drState(peer);
-      const refreshedRole = typeof refreshed?.baseKey?.role === 'string' ? refreshed.baseKey.role.toLowerCase() : null;
-      if (
-        refreshed?.rk &&
-        refreshed?.ckR instanceof Uint8Array &&
-        refreshed.ckR.length > 0 &&
-        refreshed.myRatchetPriv instanceof Uint8Array &&
-        refreshedRole === 'responder'
-      ) {
-        return true;
-      }
+    await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: shouldForce });
+    const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
+    const refreshedRole = typeof refreshed?.baseKey?.role === 'string' ? refreshed.baseKey.role.toLowerCase() : null;
+    if (
+      refreshed?.rk &&
+      refreshed?.ckR instanceof Uint8Array &&
+      refreshed.ckR.length > 0 &&
+      refreshed.myRatchetPriv instanceof Uint8Array &&
+      refreshedRole === 'responder'
+    ) {
+      return true;
     }
+    throw new Error('DR responder bootstrap failed');
   }
 
-  const holder = drState(peer);
+  const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   const holderRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
   const holderHasRatchet = !!(holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub);
   const holderHasReceiveChain = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0;
@@ -1405,85 +1299,7 @@ export async function ensureDrReceiverState(params = {}) {
 }
 
 export async function recoverDrState(params = {}) {
-  const { force = false } = params;
-  const peer = resolvePeerDigest(params);
-  if (!peer) return false;
-  const deviceId = getDeviceId() || 'default';
-  const secretInfo = getContactSecret(peer, { deviceId });
-  const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
-  const normalizeRole = (role) => (typeof role === 'string' ? role.toLowerCase() : null);
-  const hasUsableState = (holder, roleHint = null) => {
-    if (
-      !holder?.rk ||
-      !(holder.myRatchetPriv instanceof Uint8Array) ||
-      !(holder.myRatchetPub instanceof Uint8Array)
-    ) {
-      return false;
-    }
-    const hasReceive = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0;
-    const hasSend = holder?.ckS instanceof Uint8Array && holder.ckS.length > 0;
-    if (!hasReceive && !hasSend) return false;
-    const role = normalizeRole(holder?.baseKey?.role) || normalizeRole(roleHint);
-    if (role === 'initiator') return hasSend || hasReceive;
-    if (role === 'responder') return hasReceive || hasSend;
-    return hasReceive || hasSend;
-  };
-  if (secretInfo?.drState) {
-    try {
-      const ok = restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: secretInfo.drState, force: true });
-      const holder = drState(peer);
-      if (ok && hasUsableState(holder, relationshipRole)) {
-        markHolderSnapshot(holder, 'recover-snapshot', Date.now());
-        if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'snapshot' }));
-        return true;
-      }
-    } catch (err) {
-      console.warn('[dr] recover snapshot failed', err);
-    }
-  }
-
-  const context = conversationContextForPeer(peer) || {};
-  const drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
-  const guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
-  let resolvedGuestBundle = guestBundle;
-
-  if (!resolvedGuestBundle && relationshipRole !== 'guest') {
-    try {
-      const remote = await ensureRemoteBootstrap({ peerAccountDigest: peer, reason: 'recoverDrState', force });
-      if (remote?.guestBundle) {
-        resolvedGuestBundle = remote.guestBundle;
-        setContactSecret(peer, {
-          deviceId,
-          conversation: { drInit: { ...(drInit || {}), guest_bundle: resolvedGuestBundle, guestBundle: resolvedGuestBundle } },
-          meta: { source: 'recoverDrState-remote-bootstrap' }
-        });
-      }
-    } catch (err) {
-      console.warn('[dr] recover remote bootstrap failed', err?.message || err);
-    }
-  }
-
-  if (resolvedGuestBundle && relationshipRole !== 'guest') {
-    try {
-      const ok = await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle: resolvedGuestBundle, force: true });
-      const holder = drState(peer);
-      if (ok && hasUsableState(holder, relationshipRole)) {
-        markHolderSnapshot(holder, 'recover-guest', Date.now());
-        if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'guest-bundle' }));
-        return true;
-      }
-    } catch (err) {
-      console.warn('[dr] recover via guest bundle failed', err);
-    }
-  }
-
-  const holder = drState(peer);
-  if (hasUsableState(holder, relationshipRole)) {
-    markHolderSnapshot(holder, 'recover', Date.now());
-    if (isAutomationEnv()) console.log('[dr-recover]', JSON.stringify({ peerAccountDigest: peer, source: 'in-place' }));
-    return true;
-  }
-  return false;
+  throw new Error('DR recovery disabled：請重新同步好友或重新建立邀請');
 }
 
 export function prepareDrForMessage(params = {}) {
@@ -1496,82 +1312,34 @@ export function prepareDrForMessage(params = {}) {
     mutate = true
   } = params;
   const peer = resolvePeerDigest({ peerAccountDigest, ...params });
-  if (!peer) return { restored: false, duplicate: false };
-  const deviceId = getDeviceId() || 'default';
-  const secretInfo = getContactSecret(peer, { deviceId });
-  const holder = stateOverride || drState(peer);
+  const peerDeviceId = params?.peerDeviceId ?? null;
+  if (!peer || !peerDeviceId) return { restored: false, duplicate: false };
+  const deviceId = ensureDeviceId();
+  const holder = stateOverride || drState({ peerAccountDigest: peer, peerDeviceId });
+  if (!holder?.rk) {
+    throw new Error('缺少安全會話狀態，請重新同步好友或重新建立邀請');
+  }
   const stamp = Number(messageTs);
   const stampIsFinite = Number.isFinite(stamp);
   const cursorTs = Number.isFinite(holder?.historyCursorTs) ? holder.historyCursorTs : null;
   const cursorId = holder?.historyCursorId || null;
-  const historyList = Array.isArray(secretInfo?.drHistory) ? secretInfo.drHistory : [];
-  const historyEntry = messageId ? historyList.find((entry) => entry?.messageId === messageId) : null;
-  const hasMatchingHistory = !!historyEntry;
-  const allowReplay = !!allowCursorReplay;
-
-  if (!allowReplay && cursorId && messageId && cursorId === messageId) {
+  if (!allowCursorReplay && cursorId && messageId && cursorId === messageId) {
     if (isAutomationEnv()) {
       console.log('[dr-skip-duplicate]', JSON.stringify({ peerAccountDigest: peer, messageId, cursorTs }));
     }
     return { restored: false, duplicate: true };
   }
-  if (allowReplay && hasMatchingHistory && historyEntry?.messageKey_b64) {
-    return { restored: false, duplicate: false, replay: true, historyEntry };
-  }
-  let restored = false;
-  const tryHistoryRestore = (reason) => {
-    const ok = restoreDrStateFromHistory({
-      peerAccountDigest: peer,
-      ts: stamp,
-      messageId,
-      targetState: mutate ? null : holder,
-      reasonTag: reason
-    });
-    if (ok && isAutomationEnv()) {
-      console.log('[dr-history-restore]', JSON.stringify({
-        peerAccountDigest: peer,
-        reason,
-        cursorTs,
-        cursorId,
-        messageId: messageId || null,
-        ts: stamp
-      }));
-    }
-    return ok;
-  };
-  if (!holder?.rk) {
-    restored = tryHistoryRestore('missing-rk');
-  } else {
-    const isOlderThanCursor = stampIsFinite && cursorTs !== null && stamp < cursorTs;
-    const restoreByHistoryOnly = !stampIsFinite && hasMatchingHistory;
-    const replayNeedsRestore = allowReplay && hasMatchingHistory && !historyEntry?.messageKey_b64;
-    if (isOlderThanCursor || restoreByHistoryOnly || replayNeedsRestore) {
-      const reason = (() => {
-        if (isOlderThanCursor) return 'rewind';
-        if (restoreByHistoryOnly) return 'history-lookup';
-        if (replayNeedsRestore) return 'replay-no-key';
-        return 'history';
-      })();
-      restored = tryHistoryRestore(reason);
-    } else if (hasMatchingHistory && !allowReplay) {
-      if (isAutomationEnv()) {
-        console.log('[dr-skip-duplicate]', JSON.stringify({ peerAccountDigest: peer, messageId, cursorTs }));
-      }
-      return { restored: false, duplicate: true };
-    }
-  }
-  if (restored) {
-    if (Number.isFinite(stamp)) holder.historyCursorTs = stamp;
-    if (messageId) holder.historyCursorId = messageId;
-  }
-  return { restored, duplicate: false, historyEntry: hasMatchingHistory ? historyEntry : null };
+  if (Number.isFinite(stamp)) holder.historyCursorTs = stamp;
+  if (messageId) holder.historyCursorId = messageId;
+  return { restored: false, duplicate: false, historyEntry: null };
 }
 
 export function recordDrMessageHistory(params = {}) {
   const { messageTs, messageId, snapshot, snapshotNext, messageKeyB64 } = params;
   const peer = resolvePeerDigest(params);
+  const peerDeviceId = params?.peerDeviceId ?? null;
   const stamp = Number(messageTs);
-  if (!peer || !snapshot || !Number.isFinite(stamp)) return false;
+  if (!peer || !peerDeviceId || !snapshot || !Number.isFinite(stamp)) return false;
   appendDrHistoryEntry({
     peerAccountDigest: peer,
     ts: stamp,
@@ -1580,11 +1348,11 @@ export function recordDrMessageHistory(params = {}) {
     messageId,
     messageKeyB64
   });
-  updateHistoryCursor({ peerAccountDigest: peer, ts: stamp, messageId });
+  updateHistoryCursor({ peerAccountDigest: peer, peerDeviceId, ts: stamp, messageId });
   if (isAutomationEnv()) {
     console.log('[dr-history-record]', JSON.stringify({ peerAccountDigest: peer, ts: stamp, messageId: messageId || null }));
   }
-  const holder = drState(peer);
+  const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder) {
     holder.historyCursorTs = stamp;
     if (messageId) holder.historyCursorId = messageId;
@@ -1597,11 +1365,13 @@ try {
   setOutboxHooks({
     onSent: async (job) => {
       const peer = job?.peerAccountDigest || null;
+      const peerDeviceId = job?.peerDeviceId || null;
       const dr = job?.dr || {};
       const messageTs = Number(job?.createdAt);
-      if (peer && dr.snapshotBefore && Number.isFinite(messageTs)) {
+      if (peer && peerDeviceId && dr.snapshotBefore && Number.isFinite(messageTs)) {
         recordDrMessageHistory({
           peerAccountDigest: peer,
+          peerDeviceId,
           messageTs,
           messageId: job?.messageId || null,
           snapshot: dr.snapshotBefore,
@@ -1610,7 +1380,7 @@ try {
         });
       }
       if (peer && dr.snapshotAfter) {
-        persistDrSnapshot({ peerAccountDigest: peer, snapshot: dr.snapshotAfter });
+        persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: dr.snapshotAfter });
       }
     }
   });

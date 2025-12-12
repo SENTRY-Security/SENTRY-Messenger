@@ -1,5 +1,5 @@
 import { encryptWithMK, decryptWithMK, b64, b64u8 } from '../crypto/aead.js';
-import { getMkRaw } from '../core/store.js';
+import { getMkRaw, ensureDeviceId } from '../core/store.js';
 import { log } from '../core/log.js';
 import { uploadContactSecretsBackup, fetchContactSecretsBackup } from '../api/contact-secrets.js';
 import {
@@ -29,7 +29,14 @@ function detectDeviceLabel() {
 }
 
 function handlePersistEvent(event) {
-  latestPersistDetail = event?.detail || null;
+  if (event?.detail) {
+    latestPersistDetail = {
+      ...event.detail,
+      snapshotVersion: event.detail.snapshotVersion || event.detail?.summary?.version || null
+    };
+  } else {
+    latestPersistDetail = null;
+  }
   scheduleBackup('persist');
 }
 
@@ -98,7 +105,8 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
       entries: snapshot.summary?.entries || null,
       updatedAt: snapshot.summary?.generatedAt || Date.now(),
       bytes: snapshot.summary?.bytes || null,
-      deviceLabel
+      deviceLabel,
+      deviceId: ensureDeviceId()
     }, fetchOptions);
     if (r.status === 404) {
       backupDisabled = true;
@@ -107,6 +115,7 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
     }
     if (r.ok) {
       lastUploadedChecksum = snapshot.checksum || null;
+      log({ contactSecretsBackupUploaded: { status: r.status, snapshotVersion: snapshot.summary?.version || null, entries: snapshot.summary?.entries || null } });
       return true;
     }
     log({ contactSecretsBackupUploadFailed: { status: r.status, reason } });
@@ -169,7 +178,14 @@ async function performSync() {
       latestPersistDetail = {
         payload: snapshot,
         summary,
-        checksum: checksumRecord?.value || null
+        checksum: checksumRecord?.value || null,
+        snapshotVersion: backup.snapshotVersion || summary.version || null,
+        backupMeta: {
+          version: backup.version || null,
+          updatedAt: backup.updatedAt || null,
+          deviceId: backup.deviceId || null,
+          deviceLabel: backup.deviceLabel || null
+        }
       };
       lastUploadedChecksum = backup.checksum || checksumRecord?.value || null;
       syncCompleted = true;

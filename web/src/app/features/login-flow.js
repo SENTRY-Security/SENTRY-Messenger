@@ -127,7 +127,8 @@ export async function exchangeSDM(p) {
 export async function unlockAndInit({ password, onProgress } = {}) {
   const pwd = String(password || '');
   if (!pwd) throw new Error('password required');
-  if (!getSession()) throw new Error('SDM exchange required');
+  const initialSession = getSession();
+  if (!initialSession) throw new Error('SDM exchange required');
 
   const report = (step, status, detail) => {
     if (typeof onProgress === 'function') {
@@ -195,7 +196,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       report('wrap-mk', 'success');
       report('mk-store', 'start');
       const { r } = await mkStore({
-        session: getSession(),
+        session: initialSession,
         accountToken,
         accountDigest,
         wrapped_mk
@@ -229,14 +230,22 @@ export async function unlockAndInit({ password, onProgress } = {}) {
   };
 
   const publishBundle = async (bundlePub, { devicePriv = null, deviceId = null, allowFallback = true } = {}) => {
+    const resolvedDeviceId = deviceId || getDeviceId() || devicePriv?.device_id || devicePriv?.deviceId || null;
+    const resolvedSpk = bundlePub?.signedPrekey || (devicePriv ? {
+      id: devicePriv.spk_id || devicePriv.spkId || 1,
+      pub: devicePriv.spk_pub_b64,
+      sig: devicePriv.spk_sig_b64,
+      ik: devicePriv.ik_pub_b64,
+      ik_pub: devicePriv.ik_pub_b64
+    } : null);
+    if (!resolvedDeviceId) throw new Error('deviceId missing for prekeys publish');
+    if (!resolvedSpk) throw new Error('signedPrekey missing for prekeys publish');
     const send = async (payload) => {
       const { r, data } = await prekeysPublish({
         accountToken,
         accountDigest,
-        deviceId,
-        signedPrekey: payload.signedPrekey || (payload.spk_pub
-          ? { id: payload.spk_id || payload.spkId || 1, pub: payload.spk_pub, sig: payload.spk_sig }
-          : undefined),
+        deviceId: resolvedDeviceId,
+        signedPrekey: payload.signedPrekey || resolvedSpk,
         opks: payload.opks || []
       });
       if (r.ok) return { ok: true };
@@ -308,12 +317,15 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       report('generate-bundle', 'start');
       const deviceId = getDeviceId() || crypto.randomUUID();
       setDeviceId(deviceId);
-      const { devicePriv, bundlePub } = await generateInitialBundle(1, 100);
+      try { console.log('[login-flow] deviceId:set:init', deviceId); } catch {}
+      const { devicePriv, bundlePub } = await generateInitialBundle(1, 50);
+      devicePriv.device_id = deviceId;
+      devicePriv.deviceId = deviceId;
       report('generate-bundle', 'success', { opkCount: bundlePub?.opks?.length || 0 });
       setDevicePriv(devicePriv);
       await runStep('prekeys-publish', () => publishBundle(bundlePub, { devicePriv, deviceId }));
       const wrapped_dev = await runStep('wrap-device', () => wrapDevicePrivWithMK(devicePriv, getMkRaw()));
-      await runStep('devkeys-store', () => storeDevkeys(getSession(), wrapped_dev));
+      await runStep('devkeys-store', () => storeDevkeys(initialSession, wrapped_dev));
       initialized = true;
       nextId = devicePriv.next_opk_id;
       wrappedDevEnvelope = wrapped_dev;
@@ -334,14 +346,21 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       });
 
       setDevicePriv(devicePriv);
-      const deviceId = getDeviceId() || crypto.randomUUID();
+      const restoredDeviceId = devicePriv.device_id || devicePriv.deviceId || getDeviceId() || null;
+      if (!restoredDeviceId || (typeof restoredDeviceId !== 'string') || !restoredDeviceId.trim()) {
+        throw new Error('deviceId missing in device backup; please reinitialize account');
+      }
+      const deviceId = restoredDeviceId.trim();
+      devicePriv.device_id = deviceId;
+      devicePriv.deviceId = deviceId;
       setDeviceId(deviceId);
+      try { console.log('[login-flow] deviceId:set:replenish', deviceId); } catch {}
       await runStep('prekeys-sync', () => publishBundle({
         ik_pub: devicePriv.ik_pub_b64,
         spk_pub: devicePriv.spk_pub_b64,
         spk_sig: devicePriv.spk_sig_b64
       }, { devicePriv, deviceId, allowFallback: false }));
-      const { opks, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
+      const { opks, opkPrivMap, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
       if (opks.length > 0) {
         report('generate-bundle', 'start');
         report('prekeys-publish', 'start');
@@ -353,26 +372,28 @@ export async function unlockAndInit({ password, onProgress } = {}) {
           throw new Error('keys.publish (replenish) failed: ' + asMsg(e));
         }
         devicePriv.next_opk_id = next;
+        devicePriv.device_id = deviceId;
+        devicePriv.deviceId = deviceId;
+        if (!devicePriv.opk_priv_map) devicePriv.opk_priv_map = {};
+        Object.assign(devicePriv.opk_priv_map, opkPrivMap || {});
         report('generate-bundle', 'success', { opkCount: opks.length });
         report('prekeys-publish', 'success');
-        const wrapped_dev = await runStep('wrap-device', () => wrapDevicePrivWithMK(devicePriv, getMkRaw()));
-        try {
-          report('devkeys-store', 'start');
-          await storeDevkeys(undefined, wrapped_dev);
-          report('devkeys-store', 'success');
-        } catch (e) {
-          report('devkeys-store', 'error', e?.message || e);
-          throw new Error('devkeys.store (replenish) failed: ' + asMsg(e));
-        }
         replenished = true;
         nextId = next;
-        wrappedDevEnvelope = wrapped_dev;
       } else {
         report('generate-bundle', 'skip');
         report('prekeys-publish', 'skip');
-        report('wrap-device', 'success');
-        report('devkeys-store', 'skip');
       }
+      const wrapped_dev = await runStep('wrap-device', () => wrapDevicePrivWithMK(devicePriv, getMkRaw()));
+      try {
+        report('devkeys-store', 'start');
+        await storeDevkeys(undefined, wrapped_dev);
+        report('devkeys-store', 'success');
+      } catch (e) {
+        report('devkeys-store', 'error', e?.message || e);
+        throw new Error('devkeys.store (replenish) failed: ' + asMsg(e));
+      }
+      wrappedDevEnvelope = wrapped_dev;
     } catch (e) {
       if (!replenished) report('generate-bundle', 'error', e?.message || e);
       throw new Error('Prekeys replenish failed: ' + asMsg(e));

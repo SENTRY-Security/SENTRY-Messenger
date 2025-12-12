@@ -35,7 +35,8 @@ const OpkSchema = z.object({
 const SignedPrekeySchema = z.object({
   id: z.number().int().nonnegative(),
   pub: z.string().min(8),
-  sig: z.string().min(8)
+  sig: z.string().min(8),
+  ik_pub: z.string().min(8).optional()
 });
 
 const PublishSchema = withAccountSelectorGuard(AccountSelectorSchema.extend({
@@ -97,10 +98,16 @@ r.post('/keys/publish', async (req, res) => {
     });
 
     const path = '/d1/prekeys/publish';
+    const signedPrekey = {
+      id: input.signedPrekey.id,
+      pub: input.signedPrekey.pub,
+      sig: input.signedPrekey.sig,
+      ik_pub: input.signedPrekey.ik_pub || input.signedPrekey.ik || undefined
+    };
     const payload = {
       accountDigest,
       deviceId: input.deviceId,
-      signedPrekey: input.signedPrekey,
+      signedPrekey,
       opks: input.opks || []
     };
     const w = await callWorker(path, payload);

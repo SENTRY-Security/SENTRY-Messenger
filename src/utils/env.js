@@ -5,7 +5,8 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   SERVICE_NAME: z.string().min(1).default('message-api'),
   SERVICE_VERSION: z.string().min(1).default('0.1.0'),
-  CORS_ORIGIN: z.string().url().optional(),
+  // 支援逗號分隔多個來源，這裡只驗證為非空字串
+  CORS_ORIGIN: z.string().min(1).optional(),
   WS_TOKEN_SECRET: z.string().min(32, 'WS_TOKEN_SECRET must be at least 32 characters long')
 });
 

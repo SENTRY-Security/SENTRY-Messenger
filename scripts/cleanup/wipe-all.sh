@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SQL_FILE="$ROOT/scripts/cleanup/d1-wipe-all.sql"
 WRANGLER_BIN="${WRANGLER_BIN:-wrangler}"
 DB_NAME="${DB_NAME:-message_db}"

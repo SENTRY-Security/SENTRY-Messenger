@@ -36,6 +36,13 @@ function canonicalAccountDigest(value) {
   return cleaned && cleaned.length === 64 ? cleaned : null;
 }
 
+function canonicalDeviceId(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 120);
+}
+
 function pruneCallLocks() {
   const now = Date.now();
   if (now - lastCallLockSweep < 5000) return;
@@ -170,11 +177,8 @@ function buildCallDetail(msg = {}) {
 function extractPeerAccountDigest(msg = {}) {
   const candidates = [
     msg.targetAccountDigest,
-    msg.target_account_digest,
-    msg.accountDigest,
-    msg.account_digest,
     msg.peerAccountDigest,
-    msg.peer_account_digest
+    msg.accountDigest
   ];
   for (const candidate of candidates) {
     const normalized = canonicalAccountDigest(candidate);
@@ -234,6 +238,16 @@ async function handleCallSignal(ws, msg) {
     sendCallError(ws, 'CALL_TARGET_REQUIRED', 'target accountDigest required', { event: rawType, callId });
     return;
   }
+  const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+  const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
+  if (!senderDeviceId || !targetDeviceId) {
+    sendCallError(ws, 'CALL_DEVICE_REQUIRED', 'senderDeviceId and targetDeviceId required', {
+      event: rawType,
+      callId,
+      peerAccountDigest: targetAccountDigest
+    });
+    return;
+  }
   if (targetAccountDigest === ws.__accountDigest) {
     sendCallError(ws, 'CALL_TARGET_INVALID', 'target must differ from sender', { event: rawType, callId });
     return;
@@ -264,6 +278,8 @@ async function handleCallSignal(ws, msg) {
     callId,
     fromAccountDigest: ws.__accountDigest || null,
     toAccountDigest: targetAccountDigest || null,
+    fromDeviceId: senderDeviceId,
+    toDeviceId: targetDeviceId,
     traceId: traceId || null,
     ts: Date.now(),
     payload: detail || null
@@ -414,13 +430,89 @@ function handleClientMessage(ws, data) {
     const targetDigest = extractPeerAccountDigest(msg);
     if (!targetDigest) return;
     const fromDigest = ws.__accountDigest || null;
-    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
+    if (!senderDeviceId || !targetDeviceId) {
+      logger.warn({
+        event: 'ws.contact-share.missing-device',
+        fromDigest,
+        targetDigest,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null
+      }, 'drop contact-share due to missing deviceId');
+      return;
+    }
     broadcastByDigest(targetDigest, {
       type: 'contact-share',
       fromAccountDigest: fromDigest,
       senderDeviceId,
+      targetDeviceId,
       inviteId: msg.inviteId || null,
       envelope: msg.envelope || null,
+      ts: Date.now()
+    });
+    return;
+  }
+  if (msg.type === 'contact-init') {
+    const targetDigest = extractPeerAccountDigest(msg);
+    if (!targetDigest) return;
+    const fromDigest = ws.__accountDigest || null;
+    if (!fromDigest) {
+      logger.warn({ event: 'ws.contact-init.missing-guest-digest' }, 'drop contact-init due to missing guest digest');
+      return;
+    }
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
+    const conversation = safeCloneObject(msg.conversation);
+    const guestBundle = safeCloneObject(msg.guestBundle);
+    if (msg.guestAccountDigest && canonicalAccountDigest(msg.guestAccountDigest) && canonicalAccountDigest(msg.guestAccountDigest) !== fromDigest) {
+      logger.warn({
+        event: 'ws.contact-init.guest-digest-mismatch',
+        fromDigest,
+        guestAccountDigest: canonicalAccountDigest(msg.guestAccountDigest)
+      }, 'drop contact-init due to guest digest mismatch');
+      return;
+    }
+    if (!senderDeviceId || !targetDeviceId || !conversation || !guestBundle) {
+      logger.warn({
+        event: 'ws.contact-init.missing-fields',
+        fromDigest,
+        targetDigest,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null,
+        hasConversation: !!conversation,
+        hasGuestBundle: !!guestBundle
+      }, 'drop contact-init due to missing fields');
+      return;
+    }
+    if (!conversation.conversation_id || !conversation.token_b64) {
+      logger.warn({
+        event: 'ws.contact-init.invalid-conversation',
+        fromDigest,
+        targetDigest,
+        conversationId: conversation.conversation_id || null
+      }, 'drop contact-init due to invalid conversation');
+      return;
+    }
+    const guestAccountDigest = canonicalAccountDigest(msg.guestAccountDigest) || fromDigest;
+    logger.info({
+      event: 'ws.contact-init.forward',
+      fromDigest,
+      targetDigest,
+      senderDeviceId,
+      targetDeviceId,
+      conversationId: conversation.conversation_id
+    }, 'forward contact-init');
+    broadcastByDigest(targetDigest, {
+      type: 'contact-init',
+      senderAccountDigest: fromDigest,
+      guestAccountDigest,
+      peerAccountDigest: guestAccountDigest,
+      peerDeviceId: senderDeviceId,
+      senderDeviceId,
+      targetDeviceId,
+      conversation,
+      guestBundle,
       ts: Date.now()
     });
     return;
@@ -429,9 +521,23 @@ function handleClientMessage(ws, data) {
     const targetDigest = extractPeerAccountDigest(msg);
     if (!targetDigest) return;
     const peerAcct = ws.__accountDigest || null;
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
+    if (!senderDeviceId || !targetDeviceId) {
+      logger.warn({
+        event: 'ws.contact-removed.missing-device',
+        fromDigest: peerAcct,
+        targetDigest,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null
+      }, 'drop contact-removed due to missing deviceId');
+      return;
+    }
     broadcastByDigest(targetDigest, {
       type: 'contact-removed',
       peerAccountDigest: peerAcct,
+      senderDeviceId,
+      targetDeviceId,
       ts: Date.now()
     });
     return;
@@ -439,14 +545,25 @@ function handleClientMessage(ws, data) {
   if (msg.type === 'message-new') {
     if (!ws.__accountDigest) return;
     const targetDigest = extractPeerAccountDigest(msg);
-    const conversationId = String(msg.conversationId || msg.conversation_id || '').trim();
+    const conversationId = String(msg.conversationId || '').trim();
     if (!targetDigest || !conversationId) return;
     const preview = typeof msg.preview === 'string' ? msg.preview : '';
     const ts = Number(msg.ts) || Date.now();
     const count = Number.isFinite(Number(msg.count)) ? Number(msg.count) : 1;
     const senderAcct = ws.__accountDigest || null;
-    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
-    const targetDeviceId = typeof msg.targetDeviceId === 'string' && msg.targetDeviceId.trim().length ? msg.targetDeviceId.trim() : null;
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
+    if (!targetDeviceId) {
+      logger.warn({
+        event: 'ws.message-new.missing-device',
+        fromDigest: senderAcct,
+        targetDigest,
+        conversationId,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null
+      }, 'drop message-new due to missing targetDeviceId');
+      return;
+    }
     broadcastByDigest(targetDigest, {
       type: 'secure-message',
       conversationId,
@@ -464,16 +581,29 @@ function handleClientMessage(ws, data) {
   if (msg.type === 'conversation-deleted') {
     if (!ws.__accountDigest) return;
     const targetDigest = extractPeerAccountDigest(msg);
-    const conversationId = String(msg.conversationId || msg.conversation_id || '').trim();
+    const conversationId = String(msg.conversationId || '').trim();
     if (!targetDigest || !conversationId) return;
     const senderAcct = ws.__accountDigest || null;
-    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
+    if (!senderDeviceId || !targetDeviceId) {
+      logger.warn({
+        event: 'ws.conversation-deleted.missing-device',
+        fromDigest: senderAcct,
+        targetDigest,
+        conversationId,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null
+      }, 'drop conversation-deleted due to missing deviceId');
+      return;
+    }
     broadcastByDigest(targetDigest, {
       type: 'conversation-deleted',
       conversationId,
       senderAccountDigest: senderAcct,
       peerAccountDigest: senderAcct,
       senderDeviceId,
+      targetDeviceId,
       ts: Date.now()
     });
     return;
@@ -481,8 +611,24 @@ function handleClientMessage(ws, data) {
   if (msg.type === 'contacts-reload') {
     const targetDigest = extractPeerAccountDigest(msg);
     if (!targetDigest) return;
-    const senderDeviceId = typeof msg.senderDeviceId === 'string' && msg.senderDeviceId.trim().length ? msg.senderDeviceId.trim() : null;
-    broadcastByDigest(targetDigest, { type: 'contacts-reload', ts: Date.now(), accountDigest: targetDigest, senderDeviceId });
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
+    if (!senderDeviceId || !targetDeviceId) {
+      logger.warn({
+        event: 'ws.contacts-reload.missing-device',
+        targetDigest,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null
+      }, 'drop contacts-reload due to missing deviceId');
+      return;
+    }
+    broadcastByDigest(targetDigest, {
+      type: 'contacts-reload',
+      ts: Date.now(),
+      accountDigest: targetDigest,
+      senderDeviceId,
+      targetDeviceId
+    });
     return;
   }
 }
@@ -533,26 +679,116 @@ export function setupWebSocket(server) {
   });
 
   manager = {
-    notifyInviteAccepted(ownerAccountDigest = null, inviteId, fromAccountDigest = null) {
-      const ownerDigest = canonicalAccountDigest(ownerAccountDigest);
-      if (!ownerDigest) return;
-      const senderDigest = canonicalAccountDigest(fromAccountDigest);
-      broadcastByDigest(ownerDigest, { type: 'invite-accepted', inviteId, fromAccountDigest: senderDigest, ts: Date.now() });
-    },
     notifyContactsReload(_unused, accountDigest = null) {
       const digest = canonicalAccountDigest(accountDigest || null);
       if (!digest) return;
       broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    sendContactShare(_unused, { fromAccountDigest, inviteId, envelope, targetAccountDigest }) {
+    notifySecureMessage({ targetAccountDigest, conversationId, preview, ts = Date.now(), senderAccountDigest, senderDeviceId, targetDeviceId }) {
+      const target = canonicalAccountDigest(targetAccountDigest);
+      const senderDev = canonicalDeviceId(senderDeviceId);
+      const targetDev = canonicalDeviceId(targetDeviceId);
+      if (!target || !conversationId) return;
+      if (!senderDev || !targetDev) {
+        logger.warn({
+          event: 'ws.notifySecureMessage.missing-device',
+          targetAccountDigest: target,
+          conversationId,
+          senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
+          senderDeviceId: senderDev || null,
+          targetDeviceId: targetDev || null
+        }, 'drop notifySecureMessage due to missing deviceId');
+        return;
+      }
+      broadcastByDigest(target, {
+        type: 'secure-message',
+        conversationId,
+        preview: preview || '',
+        ts,
+        count: 1,
+        senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
+        senderDeviceId: senderDev,
+        targetDeviceId: targetDev,
+        peerAccountDigest: canonicalAccountDigest(senderAccountDigest),
+        targetAccountDigest: target
+      });
+    },
+    notifyConversationDeleted({ targetAccountDigest, conversationId, senderAccountDigest, senderDeviceId, targetDeviceId }) {
+      const target = canonicalAccountDigest(targetAccountDigest);
+      const senderDev = canonicalDeviceId(senderDeviceId);
+      const targetDev = canonicalDeviceId(targetDeviceId);
+      if (!target || !conversationId) return;
+      if (!senderDev || !targetDev) {
+        logger.warn({
+          event: 'ws.notifyConversationDeleted.missing-device',
+          targetAccountDigest: target,
+          conversationId,
+          senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
+          senderDeviceId: senderDev || null,
+          targetDeviceId: targetDev || null
+        }, 'drop notifyConversationDeleted due to missing deviceId');
+        return;
+      }
+      broadcastByDigest(target, {
+        type: 'conversation-deleted',
+        conversationId,
+        senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
+        peerAccountDigest: canonicalAccountDigest(senderAccountDigest),
+        senderDeviceId: senderDev,
+        targetDeviceId: targetDev,
+        ts: Date.now()
+      });
+    },
+    sendContactShare(_unused, { fromAccountDigest, envelope, targetAccountDigest, senderDeviceId, targetDeviceId, conversationId = null }) {
       const digest = canonicalAccountDigest(targetAccountDigest);
-      if (!digest || !inviteId || !envelope) return;
+      const senderDev = canonicalDeviceId(senderDeviceId);
+      const targetDev = canonicalDeviceId(targetDeviceId);
+      if (!digest || !envelope) return;
+      if (!senderDev || !targetDev) {
+        logger.warn({
+          event: 'ws.sendContactShare.missing-device',
+          targetAccountDigest: digest,
+          senderAccountDigest: canonicalAccountDigest(fromAccountDigest),
+          senderDeviceId: senderDev || null,
+          targetDeviceId: targetDev || null,
+          conversationId: conversationId || null
+        }, 'drop contact-share due to missing deviceId');
+        return;
+      }
       const senderDigest = canonicalAccountDigest(fromAccountDigest);
       broadcastByDigest(digest, {
         type: 'contact-share',
         fromAccountDigest: senderDigest,
-        inviteId,
+        senderDeviceId: senderDev,
+        targetDeviceId: targetDev,
+        conversationId: conversationId || null,
         envelope,
+        ts: Date.now()
+      });
+    },
+    sendContactRemoved(_unused, { fromAccountDigest, targetAccountDigest, senderDeviceId, targetDeviceId, conversationId = null }) {
+      const digest = canonicalAccountDigest(targetAccountDigest);
+      const senderDev = canonicalDeviceId(senderDeviceId);
+      const targetDev = canonicalDeviceId(targetDeviceId);
+      if (!digest) return;
+      if (!senderDev || !targetDev) {
+        logger.warn({
+          event: 'ws.sendContactRemoved.missing-device',
+          targetAccountDigest: digest,
+          senderAccountDigest: canonicalAccountDigest(fromAccountDigest),
+          senderDeviceId: senderDev || null,
+          targetDeviceId: targetDev || null,
+          conversationId: conversationId || null
+        }, 'drop contact-removed due to missing deviceId');
+        return;
+      }
+      const senderDigest = canonicalAccountDigest(fromAccountDigest);
+      broadcastByDigest(digest, {
+        type: 'contact-removed',
+        peerAccountDigest: senderDigest,
+        senderDeviceId: senderDev,
+        targetDeviceId: targetDev,
+        conversationId: conversationId || null,
         ts: Date.now()
       });
     },

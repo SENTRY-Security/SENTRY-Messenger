@@ -14,7 +14,7 @@ const BackupRequestSchema = z.object({
   updatedAt: z.number().int().optional(),
   bytes: z.number().int().optional(),
   deviceLabel: z.string().max(120).optional(),
-  deviceId: z.string().max(120).optional(),
+  deviceId: z.string().max(120),
   reason: z.string().max(80).optional()
 }).superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
@@ -70,6 +70,10 @@ export const backupContactSecrets = async (req, res) => {
     return respondAccountError(res, err);
   }
 
+  if (!input.deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId required' });
+  }
+
   const workerPayload = {
     accountDigest: auth.accountDigest,
     payload: input.payload,
@@ -79,7 +83,7 @@ export const backupContactSecrets = async (req, res) => {
     updatedAt: input.updatedAt ?? Date.now(),
     bytes: input.bytes ?? null,
     deviceLabel: input.deviceLabel ?? null,
-    deviceId: input.deviceId ?? null,
+    deviceId: input.deviceId,
     reason: input.reason || 'auto'
   };
 

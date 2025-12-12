@@ -35,18 +35,21 @@ const CallInviteSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   capabilities: z.record(z.any()).optional(),
   metadata: z.record(z.any()).optional(),
   expiresInSeconds: z.number().int().min(30).max(600).optional(),
-  traceId: z.string().min(6).max(64).optional()
+  traceId: z.string().min(6).max(64).optional(),
+  deviceId: z.string().min(1).optional()
 }));
 
 const CallMutateSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
   reason: z.string().max(48).optional(),
-  traceId: z.string().max(64).optional()
+  traceId: z.string().max(64).optional(),
+  deviceId: z.string().min(1).optional()
 }));
 
 const CallAckSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   callId: z.string().regex(CallIdRegex),
-  traceId: z.string().max(64).optional()
+  traceId: z.string().max(64).optional(),
+  deviceId: z.string().min(1).optional()
 }));
 
 const CallMetricsSchema = withAccountAuthGuard(BaseAccountSchema.extend({
@@ -54,7 +57,8 @@ const CallMetricsSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   metrics: z.record(z.any()),
   status: z.enum(['dialing', 'ringing', 'connected', 'ended', 'failed']).optional(),
   endReason: z.string().max(48).optional(),
-  ended: z.boolean().optional()
+  ended: z.boolean().optional(),
+  deviceId: z.string().min(1).optional()
 }));
 
 const TurnCredentialSchema = withAccountAuthGuard(BaseAccountSchema.extend({
@@ -218,6 +222,10 @@ export async function inviteCall(req, res) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
   }
   const input = parsed.data;
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
   const peerDigest = normalizeAccountDigest(input.peerAccountDigest);
   if (!peerDigest) {
     return res.status(400).json({ error: 'BadRequest', message: 'peerAccountDigest required' });
@@ -237,6 +245,7 @@ export async function inviteCall(req, res) {
     callId,
     callerAccountDigest: auth.accountDigest,
     calleeAccountDigest: peerDigest,
+    callerDeviceId: senderDeviceId,
     status: 'dialing',
     mode: input.mode || 'voice',
     capabilities: input.capabilities || null,
@@ -276,6 +285,10 @@ export async function cancelCall(req, res) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
   }
   const input = parsed.data;
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
   try {
     var auth = await resolveAccountAuth({
       accountToken: input.accountToken,
@@ -291,7 +304,8 @@ export async function cancelCall(req, res) {
     endedAt: Date.now(),
     expiresAt: Date.now() + 30_000,
     metadata: {
-      cancelledBy: auth.accountDigest
+      cancelledBy: auth.accountDigest,
+      cancelledByDeviceId: senderDeviceId
     }
   };
   let workerRes;
@@ -317,6 +331,10 @@ export async function acknowledgeCall(req, res) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
   }
   const input = parsed.data;
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
   try {
     var auth = await resolveAccountAuth({
       accountToken: input.accountToken,
@@ -330,7 +348,8 @@ export async function acknowledgeCall(req, res) {
     status: 'ringing',
     expiresAt: Date.now() + 90_000,
     metadata: {
-      lastAckAccountDigest: auth.accountDigest
+      lastAckAccountDigest: auth.accountDigest,
+      lastAckDeviceId: senderDeviceId
     }
   };
   let workerRes;
@@ -356,6 +375,10 @@ export async function reportCallMetrics(req, res) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
   }
   const input = parsed.data;
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
   try {
     var auth = await resolveAccountAuth({
       accountToken: input.accountToken,
@@ -369,7 +392,8 @@ export async function reportCallMetrics(req, res) {
     metrics: input.metrics,
     status: input.status,
     endReason: input.endReason,
-    endedAt: input.ended ? Date.now() : undefined
+    endedAt: input.ended ? Date.now() : undefined,
+    senderDeviceId
   };
   let workerRes;
   try {
@@ -392,10 +416,14 @@ export async function getCallSession(req, res) {
   if (!CallIdRegex.test(callId)) {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid call id' });
   }
-  const accountToken = req.query.accountToken || req.query.account_token;
-  const accountDigest = req.query.accountDigest || req.query.account_digest;
+  const accountToken = req.get('x-account-token');
+  const accountDigest = req.get('x-account-digest');
+  const senderDeviceId = req.get('x-device-id') || null;
   if (!accountToken && !accountDigest) {
     return res.status(400).json({ error: 'BadRequest', message: 'accountToken or accountDigest required' });
+  }
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
   }
   try {
     var auth = await resolveAccountAuth({
@@ -424,10 +452,14 @@ export async function getCallSession(req, res) {
 }
 
 export async function getCallNetworkConfig(req, res) {
-  const accountToken = req.query.accountToken || req.query.account_token;
-  const accountDigest = req.query.accountDigest || req.query.account_digest;
+  const accountToken = req.get('x-account-token');
+  const accountDigest = req.get('x-account-digest');
+  const senderDeviceId = req.get('x-device-id') || null;
   if (!accountToken && !accountDigest) {
     return res.status(400).json({ error: 'BadRequest', message: 'accountToken or accountDigest required' });
+  }
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
   }
   try {
     await resolveAccountAuth({ accountToken, accountDigest });
@@ -441,6 +473,10 @@ export async function getCallNetworkConfig(req, res) {
 export async function issueTurnCredentials(req, res) {
   if (!TURN_SHARED_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'TURN_SHARED_SECRET missing' });
+  }
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
   }
   const parsed = TurnCredentialSchema.safeParse(req.body || {});
   if (!parsed.success) {

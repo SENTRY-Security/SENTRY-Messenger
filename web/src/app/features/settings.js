@@ -3,7 +3,7 @@
 
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
-import { getMkRaw, getAccountDigest, buildAccountPayload } from '../core/store.js';
+import { getMkRaw, getAccountDigest, buildAccountPayload, ensureDeviceId } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 
 const SETTINGS_INFO_TAG = 'settings/v1';
@@ -89,13 +89,21 @@ export async function saveSettings(settings) {
   const payload = { ...normalized, updatedAt: now };
 
   const envelope = await wrapWithMK_JSON(payload, mk, SETTINGS_INFO_TAG);
-  const header = { settings: 1, v: 1, ts: payload.updatedAt, envelope };
+  const header = {
+    settings: 1,
+    v: 1,
+    ts: payload.updatedAt,
+    envelope,
+    iv_b64: envelope.iv_b64
+  };
   const overrides = {
     convId,
     type: 'text',
     aead: 'aes-256-gcm',
     header,
-    ciphertext_b64: envelope?.ct_b64 || 'settings'
+    ciphertext_b64: envelope?.ct_b64 || 'settings',
+    receiverAccountDigest: (getAccountDigest() || '').toUpperCase(),
+    receiverDeviceId: ensureDeviceId()
   };
 
   const body = buildAccountPayload({ overrides });

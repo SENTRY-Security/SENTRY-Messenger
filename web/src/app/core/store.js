@@ -15,7 +15,7 @@
 // - ACCOUNT_DIGEST: hex digest identifying the account (HMAC(uid))
 // - MK_RAW: Uint8Array | null (decrypted MK, memory-only)
 // - DEVICE_PRIV: { ik_priv_b64, ik_pub_b64, spk_priv_b64, spk_pub_b64, spk_sig_b64, next_opk_id } | null
-// - DR_SESS: Map(peer_accountDigest -> DR state object)
+// - DR_SESS: Map(peer_accountDigest::peerDeviceId -> DR state object)
 // - OPAQUE_SERVER_ID: server identity string for OPAQUE handshake (optional)
 
 // --- primitives ---
@@ -29,9 +29,35 @@ let _DEVICE_ID = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
 const _DEVICE_PRIV_WAITERS = new Set();
-const _DR_SESS = new Map(); // peerKey (accountDigest) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
-const _DR_PEER_ALIASES = new Map(); // alias -> primary peerKey
+const _DR_SESS = new Map(); // peerKey (accountDigest::deviceId) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
+const _DR_PEER_ALIASES = null; // legacy unused
 let _OPAQUE_SERVER_ID = null;
+const DEVICE_ID_STORAGE_KEY = 'device_id';
+const DEVICE_COUNTER_PREFIX = 'device_counter::';
+function resetDeviceCounter(id) {
+  if (!id) return;
+  const key = `${DEVICE_COUNTER_PREFIX}${id}`;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(key, '0');
+    }
+  } catch {
+    // ignore storage errors; counter will start from 1 on next usage
+  }
+}
+
+// Restore deviceId from sessionStorage on load to survive reload
+(function restoreDeviceIdFromStorage() {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const stored = sessionStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (stored && typeof stored === 'string' && stored.trim()) {
+      _DEVICE_ID = stored.trim();
+    }
+  } catch {
+    /* ignore */
+  }
+})();
 
 function settleDevicePrivWaiter(entry, value) {
   if (!entry) return;
@@ -75,57 +101,52 @@ export function normalizePeerUid(value) {
   const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return cleaned || null;
 }
-export function normalizePeerIdentity(peer) {
-  if (peer && typeof peer === 'object') {
-    const digest = normalizeAccountDigest(peer.peerAccountDigest ?? peer.accountDigest ?? peer.peer_account_digest ?? peer.account_digest);
-    const uid = null; // UID deprecated
-    const aliases = digest ? [digest] : [];
-    return { key: digest || null, accountDigest: digest, uid, aliases };
-  }
-  const digest = normalizeAccountDigest(peer);
-  const aliases = digest ? [digest] : [];
-  return { key: digest || null, accountDigest: digest, uid: null, aliases };
+export function normalizePeerDeviceId(value) {
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
 }
-function registerDrAliases(primary, aliases = []) {
-  if (!primary) return;
-  for (const alias of aliases) {
-    if (!alias || alias === primary) continue;
-    _DR_PEER_ALIASES.set(alias, primary);
+// General deviceId normalizer（同 normalizePeerDeviceId，但供其他模組直接使用）
+export function normalizeDeviceId(value) {
+  if (!value || typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+export function normalizePeerIdentity(peer) {
+  let digest = null;
+  let deviceId = null;
+  if (typeof peer === 'string' && peer.includes('::')) {
+    const [dPart, devPart] = peer.split('::');
+    digest = normalizeAccountDigest(dPart);
+    deviceId = normalizeDeviceId(devPart);
   }
+  if (!digest && peer && typeof peer === 'object' && typeof peer.peerAccountDigest === 'string' && peer.peerAccountDigest.includes('::')) {
+    const [dPart, devPart] = peer.peerAccountDigest.split('::');
+    digest = normalizeAccountDigest(dPart);
+    deviceId = normalizeDeviceId(devPart);
+  }
+  if (!digest) {
+    digest = normalizeAccountDigest(
+      peer && typeof peer === 'object'
+        ? (peer.peerAccountDigest ?? peer.accountDigest ?? peer)
+        : peer
+    );
+  }
+  if (!deviceId) {
+    deviceId = normalizePeerDeviceId(
+      peer && typeof peer === 'object'
+        ? (peer.peerDeviceId ?? peer.deviceId ?? null)
+        : null
+    );
+  }
+  if (!digest || !deviceId) return { key: null, accountDigest: digest || null, deviceId: deviceId || null, uid: null };
+  const key = `${digest}::${deviceId}`;
+  return { key, accountDigest: digest, deviceId, uid: null };
 }
 function resolveDrKey(peerInput) {
   const identity = normalizePeerIdentity(peerInput);
-  const aliases = identity.aliases || [];
-  if (!identity.key) {
-    for (const alias of aliases) {
-      if (!alias) continue;
-      const mapped = _DR_PEER_ALIASES.get(alias);
-      if (mapped) {
-        return { key: mapped, aliases };
-      }
-    }
-    return { key: null, aliases };
-  }
-  let key = identity.key;
-  if (_DR_PEER_ALIASES.has(key)) {
-    key = _DR_PEER_ALIASES.get(key) || key;
-  }
-  if (!_DR_SESS.has(key)) {
-    for (const alias of aliases) {
-      if (!alias) continue;
-      const mapped = _DR_PEER_ALIASES.get(alias);
-      if (mapped && _DR_SESS.has(mapped)) {
-        key = mapped;
-        break;
-      }
-      if (_DR_SESS.has(alias)) {
-        key = alias;
-        break;
-      }
-    }
-  }
-  registerDrAliases(key, aliases);
-  return { key, aliases };
+  if (!identity.key) return { key: null, aliases: [] };
+  return { key: identity.key, aliases: [] };
 }
 export function setAccountDigest(v) {
   _ACCOUNT_DIGEST = normalizeAccountDigest(v);
@@ -134,10 +155,104 @@ export function setAccountDigest(v) {
 export function getDeviceId() { return _DEVICE_ID; }
 export function setDeviceId(v) {
   if (typeof v === 'string' && v.trim()) {
-    _DEVICE_ID = v.trim();
+    const nextId = v.trim();
+    const isNew = nextId !== _DEVICE_ID;
+    _DEVICE_ID = nextId;
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(DEVICE_ID_STORAGE_KEY, _DEVICE_ID);
+        if (isNew) {
+          resetDeviceCounter(_DEVICE_ID);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
   } else {
     _DEVICE_ID = null;
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem(DEVICE_ID_STORAGE_KEY);
+        resetDeviceCounter(_DEVICE_ID);
+      }
+    } catch {
+      /* ignore */
+    }
   }
+}
+export function ensureDeviceId() {
+  if (_DEVICE_ID) return _DEVICE_ID;
+  if (_DEVICE_PRIV && (typeof _DEVICE_PRIV === 'object')) {
+    const fromPriv = _DEVICE_PRIV.device_id || _DEVICE_PRIV.deviceId || null;
+    if (fromPriv && typeof fromPriv === 'string' && fromPriv.trim()) {
+      setDeviceId(fromPriv.trim());
+      return _DEVICE_ID;
+    }
+  }
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const stored = sessionStorage.getItem(DEVICE_ID_STORAGE_KEY);
+      if (stored && stored.trim()) {
+        _DEVICE_ID = stored.trim();
+        return _DEVICE_ID;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  throw new Error('deviceId missing; please re-login');
+}
+function readDeviceCounter(deviceId) {
+  const key = `${DEVICE_COUNTER_PREFIX}${deviceId}`;
+  try {
+    if (typeof sessionStorage === 'undefined') return 0;
+    const raw = sessionStorage.getItem(key);
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+function writeDeviceCounter(deviceId, value) {
+  if (!Number.isFinite(value) || value < 0) return;
+  const key = `${DEVICE_COUNTER_PREFIX}${deviceId}`;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(key, String(value));
+    }
+  } catch {
+    // ignore storage write errors; caller will surface failure via API response
+  }
+}
+export function setDeviceCounter(value) {
+  const deviceId = ensureDeviceId();
+  writeDeviceCounter(deviceId, Number(value));
+}
+/**
+ * Allocate next counter for current device, but only persist on commit().
+ * This prevents failed requests from burning counters and causing mismatch.
+ */
+export function allocateDeviceCounter() {
+  const deviceId = ensureDeviceId();
+  const last = readDeviceCounter(deviceId);
+  const next = last + 1;
+  const commit = () => {
+    // Persist only if still ahead of last known; avoid regression.
+    const current = readDeviceCounter(deviceId);
+    if (next > current) {
+      writeDeviceCounter(deviceId, next);
+    }
+  };
+  return { deviceId, counter: next, commit };
+}
+// Restore deviceId from sessionStorage if present
+try {
+  if (!_DEVICE_ID && typeof sessionStorage !== 'undefined') {
+    const stored = sessionStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (stored && stored.trim()) _DEVICE_ID = stored.trim();
+  }
+} catch {
+  /* ignore */
 }
 
 export function getMkRaw() { return _MK_RAW; }
@@ -146,6 +261,12 @@ export function setMkRaw(u8) { _MK_RAW = u8 || null; }
 export function getDevicePriv() { return _DEVICE_PRIV; }
 export function setDevicePriv(obj) {
   _DEVICE_PRIV = obj || null;
+  if (obj && typeof obj === 'object') {
+    const maybeId = obj.device_id || obj.deviceId || null;
+    if (maybeId && typeof maybeId === 'string' && maybeId.trim()) {
+      setDeviceId(maybeId.trim());
+    }
+  }
   if (_DEVICE_PRIV_WAITERS.size) {
     const current = _DEVICE_PRIV;
     for (const entry of Array.from(_DEVICE_PRIV_WAITERS)) {
@@ -203,15 +324,11 @@ export function drState(peerInput) {
 export function clearDrState(peerInput) {
   if (!peerInput) {
     _DR_SESS.clear();
-    _DR_PEER_ALIASES.clear();
     return;
   }
   const { key } = resolveDrKey(peerInput);
   if (!key) return;
   _DR_SESS.delete(key);
-  for (const [alias, primary] of Array.from(_DR_PEER_ALIASES.entries())) {
-    if (alias === key || primary === key) _DR_PEER_ALIASES.delete(alias);
-  }
 }
 
 // --- clear helpers ---
@@ -240,7 +357,6 @@ export function resetAll() {
   _MK_RAW = null;
   setDevicePriv(null);
   _DR_SESS.clear();
-  _DR_PEER_ALIASES.clear();
 }
 
 /**

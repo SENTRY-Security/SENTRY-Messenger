@@ -2,13 +2,30 @@ import { bytesToB64Url, b64UrlToBytes } from '../utils/base64.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const INFO_CONV_TOKEN = encoder.encode('sentry/conv-token');
+const INFO_CONV_TOKEN = 'sentry/conv-token';
 
-export async function deriveConversationContext(secretB64Url) {
-  const secretBytes = b64UrlToBytes(secretB64Url);
-  if (!secretBytes) throw new Error('invite secret required');
-  const baseKey = await crypto.subtle.importKey('raw', secretBytes, 'HKDF', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: INFO_CONV_TOKEN }, baseKey, 256);
+function buildInfo(deviceId = null) {
+  const dev = typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : null;
+  return encoder.encode(dev ? `${INFO_CONV_TOKEN}/${dev}` : INFO_CONV_TOKEN);
+}
+
+function normalizeKey(input) {
+  if (input instanceof Uint8Array) return input;
+  if (typeof input === 'string') {
+    const bytes = b64UrlToBytes(input);
+    if (bytes) return bytes;
+  }
+  return null;
+}
+
+export async function deriveConversationContext(secretB64UrlOrKeyBytes, opts = {}) {
+  const deviceId = opts.deviceId || opts.ownerDeviceId || opts.peerDeviceId || null;
+  const info = buildInfo(deviceId);
+  if (!deviceId) throw new Error('deviceId required for conversation context');
+  const keyBytes = normalizeKey(secretB64UrlOrKeyBytes);
+  if (!keyBytes) throw new Error('session key required for conversation context');
+  const baseKey = await crypto.subtle.importKey('raw', keyBytes, 'HKDF', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info }, baseKey, 256);
   const tokenBytes = new Uint8Array(bits);
   const tokenB64 = bytesToB64Url(tokenBytes);
   const digest = await crypto.subtle.digest('SHA-256', tokenBytes);

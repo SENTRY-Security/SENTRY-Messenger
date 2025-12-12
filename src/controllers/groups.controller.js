@@ -242,7 +242,7 @@ export const getGroup = async (req, res) => {
 
   const query = new URLSearchParams();
   query.set('groupId', groupId);
-  const accountDigest = req.query?.accountDigest || req.query?.account_digest;
+  const accountDigest = req.query?.accountDigest;
   if (!accountDigest) {
     return res.status(400).json({ error: 'BadRequest', message: 'accountDigest required' });
   }

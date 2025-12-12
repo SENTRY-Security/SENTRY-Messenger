@@ -16,7 +16,9 @@ import {
   getWrappedMK,
   setWrappedMK,
   getOpaqueServerId,
-  normalizePeerIdentity
+  normalizePeerIdentity,
+  getDeviceId,
+  ensureDeviceId
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -26,14 +28,19 @@ import {
   getContactSecretsStorageKeys,
   getContactSecretsLatestKeys,
   getContactSecretsMetaKeys,
-  getContactSecretsChecksumKeys
+  getContactSecretsChecksumKeys,
+  getLegacyContactSecretsStorageKeys,
+  getLegacyContactSecretsLatestKeys,
+  getLegacyContactSecretsMetaKeys,
+  getLegacyContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
 import { friendsDeleteContact } from '../api/friends.js';
 import { mkUpdate } from '../api/auth.js';
 import { loadContacts, saveContact } from '../features/contacts.js';
 import { ensureSettings, saveSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
-import { setupShareController } from './mobile/share-controller.js';
+// 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
+import { setupShareController } from './mobile/share-controller.js?v=0.1.10';
 import {
   sessionStore,
   resetShareState,
@@ -43,8 +50,7 @@ import {
   resetWsState,
   resetContacts,
   resetProfileState,
-  resetSettingsState,
-  resetInviteSecrets
+  resetSettingsState
 } from './mobile/session-store.js';
 import { setupModalController } from './mobile/modal-utils.js';
 import { createSwipeManager } from './mobile/swipe-utils.js';
@@ -62,7 +68,6 @@ import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../cry
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
 import { initVersionInfoButton } from './version-info.js';
-import { initRemoteConsoleRelay } from './mobile/remote-console.js';
 import {
   setCallSignalSender,
   handleCallSignalMessage,
@@ -78,12 +83,10 @@ import {
   triggerContactSecretsBackup
 } from '../features/contact-backup.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
+import { showVersionModal } from './version-info.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
 
 const MEDIA_PERMISSION_KEY = 'media-permission-v1';
-const REMOTE_CONSOLE_HANDOFF_KEY = 'remoteConsole:autoEnable';
-const REMOTE_CONSOLE_ENABLED_KEY = 'remoteConsole:enabled';
-const REMOTE_CONSOLE_ENDPOINT_KEY = 'remoteConsole:endpoint';
 const out = document.getElementById('out');
 setLogSink(out);
 try {
@@ -99,24 +102,35 @@ const BUILD_META = (() => {
   }
 })();
 
-const { showToast, hideToast } = createToastController(document.getElementById('appToast'));
-let remoteConsoleAutoEnabled = false;
-const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style || null : null;
+const MODAL_VARIANTS = [
+  'security-modal',
+  'progress-modal',
+  'folder-modal',
+  'upload-modal',
+  'loading-modal',
+  'confirm-modal',
+  'nickname-modal',
+  'avatar-modal',
+  'avatar-preview-modal',
+  'settings-modal',
+  'subscription-modal-shell',
+  'change-password-modal'
+];
 
-(function autoEnableRemoteConsoleFromHandoff() {
-  if (!consumeRemoteConsoleHandoffFlag()) return;
-  setTimeout(() => {
-    try {
-      window.RemoteConsoleRelay?.enable?.();
-      showToast?.(`已依登入頁設定啟用遠端 Console（${BUILD_META.label}）。`, { variant: 'info' });
-      log({ remoteConsoleAutoEnabled: true });
-      remoteConsoleAutoEnabled = true;
-      updateMediaPermissionDebugVisibility();
-    } catch (err) {
-      log({ remoteConsoleAutoEnableError: err?.message || err });
-    }
-  }, 250);
-})();
+const settingsInitPromise = ensureSettings()
+  .then((settings) => {
+    sessionStore.settingsState = settings;
+    return settings;
+  })
+  .catch((err) => {
+    log({ settingsInitError: err?.message || err });
+    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
+    sessionStore.settingsState = fallback;
+    return fallback;
+  });
+
+const { showToast, hideToast } = createToastController(document.getElementById('appToast'));
+const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style || null : null;
 
 const navbarEl = document.querySelector('.navbar');
 const mainContentEl = document.querySelector('main.content');
@@ -134,6 +148,7 @@ let mediaPermissionSystemGranted = false;
 let mediaPermissionActivePrompt = null;
 let mediaPermissionPollingTimer = null;
 let cachedMicrophoneStream = null;
+let backgroundLogoutTimer = null;
 const SIM_STORAGE_PREFIX = (() => {
   try { return getSimStoragePrefix(); } catch { return 'ntag424-sim:'; }
 })();
@@ -171,7 +186,7 @@ let reloadLogoutTriggered = false;
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
 const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
 const LOGOUT_REDIRECT_SUGGESTIONS = Object.freeze([
-  'https://google.com',
+  'https://sentry.red',
   'https://apple.com',
   'https://www.cloudflare.com',
   'https://www.mozilla.org',
@@ -185,39 +200,25 @@ let wsReconnectTimer = null;
 let wsAuthTokenInfo = null;
 const pendingWsMessages = [];
 let presenceManager = null;
+let wsMonitorTimer = null;
 
-const customLogoutModal = document.getElementById('customLogoutModal');
-const customLogoutBackdrop = document.getElementById('customLogoutBackdrop');
-const customLogoutCloseBtn = document.getElementById('customLogoutClose');
-const customLogoutInput = document.getElementById('customLogoutInput');
-const customLogoutSaveBtn = document.getElementById('customLogoutSave');
-const customLogoutCancelBtn = document.getElementById('customLogoutCancel');
-const customLogoutErrorEl = document.getElementById('customLogoutError');
 let customLogoutModalContext = null;
 let customLogoutInvoker = null;
-initRemoteConsoleRelay();
+let customLogoutHandlersBound = false;
+
+function getCustomLogoutElements() {
+  return {
+    modal: document.getElementById('customLogoutModal'),
+    backdrop: document.getElementById('customLogoutBackdrop'),
+    closeBtn: document.getElementById('customLogoutClose'),
+    input: document.getElementById('customLogoutInput'),
+    saveBtn: document.getElementById('customLogoutSave'),
+    cancelBtn: document.getElementById('customLogoutCancel'),
+    errorEl: document.getElementById('customLogoutError')
+  };
+}
 initContactSecretsBackup();
 observeTopbarHeight();
-
-function consumeRemoteConsoleHandoffFlag() {
-  try {
-    const flag = sessionStorage.getItem(REMOTE_CONSOLE_HANDOFF_KEY);
-    if (flag === '1') {
-      sessionStorage.removeItem(REMOTE_CONSOLE_HANDOFF_KEY);
-      return true;
-    }
-  } catch {}
-  return false;
-}
-
-function isRemoteConsoleActive() {
-  try {
-    if (remoteConsoleAutoEnabled) return true;
-    return !!window.RemoteConsoleRelay?.status?.()?.enabled;
-  } catch {
-    return remoteConsoleAutoEnabled;
-  }
-}
 
 function normalizeOverlayState() {
   const modal = document.getElementById('modal');
@@ -254,11 +255,6 @@ function observeTopbarHeight() {
   }
   window.addEventListener('resize', refreshTopbarOffset);
   window.addEventListener('orientationchange', refreshTopbarOffset);
-}
-
-function updateMediaPermissionDebugVisibility() {
-  if (!mediaPermissionDebugBtn) return;
-  mediaPermissionDebugBtn.style.display = isRemoteConsoleActive() ? 'inline-block' : 'none';
 }
 
 let pendingServerOps = 0;
@@ -670,16 +666,14 @@ async function startMediaPermissionPrompt() {
 async function verifyMediaPermissionAfterConfirm() {
   try {
     const { permState, hasLabel } = await collectMicrophonePermissionSignals();
-    if (isRemoteConsoleActive()) {
-      try {
-        const toastMessage = permState === 'granted'
-          ? '已授權麥克風權限'
-          : `權限狀態：${permState || 'unknown'} / Label: ${hasLabel ? '有' : '無'}`;
-        showToast?.(toastMessage, { variant: permState === 'granted' || hasLabel ? 'success' : 'warning' });
-        log({ mediaPermissionConfirmCheck: { perm: permState, label: hasLabel, toast: toastMessage } });
-      } catch (err) {
-        log({ mediaPermissionConfirmToastError: err?.message || err });
-      }
+    try {
+      const toastMessage = permState === 'granted'
+        ? '已授權麥克風權限'
+        : `權限狀態：${permState || 'unknown'} / Label: ${hasLabel ? '有' : '無'}`;
+      showToast?.(toastMessage, { variant: permState === 'granted' || hasLabel ? 'success' : 'warning' });
+      log({ mediaPermissionConfirmCheck: { perm: permState, label: hasLabel, toast: toastMessage } });
+    } catch (err) {
+      log({ mediaPermissionConfirmToastError: err?.message || err });
     }
     const grantedByQuery = permState === 'granted' || hasLabel;
     const fallbackUnlocked = grantedByQuery
@@ -757,10 +751,6 @@ function initMediaPermissionPrompt() {
     mediaPermissionDebugBtn.dataset.init = '1';
     mediaPermissionDebugBtn.addEventListener('click', async (event) => {
       event.preventDefault();
-      if (!isRemoteConsoleActive()) {
-        showToast?.('須啟用遠端 Console 才可查詢', { variant: 'warning' });
-        return;
-      }
       try {
         const perm = await navigator.permissions?.query?.({ name: 'microphone' }).catch(() => null);
         const devices = await navigator.mediaDevices?.enumerateDevices?.().catch(() => []);
@@ -789,7 +779,6 @@ function initMediaPermissionPrompt() {
       }
     });
   }
-  updateMediaPermissionDebugVisibility();
 }
 
 function resetMainContentScroll({ smooth = false } = {}) {
@@ -827,7 +816,7 @@ function clearLocalEncryptedCaches() {
     for (let i = 0; i < localStorage.length; i += 1) {
       const key = localStorage.key(i);
       if (!key || isSimStorageKey(key)) continue;
-      if (key?.startsWith('contactSecrets-v1-latest')) continue;
+      if (key?.startsWith('contactSecrets-v2')) continue;
       if (key.startsWith('env_v1:')) keysToRemove.push(key);
     }
     for (const key of keysToRemove) {
@@ -838,16 +827,8 @@ function clearLocalEncryptedCaches() {
   }
 }
 
-function clearRemoteConsoleConfig() {
-  try { window.RemoteConsoleRelay?.disable?.(); } catch {}
-  remoteConsoleAutoEnabled = false;
-  try { localStorage.removeItem(REMOTE_CONSOLE_ENABLED_KEY); } catch {}
-  try { localStorage.removeItem(REMOTE_CONSOLE_ENDPOINT_KEY); } catch {}
-  try { sessionStorage.removeItem(REMOTE_CONSOLE_HANDOFF_KEY); } catch {}
-}
-
 function clearSessionHandoff() {
-  const baseKeys = ['mk_b64', 'account_token', 'account_digest', 'wrapped_mk', 'wrapped_dev', 'inviteSecrets-v1', LOGOUT_MESSAGE_KEY, SESSION_LOGIN_TS_KEY];
+  const baseKeys = ['mk_b64', 'account_token', 'account_digest', 'wrapped_mk', 'wrapped_dev', LOGOUT_MESSAGE_KEY, SESSION_LOGIN_TS_KEY];
   const opts = getContactSecretKeyOptions();
   const contactKeys = mergeUniqueKeyLists(
     getContactSecretsStorageKeys(opts),
@@ -857,7 +838,15 @@ function clearSessionHandoff() {
     getContactSecretsMetaKeys(opts),
     getContactSecretsMetaKeys({}),
     getContactSecretsChecksumKeys(opts),
-    getContactSecretsChecksumKeys({})
+    getContactSecretsChecksumKeys({}),
+    getLegacyContactSecretsStorageKeys(opts),
+    getLegacyContactSecretsStorageKeys({}),
+    getLegacyContactSecretsLatestKeys(opts),
+    getLegacyContactSecretsLatestKeys({}),
+    getLegacyContactSecretsMetaKeys(opts),
+    getLegacyContactSecretsMetaKeys({}),
+    getLegacyContactSecretsChecksumKeys(opts),
+    getLegacyContactSecretsChecksumKeys({})
   );
   const keys = [...baseKeys, ...contactKeys];
   for (const key of keys) {
@@ -957,9 +946,6 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   presenceManager?.clearPresenceState?.();
 
   try { shareController?.closeShareModal?.(); } catch {}
-  try { shareController?.clearInviteSecrets?.(); } catch {}
-
-  resetInviteSecrets();
   resetShareState();
   resetDriveState();
   resetAllProcessedMessages();
@@ -970,7 +956,6 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   resetContacts();
   resetProfileState();
   resetSettingsState();
-  clearRemoteConsoleConfig();
 
   clearSessionHandoff();
   try {
@@ -979,6 +964,10 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
     const keyOptions = getContactSecretKeyOptions();
     const storageKeys = getContactSecretsStorageKeys(keyOptions);
     const latestKeys = getContactSecretsLatestKeys(keyOptions);
+    const legacyStorageKeys = getLegacyContactSecretsStorageKeys(keyOptions);
+    const legacyLatestKeys = getLegacyContactSecretsLatestKeys(keyOptions);
+    const legacyMetaKeys = getLegacyContactSecretsMetaKeys(keyOptions);
+    const legacyChecksumKeys = getLegacyContactSecretsChecksumKeys(keyOptions);
     try {
       for (const key of storageKeys) {
         const len = localStorage.getItem(key)?.length || 0;
@@ -1007,6 +996,20 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
         source = `sessionStorage:${sessionRecord.key}`;
       }
     }
+    if (!contactSecretsSnapshot) {
+      const legacyLocal = readContactSnapshot(localStorage, legacyStorageKeys);
+      const legacySession = typeof sessionStorage !== 'undefined' ? readContactSnapshot(sessionStorage, legacyStorageKeys) : null;
+      const legacyRecord = legacyLocal || legacySession;
+      if (legacyRecord?.value) {
+        contactSecretsSnapshot = legacyRecord.value;
+        source = `legacy:${legacyRecord.key}`;
+        try { writeContactSnapshot(localStorage, storageKeys, contactSecretsSnapshot); } catch {}
+        try { if (typeof sessionStorage !== 'undefined') writeContactSnapshot(sessionStorage, storageKeys, contactSecretsSnapshot); } catch {}
+        try { writeContactSnapshot(localStorage, latestKeys, contactSecretsSnapshot); } catch {}
+        removeContactKeys(localStorage, [...legacyStorageKeys, ...legacyLatestKeys, ...legacyMetaKeys, ...legacyChecksumKeys]);
+        removeContactKeys(sessionStorage, [...legacyStorageKeys, ...legacyLatestKeys, ...legacyMetaKeys, ...legacyChecksumKeys]);
+      }
+    }
     if (contactSecretsSnapshot && typeof sessionStorage !== 'undefined') {
       writeContactSnapshot(sessionStorage, storageKeys, contactSecretsSnapshot);
       let sessionBytes = null;
@@ -1017,6 +1020,15 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
         }
       } catch { sessionBytes = null; }
       writeContactSnapshot(localStorage, latestKeys, contactSecretsSnapshot);
+      try {
+        if (typeof window !== 'undefined') {
+          if (!window.__LOGIN_SEED_LOCALSTORAGE || typeof window.__LOGIN_SEED_LOCALSTORAGE !== 'object') {
+            window.__LOGIN_SEED_LOCALSTORAGE = {};
+          }
+          storageKeys.forEach((key) => { window.__LOGIN_SEED_LOCALSTORAGE[key] = contactSecretsSnapshot; });
+          latestKeys.forEach((key) => { window.__LOGIN_SEED_LOCALSTORAGE[key] = contactSecretsSnapshot; });
+        }
+      } catch {}
       const meta = persistContactSecretMetadata({ snapshot: contactSecretsSnapshot, source, keyOptions });
       log({
         contactSecretsHandoffStored: contactSecretsSnapshot.length,
@@ -1209,9 +1221,11 @@ function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
   const opts = keyOptions || getContactSecretKeyOptions();
   const metaKeys = getContactSecretsMetaKeys(opts);
   const checksumKeys = getContactSecretsChecksumKeys(opts);
+  const legacyMetaKeys = getLegacyContactSecretsMetaKeys(opts);
+  const legacyChecksumKeys = getLegacyContactSecretsChecksumKeys(opts);
   if (!snapshot || typeof snapshot !== 'string') {
-    removeContactKeys(sessionStorage, [...metaKeys, ...checksumKeys]);
-    removeContactKeys(localStorage, [...metaKeys, ...checksumKeys]);
+    removeContactKeys(sessionStorage, [...metaKeys, ...checksumKeys, ...legacyMetaKeys, ...legacyChecksumKeys]);
+    removeContactKeys(localStorage, [...metaKeys, ...checksumKeys, ...legacyMetaKeys, ...legacyChecksumKeys]);
     return null;
   }
   const summary = summarizeContactSecretsPayload(snapshot);
@@ -1223,6 +1237,8 @@ function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
   const metaJson = JSON.stringify(meta);
   writeContactSnapshot(sessionStorage, metaKeys, metaJson);
   writeContactSnapshot(localStorage, metaKeys, metaJson);
+  removeContactKeys(sessionStorage, [...legacyMetaKeys, ...legacyChecksumKeys]);
+  removeContactKeys(localStorage, [...legacyMetaKeys, ...legacyChecksumKeys]);
   try {
     window.__CONTACT_SECRETS_META__ = meta;
   } catch {}
@@ -1272,7 +1288,9 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     const missingState = [];
     for (const peerDigest of peerSet) {
       attempted += 1;
-      const state = drState(peerDigest);
+      const peerDeviceId = entry?.conversation?.peerDeviceId || null;
+      if (!peerDeviceId) throw new Error('peerDeviceId missing for contact restore');
+      const state = drState({ peerAccountDigest: peerDigest, peerDeviceId });
       if (state?.rk) {
         if (persistDrSnapshot({ peerAccountDigest: peerDigest, state })) {
           persisted += 1;
@@ -1514,9 +1532,6 @@ const userMenuVersionModalBtn = document.getElementById('userMenuVersionBtn');
 const userMenuLogoutBtn = userMenuDropdown?.querySelector('[data-action="logout"]') || null;
 const userMenuBadge = document.getElementById('userMenuBadge');
 const userAvatarWrap = document.getElementById('userAvatarWrap');
-const topbarTitleEl = document.querySelector('.topbar .title');
-const topbarRemoteConsoleMask = document.getElementById('remoteConsoleMaskApp');
-let remoteConsolePressTimer = null;
 let subscriptionCountdownTimer = null;
 let subscriptionScanner = null;
 let subscriptionScannerActive = false;
@@ -1800,7 +1815,7 @@ async function openSubscriptionModal() {
   const tabPanels = Array.from(body.querySelectorAll('.sub-tabpanel'));
   const wizardContent = document.getElementById('subscriptionWizardContent');
 
-  function switchTab(target) {
+  function subscriptionSwitchTab(target) {
     tabButtons.forEach((btn) => {
       const active = btn.dataset.tab === target;
       btn.classList.toggle('active', active);
@@ -2040,14 +2055,14 @@ function renderStatusTab() {
       renderWizard();
     });
     document.getElementById('subscriptionWizardViewStatus')?.addEventListener('click', () => {
-      switchTab('status');
+      subscriptionSwitchTab('status');
       renderStatusTab();
     });
     stopSubscriptionScanner({ destroy: true });
   }
 
   tabButtons.forEach((btn) => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    btn.addEventListener('click', () => subscriptionSwitchTab(btn.dataset.tab));
   });
 
   document.getElementById('subscriptionRefreshBtn')?.addEventListener('click', async (event) => {
@@ -2065,36 +2080,6 @@ function renderStatusTab() {
     renderStatusTab();
   });
 }
-
-function handleRemoteConsoleLongPressStart() {
-  if (remoteConsolePressTimer) return;
-  remoteConsolePressTimer = setTimeout(() => {
-    remoteConsolePressTimer = null;
-    try {
-      window.RemoteConsoleRelay?.enable?.();
-      showToast?.(`已啟用遠端 Console，記錄將上傳到 API。（${BUILD_META.label}）`, { variant: 'info' });
-      remoteConsoleAutoEnabled = true;
-      updateMediaPermissionDebugVisibility();
-    } catch (err) {
-      log({ remoteConsoleEnableError: err?.message || err });
-    }
-  }, 1500);
-}
-
-function handleRemoteConsoleLongPressEnd() {
-  if (!remoteConsolePressTimer) return;
-  clearTimeout(remoteConsolePressTimer);
-  remoteConsolePressTimer = null;
-}
-
-const consoleTriggerEl = topbarRemoteConsoleMask || topbarTitleEl;
-consoleTriggerEl?.addEventListener('pointerdown', (event) => {
-  if (event.pointerType === 'touch' || event.pointerType === 'mouse') {
-    handleRemoteConsoleLongPressStart();
-  }
-});
-consoleTriggerEl?.addEventListener('pointerup', handleRemoteConsoleLongPressEnd);
-consoleTriggerEl?.addEventListener('pointerleave', handleRemoteConsoleLongPressEnd);
 
 userMenuDropdown?.addEventListener('click', (event) => {
   event.stopPropagation();
@@ -2169,7 +2154,7 @@ const contactsRefreshLabel = contactsRefreshEl?.querySelector('.label') || null;
 const connectionIndicator = document.getElementById('connectionIndicator');
 const btnUp = document.getElementById('btnUp');
 const btnNewFolder = document.getElementById('btnNewFolder');
-const { inviteSecrets, shareState } = sessionStore;
+const { shareState } = sessionStore;
 
 const modalController = setupModalController({ shareButtonProvider: () => btnShareModal });
 const {
@@ -2287,6 +2272,10 @@ document.addEventListener('contacts:entry-updated', (event) => {
   if (typeof messagesPane.handleContactEntryUpdated === 'function') {
     messagesPane.handleContactEntryUpdated(detail);
   }
+  updateProfileStats();
+});
+document.addEventListener('contacts:removed', () => {
+  updateProfileStats();
 });
 document.addEventListener('subscription:state', () => {
   if (typeof messagesPane.updateComposerAvailability === 'function') {
@@ -2307,7 +2296,8 @@ document.addEventListener('contacts:broadcast-update', async (event) => {
   try {
     await shareController.broadcastContactUpdate({
       reason: detail?.reason || 'manual',
-      targetPeers: targets
+      targetPeers: targets,
+      overrides: detail?.overrides || null
     });
   } catch (err) {
     log({ contactBroadcastError: err?.message || err, targetPeers: targets });
@@ -2348,11 +2338,39 @@ if (typeof window !== 'undefined') {
 }
 
 async function addContactEntry(contact) {
-  const result = await addContactEntryRaw(contact);
-  messagesPane.syncConversationThreadsFromContacts();
-  messagesPane.renderConversationList();
-  messagesPane.refreshConversationPreviews({ force: true }).catch((err) => log({ conversationPreviewRefreshError: err?.message || err }));
-  return result;
+  const peerDigest =
+    contact?.peerAccountDigest ||
+    contact?.peer_account_digest ||
+    contact?.accountDigest ||
+    contact?.account_digest ||
+    contact?.peer ||
+    null;
+  console.log('[app-mobile]', {
+    contactAddWrapperStart: {
+      peerAccountDigest: peerDigest || null,
+      hasConversation: !!(contact?.conversation?.conversation_id && contact?.conversation?.token_b64),
+      hasSecret: !!contact?.contactSecret || !!contact?.contact_secret
+    }
+  });
+  try {
+    const result = await addContactEntryRaw(contact);
+    console.log('[app-mobile]', {
+      contactAddWrapperDone: {
+        peerAccountDigest: peerDigest || null,
+        msgId: result?.msgId || result?.id || null,
+        conversationId: result?.conversation?.conversation_id || null
+      }
+    });
+    messagesPane.syncConversationThreadsFromContacts();
+    messagesPane.renderConversationList();
+    messagesPane.refreshConversationPreviews({ force: true }).catch((err) =>
+      log({ conversationPreviewRefreshError: err?.message || err })
+    );
+    return result;
+  } catch (err) {
+    console.error('[app-mobile]', { contactAddWrapperError: err?.message || err, peerAccountDigest: peerDigest || null });
+    throw err;
+  }
 }
 
 function removeContactLocal(peerAccountDigest) {
@@ -2404,7 +2422,6 @@ shareController = setupShareController({
     inviteScanVideo,
     inviteScanStatus
   },
-  inviteSecrets,
   shareState,
   getProfileState: () => sessionStore.profileState,
   profileInitPromise,
@@ -2422,13 +2439,10 @@ if (typeof window !== 'undefined') {
 }
 
 const {
-  restoreInviteSecrets,
-  clearInviteSecrets,
   handleContactShareEvent,
+  handleContactInitEvent,
   closeShareModal
 } = shareController;
-
-restoreInviteSecrets();
 
 profileInitPromise
   .then(() => {
@@ -2440,18 +2454,6 @@ profileInitPromise
     }
   })
   .catch(() => {});
-
-const settingsInitPromise = ensureSettings()
-  .then((settings) => {
-    sessionStore.settingsState = settings;
-    return settings;
-  })
-  .catch((err) => {
-    log({ settingsInitError: err?.message || err });
-    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
-    sessionStore.settingsState = fallback;
-    return fallback;
-  });
 
 function getEffectiveSettingsState() {
   return { ...DEFAULT_SETTINGS, ...(sessionStore.settingsState || {}) };
@@ -2472,25 +2474,33 @@ function sanitizeLogoutRedirectUrl(value) {
 }
 
 function openCustomLogoutUrlModal({ initialValue = '', onSubmit, onCancel, invoker } = {}) {
-  if (!customLogoutModal || !customLogoutInput || !customLogoutSaveBtn) return;
+  const {
+    modal,
+    input,
+    saveBtn,
+    errorEl
+  } = getCustomLogoutElements();
+  if (!modal || !input || !saveBtn) return;
+  bindCustomLogoutHandlers();
   customLogoutModalContext = { onSubmit, onCancel };
   customLogoutInvoker = invoker || null;
-  customLogoutInput.value = initialValue || '';
-  customLogoutInput.placeholder = LOGOUT_REDIRECT_PLACEHOLDER;
-  if (customLogoutErrorEl) customLogoutErrorEl.textContent = '';
-  customLogoutSaveBtn.disabled = false;
-  customLogoutSaveBtn.textContent = '儲存';
-  customLogoutModal.style.display = 'flex';
-  customLogoutModal.setAttribute('aria-hidden', 'false');
+  input.value = initialValue || '';
+  input.placeholder = LOGOUT_REDIRECT_PLACEHOLDER;
+  if (errorEl) errorEl.textContent = '';
+  saveBtn.disabled = false;
+  saveBtn.textContent = '儲存';
+  modal.style.display = 'flex';
+  modal.setAttribute('aria-hidden', 'false');
   setTimeout(() => {
     try { customLogoutInput.focus({ preventScroll: true }); } catch { customLogoutInput.focus(); }
   }, 30);
 }
 
 function closeCustomLogoutUrlModal() {
-  if (!customLogoutModal) return;
-  customLogoutModal.style.display = 'none';
-  customLogoutModal.setAttribute('aria-hidden', 'true');
+  const { modal } = getCustomLogoutElements();
+  if (!modal) return;
+  modal.style.display = 'none';
+  modal.setAttribute('aria-hidden', 'true');
   customLogoutModalContext = null;
   const focusTarget = customLogoutInvoker;
   customLogoutInvoker = null;
@@ -2509,51 +2519,62 @@ function handleCustomLogoutCancel() {
 
 async function handleCustomLogoutSave() {
   if (!customLogoutModalContext || typeof customLogoutModalContext.onSubmit !== 'function') return;
-  if (!customLogoutInput || !customLogoutSaveBtn) return;
-  const sanitized = sanitizeLogoutRedirectUrl(customLogoutInput.value || '');
+  const { input, saveBtn, errorEl } = getCustomLogoutElements();
+  if (!input || !saveBtn) return;
+  const sanitized = sanitizeLogoutRedirectUrl(input.value || '');
   if (!sanitized) {
-    if (customLogoutErrorEl) customLogoutErrorEl.textContent = '請輸入有效的 HTTPS 網址，例如 https://example.com。';
-    customLogoutInput.focus();
+    if (errorEl) errorEl.textContent = '請輸入有效的 HTTPS 網址，例如 https://example.com。';
+    input.focus();
     return;
   }
-  if (customLogoutErrorEl) customLogoutErrorEl.textContent = '';
-  const originalLabel = customLogoutSaveBtn.textContent;
-  customLogoutSaveBtn.disabled = true;
-  customLogoutSaveBtn.textContent = '儲存中…';
+  if (errorEl) errorEl.textContent = '';
+  const originalLabel = saveBtn.textContent;
+  saveBtn.disabled = true;
+  saveBtn.textContent = '儲存中…';
   try {
     await customLogoutModalContext.onSubmit(sanitized);
     closeCustomLogoutUrlModal();
   } catch (err) {
     log({ customLogoutSaveError: err?.message || err });
     const message = err?.userMessage || err?.message || '儲存設定失敗，請稍後再試。';
-    if (customLogoutErrorEl) customLogoutErrorEl.textContent = message;
+    if (errorEl) errorEl.textContent = message;
   } finally {
-    customLogoutSaveBtn.disabled = false;
-    customLogoutSaveBtn.textContent = originalLabel;
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalLabel;
   }
 }
 
-customLogoutCancelBtn?.addEventListener('click', () => {
-  handleCustomLogoutCancel();
-});
-customLogoutCloseBtn?.addEventListener('click', () => {
-  handleCustomLogoutCancel();
-});
-customLogoutBackdrop?.addEventListener('click', () => {
-  handleCustomLogoutCancel();
-});
-customLogoutSaveBtn?.addEventListener('click', () => {
-  handleCustomLogoutSave();
-});
-customLogoutInput?.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
+function bindCustomLogoutHandlers() {
+  if (customLogoutHandlersBound) return;
+  const { cancelBtn, closeBtn, backdrop, saveBtn, input, errorEl } = getCustomLogoutElements();
+  if (!cancelBtn && !closeBtn && !backdrop && !saveBtn && !input) return;
+  cancelBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    handleCustomLogoutCancel();
+  });
+  closeBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    handleCustomLogoutCancel();
+  });
+  backdrop?.addEventListener('click', (event) => {
+    event.preventDefault();
+    handleCustomLogoutCancel();
+  });
+  saveBtn?.addEventListener('click', (event) => {
     event.preventDefault();
     handleCustomLogoutSave();
-  }
-});
-customLogoutInput?.addEventListener('input', () => {
-  if (customLogoutErrorEl) customLogoutErrorEl.textContent = '';
-});
+  });
+  input?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleCustomLogoutSave();
+    }
+  });
+  input?.addEventListener('input', () => {
+    if (errorEl) errorEl.textContent = '';
+  });
+  customLogoutHandlersBound = true;
+}
 
 function getLogoutRedirectInfo(settings = getEffectiveSettingsState()) {
   const state = settings || getEffectiveSettingsState();
@@ -2582,21 +2603,6 @@ function hideLogoutRedirectCover() {
 }
 
 hideLogoutRedirectCover();
-
-const MODAL_VARIANTS = [
-  'security-modal',
-  'progress-modal',
-  'folder-modal',
-  'upload-modal',
-  'loading-modal',
-  'confirm-modal',
-  'nickname-modal',
-  'avatar-modal',
-  'avatar-preview-modal',
-  'settings-modal',
-  'subscription-modal-shell',
-  'change-password-modal'
-];
 
 function resetModalVariants(modalElement) {
   modalElement.classList.remove(...MODAL_VARIANTS);
@@ -2738,11 +2744,12 @@ async function openSystemSettingsModal() {
   };
 
   const syncLogoutSaveButton = () => {
-    if (!customLogoutSaveBtn) return;
+    const { saveBtn } = getCustomLogoutElements();
+    if (!saveBtn) return;
     const state = getEffectiveSettingsState();
     const url = sanitizeLogoutRedirectUrl(state.autoLogoutCustomUrl);
     const enabled = !!url && state.autoLogoutRedirectMode === 'custom';
-    customLogoutSaveBtn.disabled = !enabled;
+    saveBtn.disabled = !enabled;
   };
 
   const refreshLogoutSummary = () => {
@@ -3020,14 +3027,28 @@ async function changeAccountPassword(currentPassword, newPassword) {
 }
 
 function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出') {
-  if (logoutInProgress || _autoLoggedOut) return;
+  if (logoutInProgress || _autoLoggedOut) {
+    log({ autoLogoutSkip: 'logout-in-progress', logoutInProgress, _autoLoggedOut });
+    return;
+  }
   if (isReloadNavigation()) {
     forceReloadLogout();
     return;
   }
   const settings = getEffectiveSettingsState();
-  if (!settings.autoLogoutOnBackground) return;
-  if (!getMkRaw()) return;
+  if (!settings.autoLogoutOnBackground) {
+    log({ autoLogoutSkip: 'setting-disabled' });
+    return;
+  }
+  if (!getMkRaw()) {
+    log({ autoLogoutSkip: 'missing-mk' });
+    return;
+  }
+  log({
+    autoLogoutBackgroundTriggered: true,
+    reason,
+    visibility: typeof document !== 'undefined' ? document.visibilityState : null
+  });
   secureLogout(reason, { auto: true });
 }
 
@@ -3044,14 +3065,25 @@ loadInitialContacts()
 
 function updateProfileStats() {
   const contacts = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
-  const count = contacts.filter((entry) => entry && entry.hidden !== true && entry.isSelfContact !== true).length;
+  const uniq = new Set();
+  for (const entry of contacts) {
+    if (!entry || entry.hidden === true || entry.isSelfContact === true) continue;
+    const id = normalizePeerIdentity(entry.peerAccountDigest ?? entry.accountDigest ?? entry)?.accountDigest || null;
+    if (id) uniq.add(id);
+  }
+  const count = uniq.size;
   if (statContactsEl) statContactsEl.textContent = String(count);
   if (contactsCountEl) contactsCountEl.textContent = String(count);
 }
 
 function ensureWebSocket() {
   if (wsConn || wsReconnectTimer) return;
-  if (!getAccountDigest()) return;
+  const digest = getAccountDigest();
+  if (!digest) {
+    log({ wsSkip: 'missing_account_digest' });
+    return;
+  }
+  log({ wsEnsure: true, state: wsConn?.readyState ?? 'none' });
   connectWebSocket().catch((err) => {
     log({ wsConnectError: err?.message || err });
   });
@@ -3059,8 +3091,16 @@ function ensureWebSocket() {
 
 function resolveWsPeer(msg = {}) {
   return normalizePeerIdentity({
-    peerAccountDigest: msg.peerAccountDigest || msg.peer_account_digest || msg.accountDigest || msg.account_digest || msg.fromAccountDigest || msg.from_account_digest || null
+    peerAccountDigest: msg.peerAccountDigest || msg.fromAccountDigest || null
   });
+}
+
+function isTargetingThisDevice(msg = {}) {
+  const targetDeviceId = msg.targetDeviceId || null;
+  if (!targetDeviceId) return true;
+  const selfDeviceId = typeof getDeviceId === 'function' ? (getDeviceId() || ensureDeviceId()) : null;
+  if (!selfDeviceId) return false;
+  return String(targetDeviceId).trim() === String(selfDeviceId).trim();
 }
 
 function scheduleWsReconnect(delay = 2000) {
@@ -3101,6 +3141,7 @@ async function getWsAuthToken({ force = false } = {}) {
 async function connectWebSocket() {
   const accountDigest = getAccountDigest();
   if (!accountDigest) return;
+  log({ wsConnectStart: true, accountDigest });
   let tokenInfo;
   try {
     tokenInfo = await getWsAuthToken();
@@ -3134,7 +3175,9 @@ async function connectWebSocket() {
   }
   if (!baseHost) baseHost = location.host;
   if (!path.startsWith('/')) path = `/${path}`;
-  const ws = new WebSocket(`${proto}//${baseHost}${path}`);
+  const wsUrl = `${proto}//${baseHost}${path}`;
+  log({ wsConnectUrl: wsUrl });
+  const ws = new WebSocket(wsUrl);
   wsConn = ws;
   updateConnectionIndicator('connecting');
   ws.onopen = () => {
@@ -3204,6 +3247,14 @@ function wsSend(payload) {
 messagesPane.setWsSend(wsSend);
 shareController?.setWsSend?.(wsSend);
 setCallSignalSender(wsSend);
+if (!wsMonitorTimer) {
+  wsMonitorTimer = setInterval(() => {
+    if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+      log({ wsMonitorReconnect: true, readyState: wsConn?.readyState ?? null });
+      ensureWebSocket();
+    }
+  }, 5000);
+}
 
 function updateConnectionIndicator(state) {
   if (!connectionIndicator) return;
@@ -3242,13 +3293,8 @@ function handleWebSocketMessage(msg) {
   if (handleCallSignalMessage(msg) || handleCallAuxMessage(msg)) {
     return;
   }
-  if (type === 'invite-accepted') {
-    if (msg?.inviteId && msg?.fromUid) {
-      log({ inviteAcceptedEvent: msg });
-    }
-    return;
-  }
   if (type === 'contact-removed') {
+    if (!isTargetingThisDevice(msg)) return;
     const identity = resolveWsPeer(msg);
     const peerAccountDigest = identity.key;
     if (peerAccountDigest) {
@@ -3261,10 +3307,25 @@ function handleWebSocketMessage(msg) {
     return;
   }
   if (type === 'contact-share') {
+    if (!isTargetingThisDevice(msg)) return;
+    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
+      log({ contactShareMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
+      return;
+    }
     handleContactShareEvent(msg).catch((err) => log({ contactShareError: err?.message || err }));
     return;
   }
+  if (type === 'contact-init') {
+    if (!isTargetingThisDevice(msg)) return;
+    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
+      log({ contactInitMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
+      return;
+    }
+    handleContactInitEvent(msg).catch((err) => log({ contactInitError: err?.message || err }));
+    return;
+  }
   if (type === 'contacts-reload') {
+    if (!isTargetingThisDevice(msg)) return;
     loadInitialContacts().catch((err) => log({ contactsInitError: err?.message || err }));
     return;
   }
@@ -3283,7 +3344,21 @@ function handleWebSocketMessage(msg) {
     presenceManager.setContactPresence(identity, !!msg?.online);
     return;
   }
+  if (type === 'conversation-deleted') {
+    if (!isTargetingThisDevice(msg)) return;
+    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
+      log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
+      return;
+    }
+    messagesPane.handleIncomingSecureMessage(msg);
+    return;
+  }
   if (type === 'secure-message' || type === 'message-new') {
+    if (!isTargetingThisDevice(msg)) return;
+    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
+      log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
+      return;
+    }
     messagesPane.handleIncomingSecureMessage(msg);
     return;
   }
@@ -3303,8 +3378,47 @@ function handleWebSocketMessage(msg) {
 })();
 
 if (typeof document !== 'undefined') {
+  // 透過 DR secure-message 傳遞的 contact-share（由 features/messages 解密後發出事件）
+  document.addEventListener('contact-share', (ev) => {
+    try {
+      const detail = ev?.detail || {};
+      const msg = detail.message || {};
+      const cs = msg?.contactShare || {};
+      const header = msg?.header || {};
+      const peerAccountDigest = detail?.peerAccountDigest || header?.peerAccountDigest || header?.accountDigest || null;
+      const peerDeviceId = header?.peerDeviceId
+        || header?.meta?.peerDeviceId
+        || header?.meta?.targetDeviceId
+        || header?.meta?.receiverDeviceId
+        || msg?.peerDeviceId
+        || null;
+      const envelope = cs?.envelope || null;
+      if (!peerAccountDigest || !peerDeviceId || !envelope?.iv || !envelope?.ct) {
+        log({ contactShareMissingFields: true, peerAccountDigest, peerDeviceId, hasEnvelope: !!envelope });
+        return;
+      }
+      handleContactShareEvent({
+        peerAccountDigest,
+        peerDeviceId,
+        envelope
+      }).catch((err) => log({ contactShareError: err?.message || err }));
+    } catch (err) {
+      log({ contactShareHandlerError: err?.message || err });
+    }
+  });
+
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) handleBackgroundAutoLogout();
+    if (backgroundLogoutTimer) {
+      clearTimeout(backgroundLogoutTimer);
+      backgroundLogoutTimer = null;
+    }
+    log({ autoLogoutVisibilityChange: document.visibilityState });
+    if (document.hidden) {
+      backgroundLogoutTimer = setTimeout(() => {
+        backgroundLogoutTimer = null;
+        handleBackgroundAutoLogout();
+      }, 500);
+    }
   });
 }
 
@@ -3317,8 +3431,19 @@ if (typeof window !== 'undefined') {
       return;
     }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-      handleBackgroundAutoLogout();
+      if (backgroundLogoutTimer) {
+        clearTimeout(backgroundLogoutTimer);
+        backgroundLogoutTimer = null;
+      }
+      backgroundLogoutTimer = setTimeout(() => {
+        backgroundLogoutTimer = null;
+        handleBackgroundAutoLogout();
+      }, 0);
     }
+  });
+  window.addEventListener('blur', () => {
+    // 僅在 visibilityState === hidden 時才自動登出；單純 blur 不觸發
+    log({ autoLogoutSkip: 'blur-ignored' });
   });
   window.addEventListener('beforeunload', () => {
     disposeCallMediaSession();

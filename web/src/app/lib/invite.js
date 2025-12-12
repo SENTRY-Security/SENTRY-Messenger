@@ -1,125 +1,89 @@
-// Friend invite helpers: encode to URI string and decode from string/object.
+// Friend invite helpers: encode/decode strict v2 payloads (no legacy fallback).
 
-/**
- * Encode invite information into a `sentry://invite` URI.
- * @param {{ inviteId: string, secret: string }} invite
- * @returns {string}
- */
 export function encodeFriendInvite(invite = {}) {
-  const id = String(invite.inviteId || '').trim();
+  const inviteId = String(invite.inviteId || '').trim();
   const secret = String(invite.secret || '').trim();
-  if (!id || !secret) return '';
-  const payload = { inviteId: id, secret };
-  if (invite.ownerAccountDigest || invite.owner_account_digest) {
-    payload.ownerAccountDigest = String(invite.ownerAccountDigest || invite.owner_account_digest || '').trim();
+  if (!inviteId || !secret) return '';
+  const payload = {
+    inviteId,
+    secret,
+    version: 2
+  };
+  if (invite.ownerAccountDigest) {
+    payload.ownerAccountDigest = String(invite.ownerAccountDigest || '').trim();
   }
+  if (invite.ownerDeviceId) {
+    payload.ownerDeviceId = String(invite.ownerDeviceId || '').trim();
+  }
+  if (invite.code) payload.code = String(invite.code || '').trim();
   if (invite.prekeyBundle) payload.prekeyBundle = invite.prekeyBundle;
   if (invite.expiresAt) payload.expiresAt = Number(invite.expiresAt);
-  try {
-    const json = JSON.stringify(payload);
-    return base64UrlEncode(json);
-  } catch {
-    return `sentry://invite?id=${encodeURIComponent(id)}&secret=${encodeURIComponent(secret)}`;
-  }
+  const json = JSON.stringify(payload);
+  return base64UrlEncode(json);
 }
 
-/**
- * Try to decode an invite string/URI/JSON blob back into invite fields.
- * Returns null if parsing fails or required fields missing.
- * @param {string | URL | { inviteId?: string, secret?: string }} input
- * @returns {{ inviteId: string, secret: string } | null}
- */
 export function decodeFriendInvite(input) {
   if (!input && input !== '') return null;
 
-  if (typeof input === 'object' && !(input instanceof URL)) {
-    const inviteId = String(input.inviteId || input.id || '').trim();
-    const secret = String(input.secret || input.sig || '').trim();
+  const normalize = (obj) => {
+    if (!obj || typeof obj !== 'object') return null;
+    const inviteId = String(obj.inviteId || obj.id || '').trim();
+    const secret = String(obj.secret || '').trim();
     if (!inviteId || !secret) return null;
-    const result = { inviteId, secret };
-    if (input.ownerAccountDigest || input.owner_account_digest) {
-      const owner = String(input.ownerAccountDigest || input.owner_account_digest || '').trim();
+    const versionVal = Number.isFinite(Number(obj.version)) ? Number(obj.version) : 2;
+    if (versionVal !== 2) return null;
+    const result = { inviteId, secret, version: versionVal };
+    if (obj.ownerAccountDigest) {
+      const owner = String(obj.ownerAccountDigest || '').trim();
       if (owner) result.ownerAccountDigest = owner;
     }
-    if (input.prekeyBundle || input.prekey_bundle) {
-      result.prekeyBundle = input.prekeyBundle || input.prekey_bundle;
+    if (obj.ownerDeviceId) {
+      const dev = String(obj.ownerDeviceId || '').trim();
+      if (dev) result.ownerDeviceId = dev;
     }
-    if (input.expiresAt || input.expires_at) {
-      const ts = Number(input.expiresAt ?? input.expires_at);
+    if (obj.prekeyBundle) result.prekeyBundle = obj.prekeyBundle;
+    if (obj.expiresAt) {
+      const ts = Number(obj.expiresAt);
       if (Number.isFinite(ts)) result.expiresAt = ts;
     }
+    if (obj.code) {
+      result.code = String(obj.code || '').trim();
+    }
     return result;
+  };
+
+  if (typeof input === 'object') {
+    return normalize(input);
   }
 
-  let raw = '';
-  if (input instanceof URL) {
-    raw = input.toString();
-  } else {
-    raw = String(input || '').trim();
-  }
+  const raw = String(input || '').trim();
   if (!raw) return null;
 
-  const compact = decodeCompact(raw);
-  if (compact) return compact;
-
-  // Attempt JSON first.
-  if (raw.startsWith('{') || raw.startsWith('[')) {
+  const parseJson = (str) => {
     try {
-      const obj = JSON.parse(raw);
-      return decodeFriendInvite(obj);
-    } catch {/* ignore */}
+      const obj = JSON.parse(str);
+      return normalize(obj);
+    } catch {
+      return null;
+    }
+  };
+
+  if (raw.startsWith('{')) {
+    const parsed = parseJson(raw);
+    if (parsed) return parsed;
   }
 
-  // Try base64-encoded JSON (URL-safe allowed)
   try {
-    const normalized = raw.replace(/[-_]/g, (c) => (c === '-' ? '+' : '/'));
-    if (/^[A-Za-z0-9+/=]+$/.test(normalized)) {
-      const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
-      if (!padded || padded.length % 4 !== 0) throw new Error('invalid b64 padding');
-      const json = decodeBase64(padded);
-      const parsed = JSON.parse(json);
-      const res = decodeFriendInvite(parsed);
-      if (res) return res;
-    }
-  } catch {/* ignore */}
-
-  // Finally, parse as URI / URL-like string.
-  const parsedUrl = tryParseUrl(raw);
-  if (!parsedUrl) return null;
-
-  const inviteId = parsedUrl.searchParams.get('inviteId') || parsedUrl.searchParams.get('id') || '';
-  const secret = parsedUrl.searchParams.get('secret') || parsedUrl.searchParams.get('sig') || '';
-  if (inviteId && secret) {
-    const result = { inviteId, secret };
-    const ownerDigest =
-      parsedUrl.searchParams.get('ownerAccountDigest')
-      || parsedUrl.searchParams.get('owner_account_digest')
-      || '';
-    if (ownerDigest) result.ownerAccountDigest = ownerDigest.trim();
-    return result;
+    const normalized = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+    const json = decodeBase64(padded);
+    const parsed = parseJson(json);
+    if (parsed) return parsed;
+  } catch {
+    /* ignore */
   }
 
   return null;
-}
-
-function tryParseUrl(raw) {
-  try {
-    if (/^[a-z][a-z0-9+.-]*:/.test(raw)) return new URL(raw);
-    return new URL(raw, 'https://dummy.invalid');
-  } catch {
-    return null;
-  }
-}
-
-function decodeCompact(str) {
-  if (!str || str.length < 2) return null;
-  if (str[0] !== 'F') return null;
-  const payload = str.slice(1);
-  if (payload.length < 48) return null;
-  const inviteId = payload.slice(0, 16);
-  const secret = payload.slice(16, 16 + 32);
-  if (inviteId.length !== 16 || secret.length !== 32) return null;
-  return { inviteId, secret };
 }
 
 function decodeBase64(str) {

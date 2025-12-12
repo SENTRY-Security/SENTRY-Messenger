@@ -1,9 +1,24 @@
+/**
+ * SECURITY POLICY – STRICT CRYPTO PROTOCOL, NO FALLBACK ALLOWED.
+ *
+ * 本檔案中的所有密碼協定（X3DH、Double Ratchet、AEAD、鍵派生、counter 驗證、header 驗證）
+ * 禁止設計、加入或推論任何 fallback、retry、rollback、resync、auto-repair 等邏輯。
+ *
+ * 規則如下：
+ * 1. 若解密失敗 → 一律直接 fail，不可嘗試第二組 key 或舊 ratchet state。
+ * 2. 若 counter 不一致 → 一律直接拒絕，不可重送、補拉或自動對齊。
+ * 3. 不允許任何協定降級（downgrade）。不得用舊版本、舊頭資訊、舊密鑰重試。
+ * 4. 不允許模糊錯誤處理。不做 try-catch fallback，不做 silent recovery。
+ * 5. 對話重置必須是顯式事件，不得隱式重建 state。
+ *
+ * 一切協定邏輯必須「單一路徑」且「強一致性」，任何 fallback 視為安全漏洞。
+ */
 
 // /app/features/messages.js
 // Feature: list conversation messages and decrypt DR packets using secure conversation tokens.
 
 import { listSecureMessages as apiListSecureMessages } from '../api/messages.js';
-import { drDecryptText as cryptoDrDecryptText } from '../crypto/dr.js';
+import { drDecryptText as cryptoDrDecryptText, buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
 import {
   drState as storeDrState,
   getAccountDigest as storeGetAccountDigest,
@@ -12,12 +27,7 @@ import {
 } from '../core/store.js';
 import {
   persistDrSnapshot as sessionPersistDrSnapshot,
-  recoverDrState as sessionRecoverDrState,
-  prepareDrForMessage as sessionPrepareDrForMessage,
-  recordDrMessageHistory as sessionRecordDrMessageHistory,
   snapshotDrState as sessionSnapshotDrState,
-  restoreDrStateFromSnapshot as sessionRestoreDrStateFromSnapshot,
-  restoreDrStateToHistoryPoint as sessionRestoreDrStateToHistoryPoint,
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
@@ -26,7 +36,6 @@ import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 import {
   ensureSecureConversationReady as managerEnsureSecureConversationReady,
-  ensureDrReceiverState as managerEnsureDrReceiverState
 } from './secure-conversation-manager.js';
 import {
   describeCallLogForViewer,
@@ -40,21 +49,16 @@ import { enqueueReceiptJob } from './queue/receipts.js';
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
   drDecryptText: cryptoDrDecryptText,
+  buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
   drState: storeDrState,
   getAccountDigest: storeGetAccountDigest,
   persistDrSnapshot: sessionPersistDrSnapshot,
-  recoverDrState: sessionRecoverDrState,
-  prepareDrForMessage: sessionPrepareDrForMessage,
-  recordDrMessageHistory: sessionRecordDrMessageHistory,
   snapshotDrState: sessionSnapshotDrState,
-  restoreDrStateFromSnapshot: sessionRestoreDrStateFromSnapshot,
-  restoreDrStateToHistoryPoint: sessionRestoreDrStateToHistoryPoint,
   cloneDrStateHolder: sessionCloneDrStateHolder,
   b64UrlToBytes: uiB64UrlToBytes,
   b64u8: naclB64u8,
   saveEnvelopeMeta: mediaSaveEnvelopeMeta,
   ensureSecureConversationReady: managerEnsureSecureConversationReady,
-  ensureDrReceiverState: managerEnsureDrReceiverState,
   clearDrState: storeClearDrState,
   sendReadReceipt: featureSendDrReadReceipt,
   sendDeliveryReceipt: featureSendDrDeliveryReceipt
@@ -72,9 +76,13 @@ export function __resetMessagesTestOverrides() {
 
 const decoder = new TextDecoder();
 const secureFetchBackoff = new Map();
+const secureFetchLocks = new Set(); // conversationId in-flight
+const tombstonedConversations = new Set(); // legacy; kept for compatibility
+const conversationClearAfter = new Map(); // conversationId -> unix ts to ignore older messages
 const processedMessageCache = new Map(); // conversationId -> Set(messageId)
 const PROCESSED_CACHE_MAX_PER_CONV = 500;
 const PROCESSED_CACHE_MAX_CONVS = 50;
+const drFailureCounter = new Map(); // `${conversationId}::${peerKey}` -> count
 // receiptStore: conversationId -> Map(messageId -> { read:boolean, ts:number|null })
 const receiptStore = new Map();
 const sentReadReceipts = new Set(); // `${conversationId}:${messageId}`
@@ -84,7 +92,48 @@ let receiptsLoaded = false;
 const deliveredStore = new Map();
 const sentDeliveryReceipts = new Set(); // `${conversationId}:${messageId}`
 let deliveredLoaded = false;
-const drRecoveryCounts = new Map(); // conversationId -> retry counter for force reset
+
+export function markConversationTombstone(conversationId) {
+  if (!conversationId) return;
+  const key = String(conversationId);
+  tombstonedConversations.add(key);
+  secureFetchLocks.delete(key);
+  secureFetchBackoff.delete(key);
+  processedMessageCache.delete(key);
+  receiptStore.delete(key);
+  deliveredStore.delete(key);
+  drFailureCounter.delete(key);
+}
+
+export function isConversationTombstoned(conversationId) {
+  if (!conversationId) return false;
+  return tombstonedConversations.has(String(conversationId));
+}
+
+export function clearConversationTombstone(conversationId) {
+  if (!conversationId) return;
+  tombstonedConversations.delete(String(conversationId));
+}
+
+export function clearConversationHistory(conversationId, ts = null) {
+  if (!conversationId) return;
+  const key = String(conversationId);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const stamp = Number.isFinite(Number(ts)) ? Number(ts) : nowSec;
+  conversationClearAfter.set(key, stamp);
+  secureFetchLocks.delete(key);
+  secureFetchBackoff.delete(key);
+  processedMessageCache.delete(key);
+  receiptStore.delete(key);
+  deliveredStore.delete(key);
+  drFailureCounter.delete(key);
+}
+
+export function getConversationClearAfter(conversationId) {
+  if (!conversationId) return null;
+  const ts = conversationClearAfter.get(String(conversationId));
+  return Number.isFinite(ts) ? ts : null;
+}
 
 function getReceiptStorageKey() {
   try {
@@ -301,13 +350,15 @@ function urlB64ToStd(b64url) {
   return s;
 }
 
-async function decryptWithMessageKey({ messageKeyB64, ivB64, ciphertextB64 }) {
+async function decryptWithMessageKey({ messageKeyB64, ivB64, ciphertextB64, header }) {
   if (!messageKeyB64) throw new Error('message key missing');
   const keyU8 = deps.b64u8(messageKeyB64);
   const ivU8 = deps.b64u8(ivB64);
   const ctU8 = deps.b64u8(ciphertextB64);
   const key = await crypto.subtle.importKey('raw', keyU8, 'AES-GCM', false, ['decrypt']);
-  const ptBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivU8 }, key, ctU8);
+  const aad = header && deps.buildDrAadFromHeader ? deps.buildDrAadFromHeader(header) : null;
+  const decryptParams = aad ? { name: 'AES-GCM', iv: ivU8, additionalData: aad } : { name: 'AES-GCM', iv: ivU8 };
+  const ptBuf = await crypto.subtle.decrypt(decryptParams, key, ctU8);
   return decoder.decode(ptBuf);
 }
 
@@ -390,7 +441,7 @@ function parseMediaMessage({ plaintext, meta }) {
       height: Number.isFinite(previewHeight) ? previewHeight : null
     } : null,
     dir,
-    senderDigest: (typeof meta?.sender_digest === 'string' && meta.sender_digest.trim()) ? meta.sender_digest.trim() : null
+    senderDigest: (typeof meta?.senderDigest === 'string' && meta.senderDigest.trim()) ? meta.senderDigest.trim() : null
   };
 
   if (parsed?.sha256) mediaInfo.sha256 = parsed.sha256;
@@ -399,6 +450,29 @@ function parseMediaMessage({ plaintext, meta }) {
   if (previewSource?.localUrl) mediaInfo.previewUrl = mediaInfo.previewUrl || previewSource.localUrl;
 
   return mediaInfo;
+}
+
+function parseContactShareMessage(plaintext) {
+  if (!plaintext) return null;
+  let parsed = null;
+  if (typeof plaintext === 'string') {
+    try {
+      parsed = JSON.parse(plaintext);
+    } catch {
+      parsed = null;
+    }
+  } else if (typeof plaintext === 'object') {
+    parsed = plaintext;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  if ((parsed.type && String(parsed.type).toLowerCase() !== 'contact-share')) return null;
+  const payload = parsed.payload || parsed.data || null;
+  const envelope = parsed.envelope || null;
+  return {
+    envelope: envelope && envelope.iv && envelope.ct ? envelope : null,
+    contactPayload: payload || null,
+    conversation: parsed.conversation || null
+  };
 }
 
 function isControlMessageObject(obj) {
@@ -501,88 +575,12 @@ function recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, toke
   } catch {}
 }
 
-async function recoverAndEnsureDrState({
-  conversationId,
-  peerAccountDigest,
-  tokenB64 = null,
-  packet = null,
-  raw = null,
-  reason = 'dr-recover',
-  recordPayloadOnFail = false
-} = {}) {
-  if (!peerAccountDigest) return false;
-  const debug = isDrDebugEnabled();
-  try {
-    await deps.recoverDrState({ peerAccountDigest, force: true });
-  } catch (err) {
-    if (debug) console.warn('[messages] recoverDrState failed', err);
-  }
-  try {
-    await deps.ensureDrReceiverState({
-      peerAccountDigest,
-      force: true,
-      reason
-    });
-  } catch (err) {
-    if (debug) console.warn('[messages] ensureDrReceiverState failed', err);
-  }
-  let ready = false;
-  try {
-    const holder = deps.drState(peerAccountDigest);
-    ready = hasUsableDrState(holder);
-  } catch {}
-  if (!ready && recordPayloadOnFail) {
-    recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, tokenB64, packet, raw, reason });
-  }
-  return ready;
-}
-
-async function attemptDrRecovery({
-  peerAccountDigest,
-  conversationId = null,
-  tokenB64 = null,
-  packet = null,
-  raw = null,
-  reason = 'decrypt-recover',
-  recordPayloadOnFail = false
-} = {}) {
-  if (!peerAccountDigest) return false;
-  try {
-    return await recoverAndEnsureDrState({
-      conversationId,
-      peerAccountDigest,
-      tokenB64,
-      packet,
-      raw,
-      reason,
-      recordPayloadOnFail
-    });
-  } catch {
-    return false;
-  }
-}
-
-async function forceResetDrAndReplay({ conversationId, peerAccountDigest }) {
-  if (!conversationId || !peerAccountDigest) return false;
-  const count = (drRecoveryCounts.get(conversationId) || 0) + 1;
-  drRecoveryCounts.set(conversationId, count);
-  if (count > 2) return false; // 避免無限重置
-  try { deps.clearDrState?.(peerAccountDigest); } catch {}
-  try { resetProcessedMessages(conversationId); } catch {}
-  try {
-    await deps.ensureDrReceiverState?.({ peerAccountDigest, force: true, reason: 'dr-op-error-reset' });
-  } catch (err) {
-    if (isDrDebugEnabled()) console.warn('[messages] force reset ensure receiver failed', err);
-  }
-  return true;
-}
-
 function buildMessageObject({ plaintext, payload, header, raw, direction, ts, messageId, messageKeyB64 }) {
   const meta = payload?.meta || null;
   const baseId = messageId || toMessageId(raw) || null;
   const timestamp = Number.isFinite(ts) ? ts : null;
   const msgType = typeof meta?.msg_type === 'string' ? meta.msg_type : null;
-  const targetMessageId = meta?.target_message_id || meta?.targetMessageId || (() => {
+  const targetMessageId = meta?.targetMessageId || (() => {
     if (typeof plaintext === 'string') {
       try {
         const parsed = JSON.parse(plaintext);
@@ -644,6 +642,10 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
     base.type = CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT;
     base.text = '';
     if (targetMessageId) base.targetMessageId = targetMessageId;
+  } else if (msgType === 'contact-share') {
+    base.type = 'contact-share';
+    base.text = '';
+    base.contactShare = parseContactShareMessage(plaintext);
   } else {
     base.type = 'text';
     base.text = typeof base.text === 'string' ? base.text : '';
@@ -670,11 +672,38 @@ export async function listSecureAndDecrypt(params = {}) {
     sendReadReceipt = true
   } = params;
   if (!conversationId) throw new Error('conversationId required');
+  if (tombstonedConversations.has(String(conversationId))) {
+    return {
+      items: [],
+      nextCursorTs: null,
+      nextCursor: null,
+      hasMoreAtCursor: false,
+      errors: ['此對話已被刪除，請重新建立安全對話。'],
+      deadLetters: [],
+      receiptUpdates: []
+    };
+  }
   const identity = storeNormalizePeerIdentity({ peerAccountDigest });
   const peerKey = identity.key;
-  if (!peerKey) throw new Error('peer identity required');
+  const peerDeviceId = identity.deviceId || null;
+  if (!peerKey || !peerDeviceId) throw new Error('peer identity required (digest + deviceId)');
+  const clearAfter = getConversationClearAfter(conversationId);
+  if (secureFetchLocks.has(conversationId)) {
+    return {
+      items: [],
+      nextCursorTs: null,
+      errors: ['同步進行中，請稍後再試'],
+      receiptUpdates: [],
+      deadLetters: [],
+      hasMoreAtCursor: false,
+      serverItemCount: 0
+    };
+  }
+  secureFetchLocks.add(conversationId);
+  try {
   const peerRef = {
-    peerAccountDigest: identity.accountDigest || peerKey
+    peerAccountDigest: identity.accountDigest || peerKey,
+    peerDeviceId
   };
 
   const now = Date.now();
@@ -687,7 +716,7 @@ export async function listSecureAndDecrypt(params = {}) {
     };
   }
 
-  const { r, data } = await deps.listSecureMessages({ conversationId, limit, cursorTs, cursorId });
+    const { r, data } = await deps.listSecureMessages({ conversationId, limit, cursorTs, cursorId });
   const out = [];
   const errs = [];
   const receiptUpdates = new Set();
@@ -761,64 +790,31 @@ export async function listSecureAndDecrypt(params = {}) {
   }
   const selfDigest = (deps.getAccountDigest && deps.getAccountDigest()) ? String(deps.getAccountDigest()).toUpperCase() : null;
 
-  const sortedItems = sortMessagesByTimeline(items);
+  // 依 clearAfter 過濾舊訊息
+  let filteredItems = sortMessagesByTimeline(items);
+  if (Number.isFinite(clearAfter)) {
+    filteredItems = filteredItems.filter((it) => {
+      const ts = toMessageTimestamp(it);
+      return !Number.isFinite(ts) || ts >= clearAfter;
+    });
+  }
+  const sortedItems = filteredItems;
   const shouldTrackState = mutateState !== false;
-  const allowCursorReplay = !!allowReplay || !shouldTrackState;
   const baseState = deps.drState(peerRef);
+  const preSnapshot = shouldTrackState ? deps.snapshotDrState(baseState, { setDefaultUpdatedAt: false, forceNow: true }) : null;
   state = shouldTrackState ? baseState : deps.cloneDrStateHolder(baseState);
-  const refreshLiveState = (trackState = shouldTrackState, persist = true) => {
-    const latest = deps.drState(peerKey);
-    const snapshot = trackState ? latest : deps.cloneDrStateHolder(latest);
-    if (persist) {
-      state = snapshot;
+  const ensureReceiverStateReady = () => {
+    const current = shouldTrackState ? state : deps.cloneDrStateHolder(state);
+    if (!hasUsableDrState(current)) {
+      throw new Error('DR state unavailable for conversation');
     }
-    return snapshot;
+    return current;
   };
-  const ensureReceiverStateReady = async ({
-    force = false,
-    source = 'decrypt-precheck',
-    trackState = shouldTrackState,
-    stateOverride = null,
-    packet = null,
-    raw = null,
-    recordPayloadOnFail = false,
-    updateSharedState = true
-  } = {}) => {
-    try {
-      const current = stateOverride || (trackState ? state : deps.drState(peerKey));
-      if (!force && hasUsableDrState(current)) {
-        return current;
-      }
-      await recoverAndEnsureDrState({
-        conversationId,
-        peerAccountDigest: peerKey,
-        tokenB64,
-        packet,
-        raw,
-        reason: source,
-        recordPayloadOnFail
-      });
-      return refreshLiveState(trackState, updateSharedState);
-    } catch (err) {
-      if (drDebug) console.warn('[messages] ensure receiver state failed', err);
-      if (recordPayloadOnFail) {
-        recordDrDecryptFailurePayload({
-          conversationId,
-          peerAccountDigest: peerKey,
-          tokenB64,
-          packet,
-          raw,
-          reason: source
-        });
-      }
-      return trackState ? state : deps.cloneDrStateHolder(state);
-    }
-  };
-
-  await ensureReceiverStateReady({ source: 'decrypt-precheck', trackState: shouldTrackState, force: !hasUsableDrState(state) });
+  ensureReceiverStateReady();
 
   await deps.ensureSecureConversationReady({
     peerAccountDigest: peerKey,
+    peerDeviceId,
     reason: 'list-messages',
     source: 'messages:listSecureAndDecrypt'
   });
@@ -837,72 +833,58 @@ export async function listSecureAndDecrypt(params = {}) {
     } catch {}
   }
 
-  const handleInboxJob = async (job, opts = {}) => {
-    const trackState = opts.mutateState === false ? false : shouldTrackState;
-    const allowReplayForJob = opts.forceAllowReplay ? true : (trackState ? allowCursorReplay : true);
-    const allowAutoReplay = opts.allowAutoReplay !== false;
-    const fromReplay = !!opts.fromReplay;
-    const restoreStateAfter = !!opts.stateOverride && !trackState;
-    const originalStateRef = state;
-    if (opts.stateOverride) {
-      state = opts.stateOverride;
-    }
+  const handleInboxJob = async (job) => {
+    const trackState = shouldTrackState;
     const raw = job?.raw || {};
     const jobPacket = job?.payloadEnvelope || null;
     let payloadMsgType = null;
-      try {
-        let decrypted = false;
-        let lastError = null;
-        let packet = null;
-        const headerRaw = jobPacket?.header_json || raw?.header_json || raw?.headerJson || raw?.header || null;
-        let header = null;
-        if (typeof headerRaw === 'string') {
-          try { header = JSON.parse(headerRaw); } catch {}
-        } else if (headerRaw && typeof headerRaw === 'object') {
-          header = headerRaw;
-        }
-        const ciphertextB64 = jobPacket?.ciphertext_b64 || raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
-        if (!header || !ciphertextB64 || !header.iv_b64) {
-          throw new Error('缺少訊息標頭或密文，無法進行 DR 解密');
-        }
-        if (header?.fallback) throw new Error('偵測到舊版 fallback 封包，已不再支援');
-        packet = {
-          header_json: headerRaw,
-          ciphertext_b64: ciphertextB64,
-          counter: jobPacket?.counter ?? header?.n ?? null
-        };
-        const pkt = {
-          aead: 'aes-256-gcm',
-          header,
-          iv_b64: header.iv_b64,
-          ciphertext_b64: ciphertextB64
-        };
+    try {
+      let packet = null;
+      const headerRaw = jobPacket?.header_json || raw?.header_json || raw?.headerJson || raw?.header || null;
+      let header = null;
+      if (typeof headerRaw === 'string') {
+        try { header = JSON.parse(headerRaw); } catch {}
+      } else if (headerRaw && typeof headerRaw === 'object') {
+        header = headerRaw;
+      }
+      const ciphertextB64 = jobPacket?.ciphertext_b64 || raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
+      if (!header || !ciphertextB64 || !header.iv_b64) {
+        throw new Error('缺少訊息標頭或密文，無法進行 DR 解密');
+      }
+      if (header?.fallback) throw new Error('偵測到舊版 fallback 封包，已不再支援');
+      packet = {
+        header_json: headerRaw,
+        ciphertext_b64: ciphertextB64,
+        counter: jobPacket?.counter ?? header?.n ?? null
+      };
+      const pkt = {
+        aead: 'aes-256-gcm',
+        header,
+        iv_b64: header.iv_b64,
+        ciphertext_b64: ciphertextB64
+      };
 
-        const metaFromHeader = header?.meta || null;
-        const payload = { meta: metaFromHeader || null };
-        const msgTs = Number(metaFromHeader?.ts || raw?.created_at || raw?.createdAt || job?.createdAt || null);
+      const metaFromHeader = header?.meta || null;
+      const payload = { meta: metaFromHeader || null };
+      const msgTs = Number(metaFromHeader?.ts || raw?.created_at || raw?.createdAt || job?.createdAt || null);
       const messageTs = Number.isFinite(msgTs) ? msgTs : null;
       const messageId = job?.messageId || toMessageId(raw);
       const meta = payload?.meta || null;
       payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
       const isMediaMessage = !!(meta?.media);
-      const senderDigestRaw = raw?.sender_account_digest || raw?.senderAccountDigest || meta?.sender_digest || meta?.senderDigest || '';
+  const senderDigestRaw = raw?.senderAccountDigest || meta?.senderDigest || '';
       const senderDigest = typeof senderDigestRaw === 'string' ? senderDigestRaw.toUpperCase() : '';
       let direction = 'unknown';
       if (senderDigest && selfDigest && senderDigest === selfDigest) direction = 'outgoing';
       else if (senderDigest && peerKey && senderDigest === peerKey.toUpperCase()) direction = 'incoming';
-      const stateCandidate = trackState ? state : (state || deps.drState(peerKey));
-      if (!hasUsableDrState(stateCandidate)) {
-        const ensured = await ensureReceiverStateReady({
-          force: true,
-          source: 'decrypt-message',
-          trackState,
-          stateOverride: state,
-          packet,
-          raw,
-          updateSharedState: !restoreStateAfter
-        });
-        state = ensured;
+
+      if (!state) {
+        state = trackState
+          ? deps.drState(peerRef)
+          : deps.cloneDrStateHolder?.(deps.drState(peerRef)) || deps.drState(peerRef);
+      }
+      if (!hasUsableDrState(state)) {
+        throw new Error('DR state unavailable for conversation');
       }
       if (trackState && !isMediaMessage && wasMessageProcessed(conversationId, messageId)) {
         if (drDebug) {
@@ -910,361 +892,90 @@ export async function listSecureAndDecrypt(params = {}) {
         }
         return;
       }
-      let prepResult = null;
-      let replayHandled = false;
+
       let messageKeyB64 = null;
-      if (Number.isFinite(msgTs)) {
-        if (trackState) {
-          state = deps.drState(peerKey);
-        }
-        prepResult = deps.prepareDrForMessage({
-          peerAccountDigest: peerKey,
-          messageTs: msgTs,
-          messageId,
-          allowCursorReplay: allowReplayForJob,
-          stateOverride: state,
-          mutate: trackState
-        });
-        const historyEntry = prepResult?.historyEntry || null;
-        if (prepResult?.duplicate) {
-          if (drDebug) {
-            console.log('[dr-skip-message]', JSON.stringify({ peerAccountDigest: peerKey, messageId, reason: 'duplicate' }));
+      const text = await deps.drDecryptText(state, pkt, {
+        onMessageKey: (mk) => { messageKeyB64 = mk; }
+      });
+
+      if (trackState) {
+        markMessageProcessed(conversationId, messageId);
+        deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
+      }
+
+      const messageObj = buildMessageObject({
+        plaintext: text,
+        payload,
+        header,
+        raw,
+        direction,
+        ts: messageTs,
+        messageId,
+        messageKeyB64
+      });
+      if (messageObj && isControlMessageObject(messageObj)) {
+        if (messageObj.type === CONTROL_MESSAGE_TYPES.READ_RECEIPT && messageObj.targetMessageId) {
+          const updated = recordMessageRead(conversationId, messageObj.targetMessageId, messageTs || null);
+          if (updated) {
+            receiptUpdates.add(messageObj.targetMessageId);
           }
+        } else if (messageObj.type === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT && messageObj.targetMessageId) {
+          recordMessageDelivered(conversationId, messageObj.targetMessageId, messageTs || null);
+        }
+      } else if (messageObj) {
+        if (messageObj.type === 'contact-share') {
+          try {
+            if (typeof document !== 'undefined' && document?.dispatchEvent) {
+              document.dispatchEvent(new CustomEvent('contact-share', {
+                detail: { message: messageObj, conversationId, peerAccountDigest: peerKey }
+              }));
+            }
+          } catch {}
           return;
         }
-        if (prepResult?.restored && trackState) {
-          state = deps.drState(peerKey);
+        out.push(messageObj);
+        if (messageObj.direction === 'incoming' && messageObj.id) {
+          maybeSendDeliveryReceipt({
+            conversationId,
+            peerAccountDigest: peerKey,
+            messageId: messageObj.id,
+            tokenB64
+          });
+          if (sendReadReceipt) {
+            maybeSendReadReceipt(conversationId, peerKey, messageObj.id);
+          }
         }
-        if (!decrypted && allowReplayForJob && prepResult?.historyEntry?.messageKey_b64) {
+        if (onMessageDecrypted) {
           try {
-            const historyEntry = prepResult.historyEntry || null;
-            const replayText = await decryptWithMessageKey({
-              messageKeyB64: historyEntry?.messageKey_b64,
-              ivB64: pkt.iv_b64,
-              ciphertextB64
-            });
-            let stateSynced = false;
-            try {
-              if (historyEntry?.snapshotAfter) {
-                const restored = deps.restoreDrStateFromSnapshot({
-                  peerAccountDigest: peerKey,
-                  snapshot: historyEntry.snapshotAfter,
-                  force: true,
-                  targetState: trackState ? null : state,
-                  sourceTag: 'history-replay-after'
-                });
-                if (trackState) {
-                  state = deps.drState(peerKey);
-                  stateSynced = !!state;
-                } else {
-                  stateSynced = restored;
-                }
-              } else if (historyEntry?.snapshot) {
-                const restored = deps.restoreDrStateFromSnapshot({
-                  peerAccountDigest: peerKey,
-                  snapshot: historyEntry.snapshot,
-                  force: true,
-                  targetState: trackState ? null : state,
-                  sourceTag: 'history-replay'
-                });
-                if (trackState) {
-                  const replayState = deps.drState(peerKey);
-                  if (replayState) {
-                    await deps.drDecryptText(replayState, pkt, { onMessageKey: () => {} });
-                    state = replayState;
-                    stateSynced = true;
-                  }
-                } else if (restored) {
-                  await deps.drDecryptText(state, pkt, { onMessageKey: () => {} });
-                  stateSynced = true;
-                }
-              }
-            } catch (advanceErr) {
-              if (drDebug) console.warn('[messages] replay state advance failed', advanceErr);
-            }
-            if (trackState) {
-              markMessageProcessed(conversationId, messageId);
-              if (stateSynced && state) {
-                try {
-                  deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
-                } catch (persistErr) {
-                  if (drDebug) console.warn('[messages] replay persist snapshot failed', persistErr);
-                }
-              }
-            }
-            const messageObj = buildMessageObject({
-              plaintext: replayText,
-              payload,
-              header,
-              raw,
-              direction,
-              ts: messageTs,
-              messageId,
-              messageKeyB64: prepResult.historyEntry?.messageKey_b64 || null
-            });
-            if (messageObj && !isControlMessageObject(messageObj)) {
-              out.push(messageObj);
-              clearDrRecoveryCounter(conversationId);
-              if (messageObj.direction === 'incoming' && messageObj.id) {
-                maybeSendDeliveryReceipt({
-                  conversationId,
-                  peerAccountDigest: peerKey,
-                  messageId: messageObj.id,
-                  tokenB64
-                });
-                if (sendReadReceipt) {
-                  maybeSendReadReceipt(conversationId, peerKey, messageObj.id);
-                }
-              }
-            }
-            decrypted = true;
-            replayHandled = true;
-          } catch (replayErr) {
-            if (drDebug) console.warn('[messages] replay decrypt failed', replayErr);
+            onMessageDecrypted({ message: messageObj, conversationId, peerAccountDigest: peerKey });
+          } catch (cbErr) {
+            console.warn('[messages] onMessageDecrypted callback failed', cbErr);
           }
         }
-      }
-
-      if (replayHandled) return;
-
-      for (let attempt = 0; attempt < 2 && !decrypted; attempt += 1) {
-        let snapshotBefore = null;
-        try {
-          if (trackState) {
-            state = deps.drState(peerKey);
-          }
-          snapshotBefore = Number.isFinite(msgTs) ? deps.snapshotDrState(state, { setDefaultUpdatedAt: false }) : null;
-          const text = await deps.drDecryptText(state, pkt, {
-            onMessageKey: (mk) => { messageKeyB64 = mk; }
-          });
-          const snapshotAfter = deps.snapshotDrState(state, { setDefaultUpdatedAt: false });
-          if (trackState && snapshotBefore && Number.isFinite(msgTs)) {
-            deps.recordDrMessageHistory({
-              peerAccountDigest: peerKey,
-              messageTs: msgTs,
-              messageId,
-              snapshot: snapshotBefore,
-              snapshotNext: snapshotAfter,
-              messageKeyB64
-            });
-          }
-          if (trackState) {
-            markMessageProcessed(conversationId, messageId);
-            deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
-          }
-          const messageObj = buildMessageObject({
-            plaintext: text,
-            payload,
-            header,
-            raw,
-            direction,
-            ts: messageTs,
-            messageId,
-            messageKeyB64
-          });
-          if (messageObj && isControlMessageObject(messageObj)) {
-            if (messageObj.type === CONTROL_MESSAGE_TYPES.READ_RECEIPT && messageObj.targetMessageId) {
-              let map = receiptStore.get(conversationId);
-              if (!map) {
-                map = new Map();
-                receiptStore.set(conversationId, map);
-              }
-              map.set(messageObj.targetMessageId, { read: true, ts: messageTs || null });
-              persistReceipts();
-              receiptUpdates.add(messageObj.targetMessageId);
-              recordMessageDelivered(conversationId, messageObj.targetMessageId, messageTs || null);
-            } else if (messageObj.type === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT && messageObj.targetMessageId) {
-              recordMessageDelivered(conversationId, messageObj.targetMessageId, messageTs || null);
-            }
-          } else if (messageObj) {
-            out.push(messageObj);
-            clearDrRecoveryCounter(conversationId);
-            if (messageObj.direction === 'incoming' && messageObj.id) {
-              maybeSendDeliveryReceipt({
-                conversationId,
-                peerAccountDigest: peerKey,
-                messageId: messageObj.id,
-                tokenB64
-              });
-              if (sendReadReceipt) {
-                maybeSendReadReceipt(conversationId, peerKey, messageObj.id);
-              }
-            }
-            if (onMessageDecrypted) {
-              try {
-                onMessageDecrypted({ message: messageObj, conversationId, peerAccountDigest: peerKey });
-              } catch (cbErr) {
-                console.warn('[messages] onMessageDecrypted callback failed', cbErr);
-              }
-            }
-          }
-          decrypted = true;
-        } catch (err) {
-          lastError = err;
-          const msg = err?.message || String(err);
-          const isOpError = typeof msg === 'string' && msg.includes('OperationError');
-          if (isOpError) {
-            logDrDebug('decrypt-operation-error', {
-              peerAccountDigest: peerKey,
-              messageId: raw?.id || null,
-              ts: Number.isFinite(msgTs) ? msgTs : null,
-              header,
-              snapshotBefore: snapshotBefore || null,
-              snapshotAfter: snapshotForDebug(trackState ? deps.drState(peerKey) : state)
-            });
-            if (snapshotBefore) {
-              try {
-                deps.restoreDrStateFromSnapshot({
-                  peerAccountDigest: peerKey,
-                  snapshot: snapshotBefore,
-                  force: true,
-                  targetState: trackState ? null : state,
-                  sourceTag: 'decrypt-rollback'
-                });
-                if (trackState) {
-                  state = deps.drState(peerKey);
-                }
-              } catch (restoreErr) {
-                console.warn('[messages] dr snapshot rollback failed', restoreErr);
-              }
-            }
-          }
-          if (trackState && attempt === 0 && isOpError) {
-            let restoredFromHistory = false;
-            if (Number.isFinite(msgTs) || messageId) {
-              try {
-                restoredFromHistory = deps.restoreDrStateToHistoryPoint({
-                  peerAccountDigest: peerKey,
-                  ts: Number.isFinite(msgTs) ? msgTs : null,
-                  messageId: messageId || null
-                });
-              } catch (historyErr) {
-                if (drDebug) console.warn('[messages] history restore during op-error failed', historyErr);
-              }
-              if (!restoredFromHistory && Number.isFinite(msgTs)) {
-                try {
-                  restoredFromHistory = deps.restoreDrStateToHistoryPoint({
-                    peerAccountDigest: peerKey,
-                    ts: msgTs - 1,
-                    messageId: null
-                  });
-                } catch (historyErr) {
-                  if (drDebug) console.warn('[messages] secondary history restore failed', historyErr);
-                }
-              }
-            }
-            if (restoredFromHistory) {
-              state = refreshLiveState(trackState, !restoreStateAfter);
-              await ensureReceiverStateReady({ source: 'decrypt-history-restored', trackState, stateOverride: state, updateSharedState: !restoreStateAfter });
-              continue;
-            }
-            let recovered = false;
-            if (trackState) {
-              recovered = await deps.recoverDrState({ peerAccountDigest: peerKey, force: true });
-            }
-            if (!recovered) {
-              const ensured = await ensureReceiverStateReady({
-                force: true,
-                source: 'decrypt-op-error',
-                trackState,
-                stateOverride: state,
-                packet,
-                raw,
-                updateSharedState: !restoreStateAfter,
-                recordPayloadOnFail: true
-              });
-              recovered = hasUsableDrState(ensured);
-            }
-            if (recovered) {
-              state = refreshLiveState(trackState, !restoreStateAfter);
-              continue;
-            }
-          }
-          if (attempt === 1) throw err;
-        }
-      }
-
-      if (!decrypted) {
-        const msg = lastError?.message || String(lastError || 'decrypt failed');
-        throw new Error(msg);
+        drFailureCounter.delete(`${conversationId}::${peerKey}`);
       }
     } catch (err) {
       const msg = err?.message || String(err);
-      let recoveryTriggered = false;
-      let forceReset = false;
-      let replaySuccess = false;
-      if (isRecoverableDrError(err)) {
-        recordDrDecryptFailurePayload({
-          conversationId,
-          peerAccountDigest: peerKey,
-          tokenB64,
-          packet,
-          raw,
-          reason: 'decrypt-fail'
-        });
-        try {
-          recoveryTriggered = await attemptDrRecovery({
-            peerAccountDigest: peerKey,
-            conversationId,
-            tokenB64,
-            packet,
-            raw,
-            reason: 'inbox-decrypt-fail',
-            recordPayloadOnFail: true
-          });
-        } catch (recoverErr) {
-          if (drDebug) console.warn('[messages] dr recovery attempt failed', recoverErr);
-        }
-        if (!recoveryTriggered) {
-          forceReset = await forceResetDrAndReplay({ conversationId, peerAccountDigest: peerKey });
-          if (forceReset) {
-            recoveryTriggered = await recoverAndEnsureDrState({
-              conversationId,
-              peerAccountDigest: peerKey,
-              tokenB64,
-              packet,
-              raw,
-              reason: 'dr-op-error-reset',
-              recordPayloadOnFail: true
-            });
-          }
-        }
-        if ((recoveryTriggered || forceReset) && allowAutoReplay && !fromReplay) {
-          const liveState = deps.drState(peerKey);
-          const replayState = liveState ? deps.cloneDrStateHolder(liveState) : (state ? deps.cloneDrStateHolder(state) : null);
-          if (replayState) {
-            try {
-              await handleInboxJob(job, {
-                mutateState: false,
-                forceAllowReplay: true,
-                allowAutoReplay: false,
-                stateOverride: replayState,
-                fromReplay: true
-              });
-              clearDrRecoveryCounter(conversationId);
-              replaySuccess = true;
-              return;
-            } catch (replayErr) {
-              if (drDebug) console.warn('[messages] replay after recovery failed', replayErr);
-            }
-          } else if (drDebug) {
-            console.warn('[messages] replay skipped: no dr state available');
-          }
-        }
-      }
       if (!payloadMsgType || (payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_INIT && payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_ACK && payloadMsgType !== CONTROL_MESSAGE_TYPES.READ_RECEIPT && payloadMsgType !== CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT)) {
         errs.push(msg);
       }
       console.warn('[messages] secure decrypt skipped', { id: job?.messageId || job?.raw?.id, error: msg, msgType: payloadMsgType });
-      if (replaySuccess) return;
-      if (recoveryTriggered || forceReset) {
-        throw new Error(`dr-recovering:${msg}`);
+      deadLetters.push({
+        conversationId,
+        messageId: job?.messageId || job?.raw?.id || null,
+        counter: packet?.counter ?? header?.n ?? null,
+        drState: trackState && state ? { Ns: state.Ns, Nr: state.Nr, PN: state.PN } : null,
+        error: msg
+      });
+      const failKey = `${conversationId}::${peerKey}`;
+      const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
+      drFailureCounter.set(failKey, nextFail);
+      if (nextFail >= 3) {
+        deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId });
+        drFailureCounter.delete(failKey);
+        throw new Error('DR 解密連續失敗已重置會話，請重新同步好友或重新建立邀請');
       }
       throw err;
-    } finally {
-      if (restoreStateAfter) {
-        state = originalStateRef;
-      }
     }
   };
 
@@ -1293,62 +1004,22 @@ export async function listSecureAndDecrypt(params = {}) {
       } catch (err) {
         deadLetters.push({
           jobId: job?.jobId,
+          conversationId,
           messageId: job?.messageId,
           error: err?.message || String(err)
         });
+        if (preSnapshot && shouldTrackState) {
+          deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId });
+          try {
+            deps.restoreDrStateFromSnapshot?.({ peerAccountDigest: peerKey, peerDeviceId, snapshot: preSnapshot, force: true });
+          } catch {
+            /* ignore restore errors */
+          }
+        }
         throw err;
       }
     }
   });
-
-  // Fallback: 若 server 有回傳訊息但未解出任何內容且無 dead-letter，嘗試強制恢復 DR 並以非 mutate 模式重播。
-  if (serverItemCount > 0 && out.length === 0 && deadLetters.length === 0) {
-    try {
-      resetProcessedMessages(conversationId);
-      await recoverAndEnsureDrState({
-        conversationId,
-        peerAccountDigest: peerKey,
-        tokenB64,
-        reason: 'fallback-replay',
-        recordPayloadOnFail: true
-      });
-      const replayState = deps.cloneDrStateHolder(deps.drState(peerKey));
-      for (const raw of sortedItems) {
-        const msgTs = toMessageTimestamp(raw);
-        const headerJson = raw?.header_json || raw?.headerJson || (raw?.header ? JSON.stringify(raw.header) : null);
-        const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
-        const packet = { header_json: headerJson, ciphertext_b64: ciphertextB64, counter: raw?.counter ?? raw?.n ?? null };
-        const job = {
-          conversationId,
-          payloadEnvelope: packet,
-          raw,
-          messageId: toMessageId(raw) || crypto.randomUUID(),
-          createdAt: Number.isFinite(msgTs) ? msgTs : null,
-          tokenB64,
-          peerAccountDigest: peerKey,
-          cursorTs
-        };
-        try {
-          await handleInboxJob(job, {
-            mutateState: false,
-            forceAllowReplay: true,
-            allowAutoReplay: false,
-            stateOverride: replayState,
-            fromReplay: true
-          });
-        } catch (err) {
-          deadLetters.push({
-            jobId: job?.jobId || null,
-            messageId: job?.messageId || null,
-            error: err?.message || String(err)
-          });
-          break;
-        }
-      }
-    } catch (fallbackErr) {
-      console.warn('[messages] fallback replay failed', fallbackErr);
-    }
-  }
 
   return {
     items: out,
@@ -1359,6 +1030,9 @@ export async function listSecureAndDecrypt(params = {}) {
     deadLetters,
     receiptUpdates: Array.from(receiptUpdates)
   };
+  } finally {
+    secureFetchLocks.delete(conversationId);
+  }
 }
 function wasMessageProcessed(conversationId, messageId) {
   if (!conversationId || !messageId) return false;
@@ -1432,6 +1106,8 @@ export function recordMessageRead(conversationId, messageId, ts = null) {
     map = new Map();
     receiptStore.set(conversationId, map);
   }
+  const existing = map.get(messageId);
+  if (existing?.read) return false;
   map.set(messageId, { read: true, ts: ts && Number.isFinite(ts) ? ts : null });
   persistReceipts();
   recordMessageDelivered(conversationId, messageId, ts);
@@ -1453,7 +1129,6 @@ function maybeSendReadReceipt(conversationId, peerAccountDigest, messageId) {
       console.warn('[messages] sendReadReceipt failed', err);
       sentReadReceipts.delete(key);
       persistSentReceipts();
-      void recoverAndEnsureDrState({ conversationId, peerAccountDigest, reason: 'read-receipt-fail' });
     });
 }
 
@@ -1485,11 +1160,5 @@ function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId
   }).catch((err) => {
     console.warn('[messages] sendDeliveryReceipt failed', err);
     sentDeliveryReceipts.delete(key);
-    void recoverAndEnsureDrState({ conversationId, peerAccountDigest, reason: 'delivery-receipt-fail' });
   });
-}
-
-function clearDrRecoveryCounter(conversationId) {
-  if (!conversationId) return;
-  drRecoveryCounts.delete(conversationId);
 }

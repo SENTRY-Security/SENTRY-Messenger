@@ -30,17 +30,14 @@ export async function uploadContactSecretsBackup({
   deviceId,
   reason
 } = {}, fetchOptions = {}) {
-  const overrides = {
-    payload,
-    checksum,
-    snapshotVersion,
-    entries,
-    updatedAt,
-    bytes,
-    deviceLabel,
-    deviceId,
-    reason: reason || 'auto'
-  };
+  const overrides = { payload, reason: reason || 'auto' };
+  if (checksum != null) overrides.checksum = checksum;
+  if (snapshotVersion != null) overrides.snapshotVersion = snapshotVersion;
+  if (Number.isFinite(entries)) overrides.entries = entries;
+  if (Number.isFinite(updatedAt)) overrides.updatedAt = updatedAt;
+  if (Number.isFinite(bytes)) overrides.bytes = bytes;
+  if (deviceLabel) overrides.deviceLabel = deviceLabel;
+  if (deviceId) overrides.deviceId = deviceId;
   const body = buildAccountPayload({ overrides });
   const request = jsonReq(body);
   const merged = { ...request, ...fetchOptions };

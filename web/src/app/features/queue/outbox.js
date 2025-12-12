@@ -1,4 +1,4 @@
-// Outbox queue for secure messages: per-conversation single-worker with retry/backoff.
+// Outbox queue for secure messages: per-conversation single-worker, single-shot (no retry/backoff).
 
 import { createSecureMessage } from '../../api/messages.js';
 import {
@@ -15,13 +15,9 @@ const TYPE_MEDIA_META = 'media-meta';
 const STATE_QUEUED = 'queued';
 const STATE_INFLIGHT = 'inflight';
 const STATE_SENT = 'sent';
-const STATE_FAILED = 'failed';
 const STATE_DEAD = 'dead-letter';
 
 const PROCESS_INTERVAL_MS = 4_000;
-const BASE_BACKOFF_MS = 1_500;
-const BACKOFF_CAP_MS = 30_000;
-const MAX_RETRIES = 5;
 
 const convLocks = new Set();
 const hooks = {
@@ -43,11 +39,6 @@ function safeParseHeader(headerJson) {
   } catch {
     return null;
   }
-}
-
-function computeBackoff(retryCount = 0) {
-  const delay = BASE_BACKOFF_MS * Math.pow(2, retryCount);
-  return Math.min(BACKOFF_CAP_MS, delay);
 }
 
 function scheduleProcessor(delay = PROCESS_INTERVAL_MS) {
@@ -91,8 +82,8 @@ function normalizeJob(input = {}) {
     payloadEnvelope: input.payloadEnvelope || null,
     peerAccountDigest: input.peerAccountDigest || null,
     createdAt: ts,
-    retryCount: Number.isFinite(Number(input.retryCount)) ? Number(input.retryCount) : 0,
-    nextAttemptAt: Number.isFinite(Number(input.nextAttemptAt)) ? Number(input.nextAttemptAt) : Date.now(),
+    retryCount: 0,
+    nextAttemptAt: null,
     state: input.state || STATE_QUEUED,
     lastError: input.lastError || null,
     meta: input.meta || null,
@@ -127,9 +118,8 @@ async function updateJob(jobId, patch = {}) {
 
 function isDue(job) {
   if (!job) return false;
-  const dueAt = Number(job.nextAttemptAt) || 0;
-  const isReadyState = job.state === STATE_QUEUED || job.state === STATE_FAILED || !job.state;
-  return isReadyState && dueAt <= Date.now();
+  const isReadyState = job.state === STATE_QUEUED || !job.state;
+  return isReadyState;
 }
 
 async function fetchDueJobs() {
@@ -158,21 +148,25 @@ async function attemptSend(job) {
     createdAt: job.createdAt
   };
   const { r, data } = await createSecureMessage(payload);
+  const ackOk = r?.status === 202 && data && data.accepted === true && data.id;
+  if (!ackOk) {
+    const err = new Error(`ack failed (status=${r?.status || 'unknown'})`);
+    err.status = r?.status;
+    throw err;
+  }
   return { r, data };
 }
 
 async function markFailure(job, err) {
-  const retryCount = Number(job.retryCount) || 0;
-  const nextDelay = computeBackoff(retryCount);
   const next = await updateJob(job.jobId, {
-    state: retryCount >= MAX_RETRIES ? STATE_DEAD : STATE_FAILED,
-    retryCount: retryCount + 1,
-    nextAttemptAt: Date.now() + nextDelay,
+    state: STATE_DEAD,
+    retryCount: 0,
+    nextAttemptAt: null,
     lastError: err?.message || err || 'send failed',
     lastStatus: Number.isFinite(err?.status) ? Number(err.status) : null
   });
   if (debug) {
-    console.warn('[outbox]', { event: 'failed', jobId: job?.jobId, conv: job?.conversationId, retryCount, nextDelay, status: next?.lastStatus || null, error: err?.message || err });
+    console.warn('[outbox]', { event: 'failed', jobId: job?.jobId, conv: job?.conversationId, status: next?.lastStatus || null, error: err?.message || err });
   }
   if (next?.state === STATE_DEAD && typeof hooks.onFailed === 'function') {
     try { await hooks.onFailed(next, err); } catch {}

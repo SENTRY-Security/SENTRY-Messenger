@@ -14,7 +14,14 @@
     <link rel="stylesheet" href="/assets/styles.css" />
     <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
     <script>
-      window.APP_VERSION = '0.1.0';
+      // e2e: query ?e2e=1 以停用動畫
+      try {
+        const params = new URLSearchParams(location.search);
+        if (params.get('e2e') === '1') {
+          document.documentElement.classList.add('no-anim');
+        }
+      } catch {}
+      window.APP_VERSION = '0.1.10';
       window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
     </script>
     <style>
@@ -23,6 +30,17 @@
       html { background:var(--gradient); }
       html, body { height:100%; min-height:100%; }
       html { background:var(--gradient); }
+      /* 減少初始動畫干擾（e2e 用）：停用旋轉（僅當 html.no-anim） */
+      html.no-anim .loading-spinner,
+      html.no-anim button.loading .btn-spinner,
+      html.no-anim .spinner,
+      html.no-anim .icon.spin {
+        animation: none !important;
+      }
+      /* e2e: 關閉晶片掃描跑圈動畫 */
+      html.no-anim .chip-guard-overlay { display:none !important; }
+      html.no-anim .chip-guard-path { animation: none !important; }
+      html.no-anim .chip-guard-message { animation: none !important; }
       * { box-sizing:border-box; }
       body {
         margin:0;
@@ -59,12 +77,6 @@
       .brand { position:relative; display:flex; align-items:center; gap:12px; margin-bottom:18px; }
       .brand img { height:30px; width:auto; }
       .brand h1 { margin:0; font-size:22px; font-weight:700; letter-spacing:0.4px; color:var(--fg); }
-      .brand .remote-console-mask {
-        position:absolute;
-        inset:-6px;
-        z-index:2;
-        background:transparent;
-      }
       .subtitle { margin:0 0 24px; color:var(--muted); font-size:13px; line-height:1.5; }
       form { display:flex; flex-direction:column; gap:16px; }
       .form-group { display:flex; flex-direction:column; gap:6px; }
@@ -279,33 +291,9 @@
       @keyframes chipGuardFadeOut { 0% { opacity:1; } 100% { opacity:0; } }
       @keyframes chipGuardMessagePulse { 0% { opacity:0.8; box-shadow:0 12px 22px rgba(2,6,23,0.2); } 100% { opacity:1; box-shadow:0 18px 40px rgba(15,23,42,0.45); } }
       @media (prefers-reduced-motion: reduce) { .chip-guard-overlay { display:none; } }
-      .remote-console-toast {
-        position: fixed;
-        top: 16px;
-        left: 50%;
-        transform: translate(-50%, -150%);
-        background: rgba(15,23,42,0.95);
-        color: #fef9c3;
-        padding: 9px 18px;
-        border-radius: 999px;
-        font-size: 13px;
-        letter-spacing: 0.4px;
-        box-shadow: 0 18px 36px rgba(2,6,23,0.45);
-        opacity: 0;
-        transition: transform 0.25s ease, opacity 0.25s ease;
-        z-index: 60;
-        pointer-events: none;
-      }
-      .remote-console-toast.show {
-        transform: translate(-50%, 0);
-        opacity: 1;
-      }
-      .remote-console-toast.warn { color: #fecdd3; }
-      .remote-console-toast.success { color: #bbf7d0; }
     </style>
   </head>
   <body>
-    <div id="remoteConsoleToast" class="remote-console-toast" role="status" aria-live="polite"></div>
     <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
       <span class="icon" aria-hidden="true">📱</span>
       <strong>請以直立模式使用</strong>
@@ -332,7 +320,6 @@
     </div>
     <main class="login-shell">
       <div class="brand" id="loginBrand">
-        <div class="remote-console-mask" id="remoteConsoleMask" aria-hidden="true"></div>
         <img src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
         <h1>SENTRY MESSENGER</h1>
       </div>

@@ -2,8 +2,6 @@
 // Constants and helpers for secure conversation control messages.
 
 export const CONTROL_MESSAGE_TYPES = Object.freeze({
-  SESSION_INIT: 'session-init',
-  SESSION_ACK: 'session-ack',
   SESSION_ERROR: 'session-error',
   DELIVERY_RECEIPT: 'delivery-receipt',
   READ_RECEIPT: 'read-receipt'
