@@ -1,0 +1,16 @@
+{
+  "owner": {
+    "label": "owner",
+    "uidHex": "0477A1B2C3D4E5",              // 7-byte UID hex
+    "counter": "000001",                    // hex counter；測試會自動 +1
+    "password": "owner-password",           // 登入密碼（用於 MK unwrap，如有需要）
+    "deviceId": "device-owner-1"
+  },
+  "guest": {
+    "label": "guest",
+    "uidHex": "0488D4E5F60789",
+    "counter": "000001",
+    "password": "guest-password",
+    "deviceId": "device-guest-1"
+  }
+}
