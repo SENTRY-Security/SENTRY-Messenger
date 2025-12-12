@@ -662,8 +662,8 @@ async function sendDrPlaintext(params = {}) {
   let conversationId = convContext?.conversation_id || convContext?.conversationId || null;
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
-  const accountDigest = (getAccountDigest() || '').toUpperCase();
-  const receiverDeviceId = peerDeviceId;
+  const accountDigest = (getAccountDigest() || '').toUpperCase(); // self
+  const receiverDeviceId = selfDeviceId; // 接收方必須是自己（目標是本機）
 
   const meta = {
     ts: now,
@@ -683,18 +683,18 @@ async function sendDrPlaintext(params = {}) {
     }
   }
   // 強制對端指向目標 guest：禁止自動補救路徑
-  meta.targetAccountDigest = peer;
-  meta.target_account_digest = peer;
-  meta.receiverAccountDigest = peer;
-  meta.receiver_account_digest = peer;
+  meta.targetAccountDigest = accountDigest;
+  meta.target_account_digest = accountDigest;
+  meta.receiverAccountDigest = accountDigest;
+  meta.receiver_account_digest = accountDigest;
   meta.targetDeviceId = receiverDeviceId;
   meta.receiverDeviceId = receiverDeviceId;
 
   const headerPayload = {
     ...pkt.header,
-    // peerAccountDigest 定義為「寄件者」身份，便於接收端驗證，不做任何 fallback
-    peerAccountDigest: accountDigest || null,
-    peerDeviceId: senderDeviceId || null,
+    // peerAccountDigest 定義為「對方」身份，便於接收端驗證，不做任何 fallback
+    peerAccountDigest: peer || null,
+    peerDeviceId: peerDeviceId || null,
     iv_b64: pkt.iv_b64,
     meta
   };
