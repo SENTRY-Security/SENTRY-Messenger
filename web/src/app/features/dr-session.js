@@ -668,7 +668,9 @@ async function sendDrPlaintext(params = {}) {
   const meta = {
     ts: now,
     sender_digest: accountDigest || null,
+    senderDigest: accountDigest || null,
     sender_device_id: senderDeviceId || null,
+    senderDeviceId: senderDeviceId || null,
     msg_type: typeof metaOverrides?.msg_type === 'string' && metaOverrides.msg_type.length
       ? metaOverrides.msg_type
       : 'text'
@@ -682,7 +684,9 @@ async function sendDrPlaintext(params = {}) {
   }
   // 強制對端指向目標 guest：禁止自動補救路徑
   meta.targetAccountDigest = peer;
+  meta.target_account_digest = peer;
   meta.receiverAccountDigest = peer;
+  meta.receiver_account_digest = peer;
   meta.targetDeviceId = receiverDeviceId;
   meta.receiverDeviceId = receiverDeviceId;
 
