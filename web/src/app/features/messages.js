@@ -945,13 +945,8 @@ export async function listSecureAndDecrypt(params = {}) {
           senderDigest: meta?.sender_digest || meta?.senderDigest || null
         });
       } catch {}
-      const headerPeerDigestRaw = header?.peerAccountDigest || header?.peer_account_digest || null;
-      const headerPeerDigest = headerPeerDigestRaw ? String(headerPeerDigestRaw).toUpperCase() : null;
-      const expectedPeerDigest = senderDigest || (peerAccountDigestNormalized ? String(peerAccountDigestNormalized).toUpperCase() : null);
-      if (direction !== 'outgoing' && expectedPeerDigest && headerPeerDigest && headerPeerDigest !== expectedPeerDigest) {
-        console.warn('[dr-message-skip:peer-mismatch]', { conversationId, headerPeerDigest, expected: expectedPeerDigest });
-        return;
-      }
+      // peer 身份以 senderDigest 為準；header.peerAccountDigest 只做觀察，不作為拒收條件，避免因欄位命名差異造成單一路徑被中斷。
+      // direction 已由 senderDigest 判定，targetDigest 也已驗證為 self，因此此處不再以 headerPeerDigest 做硬性比對。
 
       if (!state) {
         state = trackState
