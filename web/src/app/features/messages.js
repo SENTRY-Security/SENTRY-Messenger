@@ -37,6 +37,7 @@ import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 import {
   ensureSecureConversationReady as managerEnsureSecureConversationReady,
+  ensureDrReceiverState as managerEnsureDrReceiverState
 } from './secure-conversation-manager.js';
 import {
   describeCallLogForViewer,
@@ -60,6 +61,7 @@ const defaultDeps = {
   b64u8: naclB64u8,
   saveEnvelopeMeta: mediaSaveEnvelopeMeta,
   ensureSecureConversationReady: managerEnsureSecureConversationReady,
+  ensureDrReceiverState: managerEnsureDrReceiverState,
   clearDrState: storeClearDrState,
   sendReadReceipt: featureSendDrReadReceipt,
   sendDeliveryReceipt: featureSendDrDeliveryReceipt
@@ -954,7 +956,15 @@ export async function listSecureAndDecrypt(params = {}) {
           : deps.cloneDrStateHolder?.(deps.drState(peerRef)) || deps.drState(peerRef);
       }
       if (!hasUsableDrState(state)) {
-        throw new Error('DR state unavailable for conversation');
+        if (deps.ensureDrReceiverState && peerKey && senderDeviceId) {
+          await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: senderDeviceId, conversationId });
+          state = trackState
+            ? deps.drState(peerRef)
+            : deps.cloneDrStateHolder?.(deps.drState(peerRef)) || deps.drState(peerRef);
+        }
+        if (!hasUsableDrState(state)) {
+          throw new Error('DR state unavailable for conversation');
+        }
       }
       if (trackState && !isMediaMessage && wasMessageProcessed(conversationId, messageId)) {
         if (drDebug) {
