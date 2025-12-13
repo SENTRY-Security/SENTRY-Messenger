@@ -143,11 +143,25 @@ export function hydrateConversationsFromSecrets() {
     const convId = conv?.id || conv?.conversation_id || null;
     const tokenB64 = conv?.token || conv?.token_b64 || null;
     if (!digest || !peerDeviceId || !convId || !tokenB64) continue;
+    const prev = sessionStore.conversationIndex.get(convId) || {};
     sessionStore.conversationIndex.set(convId, {
+      ...prev,
       peerAccountDigest: digest,
       peerDeviceId,
-      token_b64: tokenB64,
-      dr_init: conv?.drInit || conv?.dr_init || null
+      token_b64: prev.token_b64 || tokenB64,
+      dr_init: prev.dr_init || conv?.drInit || conv?.dr_init || null
     });
+    const prevThread = sessionStore.conversationThreads.get(convId) || {};
+    if (!prevThread.peerDeviceId || !prevThread.peerAccountDigest || !prevThread.conversationToken) {
+      sessionStore.conversationThreads.set(convId, {
+        ...prevThread,
+        peerAccountDigest: digest,
+        peerDeviceId,
+        conversationId: convId,
+        conversationToken: tokenB64,
+        nickname: prevThread.nickname || info?.nickname || `好友 ${digest.slice(-4)}`,
+        avatar: prevThread.avatar || info?.avatar || null
+      });
+    }
   }
 }

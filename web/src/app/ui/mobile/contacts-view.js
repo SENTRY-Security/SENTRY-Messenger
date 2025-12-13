@@ -3,6 +3,7 @@ import { sessionStore } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret, restoreContactSecrets } from '../../core/contact-secrets.js';
+import { hydrateConversationsFromSecrets } from './session-store.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
@@ -416,6 +417,8 @@ export function initContactsView(options) {
     }
     contactIndex.clear();
     if (conversationIndex) conversationIndex.clear();
+    // 若伺服器資料缺對端裝置，先用 contactSecrets 補齊 conversationIndex，避免後續解密缺 peerDeviceId。
+    try { hydrateConversationsFromSecrets(); } catch {}
     let missingConv = 0;
     let missingConvToken = 0;
     let missingConvDevice = 0;
@@ -585,6 +588,7 @@ export function initContactsView(options) {
         }
       }
     }
+    try { hydrateConversationsFromSecrets(); } catch {}
     renderContacts();
     presenceManager.sendPresenceSubscribe();
     updateContactCount();
