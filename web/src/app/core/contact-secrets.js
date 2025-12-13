@@ -510,6 +510,11 @@ export function restoreContactSecrets() {
     return map;
   }
   applySnapshotPayload(map, snapshot, { replace: true, reason: 'restore' });
+  try {
+    sanitizeContactSecretsForDevice({ map, reason: 'restore' });
+  } catch (err) {
+    log({ contactSecretsSanitizeError: err?.message || err, source: 'restore' });
+  }
   return map;
 }
 
@@ -521,6 +526,11 @@ export function importContactSecretsSnapshot(snapshot, { replace = true, reason 
   }
   const map = ensureMap();
   const summary = applySnapshotPayload(map, snapshot, { replace, reason });
+  try {
+    sanitizeContactSecretsForDevice({ map, reason: `import:${reason}` });
+  } catch (err) {
+    log({ contactSecretsSanitizeError: err?.message || err, source: reason });
+  }
   if (summary && persist) {
     try {
       persistContactSecrets();
@@ -612,6 +622,45 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
   } catch (err) {
     log({ contactSecretRestoreError: err?.message || err });
     return null;
+  }
+}
+
+export function sanitizeContactSecretsForDevice({ map = null, deviceId = null, reason = 'sanitize' } = {}) {
+  const targetMap = map || ensureMap();
+  const selfDeviceId = normalizeDeviceId(deviceId || ensureDeviceId());
+  if (!selfDeviceId || !(targetMap instanceof Map)) return;
+  let removed = 0;
+  let prunedDevices = 0;
+  for (const [peerKey, record] of targetMap.entries()) {
+    const peerDeviceId = normalizePeerDeviceId(record?.peerDeviceId || record?.conversationPeerDeviceId || null);
+    const devices = record?.devices && typeof record.devices === 'object' ? record.devices : {};
+    const selfDeviceRecord = devices[selfDeviceId];
+    const role = typeof record?.role === 'string' ? record.role.toLowerCase() : null;
+    const conversationPeerDeviceId = normalizePeerDeviceId(record?.conversation?.peerDeviceId || record?.conversationPeerDeviceId || null);
+    const mismatchPeerDevice = conversationPeerDeviceId && peerDeviceId && conversationPeerDeviceId !== peerDeviceId;
+    if (!peerDeviceId || mismatchPeerDevice) {
+      targetMap.delete(peerKey);
+      removed += 1;
+      continue;
+    }
+    if (role === 'responder' && peerDeviceId !== selfDeviceId) {
+      targetMap.delete(peerKey);
+      removed += 1;
+      continue;
+    }
+    if (!selfDeviceRecord) {
+      targetMap.delete(peerKey);
+      removed += 1;
+      continue;
+    }
+    if (Object.keys(devices).length > 1) {
+      record.devices = { [selfDeviceId]: selfDeviceRecord };
+      prunedDevices += 1;
+    }
+    record.peerDeviceId = peerDeviceId;
+  }
+  if (removed || prunedDevices) {
+    log({ contactSecretsSanitized: { removed, prunedDevices, reason, deviceId: selfDeviceId } });
   }
 }
 

@@ -2319,7 +2319,7 @@ presenceManager = createPresenceManager({
 });
 
 const contactsView = initContactsView({
-  dom: { contactsListEl, contactsScrollEl, contactsRefreshEl, contactsRefreshLabel },
+  dom: { contactsListEl, contactsScrollEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl },
   loadContactsApi: loadContacts,
   saveContactApi: saveContact,
   friendsDeleteContact,

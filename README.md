@@ -208,36 +208,21 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 - **目前狀態**：所有既有 `npm run test:*`、Playwright、mjs 腳本已移除，以下時間軸僅保留歷史紀錄（其中提到的測試名稱/指令已不可執行）。現階段需以人工或新建腳本驗證登入/交友/訊息/媒體流程。
 
-## 待辦：移除錯誤 fallback 機制
+## 待辦：暱稱 / 頭像跨裝置同步（無 fallback）
 
-- [x] 前端 contact-secret 鍵統一為本機 deviceId（peerDeviceId 僅存於 conversation.peerDeviceId）
-  - [x] `storeContactSecretMapping` 及所有呼叫點改用本機 deviceId，peerDeviceId 放入 conversation 欄位
-  - [x] contact-share 收／發流程寫入角色（guest/owner）並沿用本機 deviceId 置換 snapshot
-  - [x] `persistDrSnapshot` 寫回 contact-secret 時改用本機 deviceId，避免覆寫到 peer 裝置鍵
-  - [x] `handleContactShareEvent` 讀寫 contact-secret 改以本機 deviceId，確保 hydrate/ensure 讀得到最新 snapshot
-- [x] 掃碼/登入前清除同一 peerDigest 的所有 drStates（不分 peerDeviceId），避免殘留 responder 狀態
-- [x] Hydrate 流程健全化
-  - [x] 若解析不到 peerDeviceId，嘗試從 contact-secret/conversation.dr_init 拿 peerDeviceId；仍無則清除記憶體舊 state
-  - [x] guest 端一律拒收 responder snapshot（即使 peerDeviceId 未比對），並記錄 automation log
-- [x] ensureDrReceiverState 強化
-  - [x] guest/未知角色若發現 responder state，直接清空並改用 dr_init 重建 initiator，缺 dr_init 則 fail（無 fallback）
-  - [x] conversationId / peerDeviceId mismatch 時清除 contact-secret/記憶體狀態，避免沿用錯鏈
-- [x] 解密前路徑（messages.js）驗證
-  - [x] 收訊前再次檢查 state 角色，若 guest 卻是 responder，清除後強制走 initiator 路徑（缺資料則 fail）
-  - [x] 確認無任何 retry/fallback；錯誤直接 fail 並輸出明確 log
-- [x] 對話 ID 去重與一致性
-  - [x] contact-secret 只保存實際 conversationId，清除 `contacts-<peer>` 等假 ID 以避免 mismatch 循環
-  - [x] hydrate/ensureDrReceiverState 若偵測到同 peer 多個 conversationId，僅保留最新/正確者，並清除舊記錄
-  - [x] 收訊前若 convId 與 state/secret 不一致，應清除並走正確路徑（無 fallback）
-  - [x] contact-share 發送時禁止使用 `contacts-*` convId，缺實際 convId 則直接報錯
-  - [x] 收訊端若 WS 帶入 `contacts-*` convId，直接拒收並提示重新同步，以免 unknown peer 循環
-  - [x] guest 端 contact-secret/快照的角色標記確實為 initiator/guest，避免誤還原 responder 快照
-- [x] Runtime 錯誤排除
-  - [x] `dr-session` 引入缺失的 `clearDrState`，避免解密流程因 ReferenceError 中斷
-  - [x] `messages.js` 解密錯誤處理區塊先宣告 `packet`，避免 ReferenceError 影響 dead-letter 與錯誤記錄
-- [ ] 驗證＆回歸
-  - [ ] 手動流程：掃碼建鏈、互傳 contact-share/文字各一次，確認雙端角色分別為 initiator/owner（無 responder 污染）
-  - [ ] 檢查 contact-secret（本機 deviceId 下）的 role、自訂 peerDeviceId 是否正確保存
+- [ ] 目標：任何裝置、重登入都能取得最新暱稱與頭像，僅透過既有 contact-share + DR 路徑。
+- [x] 會話金鑰備份 / 還原
+  - [x] 以 MK 加密備份 contact-secret + DR snapshot（conversationToken、conversationId、peerDeviceId、baseRole、ckS/ckR、my/their ratchet 公鑰、updatedAt），登出 / 切換裝置時持續保留。
+  - [x] 登入時先還原備份並驗證 deviceId / role / peerDeviceId 一致性，不符即丟棄並提示需重新掃碼。
+- [ ] 登入後自動廣播最新 profile
+  - [x] DR hydrate 完成後，針對所有有效 contact-secret 觸發 `broadcastContactUpdate(reason='profile')`，payload 帶最新暱稱與頭像縮圖；缺 token 或 peerDeviceId 則 skip 並記錄 log。
+  - [x] 收端依 updatedAt / addedAt 判斷新舊，避免舊資料覆蓋新資料。
+- [ ] 裝置變更防呆
+  - [x] 偵測 peerDeviceId 變更或缺失時，明確提示重新掃碼 / 邀請，禁止沿用舊對應或其他 fallback。
+  - [x] 收到 peerDeviceId 或角色不符的 contact-share / DR snapshot 時直接拒收並記錄日誌。
+- [ ] 驗證與回歸
+  - [ ] 手動測試：雙端多裝置登入 / 登出後再登入，修改暱稱與頭像，確認所有裝置都收到最新資料且 DR / 對話未被重置。
+  - [ ] 更新 test-results 與 README，記錄測試路徑、結果與版本。
 
 
 | 日期                         | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

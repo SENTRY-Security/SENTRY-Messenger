@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getAccountToken, getAccountDigest, normalizePeerIdentity, ensureDeviceId } from '../../core/store.js';
+import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
@@ -16,7 +16,7 @@ import {
   deriveConversationContextFromSecret
 } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
-import { deleteContactSecret } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { clearDrState } from '../../core/store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
@@ -74,6 +74,13 @@ function releaseCallLogPlaceholder(peerDigest, callId) {
 
 function clearCallLogPlaceholders() {
   callLogPlaceholders.clear();
+}
+
+function getMessageState() {
+  if (!sessionStore.messageState) {
+    resetMessageStateWithPlaceholders();
+  }
+  return sessionStore.messageState;
 }
 
 function resetMessageStateWithPlaceholders() {
@@ -717,13 +724,6 @@ export function initMessagesPane({
   function isDesktopLayout() {
     if (typeof window === 'undefined') return true;
     return window.innerWidth >= 960;
-  }
-
-  function getMessageState() {
-    if (!sessionStore.messageState) {
-      resetMessageStateWithPlaceholders();
-    }
-    return sessionStore.messageState;
   }
 
   function ensureConversationIndex() {
@@ -2327,6 +2327,7 @@ export function initMessagesPane({
   async function setActiveConversation(peerAccountDigest) {
     stopActivePoll();
     const key = normalizePeerKey(peerAccountDigest);
+    try { console.log('[messages-pane]', { setActiveConversationStart: key }); } catch {}
     if (!key) return;
     const desktopLayout = isDesktopLayout();
     const entry = sessionStore.contactIndex?.get?.(key);
@@ -2344,7 +2345,26 @@ export function initMessagesPane({
     if (entry?.conversation?.conversation_id) {
       clearConversationTombstone(entry.conversation.conversation_id);
     }
-    const conversation = entry.conversation;
+    let conversation = entry.conversation;
+    if (!conversation?.token_b64) {
+      // Fallback: 從 contact-secret 取出會話資訊，避免缺 token 無法進入對話
+      const secret = getContactSecret(key, { deviceId: ensureDeviceId() }) || null;
+      if (secret?.conversationToken && secret?.conversationId) {
+        conversation = {
+          token_b64: secret.conversationToken,
+          conversation_id: secret.conversationId,
+          dr_init: secret.conversationDrInit || null,
+          peerDeviceId: secret.peerDeviceId || secret.conversationPeerDeviceId || null
+        };
+        entry.conversation = entry.conversation || {};
+        entry.conversation.token_b64 = conversation.token_b64;
+        entry.conversation.conversation_id = conversation.conversation_id;
+        if (conversation.peerDeviceId) entry.conversation.peerDeviceId = conversation.peerDeviceId;
+        if (conversation.dr_init) entry.conversation.dr_init = conversation.dr_init;
+        // 更新 contactIndex/threads 以便後續使用
+        sessionStore.contactIndex?.set?.(key, entry);
+      }
+    }
     if (!conversation?.token_b64) {
       resetMessageStateWithPlaceholders();
       const state = getMessageState();
@@ -3222,6 +3242,7 @@ export function initMessagesPane({
     const isSelf = !!(myAcct && senderAcct && myAcct === senderAcct);
 
     const rawMsgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
+    const msgTypeKey = rawMsgType ? String(rawMsgType).toLowerCase() : null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
     if (normalizedControlType) {
       if (normalizedControlType === CONTROL_MESSAGE_TYPES.READ_RECEIPT) {
@@ -3257,7 +3278,20 @@ export function initMessagesPane({
     }
 
     thread.lastMessageTs = tsRaw;
-    const previewRaw = cleanPreviewText(event?.preview ?? event?.text ?? '');
+    const typePreview = (() => {
+      switch (msgTypeKey) {
+        case 'contact-share':
+          return '好友資料已更新';
+        case 'nickname':
+          return '好友暱稱已更新';
+        case 'avatar':
+        case 'profile':
+          return '好友頭像已更新';
+        default:
+          return null;
+      }
+    })();
+    const previewRaw = cleanPreviewText(event?.preview ?? event?.text ?? '') || typePreview;
     if (previewRaw) thread.lastMessageText = previewRaw;
     else if (!thread.lastMessageText) thread.lastMessageText = '有新訊息';
     const messageId = event?.messageId || event?.message_id;
@@ -3339,7 +3373,14 @@ export function initMessagesPane({
   }
 
   function handleContactOpenConversation(detail) {
-    const peerDigest = normalizePeerKey(detail?.peerAccountDigest);
+    const identity = normalizePeerIdentity({
+      peerAccountDigest: detail?.peerAccountDigest,
+      peerDeviceId: detail?.peerDeviceId || detail?.conversation?.peerDeviceId || null
+    });
+    const peerDigest = identity.key
+      || (identity.accountDigest && identity.deviceId ? `${identity.accountDigest}::${identity.deviceId}` : null)
+      || normalizePeerKey(detail?.peerAccountDigest);
+    try { console.log('[messages-pane]', { contactOpenDetail: detail, peerDigest }); } catch {}
     if (!peerDigest) return;
     syncConversationThreadsFromContacts();
     const conversation = detail?.conversation;
@@ -3351,6 +3392,7 @@ export function initMessagesPane({
         conversationId: conversation.conversation_id,
         conversationToken: conversation.token_b64,
         peerAccountDigest: peerDigest,
+        peerDeviceId: conversation.peerDeviceId || identity.deviceId || prev.peerDeviceId || null,
         nickname: prev.nickname || detail?.nickname || `好友 ${peerDigest.slice(-4)}`,
         avatar: prev.avatar || detail?.avatar || null,
         lastMessageText: typeof prev.lastMessageText === 'string' ? prev.lastMessageText : '',

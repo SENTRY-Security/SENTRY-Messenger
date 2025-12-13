@@ -35,7 +35,7 @@ export function initContactsView(options) {
     contactsScrollEl.style.overflowY = 'auto';
     contactsScrollEl.style.webkitOverflowScrolling = 'touch';
   }
-  const counterEl = dom.contactsCountEl || contactsContainer?.querySelector?.('[data-contacts-count]') || null;
+  const counterEl = dom.contactsCountEl || dom.contactsContainer?.querySelector?.('[data-contacts-count]') || null;
   const updateContactCount = () => {
     if (!counterEl) return;
     const count = Array.isArray(sessionStore.contactState) ? sessionStore.contactState.length : 0;
@@ -140,10 +140,12 @@ export function initContactsView(options) {
           : null;
         const detail = {
           peerAccountDigest: key,
+          peerDeviceId: conversation?.peerDeviceId || (key.includes('::') ? key.split('::')[1] : null),
           nickname: name,
           avatar: c?.avatar || null,
           conversation
         };
+        try { console.log('[contacts-view]', { contactOpen: detail }); } catch {}
         try {
           document.dispatchEvent(new CustomEvent('contacts:open-conversation', { detail }));
         } catch (err) {
@@ -390,6 +392,14 @@ export function initContactsView(options) {
         ? sessionStore.contactState.map((entry) => contactKey(entry)).filter(Boolean)
         : []
     );
+    const localCache = new Map();
+    if (Array.isArray(sessionStore.contactState)) {
+      sessionStore.contactState.forEach((entry) => {
+        const k = contactKey(entry);
+        if (k) localCache.set(k, entry);
+      });
+    }
+    const localConversationCache = conversationIndex instanceof Map ? new Map(conversationIndex) : new Map();
     let fetched = [];
     try {
       const entries = await loadContactsApi();
@@ -399,13 +409,19 @@ export function initContactsView(options) {
       fetched = [];
     }
     contactIndex.clear();
-    conversationIndex?.clear();
+    if (conversationIndex) conversationIndex.clear();
     let missingConv = 0;
     let missingConvToken = 0;
     let missingConvDevice = 0;
     const sanitized = [];
     for (const entry of fetched) {
-      const key = contactKey(entry);
+      const digest = normalizeAccountDigest(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
+      const peerDeviceIdFromEntry = normalizeDeviceId(entry?.peerDeviceId || null);
+      const conv = entry?.conversation;
+      const peerDeviceIdFromConv = normalizeDeviceId(conv?.peerDeviceId || null);
+      const key = digest && (peerDeviceIdFromEntry || peerDeviceIdFromConv)
+        ? `${digest}::${peerDeviceIdFromEntry || peerDeviceIdFromConv}`
+        : contactKey(entry);
       if (!key) continue;
       if (isRecentlyRemoved(key)) {
         presenceManager.removePresenceForContact(key);
@@ -413,15 +429,16 @@ export function initContactsView(options) {
       }
       const normalizedEntry = {
         ...entry,
-        peerAccountDigest: key
+        peerAccountDigest: key,
+        accountDigest: digest || normalizeAccountDigest(entry?.peerAccountDigest ?? null) || null,
+        peerDeviceId: peerDeviceIdFromEntry || peerDeviceIdFromConv || null
       };
       contactIndex.set(key, normalizedEntry);
-      const conv = entry?.conversation;
       if (!conv) {
         missingConv += 1;
       }
       if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
-        const peerDeviceId = conv.peerDeviceId || null;
+        const peerDeviceId = conv.peerDeviceId || peerDeviceIdFromEntry || null;
         if (peerDeviceId) {
           conversationIndex.set(conv.conversation_id, {
             token_b64: conv.token_b64,
@@ -449,6 +466,23 @@ export function initContactsView(options) {
         continue;
       }
       sanitized.push(normalizedEntry);
+    }
+    // 保留本地已存在但伺服器未返回的聯絡人，避免刷新後消失
+    for (const [key, entry] of localCache.entries()) {
+      if (contactIndex.has(key)) continue;
+      contactIndex.set(key, entry);
+      sanitized.push(entry);
+      const conv = entry?.conversation;
+      if (conv?.conversation_id && conv?.token_b64 && conv?.peerDeviceId && conversationIndex) {
+        conversationIndex.set(conv.conversation_id, {
+          token_b64: conv.token_b64,
+          peerAccountDigest: key,
+          peerDeviceId: conv.peerDeviceId,
+          dr_init: conv.dr_init || null
+        });
+      } else if (localConversationCache.has(conv?.conversation_id)) {
+        conversationIndex.set(conv.conversation_id, localConversationCache.get(conv.conversation_id));
+      }
     }
     console.log('[contacts-view]', {
       contactsReloadFetched: sanitized.length,
@@ -479,7 +513,9 @@ export function initContactsView(options) {
     nickname,
     avatar,
     conversation,
-    contactSecret
+    contactSecret,
+    addedAt,
+    updatedAt
   } = {}) {
     let digest = null;
     let peerDeviceIdFromKey = null;
@@ -525,7 +561,6 @@ export function initContactsView(options) {
     if (bypassRemovalGuard && isRecentlyRemoved(key)) {
       recentlyRemovedPeers.delete(key);
     }
-    const now = Math.floor(Date.now() / 1000);
     const conversationPayload = conversation && conversation.conversation_id && conversation.token_b64 ? {
       token_b64: conversation.token_b64,
       conversation_id: conversation.conversation_id,
@@ -536,14 +571,55 @@ export function initContactsView(options) {
       throw new Error('peerDeviceId required for conversation');
     }
 
+    const now = Math.floor(Date.now() / 1000);
+    const isPlaceholderNickname = (name) => typeof name === 'string' && name.startsWith('好友 ');
+    const incomingAddedAt = Number.isFinite(addedAt) ? Number(addedAt) : now;
+    const incomingUpdatedAt = Number.isFinite(updatedAt) ? Number(updatedAt) : incomingAddedAt;
+    const existing = sessionStore.contactIndex?.get?.(key) || null;
+    const existingHasProfile = !!normalizeNickname(existing?.nickname || '') && !isPlaceholderNickname(existing?.nickname);
+    const prevUpdatedAt = Number.isFinite(existing?.profileUpdatedAt)
+      ? Number(existing.profileUpdatedAt)
+      : existingHasProfile && Number.isFinite(existing?.updatedAt)
+        ? Number(existing.updatedAt)
+        : existingHasProfile && Number.isFinite(existing?.addedAt)
+          ? Number(existing.addedAt)
+          : 0;
+    const incomingHasProfile = !!normalizeNickname(nickname || '');
+    const takeIncomingProfile =
+      (incomingHasProfile && !existingHasProfile)
+      || (!prevUpdatedAt || (incomingUpdatedAt && incomingUpdatedAt >= prevUpdatedAt));
+
+    let resolvedNickname = takeIncomingProfile
+      ? (nickname || '')
+      : (existing?.nickname || nickname || '');
+    resolvedNickname = normalizeNickname(resolvedNickname || '') || resolvedNickname || '';
+    if (!resolvedNickname) {
+      resolvedNickname = `好友 ${key.slice(-4)}`;
+    }
+
     const contact = {
-      peerAccountDigest: digest || key,
-      nickname: nickname || `好友 ${key.slice(-4)}`,
-      avatar: avatar || null,
-      addedAt: now,
+      peerAccountDigest: key,
+      accountDigest: digest || null,
+      peerDeviceId: peerDeviceIdFromKey,
+      nickname: resolvedNickname,
+      avatar: takeIncomingProfile ? (avatar || null) : (existing?.avatar || avatar || null),
+      addedAt: existing?.addedAt || incomingAddedAt || now,
+      profileUpdatedAt: takeIncomingProfile ? incomingUpdatedAt : (prevUpdatedAt || incomingUpdatedAt || now),
       conversation: conversationPayload,
       contactSecret: typeof contactSecret === 'string' ? contactSecret : null
     };
+    try {
+      console.log('[contacts-view]', {
+        contactResolved: {
+          key,
+          resolvedNickname,
+          incomingNickname: nickname || null,
+          takeIncomingProfile,
+          incomingUpdatedAt,
+          prevUpdatedAt
+        }
+      });
+    } catch {}
     try {
       console.log('[contacts-view]', {
         contactAddPreSave: {

@@ -150,6 +150,11 @@
       .nav-badge { position:absolute; top:2px; right:12px; min-width:18px; padding:1px 4px; border-radius:999px; background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; font-size:10px; font-weight:600; line-height:1.2; display:none; box-shadow:0 4px 10px rgba(37,99,235,0.25); }
       .navbtn.has-badge .nav-badge { display:inline-flex; align-items:center; justify-content:center; }
       .navbtn.active, .navbtn:focus { color:#111827; }
+      .nav-icon-stack { position:relative; width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; }
+      .nav-icon-stack i { position:absolute; color:currentColor; line-height:1; }
+      .nav-icon-stack .nav-icon-base { font-size:22px; }
+      .nav-icon-stack .nav-icon-lock { font-size:13px; bottom:-3px; right:-6px; color:#0ea5e9; text-shadow:0 0 0 transparent; }
+      .navbtn.active .nav-icon-stack .nav-icon-lock { color:#2563eb; }
       /* 減少初始旋轉動畫（測試/視覺安定） */
       html.no-anim .loading-spinner,
       html.no-anim .spinner,
@@ -181,7 +186,7 @@
       #tab-messages { position:fixed; inset:var(--topbar-offset) 0 var(--navbar-height) 0; overflow:hidden; display:flex; touch-action:pan-y; overscroll-behavior:none; }
       .contact-item { position:relative; display:flex; align-items:center; justify-content:flex-start; }
       .contact-item .item-content { display:flex; align-items:center; gap:12px; width:100%; padding:12px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 8px 16px rgba(15,23,42,0.06); transition:transform .18s ease; }
-      .contact-item .avatar { width:44px; height:44px; border-radius:50%; background:#e2e8f0; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:18px; color:#64748b; }
+      .contact-item .avatar { width:44px; height:44px; border-radius:50%; background:#e2e8f0; overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:18px; color:#64748b; border:1px solid rgba(15,23,42,0.35); box-sizing:border-box; }
       .contact-item .avatar img { width:100%; height:100%; object-fit:cover; }
       .contact-item .info { display:flex; flex-direction:column; gap:4px; flex:1; min-width:0; }
       .contact-item .info .name { font-size:15px; font-weight:600; color:#0f172a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -983,7 +988,10 @@
       </button>
       <button id="nav-drive" class="navbtn active" aria-label="加密雲端">
         <span class="nav-badge" data-tab="drive"></span>
-        <i class='bx bxs-cloud-lock' style="font-size:22px"></i>
+        <span class="nav-icon-stack" aria-hidden="true">
+          <i class='bx bxs-cloud nav-icon-base'></i>
+          <i class='bx bx-lock-alt nav-icon-lock'></i>
+        </span>
         <span>加密雲端</span>
       </button>
       <button id="nav-profile" class="navbtn" aria-label="我的檔案">

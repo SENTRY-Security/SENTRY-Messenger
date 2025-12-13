@@ -4,7 +4,15 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
-import { getMkRaw, getAccountDigest, buildAccountPayload, normalizePeerIdentity, ensureDeviceId } from '../core/store.js';
+import {
+  getMkRaw,
+  getAccountDigest,
+  buildAccountPayload,
+  normalizePeerIdentity,
+  ensureDeviceId,
+  normalizeAccountDigest,
+  normalizeDeviceId
+} from '../core/store.js';
 import { normalizeNickname, generateRandomNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
@@ -219,6 +227,7 @@ export async function saveContact(contact) {
     console.warn('[contacts]', { contactSaveEarlyReturn: 'missing-peer-digest' });
     throw new Error('peerAccountDigest/peerDeviceId required');
   }
+  const peerKey = `${peerAccountDigest}::${peerDeviceId}`;
 
   const conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
     ? {
@@ -244,7 +253,9 @@ export async function saveContact(contact) {
   });
 
   const payload = {
-    peerAccountDigest,
+    peerAccountDigest: peerKey,
+    accountDigest: peerAccountDigest,
+    peerDeviceId,
     nickname: normalizeNickname(contact?.nickname || '') || generateRandomNickname(),
     avatar: contact?.avatar || null,
     addedAt: Number(contact?.addedAt || nowTs())

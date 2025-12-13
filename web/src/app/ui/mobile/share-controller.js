@@ -21,7 +21,7 @@ import {
   clearDrStatesByAccount,
   normalizePeerIdentity
 } from '../../core/store.js';
-import { generateRandomNickname } from '../../features/profile.js';
+import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
@@ -32,9 +32,10 @@ import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js'
 import { bytesToB64Url, b64UrlToBytes } from '../../../shared/utils/base64.js';
 
 const INVITE_INFO = new TextEncoder().encode('invite-token');
-const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'manual']);
+const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
 // 手動標記目前 QR/聯絡人分享流程的版本，用來追蹤是否為最新部署
 const QR_BUILD_VERSION = 'qr-20250212-01';
+const AUTO_PROFILE_BROADCAST_DELAY_MS = 1200;
 
 async function deriveInviteTokenB64Url(secretB64Url) {
   const secretBytes = b64UrlToBytes(secretB64Url);
@@ -70,6 +71,7 @@ export function setupShareController(options) {
 
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
+  let autoProfileBroadcasted = false;
 
   const contactSecretMap = restoreContactSecrets();
   primeStoredDrSnapshots(contactSecretMap);
@@ -360,9 +362,9 @@ export function setupShareController(options) {
         qrVersion: QR_BUILD_VERSION
       }
     });
-    setInviteStatus(`安全邀請通道已生成 (QR 版本 ${QR_BUILD_VERSION})，建立 QR 中…`, { loading: true });
+    setInviteStatus('安全邀請通道已生成，建立 QR 中…', { loading: true });
     renderInviteQr(shareState.currentInvite);
-    setInviteStatus(`安全邀請通道已生成 (QR 版本 ${QR_BUILD_VERSION})，請好友掃描 QR`, { loading: false });
+    setInviteStatus('安全邀請通道已生成，請好友掃描 QR', { loading: false });
   }
 
   function openShareModal(defaultMode = 'qr') {
@@ -561,6 +563,8 @@ export function setupShareController(options) {
         peerDeviceId: resolvedOwnerDeviceId,
         nickname: '',
         avatar: null,
+        addedAt: Math.floor(Date.now() / 1000),
+        updatedAt: Math.floor(Date.now() / 1000),
         conversation: conversationContext,
         contactSecret: conversation.tokenB64
       });
@@ -617,7 +621,7 @@ export function setupShareController(options) {
     }
   }
 
-  async function sendContactShare({ peerAccountDigest, conversation, sessionKey, peerDeviceId, drInit }) {
+  async function sendContactShare({ peerAccountDigest, conversation, sessionKey, peerDeviceId, drInit, overrides = null, reason = null }) {
     const targetIdentity = normalizePeerIdentity({ peerAccountDigest });
     const targetDigest = targetIdentity.accountDigest || targetIdentity.key || null;
     const senderDeviceId = ensureDeviceId();
@@ -649,7 +653,10 @@ export function setupShareController(options) {
     if (!resolvedPeerDeviceId) {
       throw new Error('contact-share missing peerDeviceId (strict path)');
     }
-    const payload = await buildLocalContactPayload({ conversation, drInit });
+    const payload = await buildLocalContactPayload({ conversation, drInit, overrides });
+    if (reason) {
+      payload.reason = reason;
+    }
     payload.reason = payload.reason || 'invite-accept';
     const contactPayload = { ...payload };
     const envelope = await encryptContactPayload(sessionKey || conversationToken, contactPayload);
@@ -702,6 +709,7 @@ export function setupShareController(options) {
     }
 
     const nickname = profileState?.nickname || '';
+    const profileUpdatedAt = Number.isFinite(profileState?.updatedAt) ? Number(profileState.updatedAt) : Math.floor(Date.now() / 1000);
     let avatar = null;
     const overrideAvatar = overrides?.avatar || null;
     const baseAvatar = overrideAvatar || profileState?.avatar || initialProfile?.avatar || null;
@@ -762,7 +770,8 @@ export function setupShareController(options) {
     const payload = {
       nickname: effectiveNickname,
       avatar,
-      addedAt: Math.floor(Date.now() / 1000)
+      addedAt: Math.floor(Date.now() / 1000),
+      updatedAt: profileUpdatedAt
     };
     if (conversationInfo) payload.conversation = conversationInfo;
     return payload;
@@ -782,9 +791,29 @@ export function setupShareController(options) {
         hasEnvelope: !!msg?.envelope
       }
     });
-    if (!peerKey || !peerDeviceId) return;
+    if (!peerKey || !peerDeviceId) {
+      console.warn('[share-controller]', { contactShareMissingPeerDevice: true, peerAccountDigest: peerKey || null, peerDeviceId });
+      if (notifyToast) {
+        notifyToast('收到未知裝置的聯絡更新，請請好友重新掃碼', { variant: 'warning' });
+      }
+      return;
+    }
     const selfDeviceId = ensureDeviceId();
     const stored = getContactSecret(peerKey, { deviceId: selfDeviceId });
+    if (stored?.peerDeviceId && peerDeviceId && stored.peerDeviceId !== peerDeviceId) {
+      console.warn('[share-controller]', {
+        contactSharePeerDeviceConflict: true,
+        peerAccountDigest: peerKey,
+        storedPeerDeviceId: stored.peerDeviceId,
+        incomingPeerDeviceId: peerDeviceId
+      });
+      // 將 peerDeviceId 置換為最新，避免卡在舊裝置紀錄。
+      try {
+        setContactSecret(peerKey, { peerDeviceId, meta: { source: 'contact-share-peer-device-update' } });
+      } catch (err) {
+        console.warn('[share-controller]', { contactSharePeerDeviceUpdateError: err?.message || err, peerAccountDigest: peerKey });
+      }
+    }
     const sessionKey = stored?.conversationToken || null;
     if (!sessionKey) {
       console.warn('[share-controller]', { contactShareMissingSession: peerKey, peerDeviceId, selfDeviceId });
@@ -797,6 +826,19 @@ export function setupShareController(options) {
     }
     try {
       const payload = await decryptContactPayload(sessionKey, envelope);
+      const normalizedNickname = normalizeNickname(payload?.nickname || '') || payload?.nickname || generateRandomNickname();
+      payload.nickname = normalizedNickname;
+      try {
+        console.log('[share-controller]', {
+          contactSharePayload: {
+            peerAccountDigest: peerKey,
+            peerDeviceId,
+            hasAvatar: !!payload.avatar,
+            nickname: payload.nickname || null,
+            conversationId: conversation?.conversation_id || null
+          }
+        });
+      } catch {}
       const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
       const reasonKey = reasonRaw ? reasonRaw.toLowerCase() : null;
       const conversationRaw = payload?.conversation || null;
@@ -812,11 +854,25 @@ export function setupShareController(options) {
         dr_init: conversationRaw?.dr_init || conversationRaw?.drInit || null,
         peerDeviceId
       };
+      if (conversation.peerDeviceId && peerDeviceId && conversation.peerDeviceId !== peerDeviceId) {
+        console.warn('[share-controller]', {
+          contactSharePeerDeviceMismatch: true,
+          peerAccountDigest: peerKey,
+          fromEvent: peerDeviceId,
+          fromPayload: conversation.peerDeviceId
+        });
+        if (notifyToast) {
+          notifyToast('對方裝置資訊不符，請請好友重新掃描 QR', { variant: 'warning' });
+        }
+        return;
+      }
 
       await addContactEntry({
         peerAccountDigest: peerKey,
         nickname: payload.nickname,
         avatar: payload.avatar || null,
+        addedAt: payload.addedAt || null,
+        updatedAt: payload.updatedAt || null,
         conversation,
         contactSecret: conversation.token_b64
       });
@@ -1068,6 +1124,57 @@ export function setupShareController(options) {
     startInviteScanner();
   }
 
+  async function broadcastContactUpdate({ reason = 'manual', targetPeers = null, overrides = null } = {}) {
+    const reasonKey = typeof reason === 'string' ? reason.toLowerCase() : 'manual';
+    const map = contactSecretMap instanceof Map ? contactSecretMap : restoreContactSecrets();
+    if (!(map instanceof Map)) return;
+    const targetSet = Array.isArray(targetPeers) && targetPeers.length
+      ? new Set(
+        targetPeers
+          .map((p) => normalizePeerIdentity(p).key)
+          .filter(Boolean)
+      )
+      : null;
+    const deviceId = ensureDeviceId();
+    for (const peerKey of map.keys()) {
+      const identity = normalizePeerIdentity(peerKey);
+      const digest = identity.key;
+      if (!digest) continue;
+      if (targetSet && !targetSet.has(digest)) continue;
+      const record = getContactSecret(digest, { deviceId });
+      if (!record) continue;
+      const token = record.conversationToken || record.conversation?.token || null;
+      const convId = record.conversationId || record.conversation?.id || null;
+      const peerDeviceId = record.peerDeviceId || record.conversation?.peerDeviceId || identity.deviceId || null;
+      if (!token || !convId || !peerDeviceId) continue;
+      const drInit = record.conversationDrInit || record.conversation?.drInit || null;
+      const conversation = {
+        token_b64: token,
+        conversation_id: convId,
+        dr_init: drInit,
+        peerDeviceId
+      };
+      try {
+        await sendContactShare({
+          peerAccountDigest: digest,
+          conversation,
+          sessionKey: token,
+          peerDeviceId,
+          drInit,
+          overrides,
+          reason: reasonKey
+        });
+      } catch (err) {
+        console.error('[share-controller]', {
+          contactBroadcastError: err?.message || err,
+          peerAccountDigest: digest,
+          peerDeviceId,
+          reason: reasonKey
+        });
+      }
+    }
+  }
+
   return {
     openShareModal,
     closeShareModal,
@@ -1075,8 +1182,21 @@ export function setupShareController(options) {
     handleInviteScan,
     handleContactShareEvent,
     handleContactInitEvent,
+    broadcastContactUpdate,
     setWsSend(fn) {
       wsTransport = typeof fn === 'function' ? fn : null;
     }
   };
+
+  profileInitPromise
+    ?.then(() => {
+      if (autoProfileBroadcasted) return;
+      autoProfileBroadcasted = true;
+      setTimeout(() => {
+        if (!contactSecretMap || !(contactSecretMap instanceof Map) || contactSecretMap.size === 0) return;
+        broadcastContactUpdate({ reason: 'profile' })
+          .catch((err) => console.warn('[share-controller]', { autoProfileBroadcastError: err?.message || err }));
+      }, AUTO_PROFILE_BROADCAST_DELAY_MS);
+    })
+    .catch(() => {});
 }
