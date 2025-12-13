@@ -469,18 +469,31 @@ export function initContactsView(options) {
     }
     // 保留本地已存在但伺服器未返回的聯絡人，避免刷新後消失
     for (const [key, entry] of localCache.entries()) {
-      if (contactIndex.has(key)) continue;
-      contactIndex.set(key, entry);
-      sanitized.push(entry);
+      if (contactIndex.has(key)) {
+        // 補回伺服器缺的 peerDeviceId，避免覆蓋掉本地正確裝置
+        const existing = contactIndex.get(key);
+        const mergedPeerDeviceId = existing?.peerDeviceId || entry?.peerDeviceId || null;
+        if (!entry.peerDeviceId && mergedPeerDeviceId) entry.peerDeviceId = mergedPeerDeviceId;
+        if (entry?.conversation && mergedPeerDeviceId && !entry.conversation.peerDeviceId) {
+          entry.conversation.peerDeviceId = mergedPeerDeviceId;
+        }
+        contactIndex.set(key, { ...existing, ...entry });
+      } else {
+        contactIndex.set(key, entry);
+        sanitized.push(entry);
+      }
       const conv = entry?.conversation;
-      if (conv?.conversation_id && conv?.token_b64 && conv?.peerDeviceId && conversationIndex) {
-        conversationIndex.set(conv.conversation_id, {
-          token_b64: conv.token_b64,
-          peerAccountDigest: key,
-          peerDeviceId: conv.peerDeviceId,
-          dr_init: conv.dr_init || null
-        });
-      } else if (localConversationCache.has(conv?.conversation_id)) {
+      if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
+        const peerDeviceId = conv.peerDeviceId || entry?.peerDeviceId || null;
+        if (peerDeviceId) {
+          conversationIndex.set(conv.conversation_id, {
+            token_b64: conv.token_b64,
+            peerAccountDigest: key,
+            peerDeviceId,
+            dr_init: conv.dr_init || null
+          });
+        }
+      } else if (conv?.conversation_id && localConversationCache.has(conv.conversation_id)) {
         conversationIndex.set(conv.conversation_id, localConversationCache.get(conv.conversation_id));
       }
     }

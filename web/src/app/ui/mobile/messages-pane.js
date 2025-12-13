@@ -99,24 +99,6 @@ function stopActivePoll() {
   }
 }
 
-function scheduleActivePoll() {
-  stopActivePoll();
-  const state = getMessageState();
-  if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
-  activePollTimer = setTimeout(() => {
-    activePollTimer = null;
-    const current = getMessageState();
-    if (!current.conversationId || !current.conversationToken || !current.activePeerDigest) return;
-    if (current.loading) {
-      scheduleActivePoll();
-      return;
-    }
-    loadActiveConversationMessages({ append: false })
-      .catch((err) => log({ activePollError: err?.message || err }))
-      .finally(() => scheduleActivePoll());
-  }, ACTIVE_POLL_INTERVAL_MS);
-}
-
 const LOCAL_GROUP_STORAGE_KEY = 'groups-drafts-v1';
 let localGroups = loadLocalGroups();
 let groupBuilderEl = null;
@@ -211,6 +193,24 @@ export function initMessagesPane({
     const identity = normalizePeerIdentity(value);
     return identity.key || null;
   };
+
+  function scheduleActivePoll() {
+    stopActivePoll();
+    const state = getMessageState();
+    if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
+    activePollTimer = setTimeout(() => {
+      activePollTimer = null;
+      const current = getMessageState();
+      if (!current.conversationId || !current.conversationToken || !current.activePeerDigest) return;
+      if (current.loading) {
+        scheduleActivePoll();
+        return;
+      }
+      loadActiveConversationMessages({ append: false })
+        .catch((err) => log({ activePollError: err?.message || err }))
+        .finally(() => scheduleActivePoll());
+    }, ACTIVE_POLL_INTERVAL_MS);
+  }
 
   function normalizePeerKey(value) {
     return normalizeDigestString(value?.peerAccountDigest ?? value);
@@ -3227,7 +3227,7 @@ export function initMessagesPane({
 
     const thread = upsertConversationThread({
       peerAccountDigest: peerDigest,
-      peerDeviceId: convEntry.peerDeviceId || senderDeviceId || null,
+      peerDeviceId: senderDeviceId || convEntry.peerDeviceId || null,
       conversationId: convId,
       tokenB64,
       nickname,
