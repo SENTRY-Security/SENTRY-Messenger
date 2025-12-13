@@ -477,7 +477,9 @@ export function initContactsView(options) {
         if (entry?.conversation && mergedPeerDeviceId && !entry.conversation.peerDeviceId) {
           entry.conversation.peerDeviceId = mergedPeerDeviceId;
         }
-        contactIndex.set(key, { ...existing, ...entry });
+        const merged = { ...existing, ...entry };
+        contactIndex.set(key, merged);
+        sanitized.push(merged);
       } else {
         contactIndex.set(key, entry);
         sanitized.push(entry);
