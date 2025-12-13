@@ -2385,7 +2385,12 @@ export function initMessagesPane({
     if (state.conversationId && state.conversationId !== conversation.conversation_id) {
       resetProcessedMessages(state.conversationId);
     }
-    const peerDeviceId = conversation.peerDeviceId || null;
+    const peerDeviceIdFromKey = key && key.includes('::') ? key.split('::')[1] : null;
+    const peerDeviceId = conversation.peerDeviceId || peerDeviceIdFromKey || null;
+    if (!peerDeviceId) {
+      setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
+      return;
+    }
     state.activePeerDigest = key;
     state.activePeerDeviceId = peerDeviceId || null;
     state.conversationToken = conversation.token_b64;
