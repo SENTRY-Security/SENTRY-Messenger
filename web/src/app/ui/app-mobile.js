@@ -51,7 +51,8 @@ import {
   resetWsState,
   resetContacts,
   resetProfileState,
-  resetSettingsState
+  resetSettingsState,
+  hydrateConversationsFromSecrets
 } from './mobile/session-store.js';
 import { setupModalController } from './mobile/modal-utils.js';
 import { createSwipeManager } from './mobile/swipe-utils.js';
@@ -1451,6 +1452,7 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     // 登入時先清除所有記憶體 DR 狀態，避免沿用舊裝置/錯角色快照。
     clearDrState();
     const restored = hydrateDrStatesFromContactSecrets();
+    try { hydrateConversationsFromSecrets(); } catch {}
     log({ drSnapshotsRestored: restored });
     try {
       const snapshotRecord = readContactSnapshot(localStorage, getContactSecretsStorageKeys(getContactSecretKeyOptions()));
