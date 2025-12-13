@@ -383,6 +383,8 @@ function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false } = {}) {
   };
   const role = chooseString(input.role, null);
   if (role) out.role = role.toLowerCase();
+  const selfDev = chooseString(input.selfDeviceId ?? input.self_device_id, null);
+  if (selfDev) out.selfDeviceId = selfDev;
   if (setDefaultUpdatedAt && !out.updatedAt) {
     out.updatedAt = Date.now();
   }
@@ -721,6 +723,7 @@ export function persistContactSecrets() {
 function createEmptyContactSecret() {
   return {
     peerDeviceId: null,
+    role: null,
     conversationToken: null,
     conversationId: null,
     conversationDrInit: null,
@@ -747,6 +750,7 @@ function cloneContactSecretRecord(existing) {
   }
   return {
     peerDeviceId: existing.peerDeviceId || null,
+    role: existing.role || null,
     conversationToken: existing.conversationToken || null,
     conversationId: existing.conversationId || null,
     conversationDrInit: existing.conversationDrInit || null,
@@ -782,7 +786,12 @@ function selectDeviceRecord(record, deviceId = null) {
 function derivePeerIdentityForEntry(peerKey, record = {}) {
   const parsed = parsePeerKey(peerKey);
   const peerAccountDigest = parsed.accountDigest || normalizeAccountDigest(peerKey);
-  const peerDeviceId = normalizePeerDeviceId(record?.peerDeviceId || parsed.deviceId || null);
+  const peerDeviceId = normalizePeerDeviceId(
+    record?.peerDeviceId
+    || record?.conversation?.peerDeviceId
+    || parsed.deviceId
+    || null
+  );
   return {
     peerAccountDigest: peerAccountDigest || null,
     peerDeviceId: peerDeviceId || null
@@ -813,6 +822,7 @@ function buildStructuredEntry(peerAccountDigest, record) {
   return {
     peerAccountDigest: identity.peerAccountDigest || null,
     peerDeviceId,
+    role: record.role || null,
     conversation: {
       token: record.conversationToken || null,
       id: record.conversationId || null,
@@ -895,6 +905,7 @@ function normalizeStructuredEntry(entry) {
     || conversation.peerDeviceId
     || null
   );
+  const role = typeof entry.role === 'string' ? entry.role.toLowerCase() : null;
   const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : null;
   const deviceKeys = devices ? Object.keys(devices).map((k) => normalizePeerDeviceId(k)).filter(Boolean) : [];
   const peerDeviceId =
@@ -909,6 +920,7 @@ function normalizeStructuredEntry(entry) {
   if (!identity.key) return null;
   const record = createEmptyContactSecret();
   record.peerDeviceId = identity.deviceId || peerDeviceId || null;
+  record.role = role || null;
 
   record.conversationToken = normalizeOptionalString(conversation.token) || null;
   record.conversationId = normalizeOptionalString(conversation.id) || null;
@@ -977,6 +989,7 @@ function normalizeContactSecretUpdate(update = {}) {
   const structured = {
     peerDeviceId: { has: false, value: null },
     deviceId: { has: false, value: null },
+    role: { has: false, value: null },
     conversation: {
       token: { has: false, value: null },
       id: { has: false, value: null },
@@ -1019,6 +1032,12 @@ function normalizeContactSecretUpdate(update = {}) {
   const applyPeerDeviceId = (raw) => {
     if (raw === undefined) return;
     structured.peerDeviceId = { has: true, value: normalizePeerDeviceId(raw) };
+  };
+
+  const applyRole = (raw) => {
+    if (raw === undefined) return;
+    const val = normalizeOptionalString(raw);
+    structured.role = { has: true, value: val ? val.toLowerCase() : null };
   };
 
   function applyDrState(raw) {
@@ -1092,6 +1111,7 @@ function normalizeContactSecretUpdate(update = {}) {
   applyString(structured.conversation, 'token', update.conversationToken);
   applyString(structured.conversation, 'id', update.conversationId);
   applyPeerDeviceId(update.peerDeviceId);
+  applyRole(update.role);
   if (Object.prototype.hasOwnProperty.call(update, 'conversationDrInit')) {
     structured.conversation.drInit = { has: true, value: update.conversationDrInit || null };
   }
@@ -1153,6 +1173,11 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
   if (structured.conversation.drInit.has) next.conversationDrInit = structured.conversation.drInit.value;
   if (structured.conversation.peerDeviceId?.has && structured.conversation.peerDeviceId.value) {
     next.peerDeviceId = structured.conversation.peerDeviceId.value;
+  }
+  if (structured.role?.has) {
+    next.role = structured.role.value || null;
+  } else if (typeof opts.role === 'string') {
+    next.role = opts.role.toLowerCase();
   }
   if (structured.dr.state.has) deviceRecord.drState = structured.dr.state.value;
   if (structured.dr.seed.has) deviceRecord.drSeed = structured.dr.seed.value;

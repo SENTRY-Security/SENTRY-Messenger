@@ -32,7 +32,7 @@ import {
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
-import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
+import { b64u8 as naclB64u8, b64 as naclB64 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 import {
@@ -59,6 +59,7 @@ const defaultDeps = {
   cloneDrStateHolder: sessionCloneDrStateHolder,
   b64UrlToBytes: uiB64UrlToBytes,
   b64u8: naclB64u8,
+  b64: naclB64,
   saveEnvelopeMeta: mediaSaveEnvelopeMeta,
   ensureSecureConversationReady: managerEnsureSecureConversationReady,
   ensureDrReceiverState: managerEnsureDrReceiverState,
@@ -528,7 +529,40 @@ function hasUsableDrState(holder, roleHint = null) {
   return hasReceive || hasSend;
 }
 
-function recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, tokenB64 = null, packet = null, raw = null, reason = 'decrypt-fail' } = {}) {
+function summarizeDrState(state) {
+  if (!state || typeof state !== 'object') return null;
+  const encode = (u8) => {
+    try {
+      if (!u8 || !(u8 instanceof Uint8Array)) return null;
+      return deps.b64 ? deps.b64(u8) : null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    Ns: Number(state.Ns ?? null),
+    Nr: Number(state.Nr ?? null),
+    PN: Number(state.PN ?? null),
+    hasCkS: state?.ckS instanceof Uint8Array && state.ckS.length > 0,
+    hasCkR: state?.ckR instanceof Uint8Array && state.ckR.length > 0,
+    myRatchetPub_b64: encode(state?.myRatchetPub),
+    theirRatchetPub_b64: encode(state?.theirRatchetPub),
+    baseRole: state?.baseKey?.role || null,
+    snapshotTs: Number.isFinite(state?.snapshotTs) ? state.snapshotTs : null,
+    pendingSendRatchet: !!state?.pendingSendRatchet
+  };
+}
+
+function recordDrDecryptFailurePayload({
+  conversationId,
+  peerAccountDigest,
+  tokenB64 = null,
+  packet = null,
+  raw = null,
+  reason = 'decrypt-fail',
+  state = null,
+  messageId = null
+} = {}) {
   const envelope =
     packet ||
     (raw
@@ -547,11 +581,12 @@ function recordDrDecryptFailurePayload({ conversationId, peerAccountDigest, toke
     payloadEnvelope: envelope,
     raw: raw
       ? {
-          id: raw?.id || raw?.message_id || raw?.messageId || null,
+          id: raw?.id || raw?.message_id || raw?.messageId || messageId || null,
           created_at: raw?.created_at || raw?.createdAt || null
         }
       : null,
-    reason
+    reason,
+    state: summarizeDrState(state)
   };
   try {
     console.warn('[dr-decrypt-fail-payload]', {
@@ -806,24 +841,55 @@ export async function listSecureAndDecrypt(params = {}) {
   }
   const sortedItems = filteredItems;
   const shouldTrackState = mutateState !== false;
-  const baseState = deps.drState(peerRef);
-  const preSnapshot = shouldTrackState ? deps.snapshotDrState(baseState, { setDefaultUpdatedAt: false, forceNow: true }) : null;
-  state = shouldTrackState ? baseState : deps.cloneDrStateHolder(baseState);
-  const ensureReceiverStateReady = () => {
-    const current = shouldTrackState ? state : deps.cloneDrStateHolder(state);
+  const stateByDevice = new Map();
+  const ensuredConversations = new Set();
+
+  const getPeerRef = (deviceId) => ({
+    peerAccountDigest: identity.accountDigest || peerKey,
+    peerDeviceId: deviceId
+  });
+
+  const getStateForDevice = (deviceId) => {
+    if (!deviceId) throw new Error('peerDeviceId required for DR state');
+    if (shouldTrackState) {
+      let holder = stateByDevice.get(deviceId);
+      if (!holder) {
+        holder = deps.drState(getPeerRef(deviceId));
+        stateByDevice.set(deviceId, holder);
+      }
+      return holder;
+    }
+    const base = deps.drState(getPeerRef(deviceId));
+    return deps.cloneDrStateHolder?.(base) || base;
+  };
+
+  const ensureReceiverStateReady = (deviceId) => {
+    const current = getStateForDevice(deviceId);
     if (!hasUsableDrState(current)) {
       throw new Error('DR state unavailable for conversation');
     }
     return current;
   };
-  ensureReceiverStateReady();
 
-  await deps.ensureSecureConversationReady({
-    peerAccountDigest: peerKey,
-    peerDeviceId,
-    reason: 'list-messages',
-    source: 'messages:listSecureAndDecrypt'
-  });
+  const ensureConversationReadyForDevice = async (deviceId) => {
+    if (!deviceId) return;
+    const key = `${peerKey}::${deviceId}`;
+    if (ensuredConversations.has(key)) return;
+    await deps.ensureSecureConversationReady({
+      peerAccountDigest: peerKey,
+      peerDeviceId: deviceId,
+      reason: 'list-messages',
+      source: 'messages:listSecureAndDecrypt',
+      conversationId
+    });
+    ensuredConversations.add(key);
+  };
+
+  // 預先確保初始 peerDevice 的會話就緒與 state 存在。
+  if (peerDevice) {
+    await ensureConversationReadyForDevice(peerDevice);
+    ensureReceiverStateReady(peerDevice);
+  }
 
   if (drDebug) {
     try {
@@ -844,25 +910,37 @@ export async function listSecureAndDecrypt(params = {}) {
     const raw = job?.raw || {};
     const jobPacket = job?.payloadEnvelope || null;
     let payloadMsgType = null;
+    let headerRaw = null;
+    let header = null;
+    let ciphertextB64 = null;
+    let packet = null;
     try {
-      let packet = null;
-      const headerRaw = jobPacket?.header_json || raw?.header_json || raw?.headerJson || raw?.header || null;
-      let header = null;
+      headerRaw = jobPacket?.header_json || raw?.header_json || raw?.headerJson || raw?.header || null;
       if (typeof headerRaw === 'string') {
         try { header = JSON.parse(headerRaw); } catch {}
       } else if (headerRaw && typeof headerRaw === 'object') {
         header = headerRaw;
       }
-      const ciphertextB64 = jobPacket?.ciphertext_b64 || raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
-      if (!header || !ciphertextB64 || !header.iv_b64) {
+      ciphertextB64 = jobPacket?.ciphertext_b64 || raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
+      // 只接受 DR 封包；其他類型（例如 contact snapshot）直接跳過。
+      if (!header) {
         throw new Error('缺少訊息標頭或密文，無法進行 DR 解密');
       }
-      if (header?.fallback) throw new Error('偵測到舊版 fallback 封包，已不再支援');
-      packet = {
-        header_json: headerRaw,
-        ciphertext_b64: ciphertextB64,
-        counter: jobPacket?.counter ?? header?.n ?? null
-      };
+      if (!header.dr) {
+        if (drDebug) {
+          console.warn('[dr-message-skip:non-dr]', { conversationId, headerKeys: Object.keys(header || {}) });
+        }
+        return;
+      }
+      if (!ciphertextB64 || !header.iv_b64) {
+        throw new Error('缺少訊息標頭或密文，無法進行 DR 解密');
+      }
+        if (header?.fallback) throw new Error('偵測到舊版 fallback 封包，已不再支援');
+        packet = {
+          header_json: headerRaw,
+          ciphertext_b64: ciphertextB64,
+          counter: jobPacket?.counter ?? header?.n ?? null
+        };
       const pkt = {
         aead: 'aes-256-gcm',
         header,
@@ -880,11 +958,23 @@ export async function listSecureAndDecrypt(params = {}) {
       const isMediaMessage = !!(meta?.media);
 
       // Sender/target判斷：先看 direction，再套用目標驗證（避免把自己送出的封包誤判）。
+      const conversationId = packet?.conversationId || raw?.conversationId || raw?.conversation_id || null;
+      if (conversationId && typeof conversationId === 'string' && conversationId.startsWith('contacts-')) {
+        console.warn('[dr-message-skip:contacts-conv]', { conversationId });
+        return;
+      }
       const senderDigestRaw = raw?.senderAccountDigest || meta?.senderDigest || '';
       const senderDigest = typeof senderDigestRaw === 'string' ? senderDigestRaw.toUpperCase() : '';
       let direction = 'unknown';
       if (senderDigest && selfDigest && senderDigest === selfDigest) direction = 'outgoing';
       else if (senderDigest && peerAccountDigestNormalized && senderDigest === peerAccountDigestNormalized) direction = 'incoming';
+      const senderDeviceId = meta?.sender_device_id
+        || meta?.senderDeviceId
+        || raw?.senderDeviceId
+        || raw?.sender_device_id
+        || header?.device_id
+        || null;
+      const peerDeviceForMessage = senderDeviceId || peerDevice;
 
       const targetDigestRaw = raw?.targetAccountDigest
         || raw?.target_account_digest
@@ -921,12 +1011,21 @@ export async function listSecureAndDecrypt(params = {}) {
       if (direction === 'outgoing') {
         return;
       }
-      if (targetDeviceId && selfDeviceId && targetDeviceId !== selfDeviceId) {
+      if (!targetDeviceId) {
+        console.warn('[dr-message-skip:missing-target-device]', { conversationId });
+        return;
+      }
+      const deviceMatchesSelf = !!(selfDeviceId && targetDeviceId === selfDeviceId);
+      if (!deviceMatchesSelf) {
         console.warn('[dr-message-skip:target-device-mismatch]', { conversationId, targetDeviceId, selfDeviceId });
         return;
       }
-      // 若對方把 targetDigest 填成自己，且目標裝置是本機，視為我們的封包：覆寫成 selfDigest。
-      if (direction === 'incoming' && targetDigest && senderDigest && targetDigest === senderDigest && targetDeviceId && selfDeviceId && targetDeviceId === selfDeviceId) {
+      if (direction === 'unknown' && deviceMatchesSelf) {
+        direction = 'incoming';
+      }
+      // 若對方把 targetDigest 填成自己、或漏填 digest，但 targetDeviceId 指向本機，直接視目標為自端。
+      const shouldForceSelfDigest = deviceMatchesSelf && (direction === 'incoming' || direction === 'unknown');
+      if (shouldForceSelfDigest && (!targetDigest || (senderDigest && targetDigest === senderDigest))) {
         targetDigest = selfDigest || targetDigest;
       }
       if (!targetDigest) {
@@ -937,34 +1036,57 @@ export async function listSecureAndDecrypt(params = {}) {
         console.warn('[dr-message-skip:target-mismatch]', { conversationId, targetDigest, selfDigest });
         return;
       }
-      try {
-        console.log('[dr-inbox:receive]', {
-          conversationId,
-          peerAccountDigest: peerKey,
-          messageId,
-          msgType: meta?.msg_type || meta?.msgType || null,
-          targetDigest,
-          senderDigest: meta?.sender_digest || meta?.senderDigest || null
-        });
-      } catch {}
+      if (drDebug) {
+        try {
+          console.log('[dr-inbox:receive]', {
+            conversationId,
+            peerAccountDigest: peerKey,
+            messageId,
+            msgType: meta?.msg_type || meta?.msgType || null,
+            targetDigest,
+            senderDigest: meta?.sender_digest || meta?.senderDigest || null
+          });
+        } catch {}
+      }
       // peer 身份以 senderDigest 為準；header.peerAccountDigest 只做觀察，不作為拒收條件，避免因欄位命名差異造成單一路徑被中斷。
       // direction 已由 senderDigest 判定，targetDigest 也已驗證為 self，因此此處不再以 headerPeerDigest 做硬性比對。
 
-      if (!state) {
-        state = trackState
-          ? deps.drState(peerRef)
-          : deps.cloneDrStateHolder?.(deps.drState(peerRef)) || deps.drState(peerRef);
+      state = getStateForDevice(peerDeviceForMessage);
+      const holderConvId = state?.baseKey?.conversationId || null;
+      if (holderConvId && conversationId && holderConvId !== conversationId) {
+        deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage });
+        if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
+          await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId });
+          state = getStateForDevice(peerDeviceForMessage);
+        }
       }
+      // guest/未知角色若拿到 responder state，強制清除並要求 initiator 重建（無 fallback）。
+      const stateRole = typeof state?.baseKey?.role === 'string' ? state.baseKey.role.toLowerCase() : null;
+      if (stateRole === 'responder' && (direction === 'incoming' || direction === 'unknown')) {
+        deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage });
+        if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
+          await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId });
+          state = getStateForDevice(peerDeviceForMessage);
+        }
+      }
+      // 若仍缺可用 state，直接 fail（無任何 fallback）。
       if (!hasUsableDrState(state)) {
-        if (deps.ensureDrReceiverState && peerKey && senderDeviceId) {
-          await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: senderDeviceId, conversationId });
-          state = trackState
-            ? deps.drState(peerRef)
-            : deps.cloneDrStateHolder?.(deps.drState(peerRef)) || deps.drState(peerRef);
+        if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
+          await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId });
+          state = getStateForDevice(peerDeviceForMessage);
         }
         if (!hasUsableDrState(state)) {
           throw new Error('DR state unavailable for conversation');
         }
+      }
+      if (conversationId && state) {
+        state.baseKey = state.baseKey || {};
+        if (!state.baseKey.conversationId) {
+          state.baseKey.conversationId = conversationId;
+        }
+      }
+      if (!ensuredConversations.has(`${peerKey}::${peerDeviceForMessage}`)) {
+        await ensureConversationReadyForDevice(peerDeviceForMessage);
       }
       if (trackState && !isMediaMessage && wasMessageProcessed(conversationId, messageId)) {
         if (drDebug) {
@@ -973,18 +1095,60 @@ export async function listSecureAndDecrypt(params = {}) {
         return;
       }
 
+      // 單一路徑：若收到同一 ratchet 鏈上已消耗過的 counter，直接跳過，避免重放造成錯用 ckR。
+      const currentNr = Number.isFinite(Number(state?.Nr)) ? Number(state.Nr) : 0;
+      state.Nr = currentNr; // normalize to numeric to avoid string comparisons
+      const headerCounter = Number(header?.n);
+      const sameReceiveChain = state?.theirRatchetPub && typeof header?.ek_pub_b64 === 'string'
+        && naclB64(state.theirRatchetPub) === header.ek_pub_b64;
+      if (sameReceiveChain && Number.isFinite(headerCounter) && currentNr >= headerCounter) {
+        if (drDebug) {
+          console.warn('[dr-message-skip:duplicate-counter]', {
+            conversationId,
+            peerAccountDigest: peerKey,
+            messageId,
+            counter: headerCounter,
+            nr: currentNr
+          });
+        }
+        return;
+      }
+
       let messageKeyB64 = null;
-      const text = await deps.drDecryptText(state, pkt, {
-        onMessageKey: (mk) => { messageKeyB64 = mk; }
-      });
       try {
-        console.log('[dr-inbox:decrypted]', {
+        console.log('[dr-log:attempt]', {
           conversationId,
           peerAccountDigest: peerKey,
           messageId,
-          msgType: meta?.msg_type || meta?.msgType || null
+          peerDeviceId: peerDeviceForMessage || null,
+          targetDeviceId: targetDeviceId || null,
+          senderDeviceId: senderDeviceId || null,
+          selfDeviceId,
+          headerCounter: Number(header?.n ?? packet.counter ?? null),
+          headerEkPub: header?.ek_pub_b64 || null,
+          headerDeviceId: header?.device_id || null,
+          stateConvId: state?.baseKey?.conversationId || null,
+          stateRole: state?.baseKey?.role || null,
+          stateHasCkR: !!(state?.ckR && state.ckR.length),
+          stateHasCkS: !!(state?.ckS && state.ckS.length),
+          stateNs: Number.isFinite(state?.Ns) ? state.Ns : null,
+          stateNr: Number.isFinite(state?.Nr) ? state.Nr : null,
+          stateTheirPub: state?.theirRatchetPub ? (deps.b64 ? deps.b64(state.theirRatchetPub) : null) : null
         });
       } catch {}
+      const text = await deps.drDecryptText(state, pkt, {
+        onMessageKey: (mk) => { messageKeyB64 = mk; }
+      });
+      if (drDebug) {
+        try {
+          console.log('[dr-inbox:decrypted]', {
+            conversationId,
+            peerAccountDigest: peerKey,
+            messageId,
+            msgType: meta?.msg_type || meta?.msgType || null
+          });
+        } catch {}
+      }
 
       if (trackState) {
         markMessageProcessed(conversationId, messageId);
@@ -1012,13 +1176,15 @@ export async function listSecureAndDecrypt(params = {}) {
         }
       } else if (messageObj) {
         if (messageObj.type === 'contact-share') {
-          try {
-            console.log('[dr-inbox:contact-share]', {
-              conversationId,
-              peerAccountDigest: peerKey,
-              messageId
-            });
-          } catch {}
+          if (drDebug) {
+            try {
+              console.log('[dr-inbox:contact-share]', {
+                conversationId,
+                peerAccountDigest: peerKey,
+                messageId
+              });
+            } catch {}
+          }
           try {
             if (typeof document !== 'undefined' && document?.dispatchEvent) {
               document.dispatchEvent(new CustomEvent('contact-share', {
@@ -1047,7 +1213,7 @@ export async function listSecureAndDecrypt(params = {}) {
             console.warn('[messages] onMessageDecrypted callback failed', cbErr);
           }
         }
-        drFailureCounter.delete(`${conversationId}::${peerKey}`);
+        drFailureCounter.delete(`${conversationId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`);
       }
     } catch (err) {
       const msg = err?.message || String(err);
@@ -1055,6 +1221,57 @@ export async function listSecureAndDecrypt(params = {}) {
         errs.push(msg);
       }
       console.warn('[messages] secure decrypt skipped', { id: job?.messageId || job?.raw?.id, error: msg, msgType: payloadMsgType });
+      let packet = null;
+      try {
+        packet = {
+          header_json: headerRaw || headerJson || null,
+          ciphertext_b64: ciphertextB64,
+          counter: job?.payloadEnvelope?.counter ?? job?.raw?.counter ?? job?.raw?.n ?? header?.n ?? null
+        };
+        // Extra debug to pinpoint mismatched session/keys without touching protocol flow.
+        try {
+          console.log('[dr-debug:decrypt-state]', {
+            conversationId,
+            peerAccountDigest: peerKey,
+            messageId: job?.messageId || job?.raw?.id || null,
+            peerDeviceId: peerDeviceForMessage || null,
+            targetDeviceId: targetDeviceId || null,
+            senderDeviceId: senderDeviceId || null,
+            selfDeviceId,
+            headerEkPub: header?.ek_pub_b64 || null,
+            headerDeviceId: header?.device_id || null,
+            stateConvId: state?.baseKey?.conversationId || null,
+            stateRole: state?.baseKey?.role || null,
+            stateHasCkR: !!(state?.ckR && state.ckR.length),
+            stateHasCkS: !!(state?.ckS && state.ckS.length),
+            stateNs: state?.Ns ?? null,
+            stateNr: state?.Nr ?? null,
+            stateTheirPub: state?.theirRatchetPub ? (deps.b64 ? deps.b64(state.theirRatchetPub) : null) : null
+          });
+        } catch {}
+        recordDrDecryptFailurePayload({
+          conversationId,
+          peerAccountDigest: peerKey,
+          tokenB64,
+          packet,
+          raw: job?.raw || job,
+          reason: msg,
+          state,
+          messageId: job?.messageId || job?.raw?.id || null
+        });
+        console.error('[dr-decrypt-fail]', {
+          conversationId,
+          peerAccountDigest: peerKey,
+          messageId: job?.messageId || job?.raw?.id || null,
+          counter: packet?.counter ?? header?.n ?? null,
+          header: header || null,
+          meta: header?.meta || null,
+          state: summarizeDrState(state),
+          reason: msg
+        });
+      } catch (logErr) {
+        console.warn('[dr-decrypt-fail-log-error]', logErr);
+      }
       deadLetters.push({
         conversationId,
         messageId: job?.messageId || job?.raw?.id || null,
@@ -1062,7 +1279,7 @@ export async function listSecureAndDecrypt(params = {}) {
         drState: trackState && state ? { Ns: state.Ns, Nr: state.Nr, PN: state.PN } : null,
         error: msg
       });
-      const failKey = `${conversationId}::${peerKey}`;
+      const failKey = `${conversationId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`;
       const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
       drFailureCounter.set(failKey, nextFail);
       if (nextFail >= 3) {
@@ -1079,14 +1296,16 @@ export async function listSecureAndDecrypt(params = {}) {
     const headerJson = raw?.header_json || raw?.headerJson || (raw?.header ? JSON.stringify(raw.header) : null);
     const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
     const packet = { header_json: headerJson, ciphertext_b64: ciphertextB64, counter: raw?.counter ?? raw?.n ?? null };
-    try {
-      console.log('[dr-inbox:enqueue]', {
-        conversationId,
-        messageId: toMessageId(raw) || null,
-        counter: packet.counter || null,
-        ts: Number.isFinite(msgTs) ? msgTs : null
-      });
-    } catch {}
+    if (drDebug) {
+      try {
+        console.log('[dr-inbox:enqueue]', {
+          conversationId,
+          messageId: toMessageId(raw) || null,
+          counter: packet.counter || null,
+          ts: Number.isFinite(msgTs) ? msgTs : null
+        });
+      } catch {}
+    }
     await enqueueInboxJob({
       conversationId,
       payloadEnvelope: packet,
@@ -1103,14 +1322,16 @@ export async function listSecureAndDecrypt(params = {}) {
     conversationId,
     handler: async (job) => {
       try {
-        try {
-          console.log('[dr-inbox:process-job]', {
-            jobId: job?.jobId || null,
-            conversationId,
-            messageId: job?.messageId || null,
-            createdAt: job?.createdAt || null
-          });
-        } catch {}
+        if (drDebug) {
+          try {
+            console.log('[dr-inbox:process-job]', {
+              jobId: job?.jobId || null,
+              conversationId,
+              messageId: job?.messageId || null,
+              createdAt: job?.createdAt || null
+            });
+          } catch {}
+        }
         await handleInboxJob(job);
       } catch (err) {
         deadLetters.push({

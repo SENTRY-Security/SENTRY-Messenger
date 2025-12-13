@@ -179,7 +179,8 @@ export async function ensureSecureConversationReady({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   reason = 'ensure',
-  source = 'ensureSecureConversationReady'
+  source = 'ensureSecureConversationReady',
+  conversationId = null
 } = {}) {
   const { key, deviceId } = resolvePeerIdentity({ peerAccountDigest, peerDeviceId });
   if (!key || !deviceId) throw new Error('peerAccountDigest and peerDeviceId required');
@@ -204,7 +205,7 @@ export async function ensureSecureConversationReady({
     while (Date.now() <= deadline) {
       entry.attempts += 1;
       try {
-        await ensureDrReceiverState({ peerAccountDigest, peerDeviceId: deviceId });
+        await ensureDrReceiverState({ peerAccountDigest, peerDeviceId: deviceId, conversationId });
         setStatus(key, STATUS_READY, { reason: 'ensure-success', source, attempts: entry.attempts });
         return cloneStatus(key, peerStates.get(key));
       } catch (err) {

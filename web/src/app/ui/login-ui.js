@@ -65,6 +65,47 @@ function isAutomationEnv() {
   } catch {}
 })();
 
+(function clearStorageOnLogin() {
+  const logoutReason = pendingLogoutNotice;
+  (async () => {
+    try {
+      if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+    } catch (err) {
+      log({ loginCacheClearError: err?.message || err });
+    }
+    try {
+      if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
+        const dbs = await indexedDB.databases();
+        await Promise.all(
+          dbs
+            .map((db) => db?.name)
+            .filter((name) => typeof name === 'string' && name.length)
+            .map((name) => new Promise((resolve) => {
+              try {
+                const req = indexedDB.deleteDatabase(name);
+                req.onsuccess = () => resolve();
+                req.onblocked = () => resolve();
+                req.onerror = () => resolve();
+              } catch {
+                resolve();
+              }
+            }))
+        );
+      }
+    } catch (err) {
+      log({ loginIndexedDbClearError: err?.message || err });
+    }
+    try { localStorage.clear?.(); } catch (err) { log({ loginLocalClearError: err?.message || err }); }
+    try { sessionStorage.clear?.(); } catch (err) { log({ loginSessionClearError: err?.message || err }); }
+    if (logoutReason) {
+      try { sessionStorage.setItem('app:lastLogoutReason', logoutReason); } catch {}
+    }
+  })();
+})();
+
 setLogSink((line) => {
   if (out) out.textContent = line;
   if (shouldShowModal(line)) showModalMessage(line);
@@ -713,15 +754,19 @@ if (welcomeCloseBtn) {
 // ---- SDM Exchange ----
 if (btnSdmExchangeEl) btnSdmExchangeEl.onclick = onSdmExchange;
 async function onSdmExchange() {
+  if (!uidEl || !macEl || !ctrEl) {
+    log({ debugSimError: 'exchange form missing required fields' });
+    throw new Error('exchange form missing required fields');
+  }
   const uidHex = (uidEl.value || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
   const macHex = (macEl.value || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
   const ctrRaw = (ctrEl.value || '').trim();
-  const nonce = (nonceEl.value || '').trim() || 'n/a';
+  const nonce = (nonceEl?.value || '').trim() || 'n/a';
   if (!uidHex || uidHex.length < 14) return log('UID hex required (14 hex)');
   if (!macHex || macHex.length < 16) return log('SDM MAC (16 hex) required');
   try {
     await exchangeWithParams({ uidHex, sdmmac: macHex, sdmcounter: ctrRaw, nonce });
-    sessionView.value = getSession() || '';
+    if (sessionView) sessionView.value = getSession() || '';
     updateUidDisplay();
     log({ exchange: { hasMK: getHasMK(), session: !!getSession(), wrapped: !!getWrappedMK() } });
     newAccount = !getHasMK();
@@ -749,18 +794,17 @@ async function onSimDebugClick() {
     }
 
     saveSimDebugState({ uidHex: kit.uidHex });
-
-    setUidHex(kit.uidHex);
-    updateUidDisplay();
-    if (uidEl) uidEl.value = kit.uidHex;
-    if (macEl) macEl.value = kit.sdmmac;
-    if (ctrEl) ctrEl.value = kit.sdmcounter;
-    if (nonceEl) nonceEl.value = kit.nonce || `debug-${Date.now()}`;
-
-    log({ debugSim: { uidHex: kit.uidHex } });
-    welcomeAcknowledged = false;
-    newAccount = false;
-    await onSdmExchange();
+    const nonce = kit.nonce || `debug-${Date.now()}`;
+    const params = new URLSearchParams({
+      uid: kit.uidHex,
+      sdmcounter: kit.sdmcounter,
+      sdmmac: kit.sdmmac,
+      nonce,
+      e2e: '1'
+    });
+    const target = `${window.location.origin}/pages/login?${params.toString()}`;
+    log({ debugSimRedirect: target });
+    window.location.href = target;
   } catch (err) {
     log({ debugSimError: String(err?.message || err) });
   }

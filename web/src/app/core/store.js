@@ -331,6 +331,24 @@ export function clearDrState(peerInput) {
   _DR_SESS.delete(key);
 }
 
+export function clearDrStatesByAccount(peerAccountDigest) {
+  const digest = normalizeAccountDigest(
+    peerAccountDigest && typeof peerAccountDigest === 'object'
+      ? (peerAccountDigest.peerAccountDigest ?? peerAccountDigest.accountDigest ?? peerAccountDigest.peer ?? peerAccountDigest)
+      : peerAccountDigest
+  );
+  if (!digest) return;
+  const toDelete = [];
+  for (const key of _DR_SESS.keys()) {
+    if (typeof key === 'string' && key.startsWith(`${digest}::`)) {
+      toDelete.push(key);
+    }
+  }
+  for (const k of toDelete) {
+    _DR_SESS.delete(k);
+  }
+}
+
 // --- clear helpers ---
 /** Clear exchange/session-related state but keep MK/DEVICE_PRIV (e.g., after successful login). */
 export function clearExchangeState() {

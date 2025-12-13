@@ -35,6 +35,12 @@ export function initContactsView(options) {
     contactsScrollEl.style.overflowY = 'auto';
     contactsScrollEl.style.webkitOverflowScrolling = 'touch';
   }
+  const counterEl = dom.contactsCountEl || contactsContainer?.querySelector?.('[data-contacts-count]') || null;
+  const updateContactCount = () => {
+    if (!counterEl) return;
+    const count = Array.isArray(sessionStore.contactState) ? sessionStore.contactState.length : 0;
+    counterEl.textContent = String(count);
+  };
 
   const contactState = sessionStore.contactState;
   const contactIndex = sessionStore.contactIndex;
@@ -78,6 +84,7 @@ export function initContactsView(options) {
       empty.textContent = '尚未新增好友';
       contactsListEl.appendChild(empty);
       updateStats?.();
+      updateContactCount();
       try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch {}
       return;
     }
@@ -368,6 +375,9 @@ export function initContactsView(options) {
     const bundle = conversation?.dr_init?.guest_bundle || conversation?.drInit?.guestBundle;
     const peerDeviceId = conversation?.peerDeviceId || null;
     if (!bundle) return;
+    const selfDeviceId = ensureDeviceId();
+    // 僅 owner 端（peerDeviceId 等於自己）才允許 responder bootstrap，guest 端禁止。
+    if (!selfDeviceId || !peerDeviceId || selfDeviceId !== peerDeviceId) return;
     bootstrapDrFromGuestBundle({ peerAccountDigest: key, peerDeviceId, guestBundle: bundle }).catch((err) => {
       log({ drBootstrapLoadError: err?.message || err });
     });
@@ -459,6 +469,7 @@ export function initContactsView(options) {
     }
     renderContacts();
     presenceManager.sendPresenceSubscribe();
+    updateContactCount();
     console.log('[contacts-view]', { contactsReloadDone: sanitized.length });
   }
 
@@ -592,6 +603,7 @@ export function initContactsView(options) {
       renderContacts();
       presenceManager.sendPresenceSubscribe();
       updateStats?.();
+      updateContactCount();
       emitContactEntryUpdated(entry, { peerAccountDigest: key, isNew: existingIndex < 0 });
       console.log('[contacts-view]', {
         contactAddReturn: {
@@ -618,6 +630,7 @@ export function initContactsView(options) {
           entry
         }
       }));
+      updateContactCount();
     } catch (err) {
       log({ contactEntryUpdateEventError: err?.message || err, peerAccountDigest: key });
     }

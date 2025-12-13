@@ -158,6 +158,14 @@ function onLogout() {
     sessionStorage.removeItem('wrapped_dev');
   } catch {}
   try {
+    sessionStorage.clear?.();
+  } catch (err) {
+    log({ logoutSessionClearError: err?.message || err });
+  }
+  try {
+    sessionStorage.setItem('app:lastLogoutReason', '已登出');
+  } catch {}
+  try {
     // clear local envelope cache (env_v1:*), 保留模擬資料
     const del = [];
     for (let i = 0; i < localStorage.length; i++) {

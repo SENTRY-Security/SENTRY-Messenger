@@ -116,25 +116,6 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 4. **聯絡同步**：`/api/v1/friends/contact/share` 只收 conversationId + AEAD envelope，ACL 綁 accountDigest+deviceId；WS `contact-share` 事件帶 sender/targetDeviceId，前端更新 contactSecrets（含 DR snapshot）。
 5. **狀態管理**：不再持久化 invite secret 或 session bootstrap，缺資料時直接報錯，不做自動重建 / fallback。
 
-#### Signal 式 QR 邀請 + per-device X3DH/DR 導入工作清單
-
-短期目標：完整落地單一路徑、無 fallback 的邀請與建鏈流程，並移除舊 invite/secret 流程。
-
-- [X]  後端契約收斂
-  - [X]  Worker `/d1/friends/{invite,accept}`：僅接受 inviteId/tokenHash + per-device owner/guest bundle；回應 digest/device + owner bundle，無 contact snapshot/secret/bootstrap 相關欄位。
-  - [X]  Node 轉送層：精簡 DTO/驗證，只轉送必要欄位，錯誤碼涵蓋 `PrekeyUnavailable`、`InviteTokenMismatch`、`InviteExpired`。
-  - [X]  D1：`friend_invites` 維持精簡欄位（invite_id/owner_account_digest/token_hash/expires_at/used_at/invite_version/owner_device_id/created_at）；確保沒有 prekey_bundle/guest_account_digest/secret 殘留表或欄位。
-- [X]  WebSocket 事件：移除 invite 相關事件與欄位（已移除 `invite-accepted`、`contact-share` 不再帶 inviteId），僅保留 digest/device/envelope/conversationId。
-- [X]  前端邀請流程
-  - [X]  QR 內容：inviteId + secret/token + version + ownerDeviceId；不含 contact snapshot。
-  - [X]  `share-controller`：掃碼 → 驗證 → X3DH → derive conversation token → 建立 DR → 發送 contact-share，無 invite secret 持久化、無過期自動重生/自動重試；重寫函式以移除 inviteSecrets/secretRole 依賴。
-  - [X]  Contact-share：payload 只用會話 token/DR snapshot 包裝暱稱/頭像，無 inviteId/secretRole；UI 文案對齊單一路徑。
-- [X]  Contact/DR 狀態
-  - [X]  `contact-secrets`：確保結構僅含 per-device conversation token/DR snapshot/peerDeviceId，移除 legacy alias 或自動補 deviceId 的 fallback（視需求可保留最小化推測）。
-  - [X]  DR 初始化：owner/guest 兩端都可從首包/guest bundle 建立 DR，缺資料時直接 fail。
-- [ ]  腳本與測試：移除或重寫舊腳本（friends-flow.mjs、ui-friend-chat.spec 等已刪除）；若需要自動化，重建新的 e2e（邀請→掃碼→建鏈→互傳→重登入驗證）。
-- [ ]  驗證：人工 walkthrough（生成 QR → 掃描 → 互傳 contact-share → 互傳訊息/附件 → 登出/重登入確認快照還原），記錄結果。
-
 ### ~~Double Ratchet 訊息傳遞~~（棄用，重構目標：per-device Signal X3DH/DR，移除 session-init/ack 與 conversation fingerprint 授權，封包 header 標準化）
 
 1. **設備金鑰交棒**：`ensureDevicePrivAvailable()` 僅依賴登入交棒／記憶體；若 sessionStorage 缺件，直接報錯不再自動補建。
@@ -226,6 +207,37 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 ### 時間軸
 
 - **目前狀態**：所有既有 `npm run test:*`、Playwright、mjs 腳本已移除，以下時間軸僅保留歷史紀錄（其中提到的測試名稱/指令已不可執行）。現階段需以人工或新建腳本驗證登入/交友/訊息/媒體流程。
+
+## 待辦：移除錯誤 fallback 機制
+
+- [x] 前端 contact-secret 鍵統一為本機 deviceId（peerDeviceId 僅存於 conversation.peerDeviceId）
+  - [x] `storeContactSecretMapping` 及所有呼叫點改用本機 deviceId，peerDeviceId 放入 conversation 欄位
+  - [x] contact-share 收／發流程寫入角色（guest/owner）並沿用本機 deviceId 置換 snapshot
+  - [x] `persistDrSnapshot` 寫回 contact-secret 時改用本機 deviceId，避免覆寫到 peer 裝置鍵
+  - [x] `handleContactShareEvent` 讀寫 contact-secret 改以本機 deviceId，確保 hydrate/ensure 讀得到最新 snapshot
+- [x] 掃碼/登入前清除同一 peerDigest 的所有 drStates（不分 peerDeviceId），避免殘留 responder 狀態
+- [x] Hydrate 流程健全化
+  - [x] 若解析不到 peerDeviceId，嘗試從 contact-secret/conversation.dr_init 拿 peerDeviceId；仍無則清除記憶體舊 state
+  - [x] guest 端一律拒收 responder snapshot（即使 peerDeviceId 未比對），並記錄 automation log
+- [x] ensureDrReceiverState 強化
+  - [x] guest/未知角色若發現 responder state，直接清空並改用 dr_init 重建 initiator，缺 dr_init 則 fail（無 fallback）
+  - [x] conversationId / peerDeviceId mismatch 時清除 contact-secret/記憶體狀態，避免沿用錯鏈
+- [x] 解密前路徑（messages.js）驗證
+  - [x] 收訊前再次檢查 state 角色，若 guest 卻是 responder，清除後強制走 initiator 路徑（缺資料則 fail）
+  - [x] 確認無任何 retry/fallback；錯誤直接 fail 並輸出明確 log
+- [x] 對話 ID 去重與一致性
+  - [x] contact-secret 只保存實際 conversationId，清除 `contacts-<peer>` 等假 ID 以避免 mismatch 循環
+  - [x] hydrate/ensureDrReceiverState 若偵測到同 peer 多個 conversationId，僅保留最新/正確者，並清除舊記錄
+  - [x] 收訊前若 convId 與 state/secret 不一致，應清除並走正確路徑（無 fallback）
+  - [x] contact-share 發送時禁止使用 `contacts-*` convId，缺實際 convId 則直接報錯
+  - [x] 收訊端若 WS 帶入 `contacts-*` convId，直接拒收並提示重新同步，以免 unknown peer 循環
+  - [x] guest 端 contact-secret/快照的角色標記確實為 initiator/guest，避免誤還原 responder 快照
+- [x] Runtime 錯誤排除
+  - [x] `dr-session` 引入缺失的 `clearDrState`，避免解密流程因 ReferenceError 中斷
+  - [x] `messages.js` 解密錯誤處理區塊先宣告 `packet`，避免 ReferenceError 影響 dead-letter 與錯誤記錄
+- [ ] 驗證＆回歸
+  - [ ] 手動流程：掃碼建鏈、互傳 contact-share/文字各一次，確認雙端角色分別為 initiator/owner（無 responder 污染）
+  - [ ] 檢查 contact-secret（本機 deviceId 下）的 role、自訂 peerDeviceId 是否正確保存
 
 
 | 日期                         | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

@@ -18,6 +18,7 @@ import {
   getDeviceId,
   ensureDeviceId,
   clearDrState,
+  clearDrStatesByAccount,
   normalizePeerIdentity
 } from '../../core/store.js';
 import { generateRandomNickname } from '../../features/profile.js';
@@ -167,31 +168,54 @@ export function setupShareController(options) {
     );
   }
 
-  function storeContactSecretMapping({ peerAccountDigest, peerDeviceId, sessionKey, conversation, drState }) {
+  function storeContactSecretMapping({ peerAccountDigest, peerDeviceId, sessionKey, conversation, drState, role }) {
     const conversationPeerDeviceId = conversation?.peerDeviceId || null;
-    const deviceHint = peerDeviceId || conversationPeerDeviceId || null;
-    const key = normalizePeerKey(peerAccountDigest, { peerDeviceId: deviceHint });
-    if (!key || !sessionKey || !deviceHint) {
-      console.warn('[share-controller]', { contactSecretStoreSkipped: true, reason: 'missing-key-or-device', peerAccountDigest, peerDeviceId: deviceHint });
-      throw new Error('contact secret requires peer device id and session key');
+    const peerDeviceResolved = peerDeviceId || conversationPeerDeviceId || null;
+    const key = normalizePeerKey(peerAccountDigest, { peerDeviceId: peerDeviceResolved });
+    const selfDeviceId = ensureDeviceId();
+    if (!key || !sessionKey || !peerDeviceResolved || !selfDeviceId) {
+      console.warn('[share-controller]', { contactSecretStoreSkipped: true, reason: 'missing-key-or-device', peerAccountDigest, peerDeviceId: peerDeviceResolved, selfDeviceId });
+      throw new Error('contact secret requires peer device id, self device id, and session key');
     }
-    const existing = getContactSecret(key, { deviceId: deviceHint }) || {};
+    const existing = getContactSecret(key, { deviceId: selfDeviceId }) || {};
+    const convIdCandidate = conversation?.conversation_id || conversation?.conversationId || null;
+    const convIsContacts = typeof convIdCandidate === 'string' && convIdCandidate.startsWith('contacts-');
+    const existingConvId = existing?.conversationId || null;
+    const existingIsContacts = typeof existingConvId === 'string' && existingConvId.startsWith('contacts-');
+    const finalConvId = (() => {
+      if (convIsContacts && existingConvId && !existingIsContacts) return existingConvId;
+      if (convIsContacts && !existingConvId) return null; // 不保存 contacts-* 假 ID
+      return convIdCandidate || existingConvId || null;
+    })();
+    if (!finalConvId && convIsContacts) {
+      console.warn('[contact-secret]', { dropContactsConvId: true, peerAccountDigest, peerDeviceId: peerDeviceResolved });
+    }
+    const derivedRole = (() => {
+      if (role) return String(role).toLowerCase();
+      if (existing?.role) return existing.role;
+      if (selfDeviceId && peerDeviceResolved) {
+        // 這裡 peerDeviceResolved 是對端裝置，self ≠ peer 表示本端為 guest；等於 self 則視為 owner。
+        return selfDeviceId === peerDeviceResolved ? 'owner' : 'guest';
+      }
+      return null;
+    })();
     const update = {
       conversation: {
         token: conversation?.token_b64 || sessionKey || existing.conversationToken || null,
-        id: conversation?.conversation_id || existing.conversationId || null,
+        id: finalConvId,
         drInit: conversation?.dr_init || existing.conversationDrInit || null,
-        peerDeviceId: conversationPeerDeviceId || deviceHint
+        peerDeviceId: conversationPeerDeviceId || peerDeviceResolved
       },
       meta: { source: 'share-controller:storeContactSecret' }
     };
+    if (derivedRole) update.role = derivedRole;
     if (drState) {
       const snapshot = snapshotDrState(drState);
       if (snapshot) {
         update.dr = { state: snapshot };
       }
     }
-    setContactSecret(key, { ...update, deviceId: deviceHint });
+    setContactSecret(key, { ...update, deviceId: selfDeviceId });
   }
 
   async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
@@ -316,7 +340,9 @@ export function setupShareController(options) {
       expiresAt: Number(invite.expiresAt),
       ownerAccountDigest,
       ownerDeviceId,
-      version: 2
+      version: 2,
+      // 將伺服端回傳的 prekey bundle (含 opk) 一併塞進 QR，避免掃描端使用不一致的 opk。
+      prekeyBundle: invite.prekeyBundle || null
     };
     console.log('[share-controller]', {
       inviteGenerated: {
@@ -457,6 +483,20 @@ export function setupShareController(options) {
       const ownerDeviceId = ownerIdentity.deviceId || parsed.ownerDeviceId || null;
       if (!ownerDeviceId) throw new Error('invite 缺少 ownerDeviceId');
 
+      // 掃碼前先清除舊的 DR state / contact secret，確保以全新 initiator 狀態建立。
+      try {
+        if (ownerAccountDigest) {
+          clearDrStatesByAccount(ownerAccountDigest);
+        }
+        clearDrState({ peerAccountDigest: ownerAccountDigest, peerDeviceId: ownerDeviceId });
+        const normPeerKey = normalizePeerKey(ownerAccountDigest, { peerDeviceId: ownerDeviceId });
+        if (normPeerKey) {
+          setContactSecret(normPeerKey, { dr: null, conversation: null, meta: { source: 'invite-scan-reset' } });
+        }
+      } catch (err) {
+        console.warn('[share-controller]', { inviteScanResetError: err?.message || err });
+      }
+
       const devicePriv = await ensureDevicePrivLoaded();
       if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入後再試');
       const inviteToken = await deriveInviteTokenB64Url(parsed.secret);
@@ -465,7 +505,30 @@ export function setupShareController(options) {
       const res = await friendsAcceptInvite({ inviteId: parsed.inviteId, inviteToken, guestBundle });
       console.log('[share-controller]', { inviteScanAccepted: res });
 
-      const ownerBundle = normalizeInviteOwnerBundle(res?.ownerPrekeyBundle || res?.owner_prekey_bundle);
+      const ownerBundleFromInvite = normalizeInviteOwnerBundle(parsed?.prekeyBundle || null);
+      const ownerBundleFromServer = normalizeInviteOwnerBundle(res?.ownerPrekeyBundle || res?.owner_prekey_bundle);
+      const ownerBundle = ownerBundleFromInvite || ownerBundleFromServer;
+      if (!ownerBundle) throw new Error('owner prekey bundle 缺少，請重新掃描 QR');
+      if (ownerBundleFromInvite && ownerBundleFromServer) {
+        const sameIk = ownerBundleFromInvite.ik_pub === ownerBundleFromServer.ik_pub;
+        const sameSpk = ownerBundleFromInvite.spk_pub === ownerBundleFromServer.spk_pub;
+        const sameSig = ownerBundleFromInvite.spk_sig === ownerBundleFromServer.spk_sig;
+        const inviteOpk = ownerBundleFromInvite.opk?.pub || null;
+        const serverOpk = ownerBundleFromServer.opk?.pub || null;
+        const inviteOpkId = ownerBundleFromInvite.opk?.id ?? null;
+        const serverOpkId = ownerBundleFromServer.opk?.id ?? null;
+        const opkMatch = inviteOpk && serverOpk && inviteOpk === serverOpk && inviteOpkId === serverOpkId;
+        if (!sameIk || !sameSpk || !sameSig || !opkMatch) {
+          console.error('[share-controller]', {
+            ownerBundleMismatch: true,
+            inviteOpkId,
+            serverOpkId,
+            inviteOpk,
+            serverOpk
+          });
+          throw new Error('邀請金鑰與伺服端金鑰不一致，請重新生成並掃描 QR');
+        }
+      }
       const resolvedOwnerDigest = ownerAccountDigest || ownerBundle?.account_digest || null;
       const resolvedOwnerDeviceId = ownerDeviceId || ownerBundle?.device_id || null;
       if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
@@ -479,6 +542,9 @@ export function setupShareController(options) {
         peerDeviceId: resolvedOwnerDeviceId,
         dr_init: drInitPayload
       };
+      if (!x3dhState.baseKey) x3dhState.baseKey = {};
+      x3dhState.baseKey.role = 'initiator';
+      x3dhState.baseKey.conversationId = conversationContext.conversation_id;
 
       const contactInitPayload = {
         type: 'contact-init',
@@ -501,14 +567,20 @@ export function setupShareController(options) {
       const alreadyLive = hasLiveDrState(resolvedOwnerDigest);
       if (!alreadyLive) {
         clearDrState(resolvedOwnerDigest);
-        primeDrStateFromInitiator({ peerAccountDigest: resolvedOwnerDigest, peerDeviceId: resolvedOwnerDeviceId, state: x3dhState });
+        primeDrStateFromInitiator({
+          peerAccountDigest: resolvedOwnerDigest,
+          peerDeviceId: resolvedOwnerDeviceId,
+          state: x3dhState,
+          conversationId: conversationContext.conversation_id
+        });
       }
       storeContactSecretMapping({
         peerAccountDigest: resolvedOwnerDigest,
         peerDeviceId: resolvedOwnerDeviceId,
         sessionKey: conversation.tokenB64,
         conversation: conversationContext,
-        drState: x3dhState
+        drState: x3dhState,
+        role: 'guest'
       });
       sessionStore.conversationIndex?.set?.(conversation.conversationId, {
         token_b64: conversation.tokenB64,
@@ -570,6 +642,9 @@ export function setupShareController(options) {
     });
     if (!targetDigest || !conversationToken || !conversationId) {
       throw new Error('contact-share missing required fields');
+    }
+    if (conversationId.startsWith('contacts-')) {
+      throw new Error('contact-share 缺少安全對話 ID，請重新同步好友後重試');
     }
     if (!resolvedPeerDeviceId) {
       throw new Error('contact-share missing peerDeviceId (strict path)');
@@ -708,10 +783,11 @@ export function setupShareController(options) {
       }
     });
     if (!peerKey || !peerDeviceId) return;
-    const stored = getContactSecret(peerKey, { deviceId: peerDeviceId });
+    const selfDeviceId = ensureDeviceId();
+    const stored = getContactSecret(peerKey, { deviceId: selfDeviceId });
     const sessionKey = stored?.conversationToken || null;
     if (!sessionKey) {
-      console.warn('[share-controller]', { contactShareMissingSession: peerKey, peerDeviceId });
+      console.warn('[share-controller]', { contactShareMissingSession: peerKey, peerDeviceId, selfDeviceId });
       return;
     }
     const envelope = msg?.envelope;
@@ -750,6 +826,10 @@ export function setupShareController(options) {
         peerDeviceId: peerDeviceId || null,
         dr_init: conversation.dr_init || null
       });
+      const selfDeviceId = ensureDeviceId();
+      const selfRole = selfDeviceId && conversation.peerDeviceId
+        ? (selfDeviceId === conversation.peerDeviceId ? 'guest' : 'owner')
+        : (getAccountDigest() ? 'guest' : 'guest');
       console.log('[share-controller]', {
         contactShareDecryptSuccess: {
           peerAccountDigest: peerKey,
@@ -762,11 +842,14 @@ export function setupShareController(options) {
       storeContactSecretMapping({
         peerAccountDigest: peerKey,
         sessionKey: conversation.token_b64,
-        conversation
+        conversation,
+        // 保留既有角色標記（owner/guest），不在 contact-share 時覆寫。
       });
       const drInitRaw = conversation.dr_init || null;
       const normalizedBundle = drInitRaw?.guest_bundle ? normalizeGuestBundle(drInitRaw.guest_bundle) : null;
-      if (normalizedBundle) {
+      // 只有當對方裝置等於本機（owner/responder 端）才允許 responder bootstrap；guest 端禁止。
+      const allowResponderBootstrap = !!(selfDeviceId && peerDeviceId && selfDeviceId === peerDeviceId);
+      if (normalizedBundle && allowResponderBootstrap) {
         const alreadyLive = hasLiveDrState(peerKey);
         if (!alreadyLive) {
           try {
@@ -875,10 +958,22 @@ export function setupShareController(options) {
       peerDeviceId, // 這裡代表對端（guest）的裝置
       sessionKey: conversation.token_b64,
       conversation,
-      drState: null
+      drState: null,
+      role: 'owner'
     });
     try {
-      await bootstrapDrFromGuestBundle({ peerAccountDigest: peerDigest, peerDeviceId, guestBundle });
+      clearDrState({ peerAccountDigest: peerDigest, peerDeviceId });
+      const selfDeviceId = ensureDeviceId();
+      // 只有 owner/responder 端（對端裝置等於本機）才允許 responder bootstrap。
+      if (selfDeviceId && peerDeviceId && selfDeviceId === peerDeviceId) {
+        await bootstrapDrFromGuestBundle({
+          peerAccountDigest: peerDigest,
+          peerDeviceId,
+          guestBundle,
+          force: true,
+          conversationId: conversation.conversation_id
+        });
+      }
     } catch (err) {
       console.error('[share-controller]', { contactInitBootstrapError: err?.message || err, peerAccountDigest: peerDigest });
     }
@@ -891,6 +986,12 @@ export function setupShareController(options) {
         drInit: conversation.dr_init || null
       });
       console.log('[share-controller]', { contactInitContactShareSent: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
+      // 被掃描端完成回傳後，自動關閉 QR modal。
+      if (shareState.open) {
+        setTimeout(() => {
+          if (shareState.open) closeShareModal();
+        }, 500);
+      }
     } catch (err) {
       console.error('[share-controller]', { contactInitContactShareError: err?.message || err, peerDigest, peerDeviceId });
     }

@@ -19,6 +19,11 @@ import { convertEd25519PublicKey, convertEd25519SecretKey } from './ed2curve.js'
 const encoder = new TextEncoder();
 const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
 
+function cloneU8(src) {
+  if (src instanceof Uint8Array) return new Uint8Array(src);
+  return src;
+}
+
 function normalizeDeviceId(value) {
   if (!value || typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -314,82 +319,135 @@ export async function drEncryptText(st, plaintext, opts = {}) {
 
 export async function drDecryptText(st, packet, opts = {}) {
   const onMessageKey = typeof opts?.onMessageKey === 'function' ? opts.onMessageKey : null;
+  const headerN = Number(packet?.header?.n);
+  if (Number.isFinite(headerN) && headerN <= 0) {
+    throw new Error('invalid message counter');
+  }
+  const currentNr = Number.isFinite(Number(st?.Nr)) ? Number(st.Nr) : 0;
+  st.Nr = currentNr; // normalize counter to numeric to avoid string comparisons
+  const sameReceiveChain = st?.theirRatchetPub && typeof packet?.header?.ek_pub_b64 === 'string'
+    && b64(st.theirRatchetPub) === packet.header.ek_pub_b64;
+  if (sameReceiveChain && Number.isFinite(headerN) && Number.isFinite(currentNr) && currentNr >= headerN) {
+    throw new Error('replay or out-of-order message counter');
+  }
+
+  // 若接收端狀態的對方 ratchet 公鑰與封包不一致，且這是第一封消息，嘗試丟棄舊的 receive chain 讓後續能依新公鑰重新進入 ratchet。
+  if (
+    st?.baseRole === 'responder' &&
+    headerN === 1 &&
+    currentNr === 0 &&
+    typeof packet?.header?.ek_pub_b64 === 'string' &&
+    st?.theirRatchetPub &&
+    b64(st.theirRatchetPub) !== packet.header.ek_pub_b64
+  ) {
+    st.ckR = null;
+    st.theirRatchetPub = null;
+  }
+
+  const snapshot = st ? {
+    rk: cloneU8(st.rk),
+    ckS: cloneU8(st.ckS),
+    ckR: cloneU8(st.ckR),
+    Ns: st.Ns,
+    Nr: st.Nr,
+    PN: st.PN,
+    myRatchetPriv: cloneU8(st.myRatchetPriv),
+    myRatchetPub: cloneU8(st.myRatchetPub),
+    theirRatchetPub: cloneU8(st.theirRatchetPub),
+    pendingSendRatchet: st.pendingSendRatchet
+  } : null;
+
   const theirPub = b64u8(packet.header.ek_pub_b64);
   const pn = Number(packet?.header?.pn);
   const prevChainId = st.theirRatchetPub ? b64(st.theirRatchetPub) : null;
-  if (!st.theirRatchetPub || b64(st.theirRatchetPub) !== packet.header.ek_pub_b64) {
-    // Before switching to the new ratchet key, fill skipped message keys on the previous receiving chain up to pn.
-    if (prevChainId && st.ckR && Number.isFinite(pn) && pn > st.Nr) {
-      const gap = pn - st.Nr;
-      if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) {
-        console.warn('[dr] skipped-key gap too large', { gap, pn, nr: st.Nr, chain: prevChainId });
+  try {
+    if (!st.theirRatchetPub || b64(st.theirRatchetPub) !== packet.header.ek_pub_b64) {
+      // Before switching to the new ratchet key, fill skipped message keys on the previous receiving chain up to pn.
+      if (prevChainId && st.ckR && Number.isFinite(pn) && pn > st.Nr) {
+        const gap = pn - st.Nr;
+        if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) {
+          console.warn('[dr] skipped-key gap too large', { gap, pn, nr: st.Nr, chain: prevChainId });
+        }
+        let ckR = st.ckR;
+        let nr = st.Nr;
+        while (ckR && nr < pn) {
+          const skippedOut = await kdfCK(ckR);
+          const { a: skippedMk, b: skippedNext } = split64(skippedOut);
+          rememberSkippedKey(st, prevChainId, nr + 1, b64(skippedMk));
+          ckR = skippedNext;
+          nr += 1;
+        }
+        st.ckR = ckR;
+        st.Nr = nr;
       }
-      let ckR = st.ckR;
-      let nr = st.Nr;
-      while (ckR && nr < pn) {
-        const skippedOut = await kdfCK(ckR);
-        const { a: skippedMk, b: skippedNext } = split64(skippedOut);
-        rememberSkippedKey(st, prevChainId, nr + 1, b64(skippedMk));
-        ckR = skippedNext;
-        nr += 1;
-      }
-      st.ckR = ckR;
-      st.Nr = nr;
+      await drRatchet(st, theirPub);
+    } else {
+      st.theirRatchetPub = theirPub;
     }
-    await drRatchet(st, theirPub);
-  } else {
-    st.theirRatchetPub = theirPub;
-  }
-  const chainId = packet?.header?.ek_pub_b64 || null;
-  const headerN = Number(packet?.header?.n);
-  let usedStoredKey = false;
-  let mk = null;
-  if (chainId && Number.isFinite(headerN)) {
-    const cached = takeSkippedKey(st, chainId, headerN);
-    if (cached) {
-      mk = b64u8(cached);
-      usedStoredKey = true;
-    }
-  }
-  if (!usedStoredKey) {
-    if (!st.ckR) throw new Error('receive chain missing');
+    const chainId = packet?.header?.ek_pub_b64 || null;
+    let usedStoredKey = false;
+    let mk = null;
     if (chainId && Number.isFinite(headerN)) {
-      while (st.ckR && st.Nr + 1 < headerN) {
-        const skippedOut = await kdfCK(st.ckR);
-        const { a: skippedMk, b: skippedNext } = split64(skippedOut);
-        st.ckR = skippedNext;
-        st.Nr += 1;
-        rememberSkippedKey(st, chainId, st.Nr, b64(skippedMk));
+      const cached = takeSkippedKey(st, chainId, headerN);
+      if (cached) {
+        mk = b64u8(cached);
+        usedStoredKey = true;
       }
     }
-    const mkOut = await kdfCK(st.ckR);
-    const derivation = split64(mkOut);
-    mk = derivation.a;
-    st.ckR = derivation.b;
-  }
-  if (onMessageKey) {
-    try {
-      onMessageKey(b64(mk));
-    } catch {
-      // ignore callback errors
+    if (!usedStoredKey) {
+      if (!st.ckR) throw new Error('receive chain missing');
+      if (chainId && Number.isFinite(headerN)) {
+        while (st.ckR && st.Nr + 1 < headerN) {
+          const skippedOut = await kdfCK(st.ckR);
+          const { a: skippedMk, b: skippedNext } = split64(skippedOut);
+          st.ckR = skippedNext;
+          st.Nr += 1;
+          rememberSkippedKey(st, chainId, st.Nr, b64(skippedMk));
+        }
+      }
+      const mkOut = await kdfCK(st.ckR);
+      const derivation = split64(mkOut);
+      mk = derivation.a;
+      st.ckR = derivation.b;
     }
-  }
-  if (!usedStoredKey) {
-    st.Nr += 1;
-    if (Number.isFinite(headerN) && headerN > st.Nr) {
-      st.Nr = headerN;
+    if (onMessageKey) {
+      try {
+        onMessageKey(b64(mk));
+      } catch {
+        // ignore callback errors
+      }
     }
-  }
+    if (!usedStoredKey) {
+      st.Nr += 1;
+      if (Number.isFinite(headerN) && headerN > st.Nr) {
+        st.Nr = headerN;
+      }
+    }
 
-  const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
-  const aad = buildDrAadFromHeader(packet.header);
-  const decryptParams = aad
-    ? { name: 'AES-GCM', iv: b64u8(packet.iv_b64), additionalData: aad }
-    : { name: 'AES-GCM', iv: b64u8(packet.iv_b64) };
-  const pt = await crypto.subtle.decrypt(
-    decryptParams,
-    key,
-    b64u8(packet.ciphertext_b64)
-  );
-  return new TextDecoder().decode(pt);
+    const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
+    const aad = buildDrAadFromHeader(packet.header);
+    const decryptParams = aad
+      ? { name: 'AES-GCM', iv: b64u8(packet.iv_b64), additionalData: aad }
+      : { name: 'AES-GCM', iv: b64u8(packet.iv_b64) };
+    const pt = await crypto.subtle.decrypt(
+      decryptParams,
+      key,
+      b64u8(packet.ciphertext_b64)
+    );
+    return new TextDecoder().decode(pt);
+  } catch (err) {
+    if (snapshot) {
+      st.rk = snapshot.rk;
+      st.ckS = snapshot.ckS;
+      st.ckR = snapshot.ckR;
+      st.Ns = snapshot.Ns;
+      st.Nr = snapshot.Nr;
+      st.PN = snapshot.PN;
+      st.myRatchetPriv = snapshot.myRatchetPriv;
+      st.myRatchetPub = snapshot.myRatchetPub;
+      st.theirRatchetPub = snapshot.theirRatchetPub;
+      st.pendingSendRatchet = snapshot.pendingSendRatchet;
+    }
+    throw err;
+  }
 }

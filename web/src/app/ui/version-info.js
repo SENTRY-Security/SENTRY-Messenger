@@ -42,19 +42,19 @@ function collectStorageStats() {
     }
   };
 
-  addStats(window.localStorage, '本機儲存 (localStorage)');
-  addStats(window.sessionStorage, '工作階段 (sessionStorage)');
+  addStats(window.localStorage, '本機儲存');
+  addStats(window.sessionStorage, '工作階段儲存');
   try {
     const indexedDBSize = window.indexedDB ? '支援 IndexedDB' : '不支援 IndexedDB';
     results.push({
-      label: '資料庫 (IndexedDB)',
-      keyCount: indexedDBSize === '支援 IndexedDB' ? 1 : 0,
+      label: '資料庫',
+      keyCount: 0,
       totalBytes: 0,
       note: indexedDBSize
     });
   } catch {
     results.push({
-      label: '資料庫 (IndexedDB)',
+      label: '資料庫',
       keyCount: 0,
       totalBytes: 0,
       note: '不支援 IndexedDB'
@@ -67,7 +67,7 @@ function collectStorageStats() {
 function collectStorageEntries(label) {
   if (typeof window === 'undefined') return { label, error: 'no-window' };
   const encoder = new TextEncoder();
-  const isSession = label && label.includes('sessionStorage') || label?.includes('工作階段');
+  const isSession = label && (label.includes('工作階段') || label.includes('sessionStorage'));
   const storage = isSession ? window.sessionStorage : window.localStorage;
   if (!storage) return { label, error: 'storage-unavailable' };
   try {
@@ -192,10 +192,15 @@ function renderStorageDetailModal(detail) {
           <details style="border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.02);">
             <summary style="padding: 10px 12px; display:flex; justify-content:space-between; align-items:center; gap:8px; cursor:pointer; list-style:none;">
               <span class="storage-key" style="font-weight:700;word-break:break-all;">${escapeHtml(entry.key)}</span>
-              <span class="storage-meta" style="color:#94a3b8;font-size:12px;">${formatBytes(entry.sizeBytes || 0)}</span>
+              <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+                <span class="storage-meta" style="color:#94a3b8;font-size:12px; white-space:nowrap;">${formatBytes(entry.sizeBytes || 0)}</span>
+                <button type="button" class="storage-copy" data-idx="${idx}" aria-label="複製 ${escapeHtml(entry.key)} 的內容" style="border:1px solid rgba(148,163,184,0.4); background:rgba(255,255,255,0.06); color:#e2e8f0; border-radius:8px; padding:6px 8px; font-size:11px; cursor:pointer;">複製內容</button>
+              </div>
             </summary>
             <div style="padding: 0 12px 12px 12px;">
-              <pre class="storage-entry-value" style="margin:0; padding:10px; background: rgba(255,255,255,0.04); border-radius:8px; color:#e2e8f0; word-break:break-all; white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:13px;">${escapeHtml(display ?? '')}</pre>
+              <div style="max-height:320px; overflow:auto; border-radius:8px; background: rgba(255,255,255,0.04);">
+                <pre class="storage-entry-value" style="margin:0; padding:10px; color:#e2e8f0; word-break:break-all; white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:13px;">${escapeHtml(display ?? '')}</pre>
+              </div>
             </div>
           </details>
         </li>
@@ -205,6 +210,41 @@ function renderStorageDetailModal(detail) {
       <div style="margin-bottom:8px;color:#cbd5e1;">共 ${detail.entries.length} 筆，約 ${formatBytes(total)}</div>
       <ul class="storage-entry-list" style="padding:0; margin:0;">${list}</ul>
     `;
+    const copyButtons = Array.from(body.querySelectorAll('.storage-copy'));
+    const copyText = async (text, btn) => {
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          ta.remove();
+        }
+        if (btn) {
+          const old = btn.textContent;
+          btn.textContent = '已複製';
+          setTimeout(() => { btn.textContent = old || '複製內容'; }, 1200);
+        }
+      } catch {
+        alert('複製失敗');
+      }
+    };
+    copyButtons.forEach((btn) => {
+      btn.addEventListener('click', (evt) => {
+        evt.stopPropagation();
+        const idx = Number(btn.dataset.idx);
+        const entry = detail.entries?.[idx];
+        if (!entry) return;
+        const raw = entry.value ?? '';
+        const text = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
+        copyText(text, btn);
+      });
+    });
   }
   overlay.appendChild(box);
   box.appendChild(header);
@@ -219,7 +259,7 @@ function attachStorageDetailHandlers(root) {
       event.preventDefault();
       event.stopPropagation();
       const label = el.dataset.storageLabel || 'storage';
-      if (label.includes('IndexedDB')) {
+      if (label.includes('資料庫') || label.toLowerCase().includes('indexeddb')) {
         const message = window.indexedDB ? 'IndexedDB 資料由瀏覽器管理，目前僅顯示狀態。' : '此瀏覽器不支援 IndexedDB。';
         renderStorageDetailModal({ label, entries: [], error: null, note: message });
       } else {

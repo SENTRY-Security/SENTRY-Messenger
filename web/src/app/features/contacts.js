@@ -231,6 +231,9 @@ export async function saveContact(contact) {
   if (conversation && !conversation.peerDeviceId) {
     throw new Error('peerDeviceId required for conversation');
   }
+  if (conversation && conversation.conversation_id && String(conversation.conversation_id).startsWith('contacts-')) {
+    throw new Error('缺少安全對話 ID，請重新同步好友（contacts-* 無效）');
+  }
   console.log('[contacts]', {
     contactSaveConversationNormalized: {
       peerAccountDigest,
@@ -248,45 +251,7 @@ export async function saveContact(contact) {
   };
   if (conversation) payload.conversation = conversation;
 
-  const envelope = await wrapWithMK_JSON(payload, mk, CONTACT_INFO_TAG);
-  const header = {
-    contact: 1,
-    v: 1,
-    peerAccountDigest,
-    ts: payload.addedAt,
-    envelope,
-    iv_b64: envelope.iv_b64
-  };
-  console.log('[contacts]', { contactSaveBeforeCreate: { peerAccountDigest, convIds, msgTs: payload.addedAt } });
-
-  let firstMsgId = null;
-  for (const convId of convIds) {
-    console.log('[contacts]', {
-      contactSaveSend: {
-        convId,
-        peerAccountDigest,
-        hasConversation: !!conversation
-      }
-    });
-    const msgPayload = {
-      convId,
-      type: 'text',
-      aead: 'aes-256-gcm',
-      header,
-      ciphertext_b64: envelope?.ct_b64 || 'contact',
-      receiverAccountDigest: peerAccountDigest,
-      receiverDeviceId: peerDeviceId
-    };
-    const body = buildAccountPayload({ overrides: msgPayload });
-    const { r, data } = await createMessage(body);
-    if (!r.ok) {
-      const msg = typeof data === 'string' ? data : data?.error || data?.message || 'contact save failed';
-      console.error('[contacts]', { contactSaveFailed: msg, convId, peerAccountDigest });
-      throw new Error(msg);
-    }
-    if (!firstMsgId) firstMsgId = data?.id || null;
-    console.log('[contacts]', { contactSaveStored: { convId, peerAccountDigest, msgId: data?.id || null } });
-  }
-  console.log('[contacts]', { contactSaveAfterCreate: { peerAccountDigest, msgId: firstMsgId || null } });
-  return { ...payload, msgId: firstMsgId };
+  // 新路徑僅使用 contact-share / secure-message，同步保存本機 snapshot，不再寫入 contacts-* 對話。
+  console.warn('[contacts]', { contactSaveSkippedLegacyConv: true, peerAccountDigest, hasConversation: !!conversation });
+  return { ...payload, msgId: null };
 }

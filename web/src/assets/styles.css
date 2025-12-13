@@ -361,6 +361,38 @@ body.modal-open {
   display: block;
 }
 
+.version-storage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.version-storage-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.9);
+  color: #e2e8f0;
+  text-align: left;
+  font-size: 12px;
+  box-shadow: 0 10px 26px rgba(2, 6, 23, 0.32);
+}
+.version-storage-row span:last-child {
+  color: #bae6fd;
+}
+.version-storage-total {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.78);
+  color: #bfdbfe;
+}
+
 .upload-file-list {
   margin: 10px 0 0;
   padding: 0;

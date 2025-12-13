@@ -2428,6 +2428,7 @@ export function initMessagesPane({
     try {
       await ensureSecureConversationReady({
         peerAccountDigest: key,
+        conversationId: state.conversationId || null,
         reason: 'open-conversation',
         source: 'messages-pane:setActiveConversation'
       });

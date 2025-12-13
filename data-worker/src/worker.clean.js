@@ -1178,6 +1178,11 @@ async function ensureDataTables(env) {
         used_at INTEGER,
         invite_version INTEGER NOT NULL DEFAULT 2,
         owner_device_id TEXT,
+        prekey_ik_pub TEXT,
+        prekey_spk_pub TEXT,
+        prekey_spk_sig TEXT,
+        prekey_opk_id INTEGER,
+        prekey_opk_pub TEXT,
         created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         FOREIGN KEY (owner_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
       )`,
@@ -1632,16 +1637,44 @@ async function handleFriendsRoutes(req, env) {
                 expires_at=?4,
                 invite_version=2,
                 owner_device_id=?5,
+                prekey_ik_pub=?6,
+                prekey_spk_pub=?7,
+                prekey_spk_sig=?8,
+                prekey_opk_id=?9,
+                prekey_opk_pub=?10,
                 used_at=NULL
           WHERE invite_id=?1`
-      ).bind(inviteId, ownerAccount.account_digest, tokenHash, expiresAt, deviceIdBody).run();
+      ).bind(
+        inviteId,
+        ownerAccount.account_digest,
+        tokenHash,
+        expiresAt,
+        deviceIdBody,
+        ownerBundle.ik_pub || null,
+        ownerBundle.spk_pub || null,
+        ownerBundle.spk_sig || null,
+        ownerBundle.opk?.id ?? null,
+        ownerBundle.opk?.pub ?? null
+      ).run();
     } else {
       await env.DB.prepare(
         `INSERT INTO friend_invites(
             invite_id, owner_account_digest, token_hash, expires_at,
-            invite_version, owner_device_id, used_at, created_at
-         ) VALUES (?1, ?2, ?3, ?4, 2, ?5, NULL, strftime('%s','now'))`
-      ).bind(inviteId, ownerAccount.account_digest, tokenHash, expiresAt, deviceIdBody).run();
+            invite_version, owner_device_id, used_at, created_at,
+            prekey_ik_pub, prekey_spk_pub, prekey_spk_sig, prekey_opk_id, prekey_opk_pub
+         ) VALUES (?1, ?2, ?3, ?4, 2, ?5, NULL, strftime('%s','now'), ?6, ?7, ?8, ?9, ?10)`
+      ).bind(
+        inviteId,
+        ownerAccount.account_digest,
+        tokenHash,
+        expiresAt,
+        deviceIdBody,
+        ownerBundle.ik_pub || null,
+        ownerBundle.spk_pub || null,
+        ownerBundle.spk_sig || null,
+        ownerBundle.opk?.id ?? null,
+        ownerBundle.opk?.pub ?? null
+      ).run();
     }
 
     return json({
@@ -1836,7 +1869,8 @@ async function handleFriendsRoutes(req, env) {
     }
 
     const rows = await env.DB.prepare(
-      `SELECT invite_id, owner_account_digest, token_hash, expires_at, used_at, owner_device_id, invite_version
+      `SELECT invite_id, owner_account_digest, token_hash, expires_at, used_at, owner_device_id, invite_version,
+              prekey_ik_pub, prekey_spk_pub, prekey_spk_sig, prekey_opk_id, prekey_opk_pub
        FROM friend_invites WHERE invite_id=?1`
     ).bind(inviteId).all();
     const row = rows?.results?.[0];
@@ -1858,9 +1892,33 @@ async function handleFriendsRoutes(req, env) {
       return json({ error: 'BadRequest', message: 'guestBundle required' }, { status: 400 });
     }
 
-    const ownerBundle = await allocateOwnerPrekeyBundle(env, row.owner_account_digest, row.owner_device_id);
+    let ownerBundle = normalizeOwnerPrekeyBundle({
+      ik_pub: row.prekey_ik_pub,
+      spk_pub: row.prekey_spk_pub,
+      spk_sig: row.prekey_spk_sig,
+      opk: row.prekey_opk_id != null ? { id: row.prekey_opk_id, pub: row.prekey_opk_pub } : null
+    });
     if (!ownerBundle) {
-      return json({ error: 'PrekeyUnavailable', message: 'owner prekey bundle unavailable' }, { status: 409 });
+      ownerBundle = await allocateOwnerPrekeyBundle(env, row.owner_account_digest, row.owner_device_id);
+      if (!ownerBundle) {
+        return json({ error: 'PrekeyUnavailable', message: 'owner prekey bundle unavailable' }, { status: 409 });
+      }
+      try {
+        await env.DB.prepare(
+          `UPDATE friend_invites
+              SET prekey_ik_pub=?2, prekey_spk_pub=?3, prekey_spk_sig=?4, prekey_opk_id=?5, prekey_opk_pub=?6
+            WHERE invite_id=?1`
+        ).bind(
+          inviteId,
+          ownerBundle.ik_pub || null,
+          ownerBundle.spk_pub || null,
+          ownerBundle.spk_sig || null,
+          ownerBundle.opk?.id ?? null,
+          ownerBundle.opk?.pub ?? null
+        ).run();
+      } catch (err) {
+        console.warn('invite_store_prekey_fallback_failed', err?.message || err);
+      }
     }
 
     await env.DB.prepare(

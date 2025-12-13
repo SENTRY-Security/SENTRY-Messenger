@@ -18,7 +18,8 @@ import {
   getOpaqueServerId,
   normalizePeerIdentity,
   getDeviceId,
-  ensureDeviceId
+  ensureDeviceId,
+  clearDrState
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -1447,6 +1448,8 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
 
 (function hydrateDrSnapshotsFromSecrets() {
   try {
+    // 登入時先清除所有記憶體 DR 狀態，避免沿用舊裝置/錯角色快照。
+    clearDrState();
     const restored = hydrateDrStatesFromContactSecrets();
     log({ drSnapshotsRestored: restored });
     try {
