@@ -46,6 +46,8 @@ export function initContactsView(options) {
   const contactIndex = sessionStore.contactIndex;
   if (!sessionStore.conversationIndex) sessionStore.conversationIndex = new Map();
   const conversationIndex = sessionStore.conversationIndex;
+  if (!sessionStore.deletedContacts) sessionStore.deletedContacts = new Set();
+  const deletedContacts = sessionStore.deletedContacts;
 
   const PULL_THRESHOLD = 60;
   const PULL_MAX = 140;
@@ -248,6 +250,7 @@ export function initContactsView(options) {
           const peerDeviceId = contactEntry?.conversation?.peerDeviceId || null;
           const accountDigestOnly = key.includes('::') ? key.split('::')[0] : key;
           await friendsDeleteContact({ peerAccountDigest: accountDigestOnly });
+          deletedContacts.add(accountDigestOnly);
           if (convId) markConversationTombstone(convId);
           clearDrState({ peerAccountDigest: key, peerDeviceId });
           deleteContactSecret(key, { deviceId: ensureDeviceId() });
@@ -424,6 +427,10 @@ export function initContactsView(options) {
         ? `${digest}::${peerDeviceIdFromEntry || peerDeviceIdFromConv}`
         : contactKey(entry);
       if (!key) continue;
+      if (digest && deletedContacts.has(digest)) {
+        log({ contactSkipDeleted: digest });
+        continue;
+      }
       if (isRecentlyRemoved(key)) {
         presenceManager.removePresenceForContact(key);
         continue;
