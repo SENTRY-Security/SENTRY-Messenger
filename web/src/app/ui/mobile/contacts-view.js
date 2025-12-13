@@ -246,7 +246,8 @@ export function initContactsView(options) {
           const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
           const convId = contactEntry?.conversation?.conversation_id || contactEntry?.conversation?.id || null;
           const peerDeviceId = contactEntry?.conversation?.peerDeviceId || null;
-          await friendsDeleteContact({ peerAccountDigest: key });
+          const accountDigestOnly = key.includes('::') ? key.split('::')[0] : key;
+          await friendsDeleteContact({ peerAccountDigest: accountDigestOnly });
           if (convId) markConversationTombstone(convId);
           clearDrState({ peerAccountDigest: key, peerDeviceId });
           deleteContactSecret(key, { deviceId: ensureDeviceId() });
