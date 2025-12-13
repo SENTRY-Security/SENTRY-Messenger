@@ -59,6 +59,51 @@ function resetDeviceCounter(id) {
   }
 })();
 
+function recoverDeviceIdFromCaches() {
+  if (_DEVICE_ID) return;
+  const candidates = new Set();
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      for (let i = 0; i < sessionStorage.length; i += 1) {
+        const k = sessionStorage.key(i);
+        if (k && k.startsWith(DEVICE_COUNTER_PREFIX)) {
+          const id = k.slice(DEVICE_COUNTER_PREFIX.length).trim();
+          if (id) candidates.add(id);
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (!key || !key.includes('contactSecrets-v2')) continue;
+        try {
+          const parsed = JSON.parse(localStorage.getItem(key) || '{}');
+          const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+          for (const entry of entries) {
+            if (entry?.devices && typeof entry.devices === 'object') {
+              for (const devId of Object.keys(entry.devices)) {
+                if (devId && typeof devId === 'string') candidates.add(devId.trim());
+              }
+            }
+          }
+        } catch {
+          /* ignore parse errors */
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  if (candidates.size === 1) {
+    const [id] = candidates;
+    setDeviceId(id);
+  }
+}
+
 function settleDevicePrivWaiter(entry, value) {
   if (!entry) return;
   if (entry.timer) {
@@ -181,6 +226,8 @@ export function setDeviceId(v) {
   }
 }
 export function ensureDeviceId() {
+  if (_DEVICE_ID) return _DEVICE_ID;
+  recoverDeviceIdFromCaches();
   if (_DEVICE_ID) return _DEVICE_ID;
   if (_DEVICE_PRIV && (typeof _DEVICE_PRIV === 'object')) {
     const fromPriv = _DEVICE_PRIV.device_id || _DEVICE_PRIV.deviceId || null;
