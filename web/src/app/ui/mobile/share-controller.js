@@ -852,6 +852,7 @@ export function setupShareController(options) {
         token_b64: conversationTokenB64,
         conversation_id: conversationIdFromPayload,
         dr_init: conversationRaw?.dr_init || conversationRaw?.drInit || null,
+        // 對端裝置必須存在，強制用 senderDeviceId 作為 peerDeviceId
         peerDeviceId
       };
       if (conversation.peerDeviceId && peerDeviceId && conversation.peerDeviceId !== peerDeviceId) {

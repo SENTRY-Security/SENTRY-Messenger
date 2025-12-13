@@ -824,7 +824,12 @@ export function initMessagesPane({
     const tasks = [];
     for (const thread of threads) {
       const peerDigest = threadPeer(thread);
-      if (!thread?.conversationId || !thread?.conversationToken || !peerDigest) continue;
+      if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
+        if (!thread?.peerDeviceId) {
+          try { log({ previewSkipMissingPeerDevice: thread?.conversationId || null }); } catch {}
+        }
+        continue;
+      }
       if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
       tasks.push((async () => {
         try {
@@ -832,7 +837,7 @@ export function initMessagesPane({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerAccountDigest: peerDigest,
-            peerDeviceId: thread.peerDeviceId || null,
+            peerDeviceId: thread.peerDeviceId,
             limit: 20,
             mutateState: false
           });
