@@ -1,6 +1,5 @@
 import { log } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId } from '../../core/store.js';
-import { restoreContactSecrets } from '../../core/contact-secrets.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
@@ -747,43 +746,6 @@ export function initMessagesPane({
     return sessionStore.conversationThreads;
   }
 
-  function hydrateConversationsFromSecrets() {
-    const secrets = restoreContactSecrets();
-    if (!(secrets instanceof Map)) return;
-    const convIndex = ensureConversationIndex();
-    const threads = getConversationThreads();
-    for (const [peer, info] of secrets.entries()) {
-      const digest = normalizeAccountDigest(peer);
-      const conv = info?.conversation || {};
-      const convId = conv?.id || conv?.conversation_id || null;
-      const tokenB64 = conv?.token || conv?.token_b64 || null;
-      const peerDeviceId = conv?.peerDeviceId || info?.peerDeviceId || null;
-      if (!digest || !convId || !tokenB64 || !peerDeviceId) continue;
-      const prev = convIndex.get(convId) || {};
-      if (!prev.peerDeviceId || !prev.peerAccountDigest || !prev.token_b64) {
-        convIndex.set(convId, {
-          ...prev,
-          conversation_id: convId,
-          token_b64: tokenB64,
-          peerAccountDigest: digest,
-          peerDeviceId
-        });
-      }
-      const threadPrev = threads.get(convId) || {};
-      if (!threadPrev.peerDeviceId || !threadPrev.peerAccountDigest || !threadPrev.conversationToken) {
-        threads.set(convId, {
-          ...threadPrev,
-          peerAccountDigest: digest,
-          peerDeviceId,
-          conversationId: convId,
-          conversationToken: tokenB64,
-          nickname: threadPrev.nickname || info?.nickname || `好友 ${digest.slice(-4)}`,
-          avatar: threadPrev.avatar || info?.avatar || null
-        });
-      }
-    }
-  }
-
   function upsertConversationThread({ peerAccountDigest, peerDeviceId = null, conversationId, tokenB64, nickname, avatar }) {
     const key = normalizePeerKey(peerAccountDigest);
     const convId = String(conversationId || '').trim();
@@ -857,7 +819,6 @@ export function initMessagesPane({
   }
 
   async function refreshConversationPreviews({ force = false } = {}) {
-    hydrateConversationsFromSecrets();
     const threadsMap = getConversationThreads();
     const threads = Array.from(threadsMap.values());
     const tasks = [];
@@ -2209,7 +2170,6 @@ export function initMessagesPane({
   async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
-    hydrateConversationsFromSecrets();
     if (!state.activePeerDeviceId) {
       setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
       return;
@@ -3094,7 +3054,6 @@ export function initMessagesPane({
   }
 
   function handleIncomingSecureMessage(event) {
-    hydrateConversationsFromSecrets();
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
     if (convId && convId.startsWith('profile-')) {
       // 自己的 profile 更新訊息，略過以免影響聯絡同步流程

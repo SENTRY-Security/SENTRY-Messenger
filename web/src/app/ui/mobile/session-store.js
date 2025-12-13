@@ -1,3 +1,6 @@
+import { restoreContactSecrets } from '../../core/contact-secrets.js';
+import { normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
+
 const cloneValue = (value) => {
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
@@ -124,4 +127,27 @@ export function resetProfileState() {
 
 export function resetSettingsState() {
   sessionStore.settingsState = null;
+}
+
+export function hydrateConversationsFromSecrets() {
+  const secrets = restoreContactSecrets();
+  if (!(secrets instanceof Map)) return;
+  for (const [peerKey, info] of secrets.entries()) {
+    const digest = normalizeAccountDigest(
+      typeof peerKey === 'string' && peerKey.includes('::')
+        ? peerKey.split('::')[0]
+        : peerKey
+    );
+    const peerDeviceId = normalizePeerDeviceId(info?.peerDeviceId || (typeof peerKey === 'string' && peerKey.includes('::') ? peerKey.split('::')[1] : null) || null);
+    const conv = info?.conversation || {};
+    const convId = conv?.id || conv?.conversation_id || null;
+    const tokenB64 = conv?.token || conv?.token_b64 || null;
+    if (!digest || !peerDeviceId || !convId || !tokenB64) continue;
+    sessionStore.conversationIndex.set(convId, {
+      peerAccountDigest: digest,
+      peerDeviceId,
+      token_b64: tokenB64,
+      dr_init: conv?.drInit || conv?.dr_init || null
+    });
+  }
 }
