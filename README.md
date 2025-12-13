@@ -19,8 +19,7 @@
 5. [營運與部署流程](#營運與部署流程)
 6. [測試與自動化](#測試與自動化)
 7. [最新進度與工作項目](#最新進度與工作項目)
-8. [待辦：移除錯誤 fallback 機制](#待辦移除錯誤-fallback-機制)
-9. [授權條款](#授權條款)
+8. [授權條款](#授權條款)
 
 ---
 
@@ -208,21 +207,9 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 
 - **目前狀態**：所有既有 `npm run test:*`、Playwright、mjs 腳本已移除，以下時間軸僅保留歷史紀錄（其中提到的測試名稱/指令已不可執行）。現階段需以人工或新建腳本驗證登入/交友/訊息/媒體流程。
 
-## 待辦：暱稱 / 頭像跨裝置同步（無 fallback）
+## 最新進度與工作項目
 
-- [ ] 目標：任何裝置、重登入都能取得最新暱稱與頭像，僅透過既有 contact-share + DR 路徑。
-- [x] 會話金鑰備份 / 還原
-  - [x] 以 MK 加密備份 contact-secret + DR snapshot（conversationToken、conversationId、peerDeviceId、baseRole、ckS/ckR、my/their ratchet 公鑰、updatedAt），登出 / 切換裝置時持續保留。
-  - [x] 登入時先還原備份並驗證 deviceId / role / peerDeviceId 一致性，不符即丟棄並提示需重新掃碼。
-- [ ] 登入後自動廣播最新 profile
-  - [x] DR hydrate 完成後，針對所有有效 contact-secret 觸發 `broadcastContactUpdate(reason='profile')`，payload 帶最新暱稱與頭像縮圖；缺 token 或 peerDeviceId 則 skip 並記錄 log。
-  - [x] 收端依 updatedAt / addedAt 判斷新舊，避免舊資料覆蓋新資料。
-- [ ] 裝置變更防呆
-  - [x] 偵測 peerDeviceId 變更或缺失時，明確提示重新掃碼 / 邀請，禁止沿用舊對應或其他 fallback。
-  - [x] 收到 peerDeviceId 或角色不符的 contact-share / DR snapshot 時直接拒收並記錄日誌。
-- [ ] 驗證與回歸
-  - [ ] 手動測試：雙端多裝置登入 / 登出後再登入，修改暱稱與頭像，確認所有裝置都收到最新資料且 DR / 對話未被重置。
-  - [ ] 更新 test-results 與 README，記錄測試路徑、結果與版本。
+- [ ] 強化 DR 發送鏈防撞：同鏈單 sender 鎖（跨分頁/多實例）、重送時 header.n 與 counter 同步，送出前校驗 state/peerDeviceId，有異常直接中止並提示重建
 
 
 | 日期                         | 里程碑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
