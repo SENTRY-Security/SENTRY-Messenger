@@ -3370,6 +3370,8 @@ export function initMessagesPane({
         const snippet = buildConversationSnippet(previewRaw);
         if (snippet) return snippet;
         if (previewRaw) return previewRaw;
+        // 若是首則訊息且沒有預覽，視為剛加入好友的提示
+        if (!thread.lastMessageId && !thread.lastMessageTs) return '已加入好友';
         return '有新訊息';
       })();
       const toastMessage = toastPreview ? `${nickname}：${toastPreview}` : `${nickname} 有新訊息`;
