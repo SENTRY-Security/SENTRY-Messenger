@@ -1170,8 +1170,27 @@ export function setupShareController(options) {
           contactBroadcastError: err?.message || err,
           peerAccountDigest: digest,
           peerDeviceId,
-          reason: reasonKey
+          reason: reasonKey,
+          attempt: 'initial'
         });
+        try {
+          await sendContactShare({
+            peerAccountDigest: digest,
+            conversation,
+            sessionKey: token,
+            peerDeviceId,
+            drInit,
+            overrides,
+            reason: reasonKey
+          });
+        } catch (err2) {
+          console.error('[share-controller]', {
+            contactBroadcastRetryError: err2?.message || err2,
+            peerAccountDigest: digest,
+            peerDeviceId,
+            reason: reasonKey
+          });
+        }
       }
     }
   }

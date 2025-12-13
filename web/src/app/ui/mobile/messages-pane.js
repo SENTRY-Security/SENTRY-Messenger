@@ -2170,6 +2170,10 @@ export function initMessagesPane({
   async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
+    if (!state.activePeerDeviceId) {
+      setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
+      return;
+    }
     if (state.loading) return;
     if (append && (!state.hasMore || !state.nextCursor)) return;
 
@@ -2395,6 +2399,18 @@ export function initMessagesPane({
     if (!peerDeviceId) {
       setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
       return;
+    }
+    if (!conversation.peerDeviceId) {
+      conversation.peerDeviceId = peerDeviceId;
+      if (entry?.conversation) entry.conversation.peerDeviceId = peerDeviceId;
+      const convIndex = ensureConversationIndex();
+      const prev = convIndex.get(conversation.conversation_id) || {};
+      convIndex.set(conversation.conversation_id, {
+        ...prev,
+        peerAccountDigest: key,
+        peerDeviceId,
+        token_b64: conversation.token_b64 || prev.token_b64 || null
+      });
     }
     state.activePeerDigest = key;
     state.activePeerDeviceId = peerDeviceId || null;
@@ -3039,6 +3055,10 @@ export function initMessagesPane({
 
   function handleIncomingSecureMessage(event) {
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
+    if (convId && convId.startsWith('profile-')) {
+      // 自己的 profile 更新訊息，略過以免影響聯絡同步流程
+      return;
+    }
     try {
       try {
         console.log('[ws-secure-message]', {

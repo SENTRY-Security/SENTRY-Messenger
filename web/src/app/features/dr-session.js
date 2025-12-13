@@ -793,14 +793,14 @@ async function sendDrPlaintext(params = {}) {
       conversationId: finalConversationId,
       messageId,
       headerJson,
-      header: headerPayload,
-      ciphertextB64: ctB64,
-      counter: pkt.header?.n ?? null,
-      senderDeviceId,
-      receiverAccountDigest: peer,
-      receiverDeviceId: receiverDeviceId || null,
-      createdAt: now,
-      peerAccountDigest: peer,
+    header: headerPayload,
+    ciphertextB64: ctB64,
+    counter: pkt.header?.n ?? null,
+    senderDeviceId,
+    receiverAccountDigest: peer,
+    receiverDeviceId: receiverDeviceId || null,
+    createdAt: now,
+    peerAccountDigest: peer,
       peerDeviceId: peerDeviceId || null,
       meta: { msg_type: meta.msg_type },
       dr: preSnapshot
@@ -826,9 +826,7 @@ async function sendDrPlaintext(params = {}) {
     const nextFail = (sendFailureCounter.get(key) || 0) + 1;
     sendFailureCounter.set(key, nextFail);
     if (nextFail >= 3) {
-      clearDrState({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId || null });
-      sendFailureCounter.delete(key);
-      throw new Error('DR 送出連續失敗已重置會話，請重新同步好友或重新建立邀請');
+      throw new Error('DR 送出連續失敗，請重新同步好友或重新建立邀請');
     }
     if (preSnapshot) restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
     throw err;

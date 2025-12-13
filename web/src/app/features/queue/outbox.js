@@ -150,8 +150,12 @@ async function attemptSend(job) {
   const { r, data } = await createSecureMessage(payload);
   const ackOk = r?.status === 202 && data && data.accepted === true && data.id;
   if (!ackOk) {
-    const err = new Error(`ack failed (status=${r?.status || 'unknown'})`);
+    const msg = typeof data?.message === 'string' ? data.message
+      : typeof data?.error === 'string' ? data.error
+      : `ack failed (status=${r?.status || 'unknown'})`;
+    const err = new Error(msg);
     err.status = r?.status;
+    err.details = data || null;
     throw err;
   }
   return { r, data };

@@ -1041,7 +1041,7 @@ const PASSWORD_ERROR_MESSAGE = '密碼不正確，請重新輸入。';
 
 const ERROR_CODE_MESSAGES = {
   ConfigError: '伺服器設定異常，請通知客服。',
-  Unauthorized: '標籤驗證失敗，請重新感應卡片。',
+  Unauthorized: '晶片驗證失敗，請重新感應卡片。',
   ExchangeFailed: '伺服器驗證失敗，請稍後再試。',
   Replay: '偵測到晶片計數器重複，請關閉頁面後重新感應。',
   SessionExpired: '驗證已逾時，請重新感應卡片。',
@@ -1054,18 +1054,18 @@ const ERROR_CODE_MESSAGES = {
 };
 
 const ERROR_PATTERNS = [
-  { pattern: /uid hex \(14\) required/i, message: '尚未偵測到標籤 UID，請重新感應。' },
-  { pattern: /sdm mac \(16\) required/i, message: 'MAC 資料缺失，請重新感應標籤。' },
+  { pattern: /uid hex \(14\) required/i, message: '尚未偵測到晶片 UID，請重新感應。' },
+  { pattern: /sdm mac \(16\) required/i, message: 'MAC 資料缺失，請重新感應晶片。' },
   { pattern: /password required/i, message: '請輸入解鎖密碼。' },
   { pattern: /請輸入密碼。?/i, message: '請輸入密碼。' },
   { pattern: /密碼至少需 6 個字元/i, message: '密碼至少需 6 個字元。' },
   { pattern: /兩次輸入的密碼不一致/i, message: '兩次輸入的密碼不一致。' },
-  { pattern: /sdm exchange required/i, message: '請先完成標籤驗證。' },
-  { pattern: /uid not set/i, message: '尚未偵測到標籤 UID，請重新感應。' },
+  { pattern: /sdm exchange required/i, message: '請先完成晶片驗證。' },
+  { pattern: /uid not set/i, message: '尚未偵測到晶片 UID，請重新感應。' },
   { pattern: /wrong password or envelope mismatch/i, message: '密碼不正確，請重新輸入。' },
   { pattern: /unlock failed/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /enter a password first/i, message: '請輸入解鎖密碼。' },
-  { pattern: /run sdm exchange first/i, message: '請先感應標籤並完成驗證。' },
+  { pattern: /run sdm exchange first/i, message: '請先感應晶片並完成驗證。' },
   { pattern: /mk\.store failed/i, message: '儲存主金鑰失敗，請稍後再試。' },
   { pattern: /initialize mk failed/i, message: '初始化主金鑰失敗，請稍後再試。' },
   { pattern: /devkeys\.fetch failed/i, message: '讀取裝置備份失敗，請稍後再試。' },
@@ -1077,7 +1077,7 @@ const ERROR_PATTERNS = [
   { pattern: /please re-tap the tag/i, message: '驗證已逾時，請重新感應卡片。' },
   { pattern: /counter must be strictly increasing/i, message: '偵測到晶片計數器重複，請關閉頁面後重新感應。' },
   { pattern: /uid mismatch/i, message: '驗證資料不一致，請重新感應卡片。' },
-  { pattern: /sdm verify failed/i, message: '標籤驗證失敗，請重新感應卡片。' },
+  { pattern: /sdm verify failed/i, message: '晶片驗證失敗，請重新感應卡片。' },
   { pattern: /opaque login.*failed/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /opaque.*password/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /OpaqueLoginFinishFailed/i, message: PASSWORD_ERROR_MESSAGE },

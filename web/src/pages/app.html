@@ -150,10 +150,13 @@
       .nav-badge { position:absolute; top:2px; right:12px; min-width:18px; padding:1px 4px; border-radius:999px; background:linear-gradient(135deg,#2563eb,#1d4ed8); color:#fff; font-size:10px; font-weight:600; line-height:1.2; display:none; box-shadow:0 4px 10px rgba(37,99,235,0.25); }
       .navbtn.has-badge .nav-badge { display:inline-flex; align-items:center; justify-content:center; }
       .navbtn.active, .navbtn:focus { color:#111827; }
+      .navbtn i { color: currentColor; }
+      .navbtn.active i { background:linear-gradient(135deg,#38bdf8,#6366f1); -webkit-background-clip:text; -webkit-text-fill-color:transparent; color:transparent; }
       .nav-icon-stack { position:relative; width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; }
       .nav-icon-stack i { position:absolute; color:currentColor; line-height:1; }
       .nav-icon-stack .nav-icon-base { font-size:22px; }
       .nav-icon-stack .nav-icon-lock { font-size:13px; bottom:-3px; right:-6px; color:#0ea5e9; text-shadow:0 0 0 transparent; }
+      .navbtn.active .nav-icon-stack .nav-icon-base { background:linear-gradient(135deg,#38bdf8,#6366f1); -webkit-background-clip:text; -webkit-text-fill-color:transparent; color:transparent; }
       .navbtn.active .nav-icon-stack .nav-icon-lock { color:#2563eb; }
       /* 減少初始旋轉動畫（測試/視覺安定） */
       html.no-anim .loading-spinner,

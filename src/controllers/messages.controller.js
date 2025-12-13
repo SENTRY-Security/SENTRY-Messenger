@@ -386,6 +386,10 @@ export const createSecureMessage = async (req, res) => {
       workerJson = null;
     }
 
+    if (r.status === 409 && typeof workerJson === 'object' && workerJson?.error === 'CounterTooLow') {
+      return res.status(409).json({ error: 'CounterTooLow', details: workerJson });
+    }
+
     if (!r.ok) {
       return res.status(502).json({
         error: 'D1WriteFailed',

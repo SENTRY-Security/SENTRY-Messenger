@@ -29,14 +29,14 @@ function buildAccountHeaders() {
 export async function createSecureMessage({
   conversationId,
   header,
- ciphertextB64,
- counter,
- senderDeviceId,
- receiverAccountDigest,
+  ciphertextB64,
+  counter,
+  senderDeviceId,
+  receiverAccountDigest,
   receiverDeviceId,
   id,
   createdAt
-} = {}) {
+} = {}, { _retry } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   if (!header) throw new Error('header required');
   if (!ciphertextB64) throw new Error('ciphertextB64 required');
@@ -64,6 +64,22 @@ export async function createSecureMessage({
   const r = await fetchWithTimeout('/api/v1/messages/secure', jsonReq(payload), 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
+  const errCode = data?.error || data?.code || null;
+  const maxCounter = data?.details?.maxCounter;
+  if (!_retry && r?.status === 409 && errCode === 'CounterTooLow' && Number.isFinite(maxCounter)) {
+    try { setDeviceCounter(Number(maxCounter)); } catch {}
+    return createSecureMessage({
+      conversationId,
+      header,
+      ciphertextB64,
+      counter: Number(maxCounter) + 1,
+      senderDeviceId,
+      receiverAccountDigest,
+      receiverDeviceId,
+      id,
+      createdAt
+    }, { _retry: true });
+  }
   return { r, data };
 }
 

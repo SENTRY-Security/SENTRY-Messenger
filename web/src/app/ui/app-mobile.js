@@ -3413,13 +3413,21 @@ if (typeof document !== 'undefined') {
       const msg = detail.message || {};
       const cs = msg?.contactShare || {};
       const header = msg?.header || {};
-      const peerAccountDigest = detail?.peerAccountDigest || header?.peerAccountDigest || header?.accountDigest || null;
-      const peerDeviceId = header?.peerDeviceId
+      const meta = msg?.meta || {};
+      let peerAccountDigest = detail?.peerAccountDigest || header?.peerAccountDigest || header?.accountDigest || meta?.peerAccountDigest || null;
+      let peerDeviceId = header?.peerDeviceId
         || header?.meta?.peerDeviceId
         || header?.meta?.targetDeviceId
         || header?.meta?.receiverDeviceId
+        || meta?.peerDeviceId
+        || meta?.targetDeviceId
+        || meta?.receiverDeviceId
         || msg?.peerDeviceId
         || null;
+      if (!peerDeviceId && typeof peerAccountDigest === 'string' && peerAccountDigest.includes('::')) {
+        const [, devPart] = peerAccountDigest.split('::');
+        peerDeviceId = devPart || peerDeviceId;
+      }
       const envelope = cs?.envelope || null;
       if (!peerAccountDigest || !peerDeviceId || !envelope?.iv || !envelope?.ct) {
         log({ contactShareMissingFields: true, peerAccountDigest, peerDeviceId, hasEnvelope: !!envelope });
