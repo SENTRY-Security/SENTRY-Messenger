@@ -3363,7 +3363,15 @@ export function initMessagesPane({
       thread.needsRefresh = true;
       renderConversationList();
 
-      const toastPreview = buildConversationSnippet(previewRaw) || '有新訊息';
+      const toastPreview = (() => {
+        if (msgTypeKey === 'contact-share') return '已加入好友';
+        if (msgTypeKey === 'nickname') return '好友暱稱已更新';
+        if (msgTypeKey === 'avatar' || msgTypeKey === 'profile') return '好友頭像已更新';
+        const snippet = buildConversationSnippet(previewRaw);
+        if (snippet) return snippet;
+        if (previewRaw) return previewRaw;
+        return '有新訊息';
+      })();
       const toastMessage = toastPreview ? `${nickname}：${toastPreview}` : `${nickname} 有新訊息`;
       const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
       const initialsToast = initialsFromName(nickname, peerDigest).slice(0, 2);
