@@ -182,6 +182,7 @@ export function initContactsView(options) {
   function removeContactState(peerAccountDigest, { notifyPeer = true } = {}) {
     const key = contactKey(peerAccountDigest);
     if (!key) return false;
+    const accountOnly = key.includes('::') ? key.split('::')[0] : key;
     let mutated = false;
     const idx = sessionStore.contactState.findIndex((c) => {
       return contactKey(c) === key;
@@ -211,6 +212,7 @@ export function initContactsView(options) {
       renderContacts();
       updateStats?.();
       markRecentlyRemoved(key);
+      if (accountOnly) deletedContacts.add(accountOnly);
     }
     if (mutated && notifyPeer) {
       try {
@@ -560,7 +562,19 @@ export function initContactsView(options) {
       missingConversationToken: missingConvToken,
       missingConversationDevice: missingConvDevice
     });
-    sessionStore.contactState = sanitized;
+    // 過濾已標記刪除的帳號，並同步清除 index
+    const filtered = [];
+    for (const entry of sanitized) {
+      const k = contactKey(entry);
+      const acct = typeof k === 'string' && k.includes('::') ? k.split('::')[0] : k;
+      if (acct && deletedContacts.has(acct)) {
+        contactIndex.delete(k);
+        if (entry?.conversation?.conversation_id) conversationIndex?.delete?.(entry.conversation.conversation_id);
+        continue;
+      }
+      filtered.push(entry);
+    }
+    sessionStore.contactState = filtered;
     const currentPeers = new Set(sanitized.map((entry) => contactKey(entry)).filter(Boolean));
     for (const peer of prevPeers) {
       if (peer && !currentPeers.has(peer)) {
