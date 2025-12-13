@@ -726,7 +726,19 @@ export async function listSecureAndDecrypt(params = {}) {
   const peerKey = identity.key;
   const peerAccountDigestNormalized = identity.accountDigest || (peerKey && peerKey.includes('::') ? peerKey.split('::')[0] : peerKey) || null;
   const peerDevice = identity.deviceId || null;
-  if (!peerKey || !peerDevice) throw new Error('peer identity required (digest + deviceId)');
+  if (!peerKey || !peerDevice) {
+    try {
+      console.warn('[dr-list:missing-peer-identity]', {
+        conversationId,
+        hasToken: !!tokenB64,
+        peerAccountDigest,
+        peerDeviceId,
+        resolvedAccountDigest: identity.accountDigest || null,
+        resolvedDeviceId: identity.deviceId || null
+      });
+    } catch {}
+    throw new Error('peer identity required (digest + deviceId)');
+  }
   const clearAfter = getConversationClearAfter(conversationId);
   if (secureFetchLocks.has(conversationId)) {
     return {
