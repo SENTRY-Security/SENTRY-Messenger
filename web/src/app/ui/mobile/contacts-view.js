@@ -2,7 +2,7 @@ import { log } from '../../core/log.js';
 import { sessionStore } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
-import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret, restoreContactSecrets } from '../../core/contact-secrets.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
@@ -499,6 +499,53 @@ export function initContactsView(options) {
         conversationIndex.set(conv.conversation_id, localConversationCache.get(conv.conversation_id));
       }
     }
+    // 若伺服器/本地快取都沒有資料，嘗試從 contact-secrets 還原聯絡人（含 peerDeviceId/token）
+    if (!sanitized.length) {
+      const secretMap = restoreContactSecrets();
+      const restored = [];
+      if (secretMap instanceof Map) {
+        for (const [peerKey, record] of secretMap.entries()) {
+          const [dPart, devPart] = typeof peerKey === 'string' && peerKey.includes('::') ? peerKey.split('::') : [peerKey, null];
+          const digest = normalizeAccountDigest(dPart);
+          const peerDeviceId = normalizeDeviceId(record?.peerDeviceId || devPart || null);
+          const token = record?.conversationToken || record?.conversation?.token || null;
+          const convId = record?.conversationId || record?.conversation?.id || null;
+          const drInit = record?.conversationDrInit || record?.conversation?.drInit || null;
+          if (!digest || !peerDeviceId || !token || !convId) continue;
+          const key = `${digest}::${peerDeviceId}`;
+          if (contactIndex.has(key)) continue;
+          const entry = {
+            peerAccountDigest: key,
+            accountDigest: digest,
+            peerDeviceId,
+            nickname: '',
+            avatar: null,
+            conversation: {
+              conversation_id: convId,
+              token_b64: token,
+              peerDeviceId,
+              ...(drInit ? { dr_init: drInit } : null)
+            },
+            contactSecret: token
+          };
+          contactIndex.set(key, entry);
+          restored.push(entry);
+          if (conversationIndex) {
+            conversationIndex.set(convId, {
+              token_b64: token,
+              peerAccountDigest: key,
+              peerDeviceId,
+              dr_init: drInit || null
+            });
+          }
+        }
+      }
+      if (restored.length) {
+        console.log('[contacts-view]', { contactsRestoreFromSecrets: restored.length });
+        sanitized.push(...restored);
+      }
+    }
+
     console.log('[contacts-view]', {
       contactsReloadFetched: sanitized.length,
       missingConversation: missingConv,
