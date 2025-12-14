@@ -1179,12 +1179,7 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
   const structured = normalizeContactSecretUpdate(opts);
   const peerDeviceIdHint =
     (structured.peerDeviceId.has ? structured.peerDeviceId.value : null)
-    || (structured.conversation.peerDeviceId?.has ? structured.conversation.peerDeviceId.value : null)
-    || normalizePeerDeviceId(
-      opts?.peerDeviceId
-      ?? opts?.conversation?.peerDeviceId
-      ?? null
-    );
+    || normalizePeerDeviceId(opts?.peerDeviceId ?? null);
   const conversationIdHint =
     (structured.conversation.id.has ? structured.conversation.id.value : null)
     || opts?.conversationId
@@ -1211,9 +1206,7 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
   if (structured.conversation.token.has) next.conversationToken = structured.conversation.token.value;
   if (structured.conversation.id.has) next.conversationId = structured.conversation.id.value;
   if (structured.conversation.drInit.has) next.conversationDrInit = structured.conversation.drInit.value;
-  if (structured.conversation.peerDeviceId?.has && structured.conversation.peerDeviceId.value) {
-    next.peerDeviceId = structured.conversation.peerDeviceId.value;
-  }
+  // 禁止用 conversation.peerDeviceId 覆寫 peer 裝置，僅接受明確的 peerDeviceId 欄位。
   if (structured.role?.has) {
     next.role = structured.role.value || null;
   } else if (typeof opts.role === 'string') {
