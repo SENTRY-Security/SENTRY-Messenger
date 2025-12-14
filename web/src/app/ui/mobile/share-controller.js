@@ -1003,11 +1003,23 @@ export function setupShareController(options) {
       console.warn('[share-controller]', { contactInitMissingFields: true, reason: 'conversation-or-bundle', peerDigest, peerDeviceId, hasConv: !!conversation?.conversation_id });
       return;
     }
+    // 協定要求對端裝置唯一：若 payload 內的 conversation.peerDeviceId 與 senderDeviceId 不一致，視為錯誤並拒收。
+    if (conversation.peerDeviceId && conversation.peerDeviceId !== peerDeviceId) {
+      console.warn('[share-controller]', {
+        contactInitPeerDeviceMismatch: true,
+        peerAccountDigest: peerDigest,
+        fromEvent: peerDeviceId,
+        fromPayload: conversation.peerDeviceId
+      });
+      return;
+    }
+    // 強制使用 senderDeviceId 作為對端裝置。
+    conversation.peerDeviceId = peerDeviceId;
     console.log('[share-controller]', { contactInitReceived: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
     sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
       token_b64: conversation.token_b64,
       peerAccountDigest: peerDigest,
-      peerDeviceId: peerDeviceId || conversation.peerDeviceId || null,
+      peerDeviceId: peerDeviceId || null,
       dr_init: conversation.dr_init || null
     });
     storeContactSecretMapping({
