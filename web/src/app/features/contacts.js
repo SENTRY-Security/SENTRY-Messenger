@@ -114,23 +114,19 @@ export async function loadContacts() {
           ? {
               token_b64: String(contact.conversation.token_b64),
               conversation_id: String(contact.conversation.conversation_id),
-              ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null),
-              ...(contact.conversation.peerDeviceId ? { peerDeviceId: contact.conversation.peerDeviceId } : null)
+              ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
             }
           : (secretInfo?.conversationToken && secretInfo?.conversationId
               ? {
                   token_b64: secretInfo.conversationToken,
                   conversation_id: secretInfo.conversationId,
-                  ...(secretInfo?.conversationDrInit ? { dr_init: secretInfo.conversationDrInit } : null),
-                  ...(secretInfo?.conversationPeerDeviceId ? { peerDeviceId: secretInfo.conversationPeerDeviceId } : null),
-                  ...(secretInfo?.peerDeviceId ? { peerDeviceId: secretInfo.peerDeviceId } : null)
+                  ...(secretInfo?.conversationDrInit ? { dr_init: secretInfo.conversationDrInit } : null)
                 }
               : null);
         const conversationUpdate = {};
         if (conversation?.token_b64) conversationUpdate.token = conversation.token_b64;
         if (conversation?.conversation_id) conversationUpdate.id = conversation.conversation_id;
         if (conversation?.dr_init) conversationUpdate.drInit = conversation.dr_init;
-        if (conversation?.peerDeviceId) conversationUpdate.peerDeviceId = conversation.peerDeviceId;
         pendingSecretUpdate = {
           ...(Object.keys(conversationUpdate).length ? { conversation: conversationUpdate } : {}),
           meta: { source: 'contacts:pending-secret' }
@@ -146,8 +142,7 @@ export async function loadContacts() {
           ? {
               token_b64: String(contact.conversation.token_b64),
               conversation_id: String(contact.conversation.conversation_id),
-              ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null),
-              ...(contact.conversation.peerDeviceId ? { peerDeviceId: contact.conversation.peerDeviceId } : null)
+              ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
             }
           : null;
       }
@@ -219,7 +214,7 @@ export async function saveContact(contact) {
   }
   const identity = normalizePeerIdentity({
     peerAccountDigest: contact?.peerAccountDigest ?? null,
-    peerDeviceId: contact?.conversation?.peerDeviceId ?? peerDeviceId ?? null
+    peerDeviceId: peerDeviceId ?? null
   });
   const peerAccountDigest = digest || identity.accountDigest || null;
   peerDeviceId = peerDeviceId || identity.deviceId || null;
@@ -233,8 +228,7 @@ export async function saveContact(contact) {
     ? {
         token_b64: String(contact.conversation.token_b64),
         conversation_id: String(contact.conversation.conversation_id),
-        ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null),
-        ...(contact.conversation.peerDeviceId ? { peerDeviceId: contact.conversation.peerDeviceId } : null)
+        ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
       }
     : null;
   if (conversation && !conversation.peerDeviceId) {

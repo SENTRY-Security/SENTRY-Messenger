@@ -701,8 +701,7 @@ function conversationContextForPeer(peerAccountDigest) {
       return {
         token_b64: entry.conversation.token_b64,
         conversation_id: entry.conversation.conversation_id || null,
-        dr_init: entry.conversation.dr_init || null,
-        peerDeviceId: entry.conversation.peerDeviceId || entry?.peerDeviceId || null
+        dr_init: entry.conversation.dr_init || null
       };
     }
     const map = sessionStore.conversationIndex;

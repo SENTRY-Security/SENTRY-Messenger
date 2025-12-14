@@ -632,13 +632,11 @@ export function sanitizeContactSecretsForDevice({ map = null, deviceId = null, r
   let removed = 0;
   let prunedDevices = 0;
   for (const [peerKey, record] of targetMap.entries()) {
-    const peerDeviceId = normalizePeerDeviceId(record?.peerDeviceId || record?.conversationPeerDeviceId || null);
+    const peerDeviceId = normalizePeerDeviceId(record?.peerDeviceId || null);
     const devices = record?.devices && typeof record.devices === 'object' ? record.devices : {};
     const selfDeviceRecord = devices[selfDeviceId];
     const role = typeof record?.role === 'string' ? record.role.toLowerCase() : null;
-    const conversationPeerDeviceId = normalizePeerDeviceId(record?.conversation?.peerDeviceId || record?.conversationPeerDeviceId || null);
-    const mismatchPeerDevice = conversationPeerDeviceId && peerDeviceId && conversationPeerDeviceId !== peerDeviceId;
-    if (!peerDeviceId || mismatchPeerDevice) {
+    if (!peerDeviceId) {
       targetMap.delete(peerKey);
       removed += 1;
       continue;
@@ -949,18 +947,11 @@ function normalizeStructuredEntry(entry) {
   const peerAccountDigest = normalizeAccountDigest(entry.peerAccountDigest || null);
   if (!peerAccountDigest) return null;
   const conversation = entry.conversation || {};
-  const explicitPeerDeviceId = normalizePeerDeviceId(
-    entry.peerDeviceId
-    || conversation.peerDeviceId
-    || null
-  );
+  const explicitPeerDeviceId = normalizePeerDeviceId(entry.peerDeviceId || null);
   const role = typeof entry.role === 'string' ? entry.role.toLowerCase() : null;
   const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : null;
   const deviceKeys = devices ? Object.keys(devices).map((k) => normalizePeerDeviceId(k)).filter(Boolean) : [];
-  const peerDeviceId =
-    explicitPeerDeviceId
-    || (conversation.peerDeviceId ? normalizePeerDeviceId(conversation.peerDeviceId) : null)
-    || (deviceKeys.length === 1 ? deviceKeys[0] : null);
+  const peerDeviceId = explicitPeerDeviceId || (deviceKeys.length === 1 ? deviceKeys[0] : null);
   if (!peerDeviceId) return null;
   const identity = normalizePeerIdentity({
     peerAccountDigest,
