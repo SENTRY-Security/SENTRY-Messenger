@@ -1200,6 +1200,19 @@ export async function listSecureAndDecrypt(params = {}) {
       const text = await deps.drDecryptText(state, pkt, {
         onMessageKey: (mk) => { messageKeyB64 = mk; }
       });
+      const postState = summarizeDrState(state);
+      const preState = summarizeDrState(preDecryptState);
+      try {
+        console.warn('[dr-log:decrypt-state]', {
+          conversationId,
+          peerAccountDigest: peerKey,
+          peerDeviceId: peerDeviceForMessage || null,
+          headerN: Number(header?.n ?? packet?.counter ?? null),
+          headerEk: header?.ek_pub_b64 ? String(header.ek_pub_b64).slice(0, 12) : null,
+          preState,
+          postState
+        });
+      } catch {}
       if (drDebug) {
         try {
           console.log('[dr-inbox:decrypted]', {

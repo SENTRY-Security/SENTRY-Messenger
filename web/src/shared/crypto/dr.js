@@ -434,6 +434,25 @@ export async function drDecryptText(st, packet, opts = {}) {
       }
     }
 
+    if (ratchetPerformed || usedStoredKey) {
+      try {
+        console.warn('[dr-log:decrypt-ratchet]', {
+          headerN,
+          pn,
+          usedStoredKey,
+          ratchetPerformed,
+          chainId: chainId ? chainId.slice(0, 12) : null,
+          stateNr: st?.Nr ?? null,
+          stateNs: st?.Ns ?? null,
+          hasCkS: !!(st?.ckS && st.ckS.length),
+          hasCkR: !!(st?.ckR && st.ckR.length),
+          theirPubHash: st?.theirRatchetPub ? b64(st.theirRatchetPub).slice(0, 12) : null
+        });
+      } catch {
+        // ignore log errors
+      }
+    }
+
     const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
     const aad = buildDrAadFromHeader(packet.header);
     const decryptParams = aad
