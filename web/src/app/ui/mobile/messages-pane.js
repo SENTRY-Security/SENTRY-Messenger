@@ -2395,7 +2395,7 @@ export function initMessagesPane({
       resetProcessedMessages(state.conversationId);
     }
     const peerDeviceIdFromKey = key && key.includes('::') ? key.split('::')[1] : null;
-    const peerDeviceId = conversation.peerDeviceId || peerDeviceIdFromKey || null;
+    const peerDeviceId = peerDeviceIdFromKey || conversation.peerDeviceId || null;
     if (!peerDeviceId) {
       setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
       return;

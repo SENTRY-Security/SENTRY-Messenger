@@ -19,7 +19,7 @@ function normalizeKey(input) {
 }
 
 export async function deriveConversationContext(secretB64UrlOrKeyBytes, opts = {}) {
-  const deviceId = opts.deviceId || opts.ownerDeviceId || opts.peerDeviceId || null;
+  const deviceId = opts.deviceId || null;
   const info = buildInfo(deviceId);
   if (!deviceId) throw new Error('deviceId required for conversation context');
   const keyBytes = normalizeKey(secretB64UrlOrKeyBytes);

@@ -143,7 +143,7 @@ export function initContactsView(options) {
           : null;
         const detail = {
           peerAccountDigest: key,
-          peerDeviceId: conversation?.peerDeviceId || (key.includes('::') ? key.split('::')[1] : null),
+          peerDeviceId: (key.includes('::') ? key.split('::')[1] : null),
           nickname: name,
           avatar: c?.avatar || null,
           conversation
