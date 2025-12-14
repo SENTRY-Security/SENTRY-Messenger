@@ -909,15 +909,15 @@ export async function listSecureAndDecrypt(params = {}) {
   const getStateForDevice = (deviceId) => {
     if (!deviceId) throw new Error('peerDeviceId required for DR state');
     if (shouldTrackState) {
-      let holder = stateByDevice.get(deviceId);
-      if (!holder) {
-        holder = deps.drState(getPeerRef(deviceId));
-        stateByDevice.set(deviceId, holder);
-      }
-      return holder;
+      const existing = stateByDevice.get(deviceId);
+      if (existing) return existing;
+      const created = deps.drState(getPeerRef(deviceId));
+      stateByDevice.set(deviceId, created);
+      return created;
     }
     const base = deps.drState(getPeerRef(deviceId));
-    return deps.cloneDrStateHolder?.(base) || base;
+    const cloned = deps.cloneDrStateHolder?.(base) || base;
+    return cloned;
   };
 
   const ensureReceiverStateReady = (deviceId) => {
@@ -1116,7 +1116,10 @@ export async function listSecureAndDecrypt(params = {}) {
         if (hasSendChain || sendCounter > 0) {
           throw new Error('DR state bound to different conversation; please resync contact');
         }
-        deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage });
+        deps.clearDrState(
+          { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
+          { __drDebugTag: 'web/src/app/features/messages.js:1119:handleInboxJob:conv-mismatch-clear' }
+        );
         if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
           await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId });
           state = getStateForDevice(peerDeviceForMessage);
@@ -1124,8 +1127,17 @@ export async function listSecureAndDecrypt(params = {}) {
       }
       // guest/未知角色若拿到 responder state，強制清除並要求 initiator 重建（無 fallback）。
       const stateRole = typeof state?.baseKey?.role === 'string' ? state.baseKey.role.toLowerCase() : null;
-      if (stateRole === 'responder' && (direction === 'incoming' || direction === 'unknown')) {
-        deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage });
+      const hasReceiveChain = state?.ckR instanceof Uint8Array && state.ckR.length > 0;
+      const hasRatchetCore = state?.rk instanceof Uint8Array && state?.myRatchetPriv instanceof Uint8Array && state?.myRatchetPub instanceof Uint8Array;
+      if (
+        stateRole === 'responder' &&
+        (direction === 'incoming' || direction === 'unknown') &&
+        (!hasRatchetCore || !hasReceiveChain)
+      ) {
+        deps.clearDrState(
+          { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
+          { __drDebugTag: 'web/src/app/features/messages.js:1131:handleInboxJob:responder-inbound-clear' }
+        );
         if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
           await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId });
           state = getStateForDevice(peerDeviceForMessage);
@@ -1372,7 +1384,10 @@ export async function listSecureAndDecrypt(params = {}) {
       const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
       drFailureCounter.set(failKey, nextFail);
       if (nextFail >= 3) {
-        deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId });
+        deps.clearDrState(
+          { peerAccountDigest: peerKey, peerDeviceId },
+          { __drDebugTag: 'web/src/app/features/messages.js:1381:handleInboxJob:decrypt-fail-reset' }
+        );
         drFailureCounter.delete(failKey);
         throw new Error('DR 解密連續失敗已重置會話，請重新同步好友或重新建立邀請');
       }
@@ -1430,7 +1445,10 @@ export async function listSecureAndDecrypt(params = {}) {
           error: err?.message || String(err)
         });
         if (preSnapshot && shouldTrackState) {
-          deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId });
+          deps.clearDrState(
+            { peerAccountDigest: peerKey, peerDeviceId },
+            { __drDebugTag: 'web/src/app/features/messages.js:1442:processInboxForConversation:dead-letter-reset' }
+          );
           try {
             deps.restoreDrStateFromSnapshot?.({ peerAccountDigest: peerKey, peerDeviceId, snapshot: preSnapshot, force: true });
           } catch {

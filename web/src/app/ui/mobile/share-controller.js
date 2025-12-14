@@ -19,6 +19,7 @@ import {
   ensureDeviceId,
   clearDrState,
   clearDrStatesByAccount,
+  drState,
   normalizePeerIdentity
 } from '../../core/store.js';
 import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
@@ -541,9 +542,12 @@ export function setupShareController(options) {
       // 掃碼前先清除舊的 DR state / contact secret，確保以全新 initiator 狀態建立。
       try {
         if (ownerAccountDigest) {
-          clearDrStatesByAccount(ownerAccountDigest);
+          clearDrStatesByAccount(ownerAccountDigest, { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:545:invite-scan-reset-account' });
         }
-        clearDrState({ peerAccountDigest: ownerAccountDigest, peerDeviceId: ownerDeviceId });
+        clearDrState(
+          { peerAccountDigest: ownerAccountDigest, peerDeviceId: ownerDeviceId },
+          { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:547:invite-scan-reset-device' }
+        );
         const normPeerKey = normalizePeerKey(ownerAccountDigest, { peerDeviceId: ownerDeviceId });
         if (normPeerKey) {
           setContactSecret(normPeerKey, { dr: null, conversation: null, meta: { source: 'invite-scan-reset' } });
@@ -600,6 +604,21 @@ export function setupShareController(options) {
       if (!x3dhState.baseKey) x3dhState.baseKey = {};
       x3dhState.baseKey.role = 'initiator';
       x3dhState.baseKey.conversationId = conversationContext.conversation_id;
+      if (!(x3dhState.rk instanceof Uint8Array)) {
+        console.error('[contact-init:preflight-fail]', {
+          peerAccountDigest: resolvedOwnerDigest || null,
+          peerDeviceId: resolvedOwnerDeviceId || null,
+          callsite: 'invite-accept',
+          rkType: x3dhState?.rk?.constructor?.name || typeof x3dhState?.rk || null
+        });
+        throw new Error('contact-init missing DR rk');
+      }
+      console.log('[contact-init:preflight-ok]', {
+        peerAccountDigest: resolvedOwnerDigest || null,
+        peerDeviceId: resolvedOwnerDeviceId || null,
+        callsite: 'invite-accept',
+        rkByteLength: x3dhState.rk?.byteLength ?? null
+      });
 
       const contactInitPayload = {
         type: 'contact-init',
@@ -623,7 +642,10 @@ export function setupShareController(options) {
       });
       const alreadyLive = hasLiveDrState(resolvedOwnerDigest);
       if (!alreadyLive) {
-        clearDrState(resolvedOwnerDigest);
+        clearDrState(
+          resolvedOwnerDigest,
+          { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:645:contact-init-prime-clear' }
+        );
         primeDrStateFromInitiator({
           peerAccountDigest: resolvedOwnerDigest,
           peerDeviceId: resolvedOwnerDeviceId,
@@ -706,6 +728,20 @@ export function setupShareController(options) {
     if (!resolvedPeerDeviceId) {
       throw new Error('contact-share missing peerDeviceId (strict path)');
     }
+    const preflightState = drState({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId });
+    const preflightPayload = {
+      peerAccountDigest: targetDigest || null,
+      peerDeviceId: resolvedPeerDeviceId || null,
+      callsite: 'sendContactShare',
+      hasState: !!preflightState,
+      rkType: preflightState?.rk?.constructor?.name || typeof preflightState?.rk || null,
+      rkByteLength: preflightState?.rk instanceof Uint8Array ? preflightState.rk.byteLength : null
+    };
+    if (!(preflightState?.rk instanceof Uint8Array)) {
+      console.error('[contact-share:preflight-fail]', preflightPayload);
+      throw new Error('contact-share sender missing DR rk');
+    }
+    console.log('[contact-share:preflight-ok]', preflightPayload);
     const payload = await buildLocalContactPayload({ conversation, drInit, overrides });
     if (reason) {
       payload.reason = reason;
@@ -1077,35 +1113,61 @@ export function setupShareController(options) {
       peerDeviceId: peerDeviceId || null,
       dr_init: conversation.dr_init || null
     });
-    storeContactSecretMapping({
-      peerAccountDigest: peerDigest,
-      peerDeviceId, // 這裡代表對端（guest）的裝置
-      sessionKey: conversation.token_b64,
-      conversation,
-      drState: null,
-      role: 'owner'
-    });
-    try {
-      clearDrState({ peerAccountDigest: peerDigest, peerDeviceId });
-      const selfDeviceId = ensureDeviceId();
-      // 只有 owner/responder 端（對端裝置等於本機）才允許 responder bootstrap。
-      if (selfDeviceId && peerDeviceId && selfDeviceId === peerDeviceId) {
-        await bootstrapDrFromGuestBundle({
+      storeContactSecretMapping({
+        peerAccountDigest: peerDigest,
+        peerDeviceId, // 這裡代表對端（guest）的裝置
+        sessionKey: conversation.token_b64,
+        conversation,
+        drState: null,
+        role: 'owner'
+      });
+      try {
+        clearDrState(
+          { peerAccountDigest: peerDigest, peerDeviceId },
+          { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:1125:contact-init-handler-clear' }
+        );
+        const selfDeviceId = ensureDeviceId();
+        // 只有 owner/responder 端（對端裝置等於本機）才允許 responder bootstrap。
+        console.log('[responder-bootstrap:enter]', {
+          selfDeviceId: selfDeviceId || null,
+          peerDeviceId: peerDeviceId || null,
+          targetDeviceId: targetDeviceId || null
+        });
+        if (selfDeviceId && targetDeviceId && selfDeviceId === targetDeviceId) {
+          await bootstrapDrFromGuestBundle({
+            peerAccountDigest: peerDigest,
+            peerDeviceId,
+            guestBundle,
+            force: true,
+            conversationId: conversation.conversation_id
+          });
+        }
+      } catch (err) {
+        console.error('[share-controller]', { contactInitBootstrapError: err?.message || err, peerAccountDigest: peerDigest });
+      }
+      const responderHolder = drState({ peerAccountDigest: peerDigest, peerDeviceId });
+      if (!(responderHolder?.rk instanceof Uint8Array)) {
+        console.error('[responder-bootstrap:invalid-rk]', {
           peerAccountDigest: peerDigest,
           peerDeviceId,
-          guestBundle,
-          force: true,
-          conversationId: conversation.conversation_id
+          callsite: 'contact-init-handler',
+          rkType: responderHolder?.rk?.constructor?.name || typeof responderHolder?.rk || null,
+          rkIsView: ArrayBuffer.isView(responderHolder?.rk),
+          rkByteLength: typeof responderHolder?.rk?.byteLength === 'number' ? responderHolder.rk.byteLength : null
         });
+        throw new Error('responder bootstrap missing rk');
       }
-    } catch (err) {
-      console.error('[share-controller]', { contactInitBootstrapError: err?.message || err, peerAccountDigest: peerDigest });
-    }
-    try {
-      await sendContactShare({
+      console.log('[responder-bootstrap-ok]', {
         peerAccountDigest: peerDigest,
-        conversation,
-        sessionKey: conversation.token_b64,
+        peerDeviceId,
+        callsite: 'contact-init-handler',
+        rkByteLength: responderHolder.rk?.byteLength ?? null
+      });
+      try {
+        await sendContactShare({
+          peerAccountDigest: peerDigest,
+          conversation,
+          sessionKey: conversation.token_b64,
         peerDeviceId, // 對端裝置
         drInit: conversation.dr_init || null
       });

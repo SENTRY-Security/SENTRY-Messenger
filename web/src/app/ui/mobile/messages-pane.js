@@ -3104,7 +3104,10 @@ export function initMessagesPane({
           if (convId) {
             clearConversationHistory(convId, tsRaw);
           }
-          clearDrState({ peerAccountDigest: peerDigest, peerDeviceId: peerDeviceId || null });
+          clearDrState(
+            { peerAccountDigest: peerDigest, peerDeviceId: peerDeviceId || null },
+            { __drDebugTag: 'web/src/app/ui/mobile/messages-pane.js:3107:conversation-deleted-clear' }
+          );
           deleteContactSecret(peerDigest, { deviceId: ensureDeviceId() });
           const state = getMessageState();
           if (state.activePeerDigest === peerDigest || state.conversationId === convId) {

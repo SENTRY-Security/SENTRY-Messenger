@@ -255,7 +255,10 @@ export function initContactsView(options) {
           await friendsDeleteContact({ peerAccountDigest: accountDigestOnly });
           deletedContacts.add(accountDigestOnly);
           if (convId) markConversationTombstone(convId);
-          clearDrState({ peerAccountDigest: key, peerDeviceId });
+          clearDrState(
+            { peerAccountDigest: key, peerDeviceId },
+            { __drDebugTag: 'web/src/app/ui/mobile/contacts-view.js:258:confirm-delete-contact' }
+          );
           deleteContactSecret(key, { deviceId: ensureDeviceId() });
           removeContactState(key, { notifyPeer: true });
           if (element) swipe.closeSwipe(element);

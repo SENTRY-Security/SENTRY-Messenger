@@ -1450,7 +1450,7 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
 (function hydrateDrSnapshotsFromSecrets() {
   try {
     // 登入時先清除所有記憶體 DR 狀態，避免沿用舊裝置/錯角色快照。
-    clearDrState();
+    clearDrState(null, { __drDebugTag: 'web/src/app/ui/app-mobile.js:1453:hydrateDrSnapshotsFromSecrets' });
     const restored = hydrateDrStatesFromContactSecrets();
     try { hydrateConversationsFromSecrets(); } catch {}
     log({ drSnapshotsRestored: restored });

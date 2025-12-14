@@ -34,6 +34,82 @@ const _DR_PEER_ALIASES = null; // legacy unused
 let _OPAQUE_SERVER_ID = null;
 const DEVICE_ID_STORAGE_KEY = 'device_id';
 const DEVICE_COUNTER_PREFIX = 'device_counter::';
+
+function ensureDrHolderDebugId(holder) {
+  if (!holder) return null;
+  if (!holder.__id) {
+    try {
+      holder.__id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `holder-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    } catch {
+      holder.__id = `holder-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+  }
+  return holder.__id;
+}
+
+function captureDrStackTop(limit = 3) {
+  try {
+    const err = new Error('dr-state-clear');
+    const lines = String(err.stack || '').split('\n').slice(2);
+    const frames = [];
+    for (const raw of lines) {
+      const clean = raw.trim().replace(/^at\s+/, '');
+      if (!clean) continue;
+      if (
+        clean.includes('captureDrStackTop') ||
+        clean.includes('logDrStateClear') ||
+        clean.includes('logDrStateCreate') ||
+        clean.includes('logAllDrStates')
+      ) {
+        continue;
+      }
+      frames.push(clean);
+      if (frames.length >= limit) break;
+    }
+    return frames.length ? frames : null;
+  } catch {
+    return null;
+  }
+}
+
+export function logDrStateClear(tag, stateKey, holder) {
+  const entry = {
+    tag,
+    stateKey: stateKey || null,
+    holderId: ensureDrHolderDebugId(holder),
+    hasRk: holder?.rk instanceof Uint8Array,
+    hasCkR: holder?.ckR instanceof Uint8Array,
+    hasCkS: holder?.ckS instanceof Uint8Array,
+    stackTop3: captureDrStackTop()
+  };
+  try {
+    console.warn('[dr-debug:state-clear]', entry);
+  } catch {}
+}
+
+function logDrStateCreate(stateKey, holder) {
+  const entry = {
+    tag: 'dr-state:create',
+    stateKey: stateKey || null,
+    holderId: ensureDrHolderDebugId(holder),
+    hasRk: holder?.rk instanceof Uint8Array,
+    hasCkR: holder?.ckR instanceof Uint8Array,
+    hasCkS: holder?.ckS instanceof Uint8Array,
+    stackTop3: captureDrStackTop()
+  };
+  try {
+    console.warn('[dr-debug:state-create]', entry);
+  } catch {}
+}
+
+function logAllDrStates(tag, predicate = null) {
+  for (const [stateKey, holder] of _DR_SESS.entries()) {
+    if (typeof predicate === 'function' && !predicate(stateKey, holder)) continue;
+    logDrStateClear(tag, stateKey, holder);
+  }
+}
 function resetDeviceCounter(id) {
   if (!id) return;
   const key = `${DEVICE_COUNTER_PREFIX}${id}`;
@@ -194,7 +270,19 @@ function resolveDrKey(peerInput) {
   return { key: identity.key, aliases: [] };
 }
 export function setAccountDigest(v) {
+  const prev = _ACCOUNT_DIGEST;
   _ACCOUNT_DIGEST = normalizeAccountDigest(v);
+  if (prev !== _ACCOUNT_DIGEST) {
+    try {
+      console.warn('[dr-debug:set-account-digest]', {
+        tag: 'core/store.js:272:setAccountDigest',
+        prev,
+        next: _ACCOUNT_DIGEST,
+        drStates: _DR_SESS.size,
+        stackTop3: captureDrStackTop()
+      });
+    } catch {}
+  }
 }
 
 export function getDeviceId() { return _DEVICE_ID; }
@@ -340,6 +428,7 @@ export function getDrSessMap() { return _DR_SESS; }
 export function drState(peerInput) {
   const { key } = resolveDrKey(peerInput);
   if (!key) return null;
+  let created = false;
   if (!_DR_SESS.has(key)) {
     _DR_SESS.set(key, {
       rk: null,
@@ -357,8 +446,10 @@ export function drState(peerInput) {
       historyCursorId: null,
       skippedKeys: new Map()
     });
+    created = true;
   }
   const state = _DR_SESS.get(key);
+  ensureDrHolderDebugId(state);
   if (state && !(state.skippedKeys instanceof Map)) {
     try {
       state.skippedKeys = new Map();
@@ -366,19 +457,33 @@ export function drState(peerInput) {
       state.skippedKeys = null;
     }
   }
+  if (created) {
+    logDrStateCreate(key, state);
+  }
   return state;
 }
-export function clearDrState(peerInput) {
+export function clearDrState(peerInput, opts = {}) {
+  const debugTag =
+    (peerInput && typeof peerInput === 'object' && peerInput.__drDebugTag) ||
+    opts.__drDebugTag ||
+    'core/store.js:465:clearDrState';
   if (!peerInput) {
+    logAllDrStates(debugTag);
     _DR_SESS.clear();
     return;
   }
   const { key } = resolveDrKey(peerInput);
   if (!key) return;
+  const holder = _DR_SESS.get(key) || null;
+  logDrStateClear(debugTag, key, holder);
   _DR_SESS.delete(key);
 }
 
-export function clearDrStatesByAccount(peerAccountDigest) {
+export function clearDrStatesByAccount(peerAccountDigest, opts = {}) {
+  const debugTag =
+    (peerAccountDigest && typeof peerAccountDigest === 'object' && peerAccountDigest.__drDebugTag) ||
+    opts.__drDebugTag ||
+    'core/store.js:482:clearDrStatesByAccount';
   const digest = normalizeAccountDigest(
     peerAccountDigest && typeof peerAccountDigest === 'object'
       ? (peerAccountDigest.peerAccountDigest ?? peerAccountDigest.accountDigest ?? peerAccountDigest.peer ?? peerAccountDigest)
@@ -392,6 +497,8 @@ export function clearDrStatesByAccount(peerAccountDigest) {
     }
   }
   for (const k of toDelete) {
+    const holder = _DR_SESS.get(k) || null;
+    logDrStateClear(debugTag, k, holder);
     _DR_SESS.delete(k);
   }
 }
@@ -408,6 +515,7 @@ export function clearExchangeState() {
 export function clearSecrets() {
   _MK_RAW = null;
   setDevicePriv(null);
+  logAllDrStates('core/store.js:515:clearSecrets');
   _DR_SESS.clear();
 }
 
@@ -421,6 +529,7 @@ export function resetAll() {
   _ACCOUNT_DIGEST = null;
   _MK_RAW = null;
   setDevicePriv(null);
+  logAllDrStates('core/store.js:523:resetAll');
   _DR_SESS.clear();
 }
 

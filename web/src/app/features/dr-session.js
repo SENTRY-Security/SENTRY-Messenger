@@ -26,6 +26,7 @@ import {
   conversationIdFromToken
 } from './conversation.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
+import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
 import { encryptAndPutWithProgress } from './media.js';
 import {
   enqueueOutboxJob,
@@ -122,8 +123,24 @@ function resolvePeerDeviceId(peerAccountDigest = null, conversationId = null) {
   return null;
 }
 
-function cloneU8(src) {
-  if (!(src instanceof Uint8Array)) return src;
+function cloneU8(src, keyName = 'unknown', callsiteTag = 'cloneU8') {
+  if (src === undefined || src === null) return null;
+  if (!(src instanceof Uint8Array)) {
+    const reason = 'not-uint8array';
+    try {
+      console.warn('[dr-state:invalid-key-write]', {
+        keyName,
+        callsiteTag,
+        reason,
+        type: typeof src,
+        ctor: src?.constructor?.name || null,
+        isView: ArrayBuffer.isView(src),
+        byteLength: typeof src?.byteLength === 'number' ? src.byteLength : null,
+        length: typeof src?.length === 'number' ? src.length : null
+      });
+    } catch {}
+    throw new Error(`dr state write rejected: ${keyName} not Uint8Array`);
+  }
   return new Uint8Array(src);
 }
 
@@ -136,6 +153,20 @@ function markHolderSnapshot(holder, source, ts) {
 function numberOrDefault(value, def = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : def;
+}
+
+function ensureHolderId(holder) {
+  if (!holder) return null;
+  if (!holder.__id) {
+    try {
+      holder.__id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `holder-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    } catch {
+      holder.__id = `holder-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+  }
+  return holder.__id;
 }
 
 function isAutomationEnv() {
@@ -481,6 +512,7 @@ export function restoreDrStateFromSnapshot(params = {}) {
   holder.rk = decodeKeyString(data.rk_b64, { keyName: 'rk', peerAccountDigest: peer, peerDeviceId, sourceTag });
   holder.ckS = data.ckS_b64 ? decodeKeyString(data.ckS_b64, { keyName: 'ckS', peerAccountDigest: peer, peerDeviceId, sourceTag }) : null;
   holder.ckR = data.ckR_b64 ? decodeKeyString(data.ckR_b64, { keyName: 'ckR', peerAccountDigest: peer, peerDeviceId, sourceTag }) : null;
+  ensureHolderId(holder);
   assertU8('restoreDrStateFromSnapshot:rk', holder.rk);
   if (holder.ckS) assertU8('restoreDrStateFromSnapshot:ckS', holder.ckS);
   if (holder.ckR) assertU8('restoreDrStateFromSnapshot:ckR', holder.ckR);
@@ -505,6 +537,7 @@ export function restoreDrStateFromSnapshot(params = {}) {
     holder.baseKey.snapshot = true;
     if (data.role) holder.baseKey.role = data.role;
   }
+  holder.__lastWriteTag = sourceTag || 'restoreDrStateFromSnapshot';
   return true;
 }
 
@@ -640,7 +673,7 @@ export function hydrateDrStatesFromContactSecrets() {
   for (const [peerDigest] of map.entries()) {
     const info = getContactSecret(peerDigest, { deviceId });
     if (!info) {
-      clearDrStatesByAccount(peerDigest);
+      clearDrStatesByAccount(peerDigest, { __drDebugTag: 'web/src/app/features/dr-session.js:675:hydrate-missing-contact-secret' });
       continue;
     }
     const peerDeviceIdResolved = normalizePeerDeviceId(info.peerDeviceId || null);
@@ -652,7 +685,7 @@ export function hydrateDrStatesFromContactSecrets() {
     if (info?.conversationId && typeof info.conversationId === 'string' && info.conversationId.startsWith('contacts-') && !info?.conversation?.id) {
       // contacts-* 但沒有實際 conv，直接清除，避免假 conv 污染。
       setContactSecret(peerDigest, { deviceId, conversation: null, dr: null, meta: { source: 'hydrate-drop-contacts-conv' } });
-      clearDrStatesByAccount(peerDigest);
+      clearDrStatesByAccount(peerDigest, { __drDebugTag: 'web/src/app/features/dr-session.js:687:hydrate-drop-contacts-conv' });
       continue;
     }
     // 若缺角色且 peerDeviceId != self，預設為 guest，避免還原 responder 快照。
@@ -662,7 +695,7 @@ export function hydrateDrStatesFromContactSecrets() {
     }
     if (!peerDeviceIdResolved) {
       // 無法解析對端裝置時，清除記憶體中同 digest 的 state 避免沿用舊 responder。
-      clearDrStatesByAccount(peerDigest);
+      clearDrStatesByAccount(peerDigest, { __drDebugTag: 'web/src/app/features/dr-session.js:697:hydrate-missing-peer-device' });
       continue;
     }
     let snapshot = info.drState || null;
@@ -757,17 +790,19 @@ export function hydrateDrStatesFromContactSecrets() {
   return restoredCount;
 }
 
-export function copyDrState(target, source) {
+export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}) {
   if (!target || !source) return;
-  target.rk = cloneU8(source.rk) || null;
-  target.ckS = cloneU8(source.ckS) || null;
-  target.ckR = cloneU8(source.ckR) || null;
+  ensureHolderId(target);
+  target.rk = cloneU8(source.rk, 'rk', callsiteTag) || null;
+  target.ckS = cloneU8(source.ckS, 'ckS', callsiteTag) || null;
+  target.ckR = cloneU8(source.ckR, 'ckR', callsiteTag) || null;
   target.Ns = Number(source.Ns || 0);
   target.Nr = Number(source.Nr || 0);
   target.PN = Number(source.PN || 0);
-  target.myRatchetPriv = cloneU8(source.myRatchetPriv) || null;
-  target.myRatchetPub = cloneU8(source.myRatchetPub) || null;
-  target.theirRatchetPub = cloneU8(source.theirRatchetPub) || null;
+  target.myRatchetPriv = cloneU8(source.myRatchetPriv, 'myRatchetPriv', callsiteTag) || null;
+  target.myRatchetPub = cloneU8(source.myRatchetPub, 'myRatchetPub', callsiteTag) || null;
+  target.theirRatchetPub = cloneU8(source.theirRatchetPub, 'theirRatchetPub', callsiteTag) || null;
+  target.__lastWriteTag = callsiteTag || null;
   target.pendingSendRatchet = !!source.pendingSendRatchet;
   if (source.baseKey) {
     target.baseKey = target.baseKey || {};
@@ -824,7 +859,7 @@ function createDrStateShell() {
 export function cloneDrStateHolder(source) {
   const shell = createDrStateShell();
   if (!source) return shell;
-  copyDrState(shell, source);
+  copyDrState(shell, source, { callsiteTag: 'snapshotDrState:copy' });
   shell.pendingSendRatchet = !!source.pendingSendRatchet;
   shell.baseKey = source.baseKey ? { ...source.baseKey } : (shell.baseKey || null);
   shell.snapshotTs = Number.isFinite(source.snapshotTs) ? source.snapshotTs : shell.snapshotTs;
@@ -867,7 +902,7 @@ export async function ensureDrSession(params = {}) {
   const st = await x3dhInitiate(priv, bundle);
   const targetHolder = holder || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!targetHolder) throw new Error('DR holder missing for peer device');
-  copyDrState(targetHolder, st);
+  copyDrState(targetHolder, st, { callsiteTag: 'recoverDrState' });
   targetHolder.baseKey = { role: 'initiator', initializedAt: Date.now(), peerDeviceId };
   markHolderSnapshot(targetHolder, 'initiator', Date.now());
   persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state: targetHolder });
@@ -1599,21 +1634,103 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   if (holder?.rk && !force) return false;
   const priv = await ensureDevicePrivLoaded();
   const st = await x3dhRespond(priv, guestBundle);
-  if (!st?.rk || !(st?.ckR instanceof Uint8Array) || !(st?.myRatchetPriv instanceof Uint8Array)) {
-    throw new Error('guest bundle did not produce valid DR state');
+  const logInvalid = (keyName, raw, reason) => {
+    try {
+      console.warn('[dr-bootstrap:invalid-key]', {
+        keyName,
+        source: 'bootstrapDrFromGuestBundle',
+        peerAccountDigest: peer,
+        peerDeviceId,
+        reason: reason || null,
+        type: typeof raw,
+        ctor: raw?.constructor?.name || null,
+        isView: ArrayBuffer.isView(raw),
+        byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
+        length: typeof raw?.length === 'number' ? raw.length : null
+      });
+    } catch {}
+  };
+  const ensureKeyU8 = (value, keyName, { required = true } = {}) => {
+    if (value === undefined || value === null) {
+      if (required) {
+        logInvalid(keyName, value, 'missing');
+        throw new Error(`dr bootstrap missing ${keyName}`);
+      }
+      return null;
+    }
+    let next = value;
+    if (typeof next === 'string') {
+      next = b64u8(next);
+    }
+    if (!(next instanceof Uint8Array)) {
+      logInvalid(keyName, next, 'not-uint8array');
+      throw new Error(`dr bootstrap invalid ${keyName}`);
+    }
+    return next;
+  };
+  st.rk = ensureKeyU8(st?.rk, 'rk', { required: true });
+  st.ckR = ensureKeyU8(st?.ckR, 'ckR', { required: false });
+  st.ckS = ensureKeyU8(st?.ckS, 'ckS', { required: true });
+  st.myRatchetPriv = ensureKeyU8(st?.myRatchetPriv, 'myRatchetPriv', { required: true });
+  st.myRatchetPub = ensureKeyU8(st?.myRatchetPub, 'myRatchetPub', { required: true });
+  st.theirRatchetPub = ensureKeyU8(st?.theirRatchetPub, 'theirRatchetPub', { required: false });
+  console.log('[dr-bootstrap:ready]', {
+    peerAccountDigest: peer,
+    peerDeviceId,
+    rkByteLength: st.rk?.byteLength ?? null,
+    ckSByteLength: st.ckS?.byteLength ?? null,
+    ckRPresent: !!st.ckR
+  });
+  clearDrState(
+    { peerAccountDigest: peer, peerDeviceId },
+    { __drDebugTag: 'web/src/app/features/dr-session.js:1683:bootstrapDrFromGuestBundle:clear-before-copy' }
+  );
+  const freshHolder = drState({ peerAccountDigest: peer, peerDeviceId });
+  copyDrState(freshHolder, st, { callsiteTag: 'bootstrapDrFromGuestBundle' });
+  const holderId = ensureHolderId(freshHolder);
+  console.log('[dr-bootstrap:fingerprint]', {
+    peerAccountDigest: peer,
+    peerDeviceId,
+    holderId,
+    hasRk: freshHolder?.rk instanceof Uint8Array,
+    hasCkS: freshHolder?.ckS instanceof Uint8Array,
+    hasCkR: freshHolder?.ckR instanceof Uint8Array,
+    role: freshHolder?.baseKey?.role || null,
+    lastWriteTag: freshHolder?.__lastWriteTag || null
+  });
+  try {
+    console.log('[dr-debug:bootstrap-holder]', {
+      stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
+      holderId,
+      role: freshHolder?.baseKey?.role || null,
+      hasRk: freshHolder?.rk instanceof Uint8Array,
+      hasCkR: freshHolder?.ckR instanceof Uint8Array,
+      hasCkS: freshHolder?.ckS instanceof Uint8Array
+    });
+  } catch {}
+  if (!(freshHolder.rk instanceof Uint8Array)) {
+    logInvalid('rk', freshHolder?.rk, 'post-copy-not-uint8array');
+    throw new Error('dr bootstrap failed to materialize rk');
   }
-  copyDrState(holder, st);
-  holder.baseKey = {
+  if (!(freshHolder.myRatchetPriv instanceof Uint8Array) || !(freshHolder.myRatchetPub instanceof Uint8Array)) {
+    logInvalid('myRatchetKeys', freshHolder, 'post-copy-not-uint8array');
+    throw new Error('dr bootstrap failed to materialize ratchet keys');
+  }
+  if (!(freshHolder.ckS instanceof Uint8Array)) {
+    logInvalid('ckS', freshHolder?.ckS, 'post-copy-not-uint8array');
+    throw new Error('dr bootstrap failed to materialize ckS');
+  }
+  freshHolder.baseKey = {
     role: 'responder',
     initializedAt: Date.now(),
     guestBundle,
     conversationId: conversationId || null,
     peerDeviceId: peerDeviceId || null
   };
-  markHolderSnapshot(holder, 'responder', Date.now());
-    persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state: holder });
-    return true;
-  }
+  markHolderSnapshot(freshHolder, 'responder', Date.now());
+  persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state: freshHolder });
+  return true;
+}
 
 export function primeDrStateFromInitiator(params = {}) {
   const { state } = params;
@@ -1623,7 +1740,7 @@ export function primeDrStateFromInitiator(params = {}) {
   if (!peer || !peerDeviceId || !state) return false;
   const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder?.rk) return false;
-  copyDrState(holder, state);
+  copyDrState(holder, state, { callsiteTag: 'primeDrStateFromInitiator' });
   holder.baseKey = { role: 'initiator', initializedAt: Date.now(), primed: true, conversationId: conversationId || null };
   markHolderSnapshot(holder, 'prime', Date.now());
   return true;
@@ -1663,6 +1780,16 @@ export async function ensureDrReceiverState(params = {}) {
   let stateRoleRaw = state?.baseKey?.role;
   let stateRole = typeof stateRoleRaw === 'string' ? stateRoleRaw.toLowerCase() : null;
   const guestLike = relationshipRole === 'guest';
+  try {
+    console.log('[dr-debug:receiver-entry]', {
+      stateKey,
+      holderId: state ? (state.__id || null) : null,
+      role: state?.baseKey?.role || null,
+      hasRk: state?.rk instanceof Uint8Array,
+      hasCkR: state?.ckR instanceof Uint8Array,
+      hasCkS: state?.ckS instanceof Uint8Array
+    });
+  } catch {}
   try {
     console.warn('[dr-log:receiver-keys]', {
       stateKey,
@@ -1810,7 +1937,9 @@ export async function ensureDrReceiverState(params = {}) {
       hasStateCkR: stateHasCkR,
       hasStateCkS: stateHasCkS,
       hasSecretChains: secretHasChains,
-      callsite: callsiteTag
+      callsite: callsiteTag,
+      holderId: state ? ensureHolderId(state) : null,
+      lastWriteTag: state?.__lastWriteTag || null
     });
     return false;
   }
@@ -1847,7 +1976,10 @@ export async function ensureDrReceiverState(params = {}) {
           hasSnapshot: !!secretInfo?.drState
         });
       } catch {}
-      clearDrState({ peerAccountDigest: peer, peerDeviceId });
+      clearDrState(
+        { peerAccountDigest: peer, peerDeviceId },
+        { __drDebugTag: 'web/src/app/features/dr-session.js:1978:ensureDrReceiverState:guest-role-clear' }
+      );
       state = drState({ peerAccountDigest: peer, peerDeviceId });
     }
   }
@@ -1949,7 +2081,10 @@ export async function ensureDrReceiverState(params = {}) {
         Ns: Number.isFinite(state?.Ns) ? Number(state.Ns) : null
       });
     } catch {}
-    clearDrState({ peerAccountDigest: peer, peerDeviceId });
+    clearDrState(
+      { peerAccountDigest: peer, peerDeviceId },
+      { __drDebugTag: 'web/src/app/features/dr-session.js:2083:ensureDrReceiverState:conversation-mismatch' }
+    );
     try {
       setContactSecret(peer, { deviceId: selfDeviceId, dr: null, conversation: null, meta: { source: 'dr-conv-mismatch-clear' } });
     } catch {}
@@ -2134,7 +2269,10 @@ export async function ensureDrReceiverState(params = {}) {
         hasCkR: !!(holder?.ckR && holder.ckR.length)
       });
     } catch {}
-    clearDrState({ peerAccountDigest: peer, peerDeviceId });
+    clearDrState(
+      { peerAccountDigest: peer, peerDeviceId },
+      { __drDebugTag: 'web/src/app/features/dr-session.js:2271:ensureResponderState:guest-clear-responder' }
+    );
     setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-clear-responder' } });
     // 嘗試使用 contact-secret 中的 initiator 快照重建（僅限 role=initiator）。
     const snapRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
@@ -2152,7 +2290,10 @@ export async function ensureDrReceiverState(params = {}) {
   }
   // guest/未知角色若發現 responder 或缺 initiator 鏈，直接 fail 或要求重建 initiator（無 fallback）。
   if (isGuestLike && (!holderHasRatchet || holderRole === 'responder')) {
-    clearDrState({ peerAccountDigest: peer, peerDeviceId });
+    clearDrState(
+      { peerAccountDigest: peer, peerDeviceId },
+      { __drDebugTag: 'web/src/app/features/dr-session.js:2292:ensureResponderState:guest-clear-responder-fail' }
+    );
     if (!guestBundle) {
       throw new Error('guest 端缺少 initiator 重建資料，請重新同步好友');
     }
