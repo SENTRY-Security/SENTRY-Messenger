@@ -1703,9 +1703,31 @@ export async function ensureDrReceiverState(params = {}) {
     const holderNow = drState({ peerAccountDigest: peer, peerDeviceId });
     const roleNow = holderNow?.baseKey?.role;
     const hasReceiveChain = holderNow?.ckR instanceof Uint8Array && holderNow.ckR.length > 0 && roleNow === 'responder';
+    if (holderNow?.rk && hasReceiveChain && roleNow === 'responder' && !force) {
+      try {
+        console.warn('[dr-log:bootstrap-responder-skip]', {
+          reason: 'existing-responder-state',
+          peerAccountDigest: peer,
+          peerDeviceId,
+          roleNow: roleNow || null,
+          hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
+          hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
+          Ns: Number.isFinite(holderNow?.Ns) ? Number(holderNow.Ns) : null,
+          Nr: Number.isFinite(holderNow?.Nr) ? Number(holderNow.Nr) : null
+        });
+      } catch {}
+      return true;
+    }
     const shouldForce = force || conversationMismatch || !hasReceiveChain || roleNow !== 'responder';
     try {
       console.warn('[dr-log:bootstrap-responder-start]', {
+        reason: (() => {
+          if (force) return 'force';
+          if (conversationMismatch) return 'conversation-mismatch';
+          if (!hasReceiveChain) return 'missing-ckR';
+          if (roleNow !== 'responder') return 'role-not-responder';
+          return 'no-state';
+        })(),
         peerAccountDigest: peer,
         peerDeviceId,
         roleNow: roleNow || null,

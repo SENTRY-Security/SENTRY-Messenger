@@ -1302,6 +1302,20 @@ export async function listSecureAndDecrypt(params = {}) {
           ciphertext_b64: ciphertextB64,
           counter: job?.payloadEnvelope?.counter ?? job?.raw?.counter ?? job?.raw?.n ?? header?.n ?? null
         };
+        try {
+          console.warn('[dr-log:decrypt-fail-state]', {
+            conversationId,
+            peerAccountDigest: peerKey,
+            peerDeviceId: peerDeviceForMessage || null,
+            targetDeviceId: targetDeviceId || null,
+            senderDeviceId: senderDeviceId || null,
+            stateKey: `${conversationId || 'unknown'}::${peerKey || 'unknown'}::${peerDeviceForMessage || 'unknown'}`,
+            state: summarizeDrState(state),
+            headerN: Number(header?.n ?? job?.raw?.n ?? null),
+            headerEk: header?.ek_pub_b64 ? String(header.ek_pub_b64).slice(0, 12) : null,
+            stateTheirPub: state?.theirRatchetPub ? (deps.b64 ? deps.b64(state.theirRatchetPub).slice(0, 12) : null) : null
+          });
+        } catch {}
         // Extra debug to pinpoint mismatched session/keys without touching protocol flow.
         try {
           console.log('[dr-debug:decrypt-state]', {
