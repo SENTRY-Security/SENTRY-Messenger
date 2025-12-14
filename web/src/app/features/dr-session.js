@@ -186,6 +186,8 @@ function sanitizeSnapshotInput(snapshot) {
     Ns: numberOrDefault(snapshot.Ns, 0),
     Nr: numberOrDefault(snapshot.Nr, 0),
     PN: numberOrDefault(snapshot.PN, 0),
+    NsTotal: numberOrDefault(snapshot.NsTotal, snapshot.Ns_total || 0),
+    NrTotal: numberOrDefault(snapshot.NrTotal, snapshot.Nr_total || 0),
     myRatchetPriv_b64: pick(snapshot.myRatchetPriv_b64, snapshot.myRatchetPriv),
     myRatchetPub_b64: pick(snapshot.myRatchetPub_b64, snapshot.myRatchetPub),
     theirRatchetPub_b64: pick(snapshot.theirRatchetPub_b64, snapshot.theirRatchetPub),
@@ -311,6 +313,8 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
     Ns: numberOrDefault(state.Ns, 0),
     Nr: numberOrDefault(state.Nr, 0),
     PN: numberOrDefault(state.PN, 0),
+    NsTotal: numberOrDefault(state.NsTotal, 0),
+    NrTotal: numberOrDefault(state.NrTotal, 0),
     myRatchetPriv_b64: state.myRatchetPriv instanceof Uint8Array ? b64(state.myRatchetPriv) : null,
     myRatchetPub_b64: state.myRatchetPub instanceof Uint8Array ? b64(state.myRatchetPub) : null,
     theirRatchetPub_b64: state.theirRatchetPub instanceof Uint8Array ? b64(state.theirRatchetPub) : null,
@@ -384,6 +388,8 @@ export function restoreDrStateFromSnapshot(params = {}) {
   holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
   holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
   holder.PN = numberOrDefault(data.PN, holder.PN || 0);
+  holder.NsTotal = numberOrDefault(data.NsTotal, holder.NsTotal || 0);
+  holder.NrTotal = numberOrDefault(data.NrTotal, holder.NrTotal || 0);
   assign('myRatchetPriv', data.myRatchetPriv_b64);
   assign('myRatchetPub', data.myRatchetPub_b64);
   assign('theirRatchetPub', data.theirRatchetPub_b64);
@@ -449,11 +455,16 @@ export function persistDrSnapshot(params = {}) {
     // 若現存快照有 send 鏈且 Ns>0，而新快照缺 send 鏈或 Ns 更低，避免覆蓋成 0。
     const existingSnap = info.drState || null;
     const existingNs = Number.isFinite(existingSnap?.Ns) ? Number(existingSnap.Ns) : null;
+    const existingTotal = Number(existingSnap?.NsTotal || 0) + Number(existingSnap?.Ns || 0);
     const newNs = Number.isFinite(snap?.Ns) ? Number(snap.Ns) : null;
+    const newTotal = Number(snap?.NsTotal || 0) + Number(snap?.Ns || 0);
+    const holderTotal = Number(holder?.NsTotal || 0) + Number(holder?.Ns || 0);
     const hasExistingSend = !!(existingSnap?.ckS || existingSnap?.ckS_b64) && Number(existingNs) > 0;
     const lacksNewSend = !(snap?.ckS || snap?.ckS_b64);
     const nsDowngrade = Number.isFinite(existingNs) && Number.isFinite(newNs) && newNs < existingNs;
-    if (hasExistingSend && (lacksNewSend || nsDowngrade)) {
+    const totalDowngrade = Number.isFinite(existingTotal) && Number.isFinite(newTotal) && newTotal < existingTotal;
+    const holderDowngrade = Number.isFinite(holderTotal) && Number.isFinite(newTotal) && newTotal < holderTotal;
+    if (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade)) {
       console.warn('[dr] persist snapshot skipped downgrade', {
         peerAccountDigest: peer,
         peerDeviceId,
@@ -462,7 +473,12 @@ export function persistDrSnapshot(params = {}) {
         newNs,
         hasExistingSend,
         lacksNewSend,
-        nsDowngrade
+        nsDowngrade,
+        totalDowngrade,
+        holderDowngrade,
+        existingTotal,
+        newTotal,
+        holderTotal
       });
       return false;
     }
@@ -1493,6 +1509,7 @@ export async function ensureDrReceiverState(params = {}) {
     getContactSecret(peer, { peerDeviceId, deviceId: selfDeviceId, conversationId })
     || getContactSecret(peer, { deviceId: selfDeviceId, conversationId })
     || {};
+  const secretPeerDeviceId = normalizePeerDeviceId(secretInfo?.peerDeviceId || secretInfo?.conversation?.peerDeviceId || null);
   // 若缺角色且 peerDeviceId != self，預設為 guest，避免還原 responder 快照。
   if (!secretInfo?.role && selfDeviceId && peerDeviceId && selfDeviceId !== peerDeviceId) {
     setContactSecret(peer, { deviceId: selfDeviceId, role: 'guest', meta: { source: 'ensure-set-guest-role' } });
@@ -1500,6 +1517,9 @@ export async function ensureDrReceiverState(params = {}) {
   }
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
+  // 若已有送出鏈且 Ns>0，避免被 responder/接收狀態覆蓋。
+  const hasExistingSend = state?.ckS instanceof Uint8Array && state.ckS.length > 0 && Number.isFinite(state?.Ns) && Number(state.Ns) > 0;
+  const safeKeepSendState = hasExistingSend && !force;
   // guest/initiator 端若誤用 responder 快照（peerDeviceId != self），強制丟棄。
   const stateRoleRaw = state?.baseKey?.role;
   const stateRole = typeof stateRoleRaw === 'string' ? stateRoleRaw.toLowerCase() : null;
@@ -1507,9 +1527,33 @@ export async function ensureDrReceiverState(params = {}) {
     || stateRole === 'initiator'
     // 無角色但 peerDeviceId 與 self 不同，也視為 guest 端避免錯用 responder。
     || (!relationshipRole && selfDeviceId && peerDeviceId && selfDeviceId !== peerDeviceId);
+  if (safeKeepSendState) {
+    try {
+      console.warn('[dr-log:keep-existing-send]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        role: stateRole || null,
+        Ns: Number(state?.Ns) || 0,
+        hasCkR: !!(state?.ckR && state.ckR.length),
+        force
+      });
+    } catch {}
+  }
   if (guestLike && stateRole === 'responder') {
-    clearDrState({ peerAccountDigest: peer, peerDeviceId });
-    state = drState({ peerAccountDigest: peer, peerDeviceId });
+    try {
+      console.warn('[dr-log:clear-responder-guest]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        Ns: Number(state?.Ns) || 0,
+        hasCkS: !!(state?.ckS && state.ckS.length),
+        hasCkR: !!(state?.ckR && state.ckR.length),
+        safeKeepSendState
+      });
+    } catch {}
+    if (!safeKeepSendState) {
+      clearDrState({ peerAccountDigest: peer, peerDeviceId });
+      state = drState({ peerAccountDigest: peer, peerDeviceId });
+    }
   }
   // 若 contact-secrets 上存的快照屬於錯裝置或 guest 卻標示 responder，直接丟棄存檔避免再次載入。
   if (secretInfo?.drState) {
@@ -1519,6 +1563,39 @@ export async function ensureDrReceiverState(params = {}) {
       setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-state-skip-invalid-device' } });
       state = drState({ peerAccountDigest: peer, peerDeviceId });
     }
+  }
+  // 若記憶體缺送出鏈，但 contact-secret 有 initiator 且 Ns>0 的快照，優先還原 initiator 送出鏈。
+  const secretSnap = secretInfo?.drState || null;
+  const secretSnapRole = typeof secretSnap?.role === 'string' ? secretSnap.role.toLowerCase() : null;
+  const secretSnapNs = Number.isFinite(secretSnap?.Ns) ? Number(secretSnap.Ns) : null;
+  const secretSnapHasSend = !!(secretSnap?.ckS_b64 || secretSnap?.ckS);
+  const secretSnapSelf = typeof secretSnap?.selfDeviceId === 'string' ? secretSnap.selfDeviceId : null;
+  const shouldRestoreInitiatorSend =
+    !hasExistingSend &&
+    secretSnapRole === 'initiator' &&
+    secretSnapHasSend &&
+    secretSnapNs !== null &&
+    secretSnapNs > 0 &&
+    (!selfDeviceId || !secretSnapSelf || secretSnapSelf === selfDeviceId) &&
+    (!secretPeerDeviceId || !peerDeviceId || secretPeerDeviceId === peerDeviceId);
+  if (shouldRestoreInitiatorSend) {
+    const restored = restoreDrStateFromSnapshot({
+      peerAccountDigest: peer,
+      peerDeviceId,
+      snapshot: secretSnap,
+      force: true,
+      sourceTag: 'ensure-restore-initiator-send'
+    });
+    state = drState({ peerAccountDigest: peer, peerDeviceId });
+    try {
+      console.log('[dr-log:restore-initiator-send]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        restored,
+        Ns: Number(state?.Ns) || null,
+        hasCkS: !!(state?.ckS && state.ckS.length)
+      });
+    } catch {}
   }
   const resolvePreferredConversationId = () => {
     const secretConv = secretInfo?.conversationId || null;
@@ -1554,7 +1631,9 @@ export async function ensureDrReceiverState(params = {}) {
         peerDeviceId,
         conversationId: preferredConversationId,
         baseConversationId,
-        secretConversationId
+        secretConversationId,
+        hasCkS: !!(state?.ckS && state.ckS.length),
+        Ns: Number.isFinite(state?.Ns) ? Number(state.Ns) : null
       });
     } catch {}
     clearDrState({ peerAccountDigest: peer, peerDeviceId });
@@ -1564,7 +1643,6 @@ export async function ensureDrReceiverState(params = {}) {
     state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
   const snapshotRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
-  const secretPeerDeviceId = normalizePeerDeviceId(secretInfo?.peerDeviceId || secretInfo?.conversation?.peerDeviceId || null);
   const canRestoreInitiator = guestLike && snapshotRole === 'initiator' && peerDeviceId && secretPeerDeviceId && secretPeerDeviceId === peerDeviceId;
   // guest 端允許還原 initiator 自身的快照（同 peerDeviceId），避免重置 send counter。
   if (!state?.rk && secretInfo?.drState && (!guestLike || canRestoreInitiator)) {
@@ -1591,6 +1669,18 @@ export async function ensureDrReceiverState(params = {}) {
   const stateHasReceiveChain = state?.ckR instanceof Uint8Array && state.ckR.length > 0;
   const stateHasSendChain = state?.ckS instanceof Uint8Array && state.ckS.length > 0;
   const isGuestLike = guestLike;
+  if (safeKeepSendState && stateHasRatchet && !force) {
+    try {
+      console.warn('[dr-log:keep-send-skip-responder]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        hasCkS: stateHasSendChain,
+        hasCkR: stateHasReceiveChain,
+        Ns: Number(state?.Ns) || null
+      });
+    } catch {}
+    return true;
+  }
   if (!force && stateHasRatchet && stateHasReceiveChain) {
     return true;
   }
@@ -1612,6 +1702,17 @@ export async function ensureDrReceiverState(params = {}) {
     const roleNow = holderNow?.baseKey?.role;
     const hasReceiveChain = holderNow?.ckR instanceof Uint8Array && holderNow.ckR.length > 0 && roleNow === 'responder';
     const shouldForce = force || conversationMismatch || !hasReceiveChain || roleNow !== 'responder';
+    try {
+      console.warn('[dr-log:bootstrap-responder-start]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        roleNow: roleNow || null,
+        hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
+        hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
+        Ns: Number.isFinite(holderNow?.Ns) ? Number(holderNow.Ns) : null,
+        force: shouldForce
+      });
+    } catch {}
     await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: shouldForce, peerDeviceId, conversationId });
     const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
     if (conversationId) {
@@ -1645,6 +1746,10 @@ export async function ensureDrReceiverState(params = {}) {
   const holderRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
   const holderHasRatchet = !!(holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub);
   const holderHasReceiveChain = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0;
+  // 若已有送出鏈，且沒有客觀理由強制切換 responder，優先保留現有 send 狀態。
+  if (safeKeepSendState && holderHasRatchet) {
+    return true;
+  }
   if (conversationId && holder) {
     holder.baseKey = holder.baseKey || {};
     holder.baseKey.conversationId = holder.baseKey.conversationId || conversationId;
@@ -1652,6 +1757,16 @@ export async function ensureDrReceiverState(params = {}) {
   const holderRoleNow = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
   // guest/未知角色若發現 responder 或缺 initiator 鏈，直接清空並要求重建 initiator（無 fallback）。
   if (isGuestLike && (!holderHasRatchet || holderRoleNow === 'responder')) {
+    try {
+      console.warn('[dr-log:guest-clear-responder]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        holderRole: holderRoleNow || null,
+        Ns: Number.isFinite(holder?.Ns) ? Number(holder.Ns) : null,
+        hasCkS: !!(holder?.ckS && holder.ckS.length),
+        hasCkR: !!(holder?.ckR && holder.ckR.length)
+      });
+    } catch {}
     clearDrState({ peerAccountDigest: peer, peerDeviceId });
     setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-clear-responder' } });
     // 嘗試使用 contact-secret 中的 initiator 快照重建（僅限 role=initiator）。

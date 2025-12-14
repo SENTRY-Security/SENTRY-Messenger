@@ -242,6 +242,12 @@ export async function x3dhRespond(devicePriv, guestBundle) {
 }
 
 export async function drRatchet(st, theirRatchetPubU8) {
+  const nsBase = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0;
+  const nrBase = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0;
+  const nsPrev = Number.isFinite(st?.Ns) ? Number(st.Ns) : 0;
+  const nrPrev = Number.isFinite(st?.Nr) ? Number(st.Nr) : 0;
+  st.NsTotal = nsBase + nsPrev;
+  st.NrTotal = nrBase + nrPrev;
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);
   const { a: newRoot, b: chainSeed } = split64(rkOut);
@@ -261,6 +267,7 @@ export async function drRatchet(st, theirRatchetPubU8) {
 export async function drEncryptText(st, plaintext, opts = {}) {
   const deviceId = normalizeDeviceId(opts?.deviceId || opts?.senderDeviceId || null);
   const version = normalizeAadVersion(opts?.version ?? opts?.msgVersion ?? 1, 1);
+  const baseNs = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0;
   if (st.pendingSendRatchet) {
     st.pendingSendRatchet = false;
     st.ckS = null;
@@ -293,10 +300,11 @@ export async function drEncryptText(st, plaintext, opts = {}) {
   const mkB64 = b64(mk);
   st.ckS = nextCkS;
   st.Ns += 1;
+  const headerCounter = baseNs + st.Ns;
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['encrypt']);
-  const aad = buildDrAad({ version, deviceId, counter: st.Ns });
+  const aad = buildDrAad({ version, deviceId, counter: headerCounter });
   const cipherParams = aad ? { name: 'AES-GCM', iv, additionalData: aad } : { name: 'AES-GCM', iv };
   const ctBuf = await crypto.subtle.encrypt(cipherParams, key, new TextEncoder().encode(plaintext));
 
@@ -306,7 +314,7 @@ export async function drEncryptText(st, plaintext, opts = {}) {
     device_id: deviceId || undefined,
     ek_pub_b64: b64(st.myRatchetPub),
     pn: st.PN,
-    n: st.Ns
+    n: headerCounter
   };
   return {
     aead: 'aes-256-gcm',
@@ -323,13 +331,17 @@ export async function drDecryptText(st, packet, opts = {}) {
   if (Number.isFinite(headerN) && headerN <= 0) {
     throw new Error('invalid message counter');
   }
+  const baseNr = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0;
   const currentNr = Number.isFinite(Number(st?.Nr)) ? Number(st.Nr) : 0;
-  st.Nr = currentNr; // normalize counter to numeric to avoid string comparisons
+  st.Nr = currentNr; // normalize relative counter
+  const absoluteNr = baseNr + currentNr;
   const sameReceiveChain = st?.theirRatchetPub && typeof packet?.header?.ek_pub_b64 === 'string'
     && b64(st.theirRatchetPub) === packet.header.ek_pub_b64;
-  if (sameReceiveChain && Number.isFinite(headerN) && Number.isFinite(currentNr) && currentNr >= headerN) {
+  if (sameReceiveChain && Number.isFinite(headerN) && Number.isFinite(absoluteNr) && absoluteNr >= headerN) {
     throw new Error('replay or out-of-order message counter');
   }
+  let chainBaseNr = baseNr;
+  let targetRelative = Number.isFinite(headerN) ? headerN - chainBaseNr : null;
 
   // 若接收端狀態的對方 ratchet 公鑰與封包不一致，且這是第一封消息，嘗試丟棄舊的 receive chain 讓後續能依新公鑰重新進入 ratchet。
   if (
@@ -381,8 +393,14 @@ export async function drDecryptText(st, packet, opts = {}) {
         st.Nr = nr;
       }
       await drRatchet(st, theirPub);
+      chainBaseNr = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : chainBaseNr;
+      targetRelative = Number.isFinite(headerN) ? headerN - chainBaseNr : null;
     } else {
       st.theirRatchetPub = theirPub;
+      targetRelative = Number.isFinite(headerN) ? headerN - chainBaseNr : targetRelative;
+    }
+    if (Number.isFinite(targetRelative) && targetRelative <= 0) {
+      throw new Error('replay or out-of-order message counter');
     }
     const chainId = packet?.header?.ek_pub_b64 || null;
     let usedStoredKey = false;
@@ -396,8 +414,8 @@ export async function drDecryptText(st, packet, opts = {}) {
     }
     if (!usedStoredKey) {
       if (!st.ckR) throw new Error('receive chain missing');
-      if (chainId && Number.isFinite(headerN)) {
-        while (st.ckR && st.Nr + 1 < headerN) {
+      if (chainId && Number.isFinite(targetRelative)) {
+        while (st.ckR && st.Nr + 1 < targetRelative) {
           const skippedOut = await kdfCK(st.ckR);
           const { a: skippedMk, b: skippedNext } = split64(skippedOut);
           st.ckR = skippedNext;
@@ -419,8 +437,8 @@ export async function drDecryptText(st, packet, opts = {}) {
     }
     if (!usedStoredKey) {
       st.Nr += 1;
-      if (Number.isFinite(headerN) && headerN > st.Nr) {
-        st.Nr = headerN;
+      if (Number.isFinite(targetRelative) && targetRelative > st.Nr) {
+        st.Nr = targetRelative;
       }
     }
 
