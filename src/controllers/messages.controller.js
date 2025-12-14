@@ -337,8 +337,8 @@ export const createSecureMessage = async (req, res) => {
   if (!Number.isFinite(messageCounter)) {
     return res.status(400).json({ error: 'BadRequest', message: 'counter required' });
   }
-  if (Number.isFinite(headerCounter) && headerCounter !== messageCounter) {
-    return res.status(400).json({ error: 'BadRequest', message: 'header counter mismatch' });
+  if (!Number.isFinite(headerCounter)) {
+    return res.status(400).json({ error: 'BadRequest', message: 'header counter invalid' });
   }
   const headerDeviceId = canonDevice(headerObj?.device_id || null);
   if (!headerDeviceId) {
