@@ -1454,6 +1454,11 @@ export async function ensureDrReceiverState(params = {}) {
     return false;
   })();
   if (conversationMismatch) {
+    const hasSendChain = state?.ckS instanceof Uint8Array && state.ckS.length > 0;
+    const sendCounter = Number.isFinite(state?.Ns) ? state.Ns : 0;
+    if (hasSendChain || sendCounter > 0) {
+      throw new Error('DR state conversation mismatch; please resync contact');
+    }
     try {
       console.warn('[dr-log:conv-mismatch-clear]', {
         peerAccountDigest: peer,
@@ -1469,9 +1474,10 @@ export async function ensureDrReceiverState(params = {}) {
     } catch {}
     state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
-  // guest 端不從快照還原 responder/未知角色；僅非 guest 端才嘗試還原。
   const snapshotRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
-  if (!state?.rk && secretInfo?.drState && !guestLike) {
+  const canRestoreInitiator = guestLike && snapshotRole === 'initiator' && peerDeviceId && secretInfo?.drState?.peerDeviceId === peerDeviceId;
+  // guest 端允許還原 initiator 自身的快照（同 peerDeviceId），避免重置 send counter。
+  if (!state?.rk && secretInfo?.drState && (!guestLike || canRestoreInitiator)) {
     restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: secretInfo.drState });
     state = drState({ peerAccountDigest: peer, peerDeviceId });
     try {
