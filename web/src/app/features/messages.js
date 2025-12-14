@@ -1197,11 +1197,11 @@ export async function listSecureAndDecrypt(params = {}) {
           stateTheirPub: state?.theirRatchetPub ? (deps.b64 ? deps.b64(state.theirRatchetPub) : null) : null
         });
       } catch {}
+      const preDecryptState = summarizeDrState(state);
       const text = await deps.drDecryptText(state, pkt, {
         onMessageKey: (mk) => { messageKeyB64 = mk; }
       });
       const postState = summarizeDrState(state);
-      const preState = summarizeDrState(preDecryptState);
       try {
         console.warn('[dr-log:decrypt-state]', {
           conversationId,
@@ -1209,7 +1209,7 @@ export async function listSecureAndDecrypt(params = {}) {
           peerDeviceId: peerDeviceForMessage || null,
           headerN: Number(header?.n ?? packet?.counter ?? null),
           headerEk: header?.ek_pub_b64 ? String(header.ek_pub_b64).slice(0, 12) : null,
-          preState,
+          preState: preDecryptState,
           postState
         });
       } catch {}
