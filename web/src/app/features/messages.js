@@ -31,6 +31,7 @@ import {
   snapshotDrState as sessionSnapshotDrState,
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
+import { sessionStore } from '../ui/mobile/session-store.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 as naclB64u8, b64 as naclB64 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
@@ -722,7 +723,26 @@ export async function listSecureAndDecrypt(params = {}) {
       receiptUpdates: []
     };
   }
-  const identity = storeNormalizePeerIdentity({ peerAccountDigest, peerDeviceId });
+  // 盡量從各來源補齊 peerDeviceId：先拆 peerAccountDigest 的 ::device，再查對話索引。
+  let resolvedPeerDeviceId = peerDeviceId || null;
+  if (!resolvedPeerDeviceId && typeof peerAccountDigest === 'string' && peerAccountDigest.includes('::')) {
+    const [, devPart] = peerAccountDigest.split('::');
+    const ident = storeNormalizePeerIdentity({ peerAccountDigest });
+    resolvedPeerDeviceId = ident?.deviceId || (devPart ? devPart.trim() : null) || null;
+  }
+  if (!resolvedPeerDeviceId) {
+    try {
+      const fromConv = sessionStore?.conversationIndex?.get?.(conversationId);
+      resolvedPeerDeviceId = fromConv?.peerDeviceId || resolvedPeerDeviceId;
+      if (!resolvedPeerDeviceId) {
+        const fromThread = sessionStore?.conversationThreads?.get?.(conversationId);
+        resolvedPeerDeviceId = fromThread?.peerDeviceId || resolvedPeerDeviceId;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const identity = storeNormalizePeerIdentity({ peerAccountDigest, peerDeviceId: resolvedPeerDeviceId });
   const peerKey = identity.key;
   const peerAccountDigestNormalized = identity.accountDigest || (peerKey && peerKey.includes('::') ? peerKey.split('::')[0] : peerKey) || null;
   const peerDevice = identity.deviceId || null;
@@ -732,12 +752,25 @@ export async function listSecureAndDecrypt(params = {}) {
         conversationId,
         hasToken: !!tokenB64,
         peerAccountDigest,
-        peerDeviceId,
+        peerDeviceId: resolvedPeerDeviceId || peerDeviceId || null,
         resolvedAccountDigest: identity.accountDigest || null,
-        resolvedDeviceId: identity.deviceId || null
+        resolvedDeviceId: identity.deviceId || null,
+        source: params?.__debugSource || null
       });
     } catch {}
     throw new Error('peer identity required (digest + deviceId)');
+  }
+  // 若入口補齊了 peerDeviceId，寫回 state，避免後續呼叫仍為空。
+  try {
+    if (resolvedPeerDeviceId && sessionStore?.messageState) {
+      if (!sessionStore.messageState.activePeerDeviceId) sessionStore.messageState.activePeerDeviceId = resolvedPeerDeviceId;
+      if (peerAccountDigest && !sessionStore.messageState.activePeerDigest) {
+        const idObj = storeNormalizePeerIdentity({ peerAccountDigest, peerDeviceId: resolvedPeerDeviceId });
+        if (idObj?.key) sessionStore.messageState.activePeerDigest = idObj.key;
+      }
+    }
+  } catch {
+    /* ignore */
   }
   const clearAfter = getConversationClearAfter(conversationId);
   if (secureFetchLocks.has(conversationId)) {

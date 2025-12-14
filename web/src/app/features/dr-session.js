@@ -662,23 +662,59 @@ function conversationContextForPeer(peerAccountDigest) {
   try {
     const key = normHex(peerAccountDigest);
     if (!key) return null;
-    const entry = sessionStore.contactIndex?.get?.(key);
+    const selfDeviceId = ensureDeviceId();
+    // contact-secrets 先查，避免 contactIndex 尚未刷新時拿不到 token。
+    try {
+      const secret =
+        getContactSecret(key, { deviceId: selfDeviceId })
+        || getContactSecret(key, { deviceId: selfDeviceId, peerDeviceId: null })
+        || getContactSecret(key, { deviceId: null, peerDeviceId: null });
+      if (secret?.conversationToken && secret?.conversationId) {
+        const secretPeerDeviceId =
+          normalizePeerDeviceId(secret.peerDeviceId || null)
+          || normalizePeerDeviceId(secret?.conversation?.peerDeviceId || null);
+        return {
+          token_b64: secret.conversationToken,
+          conversation_id: secret.conversationId,
+          dr_init: secret.conversationDrInit || null,
+          peerDeviceId: secretPeerDeviceId || null
+        };
+      }
+    } catch (err) {
+      console.warn('[conversation] contact-secret lookup failed', err);
+    }
+    const contactIndex = sessionStore.contactIndex;
+    const directKey = typeof peerAccountDigest === 'string' ? peerAccountDigest : null;
+    const entry =
+      contactIndex?.get?.(directKey) // 先試原始 key（可能含 ::deviceId）
+      || contactIndex?.get?.(key)    // 再試純 digest
+      || (() => {
+        // 最後掃描 contactIndex，找出 digest 相同的 entry。
+        if (!contactIndex || typeof contactIndex.entries !== 'function') return null;
+        for (const [, info] of contactIndex.entries()) {
+          const digest = normHex(info?.peerAccountDigest || info?.accountDigest || null);
+          if (digest && digest === key) return info;
+        }
+        return null;
+      })();
     if (entry?.conversation?.token_b64) {
       return {
         token_b64: entry.conversation.token_b64,
         conversation_id: entry.conversation.conversation_id || null,
-        dr_init: entry.conversation.dr_init || null
+        dr_init: entry.conversation.dr_init || null,
+        peerDeviceId: entry.conversation.peerDeviceId || entry?.peerDeviceId || null
       };
     }
     const map = sessionStore.conversationIndex;
     if (map && typeof map.get === 'function') {
       for (const [convId, info] of map.entries()) {
-        const peerMatch = String(info?.peerAccountDigest || '').toUpperCase();
-        if (peerMatch === key && info?.token_b64) {
+        const peerMatch = normHex(info?.peerAccountDigest || null);
+        if (peerMatch && peerMatch === key && info?.token_b64) {
           return {
             token_b64: info.token_b64,
             conversation_id: convId,
-            dr_init: info.dr_init || null
+            dr_init: info.dr_init || null,
+            peerDeviceId: info.peerDeviceId || null
           };
         }
       }
