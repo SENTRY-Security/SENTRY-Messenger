@@ -1110,6 +1110,11 @@ export async function listSecureAndDecrypt(params = {}) {
       state = getStateForDevice(peerDeviceForMessage);
       const holderConvId = state?.baseKey?.conversationId || null;
       if (holderConvId && conversationId && holderConvId !== conversationId) {
+        const hasSendChain = state?.ckS instanceof Uint8Array && state.ckS.length > 0;
+        const sendCounter = Number.isFinite(state?.Ns) ? state.Ns : 0;
+        if (hasSendChain || sendCounter > 0) {
+          throw new Error('DR state bound to different conversation; please resync contact');
+        }
         deps.clearDrState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage });
         if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
           await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId });

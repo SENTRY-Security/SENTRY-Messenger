@@ -1475,7 +1475,8 @@ export async function ensureDrReceiverState(params = {}) {
     state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
   const snapshotRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
-  const canRestoreInitiator = guestLike && snapshotRole === 'initiator' && peerDeviceId && secretInfo?.drState?.peerDeviceId === peerDeviceId;
+  const secretPeerDeviceId = normalizePeerDeviceId(secretInfo?.peerDeviceId || secretInfo?.conversation?.peerDeviceId || null);
+  const canRestoreInitiator = guestLike && snapshotRole === 'initiator' && peerDeviceId && secretPeerDeviceId && secretPeerDeviceId === peerDeviceId;
   // guest 端允許還原 initiator 自身的快照（同 peerDeviceId），避免重置 send counter。
   if (!state?.rk && secretInfo?.drState && (!guestLike || canRestoreInitiator)) {
     restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: secretInfo.drState });
