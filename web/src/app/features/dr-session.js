@@ -19,7 +19,7 @@
 import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
-import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState } from '../core/store.js';
+import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
@@ -63,7 +63,17 @@ function resolvePeerDigest(input) {
 
 function ensurePeerIdentity({ peerAccountDigest, peerDeviceId, conversationId = null }) {
   const digest = resolvePeerDigest(peerAccountDigest);
-  const device = peerDeviceId || resolvePeerDeviceId(peerAccountDigest, conversationId);
+  let device = null;
+  // 若 caller 傳入 digest::deviceId，直接拆出裝置避免丟失。
+  if (typeof peerAccountDigest === 'string' && peerAccountDigest.includes('::')) {
+    const [, devPart] = peerAccountDigest.split('::');
+    device = normalizePeerDeviceId(devPart);
+  }
+  if (!device && peerDeviceId) device = normalizePeerDeviceId(peerDeviceId);
+  if (!device) {
+    const fromIndex = resolvePeerDeviceId(peerAccountDigest, conversationId);
+    device = normalizePeerDeviceId(fromIndex);
+  }
   if (!digest || !device) throw new Error('peerAccountDigest and peerDeviceId are required');
   return { digest, deviceId: device };
 }
