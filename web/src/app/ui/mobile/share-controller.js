@@ -172,14 +172,33 @@ export function setupShareController(options) {
 
   function storeContactSecretMapping({ peerAccountDigest, peerDeviceId, sessionKey, conversation, drState, role }) {
     const conversationPeerDeviceId = conversation?.peerDeviceId || null;
-    const peerDeviceResolved = peerDeviceId || conversationPeerDeviceId || null;
+    const peerDeviceResolved = peerDeviceId ? peerDeviceId : null;
     const key = normalizePeerKey(peerAccountDigest, { peerDeviceId: peerDeviceResolved });
     const selfDeviceId = ensureDeviceId();
     if (!key || !sessionKey || !peerDeviceResolved || !selfDeviceId) {
-      console.warn('[share-controller]', { contactSecretStoreSkipped: true, reason: 'missing-key-or-device', peerAccountDigest, peerDeviceId: peerDeviceResolved, selfDeviceId });
+      console.warn('[share-controller]', {
+        contactSecretStoreSkipped: true,
+        reason: 'missing-key-or-device',
+        peerAccountDigest,
+        peerDeviceId: peerDeviceResolved,
+        selfDeviceId,
+        hasConversation: !!conversation?.conversation_id && !!conversation?.token_b64
+      });
       throw new Error('contact secret requires peer device id, self device id, and session key');
     }
     const existing = getContactSecret(key, { deviceId: selfDeviceId }) || {};
+    try {
+      console.log('[share-controller]', {
+        contactSecretStoreStart: {
+          key,
+          peerAccountDigest,
+          peerDeviceId: peerDeviceResolved,
+          selfDeviceId,
+          hasExisting: !!existing?.conversationToken,
+          hasConversation: !!conversation?.conversation_id && !!conversation?.token_b64
+        }
+      });
+    } catch {}
     const convIdCandidate = conversation?.conversation_id || conversation?.conversationId || null;
     const convIsContacts = typeof convIdCandidate === 'string' && convIdCandidate.startsWith('contacts-');
     const existingConvId = existing?.conversationId || null;
@@ -206,7 +225,7 @@ export function setupShareController(options) {
         token: conversation?.token_b64 || sessionKey || existing.conversationToken || null,
         id: finalConvId,
         drInit: conversation?.dr_init || existing.conversationDrInit || null,
-        peerDeviceId: conversationPeerDeviceId || peerDeviceResolved
+        peerDeviceId: conversationPeerDeviceId || null
       },
       meta: { source: 'share-controller:storeContactSecret' }
     };
@@ -218,6 +237,18 @@ export function setupShareController(options) {
       }
     }
     setContactSecret(key, { ...update, deviceId: selfDeviceId });
+    try {
+      console.log('[share-controller]', {
+        contactSecretStored: {
+          key,
+          peerAccountDigest,
+          peerDeviceId: peerDeviceResolved,
+          selfDeviceId,
+          conversationId: finalConvId,
+          hasDr: !!update.dr
+        }
+      });
+    } catch {}
   }
 
   async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
@@ -748,11 +779,7 @@ export function setupShareController(options) {
     if (conversation) {
       const convToken = conversation.tokenB64 || conversation.token_b64 || null;
       const convId = conversation.conversationId || conversation.conversation_id || null;
-      const peerDeviceId =
-        conversation.peerDeviceId ||
-        conversation.peerDeviceId ||
-        ensureDeviceId() ||
-        null;
+      const peerDeviceId = conversation.peerDeviceId || null;
       if (convToken && convId) {
         conversationInfo = {
           token_b64: convToken,
@@ -898,6 +925,7 @@ export function setupShareController(options) {
       });
       storeContactSecretMapping({
         peerAccountDigest: peerKey,
+        peerDeviceId,
         sessionKey: conversation.token_b64,
         conversation,
         // 保留既有角色標記（owner/guest），不在 contact-share 時覆寫。
@@ -1159,7 +1187,7 @@ export function setupShareController(options) {
       if (!record) continue;
       const token = record.conversationToken || record.conversation?.token || null;
       const convId = record.conversationId || record.conversation?.id || null;
-      const peerDeviceId = record.peerDeviceId || record.conversation?.peerDeviceId || identity.deviceId || null;
+      const peerDeviceId = record.peerDeviceId || identity.deviceId || null;
       if (!token || !convId || !peerDeviceId) continue;
       const drInit = record.conversationDrInit || record.conversation?.drInit || null;
       const conversation = {
@@ -1169,6 +1197,17 @@ export function setupShareController(options) {
         peerDeviceId
       };
       try {
+        try {
+          console.log('[share-controller]', {
+            contactBroadcastEntry: {
+              peerAccountDigest: digest,
+              peerDeviceId,
+              conversationId: convId,
+              hasDrInit: !!drInit,
+              reason: reasonKey
+            }
+          });
+        } catch {}
         await sendContactShare({
           peerAccountDigest: digest,
           conversation,

@@ -835,7 +835,6 @@ function derivePeerIdentityForEntry(peerKey, record = {}) {
   const peerAccountDigest = parsed.accountDigest || normalizeAccountDigest(peerKey);
   const peerDeviceId = normalizePeerDeviceId(
     record?.peerDeviceId
-    || record?.conversation?.peerDeviceId
     || parsed.deviceId
     || null
   );

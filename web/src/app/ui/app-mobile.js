@@ -3426,10 +3426,6 @@ if (typeof document !== 'undefined') {
         || meta?.receiverDeviceId
         || msg?.peerDeviceId
         || null;
-      if (!peerDeviceId && typeof peerAccountDigest === 'string' && peerAccountDigest.includes('::')) {
-        const [, devPart] = peerAccountDigest.split('::');
-        peerDeviceId = devPart || peerDeviceId;
-      }
       const envelope = cs?.envelope || null;
       if (!peerAccountDigest || !peerDeviceId || !envelope?.iv || !envelope?.ct) {
         log({ contactShareMissingFields: true, peerAccountDigest, peerDeviceId, hasEnvelope: !!envelope });

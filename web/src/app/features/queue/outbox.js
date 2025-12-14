@@ -78,9 +78,10 @@ function normalizeJob(input = {}) {
     senderDeviceId: input.senderDeviceId || null,
     receiverAccountDigest: input.receiverAccountDigest || null,
     receiverDeviceId: input.receiverDeviceId || null,
+    peerAccountDigest: input.peerAccountDigest || null,
+    peerDeviceId: input.peerDeviceId || null,
     // Legacy fields kept for compatibility (media-upload no-op)
     payloadEnvelope: input.payloadEnvelope || null,
-    peerAccountDigest: input.peerAccountDigest || null,
     createdAt: ts,
     retryCount: 0,
     nextAttemptAt: null,

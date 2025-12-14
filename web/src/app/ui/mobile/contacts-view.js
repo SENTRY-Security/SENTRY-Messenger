@@ -427,9 +427,8 @@ export function initContactsView(options) {
       const digest = normalizeAccountDigest(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
       const peerDeviceIdFromEntry = normalizeDeviceId(entry?.peerDeviceId || null);
       const conv = entry?.conversation;
-      const peerDeviceIdFromConv = normalizeDeviceId(conv?.peerDeviceId || null);
-      const key = digest && (peerDeviceIdFromEntry || peerDeviceIdFromConv)
-        ? `${digest}::${peerDeviceIdFromEntry || peerDeviceIdFromConv}`
+      const key = digest && peerDeviceIdFromEntry
+        ? `${digest}::${peerDeviceIdFromEntry}`
         : contactKey(entry);
       if (!key) continue;
       if (digest && deletedContacts.has(digest)) {
@@ -444,14 +443,14 @@ export function initContactsView(options) {
         ...entry,
         peerAccountDigest: key,
         accountDigest: digest || normalizeAccountDigest(entry?.peerAccountDigest ?? null) || null,
-        peerDeviceId: peerDeviceIdFromEntry || peerDeviceIdFromConv || null
+        peerDeviceId: peerDeviceIdFromEntry || null
       };
       contactIndex.set(key, normalizedEntry);
       if (!conv) {
         missingConv += 1;
       }
       if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
-        const peerDeviceId = conv.peerDeviceId || peerDeviceIdFromEntry || null;
+        const peerDeviceId = peerDeviceIdFromEntry || null;
         if (peerDeviceId) {
           conversationIndex.set(conv.conversation_id, {
             token_b64: conv.token_b64,
@@ -647,6 +646,29 @@ export function initContactsView(options) {
     if (bypassRemovalGuard && isRecentlyRemoved(key)) {
       recentlyRemovedPeers.delete(key);
     }
+    const conversationPeerDeviceId = normalizeDeviceId(conversation?.peerDeviceId || null);
+    if (conversationPeerDeviceId && peerDeviceIdFromKey && conversationPeerDeviceId !== peerDeviceIdFromKey) {
+      console.warn('[contacts-view]', {
+        contactConversationPeerDeviceMismatch: true,
+        fromKey: peerDeviceIdFromKey,
+        fromConversation: conversationPeerDeviceId
+      });
+    }
+    try {
+      const debugPayload = {
+        contactAddDebug: {
+          key,
+          peerDeviceIdFromKey,
+          peerDeviceIdArg: peerDeviceId || null,
+          conversationPeerDeviceId: conversation?.peerDeviceId || null,
+          conversationHas: !!(conversation && conversation.conversation_id && conversation.token_b64)
+        }
+      };
+      console.log('[contacts-view]', debugPayload);
+      try {
+        console.log('[contacts-view]', '[contactAddDebug]', JSON.stringify(debugPayload));
+      } catch {}
+    } catch {}
     const conversationPayload = conversation && conversation.conversation_id && conversation.token_b64 ? {
       token_b64: conversation.token_b64,
       conversation_id: conversation.conversation_id,
@@ -655,6 +677,13 @@ export function initContactsView(options) {
       peerDeviceId: peerDeviceIdFromKey || null
     } : null;
     if (conversation && !conversationPayload?.peerDeviceId) {
+      console.warn('[contacts-view]', {
+        contactAddConversationMissingPeerDevice: true,
+        peerAccountDigest,
+        digest,
+        peerDeviceIdFromKey,
+        conversationPeerDeviceId
+      });
       throw new Error('peerDeviceId required for conversation');
     }
 

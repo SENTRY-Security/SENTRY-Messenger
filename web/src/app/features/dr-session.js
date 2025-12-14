@@ -61,7 +61,7 @@ function resolvePeerDigest(input) {
   return extractDigest(candidate);
 }
 
-function ensurePeerIdentity({ peerAccountDigest, peerDeviceId, conversationId = null }) {
+function ensurePeerIdentity({ peerAccountDigest, peerDeviceId, conversationId = null, __debugSource = null }) {
   const digest = resolvePeerDigest(peerAccountDigest);
   let device = null;
   // 若 caller 傳入 digest::deviceId，直接拆出裝置避免丟失。
@@ -74,7 +74,21 @@ function ensurePeerIdentity({ peerAccountDigest, peerDeviceId, conversationId = 
     const fromIndex = resolvePeerDeviceId(peerAccountDigest, conversationId);
     device = normalizePeerDeviceId(fromIndex);
   }
-  if (!digest || !device) throw new Error('peerAccountDigest and peerDeviceId are required');
+  if (!digest || !device) {
+    try {
+      console.warn('[dr-identity:missing]', {
+        peerAccountDigest,
+        peerDeviceId,
+        resolvedDigest: digest || null,
+        resolvedDevice: device || null,
+        conversationId,
+        source: __debugSource || null
+      });
+    } catch {
+      /* ignore logging errors */
+    }
+    throw new Error('peerAccountDigest and peerDeviceId are required');
+  }
   return { digest, deviceId: device };
 }
 
@@ -413,12 +427,6 @@ export function hydrateDrStatesFromContactSecrets() {
   const map = restoreContactSecrets();
   if (!(map instanceof Map)) return 0;
   const deviceId = ensureDeviceId();
-  const resolvePeerDeviceIdStrict = (peerDigest) => {
-    const conv = sessionStore.contactIndex?.get?.(peerDigest)?.conversation;
-    const convDev = conv?.peerDeviceId || null;
-    if (convDev) return convDev;
-    return resolvePeerDeviceId(peerDigest, null);
-  };
   let restoredCount = 0;
   let eligibleEntries = 0;
   let skippedInvalidRole = 0;
@@ -427,8 +435,12 @@ export function hydrateDrStatesFromContactSecrets() {
   let missingSnapshotEntries = 0;
   let historyFallbackCount = 0;
   for (const [peerDigest] of map.entries()) {
-    let peerDeviceIdResolved = resolvePeerDeviceIdStrict(peerDigest);
     const info = getContactSecret(peerDigest, { deviceId });
+    if (!info) {
+      clearDrStatesByAccount(peerDigest);
+      continue;
+    }
+    const peerDeviceIdResolved = normalizePeerDeviceId(info.peerDeviceId || null);
     // conversationId 正規化：若存在 contacts-* 假 ID 與實際 ID，保留實際 ID。
     if (info?.conversationId && typeof info.conversationId === 'string' && info.conversationId.startsWith('contacts-') && info?.conversation?.id && !String(info.conversation.id).startsWith('contacts-')) {
       setContactSecret(peerDigest, { deviceId, conversation: { id: info.conversation.id, token: info.conversationToken || null }, meta: { source: 'hydrate-conversation-normalize' } });
@@ -445,15 +457,8 @@ export function hydrateDrStatesFromContactSecrets() {
       setContactSecret(peerDigest, { deviceId, role: 'guest', meta: { source: 'hydrate-set-guest-role' } });
       info.role = 'guest';
     }
-    if (!peerDeviceIdResolved && info?.conversation?.peerDeviceId) {
-      peerDeviceIdResolved = info.conversation.peerDeviceId;
-    }
     if (!peerDeviceIdResolved) {
       // 無法解析對端裝置時，清除記憶體中同 digest 的 state 避免沿用舊 responder。
-      clearDrStatesByAccount(peerDigest);
-      continue;
-    }
-    if (!info) {
       clearDrStatesByAccount(peerDigest);
       continue;
     }
@@ -660,15 +665,17 @@ export async function ensureDrSession(params = {}) {
 
 function conversationContextForPeer(peerAccountDigest) {
   try {
-    const key = normHex(peerAccountDigest);
-    if (!key) return null;
+    const identity = normalizePeerIdentity(peerAccountDigest);
+    const peer = identity.accountDigest || normHex(peerAccountDigest);
+    const peerKey = identity.key || (peer ? `${peer}::${identity.deviceId || ''}`.replace(/::$/, '') : null);
+    if (!peer) return null;
     const selfDeviceId = ensureDeviceId();
     // contact-secrets 先查，避免 contactIndex 尚未刷新時拿不到 token。
     try {
       const secret =
-        getContactSecret(key, { deviceId: selfDeviceId })
-        || getContactSecret(key, { deviceId: selfDeviceId, peerDeviceId: null })
-        || getContactSecret(key, { deviceId: null, peerDeviceId: null });
+        getContactSecret(peerKey || peer, { deviceId: selfDeviceId })
+        || getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId: null })
+        || getContactSecret(peer, { deviceId: null, peerDeviceId: null });
       if (secret?.conversationToken && secret?.conversationId) {
         const secretPeerDeviceId =
           normalizePeerDeviceId(secret.peerDeviceId || null)
@@ -687,13 +694,14 @@ function conversationContextForPeer(peerAccountDigest) {
     const directKey = typeof peerAccountDigest === 'string' ? peerAccountDigest : null;
     const entry =
       contactIndex?.get?.(directKey) // 先試原始 key（可能含 ::deviceId）
-      || contactIndex?.get?.(key)    // 再試純 digest
+      || (peerKey ? contactIndex?.get?.(peerKey) : null) // 再試解析出的 digest::deviceId
+      || contactIndex?.get?.(peer)   // 再試純 digest
       || (() => {
         // 最後掃描 contactIndex，找出 digest 相同的 entry。
         if (!contactIndex || typeof contactIndex.entries !== 'function') return null;
         for (const [, info] of contactIndex.entries()) {
           const digest = normHex(info?.peerAccountDigest || info?.accountDigest || null);
-          if (digest && digest === key) return info;
+          if (digest && digest === peer) return info;
         }
         return null;
       })();
@@ -708,7 +716,7 @@ function conversationContextForPeer(peerAccountDigest) {
     if (map && typeof map.get === 'function') {
       for (const [convId, info] of map.entries()) {
         const peerMatch = normHex(info?.peerAccountDigest || null);
-        if (peerMatch && peerMatch === key && info?.token_b64) {
+        if (peerMatch && peerMatch === peer && info?.token_b64) {
           return {
             token_b64: info.token_b64,
             conversation_id: convId,
@@ -734,10 +742,6 @@ async function sendDrPlaintext(params = {}) {
     throw new Error('peerAccountDigest resolved to self (invalid)');
   }
 
-  const convContext = conversation || conversationContextForPeer(peer);
-  const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
-  if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
-
   const peerDeviceId = peerDeviceInput || null;
   if (!peerDeviceId) {
     throw new Error('peerDeviceId required for secure send');
@@ -746,6 +750,10 @@ async function sendDrPlaintext(params = {}) {
   if (selfDeviceId && peerDeviceId === selfDeviceId) {
     throw new Error('peerDeviceId resolved to self device (invalid)');
   }
+
+  const convContext = conversation || conversationContextForPeer({ peerAccountDigest: peer, peerDeviceId });
+  const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
+  if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
   const conversationId = convContext?.conversation_id || convContext?.conversationId || null;
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
@@ -1089,7 +1097,7 @@ export async function sendDrMedia(params = {}) {
     throw new Error('file required');
   }
 
-  const convContext = conversation || conversationContextForPeer(peer);
+  const convContext = conversation || conversationContextForPeer({ peerAccountDigest: peer, peerDeviceId: peerDeviceInput || conversation?.peerDeviceId || null });
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
@@ -1288,7 +1296,7 @@ export async function sendDrMedia(params = {}) {
       messageKeyB64
     });
   }
-  persistDrSnapshot({ peerAccountDigest: peer, state });
+  persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
 
   return {
     msg: {
@@ -1354,11 +1362,17 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
     throw new Error('guest bundle did not produce valid DR state');
   }
   copyDrState(holder, st);
-  holder.baseKey = { role: 'responder', initializedAt: Date.now(), guestBundle, conversationId: conversationId || null };
+  holder.baseKey = {
+    role: 'responder',
+    initializedAt: Date.now(),
+    guestBundle,
+    conversationId: conversationId || null,
+    peerDeviceId: peerDeviceId || null
+  };
   markHolderSnapshot(holder, 'responder', Date.now());
-  persistDrSnapshot({ peerAccountDigest: peer, state: holder });
-  return true;
-}
+    persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state: holder });
+    return true;
+  }
 
 export function primeDrStateFromInitiator(params = {}) {
   const { state } = params;
@@ -1379,7 +1393,8 @@ export async function ensureDrReceiverState(params = {}) {
   const { digest: peer, deviceId: peerDeviceId } = ensurePeerIdentity({
     peerAccountDigest: params?.peerAccountDigest ?? params,
     peerDeviceId: params?.peerDeviceId ?? null,
-    conversationId: params?.conversationId ?? null
+    conversationId: params?.conversationId ?? null,
+    __debugSource: params?.__debugSource || params?.source || 'ensureDrReceiverState'
   });
   const conversationId = params?.conversationId || null;
   const selfDeviceId = ensureDeviceId();

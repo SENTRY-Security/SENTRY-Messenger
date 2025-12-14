@@ -138,7 +138,7 @@ export function hydrateConversationsFromSecrets() {
         ? peerKey.split('::')[0]
         : peerKey
     );
-    const peerDeviceId = normalizePeerDeviceId(info?.peerDeviceId || (typeof peerKey === 'string' && peerKey.includes('::') ? peerKey.split('::')[1] : null) || null);
+    const peerDeviceId = normalizePeerDeviceId(info?.peerDeviceId || null);
     const conv = info?.conversation || {};
     const convId = conv?.id || conv?.conversation_id || null;
     const tokenB64 = conv?.token || conv?.token_b64 || null;

@@ -2354,26 +2354,7 @@ export function initMessagesPane({
     if (entry?.conversation?.conversation_id) {
       clearConversationTombstone(entry.conversation.conversation_id);
     }
-    let conversation = entry.conversation;
-    if (!conversation?.token_b64) {
-      // Fallback: 從 contact-secret 取出會話資訊，避免缺 token 無法進入對話
-      const secret = getContactSecret(key, { deviceId: ensureDeviceId() }) || null;
-      if (secret?.conversationToken && secret?.conversationId) {
-        conversation = {
-          token_b64: secret.conversationToken,
-          conversation_id: secret.conversationId,
-          dr_init: secret.conversationDrInit || null,
-          peerDeviceId: secret.peerDeviceId || secret.conversationPeerDeviceId || null
-        };
-        entry.conversation = entry.conversation || {};
-        entry.conversation.token_b64 = conversation.token_b64;
-        entry.conversation.conversation_id = conversation.conversation_id;
-        if (conversation.peerDeviceId) entry.conversation.peerDeviceId = conversation.peerDeviceId;
-        if (conversation.dr_init) entry.conversation.dr_init = conversation.dr_init;
-        // 更新 contactIndex/threads 以便後續使用
-        sessionStore.contactIndex?.set?.(key, entry);
-      }
-    }
+    const conversation = entry.conversation;
     if (!conversation?.token_b64) {
       resetMessageStateWithPlaceholders();
       const state = getMessageState();
@@ -2395,7 +2376,8 @@ export function initMessagesPane({
       resetProcessedMessages(state.conversationId);
     }
     const peerDeviceIdFromKey = key && key.includes('::') ? key.split('::')[1] : null;
-    const peerDeviceId = peerDeviceIdFromKey || conversation.peerDeviceId || null;
+    const peerDeviceIdFromContact = entry?.peerDeviceId || null;
+    const peerDeviceId = peerDeviceIdFromKey || peerDeviceIdFromContact || null;
     if (!peerDeviceId) {
       setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
       return;
@@ -3423,7 +3405,7 @@ export function initMessagesPane({
         conversationId: conversation.conversation_id,
         conversationToken: conversation.token_b64,
         peerAccountDigest: peerDigest,
-        peerDeviceId: conversation.peerDeviceId || identity.deviceId || prev.peerDeviceId || null,
+        peerDeviceId: detail?.peerDeviceId || identity.deviceId || prev.peerDeviceId || null,
         nickname: prev.nickname || detail?.nickname || `好友 ${peerDigest.slice(-4)}`,
         avatar: prev.avatar || detail?.avatar || null,
         lastMessageText: typeof prev.lastMessageText === 'string' ? prev.lastMessageText : '',
@@ -3445,10 +3427,11 @@ export function initMessagesPane({
     const threads = getConversationThreads();
     const threadByConv = convId ? threads.get(convId) : null;
     const targetPeer = normalizePeerKey(peerAccountDigest ?? threadPeer(threadByConv));
-    const targetPeerDeviceId = peerDeviceId || threadByConv?.peerDeviceId || null;
     const contactStateEntry = Array.isArray(sessionStore.contactState)
       ? sessionStore.contactState.find((c) => contactPeerKey(c) === targetPeer)
       : null;
+    const contactStatePeerDeviceId = contactStateEntry?.peerDeviceId || null;
+    const targetPeerDeviceId = peerDeviceId || threadByConv?.peerDeviceId || contactStatePeerDeviceId || null;
     const contactStateConv = contactStateEntry?.conversation || null;
     const state = getMessageState();
     const token = tokenB64
@@ -3486,7 +3469,7 @@ export function initMessagesPane({
       convIndex.set(conversationId, {
         ...prevConv,
         peerAccountDigest: targetPeer || prevConv.peerAccountDigest || null,
-        peerDeviceId: targetPeerDeviceId || prevConv.peerDeviceId || null,
+        peerDeviceId: targetPeerDeviceId || contactStatePeerDeviceId || prevConv.peerDeviceId || null,
         token_b64: token || prevConv.token_b64 || null
       });
     }

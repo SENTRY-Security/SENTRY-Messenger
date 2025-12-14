@@ -231,8 +231,9 @@ export async function saveContact(contact) {
         ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
       }
     : null;
-  if (conversation && !conversation.peerDeviceId) {
-    throw new Error('peerDeviceId required for conversation');
+  // conversation peer 裝置以解析出的 peerDeviceId 為唯一來源，不從其他欄位補或覆寫。
+  if (conversation) {
+    conversation.peerDeviceId = peerDeviceId;
   }
   if (conversation && conversation.conversation_id && String(conversation.conversation_id).startsWith('contacts-')) {
     throw new Error('缺少安全對話 ID，請重新同步好友（contacts-* 無效）');

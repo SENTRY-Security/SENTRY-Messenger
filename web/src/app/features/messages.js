@@ -712,6 +712,17 @@ export async function listSecureAndDecrypt(params = {}) {
     sendReadReceipt = true
   } = params;
   if (!conversationId) throw new Error('conversationId required');
+  try {
+    console.log('[dr-list:input]', {
+      conversationId,
+      peerAccountDigest,
+      peerDeviceId,
+      hasToken: !!tokenB64,
+      source: params?.__debugSource || null
+    });
+  } catch {
+    /* ignore logging errors */
+  }
   if (tombstonedConversations.has(String(conversationId))) {
     return {
       items: [],
