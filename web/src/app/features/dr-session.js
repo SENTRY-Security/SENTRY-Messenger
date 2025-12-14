@@ -349,6 +349,24 @@ export function restoreDrStateFromSnapshot(params = {}) {
   }
   const holder = targetState || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!holder) return false;
+  // 若已有 send 鏈且 Ns>0，避免被缺 send 鏈或較小 Ns 的快照覆蓋。
+  const hasExistingSend = holder?.ckS instanceof Uint8Array && holder.ckS.length > 0 && Number.isFinite(holder?.Ns) && Number(holder.Ns) > 0;
+  const incomingHasSend = !!data.ckS_b64 && typeof data.ckS_b64 === 'string';
+  const incomingNs = Number.isFinite(data.Ns) ? Number(data.Ns) : null;
+  const downgrade = hasExistingSend && (!incomingHasSend || (incomingNs !== null && incomingNs < Number(holder.Ns || 0)));
+  if (!force && downgrade) {
+    if (isAutomationEnv()) {
+      console.warn('[dr-restore-skip-downgrade]', JSON.stringify({
+        peerAccountDigest: peer,
+        peerDeviceId,
+        existingNs: Number(holder.Ns) || null,
+        incomingNs,
+        incomingHasSend,
+        sourceTag
+      }));
+    }
+    return false;
+  }
   if (!targetState && !force && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
     return false;
   }
@@ -393,15 +411,29 @@ export function persistDrSnapshot(params = {}) {
     conversationId: params?.conversationId ?? null
   });
   const holder = state || drState({ peerAccountDigest: peer, peerDeviceId });
-  if (!holder?.rk) return false;
+  if (!holder?.rk) {
+    try {
+      console.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId });
+    } catch {}
+    return false;
+  }
   const snap = snapshot || snapshotDrState(holder);
-  if (!snap) return false;
+  if (!snap) {
+    try {
+      console.warn('[dr] persist snapshot skipped: missing snapshot', { peerAccountDigest: peer, peerDeviceId });
+    } catch {}
+    return false;
+  }
   // contact secret 以「本機裝置」為鍵，peerDeviceId 僅為對端識別；寫入使用 self deviceId。
   const selfDeviceId = ensureDeviceId();
   const deviceId = selfDeviceId || peerDeviceId;
   const info = getContactSecret(peer, { deviceId, peerDeviceId });
   if (!info) {
-    console.warn('[dr] persist snapshot skipped: missing contact secret', { peerAccountDigest: peer, deviceId: peerDeviceId });
+    console.warn('[dr] persist snapshot skipped: missing contact secret', {
+      peerAccountDigest: peer,
+      peerDeviceId,
+      deviceId
+    });
     return false;
   }
   try {
@@ -414,8 +446,37 @@ export function persistDrSnapshot(params = {}) {
     if (info.conversationId) conversationUpdate.id = info.conversationId;
     if (info.conversationDrInit) conversationUpdate.drInit = info.conversationDrInit;
     if (Object.keys(conversationUpdate).length) update.conversation = conversationUpdate;
+    // 若現存快照有 send 鏈且 Ns>0，而新快照缺 send 鏈或 Ns 更低，避免覆蓋成 0。
+    const existingSnap = info.drState || null;
+    const existingNs = Number.isFinite(existingSnap?.Ns) ? Number(existingSnap.Ns) : null;
+    const newNs = Number.isFinite(snap?.Ns) ? Number(snap.Ns) : null;
+    const hasExistingSend = !!(existingSnap?.ckS || existingSnap?.ckS_b64) && Number(existingNs) > 0;
+    const lacksNewSend = !(snap?.ckS || snap?.ckS_b64);
+    const nsDowngrade = Number.isFinite(existingNs) && Number.isFinite(newNs) && newNs < existingNs;
+    if (hasExistingSend && (lacksNewSend || nsDowngrade)) {
+      console.warn('[dr] persist snapshot skipped downgrade', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        deviceId,
+        existingNs,
+        newNs,
+        hasExistingSend,
+        lacksNewSend,
+        nsDowngrade
+      });
+      return false;
+    }
     setContactSecret(peer, { ...update, deviceId });
     markHolderSnapshot(holder, 'persist', snap.updatedAt || Date.now());
+    try {
+      console.log('[dr-log:persist-snapshot]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        deviceId,
+        Ns: snap?.Ns ?? null,
+        Nr: snap?.Nr ?? null
+      });
+    } catch {}
     return true;
   } catch (err) {
     console.warn('[dr] persist snapshot failed', err);
@@ -825,6 +886,20 @@ async function sendDrPlaintext(params = {}) {
   meta.receiverDeviceId = receiverDeviceId;
   meta.receiver_device_id = receiverDeviceId;
 
+  try {
+    console.log('[dr-log:send-snapshot]', JSON.stringify({
+      peerAccountDigest: peer,
+      peerDeviceId,
+      preNs: preSnapshot?.Ns ?? null,
+      preNr: preSnapshot?.Nr ?? null,
+      preHasCkS: !!preSnapshot?.ckS_b64,
+      postNs: postSnapshot?.Ns ?? null,
+      postNr: postSnapshot?.Nr ?? null,
+      postHasCkS: !!postSnapshot?.ckS_b64,
+      msgType: meta?.msg_type || null
+    }));
+  } catch {}
+
   const headerPayload = {
     ...pkt.header,
     // peerAccountDigest 定義為「對方」身份，便於接收端驗證，不做任何 fallback
@@ -868,6 +943,20 @@ async function sendDrPlaintext(params = {}) {
     if (!result.ok) {
       const status = Number.isFinite(result?.status) ? ` (status=${result.status})` : '';
       throw new Error((result.error || 'sendText failed') + status);
+    }
+    if (postSnapshot && peer && peerDeviceId) {
+      const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: postSnapshot });
+      try {
+        console.log('[dr-log:send-persist]', JSON.stringify({
+          peerAccountDigest: peer,
+          peerDeviceId,
+          messageId,
+          persisted,
+          Ns: postSnapshot?.Ns ?? null,
+          Nr: postSnapshot?.Nr ?? null,
+          hasCkS: !!postSnapshot?.ckS_b64
+        }));
+      } catch {}
     }
     sendFailureCounter.delete(`${peer}::${receiverDeviceId || 'unknown'}`);
     logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: postSnapshot });
@@ -1674,6 +1763,23 @@ try {
       const peerDeviceId = job?.peerDeviceId || null;
       const dr = job?.dr || {};
       const messageTs = Number(job?.createdAt);
+      const nsBefore = Number.isFinite(dr?.snapshotBefore?.Ns) ? Number(dr.snapshotBefore.Ns) : null;
+      const nsAfter = Number.isFinite(dr?.snapshotAfter?.Ns) ? Number(dr.snapshotAfter.Ns) : null;
+      try {
+        console.log('[dr-log:outbox-sent]', JSON.stringify({
+          peerAccountDigest: peer,
+          peerDeviceId,
+          messageId: job?.messageId || null,
+          hasSnapshotBefore: !!dr?.snapshotBefore,
+          hasSnapshotAfter: !!dr?.snapshotAfter,
+          NsBefore: nsBefore,
+          NrBefore: Number.isFinite(dr?.snapshotBefore?.Nr) ? Number(dr.snapshotBefore.Nr) : null,
+          NsAfter: nsAfter,
+          NrAfter: Number.isFinite(dr?.snapshotAfter?.Nr) ? Number(dr.snapshotAfter.Nr) : null,
+          hasCkSBefore: !!dr?.snapshotBefore?.ckS_b64,
+          hasCkSAfter: !!dr?.snapshotAfter?.ckS_b64
+        }));
+      } catch {}
       if (peer && peerDeviceId && dr.snapshotBefore && Number.isFinite(messageTs)) {
         recordDrMessageHistory({
           peerAccountDigest: peer,
@@ -1686,7 +1792,25 @@ try {
         });
       }
       if (peer && dr.snapshotAfter) {
-        persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: dr.snapshotAfter });
+        try {
+          console.log('[dr-log:outbox-before-persist]', JSON.stringify({
+            peerAccountDigest: peer,
+            peerDeviceId,
+            messageId: job?.messageId || null,
+            hasSnapshotAfter: !!dr?.snapshotAfter
+          }));
+        } catch {}
+        const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: dr.snapshotAfter });
+        try {
+          console.log('[dr-log:outbox-persist]', JSON.stringify({
+            peerAccountDigest: peer,
+            peerDeviceId,
+            messageId: job?.messageId || null,
+            NsBefore: nsBefore,
+            NsAfter: nsAfter,
+            persisted
+          }));
+        } catch {}
       }
     }
   });
