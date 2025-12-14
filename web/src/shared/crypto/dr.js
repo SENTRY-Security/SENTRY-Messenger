@@ -299,6 +299,7 @@ export async function drEncryptText(st, plaintext, opts = {}) {
   const mkB64 = b64(mk);
   st.ckS = nextCkS;
   st.Ns += 1;
+  st.NsTotal = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) + 1 : st.Ns;
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['encrypt']);
@@ -432,6 +433,7 @@ export async function drDecryptText(st, packet, opts = {}) {
       if (Number.isFinite(headerN) && headerN > st.Nr) {
         st.Nr = headerN;
       }
+      st.NrTotal = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) + 1 : st.Nr;
     }
 
     if (ratchetPerformed || usedStoredKey) {

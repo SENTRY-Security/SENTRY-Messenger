@@ -863,6 +863,7 @@ async function sendDrPlaintext(params = {}) {
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
+  const transportCounter = Number.isFinite(state?.NsTotal) ? Number(state.NsTotal) : (Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null);
 
   let finalConversationId = conversationId;
   if (!finalConversationId) finalConversationId = await conversationIdFromToken(tokenB64);
@@ -912,6 +913,7 @@ async function sendDrPlaintext(params = {}) {
       postNs: postSnapshot?.Ns ?? null,
       postNr: postSnapshot?.Nr ?? null,
       postHasCkS: !!postSnapshot?.ckS_b64,
+      transportCounter,
       msgType: meta?.msg_type || null
     }));
   } catch {}
@@ -937,14 +939,14 @@ async function sendDrPlaintext(params = {}) {
       conversationId: finalConversationId,
       messageId,
       headerJson,
-    header: headerPayload,
-    ciphertextB64: ctB64,
-    counter: pkt.header?.n ?? null,
-    senderDeviceId,
-    receiverAccountDigest: peer,
-    receiverDeviceId: receiverDeviceId || null,
-    createdAt: now,
-    peerAccountDigest: peer,
+      header: headerPayload,
+      ciphertextB64: ctB64,
+      counter: transportCounter,
+      senderDeviceId,
+      receiverAccountDigest: peer,
+      receiverDeviceId: receiverDeviceId || null,
+      createdAt: now,
+      peerAccountDigest: peer,
       peerDeviceId: peerDeviceId || null,
       meta: { msg_type: meta.msg_type },
       dr: preSnapshot
