@@ -487,9 +487,7 @@ export function initContactsView(options) {
         const existing = contactIndex.get(key);
         const mergedPeerDeviceId = existing?.peerDeviceId || entry?.peerDeviceId || null;
         if (!entry.peerDeviceId && mergedPeerDeviceId) entry.peerDeviceId = mergedPeerDeviceId;
-        if (entry?.conversation && mergedPeerDeviceId && !entry.conversation.peerDeviceId) {
-          entry.conversation.peerDeviceId = mergedPeerDeviceId;
-        }
+        // conversation.peerDeviceId 僅用於顯示，不用來覆蓋 peer 裝置。
         const merged = { ...existing, ...entry };
         contactIndex.set(key, merged);
         sanitized.push(merged);
@@ -499,7 +497,7 @@ export function initContactsView(options) {
       }
       const conv = entry?.conversation;
       if (conv?.conversation_id && conv?.token_b64 && conversationIndex) {
-        const peerDeviceId = conv.peerDeviceId || entry?.peerDeviceId || null;
+        const peerDeviceId = entry?.peerDeviceId || null;
         if (peerDeviceId) {
           conversationIndex.set(conv.conversation_id, {
             token_b64: conv.token_b64,
@@ -653,7 +651,8 @@ export function initContactsView(options) {
       token_b64: conversation.token_b64,
       conversation_id: conversation.conversation_id,
       ...(conversation.dr_init ? { dr_init: conversation.dr_init } : null),
-      peerDeviceId: conversation.peerDeviceId || peerDeviceIdFromKey || null
+      // peer 裝置優先用 key 上的 deviceId，不從 conversation.peerDeviceId 覆寫
+      peerDeviceId: peerDeviceIdFromKey || null
     } : null;
     if (conversation && !conversationPayload?.peerDeviceId) {
       throw new Error('peerDeviceId required for conversation');
@@ -743,7 +742,8 @@ export function initContactsView(options) {
       });
       contactIndex.set(key, entry);
       if (entry?.conversation?.conversation_id && entry?.conversation?.token_b64 && conversationIndex) {
-        const peerDeviceId = entry.conversation.peerDeviceId || peerDeviceIdFromKey || null;
+        // 固定使用 key 上的對端裝置；conversation.peerDeviceId 不覆寫 peer 裝置。
+        const peerDeviceId = peerDeviceIdFromKey || null;
         if (peerDeviceId) {
           conversationIndex.set(entry.conversation.conversation_id, {
             token_b64: entry.conversation.token_b64,

@@ -2400,18 +2400,15 @@ export function initMessagesPane({
       setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
       return;
     }
-    if (!conversation.peerDeviceId) {
-      conversation.peerDeviceId = peerDeviceId;
-      if (entry?.conversation) entry.conversation.peerDeviceId = peerDeviceId;
-      const convIndex = ensureConversationIndex();
-      const prev = convIndex.get(conversation.conversation_id) || {};
-      convIndex.set(conversation.conversation_id, {
-        ...prev,
-        peerAccountDigest: key,
-        peerDeviceId,
-        token_b64: conversation.token_b64 || prev.token_b64 || null
-      });
-    }
+    // 不將 conversation.peerDeviceId 反寫或覆蓋 peer 裝置；索引只保留對端 deviceId。
+    const convIndex = ensureConversationIndex();
+    const prev = convIndex.get(conversation.conversation_id) || {};
+    convIndex.set(conversation.conversation_id, {
+      ...prev,
+      peerAccountDigest: key,
+      peerDeviceId,
+      token_b64: conversation.token_b64 || prev.token_b64 || null
+    });
     state.activePeerDigest = key;
     state.activePeerDeviceId = peerDeviceId || null;
     state.conversationToken = conversation.token_b64;
@@ -3216,9 +3213,7 @@ export function initMessagesPane({
     const contactStateEntry = Array.isArray(sessionStore.contactState)
       ? sessionStore.contactState.find((c) => contactPeerKey(c) === peerDigest)
       : null;
-    if (contactStateEntry?.conversation && peerDeviceId && !contactStateEntry.conversation.peerDeviceId) {
-      contactStateEntry.conversation.peerDeviceId = peerDeviceId;
-    }
+    // 不覆寫 contactStateEntry.conversation.peerDeviceId；peer 裝置單一路徑。
 
     const state = getMessageState();
     const contactEntry = sessionStore.contactIndex?.get?.(peerDigest) || null;
@@ -3234,9 +3229,7 @@ export function initMessagesPane({
         ...(convEntry?.dr_init ? { dr_init: convEntry.dr_init } : null)
       };
     } else if (contactEntry?.conversation) {
-      if (peerDeviceId && !contactEntry.conversation.peerDeviceId) {
-        contactEntry.conversation.peerDeviceId = peerDeviceId;
-      }
+      // 不覆寫 contactEntry.conversation.peerDeviceId；peer 裝置單一路徑。
       if (!contactEntry.conversation.conversation_id) contactEntry.conversation.conversation_id = convId;
       if (!contactEntry.conversation.token_b64 && tokenB64) contactEntry.conversation.token_b64 = tokenB64;
     }
@@ -3250,9 +3243,7 @@ export function initMessagesPane({
     } else if (contactStateEntry?.conversation) {
       if (!contactStateEntry.conversation.conversation_id) contactStateEntry.conversation.conversation_id = convId;
       if (!contactStateEntry.conversation.token_b64 && tokenB64) contactStateEntry.conversation.token_b64 = tokenB64;
-      if (peerDeviceId && !contactStateEntry.conversation.peerDeviceId) {
-        contactStateEntry.conversation.peerDeviceId = peerDeviceId;
-      }
+      // 不覆寫 contactStateEntry.conversation.peerDeviceId；peer 裝置單一路徑。
     }
 
     const thread = upsertConversationThread({
