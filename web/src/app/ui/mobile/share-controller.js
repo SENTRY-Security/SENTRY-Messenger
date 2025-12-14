@@ -993,6 +993,7 @@ export function setupShareController(options) {
     const guestIdentity = normalizePeerIdentity(msg.guestAccountDigest || msg.senderAccountDigest || msg.peerAccountDigest || null);
     const peerDigest = guestIdentity.accountDigest || null;
     const peerDeviceId = msg.senderDeviceId || msg.guestDeviceId || msg.peerDeviceId || guestIdentity.deviceId || null;
+    const targetDeviceId = msg.targetDeviceId || null;
     const conversation = msg.conversation ? { ...msg.conversation } : {};
     const guestBundle = msg.guestBundle || null;
     if (!peerDigest || !peerDeviceId) {
@@ -1003,18 +1004,18 @@ export function setupShareController(options) {
       console.warn('[share-controller]', { contactInitMissingFields: true, reason: 'conversation-or-bundle', peerDigest, peerDeviceId, hasConv: !!conversation?.conversation_id });
       return;
     }
-    // 協定要求對端裝置唯一：若 payload 內的 conversation.peerDeviceId 與 senderDeviceId 不一致，視為錯誤並拒收。
-    if (conversation.peerDeviceId && conversation.peerDeviceId !== peerDeviceId) {
+    // 同側欄位驗證：conversation.peerDeviceId 應等於 targetDeviceId（本端），若不一致則拒收。
+    if (conversation.peerDeviceId && targetDeviceId && conversation.peerDeviceId !== targetDeviceId) {
       console.warn('[share-controller]', {
-        contactInitPeerDeviceMismatch: true,
+        contactInitTargetDeviceMismatch: true,
         peerAccountDigest: peerDigest,
-        fromEvent: peerDeviceId,
-        fromPayload: conversation.peerDeviceId
+        targetDeviceId,
+        conversationPeerDeviceId: conversation.peerDeviceId
       });
       return;
     }
-    // 強制使用 senderDeviceId 作為對端裝置。
-    conversation.peerDeviceId = peerDeviceId;
+    // peer 裝置一律採 senderDeviceId；conversation.peerDeviceId 僅表示本端 target，不覆寫 peer。
+    conversation.peerDeviceId = conversation.peerDeviceId || targetDeviceId || null;
     console.log('[share-controller]', { contactInitReceived: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
     sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
       token_b64: conversation.token_b64,
