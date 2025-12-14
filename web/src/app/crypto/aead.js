@@ -8,9 +8,17 @@
 //
 // 注意：不匯入任何外部套件；使用瀏覽器 WebCrypto。
 
+import { toU8Strict } from '../../shared/utils/u8-strict.js';
+
 /** HKDF -> AES-GCM CryptoKey 派生 */
 async function hkdfDeriveAesKey(mkRawU8, saltU8, infoStr, usages) {
-  const mkKey = await crypto.subtle.importKey('raw', mkRawU8, 'HKDF', false, ['deriveKey']);
+  const mkKey = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(mkRawU8, 'web/src/app/crypto/aead.js:13:hkdfDeriveAesKey'),
+    'HKDF',
+    false,
+    ['deriveKey']
+  );
   const info = new TextEncoder().encode(infoStr || 'mk/aead');
   return crypto.subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt: saltU8, info },

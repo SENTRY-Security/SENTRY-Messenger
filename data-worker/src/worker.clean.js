@@ -10,6 +10,7 @@
  */
 
 import crypto from 'node:crypto';
+import { toU8Strict } from './u8-strict.js';
 
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
@@ -59,7 +60,7 @@ async function verifySignedPrekey({ spk_pub_b64, spk_sig_b64, ik_pub_b64 }) {
   try {
     const key = await crypto.subtle.importKey(
       'raw',
-      ikPub,
+      toU8Strict(ikPub, 'data-worker/src/worker.clean.js:60:verifySignedPrekey'),
       { name: 'Ed25519' },
       false,
       ['verify']
@@ -104,7 +105,8 @@ async function verifyHMAC(req, env) {
   const msgNewline = url.pathname + url.search + '\n' + body;
 
   const key = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(env.HMAC_SECRET),
+    'raw',
+    toU8Strict(new TextEncoder().encode(env.HMAC_SECRET), 'data-worker/src/worker.clean.js:106:verifyHMAC'),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
   );
   const encode = async (input) => {
@@ -863,7 +865,7 @@ async function getAccountHmacCryptoKey(env) {
   }
   const key = await crypto.subtle.importKey(
     'raw',
-    hexToBytes(keyHex),
+    toU8Strict(hexToBytes(keyHex), 'data-worker/src/worker.clean.js:864:getAccountHmacCryptoKey'),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
@@ -907,7 +909,7 @@ async function hashInviteTokenHex(token, env) {
   }
   const key = await crypto.subtle.importKey(
     'raw',
-    INVITE_ENCODER.encode(String(keyMaterial)),
+    toU8Strict(INVITE_ENCODER.encode(String(keyMaterial)), 'data-worker/src/worker.clean.js:908:hashInviteTokenHex'),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']

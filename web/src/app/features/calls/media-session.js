@@ -17,6 +17,7 @@ import {
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { CALL_SESSION_STATUS } from './state.js';
 import { normalizePeerIdentity } from '../../core/store.js';
+import { toU8Strict } from '../../../shared/utils/u8-strict.js';
 
 let sendSignal = null;
 let showToast = () => {};
@@ -516,7 +517,13 @@ function createEncryptionTransform(keyName, mode) {
   const baseNonce = new Uint8Array(keyEntry.nonce);
   let cryptoKey = null;
   const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
-  const importPromise = crypto.subtle.importKey('raw', keyEntry.key, { name: 'AES-GCM' }, false, usages)
+  const importPromise = crypto.subtle.importKey(
+    'raw',
+    toU8Strict(keyEntry.key, 'web/src/app/features/calls/media-session.js:519:createEncryptionTransform'),
+    { name: 'AES-GCM' },
+    false,
+    usages
+  )
     .then((key) => {
       cryptoKey = key;
       return key;

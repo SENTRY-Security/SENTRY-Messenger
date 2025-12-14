@@ -48,6 +48,7 @@ import {
 import { sendDrReadReceipt as featureSendDrReadReceipt, sendDrDeliveryReceipt as featureSendDrDeliveryReceipt } from './dr-session.js';
 import { enqueueInboxJob, processInboxForConversation } from './queue/inbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
+import { toU8Strict } from '../../shared/utils/u8-strict.js';
 
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
@@ -357,7 +358,7 @@ function urlB64ToStd(b64url) {
 
 async function decryptWithMessageKey({ messageKeyB64, ivB64, ciphertextB64, header }) {
   if (!messageKeyB64) throw new Error('message key missing');
-  const keyU8 = deps.b64u8(messageKeyB64);
+  const keyU8 = toU8Strict(deps.b64u8(messageKeyB64), 'web/src/app/features/messages.js:363:decryptWithMessageKey');
   const ivU8 = deps.b64u8(ivB64);
   const ctU8 = deps.b64u8(ciphertextB64);
   const key = await crypto.subtle.importKey('raw', keyU8, 'AES-GCM', false, ['decrypt']);

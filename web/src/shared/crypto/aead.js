@@ -25,12 +25,19 @@ if (!subtle) {
 }
 
 import { bytesToB64, bytesToB64Url, b64ToBytes, b64UrlToBytes } from '../utils/base64.js';
+import { toU8Strict } from '../utils/u8-strict.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 async function deriveAesKey(mkRawU8, saltU8, infoTag, usages) {
-  const mkKey = await subtle.importKey('raw', mkRawU8, 'HKDF', false, ['deriveKey']);
+  const mkKey = await subtle.importKey(
+    'raw',
+    toU8Strict(mkRawU8, 'web/src/shared/crypto/aead.js:33:deriveAesKey'),
+    'HKDF',
+    false,
+    ['deriveKey']
+  );
   const info = encoder.encode(infoTag || 'mk/aead');
   return subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt: saltU8, info },

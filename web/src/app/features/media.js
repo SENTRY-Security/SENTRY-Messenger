@@ -5,6 +5,7 @@
 import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMediaKeys } from '../api/media.js';
 import { getMkRaw, buildAccountPayload } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
+import { toU8Strict } from '../../shared/utils/u8-strict.js';
 
 const encoder = new TextEncoder();
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
@@ -80,7 +81,13 @@ function bytesToHex(u8) {
 
 async function deriveStorageDirPath(dirSegments, mk) {
   if (!dirSegments || !dirSegments.length) return '';
-  const key = await crypto.subtle.importKey('raw', mk, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(mk, 'web/src/app/features/media.js:83:deriveStorageDirPath'),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
   let prev = 'root';
   const hashes = [];
   for (const raw of dirSegments) {

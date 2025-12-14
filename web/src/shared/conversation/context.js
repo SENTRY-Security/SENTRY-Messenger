@@ -1,4 +1,5 @@
 import { bytesToB64Url, b64UrlToBytes } from '../utils/base64.js';
+import { toU8Strict } from '../utils/u8-strict.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -24,7 +25,13 @@ export async function deriveConversationContext(secretB64UrlOrKeyBytes, opts = {
   if (!deviceId) throw new Error('deviceId required for conversation context');
   const keyBytes = normalizeKey(secretB64UrlOrKeyBytes);
   if (!keyBytes) throw new Error('session key required for conversation context');
-  const baseKey = await crypto.subtle.importKey('raw', keyBytes, 'HKDF', false, ['deriveBits']);
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(keyBytes, 'web/src/shared/conversation/context.js:27:deriveConversationContext'),
+    'HKDF',
+    false,
+    ['deriveBits']
+  );
   const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info }, baseKey, 256);
   const tokenBytes = new Uint8Array(bits);
   const tokenB64 = bytesToB64Url(tokenBytes);
@@ -37,7 +44,13 @@ export const deriveConversationContextFromSecret = deriveConversationContext;
 
 export async function encryptConversationEnvelope(tokenB64, payload) {
   const keyBytes = b64UrlToBytes(tokenB64);
-  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(keyBytes, 'web/src/shared/conversation/context.js:40:encryptConversationEnvelope'),
+    'AES-GCM',
+    false,
+    ['encrypt']
+  );
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = encoder.encode(JSON.stringify(payload));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data));
@@ -46,7 +59,13 @@ export async function encryptConversationEnvelope(tokenB64, payload) {
 
 export async function decryptConversationEnvelope(tokenB64, envelope) {
   const keyBytes = b64UrlToBytes(tokenB64);
-  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(keyBytes, 'web/src/shared/conversation/context.js:49:decryptConversationEnvelope'),
+    'AES-GCM',
+    false,
+    ['decrypt']
+  );
   const iv = b64UrlToBytes(envelope.iv_b64 || envelope.ivB64 || envelope.iv);
   const payloadBytes = b64UrlToBytes(envelope.payload_b64 || envelope.payloadB64 || envelope.payload);
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, payloadBytes);
@@ -61,7 +80,13 @@ export async function conversationIdFromToken(tokenB64) {
 
 export async function computeConversationFingerprint(tokenB64, accountDigest) {
   const keyBytes = b64UrlToBytes(tokenB64);
-  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(keyBytes, 'web/src/shared/conversation/context.js:64:computeConversationFingerprint'),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
   const data = encoder.encode(String(accountDigest).toUpperCase());
   const sig = await crypto.subtle.sign('HMAC', key, data);
   return bytesToB64Url(new Uint8Array(sig));

@@ -30,6 +30,7 @@ import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFr
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 import { bytesToB64Url, b64UrlToBytes } from '../../../shared/utils/base64.js';
+import { toU8Strict } from '../../../shared/utils/u8-strict.js';
 
 const INVITE_INFO = new TextEncoder().encode('invite-token');
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
@@ -40,7 +41,13 @@ const AUTO_PROFILE_BROADCAST_DELAY_MS = 1200;
 async function deriveInviteTokenB64Url(secretB64Url) {
   const secretBytes = b64UrlToBytes(secretB64Url);
   if (!secretBytes) throw new Error('invalid invite secret');
-  const baseKey = await crypto.subtle.importKey('raw', secretBytes, 'HKDF', false, ['deriveBits']);
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(secretBytes, 'web/src/app/ui/mobile/share-controller.js:43:deriveInviteTokenB64Url'),
+    'HKDF',
+    false,
+    ['deriveBits']
+  );
   const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: INVITE_INFO }, baseKey, 256);
   return bytesToB64Url(new Uint8Array(bits));
 }
@@ -211,15 +218,30 @@ export function setupShareController(options) {
     if (!finalConvId && convIsContacts) {
       console.warn('[contact-secret]', { dropContactsConvId: true, peerAccountDigest, peerDeviceId: peerDeviceResolved });
     }
-    const derivedRole = (() => {
-      if (role) return String(role).toLowerCase();
-      if (existing?.role) return existing.role;
-      if (selfDeviceId && peerDeviceResolved) {
-        // 這裡 peerDeviceResolved 是對端裝置，self ≠ peer 表示本端為 guest；等於 self 則視為 owner。
-        return selfDeviceId === peerDeviceResolved ? 'owner' : 'guest';
-      }
-      return null;
-    })();
+    const incomingRole = role ? String(role).toLowerCase() : null;
+    const existingRole = existing?.role || null;
+    if (existingRole && incomingRole && incomingRole !== existingRole) {
+      console.warn('[share-controller]', {
+        contactSecretRoleConflict: true,
+        peerAccountDigest,
+        peerDeviceId: peerDeviceResolved,
+        existingRole,
+        incomingRole
+      });
+      return;
+    }
+    const derivedRole = incomingRole || existingRole || null;
+    if (!derivedRole) {
+      console.warn('[share-controller]', {
+        contactSecretRoleMissing: true,
+        peerAccountDigest,
+        peerDeviceId: peerDeviceResolved,
+        existingRole,
+        incomingRole,
+        derivedRole
+      });
+      return;
+    }
     const update = {
       conversation: {
         token: conversation?.token_b64 || sessionKey || existing.conversationToken || null,
@@ -911,9 +933,13 @@ export function setupShareController(options) {
         dr_init: conversation.dr_init || null
       });
       const selfDeviceId = ensureDeviceId();
-      const selfRole = selfDeviceId && conversation.peerDeviceId
-        ? (selfDeviceId === conversation.peerDeviceId ? 'guest' : 'owner')
-        : (getAccountDigest() ? 'guest' : 'guest');
+      const drRoleRaw = conversation?.dr_init?.role || conversation?.drInit?.role || null;
+      const drRole = typeof drRoleRaw === 'string' ? drRoleRaw.toLowerCase() : null;
+      const selfRole = (() => {
+        if (drRole === 'initiator') return 'owner';
+        if (drRole === 'responder') return 'guest';
+        return stored?.role || null;
+      })();
       console.log('[share-controller]', {
         contactShareDecryptSuccess: {
           peerAccountDigest: peerKey,
@@ -928,7 +954,7 @@ export function setupShareController(options) {
         peerDeviceId,
         sessionKey: conversation.token_b64,
         conversation,
-        // 保留既有角色標記（owner/guest），不在 contact-share 時覆寫。
+        role: selfRole || stored?.role || null
       });
       const drInitRaw = conversation.dr_init || null;
       const normalizedBundle = drInitRaw?.guest_bundle ? normalizeGuestBundle(drInitRaw.guest_bundle) : null;

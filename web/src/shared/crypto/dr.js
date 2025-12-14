@@ -15,6 +15,7 @@
  */
 import { loadNacl, scalarMult, genX25519Keypair, b64, b64u8, verifyDetached } from './nacl.js';
 import { convertEd25519PublicKey, convertEd25519SecretKey } from './ed2curve.js';
+import { toU8Strict } from '../utils/u8-strict.js';
 
 const encoder = new TextEncoder();
 const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
@@ -60,7 +61,13 @@ function buildDrAad({ version, deviceId, counter }) {
 }
 
 async function hkdfBytes(ikmU8, saltStr, infoStr, outLen = 32) {
-  const key = await crypto.subtle.importKey('raw', ikmU8, 'HKDF', false, ['deriveBits']);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(ikmU8, 'web/src/shared/crypto/dr.js:63:hkdfBytes'),
+    'HKDF',
+    false,
+    ['deriveBits']
+  );
   const bits = await crypto.subtle.deriveBits(
     { name: 'HKDF', hash: 'SHA-256', salt: new TextEncoder().encode(saltStr), info: new TextEncoder().encode(infoStr) },
     key,
@@ -302,7 +309,13 @@ export async function drEncryptText(st, plaintext, opts = {}) {
   st.NsTotal = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) + 1 : st.Ns;
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['encrypt']);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(mk, 'web/src/shared/crypto/dr.js:305:drEncryptText'),
+    'AES-GCM',
+    false,
+    ['encrypt']
+  );
   const aad = buildDrAad({ version, deviceId, counter: st.Ns });
   const cipherParams = aad ? { name: 'AES-GCM', iv, additionalData: aad } : { name: 'AES-GCM', iv };
   const ctBuf = await crypto.subtle.encrypt(cipherParams, key, new TextEncoder().encode(plaintext));
@@ -455,7 +468,13 @@ export async function drDecryptText(st, packet, opts = {}) {
       }
     }
 
-    const key = await crypto.subtle.importKey('raw', mk, 'AES-GCM', false, ['decrypt']);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      toU8Strict(mk, 'web/src/shared/crypto/dr.js:458:drDecryptText'),
+      'AES-GCM',
+      false,
+      ['decrypt']
+    );
     const aad = buildDrAadFromHeader(packet.header);
     const decryptParams = aad
       ? { name: 'AES-GCM', iv: b64u8(packet.iv_b64), additionalData: aad }

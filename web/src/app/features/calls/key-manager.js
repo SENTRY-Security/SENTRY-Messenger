@@ -2,6 +2,7 @@ import { log } from '../../core/log.js';
 import { getContactSecret } from '../../core/contact-secrets.js';
 import { normalizePeerIdentity, ensureDeviceId } from '../../core/store.js';
 import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/base64.js';
+import { toU8Strict } from '../../../shared/utils/u8-strict.js';
 import {
   CALL_EVENT,
   subscribeCallEvent
@@ -219,7 +220,13 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
 
 async function deriveMasterKey(baseSecret, salt, callId, epoch) {
   const label = `call-master-key:${callId}:${epoch}`;
-  const baseKey = await crypto.subtle.importKey('raw', baseSecret, 'HKDF', false, ['deriveBits']);
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(baseSecret, 'web/src/app/features/calls/key-manager.js:222:deriveMasterKey'),
+    'HKDF',
+    false,
+    ['deriveBits']
+  );
   const info = encoder.encode(label);
   const bits = await crypto.subtle.deriveBits(
     { name: 'HKDF', hash: 'SHA-256', salt, info },
@@ -233,7 +240,7 @@ async function computeProof(masterKey, callId, epoch) {
   const data = encoder.encode(`${callId}:${epoch}`);
   const hmacKey = await crypto.subtle.importKey(
     'raw',
-    masterKey,
+    toU8Strict(masterKey, 'web/src/app/features/calls/key-manager.js:234:computeProof'),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
@@ -252,7 +259,13 @@ async function deriveDirectionalKey(masterKey, keyLabel, nonceLabel) {
 }
 
 async function deriveSubMaterial(masterKey, label, lengthBits) {
-  const hkdfKey = await crypto.subtle.importKey('raw', masterKey, 'HKDF', false, ['deriveBits']);
+  const hkdfKey = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(masterKey, 'web/src/app/features/calls/key-manager.js:255:deriveSubMaterial'),
+    'HKDF',
+    false,
+    ['deriveBits']
+  );
   const info = encoder.encode(label);
   const salt = ZERO_SALT;
   const bits = await crypto.subtle.deriveBits(

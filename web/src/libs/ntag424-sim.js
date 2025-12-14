@@ -4,6 +4,8 @@
 // - 用 localStorage 持久化模擬資料，方便迭代測試
 // - 提供產生 UID / Counter / CMAC 的工具方法供登入頁 DEBUG 按鈕使用
 
+import { toU8Strict } from '../shared/utils/u8-strict.js';
+
 const SIM_STORAGE_KEY = 'ntag424-sim:v1';
 const SIM_RESERVED_PREFIX = 'ntag424-sim:'; // 供其他模組辨識，登出時會保留此前綴資料
 const DEFAULT_CONFIG = Object.freeze({
@@ -451,7 +453,13 @@ function getSubtle() {
 async function hmacSha256(keyBytes, dataBytes) {
   const subtle = getSubtle();
   const keyData = keyBytes && keyBytes.length ? keyBytes : new Uint8Array([0]);
-  const cryptoKey = await subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const cryptoKey = await subtle.importKey(
+    'raw',
+    toU8Strict(keyData, 'web/src/libs/ntag424-sim.js:454:hmacSha256'),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
   const signature = await subtle.sign('HMAC', cryptoKey, dataBytes);
   return new Uint8Array(signature);
 }

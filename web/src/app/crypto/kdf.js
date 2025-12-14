@@ -12,6 +12,7 @@
 //   - m: memory in MiB; t: time (iterations); p: parallelism
 //   - mkRawU8 is a 32-byte Uint8Array
 //   - All crypto runs in the browser; server never sees the password nor MK
+import { toU8Strict } from '../../shared/utils/u8-strict.js';
 
 /** Dynamically load argon2-browser (UMD) if not present. */
 export async function loadArgon2() {
@@ -39,7 +40,13 @@ export async function deriveKEKFromPassword(pwd, saltU8, params = { m: 64, t: 3,
     hashLen: 32
   });
   const kekRaw = new Uint8Array(res.hash); // 32 bytes
-  const kek = await crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  const kek = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(kekRaw, 'web/src/app/crypto/kdf.js:42:deriveKEKFromPassword'),
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt', 'decrypt']
+  );
   return { kek, params: { m, t, p } };
 }
 

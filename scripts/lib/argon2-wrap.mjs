@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { argon2id } from '@noble/hashes/argon2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { bytesToB64, b64ToBytes } from '../../web/src/shared/utils/base64.js';
+import { toU8Strict } from './u8-strict.js';
 
 if (!globalThis.crypto) {
   globalThis.crypto = crypto.webcrypto;
@@ -28,7 +29,7 @@ async function deriveKEKFromPassword(pwd, saltU8, params = DEFAULT_PARAMS) {
   });
   const kek = await crypto.webcrypto.subtle.importKey(
     'raw',
-    hash,
+    toU8Strict(hash, 'scripts/lib/argon2-wrap.mjs:29:deriveKEKFromPassword'),
     { name: 'AES-GCM' },
     false,
     ['encrypt', 'decrypt']

@@ -1,4 +1,5 @@
 import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../utils/base64.js';
+import { toU8Strict } from '../utils/u8-strict.js';
 
 const INFO = 'contact-share';
 const encoder = new TextEncoder();
@@ -30,7 +31,7 @@ export async function decryptContactPayload({ sessionKey, secret, envelope }) {
 }
 
 async function deriveKey(secret, usages) {
-  const bytes = b64UrlToBytes(secret);
+  const bytes = toU8Strict(b64UrlToBytes(secret), 'web/src/shared/contacts/contact-share.js:35:deriveKey');
   if (!bytes) throw new Error('invalid secret');
   const baseKey = await crypto.subtle.importKey('raw', bytes, 'HKDF', false, ['deriveKey']);
   const salt = new Uint8Array(16);

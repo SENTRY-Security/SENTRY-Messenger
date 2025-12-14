@@ -153,13 +153,91 @@ function logDrSend(event, payload) {
   }
 }
 
-function decodeB64(str) {
-  if (!str || typeof str !== 'string') return null;
+function normalizeB64Input(str) {
+  const trimmed = typeof str === 'string' ? str.trim() : '';
+  if (!trimmed) return trimmed;
+  let normalized = trimmed.replace(/-/g, '+').replace(/_/g, '/');
+  while (normalized.length % 4) normalized += '=';
+  return normalized;
+}
+
+function logDecodeInvalidKey({ keyName, raw, peerAccountDigest = null, peerDeviceId = null, sourceTag = null, reason = null, error = null }) {
   try {
-    return b64u8(str);
-  } catch {
+    console.warn('[contact-secrets:decode-invalid-key]', {
+      keyName,
+      peerAccountDigest,
+      peerDeviceId,
+      source: sourceTag,
+      reason: reason || null,
+      error: error || null,
+      type: typeof raw,
+      ctor: raw?.constructor?.name || null,
+      isView: ArrayBuffer.isView(raw),
+      byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
+      length: typeof raw?.length === 'number' ? raw.length : null
+    });
+  } catch {}
+}
+
+function requireSnapshotKeyString(snapshot, keyName, fallbackKey, { required = false, allowNull = false, peerAccountDigest = null, peerDeviceId = null, sourceTag = null } = {}) {
+  const hasPrimary = Object.prototype.hasOwnProperty.call(snapshot, keyName);
+  const hasFallback = fallbackKey ? Object.prototype.hasOwnProperty.call(snapshot, fallbackKey) : false;
+  const raw = snapshot?.[keyName] ?? (fallbackKey ? snapshot?.[fallbackKey] : undefined);
+  const present = hasPrimary || hasFallback || raw !== undefined;
+  if (!present) {
+    if (required) {
+      logDecodeInvalidKey({ keyName, raw, peerAccountDigest, peerDeviceId, sourceTag, reason: 'missing' });
+      throw new Error(`contact-secrets decode failed: missing ${keyName}`);
+    }
     return null;
   }
+  if (raw === null && allowNull) return null;
+  if (typeof raw !== 'string') {
+    logDecodeInvalidKey({ keyName, raw, peerAccountDigest, peerDeviceId, sourceTag, reason: 'not-string' });
+    throw new Error(`contact-secrets decode failed: ${keyName} not string`);
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    logDecodeInvalidKey({ keyName, raw, peerAccountDigest, peerDeviceId, sourceTag, reason: 'empty-string' });
+    throw new Error(`contact-secrets decode failed: ${keyName} empty`);
+  }
+  return trimmed;
+}
+
+function decodeKeyString(raw, { keyName, peerAccountDigest = null, peerDeviceId = null, sourceTag = null } = {}) {
+  const normalized = normalizeB64Input(raw);
+  if (!normalized) {
+    logDecodeInvalidKey({ keyName, raw, peerAccountDigest, peerDeviceId, sourceTag, reason: 'empty-normalized' });
+    throw new Error(`contact-secrets decode failed: ${keyName} empty`);
+  }
+  try {
+    return b64u8(normalized);
+  } catch (err) {
+    const message = err?.message || err;
+    logDecodeInvalidKey({ keyName, raw, peerAccountDigest, peerDeviceId, sourceTag, reason: 'decode-failed', error: message });
+    throw new Error(`contact-secrets decode failed: ${keyName} invalid base64`);
+  }
+}
+
+function logKeyType(tag, value) {
+  try {
+    const info = value ? {
+      tag,
+      type: typeof value,
+      ctor: value?.constructor?.name || null,
+      isView: ArrayBuffer.isView(value),
+      byteLength: typeof value?.byteLength === 'number' ? value.byteLength : null,
+      length: typeof value?.length === 'number' ? value.length : null
+    } : { tag, value: null };
+    console.warn('[dr-log:key-type]', info);
+  } catch {}
+}
+
+function assertU8(tag, value) {
+  const ok = value instanceof Uint8Array;
+  if (ok) return value;
+  logKeyType(tag, value);
+  throw new Error(`DR key not Uint8Array: ${tag}`);
 }
 
 function buildReceiptMessageId(targetMessageId) {
@@ -169,28 +247,24 @@ function buildReceiptMessageId(targetMessageId) {
   return `receipt-${base}-${crypto.randomUUID()}`;
 }
 
-function sanitizeSnapshotInput(snapshot) {
+function sanitizeSnapshotInput(snapshot, { sourceTag = 'snapshot', peerAccountDigest = null, peerDeviceId = null } = {}) {
   if (!snapshot || typeof snapshot !== 'object') return null;
-  const pick = (primary, fallback) => {
-    if (primary && typeof primary === 'string') return primary.trim() || null;
-    if (fallback && typeof fallback === 'string') return fallback.trim() || null;
-    return null;
-  };
-  const rk = pick(snapshot.rk_b64, snapshot.rk);
+  const keyCtx = { peerAccountDigest, peerDeviceId, sourceTag };
+  const rk = requireSnapshotKeyString(snapshot, 'rk_b64', 'rk', { required: true, ...keyCtx });
   if (!rk) return null;
   const out = {
     v: Number.isFinite(Number(snapshot.v)) ? Number(snapshot.v) : 1,
     rk_b64: rk,
-    ckS_b64: pick(snapshot.ckS_b64, snapshot.ckS),
-    ckR_b64: pick(snapshot.ckR_b64, snapshot.ckR),
+    ckS_b64: requireSnapshotKeyString(snapshot, 'ckS_b64', 'ckS', { ...keyCtx }),
+    ckR_b64: requireSnapshotKeyString(snapshot, 'ckR_b64', 'ckR', { ...keyCtx }),
     Ns: numberOrDefault(snapshot.Ns, 0),
     Nr: numberOrDefault(snapshot.Nr, 0),
     PN: numberOrDefault(snapshot.PN, 0),
     NsTotal: numberOrDefault(snapshot.NsTotal, snapshot.Ns_total || 0),
     NrTotal: numberOrDefault(snapshot.NrTotal, snapshot.Nr_total || 0),
-    myRatchetPriv_b64: pick(snapshot.myRatchetPriv_b64, snapshot.myRatchetPriv),
-    myRatchetPub_b64: pick(snapshot.myRatchetPub_b64, snapshot.myRatchetPub),
-    theirRatchetPub_b64: pick(snapshot.theirRatchetPub_b64, snapshot.theirRatchetPub),
+    myRatchetPriv_b64: requireSnapshotKeyString(snapshot, 'myRatchetPriv_b64', 'myRatchetPriv', { ...keyCtx, allowNull: true }),
+    myRatchetPub_b64: requireSnapshotKeyString(snapshot, 'myRatchetPub_b64', 'myRatchetPub', { ...keyCtx, allowNull: true }),
+    theirRatchetPub_b64: requireSnapshotKeyString(snapshot, 'theirRatchetPub_b64', 'theirRatchetPub', { ...keyCtx, allowNull: true }),
     pendingSendRatchet: !!snapshot.pendingSendRatchet,
     role: typeof snapshot.role === 'string' ? snapshot.role.trim() || null : null,
     updatedAt: (() => {
@@ -303,13 +377,41 @@ function updateHistoryCursor(params = {}) {
 }
 
 export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
-  if (!state || !(state.rk instanceof Uint8Array)) return null;
+  const logPersistInvalidKey = (keyName, raw, reason) => {
+    try {
+      console.warn('[contact-secrets:persist-invalid-key]', {
+        keyName,
+        source: 'snapshotDrState',
+        reason: reason || null,
+        type: typeof raw,
+        ctor: raw?.constructor?.name || null,
+        isView: ArrayBuffer.isView(raw),
+        byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
+        length: typeof raw?.length === 'number' ? raw.length : null
+      });
+    } catch {}
+  };
+  const ensureKeyU8 = (value, keyName, required = false) => {
+    if (value === undefined || value === null) {
+      if (required) {
+        logPersistInvalidKey(keyName, value, 'missing');
+        throw new Error(`contact-secrets persist blocked: missing ${keyName}`);
+      }
+      return null;
+    }
+    if (!(value instanceof Uint8Array)) {
+      logPersistInvalidKey(keyName, value, 'not-uint8array');
+      throw new Error(`contact-secrets persist blocked: ${keyName} not Uint8Array`);
+    }
+    return value;
+  };
+  const rkU8 = ensureKeyU8(state?.rk, 'rk', true);
+  const ckSU8 = ensureKeyU8(state?.ckS, 'ckS', false);
+  const ckRU8 = ensureKeyU8(state?.ckR, 'ckR', false);
   const selfDeviceId = ensureDeviceId() || null;
   const snap = {
     v: 1,
-    rk_b64: b64(state.rk),
-    ckS_b64: state.ckS instanceof Uint8Array ? b64(state.ckS) : null,
-    ckR_b64: state.ckR instanceof Uint8Array ? b64(state.ckR) : null,
+    rk_b64: b64(rkU8),
     Ns: numberOrDefault(state.Ns, 0),
     Nr: numberOrDefault(state.Nr, 0),
     PN: numberOrDefault(state.PN, 0),
@@ -323,6 +425,8 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
     selfDeviceId,
     updatedAt: Number.isFinite(state.snapshotTs) && state.snapshotTs > 0 ? state.snapshotTs : null
   };
+  if (ckSU8) snap.ckS_b64 = b64(ckSU8);
+  if (ckRU8) snap.ckR_b64 = b64(ckRU8);
   if (setDefaultUpdatedAt && !snap.updatedAt) snap.updatedAt = Date.now();
   return snap;
 }
@@ -344,7 +448,7 @@ export function restoreDrStateFromSnapshot(params = {}) {
   const peerDeviceId = params?.peerDeviceId ?? null;
   const selfDeviceId = ensureDeviceId();
   if (!peer && !targetState) return false;
-  const data = sanitizeSnapshotInput(snapshot);
+  const data = sanitizeSnapshotInput(snapshot, { sourceTag, peerAccountDigest: peer, peerDeviceId });
   if (!data) return false;
   // 丟棄非本機裝置的 responder 快照，避免 guest 端錯用對端狀態。
   if (selfDeviceId) {
@@ -374,17 +478,12 @@ export function restoreDrStateFromSnapshot(params = {}) {
   if (!targetState && !force && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
     return false;
   }
-  const assign = (prop, valueB64) => {
-    if (valueB64) {
-      const decoded = decodeB64(valueB64);
-      holder[prop] = decoded ? new Uint8Array(decoded) : null;
-    } else {
-      holder[prop] = null;
-    }
-  };
-  assign('rk', data.rk_b64);
-  assign('ckS', data.ckS_b64);
-  assign('ckR', data.ckR_b64);
+  holder.rk = decodeKeyString(data.rk_b64, { keyName: 'rk', peerAccountDigest: peer, peerDeviceId, sourceTag });
+  holder.ckS = data.ckS_b64 ? decodeKeyString(data.ckS_b64, { keyName: 'ckS', peerAccountDigest: peer, peerDeviceId, sourceTag }) : null;
+  holder.ckR = data.ckR_b64 ? decodeKeyString(data.ckR_b64, { keyName: 'ckR', peerAccountDigest: peer, peerDeviceId, sourceTag }) : null;
+  assertU8('restoreDrStateFromSnapshot:rk', holder.rk);
+  if (holder.ckS) assertU8('restoreDrStateFromSnapshot:ckS', holder.ckS);
+  if (holder.ckR) assertU8('restoreDrStateFromSnapshot:ckR', holder.ckR);
   holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
   holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
   holder.PN = numberOrDefault(data.PN, holder.PN || 0);
@@ -423,6 +522,9 @@ export function persistDrSnapshot(params = {}) {
     } catch {}
     return false;
   }
+  assertU8('persistDrSnapshot:rk', holder.rk);
+  if (holder.ckS) assertU8('persistDrSnapshot:ckS', holder.ckS);
+  if (holder.ckR) assertU8('persistDrSnapshot:ckR', holder.ckR);
   const snap = snapshot || snapshotDrState(holder);
   if (!snap) {
     try {
@@ -443,9 +545,22 @@ export function persistDrSnapshot(params = {}) {
     return false;
   }
   try {
+    const holderRoleRaw = holder?.baseKey?.role || info?.role || null;
+    const holderRole = typeof holderRoleRaw === 'string' ? holderRoleRaw : null;
+    if (!holderRole) {
+      console.error('[dr] persist snapshot failed: missing role', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        deviceId,
+        Ns: snap?.Ns ?? null,
+        Nr: snap?.Nr ?? null
+      });
+      return false;
+    }
     const update = {
       dr: { state: snap },
-      meta: { source: 'persistDrSnapshot' }
+      meta: { source: 'persistDrSnapshot' },
+      role: holderRole
     };
     const conversationUpdate = {};
     if (info.conversationToken) conversationUpdate.token = info.conversationToken;
@@ -460,11 +575,16 @@ export function persistDrSnapshot(params = {}) {
     const newTotal = Number(snap?.NsTotal || 0) + Number(snap?.Ns || 0);
     const holderTotal = Number(holder?.NsTotal || 0) + Number(holder?.Ns || 0);
     const hasExistingSend = !!(existingSnap?.ckS || existingSnap?.ckS_b64) && Number(existingNs) > 0;
+    const hasExistingRecv = !!(existingSnap?.ckR || existingSnap?.ckR_b64) && Number.isFinite(existingSnap?.Nr) && Number(existingSnap.Nr) >= 0;
     const lacksNewSend = !(snap?.ckS || snap?.ckS_b64);
+    const lacksNewRecv = !(snap?.ckR || snap?.ckR_b64);
     const nsDowngrade = Number.isFinite(existingNs) && Number.isFinite(newNs) && newNs < existingNs;
     const totalDowngrade = Number.isFinite(existingTotal) && Number.isFinite(newTotal) && newTotal < existingTotal;
     const holderDowngrade = Number.isFinite(holderTotal) && Number.isFinite(newTotal) && newTotal < holderTotal;
-    if (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade)) {
+    if (
+      (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade))
+      || (hasExistingRecv && lacksNewRecv)
+    ) {
       console.warn('[dr] persist snapshot skipped downgrade', {
         peerAccountDigest: peer,
         peerDeviceId,
@@ -472,7 +592,9 @@ export function persistDrSnapshot(params = {}) {
         existingNs,
         newNs,
         hasExistingSend,
+        hasExistingRecv,
         lacksNewSend,
+        lacksNewRecv,
         nsDowngrade,
         totalDowngrade,
         holderDowngrade,
@@ -490,7 +612,11 @@ export function persistDrSnapshot(params = {}) {
         peerDeviceId,
         deviceId,
         Ns: snap?.Ns ?? null,
-        Nr: snap?.Nr ?? null
+        Nr: snap?.Nr ?? null,
+        conversationId: holder?.baseKey?.conversationId || null,
+        stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
+        secretRole: info?.role || null,
+        holderRole: holderRole
       });
     } catch {}
     return true;
@@ -643,9 +769,17 @@ export function copyDrState(target, source) {
   target.myRatchetPub = cloneU8(source.myRatchetPub) || null;
   target.theirRatchetPub = cloneU8(source.theirRatchetPub) || null;
   target.pendingSendRatchet = !!source.pendingSendRatchet;
-  if (source.baseKey?.conversationId && (!target.baseKey || !target.baseKey.conversationId)) {
+  if (source.baseKey) {
     target.baseKey = target.baseKey || {};
-    target.baseKey.conversationId = source.baseKey.conversationId;
+    if (source.baseKey.conversationId && !target.baseKey.conversationId) {
+      target.baseKey.conversationId = source.baseKey.conversationId;
+    }
+    if (source.baseKey.role) {
+      target.baseKey.role = source.baseKey.role;
+    }
+    if (source.baseKey.peerDeviceId) {
+      target.baseKey.peerDeviceId = source.baseKey.peerDeviceId;
+    }
   }
   if (Number.isFinite(source.snapshotTs)) {
     target.snapshotTs = source.snapshotTs;
@@ -1512,23 +1646,174 @@ export async function ensureDrReceiverState(params = {}) {
     || getContactSecret(peer, { deviceId: selfDeviceId, conversationId })
     || {};
   const secretPeerDeviceId = normalizePeerDeviceId(secretInfo?.peerDeviceId || secretInfo?.conversation?.peerDeviceId || null);
-  // 若缺角色且 peerDeviceId != self，預設為 guest，避免還原 responder 快照。
-  if (!secretInfo?.role && selfDeviceId && peerDeviceId && selfDeviceId !== peerDeviceId) {
-    setContactSecret(peer, { deviceId: selfDeviceId, role: 'guest', meta: { source: 'ensure-set-guest-role' } });
-    secretInfo = { ...(secretInfo || {}), role: 'guest' };
-  }
+  const stateKey = `${peer}::${peerDeviceId || 'unknown'}`;
+  const secretKey = `${peer}::${secretPeerDeviceId || peerDeviceId || 'unknown'}`;
+  const callsiteTag = params?.__debugSource || params?.source || 'ensureDrReceiverState';
+  const snapshot = secretInfo?.drState || null;
+  const snapshotHasRk = !!(snapshot?.rk || snapshot?.rk_b64);
+  const snapshotHasCkR = !!(snapshot?.ckR || snapshot?.ckR_b64);
+  const snapshotHasCkS = !!(snapshot?.ckS || snapshot?.ckS_b64);
+  const snapshotRoleRaw = typeof snapshot?.role === 'string' ? snapshot.role.toLowerCase() : null;
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
   // 若已有送出鏈且 Ns>0，避免被 responder/接收狀態覆蓋。
   const hasExistingSend = state?.ckS instanceof Uint8Array && state.ckS.length > 0 && Number.isFinite(state?.Ns) && Number(state.Ns) > 0;
   const safeKeepSendState = hasExistingSend && !force;
   // guest/initiator 端若誤用 responder 快照（peerDeviceId != self），強制丟棄。
-  const stateRoleRaw = state?.baseKey?.role;
-  const stateRole = typeof stateRoleRaw === 'string' ? stateRoleRaw.toLowerCase() : null;
-  const guestLike = relationshipRole === 'guest'
-    || stateRole === 'initiator'
-    // 無角色但 peerDeviceId 與 self 不同，也視為 guest 端避免錯用 responder。
-    || (!relationshipRole && selfDeviceId && peerDeviceId && selfDeviceId !== peerDeviceId);
+  let stateRoleRaw = state?.baseKey?.role;
+  let stateRole = typeof stateRoleRaw === 'string' ? stateRoleRaw.toLowerCase() : null;
+  const guestLike = relationshipRole === 'guest';
+  try {
+    console.warn('[dr-log:receiver-keys]', {
+      stateKey,
+      secretKey,
+      conversationId,
+      secretRole: relationshipRole || null,
+      holderRole: stateRole || null,
+      hasSecret: !!secretInfo?.drState,
+      snapshotHasRk,
+      snapshotHasCkR,
+      snapshotHasCkS,
+      snapshotRole: snapshotRoleRaw || null,
+      hasCkS: !!(state?.ckS && state.ckS.length),
+      hasCkR: !!(state?.ckR && state.ckR.length),
+      holderNs: Number.isFinite(state?.Ns) ? Number(state.Ns) : null,
+      holderNr: Number.isFinite(state?.Nr) ? Number(state.Nr) : null,
+      callsite: callsiteTag
+    });
+  } catch {}
+
+  const secretHasChains =
+    !!(snapshot?.ckR || snapshot?.ckR_b64 || snapshot?.ckS || snapshot?.ckS_b64 || snapshot?.rk || snapshot?.rk_b64) ||
+    Number(snapshot?.Ns) > 0 ||
+    Number(snapshot?.Nr) > 0;
+  let stateHasRk = !!state?.rk;
+  let stateHasCkR = !!(state?.ckR && state.ckR.length);
+  let stateHasCkS = !!(state?.ckS && state.ckS.length);
+  // 單一路徑 hydrate（必經點）：只要 snapshot 有完整鏈且 key 匹配，就必須 hydrate；失敗直接 throw。
+  const shouldHydrateSnapshot = relationshipRole === 'owner' && snapshotHasRk && (snapshotHasCkR || snapshotHasCkS);
+  if (shouldHydrateSnapshot) {
+    const logHydrate = (event, extra = {}) => {
+      try {
+        console.warn(`[dr-log:${event}]`, {
+          stateKey,
+          secretKey,
+          conversationId,
+          snapshotRole: snapshotRoleRaw || null,
+          secretRole: relationshipRole,
+          snapshotHasRk,
+          snapshotHasCkR,
+          snapshotHasCkS,
+          callsite: callsiteTag,
+          ...extra
+        });
+      } catch {}
+    };
+    logHydrate('hydrate-attempt');
+    if (stateKey !== secretKey) {
+      logHydrate('hydrate-fail', { reason: 'ROLE_GATING', mismatch: true });
+      return false;
+    }
+    const snapshotSelfDeviceId = typeof snapshot?.selfDeviceId === 'string' ? snapshot.selfDeviceId : null;
+    const stateSelfMismatch =
+      selfDeviceId &&
+      snapshotSelfDeviceId &&
+      snapshotSelfDeviceId !== selfDeviceId;
+    const responderDeviceMismatch =
+      selfDeviceId &&
+      snapshotRoleRaw === 'responder' &&
+      peerDeviceId &&
+      selfDeviceId !== peerDeviceId;
+    if (stateSelfMismatch || responderDeviceMismatch) {
+      logHydrate('hydrate-fail', {
+        reason: 'SELF_DEVICE_GATING',
+        snapshotSelfDeviceId,
+        selfDeviceId,
+        peerDeviceId
+      });
+      return false;
+    }
+    try {
+      const hydrated = restoreDrStateFromSnapshot({
+        peerAccountDigest: peer,
+        peerDeviceId,
+        snapshot,
+        force: true,
+        sourceTag: 'deterministic-hydrate',
+        targetState: state
+      });
+      state = drState({ peerAccountDigest: peer, peerDeviceId });
+      const postHasRk = !!state?.rk;
+      const postHasCkR = !!(state?.ckR && state.ckR.length);
+      const postHasCkS = !!(state?.ckS && state.ckS.length);
+      const postRole = typeof state?.baseKey?.role === 'string' ? state.baseKey.role.toLowerCase() : null;
+      if (!hydrated) {
+        logHydrate('hydrate-fail', { reason: 'DECODE', hydrated });
+        throw new Error(`DR hydrate failed: restore returned false (stateKey=${stateKey})`);
+      }
+      if (!postHasRk || (!postHasCkR && !postHasCkS) || !postRole) {
+        logHydrate('hydrate-fail', {
+          reason: 'MISSING_FIELDS_AFTER_RESTORE',
+          postHasRk,
+          postHasCkR,
+          postHasCkS,
+          postRole
+        });
+        throw new Error(`DR hydrate failed missing fields (stateKey=${stateKey}, hasRk=${postHasRk}, hasCkR=${postHasCkR}, hasCkS=${postHasCkS}, role=${postRole || 'null'})`);
+      }
+      logHydrate('hydrate-success', {
+        postRole,
+        postHasRk,
+        postHasCkR,
+        postHasCkS
+      });
+      stateRoleRaw = state?.baseKey?.role;
+      stateRole = typeof stateRoleRaw === 'string' ? stateRoleRaw.toLowerCase() : null;
+      stateHasRk = !!state?.rk;
+      stateHasCkR = !!(state?.ckR && state.ckR.length);
+      stateHasCkS = !!(state?.ckS && state.ckS.length);
+    } catch (err) {
+      const message = err?.message || String(err);
+      const reason = /importkey/i.test(message) ? 'IMPORTKEY' : 'DECODE';
+      logHydrate('hydrate-fail', {
+        reason,
+        error: message
+      });
+      throw err;
+    }
+  }
+
+  if (relationshipRole === 'owner' && (!stateRole || stateRole !== 'responder') && (secretHasChains || stateHasCkR || stateHasCkS || stateHasRk)) {
+    console.error('[dr-log:role-mismatch-bug]', {
+      stateKey,
+      secretKey,
+      conversationId,
+      secretRole: relationshipRole,
+      holderRole: stateRole || null,
+      hasSecretChains: secretHasChains,
+      hasStateRk: stateHasRk,
+      hasStateCkR: stateHasCkR,
+      hasStateCkS: stateHasCkS,
+      callsite: callsiteTag
+    });
+    // Fail-fast: 禁止在角色缺失時重建覆蓋。
+    return false;
+  }
+  if (relationshipRole === 'owner' && (!stateHasCkR || !stateHasRk)) {
+    console.error('[dr-log:owner-missing-state]', {
+      stateKey,
+      secretKey,
+      conversationId,
+      secretRole: relationshipRole,
+      holderRole: stateRole || null,
+      hasStateRk: stateHasRk,
+      hasStateCkR: stateHasCkR,
+      hasStateCkS: stateHasCkS,
+      hasSecretChains: secretHasChains,
+      callsite: callsiteTag
+    });
+    return false;
+  }
   if (safeKeepSendState) {
     try {
       console.warn('[dr-log:keep-existing-send]', {
@@ -1553,6 +1838,15 @@ export async function ensureDrReceiverState(params = {}) {
       });
     } catch {}
     if (!safeKeepSendState) {
+      try {
+        console.warn('[dr-log:clear-drState-because-guest]', {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
+          reason: 'guest-role',
+          hasSnapshot: !!secretInfo?.drState
+        });
+      } catch {}
       clearDrState({ peerAccountDigest: peer, peerDeviceId });
       state = drState({ peerAccountDigest: peer, peerDeviceId });
     }
@@ -1565,6 +1859,23 @@ export async function ensureDrReceiverState(params = {}) {
       setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-state-skip-invalid-device' } });
       state = drState({ peerAccountDigest: peer, peerDeviceId });
     }
+  }
+  // 若缺角色但已有快照/鏈，優先沿用並還原，避免被 bootstrap 覆寫。
+  const snapHasChains =
+    !!(secretInfo?.drState?.ckR || secretInfo?.drState?.ckS || secretInfo?.drState?.rk) ||
+    Number(secretInfo?.drState?.Ns) > 0 ||
+    Number(secretInfo?.drState?.Nr) > 0;
+  if (!relationshipRole && snapHasChains) {
+    try {
+      console.warn('[dr-log:restore-missing-role]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
+        reason: 'missing-role-has-snapshot'
+      });
+    } catch {}
+    restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: secretInfo.drState, force: true, sourceTag: 'missing-role-use-snapshot' });
+    state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
   // 若記憶體缺送出鏈，但 contact-secret 有 initiator 且 Ns>0 的快照，優先還原 initiator 送出鏈。
   const secretSnap = secretInfo?.drState || null;
@@ -1659,6 +1970,14 @@ export async function ensureDrReceiverState(params = {}) {
       });
     } catch {}
   } else if (guestLike && secretInfo?.drState) {
+    try {
+      console.warn('[dr-log:skip-restore-because-guest]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        snapshotRole,
+        stateKey: `${peer}::${peerDeviceId || 'unknown'}`
+      });
+    } catch {}
     if (snapshotRole !== 'initiator') {
       setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-skip-responder-snapshot' } });
     }
@@ -1708,15 +2027,34 @@ export async function ensureDrReceiverState(params = {}) {
         console.warn('[dr-log:bootstrap-responder-skip]', {
           reason: 'existing-responder-state',
           peerAccountDigest: peer,
-          peerDeviceId,
-          roleNow: roleNow || null,
-          hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
-          hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
+        peerDeviceId,
+        stateKey,
+        roleNow: roleNow || null,
+        hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
+        hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
           Ns: Number.isFinite(holderNow?.Ns) ? Number(holderNow.Ns) : null,
           Nr: Number.isFinite(holderNow?.Nr) ? Number(holderNow.Nr) : null
         });
       } catch {}
       return true;
+    }
+    if (!hasReceiveChain && (secretHasChains || holderNow?.Ns > 0 || holderNow?.Nr > 0)) {
+      console.error('[dr-log:missing-ckR-bug]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        stateKey,
+        secretKey,
+        secretRole: relationshipRole || null,
+        roleNow: roleNow || null,
+        hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
+        hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
+        Ns: Number.isFinite(holderNow?.Ns) ? Number(holderNow.Ns) : null,
+        Nr: Number.isFinite(holderNow?.Nr) ? Number(holderNow.Nr) : null,
+        secretHasChains,
+        force,
+        callsite: callsiteTag
+      });
+      return false;
     }
     const shouldForce = force || conversationMismatch || !hasReceiveChain || roleNow !== 'responder';
     try {
@@ -1730,11 +2068,16 @@ export async function ensureDrReceiverState(params = {}) {
         })(),
         peerAccountDigest: peer,
         peerDeviceId,
+        stateKey,
+        secretKey,
+        secretRole: relationshipRole || null,
         roleNow: roleNow || null,
         hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
         hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
         Ns: Number.isFinite(holderNow?.Ns) ? Number(holderNow.Ns) : null,
-        force: shouldForce
+        hasSnapshot: !!secretInfo?.drState,
+        force: shouldForce,
+        conversationId
       });
     } catch {}
     await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: shouldForce, peerDeviceId, conversationId });

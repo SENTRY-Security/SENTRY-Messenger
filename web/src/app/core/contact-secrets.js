@@ -306,19 +306,20 @@ function debugLog(event, payload) {
 }
 
 function trimString(value) {
-  if (typeof value !== 'string') return null;
+  if (typeof value !== 'string') {
+    console.warn('[contact-secrets:invalid-string]', { reason: 'not-string', type: typeof value, ctor: value?.constructor?.name || null });
+    throw new Error('contact-secrets invalid string: not-string');
+  }
   const trimmed = value.trim();
-  return trimmed ? trimmed : null;
+  if (!trimmed) {
+    console.warn('[contact-secrets:invalid-string]', { reason: 'empty-string', type: typeof value, ctor: value?.constructor?.name || null });
+    throw new Error('contact-secrets invalid string: empty');
+  }
+  return trimmed;
 }
 
 function chooseString(value, fallback) {
-  if (value === undefined) return fallback ?? null;
-  if (value === null) return null;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed || null;
-  }
-  return fallback ?? null;
+  return trimString(value);
 }
 
 function normalizeOptionalString(value) {
@@ -352,6 +353,44 @@ function toBase64Maybe(value) {
   return null;
 }
 
+function logPersistInvalidKey({ keyName, raw, peerKey = null, deviceId = null, source = null, reason = null }) {
+  try {
+    console.warn('[contact-secrets:persist-invalid-key]', {
+      keyName,
+      peerKey,
+      deviceId,
+      source,
+      reason: reason || null,
+      type: typeof raw,
+      ctor: raw?.constructor?.name || null,
+      isView: ArrayBuffer.isView(raw),
+      byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
+      length: typeof raw?.length === 'number' ? raw.length : null
+    });
+  } catch {}
+}
+
+function normalizeDrKeyString(raw, { keyName, peerKey = null, deviceId = null, source = null, required = false, hasKey = false } = {}) {
+  const present = hasKey || raw !== undefined;
+  if (!present) {
+    if (required) {
+      logPersistInvalidKey({ keyName, raw, peerKey, deviceId, source, reason: 'missing' });
+      throw new Error(`contact-secrets persist blocked: missing ${keyName}`);
+    }
+    return null;
+  }
+  if (typeof raw !== 'string') {
+    logPersistInvalidKey({ keyName, raw, peerKey, deviceId, source, reason: 'not-string' });
+    throw new Error(`contact-secrets persist blocked: ${keyName} not string`);
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    logPersistInvalidKey({ keyName, raw, peerKey, deviceId, source, reason: 'empty-string' });
+    throw new Error(`contact-secrets persist blocked: ${keyName} empty`);
+  }
+  return trimmed;
+}
+
 function toNumberOrDefault(value, def = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : def;
@@ -363,15 +402,20 @@ function toTimestampOrNull(value) {
   return Math.floor(n);
 }
 
-function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false } = {}) {
-  if (!input || typeof input !== 'object') return null;
-  const rk = toBase64Maybe(input.rk ?? input.rk_b64);
-  if (!rk) return null;
+function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'normalize', peerKey = null, deviceId = null } = {}) {
+  if (!input || typeof input !== 'object') {
+    console.warn('[contact-secrets:invalid-dr-snapshot]', { reason: 'not-object', type: typeof input, source, peerKey, deviceId });
+    throw new Error('contact-secrets invalid dr snapshot: not object');
+  }
+  const hasRk = Object.prototype.hasOwnProperty.call(input, 'rk') || Object.prototype.hasOwnProperty.call(input, 'rk_b64');
+  const hasCkS = Object.prototype.hasOwnProperty.call(input, 'ckS') || Object.prototype.hasOwnProperty.call(input, 'ckS_b64');
+  const hasCkR = Object.prototype.hasOwnProperty.call(input, 'ckR') || Object.prototype.hasOwnProperty.call(input, 'ckR_b64');
+  const rk = normalizeDrKeyString(input.rk ?? input.rk_b64, { keyName: 'rk', peerKey, deviceId, source, required: true, hasKey: hasRk });
+  const ckS = normalizeDrKeyString(input.ckS ?? input.ckS_b64, { keyName: 'ckS', peerKey, deviceId, source, required: hasCkS, hasKey: hasCkS });
+  const ckR = normalizeDrKeyString(input.ckR ?? input.ckR_b64, { keyName: 'ckR', peerKey, deviceId, source, required: hasCkR, hasKey: hasCkR });
   const out = {
     v: Number.isFinite(Number(input.v)) ? Number(input.v) : 1,
     rk_b64: rk,
-    ckS_b64: toBase64Maybe(input.ckS ?? input.ckS_b64),
-    ckR_b64: toBase64Maybe(input.ckR ?? input.ckR_b64),
     Ns: toNumberOrDefault(input.Ns, 0),
     Nr: toNumberOrDefault(input.Nr, 0),
     PN: toNumberOrDefault(input.PN, 0),
@@ -381,6 +425,8 @@ function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false } = {}) {
     pendingSendRatchet: !!input.pendingSendRatchet,
     updatedAt: toTimestampOrNull(input.updatedAt ?? input.snapshotTs ?? input.ts ?? null)
   };
+  if (ckS) out.ckS_b64 = ckS;
+  if (ckR) out.ckR_b64 = ckR;
   const role = chooseString(input.role, null);
   if (role) out.role = role.toLowerCase();
   const selfDev = chooseString(input.selfDeviceId ?? input.self_device_id, null);
@@ -391,20 +437,23 @@ function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false } = {}) {
   return out;
 }
 
-function normalizeDrHistory(entries) {
+function normalizeDrHistory(entries, { source = 'dr-history', peerKey = null, deviceId = null } = {}) {
   if (!Array.isArray(entries)) return [];
   const out = [];
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object') continue;
     const ts = Number(entry.ts ?? entry.timestamp ?? entry.createdAt ?? entry.created_at);
-    const snap = normalizeDrSnapshot(entry.snapshot || entry.drState || entry.state || null, { setDefaultUpdatedAt: false });
+    const snap = normalizeDrSnapshot(
+      entry.snapshot || entry.drState || entry.state || null,
+      { setDefaultUpdatedAt: false, source, peerKey, deviceId }
+    );
     if (!Number.isFinite(ts) || ts <= 0) continue;
     if (!snap) continue;
     const messageId = chooseString(entry.messageId ?? entry.id ?? entry.message_id, null);
     const messageKey = chooseString(entry.messageKey_b64 ?? entry.message_key_b64 ?? entry.messageKey ?? entry.message_key, null);
     const snapshotAfter = normalizeDrSnapshot(
       entry.snapshotAfter || entry.snapshot_after || entry.nextSnapshot || entry.snapshot_next || null,
-      { setDefaultUpdatedAt: false }
+      { setDefaultUpdatedAt: false, source: `${source}:after`, peerKey, deviceId }
     );
     out.push({
       ts,
@@ -571,7 +620,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       structuredVersion = structured.version || null;
       structuredGeneratedAt = structured.generatedAt || null;
       for (const entry of structured.entries) {
-        const normalized = normalizeStructuredEntry(entry);
+        const normalized = normalizeStructuredEntry(entry, { source: reason });
         if (!normalized) continue;
         const { peerKey, aliases, record } = normalized;
         totalEntries += 1;
@@ -620,8 +669,8 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     });
     return summaryPayload;
   } catch (err) {
-    log({ contactSecretRestoreError: err?.message || err });
-    return null;
+    log({ contactSecretRestoreError: err?.message || err, source: reason });
+    throw err;
   }
 }
 
@@ -785,8 +834,11 @@ function cloneContactSecretRecord(existing) {
   if (existing.devices && typeof existing.devices === 'object') {
     for (const [devId, devVal] of Object.entries(existing.devices)) {
       if (!devId) continue;
+      const normalizedState = devVal?.drState
+        ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source: 'clone-record', deviceId: devId })
+        : null;
       devices[devId] = {
-        drState: devVal?.drState ? { ...devVal.drState } : null,
+        drState: normalizedState,
         drSeed: devVal?.drSeed || null,
         drHistory: Array.isArray(devVal?.drHistory) ? devVal.drHistory.slice() : [],
         drHistoryCursorTs: Number.isFinite(devVal?.drHistoryCursorTs) ? devVal.drHistoryCursorTs : null,
@@ -854,8 +906,14 @@ function buildStructuredEntry(peerAccountDigest, record) {
   for (const devId of deviceEntries) {
     if (!devId) continue;
     const dev = sourceDevices[devId] || {};
+    const normalizedState = dev?.drState
+      ? normalizeDrSnapshot(dev.drState, { setDefaultUpdatedAt: false, source: 'serialize', peerKey: identity.key, deviceId: devId })
+      : null;
+    if (normalizedState && record?.devices?.[devId]) {
+      record.devices[devId].drState = normalizedState;
+    }
     devicesObj[devId] = {
-      drState: dev.drState || null,
+      drState: normalizedState,
       drSeed: dev.drSeed || null,
       drHistory: Array.isArray(dev.drHistory) ? dev.drHistory : [],
       drHistoryCursorTs: Number.isFinite(dev.drHistoryCursorTs) ? dev.drHistoryCursorTs : null,
@@ -941,7 +999,7 @@ export function buildContactSecretsSnapshot() {
   return serializeContactSecretsMap(map);
 }
 
-function normalizeStructuredEntry(entry) {
+function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
   if (!entry || typeof entry !== 'object') return null;
   const peerAccountDigest = normalizeAccountDigest(entry.peerAccountDigest || null);
   if (!peerAccountDigest) return null;
@@ -972,14 +1030,16 @@ function normalizeStructuredEntry(entry) {
     if (!devId) continue;
     const slot = ensureDeviceRecord(record, devId, { create: true });
     if (Object.prototype.hasOwnProperty.call(devVal, 'drState')) {
-      const normalizedState = devVal.drState ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false }) : null;
+      const normalizedState = devVal.drState
+        ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source, peerKey: identity.key, deviceId: devId })
+        : null;
       if (normalizedState) slot.drState = normalizedState;
     }
     if (Object.prototype.hasOwnProperty.call(devVal, 'drSeed')) {
       slot.drSeed = normalizeOptionalString(devVal.drSeed) || null;
     }
     if (Object.prototype.hasOwnProperty.call(devVal, 'drHistory')) {
-      slot.drHistory = normalizeDrHistory(devVal.drHistory);
+      slot.drHistory = normalizeDrHistory(devVal.drHistory, { source, peerKey: identity.key, deviceId: devId });
     }
     const cursorTsRaw = devVal.drHistoryCursorTs ?? devVal.cursorTs ?? devVal?.dr?.cursor?.ts;
     const cursorIdRaw = devVal.drHistoryCursorId ?? devVal.cursorId ?? devVal?.dr?.cursor?.id;
@@ -1085,10 +1145,8 @@ function normalizeContactSecretUpdate(update = {}) {
       structured.dr.state = { has: true, value: null };
       return;
     }
-    const normalized = normalizeDrSnapshot(raw, { setDefaultUpdatedAt: true });
-    if (normalized) {
-      structured.dr.state = { has: true, value: normalized };
-    }
+    const normalized = normalizeDrSnapshot(raw, { setDefaultUpdatedAt: true, source: structured.debugSource || 'setContactSecret' });
+    structured.dr.state = { has: true, value: normalized };
   }
 
   function applyDrHistory(raw) {
@@ -1097,7 +1155,7 @@ function normalizeContactSecretUpdate(update = {}) {
       structured.dr.history = { has: true, value: [] };
       return;
     }
-    structured.dr.history = { has: true, value: normalizeDrHistory(raw) };
+    structured.dr.history = { has: true, value: normalizeDrHistory(raw, { source: structured.debugSource || 'setContactSecret' }) };
   }
 
   function applyDrSeed(raw) {
@@ -1176,6 +1234,7 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     return;
   }
   const structured = normalizeContactSecretUpdate(opts);
+  const sourceTag = structured.debugSource || opts?.__debugSource || 'unknown';
   const peerDeviceIdHint =
     (structured.peerDeviceId.has ? structured.peerDeviceId.value : null)
     || normalizePeerDeviceId(opts?.peerDeviceId ?? null);
@@ -1227,6 +1286,17 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     deviceRecord.updatedAt = ts;
   }
 
+  const deviceEntries = next.devices && typeof next.devices === 'object' ? Object.entries(next.devices) : [];
+  for (const [devId, devVal] of deviceEntries) {
+    if (!devVal || !devVal.drState) continue;
+    devVal.drState = normalizeDrSnapshot(devVal.drState, {
+      setDefaultUpdatedAt: false,
+      source: sourceTag,
+      peerKey: key,
+      deviceId: devId
+    });
+  }
+
   map.set(key, next);
   registerContactAliases(key, aliases);
   persistContactSecrets();
@@ -1240,7 +1310,7 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     historyLen: Array.isArray(deviceRecord.drHistory) ? deviceRecord.drHistory.length : 0,
     cursorTs: deviceRecord.drHistoryCursorTs || null,
     cursorId: deviceRecord.drHistoryCursorId || null,
-    source: structured.debugSource || opts?.__debugSource || 'unknown'
+    source: sourceTag
   });
 }
 

@@ -28,8 +28,7 @@ async function loadNaclScript() {
   try {
     await tryLoad('/libs/nacl-fast.min.js');
   } catch (err) {
-    console.warn('nacl primary load failed, falling back to CDN', err?.message || err);
-    await tryLoad('https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js');
+    throw new Error(`nacl load failed (local only): ${err?.message || err}`);
   }
   return window.nacl || null;
 }
