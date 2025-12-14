@@ -2117,8 +2117,8 @@ async function handleMessagesRoutes(req, env) {
       return json({ error: 'BadRequest', message: 'header_json invalid' }, { status: 400 });
     }
     const headerCounter = Number.isFinite(header?.n) ? header.n : Number(header?.counter);
-    if (!Number.isFinite(headerCounter) || headerCounter !== counter) {
-      return json({ error: 'BadRequest', message: 'header counter mismatch' }, { status: 400 });
+    if (!Number.isFinite(headerCounter)) {
+      return json({ error: 'BadRequest', message: 'header counter invalid' }, { status: 400 });
     }
     const headerDeviceId = normalizeDeviceId(header?.device_id || header?.deviceId || null);
     if (!headerDeviceId) {
