@@ -49,7 +49,8 @@ function scheduleProcessor(delay = PROCESS_INTERVAL_MS) {
 function normalizeJob(input = {}) {
   const messageId = typeof input.messageId === 'string' && input.messageId.trim().length
     ? input.messageId.trim()
-    : crypto.randomUUID();
+    : null;
+  if (!messageId) throw new Error('messageId required for outbox job');
   const conversationId = typeof input.conversationId === 'string' ? input.conversationId : null;
   const jobType = [TYPE_RECEIPT, TYPE_MEDIA_UPLOAD, TYPE_MEDIA_META].includes(input.type)
     ? input.type

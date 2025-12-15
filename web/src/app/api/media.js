@@ -57,6 +57,9 @@ export async function createMessage(body) {
     headers['X-Device-Id'] = deviceId;
 
     const payload = { ...body };
+    const messageId = typeof payload.id === 'string' && payload.id.trim().length ? payload.id.trim() : null;
+    if (!messageId) throw new Error('id (messageId) required');
+    payload.id = messageId;
     const accountDigest = (payload.accountDigest || getAccountDigest() || '').toUpperCase();
     if (!accountDigest) throw new Error('accountDigest required');
     payload.accountDigest = accountDigest;

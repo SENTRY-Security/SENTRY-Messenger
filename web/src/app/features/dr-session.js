@@ -17,7 +17,7 @@
 // X3DH 初始化與 DR 文字訊息發送（功能層，無 UI）。
 
 import { prekeysBundle } from '../api/prekeys.js';
-import { x3dhInitiate, drEncryptText, x3dhRespond } from '../crypto/dr.js';
+import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
@@ -35,6 +35,7 @@ import {
   startOutboxProcessor
 } from './queue/outbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
+import { logDrCore, logMsgEvent } from '../lib/logging.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 import { enqueueMediaMetaJob } from './queue/media.js';
@@ -44,6 +45,17 @@ function normHex(value) {
     value?.peerAccountDigest ?? value?.accountDigest ?? value
   );
   return digest || null;
+}
+
+async function hashBytesHex(u8) {
+  if (!(u8 instanceof Uint8Array)) return null;
+  if (typeof crypto === 'undefined' || !crypto?.subtle) return null;
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', u8);
+    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
 }
 
 function resolvePeerDigest(input) {
@@ -274,8 +286,11 @@ function assertU8(tag, value) {
 function buildReceiptMessageId(targetMessageId) {
   const base = typeof targetMessageId === 'string' && targetMessageId.trim()
     ? targetMessageId.trim()
-    : 'receipt';
-  return `receipt-${base}-${crypto.randomUUID()}`;
+    : null;
+  if (!base) {
+    throw new Error('target messageId required for receipt');
+  }
+  return crypto.randomUUID();
 }
 
 function sanitizeSnapshotInput(snapshot, { sourceTag = 'snapshot', peerAccountDigest = null, peerDeviceId = null } = {}) {
@@ -1072,20 +1087,18 @@ async function sendDrPlaintext(params = {}) {
   meta.receiverDeviceId = receiverDeviceId;
   meta.receiver_device_id = receiverDeviceId;
 
-  try {
-    console.log('[dr-log:send-snapshot]', JSON.stringify({
-      peerAccountDigest: peer,
-      peerDeviceId,
-      preNs: preSnapshot?.Ns ?? null,
-      preNr: preSnapshot?.Nr ?? null,
-      preHasCkS: !!preSnapshot?.ckS_b64,
-      postNs: postSnapshot?.Ns ?? null,
-      postNr: postSnapshot?.Nr ?? null,
-      postHasCkS: !!postSnapshot?.ckS_b64,
-      transportCounter,
-      msgType: meta?.msg_type || null
-    }));
-  } catch {}
+  logDrCore('send:snapshot', {
+    peerAccountDigest: peer,
+    peerDeviceId,
+    preNs: preSnapshot?.Ns ?? null,
+    preNr: preSnapshot?.Nr ?? null,
+    preHasCkS: !!preSnapshot?.ckS_b64,
+    postNs: postSnapshot?.Ns ?? null,
+    postNr: postSnapshot?.Nr ?? null,
+    postHasCkS: !!postSnapshot?.ckS_b64,
+    transportCounter,
+    msgType: meta?.msg_type || null
+  }, { level: 'log' });
 
   const headerPayload = {
     ...pkt.header,
@@ -1100,7 +1113,33 @@ async function sendDrPlaintext(params = {}) {
 
   const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
     ? params.messageId.trim()
-    : crypto.randomUUID();
+    : null;
+  if (!messageId) {
+    throw new Error('messageId required for send');
+  }
+  const aad = headerPayload ? buildDrAadFromHeader(headerPayload) : null;
+  const aadHash = aad ? await hashBytesHex(aad) : null;
+  const packetKeyLog = pkt?.header?.ek_pub_b64
+    ? `${finalConversationId || ''}::${String(pkt.header.ek_pub_b64).slice(0, 12)}::${pkt.header?.n ?? ''}`
+    : null;
+  logMsgEvent('send:start', {
+    direction: 'outgoing',
+    conversationId: finalConversationId,
+    messageId,
+    serverMessageId: null,
+    packetKey: packetKeyLog,
+    senderDigest: accountDigest || null,
+    senderDeviceId,
+    peerAccountDigest: peer,
+    peerDeviceId
+  });
+  logDrCore('encrypt:fingerprint', {
+    peerAccountDigest: peer,
+    peerDeviceId,
+    messageId,
+    aadHash,
+    aadLen: aad ? aad.byteLength : null
+  });
 
   try {
     startOutboxProcessor();
@@ -1128,29 +1167,76 @@ async function sendDrPlaintext(params = {}) {
     });
     const result = await processOutboxJobNow(job.jobId);
     if (!result.ok) {
+      logMsgEvent('send:fail', {
+        direction: 'outgoing',
+        conversationId: finalConversationId,
+        messageId,
+        serverMessageId: null,
+        packetKey: packetKeyLog,
+        senderDigest: accountDigest || null,
+        senderDeviceId,
+        peerAccountDigest: peer,
+        peerDeviceId,
+        status: result?.status ?? null,
+        error: result?.error || 'sendText failed'
+      }, { level: 'error' });
       const status = Number.isFinite(result?.status) ? ` (status=${result.status})` : '';
-      throw new Error((result.error || 'sendText failed') + status);
+      const sendErr = new Error((result.error || 'sendText failed') + status);
+      sendErr.status = Number.isFinite(result?.status) ? Number(result.status) : undefined;
+      sendErr.__drDeliveryLogged = true;
+      throw sendErr;
     }
     if (postSnapshot && peer && peerDeviceId) {
       const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: postSnapshot });
-      try {
-        console.log('[dr-log:send-persist]', JSON.stringify({
-          peerAccountDigest: peer,
-          peerDeviceId,
-          messageId,
-          persisted,
-          Ns: postSnapshot?.Ns ?? null,
-          Nr: postSnapshot?.Nr ?? null,
-          hasCkS: !!postSnapshot?.ckS_b64
-        }));
-      } catch {}
+      logDrCore('send:persist', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        messageId,
+        persisted,
+        Ns: postSnapshot?.Ns ?? null,
+        Nr: postSnapshot?.Nr ?? null,
+        hasCkS: !!postSnapshot?.ckS_b64
+      }, { level: 'log' });
     }
     sendFailureCounter.delete(`${peer}::${receiverDeviceId || 'unknown'}`);
     logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: postSnapshot });
     const msg = result.data && typeof result.data === 'object' ? result.data : {};
-    if (!msg.id) msg.id = messageId;
+    const ackId = typeof msg?.id === 'string' && msg.id ? msg.id : null;
+    if (ackId && ackId !== messageId) {
+      throw new Error('messageId mismatch from server');
+    }
+    if (!ackId) msg.id = messageId;
+    logMsgEvent('send:done', {
+      direction: 'outgoing',
+      conversationId: finalConversationId,
+      messageId,
+      serverMessageId: msg.id || null,
+      packetKey: packetKeyLog,
+      senderDigest: accountDigest || null,
+      senderDeviceId,
+      peerAccountDigest: peer,
+      peerDeviceId,
+      status: result?.status ?? null,
+      ok: !!result?.ok
+    });
     return { msg, convId: finalConversationId, secure: true };
   } catch (err) {
+    if (!err?.__drDeliveryLogged) {
+      logMsgEvent('send:fail', {
+        direction: 'outgoing',
+        conversationId: finalConversationId,
+        messageId,
+        serverMessageId: null,
+        packetKey: packetKeyLog,
+        senderDigest: accountDigest || null,
+        senderDeviceId,
+        peerAccountDigest: peer,
+        peerDeviceId,
+        status: Number.isFinite(err?.status) ? Number(err.status) : null,
+        error: err?.message || err
+      }, { level: 'error' });
+      err.__drDeliveryLogged = true;
+    }
     const key = `${peer}::${receiverDeviceId || 'unknown'}`;
     const nextFail = (sendFailureCounter.get(key) || 0) + 1;
     sendFailureCounter.set(key, nextFail);
@@ -1168,6 +1254,9 @@ async function sendDrPlaintext(params = {}) {
  * @returns {Promise<{ msg: any, convId: string }>}
  */
 export async function sendDrText(params = {}) {
+  if (!params?.messageId || typeof params.messageId !== 'string' || !params.messageId.trim()) {
+    throw new Error('messageId required for text send');
+  }
   return sendDrPlaintext(params);
 }
 
@@ -1372,6 +1461,12 @@ export async function sendDrMedia(params = {}) {
   if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
     throw new Error('file required');
   }
+  const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
+    ? params.messageId.trim()
+    : null;
+  if (!messageId) {
+    throw new Error('messageId required for media send');
+  }
 
   const convContext = conversation || conversationContextForPeer({ peerAccountDigest: peer, peerDeviceId: peerDeviceInput || conversation?.peerDeviceId || null });
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
@@ -1534,7 +1629,7 @@ export async function sendDrMedia(params = {}) {
   startOutboxProcessor();
   const job = await enqueueMediaMetaJob({
     conversationId,
-    messageId: crypto.randomUUID(),
+    messageId,
     headerJson,
     header: headerPayload,
     ciphertextB64: ctB64,
@@ -1561,12 +1656,16 @@ export async function sendDrMedia(params = {}) {
   logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
 
   const data = result.data && typeof result.data === 'object' ? result.data : {};
-  const messageId = data?.id || job.messageId;
+  const ackId = typeof data?.id === 'string' && data.id ? data.id : null;
+  if (ackId && ackId !== job.messageId) {
+    throw new Error('messageId mismatch from server');
+  }
+  const finalMessageId = ackId || job.messageId;
   if (preSnapshot) {
     recordDrMessageHistory({
       peerAccountDigest: peer,
       messageTs: now,
-      messageId,
+      messageId: finalMessageId,
       snapshot: preSnapshot,
       snapshotNext: postSnapshot,
       messageKeyB64
@@ -1576,7 +1675,7 @@ export async function sendDrMedia(params = {}) {
 
   return {
     msg: {
-      id: messageId,
+      id: finalMessageId,
       ts: now,
       text: `[檔案] ${metadata.name}`,
       type: 'media',
@@ -1604,6 +1703,12 @@ export async function sendDrMedia(params = {}) {
 
 export async function sendDrCallLog(params = {}) {
   const { callId, outcome, durationSeconds, direction, reason } = params;
+  const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
+    ? params.messageId.trim()
+    : null;
+  if (!messageId) {
+    throw new Error('messageId required for call-log send');
+  }
   const payload = {
     type: 'call-log',
     callId: callId || null,
@@ -1621,7 +1726,7 @@ export async function sendDrCallLog(params = {}) {
     call_reason: reason || null
   };
   const text = JSON.stringify(payload);
-  return sendDrPlaintext({ ...params, text, metaOverrides });
+  return sendDrPlaintext({ ...params, messageId, text, metaOverrides });
 }
 
 export async function bootstrapDrFromGuestBundle(params = {}) {

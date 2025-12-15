@@ -391,7 +391,7 @@ async function deleteContactByPeer(env, convId, _targetUid, targetAccountDigest 
   return total;
 }
 
-async function insertContactMessage(env, { convAccountDigest, peerAccountDigest, envelope, ts }) {
+async function insertContactMessage(env, { convAccountDigest, peerAccountDigest, envelope, ts, messageId }) {
   await ensureDataTables(env);
   const normalized = normalizeEnvelope(envelope);
   if (!normalized) return;
@@ -435,7 +435,9 @@ async function insertContactMessage(env, { convAccountDigest, peerAccountDigest,
   };
   const headerJson = JSON.stringify(header);
   const ciphertextB64 = bytesToBase64Url(new TextEncoder().encode(headerJson));
-  const messageId = crypto.randomUUID();
+  if (!messageId) {
+    throw new Error('messageId required for contact message');
+  }
 
   await env.DB.prepare(
     `INSERT OR IGNORE INTO conversations(id) VALUES (?1)`
@@ -1773,7 +1775,10 @@ async function handleFriendsRoutes(req, env) {
     };
     const headerJson = JSON.stringify(header);
     const ciphertextB64 = bytesToBase64Url(new TextEncoder().encode(headerJson));
-    const messageId = crypto.randomUUID();
+    const messageId = typeof body?.id === 'string' && body.id.trim().length ? body.id.trim() : null;
+    if (!messageId) {
+      return json({ error: 'BadRequest', message: 'id (messageId) required' }, { status: 400 });
+    }
 
     try {
       await env.DB.prepare(`
@@ -2163,7 +2168,10 @@ async function handleMessagesRoutes(req, env) {
       VALUES (?1, ?2, ?3, 'member')
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
     `).bind(conversationId, receiverAccountDigest, receiverDeviceId || null).run();
-    const messageId = typeof body?.id === 'string' && body.id.trim().length ? body.id.trim() : crypto.randomUUID();
+    const messageId = typeof body?.id === 'string' && body.id.trim().length ? body.id.trim() : null;
+    if (!messageId) {
+      return json({ error: 'BadRequest', message: 'id (messageId) required' }, { status: 400 });
+    }
     const createdAtInput = Number(body?.created_at || body?.ts || 0);
     const createdAt = Number.isFinite(createdAtInput) && createdAtInput > 0 ? createdAtInput : Math.floor(Date.now() / 1000);
     try {

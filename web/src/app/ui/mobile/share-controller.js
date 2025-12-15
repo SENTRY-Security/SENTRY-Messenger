@@ -32,6 +32,7 @@ import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 import { bytesToB64Url, b64UrlToBytes } from '../../../shared/utils/base64.js';
 import { toU8Strict } from '../../../shared/utils/u8-strict.js';
+import { logUiNoise } from '../../lib/logging.js';
 
 const INVITE_INFO = new TextEncoder().encode('invite-token');
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
@@ -102,6 +103,7 @@ export function setupShareController(options) {
   shareState.mode = shareState.mode || 'qr';
   shareState.open = shareState.open || false;
   shareState.currentInvite = null;
+  const qrErrorSilenceMs = 2000;
 
   if (shareModal) shareModal.setAttribute('data-share-mode', shareState.mode);
 
@@ -478,7 +480,16 @@ export function setupShareController(options) {
     }, {
       highlightScanRegion: true,
       highlightCodeOutline: true,
-      returnDetailedScanResult: true
+      returnDetailedScanResult: true,
+      onDecodeError: (err) => {
+        const qrDebug = typeof window !== 'undefined' && !!window.__DEBUG_QR_SCANNER__;
+        const message = err?.message || err;
+        if (qrDebug) {
+          logUiNoise('qr-scan:error', { message }, { level: 'warn', force: true });
+          return;
+        }
+        logUiNoise('qr-scan:noise', { message }, { throttleMs: qrErrorSilenceMs, throttleKey: 'qr-scan-noise' });
+      }
     });
     return shareState.scanner;
   }
@@ -755,13 +766,15 @@ export function setupShareController(options) {
       receiverDeviceId: resolvedPeerDeviceId || null,
       peerDeviceId: resolvedPeerDeviceId || null
     };
+    const messageId = crypto.randomUUID();
     await sendDrText({
       peerAccountDigest: targetDigest,
       conversation,
       convId: conversationId,
       peerDeviceId: resolvedPeerDeviceId,
       text: JSON.stringify({ type: 'contact-share', envelope }),
-      metaOverrides
+      metaOverrides,
+      messageId
     });
   }
 

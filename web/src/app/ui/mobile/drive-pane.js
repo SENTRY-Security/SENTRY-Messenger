@@ -999,10 +999,12 @@ export function initDrivePane({
     if (!entry) throw new Error('找不到檔案，請重新整理');
     const header = { ...entry.header, name: newName };
     const ciphertext_b64 = buildCiphertextForRename({ msg: entry.msg, header });
+    const messageId = crypto.randomUUID();
     const msgPayload = {
       convId,
       type: entry.msg?.type || 'media',
       aead: entry.msg?.aead || 'aes-256-gcm',
+      id: messageId,
       header,
       ciphertext_b64
     };
@@ -1036,6 +1038,7 @@ export function initDrivePane({
         convId,
         type: msg?.type || 'media',
         aead: msg?.aead || 'aes-256-gcm',
+        id: crypto.randomUUID(),
         header: {
           ...header,
           dir: newDir,

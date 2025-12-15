@@ -6,6 +6,7 @@ const AccountDigestRegex = /^[0-9A-F]{64}$/;
 export const CreateMessageSchema = z.object({
   convId: z.string().min(1),
   type: z.enum(['text', 'media']).default('text'),
+  id: z.string().uuid(),
   ciphertext_b64: z.string().min(1),
   aead: z.enum(['xchacha20poly1305', 'aes-256-gcm']).default('xchacha20poly1305'),
   header_json: z.string().min(2).optional(),
@@ -23,6 +24,7 @@ export const CreateMessageSchema = z.object({
 
 export const CreateSecureMessageSchema = z.object({
   conversation_id: z.string().min(8),
+  id: z.string().uuid(),
   header_json: z.string().min(2).optional(),
   header: z.record(z.any()).optional(),
   ciphertext_b64: z.string().min(8),
@@ -30,7 +32,6 @@ export const CreateSecureMessageSchema = z.object({
   sender_device_id: z.string().min(1),
   receiver_device_id: z.string().min(1),
   receiver_account_digest: z.string().regex(AccountDigestRegex).optional(),
-  id: z.string().min(8).optional(),
   created_at: z.number().int().optional(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()

@@ -19,6 +19,8 @@ import { toU8Strict } from '../utils/u8-strict.js';
 
 const encoder = new TextEncoder();
 const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
+const PACKET_HOLDER_CACHE_MAX = 2000;
+const packetHolderCache = new Map();
 
 function cloneU8(src) {
   if (src instanceof Uint8Array) return new Uint8Array(src);
@@ -88,6 +90,16 @@ function split64(u) {
   return { a: u.slice(0, 32), b: u.slice(32, 64) };
 }
 
+async function hashPrefix(u8, len = 12) {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', u8);
+    const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    return hex.slice(0, len);
+  } catch {
+    return null;
+  }
+}
+
 function ensureSkipStore(st) {
   if (!st || typeof st !== 'object') return null;
   if (!(st.skippedKeys instanceof Map)) {
@@ -98,6 +110,17 @@ function ensureSkipStore(st) {
     }
   }
   return st.skippedKeys || null;
+}
+
+function cloneSkippedKeys(store) {
+  const out = new Map();
+  if (!(store instanceof Map)) return out;
+  for (const [chainId, chain] of store.entries()) {
+    if (chain instanceof Map) {
+      out.set(chainId, new Map(chain));
+    }
+  }
+  return out;
 }
 
 function rememberSkippedKey(st, chainId, index, keyB64, maxPerChain = SKIPPED_KEYS_PER_CHAIN_MAX) {
@@ -258,6 +281,8 @@ export async function drRatchet(st, theirRatchetPubU8) {
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);
   const { a: newRoot, b: chainSeed } = split64(rkOut);
+  const dhOutHash = await hashPrefix(dh);
+  const ckRSeedHash = await hashPrefix(chainSeed);
   const myNew = await genX25519Keypair();
   st.rk = newRoot;
   st.ckR = chainSeed;
@@ -269,6 +294,14 @@ export async function drRatchet(st, theirRatchetPubU8) {
   st.myRatchetPub = myNew.publicKey;
   st.theirRatchetPub = theirRatchetPubU8;
   st.pendingSendRatchet = false;
+  try {
+    console.warn('[dr-debug:ratchet-dh]', {
+      dhOutHash,
+      ckRSeedHash,
+      headerEk: theirRatchetPubU8 ? b64(theirRatchetPubU8).slice(0, 12) : null
+    });
+  } catch {}
+  return { ckR: chainSeed, theirRatchetPub: theirRatchetPubU8, dhOutHash, ckRSeedHash };
 }
 
 export async function drEncryptText(st, plaintext, opts = {}) {
@@ -299,6 +332,13 @@ export async function drEncryptText(st, plaintext, opts = {}) {
       st.Ns = 0;
       st.myRatchetPriv = myNew.secretKey;
       st.myRatchetPub = myNew.publicKey;
+      try {
+        console.warn('[dr-debug:ratchet-dh:send]', {
+          dhOutHash: await hashPrefix(dh),
+          ckSSeedHash: await hashPrefix(chainSeed),
+          headerEk: st?.theirRatchetPub ? b64(st.theirRatchetPub).slice(0, 12) : null
+        });
+      } catch {}
     }
   }
   const mkOut = await kdfCK(st.ckS);
@@ -319,6 +359,24 @@ export async function drEncryptText(st, plaintext, opts = {}) {
   const aad = buildDrAad({ version, deviceId, counter: st.Ns });
   const cipherParams = aad ? { name: 'AES-GCM', iv, additionalData: aad } : { name: 'AES-GCM', iv };
   const ctBuf = await crypto.subtle.encrypt(cipherParams, key, new TextEncoder().encode(plaintext));
+  try {
+    encIvHash = await hashPrefix(iv);
+    encCtHash = await hashPrefix(new Uint8Array(ctBuf));
+    encAadHash = aad ? await hashPrefix(aad) : null;
+    encMkHash = await hashPrefix(mk);
+    const encLine = JSON.stringify({
+      ivLen: iv?.byteLength ?? null,
+      ivHash: encIvHash,
+      ctLen: ctBuf?.byteLength ?? null,
+      ctHash: encCtHash,
+      aadLen: aad?.byteLength ?? null,
+      aadHash: encAadHash,
+      mkHash: encMkHash,
+      nUsed: st?.Ns ?? null,
+      ek: st?.myRatchetPub ? b64(st.myRatchetPub).slice(0, 12) : null
+    });
+    console.warn('[dr-debug:aead-encrypt]', encLine);
+  } catch {}
 
   const header = {
     dr: 1,
@@ -339,14 +397,185 @@ export async function drEncryptText(st, plaintext, opts = {}) {
 
 export async function drDecryptText(st, packet, opts = {}) {
   const onMessageKey = typeof opts?.onMessageKey === 'function' ? opts.onMessageKey : null;
+  const packetKey = typeof opts?.packetKey === 'string' && opts.packetKey ? String(opts.packetKey) : null;
+  const msgType = typeof opts?.msgType === 'string' && opts.msgType ? String(opts.msgType) : null;
   const headerN = Number(packet?.header?.n);
   if (Number.isFinite(headerN) && headerN <= 0) {
     throw new Error('invalid message counter');
   }
+  const resolveStateKey = () => {
+    const base = st?.baseKey || {};
+    if (base.stateKey) return base.stateKey;
+    const convId = typeof base?.conversationId === 'string' ? base.conversationId : null;
+    const peerKey = base?.peerKey || base?.peerAccountDigest || null;
+    const peerDeviceId = base?.peerDeviceId || base?.deviceId || null;
+    if (convId || peerKey || peerDeviceId) {
+      return `${convId || 'unknown'}::${peerKey || 'unknown'}::${peerDeviceId || 'unknown-device'}`;
+    }
+    return null;
+  };
+  const holderId = st?.__id || null;
+  const stateKey = resolveStateKey();
+  const holderRole = typeof st?.baseKey?.role === 'string'
+    ? st.baseKey.role.toLowerCase()
+    : (typeof st?.baseRole === 'string' ? st.baseRole.toLowerCase() : null);
+  if (packetKey) {
+    const prevHolder = packetHolderCache.get(packetKey);
+    if (prevHolder !== undefined && prevHolder !== holderId) {
+      const inv = new Error('dr invariant violated: packetKey processed by different holder');
+      inv.code = 'INVARIANT_VIOLATION';
+      inv.__drInvariantDiff = { packetKey, holderId, prevHolderId: prevHolder };
+      throw inv;
+    }
+    packetHolderCache.set(packetKey, holderId || null);
+    if (packetHolderCache.size > PACKET_HOLDER_CACHE_MAX) {
+      const firstKey = packetHolderCache.keys().next();
+      if (!firstKey.done) packetHolderCache.delete(firstKey.value);
+    }
+  }
+  const holderSnapshot = {
+    rk: cloneU8(st?.rk) || null,
+    ckS: cloneU8(st?.ckS) || null,
+    ckR: cloneU8(st?.ckR) || null,
+    Ns: Number.isFinite(st?.Ns) ? Number(st.Ns) : 0,
+    Nr: Number.isFinite(st?.Nr) ? Number(st.Nr) : 0,
+    NsTotal: Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0,
+    NrTotal: Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0,
+    PN: Number.isFinite(st?.PN) ? Number(st.PN) : 0,
+    myRatchetPriv: cloneU8(st?.myRatchetPriv) || null,
+    myRatchetPub: cloneU8(st?.myRatchetPub) || null,
+    theirRatchetPub: cloneU8(st?.theirRatchetPub) || null,
+    pendingSendRatchet: !!st?.pendingSendRatchet,
+    skippedKeys: cloneSkippedKeys(st?.skippedKeys)
+  };
+  const restoreHolder = () => {
+    st.rk = holderSnapshot.rk;
+    st.ckS = holderSnapshot.ckS;
+    st.ckR = holderSnapshot.ckR;
+    st.Ns = holderSnapshot.Ns;
+    st.Nr = holderSnapshot.Nr;
+    st.NsTotal = holderSnapshot.NsTotal;
+    st.NrTotal = holderSnapshot.NrTotal;
+    st.PN = holderSnapshot.PN;
+    st.myRatchetPriv = holderSnapshot.myRatchetPriv;
+    st.myRatchetPub = holderSnapshot.myRatchetPub;
+    st.theirRatchetPub = holderSnapshot.theirRatchetPub;
+    st.pendingSendRatchet = holderSnapshot.pendingSendRatchet;
+    st.skippedKeys = cloneSkippedKeys(holderSnapshot.skippedKeys);
+  };
+  const resolveRole = (holder) => {
+    if (typeof holder?.baseKey?.role === 'string') return holder.baseKey.role.toLowerCase();
+    if (typeof holder?.baseRole === 'string') return holder.baseRole.toLowerCase();
+    return holderRole || null;
+  };
+  const fingerprintState = async (holder, mkHashValue = null, ctHashValue = null) => {
+    const hashOrNull = async (u8) => (u8 instanceof Uint8Array && u8.length ? await hashPrefix(u8) : null);
+    const skippedSize = holder?.skippedKeys instanceof Map
+      ? [...holder.skippedKeys.values()].reduce((acc, chain) => acc + (chain instanceof Map ? chain.size : 0), 0)
+      : 0;
+    const fp = {
+      stateKey: stateKey || null,
+      holderId: holderId || null,
+      Nr: Number.isFinite(holder?.Nr) ? Number(holder.Nr) : null,
+      Ns: Number.isFinite(holder?.Ns) ? Number(holder.Ns) : null,
+      PN: Number.isFinite(holder?.PN) ? Number(holder.PN) : null,
+      theirPubHash: await hashOrNull(holder?.theirRatchetPub),
+      ckRHash: await hashOrNull(holder?.ckR),
+      ckSHash: await hashOrNull(holder?.ckS),
+      skippedSize,
+      role: resolveRole(holder),
+      mkHash: mkHashValue || null,
+      ctHash: ctHashValue || null
+    };
+    return fp;
+  };
+  const diffFingerprint = (before, after) => {
+    const diff = {};
+    const keys = new Set([...(before ? Object.keys(before) : []), ...(after ? Object.keys(after) : [])]);
+    for (const key of keys) {
+      const beforeVal = before ? before[key] : undefined;
+      const afterVal = after ? after[key] : undefined;
+      if (beforeVal !== afterVal) {
+        diff[key] = { before: beforeVal, after: afterVal };
+      }
+    }
+    return diff;
+  };
+  const fingerprintBaseline = await fingerprintState(holderSnapshot);
+  const beforeAttempt = fingerprintBaseline;
+  try {
+    const preRatchetFp = await fingerprintState(st);
+    console.warn('[dr-fingerprint:pre-ratchet]', {
+      ...preRatchetFp,
+      msgType: msgType || null,
+      packetKey: packetKey || null
+    });
+  } catch {}
+  try {
+    console.warn('[dr-attempt:holder]', {
+      stateKey,
+      holderId,
+      packetKey: packetKey || null,
+      msgType: msgType || null
+    });
+  } catch {}
+  let nUsed = null;
+  let nrAfterRatchet = null;
+  let nrAtDerive = null;
+  let postRatchetTheirPubPrefix = null;
+  let dhOutHash = null;
+  let ckRSeedHash = null;
+  let ckSSeedHash = null;
+  let mkHash = null;
+  let chainHash = null;
+  let encIvHash = null;
+  let encCtHash = null;
+  let encAadHash = null;
+  let decIvHash = null;
+  let decCtHash = null;
+  let decAadHash = null;
+  let encMkHash = null;
+  let fingerprintBeforeDecrypt = null;
   const currentNr = Number.isFinite(Number(st?.Nr)) ? Number(st.Nr) : 0;
-  st.Nr = currentNr; // normalize counter to numeric to avoid string comparisons
+  const working = {
+    rk: cloneU8(st?.rk) || null,
+    ckS: cloneU8(st?.ckS) || null,
+    ckR: cloneU8(st?.ckR) || null,
+    Ns: Number.isFinite(st?.Ns) ? Number(st.Ns) : 0,
+    Nr: currentNr,
+    NsTotal: Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0,
+    NrTotal: Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0,
+    PN: Number.isFinite(st?.PN) ? Number(st.PN) : 0,
+    myRatchetPriv: cloneU8(st?.myRatchetPriv) || null,
+    myRatchetPub: cloneU8(st?.myRatchetPub) || null,
+    theirRatchetPub: cloneU8(st?.theirRatchetPub) || null,
+    pendingSendRatchet: !!st?.pendingSendRatchet
+  };
+  let skippedNext = cloneSkippedKeys(st?.skippedKeys);
+  const rememberSkippedLocal = (chainId, index, keyB64, maxPerChain = SKIPPED_KEYS_PER_CHAIN_MAX) => {
+    if (!chainId || !Number.isFinite(index)) return;
+    let chain = skippedNext.get(chainId);
+    if (!chain) {
+      chain = new Map();
+      skippedNext.set(chainId, chain);
+    }
+    chain.set(index, keyB64);
+    if (chain.size > maxPerChain) {
+      const firstKey = chain.keys().next();
+      if (!firstKey.done) chain.delete(firstKey.value);
+    }
+  };
+  const takeSkippedLocal = (chainId, index) => {
+    if (!chainId || !Number.isFinite(index)) return null;
+    const chain = skippedNext.get(chainId);
+    if (!chain) return null;
+    const value = chain.get(index) || null;
+    if (value !== null) chain.delete(index);
+    if (!chain.size) skippedNext.delete(chainId);
+    return value;
+  };
   const sameReceiveChain = st?.theirRatchetPub && typeof packet?.header?.ek_pub_b64 === 'string'
-    && b64(st.theirRatchetPub) === packet.header.ek_pub_b64;
+    && b64(working.theirRatchetPub) === packet.header.ek_pub_b64;
   if (sameReceiveChain && Number.isFinite(headerN) && Number.isFinite(currentNr) && currentNr >= headerN) {
     throw new Error('replay or out-of-order message counter');
   }
@@ -354,86 +583,124 @@ export async function drDecryptText(st, packet, opts = {}) {
 
   // 若接收端狀態的對方 ratchet 公鑰與封包不一致，且這是第一封消息，嘗試丟棄舊的 receive chain 讓後續能依新公鑰重新進入 ratchet。
   if (
-    st?.baseRole === 'responder' &&
+    holderRole === 'responder' &&
     headerN === 1 &&
     currentNr === 0 &&
     typeof packet?.header?.ek_pub_b64 === 'string' &&
-    st?.theirRatchetPub &&
-    b64(st.theirRatchetPub) !== packet.header.ek_pub_b64
+    working?.theirRatchetPub &&
+    b64(working.theirRatchetPub) !== packet.header.ek_pub_b64
   ) {
-    st.ckR = null;
-    st.theirRatchetPub = null;
+    working.ckR = null;
+    working.theirRatchetPub = null;
   }
-
-    const snapshot = st ? {
-      rk: cloneU8(st.rk),
-      ckS: cloneU8(st.ckS),
-      ckR: cloneU8(st.ckR),
-      Ns: st.Ns,
-      Nr: st.Nr,
-      NsTotal: st.NsTotal,
-      NrTotal: st.NrTotal,
-      PN: st.PN,
-      myRatchetPriv: cloneU8(st.myRatchetPriv),
-      myRatchetPub: cloneU8(st.myRatchetPub),
-      theirRatchetPub: cloneU8(st.theirRatchetPub),
-      pendingSendRatchet: st.pendingSendRatchet
-    } : null;
 
   const theirPub = b64u8(packet.header.ek_pub_b64);
   const pn = Number(packet?.header?.pn);
-  const prevChainId = st.theirRatchetPub ? b64(st.theirRatchetPub) : null;
+  const prevChainId = working.theirRatchetPub ? b64(working.theirRatchetPub) : null;
   try {
-    if (!st.theirRatchetPub || b64(st.theirRatchetPub) !== packet.header.ek_pub_b64) {
+    if (!working.theirRatchetPub || b64(working.theirRatchetPub) !== packet.header.ek_pub_b64) {
+      try {
+        console.warn('[dr-ratchet:pre]', {
+          headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
+          stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
+          hasCkR: !!(working?.ckR && working.ckR.length),
+          hasCkS: !!(working?.ckS && working.ckS.length),
+          Nr: working?.Nr ?? null,
+          Ns: working?.Ns ?? null,
+          PN: working?.PN ?? null
+        });
+      } catch {}
       // Before switching to the new ratchet key, fill skipped message keys on the previous receiving chain up to pn.
-      if (prevChainId && st.ckR && Number.isFinite(pn) && pn > st.Nr) {
-        const gap = pn - st.Nr;
+      if (prevChainId && working.ckR && Number.isFinite(pn) && pn > working.Nr) {
+        const gap = pn - working.Nr;
         if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) {
-          console.warn('[dr] skipped-key gap too large', { gap, pn, nr: st.Nr, chain: prevChainId });
+          console.warn('[dr] skipped-key gap too large', { gap, pn, nr: working.Nr, chain: prevChainId });
         }
-        let ckR = st.ckR;
-        let nr = st.Nr;
+        let ckR = working.ckR;
+        let nr = working.Nr;
         while (ckR && nr < pn) {
           const skippedOut = await kdfCK(ckR);
           const { a: skippedMk, b: skippedNext } = split64(skippedOut);
-          rememberSkippedKey(st, prevChainId, nr + 1, b64(skippedMk));
+          rememberSkippedLocal(prevChainId, nr + 1, b64(skippedMk));
           ckR = skippedNext;
           nr += 1;
         }
-        st.ckR = ckR;
-        st.Nr = nr;
+        working.ckR = ckR;
+        working.Nr = nr;
       }
-      await drRatchet(st, theirPub);
+      const ratchetResult = await drRatchet(working, theirPub);
+      if (!(working.ckR instanceof Uint8Array) || !working.ckR.length) {
+        working.ckR = ratchetResult?.ckR instanceof Uint8Array ? ratchetResult.ckR : null;
+      }
+      working.theirRatchetPub = ratchetResult?.theirRatchetPub instanceof Uint8Array ? ratchetResult.theirRatchetPub : theirPub;
+      working.Nr = 0;
       ratchetPerformed = true;
+      dhOutHash = ratchetResult?.dhOutHash || null;
+      ckRSeedHash = ratchetResult?.ckRSeedHash || null;
+      ckSSeedHash = ratchetResult?.ckRSeedHash || null;
     } else {
-      st.theirRatchetPub = theirPub;
+      working.theirRatchetPub = theirPub;
     }
+    nrAfterRatchet = Number.isFinite(working?.Nr) ? Number(working.Nr) : null;
+    postRatchetTheirPubPrefix = working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null;
     const chainId = packet?.header?.ek_pub_b64 || null;
     let usedStoredKey = false;
     let mk = null;
     if (chainId && Number.isFinite(headerN)) {
-      const cached = takeSkippedKey(st, chainId, headerN);
+      const cached = takeSkippedLocal(chainId, headerN);
       if (cached) {
         mk = b64u8(cached);
         usedStoredKey = true;
+        nrAtDerive = Number.isFinite(st?.Nr) ? Number(st.Nr) : null;
+        nUsed = Number.isFinite(headerN) ? headerN : (nrAtDerive !== null ? nrAtDerive : null);
       }
     }
     if (!usedStoredKey) {
-      if (!st.ckR) throw new Error('receive chain missing');
+      if (!working.ckR) throw new Error('receive chain missing');
       if (chainId && Number.isFinite(headerN)) {
-        while (st.ckR && st.Nr + 1 < headerN) {
-          const skippedOut = await kdfCK(st.ckR);
+        while (working.ckR && working.Nr + 1 < headerN) {
+          const skippedOut = await kdfCK(working.ckR);
           const { a: skippedMk, b: skippedNext } = split64(skippedOut);
-          st.ckR = skippedNext;
-          st.Nr += 1;
-          rememberSkippedKey(st, chainId, st.Nr, b64(skippedMk));
+          working.ckR = skippedNext;
+          working.Nr += 1;
+          rememberSkippedLocal(chainId, working.Nr, b64(skippedMk));
         }
       }
-      const mkOut = await kdfCK(st.ckR);
+      nrAtDerive = Number.isFinite(working?.Nr) ? Number(working.Nr) : null;
+      nUsed = Number.isFinite(headerN) ? headerN : (nrAtDerive !== null ? nrAtDerive + 1 : null);
+      const mkOut = await kdfCK(working.ckR);
       const derivation = split64(mkOut);
       mk = derivation.a;
-      st.ckR = derivation.b;
+      working.ckR = derivation.b;
+      mkHash = await hashPrefix(mk);
+      chainHash = await hashPrefix(working.ckR);
     }
+    if (!mkHash && mk) {
+      mkHash = await hashPrefix(mk);
+    }
+    let decryptIv = null;
+    let decryptCt = null;
+    try {
+      decryptIv = b64u8(packet.iv_b64);
+      decryptCt = b64u8(packet.ciphertext_b64);
+      const aad = buildDrAadFromHeader(packet.header);
+      const aadHash = aad ? await hashPrefix(aad) : null;
+      decIvHash = decryptIv ? await hashPrefix(decryptIv) : null;
+      decCtHash = decryptCt ? await hashPrefix(decryptCt) : null;
+      decAadHash = aadHash;
+      const decLine = JSON.stringify({
+        ivLen: decryptIv?.byteLength ?? null,
+        ivHash: decIvHash,
+        ctLen: decryptCt?.byteLength ?? null,
+        ctHash: decCtHash,
+        aadLen: aad?.byteLength ?? null,
+        aadHash,
+        mkHash,
+        nUsed: Number.isFinite(nUsed) ? nUsed : null,
+        ek: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null
+      });
+      console.warn('[dr-debug:aead-decrypt]', decLine);
+    } catch {}
     if (onMessageKey) {
       try {
         onMessageKey(b64(mk));
@@ -442,11 +709,25 @@ export async function drDecryptText(st, packet, opts = {}) {
       }
     }
     if (!usedStoredKey) {
-      st.Nr += 1;
-      if (Number.isFinite(headerN) && headerN > st.Nr) {
-        st.Nr = headerN;
+      working.Nr += 1;
+      if (Number.isFinite(headerN) && headerN > working.Nr) {
+        working.Nr = headerN;
       }
-      st.NrTotal = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) + 1 : st.Nr;
+      working.NrTotal = Number.isFinite(working?.NrTotal) ? Number(working.NrTotal) + 1 : working.Nr;
+    }
+
+    if (ratchetPerformed) {
+      try {
+        console.warn('[dr-ratchet:post]', {
+          headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
+          stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
+          hasCkR: !!(working?.ckR && working.ckR.length),
+          hasCkS: !!(working?.ckS && working.ckS.length),
+          Nr: working?.Nr ?? null,
+          Ns: working?.Ns ?? null,
+          PN: working?.PN ?? null
+        });
+      } catch {}
     }
 
     if (ratchetPerformed || usedStoredKey) {
@@ -457,17 +738,18 @@ export async function drDecryptText(st, packet, opts = {}) {
           usedStoredKey,
           ratchetPerformed,
           chainId: chainId ? chainId.slice(0, 12) : null,
-          stateNr: st?.Nr ?? null,
-          stateNs: st?.Ns ?? null,
-          hasCkS: !!(st?.ckS && st.ckS.length),
-          hasCkR: !!(st?.ckR && st.ckR.length),
-          theirPubHash: st?.theirRatchetPub ? b64(st.theirRatchetPub).slice(0, 12) : null
+          stateNr: working?.Nr ?? null,
+          stateNs: working?.Ns ?? null,
+          hasCkS: !!(working?.ckS && working.ckS.length),
+          hasCkR: !!(working?.ckR && working.ckR.length),
+          theirPubHash: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null
         });
       } catch {
         // ignore log errors
       }
     }
 
+    fingerprintBeforeDecrypt = await fingerprintState(holderSnapshot, mkHash, decCtHash);
     const key = await crypto.subtle.importKey(
       'raw',
       toU8Strict(mk, 'web/src/shared/crypto/dr.js:458:drDecryptText'),
@@ -484,22 +766,88 @@ export async function drDecryptText(st, packet, opts = {}) {
       key,
       b64u8(packet.ciphertext_b64)
     );
+    // commit working state only after successful decrypt
+    st.rk = working.rk;
+    st.ckS = working.ckS;
+    st.ckR = working.ckR;
+    st.Ns = working.Ns;
+    st.Nr = working.Nr;
+    st.NsTotal = working.NsTotal;
+    st.NrTotal = working.NrTotal;
+    st.PN = working.PN;
+    st.myRatchetPriv = working.myRatchetPriv;
+    st.myRatchetPub = working.myRatchetPub;
+    st.theirRatchetPub = working.theirRatchetPub;
+    st.pendingSendRatchet = working.pendingSendRatchet;
+    st.skippedKeys = skippedNext;
     return new TextDecoder().decode(pt);
   } catch (err) {
-    if (snapshot) {
-      st.rk = snapshot.rk;
-      st.ckS = snapshot.ckS;
-      st.ckR = snapshot.ckR;
-      st.Ns = snapshot.Ns;
-      st.Nr = snapshot.Nr;
-      st.NsTotal = snapshot.NsTotal;
-      st.NrTotal = snapshot.NrTotal;
-      st.PN = snapshot.PN;
-      st.myRatchetPriv = snapshot.myRatchetPriv;
-      st.myRatchetPub = snapshot.myRatchetPub;
-      st.theirRatchetPub = snapshot.theirRatchetPub;
-      st.pendingSendRatchet = snapshot.pendingSendRatchet;
+    const isAeadFailure = (err?.name === 'OperationError') || (err?.code === 'OperationError') || (typeof err?.message === 'string' && err.message.includes('OperationError'));
+    const ensureDrMeta = () => {
+      if (!err.__drMeta) {
+        err.__drMeta = {
+          headerN: Number.isFinite(headerN) ? headerN : null,
+          nUsed: Number.isFinite(nUsed) ? nUsed : null,
+          nrAfterRatchet: Number.isFinite(nrAfterRatchet) ? nrAfterRatchet : null,
+          nrAtDerive: Number.isFinite(nrAtDerive) ? nrAtDerive : null,
+          ratchetPerformed,
+          chainId: packet?.header?.ek_pub_b64 || null,
+          postRatchetTheirPubPrefix,
+          dhOutHash,
+          ckRSeedHash,
+          ckSSeedHash,
+          mkHash,
+          chainHash,
+          encIvHash,
+          encCtHash,
+          encAadHash,
+          decIvHash,
+          decCtHash,
+          decAadHash,
+          encMkHash
+        };
+      }
+      return err.__drMeta;
+    };
+    let diff = null;
+    if (isAeadFailure) {
+      restoreHolder();
+      try {
+        const expected = fingerprintBeforeDecrypt || beforeAttempt;
+        const afterRestore = await fingerprintState(st, mkHash, decCtHash);
+        diff = expected ? diffFingerprint(expected, afterRestore) : null;
+        try {
+          console.warn('[dr-rollback:aes-gcm]', {
+            stateKey: stateKey || null,
+            holderId: holderId || null,
+            headerN: Number.isFinite(headerN) ? headerN : null,
+            mkHash: mkHash || null,
+            ctHash: decCtHash || null,
+            expected,
+            afterRestore
+          });
+          console.warn('[dr-fingerprint:post-restore]', {
+            ...afterRestore,
+            msgType: msgType || null,
+            packetKey: packetKey || null
+          });
+        } catch {}
+      } catch {}
+    } else {
+      try {
+        const afterAttempt = await fingerprintState(st, mkHash);
+        diff = diffFingerprint(beforeAttempt, afterAttempt);
+      } catch {}
+      restoreHolder();
     }
+    if (diff && Object.keys(diff).length) {
+      const invariantErr = new Error('dr invariant violated: holder mutated during decrypt failure');
+      invariantErr.code = 'INVARIANT_VIOLATION';
+      invariantErr.__drInvariantDiff = diff;
+      invariantErr.__drMeta = ensureDrMeta();
+      throw invariantErr;
+    }
+    ensureDrMeta();
     throw err;
   }
 }

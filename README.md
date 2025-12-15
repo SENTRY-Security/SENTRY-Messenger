@@ -122,7 +122,7 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 3. **傳送訊息**：`drEncryptText` 產生 header + ciphertext → `/api/v1/messages/secure` 儲存 envelope（D1 `messages_secure`）。
 4. **接收解密**：
    - `listSecureAndDecrypt()` 先排序訊息；若為重播情境會利用 `prepareDrForMessage` 檢查 timestamp / messageId 是否早於 cursor，必要時還原 snapshot。
-   - 若 snapshot 缺失會落到 `recoverDrState()`（可強制使用 `guest_bundle`），同時記錄 `[dr-decrypt-fail-payload]` 供 `scripts/debug-dr-replay.mjs` 重播。
+   - 若 snapshot 缺失會落到 `recoverDrState()`（可強制使用 `guest_bundle`），同時記錄 `[dr-decrypt-fail-payload]` 供 `tests/scripts/debug-dr-replay.mjs` 重播。
    - 每次成功解密會 `recordDrMessageHistory()`（包含 messageKey）並 `persistDrSnapshot()`。
 5. **DR 恢復判定**：`recoverDrState()` 允許 initiator/guest 端只要恢復出有效 ratchet（`rk` + send/recv 任一鏈與 myRatchetKey 成立）即視為成功，不再硬性要求 responder `ckR`；避免誤判失敗後強制 reset，實作位於 `web/src/app/features/dr-session.js`。
 

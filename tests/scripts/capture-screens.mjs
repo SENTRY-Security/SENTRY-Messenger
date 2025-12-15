@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { startWebServer, stopWebServer, performLogin } from '../tests/e2e/utils.mjs';
+import { startWebServer, stopWebServer, performLogin } from '../e2e/utils.mjs';
 import { setupFriendConversation } from './lib/friends-flow.mjs';
 
 const ORIGIN_API = (process.env.ORIGIN_API || 'http://127.0.0.1:3000').replace(/\/$/, '');

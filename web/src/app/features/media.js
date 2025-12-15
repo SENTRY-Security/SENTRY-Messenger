@@ -242,10 +242,12 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   // 5) Create message index（把 envelope JSON 放在 ciphertext_b64，小訊息）
   let dataMsg = null;
   if (!skipIndex) {
+    const messageId = crypto.randomUUID();
     const msgPayload = {
       convId,
       type: 'media',
       aead: 'aes-256-gcm',
+      id: messageId,
       // 將封套必要欄位一併放入 header.env，支援跨裝置解密
       header: {
         obj: objectKey,
@@ -370,22 +372,24 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
 
   let dataMsg = null;
   if (!skipIndex) {
-  const msgPayload = {
-    convId,
-    type: 'media',
-    aead: 'aes-256-gcm',
-    header: {
-      obj: objectKey,
-      size: ct.cipherBuf.byteLength,
-      name,
-      contentType,
-      dir: dirSegments,
-      iv_b64: envelope.iv_b64,
-      env: {
+    const messageId = crypto.randomUUID();
+    const msgPayload = {
+      convId,
+      type: 'media',
+      aead: 'aes-256-gcm',
+      id: messageId,
+      header: {
+        obj: objectKey,
+        size: ct.cipherBuf.byteLength,
+        name,
+        contentType,
+        dir: dirSegments,
         iv_b64: envelope.iv_b64,
-        hkdf_salt_b64: envelope.hkdf_salt_b64,
-        info_tag: envelope.info_tag,
-        key_type: envelope.key_type
+        env: {
+          iv_b64: envelope.iv_b64,
+          hkdf_salt_b64: envelope.hkdf_salt_b64,
+          info_tag: envelope.info_tag,
+          key_type: envelope.key_type
         }
       },
       ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({

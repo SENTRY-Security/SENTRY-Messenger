@@ -121,10 +121,12 @@ export async function saveProfile(profile) {
     device_id: deviceId || undefined,
     n: counter
   };
+  const messageId = crypto.randomUUID();
   const payload = {
     convId,
     type: 'text',
     aead: 'aes-256-gcm',
+    id: messageId,
     header,
     ciphertext_b64: envelope?.ct_b64 || 'profile',
     counter,

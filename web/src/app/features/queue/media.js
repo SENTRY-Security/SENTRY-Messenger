@@ -4,6 +4,7 @@ import { enqueueOutboxJob } from './outbox.js';
 
 export async function enqueueMediaUploadJob({ conversationId, messageId, payloadEnvelope, meta }) {
   if (!conversationId || !payloadEnvelope) throw new Error('conversationId and payloadEnvelope required');
+  if (!messageId) throw new Error('messageId required for media upload job');
   return enqueueOutboxJob({
     type: 'media-upload',
     conversationId,
@@ -27,6 +28,7 @@ export async function enqueueMediaMetaJob({
   meta
 }) {
   if (!conversationId || !ciphertextB64 || !headerJson) throw new Error('conversationId, headerJson, ciphertextB64 required');
+  if (!messageId) throw new Error('messageId required for media meta job');
   return enqueueOutboxJob({
     type: 'media-meta',
     conversationId,

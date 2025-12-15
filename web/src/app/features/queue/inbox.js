@@ -14,8 +14,8 @@ const STATE_DEAD = 'dead-letter';
 
 const BASE_BACKOFF_MS = 1_500;
 const BACKOFF_CAP_MS = 30_000;
-// Allow a few more retries so DR 恢復流程有時間完成（會話重建/guest bundle 補齊）。
-const MAX_RETRIES = 8;
+// Isolation round: disable inbox retries to avoid repeated decrypt attempts.
+const MAX_RETRIES = 0;
 const MAX_DEAD = 50;
 
 const convLocks = new Set();
@@ -34,7 +34,8 @@ function normalizeJob(input = {}) {
   if (!conversationId || !payloadEnvelope) throw new Error('conversationId and payloadEnvelope required');
   const messageId = typeof input.messageId === 'string' && input.messageId.trim().length
     ? input.messageId.trim()
-    : (typeof input.raw?.id === 'string' && input.raw.id.trim().length ? input.raw.id.trim() : crypto.randomUUID());
+    : null;
+  if (!messageId) throw new Error('messageId required for inbox job');
   const ts = Number.isFinite(Number(input.createdAt))
     ? Number(input.createdAt)
     : nowSeconds();

@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
+import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, markMessagesProcessedForUi } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
   ensureSecureConversationReady,
@@ -44,6 +44,7 @@ import {
   resolveViewerRole
 } from '../../features/calls/call-log.js';
 import { bytesToB64Url } from './ui-utils.js';
+import { logMsgEvent } from '../../lib/logging.js';
 const sentCallLogIds = new Set();
 const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
@@ -566,8 +567,9 @@ export function initMessagesPane({
     } else {
       outcome = CALL_LOG_OUTCOME.MISSED;
     }
+    const messageId = crypto.randomUUID();
     const entry = {
-      id: session.callId ? `call-log-${session.callId}` : `call-log-${identifier}`,
+      id: messageId,
       callId: session.callId || identifier,
       ts: Math.floor(endedAt / 1000),
       peerAccountDigest: peerDigest,
@@ -605,7 +607,8 @@ export function initMessagesPane({
         durationSeconds,
         direction: entry.direction,
         reason: normalizedReason || null,
-        ts: entry.ts
+        ts: entry.ts,
+        messageId: entry.id
       }).catch((err) => {
         log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest });
       });
@@ -2013,6 +2016,7 @@ export function initMessagesPane({
   function updateMessagesUI({ scrollToEnd = false, preserveScroll = false } = {}) {
     if (!elements.messagesList) return;
     const state = getMessageState();
+    const appendedIds = [];
     let prevHeight = 0;
     let prevScroll = 0;
     if (preserveScroll && elements.scrollEl) {
@@ -2021,6 +2025,16 @@ export function initMessagesPane({
     }
 
     const timelineMessages = Array.isArray(state.messages) ? [...state.messages] : [];
+    try {
+      logMsgEvent('ui:list', {
+        stage: 'ui',
+        conversationId: state.conversationId || null,
+        itemCount: timelineMessages.length,
+        ids: timelineMessages.slice(0, 5).map((m) => (m && (m.id || m.messageId || m.serverMessageId || null))),
+        peerDigest: state.activePeerDigest || null,
+        peerDeviceId: state.activePeerDeviceId || null
+      });
+    } catch {}
     elements.messagesList.innerHTML = '';
     if (!timelineMessages.length) {
       elements.messagesEmpty?.classList.remove('hidden');
@@ -2029,6 +2043,26 @@ export function initMessagesPane({
       let prevTs = null;
       let prevDateKey = null;
       const visibleStatusIndex = computeVisibleStatusIndex(timelineMessages);
+      const logUiAppend = (msg, overrides = {}) => {
+        const payload = {
+          stage: 'ui',
+          action: 'append',
+          conversationId: state.conversationId || null,
+          serverMessageId: msg.serverMessageId || msg.server_message_id || msg.serverMsgId || msg.messageId || null,
+          messageId: msg.id || msg.messageId || null,
+          packetKey: msg.packetKey || msg.packet_key || null,
+          direction: msg.direction || null,
+          msgType: overrides.msgType || msg.type || (msg.media ? 'media' : 'text'),
+          ts: msg.ts || null,
+          senderDigest: msg.senderDigest || msg.sender_digest || msg.meta?.senderDigest || msg.meta?.sender_digest || null,
+          senderDeviceId: msg.senderDeviceId || msg.sender_device_id || msg.meta?.senderDeviceId || msg.meta?.sender_device_id || msg.header?.device_id || null,
+          peerDigest: state.activePeerDigest || msg.peerAccountDigest || msg.peerDigest || null,
+          peerDeviceId: state.activePeerDeviceId || msg.peerDeviceId || msg.peer_device_id || null
+        };
+        Object.assign(payload, overrides);
+        logMsgEvent('ui:append', payload);
+        if (payload.messageId) appendedIds.push(payload.messageId);
+      };
       for (const msg of timelineMessages) {
         const tsVal = Number(msg.ts || null);
         const hasTs = Number.isFinite(tsVal);
@@ -2075,6 +2109,9 @@ export function initMessagesPane({
           chip.appendChild(textGroup);
           li.appendChild(chip);
           elements.messagesList.appendChild(li);
+          try {
+            logUiAppend(msg, { msgType: 'call-log' });
+          } catch {}
           continue;
         }
         const row = document.createElement('div');
@@ -2100,9 +2137,9 @@ export function initMessagesPane({
         } else {
           row.style.gap = '0';
         }
-    const bubble = document.createElement('div');
-    bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
-    if (msg.id) bubble.dataset.messageId = msg.id;
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
+        if (msg.id) bubble.dataset.messageId = msg.id;
         if (messageType === 'media' && msg.media) {
           renderMediaBubble(bubble, msg);
         } else {
@@ -2142,6 +2179,9 @@ export function initMessagesPane({
         }
         li.appendChild(metaRow);
         elements.messagesList.appendChild(li);
+        try {
+          logUiAppend(msg);
+        } catch {}
       }
     }
 
@@ -2156,6 +2196,9 @@ export function initMessagesPane({
       }
     }
     updateMessagesScrollOverflow();
+    if (state.conversationId && appendedIds.length) {
+      markMessagesProcessedForUi(state.conversationId, appendedIds);
+    }
     try {
       const diagnostics = Array.from(elements.messagesList.querySelectorAll('.message-bubble')).map((el) => ({
         text: el.textContent,
@@ -2525,8 +2568,12 @@ export function initMessagesPane({
 
   function appendLocalOutgoingMessage({ text, ts, id, type = 'text', media = null }) {
     const state = getMessageState();
+    const messageId = typeof id === 'string' && id.trim().length ? id.trim() : null;
+    if (!messageId) {
+      throw new Error('messageId required for local outgoing message');
+    }
     const message = {
-      id: id || `local-${Date.now()}`,
+      id: messageId,
       ts: ts || Math.floor(Date.now() / 1000),
       text,
       direction: 'outgoing',
@@ -2634,8 +2681,13 @@ export function initMessagesPane({
     const dedupeKey = `${state.conversationId}:${message.id}`;
     if (sentReadReceiptIds.has(dedupeKey)) return;
     sentReadReceiptIds.add(dedupeKey);
+    const peerDeviceId = state.activePeerDeviceId || message.peerDeviceId || null;
+    if (!peerDeviceId) {
+      sentReadReceiptIds.delete(dedupeKey);
+      return;
+    }
     try {
-      await sendDrReadReceipt({ peerAccountDigest: state.activePeerDigest, messageId: message.id });
+      await sendDrReadReceipt({ peerAccountDigest: state.activePeerDigest, peerDeviceId, messageId: message.id });
     } catch (err) {
       log({ readReceiptError: err?.message || err, messageId: message.id });
       sentReadReceiptIds.delete(dedupeKey);
@@ -2702,12 +2754,12 @@ export function initMessagesPane({
     try {
       for (const file of files) {
         const localUrl = URL.createObjectURL(file);
-        const tmpId = `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const messageId = crypto.randomUUID();
         const previewText = `[檔案] ${file.name || '附件'}`;
         const localMsg = appendLocalOutgoingMessage({
           text: previewText,
           ts: Math.floor(Date.now() / 1000),
-          id: tmpId,
+          id: messageId,
           type: 'media',
           media: {
             name: file.name || '附件',
@@ -2741,7 +2793,8 @@ export function initMessagesPane({
             convId: state.conversationId,
             dir: state.conversationId ? ['messages', state.conversationId] : 'messages',
             onProgress: progressHandler,
-            abortSignal: abortController.signal
+            abortSignal: abortController.signal,
+            messageId
           });
           if (res?.convId && !state.conversationId) {
             state.conversationId = res.convId;
@@ -2752,7 +2805,11 @@ export function initMessagesPane({
             state.conversationId = res.convId;
           }
           if (msg) {
-            msg.id = res?.msg?.id || msg.id;
+            const serverId = res?.msg?.id || res?.id || null;
+            if (serverId && serverId !== messageId) {
+              throw new Error('messageId mismatch from server');
+            }
+            msg.id = serverId || msg.id;
             msg.ts = res?.msg?.ts || msg.ts || Math.floor(Date.now() / 1000);
             msg.text = res?.msg?.text || msg.text;
             msg.pending = false;
@@ -3604,16 +3661,22 @@ export function initMessagesPane({
       }
       if (elements.sendBtn) elements.sendBtn.disabled = true;
       const ts = Math.floor(Date.now() / 1000);
-      const localMsg = appendLocalOutgoingMessage({ text, ts });
+      const messageId = crypto.randomUUID();
+      const localMsg = appendLocalOutgoingMessage({ text, ts, id: messageId });
       try {
         const res = await sendDrText({
           peerAccountDigest: state.activePeerDigest,
           peerDeviceId: state.activePeerDeviceId || null,
-          text
+          text,
+          messageId
         });
         log({ messageComposerSent: { peer: state.activePeerDigest, convId: res?.convId || null, msgId: res?.msg?.id || res?.id || null } });
         if (localMsg) {
-          localMsg.id = res?.msg?.id || res?.id || localMsg.id;
+          const serverId = res?.msg?.id || res?.id || null;
+          if (serverId && serverId !== messageId) {
+            throw new Error('messageId mismatch from server');
+          }
+          localMsg.id = serverId || localMsg.id;
           localMsg.status = 'sent';
           localMsg.pending = false;
           localMsg.ts = res?.msg?.ts || localMsg.ts || ts;

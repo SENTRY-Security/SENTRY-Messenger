@@ -332,7 +332,8 @@ async function onSendText(){
     if (!text) return log('請輸入要傳送的文字');
     const identity = getAccountDigest() || null;
     const convId = (convEl?.value || '').trim() || (identity ? `dm-${identity}-to-${peer}` : 'dm-demo');
-    const res = await sendDrText({ peerAccountDigest: peer, peerDeviceId, text, convId });
+    const messageId = crypto.randomUUID();
+    const res = await sendDrText({ peerAccountDigest: peer, peerDeviceId, text, convId, messageId });
     log({ drSend: true, msg: res.msg, convId: res.convId });
     if (textEl) textEl.value = '';
   } catch (e) {

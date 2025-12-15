@@ -96,10 +96,12 @@ export async function saveSettings(settings) {
     envelope,
     iv_b64: envelope.iv_b64
   };
+  const messageId = crypto.randomUUID();
   const overrides = {
     convId,
     type: 'text',
     aead: 'aes-256-gcm',
+    id: messageId,
     header,
     ciphertext_b64: envelope?.ct_b64 || 'settings',
     receiverAccountDigest: (getAccountDigest() || '').toUpperCase(),

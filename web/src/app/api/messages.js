@@ -41,6 +41,7 @@ export async function createSecureMessage({
   if (!header) throw new Error('header required');
   if (!ciphertextB64) throw new Error('ciphertextB64 required');
   if (!Number.isFinite(counter)) throw new Error('counter required');
+  if (!id) throw new Error('id (messageId) required');
   const senderDevice = senderDeviceId || ensureDeviceId();
   if (!senderDevice) throw new Error('senderDeviceId required');
   if (!receiverDeviceId) throw new Error('receiverDeviceId required');

@@ -14,7 +14,6 @@
  * 一切協定邏輯必須「單一路徑」且「強一致性」，任何 fallback 視為安全漏洞。
  */
 import { CreateMessageSchema, CreateSecureMessageSchema } from '../schemas/message.schema.js';
-import crypto from 'node:crypto';
 import { signHmac } from '../utils/hmac.js';
 import { z } from 'zod';
 import fs from 'node:fs/promises';
@@ -194,6 +193,9 @@ export const createMessage = async (req, res) => {
   const counter = Number.isFinite(messageInput.counter)
     ? Number(messageInput.counter)
     : Math.floor(Date.now() / 1000);
+  if (!messageInput.id) {
+    return res.status(400).json({ error: 'BadRequest', message: 'id (messageId) required' });
+  }
   const receiverDigest = messageInput.receiver_account_digest || null;
   if (!receiverDigest) {
     return res.status(400).json({ error: 'BadRequest', message: 'receiver_account_digest required' });
@@ -216,7 +218,7 @@ export const createMessage = async (req, res) => {
     header_json: headerJson,
     ciphertext_b64: ciphertextB64,
     counter,
-    id: messageInput.id || undefined,
+    id: messageInput.id,
     created_at: messageInput.created_at || messageInput.ts || undefined
   });
   const sig = signHmac(path, body, HMAC_SECRET);
@@ -254,7 +256,7 @@ export const createMessage = async (req, res) => {
     }
 
     // Accepted: index stored (async any downstream processing)
-    const messageId = workerJson?.id || workerJson?.message_id || messageInput.id || undefined;
+    const messageId = workerJson?.id || workerJson?.message_id || messageInput.id;
     const createdAt = messageInput.created_at || messageInput.ts || undefined;
     return res.status(202).json(workerJson || {
       accepted: true,
@@ -312,7 +314,10 @@ export const createSecureMessage = async (req, res) => {
   if (!receiver_account_digest) {
     return res.status(400).json({ error: 'BadRequest', message: 'receiver_account_digest required' });
   }
-  const messageId = id || crypto.randomUUID();
+  const messageId = id;
+  if (!messageId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'id (messageId) required' });
+  }
   const createdAt = Number.isFinite(created_at) ? created_at : Math.floor(Date.now() / 1000);
   const headerJson = header_json || (header ? JSON.stringify(header) : null);
   if (!headerJson) {

@@ -6,8 +6,8 @@ if (!globalThis.crypto) {
   });
 }
 
-import { drDecryptText } from '../web/src/shared/crypto/dr.js';
-import { b64u8 } from '../web/src/app/crypto/nacl.js';
+import { drDecryptText } from '../../web/src/shared/crypto/dr.js';
+import { b64u8 } from '../../web/src/app/crypto/nacl.js';
 
 function fromB64(str) {
   if (!str) return null;
@@ -71,7 +71,47 @@ const run = async () => {
     const text = await drDecryptText(state, packet);
     console.log('Decrypted text:', text);
   } catch (err) {
-    console.error('Decrypt failed', err);
+    const meta = err?.__drMeta || {};
+    const recvDh = meta.dhOutHash ?? null;
+    const recvSeed = meta.ckRSeedHash ?? null;
+    const senderDh = meta.dhOutHash ?? null; // DH should be symmetric
+    const senderSeed = meta.ckSSeedHash ?? meta.ckRSeedHash ?? null;
+    const recvMk = meta.mkHash ?? null;
+    const senderMk = meta.mkHash ?? null; // symmetric expectation
+    const recvChain = meta.chainHash ?? null;
+    const senderChain = meta.chainHash ?? null;
+    const encIv = meta.encIvHash ?? null;
+    const decIv = meta.decIvHash ?? null;
+    const encCt = meta.encCtHash ?? null;
+    const decCt = meta.decCtHash ?? null;
+    const encAad = meta.encAadHash ?? null;
+    const decAad = meta.decAadHash ?? null;
+    const encMk = meta.encMkHash ?? null;
+    const line = [
+      `n=${meta.headerN ?? header?.n ?? null}`,
+      `nUsed=${meta.nUsed ?? null}`,
+      `nrAfterRatchet=${meta.nrAfterRatchet ?? null}`,
+      `nrAtDerive=${meta.nrAtDerive ?? null}`,
+      `ratchet=${meta.ratchetPerformed ?? null}`,
+      `ek=${(header?.ek_pub_b64 || '').slice(0, 12) || null}`,
+      `postPub=${meta.postRatchetTheirPubPrefix ?? null}`,
+      `recvDh=${recvDh}`,
+      `recvSeed=${recvSeed}`,
+      `sendDh=${senderDh}`,
+      `sendSeed=${senderSeed}`,
+      `recvMk=${recvMk}`,
+      `sendMk=${senderMk}`,
+      `recvChain=${recvChain}`,
+      `sendChain=${senderChain}`,
+      `encIv=${encIv}`,
+      `decIv=${decIv}`,
+      `encCt=${encCt}`,
+      `decCt=${decCt}`,
+      `encAad=${encAad}`,
+      `decAad=${decAad}`,
+      `encMk=${encMk}`
+    ].join(' ');
+    console.log('[dr-replay:fail]', line);
   }
 };
 
