@@ -149,7 +149,7 @@ export async function loadContacts() {
       if (pendingSecretUpdate) {
         setContactSecret({ peerAccountDigest }, {
           ...pendingSecretUpdate,
-          deviceId: peerDeviceIdFromHeader,
+          deviceId,
           peerDeviceId: peerDeviceIdFromHeader
         });
       }

@@ -102,6 +102,55 @@ const sentDeliveryReceipts = new Set(); // `${conversationId}:${messageId}`
 let deliveredLoaded = false;
 const decryptFailDedup = new Set(); // messageId -> failed once
 const decryptFailMessageCache = new Map(); // messageId -> stateKey
+const decryptedMessageStore = new Map(); // conversationId -> Map(messageId -> messageObj)
+const DECRYPTED_CACHE_MAX_PER_CONV = 500;
+
+function normalizeMessageId(messageObj) {
+  if (!messageObj) return null;
+  return messageObj.id || messageObj.messageId || messageObj.serverMessageId || messageObj.server_message_id || null;
+}
+
+function clearDecryptedMessages(conversationId) {
+  if (!conversationId) return;
+  decryptedMessageStore.delete(String(conversationId));
+}
+
+export function putDecryptedMessage(conversationId, messageObj, maxEntries = DECRYPTED_CACHE_MAX_PER_CONV) {
+  if (!conversationId || !messageObj) return;
+  const messageId = normalizeMessageId(messageObj);
+  if (!messageId) return;
+  const key = String(conversationId);
+  let map = decryptedMessageStore.get(key);
+  if (!map) {
+    map = new Map();
+    decryptedMessageStore.set(key, map);
+  }
+  map.set(messageId, messageObj);
+  const limit = Math.max(50, Math.min(Number(maxEntries) || DECRYPTED_CACHE_MAX_PER_CONV, DECRYPTED_CACHE_MAX_PER_CONV));
+  if (map.size > limit) {
+    const overflow = map.size - limit;
+    for (let i = 0; i < overflow; i += 1) {
+      const first = map.keys().next();
+      if (first.done) break;
+      map.delete(first.value);
+    }
+  }
+}
+
+export function getDecryptedMessages(conversationId) {
+  if (!conversationId) return [];
+  const map = decryptedMessageStore.get(String(conversationId));
+  if (!(map instanceof Map) || !map.size) return [];
+  return Array.from(map.values())
+    .filter(Boolean)
+    .sort((a, b) => (Number(a?.ts) || 0) - (Number(b?.ts) || 0));
+}
+
+export function hasDecryptedMessage(conversationId, messageId) {
+  if (!conversationId || !messageId) return false;
+  const map = decryptedMessageStore.get(String(conversationId));
+  return map instanceof Map && map.has(messageId);
+}
 
 export function markConversationTombstone(conversationId) {
   if (!conversationId) return;
@@ -113,6 +162,7 @@ export function markConversationTombstone(conversationId) {
   receiptStore.delete(key);
   deliveredStore.delete(key);
   drFailureCounter.delete(key);
+  clearDecryptedMessages(key);
 }
 
 export function isConversationTombstoned(conversationId) {
@@ -137,6 +187,7 @@ export function clearConversationHistory(conversationId, ts = null) {
   receiptStore.delete(key);
   deliveredStore.delete(key);
   drFailureCounter.delete(key);
+  clearDecryptedMessages(key);
 }
 
 export function getConversationClearAfter(conversationId) {
@@ -884,9 +935,8 @@ export async function listSecureAndDecrypt(params = {}) {
       const seen = new Set();
       for (const it of merged) {
         const mid = toMessageId(it) || it?.id || null;
-        const key = `${mid || ''}::${toMessageTimestamp(it) || ''}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        if (mid && seen.has(mid)) continue;
+        if (mid) seen.add(mid);
         deduped.push(it);
       }
       items = deduped;
@@ -1131,12 +1181,25 @@ export async function listSecureAndDecrypt(params = {}) {
 
       if (deviceMatchesSelf) {
         direction = 'incoming';
+        if (!targetDigest && selfDigest) targetDigest = selfDigest;
       } else if (isSelfSender) {
         direction = 'outgoing';
       } else {
         direction = 'incoming';
       }
 
+      logMsgEvent('device-check', {
+        conversationId: packetConversationId,
+        messageId,
+        senderDeviceId,
+        targetDeviceId,
+        selfDeviceId,
+        peerDeviceId: peerDevice || null,
+        directionComputed: direction
+      });
+      if (selfDeviceId && peerDevice && selfDeviceId === peerDevice) {
+        throw new Error('SELF_DEVICE_ID_CORRUPTED: selfDeviceId equals peerDeviceId');
+      }
       logMsgEvent('handle:start', {
         stage: 'handle',
         direction,
@@ -1155,23 +1218,6 @@ export async function listSecureAndDecrypt(params = {}) {
       }
       if (!deviceMatchesSelf) {
         logDeliverySkip('directionFilter', { senderDeviceId, targetDeviceId, selfDeviceId });
-        return;
-      }
-      if (direction === 'outgoing') {
-        logDeliverySkip('directionFilter', { senderDeviceId, targetDeviceId, selfDeviceId });
-        return;
-      }
-      // 若對方把 targetDigest 填成自己、或漏填 digest，但 targetDeviceId 指向本機，直接視目標為自端。
-      const shouldForceSelfDigest = deviceMatchesSelf && (direction === 'incoming' || direction === 'unknown');
-      if (shouldForceSelfDigest && (!targetDigest || (senderDigest && targetDigest === senderDigest))) {
-        targetDigest = selfDigest || targetDigest;
-      }
-      if (!targetDigest) {
-        logDeliverySkip('targetDigestMissing');
-        return;
-      }
-      if (selfDigest && targetDigest !== selfDigest) {
-        logDeliverySkip('targetDigestMismatch', { targetDigest, selfDigest });
         return;
       }
       if (msgTypeForDecrypt === 'contact-share' && !senderDeviceId) {
@@ -1194,7 +1240,7 @@ export async function listSecureAndDecrypt(params = {}) {
         }, { level: 'log', force: true });
       }
       // peer 身份以 senderDigest 為準；header.peerAccountDigest 只做觀察，不作為拒收條件，避免因欄位命名差異造成單一路徑被中斷。
-      // direction 已由 senderDigest 判定，targetDigest 也已驗證為 self，因此此處不再以 headerPeerDigest 做硬性比對。
+      // direction 以 targetDeviceId 為優先，targetDigest 僅做記錄，不作為拒收條件。
 
       state = getStateForDevice(peerDeviceForMessage);
       state.baseKey = state.baseKey || {};
@@ -1269,10 +1315,6 @@ export async function listSecureAndDecrypt(params = {}) {
           logDeliverySkip('processedContactShare', { stableKey: stableContactShareKey });
           return;
         }
-      }
-      if (trackState && !isMediaMessage && wasMessageProcessed(convId, messageId)) {
-        logDeliverySkip('processedMessageCache');
-        return;
       }
 
       // 單一路徑：若收到同一 ratchet 鏈上已消耗過的 counter，直接跳過，避免重放造成錯用 ckR。
@@ -1395,9 +1437,22 @@ export async function listSecureAndDecrypt(params = {}) {
             receiptUpdates.add(messageObj.targetMessageId);
           }
         } else if (messageObj.type === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT && messageObj.targetMessageId) {
-      recordMessageDelivered(convId, messageObj.targetMessageId, messageTs || null);
-    }
+          recordMessageDelivered(convId, messageObj.targetMessageId, messageTs || null);
+        }
       } else if (messageObj) {
+        const cacheMessageId = normalizeMessageId(messageObj);
+        if (convId && cacheMessageId) {
+          putDecryptedMessage(convId, messageObj);
+          logMsgEvent('ui:cache-put', {
+            stage: 'ui',
+            action: 'cache-put',
+            conversationId: convId,
+            messageId: cacheMessageId,
+            serverMessageId,
+            direction: messageObj.direction || direction || 'incoming',
+            msgType: messageObj.type || payloadMsgType || msgTypeForDecrypt || null
+          });
+        }
         if (messageObj.type === 'contact-share') {
           if (drDebug) {
             logDrCore('inbox:contact-share', {

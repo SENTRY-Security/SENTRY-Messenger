@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, markMessagesProcessedForUi } from '../../features/messages.js';
+import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, markMessagesProcessedForUi, getDecryptedMessages } from '../../features/messages.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
   ensureSecureConversationReady,
@@ -161,7 +161,6 @@ export function initMessagesPane({
     loadMoreBtn: dom.messagesLoadMoreBtn ?? document.getElementById('messagesLoadMore'),
     loadMoreLabel: dom.messagesLoadMoreLabel ?? document.querySelector('#messagesLoadMore .label'),
     loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('#messagesLoadMore .spinner'),
-    resyncBtn: dom.messagesResyncBtn ?? document.getElementById('messagesResyncBtn'),
     callBtn: dom.messagesCallBtn ?? document.getElementById('messagesCallBtn'),
     videoBtn: dom.messagesVideoBtn ?? document.getElementById('messagesVideoBtn')
   };
@@ -1181,12 +1180,6 @@ export function initMessagesPane({
     updateConversationActionsAvailability();
   }
 
-  function setResyncButtonVisible(show = false) {
-    if (!elements.resyncBtn) return;
-    elements.resyncBtn.style.display = show ? 'inline-flex' : 'none';
-    elements.resyncBtn.setAttribute('aria-hidden', show ? 'false' : 'true');
-  }
-
   function resolveContactAvatarUrl(entry) {
     if (!entry || typeof entry !== 'object') return null;
     const candidates = [
@@ -2047,6 +2040,7 @@ export function initMessagesPane({
         const payload = {
           stage: 'ui',
           action: 'append',
+          index: typeof overrides.index === 'number' ? overrides.index : null,
           conversationId: state.conversationId || null,
           serverMessageId: msg.serverMessageId || msg.server_message_id || msg.serverMsgId || msg.messageId || null,
           messageId: msg.id || msg.messageId || null,
@@ -2063,7 +2057,10 @@ export function initMessagesPane({
         logMsgEvent('ui:append', payload);
         if (payload.messageId) appendedIds.push(payload.messageId);
       };
+      let renderIndex = 0;
       for (const msg of timelineMessages) {
+        const currentIndex = renderIndex;
+        renderIndex += 1;
         const tsVal = Number(msg.ts || null);
         const hasTs = Number.isFinite(tsVal);
         const dateKey = hasTs ? new Date(tsVal * 1000).toDateString() : null;
@@ -2110,7 +2107,7 @@ export function initMessagesPane({
           li.appendChild(chip);
           elements.messagesList.appendChild(li);
           try {
-            logUiAppend(msg, { msgType: 'call-log' });
+            logUiAppend(msg, { msgType: 'call-log', index: currentIndex });
           } catch {}
           continue;
         }
@@ -2180,7 +2177,7 @@ export function initMessagesPane({
         li.appendChild(metaRow);
         elements.messagesList.appendChild(li);
         try {
-          logUiAppend(msg);
+          logUiAppend(msg, { index: currentIndex });
         } catch {}
       }
     }
@@ -2210,6 +2207,19 @@ export function initMessagesPane({
     }
   }
 
+  function logUiSkip(gate, { messageId = null, reason = null } = {}) {
+    try {
+      const state = getMessageState();
+      logMsgEvent('skip', {
+        stage: 'ui',
+        gate,
+        conversationId: state.conversationId || null,
+        messageId: messageId || null,
+        reason: reason || gate
+      });
+    } catch {}
+  }
+
   async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
@@ -2219,6 +2229,22 @@ export function initMessagesPane({
     }
     if (state.loading) return;
     if (append && (!state.hasMore || !state.nextCursor)) return;
+
+    const cachedDecrypted = getDecryptedMessages(state.conversationId) || [];
+    const mergeMessagesById = (...lists) => {
+      const map = new Map();
+      for (const list of lists) {
+        if (!Array.isArray(list)) continue;
+        for (const msg of list) {
+          if (!msg) continue;
+          const mid = msg.id || msg.messageId || msg.serverMessageId || msg.server_message_id || null;
+          if (!mid) continue;
+          const existing = map.get(mid);
+          map.set(mid, existing ? { ...existing, ...msg } : msg);
+        }
+      }
+      return Array.from(map.values()).sort((a, b) => (Number(a?.ts) || 0) - (Number(b?.ts) || 0));
+    };
 
     state.loading = true;
     if (!append) setMessagesStatus('載入中…');
@@ -2244,7 +2270,10 @@ export function initMessagesPane({
         chunk = chunk.filter((entry) => {
           const messageId = entry?.id || entry?.messageId || null;
           if (!messageId) return true;
-          if (seenIds.has(messageId)) return false;
+          if (seenIds.has(messageId)) {
+            logUiSkip('dedupe:chunk', { messageId });
+            return false;
+          }
           seenIds.add(messageId);
           return true;
         });
@@ -2275,7 +2304,7 @@ export function initMessagesPane({
       }
       if (!mutateLive || forceReplay) {
         // 沙盒重播：不推進現有 messages，僅在成功時替換列表
-        const sandbox = Array.isArray(chunk) ? chunk.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
+        const sandbox = mergeMessagesById(chunk, cachedDecrypted);
         if (!sandbox.length) {
           // no-op
         } else if (!append) {
@@ -2284,25 +2313,25 @@ export function initMessagesPane({
         }
       } else if (append) {
         const existingIds = new Set(state.messages.map((m) => m.id));
-        chunk = chunk.filter((m) => !existingIds.has(m.id));
-        if (chunk.length) {
-          state.messages = [...chunk, ...state.messages];
+        for (const cached of cachedDecrypted) {
+          const mid = cached?.id || cached?.messageId || cached?.serverMessageId || cached?.server_message_id || null;
+          if (mid) existingIds.add(mid);
+        }
+        chunk = chunk.filter((m) => {
+          const mid = m?.id || m?.messageId || null;
+          if (mid && existingIds.has(mid)) {
+            logUiSkip('dedupe:existing', { messageId: mid });
+            return false;
+          }
+          return true;
+        });
+        if (chunk.length || cachedDecrypted.length) {
+          state.messages = mergeMessagesById(state.messages, cachedDecrypted, chunk);
           updateMessagesUI({ preserveScroll: true });
         }
       } else {
-        if (chunk.length) {
-          const mergedMap = new Map();
-          for (const msg of state.messages) {
-            if (!msg || !msg.id) continue;
-            mergedMap.set(msg.id, msg);
-          }
-          for (const msg of chunk) {
-            if (!msg || !msg.id) continue;
-            mergedMap.set(msg.id, msg);
-          }
-          const merged = Array.from(mergedMap.values());
-          merged.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-          state.messages = merged;
+        if (chunk.length || cachedDecrypted.length) {
+          state.messages = mergeMessagesById(state.messages, cachedDecrypted, chunk);
           updateMessagesUI({ scrollToEnd: true });
         } else if (!state.messages.length) {
           state.messages = chunk;
@@ -2316,25 +2345,21 @@ export function initMessagesPane({
       state.nextCursorTs = state.nextCursor?.ts ?? nextCursorTs ?? null;
       state.hasMore = !!state.nextCursor || !!hasMoreAtCursor;
       if (errors?.length) {
-        setMessagesStatus(`部分訊息無法解密，嘗試重新同步（${errors.length}）`, true);
-        setResyncButtonVisible(true);
+        setMessagesStatus(`部分訊息無法解密，系統將嘗試重新同步（${errors.length}）`, true);
         if (!state.replayInProgress && retryOnError) {
           state.replayInProgress = true;
           try {
             await loadActiveConversationMessages({ append: false, replay: true, retryOnError: false });
           } catch (err) {
             setMessagesStatus('重新同步失敗：' + (err?.message || err), true);
-            setResyncButtonVisible(true);
           } finally {
             state.replayInProgress = false;
           }
         }
       } else if (Array.isArray(deadLetters) && deadLetters.length) {
-        setMessagesStatus('部分訊息解密失敗，已排程重試，若仍無法顯示請點擊重新同步。', true);
-        setResyncButtonVisible(true);
+        setMessagesStatus('部分訊息解密失敗，已排程重試。', true);
       } else {
         setMessagesStatus('', false);
-        setResyncButtonVisible(false);
       }
       let receiptsChanged = false;
       if (Array.isArray(receiptUpdates)) {
@@ -2468,7 +2493,6 @@ export function initMessagesPane({
     state.nextCursor = null;
     state.nextCursorTs = null;
     state.hasMore = true;
-    setResyncButtonVisible(false);
     state.loading = false;
     const thread = upsertConversationThread({
       peerAccountDigest: key,
@@ -3599,18 +3623,6 @@ export function initMessagesPane({
 
     elements.callBtn?.addEventListener('click', () => handleConversationAction('voice'));
     elements.videoBtn?.addEventListener('click', () => handleConversationAction('video'));
-    elements.resyncBtn?.addEventListener('click', () => {
-      setMessagesStatus('重新同步中…', true);
-      loadActiveConversationMessages({ append: false, replay: true, retryOnError: false })
-        .then(() => {
-          setMessagesStatus('', false);
-          scrollMessagesToBottom();
-        })
-        .catch((err) => {
-          setMessagesStatus('重新同步失敗：' + (err?.message || err), true);
-          setResyncButtonVisible(true);
-        });
-    });
     elements.createGroupBtn?.addEventListener('click', handleCreateGroup);
 
     if (elements.scrollEl) {

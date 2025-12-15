@@ -32,7 +32,7 @@ import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 import { bytesToB64Url, b64UrlToBytes } from '../../../shared/utils/base64.js';
 import { toU8Strict } from '../../../shared/utils/u8-strict.js';
-import { logUiNoise } from '../../lib/logging.js';
+import { logMsgEvent, logUiNoise } from '../../lib/logging.js';
 
 const INVITE_INFO = new TextEncoder().encode('invite-token');
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
@@ -1107,6 +1107,20 @@ export function setupShareController(options) {
       console.warn('[share-controller]', { contactInitMissingFields: true, reason: 'conversation-or-bundle', peerDigest, peerDeviceId, hasConv: !!conversation?.conversation_id });
       return;
     }
+    const selfDeviceId = ensureDeviceId();
+    const directionComputed = selfDeviceId && targetDeviceId && selfDeviceId === targetDeviceId ? 'incoming' : 'unknown';
+    logMsgEvent('contact-init:device-check', {
+      conversationId: conversation?.conversation_id || null,
+      messageId: msg?.messageId || null,
+      senderDeviceId: peerDeviceId || null,
+      targetDeviceId: targetDeviceId || null,
+      selfDeviceId: selfDeviceId || null,
+      peerDeviceId: peerDeviceId || null,
+      directionComputed
+    });
+    if (selfDeviceId && peerDeviceId && selfDeviceId === peerDeviceId) {
+      throw new Error('SELF_DEVICE_ID_CORRUPTED: selfDeviceId equals peerDeviceId');
+    }
     // 同側欄位驗證：conversation.peerDeviceId 應等於 targetDeviceId（本端），若不一致則拒收。
     if (conversation.peerDeviceId && targetDeviceId && conversation.peerDeviceId !== targetDeviceId) {
       console.warn('[share-controller]', {
@@ -1139,7 +1153,6 @@ export function setupShareController(options) {
           { peerAccountDigest: peerDigest, peerDeviceId },
           { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:1125:contact-init-handler-clear' }
         );
-        const selfDeviceId = ensureDeviceId();
         // 只有 owner/responder 端（對端裝置等於本機）才允許 responder bootstrap。
         console.log('[responder-bootstrap:enter]', {
           selfDeviceId: selfDeviceId || null,
