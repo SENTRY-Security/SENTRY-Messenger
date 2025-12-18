@@ -17,6 +17,7 @@
    - [媒體、設定與資料夾命名](#媒體設定與資料夾命名)
 4. [安全預設與環境配置](#安全預設與環境配置)
 5. [營運與部署流程](#營運與部署流程)
+   - [D1 Schema 盤點（只讀）](#d1-schema-盤點只讀)
 6. [測試與自動化](#測試與自動化)
 7. [最新進度與工作項目](#最新進度與工作項目)
 8. [授權條款](#授權條款)
@@ -188,6 +189,36 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 > **TUN 服務備註**：詳細主機資訊與操作規範請參考 `docs/internal/tun-host.md`（本檔案已被 `.gitignore` 排除，不隨版本控制分發；需向維運成員索取或於本地自行建立）。
 
 5. 若任何 Production 測試失敗，需先排除問題並重新部署，直到正式環境也全部通過為止。
+
+### D1 Schema 盤點（只讀）
+
+目的：只讀盤點目前 D1 的實際 schema（tables / indexes / triggers / views），禁止任何寫入或 migration。
+
+步驟（建議在 `data-worker/` 目錄執行）：
+1. 確認 D1 綁定與資料庫名稱：`data-worker/wrangler.toml` 內的 `[[d1_databases]]`（本專案為 `binding = "DB"`、`database_name = "message_db"`）。
+2. 確認 Wrangler 已登入且帳號可用：`wrangler whoami`。若有多帳號，請指定 `CLOUDFLARE_ACCOUNT_ID`。
+3. 確認目標 D1 存在：
+   ```bash
+   CLOUDFLARE_ACCOUNT_ID=<your-account-id> wrangler d1 list --json
+   ```
+4. 只讀查詢 schema（範例）：
+   ```bash
+   # 列出所有 tables / indexes / triggers / views（含建立語句）
+   CLOUDFLARE_ACCOUNT_ID=<your-account-id> wrangler d1 execute message_db --remote \
+     --command "SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','index','trigger','view') ORDER BY type, name;"
+
+   # 逐表欄位 / index / foreign key
+   CLOUDFLARE_ACCOUNT_ID=<your-account-id> wrangler d1 execute message_db --remote \
+     --command "PRAGMA table_info('<TABLE_NAME>');"
+   CLOUDFLARE_ACCOUNT_ID=<your-account-id> wrangler d1 execute message_db --remote \
+     --command "PRAGMA index_list('<TABLE_NAME>');"
+   CLOUDFLARE_ACCOUNT_ID=<your-account-id> wrangler d1 execute message_db --remote \
+     --command "PRAGMA index_info('<INDEX_NAME>');"
+   CLOUDFLARE_ACCOUNT_ID=<your-account-id> wrangler d1 execute message_db --remote \
+     --command "PRAGMA foreign_key_list('<TABLE_NAME>');"
+   ```
+
+備註：部分系統表（例如 `_cf_KV`）可能回 `SQLITE_AUTH`，僅需記錄「不可讀取」即可，禁止改用任何寫入或升權方式。
 
 ---
 

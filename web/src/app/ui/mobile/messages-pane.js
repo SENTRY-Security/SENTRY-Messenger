@@ -49,6 +49,44 @@ const sentCallLogIds = new Set();
 const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
 const GROUPS_ENABLED = false;
+const TIMELINE_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
+const decryptBannerLogDedup = new Set();
+
+function normalizeMsgTypeValue(value) {
+  if (!value || typeof value !== 'string') return null;
+  return value.trim().toLowerCase();
+}
+
+function isControlBannerEntry(entry) {
+  if (!entry) return false;
+  if (entry.control === true) return true;
+  const msgType = normalizeMsgTypeValue(entry.msgType || entry.type || null);
+  if (!msgType) return false;
+  return !TIMELINE_MESSAGE_TYPES.has(msgType);
+}
+
+function logDecryptBannerEntries(conversationId, entries = []) {
+  for (const entry of entries) {
+    if (isControlBannerEntry(entry)) continue;
+    const messageId = entry?.messageId || entry?.id || entry?.jobId || null;
+    const msgType = normalizeMsgTypeValue(entry?.msgType || entry?.type || null);
+    if (!messageId && !msgType) continue;
+    const dedupKey = `banner:${conversationId || 'unknown'}:${messageId || msgType || 'unknown'}`;
+    if (decryptBannerLogDedup.has(dedupKey)) continue;
+    decryptBannerLogDedup.add(dedupKey);
+    try {
+      console.info('[msg] ' + JSON.stringify({
+        event: 'decrypt-banner',
+        conversationId: conversationId || null,
+        messageId: messageId || null,
+        msgType: msgType || null,
+        control: false
+      }));
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 function makeCallLogPlaceholderKey(peerDigest, callId) {
   if (!peerDigest || !callId) return null;
@@ -2263,6 +2301,12 @@ export function initMessagesPane({
         allowReplay: true,
         onMessageDecrypted: handleMessageDecrypted
       });
+      const filteredErrors = Array.isArray(errors)
+        ? errors.filter((entry) => !isControlBannerEntry(entry))
+        : [];
+      const filteredDeadLetters = Array.isArray(deadLetters)
+        ? deadLetters.filter((entry) => !isControlBannerEntry(entry))
+        : [];
       let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
       let placeholderUpdated = false;
       if (chunk.length) {
@@ -2344,8 +2388,9 @@ export function initMessagesPane({
       state.nextCursor = nextCursor || (nextCursorTs != null ? { ts: nextCursorTs, id: null } : null);
       state.nextCursorTs = state.nextCursor?.ts ?? nextCursorTs ?? null;
       state.hasMore = !!state.nextCursor || !!hasMoreAtCursor;
-      if (errors?.length) {
-        setMessagesStatus(`部分訊息無法解密，系統將嘗試重新同步（${errors.length}）`, true);
+      if (filteredErrors.length) {
+        logDecryptBannerEntries(state.conversationId, filteredErrors);
+        setMessagesStatus(`部分訊息無法解密，系統將嘗試重新同步（${filteredErrors.length}）`, true);
         if (!state.replayInProgress && retryOnError) {
           state.replayInProgress = true;
           try {
@@ -2356,7 +2401,8 @@ export function initMessagesPane({
             state.replayInProgress = false;
           }
         }
-      } else if (Array.isArray(deadLetters) && deadLetters.length) {
+      } else if (filteredDeadLetters.length) {
+        logDecryptBannerEntries(state.conversationId, filteredDeadLetters);
         setMessagesStatus('部分訊息解密失敗，已排程重試。', true);
       } else {
         setMessagesStatus('', false);

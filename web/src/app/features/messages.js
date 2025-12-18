@@ -104,6 +104,8 @@ const decryptFailDedup = new Set(); // messageId -> failed once
 const decryptFailMessageCache = new Map(); // messageId -> stateKey
 const decryptedMessageStore = new Map(); // conversationId -> Map(messageId -> messageObj)
 const DECRYPTED_CACHE_MAX_PER_CONV = 500;
+const TIMELINE_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
+const decryptFailLogDedup = new Set();
 
 function normalizeMessageId(messageObj) {
   if (!messageObj) return null;
@@ -538,6 +540,48 @@ function parseContactShareMessage(plaintext) {
     contactPayload: payload || null,
     conversation: parsed.conversation || null
   };
+}
+
+function normalizeMsgTypeValue(value) {
+  if (!value || typeof value !== 'string') return null;
+  return value.trim().toLowerCase();
+}
+
+function resolveMsgTypeForTimeline(rawMsgType, fallbackType = null) {
+  const normRaw = normalizeMsgTypeValue(rawMsgType);
+  if (normRaw) return normRaw;
+  const normFallback = normalizeMsgTypeValue(fallbackType);
+  if (normFallback) return normFallback;
+  return 'text';
+}
+
+function isTimelineMessageType(msgType) {
+  const norm = normalizeMsgTypeValue(msgType);
+  if (!norm) return true; // default to text if not specified
+  return TIMELINE_MESSAGE_TYPES.has(norm);
+}
+
+function isControlLikeMessageType(msgType) {
+  const norm = normalizeMsgTypeValue(msgType);
+  if (!norm) return false;
+  return !TIMELINE_MESSAGE_TYPES.has(norm);
+}
+
+function logDecryptFailObservation({ conversationId = null, messageId = null, msgType = null, control = false }) {
+  const dedupKey = messageId || `${conversationId || 'unknown'}::${msgType || 'unknown'}`;
+  if (dedupKey && decryptFailLogDedup.has(dedupKey)) return;
+  if (dedupKey) decryptFailLogDedup.add(dedupKey);
+  try {
+    console.info('[msg] ' + JSON.stringify({
+      event: 'decrypt-fail',
+      conversationId: conversationId || null,
+      messageId: messageId || null,
+      msgType: msgType || null,
+      control: !!control
+    }));
+  } catch {
+    /* ignore log errors */
+  }
 }
 
 function isControlMessageObject(obj) {
@@ -1044,6 +1088,8 @@ export async function listSecureAndDecrypt(params = {}) {
     const raw = job?.raw || {};
     const jobPacket = job?.payloadEnvelope || null;
     let payloadMsgType = null;
+    let rawMsgType = null;
+    let msgTypeForDecrypt = 'text';
     let convId = null;
     let headerRaw = null;
     let headerJson = null;
@@ -1115,10 +1161,10 @@ export async function listSecureAndDecrypt(params = {}) {
       const packetConversationId = packet?.conversationId || raw?.conversationId || raw?.conversation_id || conversationId || null;
       const meta = payload?.meta || null;
       payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
-      const rawMsgType = typeof meta?.msg_type === 'string'
+      rawMsgType = typeof meta?.msg_type === 'string'
         ? meta.msg_type
         : (typeof meta?.msgType === 'string' ? meta.msgType : null);
-      const msgTypeForDecrypt = rawMsgType || (payloadMsgType ? String(payloadMsgType) : 'text');
+      msgTypeForDecrypt = rawMsgType || (payloadMsgType ? String(payloadMsgType) : 'text');
       const isMediaMessage = !!(meta?.media);
 
       // Sender/target判斷：先看 direction，再套用目標驗證（避免把自己送出的封包誤判）。
@@ -1430,16 +1476,47 @@ export async function listSecureAndDecrypt(params = {}) {
         messageId,
         messageKeyB64
       });
-      if (messageObj && isControlMessageObject(messageObj)) {
-        if (messageObj.type === CONTROL_MESSAGE_TYPES.READ_RECEIPT && messageObj.targetMessageId) {
-          const updated = recordMessageRead(convId, messageObj.targetMessageId, messageTs || null);
-          if (updated) {
-            receiptUpdates.add(messageObj.targetMessageId);
-          }
-        } else if (messageObj.type === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT && messageObj.targetMessageId) {
-          recordMessageDelivered(convId, messageObj.targetMessageId, messageTs || null);
+      const resolvedMsgType = resolveMsgTypeForTimeline(rawMsgType, messageObj?.type || msgTypeForDecrypt);
+      const controlLike = isControlLikeMessageType(resolvedMsgType);
+      const isReadReceipt = messageObj?.type === CONTROL_MESSAGE_TYPES.READ_RECEIPT && messageObj?.targetMessageId;
+      const isDeliveryReceipt = messageObj?.type === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT && messageObj?.targetMessageId;
+      if (isReadReceipt) {
+        const updated = recordMessageRead(convId, messageObj.targetMessageId, messageTs || null);
+        if (updated) {
+          receiptUpdates.add(messageObj.targetMessageId);
         }
-      } else if (messageObj) {
+      } else if (isDeliveryReceipt) {
+        recordMessageDelivered(convId, messageObj.targetMessageId, messageTs || null);
+      }
+      if (messageObj?.type === 'contact-share') {
+        if (drDebug) {
+          logDrCore('inbox:contact-share', {
+            conversationId: convId,
+            peerAccountDigest: peerKey,
+            messageId
+          }, { level: 'log', force: true });
+        }
+        try {
+          if (typeof document !== 'undefined' && document?.dispatchEvent) {
+            document.dispatchEvent(new CustomEvent('contact-share', {
+              detail: { message: messageObj, conversationId: convId, peerAccountDigest: peerKey }
+            }));
+          }
+        } catch {}
+        return;
+      }
+      if (messageObj && controlLike) {
+        logMsgEvent('skip', {
+          stage: 'handle',
+          gate: 'control-message',
+          conversationId: convId,
+          messageId,
+          msgType: resolvedMsgType,
+          direction: messageObj.direction || direction || 'incoming'
+        });
+        return;
+      }
+      if (messageObj) {
         const cacheMessageId = normalizeMessageId(messageObj);
         if (convId && cacheMessageId) {
           putDecryptedMessage(convId, messageObj);
@@ -1450,25 +1527,8 @@ export async function listSecureAndDecrypt(params = {}) {
             messageId: cacheMessageId,
             serverMessageId,
             direction: messageObj.direction || direction || 'incoming',
-            msgType: messageObj.type || payloadMsgType || msgTypeForDecrypt || null
+            msgType: resolvedMsgType || messageObj.type || payloadMsgType || msgTypeForDecrypt || null
           });
-        }
-        if (messageObj.type === 'contact-share') {
-          if (drDebug) {
-            logDrCore('inbox:contact-share', {
-              conversationId: convId,
-              peerAccountDigest: peerKey,
-              messageId
-            }, { level: 'log', force: true });
-          }
-          try {
-            if (typeof document !== 'undefined' && document?.dispatchEvent) {
-              document.dispatchEvent(new CustomEvent('contact-share', {
-                detail: { message: messageObj, conversationId: convId, peerAccountDigest: peerKey }
-              }));
-            }
-          } catch {}
-          return;
         }
         out.push(messageObj);
         if (messageObj.direction === 'incoming' && messageObj.id) {
@@ -1516,10 +1576,24 @@ export async function listSecureAndDecrypt(params = {}) {
         } catch {}
       }
       const msg = err?.message || String(err);
-      if (!payloadMsgType || (payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_INIT && payloadMsgType !== CONTROL_MESSAGE_TYPES.SESSION_ACK && payloadMsgType !== CONTROL_MESSAGE_TYPES.READ_RECEIPT && payloadMsgType !== CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT)) {
-        errs.push(msg);
-      }
+      const resolvedMsgType = resolveMsgTypeForTimeline(rawMsgType, msgTypeForDecrypt);
+      const controlLike = isControlLikeMessageType(resolvedMsgType);
+      const shouldCountForUi = !controlLike;
       const failedMessageId = messageId || job?.messageId || job?.raw?.id || null;
+      logDecryptFailObservation({
+        conversationId: convId,
+        messageId: failedMessageId,
+        msgType: resolvedMsgType,
+        control: controlLike
+      });
+      if (shouldCountForUi) {
+        errs.push({
+          messageId: failedMessageId || null,
+          msgType: resolvedMsgType || null,
+          control: false,
+          reason: msg
+        });
+      }
       logMsgEvent('decrypt:fail', {
         conversationId: convId,
         direction,
@@ -1527,7 +1601,7 @@ export async function listSecureAndDecrypt(params = {}) {
         serverMessageId,
         gate: 'decryptFail',
         reason: msg,
-        msgType: payloadMsgType || msgTypeForDecrypt,
+        msgType: resolvedMsgType || payloadMsgType || msgTypeForDecrypt,
         senderDigest,
         senderDeviceId,
         targetDeviceId,
@@ -1611,13 +1685,17 @@ export async function listSecureAndDecrypt(params = {}) {
       } catch (logErr) {
         logDrCore('decrypt:fail-log-error', { conversationId: convId, error: logErr?.message || String(logErr) });
       }
-      deadLetters.push({
-        conversationId: convId,
-        messageId: messageId || job?.messageId || job?.raw?.id || null,
-        counter: packet?.counter ?? header?.n ?? null,
-        drState: trackState && state ? { Ns: state.Ns, Nr: state.Nr, PN: state.PN } : null,
-        error: msg
-      });
+      if (shouldCountForUi) {
+        deadLetters.push({
+          conversationId: convId,
+          messageId: messageId || job?.messageId || job?.raw?.id || null,
+          counter: packet?.counter ?? header?.n ?? null,
+          drState: trackState && state ? { Ns: state.Ns, Nr: state.Nr, PN: state.PN } : null,
+          msgType: resolvedMsgType || null,
+          control: controlLike,
+          error: msg
+        });
+      }
       const failKey = `${conversationId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`;
       const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
       drFailureCounter.set(failKey, nextFail);
@@ -1628,6 +1706,11 @@ export async function listSecureAndDecrypt(params = {}) {
         );
         drFailureCounter.delete(failKey);
         throw new Error('DR 解密連續失敗已重置會話，請重新同步好友或重新建立邀請');
+      }
+      if (err && typeof err === 'object') {
+        err.__controlMessage = controlLike;
+        err.__msgType = resolvedMsgType || null;
+        err.__messageId = failedMessageId || null;
       }
       throw err;
     }
@@ -1714,12 +1797,17 @@ export async function listSecureAndDecrypt(params = {}) {
         }
         await handleInboxJob(job);
       } catch (err) {
-        deadLetters.push({
-          jobId: job?.jobId,
-          conversationId,
-          messageId: job?.messageId,
-          error: err?.message || String(err)
-        });
+        const skipDeadLetter = !!err?.__controlMessage;
+        if (!skipDeadLetter) {
+          deadLetters.push({
+            jobId: job?.jobId,
+            conversationId,
+            messageId: job?.messageId,
+            msgType: err?.__msgType || null,
+            control: !!err?.__controlMessage,
+            error: err?.message || String(err)
+          });
+        }
         if (preSnapshot && shouldTrackState) {
           deps.clearDrState(
             { peerAccountDigest: peerKey, peerDeviceId },
