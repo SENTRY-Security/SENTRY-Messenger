@@ -22,7 +22,7 @@ import {
   drState,
   normalizePeerIdentity
 } from '../../core/store.js';
-import { generateRandomNickname, normalizeNickname } from '../../features/profile.js';
+import { generateRandomNickname, normalizeNickname, persistProfileForAccount } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
@@ -1005,6 +1005,21 @@ export function setupShareController(options) {
         conversation,
         role: selfRole || stored?.role || null
       });
+      try {
+        const peerAccountOnly = peerKey && typeof peerKey === 'string' && peerKey.includes('::')
+          ? peerKey.split('::')[0]
+          : peerKey;
+        await persistProfileForAccount(
+          {
+            nickname: payload.nickname,
+            avatar: payload.avatar || null,
+            updatedAt: payload.updatedAt || payload.addedAt || Math.floor(Date.now() / 1000)
+          },
+          peerAccountOnly
+        );
+      } catch (err) {
+        log({ contactShareProfilePersistError: err?.message || err, peerAccountDigest: peerKey });
+      }
       const drInitRaw = conversation.dr_init || null;
       const normalizedBundle = drInitRaw?.guest_bundle ? normalizeGuestBundle(drInitRaw.guest_bundle) : null;
       // 只有當對方裝置等於本機（owner/responder 端）才允許 responder bootstrap；guest 端禁止。

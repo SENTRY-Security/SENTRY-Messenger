@@ -16,6 +16,9 @@ export async function signPut({ convId, contentType, dir, size, direction, accou
   const resolvedConv = typeof convId === 'string' ? convId : '';
   if (!resolvedConv) throw new Error('convId required');
   const body = { convId: resolvedConv, contentType };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
   if (dir) body.dir = dir;
   if (typeof size === 'number') body.size = size;
   if (direction) body.direction = direction;
@@ -23,7 +26,7 @@ export async function signPut({ convId, contentType, dir, size, direction, accou
   if (token) body.accountToken = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
   if (digest) body.accountDigest = digest;
-  return await fetchJSON('/api/v1/media/sign-put', body);
+  return await fetchJSON('/api/v1/media/sign-put', body, headers);
 }
 
 /**
@@ -35,11 +38,14 @@ export async function signGet({ key, accountToken, accountDigest } = {}) {
   const resolvedKey = typeof key === 'string' ? key : '';
   if (!resolvedKey) throw new Error('object key required');
   const body = { key: resolvedKey };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
   const token = accountToken || getAccountToken();
   if (token) body.accountToken = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
   if (digest) body.accountDigest = digest;
- return await fetchJSON('/api/v1/media/sign-get', body);
+  return await fetchJSON('/api/v1/media/sign-get', body, headers);
 }
 
 /**

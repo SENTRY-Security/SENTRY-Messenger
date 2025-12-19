@@ -1,6 +1,7 @@
 import { log } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, markMessagesProcessedForUi, getDecryptedMessages } from '../../features/messages.js';
+import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
+import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import {
   ensureSecureConversationReady,
@@ -11,6 +12,7 @@ import {
   listSecureConversationStatuses
 } from '../../features/secure-conversation-manager.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from '../../features/secure-conversation-signals.js';
+import { SEMANTIC_KIND } from '../../features/semantic.js';
 import {
   conversationIdFromToken,
   deriveConversationContextFromSecret
@@ -49,7 +51,6 @@ const sentCallLogIds = new Set();
 const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
 const GROUPS_ENABLED = false;
-const TIMELINE_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
 const decryptBannerLogDedup = new Set();
 
 function normalizeMsgTypeValue(value) {
@@ -57,19 +58,40 @@ function normalizeMsgTypeValue(value) {
   return value.trim().toLowerCase();
 }
 
+function isUserBannerEntry(entry) {
+  return entry?.kind === SEMANTIC_KIND.USER_MESSAGE;
+}
+
 function isControlBannerEntry(entry) {
-  if (!entry) return false;
+  if (!entry) return true;
+  if (isUserBannerEntry(entry)) return false;
+  if (entry.kind) return true;
   if (entry.control === true) return true;
-  const msgType = normalizeMsgTypeValue(entry.msgType || entry.type || null);
-  if (!msgType) return false;
-  return !TIMELINE_MESSAGE_TYPES.has(msgType);
+  return true;
+}
+
+function countBannerEntries(entries = []) {
+  let userFail = 0;
+  let controlFail = 0;
+  for (const entry of entries) {
+    if (!entry) {
+      controlFail += 1;
+      continue;
+    }
+    if (isUserBannerEntry(entry)) {
+      userFail += 1;
+    } else {
+      controlFail += 1;
+    }
+  }
+  return { userFail, controlFail };
 }
 
 function logDecryptBannerEntries(conversationId, entries = []) {
   for (const entry of entries) {
     if (isControlBannerEntry(entry)) continue;
     const messageId = entry?.messageId || entry?.id || entry?.jobId || null;
-    const msgType = normalizeMsgTypeValue(entry?.msgType || entry?.type || null);
+    const msgType = normalizeMsgTypeValue(entry?.subtype || entry?.msgType || entry?.type || null);
     if (!messageId && !msgType) continue;
     const dedupKey = `banner:${conversationId || 'unknown'}:${messageId || msgType || 'unknown'}`;
     if (decryptBannerLogDedup.has(dedupKey)) continue;
@@ -121,6 +143,18 @@ function getMessageState() {
   }
   return sessionStore.messageState;
 }
+
+  function refreshTimelineState(conversationId = null) {
+    const state = getMessageState();
+    const convId = conversationId || state.conversationId || null;
+    if (!convId) {
+      state.messages = [];
+      return state.messages;
+    }
+    const timeline = timelineGetTimeline(convId);
+    state.messages = timeline;
+    return timeline;
+  }
 
 function resetMessageStateWithPlaceholders() {
   clearCallLogPlaceholders();
@@ -209,6 +243,7 @@ export function initMessagesPane({
 
   const secureStatusCache = new Map();
   let unsubscribeSecureStatus = null;
+  let unsubscribeTimeline = null;
   let activeSecurityModalPeer = null;
 
   let wsSendFn = () => false;
@@ -226,6 +261,7 @@ export function initMessagesPane({
   const CONV_PULL_THRESHOLD = 60;
   const CONV_PULL_MAX = 140;
   const contactSyncInFlight = new Set();
+  unsubscribeTimeline = subscribeTimeline(handleTimelineAppend);
 
   const normalizeDigestString = (value) => {
     const identity = normalizePeerIdentity(value);
@@ -624,10 +660,32 @@ export function initMessagesPane({
     if (isActive && !exists) {
       localMessage = { ...viewerMessage };
       localMessage.id = localMessage.id || entry.id;
+      localMessage.messageId = localMessage.id;
       localMessage.pending = true;
-      state.messages.push(localMessage);
+      localMessage.msgType = 'call-log';
+      localMessage.direction = isOutgoing ? 'outgoing' : 'incoming';
+      localMessage.ts = localMessage.ts || entry.ts;
+      if (state.conversationId) {
+        localMessage.conversationId = state.conversationId;
+        const appended = timelineAppendUserMessage(state.conversationId, localMessage);
+        if (appended) {
+          try {
+            console.info('[msg] ' + JSON.stringify({
+              event: 'timeline:append',
+              conversationId: state.conversationId,
+              messageId: localMessage.id,
+              direction: localMessage.direction,
+              msgType: 'call-log',
+              ts: localMessage.ts || null
+            }));
+          } catch {
+            /* ignore */
+          }
+        }
+        refreshTimelineState(state.conversationId);
+        updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
+      }
       trackCallLogPlaceholder(peerDigest, entry.callId, localMessage);
-      updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
     }
     updateThreadsWithCallLogDisplay({
       peerAccountDigest: peerDigest,
@@ -873,15 +931,18 @@ export function initMessagesPane({
       if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
       tasks.push((async () => {
         try {
-          const { items } = await listSecureAndDecrypt({
+          await listSecureAndDecrypt({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerAccountDigest: peerDigest,
             peerDeviceId: thread.peerDeviceId,
             limit: 20,
-            mutateState: false
+            mutateState: false,
+            sendReadReceipt: false,
+            onMessageDecrypted: null
           });
-          const list = Array.isArray(items) ? items.filter(Boolean) : [];
+          const timeline = timelineGetTimeline(thread.conversationId);
+          const list = Array.isArray(timeline) ? timeline : [];
           if (!list.length) {
             thread.lastMessageText = '';
             thread.lastMessageTs = null;
@@ -889,19 +950,21 @@ export function initMessagesPane({
             thread.previewLoaded = true;
             thread.unreadCount = 0;
             if (thread.lastReadTs === null) thread.lastReadTs = null;
+            thread.needsRefresh = false;
             return;
           }
           const latest = list[list.length - 1];
           thread.lastMessageText = typeof latest.text === 'string' && latest.text.trim() ? latest.text : (latest.error || '(無法解密)');
           thread.lastMessageTs = typeof latest.ts === 'number' ? latest.ts : null;
-          thread.lastMessageId = latest.id || null;
+          thread.lastMessageId = latest.id || latest.messageId || null;
           thread.lastDirection = latest.direction || null;
           thread.previewLoaded = true;
+          thread.needsRefresh = false;
           if (thread.lastReadTs === null || thread.lastReadTs === undefined) {
             thread.lastReadTs = thread.lastMessageTs ?? null;
             thread.unreadCount = 0;
           } else if (typeof thread.lastReadTs === 'number') {
-            const unread = list.filter((item) => typeof item?.ts === 'number' && item.ts > thread.lastReadTs).length;
+            const unread = list.filter((item) => typeof item?.ts === 'number' && item.ts > thread.lastReadTs && item.direction === 'incoming').length;
             thread.unreadCount = unread;
           } else {
             thread.lastReadTs = thread.lastMessageTs ?? null;
@@ -1040,6 +1103,7 @@ export function initMessagesPane({
   function syncThreadFromActiveMessages() {
     const state = getMessageState();
     if (!state.conversationId || !state.activePeerDigest) return;
+    const timelineMessages = refreshTimelineState(state.conversationId);
     const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
     const nickname = contactEntry?.nickname || `好友 ${state.activePeerDigest.slice(-4)}`;
     const avatar = contactEntry?.avatar || null;
@@ -1054,7 +1118,7 @@ export function initMessagesPane({
     if (!thread) return;
     thread.previewLoaded = true;
     thread.needsRefresh = false;
-    const latest = state.messages.length ? state.messages[state.messages.length - 1] : null;
+    const latest = timelineMessages.length ? timelineMessages[timelineMessages.length - 1] : null;
     if (latest) {
       thread.lastMessageText = latest.text || latest.error || '';
       thread.lastMessageTs = latest.ts || null;
@@ -2055,7 +2119,16 @@ export function initMessagesPane({
       prevScroll = elements.scrollEl.scrollTop;
     }
 
-    const timelineMessages = Array.isArray(state.messages) ? [...state.messages] : [];
+    const timelineMessages = refreshTimelineState(state.conversationId);
+    try {
+      console.info('[msg] ' + JSON.stringify({
+        event: 'ui:render',
+        conversationId: state.conversationId || null,
+        itemCount: timelineMessages.length
+      }));
+    } catch {
+      /* ignore */
+    }
     try {
       logMsgEvent('ui:list', {
         stage: 'ui',
@@ -2231,9 +2304,6 @@ export function initMessagesPane({
       }
     }
     updateMessagesScrollOverflow();
-    if (state.conversationId && appendedIds.length) {
-      markMessagesProcessedForUi(state.conversationId, appendedIds);
-    }
     try {
       const diagnostics = Array.from(elements.messagesList.querySelectorAll('.message-bubble')).map((el) => ({
         text: el.textContent,
@@ -2243,19 +2313,6 @@ export function initMessagesPane({
     } catch (err) {
       log({ messagesRenderLogError: err?.message || err });
     }
-  }
-
-  function logUiSkip(gate, { messageId = null, reason = null } = {}) {
-    try {
-      const state = getMessageState();
-      logMsgEvent('skip', {
-        stage: 'ui',
-        gate,
-        conversationId: state.conversationId || null,
-        messageId: messageId || null,
-        reason: reason || gate
-      });
-    } catch {}
   }
 
   async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true } = {}) {
@@ -2268,28 +2325,12 @@ export function initMessagesPane({
     if (state.loading) return;
     if (append && (!state.hasMore || !state.nextCursor)) return;
 
-    const cachedDecrypted = getDecryptedMessages(state.conversationId) || [];
-    const mergeMessagesById = (...lists) => {
-      const map = new Map();
-      for (const list of lists) {
-        if (!Array.isArray(list)) continue;
-        for (const msg of list) {
-          if (!msg) continue;
-          const mid = msg.id || msg.messageId || msg.serverMessageId || msg.server_message_id || null;
-          if (!mid) continue;
-          const existing = map.get(mid);
-          map.set(mid, existing ? { ...existing, ...msg } : msg);
-        }
-      }
-      return Array.from(map.values()).sort((a, b) => (Number(a?.ts) || 0) - (Number(b?.ts) || 0));
-    };
-
     state.loading = true;
     if (!append) setMessagesStatus('載入中…');
     try {
       const cursor = append ? state.nextCursor : undefined;
       const forceReplay = !append && replay;
-      const { items, nextCursor, nextCursorTs, errors, receiptUpdates, deadLetters, hasMoreAtCursor } = await listSecureAndDecrypt({
+      const { nextCursor, nextCursorTs, errors, receiptUpdates, deadLetters, hasMoreAtCursor } = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
@@ -2307,83 +2348,18 @@ export function initMessagesPane({
       const filteredDeadLetters = Array.isArray(deadLetters)
         ? deadLetters.filter((entry) => !isControlBannerEntry(entry))
         : [];
-      let chunk = Array.isArray(items) ? items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)) : [];
-      let placeholderUpdated = false;
-      if (chunk.length) {
-        const seenIds = new Set();
-        chunk = chunk.filter((entry) => {
-          const messageId = entry?.id || entry?.messageId || null;
-          if (!messageId) return true;
-          if (seenIds.has(messageId)) {
-            logUiSkip('dedupe:chunk', { messageId });
-            return false;
-          }
-          seenIds.add(messageId);
-          return true;
-        });
-      }
-      if (chunk.length) {
-        chunk = chunk.filter((entry) => {
-          if (entry?.type === 'call-log') {
-            const callId = entry.callLog?.callId || entry.meta?.call_id || null;
-            const placeholder = resolveCallLogPlaceholder(state.activePeerDigest, callId);
-            if (placeholder && callId) {
-              placeholder.id = entry.id || placeholder.id;
-              placeholder.ts = entry.ts || placeholder.ts;
-              placeholder.direction = entry.direction || placeholder.direction;
-              if (entry.callLog) {
-                placeholder.callLog = {
-                  ...placeholder.callLog,
-                  ...entry.callLog
-                };
-              }
-              placeholder.pending = false;
-              releaseCallLogPlaceholder(state.activePeerDigest, callId);
-              placeholderUpdated = true;
-              return false;
-            }
-          }
-          return true;
-        });
-      }
-      if (!mutateLive || forceReplay) {
-        // 沙盒重播：不推進現有 messages，僅在成功時替換列表
-        const sandbox = mergeMessagesById(chunk, cachedDecrypted);
-        if (!sandbox.length) {
-          // no-op
-        } else if (!append) {
-          state.messages = sandbox;
-          updateMessagesUI({ scrollToEnd: true });
-        }
-      } else if (append) {
-        const existingIds = new Set(state.messages.map((m) => m.id));
-        for (const cached of cachedDecrypted) {
-          const mid = cached?.id || cached?.messageId || cached?.serverMessageId || cached?.server_message_id || null;
-          if (mid) existingIds.add(mid);
-        }
-        chunk = chunk.filter((m) => {
-          const mid = m?.id || m?.messageId || null;
-          if (mid && existingIds.has(mid)) {
-            logUiSkip('dedupe:existing', { messageId: mid });
-            return false;
-          }
-          return true;
-        });
-        if (chunk.length || cachedDecrypted.length) {
-          state.messages = mergeMessagesById(state.messages, cachedDecrypted, chunk);
-          updateMessagesUI({ preserveScroll: true });
-        }
-      } else {
-        if (chunk.length || cachedDecrypted.length) {
-          state.messages = mergeMessagesById(state.messages, cachedDecrypted, chunk);
-          updateMessagesUI({ scrollToEnd: true });
-        } else if (!state.messages.length) {
-          state.messages = chunk;
-          updateMessagesUI({ scrollToEnd: true });
-        }
-      }
-      if (placeholderUpdated) {
-        updateMessagesUI({ scrollToEnd: true });
+      const errorCounts = countBannerEntries(Array.isArray(errors) ? errors : []);
+      const deadLetterCounts = countBannerEntries(Array.isArray(deadLetters) ? deadLetters : []);
+      const userFail = errorCounts.userFail + deadLetterCounts.userFail;
+      const controlFail = errorCounts.controlFail + deadLetterCounts.controlFail;
+      if (userFail || controlFail) {
+        try {
+          console.info('[msg] ' + JSON.stringify({
+            event: 'banner:counts',
+            userFail,
+            controlFail
+          }));
+        } catch {}
       }
       state.nextCursor = nextCursor || (nextCursorTs != null ? { ts: nextCursorTs, id: null } : null);
       state.nextCursorTs = state.nextCursor?.ts ?? nextCursorTs ?? null;
@@ -2408,8 +2384,9 @@ export function initMessagesPane({
         setMessagesStatus('', false);
       }
       let receiptsChanged = false;
+      const timelineMessages = refreshTimelineState(state.conversationId);
       if (Array.isArray(receiptUpdates)) {
-        for (const msg of state.messages) {
+        for (const msg of timelineMessages) {
           if (msg?.id && receiptUpdates.includes(msg.id)) {
             msg.read = true;
             msg.status = 'read';
@@ -2417,12 +2394,14 @@ export function initMessagesPane({
           }
         }
       }
-      applyReceiptsToMessages(state.messages);
+      applyReceiptsToMessages(timelineMessages);
+      const shouldScrollToEnd = !append && !forceReplay;
+      updateMessagesUI({ scrollToEnd: shouldScrollToEnd, preserveScroll: append });
       if (receiptsChanged) {
         updateMessagesUI({ preserveScroll: true });
       }
       if (state.activePeerDigest) {
-        for (const msg of state.messages) {
+        for (const msg of timelineMessages) {
           if (msg?.direction === 'incoming') {
             sendReadReceiptForMessage(msg);
           }
@@ -2453,7 +2432,41 @@ export function initMessagesPane({
     try { console.log('[messages-pane]', { setActiveConversationStart: key }); } catch {}
     if (!key) return;
     const desktopLayout = isDesktopLayout();
-    const entry = sessionStore.contactIndex?.get?.(key);
+    const threads = getConversationThreads();
+    let entry = sessionStore.contactIndex?.get?.(key);
+    let threadForPeer = null;
+    if (!entry && threads instanceof Map) {
+      for (const thread of threads.values()) {
+        if (threadPeer(thread) === key) {
+          threadForPeer = thread;
+          break;
+        }
+      }
+      if (threadForPeer) {
+        const conversationId = threadForPeer?.conversationId || null;
+        const conversationToken = threadForPeer?.conversationToken || null;
+        const peerDeviceIdFromThread = threadForPeer?.peerDeviceId || null;
+        if (conversationId && conversationToken) {
+          const placeholder = {
+            peerAccountDigest: key,
+            accountDigest: key,
+            peerDeviceId: peerDeviceIdFromThread || null,
+            nickname: threadForPeer?.nickname || `好友 ${key.slice(-4)}`,
+            avatar: threadForPeer?.avatar || null,
+            conversation: {
+              conversation_id: conversationId,
+              token_b64: conversationToken,
+              ...(peerDeviceIdFromThread ? { peerDeviceId: peerDeviceIdFromThread } : {})
+            }
+          };
+          if (!(sessionStore.contactIndex instanceof Map)) {
+            sessionStore.contactIndex = new Map();
+          }
+          sessionStore.contactIndex.set(key, placeholder);
+          entry = placeholder;
+        }
+      }
+    }
     if (!entry) {
       try { log({ setActiveConversationMissingEntry: key }); } catch {}
       setMessagesStatus('找不到指定的好友', true);
@@ -2464,11 +2477,26 @@ export function initMessagesPane({
       }
       return;
     }
-    const nickname = entry.nickname || `好友 ${key.slice(-4)}`;
+    if (!threadForPeer && threads instanceof Map) {
+      for (const thread of threads.values()) {
+        if (threadPeer(thread) === key) {
+          threadForPeer = thread;
+          break;
+        }
+      }
+    }
+    const nickname = entry.nickname || threadForPeer?.nickname || `好友 ${key.slice(-4)}`;
     if (entry?.conversation?.conversation_id) {
       clearConversationTombstone(entry.conversation.conversation_id);
     }
-    const conversation = entry.conversation;
+    const conversationFromThread = threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)
+      ? {
+          conversation_id: threadForPeer.conversationId,
+          token_b64: threadForPeer.conversationToken || threadForPeer.conversation?.token_b64,
+          peerDeviceId: threadForPeer.peerDeviceId || null
+        }
+      : null;
+    const conversation = entry.conversation?.token_b64 ? entry.conversation : conversationFromThread || entry.conversation;
     if (!conversation?.token_b64) {
       resetMessageStateWithPlaceholders();
       const state = getMessageState();
@@ -2491,7 +2519,19 @@ export function initMessagesPane({
     }
     const peerDeviceIdFromKey = key && key.includes('::') ? key.split('::')[1] : null;
     const peerDeviceIdFromContact = entry?.peerDeviceId || null;
-    const peerDeviceId = peerDeviceIdFromKey || peerDeviceIdFromContact || null;
+    const peerDeviceIdFromConversation = conversation?.peerDeviceId || conversation?.peer_device_id || null;
+    const peerDeviceIdFromThread = threadForPeer?.peerDeviceId || null;
+    const peerDeviceIdFromIndex = (() => {
+      const convIndex = ensureConversationIndex();
+      const entry = conversation?.conversation_id ? convIndex.get(conversation.conversation_id) : null;
+      return entry?.peerDeviceId || null;
+    })();
+    const peerDeviceId = peerDeviceIdFromKey
+      || peerDeviceIdFromContact
+      || peerDeviceIdFromConversation
+      || peerDeviceIdFromThread
+      || peerDeviceIdFromIndex
+      || null;
     if (!peerDeviceId) {
       setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
       return;
@@ -2535,7 +2575,7 @@ export function initMessagesPane({
       });
     }
     if (resolvedConvId) resetProcessedMessages(resolvedConvId);
-    state.messages = [];
+    refreshTimelineState(state.conversationId);
     state.nextCursor = null;
     state.nextCursorTs = null;
     state.hasMore = true;
@@ -2644,6 +2684,7 @@ export function initMessagesPane({
     }
     const message = {
       id: messageId,
+      messageId,
       ts: ts || Math.floor(Date.now() / 1000),
       text,
       direction: 'outgoing',
@@ -2651,7 +2692,8 @@ export function initMessagesPane({
       media: media ? { ...media } : null,
       abortController: null,
       status: 'pending',
-      read: false
+      read: false,
+      msgType: type
     };
     if (message.type === 'media' && message.media) {
       if (!message.text) message.text = `[檔案] ${message.media.name || '附件'}`;
@@ -2664,12 +2706,101 @@ export function initMessagesPane({
   } else {
     message.type = 'text';
   }
-    state.messages.push(message);
+    const convId = state.conversationId || null;
+    message.conversationId = convId;
+    message.msgType = message.type;
+    const appended = convId ? timelineAppendUserMessage(convId, message) : false;
+    if (appended) {
+      try {
+        console.info('[msg] ' + JSON.stringify({
+          event: 'timeline:append',
+          conversationId: convId,
+          messageId,
+          direction: 'outgoing',
+          msgType: message.type || null,
+          ts: message.ts || null
+        }));
+      } catch {
+        /* ignore */
+      }
+    }
+    refreshTimelineState(convId);
     updateMessagesUI({ scrollToEnd: true });
     scrollMessagesToBottom();
     scrollMessagesToBottomSoon();
     syncThreadFromActiveMessages();
     return message;
+  }
+
+  function resolvePeerForConversation(convId, fallbackPeer = null) {
+    const convIndex = ensureConversationIndex();
+    const entry = convId ? convIndex.get(convId) : null;
+    const threads = getConversationThreads();
+    const thread = convId ? threads.get(convId) : null;
+    return normalizePeerKey(
+      threadPeer(thread) ||
+      entry?.peerAccountDigest ||
+      fallbackPeer
+    );
+  }
+
+  function handleTimelineAppend({ conversationId, entry }) {
+    const convId = String(conversationId || '').trim();
+    if (!convId || !entry) return;
+    const state = getMessageState();
+    const convIndex = ensureConversationIndex();
+    const convEntry = convIndex.get(convId) || null;
+    const threads = getConversationThreads();
+    const existingThread = threads.get(convId) || null;
+    const peerDigest = resolvePeerForConversation(convId, entry?.peerAccountDigest || entry?.senderDigest || null);
+    const contactEntry = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+    const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `好友 ${peerDigest.slice(-4)}` : '好友');
+    const avatar = contactEntry?.avatar || existingThread?.avatar || null;
+    const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || entry?.peerDeviceId || entry?.senderDeviceId || null;
+    const tokenB64 = convEntry?.token_b64 || existingThread?.conversationToken || null;
+
+    const thread = upsertConversationThread({
+      peerAccountDigest: peerDigest || existingThread?.peerAccountDigest || null,
+      peerDeviceId: peerDevice,
+      conversationId: convId,
+      tokenB64,
+      nickname,
+      avatar
+    }) || threads.get(convId);
+    if (!thread) return;
+    if (peerDigest) ensureThreadPeer(thread, peerDigest);
+    thread.lastMessageText = entry.text || entry.error || '';
+    thread.lastMessageTs = typeof entry.ts === 'number' ? entry.ts : thread.lastMessageTs || null;
+    thread.lastMessageId = entry.messageId || entry.id || thread.lastMessageId || null;
+    thread.lastDirection = entry.direction || thread.lastDirection || null;
+
+    const isActive = state.conversationId === convId && (!peerDigest || state.activePeerDigest === peerDigest);
+    if (isActive) {
+      thread.unreadCount = 0;
+      thread.lastReadTs = thread.lastMessageTs || thread.lastReadTs || null;
+      refreshTimelineState(convId);
+      applyReceiptsToMessages(state.messages);
+      updateMessagesUI({ scrollToEnd: true });
+      syncThreadFromActiveMessages();
+    } else if (entry.direction === 'incoming') {
+      thread.unreadCount = Math.max(0, Number(thread.unreadCount) || 0) + 1;
+    }
+    refreshContactsUnreadBadges();
+    renderConversationList();
+
+    if (entry.direction === 'incoming' && !isActive) {
+      playNotificationSound?.();
+      const previewText = buildConversationSnippet(entry.text || '') || entry.text || '有新訊息';
+      const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
+      const initialsToast = initialsFromName(nickname, peerDigest || '').slice(0, 2);
+      const toastPeerDeviceId = thread?.peerDeviceId || peerDevice || null;
+      showToast?.(`${nickname}：${previewText}`, {
+        onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId: toastPeerDeviceId }),
+        avatarUrl: avatarUrlToast,
+        avatarInitials: initialsToast,
+        subtitle: entry.ts ? formatTimestamp(entry.ts) : ''
+      });
+    }
   }
 
   function applyReceiptState(message) {
@@ -2743,6 +2874,7 @@ export function initMessagesPane({
     }
     return null;
   }
+
 
   async function sendReadReceiptForMessage(message) {
     if (!message || message.direction !== 'incoming' || !message.id) return;
@@ -3161,7 +3293,7 @@ export function initMessagesPane({
 
   function handleIncomingSecureMessage(event) {
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
-    if (convId && convId.startsWith('profile-')) {
+    if (convId && (convId.startsWith('profile-') || convId.startsWith('profile:'))) {
       // 自己的 profile 更新訊息，略過以免影響聯絡同步流程
       return;
     }
@@ -3215,41 +3347,41 @@ export function initMessagesPane({
 
       if (event?.type === 'conversation-deleted') {
         const peerDigest = ensurePeerAccountDigest(event);
-      sessionStore.deletedConversations?.add?.(convId);
-      getConversationThreads().delete(convId);
-      sessionStore.conversationIndex?.delete?.(convId);
-          const contactEntryAfter = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-          if (contactEntryAfter) {
-            contactEntryAfter.conversation = null;
-            contactEntryAfter.unreadCount = 0;
-          }
-          const contactStateEntry = peerDigest ? sessionStore.contactState?.find?.((c) => contactPeerKey(c) === peerDigest) || null : null;
-          if (contactStateEntry) {
-            contactStateEntry.conversation = null;
-            contactStateEntry.unreadCount = 0;
-          }
-          if (convId) {
-            clearConversationHistory(convId, tsRaw);
-          }
-          clearDrState(
-            { peerAccountDigest: peerDigest, peerDeviceId: peerDeviceId || null },
-            { __drDebugTag: 'web/src/app/ui/mobile/messages-pane.js:3107:conversation-deleted-clear' }
-          );
-          deleteContactSecret(peerDigest, { deviceId: ensureDeviceId() });
-          const state = getMessageState();
-          if (state.activePeerDigest === peerDigest || state.conversationId === convId) {
-            resetMessageStateWithPlaceholders();
-            if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
-            clearMessagesView();
-        hideSecurityModal();
-        updateComposerAvailability();
-        applyMessagesLayout();
+        sessionStore.deletedConversations?.add?.(convId);
+        getConversationThreads().delete(convId);
+        sessionStore.conversationIndex?.delete?.(convId);
+        const contactEntryAfter = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+        if (contactEntryAfter) {
+          contactEntryAfter.conversation = null;
+          contactEntryAfter.unreadCount = 0;
+        }
+        const contactStateEntry = peerDigest ? sessionStore.contactState?.find?.((c) => contactPeerKey(c) === peerDigest) || null : null;
+        if (contactStateEntry) {
+          contactStateEntry.conversation = null;
+          contactStateEntry.unreadCount = 0;
+        }
+        if (convId) {
+          clearConversationHistory(convId, tsRaw);
+        }
+        clearDrState(
+          { peerAccountDigest: peerDigest, peerDeviceId: peerDeviceId || null },
+          { __drDebugTag: 'web/src/app/ui/mobile/messages-pane.js:3107:conversation-deleted-clear' }
+        );
+        deleteContactSecret(peerDigest, { deviceId: ensureDeviceId() });
+        const state = getMessageState();
+        if (state.activePeerDigest === peerDigest || state.conversationId === convId) {
+          resetMessageStateWithPlaceholders();
+          if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
+          clearMessagesView();
+          hideSecurityModal();
+          updateComposerAvailability();
+          applyMessagesLayout();
+        }
+        syncConversationThreadsFromContacts();
+        refreshContactsUnreadBadges();
+        renderConversationList();
+        return;
       }
-      syncConversationThreadsFromContacts();
-      refreshContactsUnreadBadges();
-      renderConversationList();
-      return;
-    }
 
       const convIndex = ensureConversationIndex();
       const contactPeerFromConvId = (convId && convId.startsWith('contacts-'))
@@ -3375,7 +3507,6 @@ export function initMessagesPane({
     const isSelf = !!(myAcct && senderAcct && myAcct === senderAcct);
 
     const rawMsgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
-    const msgTypeKey = rawMsgType ? String(rawMsgType).toLowerCase() : null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
     if (normalizedControlType) {
       if (normalizedControlType === CONTROL_MESSAGE_TYPES.READ_RECEIPT) {
@@ -3407,33 +3538,10 @@ export function initMessagesPane({
           source: 'ws:message-new'
         });
       }
-      if (normalizedControlType !== CONTROL_MESSAGE_TYPES.READ_RECEIPT && normalizedControlType !== CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT) return;
+      return;
     }
 
-    thread.lastMessageTs = tsRaw;
-    const typePreview = (() => {
-      switch (msgTypeKey) {
-        case 'contact-share':
-          return '好友資料已更新';
-        case 'nickname':
-          return '好友暱稱已更新';
-        case 'avatar':
-        case 'profile':
-          return '好友頭像已更新';
-        default:
-          return null;
-      }
-    })();
-    const previewRaw = cleanPreviewText(event?.preview ?? event?.text ?? '') || typePreview;
-    if (previewRaw) thread.lastMessageText = previewRaw;
-    else if (!thread.lastMessageText) thread.lastMessageText = '有新訊息';
-    const messageId = event?.messageId || event?.message_id;
-    if (messageId) thread.lastMessageId = messageId;
-
     const active = state.conversationId === convId && state.activePeerDigest === peerDigest;
-    const onMessagesTab = getCurrentTab?.() === 'messages';
-
-    // 若正在觀看此對話但缺少 token/convId，嘗試補齊，避免 WS 事件無法觸發即時載入。
     if (active) {
       if (!state.conversationId && convId) state.conversationId = convId;
       if (!state.conversationToken && tokenB64) state.conversationToken = tokenB64;
@@ -3441,78 +3549,24 @@ export function initMessagesPane({
       if (peerDeviceId && !state.activePeerDeviceId) state.activePeerDeviceId = peerDeviceId;
     }
 
-    // 對於任何 secure-message（包含 contacts-* 與 contact-init 對話），都觸發一次同步解密，確保 contact-share 不被卡住。
-    if (isSelf) {
-      thread.unreadCount = 0;
-      thread.lastReadTs = tsRaw;
-      thread.lastDirection = 'outgoing';
-      renderConversationList();
-        return;
+    if (active) {
+      pendingWsRefresh += 1;
+      if (!state.loading) {
+        pendingWsRefresh = 0;
+        loadActiveConversationMessages({ append: false })
+          .then(() => scrollMessagesToBottom())
+          .catch((err) => log({ wsMessageSyncError: err?.message || err }))
+          .finally(() => { pendingWsRefresh = 0; });
       }
-
-      playNotificationSound?.();
-
-      if (active && onMessagesTab) {
-        thread.unreadCount = 0;
-        thread.lastReadTs = tsRaw;
-        renderConversationList();
-        pendingWsRefresh += 1;
-        if (!state.loading) {
-          const currentPending = pendingWsRefresh;
-          pendingWsRefresh = 0;
-          loadActiveConversationMessages({ append: false })
-            .then(() => scrollMessagesToBottom())
-            .catch((err) => log({ wsMessageSyncError: err?.message || err }))
-            .finally(() => {
-              if (pendingWsRefresh > 0 && getMessageState().conversationId === convId) {
-                const retryCount = pendingWsRefresh;
-                pendingWsRefresh = 0;
-                loadActiveConversationMessages({ append: false })
-                  .then(() => scrollMessagesToBottom())
-                  .catch((err) => log({ wsMessageSyncError2: err?.message || err }))
-                  .finally(() => { pendingWsRefresh = 0; });
-              } else {
-                pendingWsRefresh = 0;
-              }
-            });
-        }
-        return;
-      }
-
-      const countRaw = Number(event?.count);
-      const delta = Number.isFinite(countRaw) && countRaw > 0 ? Math.min(countRaw, 50) : 1;
-      thread.unreadCount = Math.max(0, Number(thread.unreadCount) || 0) + delta;
-      thread.lastDirection = 'incoming';
-      thread.needsRefresh = true;
-      renderConversationList();
-
-      const toastPreview = (() => {
-        if (msgTypeKey === 'contact-share') return '已加入好友';
-        if (msgTypeKey === 'nickname') return '好友暱稱已更新';
-        if (msgTypeKey === 'avatar' || msgTypeKey === 'profile') return '好友頭像已更新';
-        const snippet = buildConversationSnippet(previewRaw);
-        if (snippet) return snippet;
-        if (previewRaw) return previewRaw;
-        // 若是首則訊息且沒有預覽，視為剛加入好友的提示
-        if (!thread.lastMessageId && !thread.lastMessageTs) return '已加入好友';
-        return '有新訊息';
-      })();
-      const toastMessage = toastPreview ? `${nickname}：${toastPreview}` : `${nickname} 有新訊息`;
-      const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
-      const initialsToast = initialsFromName(nickname, peerDigest).slice(0, 2);
-      const toastPeerDeviceId = convEntry?.peerDeviceId || senderDeviceId || peerDeviceId || null;
-      showToast?.(toastMessage, {
-        onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId: toastPeerDeviceId }),
-        avatarUrl: avatarUrlToast,
-        avatarInitials: initialsToast,
-        subtitle: formatTimestamp(tsRaw)
-      });
-    } catch (err) {
-      try {
-        console.error('[secure-message] handler error', err);
-        log({ secureMessageHandlerError: { convId, error: err?.message || String(err) } });
-      } catch {}
+      return;
     }
+  } catch (err) {
+    try {
+      console.error('[secure-message] handler error', err);
+      log({ secureMessageHandlerError: { convId, error: err?.message || String(err) } });
+    } catch {}
+  }
+
   }
 
   function handleContactOpenConversation(detail) {

@@ -158,7 +158,7 @@ function safeJSON(raw) {
 function normalizeConversationId(value) {
   const token = String(value || '').trim();
   if (!token) return null;
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(token)) return null;
+  if (!/^[A-Za-z0-9_:-]{8,128}$/.test(token)) return null;
   return token;
 }
 

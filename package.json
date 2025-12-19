@@ -29,28 +29,29 @@
     "compression": "^1.7.4",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
-    "jsonwebtoken": "^9.0.2",
-    "jimp": "^0.22.12",
-    "jsqr": "^1.4.0",
-    "multer": "^1.4.5-lts.1",
-    "qrcode-reader": "^1.0.4",
     "ed2curve": "^0.3.0",
     "elliptic": "^6.5.4",
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
+    "jimp": "^0.22.12",
+    "jsonwebtoken": "^9.0.2",
+    "jsqr": "^1.4.0",
+    "multer": "^2.0.2",
     "nanoid": "^5.1.5",
     "node-aes-cmac": "^0.1.1",
     "pdfjs-dist": "^4.8.69",
     "pino": "^9.4.0",
     "pino-http": "^10.3.0",
     "pm2": "^6.0.14",
+    "qrcode-reader": "^1.0.4",
     "tweetnacl": "^1.0.3",
     "ws": "^8.17.0",
     "zod": "^3.25.76"
   },
   "overrides": {
     "glob": "^10.5.0",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "systeminformation": "^5.27.14"
   }
 }

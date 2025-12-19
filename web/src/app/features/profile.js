@@ -1,19 +1,27 @@
 // /app/features/profile.js
-// Manage encrypted user profile (nickname, etc.) stored per-user using MK.
+// Manage encrypted profile control-state (nickname, avatar) stored per-account using MK.
 
-import { listMessages } from '../api/messages.js';
-import { createMessage } from '../api/media.js';
+import { listSecureMessages, createSecureMessage } from '../api/messages.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
-import { getMkRaw, getAccountDigest, buildAccountPayload, ensureDeviceId } from '../core/store.js';
+import {
+  getMkRaw,
+  getAccountDigest,
+  ensureDeviceId,
+  allocateDeviceCounter,
+  normalizeAccountDigest,
+  getUidHex
+} from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 import { buildIdenticonImage } from '../lib/identicon.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';
+const PROFILE_MESSAGE_TYPE = 'profile-update';
+const PROFILE_CONV_PREFIX = 'profile:';
 const AVATAR_CONV_PREFIX = 'avatar-';
 
-function convIdForProfile() {
-  const acct = (getAccountDigest() || '').toUpperCase();
-  return acct ? `profile-${acct}` : null;
+export function profileConversationId(accountDigest = null) {
+  const acct = normalizeAccountDigest(accountDigest || getAccountDigest());
+  return acct ? `${PROFILE_CONV_PREFIX}${acct}` : null;
 }
 
 export function normalizeNickname(raw) {
@@ -63,12 +71,29 @@ export function generateRandomNickname() {
   return `${adj}-${noun}-${suffix}`;
 }
 
-export async function loadLatestProfile() {
+function normalizeProfilePayload(profile, { fallbackNickname } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const nickname = normalizeNickname(profile?.nickname || '') || fallbackNickname || '';
+  const payload = {
+    type: PROFILE_MESSAGE_TYPE,
+    nickname,
+    avatar: profile?.avatar || null,
+    updatedAt: Number.isFinite(profile?.updatedAt) ? Number(profile.updatedAt) : now,
+    version: Number.isFinite(profile?.version) ? Number(profile.version) : 1
+  };
+  if (profile?.ts && !payload.ts) {
+    const tsVal = Number(profile.ts);
+    if (Number.isFinite(tsVal)) payload.ts = tsVal;
+  }
+  return payload;
+}
+
+async function loadProfileControlState(accountDigest = null, { limit = 1 } = {}) {
   const mk = getMkRaw();
-  const convId = convIdForProfile();
+  const convId = profileConversationId(accountDigest);
   if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
 
-  const { r, data } = await listMessages({ convId, limit: 5 });
+  const { r, data } = await listSecureMessages({ conversationId: convId, limit });
   const status = r.status;
   if (status === 404 || status === 204) return null;
   if (!r.ok) {
@@ -98,20 +123,17 @@ export async function loadLatestProfile() {
   }
 }
 
-export async function saveProfile(profile) {
+async function persistProfileControlState(profile, { accountDigest } = {}) {
   const mk = getMkRaw();
-  const convId = convIdForProfile();
-  if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
-  const obj = { ...profile, updatedAt: profile?.updatedAt || Math.floor(Date.now() / 1000) };
-  const overridesForContacts = {
-    nickname: obj.nickname || null,
-    avatar: obj.avatar || null,
-    updatedAt: obj.updatedAt
-  };
-
-  const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
+  const targetDigest = normalizeAccountDigest(accountDigest || getAccountDigest());
+  const selfDigest = normalizeAccountDigest(getAccountDigest());
+  const convId = profileConversationId(accountDigest);
   const deviceId = ensureDeviceId();
-  const counter = Math.floor(Date.now() / 1000);
+  if (!mk || !convId || !selfDigest || !deviceId) throw new Error('Not unlocked: MK/account missing');
+  const fallbackNickname = targetDigest ? `好友 ${targetDigest.slice(-4)}` : '';
+  const obj = normalizeProfilePayload(profile, { fallbackNickname });
+  const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
+  const { counter, commit } = allocateDeviceCounter();
   const header = {
     profile: 1,
     v: 1,
@@ -119,26 +141,41 @@ export async function saveProfile(profile) {
     envelope,
     iv_b64: envelope?.iv_b64,
     device_id: deviceId || undefined,
-    n: counter
+    n: counter,
+    meta: { msg_type: PROFILE_MESSAGE_TYPE, subtype: PROFILE_MESSAGE_TYPE }
   };
   const messageId = crypto.randomUUID();
-  const payload = {
-    convId,
-    type: 'text',
-    aead: 'aes-256-gcm',
-    id: messageId,
+  const { r, data } = await createSecureMessage({
+    conversationId: convId,
     header,
-    ciphertext_b64: envelope?.ct_b64 || 'profile',
+    ciphertextB64: envelope?.ct_b64 || 'profile',
     counter,
-    receiverAccountDigest: (getAccountDigest() || '').toUpperCase(),
-    receiverDeviceId: deviceId
-  };
-  const body = buildAccountPayload({ overrides: payload });
-  const { r, data } = await createMessage(body);
+    senderDeviceId: deviceId,
+    receiverAccountDigest: selfDigest,
+    receiverDeviceId: deviceId,
+    id: messageId,
+    createdAt: obj.updatedAt
+  });
   if (!r.ok) {
     const msg = typeof data === 'string' ? data : data?.error || data?.message || 'profile save failed';
     throw new Error(msg);
   }
+  try { commit(); } catch {}
+  return { ...obj, msgId: data?.id || null };
+}
+
+export async function loadLatestProfile(accountDigest = null) {
+  return loadProfileControlState(accountDigest, { limit: 1 });
+}
+
+export async function saveProfile(profile) {
+  const saved = await persistProfileControlState(profile, { accountDigest: getAccountDigest() });
+  const overridesForContacts = {
+    nickname: saved.nickname || null,
+    avatar: saved.avatar || null,
+    updatedAt: saved.updatedAt
+  };
+
   // 對所有已知好友推播 contacts-reload，讓對方同步暱稱/頭像
   try {
     const contacts = Array.isArray(window.sessionStore?.contactState) ? window.sessionStore.contactState : [];
@@ -172,7 +209,11 @@ export async function saveProfile(profile) {
   } catch (err) {
     console.warn('[profile] broadcast-update event failed', err?.message || err);
   }
-  return { ...obj, msgId: data?.id || null };
+  return saved;
+}
+
+export async function persistProfileForAccount(profile, accountDigest) {
+  return persistProfileControlState(profile, { accountDigest });
 }
 
 export async function ensureProfileNickname() {
@@ -237,13 +278,16 @@ export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {
  */
 export async function ensureDefaultAvatarFromSeed({ seed, force = false } = {}) {
   const mk = getMkRaw();
-  const convId = convIdForProfile();
+  const convId = profileConversationId();
   if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
   const profile = await loadLatestProfile().catch(() => null);
   if (!force && profile?.avatar?.objKey) {
     return { ok: true, skipped: true, reason: 'has-avatar' };
   }
-  const identiconSeed = (typeof seed === 'string' && seed.trim()) || (getAccountDigest() || '').toUpperCase();
+  const identiconSeed =
+    (typeof seed === 'string' && seed.trim()) ||
+    getUidHex?.() ||
+    (getAccountDigest() || '').toUpperCase();
   if (!identiconSeed) throw new Error('missing identicon seed');
   const identicon = await buildIdenticonImage(identiconSeed, { size: 512, format: 'image/jpeg', quality: 0.88 });
   if (!identicon?.blob) throw new Error('identicon render failed');

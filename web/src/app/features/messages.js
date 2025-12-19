@@ -38,13 +38,19 @@ import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 import {
   ensureSecureConversationReady as managerEnsureSecureConversationReady,
-  ensureDrReceiverState as managerEnsureDrReceiverState
+  ensureDrReceiverState as managerEnsureDrReceiverState,
+  handleSecureConversationControlMessage
 } from './secure-conversation-manager.js';
+import { classifyDecryptedPayload, SEMANTIC_KIND } from './semantic.js';
 import {
   describeCallLogForViewer,
   normalizeCallLogPayload,
   resolveViewerRole
 } from './calls/call-log.js';
+import {
+  appendUserMessage as timelineAppendUserMessage,
+  clearConversation as clearTimelineConversation
+} from './timeline-store.js';
 import { sendDrReadReceipt as featureSendDrReadReceipt, sendDrDeliveryReceipt as featureSendDrDeliveryReceipt } from './dr-session.js';
 import { enqueueInboxJob, processInboxForConversation } from './queue/inbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
@@ -106,6 +112,7 @@ const decryptedMessageStore = new Map(); // conversationId -> Map(messageId -> m
 const DECRYPTED_CACHE_MAX_PER_CONV = 500;
 const TIMELINE_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
 const decryptFailLogDedup = new Set();
+const semanticIgnoreLogDedup = new Set();
 
 function normalizeMessageId(messageObj) {
   if (!messageObj) return null;
@@ -115,6 +122,7 @@ function normalizeMessageId(messageObj) {
 function clearDecryptedMessages(conversationId) {
   if (!conversationId) return;
   decryptedMessageStore.delete(String(conversationId));
+  clearTimelineConversation(String(conversationId));
 }
 
 export function putDecryptedMessage(conversationId, messageObj, maxEntries = DECRYPTED_CACHE_MAX_PER_CONV) {
@@ -578,6 +586,49 @@ function logDecryptFailObservation({ conversationId = null, messageId = null, ms
       messageId: messageId || null,
       msgType: msgType || null,
       control: !!control
+    }));
+  } catch {
+    /* ignore log errors */
+  }
+}
+
+function logSemanticClassification({ conversationId = null, messageId = null, kind = null, subtype = null }) {
+  try {
+    console.info('[msg] ' + JSON.stringify({
+      event: 'classify',
+      conversationId: conversationId || null,
+      messageId: messageId || null,
+      kind: kind || null,
+      subtype: subtype || null
+    }));
+  } catch {
+    /* ignore log errors */
+  }
+}
+
+function logSemanticControlHandled({ conversationId = null, messageId = null, subtype = null }) {
+  try {
+    console.info('[msg] ' + JSON.stringify({
+      event: 'control:handled',
+      conversationId: conversationId || null,
+      messageId: messageId || null,
+      subtype: subtype || null
+    }));
+  } catch {
+    /* ignore log errors */
+  }
+}
+
+function logSemanticIgnorableOnce({ conversationId = null, messageId = null, subtype = null }) {
+  const dedupKey = messageId || `${conversationId || 'unknown'}::${subtype || 'unknown'}`;
+  if (dedupKey && semanticIgnoreLogDedup.has(dedupKey)) return;
+  if (dedupKey) semanticIgnoreLogDedup.add(dedupKey);
+  try {
+    console.info('[msg] ' + JSON.stringify({
+      event: 'ignorable',
+      conversationId: conversationId || null,
+      messageId: messageId || null,
+      subtype: subtype || null
     }));
   } catch {
     /* ignore log errors */
@@ -1094,6 +1145,9 @@ export async function listSecureAndDecrypt(params = {}) {
     let headerRaw = null;
     let headerJson = null;
     let header = null;
+    let meta = null;
+    let payload = null;
+    let messageTs = null;
     let stableContactShareKey = null;
     let ciphertextB64 = null;
     let packet = null;
@@ -1116,6 +1170,18 @@ export async function listSecureAndDecrypt(params = {}) {
         senderDeviceId,
         ...extra
       });
+    };
+    const logControlHandled = (subtype = null) => {
+      try {
+        console.info('[msg] ' + JSON.stringify({
+          event: 'control:handled',
+          conversationId: convId || null,
+          messageId: messageId || null,
+          subtype: subtype || null
+        }));
+      } catch {
+        /* ignore */
+      }
     };
     try {
       headerRaw = jobPacket?.header_json || raw?.header_json || raw?.headerJson || raw?.header || null;
@@ -1154,12 +1220,12 @@ export async function listSecureAndDecrypt(params = {}) {
         throw new Error('messageId missing for inbound message');
       }
 
-      const metaFromHeader = header?.meta || null;
-      const payload = { meta: metaFromHeader || null };
-      const msgTs = Number(metaFromHeader?.ts || raw?.created_at || raw?.createdAt || job?.createdAt || null);
-      const messageTs = Number.isFinite(msgTs) ? msgTs : null;
+      meta = header?.meta || null;
+      payload = { meta: meta || null };
+      const msgTs = Number(meta?.ts || raw?.created_at || raw?.createdAt || job?.createdAt || null);
+      messageTs = Number.isFinite(msgTs) ? msgTs : null;
       const packetConversationId = packet?.conversationId || raw?.conversationId || raw?.conversation_id || conversationId || null;
-      const meta = payload?.meta || null;
+      meta = payload?.meta || null;
       payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
       rawMsgType = typeof meta?.msg_type === 'string'
         ? meta.msg_type
@@ -1466,6 +1532,130 @@ export async function listSecureAndDecrypt(params = {}) {
         }
       }
 
+      const semantic = classifyDecryptedPayload(text, { meta, header });
+      logSemanticClassification({
+        conversationId: convId,
+        messageId,
+        kind: semantic.kind,
+        subtype: semantic.subtype
+      });
+
+      if (semantic.kind === SEMANTIC_KIND.IGNORABLE) {
+        logSemanticIgnorableOnce({
+          conversationId: convId,
+          messageId,
+          subtype: semantic.subtype
+        });
+        return;
+      }
+
+      if (semantic.kind === SEMANTIC_KIND.CONTROL_STATE) {
+        if (convId && messageId && wasMessageProcessed(convId, messageId)) {
+          logDeliverySkip('processedControl', { msgType: semantic.subtype || null });
+          return;
+        }
+        if (semantic.subtype === 'contact-share') {
+          const messageObj = buildMessageObject({
+            plaintext: text,
+            payload,
+            header,
+            raw,
+            direction,
+            ts: messageTs,
+            messageId,
+            messageKeyB64
+          });
+          if (drDebug) {
+            logDrCore('inbox:contact-share', {
+              conversationId: convId,
+              peerAccountDigest: peerKey,
+              messageId
+            }, { level: 'log', force: true });
+          }
+          try {
+            if (typeof document !== 'undefined' && document?.dispatchEvent) {
+              document.dispatchEvent(new CustomEvent('contact-share', {
+                detail: { message: messageObj, conversationId: convId, peerAccountDigest: peerKey }
+              }));
+            }
+          } catch {}
+          if (convId && messageId) {
+            markMessageProcessed(convId, messageId);
+          }
+          logControlHandled(semantic.subtype);
+          logSemanticControlHandled({
+            conversationId: convId,
+            messageId,
+            subtype: semantic.subtype
+          });
+          return;
+        }
+        if (
+          semantic.subtype === 'session-error' ||
+          semantic.subtype === 'session-init' ||
+          semantic.subtype === 'session-ack'
+        ) {
+          try {
+            handleSecureConversationControlMessage({
+              peerAccountDigest: peerKey,
+              messageType: semantic.subtype,
+              source: 'messages:inbox'
+            });
+          } catch {}
+          if (convId && messageId) {
+            markMessageProcessed(convId, messageId);
+          }
+          logControlHandled(semantic.subtype);
+          logSemanticControlHandled({
+            conversationId: convId,
+            messageId,
+            subtype: semantic.subtype
+          });
+          return;
+        }
+        if (convId && messageId) {
+          markMessageProcessed(convId, messageId);
+        }
+        logControlHandled(semantic.subtype);
+        logSemanticControlHandled({
+          conversationId: convId,
+          messageId,
+          subtype: semantic.subtype
+        });
+        return;
+      }
+
+      if (semantic.kind === SEMANTIC_KIND.TRANSIENT_SIGNAL) {
+        if (convId && messageId && wasMessageProcessed(convId, messageId)) {
+          logDeliverySkip('processedTransient', { msgType: semantic.subtype || null });
+          return;
+        }
+        const messageObj = buildMessageObject({
+          plaintext: text,
+          payload,
+          header,
+          raw,
+          direction,
+          ts: messageTs,
+          messageId,
+          messageKeyB64
+        });
+        const isReadReceipt = messageObj?.type === CONTROL_MESSAGE_TYPES.READ_RECEIPT && messageObj?.targetMessageId;
+        const isDeliveryReceipt = messageObj?.type === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT && messageObj?.targetMessageId;
+        if (isReadReceipt) {
+          const updated = recordMessageRead(convId, messageObj.targetMessageId, messageTs || null);
+          if (updated) {
+            receiptUpdates.add(messageObj.targetMessageId);
+          }
+        } else if (isDeliveryReceipt) {
+          recordMessageDelivered(convId, messageObj.targetMessageId, messageTs || null);
+        }
+        if (convId && messageId) {
+          markMessageProcessed(convId, messageId);
+        }
+        return;
+      }
+
       const messageObj = buildMessageObject({
         plaintext: text,
         payload,
@@ -1476,46 +1666,7 @@ export async function listSecureAndDecrypt(params = {}) {
         messageId,
         messageKeyB64
       });
-      const resolvedMsgType = resolveMsgTypeForTimeline(rawMsgType, messageObj?.type || msgTypeForDecrypt);
-      const controlLike = isControlLikeMessageType(resolvedMsgType);
-      const isReadReceipt = messageObj?.type === CONTROL_MESSAGE_TYPES.READ_RECEIPT && messageObj?.targetMessageId;
-      const isDeliveryReceipt = messageObj?.type === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT && messageObj?.targetMessageId;
-      if (isReadReceipt) {
-        const updated = recordMessageRead(convId, messageObj.targetMessageId, messageTs || null);
-        if (updated) {
-          receiptUpdates.add(messageObj.targetMessageId);
-        }
-      } else if (isDeliveryReceipt) {
-        recordMessageDelivered(convId, messageObj.targetMessageId, messageTs || null);
-      }
-      if (messageObj?.type === 'contact-share') {
-        if (drDebug) {
-          logDrCore('inbox:contact-share', {
-            conversationId: convId,
-            peerAccountDigest: peerKey,
-            messageId
-          }, { level: 'log', force: true });
-        }
-        try {
-          if (typeof document !== 'undefined' && document?.dispatchEvent) {
-            document.dispatchEvent(new CustomEvent('contact-share', {
-              detail: { message: messageObj, conversationId: convId, peerAccountDigest: peerKey }
-            }));
-          }
-        } catch {}
-        return;
-      }
-      if (messageObj && controlLike) {
-        logMsgEvent('skip', {
-          stage: 'handle',
-          gate: 'control-message',
-          conversationId: convId,
-          messageId,
-          msgType: resolvedMsgType,
-          direction: messageObj.direction || direction || 'incoming'
-        });
-        return;
-      }
+      const resolvedMsgType = semantic.subtype || resolveMsgTypeForTimeline(rawMsgType, messageObj?.type || msgTypeForDecrypt);
       if (messageObj) {
         const cacheMessageId = normalizeMessageId(messageObj);
         if (convId && cacheMessageId) {
@@ -1529,6 +1680,34 @@ export async function listSecureAndDecrypt(params = {}) {
             direction: messageObj.direction || direction || 'incoming',
             msgType: resolvedMsgType || messageObj.type || payloadMsgType || msgTypeForDecrypt || null
           });
+        }
+        const timelineEntry = {
+          conversationId: convId,
+          messageId: cacheMessageId || messageId || null,
+          direction: messageObj.direction || direction || 'incoming',
+          msgType: resolvedMsgType || messageObj.type || payloadMsgType || msgTypeForDecrypt || null,
+          ts: messageObj.ts || messageTs || null,
+          text: messageObj.text || null,
+          media: messageObj.media || null,
+          callLog: messageObj.callLog || null,
+          senderDigest: senderDigest || messageObj.senderDigest || null,
+          senderDeviceId: senderDeviceId || messageObj.senderDeviceId || null,
+          peerDeviceId: messageObj.peerDeviceId || null
+        };
+        const appended = timelineAppendUserMessage(convId, timelineEntry);
+        if (appended) {
+          try {
+            console.info('[msg] ' + JSON.stringify({
+              event: 'timeline:append',
+              conversationId: convId || null,
+              messageId: timelineEntry.messageId || cacheMessageId || messageId || null,
+              direction: timelineEntry.direction || null,
+              msgType: timelineEntry.msgType || null,
+              ts: timelineEntry.ts || null
+            }));
+          } catch {
+            /* ignore */
+          }
         }
         out.push(messageObj);
         if (messageObj.direction === 'incoming' && messageObj.id) {
@@ -1576,20 +1755,27 @@ export async function listSecureAndDecrypt(params = {}) {
         } catch {}
       }
       const msg = err?.message || String(err);
-      const resolvedMsgType = resolveMsgTypeForTimeline(rawMsgType, msgTypeForDecrypt);
-      const controlLike = isControlLikeMessageType(resolvedMsgType);
-      const shouldCountForUi = !controlLike;
+      const semantic = classifyDecryptedPayload(null, { meta, header });
       const failedMessageId = messageId || job?.messageId || job?.raw?.id || null;
+      const msgTypeLabel =
+        semantic.subtype ||
+        normalizeMsgTypeValue(rawMsgType) ||
+        normalizeMsgTypeValue(payloadMsgType) ||
+        null;
+      const controlLike = semantic.kind !== SEMANTIC_KIND.USER_MESSAGE;
+      const shouldCountForUi = semantic.kind === SEMANTIC_KIND.USER_MESSAGE;
       logDecryptFailObservation({
         conversationId: convId,
         messageId: failedMessageId,
-        msgType: resolvedMsgType,
+        msgType: msgTypeLabel,
         control: controlLike
       });
       if (shouldCountForUi) {
         errs.push({
           messageId: failedMessageId || null,
-          msgType: resolvedMsgType || null,
+          msgType: msgTypeLabel || null,
+          kind: semantic.kind,
+          subtype: semantic.subtype,
           control: false,
           reason: msg
         });
@@ -1601,7 +1787,7 @@ export async function listSecureAndDecrypt(params = {}) {
         serverMessageId,
         gate: 'decryptFail',
         reason: msg,
-        msgType: resolvedMsgType || payloadMsgType || msgTypeForDecrypt,
+        msgType: msgTypeLabel || payloadMsgType || rawMsgType || msgTypeForDecrypt,
         senderDigest,
         senderDeviceId,
         targetDeviceId,
@@ -1685,17 +1871,17 @@ export async function listSecureAndDecrypt(params = {}) {
       } catch (logErr) {
         logDrCore('decrypt:fail-log-error', { conversationId: convId, error: logErr?.message || String(logErr) });
       }
-      if (shouldCountForUi) {
-        deadLetters.push({
-          conversationId: convId,
-          messageId: messageId || job?.messageId || job?.raw?.id || null,
-          counter: packet?.counter ?? header?.n ?? null,
-          drState: trackState && state ? { Ns: state.Ns, Nr: state.Nr, PN: state.PN } : null,
-          msgType: resolvedMsgType || null,
-          control: controlLike,
-          error: msg
-        });
-      }
+      deadLetters.push({
+        conversationId: convId,
+        messageId: messageId || job?.messageId || job?.raw?.id || null,
+        counter: packet?.counter ?? header?.n ?? null,
+        drState: trackState && state ? { Ns: state.Ns, Nr: state.Nr, PN: state.PN } : null,
+        msgType: msgTypeLabel || null,
+        kind: semantic.kind,
+        subtype: semantic.subtype,
+        control: controlLike,
+        error: msg
+      });
       const failKey = `${conversationId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`;
       const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
       drFailureCounter.set(failKey, nextFail);
@@ -1709,8 +1895,10 @@ export async function listSecureAndDecrypt(params = {}) {
       }
       if (err && typeof err === 'object') {
         err.__controlMessage = controlLike;
-        err.__msgType = resolvedMsgType || null;
+        err.__msgType = msgTypeLabel || null;
         err.__messageId = failedMessageId || null;
+        err.__semanticKind = semantic.kind;
+        err.__semanticSubtype = semantic.subtype;
       }
       throw err;
     }
@@ -1797,14 +1985,19 @@ export async function listSecureAndDecrypt(params = {}) {
         }
         await handleInboxJob(job);
       } catch (err) {
+        const semanticKind = err?.__semanticKind || null;
+        const semanticSubtype = err?.__semanticSubtype || null;
         const skipDeadLetter = !!err?.__controlMessage;
         if (!skipDeadLetter) {
+          const controlFlag = semanticKind ? semanticKind !== SEMANTIC_KIND.USER_MESSAGE : !!err?.__controlMessage;
           deadLetters.push({
             jobId: job?.jobId,
             conversationId,
             messageId: job?.messageId,
             msgType: err?.__msgType || null,
-            control: !!err?.__controlMessage,
+            kind: semanticKind,
+            subtype: semanticSubtype,
+            control: controlFlag,
             error: err?.message || String(err)
           });
         }

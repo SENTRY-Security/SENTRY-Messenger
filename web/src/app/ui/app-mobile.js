@@ -17,6 +17,7 @@ import {
   setWrappedMK,
   getOpaqueServerId,
   normalizePeerIdentity,
+  normalizeAccountDigest,
   getDeviceId,
   ensureDeviceId,
   clearDrState
@@ -42,6 +43,7 @@ import { ensureSettings, saveSettings, DEFAULT_SETTINGS } from '../features/sett
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
 import { setupShareController } from './mobile/share-controller.js?v=0.1.10';
+import { loadLatestProfile as loadProfileControlState, persistProfileForAccount, normalizeNickname as normalizeProfileNickname } from '../features/profile.js';
 import {
   sessionStore,
   resetShareState,
@@ -3057,6 +3059,249 @@ function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動�
   secureLogout(reason, { auto: true });
 }
 
+let profileHydrationStarted = false;
+
+const toProfileDigest = (value) => {
+  if (!value) return null;
+  const primary = typeof value === 'string' && value.includes('::') ? value.split('::')[0] : value;
+  return normalizeAccountDigest(primary);
+};
+
+function isFallbackProfileName(name, digest = null) {
+  if (!name) return true;
+  const normalized = normalizeProfileNickname(name);
+  if (!normalized) return true;
+  const trimmed = String(name).trim();
+  if (trimmed.startsWith('好友')) return true;
+  if (digest && trimmed === `好友 ${digest.slice(-4)}`) return true;
+  return false;
+}
+
+function collectProfileHydrateTargets() {
+  const targets = new Set();
+  const add = (value) => {
+    const digest = toProfileDigest(value);
+    if (digest) targets.add(digest);
+  };
+  if (Array.isArray(sessionStore.contactState)) {
+    sessionStore.contactState.forEach((entry) => add(entry?.accountDigest || entry?.peerAccountDigest || entry));
+  }
+  if (sessionStore.contactIndex instanceof Map) {
+    for (const [key, entry] of sessionStore.contactIndex.entries()) {
+      add(entry?.peerAccountDigest || entry?.accountDigest || key);
+    }
+  }
+  if (sessionStore.conversationThreads instanceof Map) {
+    for (const thread of sessionStore.conversationThreads.values()) {
+      add(thread?.peerAccountDigest || thread?.peer_account_digest || thread?.peer);
+    }
+  }
+  if (sessionStore.conversationIndex instanceof Map) {
+    for (const entry of sessionStore.conversationIndex.values()) {
+      add(entry?.peerAccountDigest || entry?.peer_account_digest || entry?.peer);
+    }
+  }
+  return targets;
+}
+
+function resolveLocalProfileSnapshot(peerDigest) {
+  const digest = toProfileDigest(peerDigest);
+  if (!digest) return null;
+  let candidate = null;
+  const maybeSelect = (entry) => {
+    if (!entry) return;
+    const nickname = entry.nickname || entry.profileNickname || entry.name || null;
+    const avatar = entry.avatar || null;
+    const updatedAt = Number.isFinite(entry.profileUpdatedAt)
+      ? Number(entry.profileUpdatedAt)
+      : Number.isFinite(entry.updatedAt)
+        ? Number(entry.updatedAt)
+        : null;
+    const hasProfile = !!normalizeProfileNickname(nickname || '') || !!avatar;
+    if (!hasProfile) return;
+    if (!candidate || (updatedAt && updatedAt > (candidate.updatedAt || 0))) {
+      candidate = { nickname, avatar, updatedAt: updatedAt || null };
+    }
+  };
+  if (sessionStore.contactIndex instanceof Map) {
+    for (const entry of sessionStore.contactIndex.values()) {
+    const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || null);
+      if (acct && acct === digest) maybeSelect(entry);
+    }
+  }
+  if (Array.isArray(sessionStore.contactState)) {
+    sessionStore.contactState.forEach((entry) => {
+      const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || entry);
+      if (acct && acct === digest) maybeSelect(entry);
+    });
+  }
+  return candidate;
+}
+
+function applyProfileSnapshotToStores(peerDigest, profile) {
+  const digest = toProfileDigest(peerDigest);
+  if (!digest) return;
+  const nickname = normalizeProfileNickname(profile?.nickname || '') || `好友 ${digest.slice(-4)}`;
+  const avatar = profile?.avatar || null;
+  const updatedAt =
+    Number.isFinite(profile?.updatedAt) ? Number(profile.updatedAt)
+      : Number.isFinite(profile?.ts) ? Number(profile.ts)
+        : null;
+  const threadsMap = sessionStore.conversationThreads instanceof Map ? sessionStore.conversationThreads : null;
+  let threadForPeer = null;
+  if (threadsMap) {
+    for (const thread of threadsMap.values()) {
+      const acct = toProfileDigest(thread?.peerAccountDigest || thread?.peer_account_digest || null);
+      if (acct === digest) {
+        threadForPeer = thread;
+        break;
+      }
+    }
+  }
+  const shouldOverwriteNickname = (current) => {
+    if (!current) return true;
+    return isFallbackProfileName(current, digest);
+  };
+  let updated = false;
+  const updatedKeys = new Set();
+  const ensureContactIndex = () => {
+    if (!(sessionStore.contactIndex instanceof Map)) {
+      const entries = sessionStore.contactIndex && typeof sessionStore.contactIndex.entries === 'function'
+        ? Array.from(sessionStore.contactIndex.entries())
+        : [];
+      sessionStore.contactIndex = new Map(entries);
+    }
+  };
+
+  if (sessionStore.contactIndex instanceof Map) {
+    for (const [key, entry] of sessionStore.contactIndex.entries()) {
+      const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || key);
+      if (acct !== digest) continue;
+      const next = { ...entry };
+      if (shouldOverwriteNickname(entry?.nickname)) next.nickname = nickname;
+      if (avatar && !next.avatar) next.avatar = avatar;
+      if (updatedAt) next.profileUpdatedAt = updatedAt;
+      if ((!next.conversation || !next.conversation?.token_b64) && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)) {
+        next.conversation = {
+          conversation_id: threadForPeer.conversationId,
+          token_b64: threadForPeer.conversationToken || threadForPeer.conversation?.token_b64,
+          ...(threadForPeer?.peerDeviceId ? { peerDeviceId: threadForPeer.peerDeviceId } : {})
+        };
+      }
+      sessionStore.contactIndex.set(key, next);
+      updated = true;
+      updatedKeys.add(key);
+    }
+  }
+
+  if (Array.isArray(sessionStore.contactState)) {
+    for (let i = 0; i < sessionStore.contactState.length; i += 1) {
+      const entry = sessionStore.contactState[i];
+      const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || entry);
+      if (acct !== digest) continue;
+      const next = { ...entry };
+      if (shouldOverwriteNickname(entry?.nickname)) next.nickname = nickname;
+      if (avatar && !next.avatar) next.avatar = avatar;
+      if (updatedAt) next.profileUpdatedAt = updatedAt;
+      if ((!next.conversation || !next.conversation?.token_b64) && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)) {
+        next.conversation = {
+          conversation_id: threadForPeer.conversationId,
+          token_b64: threadForPeer.conversationToken || threadForPeer.conversation?.token_b64,
+          ...(threadForPeer?.peerDeviceId ? { peerDeviceId: threadForPeer.peerDeviceId } : {})
+        };
+      }
+      sessionStore.contactState[i] = next;
+      updated = true;
+    }
+  }
+
+  if (threadsMap) {
+    for (const [convId, thread] of threadsMap.entries()) {
+      const acct = toProfileDigest(thread?.peerAccountDigest || thread?.peer_account_digest || null);
+      if (acct !== digest) continue;
+      const next = { ...thread };
+      if (shouldOverwriteNickname(thread?.nickname)) next.nickname = nickname;
+      if (avatar && !next.avatar) next.avatar = avatar;
+      threadsMap.set(convId, next);
+      updated = true;
+    }
+  }
+
+  if (!updated && threadForPeer && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)) {
+    const conversationId = threadForPeer.conversationId;
+    const tokenB64 = threadForPeer.conversationToken || threadForPeer.conversation?.token_b64;
+    const peerDeviceId = threadForPeer?.peerDeviceId || null;
+    ensureContactIndex();
+    const entry = {
+      peerAccountDigest: digest,
+      accountDigest: digest,
+      peerDeviceId,
+      nickname,
+      avatar: avatar || null,
+      profileUpdatedAt: updatedAt || null,
+      conversation: {
+        conversation_id: conversationId,
+        token_b64: tokenB64,
+        ...(peerDeviceId ? { peerDeviceId } : {})
+      }
+    };
+    sessionStore.contactIndex.set(digest, entry);
+    updated = true;
+    updatedKeys.add(digest);
+  }
+
+  if (updated) {
+    if (typeof renderContacts === 'function') {
+      try { renderContacts(); } catch (err) { log({ profileHydrateRenderError: err?.message || err }); }
+    }
+    try { messagesPane.renderConversationList(); } catch {}
+    for (const key of updatedKeys) {
+      try {
+        if (typeof messagesPane.handleContactEntryUpdated === 'function') {
+          messagesPane.handleContactEntryUpdated({ peerAccountDigest: key, entry: sessionStore.contactIndex?.get?.(key) || null });
+        }
+      } catch (err) {
+        log({ profileHydrateEntryUpdateError: err?.message || err, peerAccountDigest: key });
+      }
+    }
+  }
+}
+
+async function hydrateProfileSnapshotForDigest(peerDigest) {
+  const digest = toProfileDigest(peerDigest);
+  if (!digest) return;
+  let profile = await loadProfileControlState(digest).catch((err) => {
+    log({ profileHydrateError: err?.message || err, peerAccountDigest: digest });
+    return null;
+  });
+  if (profile && (normalizeProfileNickname(profile?.nickname || '') || profile?.avatar)) {
+    applyProfileSnapshotToStores(digest, profile);
+    return;
+  }
+  const localSnapshot = resolveLocalProfileSnapshot(digest);
+  if (!localSnapshot) return;
+  const normalizedNick = normalizeProfileNickname(localSnapshot.nickname || '');
+  const hasProfile = !!normalizedNick || !!localSnapshot.avatar;
+  if (!hasProfile || isFallbackProfileName(localSnapshot.nickname, digest)) return;
+  try {
+    await persistProfileForAccount({ ...localSnapshot, nickname: normalizedNick || localSnapshot.nickname }, digest);
+    log({ profileSnapshotPersisted: true, peerAccountDigest: digest });
+  } catch (err) {
+    log({ profileSnapshotPersistError: err?.message || err, peerAccountDigest: digest });
+  }
+}
+
+async function hydrateProfileSnapshots() {
+  if (profileHydrationStarted) return;
+  profileHydrationStarted = true;
+  const targets = collectProfileHydrateTargets();
+  for (const digest of targets) {
+    // 逐個執行，避免洪泛請求；失敗靜默略過。
+    // eslint-disable-next-line no-await-in-loop
+    await hydrateProfileSnapshotForDigest(digest);
+  }
+}
+
 loadInitialContacts()
   .then(() => {
     messagesPane.syncConversationThreadsFromContacts();
@@ -3066,6 +3311,7 @@ loadInitialContacts()
   .finally(() => {
     messagesPane.renderConversationList();
     ensureWebSocket();
+    hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
   });
 
 function updateProfileStats() {

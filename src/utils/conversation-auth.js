@@ -3,7 +3,8 @@ import { signHmac } from './hmac.js';
 const DATA_API = process.env.DATA_API_URL;
 const HMAC_SECRET = process.env.DATA_API_HMAC;
 
-export const ConversationIdRegex = /^[A-Za-z0-9_-]{8,128}$/;
+// Allow Signal-style conversationIds plus system-owned identifiers with colon separator (e.g., profile:<digest>)
+export const ConversationIdRegex = /^[A-Za-z0-9_:-]{8,128}$/;
 
 export function normalizeConversationId(value) {
   if (!value) return null;
@@ -18,7 +19,7 @@ export function isSystemOwnedConversation({ convId, accountDigest }) {
   const acct = (accountDigest || '').toUpperCase();
   if (acct) {
     if (convId === `drive-${acct}`) return true;
-    if (convId === `profile-${acct}`) return true;
+    if (convId === `profile-${acct}` || convId === `profile:${acct}`) return true;
     if (convId === `settings-${acct}`) return true;
     if (convId === `avatar-${acct}`) return true;
     if (convId === `contacts-${acct}`) return true;
