@@ -193,18 +193,32 @@ export async function x3dhInitiate(devicePriv, peerBundle, overrideEk = null) {
   const seed = await kdfCK(rk);
   const { a: ckS } = split64(seed);
 
-  return {
+  const state = {
     rk,
     ckS,
     ckR: null,
     Ns: 0,
     Nr: 0,
     PN: 0,
+    NsTotal: 0,
+    NrTotal: 0,
     myRatchetPriv: ek.secretKey,
     myRatchetPub: ek.publicKey,
     theirRatchetPub: null,
-    pendingSendRatchet: false
+    pendingSendRatchet: false,
+    __bornReason: 'x3dh-initiate'
   };
+  try {
+    console.log('[msg] state:init-transport-counter', JSON.stringify({
+      peerDigest: peerBundle?.account_digest || null,
+      peerDeviceId: peerBundle?.device_id || null,
+      conversationId: null,
+      NsTotal: state.NsTotal,
+      NrTotal: state.NrTotal,
+      reason: state.__bornReason
+    }));
+  } catch {}
+  return state;
 }
 
 export async function x3dhRespond(devicePriv, guestBundle) {
@@ -257,18 +271,32 @@ export async function x3dhRespond(devicePriv, guestBundle) {
   const { a: ckR, b: ckS } = split64(seed);
   const myNew = await genX25519Keypair();
 
-  return {
+  const state = {
     rk,
     ckS,
     ckR,
     Ns: 0,
     Nr: 0,
     PN: 0,
+    NsTotal: 0,
+    NrTotal: 0,
     myRatchetPriv: myNew.secretKey,
     myRatchetPub: myNew.publicKey,
     theirRatchetPub: guestEK,
-    pendingSendRatchet: true
+    pendingSendRatchet: true,
+    __bornReason: 'x3dh-respond'
   };
+  try {
+    console.log('[msg] state:init-transport-counter', JSON.stringify({
+      peerDigest: guestBundle?.account_digest || null,
+      peerDeviceId: guestBundle?.device_id || null,
+      conversationId: null,
+      NsTotal: state.NsTotal,
+      NrTotal: state.NrTotal,
+      reason: state.__bornReason
+    }));
+  } catch {}
+  return state;
 }
 
 export async function drRatchet(st, theirRatchetPubU8) {

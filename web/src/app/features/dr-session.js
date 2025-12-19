@@ -167,6 +167,26 @@ function numberOrDefault(value, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
+function requireTransportCounter(state, { peerAccountDigest = null, peerDeviceId = null, sourceTag = 'transport-counter' } = {}) {
+  if (!state || typeof state !== 'object') {
+    throw new Error('transport counter unavailable: state missing');
+  }
+  const hasNsTotal = Object.prototype.hasOwnProperty.call(state, 'NsTotal');
+  const nsTotal = hasNsTotal ? Number(state.NsTotal) : NaN;
+  if (!Number.isFinite(nsTotal)) {
+    try {
+      console.warn('[dr-log:transport-counter-missing]', {
+        peerAccountDigest,
+        peerDeviceId,
+        source: sourceTag,
+        nsTotal: state?.NsTotal ?? null
+      });
+    } catch {}
+    throw new Error('transport counter missing (NsTotal)');
+  }
+  return nsTotal;
+}
+
 function ensureHolderId(holder) {
   if (!holder) return null;
   if (!holder.__id) {
@@ -247,6 +267,22 @@ function requireSnapshotKeyString(snapshot, keyName, fallbackKey, { required = f
   return trimmed;
 }
 
+function requireSnapshotCounter(snapshot, keyName, fallbackKey, { peerAccountDigest = null, peerDeviceId = null, sourceTag = null } = {}) {
+  const hasPrimary = Object.prototype.hasOwnProperty.call(snapshot, keyName);
+  const hasFallback = fallbackKey ? Object.prototype.hasOwnProperty.call(snapshot, fallbackKey) : false;
+  const raw = snapshot?.[keyName] ?? (fallbackKey ? snapshot?.[fallbackKey] : undefined);
+  if (!hasPrimary && !hasFallback) {
+    logDecodeInvalidKey({ keyName, raw, peerAccountDigest, peerDeviceId, sourceTag, reason: 'missing-counter' });
+    throw new Error(`contact-secrets decode failed: missing ${keyName}`);
+  }
+  const num = Number(raw);
+  if (!Number.isFinite(num)) {
+    logDecodeInvalidKey({ keyName, raw, peerAccountDigest, peerDeviceId, sourceTag, reason: 'invalid-counter' });
+    throw new Error(`contact-secrets decode failed: invalid ${keyName}`);
+  }
+  return num;
+}
+
 function decodeKeyString(raw, { keyName, peerAccountDigest = null, peerDeviceId = null, sourceTag = null } = {}) {
   const normalized = normalizeB64Input(raw);
   if (!normalized) {
@@ -296,6 +332,8 @@ function buildReceiptMessageId(targetMessageId) {
 function sanitizeSnapshotInput(snapshot, { sourceTag = 'snapshot', peerAccountDigest = null, peerDeviceId = null } = {}) {
   if (!snapshot || typeof snapshot !== 'object') return null;
   const keyCtx = { peerAccountDigest, peerDeviceId, sourceTag };
+  const nsTotal = requireSnapshotCounter(snapshot, 'NsTotal', 'Ns_total', keyCtx);
+  const nrTotal = requireSnapshotCounter(snapshot, 'NrTotal', 'Nr_total', keyCtx);
   const rk = requireSnapshotKeyString(snapshot, 'rk_b64', 'rk', { required: true, ...keyCtx });
   if (!rk) return null;
   const out = {
@@ -306,8 +344,8 @@ function sanitizeSnapshotInput(snapshot, { sourceTag = 'snapshot', peerAccountDi
     Ns: numberOrDefault(snapshot.Ns, 0),
     Nr: numberOrDefault(snapshot.Nr, 0),
     PN: numberOrDefault(snapshot.PN, 0),
-    NsTotal: numberOrDefault(snapshot.NsTotal, snapshot.Ns_total || 0),
-    NrTotal: numberOrDefault(snapshot.NrTotal, snapshot.Nr_total || 0),
+    NsTotal: nsTotal,
+    NrTotal: nrTotal,
     myRatchetPriv_b64: requireSnapshotKeyString(snapshot, 'myRatchetPriv_b64', 'myRatchetPriv', { ...keyCtx, allowNull: true }),
     myRatchetPub_b64: requireSnapshotKeyString(snapshot, 'myRatchetPub_b64', 'myRatchetPub', { ...keyCtx, allowNull: true }),
     theirRatchetPub_b64: requireSnapshotKeyString(snapshot, 'theirRatchetPub_b64', 'theirRatchetPub', { ...keyCtx, allowNull: true }),
@@ -454,6 +492,8 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
   const rkU8 = ensureKeyU8(state?.rk, 'rk', true);
   const ckSU8 = ensureKeyU8(state?.ckS, 'ckS', false);
   const ckRU8 = ensureKeyU8(state?.ckR, 'ckR', false);
+  const nsTotal = requireTransportCounter(state, { sourceTag: 'snapshotDrState' });
+  const nrTotal = numberOrDefault(state.NrTotal, 0);
   const selfDeviceId = ensureDeviceId() || null;
   const snap = {
     v: 1,
@@ -461,8 +501,8 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
     Ns: numberOrDefault(state.Ns, 0),
     Nr: numberOrDefault(state.Nr, 0),
     PN: numberOrDefault(state.PN, 0),
-    NsTotal: numberOrDefault(state.NsTotal, 0),
-    NrTotal: numberOrDefault(state.NrTotal, 0),
+    NsTotal: nsTotal,
+    NrTotal: nrTotal,
     myRatchetPriv_b64: state.myRatchetPriv instanceof Uint8Array ? b64(state.myRatchetPriv) : null,
     myRatchetPub_b64: state.myRatchetPub instanceof Uint8Array ? b64(state.myRatchetPub) : null,
     theirRatchetPub_b64: state.theirRatchetPub instanceof Uint8Array ? b64(state.theirRatchetPub) : null,
@@ -474,6 +514,15 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
   if (ckSU8) snap.ckS_b64 = b64(ckSU8);
   if (ckRU8) snap.ckR_b64 = b64(ckRU8);
   if (setDefaultUpdatedAt && !snap.updatedAt) snap.updatedAt = Date.now();
+  try {
+    console.log('[msg] state:snapshot', JSON.stringify({
+      conversationId: state?.baseKey?.conversationId || null,
+      peerDigest: state?.baseKey?.peerAccountDigest || null,
+      peerDeviceId: state?.baseKey?.peerDeviceId || null,
+      NsTotal: snap.NsTotal,
+      NrTotal: snap.NrTotal
+    }));
+  } catch {}
   return snap;
 }
 
@@ -531,11 +580,19 @@ export function restoreDrStateFromSnapshot(params = {}) {
   assertU8('restoreDrStateFromSnapshot:rk', holder.rk);
   if (holder.ckS) assertU8('restoreDrStateFromSnapshot:ckS', holder.ckS);
   if (holder.ckR) assertU8('restoreDrStateFromSnapshot:ckR', holder.ckR);
+  const nsTotal = Number(data.NsTotal);
+  if (!Number.isFinite(nsTotal)) {
+    throw new Error('dr snapshot missing NsTotal');
+  }
+  const nrTotal = Number(data.NrTotal);
+  if (!Number.isFinite(nrTotal)) {
+    throw new Error('dr snapshot missing NrTotal');
+  }
   holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
   holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
   holder.PN = numberOrDefault(data.PN, holder.PN || 0);
-  holder.NsTotal = numberOrDefault(data.NsTotal, holder.NsTotal || 0);
-  holder.NrTotal = numberOrDefault(data.NrTotal, holder.NrTotal || 0);
+  holder.NsTotal = nsTotal;
+  holder.NrTotal = nrTotal;
   assign('myRatchetPriv', data.myRatchetPriv_b64);
   assign('myRatchetPub', data.myRatchetPub_b64);
   assign('theirRatchetPub', data.theirRatchetPub_b64);
@@ -553,6 +610,15 @@ export function restoreDrStateFromSnapshot(params = {}) {
     if (data.role) holder.baseKey.role = data.role;
   }
   holder.__lastWriteTag = sourceTag || 'restoreDrStateFromSnapshot';
+  try {
+    console.log('[msg] state:restore', JSON.stringify({
+      conversationId: holder?.baseKey?.conversationId || null,
+      peerDigest: peer || null,
+      peerDeviceId: peerDeviceId || null,
+      NsTotal: holder?.NsTotal ?? null,
+      NrTotal: holder?.NrTotal ?? null
+    }));
+  } catch {}
   return true;
 }
 
@@ -670,6 +736,10 @@ export function persistDrSnapshot(params = {}) {
     return true;
   } catch (err) {
     console.warn('[dr] persist snapshot failed', err);
+    const msg = err?.message || '';
+    if (msg.includes('NsTotal') || msg.toLowerCase().includes('transport counter')) {
+      throw err;
+    }
     return false;
   }
 }
@@ -814,6 +884,11 @@ export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}
   target.Ns = Number(source.Ns || 0);
   target.Nr = Number(source.Nr || 0);
   target.PN = Number(source.PN || 0);
+  target.NsTotal = Number.isFinite(source.NsTotal) ? Number(source.NsTotal) : numberOrDefault(target.NsTotal, 0);
+  target.NrTotal = Number.isFinite(source.NrTotal) ? Number(source.NrTotal) : numberOrDefault(target.NrTotal, 0);
+  if (!Number.isFinite(target.NsTotal)) target.NsTotal = 0;
+  if (!Number.isFinite(target.NrTotal)) target.NrTotal = 0;
+  if (!target.__bornReason && callsiteTag) target.__bornReason = callsiteTag;
   target.myRatchetPriv = cloneU8(source.myRatchetPriv, 'myRatchetPriv', callsiteTag) || null;
   target.myRatchetPub = cloneU8(source.myRatchetPub, 'myRatchetPub', callsiteTag) || null;
   target.theirRatchetPub = cloneU8(source.theirRatchetPub, 'theirRatchetPub', callsiteTag) || null;
@@ -830,6 +905,9 @@ export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}
     if (source.baseKey.peerDeviceId) {
       target.baseKey.peerDeviceId = source.baseKey.peerDeviceId;
     }
+    if (source.baseKey.peerAccountDigest) {
+      target.baseKey.peerAccountDigest = source.baseKey.peerAccountDigest;
+    }
   }
   if (Number.isFinite(source.snapshotTs)) {
     target.snapshotTs = source.snapshotTs;
@@ -837,6 +915,19 @@ export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}
   if (source.snapshotSource) {
     target.snapshotSource = source.snapshotSource;
   }
+  const peerDigest = target?.baseKey?.peerAccountDigest || source?.baseKey?.peerAccountDigest || null;
+  const peerDeviceId = target?.baseKey?.peerDeviceId || source?.baseKey?.peerDeviceId || null;
+  const conversationId = target?.baseKey?.conversationId || source?.baseKey?.conversationId || null;
+  try {
+    console.log('[msg] state:clone', JSON.stringify({
+      peerDigest,
+      peerDeviceId,
+      conversationId,
+      NsTotal: target.NsTotal,
+      NrTotal: target.NrTotal,
+      source: callsiteTag || null
+    }));
+  } catch {}
 }
 
 function cloneSkippedKeysStore(input) {
@@ -851,13 +942,15 @@ function cloneSkippedKeysStore(input) {
 }
 
 function createDrStateShell() {
-  return {
+  const shell = {
     rk: null,
     ckS: null,
     ckR: null,
     Ns: 0,
     Nr: 0,
     PN: 0,
+    NsTotal: 0,
+    NrTotal: 0,
     myRatchetPriv: null,
     myRatchetPub: null,
     theirRatchetPub: null,
@@ -867,8 +960,20 @@ function createDrStateShell() {
     snapshotSource: null,
     historyCursorTs: null,
     historyCursorId: null,
-    skippedKeys: new Map()
+    skippedKeys: new Map(),
+    __bornReason: 'state-shell'
   };
+  try {
+    console.log('[msg] state:init-transport-counter', JSON.stringify({
+      conversationId: shell?.baseKey?.conversationId || null,
+      peerDigest: shell?.baseKey?.peerAccountDigest || null,
+      peerDeviceId: shell?.baseKey?.peerDeviceId || null,
+      NsTotal: shell.NsTotal,
+      NrTotal: shell.NrTotal,
+      reason: shell.__bornReason
+    }));
+  } catch {}
+  return shell;
 }
 
 export function cloneDrStateHolder(source) {
@@ -1047,7 +1152,16 @@ async function sendDrPlaintext(params = {}) {
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
-  const transportCounter = Number.isFinite(state?.NsTotal) ? Number(state.NsTotal) : (Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null);
+  let transportCounter = null;
+  try {
+    transportCounter = requireTransportCounter(state, { peerAccountDigest: peer, peerDeviceId, sourceTag: 'sendDrPlaintext' });
+  } catch (err) {
+    if (preSnapshot) {
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'missing-transport-counter' });
+    }
+    throw err;
+  }
+  const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
 
   let finalConversationId = conversationId;
   if (!finalConversationId) finalConversationId = await conversationIdFromToken(tokenB64);
@@ -1122,6 +1236,14 @@ async function sendDrPlaintext(params = {}) {
   const packetKeyLog = pkt?.header?.ek_pub_b64
     ? `${finalConversationId || ''}::${String(pkt.header.ek_pub_b64).slice(0, 12)}::${pkt.header?.n ?? ''}`
     : null;
+  try {
+    console.log('[msg] send:counter', JSON.stringify({
+      messageId,
+      msgType: meta?.msg_type || null,
+      headerN,
+      transportCounter
+    }));
+  } catch {}
   logMsgEvent('send:start', {
     direction: 'outgoing',
     conversationId: finalConversationId,
@@ -1587,6 +1709,16 @@ export async function sendDrMedia(params = {}) {
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
+  let transportCounter = null;
+  try {
+    transportCounter = requireTransportCounter(state, { peerAccountDigest: peer, peerDeviceId, sourceTag: 'sendDrMedia' });
+  } catch (err) {
+    if (preSnapshot) {
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'missing-transport-counter' });
+    }
+    throw err;
+  }
+  const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
 
   const receiverDeviceId = peerDeviceId;
   const receiverAccountDigest = peer;
@@ -1626,6 +1758,15 @@ export async function sendDrMedia(params = {}) {
   const headerJson = JSON.stringify(headerPayload);
   const ctB64 = pkt.ciphertext_b64;
 
+  try {
+    console.log('[msg] send:counter', JSON.stringify({
+      messageId,
+      msgType: meta?.msg_type || null,
+      headerN,
+      transportCounter
+    }));
+  } catch {}
+
   startOutboxProcessor();
   const job = await enqueueMediaMetaJob({
     conversationId,
@@ -1633,7 +1774,7 @@ export async function sendDrMedia(params = {}) {
     headerJson,
     header: headerPayload,
     ciphertextB64: ctB64,
-    counter: pkt.header?.n ?? null,
+    counter: transportCounter,
     senderDeviceId,
     receiverAccountDigest: peer,
     receiverDeviceId: receiverDeviceId || null,

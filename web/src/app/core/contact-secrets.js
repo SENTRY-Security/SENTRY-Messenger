@@ -396,6 +396,15 @@ function toNumberOrDefault(value, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
+function toNumberRequired(value, keyName, { source = null, peerKey = null, deviceId = null } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    logPersistInvalidKey({ keyName, raw: value, peerKey, deviceId, source, reason: 'missing-number' });
+    throw new Error(`contact-secrets invalid dr snapshot: missing ${keyName}`);
+  }
+  return n;
+}
+
 function toTimestampOrNull(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -413,12 +422,24 @@ function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'nor
   const rk = normalizeDrKeyString(input.rk ?? input.rk_b64, { keyName: 'rk', peerKey, deviceId, source, required: true, hasKey: hasRk });
   const ckS = normalizeDrKeyString(input.ckS ?? input.ckS_b64, { keyName: 'ckS', peerKey, deviceId, source, required: hasCkS, hasKey: hasCkS });
   const ckR = normalizeDrKeyString(input.ckR ?? input.ckR_b64, { keyName: 'ckR', peerKey, deviceId, source, required: hasCkR, hasKey: hasCkR });
+  const hasNsTotal = Object.prototype.hasOwnProperty.call(input, 'NsTotal') || Object.prototype.hasOwnProperty.call(input, 'Ns_total');
+  const hasNrTotal = Object.prototype.hasOwnProperty.call(input, 'NrTotal') || Object.prototype.hasOwnProperty.call(input, 'Nr_total');
+  if (!hasNsTotal) {
+    logPersistInvalidKey({ keyName: 'NsTotal', raw: input?.NsTotal ?? input?.Ns_total, peerKey, deviceId, source, reason: 'missing-counter' });
+    throw new Error('contact-secrets invalid dr snapshot: missing NsTotal');
+  }
+  if (!hasNrTotal) {
+    logPersistInvalidKey({ keyName: 'NrTotal', raw: input?.NrTotal ?? input?.Nr_total, peerKey, deviceId, source, reason: 'missing-counter' });
+    throw new Error('contact-secrets invalid dr snapshot: missing NrTotal');
+  }
   const out = {
     v: Number.isFinite(Number(input.v)) ? Number(input.v) : 1,
     rk_b64: rk,
     Ns: toNumberOrDefault(input.Ns, 0),
     Nr: toNumberOrDefault(input.Nr, 0),
     PN: toNumberOrDefault(input.PN, 0),
+    NsTotal: toNumberRequired(input.NsTotal ?? input.Ns_total, 'NsTotal', { source, peerKey, deviceId }),
+    NrTotal: toNumberRequired(input.NrTotal ?? input.Nr_total, 'NrTotal', { source, peerKey, deviceId }),
     myRatchetPriv_b64: toBase64Maybe(input.myRatchetPriv ?? input.myRatchetPriv_b64),
     myRatchetPub_b64: toBase64Maybe(input.myRatchetPub ?? input.myRatchetPub_b64),
     theirRatchetPub_b64: toBase64Maybe(input.theirRatchetPub ?? input.theirRatchetPub_b64),

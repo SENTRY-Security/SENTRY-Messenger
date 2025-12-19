@@ -426,6 +426,7 @@ export function waitForDevicePriv({ timeoutMs = 5000 } = {}) {
 
 export function getDrSessMap() { return _DR_SESS; }
 export function drState(peerInput) {
+  const identity = normalizePeerIdentity(peerInput);
   const { key } = resolveDrKey(peerInput);
   if (!key) return null;
   let created = false;
@@ -437,6 +438,8 @@ export function drState(peerInput) {
       Ns: 0,
       Nr: 0,
       PN: 0,
+      NsTotal: 0,
+      NrTotal: 0,
       myRatchetPriv: null,
       myRatchetPub: null,
       theirRatchetPub: null,
@@ -444,11 +447,15 @@ export function drState(peerInput) {
       pendingSendRatchet: false,
       historyCursorTs: null,
       historyCursorId: null,
-      skippedKeys: new Map()
+      skippedKeys: new Map(),
+      __bornReason: 'drState'
     });
     created = true;
   }
   const state = _DR_SESS.get(key);
+  if (!Number.isFinite(state?.NsTotal)) state.NsTotal = 0;
+  if (!Number.isFinite(state?.NrTotal)) state.NrTotal = 0;
+  if (!state.__bornReason) state.__bornReason = created ? 'drState' : 'drState-existing';
   ensureDrHolderDebugId(state);
   if (state && !(state.skippedKeys instanceof Map)) {
     try {
@@ -458,6 +465,16 @@ export function drState(peerInput) {
     }
   }
   if (created) {
+    try {
+      console.log('[msg] state:init-transport-counter', JSON.stringify({
+        conversationId: state?.baseKey?.conversationId || null,
+        peerDigest: identity?.accountDigest || null,
+        peerDeviceId: identity?.deviceId || null,
+        NsTotal: state?.NsTotal ?? null,
+        NrTotal: state?.NrTotal ?? null,
+        reason: state?.__bornReason || 'state-birth'
+      }));
+    } catch {}
     logDrStateCreate(key, state);
   }
   return state;
