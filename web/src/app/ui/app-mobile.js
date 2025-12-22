@@ -2344,6 +2344,22 @@ if (typeof window !== 'undefined') {
   } catch {}
 }
 
+let contactSecretsRefreshInFlight = false;
+document.addEventListener('contactSecrets:restored', () => {
+  if (contactSecretsRefreshInFlight) return;
+  contactSecretsRefreshInFlight = true;
+  loadInitialContacts()
+    .then(() => {
+      messagesPane.syncConversationThreadsFromContacts();
+      return messagesPane.refreshConversationPreviews({ force: true });
+    })
+    .catch((err) => log({ contactsInitError: err?.message || err, source: 'contactSecrets:restored' }))
+    .finally(() => {
+      try { messagesPane.renderConversationList(); } catch {}
+      contactSecretsRefreshInFlight = false;
+    });
+});
+
 async function addContactEntry(contact) {
   const peerDigest =
     contact?.peerAccountDigest ||

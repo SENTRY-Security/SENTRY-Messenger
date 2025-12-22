@@ -80,6 +80,7 @@ export const sessionStore = {
   conversationIndex: new Map(),
   conversationThreads: new Map(),
   contactSecrets: new Map(),
+  corruptContacts: new Map(),
   onlineContacts: new Set(),
   deletedConversations: new Set(),
   shareState: cloneValue(defaultShareState),
@@ -116,6 +117,7 @@ export function resetContacts() {
   if (sessionStore.conversationIndex) sessionStore.conversationIndex.clear();
   if (sessionStore.contactSecrets) sessionStore.contactSecrets.clear();
   if (sessionStore.conversationThreads) sessionStore.conversationThreads.clear();
+  if (sessionStore.corruptContacts) sessionStore.corruptContacts.clear();
   sessionStore.onlineContacts.clear();
   sessionStore.deletedConversations.clear();
 }

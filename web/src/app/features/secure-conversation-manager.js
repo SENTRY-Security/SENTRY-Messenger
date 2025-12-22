@@ -2,7 +2,7 @@
 // Simplified: no session-init/ack control messages. DR 準備只靠 per-device bundle/bootstrap。
 
 import { drState, normalizePeerIdentity, ensureDeviceId } from '../core/store.js';
-import { getContactSecret } from '../core/contact-secrets.js';
+import { getContactSecret, getCorruptContact } from '../core/contact-secrets.js';
 import { ensureDrReceiverState } from './dr-session.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 
@@ -186,6 +186,13 @@ export async function ensureSecureConversationReady({
   if (!key || !deviceId) throw new Error('peerAccountDigest and peerDeviceId required');
   const entry = ensureEntry(key);
   if (!entry) throw new Error('無法建立狀態容器');
+
+  const corrupt = getCorruptContact({ peerAccountDigest: key, peerDeviceId: deviceId });
+  if (corrupt) {
+    const error = new Error('此好友狀態損壞，需要重新同步/重新邀請');
+    setStatus(key, STATUS_FAILED, { reason: 'contact-secrets-corrupt', source, attempts: entry.attempts || 0, error });
+    throw error;
+  }
 
   if (hasReceiverReady({ peerAccountDigest, peerDeviceId: deviceId })) {
     if (entry.status !== STATUS_READY) {

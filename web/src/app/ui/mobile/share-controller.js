@@ -81,6 +81,8 @@ export function setupShareController(options) {
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
   let autoProfileBroadcasted = false;
+  const CONTACT_BROADCAST_DEBOUNCE_MS = 600;
+  const pendingContactUpdates = new Map();
 
   const contactSecretMap = restoreContactSecrets();
   primeStoredDrSnapshots(contactSecretMap);
@@ -1295,6 +1297,75 @@ export function setupShareController(options) {
     startInviteScanner();
   }
 
+  function enqueueContactBroadcast(params = {}) {
+    const { digest, peerDeviceId, conversation, sessionKey, drInit, reason, overrides } = params;
+    if (!digest || !conversation || !sessionKey || !peerDeviceId) return null;
+    const overridesCopy = overrides && typeof overrides === 'object' ? { ...overrides } : null;
+    const payload = { digest, peerDeviceId, conversation, sessionKey, drInit, reason, overrides: overridesCopy };
+    let pending = pendingContactUpdates.get(digest) || null;
+    let resolveFn = pending?.resolve;
+    let rejectFn = pending?.reject;
+    const promise = pending?.promise || new Promise((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
+    });
+    if (!resolveFn && pending?.resolve) resolveFn = pending.resolve;
+    if (!rejectFn && pending?.reject) rejectFn = pending.reject;
+    if (pending?.timer) clearTimeout(pending.timer);
+    const entry = {
+      payload,
+      promise,
+      resolve: resolveFn,
+      reject: rejectFn,
+      timer: null
+    };
+    entry.timer = setTimeout(async () => {
+      pendingContactUpdates.delete(digest);
+      try {
+        await sendContactShare({
+          peerAccountDigest: payload.digest,
+          conversation: payload.conversation,
+          sessionKey: payload.sessionKey,
+          peerDeviceId: payload.peerDeviceId,
+          drInit: payload.drInit,
+          overrides: payload.overrides,
+          reason: payload.reason
+        });
+        entry.resolve?.(true);
+      } catch (err) {
+        console.error('[share-controller]', {
+          contactBroadcastError: err?.message || err,
+          peerAccountDigest: payload.digest,
+          peerDeviceId: payload.peerDeviceId,
+          reason: payload.reason,
+          attempt: 'debounced'
+        });
+        try {
+          await sendContactShare({
+            peerAccountDigest: payload.digest,
+            conversation: payload.conversation,
+            sessionKey: payload.sessionKey,
+            peerDeviceId: payload.peerDeviceId,
+            drInit: payload.drInit,
+            overrides: payload.overrides,
+            reason: payload.reason
+          });
+          entry.resolve?.(true);
+        } catch (err2) {
+          console.error('[share-controller]', {
+            contactBroadcastRetryError: err2?.message || err2,
+            peerAccountDigest: payload.digest,
+            peerDeviceId: payload.peerDeviceId,
+            reason: payload.reason
+          });
+          entry.reject?.(err2);
+        }
+      }
+    }, CONTACT_BROADCAST_DEBOUNCE_MS);
+    pendingContactUpdates.set(digest, entry);
+    return promise;
+  }
+
   async function broadcastContactUpdate({ reason = 'manual', targetPeers = null, overrides = null } = {}) {
     const reasonKey = typeof reason === 'string' ? reason.toLowerCase() : 'manual';
     const map = contactSecretMap instanceof Map ? contactSecretMap : restoreContactSecrets();
@@ -1307,6 +1378,7 @@ export function setupShareController(options) {
       )
       : null;
     const deviceId = ensureDeviceId();
+    const tasks = [];
     for (const peerKey of map.keys()) {
       const identity = normalizePeerIdentity(peerKey);
       const digest = identity.key;
@@ -1325,54 +1397,32 @@ export function setupShareController(options) {
         dr_init: drInit,
         peerDeviceId
       };
+      const overridesCopy = overrides && typeof overrides === 'object' ? { ...overrides } : null;
       try {
-        try {
-          console.log('[share-controller]', {
-            contactBroadcastEntry: {
-              peerAccountDigest: digest,
-              peerDeviceId,
-              conversationId: convId,
-              hasDrInit: !!drInit,
-              reason: reasonKey
-            }
-          });
-        } catch {}
-        await sendContactShare({
-          peerAccountDigest: digest,
-          conversation,
-          sessionKey: token,
-          peerDeviceId,
-          drInit,
-          overrides,
-          reason: reasonKey
-        });
-      } catch (err) {
-        console.error('[share-controller]', {
-          contactBroadcastError: err?.message || err,
-          peerAccountDigest: digest,
-          peerDeviceId,
-          reason: reasonKey,
-          attempt: 'initial'
-        });
-        try {
-          await sendContactShare({
-            peerAccountDigest: digest,
-            conversation,
-            sessionKey: token,
-            peerDeviceId,
-            drInit,
-            overrides,
-            reason: reasonKey
-          });
-        } catch (err2) {
-          console.error('[share-controller]', {
-            contactBroadcastRetryError: err2?.message || err2,
+        console.log('[share-controller]', {
+          contactBroadcastEntry: {
             peerAccountDigest: digest,
             peerDeviceId,
-            reason: reasonKey
-          });
-        }
-      }
+            conversationId: convId,
+            hasDrInit: !!drInit,
+            reason: reasonKey,
+            debounceMs: CONTACT_BROADCAST_DEBOUNCE_MS
+          }
+        });
+      } catch {}
+      const promise = enqueueContactBroadcast({
+        digest,
+        peerDeviceId,
+        conversation,
+        sessionKey: token,
+        drInit,
+        overrides: overridesCopy,
+        reason: reasonKey
+      });
+      if (promise) tasks.push(promise);
+    }
+    if (tasks.length) {
+      await Promise.allSettled(tasks);
     }
   }
 

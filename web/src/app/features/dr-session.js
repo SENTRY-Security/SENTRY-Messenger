@@ -187,6 +187,31 @@ function requireTransportCounter(state, { peerAccountDigest = null, peerDeviceId
   return nsTotal;
 }
 
+
+function reserveTransportCounter(state, {
+  peerAccountDigest = null,
+  peerDeviceId = null,
+  conversationId = null,
+  messageId = null,
+  msgType = null,
+  sourceTag = 'reserve-transport-counter'
+} = {}) {
+  const before = requireTransportCounter(state, { peerAccountDigest, peerDeviceId, sourceTag });
+  const reserved = before + 1;
+  state.NsTotal = reserved;
+  const convId = conversationId || state?.baseKey?.conversationId || null;
+  try {
+    console.log('[msg] counter:reserve', JSON.stringify({
+      messageId: messageId || null,
+      msgType: msgType || null,
+      conversationId: convId,
+      before,
+      reserved
+    }));
+  } catch {}
+  return reserved;
+}
+
 function ensureHolderId(holder) {
   if (!holder) return null;
   if (!holder.__id) {
@@ -1121,7 +1146,7 @@ async function sendDrPlaintext(params = {}) {
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
-  const conversationId = convContext?.conversation_id || convContext?.conversationId || null;
+  let conversationId = convContext?.conversation_id || convContext?.conversationId || null;
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
   let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
@@ -1145,26 +1170,39 @@ async function sendDrPlaintext(params = {}) {
     state.baseKey.conversationId = conversationId;
   }
 
+  const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
+    ? params.messageId.trim()
+    : null;
+  if (!messageId) {
+    throw new Error('messageId required for send');
+  }
+  const msgType = typeof metaOverrides?.msg_type === 'string' && metaOverrides.msg_type.length
+    ? metaOverrides.msg_type
+    : 'text';
+
+  let finalConversationId = conversationId;
+  if (!finalConversationId) finalConversationId = await conversationIdFromToken(tokenB64);
+
+  const transportCounter = reserveTransportCounter(state, {
+    peerAccountDigest: peer,
+    peerDeviceId,
+    conversationId: finalConversationId,
+    messageId,
+    msgType
+  });
+
   const senderDeviceId = ensureDeviceId();
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
   logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: preSnapshot || null });
   const pkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
+  const afterEncryptTotal = Number(state?.NsTotal);
+  if (!Number.isFinite(afterEncryptTotal) || afterEncryptTotal === transportCounter + 1 || afterEncryptTotal < transportCounter) {
+    state.NsTotal = transportCounter;
+  }
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
-  let transportCounter = null;
-  try {
-    transportCounter = requireTransportCounter(state, { peerAccountDigest: peer, peerDeviceId, sourceTag: 'sendDrPlaintext' });
-  } catch (err) {
-    if (preSnapshot) {
-      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'missing-transport-counter' });
-    }
-    throw err;
-  }
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
-
-  let finalConversationId = conversationId;
-  if (!finalConversationId) finalConversationId = await conversationIdFromToken(tokenB64);
 
   const accountDigest = (getAccountDigest() || '').toUpperCase(); // self
   const receiverAccountDigest = peer; // 目標必須鎖定對端
@@ -1176,9 +1214,7 @@ async function sendDrPlaintext(params = {}) {
     senderDigest: accountDigest || null,
     sender_device_id: senderDeviceId || null,
     senderDeviceId: senderDeviceId || null,
-    msg_type: typeof metaOverrides?.msg_type === 'string' && metaOverrides.msg_type.length
-      ? metaOverrides.msg_type
-      : 'text'
+    msg_type: msgType
   };
   if (metaOverrides && typeof metaOverrides === 'object') {
     for (const [key, value] of Object.entries(metaOverrides)) {
@@ -1225,12 +1261,6 @@ async function sendDrPlaintext(params = {}) {
   const headerJson = JSON.stringify(headerPayload);
   const ctB64 = pkt.ciphertext_b64;
 
-  const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
-    ? params.messageId.trim()
-    : null;
-  if (!messageId) {
-    throw new Error('messageId required for send');
-  }
   const aad = headerPayload ? buildDrAadFromHeader(headerPayload) : null;
   const aadHash = aad ? await hashBytesHex(aad) : null;
   const packetKeyLog = pkt?.header?.ek_pub_b64
@@ -1365,7 +1395,18 @@ async function sendDrPlaintext(params = {}) {
     if (nextFail >= 3) {
       throw new Error('DR 送出連續失敗，請重新同步好友或重新建立邀請');
     }
-    if (preSnapshot) restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+    const holder = drState({ peerAccountDigest: peer, peerDeviceId });
+    const currentCounter = Number(holder?.NsTotal);
+    const shouldRestore = preSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= transportCounter);
+    if (shouldRestore) {
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+      const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
+      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < transportCounter)) {
+        refreshed.NsTotal = transportCounter;
+      }
+    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < transportCounter)) {
+      holder.NsTotal = transportCounter;
+    }
     throw err;
   }
 }
@@ -1624,6 +1665,7 @@ export async function sendDrMedia(params = {}) {
   let conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
+  const msgType = 'media';
   const accountDigest = (getAccountDigest() || '').toUpperCase();
 
   const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
@@ -1703,21 +1745,23 @@ export async function sendDrMedia(params = {}) {
   });
 
   const senderDeviceId = ensureDeviceId();
+  const transportCounter = reserveTransportCounter(state, {
+    peerAccountDigest: peer,
+    peerDeviceId,
+    conversationId,
+    messageId,
+    msgType
+  });
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
   logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
   const pkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
+  const afterEncryptTotal = Number(state?.NsTotal);
+  if (!Number.isFinite(afterEncryptTotal) || afterEncryptTotal === transportCounter + 1 || afterEncryptTotal < transportCounter) {
+    state.NsTotal = transportCounter;
+  }
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Math.floor(Date.now() / 1000);
-  let transportCounter = null;
-  try {
-    transportCounter = requireTransportCounter(state, { peerAccountDigest: peer, peerDeviceId, sourceTag: 'sendDrMedia' });
-  } catch (err) {
-    if (preSnapshot) {
-      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'missing-transport-counter' });
-    }
-    throw err;
-  }
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
 
   const receiverDeviceId = peerDeviceId;
@@ -1737,7 +1781,7 @@ export async function sendDrMedia(params = {}) {
     target_device_id: receiverDeviceId || null,
     receiverDeviceId: receiverDeviceId || null,
     receiver_device_id: receiverDeviceId || null,
-    msg_type: 'media',
+    msg_type: msgType,
     media: {
       object_key: metadata.objectKey,
       size: metadata.size,
@@ -1779,7 +1823,7 @@ export async function sendDrMedia(params = {}) {
     receiverAccountDigest: peer,
     receiverDeviceId: receiverDeviceId || null,
     createdAt: now,
-    meta: { msg_type: 'media', media: metadata },
+    meta: { msg_type: msgType, media: metadata },
     peerAccountDigest: peer,
     dr: preSnapshot
       ? {
@@ -1791,7 +1835,18 @@ export async function sendDrMedia(params = {}) {
   });
   const result = await processOutboxJobNow(job.jobId);
   if (!result.ok) {
-    if (preSnapshot) restoreDrStateFromSnapshot({ peerAccountDigest: peer, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+    const holder = drState({ peerAccountDigest: peer, peerDeviceId });
+    const currentCounter = Number(holder?.NsTotal);
+    const shouldRestore = preSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= transportCounter);
+    if (shouldRestore) {
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+      const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
+      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < transportCounter)) {
+        refreshed.NsTotal = transportCounter;
+      }
+    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < transportCounter)) {
+      holder.NsTotal = transportCounter;
+    }
     throw new Error(result.error || 'sendMedia failed');
   }
   logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });

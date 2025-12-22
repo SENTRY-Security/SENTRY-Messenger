@@ -104,6 +104,10 @@ export function initContactsView(options) {
       const tsSeconds = Number(c.addedAt || 0) || Math.floor(Date.now() / 1000);
       const lastStr = new Date(tsSeconds * 1000).toLocaleString();
       const isOnline = sessionStore.onlineContacts.has(key);
+      const corruptMap = sessionStore.corruptContacts instanceof Map ? sessionStore.corruptContacts : null;
+      const digestOnly = key.includes('::') ? key.split('::')[0] : key;
+      const corruptInfo = corruptMap ? (corruptMap.get(key) || corruptMap.get(digestOnly)) : null;
+      const metaText = corruptInfo ? '狀態損壞，需要重新同步/重新邀請' : `最近同步：${lastStr}`;
 
       const li = document.createElement('li');
       li.className = 'contact-item';
@@ -117,7 +121,7 @@ export function initContactsView(options) {
               <span class="presence-dot${isOnline ? ' online' : ''}" aria-hidden="true"></span>
               <span class="name-text">${escapeHtml(name)}</span>
             </div>
-            <div class="meta">最近同步：${escapeHtml(lastStr)}</div>
+            <div class="meta">${escapeHtml(metaText)}</div>
           </div>
         </div>
         <button type="button" class="item-delete" aria-label="刪除好友"><i class='bx bx-trash'></i></button>`;

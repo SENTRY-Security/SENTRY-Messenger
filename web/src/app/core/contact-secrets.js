@@ -26,6 +26,70 @@ let contactSecretsLocked = false;
 const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 const contactAliasToPrimary = new Map(); // alias -> primary key (accountDigest::deviceId preferred)
 const contactPrimaryToAliases = new Map(); // primary -> Set(alias)
+const CORRUPT_REASON_DEFAULT = 'invalid-contact-secret';
+
+function ensureCorruptContactMap() {
+  if (!(sessionStore.corruptContacts instanceof Map)) {
+    const entries = sessionStore.corruptContacts && typeof sessionStore.corruptContacts.entries === 'function'
+      ? Array.from(sessionStore.corruptContacts.entries())
+      : [];
+    sessionStore.corruptContacts = new Map(entries);
+  }
+  return sessionStore.corruptContacts;
+}
+
+function recordCorruptContact({ peerKey = null, peerAccountDigest = null, peerDeviceId = null, reason = CORRUPT_REASON_DEFAULT, source = null } = {}) {
+  const store = ensureCorruptContactMap();
+  const parsed = parsePeerKey(peerKey || '');
+  const digest = normalizeAccountDigest(peerAccountDigest || parsed.accountDigest || null);
+  const dev = normalizePeerDeviceId(peerDeviceId || parsed.deviceId || null);
+  const key = digest && dev ? `${digest}::${dev}` : (digest || peerKey || null);
+  const entry = {
+    peerAccountDigest: digest || peerKey || null,
+    peerDeviceId: dev || null,
+    reason: reason || CORRUPT_REASON_DEFAULT,
+    source: source || null,
+    ts: Date.now()
+  };
+  if (key) store.set(key, entry);
+  if (digest && dev && !store.has(digest)) {
+    store.set(digest, { ...entry });
+  }
+  return entry;
+}
+
+function clearCorruptContact(peerKey = null) {
+  const store = ensureCorruptContactMap();
+  if (!peerKey) {
+    store.clear();
+    return;
+  }
+  const digest = normalizeAccountDigest(peerKey.includes('::') ? peerKey.split('::')[0] : peerKey);
+  if (store.delete(peerKey)) return;
+  if (digest) {
+    store.delete(digest);
+    for (const key of Array.from(store.keys())) {
+      if (typeof key === 'string' && key.startsWith(`${digest}::`)) {
+        store.delete(key);
+      }
+    }
+  }
+}
+
+export function getCorruptContact(peer) {
+  const store = ensureCorruptContactMap();
+  const identity = normalizePeerIdentity(peer);
+  const key = identity.key || (identity.accountDigest && identity.deviceId ? `${identity.accountDigest}::${identity.deviceId}` : null);
+  if (key && store.has(key)) return store.get(key);
+  if (identity.accountDigest && store.has(identity.accountDigest)) return store.get(identity.accountDigest);
+  return null;
+}
+
+export function listCorruptContacts() {
+  const store = ensureCorruptContactMap();
+  return Array.from(store.values());
+}
+
 
 function normalizeDeviceId(value) {
   if (!value) return null;
@@ -353,6 +417,19 @@ function toBase64Maybe(value) {
   return null;
 }
 
+function normalizeOptionalB64(raw, { keyName, peerKey = null, deviceId = null, source = null, strict = false } = {}) {
+  if (raw === undefined) return null;
+  if (raw === null) return null;
+  const converted = toBase64Maybe(raw);
+  if (!strict) return converted;
+  const provided = raw !== undefined;
+  if (provided && converted === null) {
+    logPersistInvalidKey({ keyName, raw, peerKey, deviceId, source, reason: 'not-b64-string' });
+    throw new Error(`contact-secrets persist blocked: ${keyName} not string`);
+  }
+  return converted;
+}
+
 function logPersistInvalidKey({ keyName, raw, peerKey = null, deviceId = null, source = null, reason = null }) {
   try {
     console.warn('[contact-secrets:persist-invalid-key]', {
@@ -411,7 +488,7 @@ function toTimestampOrNull(value) {
   return Math.floor(n);
 }
 
-function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'normalize', peerKey = null, deviceId = null } = {}) {
+function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'normalize', peerKey = null, deviceId = null, strictB64 = false } = {}) {
   if (!input || typeof input !== 'object') {
     console.warn('[contact-secrets:invalid-dr-snapshot]', { reason: 'not-object', type: typeof input, source, peerKey, deviceId });
     throw new Error('contact-secrets invalid dr snapshot: not object');
@@ -440,9 +517,9 @@ function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'nor
     PN: toNumberOrDefault(input.PN, 0),
     NsTotal: toNumberRequired(input.NsTotal ?? input.Ns_total, 'NsTotal', { source, peerKey, deviceId }),
     NrTotal: toNumberRequired(input.NrTotal ?? input.Nr_total, 'NrTotal', { source, peerKey, deviceId }),
-    myRatchetPriv_b64: toBase64Maybe(input.myRatchetPriv ?? input.myRatchetPriv_b64),
-    myRatchetPub_b64: toBase64Maybe(input.myRatchetPub ?? input.myRatchetPub_b64),
-    theirRatchetPub_b64: toBase64Maybe(input.theirRatchetPub ?? input.theirRatchetPub_b64),
+    myRatchetPriv_b64: normalizeOptionalB64(input.myRatchetPriv ?? input.myRatchetPriv_b64, { keyName: 'myRatchetPriv_b64', peerKey, deviceId, source, strict: strictB64 }),
+    myRatchetPub_b64: normalizeOptionalB64(input.myRatchetPub ?? input.myRatchetPub_b64, { keyName: 'myRatchetPub_b64', peerKey, deviceId, source, strict: strictB64 }),
+    theirRatchetPub_b64: normalizeOptionalB64(input.theirRatchetPub ?? input.theirRatchetPub_b64, { keyName: 'theirRatchetPub_b64', peerKey, deviceId, source, strict: strictB64 }),
     pendingSendRatchet: !!input.pendingSendRatchet,
     updatedAt: toTimestampOrNull(input.updatedAt ?? input.snapshotTs ?? input.ts ?? null)
   };
@@ -458,7 +535,7 @@ function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'nor
   return out;
 }
 
-function normalizeDrHistory(entries, { source = 'dr-history', peerKey = null, deviceId = null } = {}) {
+function normalizeDrHistory(entries, { source = 'dr-history', peerKey = null, deviceId = null, strictB64 = false } = {}) {
   if (!Array.isArray(entries)) return [];
   const out = [];
   for (const entry of entries) {
@@ -466,7 +543,7 @@ function normalizeDrHistory(entries, { source = 'dr-history', peerKey = null, de
     const ts = Number(entry.ts ?? entry.timestamp ?? entry.createdAt ?? entry.created_at);
     const snap = normalizeDrSnapshot(
       entry.snapshot || entry.drState || entry.state || null,
-      { setDefaultUpdatedAt: false, source, peerKey, deviceId }
+      { setDefaultUpdatedAt: false, source, peerKey, deviceId, strictB64 }
     );
     if (!Number.isFinite(ts) || ts <= 0) continue;
     if (!snap) continue;
@@ -474,7 +551,7 @@ function normalizeDrHistory(entries, { source = 'dr-history', peerKey = null, de
     const messageKey = chooseString(entry.messageKey_b64 ?? entry.message_key_b64 ?? entry.messageKey ?? entry.message_key, null);
     const snapshotAfter = normalizeDrSnapshot(
       entry.snapshotAfter || entry.snapshot_after || entry.nextSnapshot || entry.snapshot_next || null,
-      { setDefaultUpdatedAt: false, source: `${source}:after`, peerKey, deviceId }
+      { setDefaultUpdatedAt: false, source: `${source}:after`, peerKey, deviceId, strictB64 }
     );
     out.push({
       ts,
@@ -618,6 +695,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
   let withSeed = 0;
   let structuredVersion = null;
   let structuredGeneratedAt = null;
+  const corruptEntries = [];
   if (!snapshot || typeof snapshot !== 'string') {
     debugLog('restore-skip', { reason: 'snapshot-empty', source: reason });
     return null;
@@ -627,20 +705,22 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       map.clear();
       contactAliasToPrimary.clear();
       contactPrimaryToAliases.clear();
+      clearCorruptContact();
     }
     const parsed = JSON.parse(snapshot);
     if (Array.isArray(parsed)) {
       debugLog('restore-skip', { reason: 'legacy-array-format', source: reason });
       return null;
-    } else {
-      const structured = parseStructuredSnapshot(parsed);
-      if (!structured) {
-        debugLog('restore-skip', { reason: 'unsupported-format', source: reason });
-        return null;
-      }
-      structuredVersion = structured.version || null;
-      structuredGeneratedAt = structured.generatedAt || null;
-      for (const entry of structured.entries) {
+    }
+    const structured = parseStructuredSnapshot(parsed);
+    if (!structured) {
+      debugLog('restore-skip', { reason: 'unsupported-format', source: reason });
+      return null;
+    }
+    structuredVersion = structured.version || null;
+    structuredGeneratedAt = structured.generatedAt || null;
+    for (const entry of structured.entries) {
+      try {
         const normalized = normalizeStructuredEntry(entry, { source: reason });
         if (!normalized) continue;
         const { peerKey, aliases, record } = normalized;
@@ -662,6 +742,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
         if (hasDr) withDrState += 1;
         if (hasHistory) withHistory += 1;
         if (hasSeed) withSeed += 1;
+        clearCorruptContact(peerKey);
         map.set(peerKey, record);
         registerContactAliases(peerKey, aliases);
         debugLog('restore-entry', {
@@ -673,9 +754,23 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
           version: structured.version,
           source: reason
         });
+      } catch (err) {
+        const identity = normalizePeerIdentity({
+          peerAccountDigest: entry?.peerAccountDigest ?? entry?.peer_account_digest ?? entry?.accountDigest ?? entry?.account_digest ?? entry?.peerKey ?? entry?.peer_key ?? entry?.peer ?? null,
+          peerDeviceId: entry?.peerDeviceId ?? entry?.peer_device_id ?? null
+        });
+        const corrupt = recordCorruptContact({
+          peerKey: identity.key || entry?.peerKey || entry?.peer_key || null,
+          peerAccountDigest: identity.accountDigest || null,
+          peerDeviceId: identity.deviceId || null,
+          reason: err?.message || err,
+          source: reason
+        });
+        if (corrupt) corruptEntries.push(corrupt);
+        log({ contactSecretRestoreError: err?.message || err, source: reason, peerAccountDigest: identity.key || identity.accountDigest || null });
       }
     }
-    debugLog('restore', { entries: map.size, source: reason });
+    debugLog('restore', { entries: map.size, corruptEntries: corruptEntries.length, source: reason });
     const summaryPayload = {
       entries: totalEntries,
       withDrState,
@@ -683,7 +778,8 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       withSeed,
       bytes: snapshot.length,
       version: structuredVersion,
-      generatedAt: structuredGeneratedAt
+      generatedAt: structuredGeneratedAt,
+      corruptEntries
     };
     log({
       contactSecretsRestoreSummary: summaryPayload
@@ -691,7 +787,16 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     return summaryPayload;
   } catch (err) {
     log({ contactSecretRestoreError: err?.message || err, source: reason });
-    throw err;
+    return {
+      entries: totalEntries,
+      withDrState,
+      withHistory,
+      withSeed,
+      bytes: snapshot.length,
+      version: structuredVersion,
+      generatedAt: structuredGeneratedAt,
+      corruptEntries
+    };
   }
 }
 
@@ -856,7 +961,7 @@ function cloneContactSecretRecord(existing) {
     for (const [devId, devVal] of Object.entries(existing.devices)) {
       if (!devId) continue;
       const normalizedState = devVal?.drState
-        ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source: 'clone-record', deviceId: devId })
+        ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source: 'clone-record', deviceId: devId, strictB64: true })
         : null;
       devices[devId] = {
         drState: normalizedState,
@@ -928,7 +1033,7 @@ function buildStructuredEntry(peerAccountDigest, record) {
     if (!devId) continue;
     const dev = sourceDevices[devId] || {};
     const normalizedState = dev?.drState
-      ? normalizeDrSnapshot(dev.drState, { setDefaultUpdatedAt: false, source: 'serialize', peerKey: identity.key, deviceId: devId })
+      ? normalizeDrSnapshot(dev.drState, { setDefaultUpdatedAt: false, source: 'serialize', peerKey: identity.key, deviceId: devId, strictB64: true })
       : null;
     if (normalizedState && record?.devices?.[devId]) {
       record.devices[devId].drState = normalizedState;
@@ -936,7 +1041,7 @@ function buildStructuredEntry(peerAccountDigest, record) {
     devicesObj[devId] = {
       drState: normalizedState,
       drSeed: dev.drSeed || null,
-      drHistory: Array.isArray(dev.drHistory) ? dev.drHistory : [],
+      drHistory: normalizeDrHistory(dev.drHistory, { source: 'serialize-history', peerKey: identity.key, deviceId: devId, strictB64: true }),
       drHistoryCursorTs: Number.isFinite(dev.drHistoryCursorTs) ? dev.drHistoryCursorTs : null,
       drHistoryCursorId: dev.drHistoryCursorId || null,
       updatedAt: Number.isFinite(dev.updatedAt) ? dev.updatedAt : null
@@ -1052,7 +1157,7 @@ function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
     const slot = ensureDeviceRecord(record, devId, { create: true });
     if (Object.prototype.hasOwnProperty.call(devVal, 'drState')) {
       const normalizedState = devVal.drState
-        ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source, peerKey: identity.key, deviceId: devId })
+        ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source, peerKey: identity.key, deviceId: devId, strictB64: true })
         : null;
       if (normalizedState) slot.drState = normalizedState;
     }
@@ -1060,7 +1165,7 @@ function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
       slot.drSeed = normalizeOptionalString(devVal.drSeed) || null;
     }
     if (Object.prototype.hasOwnProperty.call(devVal, 'drHistory')) {
-      slot.drHistory = normalizeDrHistory(devVal.drHistory, { source, peerKey: identity.key, deviceId: devId });
+      slot.drHistory = normalizeDrHistory(devVal.drHistory, { source, peerKey: identity.key, deviceId: devId, strictB64: true });
     }
     const cursorTsRaw = devVal.drHistoryCursorTs ?? devVal.cursorTs ?? devVal?.dr?.cursor?.ts;
     const cursorIdRaw = devVal.drHistoryCursorId ?? devVal.cursorId ?? devVal?.dr?.cursor?.id;
@@ -1166,7 +1271,7 @@ function normalizeContactSecretUpdate(update = {}) {
       structured.dr.state = { has: true, value: null };
       return;
     }
-    const normalized = normalizeDrSnapshot(raw, { setDefaultUpdatedAt: true, source: structured.debugSource || 'setContactSecret' });
+    const normalized = normalizeDrSnapshot(raw, { setDefaultUpdatedAt: true, source: structured.debugSource || 'setContactSecret', strictB64: true });
     structured.dr.state = { has: true, value: normalized };
   }
 
@@ -1176,7 +1281,7 @@ function normalizeContactSecretUpdate(update = {}) {
       structured.dr.history = { has: true, value: [] };
       return;
     }
-    structured.dr.history = { has: true, value: normalizeDrHistory(raw, { source: structured.debugSource || 'setContactSecret' }) };
+    structured.dr.history = { has: true, value: normalizeDrHistory(raw, { source: structured.debugSource || 'setContactSecret', strictB64: true }) };
   }
 
   function applyDrSeed(raw) {
@@ -1314,7 +1419,8 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
       setDefaultUpdatedAt: false,
       source: sourceTag,
       peerKey: key,
-      deviceId: devId
+      deviceId: devId,
+      strictB64: true
     });
   }
 

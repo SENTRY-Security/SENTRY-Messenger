@@ -189,6 +189,11 @@ async function performSync() {
       };
       lastUploadedChecksum = backup.checksum || checksumRecord?.value || null;
       syncCompleted = true;
+      try {
+        if (typeof document !== 'undefined') {
+          document.dispatchEvent(new CustomEvent('contactSecrets:restored', { detail: { source: 'backup-sync', summary } }));
+        }
+      } catch {}
     }
   } finally {
     syncInFlight = false;

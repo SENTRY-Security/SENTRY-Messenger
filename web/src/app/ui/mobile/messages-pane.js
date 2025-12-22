@@ -280,7 +280,7 @@ export function initMessagesPane({
         scheduleActivePoll();
         return;
       }
-      loadActiveConversationMessages({ append: false })
+      loadActiveConversationMessages({ append: false, silent: true, reason: 'poll' })
         .catch((err) => log({ activePollError: err?.message || err }))
         .finally(() => scheduleActivePoll());
     }, ACTIVE_POLL_INTERVAL_MS);
@@ -2315,18 +2315,24 @@ export function initMessagesPane({
     }
   }
 
-  async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true } = {}) {
+  async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true, silent = false, reason } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
     if (!state.activePeerDeviceId) {
-      setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
+      if (!silent) setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
       return;
     }
     if (state.loading) return;
     if (append && (!state.hasMore || !state.nextCursor)) return;
 
+    if (silent) {
+      try {
+        console.info('[msg] poll:tick', { reason: reason || 'poll' });
+      } catch {}
+    }
+
     state.loading = true;
-    if (!append) setMessagesStatus('載入中…');
+    if (!append && !silent) setMessagesStatus('載入中…');
     try {
       const cursor = append ? state.nextCursor : undefined;
       const forceReplay = !append && replay;
@@ -2366,21 +2372,21 @@ export function initMessagesPane({
       state.hasMore = !!state.nextCursor || !!hasMoreAtCursor;
       if (filteredErrors.length) {
         logDecryptBannerEntries(state.conversationId, filteredErrors);
-        setMessagesStatus(`部分訊息無法解密，系統將嘗試重新同步（${filteredErrors.length}）`, true);
+        if (!silent) setMessagesStatus(`部分訊息無法解密，系統將嘗試重新同步（${filteredErrors.length}）`, true);
         if (!state.replayInProgress && retryOnError) {
           state.replayInProgress = true;
           try {
             await loadActiveConversationMessages({ append: false, replay: true, retryOnError: false });
           } catch (err) {
-            setMessagesStatus('重新同步失敗：' + (err?.message || err), true);
+            if (!silent) setMessagesStatus('重新同步失敗：' + (err?.message || err), true);
           } finally {
             state.replayInProgress = false;
           }
         }
       } else if (filteredDeadLetters.length) {
         logDecryptBannerEntries(state.conversationId, filteredDeadLetters);
-        setMessagesStatus('部分訊息解密失敗，已排程重試。', true);
-      } else {
+        if (!silent) setMessagesStatus('部分訊息解密失敗，已排程重試。', true);
+      } else if (!silent) {
         setMessagesStatus('', false);
       }
       let receiptsChanged = false;
@@ -2409,7 +2415,7 @@ export function initMessagesPane({
       }
       syncThreadFromActiveMessages();
     } catch (err) {
-      setMessagesStatus('載入失敗：' + (err?.message || err), true);
+      if (!silent) setMessagesStatus('載入失敗：' + (err?.message || err), true);
     } finally {
       state.loading = false;
       if (!append && pendingWsRefresh > 0) {
