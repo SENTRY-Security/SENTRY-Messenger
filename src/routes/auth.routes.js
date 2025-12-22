@@ -310,14 +310,87 @@ r.post('/mk/store', async (req, res) => {
     const path = '/d1/tags/store-mk';
     const body = JSON.stringify({ accountToken, accountDigest, wrapped_mk: input.wrapped_mk });
     const sig = signHmac(path, body, HMAC_SECRET);
-    const w = await fetch(`${DATA_API}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-auth': sig },
-      body
-    });
+    const upstreamUrl = `${DATA_API}${path}`;
+    const upstreamHeaders = { 'content-type': 'application/json', 'x-auth': sig, accept: 'application/json' };
+
+    const categorizeFetchError = (err) => {
+      const code = err?.code || '';
+      const msg = String(err?.message || '').toLowerCase();
+      if (code === 'ENOTFOUND' || msg.includes('enotfound')) return 'DNS_FAIL';
+      if (msg.includes('ssl') || msg.includes('certificate') || code === 'DEPTH_ZERO_SELF_SIGNED_CERT') return 'TLS_FAIL';
+      if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH') return 'CONNECT_FAIL';
+      if (code === 'ETIMEDOUT' || msg.includes('timeout')) return 'TIMEOUT';
+      return 'NETWORK_FAIL';
+    };
+
+    let w;
+    try {
+      w = await fetch(upstreamUrl, {
+        method: 'POST',
+        headers: upstreamHeaders,
+        body
+      });
+    } catch (err) {
+      const reason = categorizeFetchError(err);
+      try {
+        logger.warn({
+          event: 'mk.store.fetch.error',
+          url: upstreamUrl,
+          reason,
+          message: err?.message || err
+        });
+      } catch {}
+      return res.status(502).json({ error: 'StoreFailed', reason, message: err?.message || String(err) });
+    }
+
     if (!w.ok) {
-      const txt = await w.text().catch(() => '');
-      return res.status(502).json({ error: 'StoreFailed', details: txt });
+      const rawContentType = w.headers.get('content-type') || '';
+      const contentType = rawContentType.toLowerCase();
+      const cfRay = w.headers.get('cf-ray') || null;
+      const text = await w.text().catch(() => '');
+      const upstreamStatus = w.status || 502;
+
+      let upstreamError = null;
+      let upstreamCode = null;
+      let upstreamMessage = null;
+      let detailsPreview = text ? text.slice(0, 200) : undefined;
+
+      if (contentType.includes('application/json')) {
+        try {
+          const parsed = JSON.parse(text);
+          upstreamError = parsed?.error ?? null;
+          upstreamCode = parsed?.code ?? null;
+          if (typeof parsed?.message === 'string') {
+            upstreamMessage = parsed.message.slice(0, 120);
+          }
+          detailsPreview = undefined; // prefer structured fields
+        } catch {
+          /* ignore JSON parse errors */
+        }
+      }
+
+      const logLine = [
+        'mk.store.upstream.fail',
+        `status=${upstreamStatus}`,
+        `ct=${rawContentType || 'n/a'}`,
+        `cfRay=${cfRay || 'n/a'}`,
+        `upstreamCode=${upstreamCode || 'n/a'}`,
+        `upstreamError=${upstreamError || 'n/a'}`,
+        `upstreamMessage=${upstreamMessage || 'n/a'}`
+      ].join('|');
+      try { logger.warn(logLine); } catch {}
+
+      // JSON response ordering to surface upstreamCode early
+      return res.status(upstreamStatus).json({
+        error: 'StoreFailed',
+        upstreamCode,
+        upstreamError,
+        upstreamMessage,
+        upstreamStatus,
+        upstreamContentType: rawContentType || null,
+        cfRay: cfRay || null,
+        detailsPreview
+      });
     }
     return res.status(204).end();
   } catch (e) {

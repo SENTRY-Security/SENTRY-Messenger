@@ -8,7 +8,9 @@ import {
   updateCallMedia,
   completeCallSession,
   getCallSessionSnapshot,
-  updateCallSessionStatus
+  updateCallSessionStatus,
+  failCallSession,
+  setCallPeerDeviceId
 } from './state.js';
 import {
   getCallKeyContext,
@@ -16,8 +18,9 @@ import {
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { CALL_SESSION_STATUS } from './state.js';
-import { normalizePeerIdentity } from '../../core/store.js';
+import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccountDigest } from '../../core/store.js';
 import { toU8Strict } from '../../../shared/utils/u8-strict.js';
+import { buildCallPeerIdentity } from './identity.js';
 
 let sendSignal = null;
 let showToast = () => {};
@@ -28,13 +31,82 @@ let remoteStream = null;
 let pendingOffer = null;
 let awaitingAnswer = false;
 let activeCallId = null;
-let activePeerAccountDigest = null; // holds accountDigest now
+let activePeerKey = null;
 let direction = 'outgoing';
 let unsubscribers = [];
 let awaitingOfferAfterAccept = false;
 let localAudioMuted = false;
 let remoteAudioMuted = false;
 let pendingRemoteCandidates = [];
+
+function requireLocalDeviceId() {
+  const id = ensureDeviceId();
+  if (!id) {
+    throw new Error('deviceId missing for call media');
+  }
+  return id;
+}
+
+function requirePeerIdentitySnapshot() {
+  const snapshot = getCallSessionSnapshot();
+  const digest = normalizeAccountDigest(snapshot?.peerAccountDigest || null);
+  const deviceId = normalizePeerDeviceId(snapshot?.peerDeviceId || null);
+  if (!digest) {
+    throw new Error('peer account digest missing for call media');
+  }
+  if (!deviceId) {
+    throw new Error('peer deviceId missing for call media');
+  }
+  const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId: deviceId });
+  if (!snapshot?.peerKey) {
+    try {
+      setCallPeerDeviceId(identity.deviceId, { callId: snapshot?.callId || null });
+    } catch {}
+  }
+  return identity;
+}
+
+function setPeerDeviceId(deviceId) {
+  const normalized = normalizePeerDeviceId(deviceId);
+  if (!normalized) {
+    throw new Error('peer deviceId missing for call media');
+  }
+  return setCallPeerDeviceId(normalized, { callId: activeCallId || undefined });
+}
+
+function requirePeerDeviceId() {
+  return requirePeerIdentitySnapshot().deviceId;
+}
+
+function failCall(reason, err = null) {
+  const message = err?.message || err || reason || 'call-media-failed';
+  const session = getCallSessionSnapshot();
+  const snapshot = session || {};
+  let selfAccountDigest = null;
+  let selfDeviceId = null;
+  try {
+    selfAccountDigest = getAccountDigest ? getAccountDigest() : null;
+  } catch {}
+  try {
+    selfDeviceId = ensureDeviceId();
+  } catch {}
+  log(`callFail|callId=${snapshot.callId || null}|traceId=${snapshot.traceId || null}|selfAccountDigest=${selfAccountDigest || null}|selfDeviceId=${selfDeviceId || null}|peerAccountDigest=${snapshot.peerAccountDigest || null}|peerDeviceId=${snapshot.peerDeviceId || null}|peerKey=${snapshot.peerKey || activePeerKey || null}|reason=${message}`);
+  failCallSession(message, {
+    reason,
+    callId: snapshot.callId || null,
+    traceId: snapshot.traceId || null,
+    peerDeviceId: snapshot.peerDeviceId || null,
+    peerAccountDigest: snapshot.peerAccountDigest || null,
+    peerKey: snapshot.peerKey || activePeerKey || null,
+    selfAccountDigest,
+    selfDeviceId
+  });
+  cleanupPeerConnection(reason || message);
+  const error = err instanceof Error ? err : new Error(message);
+  // mark to avoid double-fail handling
+  error.__callFail = true;
+  throw error;
+}
 
 function isLiveMicrophoneStream(stream) {
   if (!stream?.getAudioTracks) return false;
@@ -96,7 +168,7 @@ async function addRemoteCandidate(candidate) {
   try {
     await peerConnection.addIceCandidate(candidate);
   } catch (err) {
-    log({ callMediaCandidateError: err?.message || err });
+    failCall('add-ice-candidate-failed', err);
   }
 }
 
@@ -140,18 +212,20 @@ export function disposeCallMediaSession() {
   cleanupPeerConnection('dispose');
 }
 
-export async function startOutgoingCallMedia({ callId, peerAccountDigest } = {}) {
+export async function startOutgoingCallMedia({ callId } = {}) {
   activeCallId = callId;
-  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest }).key;
+  const identity = requirePeerIdentitySnapshot();
+  activePeerKey = identity.peerKey;
   direction = 'outgoing';
   awaitingAnswer = true;
   await ensurePeerConnection();
   await createAndSendOffer();
 }
 
-export async function acceptIncomingCallMedia({ callId, peerAccountDigest } = {}) {
+export async function acceptIncomingCallMedia({ callId } = {}) {
   activeCallId = callId;
-  activePeerAccountDigest = normalizePeerIdentity({ peerAccountDigest }).key;
+  const identity = requirePeerIdentitySnapshot();
+  activePeerKey = identity.peerKey;
   direction = 'incoming';
   awaitingOfferAfterAccept = true;
   await ensurePeerConnection();
@@ -226,17 +300,24 @@ async function ensurePeerConnection() {
   const rtcConfig = await buildRtcConfiguration();
   peerConnection = new RTCPeerConnection(rtcConfig);
   peerConnection.onicecandidate = (event) => {
-    if (!event.candidate || !sendSignal || !activeCallId) return;
-    const candidateInit = typeof event.candidate.toJSON === 'function'
-      ? event.candidate.toJSON()
-      : event.candidate;
-    sendSignal('call-ice-candidate', {
-      callId: activeCallId,
-      targetAccountDigest: activePeerAccountDigest,
-      senderDeviceId: ensureDeviceId(),
-      targetDeviceId: activePeerDeviceId,
-      candidate: candidateInit
-    });
+    try {
+      if (!event.candidate || !sendSignal || !activeCallId) return;
+      const candidateInit = typeof event.candidate.toJSON === 'function'
+        ? event.candidate.toJSON()
+        : event.candidate;
+      const targetIdentity = requirePeerIdentitySnapshot();
+      activePeerKey = targetIdentity.peerKey;
+      const targetDeviceId = targetIdentity.deviceId;
+      sendSignal('call-ice-candidate', {
+        callId: activeCallId,
+        targetAccountDigest: targetIdentity.digest,
+        senderDeviceId: requireLocalDeviceId(),
+        targetDeviceId,
+        candidate: candidateInit
+      });
+    } catch (err) {
+      failCall('ice-candidate-send-failed', err);
+    }
   };
   peerConnection.ontrack = (event) => {
     remoteStream = event.streams[0] || new MediaStream([event.track]);
@@ -301,13 +382,17 @@ async function attachLocalMedia() {
   } catch (err) {
     showToast?.('無法存取麥克風：' + (err?.message || err), { variant: 'error' });
     log({ callMediaMicError: err?.message || err });
+    failCall('microphone-access-failed', err);
   }
 }
 
 async function buildRtcConfiguration() {
   let config = getCallNetworkConfig();
   if (!config) {
-    try { config = await loadCallNetworkConfig(); } catch {}
+    config = await loadCallNetworkConfig();
+  }
+  if (!config || !Array.isArray(config?.ice?.servers) || !config.ice.servers.length) {
+    failCall('call-network-config-missing');
   }
   const baseServers = Array.isArray(config?.ice?.servers)
     ? config.ice.servers
@@ -325,56 +410,94 @@ async function buildRtcConfiguration() {
         })
         .filter(Boolean)
     : [];
-  let credentialServers = [];
-  try {
-    const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
-    credentialServers = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
-  } catch (err) {
-    log({ callTurnCredentialError: err?.message || err });
-      showToast?.('無法取得 TURN 認證', { variant: 'warning' });
+  const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
+  const credentialServers = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
+  if (!credentialServers.length) {
+    failCall('turn-credentials-missing');
   }
   const iceServers = [...baseServers, ...credentialServers];
-  return { iceServers: iceServers.length ? iceServers : undefined };
+  if (!iceServers.length) {
+    failCall('ice-servers-missing');
+  }
+  return { iceServers };
 }
 
 async function createAndSendOffer() {
   if (!peerConnection) return;
-  const offer = await peerConnection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
-  await peerConnection.setLocalDescription(offer);
-  awaitingAnswer = true;
-  if (sendSignal) {
-    sendSignal('call-offer', {
+  try {
+    const offer = await peerConnection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
+    await peerConnection.setLocalDescription(offer);
+    awaitingAnswer = true;
+    if (!sendSignal) {
+      throw new Error('call signal sender missing');
+    }
+    const targetIdentity = requirePeerIdentitySnapshot();
+    activePeerKey = targetIdentity.peerKey;
+    const sent = sendSignal('call-offer', {
       callId: activeCallId,
-      targetAccountDigest: activePeerAccountDigest,
-      senderDeviceId: ensureDeviceId(),
-      targetDeviceId: activePeerDeviceId,
+      targetAccountDigest: targetIdentity.digest,
+      senderDeviceId: requireLocalDeviceId(),
+      targetDeviceId: targetIdentity.deviceId,
       description: { sdp: offer.sdp, type: offer.type }
     });
+    if (!sent) {
+      throw new Error('call-offer send failed');
+    }
+  } catch (err) {
+    failCall('create-offer-failed', err);
   }
 }
 
 async function applyRemoteOfferAndAnswer(msg) {
   if (!peerConnection || !msg?.description) return;
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
-  if (sendSignal) {
-    sendSignal('call-answer', {
+  try {
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    if (!sendSignal) {
+      throw new Error('call signal sender missing');
+    }
+    const targetIdentity = requirePeerIdentitySnapshot();
+    activePeerKey = targetIdentity.peerKey;
+    const sent = sendSignal('call-answer', {
       callId: activeCallId,
-      targetAccountDigest: activePeerAccountDigest,
-      senderDeviceId: ensureDeviceId(),
-      targetDeviceId: activePeerDeviceId,
+      targetAccountDigest: targetIdentity.digest,
+      senderDeviceId: requireLocalDeviceId(),
+      targetDeviceId: targetIdentity.deviceId,
       description: { sdp: answer.sdp, type: answer.type }
     });
+    if (!sent) {
+      throw new Error('call-answer send failed');
+    }
+    promoteSessionToInCall('answer-sent');
+  } catch (err) {
+    failCall('answer-failed', err);
   }
-  promoteSessionToInCall('answer-sent');
 }
 
 async function handleIncomingOffer(msg) {
   if (!activeCallId) {
     activeCallId = msg.callId;
-    activePeerAccountDigest = msg.fromAccountDigest || msg.from_account_digest || null;
     direction = 'incoming';
+  }
+  const fromDigest = normalizeAccountDigest(msg.fromAccountDigest || msg.from_account_digest || null);
+  const fromDeviceId = normalizePeerDeviceId(msg.fromDeviceId || msg.from_device_id || msg.senderDeviceId || null);
+  if (fromDigest && fromDeviceId) {
+    try {
+      const identity = buildCallPeerIdentity({ peerAccountDigest: fromDigest, peerDeviceId: fromDeviceId });
+      activePeerKey = identity.peerKey;
+      setCallPeerDeviceId(identity.deviceId, { callId: activeCallId || msg.callId || undefined });
+    } catch (err) {
+      failCall('peer-device-id-missing', err);
+      return;
+    }
+  } else if (fromDeviceId) {
+    try {
+      setPeerDeviceId(fromDeviceId);
+    } catch (err) {
+      failCall('peer-device-id-missing', err);
+      return;
+    }
   }
   if (awaitingOfferAfterAccept) {
     pendingOffer = msg;
@@ -390,12 +513,32 @@ async function handleIncomingAnswer(msg) {
   if (!awaitingAnswer) return;
   if (!msg?.description) return;
   awaitingAnswer = false;
+  const fromDigest = normalizeAccountDigest(msg.fromAccountDigest || msg.from_account_digest || null);
+  const fromDeviceId = normalizePeerDeviceId(msg.fromDeviceId || msg.from_device_id || msg.senderDeviceId || null);
+  if (fromDigest && fromDeviceId) {
+    try {
+      const identity = buildCallPeerIdentity({ peerAccountDigest: fromDigest, peerDeviceId: fromDeviceId });
+      activePeerKey = identity.peerKey;
+      setCallPeerDeviceId(identity.deviceId, { callId: activeCallId || msg.callId || undefined });
+    } catch (err) {
+      failCall('peer-device-id-missing', err);
+      return;
+    }
+  } else if (fromDeviceId) {
+    try {
+      setPeerDeviceId(fromDeviceId);
+    } catch (err) {
+      failCall('peer-device-id-missing', err);
+      return;
+    }
+  }
   try {
     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
     await flushPendingRemoteCandidates();
     promoteSessionToInCall('answer-received');
   } catch (err) {
-    log({ callMediaAnswerError: err?.message || err });
+    if (err?.__callFail) return;
+    failCall('remote-answer-failed', err);
   }
 }
 
@@ -403,11 +546,35 @@ async function handleIncomingCandidate(msg) {
   if (!peerConnection) return;
   const candidate = msg.candidate;
   if (!candidate) return;
+  const fromDigest = normalizeAccountDigest(msg.fromAccountDigest || msg.from_account_digest || null);
+  const fromDeviceId = normalizePeerDeviceId(msg.fromDeviceId || msg.from_device_id || msg.senderDeviceId || null);
+  if (fromDigest && fromDeviceId) {
+    try {
+      const identity = buildCallPeerIdentity({ peerAccountDigest: fromDigest, peerDeviceId: fromDeviceId });
+      activePeerKey = identity.peerKey;
+      setCallPeerDeviceId(identity.deviceId, { callId: activeCallId || msg.callId || undefined });
+    } catch (err) {
+      failCall('peer-device-id-missing', err);
+      return;
+    }
+  } else if (fromDeviceId) {
+    try {
+      setPeerDeviceId(fromDeviceId);
+    } catch (err) {
+      failCall('peer-device-id-missing', err);
+      return;
+    }
+  }
   if (!peerConnection.remoteDescription || !peerConnection.remoteDescription.type) {
     pendingRemoteCandidates.push(candidate);
     return;
   }
-  await addRemoteCandidate(candidate);
+  try {
+    await addRemoteCandidate(candidate);
+  } catch (err) {
+    if (err?.__callFail) return;
+    failCall('remote-candidate-failed', err);
+  }
 }
 
 function handleSignal(msg) {
@@ -453,7 +620,7 @@ function cleanupPeerConnection(reason) {
   awaitingOfferAfterAccept = false;
   pendingRemoteCandidates = [];
   activeCallId = null;
-  activePeerAccountDigest = null;
+  activePeerKey = null;
   if (remoteAudioEl) {
     try {
       remoteAudioEl.srcObject = null;

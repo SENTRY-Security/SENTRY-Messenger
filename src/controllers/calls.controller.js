@@ -3,7 +3,7 @@ import { z } from 'zod';
 import baseCallNetworkConfig from '../../web/src/shared/calls/network-config.json' with { type: 'json' };
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
 import { normalizeAccountDigest, AccountDigestRegex } from '../utils/account-verify.js';
-import { appendCallEvent, callWorkerRequest, ensureCallWorkerConfig } from '../services/call-worker.js';
+import { appendCallEvent, callWorkerRequest, ensureCallWorkerConfig, touchDeviceRegistry, assertDeviceIdActive, listActiveDevices } from '../services/call-worker.js';
 import { CallIdRegex } from '../utils/call-validators.js';
 
 const DEFAULT_SESSION_TTL = Number(process.env.CALL_SESSION_TTL_SECONDS || 90);
@@ -32,6 +32,7 @@ const CallInviteSchema = withAccountAuthGuard(BaseAccountSchema.extend({
   peerAccountDigest: z.string().regex(AccountDigestRegex),
   callId: z.string().regex(CallIdRegex).optional(),
   mode: z.enum(['voice', 'video']).optional(),
+  preferredDeviceId: z.string().min(1).optional(),
   capabilities: z.record(z.any()).optional(),
   metadata: z.record(z.any()).optional(),
   expiresInSeconds: z.number().int().min(30).max(600).optional(),
@@ -215,6 +216,41 @@ function respondAccountError(res, err, fallback = 'authorization failed') {
   return res.status(500).json({ error: 'AccountAuthError', message: err?.message || fallback });
 }
 
+async function assertActiveDeviceOrFail(res, accountDigest, deviceId) {
+  try {
+    await touchDeviceRegistry({ accountDigest, deviceId });
+    await assertDeviceIdActive({ accountDigest, deviceId });
+  } catch (err) {
+    const status = err?.status || 403;
+    const code = err?.code || 'DEVICE_NOT_ACTIVE';
+    res.status(status).json({ error: code, message: err?.message || 'device not active' });
+    return false;
+  }
+  return true;
+}
+
+async function resolveTargetDeviceId(peerAccountDigest, preferredDeviceId = null) {
+  if (preferredDeviceId) {
+    await assertDeviceIdActive({ accountDigest: peerAccountDigest, deviceId: preferredDeviceId });
+    return preferredDeviceId;
+  }
+  const devices = await listActiveDevices({ accountDigest: peerAccountDigest });
+  if (!devices.length) {
+    const err = new Error('peer-no-active-device');
+    err.status = 409;
+    err.code = 'peer-no-active-device';
+    throw err;
+  }
+  const first = devices[0];
+  if (!first?.deviceId) {
+    const err = new Error('peer-no-active-device');
+    err.status = 409;
+    err.code = 'peer-no-active-device';
+    throw err;
+  }
+  return first.deviceId;
+}
+
 export async function inviteCall(req, res) {
   if (!ensureCallWorkerConfig(res)) return;
   const parsed = CallInviteSchema.safeParse(req.body || {});
@@ -238,6 +274,16 @@ export async function inviteCall(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+  if (!okDevice) return;
+  let targetDeviceId;
+  try {
+    targetDeviceId = await resolveTargetDeviceId(peerDigest, input.preferredDeviceId || null);
+  } catch (err) {
+    const status = err?.status || 409;
+    const code = err?.code || 'peer-device-not-active';
+    return res.status(status).json({ error: code, message: err?.message || code });
+  }
   const callId = (input.callId && input.callId.toLowerCase()) || crypto.randomUUID();
   const ttlSeconds = clamp(input.expiresInSeconds ?? DEFAULT_SESSION_TTL, 30, 600);
   const expiresAt = Date.now() + ttlSeconds * 1000;
@@ -254,6 +300,7 @@ export async function inviteCall(req, res) {
       traceId: input.traceId || null,
       initiatedBy: auth.accountDigest
     },
+    targetDeviceId,
     expiresAt
   };
   let workerRes;
@@ -265,7 +312,7 @@ export async function inviteCall(req, res) {
   await appendCallEvent({
     callId,
     type: 'call-invite',
-    payload: { traceId: input.traceId || null, mode: input.mode || 'voice', capabilities: input.capabilities || null },
+    payload: { traceId: input.traceId || null, mode: input.mode || 'voice', capabilities: input.capabilities || null, targetDeviceId },
     fromAccountDigest: auth.accountDigest,
     toAccountDigest: peerDigest,
     traceId: input.traceId || null
@@ -273,6 +320,7 @@ export async function inviteCall(req, res) {
   return res.status(200).json({
     ok: true,
     callId,
+    targetDeviceId,
     session: workerRes?.session || null,
     expiresInSeconds: ttlSeconds
   });
@@ -297,6 +345,8 @@ export async function cancelCall(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+  if (!okDevice) return;
   const payload = {
     callId: input.callId,
     status: 'ended',
@@ -343,6 +393,8 @@ export async function acknowledgeCall(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+  if (!okDevice) return;
   const payload = {
     callId: input.callId,
     status: 'ringing',
@@ -387,6 +439,8 @@ export async function reportCallMetrics(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+  if (!okDevice) return;
   const payload = {
     callId: input.callId,
     metrics: input.metrics,
@@ -433,6 +487,8 @@ export async function getCallSession(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+  if (!okDevice) return;
   let workerRes;
   try {
     workerRes = await callWorkerRequest(`/d1/calls/session?callId=${encodeURIComponent(callId)}`, { method: 'GET' });
@@ -462,10 +518,12 @@ export async function getCallNetworkConfig(req, res) {
     return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
   }
   try {
-    await resolveAccountAuth({ accountToken, accountDigest });
+    var auth = await resolveAccountAuth({ accountToken, accountDigest });
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+  if (!okDevice) return;
   const config = buildCallNetworkConfig();
   return res.status(200).json({ ok: true, config });
 }
@@ -491,6 +549,8 @@ export async function issueTurnCredentials(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+  if (!okDevice) return;
   const ttlSeconds = clamp(input.ttlSeconds ?? TURN_TTL_SECONDS, 60, 600);
   const expiresAt = Math.floor(Date.now() / 1000) + ttlSeconds;
   const username = `${expiresAt}:${auth.accountDigest}`;

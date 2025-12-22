@@ -1033,6 +1033,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
 
 async function ensureDataTables(env) {
   if (dataTablesReady) return;
+  const alterAddWrappedMk = `ALTER TABLE accounts ADD COLUMN wrapped_mk_json TEXT`;
   const statements = [
     `CREATE TABLE IF NOT EXISTS accounts (
         account_digest TEXT PRIMARY KEY,
@@ -1043,10 +1044,14 @@ async function ensureDataTables(env) {
         created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
       )`,
+    // Backfill: add wrapped_mk_json for older deployments missing the column.
+    alterAddWrappedMk,
     `CREATE TABLE IF NOT EXISTS devices (
         account_digest TEXT NOT NULL,
         device_id TEXT NOT NULL,
         label TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        last_seen_at INTEGER,
         created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         PRIMARY KEY (account_digest, device_id),
@@ -1324,12 +1329,30 @@ async function ensureDataTables(env) {
 
   for (const sql of statements) {
     try {
+      if (sql === alterAddWrappedMk) {
+        try {
+          await env.DB.prepare(sql).run();
+        } catch (err) {
+          const msg = String(err?.message || '').toLowerCase();
+          if (msg.includes('duplicate column name') || msg.includes('duplicate column')) {
+            continue;
+          }
+          throw err;
+        }
+        continue;
+      }
       await env.DB.prepare(sql).run();
     } catch (err) {
       console.error('ensureDataTables failed', sql.slice(0, 60), err);
       throw err;
     }
   }
+
+  // best-effort ALTERs for backward compatibility
+  try { await env.DB.prepare(`ALTER TABLE devices ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`).run(); } catch {}
+  try { await env.DB.prepare(`ALTER TABLE devices ADD COLUMN last_seen_at INTEGER`).run(); } catch {}
+  try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_account_status ON devices (account_digest, status)`).run(); } catch {}
+  try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_account_seen ON devices (account_digest, status, last_seen_at)`).run(); } catch {}
 
   const triggers = [
     `CREATE TRIGGER trg_device_backup_updated
@@ -1452,31 +1475,43 @@ async function handleTagsRoutes(req, env) {
 
   // 首次設定：儲存 wrapped_mk
   if (req.method === 'POST' && url.pathname === '/d1/tags/store-mk') {
-    let body;
+    const cfRay = req.headers.get('cf-ray') || null;
+    const makeError = (status, payload) => json({ cfRay, ...payload }, { status });
     try {
-      body = await req.json();
-    } catch {
-      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return makeError(400, { error: 'BadRequest', code: 'JSON_PARSE_ERROR', message: 'invalid json' });
+      }
+      const accountDigest = normalizeAccountDigest(body.accountDigest || body.account_digest);
+      const accountToken = typeof body.accountToken === 'string' ? body.accountToken : (typeof body.account_token === 'string' ? body.account_token : null);
+      if (!accountDigest || !accountToken) {
+        return makeError(400, { error: 'BadRequest', code: 'VALIDATION_ERROR', message: 'accountDigest & accountToken required' });
+      }
+      if (!body.wrapped_mk) {
+        return makeError(400, { error: 'BadRequest', code: 'VALIDATION_ERROR', message: 'wrapped_mk required' });
+      }
+      await ensureDataTables(env);
+      // 確認帳號存在且 token 匹配
+      const acct = await resolveAccount(env, { accountDigest, accountToken }, { allowCreate: false });
+      if (!acct) {
+        return makeError(401, { error: 'Unauthorized', code: 'HMAC_INVALID', message: 'account token mismatch' });
+      }
+      try {
+        await env.DB.prepare(
+          `UPDATE accounts SET wrapped_mk_json=?2, updated_at=strftime('%s','now')
+             WHERE account_digest=?1`
+        ).bind(accountDigest, JSON.stringify(body.wrapped_mk)).run();
+      } catch (err) {
+        const msg = String(err?.message || '').slice(0, 200);
+        return makeError(500, { error: 'StoreMkFailed', code: 'D1_ERROR', message: msg });
+      }
+      return new Response(null, { status: 204 });
+    } catch (err) {
+      const msg = String(err?.message || '').slice(0, 200);
+      return makeError(500, { error: 'StoreMkFailed', code: 'UNKNOWN', message: msg });
     }
-    const accountDigest = normalizeAccountDigest(body.accountDigest || body.account_digest);
-    const accountToken = typeof body.accountToken === 'string' ? body.accountToken : (typeof body.account_token === 'string' ? body.account_token : null);
-    if (!accountDigest || !accountToken) {
-      return json({ error: 'BadRequest', message: 'accountDigest & accountToken required' }, { status: 400 });
-    }
-    if (!body.wrapped_mk) {
-      return json({ error: 'BadRequest', message: 'wrapped_mk required' }, { status: 400 });
-    }
-    await ensureDataTables(env);
-    // 確認帳號存在且 token 匹配
-    const acct = await resolveAccount(env, { accountDigest, accountToken }, { allowCreate: false });
-    if (!acct) {
-      return json({ error: 'Unauthorized', message: 'account token mismatch' }, { status: 401 });
-    }
-    await env.DB.prepare(
-      `UPDATE accounts SET wrapped_mk_json=?2, updated_at=strftime('%s','now')
-         WHERE account_digest=?1`
-    ).bind(accountDigest, JSON.stringify(body.wrapped_mk)).run();
-    return new Response(null, { status: 204 });
   }
 
   // 讀取裝置私鑰密文備份（wrapped_device_keys）
@@ -3082,6 +3117,98 @@ async function handleCallsRoutes(req, env) {
   return null;
 }
 
+async function handleDeviceRoutes(req, env) {
+  const url = new URL(req.url);
+  const now = Math.floor(Date.now() / 1000);
+
+  if (req.method === 'POST' && url.pathname === '/d1/devices/upsert') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id);
+    const label = typeof body?.label === 'string' ? body.label.trim() : null;
+    if (!accountDigest || !deviceId) {
+      return json({ error: 'BadRequest', message: 'accountDigest and deviceId required' }, { status: 400 });
+    }
+    try {
+      await env.DB.prepare(
+        `INSERT INTO devices (account_digest, device_id, label, status, last_seen_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'active', ?4, ?4, ?4)
+         ON CONFLICT(account_digest, device_id) DO UPDATE SET
+           label=COALESCE(excluded.label, devices.label),
+           status='active',
+           last_seen_at=?4,
+           updated_at=?4`
+      ).bind(accountDigest, deviceId, label, now).run();
+      return json({ ok: true });
+    } catch (err) {
+      console.error('device_upsert_failed', err?.message || err);
+      return json({ error: 'DeviceUpsertFailed', message: err?.message || 'device upsert failed' }, { status: 500 });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/d1/devices/check') {
+    await ensureDataTables(env);
+    const accountDigest = normalizeAccountDigest(url.searchParams.get('accountDigest') || url.searchParams.get('account_digest'));
+    const deviceId = normalizeDeviceId(url.searchParams.get('deviceId') || url.searchParams.get('device_id'));
+    if (!accountDigest || !deviceId) {
+      return json({ error: 'BadRequest', message: 'accountDigest and deviceId required' }, { status: 400 });
+    }
+    try {
+      const rows = await env.DB.prepare(
+        `SELECT status, last_seen_at, created_at FROM devices WHERE account_digest=?1 AND device_id=?2`
+      ).bind(accountDigest, deviceId).all();
+      const row = rows?.results?.[0] || null;
+      if (!row) {
+        return json({ ok: false, status: null });
+      }
+      return json({
+        ok: row.status === 'active',
+        status: row.status || null,
+        lastSeenAt: Number(row.last_seen_at) || null,
+        createdAt: Number(row.created_at) || null
+      });
+    } catch (err) {
+      console.error('device_check_failed', err?.message || err);
+      return json({ error: 'DeviceCheckFailed', message: err?.message || 'device check failed' }, { status: 500 });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/d1/devices/active') {
+    await ensureDataTables(env);
+    const accountDigest = normalizeAccountDigest(url.searchParams.get('accountDigest') || url.searchParams.get('account_digest'));
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    try {
+      const rows = await env.DB.prepare(
+        `SELECT device_id, status, last_seen_at, created_at, label
+           FROM devices
+          WHERE account_digest=?1 AND status='active'
+          ORDER BY (last_seen_at IS NOT NULL) DESC, last_seen_at DESC, created_at DESC`
+      ).bind(accountDigest).all();
+      const devices = (rows?.results || []).map((row) => ({
+        deviceId: row.device_id,
+        status: row.status,
+        lastSeenAt: row.last_seen_at != null ? Number(row.last_seen_at) : null,
+        createdAt: row.created_at != null ? Number(row.created_at) : null,
+        label: row.label || null
+      }));
+      return json({ devices });
+    } catch (err) {
+      console.error('device_active_list_failed', err?.message || err);
+      return json({ error: 'DeviceListFailed', message: err?.message || 'device list failed' }, { status: 500 });
+    }
+  }
+
+  return null;
+}
+
 async function handleAccountsRoutes(req, env) {
   const url = new URL(req.url);
 
@@ -3472,6 +3599,9 @@ export default {
 
     const subscriptionResult = await handleSubscriptionRoutes(req, env);
     if (subscriptionResult) return subscriptionResult;
+
+    const devicesResult = await handleDeviceRoutes(req, env);
+    if (devicesResult) return devicesResult;
 
     const callsResult = await handleCallsRoutes(req, env);
     if (callsResult) return callsResult;

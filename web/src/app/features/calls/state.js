@@ -11,7 +11,8 @@ import {
 import { createCallInvite } from '../../api/calls.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
-import { getAccountDigest, normalizePeerIdentity } from '../../core/store.js';
+import { getAccountDigest, normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
+import { buildCallPeerIdentity, logCallIdentitySet } from './identity.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -80,24 +81,62 @@ function createEmptySession() {
     initiatorAccountDigest: null,
     direction: null,
     status: CALL_SESSION_STATUS.IDLE,
+    peerKey: null,
     peerAccountDigest: null,
     peerDisplayName: null,
     peerAvatarUrl: null,
+    peerDeviceId: null,
     kind: CALL_REQUEST_KIND.VOICE,
     requestedAt: null,
     connectedAt: null,
     endedAt: null,
     lastError: null,
-    localCapability: normalizeCallMediaCapability(DEFAULT_CALL_MEDIA_CAPABILITY),
-    mediaState: createCallMediaState(),
-    network: {
-      config: null,
-      lastLoadedAt: null
+  localCapability: normalizeCallMediaCapability(DEFAULT_CALL_MEDIA_CAPABILITY),
+  mediaState: createCallMediaState(),
+  network: {
+    config: null,
+    lastLoadedAt: null
     },
     serverSession: null,
     remoteDisplayName: null,
     remoteAvatarUrl: null
   };
+}
+
+function setSessionPeerIdentity({ peerAccountDigest, peerDeviceId, callId = null } = {}) {
+  const digest = normalizeAccountDigest(peerAccountDigest);
+  if (!digest) {
+    throw new Error('peerAccountDigest required for call identity');
+  }
+  const deviceId = normalizePeerDeviceId(peerDeviceId);
+  if (!deviceId) {
+    throw new Error('peerDeviceId required for call identity');
+  }
+  if (callId && activeSession.callId && callId !== activeSession.callId) {
+    throw new Error('callId mismatch when setting peer identity');
+  }
+  if (activeSession.peerDeviceId && activeSession.peerDeviceId !== deviceId) {
+    throw new Error('peer-device-id-mismatch');
+  }
+  if (!activeSession.peerAccountDigest) {
+    activeSession.peerAccountDigest = digest;
+  }
+  const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId: deviceId });
+  if (activeSession.peerKey !== identity.peerKey) {
+    activeSession.peerAccountDigest = digest;
+    activeSession.peerDeviceId = deviceId;
+    activeSession.peerKey = identity.peerKey;
+    if (callId && !activeSession.callId) {
+      activeSession.callId = callId;
+    }
+    logCallIdentitySet({
+      callId: activeSession.callId || callId || null,
+      peerAccountDigest: identity.digest,
+      peerDeviceId: identity.deviceId,
+      peerKey: identity.peerKey
+    });
+  }
+  return identity;
 }
 
 function cloneCapability(capability) {
@@ -112,7 +151,9 @@ function cloneSession(session = activeSession) {
   if (!session) return null;
   return {
     ...session,
+    peerKey: session.peerKey || null,
     localCapability: cloneCapability(session.localCapability),
+    peerDeviceId: session.peerDeviceId || null,
     mediaState: cloneCallMediaState(session.mediaState),
     network: {
       config: session.network?.config ? { ...session.network.config } : null,
@@ -175,34 +216,38 @@ export async function requestOutgoingCall({
   peerAccountDigest,
   peerDisplayName,
   peerAvatarUrl,
+  peerDeviceId = null,
   kind = CALL_REQUEST_KIND.VOICE,
   traceId = null
 } = {}) {
-  const identity = normalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest || null
-  });
-  const peerKey = identity.key;
-  if (!peerKey) {
-    return { ok: false, error: 'MISSING_PEER' };
-  }
+  const peerDigest = normalizeAccountDigest(peerAccountDigest || null);
+  if (!peerDigest) return { ok: false, error: 'MISSING_PEER' };
   if (!canStartCall()) {
     return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
   }
-  const peerDigest = identity.accountDigest || null;
+  const normalizedPeerDeviceId = normalizePeerDeviceId(peerDeviceId);
   activeSession = createEmptySession();
   activeSession.traceId = traceId || createTraceId();
   activeSession.sessionId = activeSession.traceId;
   activeSession.initiatorAccountDigest = getAccountDigest ? getAccountDigest() : null;
   activeSession.direction = CALL_SESSION_DIRECTION.OUTGOING;
   activeSession.status = CALL_SESSION_STATUS.OUTGOING;
-  activeSession.peerAccountDigest = peerKey;
+  activeSession.peerAccountDigest = peerDigest;
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
-  activeSession.peerAccountDigest = peerDigest || null;
+  activeSession.peerDeviceId = normalizedPeerDeviceId || null;
   activeSession.remoteDisplayName = peerDisplayName || null;
   activeSession.remoteAvatarUrl = peerAvatarUrl || null;
   activeSession.kind = normalizeKind(kind);
   activeSession.requestedAt = Date.now();
+  if (normalizedPeerDeviceId) {
+    try {
+      setSessionPeerIdentity({ peerAccountDigest: peerDigest, peerDeviceId: normalizedPeerDeviceId });
+    } catch (err) {
+      activeSession.lastError = err?.message || 'peer identity invalid';
+      return { ok: false, error: activeSession.lastError };
+    }
+  }
   resetMediaState();
   emitState('outgoing-request');
   emitCallEvent(CALL_EVENT.REQUEST, {
@@ -229,10 +274,16 @@ export async function requestOutgoingCall({
       mode: activeSession.kind === CALL_REQUEST_KIND.VIDEO ? 'video' : 'voice',
       capabilities: activeSession.localCapability,
       metadata,
-      traceId: activeSession.traceId
+      traceId: activeSession.traceId,
+      preferredDeviceId: normalizedPeerDeviceId || null
     });
     if (response?.callId) {
       activeSession.callId = response.callId;
+    }
+    if (response?.targetDeviceId) {
+      setCallPeerDeviceId(response.targetDeviceId, { callId: activeSession.callId });
+    } else {
+      throw new Error('invite-target-device-missing');
     }
     if (response?.session) {
       activeSession.serverSession = { ...response.session };
@@ -258,25 +309,27 @@ export function markIncomingCall({
   peerAccountDigest = null,
   peerDisplayName,
   peerAvatarUrl,
+  peerDeviceId = null,
   envelope,
   traceId
 } = {}) {
-  const identity = normalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest || null
-  });
-  const peerKey = identity.key;
-  if (!peerKey) return { ok: false, error: 'MISSING_PEER' };
+  const digest = normalizeAccountDigest(peerAccountDigest);
+  const deviceId = normalizePeerDeviceId(peerDeviceId);
+  if (!digest) return { ok: false, error: 'MISSING_PEER' };
+  if (!deviceId) return { ok: false, error: 'MISSING_PEER_DEVICE' };
   if (!canStartCall()) return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
   activeSession = createEmptySession();
   activeSession.initiatorAccountDigest = null;
   activeSession.direction = CALL_SESSION_DIRECTION.INCOMING;
   activeSession.status = CALL_SESSION_STATUS.INCOMING;
-  activeSession.peerAccountDigest = identity.accountDigest || peerKey || null;
+  activeSession.callId = callId || null;
+  activeSession.peerAccountDigest = digest || null;
   activeSession.peerDisplayName = peerDisplayName || null;
   activeSession.peerAvatarUrl = peerAvatarUrl || null;
+  activeSession.peerDeviceId = deviceId;
+  setSessionPeerIdentity({ peerAccountDigest: digest, peerDeviceId: deviceId, callId: activeSession.callId || callId || null });
   activeSession.remoteDisplayName = peerDisplayName || null;
   activeSession.remoteAvatarUrl = peerAvatarUrl || null;
-  activeSession.callId = callId || null;
   activeSession.traceId = traceId || createTraceId();
   activeSession.requestedAt = Date.now();
   resetMediaState();
@@ -290,6 +343,20 @@ export function markIncomingCall({
   }
   emitState('incoming-call');
   return { ok: true };
+}
+
+export function setCallPeerDeviceId(peerDeviceId, { callId = null } = {}) {
+  const normalized = normalizePeerDeviceId(peerDeviceId);
+  if (!normalized) throw new Error('peerDeviceId required');
+  if (!activeSession.peerAccountDigest) {
+    throw new Error('peerAccountDigest required before setting peerDeviceId');
+  }
+  const identity = setSessionPeerIdentity({
+    peerAccountDigest: activeSession.peerAccountDigest,
+    peerDeviceId: normalized,
+    callId: callId || activeSession.callId || null
+  });
+  return identity.deviceId;
 }
 
 export function updateCallSessionStatus(nextStatus, { error = null, callId = null } = {}) {

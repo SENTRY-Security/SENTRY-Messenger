@@ -40,6 +40,7 @@ import {
   startOutgoingCallMedia,
   subscribeCallEvent
 } from '../../features/calls/index.js';
+import { buildCallPeerIdentity } from '../../features/calls/identity.js';
 import {
   CALL_LOG_OUTCOME,
   describeCallLogForViewer,
@@ -1303,20 +1304,54 @@ export function initMessagesPane({
 
   async function handleConversationAction(type) {
     const state = getMessageState();
-    if (!state.activePeerDigest || !state.conversationToken) return;
-    if (!requireSubscriptionActive()) return;
+    const preconditionMissing = [];
+    if (!state.activePeerDigest) preconditionMissing.push('activePeerDigest');
+    if (!state.conversationToken) preconditionMissing.push('conversationToken');
+    if (preconditionMissing.length) {
+      try { console.log('[call] ui:click-fail ' + JSON.stringify({ reason: 'missing-conversation', missing: preconditionMissing, conversationId: state.conversationId || null, hasConversationToken: !!state.conversationToken })); } catch {}
+      return;
+    }
     const actionType = type === 'video' ? 'voice' : type; // 視訊暫時停用，強制走語音
     const contactEntry = sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
     const fallbackName = `好友 ${state.activePeerDigest.slice(-4)}`;
     const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
     const avatarUrl = resolveContactAvatarUrl(contactEntry);
-    const peerAccountDigest = ensurePeerAccountDigest(contactEntry) || state.activePeerDigest;
+    const peerIdentity = normalizePeerIdentity({
+      peerAccountDigest: state.activePeerDigest,
+      peerDeviceId: state.activePeerDeviceId || contactEntry?.conversation?.peerDeviceId || contactEntry?.peerDeviceId || null
+    });
+    const peerAccountDigest = peerIdentity.accountDigest || null;
+    const peerDeviceId = peerIdentity.deviceId || null;
+    const missing = [];
+    if (!peerAccountDigest) missing.push('peerAccountDigest');
+    if (!peerDeviceId) missing.push('peerDeviceId');
+    if (missing.length) {
+      try { console.log('[call] ui:click-fail ' + JSON.stringify({ reason: 'missing-identity', missing, conversationId: state.conversationId || null, hasConversationToken: !!state.conversationToken })); } catch {}
+      if (!peerDeviceId) {
+        showToast?.('缺少對端裝置資訊，請重新同步好友', { variant: 'warning' });
+      } else {
+        showToast?.('找不到通話對象', { variant: 'warning' });
+      }
+      return;
+    }
+    const { peerKey } = buildCallPeerIdentity({ peerAccountDigest, peerDeviceId });
+    try {
+      console.log('[call] ui:click ' + JSON.stringify({
+        conversationId: state.conversationId || null,
+        peerAccountDigest,
+        peerDeviceId,
+        peerKey,
+        hasConversationToken: !!state.conversationToken
+      }));
+    } catch {}
+    if (!requireSubscriptionActive()) return;
     let result;
     try {
       result = await requestOutgoingCall({
         peerDisplayName: displayName,
         peerAvatarUrl: avatarUrl,
         peerAccountDigest,
+        peerDeviceId,
         kind: actionType === 'video' ? CALL_REQUEST_KIND.VIDEO : CALL_REQUEST_KIND.VOICE
       });
     } catch (err) {
@@ -1343,7 +1378,8 @@ export function initMessagesPane({
     try {
       envelope = await prepareCallKeyEnvelope({
         callId,
-        peerAccountDigest: state.activePeerDigest,
+        peerAccountDigest,
+        peerDeviceId,
         direction: CALL_SESSION_DIRECTION.OUTGOING
       });
     } catch (err) {

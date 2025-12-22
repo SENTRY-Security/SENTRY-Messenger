@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { getContactSecret } from '../../core/contact-secrets.js';
-import { normalizePeerIdentity, ensureDeviceId } from '../../core/store.js';
+import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '../../core/store.js';
 import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/base64.js';
 import { toU8Strict } from '../../../shared/utils/u8-strict.js';
 import {
@@ -18,6 +18,7 @@ import {
   setCallMediaStatus
 } from './state.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
+import { buildCallPeerIdentity } from './identity.js';
 
 const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 const ZERO_SALT = new Uint8Array(32);
@@ -53,6 +54,16 @@ const ROLE_KEY_LABELS = {
 
 function hasWebCrypto() {
   return typeof crypto !== 'undefined' && !!crypto.subtle && encoder;
+}
+
+function logCallKeyDerive({ callId = null, peerKey = null, hasSecret = false } = {}) {
+  try {
+    console.log('[call] key:derive', JSON.stringify({
+      callId: callId || null,
+      peerKey: peerKey || null,
+      hasSecret: !!hasSecret
+    }));
+  } catch {}
 }
 
 function toRole(direction) {
@@ -100,6 +111,7 @@ export function supportsInsertableStreams() {
 export async function prepareCallKeyEnvelope({
   callId,
   peerAccountDigest = null,
+  peerDeviceId = null,
   epoch = 1,
   media = null,
   capabilities = null,
@@ -108,11 +120,11 @@ export async function prepareCallKeyEnvelope({
   if (!hasWebCrypto()) throw new Error('此瀏覽器不支援 WebCrypto');
   if (!callId) throw new Error('callId required');
   const session = getCallSessionSnapshot();
-  const identity = normalizePeerIdentity({
-    peerAccountDigest: peerAccountDigest || session?.peerAccountDigest || null
-  });
-  const peerKey = identity.key;
-  if (!peerKey) throw new Error('peer account digest required');
+  const digest = normalizeAccountDigest(peerAccountDigest || session?.peerAccountDigest || null);
+  if (!digest) throw new Error('peer account digest required');
+  const deviceId = normalizePeerDeviceId(peerDeviceId || session?.peerDeviceId || null);
+  if (!deviceId) throw new Error('peerDeviceId required for call key');
+  const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId: deviceId });
   const saltBytes = crypto.getRandomValues(new Uint8Array(32));
   const mediaState = getCallMediaState();
   const envelope = {
@@ -126,7 +138,9 @@ export async function prepareCallKeyEnvelope({
     createdAt: Date.now()
   };
   const effectiveSession = {
-    peerAccountDigest: identity.accountDigest || session?.peerAccountDigest || peerKey || null,
+    peerAccountDigest: identity.digest,
+    peerDeviceId: identity.deviceId,
+    peerKey: identity.peerKey,
     callId,
     direction: direction || session?.direction || CALL_SESSION_DIRECTION.OUTGOING
   };
@@ -148,7 +162,7 @@ async function maybeDeriveKeys(trigger = 'auto') {
   if (suppressAutoDerive) return null;
   const session = getCallSessionSnapshot();
   const mediaState = getCallMediaState();
-  if (!session?.peerAccountDigest || !mediaState?.pendingEnvelope) return null;
+  if (!session?.peerAccountDigest || !session?.peerDeviceId || !mediaState?.pendingEnvelope) return null;
   if (deriveTask) return deriveTask;
   deriveTask = deriveKeysFromEnvelope({ session, envelope: mediaState.pendingEnvelope, trigger })
     .catch((err) => {
@@ -172,20 +186,33 @@ async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
 }
 
 async function buildKeyContext({ session, envelope, saltBytes = null }) {
-  const identity = normalizePeerIdentity({
-    peerAccountDigest: session?.peerAccountDigest || null
-  });
-  const peerKey = identity.key;
-  if (!peerKey) throw new Error('缺少好友 account digest');
+  const digest = normalizeAccountDigest(session?.peerAccountDigest || null);
+  if (!digest) throw new Error('缺少好友 account digest');
+  const peerDeviceId = normalizePeerDeviceId(session?.peerDeviceId || null);
+  if (!peerDeviceId) throw new Error('peerDeviceId required for call key');
+  const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId });
   const deviceId = ensureDeviceId();
-  const secretRecord = getContactSecret(identity.key, { deviceId });
-  if (!secretRecord?.secret) throw new Error('缺少好友密鑰，請重新同步聯絡人');
-  const baseSecret = b64UrlToBytes(secretRecord.secret);
+  const secretRecord = getContactSecret(identity.peerKey, { deviceId, peerDeviceId });
+  const callId = envelope?.callId || session?.callId || null;
+  const secretB64 = secretRecord?.secret
+    || secretRecord?.conversationToken
+    || secretRecord?.conversation?.token
+    || null;
+  try {
+    console.log('[call] key:secret-lookup', JSON.stringify({
+      peerKey: identity.peerKey,
+      lookupDeviceId: deviceId || null,
+      found: !!secretB64,
+      recordKeys: secretRecord && typeof secretRecord === 'object' ? Object.keys(secretRecord) : []
+    }));
+  } catch {}
+  logCallKeyDerive({ callId, peerKey: identity.peerKey, hasSecret: !!secretB64 });
+  if (!secretB64) throw new Error('缺少好友密鑰，請重新同步聯絡人');
+  const baseSecret = b64UrlToBytes(secretB64);
   if (!baseSecret || !baseSecret.length) throw new Error('無法解析好友密鑰');
   const salt = saltBytes || b64ToBytes(envelope?.cmkSalt || '');
   if (!salt || !salt.length) throw new Error('缺少通話金鑰 salt');
   const epoch = Number.isFinite(envelope?.epoch) ? envelope.epoch : 0;
-  const callId = envelope?.callId || session?.callId || null;
   if (!callId) throw new Error('callId 無效');
   const role = toRole(session?.direction);
   const masterKey = await deriveMasterKey(baseSecret, salt, callId, epoch);
@@ -202,7 +229,9 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   };
   return {
     callId,
-    peerAccountDigest: peerKey,
+    peerKey: identity.peerKey,
+    peerAccountDigest: identity.digest,
+    peerDeviceId,
     direction: session?.direction || CALL_SESSION_DIRECTION.OUTGOING,
     epoch,
     envelope,
@@ -293,7 +322,9 @@ async function finalizeContext(context) {
       proof: context.proofB64,
       epoch: context.epoch,
       callId: context.callId,
-      peerAccountDigest: context.peerAccountDigest,
+      peerKey: context.peerKey || null,
+      peerAccountDigest: context.peerAccountDigest || null,
+      peerDeviceId: context.peerDeviceId || null,
       salt: context.envelope?.cmkSalt || null
     }
   });

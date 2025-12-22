@@ -3,8 +3,6 @@ import { CALL_EVENT, emitCallEvent } from './events.js';
 import { setCallNetworkConfig } from './state.js';
 
 const API_CONFIG_URL = '/api/v1/calls/network-config';
-const STATIC_CONFIG_URL = '/shared/calls/network-config.json';
-const DEFAULT_TURN_ENDPOINT = '/api/v1/calls/turn-credentials';
 
 let cachedConfig = null;
 let inflight = null;
@@ -79,33 +77,17 @@ function normalizeFallback(raw = {}) {
 }
 
 function normalizeConfig(raw = {}) {
-  const version = numberOrNull(raw.version, 1, { min: 1 });
-  const endpoint = raw.turnSecretsEndpoint ? String(raw.turnSecretsEndpoint) : DEFAULT_TURN_ENDPOINT;
+  const version = numberOrNull(raw.version, null, { min: 1 });
+  const endpoint = raw.turnSecretsEndpoint ? String(raw.turnSecretsEndpoint) : null;
   return {
     version,
     turnSecretsEndpoint: endpoint,
-    turnTtlSeconds: numberOrNull(raw.turnTtlSeconds, 300, { min: 30 }),
+    turnTtlSeconds: numberOrNull(raw.turnTtlSeconds, null, { min: 30 }),
     rtcpProbe: normalizeProbe(raw.rtcpProbe),
     bandwidthProfiles: normalizeProfiles(raw.bandwidthProfiles),
     ice: normalizeIce(raw.ice),
     fallback: normalizeFallback(raw.fallback)
   };
-}
-
-function getStaticFallback() {
-  return normalizeConfig({
-    version: 1,
-    turnSecretsEndpoint: DEFAULT_TURN_ENDPOINT,
-    turnTtlSeconds: 300,
-    rtcpProbe: { timeoutMs: 1500, maxAttempts: 3, targetBitrateKbps: 2000 },
-    bandwidthProfiles: [
-      { name: 'video-medium', minBitrate: 900000, maxBitrate: 1400000, maxFrameRate: 30, resolution: '540p' },
-      { name: 'video-low', minBitrate: 300000, maxBitrate: 600000, maxFrameRate: 24, resolution: '360p' },
-      { name: 'audio', minBitrate: 32000, maxBitrate: 64000 }
-    ],
-    ice: { iceTransportPolicy: 'all', bundlePolicy: 'balanced', continualGatheringPolicy: 'gather_continually', servers: [] },
-    fallback: { maxPeerConnectionRetries: 2, relayOnlyAfterAttempts: 2, showBlockedAfterSeconds: 20 }
-  });
 }
 
 function applyConfig(config) {
@@ -127,12 +109,11 @@ async function fetchFromApi({ signal } = {}) {
   const headers = {};
   if (auth.accountToken) headers['X-Account-Token'] = auth.accountToken;
   if (auth.accountDigest) headers['X-Account-Digest'] = auth.accountDigest;
-  try {
-    const deviceId = ensureDeviceId();
-    if (deviceId) headers['X-Device-Id'] = deviceId;
-  } catch {
-    /* let backend enforce */
+  const deviceId = ensureDeviceId();
+  if (!deviceId) {
+    throw new Error('deviceId missing for call network config');
   }
+  headers['X-Device-Id'] = deviceId;
   const url = API_CONFIG_URL;
   const response = await fetch(url, {
     cache: 'no-store',
@@ -148,37 +129,25 @@ async function fetchFromApi({ signal } = {}) {
   return normalizeConfig(payload);
 }
 
-async function fetchStaticConfig({ signal } = {}) {
-  if (typeof fetch !== 'function') {
-    throw new Error('fetch unavailable');
+function validateConfig(config) {
+  if (!config || typeof config !== 'object') {
+    throw new Error('call network config missing');
   }
-  const response = await fetch(STATIC_CONFIG_URL, {
-    cache: 'no-store',
-    credentials: 'same-origin',
-    signal
-  });
-  if (!response.ok) {
-    throw new Error(`無法載入通話設定 (${response.status})`);
+  const servers = Array.isArray(config.ice?.servers) ? config.ice.servers : [];
+  if (!servers.length) {
+    throw new Error('call network config missing ICE servers');
   }
-  const json = await response.json();
-  return normalizeConfig(json);
-}
-
-async function fetchConfig({ signal } = {}) {
-  if (typeof fetch !== 'function') {
-    return getStaticFallback();
-  }
-  try {
-    return await fetchFromApi({ signal });
-  } catch (apiErr) {
-    console.warn('[calls] network config API load failed', apiErr);
-    try {
-      return await fetchStaticConfig({ signal });
-    } catch (staticErr) {
-      console.warn('[calls] static network config load failed', staticErr);
-      return getStaticFallback();
+  for (const entry of servers) {
+    const urls = Array.isArray(entry?.urls) ? entry.urls : [];
+    const normalized = urls.map((u) => (typeof u === 'string' ? u.trim() : '')).filter(Boolean);
+    if (!normalized.length) {
+      throw new Error('call network config contains invalid ICE server entry');
     }
   }
+  if (!config.turnSecretsEndpoint || typeof config.turnSecretsEndpoint !== 'string') {
+    throw new Error('call network config missing turnSecretsEndpoint');
+  }
+  return config;
 }
 
 export function getCachedCallNetworkConfig() {
@@ -192,13 +161,9 @@ export async function loadCallNetworkConfig({ forceRefresh = false, signal } = {
   if (inflight && !forceRefresh) {
     return inflight;
   }
-  inflight = fetchConfig({ signal })
+  inflight = fetchFromApi({ signal })
+    .then((config) => validateConfig(config))
     .then((config) => applyConfig(config))
-    .catch((err) => {
-      console.warn('[calls] network config load failed after fallbacks', err);
-      const fallback = applyConfig(getStaticFallback());
-      return fallback;
-    })
     .finally(() => {
       inflight = null;
     });

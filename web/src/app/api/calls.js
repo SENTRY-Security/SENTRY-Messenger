@@ -59,7 +59,8 @@ export async function createCallInvite({
   capabilities,
   metadata,
   expiresInSeconds,
-  traceId
+  traceId,
+  preferredDeviceId
 } = {}) {
   const digest = normalizeDigest(peerAccountDigest);
   if (!digest) throw new Error('peerAccountDigest required');
@@ -69,7 +70,8 @@ export async function createCallInvite({
     capabilities,
     metadata,
     expiresInSeconds,
-    traceId
+    traceId,
+    preferredDeviceId
   };
   const payload = buildPayload(overrides);
   return postJSON('/api/v1/calls/invite', payload, 'call invite failed');

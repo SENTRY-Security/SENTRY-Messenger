@@ -97,3 +97,34 @@ export async function appendCallEvent({ callId, type, payload, fromAccountDigest
     return null;
   }
 }
+
+export async function touchDeviceRegistry({ accountDigest, deviceId, label = null }) {
+  if (!hasCallWorkerConfig()) throw new Error('DATA_API_URL or DATA_API_HMAC not configured');
+  return callWorkerRequest('/d1/devices/upsert', {
+    method: 'POST',
+    body: { accountDigest, deviceId, label }
+  });
+}
+
+export async function assertDeviceIdActive({ accountDigest, deviceId }) {
+  if (!hasCallWorkerConfig()) throw new Error('DATA_API_URL or DATA_API_HMAC not configured');
+  const res = await callWorkerRequest(`/d1/devices/check?accountDigest=${encodeURIComponent(accountDigest)}&deviceId=${encodeURIComponent(deviceId)}`, {
+    method: 'GET'
+  });
+  if (!res?.ok || res.status !== 'active') {
+    const err = new Error('device not active');
+    err.code = 'DEVICE_NOT_ACTIVE';
+    err.status = 403;
+    throw err;
+  }
+  return true;
+}
+
+export async function listActiveDevices({ accountDigest }) {
+  if (!hasCallWorkerConfig()) throw new Error('DATA_API_URL or DATA_API_HMAC not configured');
+  const res = await callWorkerRequest(`/d1/devices/active?accountDigest=${encodeURIComponent(accountDigest)}`, {
+    method: 'GET'
+  });
+  const devices = Array.isArray(res?.devices) ? res.devices : [];
+  return devices;
+}
