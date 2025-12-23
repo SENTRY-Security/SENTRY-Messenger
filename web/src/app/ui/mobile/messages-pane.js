@@ -18,9 +18,10 @@ import {
   deriveConversationContextFromSecret
 } from '../../features/conversation.js';
 import { sessionStore, resetMessageState } from './session-store.js';
-import { deleteContactSecret, getContactSecret } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret, getCorruptContact } from '../../core/contact-secrets.js';
 import { clearDrState } from '../../core/store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
+import { contactCoreCounts, getContactCore, upsertContactCore, listReadyContacts, removeContactCore } from './contact-core-store.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
 import { deleteSecureConversation, listSecureMessages as apiListSecureMessages } from '../../api/messages.js';
@@ -54,6 +55,7 @@ const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
 const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
+const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [] };
 let pendingNewMessageHint = false;
 
@@ -297,6 +299,29 @@ export function initMessagesPane({
     return normalizeDigestString(value?.peerAccountDigest ?? value);
   }
 
+  function splitPeerKey(value) {
+    const key = typeof value === 'string' ? value : normalizePeerKey(value);
+    if (!key || typeof key !== 'string' || !key.includes('::')) {
+      return { digest: normalizeAccountDigest(key || null), deviceId: null };
+    }
+    const [digestPart, devicePart] = key.split('::');
+    return {
+      digest: normalizeAccountDigest(digestPart),
+      deviceId: normalizePeerDeviceId(devicePart)
+    };
+  }
+
+  function logContactCoreWriteSkip({ callsite, conversationId = null, hasDeviceId = false }) {
+    try {
+      console.warn('[contact-core] ui:write-skip ' + JSON.stringify({
+        reason: 'missing-digest',
+        callsite,
+        conversationId: conversationId || null,
+        hasDeviceId: !!hasDeviceId
+      }));
+    } catch {}
+  }
+
   function ensurePeerAccountDigest(source) {
     if (!source || typeof source !== 'object') return null;
     if (source.peerAccountDigest) {
@@ -324,19 +349,7 @@ export function initMessagesPane({
   }
 
   function normalizeContactsStore() {
-    if (Array.isArray(sessionStore.contactState)) {
-      sessionStore.contactState.forEach((contact) => ensurePeerAccountDigest(contact));
-    }
-    if (sessionStore.contactIndex instanceof Map) {
-      const next = new Map();
-      for (const [key, contact] of sessionStore.contactIndex.entries()) {
-        const digest = ensurePeerAccountDigest(contact) || normalizePeerKey(key);
-        if (digest && !next.has(digest)) {
-          next.set(digest, contact);
-        }
-      }
-      sessionStore.contactIndex = next;
-    }
+    sessionStore.contactState = listReadyContacts();
   }
 
   normalizeContactsStore();
@@ -901,13 +914,36 @@ export function initMessagesPane({
     if (sessionStore.deletedConversations?.has?.(convId)) return null;
     const threads = getConversationThreads();
     const prev = threads.get(convId) || {};
+    const { digest: digestFromKey, deviceId: deviceFromKey } = splitPeerKey(key);
+    const resolvedPeerDeviceId = normalizePeerDeviceId(peerDeviceId || deviceFromKey || prev.peerDeviceId || null);
+    const resolvedToken = tokenB64 || prev.conversationToken || null;
+    if (!resolvedPeerDeviceId || !resolvedToken) {
+      try { log({ conversationThreadSkip: { convId, peerAccountDigest: key, reason: 'missing-core' } }); } catch {}
+      return prev || null;
+    }
+    if (!digestFromKey) {
+      logContactCoreWriteSkip({
+        callsite: 'messages-pane:thread-upsert',
+        conversationId: convId,
+        hasDeviceId: !!resolvedPeerDeviceId
+      });
+      return prev || null;
+    }
+    upsertContactCore({
+      peerAccountDigest: digestFromKey,
+      peerDeviceId: resolvedPeerDeviceId,
+      conversationId: convId,
+      conversationToken: resolvedToken,
+      nickname: nickname || null,
+      avatar: avatar || null
+    }, 'messages-pane:thread-upsert');
     const entry = {
       ...prev,
       peerAccountDigest: key,
-      peerDeviceId: peerDeviceId || prev.peerDeviceId || null,
+      peerDeviceId: resolvedPeerDeviceId,
       conversationId: convId,
-      conversationToken: tokenB64 || prev.conversationToken || null,
-      nickname: nickname || prev.nickname || `好友 ${key.slice(-4)}`,
+      conversationToken: resolvedToken,
+      nickname: nickname || prev.nickname || null,
       avatar: avatar || prev.avatar || null,
       lastMessageText: typeof prev.lastMessageText === 'string' ? prev.lastMessageText : '',
       lastMessageTs: typeof prev.lastMessageTs === 'number' ? prev.lastMessageTs : null,
@@ -2390,7 +2426,30 @@ export function initMessagesPane({
       elements.messagesList.innerHTML = '';
     }
 
-    const visibleStatusIndex = computeVisibleStatusIndex(timelineMessages);
+    const selfDigest = (() => {
+      try {
+        return normalizeAccountDigest(getAccountDigest());
+      } catch {
+        return null;
+      }
+    })();
+    const tickState = computeDoubleTickState({
+      timelineMessages,
+      conversationId: state.conversationId || null,
+      selfDigest
+    });
+    const lastDoubleTickId = tickState.lastDoubleTickId || null;
+    try {
+      if (console?.debug) {
+        console.debug('[msg] ' + JSON.stringify({
+          event: 'tick:state',
+          conversationId: state.conversationId || null,
+          lastUserId: tickState.lastUserId || null,
+          lastUserFromSelf: tickState.lastUserFromSelf,
+          lastDoubleTickId
+        }));
+      }
+    } catch {}
     const logUiAppend = (msg, overrides = {}) => {
       const payload = {
         stage: 'ui',
@@ -2513,32 +2572,33 @@ export function initMessagesPane({
       const metaRow = document.createElement('div');
       metaRow.className = 'message-meta';
       const ts = document.createElement('span');
-      ts.className = 'message-ts';
-      ts.textContent = formatTimestamp(msg.ts);
+      ts.className = 'message-ts hidden';
+      ts.textContent = '';
       metaRow.appendChild(ts);
       if (messageType !== 'call-log') {
         const statusSpan = document.createElement('span');
         const status = typeof msg?.status === 'string' ? msg.status : (msg.read ? 'read' : null);
-        if (msg.direction === 'outgoing' && typeof visibleStatusIndex === 'number' && timelineMessages[visibleStatusIndex] === msg) {
-          statusSpan.className = 'message-status read';
-          statusSpan.textContent = '✓✓';
-        } else if (msg.direction === 'incoming') {
+        const isLastDoubleTick = msg.direction === 'outgoing' && msg.id && msg.id === lastDoubleTickId;
+        if (msg.direction === 'incoming') {
           statusSpan.className = 'message-status peer';
           statusSpan.textContent = '';
+        } else if (isLastDoubleTick) {
+          statusSpan.className = 'message-status read';
+          statusSpan.textContent = '✓✓';
         } else if (msg.pending) {
           statusSpan.className = 'message-status pending';
           statusSpan.textContent = '';
         } else if (status === 'failed') {
           statusSpan.className = 'message-status failed';
           statusSpan.textContent = '!';
-        } else if (status === 'delivered') {
-          statusSpan.className = 'message-status delivered';
-          statusSpan.textContent = '✓✓';
-        } else if (status === 'read') {
-          statusSpan.className = 'message-status read';
-          statusSpan.textContent = '✓✓';
         } else {
-          statusSpan.className = 'message-status sent';
+          if (status === 'read') {
+            statusSpan.className = 'message-status read';
+          } else if (status === 'delivered') {
+            statusSpan.className = 'message-status delivered';
+          } else {
+            statusSpan.className = 'message-status sent';
+          }
           statusSpan.textContent = '✓';
         }
         metaRow.appendChild(statusSpan);
@@ -2762,14 +2822,99 @@ export function initMessagesPane({
       scheduleActivePoll();
     }
   }
+
+  function summarizeTokenForDiag(token) {
+    if (!token) return { len: 0 };
+    const raw = String(token);
+    return { len: raw.length, prefix6: raw.slice(0, 6), suffix6: raw.slice(-6) };
+  }
+
+  function logSetActiveFail({ reason, peerKey, peerDigest, peerDeviceId, entry, conversation, error = null }) {
+    const logKey = `${reason}:${peerKey || peerDigest || 'unknown'}`;
+    if (setActiveFailLogKeys.has(logKey)) return;
+    setActiveFailLogKeys.add(logKey);
+    const counts = contactCoreCounts();
+    const corruptCount = (sessionStore?.corruptContacts instanceof Map) ? sessionStore.corruptContacts.size : 0;
+    const corruptInfo = getCorruptContact?.({ peerAccountDigest: peerDigest || peerKey || null, peerDeviceId }) || null;
+    const convId = conversation?.conversation_id || entry?.conversationId || null;
+    const tokenRaw = conversation?.token_b64 || entry?.conversationToken || null;
+    const missing = [];
+    if (entry) {
+      if (!entry.peerKey) missing.push('peerKey');
+      if (!entry.peerAccountDigest) missing.push('peerAccountDigest');
+      if (!entry.peerDeviceId) missing.push('peerDeviceId');
+      if (!entry.conversationId) missing.push('conversationId');
+      if (!entry.conversationToken) missing.push('conversationToken');
+    }
+    try {
+      console.info('[diag] ' + JSON.stringify({
+        event: 'set-active-fail',
+        reason,
+        peerKey: peerKey || null,
+        peerAccountDigest: peerDigest || null,
+        peerDeviceId: peerDeviceId || entry?.peerDeviceId || null,
+        conversationId: convId,
+        conversationToken: summarizeTokenForDiag(tokenRaw),
+        contactCore: {
+          isReady: entry?.isReady ?? null,
+          isPending: entry ? !entry.isReady : null,
+          isCorrupt: !!corruptInfo
+        },
+        contactCoreCounts: {
+          ready: counts.ready,
+          pending: counts.pending,
+          corrupt: corruptCount
+        },
+        error: error || null,
+        missingCoreFields: missing,
+        corruptReason: corruptInfo?.reason || null
+      }));
+    } catch {}
+  }
   async function setActiveConversation(peerAccountDigest) {
     stopActivePoll();
-    const key = normalizePeerKey(peerAccountDigest);
+    const identity = normalizePeerIdentity(peerAccountDigest);
+    const key = identity.key || normalizePeerKey(peerAccountDigest);
     try { console.log('[messages-pane]', { setActiveConversationStart: key }); } catch {}
-    if (!key) return;
+    const { digest: digestFromKey, deviceId: deviceFromKey } = splitPeerKey(key);
+    const peerDigest = identity.accountDigest || digestFromKey;
+    const peerDeviceHint = identity.deviceId || deviceFromKey;
+    if (!key) {
+      logContactCoreWriteSkip({
+        callsite: 'messages-pane:set-active:start',
+        conversationId: null,
+        hasDeviceId: !!peerDeviceHint
+      });
+      logSetActiveFail({
+        reason: 'MISSING_PEER_KEY',
+        peerKey: key,
+        peerDigest,
+        peerDeviceId: peerDeviceHint,
+        entry: null,
+        conversation: null
+      });
+      return;
+    }
+    if (!peerDigest) {
+      logContactCoreWriteSkip({
+        callsite: 'messages-pane:set-active:start',
+        conversationId: null,
+        hasDeviceId: !!peerDeviceHint
+      });
+      setMessagesStatus('缺少好友識別資訊，請重新同步好友。', true);
+      logSetActiveFail({
+        reason: 'MISSING_PEER_DIGEST',
+        peerKey: key,
+        peerDigest,
+        peerDeviceId: peerDeviceHint,
+        entry: null,
+        conversation: null
+      });
+      return;
+    }
     const desktopLayout = isDesktopLayout();
     const threads = getConversationThreads();
-    let entry = sessionStore.contactIndex?.get?.(key);
+    let entry = getContactCore(key);
     let threadForPeer = null;
     if (!entry && threads instanceof Map) {
       for (const thread of threads.values()) {
@@ -2778,28 +2923,35 @@ export function initMessagesPane({
           break;
         }
       }
-      if (threadForPeer) {
-        const conversationId = threadForPeer?.conversationId || null;
-        const conversationToken = threadForPeer?.conversationToken || null;
-        const peerDeviceIdFromThread = threadForPeer?.peerDeviceId || null;
-        if (conversationId && conversationToken) {
-          const placeholder = {
-            peerAccountDigest: key,
-            accountDigest: key,
-            peerDeviceId: peerDeviceIdFromThread || null,
-            nickname: threadForPeer?.nickname || `好友 ${key.slice(-4)}`,
-            avatar: threadForPeer?.avatar || null,
-            conversation: {
-              conversation_id: conversationId,
-              token_b64: conversationToken,
-              ...(peerDeviceIdFromThread ? { peerDeviceId: peerDeviceIdFromThread } : {})
-            }
-          };
-          if (!(sessionStore.contactIndex instanceof Map)) {
-            sessionStore.contactIndex = new Map();
-          }
-          sessionStore.contactIndex.set(key, placeholder);
-          entry = placeholder;
+      if (threadForPeer && threadForPeer.conversationId && threadForPeer.conversationToken && threadForPeer.peerDeviceId) {
+        const seeded = upsertContactCore({
+          peerAccountDigest: peerDigest,
+          peerDeviceId: threadForPeer.peerDeviceId,
+          conversationId: threadForPeer.conversationId,
+          conversationToken: threadForPeer.conversationToken || threadForPeer.conversation?.token_b64,
+          nickname: threadForPeer.nickname || null,
+          avatar: threadForPeer.avatar || null,
+          conversation: threadForPeer.conversation || null
+        }, 'messages-pane:set-active:thread');
+        entry = seeded || getContactCore(key);
+      }
+    }
+    if (entry && !entry.isReady && threads instanceof Map) {
+      for (const thread of threads.values()) {
+        if (threadPeer(thread) !== key) continue;
+        if (thread.conversationId && (thread.conversationToken || thread.conversation?.token_b64) && thread.peerDeviceId) {
+          const upgraded = upsertContactCore({
+            peerAccountDigest: peerDigest,
+            peerDeviceId: thread.peerDeviceId,
+            conversationId: thread.conversationId,
+            conversationToken: thread.conversationToken || thread.conversation?.token_b64,
+            nickname: entry?.nickname || thread.nickname || null,
+            avatar: entry?.avatar || thread.avatar || null,
+            conversation: thread.conversation || null
+          }, 'messages-pane:set-active:thread-upgrade');
+          entry = upgraded || entry;
+          threadForPeer = threadForPeer || thread;
+          break;
         }
       }
     }
@@ -2811,6 +2963,35 @@ export function initMessagesPane({
         stateFallback.viewMode = 'list';
         applyMessagesLayout();
       }
+      logSetActiveFail({
+        reason: 'CONTACT_NOT_FOUND',
+        peerKey: key,
+        peerDigest,
+        peerDeviceId: peerDeviceHint,
+        entry: null,
+        conversation: null
+      });
+      return;
+    }
+    if (entry && !entry.isReady) {
+      resetMessageStateWithPlaceholders();
+      const state = getMessageState();
+      if (!desktopLayout) state.viewMode = 'list';
+      if (elements.peerName) elements.peerName.textContent = entry?.nickname || `好友 ${key.slice(-4)}`;
+      setMessagesStatus('此好友尚未建立安全對話，缺少會話資訊。', true);
+      clearMessagesView();
+      hideSecurityModal();
+      updateComposerAvailability();
+      renderConversationList();
+      applyMessagesLayout();
+      logSetActiveFail({
+        reason: 'CONTACT_PENDING',
+        peerKey: key,
+        peerDigest,
+        peerDeviceId: peerDeviceHint || entry?.peerDeviceId || null,
+        entry,
+        conversation: null
+      });
       return;
     }
     if (!threadForPeer && threads instanceof Map) {
@@ -2821,9 +3002,17 @@ export function initMessagesPane({
         }
       }
     }
-    const nickname = entry.nickname || threadForPeer?.nickname || `好友 ${key.slice(-4)}`;
-    if (entry?.conversation?.conversation_id) {
-      clearConversationTombstone(entry.conversation.conversation_id);
+    const nickname = entry?.nickname || threadForPeer?.nickname || `好友 ${key.slice(-4)}`;
+    const conversationFromEntry = entry?.conversationToken && entry?.conversationId
+      ? {
+          conversation_id: entry.conversationId,
+          token_b64: entry.conversationToken,
+          peerDeviceId: entry.peerDeviceId || null,
+          ...(entry?.drInit ? { dr_init: entry.drInit } : null)
+        }
+      : entry?.conversation || null;
+    if (conversationFromEntry?.conversation_id) {
+      clearConversationTombstone(conversationFromEntry.conversation_id);
     }
     const conversationFromThread = threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)
       ? {
@@ -2832,18 +3021,26 @@ export function initMessagesPane({
           peerDeviceId: threadForPeer.peerDeviceId || null
         }
       : null;
-    const conversation = entry.conversation?.token_b64 ? entry.conversation : conversationFromThread || entry.conversation;
-    if (!conversation?.token_b64) {
+    const conversation = conversationFromEntry || conversationFromThread;
+    if (!conversation?.token_b64 || !conversation?.conversation_id) {
       resetMessageStateWithPlaceholders();
       const state = getMessageState();
       if (!desktopLayout) state.viewMode = 'list';
       if (elements.peerName) elements.peerName.textContent = nickname;
-      setMessagesStatus('此好友尚未建立安全對話，請重新生成邀請。', true);
+      setMessagesStatus('此好友尚未建立安全對話，缺少會話資訊。', true);
       clearMessagesView();
       hideSecurityModal();
       updateComposerAvailability();
       renderConversationList();
       applyMessagesLayout();
+      logSetActiveFail({
+        reason: 'MISSING_CONVERSATION_TOKEN',
+        peerKey: key,
+        peerDigest,
+        peerDeviceId: peerDeviceHint || entry?.peerDeviceId || null,
+        entry,
+        conversation
+      });
       return;
     }
     log({ setActiveConversation: { peerAccountDigest: key, conversationId: conversation.conversation_id || null, hasDrInit: !!(conversation.dr_init || conversation.drInit) } });
@@ -2853,71 +3050,58 @@ export function initMessagesPane({
     if (state.conversationId && state.conversationId !== conversation.conversation_id) {
       resetProcessedMessages(state.conversationId);
     }
-    const peerDeviceIdFromKey = key && key.includes('::') ? key.split('::')[1] : null;
-    const peerDeviceIdFromContact = entry?.peerDeviceId || null;
-    const peerDeviceIdFromConversation = conversation?.peerDeviceId || conversation?.peer_device_id || null;
-    const peerDeviceIdFromThread = threadForPeer?.peerDeviceId || null;
-    const peerDeviceIdFromIndex = (() => {
-      const convIndex = ensureConversationIndex();
-      const entry = conversation?.conversation_id ? convIndex.get(conversation.conversation_id) : null;
-      return entry?.peerDeviceId || null;
-    })();
-    const peerDeviceId = peerDeviceIdFromKey
-      || peerDeviceIdFromContact
+    const peerDeviceIdFromConversation = normalizePeerDeviceId(conversation?.peerDeviceId || conversation?.peer_device_id || null);
+    const peerDeviceIdFromThread = normalizePeerDeviceId(threadForPeer?.peerDeviceId || null);
+    const peerDeviceIdFromEntry = normalizePeerDeviceId(entry?.peerDeviceId || null);
+    const peerDeviceId = peerDeviceHint
+      || peerDeviceIdFromEntry
       || peerDeviceIdFromConversation
       || peerDeviceIdFromThread
-      || peerDeviceIdFromIndex
       || null;
     if (!peerDeviceId) {
       setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
+      logSetActiveFail({
+        reason: 'MISSING_PEER_DEVICE',
+        peerKey: key,
+        peerDigest,
+        peerDeviceId: peerDeviceHint || entry?.peerDeviceId || null,
+        entry,
+        conversation
+      });
       return;
     }
-    // 不將 conversation.peerDeviceId 反寫或覆蓋 peer 裝置；索引只保留對端 deviceId。
-    const convIndex = ensureConversationIndex();
-    const prev = convIndex.get(conversation.conversation_id) || {};
-    convIndex.set(conversation.conversation_id, {
-      ...prev,
-      peerAccountDigest: key,
+    const resolvedPeerKey = normalizePeerKey({ peerAccountDigest: peerDigest, peerDeviceId }) || key;
+    if (!peerDigest) {
+      logContactCoreWriteSkip({
+        callsite: 'messages-pane:set-active',
+        conversationId: conversation.conversation_id || null,
+        hasDeviceId: !!peerDeviceId
+      });
+      setMessagesStatus('缺少好友識別資訊，請重新同步好友。', true);
+      return;
+    }
+    upsertContactCore({
+      peerAccountDigest: peerDigest,
       peerDeviceId,
-      token_b64: conversation.token_b64 || prev.token_b64 || null
-    });
-    state.activePeerDigest = key;
+      conversationId: conversation.conversation_id,
+      conversationToken: conversation.token_b64,
+      nickname: entry?.nickname || null,
+      avatar: entry?.avatar || null,
+      conversation
+    }, 'messages-pane:set-active');
+    const activePeerKey = resolvedPeerKey || key;
+    state.activePeerDigest = activePeerKey;
     state.activePeerDeviceId = peerDeviceId || null;
     state.conversationToken = conversation.token_b64;
-    try {
-      state.conversationId = conversation.conversation_id || await conversationIdFromToken(conversation.token_b64);
-    } catch (err) {
-      resetMessageStateWithPlaceholders();
-      if (elements.peerName) elements.peerName.textContent = nickname;
-      setMessagesStatus('無法建立對話：' + (err?.message || err), true);
-      clearMessagesView();
-      hideSecurityModal();
-      updateComposerAvailability();
-      renderConversationList();
-      const fallbackState = getMessageState();
-      if (!desktopLayout) fallbackState.viewMode = 'list';
-      applyMessagesLayout();
-      return;
-    }
-    const resolvedConvId = conversation?.conversation_id || conversation?.conversationId || state.conversationId || null;
-    if (resolvedConvId && peerDeviceId) {
-      const convIndex = ensureConversationIndex();
-      const prevConv = convIndex.get(resolvedConvId) || {};
-      convIndex.set(resolvedConvId, {
-        ...prevConv,
-        peerAccountDigest: key,
-        peerDeviceId,
-        token_b64: conversation.token_b64 || prevConv.token_b64 || null
-      });
-    }
-    if (resolvedConvId) resetProcessedMessages(resolvedConvId);
+    state.conversationId = conversation.conversation_id;
+    resetProcessedMessages(state.conversationId);
     refreshTimelineState(state.conversationId);
     state.nextCursor = null;
     state.nextCursorTs = null;
     state.hasMore = true;
     state.loading = false;
     const thread = upsertConversationThread({
-      peerAccountDigest: key,
+      peerAccountDigest: activePeerKey,
       conversationId: state.conversationId,
       tokenB64: state.conversationToken,
       peerDeviceId,
@@ -2932,32 +3116,51 @@ export function initMessagesPane({
     } else if (!state.viewMode) {
       state.viewMode = 'detail';
     }
-    let initialStatus = getCachedSecureStatus(key);
+    try {
+      console.info('[msg] convo:enter ' + JSON.stringify({
+        conversationId: state.conversationId,
+        peerKey: activePeerKey,
+        peerDeviceId,
+        hasToken: !!state.conversationToken
+      }));
+    } catch {}
+    let initialStatus = getCachedSecureStatus(activePeerKey);
     if (!initialStatus || initialStatus.status === SECURE_CONVERSATION_STATUS.IDLE) {
-      initialStatus = cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.PENDING, null);
+      initialStatus = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.PENDING, null);
     }
     if (initialStatus) {
-      applySecureStatusForActivePeer(key, initialStatus);
+      applySecureStatusForActivePeer(activePeerKey, initialStatus);
     }
     try {
       await ensureSecureConversationReady({
-        peerAccountDigest: key,
+        peerAccountDigest: activePeerKey,
         conversationId: state.conversationId || null,
         reason: 'open-conversation',
         source: 'messages-pane:setActiveConversation'
       });
     } catch (err) {
       const errorMsg = err?.message || err || '建立安全對話失敗，請稍後再試。';
-      log({ ensureSecureConversationError: errorMsg, peerAccountDigest: key });
-      const cached = cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
-      applySecureStatusForActivePeer(key, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
+      log({ ensureSecureConversationError: errorMsg, peerAccountDigest: activePeerKey });
+      const cached = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
+      applySecureStatusForActivePeer(activePeerKey, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
       applyMessagesLayout();
+      const corruptInfo = getCorruptContact?.({ peerAccountDigest: activePeerKey, peerDeviceId }) || null;
+      const failReason = corruptInfo ? 'CONTACT_CORRUPT' : 'ENSURE_SECURE_CONVERSATION_FAILED';
+      logSetActiveFail({
+        reason: failReason,
+        peerKey: activePeerKey,
+        peerDigest,
+        peerDeviceId,
+        entry,
+        conversation,
+        error: errorMsg
+      });
       return;
     }
-    const statusInfo = getCachedSecureStatus(key) || cacheSecureStatus(key, SECURE_CONVERSATION_STATUS.READY, null);
-    applySecureStatusForActivePeer(key, statusInfo);
+    const statusInfo = getCachedSecureStatus(activePeerKey) || cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.READY, null);
+    applySecureStatusForActivePeer(activePeerKey, statusInfo);
     updateComposerAvailability();
-    refreshActivePeerMetadata(key, { fallbackName: nickname });
+    refreshActivePeerMetadata(activePeerKey, { fallbackName: nickname });
     setMessagesStatus('');
     renderConversationList();
     updateComposerAvailability();
@@ -3189,26 +3392,52 @@ export function initMessagesPane({
     }
   }
 
-  function computeVisibleStatusIndex(messages) {
-    if (!Array.isArray(messages) || !messages.length) return null;
-    let lastIncomingTs = null;
-    let lastIncomingIndex = -1;
-    messages.forEach((m, idx) => {
-      if (m?.direction === 'incoming') {
-        lastIncomingTs = m.ts || null;
-        lastIncomingIndex = idx;
-      }
-    });
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const msg = messages[i];
-      if (msg?.direction !== 'outgoing') continue;
-      // 若在最後一則 incoming 之後的 outgoing，顯示這一則的狀態。
-      if (i > lastIncomingIndex) return i;
-      // 若全是 outgoing（沒有 incoming），找到最後一個 outgoing。
-      if (lastIncomingIndex === -1) return i;
-      break;
+  function isUserTimelineMessage(msg) {
+    const msgType = normalizeMsgTypeValue(msg?.type || msg?.msgType || msg?.subtype || msg?.meta?.msg_type);
+    return msgType === 'text' || msgType === 'media' || msgType === 'call-log';
+  }
+
+  function isOutgoingFromSelf(msg, selfDigest) {
+    if (!msg) return false;
+    if (msg.direction === 'outgoing') return true;
+    if (!selfDigest) return msg.direction === 'outgoing';
+    const senderDigest = normalizeAccountDigest(
+      msg.senderDigest || msg.sender_digest || msg.meta?.senderDigest || msg.meta?.sender_digest || msg.header?.sender_digest || null
+    );
+    return senderDigest ? senderDigest === selfDigest : msg.direction === 'outgoing';
+  }
+
+  function computeDoubleTickState({ timelineMessages, conversationId, selfDigest } = {}) {
+    const normalizedSelf = normalizeAccountDigest(selfDigest || null);
+    let lastUserId = null;
+    let lastUserFromSelf = false;
+    let lastDoubleTickId = null;
+    if (!Array.isArray(timelineMessages) || !timelineMessages.length) {
+      return { lastUserId, lastUserFromSelf, lastDoubleTickId };
     }
-    return null;
+    for (let i = timelineMessages.length - 1; i >= 0; i -= 1) {
+      const msg = timelineMessages[i];
+      if (!isUserTimelineMessage(msg)) continue;
+      const msgId = msg?.id || msg?.messageId || msg?.serverMessageId || null;
+      if (!lastUserId) {
+        lastUserId = msgId || null;
+        lastUserFromSelf = isOutgoingFromSelf(msg, normalizedSelf);
+        if (!lastUserFromSelf) break;
+      }
+      if (!isOutgoingFromSelf(msg, normalizedSelf) || !msgId || !conversationId) continue;
+      const receipt = getMessageReceipt(conversationId, msgId);
+      const delivered = getMessageDelivery(conversationId, msgId);
+      if (receipt?.read || delivered?.delivered) {
+        lastDoubleTickId = msgId;
+        break;
+      }
+    }
+    return { lastUserId, lastUserFromSelf, lastDoubleTickId };
+  }
+
+  function computeDoubleTickMessageId(params = {}) {
+    const state = computeDoubleTickState(params);
+    return state.lastDoubleTickId || null;
   }
 
 
@@ -3534,14 +3763,14 @@ export function initMessagesPane({
   function handleConversationDelete({ conversationId, peerAccountDigest, element }) {
     const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
-    const contactEntry = sessionStore.contactIndex?.get?.(key) || null;
+    const contactEntry = getContactCore(key);
     const nickname = contactEntry?.nickname || `好友 ${key.slice(-4)}`;
     const threadEntry = getConversationThreads().get(conversationId) || null;
     const convIndexEntry = sessionStore.conversationIndex?.get?.(conversationId) || null;
     const peerDeviceId =
       threadEntry?.peerDeviceId ||
       convIndexEntry?.peerDeviceId ||
-      contactEntry?.conversation?.peerDeviceId ||
+      contactEntry?.peerDeviceId ||
       null;
     showConfirmModal({
       title: '刪除對話',
@@ -3554,16 +3783,7 @@ export function initMessagesPane({
           sessionStore.deletedConversations?.add?.(conversationId);
           getConversationThreads().delete(conversationId);
           sessionStore.conversationIndex?.delete?.(conversationId);
-          const contactEntryAfter = sessionStore.contactIndex?.get?.(key) || null;
-          if (contactEntryAfter) {
-            contactEntryAfter.conversation = null;
-            contactEntryAfter.unreadCount = 0;
-          }
-          const contactStateEntry = sessionStore.contactState?.find?.((c) => contactPeerKey(c) === key) || null;
-          if (contactStateEntry) {
-            contactStateEntry.conversation = null;
-            contactStateEntry.unreadCount = 0;
-          }
+          removeContactCore(key, 'messages-pane:delete-conversation');
           if (element) closeSwipe?.(element);
           const state = getMessageState();
           if (state.activePeerDigest === key) {
@@ -3633,6 +3853,7 @@ export function initMessagesPane({
       // 自己的 profile 更新訊息，略過以免影響聯絡同步流程
       return;
     }
+    const state = getMessageState();
     try {
       try {
         console.log('[ws-secure-message]', {
@@ -3686,15 +3907,8 @@ export function initMessagesPane({
         sessionStore.deletedConversations?.add?.(convId);
         getConversationThreads().delete(convId);
         sessionStore.conversationIndex?.delete?.(convId);
-        const contactEntryAfter = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-        if (contactEntryAfter) {
-          contactEntryAfter.conversation = null;
-          contactEntryAfter.unreadCount = 0;
-        }
-        const contactStateEntry = peerDigest ? sessionStore.contactState?.find?.((c) => contactPeerKey(c) === peerDigest) || null : null;
-        if (contactStateEntry) {
-          contactStateEntry.conversation = null;
-          contactStateEntry.unreadCount = 0;
+        if (peerDigest) {
+          removeContactCore(peerDigest, 'messages-pane:conversation-deleted');
         }
         if (convId) {
           clearConversationHistory(convId, tsRaw);
@@ -3723,117 +3937,60 @@ export function initMessagesPane({
       const contactPeerFromConvId = (convId && convId.startsWith('contacts-'))
         ? convId.slice('contacts-'.length).trim().toUpperCase()
         : null;
-      let convEntry = convIndex.get(convId) || null;
+      const existingConvEntry = convIndex.get(convId) || null;
       const peerFromEvent = ensurePeerAccountDigest(event);
-
-      const peerForConv = contactPeerFromConvId ? contactPeerFromConvId : peerFromEvent;
-
-      if (!convEntry) {
-        convEntry = { token_b64: null, peerAccountDigest: peerForConv || null, peerDeviceId: senderDeviceId || null };
-        convIndex.set(convId, convEntry);
-        if (!peerDeviceId && convEntry.peerDeviceId) peerDeviceId = convEntry.peerDeviceId;
-      } else {
-        if (peerForConv && convEntry.peerAccountDigest !== peerForConv) {
-          convEntry.peerAccountDigest = peerForConv;
-          if (senderDeviceId) convEntry.peerDeviceId = senderDeviceId;
-          if (senderDeviceId) peerDeviceId = senderDeviceId;
-        } else if (senderDeviceId && !convEntry.peerDeviceId) {
-          convEntry.peerDeviceId = senderDeviceId;
-          peerDeviceId = senderDeviceId;
+      const tokenFromEvent = event?.tokenB64 || event?.token_b64 || null;
+      const tokenB64 = tokenFromEvent || existingConvEntry?.token_b64 || null;
+      const peerDigestRaw = contactPeerFromConvId
+        || peerFromEvent
+        || existingConvEntry?.peerAccountDigest
+        || null;
+      const { digest: peerDigestForWrite } = splitPeerKey(peerDigestRaw);
+      const resolvedPeerDeviceId = normalizePeerDeviceId(senderDeviceId || existingConvEntry?.peerDeviceId || peerDeviceId || null);
+      if (!peerDigestForWrite || !resolvedPeerDeviceId || !tokenB64) {
+        console.warn('[secure-message] missing core', { convId, peerDigest: peerDigestRaw, resolvedPeerDeviceId, hasToken: !!tokenB64 });
+        log({ secureMessageMissingCore: { convId, peerDigest: peerDigestRaw, resolvedPeerDeviceId, hasToken: !!tokenB64 } });
+        if (!peerDigestForWrite) {
+          logContactCoreWriteSkip({
+            callsite: 'messages-pane:ws-incoming',
+            conversationId: convId,
+            hasDeviceId: !!resolvedPeerDeviceId
+          });
         }
+        return;
       }
+      const peerKey = normalizePeerKey({ peerAccountDigest: peerDigestForWrite, peerDeviceId: resolvedPeerDeviceId }) || peerDigestRaw;
+      upsertContactCore({
+        peerAccountDigest: peerDigestForWrite,
+        peerDeviceId: resolvedPeerDeviceId,
+        conversationId: convId,
+        conversationToken: tokenB64
+      }, 'messages-pane:ws-incoming');
 
-    const tokenFromEvent = event?.tokenB64 || event?.token_b64 || null;
-    if (tokenFromEvent && !convEntry.token_b64) {
-      const normalizedToken = String(tokenFromEvent).trim();
-      if (normalizedToken) convEntry.token_b64 = normalizedToken;
-    }
-    let tokenB64 = convEntry.token_b64 || tokenFromEvent || null;
+      // 立即觸發同步解密，避免後續分支提前 return。
+      try {
+        console.log('[contact-sync:enqueue]', { convId, peerDigest: peerDigestForWrite, senderDeviceId, reason: 'ws-incoming' });
+        log({ contactSyncEnqueue: { convId, peerDigest: peerDigestForWrite, senderDeviceId, reason: 'ws-incoming' } });
+      } catch {}
+      syncContactConversation({
+        convId,
+        peerDigest: peerDigestForWrite,
+        peerDeviceId: resolvedPeerDeviceId,
+        tokenB64,
+        reason: 'ws-incoming'
+      });
+      const contactEntry = getContactCore(peerKey) || getContactCore(peerDigestForWrite) || null;
+      const nickname = contactEntry?.nickname || `好友 ${peerDigestForWrite.slice(-4)}`;
+      const avatar = contactEntry?.avatar || null;
 
-      let peerDigest = convEntry.peerAccountDigest;
-      // 對於 contacts-<peerDigest> 對話，若事件未附帶 peerAccountDigest，強制從 convId 解析（非 fallback，單一路徑）。
-      if (!peerDigest && contactPeerFromConvId) {
-        peerDigest = contactPeerFromConvId;
-        convEntry.peerAccountDigest = contactPeerFromConvId;
-        if (senderDeviceId) convEntry.peerDeviceId = senderDeviceId;
-      }
-      // 若 WS 事件有 peerAccountDigest（僅帳號無裝置），補上帳號並沿用 senderDeviceId 作為對端裝置。
-      if (!peerDigest && event?.peerAccountDigest) {
-        const normalizedPeer = normalizePeerKey({ peerAccountDigest: event.peerAccountDigest, peerDeviceId: senderDeviceId });
-        if (normalizedPeer) {
-          peerDigest = normalizedPeer;
-          convEntry.peerAccountDigest = normalizedPeer;
-          if (senderDeviceId) convEntry.peerDeviceId = senderDeviceId;
-        }
-      }
-    if (!peerDigest) {
-      console.warn('[secure-message] unknown peer', { convId, senderDeviceId, peerFromEvent, contactPeerFromConvId });
-      log({ secureMessageUnknownPeer: { convId, senderDeviceId, peerFromEvent, contactPeerFromConvId } });
-      return;
-    }
-
-    // 立即觸發同步解密，避免後續分支提前 return。
-    try {
-      console.log('[contact-sync:enqueue]', { convId, peerDigest, senderDeviceId, reason: 'ws-incoming' });
-      log({ contactSyncEnqueue: { convId, peerDigest, senderDeviceId, reason: 'ws-incoming' } });
-    } catch {}
-    syncContactConversation({
-      convId,
-      peerDigest,
-      peerDeviceId: convEntry?.peerDeviceId || senderDeviceId || peerDeviceId || null,
-      tokenB64,
-      reason: 'ws-incoming'
-    });
-    if (peerDeviceId && sessionStore.contactIndex?.get?.(peerDigest)?.conversation) {
-      const contactConv = sessionStore.contactIndex.get(peerDigest).conversation;
-      if (contactConv && !contactConv.peerDeviceId) {
-        contactConv.peerDeviceId = peerDeviceId;
-      }
-    }
-    const contactStateEntry = Array.isArray(sessionStore.contactState)
-      ? sessionStore.contactState.find((c) => contactPeerKey(c) === peerDigest)
-      : null;
-    // 不覆寫 contactStateEntry.conversation.peerDeviceId；peer 裝置單一路徑。
-
-    const state = getMessageState();
-    const contactEntry = sessionStore.contactIndex?.get?.(peerDigest) || null;
-    const nickname = contactEntry?.nickname || `好友 ${peerDigest.slice(-4)}`;
-    const avatar = contactEntry?.avatar || null;
-    if (!tokenB64) tokenB64 = contactEntry?.conversation?.token_b64 || null;
-
-    if (contactEntry && !contactEntry.conversation) {
-      contactEntry.conversation = {
-        conversation_id: convId,
-        token_b64: tokenB64,
-        ...(peerDeviceId ? { peerDeviceId } : null),
-        ...(convEntry?.dr_init ? { dr_init: convEntry.dr_init } : null)
-      };
-    } else if (contactEntry?.conversation) {
-      // 不覆寫 contactEntry.conversation.peerDeviceId；peer 裝置單一路徑。
-      if (!contactEntry.conversation.conversation_id) contactEntry.conversation.conversation_id = convId;
-      if (!contactEntry.conversation.token_b64 && tokenB64) contactEntry.conversation.token_b64 = tokenB64;
-    }
-    if (contactStateEntry && !contactStateEntry.conversation && (tokenB64 || convId)) {
-      contactStateEntry.conversation = {
-        conversation_id: convId,
-        token_b64: tokenB64,
-        ...(peerDeviceId ? { peerDeviceId } : null),
-        ...(convEntry?.dr_init ? { dr_init: convEntry.dr_init } : null)
-      };
-    } else if (contactStateEntry?.conversation) {
-      if (!contactStateEntry.conversation.conversation_id) contactStateEntry.conversation.conversation_id = convId;
-      if (!contactStateEntry.conversation.token_b64 && tokenB64) contactStateEntry.conversation.token_b64 = tokenB64;
-      // 不覆寫 contactStateEntry.conversation.peerDeviceId；peer 裝置單一路徑。
-    }
-
-    const thread = upsertConversationThread({
-      peerAccountDigest: peerDigest,
-      peerDeviceId: senderDeviceId || convEntry.peerDeviceId || null,
-      conversationId: convId,
-      tokenB64,
-      nickname,
-      avatar
-    }) || getConversationThreads().get(convId);
+      const thread = upsertConversationThread({
+        peerAccountDigest: peerKey,
+        peerDeviceId: resolvedPeerDeviceId,
+        conversationId: convId,
+        tokenB64,
+        nickname,
+        avatar
+      }) || getConversationThreads().get(convId);
     if (!thread) return;
 
     const myAcctRaw = getAccountDigest();
@@ -3868,7 +4025,7 @@ export function initMessagesPane({
         }
       } else {
         handleSecureConversationControlMessage({
-          peerAccountDigest: peerDigest,
+          peerAccountDigest: peerKey,
           messageType: normalizedControlType,
           direction: isSelf ? 'outgoing' : 'incoming',
           source: 'ws:message-new'
@@ -3964,56 +4121,25 @@ export function initMessagesPane({
       || contactStateConv?.conversation_id
       || contactStateConv?.conversationId
       || null;
-    if (targetPeer && (conversationId || token)) {
-      const contactEntry = sessionStore.contactIndex?.get?.(targetPeer) || null;
-      if (contactEntry) {
-        contactEntry.conversation = {
-          conversation_id: conversationId || contactEntry?.conversation?.conversation_id || null,
-          token_b64: token || contactEntry?.conversation?.token_b64 || null,
-          ...(targetPeerDeviceId ? { peerDeviceId: targetPeerDeviceId } : {}),
-          ...(contactEntry?.conversation?.dr_init ? { dr_init: contactEntry.conversation.dr_init } : {})
-        };
-      }
-      if (contactStateEntry) {
-        contactStateEntry.conversation = {
-          conversation_id: conversationId || contactStateEntry?.conversation?.conversation_id || null,
-          token_b64: token || contactStateEntry?.conversation?.token_b64 || null,
-          ...(targetPeerDeviceId ? { peerDeviceId: targetPeerDeviceId } : {}),
-          ...(contactStateEntry?.conversation?.dr_init ? { dr_init: contactStateEntry.conversation.dr_init } : {})
-        };
-      }
-    }
-    if (conversationId) {
-      const convIndex = ensureConversationIndex();
-      const prevConv = convIndex.get(conversationId) || {};
-      convIndex.set(conversationId, {
-        ...prevConv,
-        peerAccountDigest: targetPeer || prevConv.peerAccountDigest || null,
-        peerDeviceId: targetPeerDeviceId || contactStatePeerDeviceId || prevConv.peerDeviceId || null,
-        token_b64: token || prevConv.token_b64 || null
+    const { digest: targetPeerDigest } = splitPeerKey(targetPeer);
+    const resolvedDeviceId = normalizePeerDeviceId(targetPeerDeviceId);
+    if (targetPeer && conversationId && token && resolvedDeviceId && targetPeerDigest) {
+      upsertContactCore({
+        peerAccountDigest: targetPeerDigest,
+        peerDeviceId: resolvedDeviceId,
+        conversationId,
+        conversationToken: token,
+        nickname: threadByConv?.nickname || contactStateEntry?.nickname || null,
+        avatar: threadByConv?.avatar || contactStateEntry?.avatar || null
+      }, 'messages-pane:open-from-toast');
+    } else if (targetPeer && (!targetPeerDigest)) {
+      logContactCoreWriteSkip({
+        callsite: 'messages-pane:open-from-toast',
+        conversationId,
+        hasDeviceId: !!resolvedDeviceId
       });
     }
     if (targetPeer) {
-      // 若 contactIndex 尚未有此人，先以 thread 資料補一筆避免 setActiveConversation 直接失敗。
-      if (!sessionStore.contactIndex?.get?.(targetPeer) && (threadByConv || contactStateEntry)) {
-        if (!(sessionStore.contactIndex instanceof Map)) {
-          const entries = sessionStore.contactIndex && typeof sessionStore.contactIndex.entries === 'function'
-            ? Array.from(sessionStore.contactIndex.entries())
-            : [];
-          sessionStore.contactIndex = new Map(entries);
-        }
-        const prev = sessionStore.contactIndex.get(targetPeer) || {};
-        sessionStore.contactIndex.set(targetPeer, {
-          ...prev,
-          peerAccountDigest: targetPeer,
-          nickname: threadByConv?.nickname || contactStateEntry?.nickname || prev.nickname || `好友 ${targetPeer.slice(-4)}`,
-          avatar: threadByConv?.avatar || contactStateEntry?.avatar || prev.avatar || null,
-          conversation: {
-            conversation_id: conversationId,
-            token_b64: token
-          }
-        });
-      }
       const p = setActiveConversation(targetPeer);
       if (p?.catch) p.catch((err) => log({ toastOpenConversationError: err?.message || err }));
       return;

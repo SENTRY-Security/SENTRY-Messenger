@@ -187,12 +187,16 @@ export const createMessage = async (req, res) => {
 
   // 轉成新版 Signal-style secure message格式（系統對話預設自寄自收）
   const headerJson = messageInput.header_json || JSON.stringify(messageInput.header || {});
-  const ciphertextB64 = messageInput.ciphertext_b64
-    || messageInput.ciphertext
-    || Buffer.from(headerJson).toString('base64');
-  const counter = Number.isFinite(messageInput.counter)
-    ? Number(messageInput.counter)
-    : Math.floor(Date.now() / 1000);
+  const ciphertextB64 = typeof messageInput.ciphertext_b64 === 'string'
+    ? messageInput.ciphertext_b64
+    : (typeof messageInput.ciphertext === 'string' ? messageInput.ciphertext : null);
+  if (!ciphertextB64 || !ciphertextB64.trim()) {
+    return res.status(400).json({ error: 'BadRequest', message: 'ciphertext_b64 required' });
+  }
+  const counter = Number.isFinite(messageInput.counter) ? Number(messageInput.counter) : null;
+  if (!Number.isFinite(counter)) {
+    return res.status(400).json({ error: 'BadRequest', message: 'counter required' });
+  }
   if (!messageInput.id) {
     return res.status(400).json({ error: 'BadRequest', message: 'id (messageId) required' });
   }
@@ -274,11 +278,19 @@ export const createSecureMessage = async (req, res) => {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
 
+  const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
+  if (!Number.isFinite(rawBody?.counter)) {
+    return res.status(400).json({ error: 'BadRequest', message: 'counter required' });
+  }
+  const rawCiphertext = typeof rawBody?.ciphertext_b64 === 'string' ? rawBody.ciphertext_b64.trim() : '';
+  if (!rawCiphertext) {
+    return res.status(400).json({ error: 'BadRequest', message: 'ciphertext_b64 required' });
+  }
   const account = extractAccountFromRequest(req);
 
   let input;
   try {
-    input = CreateSecureMessageSchema.parse(req.body || {});
+    input = CreateSecureMessageSchema.parse(rawBody);
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
@@ -297,6 +309,14 @@ export const createSecureMessage = async (req, res) => {
     id,
     created_at
   } = input;
+  const messageCounter = Number.isFinite(counter) ? counter : null;
+  if (!Number.isFinite(messageCounter)) {
+    return res.status(400).json({ error: 'BadRequest', message: 'counter required' });
+  }
+  const ciphertextB64 = typeof ciphertext_b64 === 'string' ? ciphertext_b64.trim() : '';
+  if (!ciphertextB64) {
+    return res.status(400).json({ error: 'BadRequest', message: 'ciphertext_b64 required' });
+  }
 
   let auth;
   try {
@@ -338,10 +358,6 @@ export const createSecureMessage = async (req, res) => {
     return res.status(400).json({ error: 'BadRequest', message: 'receiver_device_id required' });
   }
   const headerCounter = Number.isFinite(headerObj?.n) ? headerObj.n : Number(headerObj?.counter);
-  const messageCounter = Number.isFinite(counter) ? counter : headerCounter;
-  if (!Number.isFinite(messageCounter)) {
-    return res.status(400).json({ error: 'BadRequest', message: 'counter required' });
-  }
   if (!Number.isFinite(headerCounter)) {
     return res.status(400).json({ error: 'BadRequest', message: 'header counter invalid' });
   }
@@ -368,7 +384,7 @@ export const createSecureMessage = async (req, res) => {
     receiver_account_digest,
     receiver_device_id: targetDeviceId,
     header_json: headerJson,
-    ciphertext_b64,
+    ciphertext_b64: ciphertextB64,
     counter: messageCounter,
     created_at: createdAt
   };

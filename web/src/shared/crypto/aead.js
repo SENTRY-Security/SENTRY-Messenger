@@ -30,6 +30,53 @@ import { toU8Strict } from '../utils/u8-strict.js';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+export const ALLOWED_ENVELOPE_INFO_TAGS = new Set([
+  'blob/v1',
+  'media/v1',
+  'profile/v1',
+  'settings/v1',
+  'snapshot/v1',
+  'contact-secrets/backup/v1',
+  'devkeys/v1',
+  'contact/v1'
+]);
+
+function requireNonEmptyString(value, key) {
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid envelope: ${key} must be string`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`Invalid envelope: ${key} empty`);
+  }
+  return trimmed;
+}
+
+function normalizeInfoTag(infoTag, { allowInfoTags = null, required = true } = {}) {
+  if (!required && (infoTag === undefined || infoTag === null)) return null;
+  const normalized = requireNonEmptyString(infoTag, 'info');
+  if (allowInfoTags && allowInfoTags.size && !allowInfoTags.has(normalized)) {
+    throw new Error(`Invalid envelope: info not allowed (${normalized})`);
+  }
+  return normalized;
+}
+
+export function assertEnvelopeStrict(envelope, { requireInfoTag = true, allowInfoTags = ALLOWED_ENVELOPE_INFO_TAGS } = {}) {
+  if (!envelope || envelope.aead !== 'aes-256-gcm') {
+    throw new Error('Invalid envelope: aead must be aes-256-gcm');
+  }
+  const info = requireInfoTag
+    ? normalizeInfoTag(envelope.info, { allowInfoTags, required: true })
+    : (typeof envelope.info === 'string' ? envelope.info.trim() : envelope.info);
+  return {
+    ...envelope,
+    info,
+    salt_b64: requireNonEmptyString(envelope.salt_b64, 'salt_b64'),
+    iv_b64: requireNonEmptyString(envelope.iv_b64, 'iv_b64'),
+    ct_b64: requireNonEmptyString(envelope.ct_b64, 'ct_b64')
+  };
+}
+
 async function deriveAesKey(mkRawU8, saltU8, infoTag, usages) {
   const mkKey = await subtle.importKey(
     'raw',
@@ -38,7 +85,8 @@ async function deriveAesKey(mkRawU8, saltU8, infoTag, usages) {
     false,
     ['deriveKey']
   );
-  const info = encoder.encode(infoTag || 'mk/aead');
+  const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
+  const info = encoder.encode(normalizedInfoTag);
   return subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt: saltU8, info },
     mkKey,
@@ -90,13 +138,14 @@ export { bytesToB64, bytesToB64Url, b64ToBytes, b64UrlToBytes };
 export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
   const salt = randomIv(16);
   const iv = randomIv(12);
-  const key = await deriveAesKey(mkRawU8, salt, infoTag, ['encrypt']);
+  const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
+  const key = await deriveAesKey(mkRawU8, salt, normalizedInfoTag, ['encrypt']);
   const data = encoder.encode(JSON.stringify(obj));
   const { ciphertext } = await encryptAesGcm({ key, iv, data });
   return {
     v: 1,
     aead: 'aes-256-gcm',
-    info: infoTag,
+    info: normalizedInfoTag,
     salt_b64: bytesToB64(salt),
     iv_b64: bytesToB64(iv),
     ct_b64: bytesToB64(ciphertext)
@@ -104,13 +153,11 @@ export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
 }
 
 export async function unwrapWithMK_JSON(envelope, mkRawU8) {
-  if (!envelope || envelope.aead !== 'aes-256-gcm') {
-    throw new Error('Unsupported envelope (expect aead=aes-256-gcm)');
-  }
-  const salt = b64ToBytes(envelope.salt_b64);
-  const iv = b64ToBytes(envelope.iv_b64);
-  const ct = b64ToBytes(envelope.ct_b64);
-  const key = await deriveAesKey(mkRawU8, salt, envelope.info || 'blob/v1', ['decrypt']);
+  const normalizedEnvelope = assertEnvelopeStrict(envelope);
+  const salt = b64ToBytes(normalizedEnvelope.salt_b64);
+  const iv = b64ToBytes(normalizedEnvelope.iv_b64);
+  const ct = b64ToBytes(normalizedEnvelope.ct_b64);
+  const key = await deriveAesKey(mkRawU8, salt, normalizedEnvelope.info, ['decrypt']);
   const plain = await decryptAesGcm({ key, iv, ciphertext: ct });
   return JSON.parse(decoder.decode(plain));
 }

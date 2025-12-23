@@ -1,5 +1,5 @@
-import { encryptWithMK, decryptWithMK, b64, b64u8 } from '../crypto/aead.js';
-import { getMkRaw, ensureDeviceId } from '../core/store.js';
+import { encryptWithMK, decryptWithMK, b64, b64u8, assertEnvelopeStrict } from '../crypto/aead.js';
+import { getMkRaw, ensureDeviceId, getAccountDigest } from '../core/store.js';
 import { log } from '../core/log.js';
 import { uploadContactSecretsBackup, fetchContactSecretsBackup } from '../api/contact-secrets.js';
 import {
@@ -7,10 +7,68 @@ import {
   importContactSecretsSnapshot,
   computeContactSecretsChecksum
 } from '../core/contact-secrets.js';
+import { sessionStore } from '../ui/mobile/session-store.js';
 
 const SNAPSHOT_INFO_TAG = 'contact-secrets/backup/v1';
+const SNAPSHOT_ALLOWED_INFO_TAGS = new Set([SNAPSHOT_INFO_TAG]);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const CORRUPT_BACKUP_REASON_DEFAULT = 'corrupt-contact-backup';
+const corruptBackupSeen = new Set();
+
+function ensureCorruptBackupStore() {
+  if (!(sessionStore.corruptContactBackups instanceof Map)) {
+    const entries = sessionStore.corruptContactBackups && typeof sessionStore.corruptContactBackups.entries === 'function'
+      ? Array.from(sessionStore.corruptContactBackups.entries())
+      : [];
+    sessionStore.corruptContactBackups = new Map(entries);
+  }
+  return sessionStore.corruptContactBackups;
+}
+
+function normalizeBackupKey(backup) {
+  if (!backup) return null;
+  const candidates = [
+    backup.messageId,
+    backup.message_id,
+    backup.id,
+    backup.version,
+    backup.snapshotVersion,
+    backup.checksum
+  ];
+  for (const c of candidates) {
+    if (c === undefined || c === null) continue;
+    const key = String(c).trim();
+    if (key) return key;
+  }
+  return null;
+}
+
+function recordCorruptBackup({ backup, reason = CORRUPT_BACKUP_REASON_DEFAULT } = {}) {
+  const store = ensureCorruptBackupStore();
+  const key = normalizeBackupKey(backup) || `ts:${Date.now()}`;
+  if (key && corruptBackupSeen.has(key)) {
+    return store.get(key) || null;
+  }
+  const entry = {
+    accountDigest: getAccountDigest?.() || null,
+    version: backup?.version ?? backup?.snapshotVersion ?? null,
+    serverMessageId: backup?.messageId || backup?.message_id || backup?.id || null,
+    reason: reason || CORRUPT_BACKUP_REASON_DEFAULT,
+    ts: Date.now()
+  };
+  store.set(key, entry);
+  corruptBackupSeen.add(key);
+  sessionStore.lastCorruptContactBackup = entry;
+  log({ contactSecretsBackupCorrupt: entry });
+  return entry;
+}
+
+function getRecordedCorruptBackup(key) {
+  const store = ensureCorruptBackupStore();
+  if (key && store.has(key)) return store.get(key);
+  return null;
+}
 
 let initialized = false;
 let deviceLabel = null;
@@ -21,6 +79,7 @@ let syncRequested = false;
 let syncInFlight = false;
 let syncCompleted = false;
 let backupDisabled = false;
+let lastHydrateResult = null;
 
 function detectDeviceLabel() {
   if (typeof navigator === 'undefined') return null;
@@ -77,13 +136,19 @@ async function encryptSnapshotPayload(payload, mkRaw) {
 }
 
 async function decryptSnapshotPayload(envelope, mkRaw) {
-  if (!envelope || envelope.aead !== 'aes-256-gcm') return null;
-  const salt = b64u8(envelope.salt_b64);
-  const iv = b64u8(envelope.iv_b64);
-  const ct = b64u8(envelope.ct_b64);
-  const info = envelope.info || SNAPSHOT_INFO_TAG;
-  const plain = await decryptWithMK(ct, mkRaw, salt, iv, info);
-  return decoder.decode(plain);
+  if (!envelope || envelope.aead !== 'aes-256-gcm') {
+    return { ok: false, corrupt: true, reason: 'invalid contact-secrets backup envelope' };
+  }
+  try {
+    const normalized = assertEnvelopeStrict(envelope, { allowInfoTags: SNAPSHOT_ALLOWED_INFO_TAGS });
+    const salt = b64u8(normalized.salt_b64);
+    const iv = b64u8(normalized.iv_b64);
+    const ct = b64u8(normalized.ct_b64);
+    const plain = await decryptWithMK(ct, mkRaw, salt, iv, normalized.info);
+    return { ok: true, snapshot: decoder.decode(plain) };
+  } catch (err) {
+    return { ok: false, corrupt: true, reason: err?.message || 'decrypt failed' };
+  }
 }
 
 export async function triggerContactSecretsBackup(reason = 'manual', { force = false, keepalive = false } = {}) {
@@ -123,6 +188,117 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
   } catch (err) {
     log({ contactSecretsBackupUploadError: err?.message || err, reason });
     return false;
+  }
+}
+
+export async function hydrateContactSecretsFromBackup({ reason = 'post-login-hydrate' } = {}) {
+  const recordResult = (result = {}) => {
+    const meta = latestPersistDetail?.backupMeta || null;
+    const snapshotVersion = result.snapshotVersion || latestPersistDetail?.snapshotVersion || latestPersistDetail?.summary?.version || null;
+    lastHydrateResult = {
+      ...result,
+      snapshotVersion,
+      backupMeta: meta
+        ? {
+            version: meta.version || null,
+            updatedAt: meta.updatedAt || null,
+            deviceId: meta.deviceId || null,
+            deviceLabel: meta.deviceLabel || null
+          }
+        : null,
+      ts: Date.now()
+    };
+    return lastHydrateResult;
+  };
+  if (backupDisabled) return recordResult({ ok: false, status: 404, entries: 0, corruptCount: 0, noData: true });
+  const mk = getMkRaw();
+  if (!mk) return recordResult({ ok: false, status: null, entries: 0, corruptCount: 0, noData: false });
+  if (syncInFlight) return recordResult({ ok: false, status: null, entries: 0, corruptCount: 0, noData: false });
+  syncInFlight = true;
+  try {
+    const { r, data } = await fetchContactSecretsBackup({ limit: 1 });
+    const status = r?.status ?? null;
+    if (status === 404) {
+      backupDisabled = true;
+      syncRequested = false;
+      return recordResult({ ok: false, status, entries: 0, corruptCount: 0, noData: true });
+    }
+    if (!r?.ok) return recordResult({ ok: false, status, entries: 0, corruptCount: 0, noData: false });
+    const backup = Array.isArray(data?.backups) ? data.backups[0] : null;
+    if (!backup?.payload) {
+      syncCompleted = true;
+      return recordResult({ ok: false, status, entries: 0, corruptCount: 0, noData: true });
+    }
+    if (backup.checksum && backup.checksum === lastUploadedChecksum && !latestPersistDetail) {
+      syncCompleted = true;
+      return recordResult({ ok: true, status, entries: 0, corruptCount: 0, noData: false, snapshotVersion: backup.snapshotVersion || null });
+    }
+    const backupKey = normalizeBackupKey(backup);
+    if (backupKey && corruptBackupSeen.has(backupKey)) {
+      return recordResult({
+        ok: false,
+        status,
+        entries: 0,
+        corruptCount: 1,
+        corrupt: true,
+        noData: false,
+        corruptBackup: getRecordedCorruptBackup(backupKey),
+        snapshotVersion: backup.snapshotVersion || null
+      });
+    }
+    const decryptResult = await decryptSnapshotPayload(backup.payload, mk);
+    if (!decryptResult.ok) {
+      const recorded = decryptResult.corrupt ? recordCorruptBackup({ backup, reason: decryptResult.reason }) : null;
+      syncCompleted = true;
+      return recordResult({
+        ok: false,
+        status,
+        entries: 0,
+        corruptCount: decryptResult.corrupt ? 1 : 0,
+        corrupt: !!decryptResult.corrupt,
+        noData: false,
+        corruptBackup: recorded,
+        snapshotVersion: backup.snapshotVersion || null
+      });
+    }
+    const snapshot = decryptResult.snapshot;
+    const summary = importContactSecretsSnapshot(snapshot, { replace: true, reason, persist: true });
+    if (summary) {
+      const checksumRecord = await computeContactSecretsChecksum(snapshot).catch(() => null);
+      latestPersistDetail = {
+        payload: snapshot,
+        summary,
+        checksum: checksumRecord?.value || null,
+        snapshotVersion: backup.snapshotVersion || summary.version || null,
+        backupMeta: {
+          version: backup.version || null,
+          updatedAt: backup.updatedAt || null,
+          deviceId: backup.deviceId || null,
+          deviceLabel: backup.deviceLabel || null
+        }
+      };
+      lastUploadedChecksum = backup.checksum || checksumRecord?.value || null;
+      syncCompleted = true;
+      try {
+        if (typeof document !== 'undefined') {
+          document.dispatchEvent(new CustomEvent('contactSecrets:restored', { detail: { source: reason, summary } }));
+        }
+      } catch {}
+    }
+    const corruptCount = Array.isArray(summary?.corruptEntries) ? summary.corruptEntries.length : 0;
+    return recordResult({
+      ok: !!summary,
+      status,
+      entries: summary?.entries || 0,
+      corruptCount,
+      noData: false,
+      snapshotVersion: backup.snapshotVersion || summary?.version || null
+    });
+  } catch (err) {
+    log({ contactSecretsBackupHydrateError: err?.message || err, reason });
+    return recordResult({ ok: false, status: null, entries: 0, corruptCount: 0, noData: false });
+  } finally {
+    syncInFlight = false;
   }
 }
 
@@ -170,8 +346,18 @@ async function performSync() {
       syncCompleted = true;
       return;
     }
-    const snapshot = await decryptSnapshotPayload(backup.payload, mk);
-    if (!snapshot) return;
+    const backupKey = normalizeBackupKey(backup);
+    if (backupKey && corruptBackupSeen.has(backupKey)) {
+      log({ contactSecretsBackupSkippedCorrupt: backupKey });
+      return;
+    }
+    const decryptResult = await decryptSnapshotPayload(backup.payload, mk);
+    if (!decryptResult.ok) {
+      if (decryptResult.corrupt) recordCorruptBackup({ backup, reason: decryptResult.reason });
+      syncCompleted = true;
+      return;
+    }
+    const snapshot = decryptResult.snapshot;
     const summary = importContactSecretsSnapshot(snapshot, { replace: true, reason: 'remote-backup', persist: true });
     if (summary) {
       const checksumRecord = await computeContactSecretsChecksum(snapshot).catch(() => null);
@@ -198,4 +384,28 @@ async function performSync() {
   } finally {
     syncInFlight = false;
   }
+}
+
+export function getLastBackupHydrateResult() {
+  if (!lastHydrateResult) return null;
+  try {
+    return JSON.parse(JSON.stringify(lastHydrateResult));
+  } catch {
+    return { ...lastHydrateResult };
+  }
+}
+
+export function getLatestBackupMeta() {
+  if (!latestPersistDetail) return null;
+  const meta = latestPersistDetail.backupMeta || null;
+  return {
+    snapshotVersion: latestPersistDetail.snapshotVersion || latestPersistDetail?.summary?.version || null,
+    entries: latestPersistDetail?.summary?.entries || null,
+    bytes: latestPersistDetail?.summary?.bytes || null,
+    updatedAt: meta?.updatedAt || latestPersistDetail?.summary?.generatedAt || null,
+    backupVersion: meta?.version || null,
+    deviceId: meta?.deviceId || null,
+    deviceLabel: meta?.deviceLabel || null,
+    checksum: latestPersistDetail?.checksum || null
+  };
 }

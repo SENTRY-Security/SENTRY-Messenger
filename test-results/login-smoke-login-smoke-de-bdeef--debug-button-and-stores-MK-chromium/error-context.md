@@ -1,0 +1,62 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - img "SENTRY MESSENGER" [ref=e4]
+      - generic [ref=e5]: SENTRY
+      - generic [ref=e6]: 在線
+    - button "開啟使用者選單" [ref=e10] [cursor=pointer]:
+      - generic [ref=e11]:
+        - img "使用者頭像" [ref=e12]
+        - generic [ref=e13]: "!"
+  - main [ref=e14]:
+    - text:       
+    - generic [ref=e15]:
+      - generic:
+        - generic: 
+        - generic: 下拉更新檔案
+      - generic [ref=e16]:
+        - generic [ref=e17]:
+          - generic [ref=e18]: 雲端空間
+          - generic [ref=e19]:
+            - generic [ref=e20]: 0 B
+            - generic [ref=e21]: / 3.0 GB
+        - progressbar "加密雲端使用率" [ref=e22]
+        - generic [ref=e23]:
+          - generic [ref=e24]: 0%
+          - generic [ref=e25]: 總容量 3.0 GB
+      - generic [ref=e26]:
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - heading "檔案列表" [level=3] [ref=e29]
+            - navigation [ref=e30]:
+              - generic [ref=e31]: 根目錄
+              - generic [ref=e32]: /
+          - generic [ref=e33]:
+            - button "上傳檔案" [ref=e34] [cursor=pointer]:
+              - generic [ref=e35]: 
+            - button "新建資料夾" [ref=e36] [cursor=pointer]:
+              - generic [ref=e37]: 
+        - list [ref=e38]:
+          - listitem [ref=e39]: （此資料夾沒有內容）
+    - text:   
+  - text:  
+  - navigation [ref=e40]:
+    - button "聯絡人" [ref=e41] [cursor=pointer]:
+      - generic [ref=e42]: 
+      - generic [ref=e43]: 聯絡人
+    - button "訊息" [ref=e44] [cursor=pointer]:
+      - generic [ref=e45]: 
+      - generic [ref=e46]: 訊息
+    - button "加密雲端" [ref=e47] [cursor=pointer]:
+      - generic [ref=e48]:
+        - generic [ref=e49]: 
+        - generic [ref=e50]: 
+      - generic [ref=e51]: 加密雲端
+    - button "我的檔案" [ref=e52] [cursor=pointer]:
+      - generic [ref=e53]: 
+      - generic [ref=e54]: 我的檔案
+  - text:          
+```

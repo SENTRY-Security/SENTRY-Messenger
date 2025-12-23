@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   conversationIdFromToken
@@ -382,6 +382,55 @@ function sanitizeSnapshotInput(snapshot, { sourceTag = 'snapshot', peerAccountDi
     })()
   };
   return out;
+}
+
+function detectSnapshotCorruption(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return { badField: 'snapshot', reason: 'not-object', type: typeof snapshot };
+  }
+  const checkField = (key, { required = false } = {}) => {
+    const raw = snapshot[key];
+    const present = Object.prototype.hasOwnProperty.call(snapshot, key) || raw !== undefined;
+    if (!present) return required ? { badField: key, reason: 'missing', type: 'undefined' } : null;
+    if (raw === null) return { badField: key, reason: 'null', type: 'object' };
+    if (typeof raw !== 'string') return { badField: key, reason: 'not-string', type: typeof raw };
+    if (!raw.trim()) return { badField: key, reason: 'empty-string', type: 'string' };
+    return null;
+  };
+  const requiredFields = ['rk_b64', 'theirRatchetPub_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64'];
+  for (const field of requiredFields) {
+    const invalid = checkField(field, { required: true });
+    if (invalid) return invalid;
+  }
+  const optionalFields = ['ckR_b64', 'ckS_b64'];
+  for (const field of optionalFields) {
+    const invalid = checkField(field, { required: false });
+    if (invalid && invalid.reason !== 'missing') return invalid;
+  }
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (!key.endsWith('_b64')) continue;
+    const invalid = checkField(key, { required: false });
+    if (invalid) return invalid;
+  }
+  return null;
+}
+
+function prevalidateSnapshotOrQuarantine(snapshot, { peerAccountDigest = null, peerDeviceId = null, peerKey = null, sourceTag = null } = {}) {
+  const invalid = detectSnapshotCorruption(snapshot);
+  if (!invalid) return { ok: true, snapshot };
+  const normalizedPeerKey = peerKey || normalizePeerKeyForQuarantine({
+    peerAccountDigest,
+    peerDeviceId,
+    sourceTag: sourceTag || 'prevalidateSnapshotOrQuarantine'
+  });
+  if (normalizedPeerKey) {
+    quarantineCorruptContact(normalizedPeerKey, 'invalid-dr-snapshot', {
+      badField: invalid.badField,
+      type: invalid.type,
+      source: sourceTag || 'prevalidateSnapshotOrQuarantine'
+    });
+  }
+  return { ok: false, snapshot: null, badField: invalid.badField, reason: invalid.reason, type: invalid.type };
 }
 
 const MAX_HISTORY_ENTRIES = 120;
@@ -817,6 +866,23 @@ export function hydrateDrStatesFromContactSecrets() {
         snapshotFromHistory = true;
       }
     }
+    const hydrateSourceTag = snapshotFromHistory ? 'hydrateDrStatesFromContactSecrets:history' : 'hydrateDrStatesFromContactSecrets';
+    const quarantinePeerKey = normalizePeerKeyForQuarantine({
+      peerAccountDigest: peerDigest,
+      peerDeviceId: peerDeviceIdResolved,
+      sourceTag: hydrateSourceTag
+    });
+    const snapshotValidation = prevalidateSnapshotOrQuarantine(snapshot, {
+      peerAccountDigest: peerDigest,
+      peerDeviceId: peerDeviceIdResolved,
+      peerKey: quarantinePeerKey,
+      sourceTag: hydrateSourceTag
+    });
+    if (!snapshotValidation.ok) {
+      missingSnapshotEntries += 1;
+      continue;
+    }
+    snapshot = snapshotValidation.snapshot;
     if (!snapshot) {
       missingSnapshotEntries += 1;
       if (isAutomationEnv()) {
@@ -2109,7 +2175,23 @@ export async function ensureDrReceiverState(params = {}) {
   const stateKey = `${peer}::${peerDeviceId || 'unknown'}`;
   const secretKey = `${peer}::${secretPeerDeviceId || peerDeviceId || 'unknown'}`;
   const callsiteTag = params?.__debugSource || params?.source || 'ensureDrReceiverState';
-  const snapshot = secretInfo?.drState || null;
+  const quarantinePeerKey = normalizePeerKeyForQuarantine({
+    peerAccountDigest: peer,
+    peerDeviceId: secretPeerDeviceId || peerDeviceId,
+    sourceTag: callsiteTag
+  });
+  const snapshotValidation = prevalidateSnapshotOrQuarantine(secretInfo?.drState || null, {
+    peerAccountDigest: peer,
+    peerDeviceId: secretPeerDeviceId || peerDeviceId,
+    peerKey: quarantinePeerKey,
+    sourceTag: callsiteTag
+  });
+  if (!snapshotValidation.ok) {
+    secretInfo = { ...secretInfo, drState: null };
+    throw new Error('狀態損壞，需要重新同步/重新邀請');
+  }
+  const snapshot = snapshotValidation.snapshot;
+  secretInfo = { ...secretInfo, drState: snapshot };
   const snapshotHasRk = !!(snapshot?.rk || snapshot?.rk_b64);
   const snapshotHasCkR = !!(snapshot?.ckR || snapshot?.ckR_b64);
   const snapshotHasCkS = !!(snapshot?.ckS || snapshot?.ckS_b64);

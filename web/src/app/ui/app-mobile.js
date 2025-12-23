@@ -18,6 +18,7 @@ import {
   getOpaqueServerId,
   normalizePeerIdentity,
   normalizeAccountDigest,
+  normalizePeerDeviceId,
   getDeviceId,
   ensureDeviceId,
   clearDrState
@@ -34,11 +35,16 @@ import {
   getLegacyContactSecretsStorageKeys,
   getLegacyContactSecretsLatestKeys,
   getLegacyContactSecretsMetaKeys,
-  getLegacyContactSecretsChecksumKeys
+  getLegacyContactSecretsChecksumKeys,
+  restoreContactSecrets,
+  getLastContactSecretsRestoreSummary,
+  getLastContactSecretsRestoreError,
+  listCorruptContacts,
+  getContactSecret
 } from '../core/contact-secrets.js';
 import { friendsDeleteContact } from '../api/friends.js';
 import { mkUpdate } from '../api/auth.js';
-import { loadContacts, saveContact } from '../features/contacts.js';
+import { loadContacts, saveContact, getLastContactsHydrateSummary } from '../features/contacts.js';
 import { saveSettings, loadSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
@@ -56,6 +62,7 @@ import {
   resetSettingsState,
   hydrateConversationsFromSecrets
 } from './mobile/session-store.js';
+import { clearContactCore, contactCoreCounts, listContactCoreEntries, listReadyContacts, patchContactCore, upsertContactCore } from './mobile/contact-core-store.js';
 import { setupModalController } from './mobile/modal-utils.js';
 import { createSwipeManager } from './mobile/swipe-utils.js';
 import { initProfileCard } from './mobile/profile-card.js';
@@ -84,7 +91,10 @@ import {
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initContactSecretsBackup,
-  triggerContactSecretsBackup
+  triggerContactSecretsBackup,
+  hydrateContactSecretsFromBackup,
+  getLastBackupHydrateResult,
+  getLatestBackupMeta
 } from '../features/contact-backup.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
 import { showVersionModal } from './version-info.js';
@@ -947,6 +957,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   resetMessageState();
   resetUiState();
   resetWsState();
+  clearContactCore();
   resetContacts();
   resetProfileState();
   resetSettingsState();
@@ -1447,12 +1458,12 @@ settingsInitPromise = bootLoadSettings()
   }
 })();
 
-(function hydrateDrSnapshotsFromSecrets() {
+(async function hydrateDrSnapshotsFromSecrets() {
   try {
     // 登入時先清除所有記憶體 DR 狀態，避免沿用舊裝置/錯角色快照。
     clearDrState(null, { __drDebugTag: 'web/src/app/ui/app-mobile.js:1453:hydrateDrSnapshotsFromSecrets' });
     const restored = hydrateDrStatesFromContactSecrets();
-    try { hydrateConversationsFromSecrets(); } catch {}
+    try { await hydrateConversationsFromSecrets(); } catch {}
     log({ drSnapshotsRestored: restored });
     try {
       const snapshotRecord = readContactSnapshot(localStorage, getContactSecretsStorageKeys(getContactSecretKeyOptions()));
@@ -2339,10 +2350,15 @@ if (typeof window !== 'undefined') {
       await loadInitialContacts();
       renderContacts();
     };
+    window.__debugDumpPostLogin = () => logRestoreOverview({ reason: 'manual', force: true });
   } catch {}
 }
 
 let contactSecretsRefreshInFlight = false;
+let postLoginHydrateInFlight = false;
+let readyCountLogged = false;
+let restoreOverviewLogged = false;
+const contactDiagLoggedKeys = new Set();
 document.addEventListener('contactSecrets:restored', () => {
   if (contactSecretsRefreshInFlight) return;
   contactSecretsRefreshInFlight = true;
@@ -2357,6 +2373,192 @@ document.addEventListener('contactSecrets:restored', () => {
       contactSecretsRefreshInFlight = false;
     });
 });
+
+function summarizeTokenForDiag(token) {
+  if (!token) return { len: 0 };
+  const raw = String(token);
+  return { len: raw.length, prefix6: raw.slice(0, 6), suffix6: raw.slice(-6) };
+}
+
+function buildCorruptContactReasonMap() {
+  const out = new Map();
+  const list = typeof listCorruptContacts === 'function' ? listCorruptContacts() : [];
+  for (const entry of Array.isArray(list) ? list : []) {
+    const digest = normalizeAccountDigest(entry?.peerAccountDigest || entry?.peerKey || entry) || null;
+    const dev = normalizePeerDeviceId(entry?.peerDeviceId || null);
+    const reason = entry?.reason || 'corrupt';
+    if (digest && dev) out.set(`${digest}::${dev}`, reason);
+    if (digest) out.set(digest, reason);
+  }
+  return out;
+}
+
+function logContactCoreDiagnostics({ force = false, limit = 20 } = {}) {
+  try {
+    if (force) contactDiagLoggedKeys.clear();
+    const corruptMap = buildCorruptContactReasonMap();
+    const entries = listContactCoreEntries({ limit: Math.max(0, limit || 0) }) || [];
+    const targets = entries.slice(0, limit || 20);
+    let idx = 0;
+    for (const entry of targets) {
+      const key = entry?.peerKey || entry?.peerAccountDigest || `idx:${idx}`;
+      idx += 1;
+      if (!force && contactDiagLoggedKeys.has(key)) continue;
+      contactDiagLoggedKeys.add(key);
+      const missing = [];
+      if (!entry?.peerKey) missing.push('peerKey');
+      if (!entry?.peerAccountDigest) missing.push('peerAccountDigest');
+      if (!entry?.peerDeviceId) missing.push('peerDeviceId');
+      if (!entry?.conversationId) missing.push('conversationId');
+      if (!entry?.conversationToken) missing.push('conversationToken');
+      let hasDrSnapshot = false;
+      try {
+        const secret = getContactSecret?.(entry?.peerKey || entry?.peerAccountDigest || null, { peerDeviceId: entry?.peerDeviceId }) || null;
+        if (secret?.drState) hasDrSnapshot = true;
+        if (Array.isArray(secret?.drHistory) && secret.drHistory.length > 0) hasDrSnapshot = true;
+        if (secret?.drSeed) hasDrSnapshot = true;
+      } catch {}
+      const corruptReason = corruptMap.get(entry?.peerKey) || corruptMap.get(entry?.peerAccountDigest || '') || null;
+      const payload = {
+        event: 'contact-core',
+        peerKey: entry?.peerKey || null,
+        peerAccountDigest: entry?.peerAccountDigest || null,
+        peerDeviceId: entry?.peerDeviceId || null,
+        conversationId: entry?.conversationId || null,
+        conversationToken: summarizeTokenForDiag(entry?.conversationToken || entry?.conversation?.token_b64 || null),
+        hasDrInit: !!(entry?.drInit || entry?.conversation?.dr_init),
+        hasDrSnapshot,
+        sourceTag: entry?.sourceTag || null,
+        isReady: !!entry?.isReady,
+        isPending: !entry?.isReady && !corruptReason,
+        isCorrupt: !!corruptReason,
+        missingCoreFields: missing,
+        corruptReason: corruptReason || null
+      };
+      console.info('[diag] ' + JSON.stringify(payload));
+    }
+  } catch (err) {
+    try { console.info('[diag] ' + JSON.stringify({ event: 'contact-core-log-error', error: err?.message || err })); } catch {}
+  }
+}
+
+async function logRestoreOverview({ reason = 'post-login', force = false } = {}) {
+  if (restoreOverviewLogged && !force) return;
+  if (force) contactDiagLoggedKeys.clear();
+  restoreOverviewLogged = true;
+  try {
+    if (profileInitPromise?.then) {
+      await profileInitPromise.catch(() => {});
+    }
+  } catch {}
+  try {
+    const counts = contactCoreCounts();
+    const corruptCount = (sessionStore?.corruptContacts instanceof Map) ? sessionStore.corruptContacts.size : 0;
+    const restoreSummary = getLastContactSecretsRestoreSummary?.() || null;
+    const backupHydrate = getLastBackupHydrateResult?.() || null;
+    const backupMeta = getLatestBackupMeta?.() || null;
+    const contactsHydrate = getLastContactsHydrateSummary?.() || null;
+    const profileState = sessionStore?.profileState || null;
+    const overview = {
+      event: 'restore-overview',
+      reason,
+      hasMk: !!getMkRaw(),
+      hasAccountDigest: !!getAccountDigest(),
+      hasAccountToken: !!getAccountToken(),
+      selfDeviceId: getDeviceId() || ensureDeviceId() || null,
+      contactCore: {
+        readyCount: counts.ready,
+        pendingCount: counts.pending,
+        corruptCount
+      },
+      contactSecretsRestoreSummary: restoreSummary ? {
+        entries: restoreSummary.entries ?? null,
+        bytes: restoreSummary.bytes ?? null,
+        parseError: restoreSummary.parseError || getLastContactSecretsRestoreError?.() || null
+      } : null,
+      remoteBackupHydrate: backupHydrate ? {
+        status: backupHydrate.status ?? null,
+        ok: !!backupHydrate.ok,
+        entries: backupHydrate.entries ?? null,
+        corruptCount: backupHydrate.corruptCount ?? null,
+        snapshotVersion: backupHydrate.snapshotVersion || backupMeta?.snapshotVersion || null,
+        backupVersion: backupMeta?.backupVersion || backupHydrate?.backupMeta?.version || null,
+        backupUpdatedAt: backupMeta?.updatedAt || backupHydrate?.backupMeta?.updatedAt || null
+      } : (backupMeta ? {
+        status: null,
+        ok: false,
+        entries: null,
+        corruptCount: null,
+        snapshotVersion: backupMeta?.snapshotVersion || null,
+        backupVersion: backupMeta?.backupVersion || null,
+        backupUpdatedAt: backupMeta?.updatedAt || null
+      } : null),
+      contactsFetch: contactsHydrate ? {
+        status: contactsHydrate.status ?? null,
+        itemCount: contactsHydrate.itemCount ?? null,
+        decryptOkCount: contactsHydrate.decryptOkCount ?? null,
+        missingPeerDeviceCount: contactsHydrate.missingPeerDeviceCount ?? null,
+        missingConvFieldsCount: contactsHydrate.missingConvFieldsCount ?? null
+      } : null,
+      profileHydrate: {
+        ok: !!profileState,
+        nicknamePresent: !!(profileState && normalizeProfileNickname(profileState.nickname || '')),
+        avatarEnvPresent: !!profileState?.avatar?.env
+      }
+    };
+    console.info('[diag] ' + JSON.stringify(overview));
+  } catch (err) {
+    try { console.info('[diag] ' + JSON.stringify({ event: 'restore-overview-error', error: err?.message || err })); } catch {}
+  } finally {
+    logContactCoreDiagnostics({ force });
+  }
+}
+
+async function runPostLoginContactHydrate() {
+  if (postLoginHydrateInFlight) return;
+  postLoginHydrateInFlight = true;
+  contactSecretsRefreshInFlight = true;
+  const mk = getMkRaw();
+  const secrets = restoreContactSecrets();
+  const hasLocalSecrets = secrets instanceof Map && secrets.size > 0;
+  const willFetchRemote = !!mk;
+  try { console.log('[contact-core] hydrate:start ' + JSON.stringify({ hasMk: !!mk, hasLocalSecrets, willFetchRemote })); } catch {}
+  let remoteResult = { ok: false, status: null, entries: 0, corruptCount: 0 };
+  if (willFetchRemote) {
+    try {
+      remoteResult = await hydrateContactSecretsFromBackup({ reason: 'post-login-hydrate' });
+    } catch (err) {
+      log({ contactSecretsHydrateError: err?.message || err });
+    }
+  }
+  if (remoteResult?.corrupt || remoteResult?.corruptBackup) {
+    showToast?.('備份損壞，需重新同步/重新邀請', { variant: 'error' });
+  }
+  try {
+    console.log('[contact-core] hydrate:remote ' + JSON.stringify({
+      ok: !!remoteResult?.ok,
+      status: remoteResult?.status ?? null,
+      entries: remoteResult?.entries ?? 0,
+      corruptCount: remoteResult?.corruptCount ?? 0
+    }));
+  } catch {}
+  let loadError = null;
+  try {
+    await loadInitialContacts();
+  } catch (err) {
+    loadError = err;
+  } finally {
+    contactSecretsRefreshInFlight = false;
+    postLoginHydrateInFlight = false;
+  }
+  const counts = contactCoreCounts();
+  if (!readyCountLogged) {
+    readyCountLogged = true;
+    try { console.log('[contact-core] ready-count ' + JSON.stringify({ count: counts.ready, pendingCount: counts.pending, source: 'post-login-hydrate' })); } catch {}
+  }
+  try { console.log('[contact-core] hydrate:done ' + JSON.stringify({ readyCount: counts.ready, pendingCount: counts.pending })); } catch {}
+  if (loadError) throw loadError;
+}
 
 async function addContactEntry(contact) {
   const peerDigest =
@@ -3260,81 +3462,53 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
     }
   };
 
-  if (sessionStore.contactIndex instanceof Map) {
-    for (const [key, entry] of sessionStore.contactIndex.entries()) {
-      const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || key);
-      if (acct !== digest) continue;
-      const next = { ...entry };
-      if (shouldOverwriteNickname(entry?.nickname)) next.nickname = nickname;
-      if (avatar && !next.avatar) next.avatar = avatar;
-      if (updatedAt) next.profileUpdatedAt = updatedAt;
-      if ((!next.conversation || !next.conversation?.token_b64) && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)) {
-        next.conversation = {
-          conversation_id: threadForPeer.conversationId,
-          token_b64: threadForPeer.conversationToken || threadForPeer.conversation?.token_b64,
-          ...(threadForPeer?.peerDeviceId ? { peerDeviceId: threadForPeer.peerDeviceId } : {})
-        };
-      }
-      sessionStore.contactIndex.set(key, next);
+  const readyContacts = listReadyContacts();
+  for (const entry of readyContacts) {
+    const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || entry?.peerKey || entry);
+    if (acct !== digest) continue;
+    const patch = {};
+    if (shouldOverwriteNickname(entry?.nickname)) patch.nickname = nickname;
+    if (avatar && !entry?.avatar) patch.avatar = avatar;
+    if (updatedAt) patch.profileUpdatedAt = updatedAt;
+    if (Object.keys(patch).length) {
+      patchContactCore(entry?.peerKey || entry?.peerAccountDigest || acct, patch, 'app-mobile:profile-hydrate');
       updated = true;
-      updatedKeys.add(key);
-    }
-  }
-
-  if (Array.isArray(sessionStore.contactState)) {
-    for (let i = 0; i < sessionStore.contactState.length; i += 1) {
-      const entry = sessionStore.contactState[i];
-      const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || entry);
-      if (acct !== digest) continue;
-      const next = { ...entry };
-      if (shouldOverwriteNickname(entry?.nickname)) next.nickname = nickname;
-      if (avatar && !next.avatar) next.avatar = avatar;
-      if (updatedAt) next.profileUpdatedAt = updatedAt;
-      if ((!next.conversation || !next.conversation?.token_b64) && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)) {
-        next.conversation = {
-          conversation_id: threadForPeer.conversationId,
-          token_b64: threadForPeer.conversationToken || threadForPeer.conversation?.token_b64,
-          ...(threadForPeer?.peerDeviceId ? { peerDeviceId: threadForPeer.peerDeviceId } : {})
-        };
-      }
-      sessionStore.contactState[i] = next;
-      updated = true;
+      updatedKeys.add(entry?.peerKey || entry?.peerAccountDigest || acct);
     }
   }
 
   if (threadsMap) {
-    for (const [convId, thread] of threadsMap.entries()) {
+    for (const thread of threadsMap.values()) {
       const acct = toProfileDigest(thread?.peerAccountDigest || thread?.peer_account_digest || null);
       if (acct !== digest) continue;
-      const next = { ...thread };
-      if (shouldOverwriteNickname(thread?.nickname)) next.nickname = nickname;
-      if (avatar && !next.avatar) next.avatar = avatar;
-      threadsMap.set(convId, next);
-      updated = true;
+      const peerDeviceId = thread?.peerDeviceId || null;
+      if (thread?.conversationId && (thread?.conversationToken || thread?.conversation?.token_b64) && peerDeviceId) {
+        upsertContactCore({
+          peerAccountDigest: `${digest}::${peerDeviceId}`,
+          peerDeviceId,
+          conversationId: thread.conversationId,
+          conversationToken: thread.conversationToken || thread.conversation?.token_b64,
+          nickname: shouldOverwriteNickname(thread?.nickname) ? nickname : thread?.nickname || null,
+          avatar: avatar || thread?.avatar || null
+        }, 'app-mobile:profile-thread');
+        updated = true;
+        updatedKeys.add(`${digest}::${peerDeviceId}`);
+      }
     }
   }
 
-  if (!updated && threadForPeer && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64)) {
-    const conversationId = threadForPeer.conversationId;
-    const tokenB64 = threadForPeer.conversationToken || threadForPeer.conversation?.token_b64;
-    const peerDeviceId = threadForPeer?.peerDeviceId || null;
-    ensureContactIndex();
-    const entry = {
-      peerAccountDigest: digest,
-      accountDigest: digest,
-      peerDeviceId,
+  if (!updated && threadForPeer && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64) && threadForPeer?.peerDeviceId) {
+    upsertContactCore({
+      peerAccountDigest: `${digest}::${threadForPeer.peerDeviceId}`,
+      peerDeviceId: threadForPeer.peerDeviceId,
+      conversationId: threadForPeer.conversationId,
+      conversationToken: threadForPeer.conversationToken || threadForPeer.conversation?.token_b64,
       nickname,
       avatar: avatar || null,
-      profileUpdatedAt: updatedAt || null,
-      conversation: {
-        conversation_id: conversationId,
-        token_b64: tokenB64,
-        ...(peerDeviceId ? { peerDeviceId } : {})
-      }
-    };
-    sessionStore.contactIndex.set(digest, entry);
+      profileUpdatedAt: updatedAt || null
+    }, 'app-mobile:profile-thread-seed');
     updated = true;
-    updatedKeys.add(digest);
+    updatedKeys.add(`${digest}::${threadForPeer.peerDeviceId}`);
   }
 
   if (updated) {
@@ -3389,7 +3563,7 @@ async function hydrateProfileSnapshots() {
   }
 }
 
-loadInitialContacts()
+runPostLoginContactHydrate()
   .then(() => {
     messagesPane.syncConversationThreadsFromContacts();
     return messagesPane.refreshConversationPreviews({ force: true });
@@ -3399,6 +3573,7 @@ loadInitialContacts()
     messagesPane.renderConversationList();
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
+    logRestoreOverview({ reason: 'post-login' });
   });
 
 function updateProfileStats() {

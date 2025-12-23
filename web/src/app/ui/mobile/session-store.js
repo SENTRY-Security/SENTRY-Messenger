@@ -81,6 +81,8 @@ export const sessionStore = {
   conversationThreads: new Map(),
   contactSecrets: new Map(),
   corruptContacts: new Map(),
+  corruptContactBackups: new Map(),
+  lastCorruptContactBackup: null,
   onlineContacts: new Set(),
   deletedConversations: new Set(),
   shareState: cloneValue(defaultShareState),
@@ -118,6 +120,8 @@ export function resetContacts() {
   if (sessionStore.contactSecrets) sessionStore.contactSecrets.clear();
   if (sessionStore.conversationThreads) sessionStore.conversationThreads.clear();
   if (sessionStore.corruptContacts) sessionStore.corruptContacts.clear();
+  if (sessionStore.corruptContactBackups) sessionStore.corruptContactBackups.clear();
+  sessionStore.lastCorruptContactBackup = null;
   sessionStore.onlineContacts.clear();
   sessionStore.deletedConversations.clear();
 }
@@ -131,39 +135,54 @@ export function resetSettingsState() {
   sessionStore.settingsState = null;
 }
 
-export function hydrateConversationsFromSecrets() {
+export async function hydrateConversationsFromSecrets() {
   const secrets = restoreContactSecrets();
-  if (!(secrets instanceof Map)) return;
+  if (!(secrets instanceof Map)) return { ready: 0, pending: 0 };
+  const { upsertContactCore } = await import('./contact-core-store.js');
+  let ready = 0;
+  let pending = 0;
   for (const [peerKey, info] of secrets.entries()) {
     const digest = normalizeAccountDigest(
       typeof peerKey === 'string' && peerKey.includes('::')
         ? peerKey.split('::')[0]
         : peerKey
     );
-    const peerDeviceId = normalizePeerDeviceId(info?.peerDeviceId || null);
-    const conv = info?.conversation || {};
-    const convId = conv?.id || conv?.conversation_id || null;
-    const tokenB64 = conv?.token || conv?.token_b64 || null;
+    const peerDeviceId = normalizePeerDeviceId(
+      info?.peerDeviceId
+      || (typeof peerKey === 'string' && peerKey.includes('::') ? peerKey.split('::')[1] : null)
+      || null
+    );
+    const convId = info?.conversationId
+      || info?.conversation?.conversation_id
+      || info?.conversation?.id
+      || null;
+    const tokenB64 = info?.conversationToken
+      || info?.conversation?.token_b64
+      || info?.conversation?.token
+      || null;
+    const drInit = info?.conversationDrInit
+      || info?.conversation?.dr_init
+      || info?.conversation?.drInit
+      || null;
     if (!digest || !peerDeviceId || !convId || !tokenB64) continue;
-    const prev = sessionStore.conversationIndex.get(convId) || {};
-    sessionStore.conversationIndex.set(convId, {
-      ...prev,
+    const res = upsertContactCore({
       peerAccountDigest: digest,
       peerDeviceId,
-      token_b64: prev.token_b64 || tokenB64,
-      dr_init: prev.dr_init || conv?.drInit || conv?.dr_init || null
-    });
-    const prevThread = sessionStore.conversationThreads.get(convId) || {};
-    if (!prevThread.peerDeviceId || !prevThread.peerAccountDigest || !prevThread.conversationToken) {
-      sessionStore.conversationThreads.set(convId, {
-        ...prevThread,
-        peerAccountDigest: digest,
+      conversationId: convId,
+      conversationToken: tokenB64,
+      nickname: info?.nickname || null,
+      avatar: info?.avatar || null,
+      contactSecret: info?.conversationToken || info?.contactSecret || null,
+      conversation: {
+        conversation_id: convId,
+        token_b64: tokenB64,
         peerDeviceId,
-        conversationId: convId,
-        conversationToken: tokenB64,
-        nickname: prevThread.nickname || info?.nickname || `好友 ${digest.slice(-4)}`,
-        avatar: prevThread.avatar || info?.avatar || null
-      });
-    }
+        ...(drInit ? { dr_init: drInit } : null)
+      },
+      profileUpdatedAt: info?.profileUpdatedAt || info?.updatedAt || info?.meta?.updatedAt || null
+    }, 'session-store:hydrate-secrets');
+    if (res?.isReady) ready += 1;
+    else if (res) pending += 1;
   }
+  return { ready, pending };
 }

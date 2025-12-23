@@ -27,6 +27,7 @@ import { deriveConversationContextFromSecret } from '../../features/conversation
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore } from './session-store.js';
+import { upsertContactCore } from './contact-core-store.js';
 import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState, sendDrText } from '../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
@@ -604,6 +605,21 @@ export function setupShareController(options) {
       const resolvedOwnerDigest = ownerAccountDigest || ownerBundle?.account_digest || null;
       const resolvedOwnerDeviceId = ownerDeviceId || ownerBundle?.device_id || null;
       if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
+      const peerKey = resolvedOwnerDigest && resolvedOwnerDeviceId ? `${resolvedOwnerDigest}::${resolvedOwnerDeviceId}` : null;
+      if (resolvedOwnerDigest && resolvedOwnerDeviceId) {
+        try {
+          console.log('[contact-core] phase1-pending', {
+            peerDigestLen: resolvedOwnerDigest?.length || 0,
+            peerDeviceId: resolvedOwnerDeviceId || null,
+            hasConvId: false,
+            hasToken: false
+          });
+        } catch {}
+        upsertContactCore({
+          peerAccountDigest: resolvedOwnerDigest,
+          peerDeviceId: resolvedOwnerDeviceId
+        }, 'share-controller:invite-scan');
+      }
       const x3dhState = await x3dhInitiate(devicePriv, ownerBundle, ekPair);
       const conversation = await deriveConversationContextFromSecret(x3dhState.rk, { deviceId: resolvedOwnerDeviceId });
 
@@ -633,6 +649,22 @@ export function setupShareController(options) {
         rkByteLength: x3dhState.rk?.byteLength ?? null
       });
 
+      upsertContactCore({
+        peerAccountDigest: resolvedOwnerDigest,
+        peerDeviceId: resolvedOwnerDeviceId,
+        conversationId: conversationContext.conversation_id,
+        conversationToken: conversationContext.token_b64,
+        conversation: conversationContext,
+        contactSecret: conversation.tokenB64
+      }, 'share-controller:ready-upgrade');
+      try {
+        console.log('[contact-core] phase2-ready', {
+          peerKey,
+          hasConvId: !!conversationContext.conversation_id,
+          hasToken: !!conversationContext.token_b64
+        });
+      } catch {}
+
       const contactInitPayload = {
         type: 'contact-init',
         guestAccountDigest: (getAccountDigest() || '').toUpperCase(),
@@ -643,16 +675,6 @@ export function setupShareController(options) {
       sendContactInit(resolvedOwnerDigest, resolvedOwnerDeviceId, contactInitPayload);
       console.log('[share-controller]', { contactInitSent: { targetDigest: resolvedOwnerDigest, targetDeviceId: resolvedOwnerDeviceId, conversationId: conversationContext.conversation_id } });
 
-      await addContactEntry({
-        peerAccountDigest: resolvedOwnerDigest,
-        peerDeviceId: resolvedOwnerDeviceId,
-        nickname: '',
-        avatar: null,
-        addedAt: Math.floor(Date.now() / 1000),
-        updatedAt: Math.floor(Date.now() / 1000),
-        conversation: conversationContext,
-        contactSecret: conversation.tokenB64
-      });
       const alreadyLive = hasLiveDrState(resolvedOwnerDigest);
       if (!alreadyLive) {
         clearDrState(
@@ -673,12 +695,6 @@ export function setupShareController(options) {
         conversation: conversationContext,
         drState: x3dhState,
         role: 'guest'
-      });
-      sessionStore.conversationIndex?.set?.(conversation.conversationId, {
-        token_b64: conversation.tokenB64,
-        peerAccountDigest: resolvedOwnerDigest,
-        peerDeviceId: resolvedOwnerDeviceId,
-        dr_init: drInitPayload
       });
 
       await sendContactShare({
@@ -968,6 +984,16 @@ export function setupShareController(options) {
         return;
       }
 
+      try {
+        console.log('[contact-core] pre-upsert', {
+          sourceTag: 'share-controller:contact-share',
+          peerKey,
+          peerAccountDigest: peerKey || null,
+          peerDeviceId,
+          conversationId: conversation.conversation_id || null,
+          hasToken: !!conversation.token_b64
+        });
+      } catch {}
       await addContactEntry({
         peerAccountDigest: peerKey,
         nickname: payload.nickname,
@@ -976,12 +1002,6 @@ export function setupShareController(options) {
         updatedAt: payload.updatedAt || null,
         conversation,
         contactSecret: conversation.token_b64
-      });
-      sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
-        token_b64: conversation.token_b64,
-        peerAccountDigest: peerKey,
-        peerDeviceId: peerDeviceId || null,
-        dr_init: conversation.dr_init || null
       });
       const selfDeviceId = ensureDeviceId();
       const drRoleRaw = conversation?.dr_init?.role || conversation?.drInit?.role || null;
@@ -1151,12 +1171,23 @@ export function setupShareController(options) {
     // peer 裝置一律採 senderDeviceId；conversation.peerDeviceId 僅表示本端 target，不覆寫 peer。
     conversation.peerDeviceId = conversation.peerDeviceId || targetDeviceId || null;
     console.log('[share-controller]', { contactInitReceived: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
-    sessionStore.conversationIndex?.set?.(conversation.conversation_id, {
-      token_b64: conversation.token_b64,
+    try {
+      console.log('[contact-core] pre-upsert', {
+        sourceTag: 'share-controller:contact-init-received',
+        peerKey: peerDigest && peerDeviceId ? `${peerDigest}::${peerDeviceId}` : null,
+        peerAccountDigest: peerDigest || null,
+        peerDeviceId: peerDeviceId || null,
+        conversationId: conversation.conversation_id || null,
+        hasToken: !!conversation.token_b64
+      });
+    } catch {}
+    upsertContactCore({
       peerAccountDigest: peerDigest,
       peerDeviceId: peerDeviceId || null,
-      dr_init: conversation.dr_init || null
-    });
+      conversationId: conversation.conversation_id,
+      conversationToken: conversation.token_b64,
+      conversation
+    }, 'share-controller:contact-init-received');
       storeContactSecretMapping({
         peerAccountDigest: peerDigest,
         peerDeviceId, // 這裡代表對端（guest）的裝置

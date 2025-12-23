@@ -27,6 +27,8 @@ const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : nu
 const contactAliasToPrimary = new Map(); // alias -> primary key (accountDigest::deviceId preferred)
 const contactPrimaryToAliases = new Map(); // primary -> Set(alias)
 const CORRUPT_REASON_DEFAULT = 'invalid-contact-secret';
+let lastRestoreSummary = null;
+let lastRestoreError = null;
 
 function ensureCorruptContactMap() {
   if (!(sessionStore.corruptContacts instanceof Map)) {
@@ -88,6 +90,135 @@ export function getCorruptContact(peer) {
 export function listCorruptContacts() {
   const store = ensureCorruptContactMap();
   return Array.from(store.values());
+}
+
+export function quarantineCorruptContact(peerAccountDigest, reason = CORRUPT_REASON_DEFAULT, { badField = null, type = null, source = 'quarantine' } = {}) {
+  const sourceTag = source || 'quarantine';
+  const { key, identity } = resolvePeerKey(peerAccountDigest);
+  if (!key) return false;
+  const map = ensureMap();
+  const record = map.get(key) || null;
+  if (record && record.devices && typeof record.devices === 'object') {
+    for (const dev of Object.values(record.devices)) {
+      if (!dev || typeof dev !== 'object') continue;
+      dev.drState = null;
+      dev.drHistory = [];
+      dev.drHistoryCursorTs = null;
+      dev.drHistoryCursorId = null;
+    }
+  }
+  const parsed = parsePeerKey(key);
+  const entry = recordCorruptContact({
+    peerKey: key,
+    peerAccountDigest: identity?.accountDigest || parsed.accountDigest || key,
+    peerDeviceId: identity?.deviceId || parsed.deviceId || record?.peerDeviceId || null,
+    reason: reason || CORRUPT_REASON_DEFAULT,
+    source: sourceTag
+  });
+  try {
+    console.warn('[contact-core] corrupt', JSON.stringify({
+      peerKey: key,
+      reason: reason || CORRUPT_REASON_DEFAULT,
+      badField: badField || null,
+      type: type || null,
+      sourceTag,
+      source: sourceTag
+    }));
+  } catch {}
+  try {
+    persistContactSecrets();
+  } catch (err) {
+    log({ contactSecretsQuarantinePersistError: err?.message || err, peerKey: key, source: sourceTag });
+  }
+  return !!entry;
+}
+
+function cloneImmutable(value, { path = '', sourceTag = 'contact-secrets:clone' } = {}) {
+  const location = path || '(root)';
+  const logCloneError = (reason) => {
+    try {
+      console.warn('[contact-secrets:clone-fail]', JSON.stringify({
+        path: location,
+        ctor: value?.constructor?.name || null,
+        typeof: typeof value,
+        reason,
+        sourceTag
+      }));
+    } catch {}
+  };
+
+  if (value === null || typeof value !== 'object') return value;
+
+  if (value instanceof Date) {
+    return new Date(value.getTime());
+  }
+
+  if (value instanceof ArrayBuffer) {
+    try {
+      return value.slice(0);
+    } catch {}
+    const bufferCopy = new ArrayBuffer(value.byteLength);
+    new Uint8Array(bufferCopy).set(new Uint8Array(value));
+    return bufferCopy;
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    if (value instanceof DataView) {
+      const bufferCopy = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+      return new DataView(bufferCopy);
+    }
+    if (value.constructor && typeof value.constructor.from === 'function') {
+      return value.constructor.from(value);
+    }
+    if (typeof value.slice === 'function') {
+      return value.slice(0);
+    }
+    const bufferCopy = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    try {
+      return new value.constructor(bufferCopy);
+    } catch {
+      logCloneError('unsupported-typed-array');
+      throw new Error(`contact-secrets clone failed at ${location}`);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item, idx) => {
+      const childPath = path ? `${path}[${idx}]` : `[${idx}]`;
+      return cloneImmutable(item, { path: childPath, sourceTag });
+    });
+  }
+
+  if (value instanceof Set) {
+    const next = new Set();
+    let idx = 0;
+    for (const entry of value) {
+      const childPath = path ? `${path}[${idx}]` : `[${idx}]`;
+      next.add(cloneImmutable(entry, { path: childPath, sourceTag }));
+      idx += 1;
+    }
+    return next;
+  }
+
+  if (value instanceof Map) {
+    return new Map(Array.from(value.entries()).map(([k, v]) => {
+      const childPath = path ? `${path}.${String(k)}` : String(k);
+      return [k, cloneImmutable(v, { path: childPath, sourceTag })];
+    }));
+  }
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    logCloneError('unsupported-object');
+    throw new Error(`contact-secrets clone failed at ${location}`);
+  }
+
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    const childPath = path ? `${path}.${k}` : k;
+    out[k] = cloneImmutable(v, { path: childPath, sourceTag });
+  }
+  return out;
 }
 
 
@@ -447,6 +578,74 @@ function logPersistInvalidKey({ keyName, raw, peerKey = null, deviceId = null, s
   } catch {}
 }
 
+function logImportInvalidSnapshotKey({ keyName, raw, peerKey = null, deviceId = null, source = null, reason = null }) {
+  try {
+    console.warn('[contact-secrets:import-invalid-key]', {
+      keyName,
+      peerKey,
+      deviceId,
+      source,
+      reason: reason || null,
+      type: typeof raw,
+      ctor: raw?.constructor?.name || null,
+      isView: ArrayBuffer.isView(raw),
+      byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
+      length: typeof raw?.length === 'number' ? raw.length : null
+    });
+  } catch {}
+}
+
+function requireSnapshotString(raw, { keyName, required = false, allowNull = false, peerKey = null, deviceId = null, source = null } = {}) {
+  const provided = raw !== undefined;
+  if (!provided) {
+    if (required) {
+      logImportInvalidSnapshotKey({ keyName, raw, peerKey, deviceId, source, reason: 'missing' });
+      throw new Error(`contact-secrets import blocked: missing ${keyName}`);
+    }
+    return null;
+  }
+  if (raw === null) {
+    if (allowNull) return null;
+    logImportInvalidSnapshotKey({ keyName, raw, peerKey, deviceId, source, reason: 'null' });
+    throw new Error(`contact-secrets import blocked: missing ${keyName}`);
+  }
+  if (typeof raw !== 'string') {
+    logImportInvalidSnapshotKey({ keyName, raw, peerKey, deviceId, source, reason: 'not-string' });
+    throw new Error(`contact-secrets import blocked: ${keyName} not string`);
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    logImportInvalidSnapshotKey({ keyName, raw, peerKey, deviceId, source, reason: 'empty-string' });
+    throw new Error(`contact-secrets import blocked: ${keyName} empty`);
+  }
+  return trimmed;
+}
+
+function validateDrSnapshotInput(raw, { peerKey = null, deviceId = null, source = null } = {}) {
+  if (!raw || typeof raw !== 'object') {
+    logImportInvalidSnapshotKey({ keyName: 'snapshot', raw, peerKey, deviceId, source, reason: 'not-object' });
+    throw new Error('contact-secrets import blocked: dr snapshot not object');
+  }
+  const ctx = { peerKey, deviceId, source };
+  requireSnapshotString(raw.rk_b64 ?? raw.rk, { ...ctx, keyName: 'rk_b64', required: true });
+  requireSnapshotString(raw.ckR_b64 ?? raw.ckR, { ...ctx, keyName: 'ckR_b64' });
+  requireSnapshotString(raw.ckS_b64 ?? raw.ckS, { ...ctx, keyName: 'ckS_b64' });
+  requireSnapshotString(raw.myRatchetPriv_b64 ?? raw.myRatchetPriv, { ...ctx, keyName: 'myRatchetPriv_b64', allowNull: true });
+  requireSnapshotString(raw.myRatchetPub_b64 ?? raw.myRatchetPub, { ...ctx, keyName: 'myRatchetPub_b64', allowNull: true });
+  requireSnapshotString(raw.theirRatchetPub_b64 ?? raw.theirRatchetPub, { ...ctx, keyName: 'theirRatchetPub_b64', allowNull: true });
+}
+
+function validateDrHistoryInput(entries, { peerKey = null, deviceId = null, source = null } = {}) {
+  if (!Array.isArray(entries)) return;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const snap = entry.snapshot || entry.drState || entry.state || null;
+    if (snap) validateDrSnapshotInput(snap, { peerKey, deviceId, source });
+    const snapAfter = entry.snapshotAfter || entry.snapshot_after || entry.nextSnapshot || entry.snapshot_next || null;
+    if (snapAfter) validateDrSnapshotInput(snapAfter, { peerKey, deviceId, source: source ? `${source}:after` : 'dr-history:after' });
+  }
+}
+
 function normalizeDrKeyString(raw, { keyName, peerKey = null, deviceId = null, source = null, required = false, hasKey = false } = {}) {
   const present = hasKey || raw !== undefined;
   if (!present) {
@@ -616,6 +815,36 @@ function clearContactAliases(primary) {
   contactAliasToPrimary.delete(primary);
 }
 
+export function normalizePeerKeyForQuarantine({ peerAccountDigest = null, peerDeviceId = null, sourceTag = null } = {}) {
+  const tag = sourceTag || 'normalizePeerKeyForQuarantine';
+  const digestInput = typeof peerAccountDigest === 'string' && peerAccountDigest.includes('::')
+    ? peerAccountDigest.split('::')[0]
+    : peerAccountDigest;
+  const digest = normalizeAccountDigest(digestInput);
+  const device = normalizePeerDeviceId(peerDeviceId);
+  const logInvalid = (reason) => {
+    try {
+      console.warn('[contact-secrets:peer-key-invalid]', JSON.stringify({
+        peerAccountDigest: peerAccountDigest || null,
+        peerDeviceId: peerDeviceId || null,
+        digest: digest || null,
+        device: device || null,
+        reason,
+        sourceTag: tag
+      }));
+    } catch {}
+  };
+  if (!digest) {
+    logInvalid(peerAccountDigest ? 'invalid-digest' : 'missing-digest');
+    return null;
+  }
+  if (!device || device.includes('::')) {
+    logInvalid(peerDeviceId ? 'invalid-device' : 'missing-device');
+    return null;
+  }
+  return `${digest}::${device}`;
+}
+
 function parsePeerKey(key) {
   if (!key || typeof key !== 'string') return { accountDigest: null, deviceId: null };
   const [digestPart, devicePart] = key.includes('::') ? key.split('::') : [key, null];
@@ -723,7 +952,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       try {
         const normalized = normalizeStructuredEntry(entry, { source: reason });
         if (!normalized) continue;
-        const { peerKey, aliases, record } = normalized;
+        const { peerKey, aliases, record, corruptDevices = [] } = normalized;
         totalEntries += 1;
         const devices = record.devices && typeof record.devices === 'object' ? record.devices : {};
         let hasDr = false;
@@ -743,6 +972,27 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
         if (hasHistory) withHistory += 1;
         if (hasSeed) withSeed += 1;
         clearCorruptContact(peerKey);
+        if (Array.isArray(corruptDevices) && corruptDevices.length) {
+          const parsedKey = parsePeerKey(peerKey);
+          for (const info of corruptDevices) {
+            const corrupt = recordCorruptContact({
+              peerKey,
+              peerAccountDigest: parsedKey.accountDigest || peerKey,
+              peerDeviceId: info?.peerDeviceId || parsedKey.deviceId || null,
+              reason: info?.reason || CORRUPT_REASON_DEFAULT,
+              source: reason
+            });
+            if (corrupt) corruptEntries.push(corrupt);
+          }
+          try {
+            console.warn('[contact-secrets:corrupt-import]', {
+              peerKey,
+              peerDeviceId: parsedKey.deviceId || null,
+              corruptDevices: corruptDevices.length,
+              source: reason
+            });
+          } catch {}
+        }
         map.set(peerKey, record);
         registerContactAliases(peerKey, aliases);
         debugLog('restore-entry', {
@@ -751,6 +1001,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
           historyLen: devList.reduce((acc, dev) => Math.max(acc, Array.isArray(dev?.drHistory) ? dev.drHistory.length : 0), 0),
           cursorTs: null,
           cursorId: null,
+          corruptDevices: Array.isArray(corruptDevices) ? corruptDevices.length : 0,
           version: structured.version,
           source: reason
         });
@@ -779,15 +1030,19 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       bytes: snapshot.length,
       version: structuredVersion,
       generatedAt: structuredGeneratedAt,
-      corruptEntries
+      corruptEntries,
+      parseError: null
     };
+    lastRestoreSummary = { ...summaryPayload };
+    lastRestoreError = null;
     log({
       contactSecretsRestoreSummary: summaryPayload
     });
     return summaryPayload;
   } catch (err) {
     log({ contactSecretRestoreError: err?.message || err, source: reason });
-    return {
+    lastRestoreError = err?.message || String(err);
+    lastRestoreSummary = {
       entries: totalEntries,
       withDrState,
       withHistory,
@@ -795,8 +1050,10 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       bytes: snapshot.length,
       version: structuredVersion,
       generatedAt: structuredGeneratedAt,
-      corruptEntries
+      corruptEntries,
+      parseError: lastRestoreError
     };
+    return lastRestoreSummary;
   }
 }
 
@@ -1144,6 +1401,7 @@ function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
   const record = createEmptyContactSecret();
   record.peerDeviceId = identity.deviceId || peerDeviceId || null;
   record.role = role || null;
+  const corruptDevices = [];
 
   record.conversationToken = normalizeOptionalString(conversation.token) || null;
   record.conversationId = normalizeOptionalString(conversation.id) || null;
@@ -1155,25 +1413,46 @@ function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
     const devId = normalizeDeviceId(devIdRaw);
     if (!devId) continue;
     const slot = ensureDeviceRecord(record, devId, { create: true });
+    let deviceCorrupt = false;
+    const ctx = { source, peerKey: identity.key, deviceId: devId };
     if (Object.prototype.hasOwnProperty.call(devVal, 'drState')) {
-      const normalizedState = devVal.drState
-        ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source, peerKey: identity.key, deviceId: devId, strictB64: true })
-        : null;
-      if (normalizedState) slot.drState = normalizedState;
+      try {
+        if (devVal.drState) validateDrSnapshotInput(devVal.drState, ctx);
+        const normalizedState = devVal.drState
+          ? normalizeDrSnapshot(devVal.drState, { setDefaultUpdatedAt: false, source, peerKey: identity.key, deviceId: devId, strictB64: true })
+          : null;
+        if (normalizedState) slot.drState = normalizedState;
+      } catch (err) {
+        deviceCorrupt = true;
+        slot.drState = null;
+        slot.drHistory = [];
+        slot.drHistoryCursorTs = null;
+        slot.drHistoryCursorId = null;
+        corruptDevices.push({ peerKey: identity.key, peerDeviceId: devId, reason: err?.message || err });
+      }
     }
     if (Object.prototype.hasOwnProperty.call(devVal, 'drSeed')) {
       slot.drSeed = normalizeOptionalString(devVal.drSeed) || null;
     }
-    if (Object.prototype.hasOwnProperty.call(devVal, 'drHistory')) {
-      slot.drHistory = normalizeDrHistory(devVal.drHistory, { source, peerKey: identity.key, deviceId: devId, strictB64: true });
+    if (!deviceCorrupt && Object.prototype.hasOwnProperty.call(devVal, 'drHistory')) {
+      try {
+        validateDrHistoryInput(devVal.drHistory, ctx);
+        slot.drHistory = normalizeDrHistory(devVal.drHistory, { source, peerKey: identity.key, deviceId: devId, strictB64: true });
+      } catch (err) {
+        deviceCorrupt = true;
+        slot.drHistory = [];
+        slot.drHistoryCursorTs = null;
+        slot.drHistoryCursorId = null;
+        corruptDevices.push({ peerKey: identity.key, peerDeviceId: devId, reason: err?.message || err });
+      }
     }
     const cursorTsRaw = devVal.drHistoryCursorTs ?? devVal.cursorTs ?? devVal?.dr?.cursor?.ts;
     const cursorIdRaw = devVal.drHistoryCursorId ?? devVal.cursorId ?? devVal?.dr?.cursor?.id;
-    if (cursorTsRaw !== undefined) {
+    if (!deviceCorrupt && cursorTsRaw !== undefined) {
       const cursorTs = Number(cursorTsRaw);
       slot.drHistoryCursorTs = Number.isFinite(cursorTs) ? cursorTs : null;
     }
-    if (cursorIdRaw !== undefined) {
+    if (!deviceCorrupt && cursorIdRaw !== undefined) {
       slot.drHistoryCursorId = normalizeOptionalString(cursorIdRaw) || null;
     }
     if (Object.prototype.hasOwnProperty.call(devVal, 'updatedAt')) {
@@ -1192,7 +1471,7 @@ function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
   if (identity.accountDigest) aliases.push(identity.accountDigest);
   if (identity.deviceId) aliases.push(identity.deviceId);
 
-  return { peerKey: identity.key, aliases, record };
+  return { peerKey: identity.key, aliases, record, corruptDevices };
 }
 
 function parseStructuredSnapshot(payloadObj) {
@@ -1475,7 +1754,14 @@ export function getContactSecret(peerAccountDigest, opts = {}) {
   merged.drHistoryCursorTs = Number.isFinite(deviceRecord?.drHistoryCursorTs) ? deviceRecord.drHistoryCursorTs : null;
   merged.drHistoryCursorId = deviceRecord?.drHistoryCursorId || null;
   merged.updatedAt = Number.isFinite(deviceRecord?.updatedAt) ? deviceRecord.updatedAt : (Number.isFinite(record.updatedAt) ? record.updatedAt : null);
-  return merged;
+  const cloned = cloneImmutable(merged, { sourceTag: 'getContactSecret' });
+  debugLog('export-immutable', {
+    peerKey: key,
+    hasDrState: !!cloned?.drState,
+    hasDrHistory: Array.isArray(cloned?.drHistory) ? cloned.drHistory.length > 0 : false,
+    strategy: 'clone'
+  });
+  return cloned;
 }
 
 export function getContactSecretSections(peerAccountDigest, opts = {}) {
@@ -1591,4 +1877,17 @@ export function summarizeContactSecretsPayload(payload) {
     summary.parseError = err?.message || String(err);
   }
   return summary;
+}
+
+export function getLastContactSecretsRestoreSummary() {
+  if (!lastRestoreSummary) return null;
+  try {
+    return JSON.parse(JSON.stringify(lastRestoreSummary));
+  } catch {
+    return { ...lastRestoreSummary };
+  }
+}
+
+export function getLastContactSecretsRestoreError() {
+  return lastRestoreError || null;
 }

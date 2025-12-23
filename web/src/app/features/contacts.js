@@ -19,6 +19,7 @@ import { getContactSecret, setContactSecret, restoreContactSecrets } from '../co
 
 const CONTACT_INFO_TAG = 'contact/v1';
 const missingSecretWarned = new Set();
+let lastContactsHydrateSummary = null;
 function contactConvIds() {
   const ids = [];
   const acct = (getAccountDigest() || '').toUpperCase();
@@ -40,23 +41,36 @@ export async function loadContacts() {
   restoreContactSecrets();
 
   const aggregatedItems = [];
+  const diag = {
+    status: null,
+    itemCount: 0,
+    decryptOkCount: 0,
+    missingPeerDeviceCount: 0,
+    missingConvFieldsCount: 0
+  };
 
   for (const convId of convIds) {
     const { r, data } = await listMessages({ convId, limit: 100 });
+    if (diag.status === null && r) diag.status = r.status ?? null;
     if (r.status === 404) {
       continue;
     }
     if (!r.ok) {
       const msg = typeof data === 'string' ? data : data?.error || data?.message || 'load contacts failed';
+      lastContactsHydrateSummary = { ...diag, ok: false, error: msg, status: r.status ?? diag.status ?? null };
       throw new Error(msg);
     }
     const items = Array.isArray(data?.items) ? data.items : [];
+    diag.itemCount += items.length;
     if (items.length) {
       aggregatedItems.push(...items);
     }
   }
 
-  if (!aggregatedItems.length) return [];
+  if (!aggregatedItems.length) {
+    lastContactsHydrateSummary = { ...diag, ok: true, peerCount: 0 };
+    return [];
+  }
 
   const peerMap = new Map();
   for (const item of aggregatedItems) {
@@ -76,6 +90,7 @@ export async function loadContacts() {
       const peerDeviceIdFromHeader = header?.peerDeviceId || envelope?.peerDeviceId || item?.peer_device_id || null;
       if (!peerDeviceIdFromHeader) {
         console.warn('[contacts]', { contactMissingPeerDevice: item?.id || null, peerAccountDigest });
+        diag.missingPeerDeviceCount += 1;
         continue; // 嚴禁 fallback：沒有對端裝置就不處理
       }
       let contact = null;
@@ -146,6 +161,15 @@ export async function loadContacts() {
             }
           : null;
       }
+      if (conversation && !(conversation.token_b64 && conversation.conversation_id)) {
+        diag.missingConvFieldsCount += 1;
+      }
+      if (!conversation) {
+        diag.missingConvFieldsCount += 1;
+      }
+      if (contact) {
+        diag.decryptOkCount += 1;
+      }
       if (pendingSecretUpdate) {
         setContactSecret({ peerAccountDigest }, {
           ...pendingSecretUpdate,
@@ -187,7 +211,17 @@ export async function loadContacts() {
   const out = Array.from(peerMap.values());
   out.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
   console.log('[contacts]', { contactsLoadDone: out.length });
+  lastContactsHydrateSummary = { ...diag, ok: true, peerCount: out.length };
   return out;
+}
+
+export function getLastContactsHydrateSummary() {
+  if (!lastContactsHydrateSummary) return null;
+  try {
+    return JSON.parse(JSON.stringify(lastContactsHydrateSummary));
+  } catch {
+    return { ...lastContactsHydrateSummary };
+  }
 }
 
 export async function saveContact(contact) {

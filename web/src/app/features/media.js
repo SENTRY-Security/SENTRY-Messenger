@@ -9,6 +9,7 @@ import { toU8Strict } from '../../shared/utils/u8-strict.js';
 
 const encoder = new TextEncoder();
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
+const MEDIA_INFO_TAG = 'media/v1';
 
 const EXT_CONTENT_TYPE = new Map([
   ['mov', 'video/quicktime'],
@@ -119,13 +120,20 @@ function normalizeSharedKey(input) {
   return null;
 }
 
+function requireMediaInfoTag(infoTag) {
+  const tag = typeof infoTag === 'string' ? infoTag.trim() : '';
+  if (!tag) throw new Error('media info_tag missing');
+  return tag;
+}
+
 function buildEnvelope({ ct, keyType, keyU8, infoTag, contentType, name }) {
+  const normalizedInfoTag = requireMediaInfoTag(infoTag);
   const envelope = {
     v: keyType === 'shared' ? 2 : 1,
     aead: 'aes-256-gcm',
     iv_b64: b64(ct.iv),
     hkdf_salt_b64: b64(ct.hkdfSalt),
-    info_tag: infoTag || 'media/v1',
+    info_tag: normalizedInfoTag,
     key_type: keyType || 'mk',
     contentType,
     name
@@ -196,9 +204,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
     throw new Error('檔案大小超過 500MB 限制');
   }
-  const infoTag = useSharedKey
-    ? (typeof encryptionInfoTag === 'string' && encryptionInfoTag.trim() ? encryptionInfoTag.trim() : 'media/v1')
-    : 'media/v1';
+  const infoTag = requireMediaInfoTag(useSharedKey ? encryptionInfoTag : MEDIA_INFO_TAG);
   const ctKey = useSharedKey ? sharedKeyU8 : mk;
   const ct = await aeadEncryptWithMK(plainBuf, ctKey, infoTag);
 
@@ -310,9 +316,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
     throw new Error('檔案大小超過 500MB 限制');
   }
-  const infoTag = useSharedKey
-    ? (typeof encryptionInfoTag === 'string' && encryptionInfoTag.trim() ? encryptionInfoTag.trim() : 'media/v1')
-    : 'media/v1';
+  const infoTag = requireMediaInfoTag(useSharedKey ? encryptionInfoTag : MEDIA_INFO_TAG);
   const ctKey = useSharedKey ? sharedKeyU8 : mk;
   const ct = await aeadEncryptWithMK(plainBuf, ctKey, infoTag);
 
@@ -448,7 +452,7 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
     baseKey = getMkRaw();
     if (!baseKey) throw new Error('Not unlocked: MK not ready');
   }
-  const infoTag = typeof meta.info_tag === 'string' && meta.info_tag ? meta.info_tag : 'media/v1';
+  const infoTag = requireMediaInfoTag(meta.info_tag || meta.infoTag);
 
   progress?.({ stage: 'sign', message: '取得下載授權…' });
   const { download } = await signGet({ key });

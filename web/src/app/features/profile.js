@@ -11,10 +11,12 @@ import {
   normalizeAccountDigest,
   getUidHex
 } from '../core/store.js';
-import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
+import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../crypto/aead.js';
 import { buildIdenticonImage } from '../lib/identicon.js';
+import { log } from '../core/log.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';
+const PROFILE_ALLOWED_INFO_TAGS = new Set([PROFILE_INFO_TAG]);
 const PROFILE_MESSAGE_TYPE = 'profile-update';
 const PROFILE_CONV_PREFIX = 'profile:';
 const AVATAR_CONV_PREFIX = 'avatar-';
@@ -103,24 +105,63 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
   const items = Array.isArray(data?.items) ? data.items : [];
   if (!items.length) return null;
 
-  let latest = items[0];
+  const candidates = [];
   for (const it of items) {
-    if ((it?.ts || 0) > (latest?.ts || 0)) latest = it;
-  }
-  try {
-    const header = latest?.header_json ? JSON.parse(latest.header_json) : latest?.header;
-    const envelope = header?.envelope;
-    if (!envelope) {
-      console.warn('[profile] missing envelope on message', latest?.id);
-      return null;
+    const msgId = it?.id || null;
+    const createdAt = it?.ts || it?.created_at || null;
+    let header = null;
+    try {
+      header = it?.header_json ? JSON.parse(it.header_json) : it?.header;
+    } catch (err) {
+      log({ profileHydrateSkip: { msgId, createdAt, reason: 'header-json-invalid', error: err?.message || String(err) } });
+      continue;
     }
-    const profile = await unwrapWithMK_JSON(envelope, mk);
-    console.log('[profile] loaded profile', profile);
-    return { ...profile, msgId: latest?.id || null, ts: latest?.ts || null };
-  } catch (err) {
-    console.error('profile decode failed', err);
-    return null;
+    const metaType = header?.meta?.msg_type || header?.meta?.msgType || null;
+    if (!(header?.profile === 1 || metaType === PROFILE_MESSAGE_TYPE)) {
+      log({ profileHydrateSkip: { msgId, createdAt, reason: 'non-profile-message' } });
+      continue;
+    }
+    if (!header?.envelope) {
+      log({ profileHydrateSkip: { msgId, createdAt, reason: 'missing-envelope' } });
+      continue;
+    }
+    candidates.push({ item: it, header, envelope: header.envelope, createdAt });
   }
+
+  if (!candidates.length) return null;
+
+  const ordered = candidates.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  for (const entry of ordered) {
+    const msgId = entry?.item?.id || null;
+    const createdAt = entry?.createdAt || null;
+    try {
+      const normalizedEnvelope = assertEnvelopeStrict(entry.envelope, { allowInfoTags: PROFILE_ALLOWED_INFO_TAGS });
+      log({
+        profileHydrateEnvelope: {
+          conversationId: convId,
+          serverMessageId: msgId,
+          createdAt,
+          hasMk: !!mk,
+          info: typeof normalizedEnvelope.info === 'string' ? normalizedEnvelope.info : null,
+          saltB64Len: typeof normalizedEnvelope.salt_b64 === 'string' ? normalizedEnvelope.salt_b64.length : null,
+          ivB64Len: typeof normalizedEnvelope.iv_b64 === 'string' ? normalizedEnvelope.iv_b64.length : null,
+          ctB64Len: typeof normalizedEnvelope.ct_b64 === 'string' ? normalizedEnvelope.ct_b64.length : null,
+          types: {
+            info: typeof entry.envelope?.info,
+            salt: typeof entry.envelope?.salt_b64,
+            iv: typeof entry.envelope?.iv_b64,
+            ct: typeof entry.envelope?.ct_b64
+          }
+        }
+      });
+      const profile = await unwrapWithMK_JSON(normalizedEnvelope, mk);
+      console.log('[profile] loaded profile', profile);
+      return { ...profile, msgId, ts: createdAt };
+    } catch (err) {
+      log({ profileHydrateSkip: { msgId, createdAt, reason: err?.message || 'profile decode failed' } });
+    }
+  }
+  return null;
 }
 
 async function persistProfileControlState(profile, { accountDigest } = {}) {
@@ -132,23 +173,38 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   if (!mk || !convId || !selfDigest || !deviceId) throw new Error('Not unlocked: MK/account missing');
   const fallbackNickname = targetDigest ? `好友 ${targetDigest.slice(-4)}` : '';
   const obj = normalizeProfilePayload(profile, { fallbackNickname });
+  if (obj?.avatar) {
+    const env = obj.avatar?.env || null;
+    console.log('[profile] avatar:env-written', {
+      hasInfoTag: !!env?.info_tag,
+      hasKeyType: !!env?.key_type,
+      hasIv: !!env?.iv_b64,
+      hasSalt: !!env?.hkdf_salt_b64,
+      objKey: obj.avatar?.objKey || null
+    });
+  }
   const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
+  const normalizedEnvelope = assertEnvelopeStrict(envelope, { allowInfoTags: PROFILE_ALLOWED_INFO_TAGS });
   const { counter, commit } = allocateDeviceCounter();
   const header = {
     profile: 1,
     v: 1,
     ts: obj.updatedAt,
-    envelope,
-    iv_b64: envelope?.iv_b64,
+    envelope: normalizedEnvelope,
+    iv_b64: normalizedEnvelope.iv_b64,
     device_id: deviceId || undefined,
     n: counter,
     meta: { msg_type: PROFILE_MESSAGE_TYPE, subtype: PROFILE_MESSAGE_TYPE }
   };
+  const ciphertextB64 = normalizedEnvelope.ct_b64;
+  if (!ciphertextB64) {
+    throw new Error('profile ciphertext missing');
+  }
   const messageId = crypto.randomUUID();
   const { r, data } = await createSecureMessage({
     conversationId: convId,
     header,
-    ciphertextB64: envelope?.ct_b64 || 'profile',
+    ciphertextB64,
     counter,
     senderDeviceId: deviceId,
     receiverAccountDigest: selfDigest,
@@ -261,9 +317,18 @@ export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {
     direction: 'drive'
   });
   const now = Math.floor(Date.now() / 1000);
+  const env = {
+    iv_b64: envelope.iv_b64,
+    hkdf_salt_b64: envelope.hkdf_salt_b64,
+    info_tag: envelope.info_tag,
+    key_type: envelope.key_type,
+    aead: envelope.aead
+  };
+  if (envelope?.key_b64) env.key_b64 = envelope.key_b64;
+  if (typeof envelope?.v !== 'undefined') env.v = envelope.v;
   return {
     objKey: objectKey,
-    env: { iv_b64: envelope.iv_b64, hkdf_salt_b64: envelope.hkdf_salt_b64, aead: envelope.aead },
+    env,
     contentType: file.type || 'image/png',
     size,
     updatedAt: now,
@@ -305,14 +370,32 @@ export async function ensureDefaultAvatarFromSeed({ seed, force = false } = {}) 
 
 export async function loadAvatarBlob(profile) {
   if (!profile?.avatar?.objKey) return null;
-  const env = profile.avatar.env || profile.avatar;
-  if (!env?.iv_b64 || !env?.hkdf_salt_b64) return null;
+  const env = profile.avatar?.env || null;
+  console.log('[profile] avatar:env-read', {
+    hasInfoTag: !!env?.info_tag,
+    hasKeyType: !!env?.key_type,
+    hasIv: !!env?.iv_b64,
+    hasSalt: !!env?.hkdf_salt_b64,
+    objKey: profile.avatar?.objKey || null
+  });
+  if (!env?.info_tag) {
+    console.log('[profile] avatar:skip', { reason: 'missing-info_tag' });
+    return null;
+  }
+  if (!env?.key_type || !env?.iv_b64 || !env?.hkdf_salt_b64) {
+    return null;
+  }
   const envelope = {
     iv_b64: env.iv_b64,
     hkdf_salt_b64: env.hkdf_salt_b64,
+    info_tag: env.info_tag,
+    key_type: env.key_type,
     contentType: profile.avatar.contentType || 'image/png',
     name: profile.avatar.name || 'avatar'
   };
+  if (env?.aead) envelope.aead = env.aead;
+  if (env?.key_b64) envelope.key_b64 = env.key_b64;
+  if (typeof env?.v !== 'undefined') envelope.v = env.v;
   try {
     const result = await downloadAndDecrypt({ key: profile.avatar.objKey, envelope });
     return result;

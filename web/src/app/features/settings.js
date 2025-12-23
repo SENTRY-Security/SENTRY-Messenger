@@ -4,9 +4,10 @@
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { getMkRaw, getAccountDigest, buildAccountPayload, ensureDeviceId } from '../core/store.js';
-import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
+import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../crypto/aead.js';
 
 const SETTINGS_INFO_TAG = 'settings/v1';
+const SETTINGS_ALLOWED_INFO_TAGS = new Set([SETTINGS_INFO_TAG]);
 
 function convIdForSettings() {
   const acct = (getAccountDigest() || '').toUpperCase();
@@ -70,29 +71,57 @@ export async function loadSettings({ returnMeta = false } = {}) {
     return returnMeta ? { settings: null, meta } : null;
   }
 
-  let latest = items[0];
+  const candidates = [];
   for (const it of items) {
-    if ((it?.ts || 0) > (latest?.ts || 0)) latest = it;
+    const ts = Number.isFinite(it?.ts) ? it.ts : (Number(it?.created_at) || 0);
+    let header = null;
+    try {
+      header = it?.header_json ? JSON.parse(it.header_json) : (typeof it?.header === 'object' ? it.header : null);
+    } catch {
+      header = typeof it?.header === 'object' ? it.header : null;
+    }
+    const msgType = it?.msg_type
+      || (it?.meta && typeof it.meta === 'object' ? it.meta.msg_type : null)
+      || (header?.meta && typeof header.meta === 'object' ? header.meta.msg_type : null)
+      || header?.msg_type
+      || null;
+    const isSettings = (header && header.settings === 1) || msgType === 'settings-update';
+    if (!isSettings) {
+      try {
+        console.debug('[settings] skip non-settings message', { id: it?.id || null, msgType });
+      } catch {}
+      continue;
+    }
+    candidates.push({ item: it, header, msgType, ts });
+  }
+
+  if (!candidates.length) {
+    const meta = {
+      ok: true,
+      hasEnvelope: false,
+      urlMode: null,
+      hasUrl: false,
+      urlLen: 0,
+      ts: null
+    };
+    return returnMeta ? { settings: null, meta } : null;
+  }
+
+  candidates.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const latest = candidates[0];
+  const envelope = latest?.header?.envelope;
+  if (!envelope) {
+    const err = new Error('settings envelope missing');
+    err.messageId = latest?.item?.id || null;
+    throw err;
   }
   try {
-    const header = latest?.header_json ? JSON.parse(latest.header_json) : latest?.header;
-    const envelope = header?.envelope;
-    if (!envelope) {
-      const meta = {
-        ok: true,
-        hasEnvelope: false,
-        urlMode: null,
-        hasUrl: false,
-        urlLen: 0,
-        ts: latest?.ts || null
-      };
-      return returnMeta ? { settings: null, meta } : null;
-    }
-    const settings = await unwrapWithMK_JSON(envelope, mk);
+    const normalizedEnvelope = assertEnvelopeStrict(envelope, { allowInfoTags: SETTINGS_ALLOWED_INFO_TAGS });
+    const settings = await unwrapWithMK_JSON(normalizedEnvelope, mk);
     const normalized = {
       ...normalizeSettings(settings),
       updatedAt: settings?.updatedAt || latest?.ts || Math.floor(Date.now() / 1000),
-      msgId: latest?.id || null,
+      msgId: latest?.item?.id || null,
       ts: latest?.ts || null
     };
     const meta = {
@@ -101,7 +130,8 @@ export async function loadSettings({ returnMeta = false } = {}) {
       urlMode: normalized.autoLogoutRedirectMode || null,
       hasUrl: !!normalized.autoLogoutCustomUrl,
       urlLen: normalized.autoLogoutCustomUrl ? String(normalized.autoLogoutCustomUrl).length : 0,
-      ts: normalized.ts || null
+      ts: normalized.ts || null,
+      messageId: latest?.item?.id || null
     };
     try {
       console.info('[settings] hydrate ' + JSON.stringify(meta));
@@ -115,7 +145,8 @@ export async function loadSettings({ returnMeta = false } = {}) {
       hasUrl: false,
       urlLen: 0,
       ts: latest?.ts || null,
-      reason: err?.message || String(err)
+      reason: err?.message || String(err),
+      messageId: latest?.item?.id || null
     };
     try {
       console.info('[settings] hydrate ' + JSON.stringify(meta));
@@ -145,12 +176,13 @@ export async function saveSettings(settings) {
   } catch {}
 
   const envelope = await wrapWithMK_JSON(payload, mk, SETTINGS_INFO_TAG);
+  const normalizedEnvelope = assertEnvelopeStrict(envelope, { allowInfoTags: SETTINGS_ALLOWED_INFO_TAGS });
   const header = {
     settings: 1,
     v: 1,
     ts: payload.updatedAt,
-    envelope,
-    iv_b64: envelope.iv_b64
+    envelope: normalizedEnvelope,
+    iv_b64: normalizedEnvelope.iv_b64
   };
   const messageId = crypto.randomUUID();
   const overrides = {
@@ -159,7 +191,7 @@ export async function saveSettings(settings) {
     aead: 'aes-256-gcm',
     id: messageId,
     header,
-    ciphertext_b64: envelope?.ct_b64 || 'settings',
+    ciphertext_b64: normalizedEnvelope.ct_b64,
     receiverAccountDigest: (getAccountDigest() || '').toUpperCase(),
     receiverDeviceId: ensureDeviceId()
   };
