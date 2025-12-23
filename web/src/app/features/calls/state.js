@@ -11,7 +11,14 @@ import {
 import { createCallInvite } from '../../api/calls.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
-import { getAccountDigest, normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
+import { log } from '../../core/log.js';
+import {
+  getAccountDigest,
+  getDeviceId,
+  normalizeAccountDigest,
+  normalizePeerDeviceId,
+  normalizePeerIdentity
+} from '../../core/store.js';
 import { buildCallPeerIdentity, logCallIdentitySet } from './identity.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
@@ -67,6 +74,194 @@ function resolveSelfProfileSummary() {
     }
   }
   return { displayName, avatarUrl };
+}
+
+function ensureContactIndexMap() {
+  if (!(sessionStore.contactIndex instanceof Map)) {
+    const entries = sessionStore.contactIndex && typeof sessionStore.contactIndex.entries === 'function'
+      ? Array.from(sessionStore.contactIndex.entries())
+      : [];
+    sessionStore.contactIndex = new Map(entries);
+  }
+  return sessionStore.contactIndex;
+}
+
+function ensureConversationThreadsMap() {
+  if (!(sessionStore.conversationThreads instanceof Map)) {
+    const entries = sessionStore.conversationThreads && typeof sessionStore.conversationThreads.entries === 'function'
+      ? Array.from(sessionStore.conversationThreads.entries())
+      : [];
+    sessionStore.conversationThreads = new Map(entries);
+  }
+  return sessionStore.conversationThreads;
+}
+
+function pickAvatarFromEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const candidates = [
+    entry.avatar?.thumbDataUrl,
+    entry.avatar?.previewDataUrl,
+    entry.avatar?.url
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim().length) return c;
+  }
+  return null;
+}
+
+function pickNicknameFromEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const nickname = entry.nickname || entry.profile?.nickname || null;
+  return typeof nickname === 'string' && nickname.trim().length ? nickname.trim() : null;
+}
+
+function findContactEntry(peerKey, peerDigest) {
+  const index = ensureContactIndexMap();
+  const digest = normalizeAccountDigest(peerDigest || null);
+  const key = typeof peerKey === 'string' && peerKey.trim().length ? peerKey : null;
+  if (key && index?.get?.(key)) return index.get(key);
+  if (digest && index?.get?.(digest)) return index.get(digest);
+  if (index && typeof index.entries === 'function' && digest) {
+    for (const [storedKey, entry] of index.entries()) {
+      const identity = normalizePeerIdentity(entry?.peerAccountDigest || entry?.accountDigest || storedKey);
+      if (identity.accountDigest && identity.accountDigest === digest) {
+        return entry;
+      }
+    }
+  }
+  return null;
+}
+
+function findThreadEntry(peerKey, peerDigest, peerDeviceId) {
+  const threads = ensureConversationThreadsMap();
+  const digest = normalizeAccountDigest(peerDigest || null);
+  const deviceId = normalizePeerDeviceId(peerDeviceId || null);
+  for (const entry of threads.values()) {
+    const identity = normalizePeerIdentity(entry?.peerAccountDigest || entry?.peerKey || entry);
+    const entryDigest = identity.accountDigest || null;
+    const entryDeviceId = identity.deviceId || normalizePeerDeviceId(entry?.peerDeviceId || null) || null;
+    if (peerKey && identity.key && peerKey === identity.key) return entry;
+    if (digest && entryDigest && digest === entryDigest) {
+      if (deviceId && entryDeviceId && deviceId !== entryDeviceId) continue;
+      return entry;
+    }
+  }
+  return null;
+}
+
+export function resolveCallPeerProfile({
+  peerAccountDigest,
+  peerDeviceId = null,
+  peerKey = null,
+  displayNameFallback = null
+} = {}) {
+  let digest = normalizeAccountDigest(peerAccountDigest || null);
+  let deviceId = normalizePeerDeviceId(peerDeviceId || null);
+  let identity = normalizePeerIdentity(peerKey || { peerAccountDigest: digest, peerDeviceId: deviceId });
+  if (!identity.accountDigest && digest) identity.accountDigest = digest;
+  if (!identity.deviceId && deviceId) identity.deviceId = deviceId;
+  if (!identity.key && identity.accountDigest && identity.deviceId) {
+    try {
+      identity = buildCallPeerIdentity({ peerAccountDigest: identity.accountDigest, peerDeviceId: identity.deviceId });
+    } catch {
+      /* ignore */
+    }
+  }
+  digest = identity.accountDigest || normalizeAccountDigest(identity.key?.split('::')?.[0] || null) || digest;
+  deviceId = identity.deviceId || deviceId;
+  const key = identity.peerKey || identity.key || (digest && deviceId ? `${digest}::${deviceId}` : null);
+  const threadEntry = findThreadEntry(key, digest, deviceId);
+  const contactEntry = findContactEntry(key, digest);
+  const nickname = pickNicknameFromEntry(threadEntry) || pickNicknameFromEntry(contactEntry);
+  const avatarUrl = pickAvatarFromEntry(threadEntry) || pickAvatarFromEntry(contactEntry) || null;
+  const conversationId = threadEntry?.conversationId
+    || contactEntry?.conversation?.conversation_id
+    || null;
+  const fallbackName = digest ? `好友 ${digest.slice(-4)}` : '好友';
+  const placeholderName = displayNameFallback || fallbackName;
+  const source = (nickname || avatarUrl) ? 'snapshot' : 'fallback';
+  return {
+    peerAccountDigest: digest || null,
+    peerDeviceId: deviceId || null,
+    peerKey: key || null,
+    nickname: nickname || null,
+    avatarUrl,
+    conversationId,
+    fallbackName,
+    placeholderName,
+    source
+  };
+}
+
+export function resolvePeerForCallEvent(event = {}, selfDeviceId = null) {
+  const selfDevice = normalizePeerDeviceId(selfDeviceId || getDeviceId() || null);
+  const fromDeviceId = normalizePeerDeviceId(
+    event.fromDeviceId
+    || event.from_device_id
+    || event.senderDeviceId
+    || event.sender_device_id
+    || null
+  );
+  const toDeviceId = normalizePeerDeviceId(
+    event.toDeviceId
+    || event.to_device_id
+    || event.targetDeviceId
+    || event.target_device_id
+    || event.receiverDeviceId
+    || event.receiver_device_id
+    || null
+  );
+  const callId = event.callId || event.call_id || null;
+  const logBase = {
+    callId: callId || null,
+    selfDeviceId: selfDevice || null,
+    fromDeviceId: fromDeviceId || null,
+    toDeviceId: toDeviceId || null
+  };
+  if (!selfDevice || (!fromDeviceId && !toDeviceId)) {
+    log({ callPeerResolveError: 'missing-device', ...logBase });
+    return null;
+  }
+  if (toDeviceId && selfDevice === toDeviceId) {
+    const peerAccountDigest = normalizeAccountDigest(
+      event.fromAccountDigest
+      || event.from_account_digest
+      || event.callerAccountDigest
+      || event.caller_account_digest
+      || null
+    );
+    if (!peerAccountDigest || !fromDeviceId) {
+      log({ callPeerResolveError: 'missing-from-identity', ...logBase });
+      return null;
+    }
+    try {
+      return buildCallPeerIdentity({ peerAccountDigest, peerDeviceId: fromDeviceId });
+    } catch (err) {
+      log({ callPeerResolveError: err?.message || err, ...logBase });
+      return null;
+    }
+  }
+  if (fromDeviceId && selfDevice === fromDeviceId) {
+    const peerAccountDigest = normalizeAccountDigest(
+      event.toAccountDigest
+      || event.to_account_digest
+      || event.targetAccountDigest
+      || event.target_account_digest
+      || null
+    );
+    if (!peerAccountDigest || !toDeviceId) {
+      log({ callPeerResolveError: 'missing-to-identity', ...logBase });
+      return null;
+    }
+    try {
+      return buildCallPeerIdentity({ peerAccountDigest, peerDeviceId: toDeviceId });
+    } catch (err) {
+      log({ callPeerResolveError: err?.message || err, ...logBase });
+      return null;
+    }
+  }
+  log({ callPeerResolveError: 'device-mismatch', ...logBase });
+  return null;
 }
 
 export function getSelfProfileSummary() {
@@ -318,18 +513,25 @@ export function markIncomingCall({
   if (!digest) return { ok: false, error: 'MISSING_PEER' };
   if (!deviceId) return { ok: false, error: 'MISSING_PEER_DEVICE' };
   if (!canStartCall()) return { ok: false, error: 'CALL_ALREADY_IN_PROGRESS' };
+  const profile = resolveCallPeerProfile({
+    peerAccountDigest: digest,
+    peerDeviceId: deviceId,
+    displayNameFallback: peerDisplayName || null
+  });
+  const resolvedName = profile.nickname || profile.placeholderName || null;
+  const resolvedAvatar = profile.avatarUrl || null;
   activeSession = createEmptySession();
   activeSession.initiatorAccountDigest = null;
   activeSession.direction = CALL_SESSION_DIRECTION.INCOMING;
   activeSession.status = CALL_SESSION_STATUS.INCOMING;
   activeSession.callId = callId || null;
   activeSession.peerAccountDigest = digest || null;
-  activeSession.peerDisplayName = peerDisplayName || null;
-  activeSession.peerAvatarUrl = peerAvatarUrl || null;
+  activeSession.peerDisplayName = resolvedName;
+  activeSession.peerAvatarUrl = resolvedAvatar;
   activeSession.peerDeviceId = deviceId;
   setSessionPeerIdentity({ peerAccountDigest: digest, peerDeviceId: deviceId, callId: activeSession.callId || callId || null });
-  activeSession.remoteDisplayName = peerDisplayName || null;
-  activeSession.remoteAvatarUrl = peerAvatarUrl || null;
+  activeSession.remoteDisplayName = profile.placeholderName || resolvedName;
+  activeSession.remoteAvatarUrl = resolvedAvatar;
   activeSession.traceId = traceId || createTraceId();
   activeSession.requestedAt = Date.now();
   resetMediaState();

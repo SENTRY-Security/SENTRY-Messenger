@@ -39,7 +39,7 @@ import {
 import { friendsDeleteContact } from '../api/friends.js';
 import { mkUpdate } from '../api/auth.js';
 import { loadContacts, saveContact } from '../features/contacts.js';
-import { ensureSettings, saveSettings, DEFAULT_SETTINGS } from '../features/settings.js';
+import { saveSettings, loadSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
 import { setupShareController } from './mobile/share-controller.js?v=0.1.10';
@@ -121,17 +121,7 @@ const MODAL_VARIANTS = [
   'change-password-modal'
 ];
 
-const settingsInitPromise = ensureSettings()
-  .then((settings) => {
-    sessionStore.settingsState = settings;
-    return settings;
-  })
-  .catch((err) => {
-    log({ settingsInitError: err?.message || err });
-    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
-    sessionStore.settingsState = fallback;
-    return fallback;
-  });
+let settingsInitPromise = null;
 
 const { showToast, hideToast } = createToastController(document.getElementById('appToast'));
 const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style || null : null;
@@ -1384,6 +1374,14 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
   } catch (e) { log({ restoreError: String(e?.message || e) }); }
 })();
 
+settingsInitPromise = bootLoadSettings()
+  .catch((err) => {
+    log({ settingsBootError: err?.message || err });
+    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
+    if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
+    return sessionStore.settingsState || fallback;
+  });
+
 (function hydrateDevicePrivFromSession() {
   try {
     let serialized = sessionStorage.getItem('wrapped_dev');
@@ -2488,11 +2486,84 @@ function sanitizeLogoutRedirectUrl(value) {
   if (!trimmed) return '';
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'https:') return '';
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
     if (!parsed.hostname) return '';
     return parsed.toString();
   } catch {
     return '';
+  }
+}
+
+function logSettingsBootStart({ digest, convId, mkReady }) {
+  try {
+    console.info('[settings] boot:load:start ' + JSON.stringify({ digest, convId, mkReady }));
+  } catch {}
+}
+
+async function bootLoadSettings() {
+  const digest = getAccountDigest();
+  const convId = digest ? `settings-${String(digest).toUpperCase()}` : null;
+  const mkReady = !!getMkRaw();
+  logSettingsBootStart({ digest: digest || null, convId, mkReady });
+  if (!mkReady || !convId) {
+    const err = new Error('settings boot prerequisites missing');
+    try {
+      console.info('[settings] boot:load:done ' + JSON.stringify({
+        ok: false,
+        hasEnvelope: false,
+        reason: 'mk/account missing',
+        ts: null
+      }));
+    } catch {}
+    throw err;
+  }
+  try {
+    const { settings, meta } = await loadSettings({ returnMeta: true });
+    const info = meta || {};
+    try {
+      console.info('[settings] boot:load:done ' + JSON.stringify({
+        ok: info.ok !== false,
+        hasEnvelope: !!info.hasEnvelope,
+        urlMode: info.urlMode || null,
+        hasUrl: !!info.hasUrl,
+        urlLen: info.urlLen || 0,
+        ts: info.ts || null
+      }));
+    } catch {}
+    const applied = settings || { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
+    sessionStore.settingsState = applied;
+    try {
+      console.info('[settings] boot:apply ' + JSON.stringify({
+        autoLogoutRedirectMode: applied.autoLogoutRedirectMode || null,
+        hasCustomLogoutUrl: !!applied.autoLogoutCustomUrl
+      }));
+    } catch {}
+    return applied;
+  } catch (err) {
+    try {
+      console.info('[settings] boot:load:done ' + JSON.stringify({
+        ok: false,
+        hasEnvelope: true,
+        reason: err?.message || String(err),
+        ts: null
+      }));
+    } catch {}
+    throw err;
+  }
+}
+
+function isSettingsConversationId(convId) {
+  return typeof convId === 'string' && convId.startsWith('settings-');
+}
+
+async function handleSettingsSecureMessage() {
+  try {
+    const refreshed = await loadSettings();
+    if (refreshed && typeof refreshed === 'object') {
+      sessionStore.settingsState = refreshed;
+    }
+  } catch (err) {
+    log({ settingsHydrateError: err?.message || err });
   }
 }
 
@@ -2546,7 +2617,7 @@ async function handleCustomLogoutSave() {
   if (!input || !saveBtn) return;
   const sanitized = sanitizeLogoutRedirectUrl(input.value || '');
   if (!sanitized) {
-    if (errorEl) errorEl.textContent = '請輸入有效的 HTTPS 網址，例如 https://example.com。';
+    if (errorEl) errorEl.textContent = '請輸入有效的 http/https 網址，例如 https://example.com。';
     input.focus();
     return;
   }
@@ -2812,7 +2883,7 @@ async function openSystemSettingsModal() {
     logoutDefaultRadio.disabled = true;
     logoutCustomRadio && (logoutCustomRadio.disabled = true);
     try {
-      await persistSettingsPatch({ autoLogoutRedirectMode: 'default' });
+      await persistSettingsPatch({ autoLogoutRedirectMode: 'default', autoLogoutCustomUrl: null });
       refreshLogoutSummary();
     } catch (err) {
       log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' });
@@ -3631,6 +3702,11 @@ function handleWebSocketMessage(msg) {
       log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
       return;
     }
+    const convId = String(msg?.conversationId || msg?.conversation_id || '').trim();
+    if (isSettingsConversationId(convId)) {
+      handleSettingsSecureMessage();
+      return;
+    }
     messagesPane.handleIncomingSecureMessage(msg);
     return;
   }
@@ -3640,10 +3716,15 @@ function handleWebSocketMessage(msg) {
       log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
       return;
     }
+    const convId = String(msg?.conversationId || msg?.conversation_id || '').trim();
+    if (isSettingsConversationId(convId)) {
+      handleSettingsSecureMessage();
+      return;
+    }
     try {
       console.log('[ws-dispatch]', {
         type,
-        conversationId: msg?.conversationId || null,
+        conversationId: convId || null,
         senderAccountDigest: msg?.senderAccountDigest || null,
         senderDeviceId: msg?.senderDeviceId || null,
         targetDeviceId: msg?.targetDeviceId || null,

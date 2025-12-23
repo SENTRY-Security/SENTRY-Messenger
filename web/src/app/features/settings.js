@@ -21,32 +21,33 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 function sanitizeLogoutUrl(input) {
-  if (typeof input !== 'string') return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+  if (typeof input !== 'string') return null;
   const trimmed = input.trim();
-  if (!trimmed) return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+  if (!trimmed) return null;
   try {
     const url = new URL(trimmed);
-    if (url.protocol !== 'https:') return DEFAULT_SETTINGS.autoLogoutCustomUrl;
-    if (!url.hostname) return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    if (!url.hostname) return null;
     return url.toString();
   } catch {
-    return DEFAULT_SETTINGS.autoLogoutCustomUrl;
+    return null;
   }
 }
 
 function normalizeSettings(input = {}) {
   const sanitizedUrl = sanitizeLogoutUrl(input.autoLogoutCustomUrl);
-  const wantsCustomRedirect = input.autoLogoutRedirectMode === 'custom' && !!sanitizedUrl;
+  const wantsCustomRedirect = input.autoLogoutRedirectMode === 'custom';
+  const hasUrl = !!sanitizedUrl;
   const normalized = {
     showOnlineStatus: typeof input.showOnlineStatus === 'boolean' ? input.showOnlineStatus : DEFAULT_SETTINGS.showOnlineStatus,
     autoLogoutOnBackground: typeof input.autoLogoutOnBackground === 'boolean' ? input.autoLogoutOnBackground : DEFAULT_SETTINGS.autoLogoutOnBackground,
-    autoLogoutRedirectMode: wantsCustomRedirect ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
-    autoLogoutCustomUrl: sanitizedUrl
+    autoLogoutRedirectMode: wantsCustomRedirect && hasUrl ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
+    autoLogoutCustomUrl: sanitizedUrl || null
   };
   return normalized;
 }
 
-export async function loadSettings() {
+export async function loadSettings({ returnMeta = false } = {}) {
   const mk = getMkRaw();
   const convId = convIdForSettings();
   if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
@@ -57,7 +58,17 @@ export async function loadSettings() {
     throw new Error(msg);
   }
   const items = Array.isArray(data?.items) ? data.items : [];
-  if (!items.length) return null;
+  if (!items.length) {
+    const meta = {
+      ok: true,
+      hasEnvelope: false,
+      urlMode: null,
+      hasUrl: false,
+      urlLen: 0,
+      ts: null
+    };
+    return returnMeta ? { settings: null, meta } : null;
+  }
 
   let latest = items[0];
   for (const it of items) {
@@ -66,17 +77,50 @@ export async function loadSettings() {
   try {
     const header = latest?.header_json ? JSON.parse(latest.header_json) : latest?.header;
     const envelope = header?.envelope;
-    if (!envelope) return null;
+    if (!envelope) {
+      const meta = {
+        ok: true,
+        hasEnvelope: false,
+        urlMode: null,
+        hasUrl: false,
+        urlLen: 0,
+        ts: latest?.ts || null
+      };
+      return returnMeta ? { settings: null, meta } : null;
+    }
     const settings = await unwrapWithMK_JSON(envelope, mk);
-    return {
+    const normalized = {
       ...normalizeSettings(settings),
       updatedAt: settings?.updatedAt || latest?.ts || Math.floor(Date.now() / 1000),
       msgId: latest?.id || null,
       ts: latest?.ts || null
     };
+    const meta = {
+      ok: true,
+      hasEnvelope: true,
+      urlMode: normalized.autoLogoutRedirectMode || null,
+      hasUrl: !!normalized.autoLogoutCustomUrl,
+      urlLen: normalized.autoLogoutCustomUrl ? String(normalized.autoLogoutCustomUrl).length : 0,
+      ts: normalized.ts || null
+    };
+    try {
+      console.info('[settings] hydrate ' + JSON.stringify(meta));
+    } catch {}
+    return returnMeta ? { settings: normalized, meta } : normalized;
   } catch (err) {
-    console.warn('[settings] decode failed', err);
-    return null;
+    const meta = {
+      ok: false,
+      hasEnvelope: true,
+      urlMode: null,
+      hasUrl: false,
+      urlLen: 0,
+      ts: latest?.ts || null,
+      reason: err?.message || String(err)
+    };
+    try {
+      console.info('[settings] hydrate ' + JSON.stringify(meta));
+    } catch {}
+    throw err;
   }
 }
 
@@ -85,8 +129,20 @@ export async function saveSettings(settings) {
   const convId = convIdForSettings();
   if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
   const normalized = normalizeSettings(settings);
+  if (normalized.autoLogoutRedirectMode === 'custom' && !normalized.autoLogoutCustomUrl) {
+    const err = new Error('autoLogoutCustomUrl required for custom redirect');
+    err.userMessage = '請輸入有效的 http/https 網址，或改選預設登出頁面。';
+    throw err;
+  }
   const now = Math.floor(Date.now() / 1000);
   const payload = { ...normalized, updatedAt: now };
+  try {
+    console.info('[settings] persist ' + JSON.stringify({
+      mode: payload.autoLogoutRedirectMode,
+      hasUrl: !!payload.autoLogoutCustomUrl,
+      urlLen: payload.autoLogoutCustomUrl ? String(payload.autoLogoutCustomUrl).length : 0
+    }));
+  } catch {}
 
   const envelope = await wrapWithMK_JSON(payload, mk, SETTINGS_INFO_TAG);
   const header = {

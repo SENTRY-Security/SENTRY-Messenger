@@ -13,7 +13,8 @@ import {
   setLocalAudioMuted,
   isLocalAudioMuted,
   setRemoteAudioMuted,
-  isRemoteAudioMuted
+  isRemoteAudioMuted,
+  resolveCallPeerProfile
 } from '../../features/calls/index.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 import { createCallAudioManager } from './call-audio.js';
@@ -365,26 +366,53 @@ function ensureOverlayElements() {
     };
   }
 
-function resolveRemoteProfile(session) {
-  const peerKey = session?.peerAccountDigest || null;
-  const fallback = peerKey ? `好友 ${peerKey.slice(-4)}` : '好友';
-  const name = session?.remoteDisplayName
-    || session?.peerDisplayName
-    || fallback;
-  const avatarUrl = session?.remoteAvatarUrl || session?.peerAvatarUrl || null;
-  return { name, avatarUrl, fallback };
+function resolveUiPeerProfile(session) {
+  if (!session) {
+    return {
+      name: '好友',
+      avatarUrl: null,
+      source: 'fallback',
+      peerKey: null,
+      hasNickname: false,
+      hasAvatar: false
+    };
+  }
+  const profile = resolveCallPeerProfile({
+    peerAccountDigest: session.peerAccountDigest,
+    peerDeviceId: session.peerDeviceId,
+    peerKey: session.peerKey || null,
+    displayNameFallback: session.remoteDisplayName || session.peerDisplayName || null
+  });
+  const name = profile.nickname || profile.placeholderName || profile.fallbackName || '好友';
+  const avatarUrl = profile.avatarUrl || null;
+  return {
+    ...profile,
+    name,
+    avatarUrl,
+    hasNickname: !!profile.nickname,
+    hasAvatar: !!avatarUrl
+  };
 }
 
-function formatPeerName(session) {
-  if (!session) return '好友';
-  const profile = resolveRemoteProfile(session);
-  return profile.name || '好友';
+function maybeLogPeerProfile(session, profile, state) {
+  if (!session || !profile || !state) return;
+  const logKey = `${session.callId || 'unknown'}:${profile.peerKey || profile.peerAccountDigest || 'unknown'}:${profile.source}:${profile.hasNickname ? '1' : '0'}:${profile.hasAvatar ? '1' : '0'}`;
+  if (state.lastProfileLogKey === logKey) return;
+  state.lastProfileLogKey = logKey;
+  try {
+    console.info('[call] ui:peer-profile ' + JSON.stringify({
+      callId: session.callId || null,
+      peerKey: profile.peerKey || profile.peerAccountDigest || null,
+      hasNickname: !!profile.hasNickname,
+      hasAvatar: !!profile.hasAvatar,
+      source: profile.source || 'fallback'
+    }));
+  } catch {}
 }
 
-function renderAvatarContent(el, session) {
-  if (!el) return;
+function renderAvatarContent(el, profile) {
+  if (!el || !profile) return;
   el.innerHTML = '';
-  const profile = resolveRemoteProfile(session);
   if (profile.avatarUrl) {
     const img = document.createElement('img');
     img.src = profile.avatarUrl;
@@ -392,7 +420,7 @@ function renderAvatarContent(el, session) {
     el.appendChild(img);
     return;
   }
-  const peerKey = session?.peerAccountDigest || '?';
+  const peerKey = profile.peerAccountDigest || '?';
   const initials = (profile.name || peerKey || '?')
     .replace(/\s+/g, '')
     .slice(0, 2)
@@ -400,8 +428,8 @@ function renderAvatarContent(el, session) {
   el.textContent = initials;
 }
 
-function updateAvatar(el, session) {
-  renderAvatarContent(el, session);
+function updateAvatar(el, profile) {
+  renderAvatarContent(el, profile);
 }
 
 function shouldDisplay(status) {
@@ -434,7 +462,8 @@ export function initCallOverlay({ showToast }) {
       baseX: 0,
       baseY: 0,
       moved: false
-    }
+    },
+    lastProfileLogKey: null
   };
   const audio = createCallAudioManager();
 
@@ -626,11 +655,12 @@ export function initCallOverlay({ showToast }) {
     setToggleState(ui.speakerBtn, !!remoteMuted);
   }
 
-  function updateBubbleDetails(session) {
+  function updateBubbleDetails(profile) {
     if (!ui.bubble) return;
-    const labelName = session ? formatPeerName(session) : '好友';
+    const safeProfile = profile || { name: '好友', peerAccountDigest: null, avatarUrl: null };
+    const labelName = safeProfile.name || '好友';
     ui.bubble.setAttribute('aria-label', `回到與 ${labelName} 的通話`);
-    renderAvatarContent(ui.bubbleAvatar, session);
+    renderAvatarContent(ui.bubbleAvatar, safeProfile);
   }
 
   function syncAudio(session) {
@@ -665,11 +695,13 @@ export function initCallOverlay({ showToast }) {
       return;
     }
     setVisibility(true);
-    if (ui.nameLabel) ui.nameLabel.textContent = formatPeerName(session);
+    const profile = resolveUiPeerProfile(session);
+    maybeLogPeerProfile(session, profile, state);
+    if (ui.nameLabel) ui.nameLabel.textContent = profile.name || '好友';
     if (ui.statusLabel) ui.statusLabel.textContent = describeStatus(session);
     if (ui.secureLabel) ui.secureLabel.textContent = describeSecureStatus(session);
-    updateAvatar(ui.avatar, session);
-    updateBubbleDetails(session);
+    updateAvatar(ui.avatar, profile);
+    updateBubbleDetails(profile);
     updateTimer(session);
     syncControlStates(session);
     const incoming = session.status === CALL_SESSION_STATUS.INCOMING;

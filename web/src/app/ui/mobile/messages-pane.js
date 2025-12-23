@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId } from '../../core/store.js';
+import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
@@ -23,7 +23,7 @@ import { clearDrState } from '../../core/store.js';
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
-import { deleteSecureConversation } from '../../api/messages.js';
+import { deleteSecureConversation, listSecureMessages as apiListSecureMessages } from '../../api/messages.js';
 import { createGroup as apiCreateGroup } from '../../api/groups.js';
 import {
   CALL_EVENT,
@@ -38,7 +38,8 @@ import {
   getSelfProfileSummary,
   prepareCallKeyEnvelope,
   startOutgoingCallMedia,
-  subscribeCallEvent
+  subscribeCallEvent,
+  resolveCallPeerProfile
 } from '../../features/calls/index.js';
 import { buildCallPeerIdentity } from '../../features/calls/identity.js';
 import {
@@ -53,6 +54,8 @@ const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
 const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
+const renderState = { conversationId: null, renderedIds: [] };
+let pendingNewMessageHint = false;
 
 function normalizeMsgTypeValue(value) {
   if (!value || typeof value !== 'string') return null;
@@ -161,6 +164,9 @@ function resetMessageStateWithPlaceholders() {
   clearCallLogPlaceholders();
   resetMessageState();
   stopActivePoll();
+  renderState.conversationId = null;
+  renderState.renderedIds = [];
+  pendingNewMessageHint = false;
 }
 
 let activePollTimer = null;
@@ -606,16 +612,41 @@ export function initMessagesPane({
 
   function handleCallStateEvent(detail = {}) {
     const session = detail.session || null;
-    const peerDigest = ensurePeerAccountDigest(session);
-    if (!peerDigest) return;
+    if (!session) return;
     const status = session.status;
     if (![CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(status)) return;
-    const identifier = session.callId || session.traceId || `${peerDigest}-${session.requestedAt || Date.now()}`;
+    const peerProfile = resolveCallPeerProfile({
+      peerAccountDigest: session.peerAccountDigest,
+      peerDeviceId: session.peerDeviceId,
+      peerKey: session.peerKey || null
+    });
+    const peerDigest = peerProfile.peerAccountDigest || ensurePeerAccountDigest(session);
+    const peerDeviceId = peerProfile.peerDeviceId
+      || normalizePeerDeviceId(session?.peerDeviceId || null)
+      || normalizePeerIdentity(session?.peerKey || session)?.deviceId
+      || null;
+    const identifier = session.callId || session.traceId || `${peerDigest || 'unknown'}-${session.requestedAt || Date.now()}`;
     if (sentCallLogIds.has(identifier)) return;
     sentCallLogIds.add(identifier);
-    const endedAt = session.endedAt || Date.now();
-    const connectedAt = session.connectedAt || null;
-    const durationSeconds = connectedAt ? Math.max(1, Math.round((endedAt - connectedAt) / 1000)) : 0;
+    if (!peerDigest || !peerDeviceId) {
+      try {
+        console.info('[call] log:skip ' + JSON.stringify({ reason: 'missing-peer', callId: session.callId || identifier }));
+      } catch {}
+      return;
+    }
+    const state = getMessageState();
+    const conversationId = state.conversationId || peerProfile.conversationId || null;
+    if (!conversationId) {
+      try {
+        console.info('[call] log:skip ' + JSON.stringify({ reason: 'missing-conversation', callId: session.callId || identifier }));
+      } catch {}
+      return;
+    }
+    const endedAtMs = session.endedAt || Date.now();
+    const startedAtMs = session.connectedAt || session.requestedAt || null;
+    const durationSeconds = startedAtMs ? Math.max(0, Math.round((endedAtMs - startedAtMs) / 1000)) : 0;
+    const startedAt = startedAtMs ? Math.floor(startedAtMs / 1000) : null;
+    const endedAt = Math.floor(endedAtMs / 1000);
     const direction = (() => {
       if (session.direction === CALL_SESSION_DIRECTION.INCOMING || session.direction === CALL_SESSION_DIRECTION.OUTGOING) {
         return session.direction;
@@ -645,16 +676,19 @@ export function initMessagesPane({
     const entry = {
       id: messageId,
       callId: session.callId || identifier,
-      ts: Math.floor(endedAt / 1000),
+      ts: endedAt,
       peerAccountDigest: peerDigest,
+      peerDeviceId,
       direction,
       durationSeconds,
       outcome,
-      reason: normalizedReason || null
+      reason: normalizedReason || null,
+      startedAt,
+      endedAt
     };
-    const state = getMessageState();
     const isOutgoing = direction === CALL_SESSION_DIRECTION.OUTGOING;
-    const isActive = state.activePeerDigest === peerDigest;
+    const isActive = state.activePeerDigest === peerDigest
+      && (!state.activePeerDeviceId || state.activePeerDeviceId === peerDeviceId);
     const exists = hasCallLog(entry.callId);
     const viewerMessage = createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
     let localMessage = null;
@@ -666,26 +700,24 @@ export function initMessagesPane({
       localMessage.msgType = 'call-log';
       localMessage.direction = isOutgoing ? 'outgoing' : 'incoming';
       localMessage.ts = localMessage.ts || entry.ts;
-      if (state.conversationId) {
-        localMessage.conversationId = state.conversationId;
-        const appended = timelineAppendUserMessage(state.conversationId, localMessage);
-        if (appended) {
-          try {
-            console.info('[msg] ' + JSON.stringify({
-              event: 'timeline:append',
-              conversationId: state.conversationId,
-              messageId: localMessage.id,
-              direction: localMessage.direction,
-              msgType: 'call-log',
-              ts: localMessage.ts || null
-            }));
-          } catch {
-            /* ignore */
-          }
+      localMessage.conversationId = conversationId;
+      const appended = timelineAppendUserMessage(conversationId, localMessage);
+      if (appended) {
+        try {
+          console.info('[msg] ' + JSON.stringify({
+            event: 'timeline:append',
+            conversationId,
+            messageId: localMessage.id,
+            direction: localMessage.direction,
+            msgType: 'call-log',
+            ts: localMessage.ts || null
+          }));
+        } catch {
+          /* ignore */
         }
-        refreshTimelineState(state.conversationId);
-        updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
       }
+      refreshTimelineState(conversationId);
+      updateMessagesUI({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
       trackCallLogPlaceholder(peerDigest, entry.callId, localMessage);
     }
     updateThreadsWithCallLogDisplay({
@@ -696,17 +728,34 @@ export function initMessagesPane({
     });
     if (entry.id && !sentCallLogIds.has(entry.id) && !exists) {
       sentCallLogIds.add(entry.id);
+      const logPayload = {
+        conversationId,
+        callId: entry.callId,
+        messageId: entry.id,
+        direction: entry.direction
+      };
       sendDrCallLog({
         peerAccountDigest: peerDigest,
+        peerDeviceId,
         callId: entry.callId,
         outcome,
         durationSeconds,
         direction: entry.direction,
         reason: normalizedReason || null,
         ts: entry.ts,
+        startedAt,
+        endedAt,
+        conversation: { conversation_id: conversationId },
         messageId: entry.id
+      }).then(() => {
+        try {
+          console.info('[call] log:send ' + JSON.stringify({ ...logPayload, ok: true }));
+        } catch {}
       }).catch((err) => {
-        log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest });
+        log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest, peerDeviceId });
+        try {
+          console.info('[call] log:send ' + JSON.stringify({ ...logPayload, ok: false, reason: err?.message || err }));
+        } catch {}
       });
     }
     releaseCallLogPlaceholder(peerDigest, entry.callId);
@@ -1239,6 +1288,9 @@ export function initMessagesPane({
     if (!elements.statusLabel) return;
     elements.statusLabel.textContent = message || '';
     elements.statusLabel.style.color = isError ? '#dc2626' : '#64748b';
+    if (pendingNewMessageHint && message !== '有新訊息') {
+      pendingNewMessageHint = false;
+    }
   }
 
   function updateConversationActionsAvailability() {
@@ -1475,6 +1527,9 @@ export function initMessagesPane({
       setLoadMoreState('armed');
     } else {
       setLoadMoreState('idle');
+    }
+    if (isNearMessagesBottom()) {
+      setNewMessageHint(false);
     }
   }
 
@@ -2144,18 +2199,155 @@ export function initMessagesPane({
     renderUploadOverlay(wrapper, media);
   }
 
-  function updateMessagesUI({ scrollToEnd = false, preserveScroll = false } = {}) {
+  function normalizeTimelineMessageId(msg) {
+    if (!msg) return null;
+    const id = msg.id || msg.messageId || msg.serverMessageId || msg.server_message_id || null;
+    return typeof id === 'string' && id.trim() ? id.trim() : null;
+  }
+
+  function normalizeRawMessageId(raw) {
+    if (!raw) return null;
+    const candidates = [raw.id, raw.message_id, raw.messageId];
+    for (const val of candidates) {
+      if (typeof val === 'string' && val.trim()) return val.trim();
+    }
+    return null;
+  }
+
+  function extractMessageTimestamp(raw) {
+    if (!raw) return null;
+    const candidates = [raw.created_at, raw.createdAt, raw.ts, raw.timestamp, raw.meta?.ts];
+    for (const val of candidates) {
+      const n = Number(val);
+      if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    }
+    return null;
+  }
+
+  function sortMessagesByTimelineLocal(items = []) {
+    if (!Array.isArray(items) || items.length <= 1) return Array.isArray(items) ? items : [];
+    const enriched = items.map((item) => ({
+      raw: item,
+      ts: extractMessageTimestamp(item),
+      id: normalizeRawMessageId(item)
+    }));
+    enriched.sort((a, b) => {
+      const aHasTs = Number.isFinite(a.ts);
+      const bHasTs = Number.isFinite(b.ts);
+      if (aHasTs && bHasTs && a.ts !== b.ts) return a.ts - b.ts;
+      if (aHasTs && !bHasTs) return 1;
+      if (!aHasTs && bHasTs) return -1;
+      if (a.id && b.id && a.id !== b.id) return a.id.localeCompare(b.id);
+      if (a.id && !b.id) return 1;
+      if (!a.id && b.id) return -1;
+      return 0;
+    });
+    return enriched.map((entry) => entry.raw);
+  }
+
+  function latestKeyFromTimeline(messages = []) {
+    if (!Array.isArray(messages) || !messages.length) return null;
+    const last = messages[messages.length - 1];
+    const id = normalizeTimelineMessageId(last);
+    const tsVal = Number(last?.ts ?? null);
+    const ts = Number.isFinite(tsVal) ? tsVal : null;
+    if (!id && !Number.isFinite(ts)) return null;
+    return { id, ts };
+  }
+
+  function latestKeyFromRaw(items = []) {
+    const sorted = sortMessagesByTimelineLocal(items);
+    if (!sorted.length) return null;
+    const last = sorted[sorted.length - 1];
+    const id = normalizeRawMessageId(last);
+    const tsVal = extractMessageTimestamp(last);
+    const ts = Number.isFinite(tsVal) ? tsVal : null;
+    if (!id && !Number.isFinite(ts)) return null;
+    return { id, ts };
+  }
+
+  function latestKeysEqual(a, b) {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    return (a.id || null) === (b.id || null) && (a.ts || null) === (b.ts || null);
+  }
+
+  function collectTimelineIdSet(messages = []) {
+    const set = new Set();
+    if (!Array.isArray(messages)) return set;
+    for (const msg of messages) {
+      const mid = normalizeTimelineMessageId(msg);
+      if (mid) set.add(mid);
+    }
+    return set;
+  }
+
+  function isNearMessagesBottom(threshold = 32) {
+    const scroller = elements.scrollEl;
+    if (!scroller) return true;
+    const distance = scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
+    return distance <= threshold;
+  }
+
+  function captureScrollAnchor() {
+    if (!elements.scrollEl || !elements.messagesList) return null;
+    const scroller = elements.scrollEl;
+    const scrollTop = scroller.scrollTop;
+    const scrollTopPx = scroller.getBoundingClientRect().top;
+    const bubbles = elements.messagesList.querySelectorAll('.message-bubble[data-message-id]');
+    for (const bubble of bubbles) {
+      const rect = bubble.getBoundingClientRect();
+      const offset = rect.top - scrollTopPx + scrollTop;
+      const bottom = offset + rect.height;
+      if (bottom >= scrollTop) {
+        const id = bubble.dataset.messageId || null;
+        if (id) return { id, top: offset };
+      }
+    }
+    return null;
+  }
+
+  function restoreScrollFromAnchor(anchor) {
+    if (!anchor || !elements.scrollEl || !elements.messagesList) return;
+    const selector = `.message-bubble[data-message-id="${escapeSelector(anchor.id)}"]`;
+    const bubble = elements.messagesList.querySelector(selector);
+    if (!bubble) return;
+    const scroller = elements.scrollEl;
+    const scrollTop = scroller.scrollTop;
+    const scrollTopPx = scroller.getBoundingClientRect().top;
+    const rect = bubble.getBoundingClientRect();
+    const offset = rect.top - scrollTopPx + scrollTop;
+    const delta = offset - anchor.top;
+    if (delta !== 0) {
+      scroller.scrollTop = Math.max(0, scrollTop + delta);
+    }
+  }
+
+  function setNewMessageHint(active) {
+    if (!elements.statusLabel) return;
+    if (active) {
+      if (pendingNewMessageHint) return;
+      if (elements.statusLabel.textContent && elements.statusLabel.textContent.trim() && elements.statusLabel.textContent !== '有新訊息') return;
+      elements.statusLabel.textContent = '有新訊息';
+      elements.statusLabel.style.color = '#64748b';
+      pendingNewMessageHint = true;
+    } else if (pendingNewMessageHint) {
+      if (elements.statusLabel.textContent === '有新訊息') {
+        elements.statusLabel.textContent = '';
+      }
+      pendingNewMessageHint = false;
+    }
+  }
+
+  function updateMessagesUI({ scrollToEnd = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
     if (!elements.messagesList) return;
     const state = getMessageState();
     const appendedIds = [];
-    let prevHeight = 0;
-    let prevScroll = 0;
-    if (preserveScroll && elements.scrollEl) {
-      prevHeight = elements.scrollEl.scrollHeight;
-      prevScroll = elements.scrollEl.scrollTop;
-    }
-
     const timelineMessages = refreshTimelineState(state.conversationId);
+    const timelineIds = timelineMessages.map((m) => normalizeTimelineMessageId(m));
+    const anchorNeeded = preserveScroll || (!scrollToEnd && !isNearMessagesBottom());
+    const anchor = anchorNeeded ? captureScrollAnchor() : null;
+
     try {
       console.info('[msg] ' + JSON.stringify({
         event: 'ui:render',
@@ -2175,169 +2367,202 @@ export function initMessagesPane({
         peerDeviceId: state.activePeerDeviceId || null
       });
     } catch {}
-    elements.messagesList.innerHTML = '';
-    if (!timelineMessages.length) {
-      elements.messagesEmpty?.classList.remove('hidden');
-    } else {
-      elements.messagesEmpty?.classList.add('hidden');
-      let prevTs = null;
-      let prevDateKey = null;
-      const visibleStatusIndex = computeVisibleStatusIndex(timelineMessages);
-      const logUiAppend = (msg, overrides = {}) => {
-        const payload = {
-          stage: 'ui',
-          action: 'append',
-          index: typeof overrides.index === 'number' ? overrides.index : null,
-          conversationId: state.conversationId || null,
-          serverMessageId: msg.serverMessageId || msg.server_message_id || msg.serverMsgId || msg.messageId || null,
-          messageId: msg.id || msg.messageId || null,
-          packetKey: msg.packetKey || msg.packet_key || null,
-          direction: msg.direction || null,
-          msgType: overrides.msgType || msg.type || (msg.media ? 'media' : 'text'),
-          ts: msg.ts || null,
-          senderDigest: msg.senderDigest || msg.sender_digest || msg.meta?.senderDigest || msg.meta?.sender_digest || null,
-          senderDeviceId: msg.senderDeviceId || msg.sender_device_id || msg.meta?.senderDeviceId || msg.meta?.sender_device_id || msg.header?.device_id || null,
-          peerDigest: state.activePeerDigest || msg.peerAccountDigest || msg.peerDigest || null,
-          peerDeviceId: state.activePeerDeviceId || msg.peerDeviceId || msg.peer_device_id || null
-        };
-        Object.assign(payload, overrides);
-        logMsgEvent('ui:append', payload);
-        if (payload.messageId) appendedIds.push(payload.messageId);
-      };
-      let renderIndex = 0;
-      for (const msg of timelineMessages) {
-        const currentIndex = renderIndex;
-        renderIndex += 1;
-        const tsVal = Number(msg.ts || null);
-        const hasTs = Number.isFinite(tsVal);
-        const dateKey = hasTs ? new Date(tsVal * 1000).toDateString() : null;
-        if (hasTs) {
-          const needSeparator = prevTs === null
-            || prevDateKey !== dateKey
-            || (tsVal - prevTs) >= 300;
-          if (needSeparator) {
-            const sep = document.createElement('li');
-            sep.className = 'message-separator';
-            sep.textContent = formatTimestamp(tsVal);
-            elements.messagesList.appendChild(sep);
-          }
-          prevTs = tsVal;
-          prevDateKey = dateKey;
-        }
-        const li = document.createElement('li');
-        const messageType = msg.type || (msg.media ? 'media' : 'text');
-        if (!msg.type) msg.type = messageType;
-        if (messageType === 'call-log' && msg.callLog) {
-          li.className = 'call-log-entry';
-          const chip = document.createElement('div');
-          const outcome = msg.callLog.outcome || 'missed';
-          chip.className = `call-log-chip ${outcome}`;
-          const icon = document.createElement('span');
-          icon.className = 'call-log-icon';
-          icon.innerHTML = CALL_LOG_PHONE_ICON;
-          chip.appendChild(icon);
-          const textGroup = document.createElement('div');
-          textGroup.className = 'call-log-text-group';
-          const main = document.createElement('div');
-          main.className = 'call-log-main';
-          const viewerRole = msg.callLog.viewerRole || resolveViewerRole(msg.callLog.authorRole, msg.direction);
-          const { label, subLabel } = describeCallLogForViewer(msg.callLog, viewerRole);
-          main.textContent = label || '語音通話';
-          textGroup.appendChild(main);
-          if (subLabel) {
-            const sub = document.createElement('div');
-            sub.className = 'call-log-sub';
-            sub.textContent = subLabel;
-            textGroup.appendChild(sub);
-          }
-          chip.appendChild(textGroup);
-          li.appendChild(chip);
-          elements.messagesList.appendChild(li);
-          try {
-            logUiAppend(msg, { msgType: 'call-log', index: currentIndex });
-          } catch {}
-          continue;
-        }
-        const row = document.createElement('div');
-        row.className = 'message-row';
-        if (msg.direction === 'outgoing') {
-          row.style.justifyContent = 'flex-end';
-        }
-        if (msg.direction === 'incoming') {
-          const avatar = document.createElement('div');
-          avatar.className = 'message-avatar';
-          const contact = msg.direction === 'incoming' ? sessionStore.contactIndex?.get?.(state.activePeerDigest || '') : null;
-          const name = contact?.nickname || '';
-          const initials = name ? name.slice(0, 1) : '好友';
-          avatar.textContent = initials;
-          if (contact?.avatar?.thumbDataUrl || contact?.avatar?.previewDataUrl || contact?.avatar?.url) {
-            const img = document.createElement('img');
-            img.src = contact.avatar.thumbDataUrl || contact.avatar.previewDataUrl || contact.avatar.url;
-            img.alt = name || 'avatar';
-            avatar.textContent = '';
-            avatar.appendChild(img);
-          }
-          row.appendChild(avatar);
-        } else {
-          row.style.gap = '0';
-        }
-        const bubble = document.createElement('div');
-        bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
-        if (msg.id) bubble.dataset.messageId = msg.id;
-        if (messageType === 'media' && msg.media) {
-          renderMediaBubble(bubble, msg);
-        } else {
-          bubble.textContent = msg.text || msg.error || '(無法解密)';
-        }
-        row.appendChild(bubble);
-        li.appendChild(row);
 
-        const metaRow = document.createElement('div');
-        metaRow.className = 'message-meta';
-        const timeSpan = document.createElement('span');
-        timeSpan.className = 'message-meta-time';
-        timeSpan.textContent = formatTimeShort(tsVal);
-        metaRow.appendChild(timeSpan);
-        if (msg.direction === 'outgoing' && typeof visibleStatusIndex === 'number' && timelineMessages[visibleStatusIndex] === msg) {
-          const statusSpan = document.createElement('span');
-          const status = msg.status || (msg.read ? 'read' : 'sent');
-          let label = '';
-          if (status === 'pending') {
-            statusSpan.className = 'message-status pending';
-            label = '';
-          } else if (status === 'failed') {
-            statusSpan.className = 'message-status failed';
-            label = '!';
-          } else if (status === 'delivered') {
-            statusSpan.className = 'message-status delivered';
-            label = '✓✓';
-          } else if (status === 'read') {
-            statusSpan.className = 'message-status read';
-            label = '✓✓';
-          } else {
-            statusSpan.className = 'message-status sent';
-            label = '✓';
-          }
-          statusSpan.textContent = label;
-          metaRow.appendChild(statusSpan);
-        }
-        li.appendChild(metaRow);
-        elements.messagesList.appendChild(li);
-        try {
-          logUiAppend(msg, { index: currentIndex });
-        } catch {}
-      }
+    if (!timelineMessages.length) {
+      elements.messagesList.innerHTML = '';
+      elements.messagesEmpty?.classList.remove('hidden');
+      renderState.renderedIds = [];
+      renderState.conversationId = state.conversationId || null;
+      updateLoadMoreVisibility();
+      updateMessagesScrollOverflow();
+      if (!scrollToEnd && anchor) restoreScrollFromAnchor(anchor);
+      return;
     }
 
+    elements.messagesEmpty?.classList.add('hidden');
+    const convChanged = renderState.conversationId !== state.conversationId;
+    const prefixMatches = !convChanged && renderState.renderedIds.length > 0
+      ? renderState.renderedIds.every((id, idx) => id === timelineIds[idx])
+      : false;
+    const canAppend = !forceFullRender && prefixMatches && renderState.renderedIds.length <= timelineMessages.length;
+    const startIndex = canAppend ? renderState.renderedIds.length : 0;
+    if (!canAppend) {
+      elements.messagesList.innerHTML = '';
+    }
+
+    const visibleStatusIndex = computeVisibleStatusIndex(timelineMessages);
+    const logUiAppend = (msg, overrides = {}) => {
+      const payload = {
+        stage: 'ui',
+        action: 'append',
+        index: typeof overrides.index === 'number' ? overrides.index : null,
+        conversationId: state.conversationId || null,
+        serverMessageId: msg.serverMessageId || msg.server_message_id || msg.serverMsgId || msg.messageId || null,
+        messageId: msg.id || msg.messageId || null,
+        packetKey: msg.packetKey || msg.packet_key || null,
+        direction: msg.direction || null,
+        msgType: overrides.msgType || msg.type || (msg.media ? 'media' : 'text'),
+        ts: msg.ts || null,
+        senderDigest: msg.senderDigest || msg.sender_digest || msg.meta?.senderDigest || msg.meta?.sender_digest || null,
+        senderDeviceId: msg.senderDeviceId || msg.sender_device_id || msg.meta?.senderDeviceId || msg.meta?.sender_device_id || msg.header?.device_id || null,
+        peerDigest: state.activePeerDigest || msg.peerAccountDigest || msg.peerDigest || null,
+        peerDeviceId: state.activePeerDeviceId || msg.peerDeviceId || msg.peer_device_id || null
+      };
+      Object.assign(payload, overrides);
+      logMsgEvent('ui:append', payload);
+      if (payload.messageId) appendedIds.push(payload.messageId);
+    };
+    let prevTs = null;
+    let prevDateKey = null;
+    if (startIndex > 0) {
+      const prevMsg = timelineMessages[startIndex - 1];
+      const tsVal = Number(prevMsg?.ts ?? null);
+      if (Number.isFinite(tsVal)) {
+        prevTs = tsVal;
+        prevDateKey = new Date(tsVal * 1000).toDateString();
+      }
+    }
+    let renderIndex = startIndex;
+    for (let i = startIndex; i < timelineMessages.length; i += 1) {
+      const msg = timelineMessages[i];
+      const currentIndex = renderIndex;
+      renderIndex += 1;
+      const tsVal = Number(msg.ts || null);
+      const hasTs = Number.isFinite(tsVal);
+      const dateKey = hasTs ? new Date(tsVal * 1000).toDateString() : null;
+      if (hasTs) {
+        const needSeparator = prevTs === null
+          || prevDateKey !== dateKey
+          || (tsVal - prevTs) >= 300;
+        if (needSeparator) {
+          const sep = document.createElement('li');
+          sep.className = 'message-separator';
+          sep.textContent = formatTimestamp(tsVal);
+          elements.messagesList.appendChild(sep);
+        }
+        prevTs = tsVal;
+        prevDateKey = dateKey;
+      }
+      const li = document.createElement('li');
+      const messageType = msg.type || (msg.media ? 'media' : 'text');
+      if (!msg.type) msg.type = messageType;
+      if (messageType === 'call-log' && msg.callLog) {
+        li.className = 'call-log-entry';
+        const chip = document.createElement('div');
+        const outcome = msg.callLog.outcome || 'missed';
+        chip.className = `call-log-chip ${outcome}`;
+        const icon = document.createElement('span');
+        icon.className = 'call-log-icon';
+        icon.innerHTML = CALL_LOG_PHONE_ICON;
+        chip.appendChild(icon);
+        const textGroup = document.createElement('div');
+        textGroup.className = 'call-log-text-group';
+        const main = document.createElement('div');
+        main.className = 'call-log-main';
+        const viewerRole = msg.callLog.viewerRole || resolveViewerRole(msg.callLog.authorRole, msg.direction);
+        const { label, subLabel } = describeCallLogForViewer(msg.callLog, viewerRole);
+        main.textContent = label || '語音通話';
+        textGroup.appendChild(main);
+        if (subLabel) {
+          const sub = document.createElement('div');
+          sub.className = 'call-log-sub';
+          sub.textContent = subLabel;
+          textGroup.appendChild(sub);
+        }
+        chip.appendChild(textGroup);
+        li.appendChild(chip);
+        elements.messagesList.appendChild(li);
+        try {
+          logUiAppend(msg, { msgType: 'call-log', index: currentIndex });
+        } catch {}
+        continue;
+      }
+      const row = document.createElement('div');
+      row.className = 'message-row';
+      if (msg.direction === 'outgoing') {
+        row.style.justifyContent = 'flex-end';
+      }
+      if (msg.direction === 'incoming') {
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        const contact = msg.direction === 'incoming' ? sessionStore.contactIndex?.get?.(state.activePeerDigest || '') : null;
+        const name = contact?.nickname || '';
+        const initials = name ? name.slice(0, 1) : '好友';
+        avatar.textContent = initials;
+        if (contact?.avatar?.thumbDataUrl || contact?.avatar?.previewDataUrl || contact?.avatar?.url) {
+          const img = document.createElement('img');
+          img.src = contact.avatar.thumbDataUrl || contact.avatar.previewDataUrl || contact.avatar.url;
+          img.alt = name || 'avatar';
+          avatar.textContent = '';
+          avatar.appendChild(img);
+        }
+        row.appendChild(avatar);
+      } else {
+        row.style.gap = '0';
+      }
+      const bubble = document.createElement('div');
+      bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
+      if (msg.id) bubble.dataset.messageId = msg.id;
+      if (messageType === 'media' && msg.media) {
+        renderMediaBubble(bubble, msg);
+      } else {
+        bubble.textContent = msg.text || msg.error || '(無法解密)';
+      }
+      row.appendChild(bubble);
+      li.appendChild(row);
+      const metaRow = document.createElement('div');
+      metaRow.className = 'message-meta';
+      const ts = document.createElement('span');
+      ts.className = 'message-ts';
+      ts.textContent = formatTimestamp(msg.ts);
+      metaRow.appendChild(ts);
+      if (messageType !== 'call-log') {
+        const statusSpan = document.createElement('span');
+        const status = typeof msg?.status === 'string' ? msg.status : (msg.read ? 'read' : null);
+        if (msg.direction === 'outgoing' && typeof visibleStatusIndex === 'number' && timelineMessages[visibleStatusIndex] === msg) {
+          statusSpan.className = 'message-status read';
+          statusSpan.textContent = '✓✓';
+        } else if (msg.direction === 'incoming') {
+          statusSpan.className = 'message-status peer';
+          statusSpan.textContent = '';
+        } else if (msg.pending) {
+          statusSpan.className = 'message-status pending';
+          statusSpan.textContent = '';
+        } else if (status === 'failed') {
+          statusSpan.className = 'message-status failed';
+          statusSpan.textContent = '!';
+        } else if (status === 'delivered') {
+          statusSpan.className = 'message-status delivered';
+          statusSpan.textContent = '✓✓';
+        } else if (status === 'read') {
+          statusSpan.className = 'message-status read';
+          statusSpan.textContent = '✓✓';
+        } else {
+          statusSpan.className = 'message-status sent';
+          statusSpan.textContent = '✓';
+        }
+        metaRow.appendChild(statusSpan);
+      }
+      li.appendChild(metaRow);
+      elements.messagesList.appendChild(li);
+      try {
+        logUiAppend(msg, { index: currentIndex });
+      } catch {}
+    }
+
+    renderState.conversationId = state.conversationId || null;
+    renderState.renderedIds = timelineIds.filter(Boolean);
     updateLoadMoreVisibility();
 
     if (elements.scrollEl) {
-      if (preserveScroll) {
-        const diff = elements.scrollEl.scrollHeight - prevHeight;
-        elements.scrollEl.scrollTop = Math.max(0, prevScroll + diff);
-      } else if (scrollToEnd) {
+      if (scrollToEnd) {
         scrollMessagesToBottom();
+      } else if (anchor) {
+        restoreScrollFromAnchor(anchor);
       }
+    }
+    if (scrollToEnd) {
+      setNewMessageHint(false);
     }
     updateMessagesScrollOverflow();
     try {
@@ -2345,12 +2570,11 @@ export function initMessagesPane({
         text: el.textContent,
         hidden: el.offsetParent === null
       }));
-      log({ messagesRendered: diagnostics });
+      log({ messagesRendered: diagnostics, newMessageIds, appendedIds });
     } catch (err) {
       log({ messagesRenderLogError: err?.message || err });
     }
   }
-
   async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true, silent = false, reason } = {}) {
     const state = getMessageState();
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
@@ -2369,21 +2593,71 @@ export function initMessagesPane({
 
     state.loading = true;
     if (!append && !silent) setMessagesStatus('載入中…');
+    const beforeTimeline = refreshTimelineState(state.conversationId);
+    const beforeIdSet = collectTimelineIdSet(beforeTimeline);
+    const uiLatestKey = latestKeyFromTimeline(beforeTimeline);
     try {
       const cursor = append ? state.nextCursor : undefined;
+      const cursorTs = cursor?.ts ?? cursor ?? undefined;
+      const cursorId = cursor?.id ?? undefined;
       const forceReplay = !append && replay;
-      const { nextCursor, nextCursorTs, errors, receiptUpdates, deadLetters, hasMoreAtCursor } = await listSecureAndDecrypt({
+      let prefetch = null;
+      let serverLatestKey = null;
+
+      if (!append) {
+        try {
+          const { r, data } = await apiListSecureMessages({
+            conversationId: state.conversationId,
+            limit: 50,
+            cursorTs,
+            cursorId
+          });
+          const items = Array.isArray(data?.items) ? data.items : [];
+          const sortedItems = sortMessagesByTimelineLocal(items);
+          serverLatestKey = latestKeyFromRaw(sortedItems);
+          if (silent && latestKeysEqual(uiLatestKey, serverLatestKey)) {
+            try {
+              console.info('[msg] poll:no-op ' + JSON.stringify({
+                conversationId: state.conversationId || null,
+                uiLatestId: uiLatestKey?.id || null,
+                serverLatestId: serverLatestKey?.id || null
+              }));
+            } catch {}
+            return;
+          }
+          const newItems = sortedItems.filter((item) => {
+            const mid = normalizeRawMessageId(item);
+            if (!mid) return true;
+            return !beforeIdSet.has(mid);
+          });
+          prefetch = { r, data: { ...(data || {}), items: newItems } };
+        } catch (err) {
+          log({ prefetchMessagesError: err?.message || err });
+        }
+      }
+
+      const nearBottom = isNearMessagesBottom();
+      const listResult = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
         peerDeviceId: state.activePeerDeviceId || null,
         limit: 50,
-        cursorTs: cursor?.ts ?? cursor ?? undefined,
-        cursorId: cursor?.id ?? undefined,
+        cursorTs,
+        cursorId,
         mutateState: mutateLive && !forceReplay && !append,
         allowReplay: true,
-        onMessageDecrypted: handleMessageDecrypted
+        onMessageDecrypted: handleMessageDecrypted,
+        prefetchedList: prefetch
+          ? {
+              items: Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [],
+              nextCursor: prefetch?.data?.nextCursor ?? null,
+              nextCursorTs: prefetch?.data?.nextCursorTs ?? null,
+              hasMoreAtCursor: !!prefetch?.data?.hasMoreAtCursor
+            }
+          : null
       });
+      const { nextCursor, nextCursorTs, errors, receiptUpdates, deadLetters, hasMoreAtCursor } = listResult;
       const filteredErrors = Array.isArray(errors)
         ? errors.filter((entry) => !isControlBannerEntry(entry))
         : [];
@@ -2427,6 +2701,8 @@ export function initMessagesPane({
       }
       let receiptsChanged = false;
       const timelineMessages = refreshTimelineState(state.conversationId);
+      const afterIdSet = collectTimelineIdSet(timelineMessages);
+      const newMessageIds = Array.from(afterIdSet).filter((id) => !beforeIdSet.has(id));
       if (Array.isArray(receiptUpdates)) {
         for (const msg of timelineMessages) {
           if (msg?.id && receiptUpdates.includes(msg.id)) {
@@ -2437,10 +2713,11 @@ export function initMessagesPane({
         }
       }
       applyReceiptsToMessages(timelineMessages);
-      const shouldScrollToEnd = !append && !forceReplay;
-      updateMessagesUI({ scrollToEnd: shouldScrollToEnd, preserveScroll: append });
+      const shouldScrollToEnd = !append && !forceReplay && nearBottom;
+      const preserveScroll = append || !shouldScrollToEnd;
+      updateMessagesUI({ scrollToEnd: shouldScrollToEnd, preserveScroll, newMessageIds });
       if (receiptsChanged) {
-        updateMessagesUI({ preserveScroll: true });
+        updateMessagesUI({ preserveScroll: true, forceFullRender: true });
       }
       if (state.activePeerDigest) {
         for (const msg of timelineMessages) {
@@ -2448,6 +2725,24 @@ export function initMessagesPane({
             sendReadReceiptForMessage(msg);
           }
         }
+      }
+      if (silent && newMessageIds.length) {
+        try {
+          console.info('[msg] poll:append ' + JSON.stringify({
+            conversationId: state.conversationId || null,
+            newCount: newMessageIds.length,
+            nearBottom
+          }));
+        } catch {}
+      }
+      if (!append && !forceReplay && newMessageIds.length) {
+        if (shouldScrollToEnd) {
+          setNewMessageHint(false);
+        } else {
+          setNewMessageHint(true);
+        }
+      } else if (shouldScrollToEnd) {
+        setNewMessageHint(false);
       }
       syncThreadFromActiveMessages();
     } catch (err) {
@@ -2467,7 +2762,6 @@ export function initMessagesPane({
       scheduleActivePoll();
     }
   }
-
   async function setActiveConversation(peerAccountDigest) {
     stopActivePoll();
     const key = normalizePeerKey(peerAccountDigest);

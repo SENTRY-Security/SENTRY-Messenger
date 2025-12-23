@@ -865,7 +865,8 @@ export async function listSecureAndDecrypt(params = {}) {
     mutateState = true,
     allowReplay = false,
     onMessageDecrypted = null,
-    sendReadReceipt = true
+    sendReadReceipt = true,
+    prefetchedList = null
   } = params;
   if (!conversationId) throw new Error('conversationId required');
   logMsgEvent('fetch:start', {
@@ -966,7 +967,6 @@ export async function listSecureAndDecrypt(params = {}) {
     };
   }
 
-    const { r, data } = await deps.listSecureMessages({ conversationId, limit, cursorTs, cursorId });
   const out = [];
   const errs = [];
   const receiptUpdates = new Set();
@@ -977,30 +977,39 @@ export async function listSecureAndDecrypt(params = {}) {
   let nextCursor = null;
   let hasMoreAtCursor = false;
   let serverItemCount = 0;
-  if (!r.ok) {
-    if (r.status === 404 || r.status >= 500) {
-      errs.push(`訊息服務暫時無法使用（HTTP ${r.status}）`);
-      if (r.status >= 500) {
-        secureFetchBackoff.set(conversationId, now + 60_000);
+  if (prefetchedList) {
+    items = Array.isArray(prefetchedList.items) ? prefetchedList.items : [];
+    serverItemCount = items.length;
+    nextCursorTs = prefetchedList?.nextCursorTs ?? null;
+    nextCursor = prefetchedList?.nextCursor || (nextCursorTs != null && items.length ? { ts: nextCursorTs, id: items[items.length - 1]?.id || null } : null);
+    hasMoreAtCursor = !!prefetchedList?.hasMoreAtCursor;
+  } else {
+    const { r, data } = await deps.listSecureMessages({ conversationId, limit, cursorTs, cursorId });
+    if (!r.ok) {
+      if (r.status === 404 || r.status >= 500) {
+        errs.push(`訊息服務暫時無法使用（HTTP ${r.status}）`);
+        if (r.status >= 500) {
+          secureFetchBackoff.set(conversationId, now + 60_000);
+        }
+      } else {
+        const msg = typeof data === 'string' ? data : JSON.stringify(data);
+        throw new Error('listSecureMessages failed: ' + msg);
       }
     } else {
-      const msg = typeof data === 'string' ? data : JSON.stringify(data);
-      throw new Error('listSecureMessages failed: ' + msg);
-    }
-  } else {
-    items = Array.isArray(data?.items) ? data.items : [];
-    serverItemCount = items.length;
-    nextCursorTs = data?.nextCursorTs ?? null;
-    nextCursor = data?.nextCursor || (nextCursorTs != null && items.length ? { ts: nextCursorTs, id: items[items.length - 1]?.id || null } : null);
-    hasMoreAtCursor = !!data?.hasMoreAtCursor;
-    if (items.length || nextCursorTs !== null || nextCursor) {
-      secureFetchBackoff.delete(conversationId);
+      items = Array.isArray(data?.items) ? data.items : [];
+      serverItemCount = items.length;
+      nextCursorTs = data?.nextCursorTs ?? null;
+      nextCursor = data?.nextCursor || (nextCursorTs != null && items.length ? { ts: nextCursorTs, id: items[items.length - 1]?.id || null } : null);
+      hasMoreAtCursor = !!data?.hasMoreAtCursor;
+      if (items.length || nextCursorTs !== null || nextCursor) {
+        secureFetchBackoff.delete(conversationId);
+      }
     }
   }
   const drDebug = isDrDebugEnabled();
 
   // 若 server 表示同一時間戳仍有更多，連續補抓避免截斷（安全上限避免無窮迴圈）。
-  if (hasMoreAtCursor && nextCursor) {
+  if (hasMoreAtCursor && nextCursor && !prefetchedList) {
     const extraItems = [];
     let cursor = { ...nextCursor };
     let guard = 0;

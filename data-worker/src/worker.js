@@ -1,14 +1,3 @@
-/**
- * Worker (clean rebuild scaffold)
- * -------------------------------
- * 目標：以乾淨結構重新搬遷既有路由，避免括號/結構錯亂。
- * 步驟：
- * 1) 保留共用工具（HMAC 驗證、base64 helpers）。
- * 2) 依功能區塊逐步搬移路由（tags → friends → messages → groups → media/calls/subscription → accounts/admin）。
- * 3) 每搬完一塊都跑 `node --check data-worker/src/worker.clean.js` 確認語法。
- * 4) 全部完成後，以本檔覆蓋 worker.js 並部署。
- */
-
 import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
 

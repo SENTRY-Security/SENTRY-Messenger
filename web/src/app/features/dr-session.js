@@ -1898,31 +1898,73 @@ export async function sendDrMedia(params = {}) {
 }
 
 export async function sendDrCallLog(params = {}) {
-  const { callId, outcome, durationSeconds, direction, reason } = params;
+  const { callId, outcome, direction, reason } = params;
+  const peerAccountDigest = resolvePeerDigest(params);
+  const peerDeviceId = normalizePeerDeviceId(
+    params.peerDeviceId
+    || params.peer_device_id
+    || params.receiverDeviceId
+    || params.targetDeviceId
+    || params.peerDeviceId // for consistency if already normalized
+    || null
+  );
   const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
     ? params.messageId.trim()
     : null;
   if (!messageId) {
     throw new Error('messageId required for call-log send');
   }
+  if (!peerAccountDigest) {
+    throw new Error('peerAccountDigest required for call-log send');
+  }
+  if (!peerDeviceId) {
+    throw new Error('peerDeviceId required for call-log send');
+  }
+  const startedAtSec = Number.isFinite(params.startedAt) ? Math.max(0, Math.round(Number(params.startedAt))) : null;
+  const endedAtSec = Number.isFinite(params.endedAt) ? Math.max(0, Math.round(Number(params.endedAt))) : null;
+  const safeDuration = Number.isFinite(Number(params.durationSeconds))
+    ? Math.max(0, Math.round(Number(params.durationSeconds)))
+    : (startedAtSec != null && endedAtSec != null ? Math.max(0, endedAtSec - startedAtSec) : 0);
+  const conversationContext = conversationContextForPeer({ peerAccountDigest, peerDeviceId }) || {};
+  const conversationId = conversationContext?.conversation_id || conversationContext?.conversationId || null;
   const payload = {
     type: 'call-log',
     callId: callId || null,
     outcome,
-    durationSeconds,
+    durationSeconds: safeDuration,
+    durationSec: safeDuration,
     direction,
-    reason
+    reason,
+    endReason: reason || null,
+    peerAccountDigest,
+    peerDeviceId,
+    startedAt: startedAtSec,
+    endedAt: endedAtSec
   };
   const metaOverrides = {
     msg_type: 'call-log',
     call_id: callId || null,
     call_outcome: outcome,
-    call_duration: durationSeconds,
+    call_duration: safeDuration,
     call_direction: direction,
-    call_reason: reason || null
+    call_reason: reason || null,
+    peer_account_digest: peerAccountDigest,
+    peer_device_id: peerDeviceId,
+    call_started_at: startedAtSec,
+    call_ended_at: endedAtSec
   };
   const text = JSON.stringify(payload);
-  return sendDrPlaintext({ ...params, messageId, text, metaOverrides });
+  const conversation = params?.conversation || conversationContext || null;
+  const result = await sendDrPlaintext({
+    ...params,
+    peerAccountDigest,
+    peerDeviceId,
+    conversation,
+    messageId,
+    text,
+    metaOverrides
+  });
+  return { ...result, conversationId: conversationId || result?.convId || null };
 }
 
 export async function bootstrapDrFromGuestBundle(params = {}) {

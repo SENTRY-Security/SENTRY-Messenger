@@ -1,5 +1,4 @@
 import { log } from '../../core/log.js';
-import { sessionStore } from '../../ui/mobile/session-store.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '../../core/store.js';
 import { emitCallEvent, CALL_EVENT } from './events.js';
 import {
@@ -10,59 +9,12 @@ import {
   getCallCapability,
   updateCallSessionStatus,
   completeCallSession,
-  applyCallEnvelope
+  applyCallEnvelope,
+  resolveCallPeerProfile,
+  resolvePeerForCallEvent
 } from './state.js';
-import { buildCallPeerIdentity } from './identity.js';
 
 let wsSend = null;
-
-function resolveContactSnapshot(peer) {
-  const digest = normalizeAccountDigest(
-    peer && typeof peer === 'object'
-      ? (peer.peerAccountDigest ?? peer.accountDigest ?? peer)
-      : peer
-  );
-  const deviceId = normalizePeerDeviceId(
-    peer && typeof peer === 'object'
-      ? (peer.peerDeviceId ?? peer.deviceId ?? null)
-      : null
-  );
-  let key = null;
-  if (digest && deviceId) {
-    try {
-      key = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId: deviceId }).peerKey;
-    } catch {}
-  }
-  if (!key || !(sessionStore?.contactIndex instanceof Map)) {
-    return { key: key || null, nickname: null, avatarUrl: null, accountDigest: digest || null };
-  }
-  const entry = sessionStore.contactIndex.get(key);
-  if (!entry) return { key, nickname: null, avatarUrl: null, accountDigest: digest || null };
-  const nickname =
-    entry.nickname
-    || entry.profile?.nickname
-    || entry.profile?.displayName
-    || entry.profile?.name
-    || entry.contactProfile?.nickname
-    || entry.contactProfile?.displayName
-    || null;
-  const avatarCandidates = [
-    entry.avatarUrl,
-    entry.avatar?.thumbDataUrl,
-    entry.avatar?.previewDataUrl,
-    entry.avatar?.url,
-    entry.profile?.avatarUrl,
-    entry.profile?.avatar?.thumbUrl
-  ];
-  let avatarUrl = null;
-  for (const candidate of avatarCandidates) {
-    if (typeof candidate === 'string' && candidate.length) {
-      avatarUrl = candidate;
-      break;
-    }
-  }
-  return { key, nickname, avatarUrl, accountDigest: digest || entry.peerAccountDigest || null };
-}
 
 export function setCallSignalSender(fn) {
   wsSend = typeof fn === 'function' ? fn : null;
@@ -70,34 +22,23 @@ export function setCallSignalSender(fn) {
 
 function applyPeerIdentityFromSignal(msg) {
   if (!msg || typeof msg !== 'object') return;
-  const digest = normalizeAccountDigest(
-    msg.fromAccountDigest
-    || msg.from_account_digest
-    || msg.peerAccountDigest
-    || msg.targetAccountDigest
-    || msg.target_account_digest
-    || null
-  );
-  const deviceId = normalizePeerDeviceId(
-    msg.fromDeviceId
-    || msg.from_device_id
-    || msg.senderDeviceId
-    || msg.peerDeviceId
-    || msg.targetDeviceId
-    || msg.target_device_id
-    || null
-  );
-  if (!digest || !deviceId) return;
+  const identity = resolvePeerForCallEvent(msg);
+  if (!identity?.digest || !identity?.deviceId) return;
   const session = getCallSessionSnapshot();
   if (!session?.peerAccountDigest) return;
   if (session?.callId && msg?.callId && session.callId !== msg.callId) return;
-  const sessionDigest = normalizeAccountDigest(session?.peerAccountDigest || null);
-  if (sessionDigest && digest && sessionDigest !== digest) {
-    log({ callSignalPeerIdentityMismatch: true, sessionDigest, signalDigest: digest, callId: session?.callId || msg?.callId || null });
+  const sessionDigest = normalizeAccountDigest(session?.peerAccountDigest || null) || null;
+  if (sessionDigest && identity.digest && sessionDigest !== identity.digest) {
+    log({
+      callSignalPeerIdentityMismatch: true,
+      sessionDigest,
+      signalDigest: identity.digest,
+      callId: session?.callId || msg?.callId || null
+    });
     return;
   }
   try {
-    setCallPeerDeviceId(deviceId, { callId: msg?.callId || session?.callId || null });
+    setCallPeerDeviceId(identity.deviceId, { callId: msg?.callId || session?.callId || null });
   } catch (err) {
     log({ callSignalPeerIdentityError: err?.message || err, callId: msg?.callId || null });
   }
@@ -190,38 +131,27 @@ function handleIncomingInvite(msg) {
   const payload = msg?.payload || {};
   const metadata = payload.metadata || payload.meta || {};
   const envelope = payload.envelope || null;
-  const contactSnapshot = resolveContactSnapshot({
-    peerAccountDigest: msg?.fromAccountDigest || msg?.from_account_digest || null
-  });
-  const fromAccountDigest = normalizeAccountDigest(
-    contactSnapshot.accountDigest
-    || msg.fromAccountDigest
-    || msg.from_account_digest
-    || null
-  );
+  const fromAccountDigest = normalizeAccountDigest(msg.fromAccountDigest || msg.from_account_digest || null);
   const fromDeviceId = normalizePeerDeviceId(
     msg.fromDeviceId
     || msg.from_device_id
     || msg.senderDeviceId
     || null
   );
-  const fallbackName = contactSnapshot.nickname
-    || (contactSnapshot.key ? `好友 ${contactSnapshot.key.slice(-4)}` : null);
-  const fallbackAvatar = contactSnapshot.avatarUrl || null;
+  const peerProfile = resolveCallPeerProfile({
+    peerAccountDigest: fromAccountDigest,
+    peerDeviceId: fromDeviceId,
+    displayNameFallback: metadata.displayName
+      || metadata.callerDisplayName
+      || metadata.name
+      || null
+  });
   const result = markIncomingCall({
     callId: msg.callId,
     peerAccountDigest: fromAccountDigest,
     peerDeviceId: fromDeviceId,
-    peerDisplayName: metadata.displayName
-      || metadata.callerDisplayName
-      || metadata.name
-      || fallbackName
-      || null,
-    peerAvatarUrl: metadata.avatarUrl
-      || metadata.callerAvatarUrl
-      || metadata.avatar
-      || fallbackAvatar
-      || null,
+    peerDisplayName: peerProfile.nickname || peerProfile.placeholderName || null,
+    peerAvatarUrl: peerProfile.avatarUrl || null,
     envelope,
     traceId: msg.traceId
   });

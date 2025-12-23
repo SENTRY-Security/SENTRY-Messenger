@@ -21,7 +21,9 @@ export {
   getCallNetworkConfig,
   hydrateCallCapability,
   getCallCapability,
-  getSelfProfileSummary
+  getSelfProfileSummary,
+  resolveCallPeerProfile,
+  resolvePeerForCallEvent
 } from './state.js';
 export {
   loadCallNetworkConfig,
