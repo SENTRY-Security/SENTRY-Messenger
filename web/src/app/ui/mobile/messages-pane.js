@@ -2653,6 +2653,7 @@ export function initMessagesPane({
     if (state.loading) return;
     if (append && (!state.hasMore || !state.nextCursor)) return;
 
+    const debugRelogin = typeof window !== 'undefined' && window.__DEBUG_RELOGIN__ === true;
     if (silent) {
       try {
         console.info('[msg] poll:tick', { reason: reason || 'poll' });
@@ -2668,15 +2669,28 @@ export function initMessagesPane({
       const cursor = append ? state.nextCursor : undefined;
       const cursorTs = cursor?.ts ?? cursor ?? undefined;
       const cursorId = cursor?.id ?? undefined;
+      const fetchLimit = 50;
       const forceReplay = !append && replay;
       let prefetch = null;
       let serverLatestKey = null;
+      if (debugRelogin) {
+        try {
+          console.info('[diag][relogin] load-messages:before ' + JSON.stringify({
+            trigger: reason || 'enter',
+            conversationId: state.conversationId || null,
+            cursor: cursor ? { ts: cursorTs ?? null, id: cursorId ?? null } : null,
+            nextCursor: state.nextCursor || null,
+            limit: fetchLimit,
+            timelineSizeBefore: Array.isArray(beforeTimeline) ? beforeTimeline.length : 0
+          }));
+        } catch {}
+      }
 
       if (!append) {
         try {
           const { r, data } = await apiListSecureMessages({
             conversationId: state.conversationId,
-            limit: 50,
+            limit: fetchLimit,
             cursorTs,
             cursorId
           });
@@ -2710,7 +2724,7 @@ export function initMessagesPane({
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
         peerDeviceId: state.activePeerDeviceId || null,
-        limit: 50,
+        limit: fetchLimit,
         cursorTs,
         cursorId,
         mutateState: mutateLive && !forceReplay && !append,
@@ -2725,7 +2739,16 @@ export function initMessagesPane({
             }
           : null
       });
-      const { nextCursor, nextCursorTs, errors, receiptUpdates, deadLetters, hasMoreAtCursor } = listResult;
+      const {
+        nextCursor,
+        nextCursorTs,
+        errors,
+        receiptUpdates,
+        deadLetters,
+        hasMoreAtCursor,
+        items: resultItems = [],
+        serverItemCount = null
+      } = listResult;
       const filteredErrors = Array.isArray(errors)
         ? errors.filter((entry) => !isControlBannerEntry(entry))
         : [];
@@ -2771,6 +2794,19 @@ export function initMessagesPane({
       const timelineMessages = refreshTimelineState(state.conversationId);
       const afterIdSet = collectTimelineIdSet(timelineMessages);
       const newMessageIds = Array.from(afterIdSet).filter((id) => !beforeIdSet.has(id));
+      if (debugRelogin) {
+        try {
+          console.info('[diag][relogin] load-messages:after ' + JSON.stringify({
+            trigger: reason || 'enter',
+            conversationId: state.conversationId || null,
+            nextCursor: state.nextCursor || null,
+            serverItemCount: serverItemCount ?? null,
+            items: Array.isArray(resultItems) ? resultItems.length : null,
+            errors: filteredErrors.slice(0, 3).map((entry) => entry?.message || entry),
+            timelineSizeAfter: Array.isArray(timelineMessages) ? timelineMessages.length : 0
+          }));
+        } catch {}
+      }
       if (Array.isArray(receiptUpdates)) {
         for (const msg of timelineMessages) {
           if (msg?.id && receiptUpdates.includes(msg.id)) {
@@ -3202,6 +3238,18 @@ export function initMessagesPane({
     }
     applyMessagesLayout();
     if (statusInfo?.status === SECURE_CONVERSATION_STATUS.READY) {
+      if (typeof window !== 'undefined' && window.__DEBUG_RELOGIN__ === true) {
+        try {
+          const timeline = timelineGetTimeline(state.conversationId);
+          console.info('[diag][relogin] set-active-ready ' + JSON.stringify({
+            activePeerKey,
+            conversationId: state.conversationId || null,
+            hasConversationToken: !!state.conversationToken,
+            activePeerDeviceId: state.activePeerDeviceId || null,
+            timelineSizeBefore: Array.isArray(timeline) ? timeline.length : 0
+          }));
+        } catch {}
+      }
       await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
       scheduleActivePoll();
     }
@@ -4035,6 +4083,15 @@ export function initMessagesPane({
     const senderAcctRaw = event?.senderAccountDigest || null;
     const senderAcct = senderAcctRaw ? String(senderAcctRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
     const isSelf = !!(myAcct && senderAcct && myAcct === senderAcct);
+
+    const peerDigest = normalizeAccountDigest(event?.peerAccountDigest || event?.senderAccountDigest || null);
+    if (!peerDigest) {
+      try {
+        console.warn('[secure-message] missing peerAccountDigest', { convId, senderAccountDigest: event?.senderAccountDigest || null });
+        log({ secureMessageMissingPeerDigest: { convId, senderAccountDigest: event?.senderAccountDigest || null } });
+      } catch {}
+      return;
+    }
 
     const rawMsgType = event?.meta?.msg_type || event?.meta?.msgType || event?.messageType || event?.msgType || null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
