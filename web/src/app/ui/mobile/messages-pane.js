@@ -3095,7 +3095,8 @@ export function initMessagesPane({
     state.conversationToken = conversation.token_b64;
     state.conversationId = conversation.conversation_id;
     resetProcessedMessages(state.conversationId);
-    refreshTimelineState(state.conversationId);
+    const timelineMessages = refreshTimelineState(state.conversationId);
+    const hasTimelineMessages = Array.isArray(timelineMessages) && timelineMessages.length > 0;
     state.nextCursor = null;
     state.nextCursorTs = null;
     state.hasMore = true;
@@ -3164,7 +3165,11 @@ export function initMessagesPane({
     setMessagesStatus('');
     renderConversationList();
     updateComposerAvailability();
-    clearMessagesView();
+    if (hasTimelineMessages) {
+      updateMessagesUI({ scrollToEnd: true, forceFullRender: true });
+    } else {
+      clearMessagesView();
+    }
     applyMessagesLayout();
     await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
     scheduleActivePoll();
