@@ -1275,7 +1275,83 @@ export async function listSecureAndDecrypt(params = {}) {
         || raw?.sender_device_id
         || header?.device_id
         || null;
-      const peerDeviceForMessage = senderDeviceId || peerDevice;
+      const targetDigestRaw = raw?.targetAccountDigest
+        || raw?.target_account_digest
+        || meta?.targetAccountDigest
+        || meta?.target_account_digest
+        || meta?.receiverAccountDigest
+        || meta?.receiver_account_digest
+        || raw?.receiverAccountDigest
+        || raw?.receiver_account_digest
+        || null;
+      const targetDeviceRaw = raw?.targetDeviceId
+        || raw?.target_device_id
+        || meta?.targetDeviceId
+        || meta?.target_device_id
+        || meta?.receiverDeviceId
+        || meta?.receiver_device_id
+        || raw?.receiverDeviceId
+        || raw?.receiver_device_id
+        || null;
+      const targetDeviceId = targetDeviceRaw ? String(targetDeviceRaw) : null;
+      let targetDigest = targetDigestRaw ? String(targetDigestRaw).toUpperCase() : null;
+      const deviceMatchesSelf = !!(selfDeviceId && targetDeviceId && targetDeviceId === selfDeviceId);
+      const isSelfSender = !!(selfDigest && senderDigest && senderDigest === selfDigest);
+      const isHistoryReplay = allowReplay === true && trackState === false;
+
+      if (deviceMatchesSelf) {
+        direction = 'incoming';
+        if (!targetDigest && selfDigest) targetDigest = selfDigest;
+      } else if (isSelfSender) {
+        direction = 'outgoing';
+      } else {
+        direction = 'incoming';
+      }
+
+      let peerDeviceForMessage = senderDeviceId || peerDevice;
+      if (isHistoryReplay && isSelfSender && targetDeviceId) {
+        peerDeviceForMessage = targetDeviceId;
+      }
+
+      logMsgEvent('device-check', {
+        conversationId: packetConversationId,
+        messageId,
+        senderDeviceId,
+        targetDeviceId,
+        selfDeviceId,
+        peerDeviceId: peerDeviceForMessage || null,
+        directionComputed: direction
+      });
+      if (selfDeviceId && peerDevice && selfDeviceId === peerDevice) {
+        throw new Error('SELF_DEVICE_ID_CORRUPTED: selfDeviceId equals peerDeviceId');
+      }
+      logMsgEvent('handle:start', {
+        stage: 'handle',
+        direction,
+        conversationId: packetConversationId,
+        serverMessageId,
+        messageId,
+        senderDigest,
+        senderDeviceId,
+        targetDeviceId,
+        targetDigest,
+        selfDeviceId
+      });
+      if (!targetDeviceId) {
+        logDeliverySkip('targetDeviceMissing', { targetDeviceId, selfDeviceId, senderDeviceId });
+        return;
+      }
+      if (isHistoryReplay) {
+        if (!deviceMatchesSelf && !isSelfSender) {
+          logDeliverySkip('directionFilter', { senderDeviceId, targetDeviceId, selfDeviceId });
+          return;
+        }
+      } else {
+        if (!deviceMatchesSelf) {
+          logDeliverySkip('directionFilter', { senderDeviceId, targetDeviceId, selfDeviceId });
+          return;
+        }
+      }
       const secureStatus = await ensureConversationReadyForDevice(peerDeviceForMessage);
       if (secureStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
         logDeliverySkip('securePending', { peerDeviceId: peerDeviceForMessage, conversationId: packetConversationId || conversationId });
@@ -1304,70 +1380,6 @@ export async function listSecureAndDecrypt(params = {}) {
         stableContactShareKey = messageId;
       }
 
-      const targetDigestRaw = raw?.targetAccountDigest
-        || raw?.target_account_digest
-        || meta?.targetAccountDigest
-        || meta?.target_account_digest
-        || meta?.receiverAccountDigest
-        || meta?.receiver_account_digest
-        || raw?.receiverAccountDigest
-        || raw?.receiver_account_digest
-        || null;
-      const targetDeviceRaw = raw?.targetDeviceId
-        || raw?.target_device_id
-        || meta?.targetDeviceId
-        || meta?.target_device_id
-        || meta?.receiverDeviceId
-        || meta?.receiver_device_id
-        || raw?.receiverDeviceId
-        || raw?.receiver_device_id
-        || null;
-      const targetDeviceId = targetDeviceRaw ? String(targetDeviceRaw) : null;
-      let targetDigest = targetDigestRaw ? String(targetDigestRaw).toUpperCase() : null;
-      const deviceMatchesSelf = !!(selfDeviceId && targetDeviceId && targetDeviceId === selfDeviceId);
-      const isSelfSender = !!(selfDigest && senderDigest && senderDigest === selfDigest);
-
-      if (deviceMatchesSelf) {
-        direction = 'incoming';
-        if (!targetDigest && selfDigest) targetDigest = selfDigest;
-      } else if (isSelfSender) {
-        direction = 'outgoing';
-      } else {
-        direction = 'incoming';
-      }
-
-      logMsgEvent('device-check', {
-        conversationId: packetConversationId,
-        messageId,
-        senderDeviceId,
-        targetDeviceId,
-        selfDeviceId,
-        peerDeviceId: peerDevice || null,
-        directionComputed: direction
-      });
-      if (selfDeviceId && peerDevice && selfDeviceId === peerDevice) {
-        throw new Error('SELF_DEVICE_ID_CORRUPTED: selfDeviceId equals peerDeviceId');
-      }
-      logMsgEvent('handle:start', {
-        stage: 'handle',
-        direction,
-        conversationId: packetConversationId,
-        serverMessageId,
-        messageId,
-        senderDigest,
-        senderDeviceId,
-        targetDeviceId,
-        targetDigest,
-        selfDeviceId
-      });
-      if (!targetDeviceId) {
-        logDeliverySkip('targetDeviceMissing', { targetDeviceId, selfDeviceId, senderDeviceId });
-        return;
-      }
-      if (!deviceMatchesSelf) {
-        logDeliverySkip('directionFilter', { senderDeviceId, targetDeviceId, selfDeviceId });
-        return;
-      }
       if (msgTypeForDecrypt === 'contact-share' && !senderDeviceId) {
         const availableDevices = {
           headerDeviceId: header?.device_id || null,
