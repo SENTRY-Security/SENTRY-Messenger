@@ -27,6 +27,7 @@ const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : nu
 const contactAliasToPrimary = new Map(); // alias -> primary key (accountDigest::deviceId preferred)
 const contactPrimaryToAliases = new Map(); // primary -> Set(alias)
 const CORRUPT_REASON_DEFAULT = 'invalid-contact-secret';
+const PENDING_REASON_DEFAULT = 'pending-material';
 let lastRestoreSummary = null;
 let lastRestoreError = null;
 
@@ -89,6 +90,57 @@ export function getCorruptContact(peer) {
 
 export function listCorruptContacts() {
   const store = ensureCorruptContactMap();
+  return Array.from(store.values());
+}
+
+function ensurePendingContactMap() {
+  if (!(sessionStore.pendingContacts instanceof Map)) {
+    const entries = sessionStore.pendingContacts && typeof sessionStore.pendingContacts.entries === 'function'
+      ? Array.from(sessionStore.pendingContacts.entries())
+      : [];
+    sessionStore.pendingContacts = new Map(entries);
+  }
+  return sessionStore.pendingContacts;
+}
+
+export function recordPendingContact(peerAccountDigest, reason = PENDING_REASON_DEFAULT, { source = null, peerDeviceId = null } = {}) {
+  const store = ensurePendingContactMap();
+  const { key, identity } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint: peerDeviceId });
+  if (!key) return null;
+  const entry = {
+    peerAccountDigest: identity?.accountDigest || key,
+    peerDeviceId: identity?.deviceId || null,
+    reason: reason || PENDING_REASON_DEFAULT,
+    source: source || null,
+    ts: Date.now()
+  };
+  store.set(key, entry);
+  if (identity?.accountDigest && identity?.deviceId && !store.has(identity.accountDigest)) {
+    store.set(identity.accountDigest, { ...entry });
+  }
+  return entry;
+}
+
+export function clearPendingContact(peerKey = null) {
+  const store = ensurePendingContactMap();
+  if (!peerKey) {
+    store.clear();
+    return;
+  }
+  const digest = normalizeAccountDigest(peerKey.includes('::') ? peerKey.split('::')[0] : peerKey);
+  if (store.delete(peerKey)) return;
+  if (digest) {
+    store.delete(digest);
+    for (const key of Array.from(store.keys())) {
+      if (typeof key === 'string' && key.startsWith(`${digest}::`)) {
+        store.delete(key);
+      }
+    }
+  }
+}
+
+export function listPendingContacts() {
+  const store = ensurePendingContactMap();
   return Array.from(store.values());
 }
 

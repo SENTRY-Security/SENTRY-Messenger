@@ -126,9 +126,13 @@ export function initContactsView(options) {
       const lastStr = new Date(tsSeconds * 1000).toLocaleString();
       const isOnline = sessionStore.onlineContacts.has(key);
       const corruptMap = sessionStore.corruptContacts instanceof Map ? sessionStore.corruptContacts : null;
+      const pendingMap = sessionStore.pendingContacts instanceof Map ? sessionStore.pendingContacts : null;
       const digestOnly = key.includes('::') ? key.split('::')[0] : key;
       const corruptInfo = corruptMap ? (corruptMap.get(key) || corruptMap.get(digestOnly)) : null;
-      const metaText = corruptInfo ? '狀態損壞，需要重新同步/重新邀請' : `最近同步：${lastStr}`;
+      const pendingInfo = pendingMap ? (pendingMap.get(key) || pendingMap.get(digestOnly)) : null;
+      const metaText = pendingInfo
+        ? '同步中，請稍候'
+        : (corruptInfo ? '狀態損壞，需要重新同步/重新邀請' : `最近同步：${lastStr}`);
 
       const li = document.createElement('li');
       li.className = 'contact-item';

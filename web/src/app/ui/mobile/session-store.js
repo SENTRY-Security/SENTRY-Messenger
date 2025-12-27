@@ -81,6 +81,7 @@ export const sessionStore = {
   conversationThreads: new Map(),
   contactSecrets: new Map(),
   corruptContacts: new Map(),
+  pendingContacts: new Map(),
   corruptContactBackups: new Map(),
   lastCorruptContactBackup: null,
   onlineContacts: new Set(),
@@ -120,6 +121,7 @@ export function resetContacts() {
   if (sessionStore.contactSecrets) sessionStore.contactSecrets.clear();
   if (sessionStore.conversationThreads) sessionStore.conversationThreads.clear();
   if (sessionStore.corruptContacts) sessionStore.corruptContacts.clear();
+  if (sessionStore.pendingContacts) sessionStore.pendingContacts.clear();
   if (sessionStore.corruptContactBackups) sessionStore.corruptContactBackups.clear();
   sessionStore.lastCorruptContactBackup = null;
   sessionStore.onlineContacts.clear();

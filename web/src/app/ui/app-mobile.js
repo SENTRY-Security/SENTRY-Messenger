@@ -1458,28 +1458,6 @@ settingsInitPromise = bootLoadSettings()
   }
 })();
 
-(async function hydrateDrSnapshotsFromSecrets() {
-  try {
-    // 登入時先清除所有記憶體 DR 狀態，避免沿用舊裝置/錯角色快照。
-    clearDrState(null, { __drDebugTag: 'web/src/app/ui/app-mobile.js:1453:hydrateDrSnapshotsFromSecrets' });
-    const restored = hydrateDrStatesFromContactSecrets();
-    try { await hydrateConversationsFromSecrets(); } catch {}
-    log({ drSnapshotsRestored: restored });
-    try {
-      const snapshotRecord = readContactSnapshot(localStorage, getContactSecretsStorageKeys(getContactSecretKeyOptions()));
-      if (snapshotRecord?.value) {
-        log({ contactSecretsAppLoadSummary: summarizeContactSecretsPayload(snapshotRecord.value) });
-      } else {
-        log({ contactSecretsAppLoadSummary: { entries: 0, bytes: 0, parseError: 'missing' } });
-      }
-    } catch (err) {
-      log({ contactSecretsAppLoadSummaryError: err?.message || err });
-    }
-  } catch (e) {
-    log({ drSnapshotHydrateError: e?.message || e });
-  }
-})();
-
 // Guard: require MK
 (function ensureUnlockedOrRedirect(){
   if (!getMkRaw()) {
@@ -2514,6 +2492,27 @@ async function logRestoreOverview({ reason = 'post-login', force = false } = {})
   }
 }
 
+async function hydrateDrSnapshotsAfterBackup() {
+  try {
+    clearDrState(null, { __drDebugTag: 'web/src/app/ui/app-mobile.js:hydrateDrSnapshotsAfterBackup' });
+    const restored = hydrateDrStatesFromContactSecrets();
+    try { await hydrateConversationsFromSecrets(); } catch {}
+    log({ drSnapshotsRestored: restored });
+    try {
+      const snapshotRecord = readContactSnapshot(localStorage, getContactSecretsStorageKeys(getContactSecretKeyOptions()));
+      if (snapshotRecord?.value) {
+        log({ contactSecretsAppLoadSummary: summarizeContactSecretsPayload(snapshotRecord.value) });
+      } else {
+        log({ contactSecretsAppLoadSummary: { entries: 0, bytes: 0, parseError: 'missing' } });
+      }
+    } catch (err) {
+      log({ contactSecretsAppLoadSummaryError: err?.message || err });
+    }
+  } catch (e) {
+    log({ drSnapshotHydrateError: e?.message || e });
+  }
+}
+
 async function runPostLoginContactHydrate() {
   if (postLoginHydrateInFlight) return;
   postLoginHydrateInFlight = true;
@@ -2542,6 +2541,11 @@ async function runPostLoginContactHydrate() {
       corruptCount: remoteResult?.corruptCount ?? 0
     }));
   } catch {}
+  try {
+    await hydrateDrSnapshotsAfterBackup();
+  } catch (err) {
+    log({ drSnapshotHydrateError: err?.message || err, source: 'post-login-hydrate' });
+  }
   let loadError = null;
   try {
     await loadInitialContacts();

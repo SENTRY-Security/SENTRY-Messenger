@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact } from '../core/contact-secrets.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   conversationIdFromToken
@@ -39,6 +39,25 @@ import { logDrCore, logMsgEvent } from '../lib/logging.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 import { enqueueMediaMetaJob } from './queue/media.js';
+
+const DR_STATE_DEBUG_ENABLED = (() => {
+  try {
+    if (typeof window !== 'undefined' && window.__DEBUG_DR_STATE__) return true;
+    if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+})();
+
+function logDrStateDebug(event, payload = {}) {
+  if (!DR_STATE_DEBUG_ENABLED) return;
+  try {
+    console.warn(`[dr-state:${event}]`, payload);
+  } catch {
+    /* ignore */
+  }
+}
 
 function normHex(value) {
   const digest = normalizeAccountDigest(
@@ -416,18 +435,38 @@ function detectSnapshotCorruption(snapshot) {
 }
 
 function prevalidateSnapshotOrQuarantine(snapshot, { peerAccountDigest = null, peerDeviceId = null, peerKey = null, sourceTag = null } = {}) {
-  const invalid = detectSnapshotCorruption(snapshot);
-  if (!invalid) return { ok: true, snapshot };
   const normalizedPeerKey = peerKey || normalizePeerKeyForQuarantine({
     peerAccountDigest,
     peerDeviceId,
     sourceTag: sourceTag || 'prevalidateSnapshotOrQuarantine'
   });
+  const logSource = sourceTag || 'prevalidateSnapshotOrQuarantine';
+  if (snapshot === null || snapshot === undefined) {
+    if (normalizedPeerKey) {
+      recordPendingContact(normalizedPeerKey, 'missing-snapshot', { source: logSource, peerDeviceId });
+      logDrStateDebug('pending_missing_material', { peerKey: normalizedPeerKey, sourceTag: logSource });
+    }
+    return { ok: false, snapshot: null, pending: true, badField: 'snapshot', reason: 'missing', type: 'undefined' };
+  }
+  const invalid = detectSnapshotCorruption(snapshot);
+  if (!invalid) {
+    if (normalizedPeerKey) clearPendingContact(normalizedPeerKey);
+    return { ok: true, snapshot };
+  }
   if (normalizedPeerKey) {
+    clearPendingContact(normalizedPeerKey);
     quarantineCorruptContact(normalizedPeerKey, 'invalid-dr-snapshot', {
       badField: invalid.badField,
       type: invalid.type,
-      source: sourceTag || 'prevalidateSnapshotOrQuarantine'
+      source: logSource
+    });
+    const missingFields = invalid.reason === 'missing' ? [invalid.badField] : [];
+    const typeErrors = invalid.reason !== 'missing' ? [invalid.badField] : [];
+    logDrStateDebug('corrupt_invalid_format', {
+      peerKey: normalizedPeerKey,
+      missingFields,
+      typeErrors,
+      sourceTag: logSource
     });
   }
   return { ok: false, snapshot: null, badField: invalid.badField, reason: invalid.reason, type: invalid.type };
@@ -879,7 +918,9 @@ export function hydrateDrStatesFromContactSecrets() {
       sourceTag: hydrateSourceTag
     });
     if (!snapshotValidation.ok) {
-      missingSnapshotEntries += 1;
+      if (snapshotValidation.pending) {
+        missingSnapshotEntries += 1;
+      }
       continue;
     }
     snapshot = snapshotValidation.snapshot;
@@ -2164,7 +2205,14 @@ export async function ensureDrReceiverState(params = {}) {
     __debugSource: params?.__debugSource || params?.source || 'ensureDrReceiverState'
   });
   const conversationId = params?.conversationId || null;
-  const selfDeviceId = ensureDeviceId();
+  const callsiteTag = params?.__debugSource || params?.source || 'ensureDrReceiverState';
+  let selfDeviceId = getDeviceId() || null;
+  logDrStateDebug('ws_self_device_not_ready', {
+    targetDeviceId: peerDeviceId || null,
+    selfDeviceIdReady: !!selfDeviceId,
+    sourceTag: callsiteTag
+  });
+  selfDeviceId = ensureDeviceId();
   // contact-secrets 的 device record 以「本機 deviceId」為鍵，peerDeviceId 只作為辨識 peer 版本的 key。
   // 因此查詢時以 peerDeviceId 作為 hint，但 deviceId 一律用 selfDeviceId。
   let secretInfo =
@@ -2174,7 +2222,6 @@ export async function ensureDrReceiverState(params = {}) {
   const secretPeerDeviceId = normalizePeerDeviceId(secretInfo?.peerDeviceId || secretInfo?.conversation?.peerDeviceId || null);
   const stateKey = `${peer}::${peerDeviceId || 'unknown'}`;
   const secretKey = `${peer}::${secretPeerDeviceId || peerDeviceId || 'unknown'}`;
-  const callsiteTag = params?.__debugSource || params?.source || 'ensureDrReceiverState';
   const quarantinePeerKey = normalizePeerKeyForQuarantine({
     peerAccountDigest: peer,
     peerDeviceId: secretPeerDeviceId || peerDeviceId,
@@ -2187,6 +2234,9 @@ export async function ensureDrReceiverState(params = {}) {
     sourceTag: callsiteTag
   });
   if (!snapshotValidation.ok) {
+    if (snapshotValidation.pending) {
+      return false;
+    }
     secretInfo = { ...secretInfo, drState: null };
     throw new Error('狀態損壞，需要重新同步/重新邀請');
   }
