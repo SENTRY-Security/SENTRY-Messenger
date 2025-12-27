@@ -447,6 +447,16 @@ export function initContactsView(options) {
       });
     }
     const localConversationCache = conversationIndex instanceof Map ? new Map(conversationIndex) : new Map();
+    const conversationPeerLookup = new Map();
+    for (const [convId, conv] of localConversationCache.entries()) {
+      if (!convId) continue;
+      const convPeerKey = contactKey(conv?.peerAccountDigest || conv?.peerKey || conv);
+      const convPeerDeviceId = normalizeDeviceId(conv?.peerDeviceId || (convPeerKey?.includes('::') ? convPeerKey.split('::')[1] : null));
+      const convPeerDigest = convPeerKey ? convPeerKey.split('::')[0] : null;
+      if (convPeerDigest && convPeerDeviceId) {
+        conversationPeerLookup.set(convId, { peerKey: `${convPeerDigest}::${convPeerDeviceId}`, peerDeviceId: convPeerDeviceId });
+      }
+    }
     let fetched = [];
     try {
       const entries = await loadContactsApi();
@@ -577,6 +587,7 @@ export function initContactsView(options) {
         || entry?.conversation?.token
         || null;
       let drInit = entry?.conversation?.dr_init || entry?.conversation?.drInit || null;
+      let peerKeyFromLookup = null;
       const keyCandidate = peerDeviceId ? `${digest}::${peerDeviceId}` : rawKey;
       const secretForKey = keyCandidate ? secretByKey.get(keyCandidate) : null;
       const secretForDigestList = secretByDigest.get(digest) || [];
@@ -584,14 +595,32 @@ export function initContactsView(options) {
       if (!peerDeviceId && secretRecord) {
         peerDeviceId = normalizeDeviceId(secretRecord?.peerDeviceId || null);
       }
-      const localKey = peerDeviceId ? `${digest}::${peerDeviceId}` : rawKey;
-      const cacheEntry = localKey ? localCache.get(localKey) || null : null;
+      let localKey = peerDeviceId ? `${digest}::${peerDeviceId}` : rawKey;
+      let cacheEntry = localKey ? localCache.get(localKey) || null : null;
       if (!peerDeviceId && cacheEntry?.peerDeviceId) {
         peerDeviceId = normalizeDeviceId(cacheEntry.peerDeviceId);
       }
       if (!peerDeviceId && conversationId && localConversationCache.has(conversationId)) {
         const convCache = localConversationCache.get(conversationId);
         peerDeviceId = normalizeDeviceId(convCache?.peerDeviceId || null);
+      }
+      if (!peerDeviceId && conversationId && conversationPeerLookup.has(conversationId)) {
+        const convPeer = conversationPeerLookup.get(conversationId);
+        const lookupKey = typeof convPeer?.peerKey === 'string' ? convPeer.peerKey : null;
+        const lookupDigest = lookupKey && lookupKey.includes('::') ? normalizeAccountDigest(lookupKey.split('::')[0]) : null;
+        const lookupDeviceId = normalizeDeviceId(convPeer?.peerDeviceId || (lookupKey && lookupKey.includes('::') ? lookupKey.split('::')[1] : null));
+        if (lookupDeviceId && (!lookupDigest || lookupDigest === digest)) {
+          peerDeviceId = lookupDeviceId;
+          peerKeyFromLookup = lookupKey || (digest ? `${digest}::${lookupDeviceId}` : null);
+        }
+      }
+      if (peerDeviceId) {
+        const refreshedKey = `${digest}::${peerDeviceId}`;
+        cacheEntry = localCache.get(refreshedKey) || cacheEntry;
+        localKey = refreshedKey;
+      } else if (!cacheEntry && peerKeyFromLookup) {
+        cacheEntry = localCache.get(peerKeyFromLookup) || null;
+        localKey = peerKeyFromLookup;
       }
       if (!conversationId) {
         conversationId =
@@ -621,6 +650,7 @@ export function initContactsView(options) {
         || secretRecord?.conversation?.token
         || null;
       if (!digest || !peerDeviceId) return null;
+      const resolvedPeerKey = peerKeyFromLookup || (peerDeviceId ? `${digest}::${peerDeviceId}` : null);
       return {
         peerAccountDigest: digest,
         peerDeviceId,
@@ -630,7 +660,7 @@ export function initContactsView(options) {
         avatar,
         contactSecret: contactSecretResolved,
         conversation: drInit ? { dr_init: drInit } : null,
-        peerKey: peerDeviceId ? `${digest}::${peerDeviceId}` : null,
+        peerKey: resolvedPeerKey,
         sourceTag
       };
     };
