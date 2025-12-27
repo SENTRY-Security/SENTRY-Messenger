@@ -251,6 +251,7 @@ export function initMessagesPane({
   let viewportGuardTimer = null;
 
   const secureStatusCache = new Map();
+  let pendingSecureReadyPeer = null;
   let unsubscribeSecureStatus = null;
   let unsubscribeTimeline = null;
   let activeSecurityModalPeer = null;
@@ -879,6 +880,13 @@ export function initMessagesPane({
     const state = getMessageState();
     if (state.activePeerDigest === key) {
       applySecureStatusForActivePeer(key, entry);
+      if (pendingSecureReadyPeer === key && entry.status === SECURE_CONVERSATION_STATUS.READY) {
+        pendingSecureReadyPeer = null;
+        setMessagesStatus('');
+        updateComposerAvailability();
+        loadActiveConversationMessages({ append: false, replay: false })
+          .catch((err) => log({ secureReadyLoadError: err?.message || err }));
+      }
     }
   }
 
@@ -2873,6 +2881,7 @@ export function initMessagesPane({
   }
   async function setActiveConversation(peerAccountDigest) {
     stopActivePoll();
+    pendingSecureReadyPeer = null;
     const identity = normalizePeerIdentity(peerAccountDigest);
     const key = identity.key || normalizePeerKey(peerAccountDigest);
     try { console.log('[messages-pane]', { setActiveConversationStart: key }); } catch {}
@@ -3125,15 +3134,17 @@ export function initMessagesPane({
         hasToken: !!state.conversationToken
       }));
     } catch {}
-    let initialStatus = getCachedSecureStatus(activePeerKey);
+    const statusBeforeEnsure = getCachedSecureStatus(activePeerKey);
+    let initialStatus = statusBeforeEnsure;
     if (!initialStatus || initialStatus.status === SECURE_CONVERSATION_STATUS.IDLE) {
       initialStatus = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.PENDING, null);
     }
     if (initialStatus) {
       applySecureStatusForActivePeer(activePeerKey, initialStatus);
     }
+    let ensureStatusInfo = null;
     try {
-      await ensureSecureConversationReady({
+      ensureStatusInfo = await ensureSecureConversationReady({
         peerAccountDigest: activePeerKey,
         conversationId: state.conversationId || null,
         reason: 'open-conversation',
@@ -3142,27 +3153,46 @@ export function initMessagesPane({
     } catch (err) {
       const errorMsg = err?.message || err || '建立安全對話失敗，請稍後再試。';
       log({ ensureSecureConversationError: errorMsg, peerAccountDigest: activePeerKey });
-      const cached = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
-      applySecureStatusForActivePeer(activePeerKey, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
-      applyMessagesLayout();
       const corruptInfo = getCorruptContact?.({ peerAccountDigest: activePeerKey, peerDeviceId }) || null;
       const failReason = corruptInfo ? 'CONTACT_CORRUPT' : 'ENSURE_SECURE_CONVERSATION_FAILED';
-      logSetActiveFail({
-        reason: failReason,
-        peerKey: activePeerKey,
-        peerDigest,
-        peerDeviceId,
-        entry,
-        conversation,
-        error: errorMsg
-      });
-      return;
+      const cachedWasPending = statusBeforeEnsure?.status === SECURE_CONVERSATION_STATUS.PENDING;
+      const isNotReadyError = typeof errorMsg === 'string'
+        && (/缺少安全會話狀態/.test(errorMsg) || /逾時/.test(errorMsg) || /timeout/i.test(errorMsg));
+      if (!corruptInfo && entry?.isReady && cachedWasPending && isNotReadyError) {
+        pendingSecureReadyPeer = activePeerKey;
+        ensureStatusInfo = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.PENDING, null);
+        log({ ensureSecureConversationPending: { peerAccountDigest: activePeerKey, reason: failReason, error: errorMsg } });
+      } else {
+        const cached = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
+        applySecureStatusForActivePeer(activePeerKey, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
+        applyMessagesLayout();
+        logSetActiveFail({
+          reason: failReason,
+          peerKey: activePeerKey,
+          peerDigest,
+          peerDeviceId,
+          entry,
+          conversation,
+          error: errorMsg
+        });
+        return;
+      }
     }
-    const statusInfo = getCachedSecureStatus(activePeerKey) || cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.READY, null);
+    const cachedSecureStatus = getCachedSecureStatus(activePeerKey);
+    const statusInfo = ensureStatusInfo
+      || cachedSecureStatus
+      || cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.READY, null);
+    if (statusInfo?.status === SECURE_CONVERSATION_STATUS.PENDING) {
+      pendingSecureReadyPeer = pendingSecureReadyPeer || activePeerKey;
+    } else if (statusInfo?.status === SECURE_CONVERSATION_STATUS.READY) {
+      pendingSecureReadyPeer = null;
+    }
     applySecureStatusForActivePeer(activePeerKey, statusInfo);
     updateComposerAvailability();
     refreshActivePeerMetadata(activePeerKey, { fallbackName: nickname });
-    setMessagesStatus('');
+    if (statusInfo?.status === SECURE_CONVERSATION_STATUS.READY) {
+      setMessagesStatus('');
+    }
     renderConversationList();
     updateComposerAvailability();
     if (hasTimelineMessages) {
@@ -3171,8 +3201,10 @@ export function initMessagesPane({
       clearMessagesView();
     }
     applyMessagesLayout();
-    await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
-    scheduleActivePoll();
+    if (statusInfo?.status === SECURE_CONVERSATION_STATUS.READY) {
+      await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
+      scheduleActivePoll();
+    }
   }
 
   function refreshActivePeerMetadata(peerAccountDigest, { fallbackName } = {}) {
