@@ -13,6 +13,7 @@ const BackupRequestSchema = z.object({
   entries: z.number().int().optional(),
   updatedAt: z.number().int().optional(),
   bytes: z.number().int().optional(),
+  withDrState: z.number().int().optional(),
   deviceLabel: z.string().max(120).optional(),
   deviceId: z.string().max(120),
   reason: z.string().max(80).optional()
@@ -82,6 +83,7 @@ export const backupContactSecrets = async (req, res) => {
     entries: input.entries ?? null,
     updatedAt: input.updatedAt ?? Date.now(),
     bytes: input.bytes ?? null,
+    withDrState: input.withDrState ?? null,
     deviceLabel: input.deviceLabel ?? null,
     deviceId: input.deviceId,
     reason: input.reason || 'auto'

@@ -169,6 +169,16 @@ function safeParseEnvelope(json) {
   }
 }
 
+function parseBackupPayload(rawPayload) {
+  const parsed = safeJSON(rawPayload);
+  if (parsed && typeof parsed === 'object' && parsed.payload && parsed.meta && parsed.payload.aead) {
+    const withDrStateMeta = Number.isFinite(Number(parsed.meta?.withDrState)) ? Number(parsed.meta.withDrState) : null;
+    return { payload: parsed.payload, withDrState: withDrStateMeta };
+  }
+  const withDrStateInline = Number.isFinite(Number(parsed?.withDrState)) ? Number(parsed.withDrState) : null;
+  return { payload: parsed, withDrState: withDrStateInline };
+}
+
 function normalizeOpk(opk) {
   if (!opk || typeof opk !== 'object') return null;
   const id = Number(opk.id ?? opk.opk_id);
@@ -2406,6 +2416,7 @@ async function handleContactSecretsRoutes(req, env) {
     const snapshotVersion = Number.isFinite(Number(body?.snapshotVersion)) ? Number(body.snapshotVersion) : null;
     const entries = Number.isFinite(Number(body?.entries)) ? Number(body.entries) : null;
     const bytes = Number.isFinite(Number(body?.bytes)) ? Number(body.bytes) : null;
+    const withDrState = Number.isFinite(Number(body?.withDrState)) ? Number(body.withDrState) : null;
     const checksum = typeof body?.checksum === 'string' ? String(body.checksum).slice(0, 128) : null;
     const deviceLabel = typeof body?.deviceLabel === 'string' ? String(body.deviceLabel).slice(0, 120) : null;
     const deviceId = typeof body?.deviceId === 'string' ? String(body.deviceId).slice(0, 120) : null;
@@ -2413,6 +2424,23 @@ async function handleContactSecretsRoutes(req, env) {
     let version = Number.isFinite(Number(body?.version)) && Number(body.version) > 0
       ? Math.floor(Number(body.version))
       : null;
+
+    let existingWithDrState = null;
+    const latestRows = await env.DB.prepare(
+      `SELECT payload_json
+        FROM contact_secret_backups
+        WHERE account_digest=?1
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 5`
+    ).bind(accountDigest).all();
+    const latestList = latestRows?.results || [];
+    for (const row of latestList) {
+      const parsed = parseBackupPayload(row.payload_json);
+      if (Number.isFinite(parsed?.withDrState)) {
+        existingWithDrState = parsed.withDrState;
+        break;
+      }
+    }
 
     const existingVersionRow = await env.DB.prepare(
       `SELECT MAX(version) as max_version FROM contact_secret_backups WHERE account_digest=?1`
@@ -2422,6 +2450,14 @@ async function handleContactSecretsRoutes(req, env) {
       version = nextVersion + 1;
     }
 
+    if (Number.isFinite(withDrState) && Number.isFinite(existingWithDrState) && withDrState < existingWithDrState) {
+      return json({ ok: false, error: 'ContactSecretsBackupRejected', message: 'withDrState regression' }, { status: 409 });
+    }
+
+    const payloadRecord = Number.isFinite(withDrState)
+      ? { payload, meta: { withDrState } }
+      : payload;
+
     await env.DB.prepare(
       `INSERT INTO contact_secret_backups (
           account_digest, version, payload_json, snapshot_version, entries,
@@ -2430,7 +2466,7 @@ async function handleContactSecretsRoutes(req, env) {
     ).bind(
       accountDigest,
       version,
-      JSON.stringify(payload),
+      JSON.stringify(payloadRecord),
       snapshotVersion,
       entries,
       checksum,
@@ -2487,20 +2523,25 @@ async function handleContactSecretsRoutes(req, env) {
       ).bind(accountDigest, limit);
     }
     const rows = await stmt.all();
-    const backups = (rows?.results || []).map((row) => ({
-      id: row.id,
-      accountDigest: row.account_digest,
-      version: row.version,
-      snapshotVersion: row.snapshot_version,
-      entries: row.entries,
-      checksum: row.checksum,
-      bytes: row.bytes,
-      updatedAt: Number(row.updated_at) || null,
-      deviceLabel: row.device_label || null,
-      deviceId: row.device_id || null,
-      createdAt: Number(row.created_at) || null,
-      payload: safeJSON(row.payload_json)
-    }));
+    const backups = (rows?.results || []).map((row) => {
+      const parsed = parseBackupPayload(row.payload_json);
+      const parsedWithDrState = Number.isFinite(parsed?.withDrState) ? Number(parsed.withDrState) : null;
+      return {
+        id: row.id,
+        accountDigest: row.account_digest,
+        version: row.version,
+        snapshotVersion: row.snapshot_version,
+        entries: row.entries,
+        checksum: row.checksum,
+        bytes: row.bytes,
+        updatedAt: Number(row.updated_at) || null,
+        deviceLabel: row.device_label || null,
+        deviceId: row.device_id || null,
+        createdAt: Number(row.created_at) || null,
+        payload: parsed?.payload ?? null,
+        withDrState: parsedWithDrState
+      };
+    });
     return json({ ok: true, backups });
   }
 

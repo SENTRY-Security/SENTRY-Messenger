@@ -26,6 +26,7 @@ export async function uploadContactSecretsBackup({
   entries,
   updatedAt,
   bytes,
+  withDrState,
   deviceLabel,
   deviceId,
   reason
@@ -36,6 +37,7 @@ export async function uploadContactSecretsBackup({
   if (Number.isFinite(entries)) overrides.entries = entries;
   if (Number.isFinite(updatedAt)) overrides.updatedAt = updatedAt;
   if (Number.isFinite(bytes)) overrides.bytes = bytes;
+  if (Number.isFinite(withDrState)) overrides.withDrState = withDrState;
   if (deviceLabel) overrides.deviceLabel = deviceLabel;
   if (deviceId) overrides.deviceId = deviceId;
   const body = buildAccountPayload({ overrides });

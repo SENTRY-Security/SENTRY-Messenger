@@ -157,6 +157,13 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
   if (!mk) return false;
   const snapshot = latestPersistDetail || buildContactSecretsSnapshot();
   if (!snapshot?.payload) return false;
+  const summary = snapshot?.summary || null;
+  const entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
+  const withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
+  if (entryCount > 0 && withDrState === 0) {
+    log({ contactSecretsBackupSkipped: 'withDrState-absent', reason, entries: entryCount });
+    return false;
+  }
   if (!force && snapshot.checksum && snapshot.checksum === lastUploadedChecksum) {
     return false;
   }
@@ -166,10 +173,11 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
     const { r } = await uploadContactSecretsBackup({
       payload: payloadEnvelope,
       checksum: snapshot.checksum || null,
-      snapshotVersion: snapshot.summary?.version || null,
-      entries: snapshot.summary?.entries || null,
-      updatedAt: snapshot.summary?.generatedAt || Date.now(),
-      bytes: snapshot.summary?.bytes || null,
+      snapshotVersion: summary?.version || null,
+      entries: entryCount,
+      updatedAt: summary?.generatedAt || Date.now(),
+      bytes: summary?.bytes || null,
+      withDrState,
       deviceLabel,
       deviceId: ensureDeviceId()
     }, fetchOptions);

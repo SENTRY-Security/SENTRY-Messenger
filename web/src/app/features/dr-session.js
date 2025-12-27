@@ -761,16 +761,7 @@ export function persistDrSnapshot(params = {}) {
   }
   // contact secret 以「本機裝置」為鍵，peerDeviceId 僅為對端識別；寫入使用 self deviceId。
   const selfDeviceId = ensureDeviceId();
-  const deviceId = selfDeviceId || peerDeviceId;
-  const info = getContactSecret(peer, { deviceId, peerDeviceId });
-  if (!info) {
-    console.warn('[dr] persist snapshot skipped: missing contact secret', {
-      peerAccountDigest: peer,
-      peerDeviceId,
-      deviceId
-    });
-    return false;
-  }
+  const info = getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId });
   try {
     const holderRoleRaw = holder?.baseKey?.role || info?.role || null;
     const holderRole = typeof holderRoleRaw === 'string' ? holderRoleRaw : null;
@@ -778,7 +769,7 @@ export function persistDrSnapshot(params = {}) {
       console.error('[dr] persist snapshot failed: missing role', {
         peerAccountDigest: peer,
         peerDeviceId,
-        deviceId,
+        deviceId: selfDeviceId,
         Ns: snap?.Ns ?? null,
         Nr: snap?.Nr ?? null
       });
@@ -790,12 +781,13 @@ export function persistDrSnapshot(params = {}) {
       role: holderRole
     };
     const conversationUpdate = {};
-    if (info.conversationToken) conversationUpdate.token = info.conversationToken;
-    if (info.conversationId) conversationUpdate.id = info.conversationId;
-    if (info.conversationDrInit) conversationUpdate.drInit = info.conversationDrInit;
+    const baseConversationId = typeof holder?.baseKey?.conversationId === 'string' ? holder.baseKey.conversationId : null;
+    if (info?.conversationToken) conversationUpdate.token = info.conversationToken;
+    if (info?.conversationId || baseConversationId) conversationUpdate.id = info?.conversationId || baseConversationId;
+    if (info?.conversationDrInit) conversationUpdate.drInit = info.conversationDrInit;
     if (Object.keys(conversationUpdate).length) update.conversation = conversationUpdate;
     // 若現存快照有 send 鏈且 Ns>0，而新快照缺 send 鏈或 Ns 更低，避免覆蓋成 0。
-    const existingSnap = info.drState || null;
+    const existingSnap = info?.drState || null;
     const existingNs = Number.isFinite(existingSnap?.Ns) ? Number(existingSnap.Ns) : null;
     const existingTotal = Number(existingSnap?.NsTotal || 0) + Number(existingSnap?.Ns || 0);
     const newNs = Number.isFinite(snap?.Ns) ? Number(snap.Ns) : null;
@@ -815,7 +807,7 @@ export function persistDrSnapshot(params = {}) {
       console.warn('[dr] persist snapshot skipped downgrade', {
         peerAccountDigest: peer,
         peerDeviceId,
-        deviceId,
+        deviceId: selfDeviceId,
         existingNs,
         newNs,
         hasExistingSend,
@@ -831,13 +823,13 @@ export function persistDrSnapshot(params = {}) {
       });
       return false;
     }
-    setContactSecret(peer, { ...update, deviceId });
+    setContactSecret(peer, { ...update, deviceId: selfDeviceId, peerDeviceId });
     markHolderSnapshot(holder, 'persist', snap.updatedAt || Date.now());
     try {
       console.log('[dr-log:persist-snapshot]', {
         peerAccountDigest: peer,
         peerDeviceId,
-        deviceId,
+        deviceId: selfDeviceId,
         Ns: snap?.Ns ?? null,
         Nr: snap?.Nr ?? null,
         conversationId: holder?.baseKey?.conversationId || null,
