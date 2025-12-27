@@ -437,7 +437,8 @@ export function initContactsView(options) {
     );
     const prevReadyCount = prevPeers.size;
     const builtByKey = new Map();
-    const buildCounts = { total: 0, ready: 0, skipped: 0 };
+    const profileUpdates = new Map();
+    const buildCounts = { total: 0, ready: 0, skipped: 0, profileOnly: 0 };
     const localCache = new Map();
     if (Array.isArray(sessionStore.contactState)) {
       sessionStore.contactState.forEach((entry) => {
@@ -474,31 +475,88 @@ export function initContactsView(options) {
       if (!payload) return null;
       buildCounts.total += 1;
       const peerKey = payload.peerKey || contactKey(payload);
+      const hasProfile = (payload.nickname !== null && payload.nickname !== undefined) || (payload.avatar !== null && payload.avatar !== undefined);
       const complete = !!(payload.peerAccountDigest && payload.peerDeviceId && payload.conversationId && payload.conversationToken);
-      if (!peerKey || !complete) {
-        buildCounts.skipped += 1;
+      const hasPeerIdentity = !!(payload.peerAccountDigest && payload.peerDeviceId);
+      if (complete && peerKey) {
+        let staged = { ...payload, peerKey, sourceTag };
+        const stagedProfile = profileUpdates.get(peerKey);
+        if (stagedProfile) {
+          if (stagedProfile.nickname !== undefined) staged.nickname = stagedProfile.nickname;
+          if (stagedProfile.avatar !== undefined) staged.avatar = stagedProfile.avatar;
+          profileUpdates.delete(peerKey);
+        }
+        if (!builtByKey.has(peerKey)) {
+          buildCounts.ready += 1;
+        }
+        builtByKey.set(peerKey, staged);
+        processed.add(peerKey);
         if (DEBUG_CONTACTS_CORE) {
           console.log('[contacts-view]', {
-            contactsCoreStage: 'skip-incomplete',
+            contactsCoreStage: 'stage-complete',
             phase: 'build',
             acct: selfAcct,
             peerDigest: payload.peerAccountDigest || null,
             peerDeviceId: payload.peerDeviceId || null,
             conversationId: payload.conversationId || null,
             hasToken: !!payload.conversationToken,
-            counts: { buildTotal: buildCounts.total, buildReady: buildCounts.ready, skipped: buildCounts.skipped },
+            hasProfile,
+            counts: { buildTotal: buildCounts.total, buildReady: buildCounts.ready, skipped: buildCounts.skipped, profileOnly: buildCounts.profileOnly },
             sourceTag
           });
         }
-        return null;
+        return staged;
       }
-      const staged = { ...payload, peerKey, sourceTag };
-      if (!builtByKey.has(peerKey)) {
-        buildCounts.ready += 1;
+      if (hasPeerIdentity && hasProfile && peerKey) {
+        const existingProfile = profileUpdates.get(peerKey) || {};
+        const stagedProfile = {
+          peerAccountDigest: payload.peerAccountDigest,
+          peerDeviceId: payload.peerDeviceId,
+          peerKey,
+          nickname: payload.nickname !== undefined ? payload.nickname : existingProfile.nickname,
+          avatar: payload.avatar !== undefined ? payload.avatar : existingProfile.avatar,
+          sourceTag: sourceTag || existingProfile.sourceTag || null
+        };
+        profileUpdates.set(peerKey, stagedProfile);
+        buildCounts.profileOnly += 1;
+        if (DEBUG_CONTACTS_CORE) {
+          console.log('[contacts-view]', {
+            contactsCoreStage: 'stage-profile-only',
+            phase: 'build',
+            acct: selfAcct,
+            peerDigest: payload.peerAccountDigest || null,
+            peerDeviceId: payload.peerDeviceId || null,
+            hasProfile,
+            counts: { buildTotal: buildCounts.total, buildReady: buildCounts.ready, skipped: buildCounts.skipped, profileOnly: buildCounts.profileOnly },
+            sourceTag
+          });
+        }
+        if (builtByKey.has(peerKey)) {
+          const existingComplete = builtByKey.get(peerKey);
+          const mergedComplete = { ...existingComplete };
+          if (payload.nickname !== undefined && payload.nickname !== null) mergedComplete.nickname = payload.nickname;
+          if (payload.avatar !== undefined && payload.avatar !== null) mergedComplete.avatar = payload.avatar;
+          builtByKey.set(peerKey, mergedComplete);
+        }
+        return stagedProfile;
       }
-      builtByKey.set(peerKey, staged);
-      processed.add(peerKey);
-      return staged;
+      buildCounts.skipped += 1;
+      if (DEBUG_CONTACTS_CORE) {
+        console.log('[contacts-view]', {
+          contactsCoreStage: 'skip-incomplete',
+          phase: 'build',
+          acct: selfAcct,
+          peerDigest: payload.peerAccountDigest || null,
+          peerDeviceId: payload.peerDeviceId || null,
+          conversationId: payload.conversationId || null,
+          hasToken: !!payload.conversationToken,
+          hasProfile,
+          reason: !peerKey || !hasPeerIdentity ? 'missing-peer' : 'missing-profile',
+          counts: { buildTotal: buildCounts.total, buildReady: buildCounts.ready, skipped: buildCounts.skipped, profileOnly: buildCounts.profileOnly },
+          sourceTag
+        });
+      }
+      return null;
     };
     const resolveCorePayload = (entry, sourceTag) => {
       const digest = normalizeAccountDigest(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
@@ -618,20 +676,76 @@ export function initContactsView(options) {
         contactsCoreStage: 'build',
         phase: 'build',
         acct: selfAcct,
-        counts: { total: buildCounts.total, ready: buildCounts.ready, skipped: buildCounts.skipped },
+        counts: { total: buildCounts.total, ready: buildCounts.ready, skipped: buildCounts.skipped, profileOnly: buildCounts.profileOnly },
         committed: builtByKey.size,
         sourceTag: 'contacts-view:refresh'
       });
     }
     for (const entry of builtByKey.values()) {
-      upsertContactCore(entry, 'contacts-view:commit');
+      const profilePatch = profileUpdates.get(entry.peerKey);
+      const mergedEntry = profilePatch ? { ...entry } : entry;
+      if (profilePatch) {
+        if (profilePatch.nickname !== undefined) mergedEntry.nickname = profilePatch.nickname;
+        if (profilePatch.avatar !== undefined) mergedEntry.avatar = profilePatch.avatar;
+        profileUpdates.delete(entry.peerKey);
+      }
+      upsertContactCore(mergedEntry, 'contacts-view:commit');
+    }
+    for (const [peerKey, profilePayload] of profileUpdates.entries()) {
+      if (builtByKey.has(peerKey)) continue;
+      const existingCore = getContactCore(peerKey);
+      if (!existingCore) {
+        if (DEBUG_CONTACTS_CORE) {
+          console.log('[contacts-view]', {
+            contactsCoreStage: 'profile-only-skip',
+            phase: 'commit',
+            acct: selfAcct,
+            peerDigest: profilePayload.peerAccountDigest || null,
+            peerDeviceId: profilePayload.peerDeviceId || null,
+            reason: 'missing-core',
+            sourceTag: profilePayload.sourceTag || 'contacts-view:profile-only'
+          });
+        }
+        continue;
+      }
+      const patch = {};
+      if (profilePayload.nickname !== undefined) patch.nickname = profilePayload.nickname;
+      if (profilePayload.avatar !== undefined) patch.avatar = profilePayload.avatar;
+      const nextNickname = patch.nickname ?? existingCore.nickname ?? null;
+      const nextAvatar = patch.avatar ?? existingCore.avatar ?? null;
+      if (nextNickname === existingCore.nickname && nextAvatar === existingCore.avatar) {
+        if (DEBUG_CONTACTS_CORE) {
+          console.log('[contacts-view]', {
+            contactsCoreStage: 'profile-only-skip',
+            phase: 'commit',
+            acct: selfAcct,
+            peerDigest: profilePayload.peerAccountDigest || null,
+            peerDeviceId: profilePayload.peerDeviceId || null,
+            reason: 'no-profile-change',
+            sourceTag: profilePayload.sourceTag || 'contacts-view:profile-only'
+          });
+        }
+        continue;
+      }
+      patchContactCore(peerKey, patch, 'contacts-view:profile-only');
+      if (DEBUG_CONTACTS_CORE) {
+        console.log('[contacts-view]', {
+          contactsCoreStage: 'profile-only-commit',
+          phase: 'commit',
+          acct: selfAcct,
+          peerDigest: profilePayload.peerAccountDigest || null,
+          peerDeviceId: profilePayload.peerDeviceId || null,
+          hasProfile: (patch.nickname !== undefined) || (patch.avatar !== undefined),
+          sourceTag: profilePayload.sourceTag || 'contacts-view:profile-only'
+        });
+      }
     }
     if (DEBUG_CONTACTS_CORE) {
       console.log('[contacts-view]', {
         contactsCoreStage: 'commit',
         phase: 'commit',
         acct: selfAcct,
-        counts: { total: buildCounts.total, ready: buildCounts.ready, skipped: buildCounts.skipped },
+        counts: { total: buildCounts.total, ready: buildCounts.ready, skipped: buildCounts.skipped, profileOnly: buildCounts.profileOnly },
         committed: builtByKey.size,
         sourceTag: 'contacts-view:commit'
       });
