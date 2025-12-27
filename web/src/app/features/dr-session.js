@@ -706,9 +706,15 @@ export function restoreDrStateFromSnapshot(params = {}) {
   holder.PN = numberOrDefault(data.PN, holder.PN || 0);
   holder.NsTotal = nsTotal;
   holder.NrTotal = nrTotal;
-  assign('myRatchetPriv', data.myRatchetPriv_b64);
-  assign('myRatchetPub', data.myRatchetPub_b64);
-  assign('theirRatchetPub', data.theirRatchetPub_b64);
+  holder.myRatchetPriv = data.myRatchetPriv_b64
+    ? decodeKeyString(data.myRatchetPriv_b64, { keyName: 'myRatchetPriv', peerAccountDigest: peer, peerDeviceId, sourceTag })
+    : null;
+  holder.myRatchetPub = data.myRatchetPub_b64
+    ? decodeKeyString(data.myRatchetPub_b64, { keyName: 'myRatchetPub', peerAccountDigest: peer, peerDeviceId, sourceTag })
+    : null;
+  holder.theirRatchetPub = data.theirRatchetPub_b64
+    ? decodeKeyString(data.theirRatchetPub_b64, { keyName: 'theirRatchetPub', peerAccountDigest: peer, peerDeviceId, sourceTag })
+    : null;
   holder.pendingSendRatchet = !!data.pendingSendRatchet;
   const snapshotTs = data.updatedAt || Date.now();
   if (targetState) {
