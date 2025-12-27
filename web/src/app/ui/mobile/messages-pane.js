@@ -3166,7 +3166,7 @@ export function initMessagesPane({
     renderConversationList();
     updateComposerAvailability();
     if (hasTimelineMessages) {
-      updateMessagesUI({ scrollToEnd: true, forceFullRender: true });
+      updateMessagesUI({ scrollToEnd: false, forceFullRender: true });
     } else {
       clearMessagesView();
     }
