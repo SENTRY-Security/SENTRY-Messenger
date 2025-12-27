@@ -39,7 +39,8 @@ import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-con
 import {
   ensureSecureConversationReady as managerEnsureSecureConversationReady,
   ensureDrReceiverState as managerEnsureDrReceiverState,
-  handleSecureConversationControlMessage
+  handleSecureConversationControlMessage,
+  SECURE_CONVERSATION_STATUS
 } from './secure-conversation-manager.js';
 import { classifyDecryptedPayload, SEMANTIC_KIND } from './semantic.js';
 import {
@@ -89,16 +90,16 @@ export function __resetMessagesTestOverrides() {
 
 const decoder = new TextDecoder();
 const secureFetchBackoff = new Map();
-const secureFetchLocks = new Set(); // conversationId in-flight
-const tombstonedConversations = new Set(); // legacy; kept for compatibility
-const conversationClearAfter = new Map(); // conversationId -> unix ts to ignore older messages
-const processedMessageCache = new Map(); // conversationId -> Set(messageId)
-const processedContactShare = new Map(); // conversationId -> Set(stableKey)
-const PROCESSED_CACHE_MAX_PER_CONV = 500;
-const PROCESSED_CACHE_MAX_CONVS = 50;
-const drFailureCounter = new Map(); // `${conversationId}::${peerKey}` -> count
-// receiptStore: conversationId -> Map(messageId -> { read:boolean, ts:number|null })
-const receiptStore = new Map();
+  const secureFetchLocks = new Set(); // conversationId in-flight
+  const tombstonedConversations = new Set(); // legacy; kept for compatibility
+  const conversationClearAfter = new Map(); // conversationId -> unix ts to ignore older messages
+  const processedMessageCache = new Map(); // conversationId -> Set(messageId)
+  const processedContactShare = new Map(); // conversationId -> Set(stableKey)
+  const PROCESSED_CACHE_MAX_PER_CONV = 500;
+  const PROCESSED_CACHE_MAX_CONVS = 50;
+  const drFailureCounter = new Map(); // `${conversationId}::${peerKey}` -> count
+  // receiptStore: conversationId -> Map(messageId -> { read:boolean, ts:number|null })
+  const receiptStore = new Map();
 const sentReadReceipts = new Set(); // `${conversationId}:${messageId}`
 let sentReceiptsLoaded = false;
 let receiptsLoaded = false;
@@ -1059,6 +1060,7 @@ export async function listSecureAndDecrypt(params = {}) {
   const sortedItems = filteredItems;
   const shouldTrackState = mutateState !== false;
   const stateByDevice = new Map();
+  const secureStatusByDevice = new Map();
   const ensuredConversations = new Set();
   const logSkipLine = (fields = {}) => {
     logMsgEvent('skip', {
@@ -1112,22 +1114,42 @@ export async function listSecureAndDecrypt(params = {}) {
   };
 
   const ensureConversationReadyForDevice = async (deviceId) => {
-    if (!deviceId) return;
+    if (!deviceId) return { status: null };
     const key = `${peerKey}::${deviceId}`;
-    if (ensuredConversations.has(key)) return;
-    await deps.ensureSecureConversationReady({
+    if (ensuredConversations.has(key)) {
+      return { status: secureStatusByDevice.get(deviceId) || null };
+    }
+    const statusInfo = await deps.ensureSecureConversationReady({
       peerAccountDigest: peerKey,
       peerDeviceId: deviceId,
       reason: 'list-messages',
       source: 'messages:listSecureAndDecrypt',
       conversationId
     });
+    const status = statusInfo?.status || null;
+    secureStatusByDevice.set(deviceId, status);
+    if (status === SECURE_CONVERSATION_STATUS.PENDING) {
+      return { status };
+    }
     ensuredConversations.add(key);
+    return { status };
   };
 
   // 預先確保初始 peerDevice 的會話就緒與 state 存在。
   if (peerDevice) {
-    await ensureConversationReadyForDevice(peerDevice);
+    const initialStatus = await ensureConversationReadyForDevice(peerDevice);
+    if (initialStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
+      return {
+        items: [],
+        nextCursorTs: null,
+        nextCursor: null,
+        hasMoreAtCursor: false,
+        errors: ['安全對話建立中，請稍後再試。'],
+        receiptUpdates: [],
+        deadLetters: [],
+        serverItemCount: 0
+      };
+    }
     ensureReceiverStateReady(peerDevice);
   }
 
@@ -1254,6 +1276,11 @@ export async function listSecureAndDecrypt(params = {}) {
         || header?.device_id
         || null;
       const peerDeviceForMessage = senderDeviceId || peerDevice;
+      const secureStatus = await ensureConversationReadyForDevice(peerDeviceForMessage);
+      if (secureStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
+        logDeliverySkip('securePending', { peerDeviceId: peerDeviceForMessage, conversationId: packetConversationId || conversationId });
+        return;
+      }
 
       stateKey = buildStateKey({ conversationId: packetConversationId, peerKey, peerDeviceId: peerDeviceForMessage });
       logDrCore('packet:key', { conversationId: packetConversationId, messageId, stateKey });

@@ -212,7 +212,12 @@ export async function ensureSecureConversationReady({
     while (Date.now() <= deadline) {
       entry.attempts += 1;
       try {
-        await ensureDrReceiverState({ peerAccountDigest, peerDeviceId: deviceId, conversationId });
+        const ensured = await ensureDrReceiverState({ peerAccountDigest, peerDeviceId: deviceId, conversationId });
+        // ensureDrReceiverState 回傳 false 代表 contact 仍 pending（缺材料）
+        if (ensured === false) {
+          setStatus(key, STATUS_PENDING, { reason: 'missing-material', source, attempts: entry.attempts });
+          return cloneStatus(key, peerStates.get(key));
+        }
         setStatus(key, STATUS_READY, { reason: 'ensure-success', source, attempts: entry.attempts });
         return cloneStatus(key, peerStates.get(key));
       } catch (err) {
