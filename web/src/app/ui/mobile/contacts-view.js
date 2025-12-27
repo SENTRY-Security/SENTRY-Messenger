@@ -420,12 +420,20 @@ export function initContactsView(options) {
   }
 
   async function loadInitialContacts() {
-    console.log('[contacts-view]', { contactsReloadStart: true });
+    // contacts-view refresh uses delta-commit: only add/update complete entries; never clear/remove to avoid downgrading ready contacts or losing messages.
+    // File: web/src/app/ui/mobile/contacts-view.js (loadInitialContacts)
+    const DEBUG_CONTACTS_CORE = false;
+    if (DEBUG_CONTACTS_CORE) console.log('[contacts-view]', { contactsReloadStart: true, phase: 'start' });
+    const selfAcct = getAccountDigest() || null;
+    const prevReady = listReadyContacts();
     const prevPeers = new Set(
-      listReadyContacts()
+      prevReady
         .map((entry) => contactKey(entry))
         .filter(Boolean)
     );
+    const prevReadyCount = prevPeers.size;
+    const builtByKey = new Map();
+    const buildCounts = { total: 0, ready: 0, skipped: 0 };
     const localCache = new Map();
     if (Array.isArray(sessionStore.contactState)) {
       sessionStore.contactState.forEach((entry) => {
@@ -442,7 +450,6 @@ export function initContactsView(options) {
       log({ contactsInitError: err?.message || err });
       fetched = [];
     }
-    clearContactCore();
     // 若伺服器資料缺對端裝置，先用 contactSecrets 作為補全來源。
     const secretMap = restoreContactSecrets();
     const secretByKey = new Map();
@@ -459,10 +466,35 @@ export function initContactsView(options) {
     }
 
     const processed = new Set();
-    const tryUpsert = (payload, sourceTag) => {
-      const res = upsertContactCore(payload, sourceTag);
-      if (res?.peerKey && res?.isReady) processed.add(res.peerKey);
-      return res;
+    const stageEntry = (payload, sourceTag) => {
+      if (!payload) return null;
+      buildCounts.total += 1;
+      const peerKey = payload.peerKey || contactKey(payload);
+      const complete = !!(payload.peerAccountDigest && payload.peerDeviceId && payload.conversationId && payload.conversationToken);
+      if (!peerKey || !complete) {
+        buildCounts.skipped += 1;
+        if (DEBUG_CONTACTS_CORE) {
+          console.log('[contacts-view]', {
+            contactsCoreStage: 'skip-incomplete',
+            phase: 'build',
+            acct: selfAcct,
+            peerDigest: payload.peerAccountDigest || null,
+            peerDeviceId: payload.peerDeviceId || null,
+            conversationId: payload.conversationId || null,
+            hasToken: !!payload.conversationToken,
+            counts: { buildTotal: buildCounts.total, buildReady: buildCounts.ready, skipped: buildCounts.skipped },
+            sourceTag
+          });
+        }
+        return null;
+      }
+      const staged = { ...payload, peerKey, sourceTag };
+      if (!builtByKey.has(peerKey)) {
+        buildCounts.ready += 1;
+      }
+      builtByKey.set(peerKey, staged);
+      processed.add(peerKey);
+      return staged;
     };
     const resolveCorePayload = (entry, sourceTag) => {
       const digest = normalizeAccountDigest(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
@@ -553,8 +585,8 @@ export function initContactsView(options) {
         presenceManager.removePresenceForContact(payload.peerKey);
         continue;
       }
-      const saved = tryUpsert(payload, 'contacts-view:fetched');
-      if (saved?.peerKey && payload?.conversation?.dr_init) {
+      const staged = stageEntry(payload, 'contacts-view:fetched');
+      if (staged?.peerKey && payload?.conversation?.dr_init) {
         scheduleDrBootstrap(payload.peerKey, { dr_init: payload.conversation.dr_init, peerDeviceId: payload.peerDeviceId });
       }
     }
@@ -565,7 +597,7 @@ export function initContactsView(options) {
       if (digest && deletedContacts.has(digest)) continue;
       const payload = resolveCorePayload(entry, 'contacts-view:local-cache');
       if (!payload) continue;
-      tryUpsert(payload, 'contacts-view:local-cache');
+      stageEntry(payload, 'contacts-view:local-cache');
     }
     // contact-secrets 還原聯絡人（含 peerDeviceId/token）
     if (secretMap instanceof Map) {
@@ -573,8 +605,32 @@ export function initContactsView(options) {
         const payload = resolveCorePayload({ ...record, peerAccountDigest: peerKey }, 'contacts-view:secrets');
         if (!payload) continue;
         if (processed.has(payload.peerKey)) continue;
-        tryUpsert(payload, 'contacts-view:secrets');
+        stageEntry(payload, 'contacts-view:secrets');
       }
+    }
+
+    if (DEBUG_CONTACTS_CORE) {
+      console.log('[contacts-view]', {
+        contactsCoreStage: 'build',
+        phase: 'build',
+        acct: selfAcct,
+        counts: { total: buildCounts.total, ready: buildCounts.ready, skipped: buildCounts.skipped },
+        committed: builtByKey.size,
+        sourceTag: 'contacts-view:refresh'
+      });
+    }
+    for (const entry of builtByKey.values()) {
+      upsertContactCore(entry, 'contacts-view:commit');
+    }
+    if (DEBUG_CONTACTS_CORE) {
+      console.log('[contacts-view]', {
+        contactsCoreStage: 'commit',
+        phase: 'commit',
+        acct: selfAcct,
+        counts: { total: buildCounts.total, ready: buildCounts.ready, skipped: buildCounts.skipped },
+        committed: builtByKey.size,
+        sourceTag: 'contacts-view:commit'
+      });
     }
 
     const currentPeers = new Set(listReadyContacts().map((entry) => contactKey(entry)).filter(Boolean));
