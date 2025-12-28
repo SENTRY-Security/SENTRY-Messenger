@@ -427,6 +427,7 @@ export function initContactsView(options) {
     // contacts-view refresh uses delta-commit: only add/update complete entries; never clear/remove to avoid downgrading ready contacts or losing messages.
     // File: web/src/app/ui/mobile/contacts-view.js (loadInitialContacts)
     const DEBUG_CONTACTS_CORE = false;
+    const DEBUG_CONTACTS_A1 = true;
     if (DEBUG_CONTACTS_CORE) console.log('[contacts-view]', { contactsReloadStart: true, phase: 'start' });
     const selfAcct = getAccountDigest() || null;
     const prevReady = listReadyContacts();
@@ -456,6 +457,22 @@ export function initContactsView(options) {
       if (convPeerDigest && convPeerDeviceId) {
         conversationPeerLookup.set(convId, { peerKey: `${convPeerDigest}::${convPeerDeviceId}`, peerDeviceId: convPeerDeviceId });
       }
+    }
+    if (DEBUG_CONTACTS_A1) {
+      const sampleLookup = [];
+      for (const [convId, info] of conversationPeerLookup.entries()) {
+        sampleLookup.push({ conversationId: convId, peerDeviceId: info?.peerDeviceId || null });
+        if (sampleLookup.length >= 3) break;
+      }
+      try {
+        console.log('[contacts-view][A1]', {
+          conversationLookupBuilt: true,
+          localConversationCacheSize: localConversationCache.size,
+          conversationPeerLookupSize: conversationPeerLookup.size,
+          sampleConversationIds: sampleLookup.map((item) => item.conversationId),
+          samplePeerDeviceIds: sampleLookup.map((item) => item.peerDeviceId)
+        });
+      } catch {}
     }
     let fetched = [];
     try {
@@ -649,6 +666,22 @@ export function initContactsView(options) {
         || secretRecord?.conversationToken
         || secretRecord?.conversation?.token
         || null;
+      if ((!digest || !peerDeviceId) && DEBUG_CONTACTS_A1) {
+        const hasLookupHit = !!(conversationId && conversationPeerLookup.has(conversationId));
+        const conversationTokenPresent = !!conversationToken;
+        try {
+          console.log('[contacts-view][A1]', {
+            resolveCorePayloadMissingPeerDevice: true,
+            sourceTag,
+            digest,
+            rawKey,
+            conversationId: conversationId || null,
+            conversationTokenPresent,
+            peerDeviceId: peerDeviceId || null,
+            hasLookupHit
+          });
+        } catch {}
+      }
       if (!digest || !peerDeviceId) return null;
       const resolvedPeerKey = peerKeyFromLookup || (peerDeviceId ? `${digest}::${peerDeviceId}` : null);
       return {

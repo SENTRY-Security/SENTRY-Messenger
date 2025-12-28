@@ -2645,6 +2645,7 @@ export function initMessagesPane({
   }
   async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true, silent = false, reason } = {}) {
     const state = getMessageState();
+    log({ probeReplay: { where: 'messages-pane:loadActiveConversationMessages:enter', hasConvId: !!state.conversationId, hasToken: !!state.conversationToken, hasPeer: !!state.activePeerDigest, hasPeerDevice: !!state.activePeerDeviceId } });
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
     if (!state.activePeerDeviceId) {
       if (!silent) setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
@@ -2664,6 +2665,7 @@ export function initMessagesPane({
     if (!append && !silent) setMessagesStatus('載入中…');
     const beforeTimeline = refreshTimelineState(state.conversationId);
     const beforeIdSet = collectTimelineIdSet(beforeTimeline);
+    const timelineSizeBefore = Array.isArray(beforeTimeline) ? beforeTimeline.length : null;
     const uiLatestKey = latestKeyFromTimeline(beforeTimeline);
     try {
       const cursor = append ? state.nextCursor : undefined;
@@ -2671,6 +2673,7 @@ export function initMessagesPane({
       const cursorId = cursor?.id ?? undefined;
       const fetchLimit = 50;
       const forceReplay = !append && replay;
+      const mutateState = mutateLive && !forceReplay && !append;
       let prefetch = null;
       let serverLatestKey = null;
       if (debugRelogin) {
@@ -2685,6 +2688,23 @@ export function initMessagesPane({
           }));
         } catch {}
       }
+      try {
+        log({
+          action: 'replay:before',
+          conversationId: state.conversationId || null,
+          conversationIdPresent: !!state.conversationId,
+          allowReplay: true,
+          replay: !!replay,
+          append: !!append,
+          silent: !!silent,
+          mutateState,
+          limit: fetchLimit,
+          nextCursorTs: cursorTs ?? null,
+          nextCursorId: cursorId ?? null,
+          nextCursor: cursor || null,
+          timelineSizeBefore
+        });
+      } catch {}
 
       if (!append) {
         try {
@@ -2727,7 +2747,7 @@ export function initMessagesPane({
         limit: fetchLimit,
         cursorTs,
         cursorId,
-        mutateState: mutateLive && !forceReplay && !append,
+        mutateState,
         allowReplay: true,
         onMessageDecrypted: handleMessageDecrypted,
         prefetchedList: prefetch
@@ -2794,6 +2814,28 @@ export function initMessagesPane({
       const timelineMessages = refreshTimelineState(state.conversationId);
       const afterIdSet = collectTimelineIdSet(timelineMessages);
       const newMessageIds = Array.from(afterIdSet).filter((id) => !beforeIdSet.has(id));
+      try {
+        log({
+          action: 'replay:after',
+          conversationId: state.conversationId || null,
+          conversationIdPresent: !!state.conversationId,
+          allowReplay: true,
+          replay: !!replay,
+          append: !!append,
+          silent: !!silent,
+          mutateState,
+          limit: fetchLimit,
+          nextCursorTs: nextCursor?.ts ?? nextCursorTs ?? null,
+          nextCursorId: nextCursor?.id ?? null,
+          nextCursor: nextCursor || null,
+          serverItemCount: serverItemCount ?? null,
+          itemsLength: Array.isArray(resultItems) ? resultItems.length : null,
+          errorsLength: filteredErrors.length,
+          errorsPreview: filteredErrors.slice(0, 3).map((entry) => entry?.message || entry?.code || entry),
+          timelineSizeBefore,
+          timelineSizeAfter: Array.isArray(timelineMessages) ? timelineMessages.length : null
+        });
+      } catch {}
       if (debugRelogin) {
         try {
           console.info('[diag][relogin] load-messages:after ' + JSON.stringify({
@@ -3141,7 +3183,8 @@ export function initMessagesPane({
     state.conversationId = conversation.conversation_id;
     resetProcessedMessages(state.conversationId);
     const timelineMessages = refreshTimelineState(state.conversationId);
-    const hasTimelineMessages = Array.isArray(timelineMessages) && timelineMessages.length > 0;
+    const timelineSizeBefore = Array.isArray(timelineMessages) ? timelineMessages.length : 0;
+    const hasTimelineMessages = timelineSizeBefore > 0;
     state.nextCursor = null;
     state.nextCursorTs = null;
     state.hasMore = true;
@@ -3250,7 +3293,7 @@ export function initMessagesPane({
           }));
         } catch {}
       }
-      await loadActiveConversationMessages({ append: false, replay: hadExistingMessages });
+      await loadActiveConversationMessages({ append: false, replay: hadExistingMessages || timelineSizeBefore === 0 });
       scheduleActivePoll();
     }
   }

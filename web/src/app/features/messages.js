@@ -57,6 +57,7 @@ import { enqueueInboxJob, processInboxForConversation } from './queue/inbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
 import { toU8Strict } from '../../shared/utils/u8-strict.js';
 import { logDrCore, logMsgEvent, shouldLogDrCore } from '../lib/logging.js';
+import { log } from '../core/log.js';
 
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
@@ -869,7 +870,37 @@ export async function listSecureAndDecrypt(params = {}) {
     sendReadReceipt = true,
     prefetchedList = null
   } = params;
+  log({ probeReplay: { where: 'messages:listSecureAndDecrypt:enter', conversationId: conversationId || null, hasPeerDevice: !!peerDeviceId, allowReplay: !!allowReplay, mutateState: !!mutateState } });
   if (!conversationId) throw new Error('conversationId required');
+  const replayCounters = {
+    fetchedItems: 0,
+    enqueuedJobs: 0,
+    skipped_targetDeviceMissing: 0,
+    skipped_directionFilter: 0,
+    skipped_duplicateCounter: 0,
+    skipped_processedContactShare: 0,
+    skipped_securePending: 0,
+    decryptOk: 0,
+    decryptFail: 0,
+    timelineAppendCount: 0
+  };
+  const uniqueAppendedIds = new Set();
+  let replaySummaryLogged = false;
+  const emitReplaySummary = (extra = {}) => {
+    if (replaySummaryLogged) return;
+    replaySummaryLogged = true;
+    try {
+      log({
+        replaySummary: {
+          ...replayCounters,
+          uniqueMessageIdsAppended: uniqueAppendedIds.size,
+          ...extra
+        },
+        conversationId,
+        stage: 'listSecureAndDecrypt'
+      });
+    } catch {}
+  };
   logMsgEvent('fetch:start', {
     conversationId,
     direction: 'incoming',
@@ -879,6 +910,7 @@ export async function listSecureAndDecrypt(params = {}) {
     source: params?.__debugSource || null
   });
   if (tombstonedConversations.has(String(conversationId))) {
+    emitReplaySummary();
     return {
       items: [],
       nextCursorTs: null,
@@ -940,6 +972,7 @@ export async function listSecureAndDecrypt(params = {}) {
   }
   const clearAfter = getConversationClearAfter(conversationId);
   if (secureFetchLocks.has(conversationId)) {
+    emitReplaySummary();
     return {
       items: [],
       nextCursorTs: null,
@@ -1058,10 +1091,15 @@ export async function listSecureAndDecrypt(params = {}) {
     });
   }
   const sortedItems = filteredItems;
+  replayCounters.fetchedItems = Array.isArray(sortedItems) ? sortedItems.length : 0;
   const shouldTrackState = mutateState !== false;
   const stateByDevice = new Map();
   const secureStatusByDevice = new Map();
   const ensuredConversations = new Set();
+  const directionFilterSampleLimit = 3;
+  let directionFilterSampleCount = 0;
+  const duplicateCounterSampleLimit = 3;
+  let duplicateCounterSampleCount = 0;
   const logSkipLine = (fields = {}) => {
     logMsgEvent('skip', {
       conversationId,
@@ -1139,6 +1177,7 @@ export async function listSecureAndDecrypt(params = {}) {
   if (peerDevice) {
     const initialStatus = await ensureConversationReadyForDevice(peerDevice);
     if (initialStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
+      replayCounters.skipped_securePending += 1;
       return {
         items: [],
         nextCursorTs: null,
@@ -1189,6 +1228,49 @@ export async function listSecureAndDecrypt(params = {}) {
     let senderDigest = null;
     let direction = 'unknown';
     const logDeliverySkip = (gate, extra = {}) => {
+      if (gate === 'targetDeviceMissing') replayCounters.skipped_targetDeviceMissing += 1;
+      else if (gate === 'directionFilter') replayCounters.skipped_directionFilter += 1;
+      else if (gate === 'duplicateCounter') replayCounters.skipped_duplicateCounter += 1;
+      else if (gate === 'processedContactShare') replayCounters.skipped_processedContactShare += 1;
+      else if (gate === 'securePending') replayCounters.skipped_securePending += 1;
+      if (gate === 'directionFilter' && directionFilterSampleCount < directionFilterSampleLimit) {
+        directionFilterSampleCount += 1;
+        try {
+          log({
+            replaySkipSample: {
+              skipReason: 'directionFilter',
+              conversationId: convId || conversationId || null,
+              serverMessageId: serverMessageId || null,
+              messageId: messageId || null,
+              isHistoryReplay: allowReplay === true && mutateState === false,
+              selfDeviceId: selfDeviceId || null,
+              senderDeviceId: senderDeviceId || null,
+              targetDeviceId: targetDeviceId || null,
+              directionComputed: direction || 'unknown',
+              isSelfSenderByDevice: !!(senderDeviceId && selfDeviceId && senderDeviceId === selfDeviceId),
+              deviceMatchesSelf: !!(targetDeviceId && selfDeviceId && targetDeviceId === selfDeviceId)
+            }
+          });
+        } catch {}
+      }
+      if (gate === 'duplicateCounter' && duplicateCounterSampleCount < duplicateCounterSampleLimit) {
+        duplicateCounterSampleCount += 1;
+        try {
+          log({
+            replaySkipSample: {
+              skipReason: 'duplicateCounter',
+              conversationId: convId || conversationId || null,
+              serverMessageId: serverMessageId || null,
+              messageId: messageId || null,
+              counter: Number.isFinite(Number(extra?.counter)) ? Number(extra.counter) : null,
+              transportCounter: Number.isFinite(Number(extra?.transportCounter)) ? Number(extra.transportCounter) : null,
+              Nr: Number.isFinite(Number(extra?.Nr)) ? Number(extra.Nr) : null,
+              Ns: Number.isFinite(Number(extra?.Ns)) ? Number(extra.Ns) : null,
+              isHistoryReplay: allowReplay === true && mutateState === false
+            }
+          });
+        } catch {}
+      }
       logSkipLine({
         gate,
         reason: extra?.reason || gate,
@@ -1567,6 +1649,7 @@ export async function listSecureAndDecrypt(params = {}) {
         msgType: payloadMsgType || msgTypeForDecrypt,
         targetDeviceId
       });
+      replayCounters.decryptOk += 1;
 
       if (trackState) {
         deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
@@ -1744,6 +1827,9 @@ export async function listSecureAndDecrypt(params = {}) {
         };
         const appended = timelineAppendUserMessage(convId, timelineEntry);
         if (appended) {
+          replayCounters.timelineAppendCount += 1;
+          const appendedId = timelineEntry.messageId || cacheMessageId || messageId || null;
+          if (appendedId) uniqueAppendedIds.add(appendedId);
           try {
             console.info('[msg] ' + JSON.stringify({
               event: 'timeline:append',
@@ -1780,6 +1866,7 @@ export async function listSecureAndDecrypt(params = {}) {
         drFailureCounter.delete(`${convId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`);
       }
     } catch (err) {
+      replayCounters.decryptFail += 1;
       // Restore the holder to the state before this decrypt attempt to align all message types (including contact-share)
       // to the same receive-chain rollback behavior.
       if (preDecryptSnapshot) {
@@ -2005,6 +2092,7 @@ export async function listSecureAndDecrypt(params = {}) {
       peerAccountDigest: peerKey,
       cursorTs
     });
+    replayCounters.enqueuedJobs += 1;
     logMsgEvent('enqueue', {
       direction: 'incoming',
       conversationId,
@@ -2065,6 +2153,7 @@ export async function listSecureAndDecrypt(params = {}) {
     }
   });
 
+  emitReplaySummary();
   return {
     items: out,
     nextCursorTs,
@@ -2076,6 +2165,7 @@ export async function listSecureAndDecrypt(params = {}) {
   };
   } finally {
     secureFetchLocks.delete(conversationId);
+    emitReplaySummary();
   }
 }
 function wasMessageProcessed(conversationId, messageId) {

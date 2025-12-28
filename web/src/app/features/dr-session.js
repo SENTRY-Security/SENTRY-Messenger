@@ -36,6 +36,7 @@ import {
 } from './queue/outbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
+import { log } from '../core/log.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 import { enqueueMediaMetaJob } from './queue/media.js';
@@ -219,14 +220,21 @@ function reserveTransportCounter(state, {
   const reserved = before + 1;
   state.NsTotal = reserved;
   const convId = conversationId || state?.baseKey?.conversationId || null;
+  const stateKey = peerAccountDigest && peerDeviceId ? `${peerAccountDigest}::${peerDeviceId}` : null;
   try {
-    console.log('[msg] counter:reserve', JSON.stringify({
-      messageId: messageId || null,
-      msgType: msgType || null,
-      conversationId: convId,
-      before,
-      reserved
-    }));
+    log({
+      counterReserve: {
+        messageId: messageId || null,
+        msgType: msgType || null,
+        conversationId: convId,
+        peerAccountDigest: peerAccountDigest || null,
+        peerDeviceId: peerDeviceId || null,
+        stateKey,
+        holderKey: stateKey,
+        before,
+        reserved
+      }
+    });
   } catch {}
   return reserved;
 }
@@ -730,13 +738,17 @@ export function restoreDrStateFromSnapshot(params = {}) {
   }
   holder.__lastWriteTag = sourceTag || 'restoreDrStateFromSnapshot';
   try {
-    console.log('[msg] state:restore', JSON.stringify({
-      conversationId: holder?.baseKey?.conversationId || null,
-      peerDigest: peer || null,
-      peerDeviceId: peerDeviceId || null,
-      NsTotal: holder?.NsTotal ?? null,
-      NrTotal: holder?.NrTotal ?? null
-    }));
+    log({
+      hydrateDrState: {
+        conversationId: holder?.baseKey?.conversationId || null,
+        peerDigest: peer || null,
+        peerDeviceId: peerDeviceId || null,
+        NsTotal: holder?.NsTotal ?? null,
+        NrTotal: holder?.NrTotal ?? null,
+        peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
+        sourceTag: 'hydrate'
+      }
+    });
   } catch {}
   return true;
 }
@@ -810,22 +822,28 @@ export function persistDrSnapshot(params = {}) {
       (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade))
       || (hasExistingRecv && lacksNewRecv)
     ) {
-      console.warn('[dr] persist snapshot skipped downgrade', {
-        peerAccountDigest: peer,
-        peerDeviceId,
-        deviceId: selfDeviceId,
-        existingNs,
-        newNs,
-        hasExistingSend,
-        hasExistingRecv,
-        lacksNewSend,
-        lacksNewRecv,
-        nsDowngrade,
-        totalDowngrade,
-        holderDowngrade,
-        existingTotal,
-        newTotal,
-        holderTotal
+      log({
+        persistSnapshotSkippedDowngrade: {
+          conversationId: holder?.baseKey?.conversationId || baseConversationId || null,
+          convId: holder?.baseKey?.conversationId || baseConversationId || null,
+          peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
+          peerAccountDigest: peer,
+          peerDeviceId,
+          deviceId: selfDeviceId,
+          existingNs,
+          newNs,
+          hasExistingSend,
+          hasExistingRecv,
+          lacksNewSend,
+          lacksNewRecv,
+          nsDowngrade,
+          totalDowngrade,
+          holderDowngrade,
+          existingTotal,
+          newTotal,
+          holderTotal,
+          reason: 'downgrade-check'
+        }
       });
       return false;
     }

@@ -37,6 +37,7 @@ export async function loadContacts() {
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const selfDigest = (getAccountDigest() || '').toUpperCase();
   const deviceId = ensureDeviceId();
+  const DEBUG_CONTACTS_A1 = true;
 
   restoreContactSecrets();
 
@@ -48,6 +49,7 @@ export async function loadContacts() {
     missingPeerDeviceCount: 0,
     missingConvFieldsCount: 0
   };
+  let debugContactsA1Logged = 0;
 
   for (const convId of convIds) {
     const { r, data } = await listMessages({ convId, limit: 100 });
@@ -185,6 +187,23 @@ export async function loadContacts() {
         msgId: item?.id || null,
         conversation
       };
+      if (DEBUG_CONTACTS_A1 && debugContactsA1Logged < 3) {
+        debugContactsA1Logged += 1;
+        const conversationId = entry?.conversation?.conversation_id || entry?.conversation?.id || null;
+        const conversationTokenPresent = !!entry?.conversation?.token_b64;
+        const nicknamePresent = entry?.nickname !== null && entry?.nickname !== undefined;
+        const avatarPresent = !!entry?.avatar;
+        try {
+          console.log('[contacts][A1]', {
+            loadContactsEntry: true,
+            peerAccountDigest: entry.peerAccountDigest,
+            conversationId,
+            conversationTokenPresent,
+            nicknamePresent,
+            avatarPresent
+          });
+        } catch {}
+      }
       const selfKeys = new Set([selfDigest].filter(Boolean));
       const isSelfContact = !!peerDigest && selfKeys.has(peerDigest);
       if (isSelfContact) {

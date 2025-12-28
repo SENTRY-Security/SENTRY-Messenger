@@ -49,7 +49,12 @@ import { saveSettings, loadSettings, DEFAULT_SETTINGS } from '../features/settin
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
 import { setupShareController } from './mobile/share-controller.js?v=0.1.10';
-import { loadLatestProfile as loadProfileControlState, persistProfileForAccount, normalizeNickname as normalizeProfileNickname } from '../features/profile.js';
+import {
+  loadLatestProfile as loadProfileControlState,
+  persistProfileForAccount,
+  normalizeNickname as normalizeProfileNickname,
+  seedProfileCounterOnce
+} from '../features/profile.js';
 import {
   sessionStore,
   resetShareState,
@@ -3567,7 +3572,16 @@ async function hydrateProfileSnapshots() {
   }
 }
 
-runPostLoginContactHydrate()
+const postLoginInitPromise = (async () => {
+  try {
+    await seedProfileCounterOnce();
+  } catch (err) {
+    log({ profileCounterSeedError: err?.message || err });
+  }
+  return runPostLoginContactHydrate();
+})();
+
+postLoginInitPromise
   .then(() => {
     messagesPane.syncConversationThreadsFromContacts();
     return messagesPane.refreshConversationPreviews({ force: true });

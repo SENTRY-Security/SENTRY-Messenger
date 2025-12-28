@@ -165,6 +165,80 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
   return null;
 }
 
+let profileCounterSeedPromise = null;
+
+export async function seedProfileCounterOnce() {
+  if (profileCounterSeedPromise) return profileCounterSeedPromise;
+  let deviceId = null;
+  let digest = null;
+  try {
+    deviceId = ensureDeviceId();
+    digest = normalizeAccountDigest(getAccountDigest());
+  } catch (err) {
+    log({ profileCounterSeedSkip: { reason: 'identity-missing', error: err?.message || err } });
+    return null;
+  }
+  const conversationId = profileConversationId(digest);
+  if (!deviceId || !digest || !conversationId) {
+    log({
+      profileCounterSeedSkip: {
+        reason: 'identity-missing',
+        hasDeviceId: !!deviceId,
+        hasDigest: !!digest,
+        hasConversation: !!conversationId
+      }
+    });
+    return null;
+  }
+
+  profileCounterSeedPromise = (async () => {
+    try {
+      const { r, data } = await listSecureMessages({ conversationId, limit: 50 });
+      if (!r.ok) {
+        const msg = typeof data === 'string' ? data : data?.error || data?.message || 'profile seed failed';
+        log({ profileCounterSeedError: msg, status: r.status || null });
+        return null;
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      let maxCounter = 0;
+      for (const entry of items) {
+        const senderAccount = normalizeAccountDigest(entry?.sender_account_digest || entry?.senderAccountDigest || null);
+        if (senderAccount && senderAccount !== digest) continue;
+        const senderDeviceId = entry?.sender_device_id || entry?.senderDeviceId || null;
+        if (senderDeviceId && senderDeviceId !== deviceId) continue;
+        const counters = [];
+        const directCounter = Number(entry?.counter ?? entry?.n);
+        if (Number.isFinite(directCounter) && directCounter > 0) counters.push(directCounter);
+        try {
+          const header = entry?.header_json ? JSON.parse(entry.header_json) : entry?.header;
+          const headerDeviceId = header?.device_id || header?.deviceId || null;
+          if (!headerDeviceId || headerDeviceId === deviceId) {
+            const headerCounter = Number(header?.n ?? header?.counter);
+            if (Number.isFinite(headerCounter) && headerCounter > 0) counters.push(headerCounter);
+          }
+        } catch {}
+        for (const c of counters) {
+          if (Number.isFinite(c) && c > maxCounter) maxCounter = c;
+        }
+        if (maxCounter && senderDeviceId && senderDeviceId === deviceId) break;
+      }
+      if (maxCounter > 0) {
+        const seed = maxCounter + 1;
+        setDeviceCounter(seed);
+        log({ profileCounterSeeded: { maxCounter, seed, deviceId, source: 'seedProfileCounterOnce' } });
+        return { maxCounter };
+      }
+      log({ profileCounterSeedSkip: { reason: 'no-self-messages', deviceId } });
+      return null;
+    } catch (err) {
+      log({ profileCounterSeedError: err?.message || err });
+      return null;
+    }
+  })();
+
+  return profileCounterSeedPromise;
+}
+
 async function persistProfileControlState(profile, { accountDigest } = {}) {
   const mk = getMkRaw();
   const targetDigest = normalizeAccountDigest(accountDigest || getAccountDigest());
@@ -215,9 +289,19 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   });
   if (!r.ok) {
     if (r.status === 409 && data?.error === 'CounterTooLow') {
-      const maxCounter = Number.isFinite(data?.maxCounter) ? Number(data.maxCounter) : null;
+      const maxCounter = Number.isFinite(data?.maxCounter)
+        ? Number(data.maxCounter)
+        : Number.isFinite(data?.details?.maxCounter)
+          ? Number(data.details.maxCounter)
+          : null;
       const seed = maxCounter === null ? 1 : maxCounter + 1;
-      setDeviceCounter(deviceId, seed);
+      setDeviceCounter(seed);
+      log({
+        profileCounterTooLowPayload: {
+          keys: data && typeof data === 'object' ? Object.keys(data) : typeof data,
+          hasDetails: !!data?.details
+        }
+      });
       log({ profileCounterReseeded: { maxCounter, seed, source: 'CounterTooLow' } });
       return false;
     }

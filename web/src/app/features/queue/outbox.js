@@ -6,6 +6,7 @@ import {
   listOutboxRecords,
   putOutboxRecord
 } from './db.js';
+import { log } from '../../core/log.js';
 
 const TYPE_MESSAGE = 'message';
 const TYPE_RECEIPT = 'receipt';
@@ -150,6 +151,20 @@ async function attemptSend(job) {
     createdAt: job.createdAt
   };
   const { r, data } = await createSecureMessage(payload);
+  if (r?.status === 409 && typeof data === 'object' && data?.error === 'CounterTooLow') {
+    const meta = payload?.header?.meta || {};
+    try {
+      log({
+        outboxCounterTooLow: {
+          conversationId: job?.conversationId || null,
+          counterSent: job?.counter ?? null,
+          maxCounterFromServer: data?.maxCounter ?? null,
+          senderDeviceId: job?.senderDeviceId || null,
+          senderAccountDigest: meta?.senderDigest || meta?.sender_digest || null
+        }
+      });
+    } catch {}
+  }
   const ackOk = r?.status === 202 && data && data.accepted === true && data.id;
   if (!ackOk) {
     const msg = typeof data?.message === 'string' ? data.message

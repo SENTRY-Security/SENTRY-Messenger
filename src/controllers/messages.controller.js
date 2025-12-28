@@ -237,6 +237,25 @@ export const createMessage = async (req, res) => {
     let workerJson = null;
     try { workerJson = text ? JSON.parse(text) : null; } catch { workerJson = text || null; }
     if (r.status === 409 && typeof workerJson === 'object' && workerJson?.error === 'CounterTooLow') {
+      appendSecureDebug({
+        event: 'proxy-counter-too-low',
+        conversationId: auth.conversationId,
+        counterSent: counter,
+        maxCounter: workerJson?.maxCounter ?? null,
+        senderAccountDigest: auth.accountDigest,
+        senderDeviceId,
+        path
+      });
+      logger.info({
+        proxyCounterTooLow: {
+          conversationId: auth.conversationId,
+          counterSent: counter,
+          maxCounter: workerJson?.maxCounter ?? null,
+          senderAccountDigest: auth.accountDigest,
+          senderDeviceId,
+          path
+        }
+      });
       return res.status(409).json({ error: 'CounterTooLow', details: workerJson });
     }
     if (!r.ok) {
@@ -408,6 +427,25 @@ export const createSecureMessage = async (req, res) => {
     }
 
     if (r.status === 409 && typeof workerJson === 'object' && workerJson?.error === 'CounterTooLow') {
+      appendSecureDebug({
+        event: 'proxy-counter-too-low',
+        conversationId: auth.conversationId,
+        counterSent: messageCounter,
+        maxCounter: workerJson?.maxCounter ?? null,
+        senderAccountDigest: auth.accountDigest,
+        senderDeviceId,
+        path
+      });
+      logger.info({
+        proxyCounterTooLow: {
+          conversationId: auth.conversationId,
+          counterSent: messageCounter,
+          maxCounter: workerJson?.maxCounter ?? null,
+          senderAccountDigest: auth.accountDigest,
+          senderDeviceId,
+          path
+        }
+      });
       return res.status(409).json({ error: 'CounterTooLow', details: workerJson });
     }
 
