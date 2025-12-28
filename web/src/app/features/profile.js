@@ -1,7 +1,7 @@
 // /app/features/profile.js
 // Manage encrypted profile control-state (nickname, avatar) stored per-account using MK.
 
-import { listSecureMessages, createSecureMessage, fetchSecureMaxCounter } from '../api/messages.js';
+import { listSecureMessages, createSecureMessage } from '../api/messages.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
 import {
   getMkRaw,
@@ -25,22 +25,6 @@ const AVATAR_CONV_PREFIX = 'avatar-';
 export function profileConversationId(accountDigest = null) {
   const acct = normalizeAccountDigest(accountDigest || getAccountDigest());
   return acct ? `${PROFILE_CONV_PREFIX}${acct}` : null;
-}
-
-export async function seedProfileCounterFromServer() {
-  const conversationId = profileConversationId();
-  if (!conversationId) throw new Error('profile conversationId missing');
-  const deviceId = ensureDeviceId();
-  const { r, data } = await fetchSecureMaxCounter({ conversationId, senderDeviceId: deviceId });
-  if (!r.ok) {
-    const msg = typeof data === 'string' ? data : data?.message || data?.error || 'maxCounter fetch failed';
-    throw new Error(msg);
-  }
-  const parsed = Number(data?.maxCounter);
-  const maxCounter = Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-  const seed = maxCounter === null ? 1 : maxCounter + 1;
-  setDeviceCounter(deviceId, seed);
-  return { maxCounter, seed };
 }
 
 export function normalizeNickname(raw) {
@@ -231,20 +215,7 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   });
   if (!r.ok) {
     if (r.status === 409 && data?.error === 'CounterTooLow') {
-      let maxCounter = Number.isFinite(data?.maxCounter) ? Number(data.maxCounter) : null;
-      if (maxCounter === null) {
-        try {
-          const { r: maxCounterRes, data: maxCounterData } = await fetchSecureMaxCounter({
-            conversationId: convId,
-            senderDeviceId: deviceId
-          });
-          if (maxCounterRes.ok && Number.isFinite(maxCounterData?.maxCounter)) {
-            maxCounter = Number(maxCounterData.maxCounter);
-          }
-        } catch (err) {
-          log({ profileCounterReseedError: err?.message || err });
-        }
-      }
+      const maxCounter = Number.isFinite(data?.maxCounter) ? Number(data.maxCounter) : null;
       const seed = maxCounter === null ? 1 : maxCounter + 1;
       setDeviceCounter(deviceId, seed);
       log({ profileCounterReseeded: { maxCounter, seed, source: 'CounterTooLow' } });
