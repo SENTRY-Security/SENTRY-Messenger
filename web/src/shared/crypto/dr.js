@@ -16,11 +16,13 @@
 import { loadNacl, scalarMult, genX25519Keypair, b64, b64u8, verifyDetached } from './nacl.js';
 import { convertEd25519PublicKey, convertEd25519SecretKey } from './ed2curve.js';
 import { toU8Strict } from '../utils/u8-strict.js';
+import { DEBUG } from '../../app/ui/mobile/debug-flags.js';
 
 const encoder = new TextEncoder();
 const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
 const PACKET_HOLDER_CACHE_MAX = 2000;
 const packetHolderCache = new Map();
+const drDebugLogsEnabled = DEBUG.drVerbose === true;
 
 function cloneU8(src) {
   if (src instanceof Uint8Array) return new Uint8Array(src);
@@ -208,16 +210,18 @@ export async function x3dhInitiate(devicePriv, peerBundle, overrideEk = null) {
     pendingSendRatchet: false,
     __bornReason: 'x3dh-initiate'
   };
-  try {
-    console.log('[msg] state:init-transport-counter', JSON.stringify({
-      peerDigest: peerBundle?.account_digest || null,
-      peerDeviceId: peerBundle?.device_id || null,
-      conversationId: null,
-      NsTotal: state.NsTotal,
-      NrTotal: state.NrTotal,
-      reason: state.__bornReason
-    }));
-  } catch {}
+  if (drDebugLogsEnabled) {
+    try {
+      console.log('[msg] state:init-transport-counter', JSON.stringify({
+        peerDigest: peerBundle?.account_digest || null,
+        peerDeviceId: peerBundle?.device_id || null,
+        conversationId: null,
+        NsTotal: state.NsTotal,
+        NrTotal: state.NrTotal,
+        reason: state.__bornReason
+      }));
+    } catch {}
+  }
   return state;
 }
 
@@ -286,16 +290,18 @@ export async function x3dhRespond(devicePriv, guestBundle) {
     pendingSendRatchet: true,
     __bornReason: 'x3dh-respond'
   };
-  try {
-    console.log('[msg] state:init-transport-counter', JSON.stringify({
-      peerDigest: guestBundle?.account_digest || null,
-      peerDeviceId: guestBundle?.device_id || null,
-      conversationId: null,
-      NsTotal: state.NsTotal,
-      NrTotal: state.NrTotal,
-      reason: state.__bornReason
-    }));
-  } catch {}
+  if (drDebugLogsEnabled) {
+    try {
+      console.log('[msg] state:init-transport-counter', JSON.stringify({
+        peerDigest: guestBundle?.account_digest || null,
+        peerDeviceId: guestBundle?.device_id || null,
+        conversationId: null,
+        NsTotal: state.NsTotal,
+        NrTotal: state.NrTotal,
+        reason: state.__bornReason
+      }));
+    } catch {}
+  }
   return state;
 }
 
@@ -323,11 +329,13 @@ export async function drRatchet(st, theirRatchetPubU8) {
   st.theirRatchetPub = theirRatchetPubU8;
   st.pendingSendRatchet = false;
   try {
-    console.warn('[dr-debug:ratchet-dh]', {
-      dhOutHash,
-      ckRSeedHash,
-      headerEk: theirRatchetPubU8 ? b64(theirRatchetPubU8).slice(0, 12) : null
-    });
+    if (drDebugLogsEnabled) {
+      console.warn('[dr-debug:ratchet-dh]', {
+        dhOutHash,
+        ckRSeedHash,
+        headerEk: theirRatchetPubU8 ? b64(theirRatchetPubU8).slice(0, 12) : null
+      });
+    }
   } catch {}
   return { ckR: chainSeed, theirRatchetPub: theirRatchetPubU8, dhOutHash, ckRSeedHash };
 }
@@ -361,11 +369,13 @@ export async function drEncryptText(st, plaintext, opts = {}) {
       st.myRatchetPriv = myNew.secretKey;
       st.myRatchetPub = myNew.publicKey;
       try {
-        console.warn('[dr-debug:ratchet-dh:send]', {
-          dhOutHash: await hashPrefix(dh),
-          ckSSeedHash: await hashPrefix(chainSeed),
-          headerEk: st?.theirRatchetPub ? b64(st.theirRatchetPub).slice(0, 12) : null
-        });
+        if (drDebugLogsEnabled) {
+          console.warn('[dr-debug:ratchet-dh:send]', {
+            dhOutHash: await hashPrefix(dh),
+            ckSSeedHash: await hashPrefix(chainSeed),
+            headerEk: st?.theirRatchetPub ? b64(st.theirRatchetPub).slice(0, 12) : null
+          });
+        }
       } catch {}
     }
   }
@@ -403,7 +413,9 @@ export async function drEncryptText(st, plaintext, opts = {}) {
       nUsed: st?.Ns ?? null,
       ek: st?.myRatchetPub ? b64(st.myRatchetPub).slice(0, 12) : null
     });
-    console.warn('[dr-debug:aead-encrypt]', encLine);
+    if (drDebugLogsEnabled) {
+      console.warn('[dr-debug:aead-encrypt]', encLine);
+    }
   } catch {}
 
   const header = {
@@ -533,19 +545,23 @@ export async function drDecryptText(st, packet, opts = {}) {
   const beforeAttempt = fingerprintBaseline;
   try {
     const preRatchetFp = await fingerprintState(st);
-    console.warn('[dr-fingerprint:pre-ratchet]', {
-      ...preRatchetFp,
-      msgType: msgType || null,
-      packetKey: packetKey || null
-    });
+    if (drDebugLogsEnabled) {
+      console.warn('[dr-fingerprint:pre-ratchet]', {
+        ...preRatchetFp,
+        msgType: msgType || null,
+        packetKey: packetKey || null
+      });
+    }
   } catch {}
   try {
-    console.warn('[dr-attempt:holder]', {
-      stateKey,
-      holderId,
-      packetKey: packetKey || null,
-      msgType: msgType || null
-    });
+    if (drDebugLogsEnabled) {
+      console.warn('[dr-attempt:holder]', {
+        stateKey,
+        holderId,
+        packetKey: packetKey || null,
+        msgType: msgType || null
+      });
+    }
   } catch {}
   let nUsed = null;
   let nrAfterRatchet = null;
@@ -628,21 +644,25 @@ export async function drDecryptText(st, packet, opts = {}) {
   try {
     if (!working.theirRatchetPub || b64(working.theirRatchetPub) !== packet.header.ek_pub_b64) {
       try {
-        console.warn('[dr-ratchet:pre]', {
-          headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
-          stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
-          hasCkR: !!(working?.ckR && working.ckR.length),
-          hasCkS: !!(working?.ckS && working.ckS.length),
-          Nr: working?.Nr ?? null,
-          Ns: working?.Ns ?? null,
-          PN: working?.PN ?? null
-        });
+        if (drDebugLogsEnabled) {
+          console.warn('[dr-ratchet:pre]', {
+            headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
+            stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
+            hasCkR: !!(working?.ckR && working.ckR.length),
+            hasCkS: !!(working?.ckS && working.ckS.length),
+            Nr: working?.Nr ?? null,
+            Ns: working?.Ns ?? null,
+            PN: working?.PN ?? null
+          });
+        }
       } catch {}
       // Before switching to the new ratchet key, fill skipped message keys on the previous receiving chain up to pn.
       if (prevChainId && working.ckR && Number.isFinite(pn) && pn > working.Nr) {
         const gap = pn - working.Nr;
         if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) {
-          console.warn('[dr] skipped-key gap too large', { gap, pn, nr: working.Nr, chain: prevChainId });
+          if (drDebugLogsEnabled) {
+            console.warn('[dr] skipped-key gap too large', { gap, pn, nr: working.Nr, chain: prevChainId });
+          }
         }
         let ckR = working.ckR;
         let nr = working.Nr;
@@ -727,7 +747,9 @@ export async function drDecryptText(st, packet, opts = {}) {
         nUsed: Number.isFinite(nUsed) ? nUsed : null,
         ek: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null
       });
-      console.warn('[dr-debug:aead-decrypt]', decLine);
+      if (drDebugLogsEnabled) {
+        console.warn('[dr-debug:aead-decrypt]', decLine);
+      }
     } catch {}
     if (onMessageKey) {
       try {
@@ -746,32 +768,36 @@ export async function drDecryptText(st, packet, opts = {}) {
 
     if (ratchetPerformed) {
       try {
-        console.warn('[dr-ratchet:post]', {
-          headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
-          stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
-          hasCkR: !!(working?.ckR && working.ckR.length),
-          hasCkS: !!(working?.ckS && working.ckS.length),
-          Nr: working?.Nr ?? null,
-          Ns: working?.Ns ?? null,
-          PN: working?.PN ?? null
-        });
+        if (drDebugLogsEnabled) {
+          console.warn('[dr-ratchet:post]', {
+            headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
+            stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
+            hasCkR: !!(working?.ckR && working.ckR.length),
+            hasCkS: !!(working?.ckS && working.ckS.length),
+            Nr: working?.Nr ?? null,
+            Ns: working?.Ns ?? null,
+            PN: working?.PN ?? null
+          });
+        }
       } catch {}
     }
 
     if (ratchetPerformed || usedStoredKey) {
       try {
-        console.warn('[dr-log:decrypt-ratchet]', {
-          headerN,
-          pn,
-          usedStoredKey,
-          ratchetPerformed,
-          chainId: chainId ? chainId.slice(0, 12) : null,
-          stateNr: working?.Nr ?? null,
-          stateNs: working?.Ns ?? null,
-          hasCkS: !!(working?.ckS && working.ckS.length),
-          hasCkR: !!(working?.ckR && working.ckR.length),
-          theirPubHash: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null
-        });
+        if (drDebugLogsEnabled) {
+          console.warn('[dr-log:decrypt-ratchet]', {
+            headerN,
+            pn,
+            usedStoredKey,
+            ratchetPerformed,
+            chainId: chainId ? chainId.slice(0, 12) : null,
+            stateNr: working?.Nr ?? null,
+            stateNs: working?.Ns ?? null,
+            hasCkS: !!(working?.ckS && working.ckS.length),
+            hasCkR: !!(working?.ckR && working.ckR.length),
+            theirPubHash: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null
+          });
+        }
       } catch {
         // ignore log errors
       }
@@ -844,22 +870,24 @@ export async function drDecryptText(st, packet, opts = {}) {
         const expected = fingerprintBeforeDecrypt || beforeAttempt;
         const afterRestore = await fingerprintState(st, mkHash, decCtHash);
         diff = expected ? diffFingerprint(expected, afterRestore) : null;
-        try {
-          console.warn('[dr-rollback:aes-gcm]', {
-            stateKey: stateKey || null,
-            holderId: holderId || null,
-            headerN: Number.isFinite(headerN) ? headerN : null,
-            mkHash: mkHash || null,
-            ctHash: decCtHash || null,
-            expected,
-            afterRestore
-          });
-          console.warn('[dr-fingerprint:post-restore]', {
-            ...afterRestore,
-            msgType: msgType || null,
-            packetKey: packetKey || null
-          });
-        } catch {}
+        if (drDebugLogsEnabled) {
+          try {
+            console.warn('[dr-rollback:aes-gcm]', {
+              stateKey: stateKey || null,
+              holderId: holderId || null,
+              headerN: Number.isFinite(headerN) ? headerN : null,
+              mkHash: mkHash || null,
+              ctHash: decCtHash || null,
+              expected,
+              afterRestore
+            });
+            console.warn('[dr-fingerprint:post-restore]', {
+              ...afterRestore,
+              msgType: msgType || null,
+              packetKey: packetKey || null
+            });
+          } catch {}
+        }
       } catch {}
     } else {
       try {

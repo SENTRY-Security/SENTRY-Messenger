@@ -109,6 +109,7 @@ async function verifyHMAC(req, env) {
 
 // ---- 帳號與 MK / TAGS 相關共用 ----
 let dataTablesReady = false;
+const OUTBOUND_VAULT_RETENTION = 200;
 
 function bytesToHex(u8) {
   let out = '';
@@ -148,6 +149,14 @@ function normalizeConversationId(value) {
   const token = String(value || '').trim();
   if (!token) return null;
   if (!/^[A-Za-z0-9_:-]{8,128}$/.test(token)) return null;
+  return token;
+}
+
+function normalizeMessageId(value) {
+  if (value === null || value === undefined) return null;
+  const token = String(value || '').trim();
+  if (!token) return null;
+  if (token.length < 8 || token.length > 200) return null;
   return token;
 }
 
@@ -1032,372 +1041,76 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
 
 async function ensureDataTables(env) {
   if (dataTablesReady) return;
-  const alterAddWrappedMk = `ALTER TABLE accounts ADD COLUMN wrapped_mk_json TEXT`;
-  const statements = [
-    `CREATE TABLE IF NOT EXISTS accounts (
-        account_digest TEXT PRIMARY KEY,
-        account_token TEXT NOT NULL,
-        uid_digest TEXT NOT NULL UNIQUE,
-        last_ctr INTEGER NOT NULL DEFAULT 0,
-        wrapped_mk_json TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    // Backfill: add wrapped_mk_json for older deployments missing the column.
-    alterAddWrappedMk,
-    `CREATE TABLE IF NOT EXISTS devices (
-        account_digest TEXT NOT NULL,
-        device_id TEXT NOT NULL,
-        label TEXT,
-        status TEXT NOT NULL DEFAULT 'active',
-        last_seen_at INTEGER,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        PRIMARY KEY (account_digest, device_id),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE TABLE IF NOT EXISTS device_signed_prekeys (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_digest TEXT NOT NULL,
-        device_id TEXT NOT NULL,
-        spk_id INTEGER NOT NULL,
-        spk_pub TEXT NOT NULL,
-        spk_sig TEXT NOT NULL,
-        ik_pub TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        UNIQUE (account_digest, device_id, spk_id),
-        FOREIGN KEY (account_digest, device_id) REFERENCES devices(account_digest, device_id) ON DELETE CASCADE
-      )`,
-    `CREATE TABLE IF NOT EXISTS device_opks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_digest TEXT NOT NULL,
-        device_id TEXT NOT NULL,
-        opk_id INTEGER NOT NULL,
-        opk_pub TEXT NOT NULL,
-        issued_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        consumed_at INTEGER,
-        UNIQUE (account_digest, device_id, opk_id),
-        FOREIGN KEY (account_digest, device_id) REFERENCES devices(account_digest, device_id) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_device_opks_fetch ON device_opks (account_digest, device_id, consumed_at, opk_id)`,
-    `CREATE TABLE IF NOT EXISTS prekey_users (
-        account_digest TEXT PRIMARY KEY,
-        ik_pub      TEXT NOT NULL,
-        spk_pub     TEXT NOT NULL,
-        spk_sig     TEXT NOT NULL,
-        device_id   TEXT,
-        created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE TABLE IF NOT EXISTS prekey_opk (
-        account_digest TEXT NOT NULL,
-        opk_id     INTEGER NOT NULL,
-        opk_pub    TEXT NOT NULL,
-        used       INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        PRIMARY KEY (account_digest, opk_id),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_prekey_opk_unused ON prekey_opk (account_digest, used, opk_id)`,
-    `CREATE TABLE IF NOT EXISTS conversations (
-        id TEXT PRIMARY KEY,
-        token_b64 TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    `CREATE TABLE IF NOT EXISTS conversation_acl (
-        conversation_id TEXT NOT NULL,
-        account_digest TEXT NOT NULL,
-        device_id TEXT,
-        role TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        PRIMARY KEY (conversation_id, account_digest, device_id),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_conversation_acl_account_device ON conversation_acl (account_digest, device_id)`,
-    `CREATE TABLE IF NOT EXISTS messages_secure (
-        id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        sender_account_digest TEXT NOT NULL,
-        sender_device_id TEXT NOT NULL,
-        receiver_account_digest TEXT NOT NULL,
-        receiver_device_id TEXT,
-        header_json TEXT NOT NULL,
-        ciphertext_b64 TEXT NOT NULL,
-        counter INTEGER NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_messages_secure_conv_created ON messages_secure (conversation_id, created_at DESC, id DESC)`,
-    `CREATE INDEX IF NOT EXISTS idx_messages_secure_sender_counter ON messages_secure (sender_account_digest, sender_device_id, counter)`,
-    `CREATE TABLE IF NOT EXISTS attachments (
-        object_key TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        message_id TEXT NOT NULL,
-        sender_account_digest TEXT NOT NULL,
-        sender_device_id TEXT NOT NULL,
-        envelope_json TEXT,
-        size_bytes INTEGER,
-        content_type TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_attachments_conv ON attachments (conversation_id, created_at DESC)`,
-    `CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments (message_id)`,
-    `CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        conv_id TEXT NOT NULL,
-        sender_id TEXT NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('text','media')),
-        aead TEXT NOT NULL,
-        header_json TEXT,
-        obj_key TEXT,
-        size_bytes INTEGER,
-        ts INTEGER NOT NULL,
-        FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_messages_conv_ts ON messages (conv_id, ts)`,
-    `CREATE TABLE IF NOT EXISTS media_objects (
-        obj_key TEXT PRIMARY KEY,
-        conv_id TEXT NOT NULL,
-        size_bytes INTEGER,
-        created_at INTEGER NOT NULL
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_media_conv ON media_objects (conv_id)`,
-    `CREATE TABLE IF NOT EXISTS opaque_records (
-        account_digest TEXT PRIMARY KEY,
-        record_b64     TEXT NOT NULL,
-        client_identity TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE TABLE IF NOT EXISTS device_backup (
-        account_digest   TEXT PRIMARY KEY,
-        wrapped_dev_json TEXT,
-        created_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE TABLE IF NOT EXISTS friend_invites (
-        invite_id TEXT PRIMARY KEY,
-        owner_account_digest TEXT NOT NULL,
-        token_hash TEXT NOT NULL,
-        expires_at INTEGER NOT NULL,
-        used_at INTEGER,
-        invite_version INTEGER NOT NULL DEFAULT 2,
-        owner_device_id TEXT,
-        prekey_ik_pub TEXT,
-        prekey_spk_pub TEXT,
-        prekey_spk_sig TEXT,
-        prekey_opk_id INTEGER,
-        prekey_opk_pub TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (owner_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_friend_invites_owner ON friend_invites(owner_account_digest)`,
-    `CREATE INDEX IF NOT EXISTS idx_friend_invites_used ON friend_invites(used_at)`,
-    `CREATE INDEX IF NOT EXISTS idx_friend_invites_expires ON friend_invites(expires_at)`,
-    `CREATE TABLE IF NOT EXISTS call_sessions (
-        call_id TEXT PRIMARY KEY,
-        caller_account_digest TEXT,
-        callee_account_digest TEXT,
-        status TEXT NOT NULL,
-        mode TEXT NOT NULL,
-        capabilities_json TEXT,
-        metadata_json TEXT,
-        metrics_json TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        connected_at INTEGER,
-        ended_at INTEGER,
-        end_reason TEXT,
-        expires_at INTEGER NOT NULL,
-        last_event TEXT
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_call_sessions_status ON call_sessions(status)`,
-    `CREATE INDEX IF NOT EXISTS idx_call_sessions_expires ON call_sessions(expires_at)`,
-    `CREATE TABLE IF NOT EXISTS call_events (
-        event_id TEXT PRIMARY KEY,
-        call_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        payload_json TEXT,
-        from_account_digest TEXT,
-        to_account_digest TEXT,
-        trace_id TEXT,
-        created_at INTEGER NOT NULL,
-        FOREIGN KEY (call_id) REFERENCES call_sessions(call_id) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_call_events_call_created ON call_events(call_id, created_at DESC)`,
-    `CREATE TABLE IF NOT EXISTS contact_secret_backups (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_digest TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        payload_json TEXT NOT NULL,
-        snapshot_version INTEGER,
-        entries INTEGER,
-        checksum TEXT,
-        bytes INTEGER,
-        updated_at INTEGER NOT NULL,
-        device_label TEXT,
-        device_id TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_secret_backups_account_version
-        ON contact_secret_backups (account_digest, version)`,
-    `CREATE INDEX IF NOT EXISTS idx_contact_secret_backups_account_updated
-        ON contact_secret_backups (account_digest, updated_at DESC)`,
-    `CREATE TABLE IF NOT EXISTS groups (
-        group_id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        creator_account_digest TEXT NOT NULL,
-        name TEXT,
-        avatar_json TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (creator_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_groups_conversation_id ON groups(conversation_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_groups_creator ON groups(creator_account_digest)`,
-    `CREATE TABLE IF NOT EXISTS group_members (
-        group_id TEXT NOT NULL,
-        account_digest TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('owner','admin','member')),
-        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','left','kicked','removed')),
-        inviter_account_digest TEXT,
-        joined_at INTEGER,
-        muted_until INTEGER,
-        last_read_ts INTEGER,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        PRIMARY KEY (group_id, account_digest),
-        FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE,
-        FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_group_members_account ON group_members(account_digest)`,
-    `CREATE INDEX IF NOT EXISTS idx_group_members_status ON group_members(group_id, status)`,
-    `CREATE TABLE IF NOT EXISTS group_invites (
-        invite_id TEXT PRIMARY KEY,
-        group_id TEXT NOT NULL,
-        issuer_account_digest TEXT,
-        secret TEXT NOT NULL,
-        expires_at INTEGER NOT NULL,
-        used_at INTEGER,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE,
-        FOREIGN KEY (issuer_account_digest) REFERENCES accounts(account_digest) ON DELETE SET NULL
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_group_invites_group ON group_invites(group_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_group_invites_expires ON group_invites(expires_at)`,
-    `CREATE TABLE IF NOT EXISTS subscriptions (
-        digest TEXT PRIMARY KEY,
-        expires_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-      )`,
-    `CREATE TABLE IF NOT EXISTS tokens (
-        token_id TEXT PRIMARY KEY,
-        digest TEXT NOT NULL,
-        issued_at INTEGER NOT NULL,
-        extend_days INTEGER NOT NULL,
-        nonce TEXT,
-        key_id TEXT NOT NULL,
-        signature_b64 TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('issued','used','invalid')),
-        used_at INTEGER,
-        used_by_digest TEXT,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (digest) REFERENCES subscriptions(digest) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_tokens_digest ON tokens(digest)`,
-    `CREATE INDEX IF NOT EXISTS idx_tokens_status ON tokens(status)`,
-    `CREATE TABLE IF NOT EXISTS extend_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_id TEXT NOT NULL,
-        digest TEXT NOT NULL,
-        extend_days INTEGER NOT NULL,
-        expires_at_after INTEGER NOT NULL,
-        used_at INTEGER NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        FOREIGN KEY (token_id) REFERENCES tokens(token_id) ON DELETE CASCADE
-      )`,
-    `CREATE INDEX IF NOT EXISTS idx_extend_logs_digest ON extend_logs(digest)`,
-    `CREATE INDEX IF NOT EXISTS idx_extend_logs_token ON extend_logs(token_id)`
+  const requiredTables = [
+    'accounts',
+    'devices',
+    'device_signed_prekeys',
+    'device_opks',
+    'prekey_users',
+    'prekey_opk',
+    'conversations',
+    'conversation_acl',
+    'messages_secure',
+    'outbound_message_keys',
+    'attachments',
+    'messages',
+    'media_objects',
+    'opaque_records',
+    'device_backup',
+    'friend_invites',
+    'call_sessions',
+    'call_events',
+    'contact_secret_backups',
+    'groups',
+    'group_members',
+    'group_invites',
+    'subscriptions',
+    'tokens',
+    'extend_logs'
   ];
-
-  for (const sql of statements) {
+  try {
+    const tableRows = await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all();
+    const tableNames = new Set((tableRows?.results || []).map((row) => row.name));
+    const missingTables = requiredTables.filter((name) => !tableNames.has(name));
+    const missingColumns = [];
     try {
-      if (sql === alterAddWrappedMk) {
-        try {
-          await env.DB.prepare(sql).run();
-        } catch (err) {
-          const msg = String(err?.message || '').toLowerCase();
-          if (msg.includes('duplicate column name') || msg.includes('duplicate column')) {
-            continue;
-          }
-          throw err;
-        }
-        continue;
-      }
-      await env.DB.prepare(sql).run();
-    } catch (err) {
-      console.error('ensureDataTables failed', sql.slice(0, 60), err);
-      throw err;
+      await env.DB.prepare(`SELECT wrapped_mk_json FROM accounts LIMIT 0`).all();
+    } catch {
+      missingColumns.push('accounts.wrapped_mk_json');
     }
-  }
-
-  // best-effort ALTERs for backward compatibility
-  try { await env.DB.prepare(`ALTER TABLE devices ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`).run(); } catch {}
-  try { await env.DB.prepare(`ALTER TABLE devices ADD COLUMN last_seen_at INTEGER`).run(); } catch {}
-  try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_account_status ON devices (account_digest, status)`).run(); } catch {}
-  try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_account_seen ON devices (account_digest, status, last_seen_at)`).run(); } catch {}
-
-  const triggers = [
-    `CREATE TRIGGER trg_device_backup_updated
-       AFTER UPDATE ON device_backup
-       FOR EACH ROW
-       BEGIN
-         UPDATE device_backup SET updated_at = strftime('%s','now') WHERE account_digest = OLD.account_digest;
-       END;`,
-    `CREATE TRIGGER trg_conversation_acl_updated
-       AFTER UPDATE ON conversation_acl
-       FOR EACH ROW
-       BEGIN
-         UPDATE conversation_acl
-            SET updated_at = strftime('%s','now')
-          WHERE conversation_id = OLD.conversation_id
-            AND account_digest = OLD.account_digest
-            AND (
-              (device_id IS NULL AND OLD.device_id IS NULL) OR
-              device_id = OLD.device_id
-            );
-       END;`,
-    `CREATE TRIGGER trg_groups_updated
-       AFTER UPDATE ON groups
-       FOR EACH ROW
-       BEGIN
-         UPDATE groups SET updated_at = strftime('%s','now') WHERE group_id = OLD.group_id;
-       END;`,
-    `CREATE TRIGGER trg_group_members_updated
-       AFTER UPDATE ON group_members
-       FOR EACH ROW
-       BEGIN
-         UPDATE group_members SET updated_at = strftime('%s','now') WHERE group_id = OLD.group_id AND account_digest = OLD.account_digest;
-       END;`
-  ];
-
-  for (const sql of triggers) {
-    try {
-      await env.DB.prepare(sql).run();
-    } catch (err) {
-      const msg = String(err?.message || '').toLowerCase();
-      if (msg.includes('already exists')) continue;
-      console.error('ensureDataTables trigger failed', err);
+    if (missingTables.length || missingColumns.length) {
+      const detail = [
+        ...missingTables.map((name) => `table:${name}`),
+        ...missingColumns.map((name) => `column:${name}`)
+      ];
+      const message = `D1 schema missing (${detail.join(', ') || 'none'}); run migrations (including 0020_outbound_key_vault.sql).`;
+      console.error(message);
+      throw new Error(message);
     }
+    dataTablesReady = true;
+  } catch (err) {
+    console.error('ensureDataTables schema check failed', err);
+    throw err;
   }
+}
 
-  dataTablesReady = true;
+async function pruneOutboundKeys(env, accountDigest, conversationId, limit = OUTBOUND_VAULT_RETENTION) {
+  if (!accountDigest || !conversationId) return;
+  const keep = Math.max(1, Math.min(Number(limit) || OUTBOUND_VAULT_RETENTION, 1000));
+  try {
+    await env.DB.prepare(
+      `DELETE FROM outbound_message_keys
+        WHERE account_digest=?1 AND conversation_id=?2
+          AND id NOT IN (
+            SELECT id FROM outbound_message_keys
+             WHERE account_digest=?1 AND conversation_id=?2
+             ORDER BY header_counter DESC, created_at DESC, id DESC
+             LIMIT ?3
+          )`
+    ).bind(accountDigest, conversationId, keep).run();
+  } catch (err) {
+    console.warn('prune_outbound_keys_failed', err?.message || err);
+  }
 }
 
 // ---- Tags / SDM / OPAQUE 路由（先搬）----
@@ -2548,6 +2261,141 @@ async function handleContactSecretsRoutes(req, env) {
   return null;
 }
 
+async function handleOutboundKeyVaultRoutes(req, env) {
+  const url = new URL(req.url);
+
+  if (req.method === 'POST' && url.pathname === '/d1/outbound-key-vault/put') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const messageId = normalizeMessageId(body?.messageId || body?.message_id || body?.serverMessageId || body?.server_message_id);
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+    const targetDeviceId = normalizeDeviceId(body?.targetDeviceId || body?.target_device_id);
+    const headerCounter = Number(body?.headerCounter ?? body?.header_counter ?? body?.counter);
+    const msgType = typeof body?.msgType === 'string' ? body.msgType.trim() : null;
+    const retentionLimit = Number.isFinite(Number(body?.retentionLimit)) ? Number(body.retentionLimit) : OUTBOUND_VAULT_RETENTION;
+    const wrapped = body?.wrapped_mk || body?.wrappedMk || null;
+    const wrapContext = body?.wrap_context || body?.wrapContext || null;
+    if (!accountDigest || !conversationId || !messageId || !senderDeviceId || !Number.isFinite(headerCounter) || !wrapped) {
+      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, messageId, senderDeviceId, headerCounter, wrapped_mk required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await env.DB.prepare(
+        `INSERT INTO outbound_message_keys (
+            account_digest, conversation_id, message_id, sender_device_id,
+            target_device_id, header_counter, msg_type, wrapped_mk_json, wrap_context_json, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, strftime('%s','now'))
+         ON CONFLICT(account_digest, conversation_id, message_id, sender_device_id)
+         DO UPDATE SET
+           target_device_id=excluded.target_device_id,
+           header_counter=excluded.header_counter,
+           msg_type=excluded.msg_type,
+           wrapped_mk_json=excluded.wrapped_mk_json,
+           wrap_context_json=excluded.wrap_context_json,
+           created_at=strftime('%s','now')`
+      ).bind(
+        accountDigest,
+        conversationId,
+        messageId,
+        senderDeviceId,
+        targetDeviceId,
+        Math.floor(headerCounter),
+        msgType,
+        JSON.stringify(wrapped),
+        wrapContext ? JSON.stringify(wrapContext) : null
+      ).run();
+    } catch (err) {
+      console.warn('outbound_vault_put_failed', err?.message || err);
+      return json({ error: 'InsertFailed', message: err?.message || 'unable to store outbound key' }, { status: 500 });
+    }
+
+    await pruneOutboundKeys(env, accountDigest, conversationId, retentionLimit);
+    return json({ ok: true });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/d1/outbound-key-vault/get') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const messageId = normalizeMessageId(body?.messageId || body?.message_id || body?.serverMessageId || body?.server_message_id);
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+    const targetDeviceId = normalizeDeviceId(body?.targetDeviceId || body?.target_device_id);
+    const headerCounter = Number(body?.headerCounter ?? body?.header_counter ?? body?.counter);
+    if (!accountDigest || !conversationId) {
+      return json({ error: 'BadRequest', message: 'accountDigest and conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    let row = null;
+    if (messageId) {
+      if (senderDeviceId) {
+        row = await env.DB.prepare(
+          `SELECT * FROM outbound_message_keys
+             WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3 AND sender_device_id=?4
+             ORDER BY created_at DESC
+             LIMIT 1`
+        ).bind(accountDigest, conversationId, messageId, senderDeviceId).first();
+      } else {
+        row = await env.DB.prepare(
+          `SELECT * FROM outbound_message_keys
+             WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3
+             ORDER BY created_at DESC
+             LIMIT 1`
+        ).bind(accountDigest, conversationId, messageId).first();
+      }
+    } else {
+      const params = [accountDigest, conversationId];
+      let where = '';
+      if (Number.isFinite(headerCounter)) {
+        params.push(Math.floor(headerCounter));
+        where += ` AND header_counter=?${params.length}`;
+      }
+      if (senderDeviceId) {
+        params.push(senderDeviceId);
+        where += ` AND sender_device_id=?${params.length}`;
+      }
+      if (targetDeviceId) {
+        params.push(targetDeviceId);
+        where += ` AND target_device_id=?${params.length}`;
+      }
+      row = await env.DB.prepare(
+        `SELECT * FROM outbound_message_keys
+           WHERE account_digest=?1 AND conversation_id=?2${where}
+           ORDER BY created_at DESC
+           LIMIT 1`
+      ).bind(...params).first();
+    }
+    if (!row) return json({ ok: true, entry: null });
+    return json({
+      ok: true,
+      entry: {
+        accountDigest: row.account_digest,
+        conversationId: row.conversation_id,
+        messageId: row.message_id,
+        senderDeviceId: row.sender_device_id,
+        targetDeviceId: row.target_device_id,
+        headerCounter: row.header_counter,
+        msgType: row.msg_type,
+        wrapped_mk: safeJSON(row.wrapped_mk_json),
+        wrap_context: safeJSON(row.wrap_context_json),
+        createdAt: Number(row.created_at) || null
+      }
+    });
+  }
+
+  return null;
+}
+
 async function handleGroupsRoutes(req, env) {
   const url = new URL(req.url);
 
@@ -3617,6 +3465,9 @@ export default {
 
     const contactSecretResult = await handleContactSecretsRoutes(req, env);
     if (contactSecretResult) return contactSecretResult;
+
+    const outboundVaultResult = await handleOutboundKeyVaultRoutes(req, env);
+    if (outboundVaultResult) return outboundVaultResult;
 
     const groupsResult = await handleGroupsRoutes(req, env);
     if (groupsResult) return groupsResult;

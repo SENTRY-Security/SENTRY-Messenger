@@ -1,3 +1,5 @@
+import { DEBUG } from '../ui/mobile/debug-flags.js';
+
 const MSG_PREFIX = '[msg]';
 const DR_CORE_PREFIX = '[dr-core]';
 const UI_NOISE_PREFIX = '[ui-noise]';
@@ -48,7 +50,7 @@ function isHarnessEnv() {
 }
 
 export function shouldLogDrCore() {
-  if (isHarnessEnv()) return true;
+  if (DEBUG.drVerbose === true || DEBUG.drCounter === true) return true;
   try {
     if (typeof window !== 'undefined' && window.__DEBUG_DR_STATE__) return true;
   } catch {}
@@ -113,7 +115,25 @@ function normalizeMsgPayload(event, payload = {}) {
   return normalized;
 }
 
+const uiNoiseEnabled = DEBUG.uiNoise === true;
+const queueNoiseEnabled = DEBUG.queueNoise === true;
+const fetchNoiseEnabled = DEBUG.fetchNoise === true;
+const drVerboseEnabled = DEBUG.drVerbose === true || DEBUG.drCounter === true;
+
+function shouldLogMsgEvent(event, opts = {}) {
+  const ev = String(event || '');
+  const level = opts?.level || null;
+  if (level === 'error') return true;
+  if (ev === 'decrypt:fail' || ev === 'send:fail' || ev === 'fetch:fail') return true;
+  if (ev.startsWith('fetch:')) return fetchNoiseEnabled;
+  if (ev.startsWith('ui:') || ev.startsWith('tick:')) return uiNoiseEnabled;
+  if (ev === 'device-check' || ev === 'handle:start' || ev === 'enqueue' || ev === 'skip') return queueNoiseEnabled;
+  if (ev.startsWith('decrypt:') || ev.startsWith('send:')) return drVerboseEnabled;
+  return false;
+}
+
 export function logMsgEvent(event, payload = {}, opts = {}) {
+  if (!shouldLogMsgEvent(event, opts)) return;
   const normalized = normalizeMsgPayload(event, payload);
   const level = opts.level || (normalized.gate ? 'warn' : 'log');
   const loggerPayload = { ...normalized };

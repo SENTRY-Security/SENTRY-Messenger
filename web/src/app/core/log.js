@@ -12,9 +12,85 @@
 //  3) a CSS selector string (resolved once at setLogSink)
 //
 // If no sink is set, logs fall back to console.log.
+import { DEBUG } from '../ui/mobile/debug-flags.js';
+
+// Only keep high-signal replay/forensic events by default.
+const REPLAY_DEBUG_KEYS = new Set([
+  'replayCallsite',
+  'replayEarlyReturn',
+  'replayFetchResult',
+  'replaySummary',
+  'replaySkipSample',
+  'historyReplayFlagTrace',
+  'decryptFailSample',
+  'banner:counts',
+  'vaultLookupAttempt',
+  'vaultRecordAttempt',
+  'vaultHit',
+  'vaultRecord',
+  'outboundVaultMissing'
+]);
+const REPLAY_ACTION_VALUES = new Set(['replay:before', 'replay:after']);
+const FETCH_NOISE_KEYS = new Set(['fetchStart', 'fetchDone', 'fetchJSONDone', 'fetchFail']);
+const WS_NOISE_KEYS = new Set(['wsEnsure', 'wsConnectStart', 'wsConnectResult', 'wsDisconnect']);
+const QUEUE_NOISE_KEYS = new Set(['queue', 'enqueue', 'dequeue', 'queueState']);
+const UI_NOISE_KEYS = new Set(['messagesRendered', 'messagesRenderLogError', 'uiNoise', 'probeReplay', 'action']);
+const TICK_NOISE_KEYS = new Set(['tick', 'tickState']);
+const PRESENCE_NOISE_KEYS = new Set(['presence', 'presenceUpdate', 'presenceSnapshot', 'presenceState']);
 
 let _sink = null;   // function | Element | null
 let _sinkIsFn = false;
+
+function shouldAllowReplayPayload(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const action = typeof payload.action === 'string' ? payload.action : null;
+  if (action && REPLAY_ACTION_VALUES.has(action)) return true;
+  for (const key of REPLAY_DEBUG_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(payload, key)) return true;
+  }
+  return false;
+}
+
+function shouldSuppress(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const keys = Object.keys(payload);
+  const hasFetchNoise = keys.some((key) => FETCH_NOISE_KEYS.has(key));
+  if (hasFetchNoise && DEBUG.fetchNoise !== true) return true;
+  const hasWsNoise = keys.some((key) => WS_NOISE_KEYS.has(key));
+  if (hasWsNoise && DEBUG.ws !== true) return true;
+  const hasQueueNoise = keys.some((key) => QUEUE_NOISE_KEYS.has(key));
+  if (hasQueueNoise && DEBUG.queueNoise !== true) return true;
+  const hasUiNoise = keys.some((key) => UI_NOISE_KEYS.has(key));
+  if (hasUiNoise && DEBUG.uiNoise !== true) return true;
+  const hasTickNoise = keys.some((key) => key.startsWith('tick') || TICK_NOISE_KEYS.has(key));
+  if (hasTickNoise && DEBUG.uiNoise !== true) return true;
+  const hasPresenceNoise = keys.some((key) => key.startsWith('presence') || PRESENCE_NOISE_KEYS.has(key));
+  if (hasPresenceNoise && DEBUG.uiNoise !== true) return true;
+  const replayKey = keys.find((key) => key.startsWith('replay'));
+  if (replayKey && !REPLAY_DEBUG_KEYS.has(replayKey)) return true;
+  const drNoise = keys.some((key) => key.startsWith('dr') || key.includes('ratchet'));
+  if (drNoise && DEBUG.drVerbose !== true && DEBUG.drCounter !== true) return true;
+  return false;
+}
+
+function shouldEmit(payload) {
+  if (!payload || typeof payload !== 'object') return true;
+  if (shouldAllowReplayPayload(payload)) return true;
+  // Preserve explicit error logs even when filters are active.
+  const hasError = Object.prototype.hasOwnProperty.call(payload, 'error')
+    || Object.prototype.hasOwnProperty.call(payload, 'errorMessage')
+    || Object.keys(payload || {}).some((key) => key.toLowerCase().includes('error'));
+  if (hasError) return true;
+  if (shouldSuppress(payload)) return false;
+  const debugBypass = DEBUG.uiNoise === true
+    || DEBUG.queueNoise === true
+    || DEBUG.fetchNoise === true
+    || DEBUG.ws === true
+    || DEBUG.drVerbose === true
+    || DEBUG.drCounter === true;
+  if (debugBypass) return true;
+  return false;
+}
 
 /**
  * Configure the log sink.
@@ -49,6 +125,7 @@ function stringify(x) {
  * @param {any} x
  */
 export function log(x) {
+  if (!shouldEmit(x)) return;
   const line = stringify(x);
   // Write to configured sink (UI panel or custom handler)
   if (_sinkIsFn && typeof _sink === 'function') {

@@ -1,4 +1,18 @@
-export const DEBUG_CONTACT_PROFILE = true;
+// Centralized debug switches (front-end + local diagnostics)
+export const DEBUG = {
+  replay: true,
+  drVerbose: false,
+  profileCounter: false,
+  drCounter: false,
+  contactsA1: false,
+  ws: false,
+  contactCoreVerbose: false,
+  fetchNoise: false,
+  uiNoise: false,
+  queueNoise: false
+};
+
+export const DEBUG_CONTACT_PROFILE = DEBUG.profileCounter;
 
 export function hasNicknameValue(value) {
   if (value === null || value === undefined) return false;

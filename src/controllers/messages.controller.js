@@ -22,6 +22,7 @@ import { logger } from '../utils/logger.js';
 import { normalizeConversationId, authorizeConversationAccess, isSystemOwnedConversation } from '../utils/conversation-auth.js';
 import { AccountDigestRegex } from '../utils/account-verify.js';
 import { getWebSocketManager } from '../ws/index.js';
+import { DEBUG } from '../../web/src/app/ui/mobile/debug-flags.js';
 
 export const getHealth = (req, res) => {
   res.json({ ok: true, ts: Date.now() });
@@ -246,16 +247,18 @@ export const createMessage = async (req, res) => {
         senderDeviceId,
         path
       });
-      logger.info({
-        proxyCounterTooLow: {
-          conversationId: auth.conversationId,
-          counterSent: counter,
-          maxCounter: workerJson?.maxCounter ?? null,
-          senderAccountDigest: auth.accountDigest,
-          senderDeviceId,
-          path
-        }
-      });
+      if (DEBUG.drCounter) {
+        logger.info({
+          proxyCounterTooLow: {
+            conversationId: auth.conversationId,
+            counterSent: counter,
+            maxCounter: workerJson?.maxCounter ?? null,
+            senderAccountDigest: auth.accountDigest,
+            senderDeviceId,
+            path
+          }
+        });
+      }
       return res.status(409).json({ error: 'CounterTooLow', details: workerJson });
     }
     if (!r.ok) {
@@ -436,16 +439,18 @@ export const createSecureMessage = async (req, res) => {
         senderDeviceId,
         path
       });
-      logger.info({
-        proxyCounterTooLow: {
-          conversationId: auth.conversationId,
-          counterSent: messageCounter,
-          maxCounter: workerJson?.maxCounter ?? null,
-          senderAccountDigest: auth.accountDigest,
-          senderDeviceId,
-          path
-        }
-      });
+      if (DEBUG.drCounter) {
+        logger.info({
+          proxyCounterTooLow: {
+            conversationId: auth.conversationId,
+            counterSent: messageCounter,
+            maxCounter: workerJson?.maxCounter ?? null,
+            senderAccountDigest: auth.accountDigest,
+            senderDeviceId,
+            path
+          }
+        });
+      }
       return res.status(409).json({ error: 'CounterTooLow', details: workerJson });
     }
 

@@ -4,6 +4,7 @@
 
 import { log, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
+import { DEBUG } from './mobile/debug-flags.js';
 import {
   getMkRaw,
   setMkRaw,
@@ -105,6 +106,8 @@ import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '..
 import { showVersionModal } from './version-info.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
 
+const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
+const wsDebugEnabled = DEBUG.ws === true;
 const MEDIA_PERMISSION_KEY = 'media-permission-v1';
 const out = document.getElementById('out');
 setLogSink(out);
@@ -2526,7 +2529,9 @@ async function runPostLoginContactHydrate() {
   const secrets = restoreContactSecrets();
   const hasLocalSecrets = secrets instanceof Map && secrets.size > 0;
   const willFetchRemote = !!mk;
-  try { console.log('[contact-core] hydrate:start ' + JSON.stringify({ hasMk: !!mk, hasLocalSecrets, willFetchRemote })); } catch {}
+  if (contactCoreVerbose) {
+    try { console.log('[contact-core] hydrate:start ' + JSON.stringify({ hasMk: !!mk, hasLocalSecrets, willFetchRemote })); } catch {}
+  }
   let remoteResult = { ok: false, status: null, entries: 0, corruptCount: 0 };
   if (willFetchRemote) {
     try {
@@ -2538,14 +2543,16 @@ async function runPostLoginContactHydrate() {
   if (remoteResult?.corrupt || remoteResult?.corruptBackup) {
     showToast?.('備份損壞，需重新同步/重新邀請', { variant: 'error' });
   }
-  try {
-    console.log('[contact-core] hydrate:remote ' + JSON.stringify({
-      ok: !!remoteResult?.ok,
-      status: remoteResult?.status ?? null,
-      entries: remoteResult?.entries ?? 0,
-      corruptCount: remoteResult?.corruptCount ?? 0
-    }));
-  } catch {}
+  if (contactCoreVerbose) {
+    try {
+      console.log('[contact-core] hydrate:remote ' + JSON.stringify({
+        ok: !!remoteResult?.ok,
+        status: remoteResult?.status ?? null,
+        entries: remoteResult?.entries ?? 0,
+        corruptCount: remoteResult?.corruptCount ?? 0
+      }));
+    } catch {}
+  }
   try {
     await hydrateDrSnapshotsAfterBackup();
   } catch (err) {
@@ -2563,9 +2570,13 @@ async function runPostLoginContactHydrate() {
   const counts = contactCoreCounts();
   if (!readyCountLogged) {
     readyCountLogged = true;
-    try { console.log('[contact-core] ready-count ' + JSON.stringify({ count: counts.ready, pendingCount: counts.pending, source: 'post-login-hydrate' })); } catch {}
+    if (contactCoreVerbose) {
+      try { console.log('[contact-core] ready-count ' + JSON.stringify({ count: counts.ready, pendingCount: counts.pending, source: 'post-login-hydrate' })); } catch {}
+    }
   }
-  try { console.log('[contact-core] hydrate:done ' + JSON.stringify({ readyCount: counts.ready, pendingCount: counts.pending })); } catch {}
+  if (contactCoreVerbose) {
+    try { console.log('[contact-core] hydrate:done ' + JSON.stringify({ readyCount: counts.ready, pendingCount: counts.pending })); } catch {}
+  }
   if (loadError) throw loadError;
 }
 
@@ -3672,7 +3683,9 @@ async function getWsAuthToken({ force = false } = {}) {
 async function connectWebSocket() {
   const accountDigest = getAccountDigest();
   if (!accountDigest) return;
-  log({ wsConnectStart: true, accountDigest });
+  if (wsDebugEnabled) {
+    log({ wsConnectStart: true, accountDigest });
+  }
   let tokenInfo;
   try {
     tokenInfo = await getWsAuthToken();
@@ -3707,13 +3720,17 @@ async function connectWebSocket() {
   if (!baseHost) baseHost = location.host;
   if (!path.startsWith('/')) path = `/${path}`;
   const wsUrl = `${proto}//${baseHost}${path}`;
-  log({ wsConnectUrl: wsUrl });
+  if (wsDebugEnabled) {
+    log({ wsConnectUrl: wsUrl });
+  }
   const ws = new WebSocket(wsUrl);
   wsConn = ws;
   updateConnectionIndicator('connecting');
   ws.onopen = () => {
     if (ws !== wsConn) return; // stale socket
-    log({ wsState: 'open' });
+    if (wsDebugEnabled) {
+      log({ wsState: 'open' });
+    }
     wsReconnectTimer = null;
     try {
       ws.send(JSON.stringify({ type: 'auth', accountDigest, token: tokenInfo.token }));
@@ -3728,14 +3745,18 @@ async function connectWebSocket() {
   };
   ws.onmessage = (event) => {
     if (ws !== wsConn) return; // stale socket
-    log({ wsMessageRaw: event.data });
+    if (wsDebugEnabled) {
+      log({ wsMessageRaw: event.data });
+    }
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     handleWebSocketMessage(msg);
   };
   ws.onclose = (evt) => {
     if (ws !== wsConn) return; // stale socket (likely replaced)
-    log({ wsClose: { code: evt.code, reason: evt.reason } });
+    if (wsDebugEnabled) {
+      log({ wsClose: { code: evt.code, reason: evt.reason } });
+    }
     wsConn = null;
     updateConnectionIndicator('offline');
     presenceManager.clearPresenceState();
@@ -3751,7 +3772,9 @@ async function connectWebSocket() {
   };
   ws.onerror = () => {
     if (ws !== wsConn) return; // stale socket
-    log({ wsError: true });
+    if (wsDebugEnabled) {
+      log({ wsError: true });
+    }
     updateConnectionIndicator('offline');
     wsAuthTokenInfo = null;
     try { ws.close(); } catch {}
@@ -3914,17 +3937,19 @@ function handleWebSocketMessage(msg) {
       handleSettingsSecureMessage();
       return;
     }
-    try {
-      console.log('[ws-dispatch]', {
-        type,
-        conversationId: convId || null,
-        senderAccountDigest: msg?.senderAccountDigest || null,
-        senderDeviceId: msg?.senderDeviceId || null,
-        targetDeviceId: msg?.targetDeviceId || null,
-        targetAccountDigest: msg?.targetAccountDigest || null,
-        peerAccountDigest: msg?.peerAccountDigest || null
-      });
-    } catch {}
+    if (wsDebugEnabled) {
+      try {
+        console.log('[ws-dispatch]', {
+          type,
+          conversationId: convId || null,
+          senderAccountDigest: msg?.senderAccountDigest || null,
+          senderDeviceId: msg?.senderDeviceId || null,
+          targetDeviceId: msg?.targetDeviceId || null,
+          targetAccountDigest: msg?.targetAccountDigest || null,
+          peerAccountDigest: msg?.peerAccountDigest || null
+        });
+      } catch {}
+    }
     messagesPane.handleIncomingSecureMessage(msg);
     return;
   }

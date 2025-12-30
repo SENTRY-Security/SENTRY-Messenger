@@ -15,12 +15,22 @@ import {
 import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../crypto/aead.js';
 import { buildIdenticonImage } from '../lib/identicon.js';
 import { log } from '../core/log.js';
+import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';
 const PROFILE_ALLOWED_INFO_TAGS = new Set([PROFILE_INFO_TAG]);
 const PROFILE_MESSAGE_TYPE = 'profile-update';
 const PROFILE_CONV_PREFIX = 'profile:';
 const AVATAR_CONV_PREFIX = 'avatar-';
+
+function logProfileCounter(payload) {
+  if (!DEBUG.profileCounter) return;
+  try {
+    log(payload);
+  } catch {
+    /* ignore logging errors */
+  }
+}
 
 export function profileConversationId(accountDigest = null) {
   const acct = normalizeAccountDigest(accountDigest || getAccountDigest());
@@ -175,12 +185,12 @@ export async function seedProfileCounterOnce() {
     deviceId = ensureDeviceId();
     digest = normalizeAccountDigest(getAccountDigest());
   } catch (err) {
-    log({ profileCounterSeedSkip: { reason: 'identity-missing', error: err?.message || err } });
+    logProfileCounter({ profileCounterSeedSkip: { reason: 'identity-missing', error: err?.message || err } });
     return null;
   }
   const conversationId = profileConversationId(digest);
   if (!deviceId || !digest || !conversationId) {
-    log({
+    logProfileCounter({
       profileCounterSeedSkip: {
         reason: 'identity-missing',
         hasDeviceId: !!deviceId,
@@ -196,7 +206,7 @@ export async function seedProfileCounterOnce() {
       const { r, data } = await listSecureMessages({ conversationId, limit: 50 });
       if (!r.ok) {
         const msg = typeof data === 'string' ? data : data?.error || data?.message || 'profile seed failed';
-        log({ profileCounterSeedError: msg, status: r.status || null });
+        logProfileCounter({ profileCounterSeedError: msg, status: r.status || null });
         return null;
       }
       const items = Array.isArray(data?.items) ? data.items : [];
@@ -225,13 +235,13 @@ export async function seedProfileCounterOnce() {
       if (maxCounter > 0) {
         const seed = maxCounter + 1;
         setDeviceCounter(seed);
-        log({ profileCounterSeeded: { maxCounter, seed, deviceId, source: 'seedProfileCounterOnce' } });
+        logProfileCounter({ profileCounterSeeded: { maxCounter, seed, deviceId, source: 'seedProfileCounterOnce' } });
         return { maxCounter };
       }
-      log({ profileCounterSeedSkip: { reason: 'no-self-messages', deviceId } });
+      logProfileCounter({ profileCounterSeedSkip: { reason: 'no-self-messages', deviceId } });
       return null;
     } catch (err) {
-      log({ profileCounterSeedError: err?.message || err });
+      logProfileCounter({ profileCounterSeedError: err?.message || err });
       return null;
     }
   })();
@@ -296,13 +306,13 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
           : null;
       const seed = maxCounter === null ? 1 : maxCounter + 1;
       setDeviceCounter(seed);
-      log({
+      logProfileCounter({
         profileCounterTooLowPayload: {
           keys: data && typeof data === 'object' ? Object.keys(data) : typeof data,
           hasDetails: !!data?.details
         }
       });
-      log({ profileCounterReseeded: { maxCounter, seed, source: 'CounterTooLow' } });
+      logProfileCounter({ profileCounterReseeded: { maxCounter, seed, source: 'CounterTooLow' } });
       return false;
     }
     const msg = typeof data === 'string' ? data : data?.error || data?.message || 'profile save failed';

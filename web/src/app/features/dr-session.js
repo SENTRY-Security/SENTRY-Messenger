@@ -37,9 +37,17 @@ import {
 import { enqueueReceiptJob } from './queue/receipts.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log } from '../core/log.js';
+import { DEBUG } from '../ui/mobile/debug-flags.js';
+import { OutboundKeyVault } from './outbound-key-vault.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
+const VAULT_RECORD_ATTEMPT_LOG_LIMIT = 3;
+let vaultRecordAttemptLogCount = 0;
 import { enqueueMediaMetaJob } from './queue/media.js';
+
+const drConsole = DEBUG.drVerbose === true
+  ? console
+  : { log() {}, warn() {}, error: (...args) => console.error(...args), info() {} };
 
 const DR_STATE_DEBUG_ENABLED = (() => {
   try {
@@ -54,7 +62,7 @@ const DR_STATE_DEBUG_ENABLED = (() => {
 function logDrStateDebug(event, payload = {}) {
   if (!DR_STATE_DEBUG_ENABLED) return;
   try {
-    console.warn(`[dr-state:${event}]`, payload);
+    drConsole.warn(`[dr-state:${event}]`, payload);
   } catch {
     /* ignore */
   }
@@ -75,6 +83,36 @@ async function hashBytesHex(u8) {
     return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
   } catch {
     return null;
+  }
+}
+
+async function summarizeVaultRecordMk(mkB64) {
+  const summary = { mkLen: typeof mkB64 === 'string' ? mkB64.length : 0, mkHash: null };
+  if (!mkB64 || typeof mkB64 !== 'string') return summary;
+  try {
+    const mkBytes = b64u8(mkB64);
+    summary.mkLen = mkBytes instanceof Uint8Array ? mkBytes.length : summary.mkLen;
+    const hash = await hashBytesHex(mkBytes instanceof Uint8Array ? mkBytes : null);
+    summary.mkHash = hash ? hash.slice(0, 32) : null;
+  } catch {
+    /* ignore hashing errors */
+  }
+  return summary;
+}
+
+async function emitVaultRecordAttempt(fields = {}, mkB64 = null) {
+  if (!(DEBUG.replay && vaultRecordAttemptLogCount < VAULT_RECORD_ATTEMPT_LOG_LIMIT)) return;
+  vaultRecordAttemptLogCount += 1;
+  try {
+    const mkSummary = await summarizeVaultRecordMk(mkB64);
+    log({
+      vaultRecordAttempt: {
+        ...fields,
+        ...mkSummary
+      }
+    });
+  } catch {
+    /* ignore logging errors */
   }
 }
 
@@ -109,7 +147,7 @@ function ensurePeerIdentity({ peerAccountDigest, peerDeviceId, conversationId = 
   }
   if (!digest || !device) {
     try {
-      console.warn('[dr-identity:missing]', {
+      drConsole.warn('[dr-identity:missing]', {
         peerAccountDigest,
         peerDeviceId,
         resolvedDigest: digest || null,
@@ -160,7 +198,7 @@ function cloneU8(src, keyName = 'unknown', callsiteTag = 'cloneU8') {
   if (!(src instanceof Uint8Array)) {
     const reason = 'not-uint8array';
     try {
-      console.warn('[dr-state:invalid-key-write]', {
+      drConsole.warn('[dr-state:invalid-key-write]', {
         keyName,
         callsiteTag,
         reason,
@@ -195,7 +233,7 @@ function requireTransportCounter(state, { peerAccountDigest = null, peerDeviceId
   const nsTotal = hasNsTotal ? Number(state.NsTotal) : NaN;
   if (!Number.isFinite(nsTotal)) {
     try {
-      console.warn('[dr-log:transport-counter-missing]', {
+      drConsole.warn('[dr-log:transport-counter-missing]', {
         peerAccountDigest,
         peerDeviceId,
         source: sourceTag,
@@ -221,21 +259,23 @@ function reserveTransportCounter(state, {
   state.NsTotal = reserved;
   const convId = conversationId || state?.baseKey?.conversationId || null;
   const stateKey = peerAccountDigest && peerDeviceId ? `${peerAccountDigest}::${peerDeviceId}` : null;
-  try {
-    log({
-      counterReserve: {
-        messageId: messageId || null,
-        msgType: msgType || null,
-        conversationId: convId,
-        peerAccountDigest: peerAccountDigest || null,
-        peerDeviceId: peerDeviceId || null,
-        stateKey,
-        holderKey: stateKey,
-        before,
-        reserved
-      }
-    });
-  } catch {}
+  if (DEBUG.drCounter) {
+    try {
+      log({
+        counterReserve: {
+          messageId: messageId || null,
+          msgType: msgType || null,
+          conversationId: convId,
+          peerAccountDigest: peerAccountDigest || null,
+          peerDeviceId: peerDeviceId || null,
+          stateKey,
+          holderKey: stateKey,
+          before,
+          reserved
+        }
+      });
+    } catch {}
+  }
   return reserved;
 }
 
@@ -262,9 +302,9 @@ function isAutomationEnv() {
 function logDrSend(event, payload) {
   if (!isAutomationEnv()) return;
   try {
-    console.log('[dr-send]', JSON.stringify({ event, ...payload }, null, 2));
+    drConsole.log('[dr-send]', JSON.stringify({ event, ...payload }, null, 2));
   } catch {
-    console.log('[dr-send]', { event, ...payload });
+    drConsole.log('[dr-send]', { event, ...payload });
   }
 }
 
@@ -278,7 +318,7 @@ function normalizeB64Input(str) {
 
 function logDecodeInvalidKey({ keyName, raw, peerAccountDigest = null, peerDeviceId = null, sourceTag = null, reason = null, error = null }) {
   try {
-    console.warn('[contact-secrets:decode-invalid-key]', {
+    drConsole.warn('[contact-secrets:decode-invalid-key]', {
       keyName,
       peerAccountDigest,
       peerDeviceId,
@@ -360,7 +400,7 @@ function logKeyType(tag, value) {
       byteLength: typeof value?.byteLength === 'number' ? value.byteLength : null,
       length: typeof value?.length === 'number' ? value.length : null
     } : { tag, value: null };
-    console.warn('[dr-log:key-type]', info);
+    drConsole.warn('[dr-log:key-type]', info);
   } catch {}
 }
 
@@ -527,7 +567,7 @@ function appendDrHistoryEntry(params = {}) {
     meta: { source: 'dr-history-append' }
   });
   if (isAutomationEnv()) {
-    console.log('[dr-history-append]', JSON.stringify({
+    drConsole.log('[dr-history-append]', JSON.stringify({
       peerAccountDigest: peer,
       ts: stamp,
       messageId: messageId || null,
@@ -573,7 +613,7 @@ function updateHistoryCursor(params = {}) {
     meta: { source: 'dr-history-cursor' }
   });
   if (isAutomationEnv()) {
-    console.log('[dr-history-cursor]', JSON.stringify({
+    drConsole.log('[dr-history-cursor]', JSON.stringify({
       peerAccountDigest: peer,
       ts: Number.isFinite(stamp) ? stamp : null,
       messageId: messageId || null
@@ -584,7 +624,7 @@ function updateHistoryCursor(params = {}) {
 export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
   const logPersistInvalidKey = (keyName, raw, reason) => {
     try {
-      console.warn('[contact-secrets:persist-invalid-key]', {
+      drConsole.warn('[contact-secrets:persist-invalid-key]', {
         keyName,
         source: 'snapshotDrState',
         reason: reason || null,
@@ -636,7 +676,7 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
   if (ckRU8) snap.ckR_b64 = b64(ckRU8);
   if (setDefaultUpdatedAt && !snap.updatedAt) snap.updatedAt = Date.now();
   try {
-    console.log('[msg] state:snapshot', JSON.stringify({
+    drConsole.log('[msg] state:snapshot', JSON.stringify({
       conversationId: state?.baseKey?.conversationId || null,
       peerDigest: state?.baseKey?.peerAccountDigest || null,
       peerDeviceId: state?.baseKey?.peerDeviceId || null,
@@ -680,7 +720,7 @@ export function restoreDrStateFromSnapshot(params = {}) {
   const downgrade = hasExistingSend && (!incomingHasSend || (incomingNs !== null && incomingNs < Number(holder.Ns || 0)));
   if (!force && downgrade) {
     if (isAutomationEnv()) {
-      console.warn('[dr-restore-skip-downgrade]', JSON.stringify({
+      drConsole.warn('[dr-restore-skip-downgrade]', JSON.stringify({
         peerAccountDigest: peer,
         peerDeviceId,
         existingNs: Number(holder.Ns) || null,
@@ -737,19 +777,21 @@ export function restoreDrStateFromSnapshot(params = {}) {
     if (data.role) holder.baseKey.role = data.role;
   }
   holder.__lastWriteTag = sourceTag || 'restoreDrStateFromSnapshot';
-  try {
-    log({
-      hydrateDrState: {
-        conversationId: holder?.baseKey?.conversationId || null,
-        peerDigest: peer || null,
-        peerDeviceId: peerDeviceId || null,
-        NsTotal: holder?.NsTotal ?? null,
-        NrTotal: holder?.NrTotal ?? null,
-        peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
-        sourceTag: 'hydrate'
-      }
-    });
-  } catch {}
+  if (DEBUG.drCounter) {
+    try {
+      log({
+        hydrateDrState: {
+          conversationId: holder?.baseKey?.conversationId || null,
+          peerDigest: peer || null,
+          peerDeviceId: peerDeviceId || null,
+          NsTotal: holder?.NsTotal ?? null,
+          NrTotal: holder?.NrTotal ?? null,
+          peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
+          sourceTag: 'hydrate'
+        }
+      });
+    } catch {}
+  }
   return true;
 }
 
@@ -763,7 +805,7 @@ export function persistDrSnapshot(params = {}) {
   const holder = state || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!holder?.rk) {
     try {
-      console.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId });
+      drConsole.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId });
     } catch {}
     return false;
   }
@@ -773,7 +815,7 @@ export function persistDrSnapshot(params = {}) {
   const snap = snapshot || snapshotDrState(holder);
   if (!snap) {
     try {
-      console.warn('[dr] persist snapshot skipped: missing snapshot', { peerAccountDigest: peer, peerDeviceId });
+      drConsole.warn('[dr] persist snapshot skipped: missing snapshot', { peerAccountDigest: peer, peerDeviceId });
     } catch {}
     return false;
   }
@@ -784,7 +826,7 @@ export function persistDrSnapshot(params = {}) {
     const holderRoleRaw = holder?.baseKey?.role || info?.role || null;
     const holderRole = typeof holderRoleRaw === 'string' ? holderRoleRaw : null;
     if (!holderRole) {
-      console.error('[dr] persist snapshot failed: missing role', {
+      drConsole.error('[dr] persist snapshot failed: missing role', {
         peerAccountDigest: peer,
         peerDeviceId,
         deviceId: selfDeviceId,
@@ -822,49 +864,53 @@ export function persistDrSnapshot(params = {}) {
       (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade))
       || (hasExistingRecv && lacksNewRecv)
     ) {
-      log({
-        persistSnapshotSkippedDowngrade: {
-          conversationId: holder?.baseKey?.conversationId || baseConversationId || null,
-          convId: holder?.baseKey?.conversationId || baseConversationId || null,
-          peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
-          peerAccountDigest: peer,
-          peerDeviceId,
-          deviceId: selfDeviceId,
-          existingNs,
-          newNs,
-          hasExistingSend,
-          hasExistingRecv,
-          lacksNewSend,
-          lacksNewRecv,
-          nsDowngrade,
-          totalDowngrade,
-          holderDowngrade,
-          existingTotal,
-          newTotal,
-          holderTotal,
-          reason: 'downgrade-check'
-        }
-      });
+      if (DEBUG.drCounter) {
+        log({
+          persistSnapshotSkippedDowngrade: {
+            conversationId: holder?.baseKey?.conversationId || baseConversationId || null,
+            convId: holder?.baseKey?.conversationId || baseConversationId || null,
+            peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
+            peerAccountDigest: peer,
+            peerDeviceId,
+            deviceId: selfDeviceId,
+            existingNs,
+            newNs,
+            hasExistingSend,
+            hasExistingRecv,
+            lacksNewSend,
+            lacksNewRecv,
+            nsDowngrade,
+            totalDowngrade,
+            holderDowngrade,
+            existingTotal,
+            newTotal,
+            holderTotal,
+            reason: 'downgrade-check'
+          }
+        });
+      }
       return false;
     }
     setContactSecret(peer, { ...update, deviceId: selfDeviceId, peerDeviceId });
     markHolderSnapshot(holder, 'persist', snap.updatedAt || Date.now());
-    try {
-      console.log('[dr-log:persist-snapshot]', {
-        peerAccountDigest: peer,
-        peerDeviceId,
-        deviceId: selfDeviceId,
-        Ns: snap?.Ns ?? null,
-        Nr: snap?.Nr ?? null,
-        conversationId: holder?.baseKey?.conversationId || null,
-        stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
-        secretRole: info?.role || null,
-        holderRole: holderRole
-      });
-    } catch {}
+    if (DEBUG.drCounter) {
+      try {
+        drConsole.log('[dr-log:persist-snapshot]', {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          deviceId: selfDeviceId,
+          Ns: snap?.Ns ?? null,
+          Nr: snap?.Nr ?? null,
+          conversationId: holder?.baseKey?.conversationId || null,
+          stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
+          secretRole: info?.role || null,
+          holderRole: holderRole
+        });
+      } catch {}
+    }
     return true;
   } catch (err) {
-    console.warn('[dr] persist snapshot failed', err);
+    drConsole.warn('[dr] persist snapshot failed', err);
     const msg = err?.message || '';
     if (msg.includes('NsTotal') || msg.toLowerCase().includes('transport counter')) {
       throw err;
@@ -943,7 +989,7 @@ export function hydrateDrStatesFromContactSecrets() {
     if (!snapshot) {
       missingSnapshotEntries += 1;
       if (isAutomationEnv()) {
-        console.log('[dr] hydrate skip (no-snapshot)', JSON.stringify({
+        drConsole.log('[dr] hydrate skip (no-snapshot)', JSON.stringify({
           peerAccountDigest: peerDigest,
           hasHistory: Array.isArray(info?.drHistory) && info.drHistory.length > 0,
           historyLen: Array.isArray(info?.drHistory) ? info.drHistory.length : 0
@@ -967,7 +1013,7 @@ export function hydrateDrStatesFromContactSecrets() {
     if (deviceId && snapshotSelfDeviceId && snapshotSelfDeviceId !== deviceId) {
       skippedDeviceMismatch += 1;
       if (isAutomationEnv()) {
-        console.log('[dr] hydrate skip (self-device-mismatch)', JSON.stringify({
+        drConsole.log('[dr] hydrate skip (self-device-mismatch)', JSON.stringify({
           peerAccountDigest: peerDigest,
           peerDeviceId: peerDeviceIdResolved,
           snapshotSelfDeviceId
@@ -978,7 +1024,7 @@ export function hydrateDrStatesFromContactSecrets() {
     if (isGuestLike && snapshotRole === 'responder') {
       skippedResponderPeerMismatch += 1;
       if (isAutomationEnv()) {
-        console.log('[dr] hydrate skip (responder-peer-mismatch)', JSON.stringify({
+        drConsole.log('[dr] hydrate skip (responder-peer-mismatch)', JSON.stringify({
           peerAccountDigest: peerDigest,
           peerDeviceId: peerDeviceIdResolved,
           selfDeviceId: deviceId
@@ -1009,7 +1055,7 @@ export function hydrateDrStatesFromContactSecrets() {
     }
   }
   if (isAutomationEnv()) {
-    console.log('[dr] hydrate snapshot summary', {
+    drConsole.log('[dr] hydrate snapshot summary', {
       total: map.size,
       eligibleEntries,
       restored: restoredCount,
@@ -1067,7 +1113,7 @@ export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}
   const peerDeviceId = target?.baseKey?.peerDeviceId || source?.baseKey?.peerDeviceId || null;
   const conversationId = target?.baseKey?.conversationId || source?.baseKey?.conversationId || null;
   try {
-    console.log('[msg] state:clone', JSON.stringify({
+    drConsole.log('[msg] state:clone', JSON.stringify({
       peerDigest,
       peerDeviceId,
       conversationId,
@@ -1112,7 +1158,7 @@ function createDrStateShell() {
     __bornReason: 'state-shell'
   };
   try {
-    console.log('[msg] state:init-transport-counter', JSON.stringify({
+    drConsole.log('[msg] state:init-transport-counter', JSON.stringify({
       conversationId: shell?.baseKey?.conversationId || null,
       peerDigest: shell?.baseKey?.peerAccountDigest || null,
       peerDeviceId: shell?.baseKey?.peerDeviceId || null,
@@ -1202,7 +1248,7 @@ function conversationContextForPeer(peerAccountDigest) {
         };
       }
     } catch (err) {
-      console.warn('[conversation] contact-secret lookup failed', err);
+      drConsole.warn('[conversation] contact-secret lookup failed', err);
     }
     const contactIndex = sessionStore.contactIndex;
     const directKey = typeof peerAccountDigest === 'string' ? peerAccountDigest : null;
@@ -1241,7 +1287,7 @@ function conversationContextForPeer(peerAccountDigest) {
       }
     }
   } catch (err) {
-    console.warn('[conversation] lookup failed', err);
+    drConsole.warn('[conversation] lookup failed', err);
   }
   return null;
 }
@@ -1390,7 +1436,7 @@ async function sendDrPlaintext(params = {}) {
     ? `${finalConversationId || ''}::${String(pkt.header.ek_pub_b64).slice(0, 12)}::${pkt.header?.n ?? ''}`
     : null;
   try {
-    console.log('[msg] send:counter', JSON.stringify({
+    drConsole.log('[msg] send:counter', JSON.stringify({
       messageId,
       msgType: meta?.msg_type || null,
       headerN,
@@ -1494,6 +1540,29 @@ async function sendDrPlaintext(params = {}) {
       status: result?.status ?? null,
       ok: !!result?.ok
     });
+    if (messageKeyB64) {
+      const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
+      await emitVaultRecordAttempt({
+        conversationId: finalConversationId,
+        msgType,
+        messageId,
+        serverMessageId: msg.id || messageId,
+        headerCounter: vaultCounter,
+        senderDeviceId,
+        targetDeviceId: receiverDeviceId,
+        selfDeviceId
+      }, messageKeyB64);
+      void OutboundKeyVault.recordOutboundKey({
+        conversationId: finalConversationId,
+        serverMessageId: msg.id || messageId,
+        messageId,
+        senderDeviceId,
+        targetDeviceId: receiverDeviceId,
+        headerCounter: vaultCounter,
+        msgType,
+        messageKeyB64
+      }).catch(() => {});
+    }
     return { msg, convId: finalConversationId, secure: true };
   } catch (err) {
     if (!err?.__drDeliveryLogged) {
@@ -1926,7 +1995,7 @@ export async function sendDrMedia(params = {}) {
   const ctB64 = pkt.ciphertext_b64;
 
   try {
-    console.log('[msg] send:counter', JSON.stringify({
+    drConsole.log('[msg] send:counter', JSON.stringify({
       messageId,
       msgType: meta?.msg_type || null,
       headerN,
@@ -1991,6 +2060,29 @@ export async function sendDrMedia(params = {}) {
     });
   }
   persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
+  if (messageKeyB64) {
+    const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
+    await emitVaultRecordAttempt({
+      conversationId,
+      msgType,
+      messageId: finalMessageId,
+      serverMessageId: finalMessageId,
+      headerCounter: vaultCounter,
+      senderDeviceId,
+      targetDeviceId: receiverDeviceId,
+      selfDeviceId: senderDeviceId
+    }, messageKeyB64);
+    void OutboundKeyVault.recordOutboundKey({
+      conversationId,
+      serverMessageId: finalMessageId,
+      messageId: finalMessageId,
+      senderDeviceId,
+      targetDeviceId: receiverDeviceId,
+      headerCounter: vaultCounter,
+      msgType,
+      messageKeyB64
+    }).catch(() => {});
+  }
 
   return {
     msg: {
@@ -2102,7 +2194,7 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   const st = await x3dhRespond(priv, guestBundle);
   const logInvalid = (keyName, raw, reason) => {
     try {
-      console.warn('[dr-bootstrap:invalid-key]', {
+      drConsole.warn('[dr-bootstrap:invalid-key]', {
         keyName,
         source: 'bootstrapDrFromGuestBundle',
         peerAccountDigest: peer,
@@ -2140,7 +2232,7 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   st.myRatchetPriv = ensureKeyU8(st?.myRatchetPriv, 'myRatchetPriv', { required: true });
   st.myRatchetPub = ensureKeyU8(st?.myRatchetPub, 'myRatchetPub', { required: true });
   st.theirRatchetPub = ensureKeyU8(st?.theirRatchetPub, 'theirRatchetPub', { required: false });
-  console.log('[dr-bootstrap:ready]', {
+  drConsole.log('[dr-bootstrap:ready]', {
     peerAccountDigest: peer,
     peerDeviceId,
     rkByteLength: st.rk?.byteLength ?? null,
@@ -2154,7 +2246,7 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   const freshHolder = drState({ peerAccountDigest: peer, peerDeviceId });
   copyDrState(freshHolder, st, { callsiteTag: 'bootstrapDrFromGuestBundle' });
   const holderId = ensureHolderId(freshHolder);
-  console.log('[dr-bootstrap:fingerprint]', {
+  drConsole.log('[dr-bootstrap:fingerprint]', {
     peerAccountDigest: peer,
     peerDeviceId,
     holderId,
@@ -2165,7 +2257,7 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
     lastWriteTag: freshHolder?.__lastWriteTag || null
   });
   try {
-    console.log('[dr-debug:bootstrap-holder]', {
+    drConsole.log('[dr-debug:bootstrap-holder]', {
       stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
       holderId,
       role: freshHolder?.baseKey?.role || null,
@@ -2272,7 +2364,7 @@ export async function ensureDrReceiverState(params = {}) {
   let stateRole = typeof stateRoleRaw === 'string' ? stateRoleRaw.toLowerCase() : null;
   const guestLike = relationshipRole === 'guest';
   try {
-    console.log('[dr-debug:receiver-entry]', {
+    drConsole.log('[dr-debug:receiver-entry]', {
       stateKey,
       holderId: state ? (state.__id || null) : null,
       role: state?.baseKey?.role || null,
@@ -2282,7 +2374,7 @@ export async function ensureDrReceiverState(params = {}) {
     });
   } catch {}
   try {
-    console.warn('[dr-log:receiver-keys]', {
+    drConsole.warn('[dr-log:receiver-keys]', {
       stateKey,
       secretKey,
       conversationId,
@@ -2313,7 +2405,7 @@ export async function ensureDrReceiverState(params = {}) {
   if (shouldHydrateSnapshot) {
     const logHydrate = (event, extra = {}) => {
       try {
-        console.warn(`[dr-log:${event}]`, {
+        drConsole.warn(`[dr-log:${event}]`, {
           stateKey,
           secretKey,
           conversationId,
@@ -2402,7 +2494,7 @@ export async function ensureDrReceiverState(params = {}) {
   }
 
   if (relationshipRole === 'owner' && (!stateRole || stateRole !== 'responder') && (secretHasChains || stateHasCkR || stateHasCkS || stateHasRk)) {
-    console.error('[dr-log:role-mismatch-bug]', {
+    drConsole.error('[dr-log:role-mismatch-bug]', {
       stateKey,
       secretKey,
       conversationId,
@@ -2418,7 +2510,7 @@ export async function ensureDrReceiverState(params = {}) {
     return false;
   }
   if (relationshipRole === 'owner' && (!stateHasCkR || !stateHasRk)) {
-    console.error('[dr-log:owner-missing-state]', {
+    drConsole.error('[dr-log:owner-missing-state]', {
       stateKey,
       secretKey,
       conversationId,
@@ -2436,7 +2528,7 @@ export async function ensureDrReceiverState(params = {}) {
   }
   if (safeKeepSendState) {
     try {
-      console.warn('[dr-log:keep-existing-send]', {
+      drConsole.warn('[dr-log:keep-existing-send]', {
         peerAccountDigest: peer,
         peerDeviceId,
         role: stateRole || null,
@@ -2448,7 +2540,7 @@ export async function ensureDrReceiverState(params = {}) {
   }
   if (guestLike && stateRole === 'responder') {
     try {
-      console.warn('[dr-log:clear-responder-guest]', {
+      drConsole.warn('[dr-log:clear-responder-guest]', {
         peerAccountDigest: peer,
         peerDeviceId,
         Ns: Number(state?.Ns) || 0,
@@ -2459,7 +2551,7 @@ export async function ensureDrReceiverState(params = {}) {
     } catch {}
     if (!safeKeepSendState) {
       try {
-        console.warn('[dr-log:clear-drState-because-guest]', {
+        drConsole.warn('[dr-log:clear-drState-because-guest]', {
           peerAccountDigest: peer,
           peerDeviceId,
           stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
@@ -2490,7 +2582,7 @@ export async function ensureDrReceiverState(params = {}) {
     Number(secretInfo?.drState?.Nr) > 0;
   if (!relationshipRole && snapHasChains) {
     try {
-      console.warn('[dr-log:restore-missing-role]', {
+      drConsole.warn('[dr-log:restore-missing-role]', {
         peerAccountDigest: peer,
         peerDeviceId,
         stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
@@ -2524,7 +2616,7 @@ export async function ensureDrReceiverState(params = {}) {
     });
     state = drState({ peerAccountDigest: peer, peerDeviceId });
     try {
-      console.log('[dr-log:restore-initiator-send]', {
+      drConsole.log('[dr-log:restore-initiator-send]', {
         peerAccountDigest: peer,
         peerDeviceId,
         restored,
@@ -2562,7 +2654,7 @@ export async function ensureDrReceiverState(params = {}) {
       throw new Error('DR state conversation mismatch; please resync contact');
     }
     try {
-      console.warn('[dr-log:conv-mismatch-clear]', {
+      drConsole.warn('[dr-log:conv-mismatch-clear]', {
         peerAccountDigest: peer,
         peerDeviceId,
         conversationId: preferredConversationId,
@@ -2588,7 +2680,7 @@ export async function ensureDrReceiverState(params = {}) {
     restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: secretInfo.drState });
     state = drState({ peerAccountDigest: peer, peerDeviceId });
     try {
-      console.log('[dr-log:restore-from-secret]', {
+      drConsole.log('[dr-log:restore-from-secret]', {
         peerAccountDigest: peer,
         peerDeviceId,
         conversationId,
@@ -2597,7 +2689,7 @@ export async function ensureDrReceiverState(params = {}) {
     } catch {}
   } else if (guestLike && secretInfo?.drState) {
     try {
-      console.warn('[dr-log:skip-restore-because-guest]', {
+      drConsole.warn('[dr-log:skip-restore-because-guest]', {
         peerAccountDigest: peer,
         peerDeviceId,
         snapshotRole,
@@ -2618,7 +2710,7 @@ export async function ensureDrReceiverState(params = {}) {
   const isGuestLike = guestLike;
   if (safeKeepSendState && stateHasRatchet && !force) {
     try {
-      console.warn('[dr-log:keep-send-skip-responder]', {
+      drConsole.warn('[dr-log:keep-send-skip-responder]', {
         peerAccountDigest: peer,
         peerDeviceId,
         hasCkS: stateHasSendChain,
@@ -2650,7 +2742,7 @@ export async function ensureDrReceiverState(params = {}) {
     const hasReceiveChain = holderNow?.ckR instanceof Uint8Array && holderNow.ckR.length > 0 && roleNow === 'responder';
     if (holderNow?.rk && hasReceiveChain && roleNow === 'responder' && !force) {
       try {
-        console.warn('[dr-log:bootstrap-responder-skip]', {
+        drConsole.warn('[dr-log:bootstrap-responder-skip]', {
           reason: 'existing-responder-state',
           peerAccountDigest: peer,
         peerDeviceId,
@@ -2665,7 +2757,7 @@ export async function ensureDrReceiverState(params = {}) {
       return true;
     }
     if (!hasReceiveChain && (secretHasChains || holderNow?.Ns > 0 || holderNow?.Nr > 0)) {
-      console.error('[dr-log:missing-ckR-bug]', {
+      drConsole.error('[dr-log:missing-ckR-bug]', {
         peerAccountDigest: peer,
         peerDeviceId,
         stateKey,
@@ -2684,7 +2776,7 @@ export async function ensureDrReceiverState(params = {}) {
     }
     const shouldForce = force || conversationMismatch || !hasReceiveChain || roleNow !== 'responder';
     try {
-      console.warn('[dr-log:bootstrap-responder-start]', {
+      drConsole.warn('[dr-log:bootstrap-responder-start]', {
         reason: (() => {
           if (force) return 'force';
           if (conversationMismatch) return 'conversation-mismatch';
@@ -2713,7 +2805,7 @@ export async function ensureDrReceiverState(params = {}) {
       refreshed.baseKey.conversationId = conversationId;
     }
     try {
-      console.log('[dr-log:bootstrap-responder]', {
+      drConsole.log('[dr-log:bootstrap-responder]', {
         peerAccountDigest: peer,
         peerDeviceId,
         conversationId,
@@ -2751,7 +2843,7 @@ export async function ensureDrReceiverState(params = {}) {
   // guest/未知角色若發現 responder 或缺 initiator 鏈，直接清空並要求重建 initiator（無 fallback）。
   if (isGuestLike && (!holderHasRatchet || holderRoleNow === 'responder')) {
     try {
-      console.warn('[dr-log:guest-clear-responder]', {
+      drConsole.warn('[dr-log:guest-clear-responder]', {
         peerAccountDigest: peer,
         peerDeviceId,
         holderRole: holderRoleNow || null,
@@ -2834,7 +2926,7 @@ export function prepareDrForMessage(params = {}) {
   const cursorId = holder?.historyCursorId || null;
   if (!allowCursorReplay && cursorId && messageId && cursorId === messageId) {
     if (isAutomationEnv()) {
-      console.log('[dr-skip-duplicate]', JSON.stringify({ peerAccountDigest: peer, messageId, cursorTs }));
+      drConsole.log('[dr-skip-duplicate]', JSON.stringify({ peerAccountDigest: peer, messageId, cursorTs }));
     }
     return { restored: false, duplicate: true };
   }
@@ -2859,7 +2951,7 @@ export function recordDrMessageHistory(params = {}) {
   });
   updateHistoryCursor({ peerAccountDigest: peer, peerDeviceId, ts: stamp, messageId });
   if (isAutomationEnv()) {
-    console.log('[dr-history-record]', JSON.stringify({ peerAccountDigest: peer, ts: stamp, messageId: messageId || null }));
+    drConsole.log('[dr-history-record]', JSON.stringify({ peerAccountDigest: peer, ts: stamp, messageId: messageId || null }));
   }
   const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder) {
@@ -2880,7 +2972,7 @@ try {
       const nsBefore = Number.isFinite(dr?.snapshotBefore?.Ns) ? Number(dr.snapshotBefore.Ns) : null;
       const nsAfter = Number.isFinite(dr?.snapshotAfter?.Ns) ? Number(dr.snapshotAfter.Ns) : null;
       try {
-        console.log('[dr-log:outbox-sent]', JSON.stringify({
+        drConsole.log('[dr-log:outbox-sent]', JSON.stringify({
           peerAccountDigest: peer,
           peerDeviceId,
           messageId: job?.messageId || null,
@@ -2907,7 +2999,7 @@ try {
       }
       if (peer && dr.snapshotAfter) {
         try {
-          console.log('[dr-log:outbox-before-persist]', JSON.stringify({
+          drConsole.log('[dr-log:outbox-before-persist]', JSON.stringify({
             peerAccountDigest: peer,
             peerDeviceId,
             messageId: job?.messageId || null,
@@ -2916,7 +3008,7 @@ try {
         } catch {}
         const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: dr.snapshotAfter });
         try {
-          console.log('[dr-log:outbox-persist]', JSON.stringify({
+          drConsole.log('[dr-log:outbox-persist]', JSON.stringify({
             peerAccountDigest: peer,
             peerDeviceId,
             messageId: job?.messageId || null,
@@ -2930,5 +3022,5 @@ try {
   });
   startOutboxProcessor();
 } catch (err) {
-  console.warn('[outbox] init failed', err);
+  drConsole.warn('[outbox] init failed', err);
 }

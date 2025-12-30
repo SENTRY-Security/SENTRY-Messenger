@@ -8,6 +8,7 @@ import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
 import { markConversationTombstone } from '../../features/messages.js';
+import { DEBUG } from './debug-flags.js';
 import {
   upsertContactCore,
   patchContactCore,
@@ -17,6 +18,7 @@ import {
   contactCoreReadyCount,
   getContactCore
 } from './contact-core-store.js';
+const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 
 export function initContactsView(options) {
   const {
@@ -99,7 +101,9 @@ export function initContactsView(options) {
 
     const contacts = listReadyContacts();
     sessionStore.contactState = contacts;
-    try { console.log('[contact-core] render:list ' + JSON.stringify({ readyCount: contacts.length })); } catch {}
+    if (contactCoreVerbose) {
+      try { console.log('[contact-core] render:list ' + JSON.stringify({ readyCount: contacts.length })); } catch {}
+    }
 
     if (!contacts.length) {
       presenceManager.clearPresenceState();
@@ -180,7 +184,9 @@ export function initContactsView(options) {
           avatar: c?.avatar || null,
           conversation
         };
-        try { console.log('[contact-core] open ' + JSON.stringify({ peerKey: key, conversationId, hasToken: !!conversationToken, peerDeviceId })); } catch {}
+        if (contactCoreVerbose) {
+          try { console.log('[contact-core] open ' + JSON.stringify({ peerKey: key, conversationId, hasToken: !!conversationToken, peerDeviceId })); } catch {}
+        }
         try { console.log('[contacts-view]', { contactOpen: detail }); } catch {}
         try {
           document.dispatchEvent(new CustomEvent('contacts:open-conversation', { detail }));
@@ -427,7 +433,7 @@ export function initContactsView(options) {
     // contacts-view refresh uses delta-commit: only add/update complete entries; never clear/remove to avoid downgrading ready contacts or losing messages.
     // File: web/src/app/ui/mobile/contacts-view.js (loadInitialContacts)
     const DEBUG_CONTACTS_CORE = false;
-    const DEBUG_CONTACTS_A1 = true;
+    const DEBUG_CONTACTS_A1 = DEBUG.contactsA1 === true;
     if (DEBUG_CONTACTS_CORE) console.log('[contacts-view]', { contactsReloadStart: true, phase: 'start' });
     const selfAcct = getAccountDigest() || null;
     const prevReady = listReadyContacts();
@@ -1006,14 +1012,16 @@ export function initContactsView(options) {
         peerDeviceId: entry?.conversation?.peerDeviceId || null
       });
       try {
-        console.log('[contact-core] pre-upsert', {
-          sourceTag: 'contacts-view:add-contact',
-          peerKey: key,
-          peerAccountDigest: summarizeDigest(digest || peerAccountDigest || null),
-          peerDeviceId: peerDeviceIdFromKey || null,
-          conversationId: entry?.conversation?.conversation_id || null,
-          hasToken: !!entry?.conversation?.token_b64
-        });
+        if (contactCoreVerbose) {
+          console.log('[contact-core] pre-upsert', {
+            sourceTag: 'contacts-view:add-contact',
+            peerKey: key,
+            peerAccountDigest: summarizeDigest(digest || peerAccountDigest || null),
+            peerDeviceId: peerDeviceIdFromKey || null,
+            conversationId: entry?.conversation?.conversation_id || null,
+            hasToken: !!entry?.conversation?.token_b64
+          });
+        }
       } catch {}
       const upserted = upsertContactCore({
         peerAccountDigest: digest,

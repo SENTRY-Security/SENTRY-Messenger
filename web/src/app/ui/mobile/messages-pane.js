@@ -50,6 +50,7 @@ import {
 } from '../../features/calls/call-log.js';
 import { bytesToB64Url } from './ui-utils.js';
 import { logMsgEvent } from '../../lib/logging.js';
+import { DEBUG } from './debug-flags.js';
 const sentCallLogIds = new Set();
 const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
@@ -58,6 +59,18 @@ const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [] };
 let pendingNewMessageHint = false;
+const uiNoiseEnabled = DEBUG.uiNoise === true;
+const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
+const logReplayCallsite = (name, payload = {}) => {
+  try {
+    log({ replayCallsite: { name, ...payload } });
+  } catch {}
+};
+const logReplayFetchResult = (payload = {}) => {
+  try {
+    log({ replayFetchResult: payload });
+  } catch {}
+};
 
 function normalizeMsgTypeValue(value) {
   if (!value || typeof value !== 'string') return null;
@@ -313,6 +326,7 @@ export function initMessagesPane({
   }
 
   function logContactCoreWriteSkip({ callsite, conversationId = null, hasDeviceId = false }) {
+    if (!contactCoreVerbose) return;
     try {
       console.warn('[contact-core] ui:write-skip ' + JSON.stringify({
         reason: 'missing-digest',
@@ -1025,7 +1039,17 @@ export function initMessagesPane({
       if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
       tasks.push((async () => {
         try {
-          await listSecureAndDecrypt({
+          logReplayCallsite('refreshConversationPreviews', {
+            conversationId: thread.conversationId,
+            replay: false,
+            allowReplay: false,
+            mutateState: false,
+            silent: true,
+            limit: 20,
+            cursorTs: null,
+            cursorId: null
+          });
+          const previewResult = await listSecureAndDecrypt({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerAccountDigest: peerDigest,
@@ -1033,7 +1057,16 @@ export function initMessagesPane({
             limit: 20,
             mutateState: false,
             sendReadReceipt: false,
-            onMessageDecrypted: null
+            onMessageDecrypted: null,
+            silent: true
+          });
+          logReplayFetchResult({
+            conversationId: thread.conversationId,
+            itemsLength: Array.isArray(previewResult?.items) ? previewResult.items.length : null,
+            serverItemCount: previewResult?.serverItemCount ?? null,
+            nextCursorTs: previewResult?.nextCursor?.ts ?? previewResult?.nextCursorTs ?? null,
+            nextCursorId: previewResult?.nextCursor?.id ?? null,
+            errorsLength: Array.isArray(previewResult?.errors) ? previewResult.errors.length : null
           });
           const timeline = timelineGetTimeline(thread.conversationId);
           const list = Array.isArray(timeline) ? timeline : [];
@@ -1404,7 +1437,9 @@ export function initMessagesPane({
     if (!state.activePeerDigest) preconditionMissing.push('activePeerDigest');
     if (!state.conversationToken) preconditionMissing.push('conversationToken');
     if (preconditionMissing.length) {
-      try { console.log('[call] ui:click-fail ' + JSON.stringify({ reason: 'missing-conversation', missing: preconditionMissing, conversationId: state.conversationId || null, hasConversationToken: !!state.conversationToken })); } catch {}
+      if (uiNoiseEnabled) {
+        try { console.log('[call] ui:click-fail ' + JSON.stringify({ reason: 'missing-conversation', missing: preconditionMissing, conversationId: state.conversationId || null, hasConversationToken: !!state.conversationToken })); } catch {}
+      }
       return;
     }
     const actionType = type === 'video' ? 'voice' : type; // 視訊暫時停用，強制走語音
@@ -1422,7 +1457,9 @@ export function initMessagesPane({
     if (!peerAccountDigest) missing.push('peerAccountDigest');
     if (!peerDeviceId) missing.push('peerDeviceId');
     if (missing.length) {
-      try { console.log('[call] ui:click-fail ' + JSON.stringify({ reason: 'missing-identity', missing, conversationId: state.conversationId || null, hasConversationToken: !!state.conversationToken })); } catch {}
+      if (uiNoiseEnabled) {
+        try { console.log('[call] ui:click-fail ' + JSON.stringify({ reason: 'missing-identity', missing, conversationId: state.conversationId || null, hasConversationToken: !!state.conversationToken })); } catch {}
+      }
       if (!peerDeviceId) {
         showToast?.('缺少對端裝置資訊，請重新同步好友', { variant: 'warning' });
       } else {
@@ -1432,13 +1469,15 @@ export function initMessagesPane({
     }
     const { peerKey } = buildCallPeerIdentity({ peerAccountDigest, peerDeviceId });
     try {
-      console.log('[call] ui:click ' + JSON.stringify({
-        conversationId: state.conversationId || null,
-        peerAccountDigest,
-        peerDeviceId,
-        peerKey,
-        hasConversationToken: !!state.conversationToken
-      }));
+      if (uiNoiseEnabled) {
+        console.log('[call] ui:click ' + JSON.stringify({
+          conversationId: state.conversationId || null,
+          peerAccountDigest,
+          peerDeviceId,
+          peerKey,
+          hasConversationToken: !!state.conversationToken
+        }));
+      }
     } catch {}
     if (!requireSubscriptionActive()) return;
     let result;
@@ -2392,25 +2431,27 @@ export function initMessagesPane({
     const anchorNeeded = preserveScroll || (!scrollToEnd && !isNearMessagesBottom());
     const anchor = anchorNeeded ? captureScrollAnchor() : null;
 
-    try {
-      console.info('[msg] ' + JSON.stringify({
-        event: 'ui:render',
-        conversationId: state.conversationId || null,
-        itemCount: timelineMessages.length
-      }));
-    } catch {
-      /* ignore */
+    if (uiNoiseEnabled) {
+      try {
+        console.info('[msg] ' + JSON.stringify({
+          event: 'ui:render',
+          conversationId: state.conversationId || null,
+          itemCount: timelineMessages.length
+        }));
+      } catch {
+        /* ignore */
+      }
+      try {
+        logMsgEvent('ui:list', {
+          stage: 'ui',
+          conversationId: state.conversationId || null,
+          itemCount: timelineMessages.length,
+          ids: timelineMessages.slice(0, 5).map((m) => (m && (m.id || m.messageId || m.serverMessageId || null))),
+          peerDigest: state.activePeerDigest || null,
+          peerDeviceId: state.activePeerDeviceId || null
+        });
+      } catch {}
     }
-    try {
-      logMsgEvent('ui:list', {
-        stage: 'ui',
-        conversationId: state.conversationId || null,
-        itemCount: timelineMessages.length,
-        ids: timelineMessages.slice(0, 5).map((m) => (m && (m.id || m.messageId || m.serverMessageId || null))),
-        peerDigest: state.activePeerDigest || null,
-        peerDeviceId: state.activePeerDeviceId || null
-      });
-    } catch {}
 
     if (!timelineMessages.length) {
       elements.messagesList.innerHTML = '';
@@ -2447,18 +2488,21 @@ export function initMessagesPane({
       selfDigest
     });
     const lastDoubleTickId = tickState.lastDoubleTickId || null;
-    try {
-      if (console?.debug) {
-        console.debug('[msg] ' + JSON.stringify({
-          event: 'tick:state',
-          conversationId: state.conversationId || null,
-          lastUserId: tickState.lastUserId || null,
-          lastUserFromSelf: tickState.lastUserFromSelf,
-          lastDoubleTickId
-        }));
-      }
-    } catch {}
+    if (uiNoiseEnabled) {
+      try {
+        if (console?.debug) {
+          console.debug('[msg] ' + JSON.stringify({
+            event: 'tick:state',
+            conversationId: state.conversationId || null,
+            lastUserId: tickState.lastUserId || null,
+            lastUserFromSelf: tickState.lastUserFromSelf,
+            lastDoubleTickId
+          }));
+        }
+      } catch {}
+    }
     const logUiAppend = (msg, overrides = {}) => {
+      if (!uiNoiseEnabled) return;
       const payload = {
         stage: 'ui',
         action: 'append',
@@ -2633,19 +2677,34 @@ export function initMessagesPane({
       setNewMessageHint(false);
     }
     updateMessagesScrollOverflow();
-    try {
-      const diagnostics = Array.from(elements.messagesList.querySelectorAll('.message-bubble')).map((el) => ({
-        text: el.textContent,
-        hidden: el.offsetParent === null
-      }));
-      log({ messagesRendered: diagnostics, newMessageIds, appendedIds });
-    } catch (err) {
-      log({ messagesRenderLogError: err?.message || err });
+    if (uiNoiseEnabled) {
+      try {
+        const diagnostics = Array.from(elements.messagesList.querySelectorAll('.message-bubble')).map((el) => ({
+          text: el.textContent,
+          hidden: el.offsetParent === null
+        }));
+        log({ messagesRendered: diagnostics, newMessageIds, appendedIds });
+      } catch (err) {
+        log({ messagesRenderLogError: err?.message || err });
+      }
     }
   }
   async function loadActiveConversationMessages({ append = false, replay = false, retryOnError = true, mutateLive = true, silent = false, reason } = {}) {
     const state = getMessageState();
-    log({ probeReplay: { where: 'messages-pane:loadActiveConversationMessages:enter', hasConvId: !!state.conversationId, hasToken: !!state.conversationToken, hasPeer: !!state.activePeerDigest, hasPeerDevice: !!state.activePeerDeviceId } });
+    const startedConversationId = state.conversationId;
+    sessionStore.historyReplayDoneByConvId = sessionStore.historyReplayDoneByConvId || {};
+    const historyReplayDoneByConvId = sessionStore.historyReplayDoneByConvId;
+    if (DEBUG.replay) {
+      log({
+        probeReplay: {
+          where: 'messages-pane:loadActiveConversationMessages:enter',
+          hasConvId: !!state.conversationId,
+          hasToken: !!state.conversationToken,
+          hasPeer: !!state.activePeerDigest,
+          hasPeerDevice: !!state.activePeerDeviceId
+        }
+      });
+    }
     if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
     if (!state.activePeerDeviceId) {
       if (!silent) setMessagesStatus('缺少對端裝置資訊，請重新同步好友。', true);
@@ -2655,7 +2714,7 @@ export function initMessagesPane({
     if (append && (!state.hasMore || !state.nextCursor)) return;
 
     const debugRelogin = typeof window !== 'undefined' && window.__DEBUG_RELOGIN__ === true;
-    if (silent) {
+    if (silent && uiNoiseEnabled) {
       try {
         console.info('[msg] poll:tick', { reason: reason || 'poll' });
       } catch {}
@@ -2688,23 +2747,25 @@ export function initMessagesPane({
           }));
         } catch {}
       }
-      try {
-        log({
-          action: 'replay:before',
-          conversationId: state.conversationId || null,
-          conversationIdPresent: !!state.conversationId,
-          allowReplay: true,
-          replay: !!replay,
-          append: !!append,
-          silent: !!silent,
-          mutateState,
-          limit: fetchLimit,
-          nextCursorTs: cursorTs ?? null,
-          nextCursorId: cursorId ?? null,
-          nextCursor: cursor || null,
-          timelineSizeBefore
-        });
-      } catch {}
+      if (DEBUG.replay) {
+        try {
+          log({
+            action: 'replay:before',
+            conversationId: state.conversationId || null,
+            conversationIdPresent: !!state.conversationId,
+            allowReplay: true,
+            replay: !!replay,
+            append: !!append,
+            silent: !!silent,
+            mutateState,
+            limit: fetchLimit,
+            nextCursorTs: cursorTs ?? null,
+            nextCursorId: cursorId ?? null,
+            nextCursor: cursor || null,
+            timelineSizeBefore
+          });
+        } catch {}
+      }
 
       if (!append) {
         try {
@@ -2717,7 +2778,7 @@ export function initMessagesPane({
           const items = Array.isArray(data?.items) ? data.items : [];
           const sortedItems = sortMessagesByTimelineLocal(items);
           serverLatestKey = latestKeyFromRaw(sortedItems);
-          if (silent && latestKeysEqual(uiLatestKey, serverLatestKey)) {
+          if (silent && latestKeysEqual(uiLatestKey, serverLatestKey) && uiNoiseEnabled) {
             try {
               console.info('[msg] poll:no-op ' + JSON.stringify({
                 conversationId: state.conversationId || null,
@@ -2739,6 +2800,16 @@ export function initMessagesPane({
       }
 
       const nearBottom = isNearMessagesBottom();
+      logReplayCallsite('loadActiveConversationMessages', {
+        conversationId: state.conversationId || null,
+        replay: !!replay,
+        allowReplay: true,
+        mutateState,
+        silent: !!silent,
+        limit: fetchLimit,
+        cursorTs: cursorTs ?? null,
+        cursorId: cursorId ?? null
+      });
       const listResult = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
@@ -2749,6 +2820,8 @@ export function initMessagesPane({
         cursorId,
         mutateState,
         allowReplay: true,
+        priority: forceReplay ? 'replay' : 'live',
+        silent: !!silent,
         onMessageDecrypted: handleMessageDecrypted,
         prefetchedList: prefetch
           ? {
@@ -2769,6 +2842,17 @@ export function initMessagesPane({
         items: resultItems = [],
         serverItemCount = null
       } = listResult;
+      logReplayFetchResult({
+        conversationId: state.conversationId || null,
+        itemsLength: Array.isArray(resultItems) ? resultItems.length : null,
+        serverItemCount: serverItemCount ?? null,
+        nextCursorTs: nextCursor?.ts ?? nextCursorTs ?? null,
+        nextCursorId: nextCursor?.id ?? null,
+        errorsLength: Array.isArray(errors) ? errors.length : null
+      });
+      if (replay && startedConversationId) {
+        historyReplayDoneByConvId[startedConversationId] = true;
+      }
       const filteredErrors = Array.isArray(errors)
         ? errors.filter((entry) => !isControlBannerEntry(entry))
         : [];
@@ -2814,28 +2898,30 @@ export function initMessagesPane({
       const timelineMessages = refreshTimelineState(state.conversationId);
       const afterIdSet = collectTimelineIdSet(timelineMessages);
       const newMessageIds = Array.from(afterIdSet).filter((id) => !beforeIdSet.has(id));
-      try {
-        log({
-          action: 'replay:after',
-          conversationId: state.conversationId || null,
-          conversationIdPresent: !!state.conversationId,
-          allowReplay: true,
-          replay: !!replay,
-          append: !!append,
-          silent: !!silent,
-          mutateState,
-          limit: fetchLimit,
-          nextCursorTs: nextCursor?.ts ?? nextCursorTs ?? null,
-          nextCursorId: nextCursor?.id ?? null,
-          nextCursor: nextCursor || null,
-          serverItemCount: serverItemCount ?? null,
-          itemsLength: Array.isArray(resultItems) ? resultItems.length : null,
-          errorsLength: filteredErrors.length,
-          errorsPreview: filteredErrors.slice(0, 3).map((entry) => entry?.message || entry?.code || entry),
-          timelineSizeBefore,
-          timelineSizeAfter: Array.isArray(timelineMessages) ? timelineMessages.length : null
-        });
-      } catch {}
+      if (DEBUG.replay) {
+        try {
+          log({
+            action: 'replay:after',
+            conversationId: state.conversationId || null,
+            conversationIdPresent: !!state.conversationId,
+            allowReplay: true,
+            replay: !!replay,
+            append: !!append,
+            silent: !!silent,
+            mutateState,
+            limit: fetchLimit,
+            nextCursorTs: nextCursor?.ts ?? nextCursorTs ?? null,
+            nextCursorId: nextCursor?.id ?? null,
+            nextCursor: nextCursor || null,
+            serverItemCount: serverItemCount ?? null,
+            itemsLength: Array.isArray(resultItems) ? resultItems.length : null,
+            errorsLength: filteredErrors.length,
+            errorsPreview: filteredErrors.slice(0, 3).map((entry) => entry?.message || entry?.code || entry),
+            timelineSizeBefore,
+            timelineSizeAfter: Array.isArray(timelineMessages) ? timelineMessages.length : null
+          });
+        } catch {}
+      }
       if (debugRelogin) {
         try {
           console.info('[diag][relogin] load-messages:after ' + JSON.stringify({
@@ -2872,7 +2958,7 @@ export function initMessagesPane({
           }
         }
       }
-      if (silent && newMessageIds.length) {
+      if (silent && newMessageIds.length && uiNoiseEnabled) {
         try {
           console.info('[msg] poll:append ' + JSON.stringify({
             conversationId: state.conversationId || null,
@@ -2962,7 +3048,11 @@ export function initMessagesPane({
     pendingSecureReadyPeer = null;
     const identity = normalizePeerIdentity(peerAccountDigest);
     const key = identity.key || normalizePeerKey(peerAccountDigest);
-    try { console.log('[messages-pane]', { setActiveConversationStart: key }); } catch {}
+    try {
+      if (uiNoiseEnabled) {
+        console.log('[messages-pane]', { setActiveConversationStart: key });
+      }
+    } catch {}
     const { digest: digestFromKey, deviceId: deviceFromKey } = splitPeerKey(key);
     const peerDigest = identity.accountDigest || digestFromKey;
     const peerDeviceHint = identity.deviceId || deviceFromKey;
@@ -3132,7 +3222,8 @@ export function initMessagesPane({
     }
     log({ setActiveConversation: { peerAccountDigest: key, conversationId: conversation.conversation_id || null, hasDrInit: !!(conversation.dr_init || conversation.drInit) } });
     const state = getMessageState();
-    const hadExistingMessages = Array.isArray(state.messages) && state.messages.length > 0;
+    sessionStore.historyReplayDoneByConvId = sessionStore.historyReplayDoneByConvId || {};
+    const historyReplayDone = sessionStore.historyReplayDoneByConvId[conversation.conversation_id] === true;
     // 清掉舊對話的 processed cache，以免略過新訊息
     if (state.conversationId && state.conversationId !== conversation.conversation_id) {
       resetProcessedMessages(state.conversationId);
@@ -3293,7 +3384,7 @@ export function initMessagesPane({
           }));
         } catch {}
       }
-      await loadActiveConversationMessages({ append: false, replay: hadExistingMessages || timelineSizeBefore === 0 });
+      await loadActiveConversationMessages({ append: false, replay: !historyReplayDone });
       scheduleActivePoll();
     }
   }
@@ -3753,7 +3844,9 @@ export function initMessagesPane({
       }
       setMessagesStatus('');
     } catch (err) {
-      log({ messageComposerUploadError: err?.message || err });
+      if (uiNoiseEnabled) {
+        log({ messageComposerUploadError: err?.message || err });
+      }
       setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
     } finally {
       if (input) input.value = '';
@@ -3951,21 +4044,44 @@ export function initMessagesPane({
     contactSyncInFlight.add(key);
     try {
       try {
-        console.log('[contact-sync:start]', { convId, peerDigest, peerDeviceId, reason: reason || null });
+        if (DEBUG.ws) {
+          console.log('[contact-sync:start]', { convId, peerDigest, peerDeviceId, reason: reason || null });
+        }
         log({ contactSyncStart: { convId, peerDigest, peerDeviceId: peerDeviceId || null, reason: reason || null } });
       } catch {}
       const normIdentity = normalizePeerIdentity({ peerAccountDigest: peerDigest, peerDeviceId: peerDeviceId });
       const resolvedPeerDeviceId = normIdentity.deviceId || peerDeviceId || null;
-      await listSecureAndDecrypt({
+      logReplayCallsite('handleIncomingSecureMessage', {
+        conversationId: convId || null,
+        replay: false,
+        allowReplay: false,
+        mutateState: true,
+        silent: true,
+        limit: 20,
+        cursorTs: null,
+        cursorId: null
+      });
+      const syncResult = await listSecureAndDecrypt({
         conversationId: convId,
         tokenB64: tokenB64 || null,
         peerAccountDigest: peerDigest,
         peerDeviceId: resolvedPeerDeviceId,
         sendReadReceipt: false,
-        onMessageDecrypted: () => {}
+        onMessageDecrypted: () => {},
+        silent: true
+      });
+      logReplayFetchResult({
+        conversationId: convId || null,
+        itemsLength: Array.isArray(syncResult?.items) ? syncResult.items.length : null,
+        serverItemCount: syncResult?.serverItemCount ?? null,
+        nextCursorTs: syncResult?.nextCursor?.ts ?? syncResult?.nextCursorTs ?? null,
+        nextCursorId: syncResult?.nextCursor?.id ?? null,
+        errorsLength: Array.isArray(syncResult?.errors) ? syncResult.errors.length : null
       });
       try {
-        console.log('[contact-sync:done]', { convId, peerDigest, reason: reason || null });
+        if (DEBUG.ws) {
+          console.log('[contact-sync:done]', { convId, peerDigest, reason: reason || null });
+        }
         log({ contactSyncDone: { convId, peerDigest, reason: reason || null } });
       } catch {}
     } catch (err) {
@@ -3984,15 +4100,17 @@ export function initMessagesPane({
     const state = getMessageState();
     try {
       try {
-        console.log('[ws-secure-message]', {
-          convId,
-          senderAccountDigest: event?.senderAccountDigest || null,
-          senderDeviceId: event?.senderDeviceId || null,
-          targetDeviceId: event?.targetDeviceId || null,
-          targetAccountDigest: event?.targetAccountDigest || event?.target_account_digest || null,
-          peerAccountDigest: event?.peerAccountDigest || null,
-          type: event?.type || null
-        });
+        if (DEBUG.ws) {
+          console.log('[ws-secure-message]', {
+            convId,
+            senderAccountDigest: event?.senderAccountDigest || null,
+            senderDeviceId: event?.senderDeviceId || null,
+            targetDeviceId: event?.targetDeviceId || null,
+            targetAccountDigest: event?.targetAccountDigest || event?.target_account_digest || null,
+            peerAccountDigest: event?.peerAccountDigest || null,
+            type: event?.type || null
+          });
+        }
         log({
           wsSecureMessage: {
             convId,
@@ -4012,7 +4130,9 @@ export function initMessagesPane({
       const selfDeviceId = ensureDeviceId();
       if (!selfDeviceId || targetDeviceId !== String(selfDeviceId).trim()) {
         try {
-          console.log('[messages-pane] skip secure-message (target mismatch)', { convId, targetDeviceId, selfDeviceId });
+          if (DEBUG.ws) {
+            console.log('[messages-pane] skip secure-message (target mismatch)', { convId, targetDeviceId, selfDeviceId });
+          }
           log({ secureMessageSkipTarget: { convId, targetDeviceId, selfDeviceId } });
         } catch {}
         return;
@@ -4097,7 +4217,9 @@ export function initMessagesPane({
 
       // 立即觸發同步解密，避免後續分支提前 return。
       try {
-        console.log('[contact-sync:enqueue]', { convId, peerDigest: peerDigestForWrite, senderDeviceId, reason: 'ws-incoming' });
+        if (DEBUG.ws) {
+          console.log('[contact-sync:enqueue]', { convId, peerDigest: peerDigestForWrite, senderDeviceId, reason: 'ws-incoming' });
+        }
         log({ contactSyncEnqueue: { convId, peerDigest: peerDigestForWrite, senderDeviceId, reason: 'ws-incoming' } });
       } catch {}
       syncContactConversation({
@@ -4207,7 +4329,11 @@ export function initMessagesPane({
     const peerDigest = identity.key
       || (identity.accountDigest && identity.deviceId ? `${identity.accountDigest}::${identity.deviceId}` : null)
       || normalizePeerKey(detail?.peerAccountDigest);
-    try { console.log('[messages-pane]', { contactOpenDetail: detail, peerDigest }); } catch {}
+    try {
+      if (uiNoiseEnabled) {
+        console.log('[messages-pane]', { contactOpenDetail: detail, peerDigest });
+      }
+    } catch {}
     if (!peerDigest) return;
     syncConversationThreadsFromContacts();
     const conversation = detail?.conversation;
@@ -4235,7 +4361,9 @@ export function initMessagesPane({
   }
 
   function openConversationFromToast({ peerAccountDigest, convId, tokenB64, peerDeviceId }) {
-    try { log({ toastNavigate: { peerAccountDigest, convId } }); } catch {}
+    if (uiNoiseEnabled) {
+      try { log({ toastNavigate: { peerAccountDigest, convId } }); } catch {}
+    }
     switchTab?.('messages');
     syncConversationThreadsFromContacts();
     const threads = getConversationThreads();
@@ -4278,7 +4406,7 @@ export function initMessagesPane({
     }
     if (targetPeer) {
       const p = setActiveConversation(targetPeer);
-      if (p?.catch) p.catch((err) => log({ toastOpenConversationError: err?.message || err }));
+      if (p?.catch && uiNoiseEnabled) p.catch((err) => log({ toastOpenConversationError: err?.message || err }));
       return;
     }
     if (conversationId && token) {
@@ -4287,13 +4415,19 @@ export function initMessagesPane({
       state.conversationToken = token;
       loadActiveConversationMessages({ append: false })
         .then(() => scrollMessagesToBottom())
-        .catch((err) => log({ toastOpenConversationError: err?.message || err }));
+        .catch((err) => {
+          if (uiNoiseEnabled) log({ toastOpenConversationError: err?.message || err });
+        });
       renderConversationList();
       return;
     }
-    log({ toastOpenConversationError: 'missing conversation info', peerAccountDigest: targetPeer, convId });
+    if (uiNoiseEnabled) {
+      log({ toastOpenConversationError: 'missing conversation info', peerAccountDigest: targetPeer, convId });
+    }
     showToast?.('同步中，請稍後再試', { variant: 'warning' });
-    refreshConversationPreviews({ force: true }).catch((err) => log({ toastRefreshPreviewError: err?.message || err }));
+    refreshConversationPreviews({ force: true }).catch((err) => {
+      if (uiNoiseEnabled) log({ toastRefreshPreviewError: err?.message || err });
+    });
   }
 
   function attachDomEvents() {
@@ -4361,11 +4495,15 @@ export function initMessagesPane({
       if (!text) return;
       const state = getMessageState();
       const contactEntryLog = state.activePeerDigest ? sessionStore.contactIndex?.get?.(state.activePeerDigest) : null;
-      log({ messageComposerSubmit: {
-        peer: state.activePeerDigest,
-        hasToken: !!state.conversationToken,
-        contactHasToken: !!contactEntryLog?.conversation?.token_b64
-      } });
+      if (uiNoiseEnabled) {
+        log({
+          messageComposerSubmit: {
+            peer: state.activePeerDigest,
+            hasToken: !!state.conversationToken,
+            contactHasToken: !!contactEntryLog?.conversation?.token_b64
+          }
+        });
+      }
       if (!state.conversationToken || !state.activePeerDigest) {
         setMessagesStatus('請先選擇已建立安全對話的好友', true);
         return;
@@ -4381,7 +4519,15 @@ export function initMessagesPane({
           text,
           messageId
         });
-        log({ messageComposerSent: { peer: state.activePeerDigest, convId: res?.convId || null, msgId: res?.msg?.id || res?.id || null } });
+        if (uiNoiseEnabled) {
+          log({
+            messageComposerSent: {
+              peer: state.activePeerDigest,
+              convId: res?.convId || null,
+              msgId: res?.msg?.id || res?.id || null
+            }
+          });
+        }
         if (localMsg) {
           const serverId = res?.msg?.id || res?.id || null;
           if (serverId && serverId !== messageId) {
@@ -4414,7 +4560,9 @@ export function initMessagesPane({
           });
         }
       } catch (err) {
-        log({ messageComposerError: err?.message || err });
+        if (uiNoiseEnabled) {
+          log({ messageComposerError: err?.message || err });
+        }
         setMessagesStatus('傳送失敗：' + (err?.message || err), true);
         if (localMsg) {
           localMsg.status = 'failed';

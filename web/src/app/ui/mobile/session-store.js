@@ -37,7 +37,8 @@ const defaultMessageState = {
   viewMode: 'list',
   pendingDeletePeer: null,
   deletePreviewPeer: null,
-  replayInProgress: false
+  replayInProgress: false,
+  historyReplayDoneByConvId: {}
 };
 
 const defaultUiState = {
@@ -93,6 +94,8 @@ export const sessionStore = {
   wsState: cloneValue(defaultWsState),
   subscriptionState: cloneValue(defaultSubscriptionState)
 };
+
+sessionStore.historyReplayDoneByConvId = sessionStore.historyReplayDoneByConvId || {};
 
 export function resetShareState() {
   resetState(sessionStore.shareState, defaultShareState);

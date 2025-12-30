@@ -31,6 +31,7 @@ import {
   snapshotDrState as sessionSnapshotDrState,
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
+import { OutboundKeyVault } from './outbound-key-vault.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 as naclB64u8, b64 as naclB64 } from '../crypto/nacl.js';
@@ -58,6 +59,10 @@ import { enqueueReceiptJob } from './queue/receipts.js';
 import { toU8Strict } from '../../shared/utils/u8-strict.js';
 import { logDrCore, logMsgEvent, shouldLogDrCore } from '../lib/logging.js';
 import { log } from '../core/log.js';
+import { DEBUG } from '../ui/mobile/debug-flags.js';
+
+const FETCH_LOG_ENABLED = DEBUG.fetchNoise === true;
+const QUEUE_LOG_ENABLED = DEBUG.queueNoise === true;
 
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
@@ -91,16 +96,16 @@ export function __resetMessagesTestOverrides() {
 
 const decoder = new TextDecoder();
 const secureFetchBackoff = new Map();
-  const secureFetchLocks = new Set(); // conversationId in-flight
-  const tombstonedConversations = new Set(); // legacy; kept for compatibility
-  const conversationClearAfter = new Map(); // conversationId -> unix ts to ignore older messages
-  const processedMessageCache = new Map(); // conversationId -> Set(messageId)
-  const processedContactShare = new Map(); // conversationId -> Set(stableKey)
-  const PROCESSED_CACHE_MAX_PER_CONV = 500;
-  const PROCESSED_CACHE_MAX_CONVS = 50;
-  const drFailureCounter = new Map(); // `${conversationId}::${peerKey}` -> count
-  // receiptStore: conversationId -> Map(messageId -> { read:boolean, ts:number|null })
-  const receiptStore = new Map();
+const secureFetchLocks = new Map(); // conversationId -> lock token
+const tombstonedConversations = new Set(); // legacy; kept for compatibility
+const conversationClearAfter = new Map(); // conversationId -> unix ts to ignore older messages
+const processedMessageCache = new Map(); // conversationId -> Set(messageId)
+const processedContactShare = new Map(); // conversationId -> Set(stableKey)
+const PROCESSED_CACHE_MAX_PER_CONV = 500;
+const PROCESSED_CACHE_MAX_CONVS = 50;
+const drFailureCounter = new Map(); // `${conversationId}::${peerKey}` -> count
+// receiptStore: conversationId -> Map(messageId -> { read:boolean, ts:number|null })
+const receiptStore = new Map();
 const sentReadReceipts = new Set(); // `${conversationId}:${messageId}`
 let sentReceiptsLoaded = false;
 let receiptsLoaded = false;
@@ -206,6 +211,40 @@ export function getConversationClearAfter(conversationId) {
   if (!conversationId) return null;
   const ts = conversationClearAfter.get(String(conversationId));
   return Number.isFinite(ts) ? ts : null;
+}
+
+function createSecureFetchLockToken(priority) {
+  return {
+    id: Symbol('secureFetchLock'),
+    priority: priority === 'replay' ? 'replay' : 'live',
+    cancelled: false,
+    cancelReason: null
+  };
+}
+
+function acquireSecureFetchLock(conversationId, priority = 'live') {
+  const key = String(conversationId);
+  const holder = secureFetchLocks.get(key);
+  if (holder) {
+    if (priority === 'replay' && holder.priority === 'live') {
+      holder.cancelled = true;
+      holder.cancelReason = 'yieldToReplay';
+    } else {
+      return { granted: false, holderPriority: holder.priority || 'live' };
+    }
+  }
+  const token = createSecureFetchLockToken(priority);
+  secureFetchLocks.set(key, token);
+  return { granted: true, token };
+}
+
+function releaseSecureFetchLock(conversationId, token) {
+  if (!conversationId || !token) return;
+  const key = String(conversationId);
+  const holder = secureFetchLocks.get(key);
+  if (holder && holder.id === token.id) {
+    secureFetchLocks.delete(key);
+  }
 }
 
 function getReceiptStorageKey() {
@@ -868,10 +907,49 @@ export async function listSecureAndDecrypt(params = {}) {
     allowReplay = false,
     onMessageDecrypted = null,
     sendReadReceipt = true,
-    prefetchedList = null
+    prefetchedList = null,
+    silent = false,
+    priority = 'live'
   } = params;
-  log({ probeReplay: { where: 'messages:listSecureAndDecrypt:enter', conversationId: conversationId || null, hasPeerDevice: !!peerDeviceId, allowReplay: !!allowReplay, mutateState: !!mutateState } });
+  const logReplayEarlyReturn = (reason, extra = {}) => {
+    try {
+      log({
+        replayEarlyReturn: {
+          reason,
+          conversationId: conversationId || null,
+          allowReplay: !!allowReplay,
+          mutateState: !!mutateState,
+          priority: requestPriority,
+          silent: !!silent,
+          limit,
+          ...extra
+        }
+      });
+    } catch {}
+  };
+  if (DEBUG.replay) {
+    log({
+      probeReplay: {
+        where: 'messages:listSecureAndDecrypt:enter',
+        conversationId: conversationId || null,
+        hasPeerDevice: !!peerDeviceId,
+        allowReplay: !!allowReplay,
+        mutateState: !!mutateState
+      }
+    });
+  }
   if (!conversationId) throw new Error('conversationId required');
+  const requestPriority = priority === 'replay' ? 'replay' : 'live';
+  const buildEmptyResult = (errors = []) => ({
+    items: [],
+    nextCursorTs: null,
+    nextCursor: null,
+    hasMoreAtCursor: false,
+    errors,
+    deadLetters: [],
+    receiptUpdates: [],
+    serverItemCount: 0
+  });
   const replayCounters = {
     fetchedItems: 0,
     enqueuedJobs: 0,
@@ -887,7 +965,7 @@ export async function listSecureAndDecrypt(params = {}) {
   const uniqueAppendedIds = new Set();
   let replaySummaryLogged = false;
   const emitReplaySummary = (extra = {}) => {
-    if (replaySummaryLogged) return;
+    if (replaySummaryLogged || !DEBUG.replay) return;
     replaySummaryLogged = true;
     try {
       log({
@@ -901,15 +979,18 @@ export async function listSecureAndDecrypt(params = {}) {
       });
     } catch {}
   };
-  logMsgEvent('fetch:start', {
-    conversationId,
-    direction: 'incoming',
-    peerAccountDigest,
-    peerDeviceId,
-    hasToken: !!tokenB64,
-    source: params?.__debugSource || null
-  });
+  if (FETCH_LOG_ENABLED) {
+    logMsgEvent('fetch:start', {
+      conversationId,
+      direction: 'incoming',
+      peerAccountDigest,
+      peerDeviceId,
+      hasToken: !!tokenB64,
+      source: params?.__debugSource || null
+    });
+  }
   if (tombstonedConversations.has(String(conversationId))) {
+    logReplayEarlyReturn('tombstone');
     emitReplaySummary();
     return {
       items: [],
@@ -945,6 +1026,10 @@ export async function listSecureAndDecrypt(params = {}) {
   const peerAccountDigestNormalized = identity.accountDigest || (peerKey && peerKey.includes('::') ? peerKey.split('::')[0] : peerKey) || null;
   const peerDevice = identity.deviceId || null;
   if (!peerKey || !peerDevice) {
+    logReplayEarlyReturn('missingPeerIdentity', {
+      peerAccountDigest,
+      peerDeviceId: resolvedPeerDeviceId || peerDeviceId || null
+    });
     logMsgEvent('fetch:fail', {
       conversationId,
       direction: 'incoming',
@@ -971,19 +1056,24 @@ export async function listSecureAndDecrypt(params = {}) {
     /* ignore */
   }
   const clearAfter = getConversationClearAfter(conversationId);
-  if (secureFetchLocks.has(conversationId)) {
+  const lockAttempt = acquireSecureFetchLock(conversationId, requestPriority);
+  if (!lockAttempt?.granted || !lockAttempt.token) {
+    const reason = requestPriority === 'live' ? 'yieldToReplay' : 'secureFetchLock';
+    logReplayEarlyReturn(reason, { holderPriority: lockAttempt?.holderPriority || null });
     emitReplaySummary();
-    return {
-      items: [],
-      nextCursorTs: null,
-      errors: ['同步進行中，請稍後再試'],
-      receiptUpdates: [],
-      deadLetters: [],
-      hasMoreAtCursor: false,
-      serverItemCount: 0
-    };
+    return buildEmptyResult(['同步進行中，請稍後再試']);
   }
-  secureFetchLocks.add(conversationId);
+  const lockToken = lockAttempt.token;
+  const buildYieldResult = () => buildEmptyResult(requestPriority === 'live' ? ['同步進行中，請稍後再試'] : []);
+  const shouldYieldToReplay = (stage = null) => {
+    if (!lockToken?.cancelled) return false;
+    logReplayEarlyReturn('yieldToReplay', {
+      stage,
+      cancelReason: lockToken.cancelReason || null,
+      priority: requestPriority
+    });
+    return true;
+  };
   try {
   const peerRef = {
     peerAccountDigest: identity.accountDigest || peerKey,
@@ -994,11 +1084,15 @@ export async function listSecureAndDecrypt(params = {}) {
   const now = Date.now();
   const backoffUntil = secureFetchBackoff.get(conversationId) || 0;
   if (now < backoffUntil) {
+    logReplayEarlyReturn('backoff', { backoffUntil });
     return {
       items: [],
       nextCursorTs: null,
       errors: ['訊息服務暫時無法使用，請稍後再試。']
     };
+  }
+  if (shouldYieldToReplay('beforeFetch')) {
+    return buildYieldResult();
   }
 
   const out = [];
@@ -1080,6 +1174,21 @@ export async function listSecureAndDecrypt(params = {}) {
       items = deduped;
     }
   }
+  if (shouldYieldToReplay('afterFetch')) {
+    return buildYieldResult();
+  }
+  try {
+    log({
+      replayFetchResult: {
+        conversationId: conversationId || null,
+        itemsLength: Array.isArray(items) ? items.length : null,
+        serverItemCount: serverItemCount ?? null,
+        nextCursorTs: nextCursor?.ts ?? nextCursorTs ?? null,
+        nextCursorId: nextCursor?.id ?? null,
+        errorsLength: errs.length
+      }
+    });
+  } catch {}
   const selfDigest = (deps.getAccountDigest && deps.getAccountDigest()) ? String(deps.getAccountDigest()).toUpperCase() : null;
 
   // 依 clearAfter 過濾舊訊息
@@ -1098,8 +1207,14 @@ export async function listSecureAndDecrypt(params = {}) {
   const ensuredConversations = new Set();
   const directionFilterSampleLimit = 3;
   let directionFilterSampleCount = 0;
+  const decryptFailSampleLimit = 3;
+  let decryptFailSampleCount = 0;
   const duplicateCounterSampleLimit = 3;
   let duplicateCounterSampleCount = 0;
+  const historyReplayTraceLimit = 3;
+  let historyReplayTraceCount = 0;
+  const vaultLookupAttemptLimit = 3;
+  let vaultLookupAttemptCount = 0;
   const logSkipLine = (fields = {}) => {
     logMsgEvent('skip', {
       conversationId,
@@ -1116,12 +1231,14 @@ export async function listSecureAndDecrypt(params = {}) {
       senderDigest: it?.senderAccountDigest || it?.sender_digest || null,
       senderDeviceId: it?.senderDeviceId || it?.sender_device_id || null
     }));
-    logMsgEvent('fetch:batch', {
-      direction: 'incoming',
-      conversationId,
-      serverItemCount,
-      items: fetchIds
-    });
+    if (FETCH_LOG_ENABLED) {
+      logMsgEvent('fetch:batch', {
+        direction: 'incoming',
+        conversationId,
+        serverItemCount,
+        items: fetchIds
+      });
+    }
   } catch {}
 
   const getPeerRef = (deviceId) => ({
@@ -1178,6 +1295,7 @@ export async function listSecureAndDecrypt(params = {}) {
     const initialStatus = await ensureConversationReadyForDevice(peerDevice);
     if (initialStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
       replayCounters.skipped_securePending += 1;
+      logReplayEarlyReturn('securePending', { peerDeviceId: peerDevice });
       return {
         items: [],
         nextCursorTs: null,
@@ -1204,6 +1322,8 @@ export async function listSecureAndDecrypt(params = {}) {
     }, { level: 'log', force: true });
   }
 
+  const yieldToReplayError = new Error('yieldToReplay');
+  yieldToReplayError.__yieldToReplay = true;
   const handleInboxJob = async (job) => {
     const trackState = shouldTrackState;
     const raw = job?.raw || {};
@@ -1222,11 +1342,13 @@ export async function listSecureAndDecrypt(params = {}) {
     let ciphertextB64 = null;
     let packet = null;
     let senderDeviceId = null;
+    let targetDeviceId = null;
     let stateKey = null;
     let messageId = null;
     let serverMessageId = null;
     let senderDigest = null;
     let direction = 'unknown';
+    let peerDeviceForMessage = null;
     const logDeliverySkip = (gate, extra = {}) => {
       if (gate === 'targetDeviceMissing') replayCounters.skipped_targetDeviceMissing += 1;
       else if (gate === 'directionFilter') replayCounters.skipped_directionFilter += 1;
@@ -1235,41 +1357,65 @@ export async function listSecureAndDecrypt(params = {}) {
       else if (gate === 'securePending') replayCounters.skipped_securePending += 1;
       if (gate === 'directionFilter' && directionFilterSampleCount < directionFilterSampleLimit) {
         directionFilterSampleCount += 1;
-        try {
-          log({
-            replaySkipSample: {
-              skipReason: 'directionFilter',
-              conversationId: convId || conversationId || null,
-              serverMessageId: serverMessageId || null,
-              messageId: messageId || null,
-              isHistoryReplay: allowReplay === true && mutateState === false,
-              selfDeviceId: selfDeviceId || null,
-              senderDeviceId: senderDeviceId || null,
-              targetDeviceId: targetDeviceId || null,
-              directionComputed: direction || 'unknown',
-              isSelfSenderByDevice: !!(senderDeviceId && selfDeviceId && senderDeviceId === selfDeviceId),
-              deviceMatchesSelf: !!(targetDeviceId && selfDeviceId && targetDeviceId === selfDeviceId)
-            }
-          });
-        } catch {}
+        if (DEBUG.replay) {
+          try {
+            log({
+              replaySkipSample: {
+                skipReason: 'directionFilter',
+                conversationId: convId || conversationId || null,
+                serverMessageId: serverMessageId || null,
+                messageId: messageId || null,
+                isHistoryReplay: allowReplay === true && mutateState === false,
+                selfDeviceId: selfDeviceId || null,
+                senderDeviceId: senderDeviceId || null,
+                targetDeviceId: targetDeviceId || null,
+                directionComputed: direction || 'unknown',
+                isSelfSenderByDevice: !!(senderDeviceId && selfDeviceId && senderDeviceId === selfDeviceId),
+                deviceMatchesSelf: !!(targetDeviceId && selfDeviceId && targetDeviceId === selfDeviceId)
+              }
+            });
+          } catch {}
+        }
       }
       if (gate === 'duplicateCounter' && duplicateCounterSampleCount < duplicateCounterSampleLimit) {
         duplicateCounterSampleCount += 1;
-        try {
-          log({
-            replaySkipSample: {
-              skipReason: 'duplicateCounter',
-              conversationId: convId || conversationId || null,
-              serverMessageId: serverMessageId || null,
-              messageId: messageId || null,
-              counter: Number.isFinite(Number(extra?.counter)) ? Number(extra.counter) : null,
-              transportCounter: Number.isFinite(Number(extra?.transportCounter)) ? Number(extra.transportCounter) : null,
-              Nr: Number.isFinite(Number(extra?.Nr)) ? Number(extra.Nr) : null,
-              Ns: Number.isFinite(Number(extra?.Ns)) ? Number(extra.Ns) : null,
-              isHistoryReplay: allowReplay === true && mutateState === false
-            }
-          });
-        } catch {}
+        if (DEBUG.replay) {
+          const sampleCounter = Number.isFinite(Number(extra?.counter)) ? Number(extra.counter) : 0;
+          const sampleTransport = Number.isFinite(Number(extra?.transportCounter))
+            ? Number(extra.transportCounter)
+            : sampleCounter;
+          const sampleNr = Number.isFinite(Number(extra?.Nr)) ? Number(extra.Nr) : 0;
+          const sampleNs = Number.isFinite(Number(extra?.Ns)) ? Number(extra.Ns) : 0;
+          try {
+            log({
+              duplicateCounterSample: {
+                conversationId: convId || conversationId || null,
+                serverMessageId: serverMessageId || null,
+                messageId: messageId || null,
+                counter: sampleCounter,
+                transportCounter: sampleTransport,
+                Nr: sampleNr,
+                Ns: sampleNs,
+                isHistoryReplay: allowReplay === true && mutateState === false,
+                peerDeviceId: peerDeviceForMessage || null,
+                stateKey: stateKey || null
+              }
+            });
+            log({
+              replaySkipSample: {
+                skipReason: 'duplicateCounter',
+                conversationId: convId || conversationId || null,
+                serverMessageId: serverMessageId || null,
+                messageId: messageId || null,
+                counter: sampleCounter,
+                transportCounter: sampleTransport,
+                Nr: sampleNr,
+                Ns: sampleNs,
+                isHistoryReplay: allowReplay === true && mutateState === false
+              }
+            });
+          } catch {}
+        }
       }
       logSkipLine({
         gate,
@@ -1296,6 +1442,10 @@ export async function listSecureAndDecrypt(params = {}) {
         /* ignore */
       }
     };
+    if (shouldYieldToReplay('inbox-handler')) {
+      throw yieldToReplayError;
+    }
+    let preDecryptSnapshot = null;
     try {
       headerRaw = jobPacket?.header_json || raw?.header_json || raw?.headerJson || raw?.header || null;
       if (typeof headerRaw === 'string') {
@@ -1375,57 +1525,90 @@ export async function listSecureAndDecrypt(params = {}) {
         || raw?.receiverDeviceId
         || raw?.receiver_device_id
         || null;
-      const targetDeviceId = targetDeviceRaw ? String(targetDeviceRaw) : null;
+      targetDeviceId = targetDeviceRaw ? String(targetDeviceRaw) : null;
       let targetDigest = targetDigestRaw ? String(targetDigestRaw).toUpperCase() : null;
       const deviceMatchesSelf = !!(selfDeviceId && targetDeviceId && targetDeviceId === selfDeviceId);
       const isSelfSender = !!(selfDigest && senderDigest && senderDigest === selfDigest);
-      const isHistoryReplay = allowReplay === true && trackState === false;
+      const senderMatchesSelfDevice = !!(senderDeviceId && selfDeviceId && senderDeviceId === selfDeviceId);
+      const isHistoryReplay = allowReplay === true && mutateState === false;
+      const replaySelfSender = isHistoryReplay && senderMatchesSelfDevice;
+      const treatAsSelfSender = isSelfSender || replaySelfSender;
 
       if (deviceMatchesSelf) {
         direction = 'incoming';
         if (!targetDigest && selfDigest) targetDigest = selfDigest;
-      } else if (isSelfSender) {
+      } else if (treatAsSelfSender) {
         direction = 'outgoing';
       } else {
         direction = 'incoming';
       }
 
-      let peerDeviceForMessage = senderDeviceId || peerDevice;
-      if (isHistoryReplay && isSelfSender && targetDeviceId) {
+      peerDeviceForMessage = senderDeviceId || peerDevice;
+      if (isHistoryReplay && treatAsSelfSender && targetDeviceId) {
         peerDeviceForMessage = targetDeviceId;
       }
 
-      logMsgEvent('device-check', {
-        conversationId: packetConversationId,
-        messageId,
-        senderDeviceId,
-        targetDeviceId,
-        selfDeviceId,
-        peerDeviceId: peerDeviceForMessage || null,
-        directionComputed: direction
-      });
+      if (QUEUE_LOG_ENABLED) {
+        logMsgEvent('device-check', {
+          conversationId: packetConversationId,
+          messageId,
+          senderDeviceId,
+          targetDeviceId,
+          selfDeviceId,
+          peerDeviceId: peerDeviceForMessage || null,
+          directionComputed: direction
+        });
+      }
       if (selfDeviceId && peerDevice && selfDeviceId === peerDevice) {
         throw new Error('SELF_DEVICE_ID_CORRUPTED: selfDeviceId equals peerDeviceId');
       }
-      logMsgEvent('handle:start', {
-        stage: 'handle',
-        direction,
-        conversationId: packetConversationId,
-        serverMessageId,
-        messageId,
-        senderDigest,
-        senderDeviceId,
-        targetDeviceId,
-        targetDigest,
-        selfDeviceId
-      });
+      if (QUEUE_LOG_ENABLED) {
+        logMsgEvent('handle:start', {
+          stage: 'handle',
+          direction,
+          conversationId: packetConversationId,
+          serverMessageId,
+          messageId,
+          senderDigest,
+          senderDeviceId,
+          targetDeviceId,
+          targetDigest,
+          selfDeviceId
+        });
+      }
       if (!targetDeviceId) {
         logDeliverySkip('targetDeviceMissing', { targetDeviceId, selfDeviceId, senderDeviceId });
         return;
       }
+      const isReplaySelfOutgoing = isHistoryReplay && senderMatchesSelfDevice && direction === 'outgoing';
+      if (DEBUG.replay && historyReplayTraceCount < historyReplayTraceLimit) {
+        historyReplayTraceCount += 1;
+        try {
+          log({
+            historyReplayFlagTrace: {
+              conversationId: convId || conversationId || null,
+              allowReplay: allowReplay === true,
+              mutateState,
+              computedIsHistoryReplay: isHistoryReplay,
+              directionComputed: direction || 'unknown',
+              senderDeviceId: senderDeviceId || null,
+              targetDeviceId: targetDeviceId || null,
+              selfDeviceId: selfDeviceId || null,
+              messageId: messageId || null,
+              serverMessageId: serverMessageId || null
+            }
+          });
+        } catch {}
+      }
       if (isHistoryReplay) {
-        if (!deviceMatchesSelf && !isSelfSender) {
-          logDeliverySkip('directionFilter', { senderDeviceId, targetDeviceId, selfDeviceId });
+        if (!deviceMatchesSelf && !isSelfSender && !isReplaySelfOutgoing) {
+          logDeliverySkip('directionFilter', {
+            senderDeviceId,
+            targetDeviceId,
+            selfDeviceId,
+            senderMatchesSelfDevice,
+            replaySelfOutgoing: isReplaySelfOutgoing
+          });
           return;
         }
       } else {
@@ -1563,12 +1746,16 @@ export async function listSecureAndDecrypt(params = {}) {
       const currentNr = Number.isFinite(Number(state?.Nr)) ? Number(state.Nr) : 0;
       state.Nr = currentNr; // normalize to numeric to avoid string comparisons
       const headerCounter = Number(header?.n);
+      const transportCounter = Number.isFinite(Number(packet?.counter)) ? Number(packet.counter) : null;
+      const stateNs = Number.isFinite(Number(state?.Ns)) ? Number(state.Ns) : null;
       const sameReceiveChain = state?.theirRatchetPub && typeof header?.ek_pub_b64 === 'string'
         && naclB64(state.theirRatchetPub) === header.ek_pub_b64;
       if (sameReceiveChain && Number.isFinite(headerCounter) && currentNr >= headerCounter) {
         logDeliverySkip('duplicateCounter', {
           counter: headerCounter,
-          nr: currentNr
+          transportCounter,
+          Nr: currentNr,
+          Ns: stateNs
         });
         return;
       }
@@ -1603,7 +1790,7 @@ export async function listSecureAndDecrypt(params = {}) {
         hasCkS: state?.ckS instanceof Uint8Array && state.ckS.length > 0,
         role: state?.baseKey?.role || null
       };
-      const preDecryptSnapshot = deps.cloneDrStateHolder ? deps.cloneDrStateHolder(state) : null;
+      preDecryptSnapshot = deps.cloneDrStateHolder ? deps.cloneDrStateHolder(state) : null;
       const preDecryptCore = {
         ckRHash: state?.ckR instanceof Uint8Array ? await hashBytesHex(state.ckR) : null,
         Nr: Number(state?.Nr ?? null),
@@ -1620,22 +1807,106 @@ export async function listSecureAndDecrypt(params = {}) {
         msgType: payloadMsgType || null,
         preDecryptCore
       });
+      const vaultEligible = isReplaySelfOutgoing;
+      if (DEBUG.replay && vaultLookupAttemptCount < vaultLookupAttemptLimit) {
+        vaultLookupAttemptCount += 1;
+        try {
+          log({
+            vaultLookupAttempt: {
+              conversationId: convId || conversationId || null,
+              eligible: !!vaultEligible,
+              computedIsHistoryReplay: isHistoryReplay,
+              directionComputed: direction || 'unknown',
+              senderDeviceId: senderDeviceId || null,
+              targetDeviceId: targetDeviceId || null,
+              selfDeviceId: selfDeviceId || null,
+              lookupKey: {
+                messageId: messageId || null,
+                serverMessageId: serverMessageId || null,
+                headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter
+              },
+              msgTypeForDecrypt
+            }
+          });
+        } catch {}
+      }
+      let text = null;
+      let usedVault = false;
+      if (vaultEligible) {
+        const vaultKeyB64 = await OutboundKeyVault.getOutboundKey({
+          conversationId: convId || conversationId || null,
+          messageId,
+          serverMessageId,
+          senderDeviceId,
+          targetDeviceId,
+          headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter,
+          msgType: msgTypeForDecrypt
+        });
+        if (vaultKeyB64) {
+          messageKeyB64 = vaultKeyB64;
+          usedVault = true;
+          try {
+            text = await decryptWithMessageKey({
+              messageKeyB64: vaultKeyB64,
+              ivB64: pkt.iv_b64,
+              ciphertextB64: pkt.ciphertext_b64,
+              header
+            });
+          } catch {
+            throw new Error('不可回放：密鑰解封失敗');
+          }
+        } else {
+          if (DEBUG.replay) {
+            log({
+              replaySkipSample: {
+                skipReason: 'outboundVaultMissing',
+                gate: 'outboundVaultMissing',
+                conversationId: convId || conversationId || null,
+                serverMessageId: serverMessageId || null,
+                messageId: messageId || null,
+                senderDeviceId: senderDeviceId || null,
+                targetDeviceId: targetDeviceId || null,
+                selfDeviceId: selfDeviceId || null,
+                stateKey: stateKey || null,
+                headerCounter
+              }
+            });
+          }
+          try {
+            log({
+              outboundVaultMissing: {
+                conversationId: convId || conversationId || null,
+                serverMessageId: serverMessageId || null,
+                messageId: messageId || null,
+                senderDeviceId: senderDeviceId || null,
+                targetDeviceId: targetDeviceId || null,
+                selfDeviceId: selfDeviceId || null,
+                stateKey: stateKey || null,
+                headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter
+              }
+            });
+          } catch {}
+          throw new Error('不可回放：缺少發送端密鑰');
+        }
+      }
       const preDecryptState = summarizeDrState(state);
-      const text = await deps.drDecryptText(state, pkt, {
-        onMessageKey: (mk) => { messageKeyB64 = mk; },
-        packetKey: messageId,
-        msgType: msgTypeForDecrypt
-      });
-      const postState = summarizeDrState(state);
-      logDrCore('decrypt:state', {
-        conversationId: convId,
-        peerAccountDigest: peerKey,
-        peerDeviceId: peerDeviceForMessage || null,
-        headerN: Number(header?.n ?? packet?.counter ?? null),
-        headerEk: header?.ek_pub_b64 ? String(header.ek_pub_b64).slice(0, 12) : null,
-        preState: preDecryptState,
-        postState
-      });
+      if (!text) {
+        text = await deps.drDecryptText(state, pkt, {
+          onMessageKey: (mk) => { messageKeyB64 = mk; },
+          packetKey: messageId,
+          msgType: msgTypeForDecrypt
+        });
+        const postState = summarizeDrState(state);
+        logDrCore('decrypt:state', {
+          conversationId: convId,
+          peerAccountDigest: peerKey,
+          peerDeviceId: peerDeviceForMessage || null,
+          headerN: Number(header?.n ?? packet?.counter ?? null),
+          headerEk: header?.ek_pub_b64 ? String(header.ek_pub_b64).slice(0, 12) : null,
+          preState: preDecryptState,
+          postState
+        });
+      }
       decryptFailMessageCache.delete(messageId);
       logMsgEvent('decrypt:ok', {
         conversationId: convId,
@@ -1889,9 +2160,41 @@ export async function listSecureAndDecrypt(params = {}) {
           if (preDecryptSnapshot.baseKey) state.baseKey = { ...preDecryptSnapshot.baseKey };
         } catch {}
       }
+      const errorName = err?.name || err?.constructor?.name || 'Error';
       const msg = err?.message || String(err);
+      const errorMessage = msg;
       const semantic = classifyDecryptedPayload(null, { meta, header });
       const failedMessageId = messageId || job?.messageId || job?.raw?.id || null;
+      const headerCounter = Number.isFinite(Number(header?.n))
+        ? Number(header.n)
+        : Number.isFinite(Number(job?.payloadEnvelope?.counter))
+          ? Number(job.payloadEnvelope.counter)
+          : Number.isFinite(Number(job?.raw?.counter ?? job?.raw?.n))
+            ? Number(job.raw.counter ?? job.raw.n)
+            : null;
+      if (DEBUG.replay && decryptFailSampleCount < decryptFailSampleLimit) {
+        decryptFailSampleCount += 1;
+        try {
+          log({
+            decryptFailSample: {
+              conversationId: convId || conversationId || null,
+              serverMessageId: serverMessageId || null,
+              messageId: failedMessageId || null,
+              isHistoryReplay: allowReplay === true && mutateState === false,
+              msgTypeForDecrypt,
+              directionComputed: direction || 'unknown',
+              selfDeviceId: selfDeviceId || null,
+              senderDeviceId: senderDeviceId || null,
+              targetDeviceId: targetDeviceId || null,
+              peerDeviceForMessage: peerDeviceForMessage || null,
+              stateKey: stateKey || null,
+              headerCounter,
+              errorName,
+              errorMessage
+            }
+          });
+        } catch {}
+      }
       const msgTypeLabel =
         semantic.subtype ||
         normalizeMsgTypeValue(rawMsgType) ||
@@ -2039,7 +2342,13 @@ export async function listSecureAndDecrypt(params = {}) {
     }
   };
 
+  if (shouldYieldToReplay('beforeEnqueue')) {
+    return buildYieldResult();
+  }
   for (const raw of sortedItems) {
+    if (shouldYieldToReplay('enqueue')) {
+      return buildYieldResult();
+    }
     const msgTs = toMessageTimestamp(raw);
     const headerJson = raw?.header_json || raw?.headerJson || (raw?.header ? JSON.stringify(raw.header) : null);
     const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
@@ -2054,15 +2363,17 @@ export async function listSecureAndDecrypt(params = {}) {
     const stateKey = buildStateKey({ conversationId, peerKey, peerDeviceId: peerDevice });
     const fetchSenderDigest = raw?.senderAccountDigest || raw?.sender_digest || null;
     const fetchSenderDeviceId = raw?.senderDeviceId || raw?.sender_device_id || (headerForKey?.meta?.senderDeviceId || headerForKey?.meta?.sender_device_id) || null;
-    logMsgEvent('fetch:item', {
-      conversationId,
-      direction: 'incoming',
-      messageId: serverMessageId,
-      serverMessageId,
-      stateKey,
-      senderDigest: fetchSenderDigest,
-      senderDeviceId: fetchSenderDeviceId
-    });
+    if (FETCH_LOG_ENABLED) {
+      logMsgEvent('fetch:item', {
+        conversationId,
+        direction: 'incoming',
+        messageId: serverMessageId,
+        serverMessageId,
+        stateKey,
+        senderDigest: fetchSenderDigest,
+        senderDeviceId: fetchSenderDeviceId
+      });
+    }
     const cachedState = decryptFailMessageCache.get(serverMessageId);
     if (cachedState && cachedState === stateKey) {
       logSkipLine({
@@ -2093,22 +2404,27 @@ export async function listSecureAndDecrypt(params = {}) {
       cursorTs
     });
     replayCounters.enqueuedJobs += 1;
-    logMsgEvent('enqueue', {
-      direction: 'incoming',
-      conversationId,
-      serverMessageId,
-      messageId: job?.messageId || messageId,
-      stateKey,
-      senderDigest: fetchSenderDigest,
-      senderDeviceId: fetchSenderDeviceId,
-      jobId: job?.jobId || null,
-      state: job?.state || null,
-      ts: Number.isFinite(msgTs) ? msgTs : null
-    });
+    if (QUEUE_LOG_ENABLED) {
+      logMsgEvent('enqueue', {
+        direction: 'incoming',
+        conversationId,
+        serverMessageId,
+        messageId: job?.messageId || messageId,
+        stateKey,
+        senderDigest: fetchSenderDigest,
+        senderDeviceId: fetchSenderDeviceId,
+        jobId: job?.jobId || null,
+        state: job?.state || null,
+        ts: Number.isFinite(msgTs) ? msgTs : null
+      });
+    }
   }
 
+  if (shouldYieldToReplay('beforeProcess')) {
+    return buildYieldResult();
+  }
   await processInboxForConversation({
-      conversationId,
+    conversationId,
     handler: async (job) => {
       try {
         if (drDebug) {
@@ -2153,6 +2469,9 @@ export async function listSecureAndDecrypt(params = {}) {
     }
   });
 
+  if (shouldYieldToReplay('afterProcess')) {
+    return buildYieldResult();
+  }
   emitReplaySummary();
   return {
     items: out,
@@ -2164,7 +2483,7 @@ export async function listSecureAndDecrypt(params = {}) {
     receiptUpdates: Array.from(receiptUpdates)
   };
   } finally {
-    secureFetchLocks.delete(conversationId);
+    releaseSecureFetchLock(conversationId, lockToken);
     emitReplaySummary();
   }
 }

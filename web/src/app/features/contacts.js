@@ -16,6 +16,7 @@ import {
 import { normalizeNickname, generateRandomNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
+import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const CONTACT_INFO_TAG = 'contact/v1';
 const missingSecretWarned = new Set();
@@ -37,7 +38,7 @@ export async function loadContacts() {
   if (!mk || !convIds.length) throw new Error('Not unlocked: MK/account missing');
   const selfDigest = (getAccountDigest() || '').toUpperCase();
   const deviceId = ensureDeviceId();
-  const DEBUG_CONTACTS_A1 = true;
+  const DEBUG_CONTACTS_A1 = DEBUG.contactsA1 === true;
 
   restoreContactSecrets();
 
@@ -121,10 +122,12 @@ export async function loadContacts() {
           console.warn('[contacts] contact-share decrypt failed', err?.message || err);
           continue;
         }
-        try {
-          console.log('[contacts] decrypted contact-share', peerDigest, JSON.stringify(contact));
-        } catch {
-          console.log('[contacts] decrypted contact-share', peerDigest, contact);
+        if (DEBUG_CONTACTS_A1) {
+          try {
+            console.log('[contacts] decrypted contact-share', peerDigest, JSON.stringify(contact));
+          } catch {
+            console.log('[contacts] decrypted contact-share', peerDigest, contact);
+          }
         }
         if (!contact) continue;
         conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
@@ -216,20 +219,24 @@ export async function loadContacts() {
         continue;
       }
       peerMap.set(mapKey, entry);
-      console.log('[contacts]', {
-        contactsLoadEntry: {
-          peerAccountDigest: mapKey,
-          hasConversation: !!entry.conversation?.conversation_id,
-          msgId: entry.msgId || item?.id || null
-        }
-      });
+      if (DEBUG_CONTACTS_A1) {
+        console.log('[contacts]', {
+          contactsLoadEntry: {
+            peerAccountDigest: mapKey,
+            hasConversation: !!entry.conversation?.conversation_id,
+            msgId: entry.msgId || item?.id || null
+          }
+        });
+      }
     } catch (err) {
       console.error('[contacts] decode failed', err);
     }
   }
   const out = Array.from(peerMap.values());
   out.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
-  console.log('[contacts]', { contactsLoadDone: out.length });
+  if (DEBUG_CONTACTS_A1) {
+    console.log('[contacts]', { contactsLoadDone: out.length });
+  }
   lastContactsHydrateSummary = { ...diag, ok: true, peerCount: out.length };
   return out;
 }
@@ -244,13 +251,15 @@ export function getLastContactsHydrateSummary() {
 }
 
 export async function saveContact(contact) {
-  console.log('[contacts]', {
-    contactSaveStart: {
-      peerAccountDigest: contact?.peerAccountDigest ?? contact?.peer_account_digest ?? null,
-      hasConversation: !!(contact?.conversation?.conversation_id && contact?.conversation?.token_b64),
-      hasSecret: !!contact?.contactSecret
-    }
-  });
+  if (DEBUG.contactsA1) {
+    console.log('[contacts]', {
+      contactSaveStart: {
+        peerAccountDigest: contact?.peerAccountDigest ?? contact?.peer_account_digest ?? null,
+        hasConversation: !!(contact?.conversation?.conversation_id && contact?.conversation?.token_b64),
+        hasSecret: !!contact?.contactSecret
+      }
+    });
+  }
   const mk = getMkRaw();
   const convIds = contactConvIds();
   if (!mk || !convIds.length) {
@@ -291,14 +300,16 @@ export async function saveContact(contact) {
   if (conversation && conversation.conversation_id && String(conversation.conversation_id).startsWith('contacts-')) {
     throw new Error('缺少安全對話 ID，請重新同步好友（contacts-* 無效）');
   }
-  console.log('[contacts]', {
-    contactSaveConversationNormalized: {
-      peerAccountDigest,
-      conversationId: conversation?.conversation_id || null,
-      hasDrInit: !!conversation?.dr_init,
-      peerDeviceId: conversation?.peerDeviceId || null
-    }
-  });
+  if (DEBUG.contactsA1) {
+    console.log('[contacts]', {
+      contactSaveConversationNormalized: {
+        peerAccountDigest,
+        conversationId: conversation?.conversation_id || null,
+        hasDrInit: !!conversation?.dr_init,
+        peerDeviceId: conversation?.peerDeviceId || null
+      }
+    });
+  }
 
   const payload = {
     peerAccountDigest: peerKey,

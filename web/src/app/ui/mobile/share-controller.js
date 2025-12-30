@@ -34,12 +34,15 @@ import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js'
 import { bytesToB64Url, b64UrlToBytes } from '../../../shared/utils/base64.js';
 import { toU8Strict } from '../../../shared/utils/u8-strict.js';
 import { logMsgEvent, logUiNoise } from '../../lib/logging.js';
+import { DEBUG } from './debug-flags.js';
 
 const INVITE_INFO = new TextEncoder().encode('invite-token');
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
 // 手動標記目前 QR/聯絡人分享流程的版本，用來追蹤是否為最新部署
 const QR_BUILD_VERSION = 'qr-20250212-01';
 const AUTO_PROFILE_BROADCAST_DELAY_MS = 1200;
+const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
+const queueNoiseEnabled = DEBUG.queueNoise === true;
 
 async function deriveInviteTokenB64Url(secretB64Url) {
   const secretBytes = b64UrlToBytes(secretB64Url);
@@ -608,12 +611,14 @@ export function setupShareController(options) {
       const peerKey = resolvedOwnerDigest && resolvedOwnerDeviceId ? `${resolvedOwnerDigest}::${resolvedOwnerDeviceId}` : null;
       if (resolvedOwnerDigest && resolvedOwnerDeviceId) {
         try {
-          console.log('[contact-core] phase1-pending', {
-            peerDigestLen: resolvedOwnerDigest?.length || 0,
-            peerDeviceId: resolvedOwnerDeviceId || null,
-            hasConvId: false,
-            hasToken: false
-          });
+          if (contactCoreVerbose) {
+            console.log('[contact-core] phase1-pending', {
+              peerDigestLen: resolvedOwnerDigest?.length || 0,
+              peerDeviceId: resolvedOwnerDeviceId || null,
+              hasConvId: false,
+              hasToken: false
+            });
+          }
         } catch {}
         upsertContactCore({
           peerAccountDigest: resolvedOwnerDigest,
@@ -658,11 +663,13 @@ export function setupShareController(options) {
         contactSecret: conversation.tokenB64
       }, 'share-controller:ready-upgrade');
       try {
-        console.log('[contact-core] phase2-ready', {
-          peerKey,
-          hasConvId: !!conversationContext.conversation_id,
-          hasToken: !!conversationContext.token_b64
-        });
+        if (contactCoreVerbose) {
+          console.log('[contact-core] phase2-ready', {
+            peerKey,
+            hasConvId: !!conversationContext.conversation_id,
+            hasToken: !!conversationContext.token_b64
+          });
+        }
       } catch {}
 
       const contactInitPayload = {
@@ -985,14 +992,16 @@ export function setupShareController(options) {
       }
 
       try {
-        console.log('[contact-core] pre-upsert', {
-          sourceTag: 'share-controller:contact-share',
-          peerKey,
-          peerAccountDigest: peerKey || null,
-          peerDeviceId,
-          conversationId: conversation.conversation_id || null,
-          hasToken: !!conversation.token_b64
-        });
+        if (contactCoreVerbose) {
+          console.log('[contact-core] pre-upsert', {
+            sourceTag: 'share-controller:contact-share',
+            peerKey,
+            peerAccountDigest: peerKey || null,
+            peerDeviceId,
+            conversationId: conversation.conversation_id || null,
+            hasToken: !!conversation.token_b64
+          });
+        }
       } catch {}
       await addContactEntry({
         peerAccountDigest: peerKey,
@@ -1146,15 +1155,17 @@ export function setupShareController(options) {
     }
     const selfDeviceId = ensureDeviceId();
     const directionComputed = selfDeviceId && targetDeviceId && selfDeviceId === targetDeviceId ? 'incoming' : 'unknown';
-    logMsgEvent('contact-init:device-check', {
-      conversationId: conversation?.conversation_id || null,
-      messageId: msg?.messageId || null,
-      senderDeviceId: peerDeviceId || null,
-      targetDeviceId: targetDeviceId || null,
-      selfDeviceId: selfDeviceId || null,
-      peerDeviceId: peerDeviceId || null,
-      directionComputed
-    });
+    if (queueNoiseEnabled) {
+      logMsgEvent('contact-init:device-check', {
+        conversationId: conversation?.conversation_id || null,
+        messageId: msg?.messageId || null,
+        senderDeviceId: peerDeviceId || null,
+        targetDeviceId: targetDeviceId || null,
+        selfDeviceId: selfDeviceId || null,
+        peerDeviceId: peerDeviceId || null,
+        directionComputed
+      });
+    }
     if (selfDeviceId && peerDeviceId && selfDeviceId === peerDeviceId) {
       throw new Error('SELF_DEVICE_ID_CORRUPTED: selfDeviceId equals peerDeviceId');
     }
@@ -1172,14 +1183,16 @@ export function setupShareController(options) {
     conversation.peerDeviceId = conversation.peerDeviceId || targetDeviceId || null;
     console.log('[share-controller]', { contactInitReceived: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
     try {
-      console.log('[contact-core] pre-upsert', {
-        sourceTag: 'share-controller:contact-init-received',
-        peerKey: peerDigest && peerDeviceId ? `${peerDigest}::${peerDeviceId}` : null,
-        peerAccountDigest: peerDigest || null,
-        peerDeviceId: peerDeviceId || null,
-        conversationId: conversation.conversation_id || null,
-        hasToken: !!conversation.token_b64
-      });
+      if (contactCoreVerbose) {
+        console.log('[contact-core] pre-upsert', {
+          sourceTag: 'share-controller:contact-init-received',
+          peerKey: peerDigest && peerDeviceId ? `${peerDigest}::${peerDeviceId}` : null,
+          peerAccountDigest: peerDigest || null,
+          peerDeviceId: peerDeviceId || null,
+          conversationId: conversation.conversation_id || null,
+          hasToken: !!conversation.token_b64
+        });
+      }
     } catch {}
     upsertContactCore({
       peerAccountDigest: peerDigest,

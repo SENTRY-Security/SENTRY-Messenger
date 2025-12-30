@@ -132,8 +132,8 @@ async function markFailure(job, err) {
 }
 
 async function processSingle(job, handler) {
-  if (!job || typeof handler !== 'function') return false;
-  if (convLocks.has(job.conversationId)) return false;
+  if (!job || typeof handler !== 'function') return { processed: false, yielded: false };
+  if (convLocks.has(job.conversationId)) return { processed: false, yielded: false };
   convLocks.add(job.conversationId);
   let updated = null;
   try {
@@ -143,10 +143,14 @@ async function processSingle(job, handler) {
     if (debug) {
       console.log('[inbox]', { event: 'processed', jobId: job?.jobId, conv: job?.conversationId, messageId: job?.messageId });
     }
-    return true;
+    return { processed: true, yielded: false };
   } catch (err) {
+    if (err && err.__yieldToReplay) {
+      await updateJob(job.jobId, { state: STATE_QUEUED, nextAttemptAt: Date.now(), lastError: null });
+      return { processed: false, yielded: true };
+    }
     await markFailure(updated || job, err);
-    return false;
+    return { processed: false, yielded: false };
   } finally {
     convLocks.delete(job.conversationId);
   }
@@ -157,8 +161,9 @@ export async function processInboxForConversation({ conversationId, handler }) {
   const due = await fetchDueJobs(conversationId);
   let processed = 0;
   for (const job of due) {
-    await processSingle(job, handler);
+    const result = await processSingle(job, handler);
     processed += 1;
+    if (result?.yielded) break;
     if (processed >= 50) break; // avoid starving other conversations
   }
   return { processed };
@@ -183,8 +188,9 @@ export async function processInboxNow(handler) {
       return (a.messageId || '').localeCompare(b.messageId || '');
     });
     for (const job of jobs) {
-      await processSingle(job, handler);
+      const result = await processSingle(job, handler);
       processed += 1;
+      if (result?.yielded) break;
     }
   }
   return { processed };

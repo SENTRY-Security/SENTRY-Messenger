@@ -1,5 +1,6 @@
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
 import { sessionStore } from './session-store.js';
+import { DEBUG } from './debug-flags.js';
 
 const coreMap = new Map();
 
@@ -10,7 +11,10 @@ const toPeerKey = ({ peerAccountDigest, peerDeviceId, peerKey = null }) => {
   return `${digest}::${dev}`;
 };
 
+const contactCoreLogEnabled = DEBUG.contactCoreVerbose === true;
+
 const logJson = (tag, payload) => {
+  if (!contactCoreLogEnabled) return;
   try {
     console.log(`[contact-core] ${tag} ${JSON.stringify(payload)}`);
   } catch {
@@ -350,7 +354,9 @@ export function upsertContactCore(fields, sourceTag = 'unknown') {
   if (!existing?.isReady && nextEntry.isReady) {
     logJson('upgrade', { peerKey, from: 'pending', to: 'ready' });
   }
-  logJson('upsert', { peerKey, sourceTag, isReady: nextEntry.isReady, changedFields });
+  if (Object.keys(changedFields).length > 0) {
+    logJson('upsert', { peerKey, sourceTag, isReady: nextEntry.isReady, changedFields });
+  }
   if (nextEntry.isReady) applyDerivedOutputs(nextEntry);
   return cloneEntry(nextEntry);
 }
@@ -382,7 +388,9 @@ export function patchContactCore(peerKey, patch = {}, sourceTag = 'unknown') {
   ['nickname', 'avatar', 'contactSecret', 'drInit'].forEach((field) => {
     if (nextEntry[field] !== existing[field]) changedFields[field] = nextEntry[field];
   });
-  logJson('upsert', { peerKey: key, sourceTag, isReady: nextEntry.isReady, changedFields });
+  if (Object.keys(changedFields).length > 0) {
+    logJson('upsert', { peerKey: key, sourceTag, isReady: nextEntry.isReady, changedFields });
+  }
   if (nextEntry.isReady) applyDerivedOutputs(nextEntry);
   return cloneEntry(nextEntry);
 }

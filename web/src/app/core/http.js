@@ -7,6 +7,7 @@
 // NOTE: This module is UI-agnostic. Do not import UI/logging here.
 
 import { log } from './log.js';
+import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const API_ORIGIN = (() => {
   if (typeof globalThis !== 'undefined' && typeof globalThis.API_ORIGIN === 'string') {
@@ -15,6 +16,8 @@ const API_ORIGIN = (() => {
   }
   return '';
 })();
+
+const FETCH_LOG_ENABLED = DEBUG.fetchNoise === true;
 
 function resolveUrl(resource) {
   if (typeof resource === 'string' && resource.startsWith('/') && API_ORIGIN) {
@@ -63,15 +66,26 @@ export async function fetchWithTimeout(resource, options = {}, timeout = 15000) 
   };
   dispatchFetchEvent('app:fetch-start', detail);
   try {
-    log({ fetchStart: fmtResource(target), method: options?.method || 'GET', body: options?.body || null });
+    if (FETCH_LOG_ENABLED) {
+      log({ fetchStart: fmtResource(target), method: options?.method || 'GET', body: options?.body || null });
+    }
     const fetchOptions = {
       ...options,
       cache: options?.cache ?? 'no-store',
       signal: controller.signal
     };
     const res = await fetch(target, fetchOptions);
-    log({ fetchDone: fmtResource(resource), status: res?.status });
+    if (FETCH_LOG_ENABLED) {
+      log({ fetchDone: fmtResource(resource), status: res?.status });
+    }
     return res;
+  } catch (err) {
+    log({
+      fetchFail: fmtResource(target),
+      status: err?.status ?? null,
+      error: err?.message || err
+    });
+    throw err;
   } finally {
     clearTimeout(id);
     detail.completedAt = Date.now();
@@ -98,7 +112,9 @@ export async function fetchJSON(url, bodyObj, extraHeaders = {}, timeout = 15000
     timeout
   );
   const data = await safeParseJSON(r);
-  log({ fetchJSONDone: fmtResource(url), status: r.status, dataPreview: previewData(data) });
+  if (FETCH_LOG_ENABLED) {
+    log({ fetchJSONDone: fmtResource(url), status: r.status, dataPreview: previewData(data) });
+  }
   return { r, data };
 }
 
