@@ -2910,7 +2910,8 @@ export function initMessagesPane({
         deadLetters,
         hasMoreAtCursor,
         items: resultItems = [],
-        serverItemCount = null
+        serverItemCount = null,
+        replayStats = {}
       } = listResult;
       logReplayFetchResult({
         conversationId: state.conversationId || null,
@@ -2921,7 +2922,14 @@ export function initMessagesPane({
         errorsLength: Array.isArray(errors) ? errors.length : null
       });
       if (replayMode && startedConversationId) {
-        const replayComplete = !hasMoreAtCursor && !nextCursor && !(Array.isArray(errors) && errors.length);
+        const decryptFailCount = Number(replayStats?.decryptFail) || 0;
+        const outboundVaultMissingCount = Number(replayStats?.outboundVaultMissing) || 0;
+        const replayComplete =
+          !hasMoreAtCursor &&
+          !nextCursor &&
+          !(Array.isArray(errors) && errors.length) &&
+          decryptFailCount === 0 &&
+          outboundVaultMissingCount === 0;
         historyReplayDoneByConvId[startedConversationId] = replayComplete;
       }
       const filteredErrors = Array.isArray(errors)

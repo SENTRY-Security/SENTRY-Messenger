@@ -110,6 +110,7 @@ async function verifyHMAC(req, env) {
 // ---- 帳號與 MK / TAGS 相關共用 ----
 let dataTablesReady = false;
 const OUTBOUND_VAULT_RETENTION = 200;
+const RECEIVER_CHECKPOINT_RETENTION = 128;
 
 function bytesToHex(u8) {
   let out = '';
@@ -143,6 +144,13 @@ function safeJSON(raw) {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === 'object') return raw;
   try { return JSON.parse(String(raw)); } catch { return null; }
+}
+
+function normalizeHashHex(value, { maxLen = 128, minLen = 8 } = {}) {
+  if (!value || typeof value !== 'string') return null;
+  const cleaned = value.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (!cleaned.length || cleaned.length < minLen) return null;
+  return cleaned.length > maxLen ? cleaned.slice(0, maxLen) : cleaned;
 }
 
 function normalizeConversationId(value) {
@@ -1052,6 +1060,7 @@ async function ensureDataTables(env) {
     'conversation_acl',
     'messages_secure',
     'outbound_message_keys',
+    'receiver_checkpoints',
     'attachments',
     'messages',
     'media_objects',
@@ -1083,7 +1092,7 @@ async function ensureDataTables(env) {
         ...missingTables.map((name) => `table:${name}`),
         ...missingColumns.map((name) => `column:${name}`)
       ];
-      const message = `D1 schema missing (${detail.join(', ') || 'none'}); run migrations (including 0020_outbound_key_vault.sql).`;
+      const message = `D1 schema missing (${detail.join(', ') || 'none'}); run migrations (including 0020_outbound_key_vault.sql, 0022_receiver_checkpoints.sql).`;
       console.error(message);
       throw new Error(message);
     }
@@ -2261,6 +2270,236 @@ async function handleContactSecretsRoutes(req, env) {
   return null;
 }
 
+let outboundVaultSchemaWarned = false;
+let receiverCheckpointSchemaWarned = false;
+const VAULT_WORKER_LOG_LIMIT = 5;
+let outboundVaultPutLogCount = 0;
+let outboundVaultGetLogCount = 0;
+let outboundVaultWorkerGetLogCount = 0;
+
+function validateWrappedCheckpointEnvelope(wrapped) {
+  if (!wrapped || typeof wrapped !== 'object') return false;
+  const required = ['aead', 'info', 'salt_b64', 'iv_b64', 'ct_b64'];
+  for (const key of required) {
+    if (typeof wrapped[key] !== 'string' || !wrapped[key].length) return false;
+  }
+  const version = Number(wrapped.v ?? wrapped.version ?? 0);
+  if (!Number.isFinite(version) || version <= 0) return false;
+  return true;
+}
+
+async function pruneReceiverCheckpoints(env, accountDigest, conversationId, peerDeviceId, limit = RECEIVER_CHECKPOINT_RETENTION) {
+  if (!accountDigest || !conversationId || !peerDeviceId) return;
+  const keep = Math.max(1, Math.min(Number(limit) || RECEIVER_CHECKPOINT_RETENTION, 500));
+  try {
+    await env.DB.prepare(
+      `DELETE FROM receiver_checkpoints
+        WHERE account_digest=?1 AND conversation_id=?2 AND peer_device_id=?3
+          AND id NOT IN (
+            SELECT id FROM receiver_checkpoints
+             WHERE account_digest=?1 AND conversation_id=?2 AND peer_device_id=?3
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?4
+          )`
+    ).bind(accountDigest, conversationId, peerDeviceId, keep).run();
+  } catch (err) {
+    console.warn('prune_receiver_checkpoints_failed', err?.message || err);
+  }
+}
+
+function logOutboundVault(kind, payload) {
+  if (kind === 'put' && outboundVaultPutLogCount >= VAULT_WORKER_LOG_LIMIT) return;
+  if (kind === 'get' && outboundVaultGetLogCount >= VAULT_WORKER_LOG_LIMIT) return;
+  if (kind === 'put') outboundVaultPutLogCount += 1;
+  if (kind === 'get') outboundVaultGetLogCount += 1;
+  try {
+    console.log(kind === 'put' ? 'vaultServerPut' : 'vaultServerGet', payload);
+  } catch {
+    /* ignore logging errors */
+  }
+}
+
+async function handleReceiverCheckpointRoutes(req, env) {
+  const url = new URL(req.url);
+
+  if (req.method === 'POST' && url.pathname === '/d1/receiver-checkpoints/put') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const peerDeviceId = normalizeDeviceId(body?.peerDeviceId || body?.peer_device_id);
+    const cursorMessageId = normalizeMessageId(body?.cursorMessageId || body?.cursor_message_id);
+    const cursorServerMessageId = normalizeMessageId(body?.cursorServerMessageId || body?.cursor_server_message_id);
+    const headerCounter = Number(body?.headerCounter ?? body?.header_counter);
+    const nr = Number(body?.Nr ?? body?.nr);
+    const ns = Number(body?.Ns ?? body?.ns);
+    const pn = Number(body?.PN ?? body?.pn);
+    const theirRatchetPubHash = normalizeHashHex(body?.theirRatchetPubHash || body?.their_ratchet_pub_hash, { minLen: 8, maxLen: 128 });
+    const ckRHash = normalizeHashHex(body?.ckRHash || body?.ckr_hash, { minLen: 8, maxLen: 128 });
+    const skippedHash = normalizeHashHex(body?.skippedHash || body?.skipped_hash, { minLen: 8, maxLen: 128 });
+    const skippedCount = Number.isFinite(Number(body?.skippedCount)) ? Math.max(0, Math.floor(Number(body.skippedCount))) : null;
+    const wrapInfoTagRaw = typeof body?.wrapInfoTag === 'string' ? body.wrapInfoTag : (typeof body?.wrap_info_tag === 'string' ? body.wrap_info_tag : null);
+    const wrapInfoTag = wrapInfoTagRaw ? wrapInfoTagRaw.slice(0, 120) : null;
+    const checkpointHash = normalizeHashHex(body?.checkpointHash || body?.checkpoint_hash, { minLen: 8, maxLen: 256 });
+    const wrapped = body?.wrapped_checkpoint || body?.wrappedCheckpoint || body?.wrapped || null;
+    const wrapContext = body?.wrap_context || body?.wrapContext || null;
+    const retentionLimit = Number.isFinite(Number(body?.retentionLimit))
+      ? Number(body.retentionLimit)
+      : RECEIVER_CHECKPOINT_RETENTION;
+
+    if (!accountDigest || !conversationId || !peerDeviceId || !wrapped || !Number.isFinite(nr)) {
+      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, peerDeviceId, nr, wrapped_checkpoint required' }, { status: 400 });
+    }
+    if (!validateWrappedCheckpointEnvelope(wrapped)) {
+      return json({ error: 'InvalidWrappedPayload', message: 'wrapped checkpoint envelope missing required fields' }, { status: 400 });
+    }
+
+    try {
+      await ensureDataTables(env);
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (message.includes('receiver_checkpoints')) {
+        if (!receiverCheckpointSchemaWarned) {
+          receiverCheckpointSchemaWarned = true;
+          console.error('receiver_checkpoint_schema_missing', message);
+        }
+        return json({ error: 'ReceiverCheckpointSchemaMissing', message: 'receiver_checkpoints table missing; apply migration' }, { status: 500 });
+      }
+      throw err;
+    }
+
+    const latest = await env.DB.prepare(
+      `SELECT nr, cursor_message_id, cursor_server_message_id, created_at
+         FROM receiver_checkpoints
+        WHERE account_digest=?1 AND conversation_id=?2 AND peer_device_id=?3
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`
+    ).bind(accountDigest, conversationId, peerDeviceId).first();
+
+    const latestCursorMessageId = latest?.cursor_message_id || null;
+    const latestCursorServerMessageId = latest?.cursor_server_message_id || null;
+    if (latestCursorMessageId && cursorMessageId && cursorMessageId === latestCursorMessageId) {
+      return json({ ok: true, duplicate: true });
+    }
+    if (latestCursorServerMessageId && cursorServerMessageId && cursorServerMessageId === latestCursorServerMessageId) {
+      return json({ ok: true, duplicate: true });
+    }
+
+    try {
+      await env.DB.prepare(
+        `INSERT INTO receiver_checkpoints (
+            account_digest, conversation_id, peer_device_id,
+            cursor_message_id, cursor_server_message_id, header_counter,
+            nr, ns, pn, their_ratchet_pub_hash, ckR_hash, skipped_hash, skipped_count,
+            wrap_info_tag, checkpoint_hash, wrapped_checkpoint_json, wrap_context_json, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, strftime('%s','now'))`
+      ).bind(
+        accountDigest,
+        conversationId,
+        peerDeviceId,
+        cursorMessageId,
+        cursorServerMessageId,
+        Number.isFinite(headerCounter) ? Math.floor(headerCounter) : null,
+        Math.floor(nr),
+        Number.isFinite(ns) ? Math.floor(ns) : null,
+        Number.isFinite(pn) ? Math.floor(pn) : null,
+        theirRatchetPubHash,
+        ckRHash,
+        skippedHash,
+        skippedCount,
+        wrapInfoTag || (typeof wrapped?.info === 'string' ? wrapped.info : null),
+        checkpointHash,
+        JSON.stringify(wrapped),
+        wrapContext ? JSON.stringify(wrapContext) : null
+      ).run();
+    } catch (err) {
+      console.warn('receiver_checkpoint_put_failed', err?.message || err);
+      return json({ error: 'InsertFailed', message: err?.message || 'unable to store receiver checkpoint' }, { status: 500 });
+    }
+
+    await pruneReceiverCheckpoints(env, accountDigest, conversationId, peerDeviceId, retentionLimit);
+    return json({ ok: true });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/d1/receiver-checkpoints/get-latest') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const peerDeviceId = normalizeDeviceId(body?.peerDeviceId || body?.peer_device_id);
+    if (!accountDigest || !conversationId || !peerDeviceId) {
+      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, peerDeviceId required' }, { status: 400 });
+    }
+
+    try {
+      await ensureDataTables(env);
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (message.includes('receiver_checkpoints')) {
+        if (!receiverCheckpointSchemaWarned) {
+          receiverCheckpointSchemaWarned = true;
+          console.error('receiver_checkpoint_schema_missing', message);
+        }
+        return json({ error: 'ReceiverCheckpointSchemaMissing', message: 'receiver_checkpoints table missing; apply migration' }, { status: 500 });
+      }
+      throw err;
+    }
+
+    const row = await env.DB.prepare(
+      `SELECT * FROM receiver_checkpoints
+         WHERE account_digest=?1 AND conversation_id=?2 AND peer_device_id=?3
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`
+    ).bind(accountDigest, conversationId, peerDeviceId).first();
+    if (!row) {
+      return json({ error: 'NotFound', message: 'receiver checkpoint not found' }, { status: 404 });
+    }
+    return json({
+      ok: true,
+      checkpoint: {
+        accountDigest: row.account_digest,
+        conversationId: row.conversation_id,
+        peerDeviceId: row.peer_device_id,
+        cursorMessageId: row.cursor_message_id,
+        cursorServerMessageId: row.cursor_server_message_id,
+        headerCounter: row.header_counter,
+        Nr: row.nr,
+        Ns: row.ns,
+        PN: row.pn,
+        theirRatchetPubHash: row.their_ratchet_pub_hash,
+        ckRHash: row.ckR_hash,
+        skippedHash: row.skipped_hash,
+        skippedCount: row.skipped_count,
+        wrapInfoTag: row.wrap_info_tag,
+        checkpointHash: row.checkpoint_hash,
+        wrapped_checkpoint: safeJSON(row.wrapped_checkpoint_json),
+        wrap_context: safeJSON(row.wrap_context_json),
+        createdAt: Number(row.created_at) || null
+      }
+    });
+  }
+
+  return null;
+}
+
+function logVaultWorkerGet(payload) {
+  if (outboundVaultWorkerGetLogCount >= VAULT_WORKER_LOG_LIMIT) return;
+  outboundVaultWorkerGetLogCount += 1;
+  try {
+    console.log('vaultWorkerGet', payload);
+  } catch {
+    /* ignore logging errors */
+  }
+}
+
 async function handleOutboundKeyVaultRoutes(req, env) {
   const url = new URL(req.url);
 
@@ -2273,7 +2512,8 @@ async function handleOutboundKeyVaultRoutes(req, env) {
     }
     const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
-    const messageId = normalizeMessageId(body?.messageId || body?.message_id || body?.serverMessageId || body?.server_message_id);
+    const serverMessageId = normalizeMessageId(body?.serverMessageId || body?.server_message_id);
+    const messageId = normalizeMessageId(serverMessageId || body?.messageId || body?.message_id);
     const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
     const targetDeviceId = normalizeDeviceId(body?.targetDeviceId || body?.target_device_id);
     const headerCounter = Number(body?.headerCounter ?? body?.header_counter ?? body?.counter);
@@ -2284,7 +2524,26 @@ async function handleOutboundKeyVaultRoutes(req, env) {
     if (!accountDigest || !conversationId || !messageId || !senderDeviceId || !Number.isFinite(headerCounter) || !wrapped) {
       return json({ error: 'BadRequest', message: 'accountDigest, conversationId, messageId, senderDeviceId, headerCounter, wrapped_mk required' }, { status: 400 });
     }
-    await ensureDataTables(env);
+    try {
+      await ensureDataTables(env);
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (message.includes('outbound_message_keys')) {
+        if (!outboundVaultSchemaWarned) {
+          outboundVaultSchemaWarned = true;
+          console.error('outbound_vault_schema_missing', message);
+        }
+        logOutboundVault('put', {
+          accountDigest: accountDigest ? accountDigest.slice(-4) : null,
+          conversationId: conversationId ? conversationId.slice(0, 8) : null,
+          messageId: messageId ? messageId.slice(0, 8) : null,
+          status: 500,
+          errorCode: 'OutboundVaultSchemaMissing'
+        });
+        return json({ error: 'OutboundVaultSchemaMissing', message: 'outbound_message_keys table missing; apply outbound key vault migration' }, { status: 500 });
+      }
+      throw err;
+    }
     try {
       await env.DB.prepare(
         `INSERT INTO outbound_message_keys (
@@ -2312,10 +2571,24 @@ async function handleOutboundKeyVaultRoutes(req, env) {
       ).run();
     } catch (err) {
       console.warn('outbound_vault_put_failed', err?.message || err);
+      logOutboundVault('put', {
+        accountDigest: accountDigest ? accountDigest.slice(-4) : null,
+        conversationId: conversationId ? conversationId.slice(0, 8) : null,
+        messageId: messageId ? messageId.slice(0, 8) : null,
+        status: 500,
+        errorCode: 'InsertFailed'
+      });
       return json({ error: 'InsertFailed', message: err?.message || 'unable to store outbound key' }, { status: 500 });
     }
 
     await pruneOutboundKeys(env, accountDigest, conversationId, retentionLimit);
+    logOutboundVault('put', {
+      accountDigest: accountDigest ? accountDigest.slice(-4) : null,
+      conversationId: conversationId ? conversationId.slice(0, 8) : null,
+      messageId: messageId ? messageId.slice(0, 8) : null,
+      status: 200,
+      errorCode: null
+    });
     return json({ ok: true });
   }
 
@@ -2328,32 +2601,70 @@ async function handleOutboundKeyVaultRoutes(req, env) {
     }
     const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
-    const messageId = normalizeMessageId(body?.messageId || body?.message_id || body?.serverMessageId || body?.server_message_id);
+    const serverMessageId = normalizeMessageId(body?.serverMessageId || body?.server_message_id);
+    const messageId = normalizeMessageId(serverMessageId || body?.messageId || body?.message_id);
     const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
     const targetDeviceId = normalizeDeviceId(body?.targetDeviceId || body?.target_device_id);
     const headerCounter = Number(body?.headerCounter ?? body?.header_counter ?? body?.counter);
     if (!accountDigest || !conversationId) {
       return json({ error: 'BadRequest', message: 'accountDigest and conversationId required' }, { status: 400 });
     }
-    await ensureDataTables(env);
+    try {
+      await ensureDataTables(env);
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (message.includes('outbound_message_keys')) {
+        if (!outboundVaultSchemaWarned) {
+          outboundVaultSchemaWarned = true;
+          console.error('outbound_vault_schema_missing', message);
+        }
+        logOutboundVault('get', {
+          accountDigest: accountDigest ? accountDigest.slice(-4) : null,
+          conversationId: conversationId ? conversationId.slice(0, 8) : null,
+          messageId: messageId ? messageId.slice(0, 8) : null,
+          status: 500,
+          errorCode: 'OutboundVaultSchemaMissing'
+        });
+        logVaultWorkerGet({
+          status: 500,
+          accountDigestSuffix4: accountDigest ? accountDigest.slice(-4) : null,
+          conversationIdPrefix8: conversationId ? conversationId.slice(0, 8) : null,
+          messageIdPrefix8: messageId ? messageId.slice(0, 8) : (serverMessageId ? serverMessageId.slice(0, 8) : null),
+          senderDeviceIdSuffix4: senderDeviceId ? senderDeviceId.slice(-4) : null,
+          queryMode: 'schema',
+          rowsFoundCount: 0,
+          errorCode: 'OutboundVaultSchemaMissing'
+        });
+        return json({ error: 'OutboundVaultSchemaMissing', message: 'outbound_message_keys table missing; apply outbound key vault migration' }, { status: 500 });
+      }
+      throw err;
+    }
     let row = null;
-    if (messageId) {
+    const messageIdsToTry = [];
+    if (serverMessageId) messageIdsToTry.push(serverMessageId);
+    if (messageId && messageId !== serverMessageId) messageIdsToTry.push(messageId);
+    let queryMode = 'byMessageId';
+    for (const mid of messageIdsToTry) {
+      if (!mid) continue;
       if (senderDeviceId) {
         row = await env.DB.prepare(
           `SELECT * FROM outbound_message_keys
              WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3 AND sender_device_id=?4
              ORDER BY created_at DESC
              LIMIT 1`
-        ).bind(accountDigest, conversationId, messageId, senderDeviceId).first();
+        ).bind(accountDigest, conversationId, mid, senderDeviceId).first();
       } else {
         row = await env.DB.prepare(
           `SELECT * FROM outbound_message_keys
              WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3
              ORDER BY created_at DESC
              LIMIT 1`
-        ).bind(accountDigest, conversationId, messageId).first();
+        ).bind(accountDigest, conversationId, mid).first();
       }
-    } else {
+      if (row) break;
+    }
+    if (!row) {
+      queryMode = 'byHeaderCounter';
       const params = [accountDigest, conversationId];
       let where = '';
       if (Number.isFinite(headerCounter)) {
@@ -2375,7 +2686,43 @@ async function handleOutboundKeyVaultRoutes(req, env) {
            LIMIT 1`
       ).bind(...params).first();
     }
-    if (!row) return json({ ok: true, entry: null });
+    if (!row) {
+      logOutboundVault('get', {
+        accountDigest: accountDigest ? accountDigest.slice(-4) : null,
+        conversationId: conversationId ? conversationId.slice(0, 8) : null,
+        messageId: messageId ? messageId.slice(0, 8) : null,
+        status: 200,
+        errorCode: 'NotFound'
+      });
+      logVaultWorkerGet({
+        status: 200,
+        accountDigestSuffix4: accountDigest ? accountDigest.slice(-4) : null,
+        conversationIdPrefix8: conversationId ? conversationId.slice(0, 8) : null,
+        messageIdPrefix8: messageId ? messageId.slice(0, 8) : (serverMessageId ? serverMessageId.slice(0, 8) : null),
+        senderDeviceIdSuffix4: senderDeviceId ? senderDeviceId.slice(-4) : null,
+        queryMode,
+        rowsFoundCount: 0,
+        errorCode: 'NotFound'
+      });
+      return json({ ok: true, entry: null });
+    }
+    logVaultWorkerGet({
+      status: 200,
+      accountDigestSuffix4: accountDigest ? accountDigest.slice(-4) : null,
+      conversationIdPrefix8: conversationId ? conversationId.slice(0, 8) : null,
+      messageIdPrefix8: messageId ? messageId.slice(0, 8) : (serverMessageId ? serverMessageId.slice(0, 8) : null),
+      senderDeviceIdSuffix4: senderDeviceId ? senderDeviceId.slice(-4) : null,
+      queryMode,
+      rowsFoundCount: 1,
+      errorCode: null
+    });
+    logOutboundVault('get', {
+      accountDigest: accountDigest ? accountDigest.slice(-4) : null,
+      conversationId: conversationId ? conversationId.slice(0, 8) : null,
+      messageId: messageId ? messageId.slice(0, 8) : null,
+      status: 200,
+      errorCode: null
+    });
     return json({
       ok: true,
       entry: {
@@ -3090,6 +3437,83 @@ async function handleDeviceRoutes(req, env) {
 async function handleAccountsRoutes(req, env) {
   const url = new URL(req.url);
 
+  if (req.method === 'GET' && url.pathname === '/d1/account/evidence') {
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest')
+      || url.searchParams.get('account_digest')
+      || url.searchParams.get('digest')
+    );
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    try {
+      await ensureDataTables(env);
+    } catch (err) {
+      return json({ error: 'EnsureTablesFailed', message: err?.message || 'ensureDataTables failed' }, { status: 500 });
+    }
+    const evidence = {
+      backupExists: false,
+      vaultExists: false,
+      messagesExists: false,
+      backupDeviceId: null,
+      backupDeviceLabel: null,
+      backupUpdatedAt: null,
+      registryDeviceId: null,
+      registryDeviceLabel: null
+    };
+    try {
+      const row = await env.DB.prepare(
+        `SELECT device_id, device_label, updated_at
+           FROM contact_secret_backups
+          WHERE account_digest=?1
+          ORDER BY updated_at DESC, id DESC
+          LIMIT 1`
+      ).bind(accountDigest).first();
+      if (row) {
+        evidence.backupExists = true;
+        evidence.backupDeviceId = row.device_id || null;
+        evidence.backupDeviceLabel = row.device_label || null;
+        evidence.backupUpdatedAt = row.updated_at != null ? Number(row.updated_at) : null;
+      }
+    } catch (err) {
+      return json({ error: 'BackupEvidenceFailed', message: err?.message || 'backup evidence query failed' }, { status: 500 });
+    }
+    try {
+      const row = await env.DB.prepare(
+        `SELECT 1 FROM outbound_message_keys WHERE account_digest=?1 LIMIT 1`
+      ).bind(accountDigest).first();
+      evidence.vaultExists = !!row;
+    } catch (err) {
+      return json({ error: 'VaultEvidenceFailed', message: err?.message || 'vault evidence query failed' }, { status: 500 });
+    }
+    try {
+      const row = await env.DB.prepare(
+        `SELECT 1 FROM messages_secure
+           WHERE sender_account_digest=?1 OR receiver_account_digest=?1
+           LIMIT 1`
+      ).bind(accountDigest).first();
+      evidence.messagesExists = !!row;
+    } catch (err) {
+      return json({ error: 'MessagesEvidenceFailed', message: err?.message || 'messages evidence query failed' }, { status: 500 });
+    }
+    try {
+      const row = await env.DB.prepare(
+        `SELECT device_id, label
+           FROM devices
+          WHERE account_digest=?1 AND status='active'
+          ORDER BY (last_seen_at IS NOT NULL) DESC, last_seen_at DESC, created_at DESC
+          LIMIT 1`
+      ).bind(accountDigest).first();
+      if (row) {
+        evidence.registryDeviceId = row.device_id || null;
+        evidence.registryDeviceLabel = row.label || null;
+      }
+    } catch (err) {
+      return json({ error: 'DeviceEvidenceFailed', message: err?.message || 'device evidence query failed' }, { status: 500 });
+    }
+    return json({ ok: true, accountDigest, evidence });
+  }
+
   if (req.method === 'POST' && url.pathname === '/d1/accounts/verify') {
     let body;
     try {
@@ -3465,6 +3889,9 @@ export default {
 
     const contactSecretResult = await handleContactSecretsRoutes(req, env);
     if (contactSecretResult) return contactSecretResult;
+
+    const receiverCheckpointResult = await handleReceiverCheckpointRoutes(req, env);
+    if (receiverCheckpointResult) return receiverCheckpointResult;
 
     const outboundVaultResult = await handleOutboundKeyVaultRoutes(req, env);
     if (outboundVaultResult) return outboundVaultResult;

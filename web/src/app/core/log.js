@@ -23,8 +23,16 @@ const REPLAY_DEBUG_KEYS = new Set([
   'replayFetchResult',
   'replaySummary',
   'replaySkipSample',
+  'vaultGetHttpAttempt',
+  'vaultGetHttpResult',
+  'vaultGetFailed',
+  'vaultGetDecision',
+  'vaultGetReturnShape',
   'avatarWriteTrace',
-  'avatar:env-written'
+  'avatar:env-written',
+  'mkHardblockTrace',
+  'mkUnwrapHardblockTrace',
+  'deviceIdRestoreTrace'
 ]);
 const REPLAY_ACTION_VALUES = new Set();
 const FETCH_NOISE_KEYS = new Set(['fetchStart', 'fetchDone', 'fetchJSONDone', 'fetchFail']);

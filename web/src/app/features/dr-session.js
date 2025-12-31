@@ -1542,26 +1542,57 @@ async function sendDrPlaintext(params = {}) {
     });
     if (messageKeyB64) {
       const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
+      const serverMessageId = msg.id || messageId;
       await emitVaultRecordAttempt({
         conversationId: finalConversationId,
         msgType,
         messageId,
-        serverMessageId: msg.id || messageId,
+        serverMessageId,
         headerCounter: vaultCounter,
         senderDeviceId,
         targetDeviceId: receiverDeviceId,
         selfDeviceId
       }, messageKeyB64);
-      void OutboundKeyVault.recordOutboundKey({
+      const vaultResult = await OutboundKeyVault.recordOutboundKey({
         conversationId: finalConversationId,
-        serverMessageId: msg.id || messageId,
+        serverMessageId,
         messageId,
         senderDeviceId,
         targetDeviceId: receiverDeviceId,
         headerCounter: vaultCounter,
         msgType,
         messageKeyB64
-      }).catch(() => {});
+      });
+      if (!vaultResult?.ok) {
+        try {
+          log({
+            vaultRecordFailed: {
+              conversationId: finalConversationId,
+              serverMessageId,
+              messageId,
+              headerCounter: vaultCounter,
+              senderDeviceId,
+              targetDeviceId: receiverDeviceId,
+              msgType,
+              reason: vaultResult?.reason || 'unknown'
+            }
+          });
+        } catch {}
+        throw new Error('vault record failed');
+      }
+      try {
+        log({
+          sendSuccessTrace: {
+            conversationId: finalConversationId,
+            serverMessageId,
+            messageId,
+            msgType,
+            headerCounter: vaultCounter,
+            senderDeviceId,
+            targetDeviceId: receiverDeviceId
+          }
+        });
+      } catch {}
     }
     return { msg, convId: finalConversationId, secure: true };
   } catch (err) {
@@ -2062,26 +2093,57 @@ export async function sendDrMedia(params = {}) {
   persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
   if (messageKeyB64) {
     const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
+    const serverMessageId = finalMessageId;
     await emitVaultRecordAttempt({
       conversationId,
       msgType,
       messageId: finalMessageId,
-      serverMessageId: finalMessageId,
+      serverMessageId,
       headerCounter: vaultCounter,
       senderDeviceId,
       targetDeviceId: receiverDeviceId,
       selfDeviceId: senderDeviceId
     }, messageKeyB64);
-    void OutboundKeyVault.recordOutboundKey({
+    const vaultResult = await OutboundKeyVault.recordOutboundKey({
       conversationId,
-      serverMessageId: finalMessageId,
+      serverMessageId,
       messageId: finalMessageId,
       senderDeviceId,
       targetDeviceId: receiverDeviceId,
       headerCounter: vaultCounter,
       msgType,
       messageKeyB64
-    }).catch(() => {});
+    });
+    if (!vaultResult?.ok) {
+      try {
+        log({
+          vaultRecordFailed: {
+            conversationId,
+            serverMessageId,
+            messageId: finalMessageId,
+            headerCounter: vaultCounter,
+            senderDeviceId,
+            targetDeviceId: receiverDeviceId,
+            msgType,
+            reason: vaultResult?.reason || 'unknown'
+          }
+        });
+      } catch {}
+      throw new Error('vault record failed');
+    }
+    try {
+      log({
+        sendSuccessTrace: {
+          conversationId,
+          serverMessageId,
+          messageId: finalMessageId,
+          msgType,
+          headerCounter: vaultCounter,
+          senderDeviceId,
+          targetDeviceId: receiverDeviceId
+        }
+      });
+    } catch {}
   }
 
   return {

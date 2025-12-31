@@ -14,10 +14,47 @@ const RETENTION_PER_CONVERSATION = 200;
 const CACHE_MAX = 400;
 const VAULT_RECORD_LOG_LIMIT = 3;
 const VAULT_HIT_LOG_LIMIT = 3;
+const VAULT_EVENT_LOG_LIMIT = 5;
+const VAULT_HTTP_LOG_LIMIT = 5;
+const VAULT_DECISION_LOG_LIMIT = 5;
 
 const cache = new Map(); // key -> messageKeyB64
 let vaultRecordLogCount = 0;
 let vaultHitLogCount = 0;
+let vaultPutAttemptLogCount = 0;
+let vaultPutResultLogCount = 0;
+let vaultGetAttemptLogCount = 0;
+let vaultGetResultLogCount = 0;
+let vaultGetHttpAttemptLogCount = 0;
+let vaultGetHttpResultLogCount = 0;
+let vaultGetDecisionLogCount = 0;
+let mkUseTraceLogged = false;
+
+function idSummary(id) {
+  if (!id || typeof id !== 'string') return null;
+  if (id.length <= 12) return id;
+  return `${id.slice(0, 8)}…${id.slice(-4)}`;
+}
+
+function emitCapped(kind, payload) {
+  const limits = {
+    vaultPutAttempt: () => vaultPutAttemptLogCount++,
+    vaultPutResult: () => vaultPutResultLogCount++,
+    vaultGetAttempt: () => vaultGetAttemptLogCount++,
+    vaultGetResult: () => vaultGetResultLogCount++,
+    vaultGetHttpAttempt: () => vaultGetHttpAttemptLogCount++,
+    vaultGetHttpResult: () => vaultGetHttpResultLogCount++
+  };
+  const counter = limits[kind];
+  if (!counter) return;
+  const limit = kind.startsWith('vaultGetHttp') ? VAULT_HTTP_LOG_LIMIT : VAULT_EVENT_LOG_LIMIT;
+  if (counter() >= limit) return;
+  try {
+    log({ [kind]: payload });
+  } catch {
+    /* ignore logging errors */
+  }
+}
 
 function normalizeCounter(n) {
   const num = Number(n);
@@ -54,6 +91,14 @@ function base64ToU8(mkB64) {
   }
 }
 
+function shouldLogReplayVault(params, senderDeviceId) {
+  const ctx = params?.replayContext || {};
+  if (ctx?.computedIsHistoryReplay !== true) return false;
+  if (ctx?.directionComputed !== 'outgoing') return false;
+  if (!senderDeviceId || !ctx?.selfDeviceId) return false;
+  return ctx.selfDeviceId === senderDeviceId;
+}
+
 async function summarizeMk(mkB64) {
   const summary = { mkLen: mkB64 ? mkB64.length : 0, mkHash: null };
   if (!mkB64 || typeof crypto === 'undefined' || !crypto.subtle || typeof crypto.subtle.digest !== 'function') {
@@ -69,6 +114,34 @@ async function summarizeMk(mkB64) {
     summary.mkLen = u8.length;
   }
   return summary;
+}
+
+async function emitMkUseTrace(sourceTag, mk) {
+  if (mkUseTraceLogged) return;
+  mkUseTraceLogged = true;
+  try {
+    let summary;
+    if (mk instanceof Uint8Array && typeof crypto !== 'undefined' && crypto.subtle?.digest) {
+      summary = { mkLen: mk.length, mkHash: null };
+      try {
+        const digest = await crypto.subtle.digest('SHA-256', mk);
+        summary.mkHash = u8ToHex(new Uint8Array(digest)).slice(0, 32);
+      } catch {
+        summary.mkHash = null;
+      }
+    } else {
+      summary = await summarizeMk(mk);
+    }
+    log({
+      mkUseTrace: {
+        sourceTag,
+        mkLen: summary.mkLen,
+        mkHash12: summary.mkHash ? summary.mkHash.slice(0, 12) : null,
+        accountDigestSuffix4: (getAccountDigest() || '').toUpperCase().slice(-4) || null,
+        deviceIdSuffix4: (ensureDeviceId() || '').slice(-4) || null
+      }
+    });
+  } catch {}
 }
 
 function emitVaultRecord(stage, fields, mkSummary = null) {
@@ -130,6 +203,22 @@ function contextsMatch(requested, stored) {
   return true;
 }
 
+function summarizeContextDiff(requested, stored) {
+  if (!stored || typeof stored !== 'object') return ['missing'];
+  const mismatches = [];
+  if (stored.conversationId && requested.conversationId && stored.conversationId !== requested.conversationId) mismatches.push('conversationId');
+  const reqMessageId = requested.serverMessageId || requested.messageId || null;
+  const storedMessageId = stored.serverMessageId || stored.messageId || null;
+  if (reqMessageId && storedMessageId && storedMessageId !== reqMessageId) mismatches.push('messageId');
+  if (!reqMessageId && storedMessageId && requested.headerCounter == null) mismatches.push('headerCounterMissing');
+  if (stored.senderDeviceId && requested.senderDeviceId && stored.senderDeviceId !== requested.senderDeviceId) mismatches.push('senderDeviceId');
+  if (requested.targetDeviceId && stored.targetDeviceId && stored.targetDeviceId !== requested.targetDeviceId) mismatches.push('targetDeviceId');
+  const storedHeader = normalizeCounter(stored.headerCounter);
+  const reqHeader = normalizeCounter(requested.headerCounter);
+  if (!reqMessageId && reqHeader !== null && storedHeader !== null && reqHeader !== storedHeader) mismatches.push('headerCounter');
+  return mismatches.length ? mismatches : [];
+}
+
 function buildContext(params, senderDeviceId) {
   const accountDigest = (getAccountDigest() || '').toUpperCase() || null;
   const headerCounter = normalizeCounter(params.headerCounter ?? params.counterN);
@@ -172,7 +261,7 @@ export class OutboundKeyVault {
    */
   static async recordOutboundKey(params) {
     const mkRaw = getMkRaw();
-    if (!mkRaw) return;
+    if (!mkRaw) return { ok: false, reason: 'mkMissing' };
     const conversationId = params?.conversationId || null;
     const serverMessageId = params?.serverMessageId || null;
     const messageId = serverMessageId || params?.messageId || null;
@@ -181,7 +270,19 @@ export class OutboundKeyVault {
     const senderDeviceId = params?.senderDeviceId || ensureDeviceId();
     const selfDeviceId = params?.selfDeviceId || senderDeviceId || null;
     const targetDeviceId = params?.targetDeviceId || null;
-    if (!conversationId || !messageId || !messageKeyB64 || !senderDeviceId) return;
+    if (!conversationId || !messageId || !messageKeyB64 || !senderDeviceId) {
+      return { ok: false, reason: 'missingParams' };
+    }
+    emitCapped('vaultPutAttempt', {
+      accountDigest: idSummary(getAccountDigest() || null),
+      conversationId: idSummary(conversationId),
+      messageId: idSummary(messageId),
+      serverMessageId: idSummary(serverMessageId),
+      senderDeviceId: idSummary(senderDeviceId),
+      targetDeviceId: idSummary(targetDeviceId),
+      headerCounter,
+      msgType: params?.msgType || null
+    });
     const context = buildContext({ ...params, conversationId, messageId, serverMessageId, headerCounter }, senderDeviceId);
     const baseLogFields = {
       conversationId,
@@ -203,12 +304,13 @@ export class OutboundKeyVault {
     try {
       wrapped = await wrapWithMK_JSON({ mk_b64: messageKeyB64, context }, mkRaw, WRAP_INFO_TAG);
     } catch {
-      return;
+      return { ok: false, reason: 'wrapFailed' };
     }
     try {
       await apiPutOutboundKey({
         conversationId,
         messageId,
+        serverMessageId: serverMessageId || null,
         senderDeviceId,
         targetDeviceId,
         headerCounter,
@@ -224,8 +326,12 @@ export class OutboundKeyVault {
         wrapAead: wrapped?.aead || null,
         wrapInfoTag: wrapped?.info || baseLogFields.wrapInfoTag
       }, mkSummary);
-    } catch {
-      /* swallow store errors to avoid impacting send path */
+      const result = { ok: true };
+      emitCapped('vaultPutResult', { ok: true, status: 200, error: null });
+      return result;
+    } catch (err) {
+      emitCapped('vaultPutResult', { ok: false, status: err?.status || null, error: err?.message || 'storeFailed' });
+      return { ok: false, reason: 'storeFailed' };
     }
   }
 
@@ -255,26 +361,194 @@ export class OutboundKeyVault {
     if (!conversationId || (!messageId && headerCounter === null) || !senderDeviceId) return null;
     const cacheK = cacheKey({ conversationId, serverMessageId, messageId, headerCounter });
     const cached = getCache(cacheK);
-    if (cached) return cached;
+    if (cached) {
+      const allowCacheLog = shouldLogReplayVault(params, senderDeviceId);
+      if (allowCacheLog && vaultGetDecisionLogCount < VAULT_DECISION_LOG_LIMIT) {
+        vaultGetDecisionLogCount += 1;
+        try {
+          log({
+            vaultGetDecision: {
+              decision: 'CACHE_HIT',
+              conversationId,
+              messageId,
+              serverMessageId,
+              senderDeviceId,
+              targetDeviceId,
+              selfDeviceId,
+              headerCounter,
+              http: null,
+              hasEntry: null,
+              hasWrappedMK: null,
+              hasWrapContext: null,
+              contextDiff: []
+            }
+          });
+        } catch {}
+      }
+      return cached;
+    }
+    const allowHttpLog = shouldLogReplayVault(params, senderDeviceId);
+    const accountDigest = (getAccountDigest() || '').toUpperCase() || null;
+    const decisionBase = {
+      conversationId,
+      messageId,
+      serverMessageId,
+      senderDeviceId,
+      targetDeviceId,
+      selfDeviceId,
+      headerCounter
+    };
+    const emitDecision = (decision, fields = {}) => {
+      if (!allowHttpLog || vaultGetDecisionLogCount >= VAULT_DECISION_LOG_LIMIT) return;
+      vaultGetDecisionLogCount += 1;
+      try {
+        log({
+          vaultGetDecision: {
+            decision,
+            ...decisionBase,
+            ...fields
+          }
+        });
+      } catch {}
+    };
+    if (allowHttpLog) {
+      emitCapped('vaultGetHttpAttempt', {
+        conversationId: idSummary(conversationId),
+        messageId: idSummary(messageId),
+        serverMessageId: idSummary(serverMessageId),
+        senderDeviceId: idSummary(senderDeviceId),
+        targetDeviceId: idSummary(targetDeviceId),
+        accountDigestSuffix4: accountDigest ? accountDigest.slice(-4) : null,
+        headerCounter
+      });
+    }
+    emitCapped('vaultGetAttempt', {
+      accountDigest: idSummary(getAccountDigest() || null),
+      conversationId: idSummary(conversationId),
+      messageId: idSummary(messageId),
+      serverMessageId: idSummary(serverMessageId),
+      senderDeviceId: idSummary(senderDeviceId),
+      targetDeviceId: idSummary(targetDeviceId),
+      headerCounter,
+      msgType: params?.msgType || null
+    });
+    let res = null;
     let data = null;
+    let parseOk = false;
+    let status = null;
+    let httpSnapshot = null;
     try {
-      const res = await apiGetOutboundKey({
+      res = await apiGetOutboundKey({
         conversationId,
+        serverMessageId,
         messageId,
         senderDeviceId,
         targetDeviceId,
         headerCounter
       });
-      data = res?.data || res || null;
-    } catch {
-      return null;
+      status = res?.r?.status ?? null;
+      data = res?.data || null;
+      parseOk = !!data && typeof data === 'object';
+      emitCapped('vaultGetResult', {
+        ok: !!data?.ok,
+        status: data?.status || null,
+        found: !!data?.entry,
+        error: data?.error || null
+      });
+    } catch (err) {
+      emitCapped('vaultGetResult', {
+        ok: false,
+        status: err?.status || null,
+        found: false,
+        error: err?.message || 'requestFailed'
+      });
+      if (allowHttpLog) {
+        emitCapped('vaultGetHttpResult', {
+          status: err?.status || null,
+          ok: false,
+          errorCode: err?.payload?.error || null,
+          message: err?.message || 'requestFailed',
+          foundBoolean: false,
+          parseOk: false
+        });
+      }
+      return { error: 'VaultGetFailed', status: err?.status || null, message: err?.message || 'requestFailed' };
+    }
+    if (allowHttpLog) {
+      emitCapped('vaultGetHttpResult', {
+        status: data?.status ?? status ?? null,
+        ok: !!data?.ok,
+        errorCode: data?.error || null,
+        message: data?.message || null,
+        foundBoolean: !!data?.entry,
+        parseOk
+      });
+      httpSnapshot = {
+        status: data?.status ?? status ?? null,
+        ok: !!data?.ok,
+        foundBoolean: !!data?.entry,
+        parseOk
+      };
+    }
+    if (!parseOk) {
+      return { error: 'VaultGetFailed', status, message: 'invalid json' };
+    }
+    if (!data?.ok || data?.error) {
+      return {
+        error: 'VaultGetFailed',
+        status: data?.status ?? status ?? null,
+        message: data?.message || data?.error || 'vault get failed',
+        body: data
+      };
     }
     const entry = data?.entry || null;
-    if (!entry?.wrapped_mk) return null;
+    if (!entry?.wrapped_mk) {
+      emitDecision('NOT_FOUND_OR_EMPTY', {
+        http: httpSnapshot,
+        hasEntry: !!entry,
+        hasWrappedMK: !!entry?.wrapped_mk,
+        hasWrapContext: !!entry?.wrap_context,
+        contextDiff: []
+      });
+      return null;
+    }
+    emitMkUseTrace('outbound-vault-unwrap', mkRaw);
     let unwrapped = null;
     try {
       unwrapped = await unwrapMessageKey(entry.wrapped_mk, mkRaw);
-    } catch {
+    } catch (err) {
+      emitDecision('UNWRAP_THROW', {
+        http: httpSnapshot,
+        hasEntry: true,
+        hasWrappedMK: !!entry?.wrapped_mk,
+        hasWrapContext: !!entry?.wrap_context,
+        contextDiff: []
+      });
+      try {
+        const summary = await summarizeMk(entry?.wrapped_mk?.mk_b64 || entry?.wrapped_mk?.mkB64 || null);
+        log({
+          vaultUnwrapErrorTrace: {
+            messageIdPrefix8: (messageId || serverMessageId || '').slice(0, 8) || null,
+            convIdPrefix8: (conversationId || '').slice(0, 8) || null,
+            errorName: err?.name || null,
+            errorMessage: err?.message || null,
+            mkHash12: summary.mkHash ? summary.mkHash.slice(0, 12) : null,
+            wrapInfoTag: entry?.wrapped_mk?.info || null,
+            wrapAead: entry?.wrapped_mk?.aead || null,
+            wrapV: entry?.wrapped_mk?.v ?? null
+          }
+        });
+      } catch {}
+      return null;
+    }
+    if (!unwrapped) {
+      emitDecision('UNWRAP_NULL', {
+        http: httpSnapshot,
+        hasEntry: true,
+        hasWrappedMK: !!entry?.wrapped_mk,
+        hasWrapContext: !!entry?.wrap_context,
+        contextDiff: []
+      });
       return null;
     }
     const requestCtx = {
@@ -285,7 +559,17 @@ export class OutboundKeyVault {
       targetDeviceId,
       headerCounter
     };
-    if (!unwrapped || !contextsMatch(requestCtx, unwrapped.context || entry.wrap_context || null)) return null;
+    const storedCtx = unwrapped.context || entry.wrap_context || null;
+    if (!contextsMatch(requestCtx, storedCtx)) {
+      emitDecision('CONTEXT_MISMATCH', {
+        http: httpSnapshot,
+        hasEntry: true,
+        hasWrappedMK: !!entry?.wrapped_mk,
+        hasWrapContext: !!entry?.wrap_context,
+        contextDiff: summarizeContextDiff(requestCtx, storedCtx)
+      });
+      return null;
+    }
     const mkSummary = DEBUG.replay && vaultHitLogCount < VAULT_HIT_LOG_LIMIT ? await summarizeMk(unwrapped.mkB64) : null;
     emitVaultHit({
       conversationId,

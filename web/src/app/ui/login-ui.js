@@ -34,6 +34,34 @@ import {
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
 import { ensureDefaultAvatarFromSeed } from '../features/profile.js';
 
+function summarizeMkForLog(mkRaw) {
+  const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
+  if (!(mkRaw instanceof Uint8Array) || typeof crypto === 'undefined' || !crypto.subtle?.digest) return Promise.resolve(summary);
+  return crypto.subtle.digest('SHA-256', mkRaw).then((digest) => {
+    const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    summary.mkHash12 = hex.slice(0, 12);
+    return summary;
+  }).catch(() => summary);
+}
+
+let mkSetTraceLogged = false;
+async function emitMkSetTrace(sourceTag, mkRaw) {
+  if (mkSetTraceLogged) return;
+  mkSetTraceLogged = true;
+  try {
+    const { mkLen, mkHash12 } = await summarizeMkForLog(mkRaw);
+    log({
+      mkSetTrace: {
+        sourceTag,
+        mkLen,
+        mkHash12,
+        accountDigestSuffix4: (getAccountDigest() || '').slice(-4) || null,
+        deviceIdSuffix4: (ensureDeviceId?.() || '').slice(-4) || null
+      }
+    });
+  } catch {}
+}
+
 // ---- UI elements ----
 const $ = (sel) => document.querySelector(sel);
 const out = $('#out');
@@ -852,7 +880,13 @@ if (pwdConfirmEl) {
   });
 }
 const btnResetMK = document.getElementById('btnResetMK');
-if (btnResetMK) btnResetMK.onclick = () => { try { setMkRaw(null); log('Local MK cleared.'); } catch {} };
+if (btnResetMK) btnResetMK.onclick = () => {
+  try {
+    setMkRaw(null);
+    emitMkSetTrace('login-ui:debug-reset', null);
+    log('Local MK cleared.');
+  } catch {}
+};
 
 async function onUnlock() {
   if (loginInProgress) return;

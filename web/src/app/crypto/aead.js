@@ -18,7 +18,8 @@ export const ALLOWED_ENVELOPE_INFO_TAGS = new Set([
   'snapshot/v1',
   'contact-secrets/backup/v1',
   'devkeys/v1',
-  'contact/v1'
+  'contact/v1',
+  'outbound-mk/v1'
 ]);
 
 function requireNonEmptyString(value, key) {

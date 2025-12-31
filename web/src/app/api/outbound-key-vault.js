@@ -16,6 +16,7 @@ export async function putOutboundKey(params = {}) {
     overrides: {
       conversationId: params.conversationId,
       messageId: params.messageId,
+      serverMessageId: params.serverMessageId || null,
       senderDeviceId: params.senderDeviceId || ensureDeviceId(),
       targetDeviceId: params.targetDeviceId || null,
       headerCounter: params.headerCounter,
@@ -34,6 +35,7 @@ export async function getOutboundKey(params = {}) {
   const payload = buildAccountPayload({
     overrides: {
       conversationId: params.conversationId,
+      serverMessageId: params.serverMessageId || null,
       messageId: params.messageId || null,
       senderDeviceId: params.senderDeviceId || ensureDeviceId(),
       targetDeviceId: params.targetDeviceId || null,

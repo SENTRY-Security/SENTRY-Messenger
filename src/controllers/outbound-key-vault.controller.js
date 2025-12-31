@@ -4,9 +4,31 @@ import { AccountDigestRegex } from '../utils/account-verify.js';
 import { ensureCallWorkerConfig, callWorkerRequest } from '../services/call-worker.js';
 import { logger } from '../utils/logger.js';
 
+const VAULT_SERVER_LOG_LIMIT = 5;
+let vaultServerPutLogCount = 0;
+let vaultServerGetLogCount = 0;
+
+function logVaultServer(kind, payload) {
+  if (kind === 'put' && vaultServerPutLogCount >= VAULT_SERVER_LOG_LIMIT) return;
+  if (kind === 'get' && vaultServerGetLogCount >= VAULT_SERVER_LOG_LIMIT) return;
+  if (kind === 'put') vaultServerPutLogCount += 1;
+  if (kind === 'get') vaultServerGetLogCount += 1;
+  const event = kind === 'put' ? 'vaultServerPut' : 'vaultServerGet';
+  const normalized = {
+    status: payload?.status ?? null,
+    accountDigestSuffix4: payload?.accountDigestSuffix4 ?? payload?.accountDigest ?? null,
+    conversationIdPrefix8: payload?.conversationIdPrefix8 ?? payload?.conversationId ?? null,
+    messageIdPrefix8: payload?.messageIdPrefix8 ?? payload?.messageId ?? null,
+    senderDeviceIdSuffix4: payload?.senderDeviceIdSuffix4 ?? null,
+    errorCode: payload?.errorCode ?? null
+  };
+  logger.info({ event, ...normalized });
+}
+
 const PutSchema = z.object({
   conversationId: z.string().min(8),
   messageId: z.string().min(8),
+  serverMessageId: z.string().min(8).optional(),
   senderDeviceId: z.string().min(1),
   targetDeviceId: z.string().min(1).optional(),
   headerCounter: z.number().int(),
@@ -25,6 +47,7 @@ const PutSchema = z.object({
 const GetSchema = z.object({
   conversationId: z.string().min(8),
   messageId: z.string().min(1).optional(),
+  serverMessageId: z.string().min(1).optional(),
   senderDeviceId: z.string().min(1).optional(),
   targetDeviceId: z.string().min(1).optional(),
   headerCounter: z.number().int().optional(),
@@ -76,6 +99,7 @@ export const putOutboundKey = async (req, res) => {
     accountDigest: auth.accountDigest,
     conversationId: input.conversationId,
     messageId: input.messageId,
+    serverMessageId: input.serverMessageId || null,
     senderDeviceId: input.senderDeviceId,
     targetDeviceId: input.targetDeviceId || null,
     headerCounter: input.headerCounter,
@@ -90,6 +114,13 @@ export const putOutboundKey = async (req, res) => {
       method: 'POST',
       body: payload
     });
+    logVaultServer('put', {
+      accountDigest: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      conversationId: input.conversationId.slice(0, 8),
+      messageId: input.messageId.slice(0, 8),
+      status: 200,
+      errorCode: null
+    });
     return res.json(data || { ok: true });
   } catch (err) {
     logger.error({
@@ -101,6 +132,13 @@ export const putOutboundKey = async (req, res) => {
     const payload = err?.payload && typeof err.payload === 'object'
       ? err.payload
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
+    logVaultServer('put', {
+      accountDigest: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      conversationId: input.conversationId.slice(0, 8),
+      messageId: input.messageId.slice(0, 8),
+      status,
+      errorCode: payload?.error || null
+    });
     return res.status(status).json(payload);
   }
 };
@@ -129,6 +167,7 @@ export const getOutboundKey = async (req, res) => {
     accountDigest: auth.accountDigest,
     conversationId: input.conversationId,
     messageId: input.messageId || null,
+    serverMessageId: input.serverMessageId || null,
     senderDeviceId: input.senderDeviceId || null,
     targetDeviceId: input.targetDeviceId || null,
     headerCounter: input.headerCounter ?? null
@@ -138,6 +177,14 @@ export const getOutboundKey = async (req, res) => {
     const data = await callWorkerRequest('/d1/outbound-key-vault/get', {
       method: 'POST',
       body: payload
+    });
+    logVaultServer('get', {
+      accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      conversationIdPrefix8: input.conversationId.slice(0, 8),
+      messageIdPrefix8: input.messageId ? input.messageId.slice(0, 8) : null,
+      senderDeviceIdSuffix4: input.senderDeviceId ? input.senderDeviceId.slice(-4) : null,
+      status: 200,
+      errorCode: null
     });
     return res.json(data || { ok: true, entry: null });
   } catch (err) {
@@ -150,6 +197,14 @@ export const getOutboundKey = async (req, res) => {
     const payload = err?.payload && typeof err.payload === 'object'
       ? err.payload
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
+    logVaultServer('get', {
+      accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      conversationIdPrefix8: input.conversationId.slice(0, 8),
+      messageIdPrefix8: input.messageId ? input.messageId.slice(0, 8) : null,
+      senderDeviceIdSuffix4: input.senderDeviceId ? input.senderDeviceId.slice(-4) : null,
+      status,
+      errorCode: payload?.error || null
+    });
     return res.status(status).json(payload);
   }
 };

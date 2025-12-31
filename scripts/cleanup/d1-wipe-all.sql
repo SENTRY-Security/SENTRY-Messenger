@@ -2,12 +2,14 @@
 DELETE FROM attachments;
 DELETE FROM messages_secure;
 DELETE FROM messages;
+DELETE FROM outbound_message_keys;
 DELETE FROM conversation_acl;
 DELETE FROM conversations;
 DELETE FROM contact_secret_backups;
 DELETE FROM opaque_records;
 -- Optional legacy snapshot tables (ignore if absent)
 -- DELETE FROM contact_snapshots;
+DELETE FROM friend_invite_accepts;
 DELETE FROM friend_invites;
 -- DELETE FROM friend_invites_v2;
 -- DELETE FROM contact_messages;

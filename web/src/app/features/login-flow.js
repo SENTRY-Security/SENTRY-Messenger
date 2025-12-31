@@ -9,6 +9,8 @@
 import { sdmExchange, mkStore } from '../api/auth.js';
 import { devkeysFetch, devkeysStore } from '../api/devkeys.js';
 import { prekeysPublish } from '../api/prekeys.js';
+import { fetchAccountEvidence } from '../api/account.js';
+import { log } from '../core/log.js';
 import {
   getSession, setSession,
   getHasMK, setHasMK,
@@ -76,6 +78,99 @@ function peekWrappedDevHandoff() {
     try { console.warn('[login-flow] wrapped_dev parse failed', err?.message || err); } catch {}
     return null;
   }
+}
+
+function summarizeMkForLog(mkRaw) {
+  const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
+  if (!(mkRaw instanceof Uint8Array) || typeof crypto === 'undefined' || !crypto.subtle?.digest) return Promise.resolve(summary);
+  return crypto.subtle.digest('SHA-256', mkRaw).then((digest) => {
+    const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    summary.mkHash12 = hex.slice(0, 12);
+    return summary;
+  }).catch(() => summary);
+}
+
+let mkSetTraceLogged = false;
+async function emitMkSetTrace(sourceTag, mkRaw) {
+  if (mkSetTraceLogged) return;
+  mkSetTraceLogged = true;
+  try {
+    const { mkLen, mkHash12 } = await summarizeMkForLog(mkRaw);
+    log({
+      mkSetTrace: {
+        sourceTag,
+        mkLen,
+        mkHash12,
+        accountDigestSuffix4: (getAccountDigest() || '').slice(-4) || null,
+        deviceIdSuffix4: (getDeviceId() || '').slice(-4) || null
+      }
+    });
+  } catch {}
+}
+
+function normalizeEvidencePayload(raw = {}) {
+  const ev = raw?.evidence || {};
+  const backupDeviceId = typeof ev.backupDeviceId === 'string' && ev.backupDeviceId.trim()
+    ? ev.backupDeviceId.trim()
+    : null;
+  const backupDeviceLabel = typeof ev.backupDeviceLabel === 'string' && ev.backupDeviceLabel.trim()
+    ? ev.backupDeviceLabel
+    : null;
+  return {
+    backupExists: !!ev.backupExists,
+    vaultExists: !!ev.vaultExists,
+    messagesExists: !!ev.messagesExists,
+    backupDeviceId,
+    backupDeviceLabel,
+    backupUpdatedAt: Number(ev.backupUpdatedAt) || null,
+    registryDeviceId: typeof ev.registryDeviceId === 'string' && ev.registryDeviceId.trim() ? ev.registryDeviceId.trim() : null,
+    registryDeviceLabel: typeof ev.registryDeviceLabel === 'string' && ev.registryDeviceLabel.trim() ? ev.registryDeviceLabel : null
+  };
+}
+
+async function fetchServerEvidenceStrict({ accountToken, accountDigest }) {
+  const { r, data } = await fetchAccountEvidence({ accountToken, accountDigest });
+  if (!r?.ok) {
+    throw new Error(`MK_EVIDENCE_FETCH_FAILED_HTTP_${r?.status ?? 'unknown'}`);
+  }
+  if (!data || data.error) {
+    throw new Error(typeof data?.message === 'string' ? data.message : 'MK_EVIDENCE_FETCH_FAILED');
+  }
+  const evidence = normalizeEvidencePayload(data);
+  const hasEvidence = !!(evidence.backupExists || evidence.vaultExists || evidence.messagesExists);
+  return { evidence, hasEvidence, raw: data };
+}
+
+async function maybeRestoreDeviceIdFromEvidence(evidence) {
+  if (getDeviceId()) return null;
+  const preferred = (typeof evidence?.registryDeviceId === 'string' && evidence.registryDeviceId.trim())
+    ? evidence.registryDeviceId.trim()
+    : null;
+  const candidate = preferred
+    || (typeof evidence?.backupDeviceId === 'string' && evidence.backupDeviceId.trim() ? evidence.backupDeviceId.trim() : null);
+  if (!candidate) return null;
+  setDeviceId(candidate);
+  try {
+    const mkSummary = await summarizeMkForLog(getMkRaw());
+    log({
+      deviceIdRestoreTrace: {
+        sourceTag: 'login:server-evidence',
+        serverHasMK: getHasMK(),
+        mkHash12: mkSummary.mkHash12,
+        accountDigestSuffix4: (getAccountDigest() || '').slice(-4) || null,
+        deviceIdSuffix4: candidate.slice(-4) || null,
+        deviceIdSource: preferred ? 'registry' : 'backup',
+        registryDeviceIdSuffix4: preferred ? preferred.slice(-4) : null,
+        backupDeviceIdSuffix4: evidence?.backupDeviceId ? evidence.backupDeviceId.slice(-4) : null,
+        evidence: {
+          backup: !!evidence?.backupExists,
+          vault: !!evidence?.vaultExists,
+          messages: !!evidence?.messagesExists
+        }
+      }
+    });
+  } catch {}
+  return candidate;
 }
 
 /**
@@ -174,6 +269,31 @@ export async function unlockAndInit({ password, onProgress } = {}) {
   let wrappedDevEnvelope = null;
   report('prekeys-sync', 'skip');
 
+  const evidenceResult = await runStep('mk-evidence', async () => {
+    try {
+      return await fetchServerEvidenceStrict({ accountToken, accountDigest });
+    } catch (err) {
+      const mkSummary = await summarizeMkForLog(getMkRaw());
+      log({
+        mkHardblockTrace: {
+          sourceTag: 'login:evidence-fetch',
+          reason: 'evidence_fetch_failed',
+          serverHasMK: getHasMK(),
+          mkHash12: mkSummary.mkHash12,
+          accountDigestSuffix4: (accountDigest || '').slice(-4) || null,
+          deviceIdSuffix4: (getDeviceId() || '').slice(-4) || null,
+          evidence: null,
+          errorMessage: asMsg(err, 'evidence_fetch_failed')
+        }
+      });
+      throw err;
+    }
+  });
+  const evidence = evidenceResult?.evidence || {};
+  const hasServerEvidence = !!evidenceResult?.hasEvidence;
+  const evidenceDeviceId = evidence?.registryDeviceId || evidence?.backupDeviceId || null;
+  await maybeRestoreDeviceIdFromEvidence(evidence);
+
   if (getHasMK()) {
     report('wrap-mk', 'skip');
     report('mk-store', 'skip');
@@ -182,16 +302,58 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       const mk = await unwrapMKWithPasswordArgon2id(pwd, getWrappedMK());
       if (!mk) throw new Error('wrong password or envelope mismatch');
       setMkRaw(mk);
+      emitMkSetTrace('login:unwrap-existing', mk);
       unlocked = true;
     } catch (e) {
-      throw new Error('Unlock failed: ' + asMsg(e, 'wrong password or envelope mismatch'));
+      const mkSummary = await summarizeMkForLog(getMkRaw());
+      log({
+        mkUnwrapHardblockTrace: {
+          sourceTag: 'login:unwrap-existing',
+          reason: 'unwrap_failed',
+          serverHasMK: true,
+          mkHash12: mkSummary.mkHash12,
+          accountDigestSuffix4: (accountDigest || '').slice(-4) || null,
+          deviceIdSuffix4: (getDeviceId() || evidenceDeviceId || '').slice(-4) || null,
+          evidence: {
+            backup: !!evidence?.backupExists,
+            vault: !!evidence?.vaultExists,
+            messages: !!evidence?.messagesExists,
+            registryDeviceIdSuffix4: evidence?.registryDeviceId ? evidence.registryDeviceId.slice(-4) : null,
+            backupDeviceIdSuffix4: evidence?.backupDeviceId ? evidence.backupDeviceId.slice(-4) : null
+          },
+          errorMessage: asMsg(e, 'unwrap_failed')
+        }
+      });
+      throw new Error('MK_UNWRAP_FAILED_HARDBLOCK');
     }
   } else {
+    if (hasServerEvidence) {
+      const mkSummary = await summarizeMkForLog(getMkRaw());
+      log({
+        mkHardblockTrace: {
+          sourceTag: 'login:hasMK=false',
+          reason: 'server_evidence_present',
+          serverHasMK: false,
+          mkHash12: mkSummary.mkHash12,
+          accountDigestSuffix4: (accountDigest || '').slice(-4) || null,
+          deviceIdSuffix4: (getDeviceId() || evidenceDeviceId || '').slice(-4) || null,
+          evidence: {
+            backup: !!evidence?.backupExists,
+            vault: !!evidence?.vaultExists,
+            messages: !!evidence?.messagesExists,
+            registryDeviceIdSuffix4: evidence?.registryDeviceId ? evidence.registryDeviceId.slice(-4) : null,
+            backupDeviceIdSuffix4: evidence?.backupDeviceId ? evidence.backupDeviceId.slice(-4) : null
+          }
+        }
+      });
+      throw new Error('MK_MISSING_HARDBLOCK');
+    }
     // first-time init MK → wrap → /mk/store
     try {
       report('wrap-mk', 'start');
       const mk = crypto.getRandomValues(new Uint8Array(32));
       setMkRaw(mk);
+      emitMkSetTrace('login:init-new', mk);
       const wrapped_mk = await wrapMKWithPasswordArgon2id(pwd, mk);
       report('wrap-mk', 'success');
       report('mk-store', 'start');

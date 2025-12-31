@@ -32,6 +32,7 @@ import {
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
 import { OutboundKeyVault } from './outbound-key-vault.js';
+import { ReceiverCheckpoints } from './receiver-checkpoints.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 as naclB64u8, b64 as naclB64 } from '../crypto/nacl.js';
@@ -63,6 +64,8 @@ import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const FETCH_LOG_ENABLED = DEBUG.fetchNoise === true;
 const QUEUE_LOG_ENABLED = DEBUG.queueNoise === true;
+const VAULT_RETURN_LOG_LIMIT = 5;
+let vaultReturnLogCount = 0;
 
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
@@ -81,7 +84,9 @@ const defaultDeps = {
   ensureDrReceiverState: managerEnsureDrReceiverState,
   clearDrState: storeClearDrState,
   sendReadReceipt: featureSendDrReadReceipt,
-  sendDeliveryReceipt: featureSendDrDeliveryReceipt
+  sendDeliveryReceipt: featureSendDrDeliveryReceipt,
+  recordReceiverCheckpoint: ReceiverCheckpoints.recordCheckpoint,
+  loadLatestReceiverCheckpoint: ReceiverCheckpoints.loadLatestCheckpoint
 };
 
 const deps = { ...defaultDeps };
@@ -979,7 +984,13 @@ export async function listSecureAndDecrypt(params = {}) {
     errors,
     deadLetters: [],
     receiptUpdates: [],
-    serverItemCount: 0
+    serverItemCount: 0,
+    replayStats: {
+      decryptFail: 0,
+      outboundVaultMissing: 0,
+      directionFilterSkips: 0,
+      duplicateCounterSkips: 0
+    }
   });
   const replayCounters = {
     fetchedItems: 0,
@@ -991,6 +1002,7 @@ export async function listSecureAndDecrypt(params = {}) {
     skipped_securePending: 0,
     decryptOk: 0,
     decryptFail: 0,
+    outboundVaultMissing: 0,
     timelineAppendCount: 0
   };
   const uniqueAppendedIds = new Set();
@@ -1236,6 +1248,7 @@ export async function listSecureAndDecrypt(params = {}) {
   const stateByDevice = new Map();
   const secureStatusByDevice = new Map();
   const ensuredConversations = new Set();
+  const replayCheckpointByDevice = new Map();
   const replayGateTraceSampleLimit = 3;
   let replayGateTraceSampleCount = 0;
   const directionFilterSampleLimit = 3;
@@ -1279,18 +1292,42 @@ export async function listSecureAndDecrypt(params = {}) {
     peerDeviceId: deviceId
   });
 
+  const loadReplayHolderForDevice = async (deviceId) => {
+    if (!deviceId) throw new Error('peerDeviceId required for replay holder');
+    if (replayCheckpointByDevice.has(deviceId)) return replayCheckpointByDevice.get(deviceId);
+    const checkpointResult = await deps.loadLatestReceiverCheckpoint({
+      conversationId,
+      peerAccountDigest: peerAccountDigestNormalized || peerKey,
+      peerDeviceId: deviceId
+    });
+    if (!checkpointResult || checkpointResult.error || !checkpointResult.holder) {
+      const err = new Error('不可回放：缺少 receiver checkpoint');
+      err.code = checkpointResult?.error || 'CheckpointMissing';
+      throw err;
+    }
+    replayCheckpointByDevice.set(deviceId, checkpointResult.holder);
+    return checkpointResult.holder;
+  };
+
   const getStateForDevice = (deviceId) => {
     if (!deviceId) throw new Error('peerDeviceId required for DR state');
-    if (shouldTrackState) {
-      const existing = stateByDevice.get(deviceId);
-      if (existing) return existing;
-      const created = deps.drState(getPeerRef(deviceId));
-      stateByDevice.set(deviceId, created);
-      return created;
+    const cached = stateByDevice.get(deviceId);
+    if (cached) return cached;
+
+    if (!shouldTrackState) {
+      const replayHolder = replayCheckpointByDevice.get(deviceId);
+      if (!replayHolder) {
+        throw new Error('不可回放：缺少 receiver checkpoint');
+      }
+      stateByDevice.set(deviceId, replayHolder);
+      return replayHolder;
     }
+
     const base = deps.drState(getPeerRef(deviceId));
-    const cloned = deps.cloneDrStateHolder?.(base) || base;
-    return cloned;
+    const holder = shouldTrackState ? base : (deps.cloneDrStateHolder?.(base) || base);
+
+    stateByDevice.set(deviceId, holder);
+    return holder;
   };
 
   const ensureReceiverStateReady = (deviceId) => {
@@ -1325,6 +1362,12 @@ export async function listSecureAndDecrypt(params = {}) {
 
   // 預先確保初始 peerDevice 的會話就緒與 state 存在。
   if (peerDevice) {
+    if (!shouldTrackState) {
+      const initialReplayHolder = await loadReplayHolderForDevice(peerDevice);
+      if (initialReplayHolder) {
+        stateByDevice.set(peerDevice, initialReplayHolder);
+      }
+    }
     const initialStatus = await ensureConversationReadyForDevice(peerDevice);
     if (initialStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
       replayCounters.skipped_securePending += 1;
@@ -1341,6 +1384,22 @@ export async function listSecureAndDecrypt(params = {}) {
       };
     }
     ensureReceiverStateReady(peerDevice);
+  }
+
+  if (!shouldTrackState) {
+    const replayDevices = new Set();
+    if (peerDevice) replayDevices.add(peerDevice);
+    for (const it of sortedItems) {
+      const senderDev = it?.senderDeviceId || it?.sender_device_id || null;
+      const targetDev = it?.targetDeviceId || it?.target_device_id || null;
+      if (senderDev) replayDevices.add(senderDev);
+      if (targetDev) replayDevices.add(targetDev);
+    }
+    for (const devId of replayDevices) {
+      if (stateByDevice.has(devId)) continue;
+      const holder = await loadReplayHolderForDevice(devId);
+      stateByDevice.set(devId, holder);
+    }
   }
 
   if (drDebug) {
@@ -1659,8 +1718,8 @@ export async function listSecureAndDecrypt(params = {}) {
           return;
         }
       }
-      const secureStatus = await ensureConversationReadyForDevice(peerDeviceForMessage);
-      if (secureStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
+      const secureStatus = computedIsHistoryReplay ? { status: null } : await ensureConversationReadyForDevice(peerDeviceForMessage);
+      if (!computedIsHistoryReplay && secureStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
         logDeliverySkip('securePending', { peerDeviceId: peerDeviceForMessage, conversationId: packetConversationId || conversationId });
         return;
       }
@@ -1724,13 +1783,15 @@ export async function listSecureAndDecrypt(params = {}) {
         if (hasSendChain || sendCounter > 0) {
           throw new Error('DR state bound to different conversation; please resync contact');
         }
-        deps.clearDrState(
-          { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
-          { __drDebugTag: 'web/src/app/features/messages.js:1119:handleInboxJob:conv-mismatch-clear' }
-        );
-        if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
-          await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId: convId });
-          state = getStateForDevice(peerDeviceForMessage);
+        if (!computedIsHistoryReplay && shouldTrackState) {
+          deps.clearDrState(
+            { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
+            { __drDebugTag: 'web/src/app/features/messages.js:1119:handleInboxJob:conv-mismatch-clear' }
+          );
+          if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
+            await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId: convId });
+            state = getStateForDevice(peerDeviceForMessage);
+          }
         }
       }
       // guest/未知角色若拿到 responder state，強制清除並要求 initiator 重建（無 fallback）。
@@ -1742,18 +1803,20 @@ export async function listSecureAndDecrypt(params = {}) {
         (direction === 'incoming' || direction === 'unknown') &&
         (!hasRatchetCore || !hasReceiveChain)
       ) {
-        deps.clearDrState(
-          { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
-          { __drDebugTag: 'web/src/app/features/messages.js:1131:handleInboxJob:responder-inbound-clear' }
-        );
-        if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
-          await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId: convId });
-          state = getStateForDevice(peerDeviceForMessage);
+        if (!computedIsHistoryReplay && shouldTrackState) {
+          deps.clearDrState(
+            { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
+            { __drDebugTag: 'web/src/app/features/messages.js:1131:handleInboxJob:responder-inbound-clear' }
+          );
+          if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
+            await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId: convId });
+            state = getStateForDevice(peerDeviceForMessage);
+          }
         }
       }
       // 若仍缺可用 state，直接 fail（無任何 fallback）。
       if (!hasUsableDrState(state)) {
-        if (deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
+        if (shouldTrackState && !computedIsHistoryReplay && deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
           await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId: convId });
           state = getStateForDevice(peerDeviceForMessage);
         }
@@ -1792,7 +1855,8 @@ export async function listSecureAndDecrypt(params = {}) {
       const stateNs = Number.isFinite(Number(state?.Ns)) ? Number(state.Ns) : null;
       const sameReceiveChain = state?.theirRatchetPub && typeof header?.ek_pub_b64 === 'string'
         && naclB64(state.theirRatchetPub) === header.ek_pub_b64;
-      if (sameReceiveChain && Number.isFinite(headerCounter) && currentNr >= headerCounter) {
+      const enableDuplicateGuard = shouldTrackState; // disable duplicate drop in replay-only mode
+      if (enableDuplicateGuard && sameReceiveChain && Number.isFinite(headerCounter) && currentNr >= headerCounter) {
         logDeliverySkip('duplicateCounter', {
           counter: headerCounter,
           transportCounter,
@@ -1875,15 +1939,62 @@ export async function listSecureAndDecrypt(params = {}) {
       let text = null;
       let usedVault = false;
       if (vaultEligible) {
-        const vaultKeyB64 = await OutboundKeyVault.getOutboundKey({
+        const vaultKeyResult = await OutboundKeyVault.getOutboundKey({
           conversationId: convId || conversationId || null,
           messageId,
           serverMessageId,
           senderDeviceId,
           targetDeviceId,
           headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter,
-          msgType: msgTypeForDecrypt
+          msgType: msgTypeForDecrypt,
+          replayContext: {
+            computedIsHistoryReplay: isHistoryReplay,
+            directionComputed: direction || null,
+            selfDeviceId
+          }
         });
+        if (DEBUG.replay && vaultReturnLogCount < VAULT_RETURN_LOG_LIMIT) {
+          vaultReturnLogCount += 1;
+          const resultType = vaultKeyResult === null ? 'null' : typeof vaultKeyResult;
+          const shape = {
+            vaultGetReturnShape: {
+              conversationId: convId || conversationId || null,
+              messageId: messageId || null,
+              serverMessageId: serverMessageId || null,
+              headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter,
+              vaultResultType: resultType,
+              computedIsHistoryReplay: isHistoryReplay,
+              directionComputed: direction || 'unknown'
+            }
+          };
+          if (vaultKeyResult && typeof vaultKeyResult === 'object') {
+            shape.vaultGetReturnShape.vaultResultKeys = Object.keys(vaultKeyResult);
+            if (vaultKeyResult.error) shape.vaultGetReturnShape.error = vaultKeyResult.error;
+          }
+          try { log(shape); } catch {}
+        }
+        if (vaultKeyResult && typeof vaultKeyResult === 'object' && vaultKeyResult.error) {
+          if (DEBUG.replay) {
+            try {
+              log({
+                vaultGetFailed: {
+                  conversationId: convId || conversationId || null,
+                  serverMessageId: serverMessageId || null,
+                  messageId: messageId || null,
+                  senderDeviceId: senderDeviceId || null,
+                  targetDeviceId: targetDeviceId || null,
+                  selfDeviceId: selfDeviceId || null,
+                  headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter,
+                  status: vaultKeyResult.status ?? null,
+                  error: vaultKeyResult.error || null,
+                  message: vaultKeyResult.message || null
+                }
+              });
+            } catch {}
+          }
+          throw new Error('不可回放：vault 取回失敗');
+        }
+        const vaultKeyB64 = typeof vaultKeyResult === 'string' ? vaultKeyResult : null;
         if (vaultKeyB64) {
           messageKeyB64 = vaultKeyB64;
           usedVault = true;
@@ -1928,14 +2039,18 @@ export async function listSecureAndDecrypt(params = {}) {
               }
             });
           } catch {}
+          replayCounters.outboundVaultMissing += 1;
           throw new Error('不可回放：缺少發送端密鑰');
         }
       }
       const preDecryptState = summarizeDrState(state);
       if (!text) {
+        const packetKey = shouldTrackState
+          ? messageId
+          : `${messageId || serverMessageId || 'unknown'}::${conversationId || convId || 'unknown'}::${peerDeviceForMessage || 'unknown-device'}`;
         text = await deps.drDecryptText(state, pkt, {
           onMessageKey: (mk) => { messageKeyB64 = mk; },
-          packetKey: messageId,
+          packetKey,
           msgType: msgTypeForDecrypt
         });
         const postState = summarizeDrState(state);
@@ -1963,6 +2078,22 @@ export async function listSecureAndDecrypt(params = {}) {
         targetDeviceId
       });
       replayCounters.decryptOk += 1;
+
+      if (direction === 'incoming' && peerDeviceForMessage) {
+        const checkpointResult = await deps.recordReceiverCheckpoint({
+          conversationId: convId || conversationId || null,
+          peerAccountDigest: peerAccountDigestNormalized || peerKey || null,
+          peerDeviceId: peerDeviceForMessage,
+          state,
+          cursorMessageId: messageId || null,
+          serverMessageId,
+          headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter,
+          messageTs
+        });
+        if (!checkpointResult?.ok) {
+          throw new Error(checkpointResult?.message || '不可回放：receiver checkpoint 寫入失敗');
+        }
+      }
 
       if (trackState) {
         deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
@@ -2384,16 +2515,18 @@ export async function listSecureAndDecrypt(params = {}) {
         control: controlLike,
         error: msg
       });
-      const failKey = `${conversationId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`;
-      const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
-      drFailureCounter.set(failKey, nextFail);
-      if (nextFail >= 3) {
-        deps.clearDrState(
-          { peerAccountDigest: peerKey, peerDeviceId },
-          { __drDebugTag: 'web/src/app/features/messages.js:1381:handleInboxJob:decrypt-fail-reset' }
-        );
-        drFailureCounter.delete(failKey);
-        throw new Error('DR 解密連續失敗已重置會話，請重新同步好友或重新建立邀請');
+      if (shouldTrackState && !computedIsHistoryReplay) {
+        const failKey = `${conversationId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`;
+        const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
+        drFailureCounter.set(failKey, nextFail);
+        if (nextFail >= 3) {
+          deps.clearDrState(
+            { peerAccountDigest: peerKey, peerDeviceId },
+            { __drDebugTag: 'web/src/app/features/messages.js:1381:handleInboxJob:decrypt-fail-reset' }
+          );
+          drFailureCounter.delete(failKey);
+          throw new Error('DR 解密連續失敗已重置會話，請重新同步好友或重新建立邀請');
+        }
       }
       if (err && typeof err === 'object') {
         err.__controlMessage = controlLike;
@@ -2525,7 +2658,7 @@ export async function listSecureAndDecrypt(params = {}) {
             error: err?.message || String(err)
           });
         }
-        if (preSnapshot && shouldTrackState) {
+        if (preSnapshot && shouldTrackState && !computedIsHistoryReplay) {
           deps.clearDrState(
             { peerAccountDigest: peerKey, peerDeviceId },
             { __drDebugTag: 'web/src/app/features/messages.js:1442:processInboxForConversation:dead-letter-reset' }
@@ -2552,7 +2685,13 @@ export async function listSecureAndDecrypt(params = {}) {
     hasMoreAtCursor,
     errors: errs,
     deadLetters,
-    receiptUpdates: Array.from(receiptUpdates)
+    receiptUpdates: Array.from(receiptUpdates),
+    replayStats: {
+      decryptFail: replayCounters.decryptFail,
+      outboundVaultMissing: replayCounters.outboundVaultMissing,
+      directionFilterSkips: replayCounters.skipped_directionFilter,
+      duplicateCounterSkips: replayCounters.skipped_duplicateCounter
+    }
   };
   } finally {
     releaseSecureFetchLock(conversationId, lockToken);

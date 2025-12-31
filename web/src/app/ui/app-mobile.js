@@ -106,6 +106,34 @@ import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '..
 import { showVersionModal } from './version-info.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
 
+function summarizeMkForLog(mkRaw) {
+  const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
+  if (!(mkRaw instanceof Uint8Array) || typeof crypto === 'undefined' || !crypto.subtle?.digest) return Promise.resolve(summary);
+  return crypto.subtle.digest('SHA-256', mkRaw).then((digest) => {
+    const hex = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    summary.mkHash12 = hex.slice(0, 12);
+    return summary;
+  }).catch(() => summary);
+}
+
+let mkSetTraceLogged = false;
+async function emitMkSetTrace(sourceTag, mkRaw) {
+  if (mkSetTraceLogged) return;
+  mkSetTraceLogged = true;
+  try {
+    const { mkLen, mkHash12 } = await summarizeMkForLog(mkRaw);
+    log({
+      mkSetTrace: {
+        sourceTag,
+        mkLen,
+        mkHash12,
+        accountDigestSuffix4: (getAccountDigest() || '').slice(-4) || null,
+        deviceIdSuffix4: (getDeviceId() || '').slice(-4) || null
+      }
+    });
+  } catch {}
+}
+
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 const wsDebugEnabled = DEBUG.ws === true;
 const MEDIA_PERMISSION_KEY = 'media-permission-v1';
@@ -1374,7 +1402,11 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     const identityKey = accountDigest || null;
     if (identityKey) setAccountDigest(identityKey);
     if (accountToken) setAccountToken(accountToken);
-    if (mkb64 && !getMkRaw()) setMkRaw(b64u8(mkb64));
+    if (mkb64 && !getMkRaw()) {
+      const mk = b64u8(mkb64);
+      setMkRaw(mk);
+      emitMkSetTrace('app-mobile:handoff', mk);
+    }
     if (wrappedMkRaw) {
       try {
         const parsedWrapped = JSON.parse(wrappedMkRaw);
@@ -3338,6 +3370,7 @@ async function changeAccountPassword(currentPassword, newPassword) {
   log({ changePasswordUpdateStatus: r.status });
   setWrappedMK(newWrapped);
   setMkRaw(mk);
+  emitMkSetTrace('app-mobile:change-password', mk);
   log({ passwordChangedAt: Date.now() });
   return true;
 }
