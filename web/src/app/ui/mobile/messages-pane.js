@@ -66,11 +66,42 @@ const logReplayCallsite = (name, payload = {}) => {
     log({ replayCallsite: { name, ...payload } });
   } catch {}
 };
+const logReplayGateTrace = (where, payload = {}) => {
+  if (!DEBUG.replay) return;
+  const allowReplayRaw = payload?.allowReplay;
+  const mutateStateRaw = payload?.mutateState;
+  const computedIsHistoryReplay = allowReplayRaw === true && mutateStateRaw === false;
+  try {
+    log({
+      replayGateTrace: {
+        where,
+        conversationId: payload.conversationId ?? null,
+        messageId: payload.messageId ?? null,
+        serverMessageId: payload.serverMessageId ?? null,
+        allowReplayRaw,
+        mutateStateRaw,
+        computedIsHistoryReplay,
+        replay: payload.replay ?? null,
+        silent: payload.silent ?? null
+      }
+    });
+  } catch {}
+};
 const logReplayFetchResult = (payload = {}) => {
   try {
     log({ replayFetchResult: payload });
   } catch {}
 };
+const CONVERSATION_RESET_TRACE_LIMIT = 5;
+let conversationResetTraceCount = 0;
+
+function logConversationResetTrace(payload = {}) {
+  if (conversationResetTraceCount >= CONVERSATION_RESET_TRACE_LIMIT) return;
+  conversationResetTraceCount += 1;
+  try {
+    log({ conversationResetTrace: payload });
+  } catch {}
+}
 
 function normalizeMsgTypeValue(value) {
   if (!value || typeof value !== 'string') return null;
@@ -1049,6 +1080,15 @@ export function initMessagesPane({
             cursorTs: null,
             cursorId: null
           });
+          logReplayGateTrace('messages-pane:listSecureAndDecrypt:refreshConversationPreviews', {
+            conversationId: thread.conversationId,
+            allowReplay: false,
+            mutateState: false,
+            replay: false,
+            silent: true,
+            messageId: null,
+            serverMessageId: null
+          });
           const previewResult = await listSecureAndDecrypt({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
@@ -1707,14 +1747,32 @@ export function initMessagesPane({
     if (state.activePeerDigest) {
       const exists = contacts.some((c) => contactPeerKey(c) === state.activePeerDigest);
       if (!exists) {
-        resetMessageStateWithPlaceholders();
-        state = getMessageState();
-        if (!isDesktopLayout()) state.viewMode = 'list';
-        if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
-        setMessagesStatus('');
-        clearMessagesView();
-        updateComposerAvailability();
-        applyMessagesLayout();
+        const { digest: activeDigest, deviceId: activeDeviceId } = splitPeerKey(state.activePeerDigest || null);
+        const hasActiveConversation = !!(state.conversationId && state.conversationToken);
+        const isViewingMessages = isDesktopLayout() || state.viewMode === 'detail';
+        const activationInFlight = state.loading || pendingSecureReadyPeer === state.activePeerDigest;
+        logConversationResetTrace({
+          reason: 'ACTIVE_PEER_REMOVED',
+          conversationId: state?.conversationId || null,
+          peerKey: state?.activePeerDigest || null,
+          peerDigest: activeDigest || state?.activePeerDigest || null,
+          peerDeviceId: activeDeviceId || state?.activePeerDeviceId || null,
+          hasToken: !!state?.conversationToken,
+          hasConversationId: !!state?.conversationId,
+          'entry.isReady': null,
+          sourceTag: 'messages-pane:renderConversationList',
+          deferred: hasActiveConversation && (isViewingMessages || activationInFlight)
+        });
+        if (!hasActiveConversation || (!isViewingMessages && !activationInFlight)) {
+          resetMessageStateWithPlaceholders();
+          state = getMessageState();
+          if (!isDesktopLayout()) state.viewMode = 'list';
+          if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
+          setMessagesStatus('');
+          clearMessagesView();
+          updateComposerAvailability();
+          applyMessagesLayout();
+        }
       }
     }
     syncConversationThreadsFromContacts();
@@ -2727,12 +2785,15 @@ export function initMessagesPane({
     const timelineSizeBefore = Array.isArray(beforeTimeline) ? beforeTimeline.length : null;
     const uiLatestKey = latestKeyFromTimeline(beforeTimeline);
     try {
+      const historyReplayDone = historyReplayDoneByConvId[startedConversationId] === true;
+      const replayMode = replay || !historyReplayDone;
       const cursor = append ? state.nextCursor : undefined;
       const cursorTs = cursor?.ts ?? cursor ?? undefined;
       const cursorId = cursor?.id ?? undefined;
       const fetchLimit = 50;
-      const forceReplay = !append && replay;
-      const mutateState = mutateLive && !forceReplay && !append;
+      const mutateState = mutateLive && !replayMode && !append;
+      const requestPriority = replayMode ? 'replay' : 'live';
+      const forceReplay = replayMode && !append;
       let prefetch = null;
       let serverLatestKey = null;
       if (debugRelogin) {
@@ -2754,7 +2815,7 @@ export function initMessagesPane({
             conversationId: state.conversationId || null,
             conversationIdPresent: !!state.conversationId,
             allowReplay: true,
-            replay: !!replay,
+            replay: !!replayMode,
             append: !!append,
             silent: !!silent,
             mutateState,
@@ -2802,13 +2863,22 @@ export function initMessagesPane({
       const nearBottom = isNearMessagesBottom();
       logReplayCallsite('loadActiveConversationMessages', {
         conversationId: state.conversationId || null,
-        replay: !!replay,
+        replay: !!replayMode,
         allowReplay: true,
         mutateState,
         silent: !!silent,
         limit: fetchLimit,
         cursorTs: cursorTs ?? null,
         cursorId: cursorId ?? null
+      });
+      logReplayGateTrace('messages-pane:listSecureAndDecrypt:loadActiveConversationMessages', {
+        conversationId: state.conversationId || null,
+        allowReplay: true,
+        mutateState,
+        replay: !!replayMode,
+        silent: !!silent,
+        messageId: null,
+        serverMessageId: null
       });
       const listResult = await listSecureAndDecrypt({
         conversationId: state.conversationId,
@@ -2820,7 +2890,7 @@ export function initMessagesPane({
         cursorId,
         mutateState,
         allowReplay: true,
-        priority: forceReplay ? 'replay' : 'live',
+        priority: requestPriority,
         silent: !!silent,
         onMessageDecrypted: handleMessageDecrypted,
         prefetchedList: prefetch
@@ -2850,8 +2920,9 @@ export function initMessagesPane({
         nextCursorId: nextCursor?.id ?? null,
         errorsLength: Array.isArray(errors) ? errors.length : null
       });
-      if (replay && startedConversationId) {
-        historyReplayDoneByConvId[startedConversationId] = true;
+      if (replayMode && startedConversationId) {
+        const replayComplete = !hasMoreAtCursor && !nextCursor && !(Array.isArray(errors) && errors.length);
+        historyReplayDoneByConvId[startedConversationId] = replayComplete;
       }
       const filteredErrors = Array.isArray(errors)
         ? errors.filter((entry) => !isControlBannerEntry(entry))
@@ -3151,6 +3222,18 @@ export function initMessagesPane({
       return;
     }
     if (entry && !entry.isReady) {
+      const stateBefore = sessionStore?.messageState || {};
+      logConversationResetTrace({
+        reason: 'CONTACT_PENDING',
+        conversationId: stateBefore?.conversationId || null,
+        peerKey: key || null,
+        peerDigest: peerDigest || key || null,
+        peerDeviceId: peerDeviceHint || entry?.peerDeviceId || null,
+        hasToken: !!(entry?.conversationToken || entry?.conversation?.token_b64),
+        hasConversationId: !!(entry?.conversationId || entry?.conversation?.conversation_id),
+        'entry.isReady': !!entry?.isReady,
+        sourceTag: 'messages-pane:set-active'
+      });
       resetMessageStateWithPlaceholders();
       const state = getMessageState();
       if (!desktopLayout) state.viewMode = 'list';
@@ -3200,6 +3283,18 @@ export function initMessagesPane({
       : null;
     const conversation = conversationFromEntry || conversationFromThread;
     if (!conversation?.token_b64 || !conversation?.conversation_id) {
+      const stateBefore = sessionStore?.messageState || {};
+      logConversationResetTrace({
+        reason: 'MISSING_CONVERSATION_TOKEN',
+        conversationId: stateBefore?.conversationId || null,
+        peerKey: key || null,
+        peerDigest: peerDigest || key || null,
+        peerDeviceId: peerDeviceHint || entry?.peerDeviceId || conversation?.peerDeviceId || conversation?.peer_device_id || null,
+        hasToken: !!(conversation?.token_b64 || entry?.conversationToken || entry?.conversation?.token_b64),
+        hasConversationId: !!(conversation?.conversation_id || entry?.conversationId || entry?.conversation?.conversation_id),
+        'entry.isReady': !!entry?.isReady,
+        sourceTag: 'messages-pane:set-active'
+      });
       resetMessageStateWithPlaceholders();
       const state = getMessageState();
       if (!desktopLayout) state.viewMode = 'list';
@@ -4008,6 +4103,17 @@ export function initMessagesPane({
           if (element) closeSwipe?.(element);
           const state = getMessageState();
           if (state.activePeerDigest === key) {
+            logConversationResetTrace({
+              reason: 'DELETE_ACTIVE',
+              conversationId: state?.conversationId || conversationId || null,
+              peerKey: key || null,
+              peerDigest: key || null,
+              peerDeviceId,
+              hasToken: !!(state?.conversationToken || convIndexEntry?.token_b64 || threadEntry?.conversationToken || contactEntry?.conversationToken),
+              hasConversationId: !!(state?.conversationId || conversationId),
+              'entry.isReady': contactEntry?.isReady ?? null,
+              sourceTag: 'messages-pane:delete-conversation'
+            });
             resetMessageStateWithPlaceholders();
             if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
             clearMessagesView();
@@ -4060,6 +4166,15 @@ export function initMessagesPane({
         limit: 20,
         cursorTs: null,
         cursorId: null
+      });
+      logReplayGateTrace('messages-pane:listSecureAndDecrypt:handleIncomingSecureMessage', {
+        conversationId: convId || null,
+        allowReplay: false,
+        mutateState: true,
+        replay: false,
+        silent: true,
+        messageId: null,
+        serverMessageId: null
       });
       const syncResult = await listSecureAndDecrypt({
         conversationId: convId,
@@ -4168,6 +4283,17 @@ export function initMessagesPane({
         deleteContactSecret(peerDigest, { deviceId: ensureDeviceId() });
         const state = getMessageState();
         if (state.activePeerDigest === peerDigest || state.conversationId === convId) {
+          logConversationResetTrace({
+            reason: 'CONVERSATION_DELETED_WS',
+            conversationId: state?.conversationId || convId || null,
+            peerKey: peerDigest || null,
+            peerDigest: peerDigest || null,
+            peerDeviceId: peerDeviceId || null,
+            hasToken: !!tokenB64,
+            hasConversationId: !!convId,
+            'entry.isReady': null,
+            sourceTag: 'messages-pane:ws-conversation-deleted'
+          });
           resetMessageStateWithPlaceholders();
           if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
           clearMessagesView();

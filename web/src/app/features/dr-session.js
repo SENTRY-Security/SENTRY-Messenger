@@ -1541,7 +1541,7 @@ async function sendDrPlaintext(params = {}) {
       ok: !!result?.ok
     });
     if (messageKeyB64) {
-      const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
+      const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
       await emitVaultRecordAttempt({
         conversationId: finalConversationId,
         msgType,
@@ -2061,7 +2061,7 @@ export async function sendDrMedia(params = {}) {
   }
   persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
   if (messageKeyB64) {
-    const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
+    const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
     await emitVaultRecordAttempt({
       conversationId,
       msgType,

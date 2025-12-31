@@ -22,6 +22,7 @@ const PROFILE_ALLOWED_INFO_TAGS = new Set([PROFILE_INFO_TAG]);
 const PROFILE_MESSAGE_TYPE = 'profile-update';
 const PROFILE_CONV_PREFIX = 'profile:';
 const AVATAR_CONV_PREFIX = 'avatar-';
+let avatarBugLogCount = 0;
 
 function logProfileCounter(payload) {
   if (!DEBUG.profileCounter) return;
@@ -29,6 +30,21 @@ function logProfileCounter(payload) {
     log(payload);
   } catch {
     /* ignore logging errors */
+  }
+}
+
+async function hashString(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    if (typeof crypto === 'undefined' || !crypto.subtle || typeof TextEncoder === 'undefined') return null;
+    const data = new TextEncoder().encode(value);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(digest))
+      .slice(0, 8)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  } catch {
+    return null;
   }
 }
 
@@ -267,6 +283,42 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
       hasSalt: !!env?.hkdf_salt_b64,
       objKey: obj.avatar?.objKey || null
     });
+    if (DEBUG.avatarBug && avatarBugLogCount < 3) {
+      avatarBugLogCount += 1;
+      const targetIsSelf = !!(targetDigest && selfDigest && targetDigest === selfDigest);
+      const selfAvatarObjKey = (() => {
+        try {
+          if (typeof window !== 'undefined') {
+            return window.sessionStore?.profileState?.avatar?.objKey || null;
+          }
+        } catch {
+          /* ignore access errors */
+        }
+        return null;
+      })();
+      const hashInputRaw = env?.ct_b64 || obj.avatar?.objKey || JSON.stringify(env || {});
+      const payloadHash = await hashString(typeof hashInputRaw === 'string' ? hashInputRaw : JSON.stringify(hashInputRaw));
+      const selfAvatarHash = await hashString(selfAvatarObjKey || '');
+      const sourceTag = profile?.sourceTag || profile?.source || (targetIsSelf ? 'self-profile' : 'contact-share');
+      const triggeredBy = profile?.triggeredBy || (targetIsSelf ? 'self-profile' : 'contact-share');
+      try {
+        log({
+          avatarWriteTrace: {
+            objKey: obj.avatar?.objKey || null,
+            payloadHash: payloadHash || null,
+            payloadHashSource: env?.ct_b64 ? 'env.ct_b64' : (obj.avatar?.objKey ? 'objKey' : 'avatar.env'),
+            selfAvatarObjKey: selfAvatarObjKey || null,
+            selfAvatarHash: selfAvatarHash || null,
+            matchesSelfAvatar: !!(selfAvatarObjKey && obj.avatar?.objKey && selfAvatarObjKey === obj.avatar.objKey),
+            targetAccountDigest: targetDigest || null,
+            selfAccountDigest: selfDigest || null,
+            peerAccountDigest: targetDigest && selfDigest && targetDigest !== selfDigest ? targetDigest : null,
+            sourceTag,
+            triggeredBy
+          }
+        });
+      } catch {}
+    }
   }
   const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
   const normalizedEnvelope = assertEnvelopeStrict(envelope, { allowInfoTags: PROFILE_ALLOWED_INFO_TAGS });

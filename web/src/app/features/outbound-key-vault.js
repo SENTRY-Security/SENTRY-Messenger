@@ -24,9 +24,11 @@ function normalizeCounter(n) {
   return Number.isFinite(num) ? Math.floor(num) : null;
 }
 
-function cacheKey({ conversationId, messageId, headerCounter }) {
+function cacheKey({ conversationId, serverMessageId, messageId, headerCounter }) {
+  const idPart = serverMessageId || messageId;
+  if (idPart) return `${conversationId || 'unknown'}::msg:${idPart}`;
   const counterPart = Number.isFinite(headerCounter) ? `n:${headerCounter}` : 'n:unknown';
-  return `${conversationId || 'unknown'}::${messageId || counterPart}`;
+  return `${conversationId || 'unknown'}::${counterPart}`;
 }
 
 function u8ToHex(u8) {
@@ -116,23 +118,30 @@ function getCache(key) {
 function contextsMatch(requested, stored) {
   if (!stored || typeof stored !== 'object') return false;
   if (stored.conversationId && requested.conversationId && stored.conversationId !== requested.conversationId) return false;
-  if (stored.messageId && requested.messageId && stored.messageId !== requested.messageId) return false;
+  const reqMessageId = requested.serverMessageId || requested.messageId || null;
+  const storedMessageId = stored.serverMessageId || stored.messageId || null;
+  if (reqMessageId && storedMessageId && storedMessageId !== reqMessageId) return false;
+  if (!reqMessageId && storedMessageId && requested.headerCounter == null) return false;
   if (stored.senderDeviceId && requested.senderDeviceId && stored.senderDeviceId !== requested.senderDeviceId) return false;
   if (requested.targetDeviceId && stored.targetDeviceId && stored.targetDeviceId !== requested.targetDeviceId) return false;
   const storedHeader = normalizeCounter(stored.headerCounter);
   const reqHeader = normalizeCounter(requested.headerCounter);
-  if (reqHeader !== null && storedHeader !== null && reqHeader !== storedHeader) return false;
+  if (!reqMessageId && reqHeader !== null && storedHeader !== null && reqHeader !== storedHeader) return false;
   return true;
 }
 
 function buildContext(params, senderDeviceId) {
   const accountDigest = (getAccountDigest() || '').toUpperCase() || null;
+  const headerCounter = normalizeCounter(params.headerCounter ?? params.counterN);
+  const serverMessageId = params.serverMessageId || null;
+  const messageId = serverMessageId || params.messageId || null;
   return {
     conversationId: params.conversationId || null,
-    messageId: params.serverMessageId || params.messageId || null,
+    messageId,
+    serverMessageId,
     senderDeviceId: senderDeviceId || null,
     targetDeviceId: params.targetDeviceId || null,
-    headerCounter: normalizeCounter(params.headerCounter ?? params.counterN),
+    headerCounter,
     msgType: params.msgType || null,
     accountDigest
   };
@@ -150,6 +159,7 @@ async function unwrapMessageKey(wrapped, mkRaw) {
 export class OutboundKeyVault {
   /**
    * Persist the outbound message key for a sent packet so history replay can deterministically decrypt it later.
+   * Vault entries are keyed by { conversationId, serverMessageId|messageId, senderDeviceId, targetDeviceId } with headerCounter stored as context only.
    * @param {object} params
    * @param {string|number} params.conversationId
    * @param {string} [params.serverMessageId] - Server-assigned id when available.
@@ -164,18 +174,19 @@ export class OutboundKeyVault {
     const mkRaw = getMkRaw();
     if (!mkRaw) return;
     const conversationId = params?.conversationId || null;
-    const messageId = params?.serverMessageId || params?.messageId || null;
+    const serverMessageId = params?.serverMessageId || null;
+    const messageId = serverMessageId || params?.messageId || null;
     const headerCounter = normalizeCounter(params?.headerCounter ?? params?.counterN);
     const messageKeyB64 = params?.messageKeyB64 || null;
     const senderDeviceId = params?.senderDeviceId || ensureDeviceId();
     const selfDeviceId = params?.selfDeviceId || senderDeviceId || null;
     const targetDeviceId = params?.targetDeviceId || null;
-    if (!conversationId || !messageId || !messageKeyB64 || !senderDeviceId || headerCounter === null) return;
-    const context = buildContext({ ...params, conversationId, messageId, headerCounter }, senderDeviceId);
+    if (!conversationId || !messageId || !messageKeyB64 || !senderDeviceId) return;
+    const context = buildContext({ ...params, conversationId, messageId, serverMessageId, headerCounter }, senderDeviceId);
     const baseLogFields = {
       conversationId,
       messageId,
-      serverMessageId: params?.serverMessageId || null,
+      serverMessageId,
       headerCounter,
       msgType: params?.msgType || null,
       wrapContextVersion: WRAP_CONTEXT_VERSION,
@@ -206,7 +217,7 @@ export class OutboundKeyVault {
         wrap_context: context,
         retentionLimit: RETENTION_PER_CONVERSATION
       });
-      setCache(cacheKey({ conversationId, messageId, headerCounter }), messageKeyB64);
+      setCache(cacheKey({ conversationId, serverMessageId, messageId, headerCounter }), messageKeyB64);
       emitVaultRecord('after', {
         ...baseLogFields,
         wrapEnvelopeVersion: wrapped?.v ?? null,
@@ -220,6 +231,7 @@ export class OutboundKeyVault {
 
   /**
    * Retrieve the outbound message key for a previously sent packet.
+   * Vault lookup key is { conversationId, serverMessageId|messageId, senderDeviceId, targetDeviceId }; headerCounter only narrows matches when ids are absent.
    * @param {object} params
    * @param {string|number} params.conversationId
    * @param {string} [params.serverMessageId]
@@ -234,13 +246,14 @@ export class OutboundKeyVault {
     const mkRaw = getMkRaw();
     if (!mkRaw) return null;
     const conversationId = params?.conversationId || null;
-    const messageId = params?.serverMessageId || params?.messageId || null;
+    const serverMessageId = params?.serverMessageId || null;
+    const messageId = serverMessageId || params?.messageId || null;
     const headerCounter = normalizeCounter(params?.headerCounter);
     const senderDeviceId = params?.senderDeviceId || ensureDeviceId();
     const selfDeviceId = params?.selfDeviceId || senderDeviceId || null;
     const targetDeviceId = params?.targetDeviceId || null;
     if (!conversationId || (!messageId && headerCounter === null) || !senderDeviceId) return null;
-    const cacheK = cacheKey({ conversationId, messageId, headerCounter });
+    const cacheK = cacheKey({ conversationId, serverMessageId, messageId, headerCounter });
     const cached = getCache(cacheK);
     if (cached) return cached;
     let data = null;
@@ -267,6 +280,7 @@ export class OutboundKeyVault {
     const requestCtx = {
       conversationId,
       messageId,
+      serverMessageId,
       senderDeviceId,
       targetDeviceId,
       headerCounter

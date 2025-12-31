@@ -16,21 +16,17 @@ import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 // Only keep high-signal replay/forensic events by default.
 const REPLAY_DEBUG_KEYS = new Set([
+  'conversationResetTrace',
+  'replayGateTrace',
+  'historyReplayFlagTrace',
   'replayCallsite',
-  'replayEarlyReturn',
   'replayFetchResult',
   'replaySummary',
   'replaySkipSample',
-  'historyReplayFlagTrace',
-  'decryptFailSample',
-  'banner:counts',
-  'vaultLookupAttempt',
-  'vaultRecordAttempt',
-  'vaultHit',
-  'vaultRecord',
-  'outboundVaultMissing'
+  'avatarWriteTrace',
+  'avatar:env-written'
 ]);
-const REPLAY_ACTION_VALUES = new Set(['replay:before', 'replay:after']);
+const REPLAY_ACTION_VALUES = new Set();
 const FETCH_NOISE_KEYS = new Set(['fetchStart', 'fetchDone', 'fetchJSONDone', 'fetchFail']);
 const WS_NOISE_KEYS = new Set(['wsEnsure', 'wsConnectStart', 'wsConnectResult', 'wsDisconnect']);
 const QUEUE_NOISE_KEYS = new Set(['queue', 'enqueue', 'dequeue', 'queueState']);

@@ -9,7 +9,9 @@ export const DEBUG = {
   contactCoreVerbose: false,
   fetchNoise: false,
   uiNoise: false,
-  queueNoise: false
+  queueNoise: false,
+  avatarBug: false,
+  conversationReset: true
 };
 
 export const DEBUG_CONTACT_PROFILE = DEBUG.profileCounter;

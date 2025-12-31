@@ -6,6 +6,8 @@ import {
   listInboxRecords,
   putInboxRecord
 } from './db.js';
+import { log } from '../../core/log.js';
+import { DEBUG } from '../../ui/mobile/debug-flags.js';
 
 const STATE_QUEUED = 'queued';
 const STATE_INFLIGHT = 'inflight';
@@ -156,8 +158,24 @@ async function processSingle(job, handler) {
   }
 }
 
-export async function processInboxForConversation({ conversationId, handler }) {
+export async function processInboxForConversation({ conversationId, handler, allowReplay = false, mutateState = true }) {
   if (!conversationId || typeof handler !== 'function') return { processed: 0 };
+  const computedIsHistoryReplay = allowReplay === true && mutateState === false;
+  if (DEBUG.replay) {
+    try {
+      log({
+        replayGateTrace: {
+          where: 'queue:processInboxForConversation:enter',
+          conversationId: conversationId || null,
+          messageId: null,
+          serverMessageId: null,
+          allowReplayRaw: allowReplay,
+          mutateStateRaw: mutateState,
+          computedIsHistoryReplay
+        }
+      });
+    } catch {}
+  }
   const due = await fetchDueJobs(conversationId);
   let processed = 0;
   for (const job of due) {

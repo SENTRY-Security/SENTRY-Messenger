@@ -187,7 +187,6 @@ export function setupShareController(options) {
   }
 
   function storeContactSecretMapping({ peerAccountDigest, peerDeviceId, sessionKey, conversation, drState, role }) {
-    const conversationPeerDeviceId = conversation?.peerDeviceId || null;
     const peerDeviceResolved = peerDeviceId ? peerDeviceId : null;
     const key = normalizePeerKey(peerAccountDigest, { peerDeviceId: peerDeviceResolved });
     const selfDeviceId = ensureDeviceId();
@@ -203,6 +202,7 @@ export function setupShareController(options) {
       throw new Error('contact secret requires peer device id, self device id, and session key');
     }
     const existing = getContactSecret(key, { deviceId: selfDeviceId }) || {};
+    const conversationPeerDeviceId = conversation?.peerDeviceId || existing?.peerDeviceId || null;
     try {
       console.log('[share-controller]', {
         contactSecretStoreStart: {
@@ -229,7 +229,9 @@ export function setupShareController(options) {
     }
     const incomingRole = role ? String(role).toLowerCase() : null;
     const existingRole = existing?.role || null;
-    if (existingRole && incomingRole && incomingRole !== existingRole) {
+    let chosenRole = incomingRole || existingRole || null;
+    const hasConflict = existingRole && incomingRole && incomingRole !== existingRole;
+    if (hasConflict) {
       console.warn('[share-controller]', {
         contactSecretRoleConflict: true,
         peerAccountDigest,
@@ -237,17 +239,28 @@ export function setupShareController(options) {
         existingRole,
         incomingRole
       });
-      return;
+      chosenRole = existingRole;
+      try {
+        console.log('[share-controller]', {
+          contactSecretRoleConflictResolved: {
+            peerKey: key,
+            existingRole,
+            incomingRole,
+            chosenRole,
+            hasConversationId: !!finalConvId,
+            hasToken: !!(conversation?.token_b64 || sessionKey || existing?.conversationToken)
+          }
+        });
+      } catch {}
     }
-    const derivedRole = incomingRole || existingRole || null;
-    if (!derivedRole) {
+    if (!chosenRole) {
       console.warn('[share-controller]', {
         contactSecretRoleMissing: true,
         peerAccountDigest,
         peerDeviceId: peerDeviceResolved,
         existingRole,
         incomingRole,
-        derivedRole
+        derivedRole: chosenRole
       });
       return;
     }
@@ -260,7 +273,7 @@ export function setupShareController(options) {
       },
       meta: { source: 'share-controller:storeContactSecret' }
     };
-    if (derivedRole) update.role = derivedRole;
+    if (chosenRole) update.role = chosenRole;
     if (drState) {
       const snapshot = snapshotDrState(drState);
       if (snapshot) {

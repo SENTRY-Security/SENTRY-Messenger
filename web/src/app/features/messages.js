@@ -911,6 +911,32 @@ export async function listSecureAndDecrypt(params = {}) {
     silent = false,
     priority = 'live'
   } = params;
+  const allowReplayRaw = allowReplay;
+  const mutateStateRaw = mutateState;
+  const computedIsHistoryReplay = allowReplay === true && mutateState === false;
+  const logReplayGateTrace = (where, payload = {}) => {
+    if (!DEBUG.replay) return;
+    const {
+      conversationId: payloadConversationId,
+      messageId,
+      serverMessageId,
+      ...rest
+    } = payload || {};
+    try {
+      log({
+        replayGateTrace: {
+          where,
+          conversationId: payloadConversationId ?? conversationId ?? null,
+          messageId: messageId ?? null,
+          serverMessageId: serverMessageId ?? null,
+          allowReplayRaw,
+          mutateStateRaw,
+          computedIsHistoryReplay,
+          ...rest
+        }
+      });
+    } catch {}
+  };
   const logReplayEarlyReturn = (reason, extra = {}) => {
     try {
       log({
@@ -940,6 +966,11 @@ export async function listSecureAndDecrypt(params = {}) {
   }
   if (!conversationId) throw new Error('conversationId required');
   const requestPriority = priority === 'replay' ? 'replay' : 'live';
+  logReplayGateTrace('messages:listSecureAndDecrypt:enter', {
+    silent: !!silent,
+    priority: requestPriority,
+    replay: requestPriority === 'replay'
+  });
   const buildEmptyResult = (errors = []) => ({
     items: [],
     nextCursorTs: null,
@@ -1205,6 +1236,8 @@ export async function listSecureAndDecrypt(params = {}) {
   const stateByDevice = new Map();
   const secureStatusByDevice = new Map();
   const ensuredConversations = new Set();
+  const replayGateTraceSampleLimit = 3;
+  let replayGateTraceSampleCount = 0;
   const directionFilterSampleLimit = 3;
   let directionFilterSampleCount = 0;
   const decryptFailSampleLimit = 3;
@@ -1365,7 +1398,7 @@ export async function listSecureAndDecrypt(params = {}) {
                 conversationId: convId || conversationId || null,
                 serverMessageId: serverMessageId || null,
                 messageId: messageId || null,
-                isHistoryReplay: allowReplay === true && mutateState === false,
+                computedIsHistoryReplay,
                 selfDeviceId: selfDeviceId || null,
                 senderDeviceId: senderDeviceId || null,
                 targetDeviceId: targetDeviceId || null,
@@ -1396,7 +1429,7 @@ export async function listSecureAndDecrypt(params = {}) {
                 transportCounter: sampleTransport,
                 Nr: sampleNr,
                 Ns: sampleNs,
-                isHistoryReplay: allowReplay === true && mutateState === false,
+                computedIsHistoryReplay,
                 peerDeviceId: peerDeviceForMessage || null,
                 stateKey: stateKey || null
               }
@@ -1411,7 +1444,7 @@ export async function listSecureAndDecrypt(params = {}) {
                 transportCounter: sampleTransport,
                 Nr: sampleNr,
                 Ns: sampleNs,
-                isHistoryReplay: allowReplay === true && mutateState === false
+                computedIsHistoryReplay
               }
             });
           } catch {}
@@ -1530,7 +1563,7 @@ export async function listSecureAndDecrypt(params = {}) {
       const deviceMatchesSelf = !!(selfDeviceId && targetDeviceId && targetDeviceId === selfDeviceId);
       const isSelfSender = !!(selfDigest && senderDigest && senderDigest === selfDigest);
       const senderMatchesSelfDevice = !!(senderDeviceId && selfDeviceId && senderDeviceId === selfDeviceId);
-      const isHistoryReplay = allowReplay === true && mutateState === false;
+      const isHistoryReplay = computedIsHistoryReplay;
       const replaySelfSender = isHistoryReplay && senderMatchesSelfDevice;
       const treatAsSelfSender = isSelfSender || replaySelfSender;
 
@@ -1546,6 +1579,15 @@ export async function listSecureAndDecrypt(params = {}) {
       peerDeviceForMessage = senderDeviceId || peerDevice;
       if (isHistoryReplay && treatAsSelfSender && targetDeviceId) {
         peerDeviceForMessage = targetDeviceId;
+      }
+      if (DEBUG.replay && replayGateTraceSampleCount < replayGateTraceSampleLimit) {
+        replayGateTraceSampleCount += 1;
+        logReplayGateTrace('messages:handleInboxJob:enter', {
+          conversationId: convId || conversationId || null,
+          messageId,
+          serverMessageId,
+          directionComputed: direction || 'unknown'
+        });
       }
 
       if (QUEUE_LOG_ENABLED) {
@@ -1580,15 +1622,15 @@ export async function listSecureAndDecrypt(params = {}) {
         logDeliverySkip('targetDeviceMissing', { targetDeviceId, selfDeviceId, senderDeviceId });
         return;
       }
-      const isReplaySelfOutgoing = isHistoryReplay && senderMatchesSelfDevice && direction === 'outgoing';
+      const isReplaySelfOutgoing = computedIsHistoryReplay && senderMatchesSelfDevice && direction === 'outgoing';
       if (DEBUG.replay && historyReplayTraceCount < historyReplayTraceLimit) {
         historyReplayTraceCount += 1;
         try {
           log({
             historyReplayFlagTrace: {
               conversationId: convId || conversationId || null,
-              allowReplay: allowReplay === true,
-              mutateState,
+              allowReplayRaw,
+              mutateStateRaw,
               computedIsHistoryReplay: isHistoryReplay,
               directionComputed: direction || 'unknown',
               senderDeviceId: senderDeviceId || null,
@@ -1807,7 +1849,7 @@ export async function listSecureAndDecrypt(params = {}) {
         msgType: payloadMsgType || null,
         preDecryptCore
       });
-      const vaultEligible = isReplaySelfOutgoing;
+      const vaultEligible = computedIsHistoryReplay && senderMatchesSelfDevice && direction === 'outgoing';
       if (DEBUG.replay && vaultLookupAttemptCount < vaultLookupAttemptLimit) {
         vaultLookupAttemptCount += 1;
         try {
@@ -1967,6 +2009,28 @@ export async function listSecureAndDecrypt(params = {}) {
             messageId,
             messageKeyB64
           });
+          if (computedIsHistoryReplay) {
+            try {
+              log({
+                replaySkipSample: {
+                  skipReason: 'controlSideEffectsInReplay',
+                  conversationId: convId || null,
+                  messageId: messageId || null,
+                  serverMessageId: serverMessageId || null
+                }
+              });
+            } catch {}
+            if (convId && messageId) {
+              markMessageProcessed(convId, messageId);
+            }
+            logControlHandled(semantic.subtype);
+            logSemanticControlHandled({
+              conversationId: convId,
+              messageId,
+              subtype: semantic.subtype
+            });
+            return;
+          }
           if (drDebug) {
             logDrCore('inbox:contact-share', {
               conversationId: convId,
@@ -2180,7 +2244,7 @@ export async function listSecureAndDecrypt(params = {}) {
               conversationId: convId || conversationId || null,
               serverMessageId: serverMessageId || null,
               messageId: failedMessageId || null,
-              isHistoryReplay: allowReplay === true && mutateState === false,
+              computedIsHistoryReplay,
               msgTypeForDecrypt,
               directionComputed: direction || 'unknown',
               selfDeviceId: selfDeviceId || null,
@@ -2423,8 +2487,16 @@ export async function listSecureAndDecrypt(params = {}) {
   if (shouldYieldToReplay('beforeProcess')) {
     return buildYieldResult();
   }
+  logReplayGateTrace('messages:listSecureAndDecrypt:processInboxInvoke', {
+    conversationId,
+    silent: !!silent,
+    priority: requestPriority,
+    callsite: 'processInboxInvoke'
+  });
   await processInboxForConversation({
     conversationId,
+    allowReplay,
+    mutateState,
     handler: async (job) => {
       try {
         if (drDebug) {
