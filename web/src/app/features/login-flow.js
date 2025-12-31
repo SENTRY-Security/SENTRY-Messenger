@@ -383,6 +383,29 @@ export async function unlockAndInit({ password, onProgress } = {}) {
     }
   }
 
+  // Hardblock if server evidence indicates existing data but MK is still missing
+  if (hasServerEvidence && !getMkRaw()) {
+    const mkSummary = await summarizeMkForLog(getMkRaw());
+    log({
+      mkHardblockTrace: {
+        sourceTag: 'login:mk-missing-post-evidence',
+        reason: 'mk_raw_missing_after_evidence',
+        serverHasMK: getHasMK(),
+        mkHash12: mkSummary.mkHash12,
+        accountDigestSuffix4: (accountDigest || '').slice(-4) || null,
+        deviceIdSuffix4: (getDeviceId() || evidenceDeviceId || '').slice(-4) || null,
+        evidence: {
+          backup: !!evidence?.backupExists,
+          vault: !!evidence?.vaultExists,
+          messages: !!evidence?.messagesExists,
+          registryDeviceIdSuffix4: evidence?.registryDeviceId ? evidence.registryDeviceId.slice(-4) : null,
+          backupDeviceIdSuffix4: evidence?.backupDeviceId ? evidence.backupDeviceId.slice(-4) : null
+        }
+      }
+    });
+    throw new Error('MK_MISSING_HARDBLOCK');
+  }
+
   // Ensure device bundle / replenish OPKs
   const fetchDevkeys = async () => {
     const { r, data } = await devkeysFetch({ accountToken, accountDigest });

@@ -2319,6 +2319,37 @@ function logOutboundVault(kind, payload) {
   }
 }
 
+function shapeOf(value) {
+  if (value === undefined) return 'missing';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value.length ? 'string' : 'string(empty)';
+  if (typeof value === 'object') return Array.isArray(value) ? 'array' : 'object';
+  return typeof value;
+}
+
+function summarizeReceiverCheckpointShape(body = {}) {
+  return {
+    accountDigest: shapeOf(body?.accountDigest || body?.account_digest),
+    conversationId: shapeOf(body?.conversationId || body?.conversation_id),
+    peerDeviceId: shapeOf(body?.peerDeviceId || body?.peer_device_id),
+    cursorMessageId: shapeOf(body?.cursorMessageId || body?.cursor_message_id),
+    cursorServerMessageId: shapeOf(body?.cursorServerMessageId || body?.cursor_server_message_id),
+    headerCounter: shapeOf(body?.headerCounter ?? body?.header_counter),
+    Nr: shapeOf(body?.Nr ?? body?.nr),
+    Ns: shapeOf(body?.Ns ?? body?.ns),
+    PN: shapeOf(body?.PN ?? body?.pn),
+    theirRatchetPubHash: shapeOf(body?.theirRatchetPubHash || body?.their_ratchet_pub_hash),
+    ckRHash: shapeOf(body?.ckRHash || body?.ckr_hash),
+    skippedHash: shapeOf(body?.skippedHash || body?.skipped_hash),
+    skippedCount: shapeOf(body?.skippedCount),
+    wrapInfoTag: shapeOf(body?.wrapInfoTag || body?.wrap_info_tag),
+    checkpointHash: shapeOf(body?.checkpointHash || body?.checkpoint_hash),
+    wrapped_checkpoint: shapeOf(body?.wrapped_checkpoint || body?.wrappedCheckpoint || body?.wrapped),
+    wrap_context: shapeOf(body?.wrap_context || body?.wrapContext),
+    retentionLimit: shapeOf(body?.retentionLimit)
+  };
+}
+
 async function handleReceiverCheckpointRoutes(req, env) {
   const url = new URL(req.url);
 
@@ -2329,6 +2360,7 @@ async function handleReceiverCheckpointRoutes(req, env) {
     } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
+    const bodyShape = summarizeReceiverCheckpointShape(body);
     const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
     const peerDeviceId = normalizeDeviceId(body?.peerDeviceId || body?.peer_device_id);
@@ -2352,9 +2384,17 @@ async function handleReceiverCheckpointRoutes(req, env) {
       : RECEIVER_CHECKPOINT_RETENTION;
 
     if (!accountDigest || !conversationId || !peerDeviceId || !wrapped || !Number.isFinite(nr)) {
+      console.warn('receiverCheckpoint.put.badPayload', {
+        reason: 'required-missing',
+        shape: bodyShape
+      });
       return json({ error: 'BadRequest', message: 'accountDigest, conversationId, peerDeviceId, nr, wrapped_checkpoint required' }, { status: 400 });
     }
     if (!validateWrappedCheckpointEnvelope(wrapped)) {
+      console.warn('receiverCheckpoint.put.badPayload', {
+        reason: 'wrapped-envelope-invalid',
+        shape: bodyShape
+      });
       return json({ error: 'InvalidWrappedPayload', message: 'wrapped checkpoint envelope missing required fields' }, { status: 400 });
     }
 

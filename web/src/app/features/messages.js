@@ -24,6 +24,7 @@ import {
   getAccountDigest as storeGetAccountDigest,
   normalizePeerIdentity as storeNormalizePeerIdentity,
   clearDrState as storeClearDrState,
+  getMkRaw as storeGetMkRaw,
   ensureDeviceId as storeEnsureDeviceId
 } from '../core/store.js';
 import {
@@ -76,6 +77,7 @@ const defaultDeps = {
   persistDrSnapshot: sessionPersistDrSnapshot,
   snapshotDrState: sessionSnapshotDrState,
   cloneDrStateHolder: sessionCloneDrStateHolder,
+  getMkRaw: storeGetMkRaw,
   b64UrlToBytes: uiB64UrlToBytes,
   b64u8: naclB64u8,
   b64: naclB64,
@@ -976,6 +978,31 @@ export async function listSecureAndDecrypt(params = {}) {
     priority: requestPriority,
     replay: requestPriority === 'replay'
   });
+  const mkRawForReplay = typeof deps.getMkRaw === 'function' ? deps.getMkRaw() : null;
+  if (!mkRawForReplay && (allowReplayRaw || requestPriority === 'replay' || computedIsHistoryReplay)) {
+    const accountDigest = typeof deps.getAccountDigest === 'function' ? deps.getAccountDigest() : null;
+    let deviceId = null;
+    try {
+      deviceId = typeof deps.ensureDeviceId === 'function' ? deps.ensureDeviceId() : null;
+    } catch {}
+    try {
+      log({
+        mkHardblockTrace: {
+          sourceTag: 'messages:listSecureAndDecrypt',
+          reason: 'mk_missing_replay_gate',
+          serverHasMK: null,
+          mkHash12: null,
+          accountDigestSuffix4: accountDigest ? String(accountDigest).slice(-4) : null,
+          deviceIdSuffix4: deviceId ? String(deviceId).slice(-4) : null,
+          conversationId: conversationId || null,
+          evidence: null
+        }
+      });
+    } catch {}
+    const err = new Error('MK 未解鎖/遺失，已硬阻擋（MK_MISSING_HARDBLOCK）');
+    err.code = 'MK_MISSING_HARDBLOCK';
+    throw err;
+  }
   const buildEmptyResult = (errors = []) => ({
     items: [],
     nextCursorTs: null,
@@ -1300,9 +1327,20 @@ export async function listSecureAndDecrypt(params = {}) {
       peerAccountDigest: peerAccountDigestNormalized || peerKey,
       peerDeviceId: deviceId
     });
-    if (!checkpointResult || checkpointResult.error || !checkpointResult.holder) {
+    const errorCode = checkpointResult?.error || null;
+    if (errorCode === 'MK_MISSING_HARDBLOCK' || errorCode === 'MKMissing') {
+      const err = new Error('MK 未解鎖/遺失，已硬阻擋（MK_MISSING_HARDBLOCK）');
+      err.code = 'MK_MISSING_HARDBLOCK';
+      throw err;
+    }
+    if (errorCode === 'MK_UNWRAP_FAILED_HARDBLOCK' || errorCode === 'UnwrapFailed') {
+      const err = new Error('MK 解封失敗，已硬阻擋（MK_UNWRAP_FAILED_HARDBLOCK）');
+      err.code = 'MK_UNWRAP_FAILED_HARDBLOCK';
+      throw err;
+    }
+    if (!checkpointResult || errorCode || !checkpointResult.holder) {
       const err = new Error('不可回放：缺少 receiver checkpoint');
-      err.code = checkpointResult?.error || 'CheckpointMissing';
+      err.code = errorCode || 'CheckpointMissing';
       throw err;
     }
     replayCheckpointByDevice.set(deviceId, checkpointResult.holder);
@@ -2079,7 +2117,20 @@ export async function listSecureAndDecrypt(params = {}) {
       });
       replayCounters.decryptOk += 1;
 
-      if (direction === 'incoming' && peerDeviceForMessage) {
+      const semantic = classifyDecryptedPayload(text, { meta, header });
+      logSemanticClassification({
+        conversationId: convId,
+        messageId,
+        kind: semantic.kind,
+        subtype: semantic.subtype
+      });
+
+      const shouldCheckpoint = direction === 'incoming'
+        && trackState
+        && semantic.kind === SEMANTIC_KIND.USER_MESSAGE
+        && !!peerDeviceForMessage;
+      const checkpointLoggable = direction === 'incoming' && trackState && !!peerDeviceForMessage;
+      if (shouldCheckpoint) {
         const checkpointResult = await deps.recordReceiverCheckpoint({
           conversationId: convId || conversationId || null,
           peerAccountDigest: peerAccountDigestNormalized || peerKey || null,
@@ -2091,8 +2142,22 @@ export async function listSecureAndDecrypt(params = {}) {
           messageTs
         });
         if (!checkpointResult?.ok) {
-          throw new Error(checkpointResult?.message || '不可回放：receiver checkpoint 寫入失敗');
+          const err = new Error(checkpointResult?.message || '不可回放：receiver checkpoint 寫入失敗');
+          err.code = checkpointResult?.error || 'ReceiverCheckpointWriteFailed';
+          throw err;
         }
+      } else if (checkpointLoggable && DEBUG.replay) {
+        try {
+          log({
+            checkpointSkip: {
+              conversationId: convId || conversationId || null,
+              peerDeviceId: peerDeviceForMessage,
+              reason: 'ineligibleMessageType',
+              semanticKind: semantic.kind,
+              semanticSubtype: semantic.subtype
+            }
+          });
+        } catch {}
       }
 
       if (trackState) {
@@ -2106,14 +2171,6 @@ export async function listSecureAndDecrypt(params = {}) {
           set.add(stableContactShareKey);
         }
       }
-
-      const semantic = classifyDecryptedPayload(text, { meta, header });
-      logSemanticClassification({
-        conversationId: convId,
-        messageId,
-        kind: semantic.kind,
-        subtype: semantic.subtype
-      });
 
       if (semantic.kind === SEMANTIC_KIND.IGNORABLE) {
         logSemanticIgnorableOnce({

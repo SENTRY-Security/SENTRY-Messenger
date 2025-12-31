@@ -4,6 +4,9 @@ import { AccountDigestRegex } from '../utils/account-verify.js';
 import { ensureCallWorkerConfig, callWorkerRequest } from '../services/call-worker.js';
 import { logger } from '../utils/logger.js';
 
+const BAD_REQUEST_LOG_LIMIT = 5;
+let badRequestLogCount = 0;
+
 const PutSchema = z.object({
   conversationId: z.string().min(8),
   peerDeviceId: z.string().min(1),
@@ -41,6 +44,47 @@ const GetSchema = z.object({
   }
 });
 
+function describeShape(value) {
+  if (value === undefined) return 'missing';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value.length ? 'string' : 'string(empty)';
+  if (typeof value === 'object') return Array.isArray(value) ? 'array' : 'object';
+  return typeof value;
+}
+
+function summarizePutPayloadShape(body = {}) {
+  return {
+    conversationId: describeShape(body?.conversationId),
+    peerDeviceId: describeShape(body?.peerDeviceId),
+    cursorMessageId: describeShape(body?.cursorMessageId),
+    cursorServerMessageId: describeShape(body?.cursorServerMessageId),
+    headerCounter: describeShape(body?.headerCounter),
+    Nr: describeShape(body?.Nr),
+    Ns: describeShape(body?.Ns),
+    PN: describeShape(body?.PN),
+    theirRatchetPubHash: describeShape(body?.theirRatchetPubHash),
+    ckRHash: describeShape(body?.ckRHash),
+    skippedHash: describeShape(body?.skippedHash),
+    skippedCount: describeShape(body?.skippedCount),
+    wrapInfoTag: describeShape(body?.wrapInfoTag),
+    checkpointHash: describeShape(body?.checkpointHash),
+    wrapped_checkpoint: describeShape(body?.wrapped_checkpoint),
+    wrap_context: describeShape(body?.wrap_context),
+    retentionLimit: describeShape(body?.retentionLimit),
+    accountToken: describeShape(body?.accountToken),
+    accountDigest: describeShape(body?.accountDigest)
+  };
+}
+
+function summarizeGetPayloadShape(body = {}) {
+  return {
+    conversationId: describeShape(body?.conversationId),
+    peerDeviceId: describeShape(body?.peerDeviceId),
+    accountToken: describeShape(body?.accountToken),
+    accountDigest: describeShape(body?.accountDigest)
+  };
+}
+
 function respondAccountError(res, err, fallback = 'authorization failed') {
   if (err instanceof AccountAuthError) {
     const status = err.status || 400;
@@ -59,6 +103,14 @@ export const putReceiverCheckpoint = async (req, res) => {
   try {
     input = PutSchema.parse(req.body || {});
   } catch (err) {
+    if (badRequestLogCount < BAD_REQUEST_LOG_LIMIT) {
+      badRequestLogCount += 1;
+      logger.warn({
+        event: 'receiverCheckpoint.put.badRequest',
+        message: err.errors?.[0]?.message || err?.message || 'invalid payload',
+        shape: summarizePutPayloadShape(req.body || {})
+      });
+    }
     return res.status(400).json({ error: 'BadRequest', message: err.errors?.[0]?.message || 'invalid payload' });
   }
 
@@ -120,6 +172,14 @@ export const getLatestReceiverCheckpoint = async (req, res) => {
   try {
     input = GetSchema.parse(req.body || {});
   } catch (err) {
+    if (badRequestLogCount < BAD_REQUEST_LOG_LIMIT) {
+      badRequestLogCount += 1;
+      logger.warn({
+        event: 'receiverCheckpoint.get.badRequest',
+        message: err.errors?.[0]?.message || err?.message || 'invalid payload',
+        shape: summarizeGetPayloadShape(req.body || {})
+      });
+    }
     return res.status(400).json({ error: 'BadRequest', message: err.errors?.[0]?.message || 'invalid payload' });
   }
 

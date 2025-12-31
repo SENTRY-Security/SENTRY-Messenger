@@ -3,7 +3,7 @@
  */
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
-import { getMkRaw, getAccountDigest } from '../core/store.js';
+import { getMkRaw, getAccountDigest, getDeviceId } from '../core/store.js';
 import { log } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 import {
@@ -25,6 +25,53 @@ let putResultLogCount = 0;
 let getAttemptLogCount = 0;
 let getResultLogCount = 0;
 let replayLoadedLogCount = 0;
+let theirPubLogCount = 0;
+
+function logMkMissingHardblock({ sourceTag, reason, conversationId = null, peerDeviceId = null } = {}) {
+  try {
+    const digest = getAccountDigest();
+    const deviceId = getDeviceId();
+    log({
+      mkHardblockTrace: {
+        sourceTag,
+        reason,
+        serverHasMK: null,
+        mkHash12: null,
+        accountDigestSuffix4: digest ? String(digest).slice(-4) : null,
+        deviceIdSuffix4: deviceId ? String(deviceId).slice(-4) : null,
+        conversationId: conversationId || null,
+        peerDeviceIdSuffix4: peerDeviceId ? String(peerDeviceId).slice(-4) : null,
+        evidence: null
+      }
+    });
+  } catch {
+    /* logging best-effort */
+  }
+}
+
+async function logMkUnwrapHardblock({ sourceTag, errorMessage, mkRaw, conversationId = null, peerDeviceId = null } = {}) {
+  try {
+    const digest = getAccountDigest();
+    const deviceId = getDeviceId();
+    const mkHash = await hashBytesHex(mkRaw || null);
+    log({
+      mkUnwrapHardblockTrace: {
+        sourceTag,
+        reason: 'checkpoint_unwrap_failed',
+        serverHasMK: null,
+        mkHash12: mkHash ? mkHash.slice(0, 12) : null,
+        accountDigestSuffix4: digest ? String(digest).slice(-4) : null,
+        deviceIdSuffix4: deviceId ? String(deviceId).slice(-4) : null,
+        conversationId: conversationId || null,
+        peerDeviceIdSuffix4: peerDeviceId ? String(peerDeviceId).slice(-4) : null,
+        evidence: null,
+        errorMessage: errorMessage || null
+      }
+    });
+  } catch {
+    /* logging best-effort */
+  }
+}
 
 function logCapped(kind, payload) {
   if (kind === 'record' && recordLogCount >= LOG_LIMIT) return;
@@ -261,7 +308,15 @@ export const ReceiverCheckpoints = {
     messageTs
   }) {
     const mkRaw = getMkRaw();
-    if (!mkRaw) return { ok: false, error: 'MKMissing' };
+    if (!mkRaw) {
+      logMkMissingHardblock({
+        sourceTag: 'receiver-checkpoints:record',
+        reason: 'mk_missing',
+        conversationId,
+        peerDeviceId
+      });
+      return { ok: false, error: 'MK_MISSING_HARDBLOCK' };
+    }
     if (!conversationId || !peerDeviceId || !state) return { ok: false, error: 'MissingParams' };
     const accountDigest = (getAccountDigest() || '').toUpperCase() || null;
     let payloadInfo;
@@ -280,6 +335,19 @@ export const ReceiverCheckpoints = {
       return { ok: false, error: 'StateInvalid', message: err?.message || 'checkpoint payload build failed' };
     }
     const { payload, skippedCount, skippedCanonical } = payloadInfo;
+    const theirRatchetPubB64 = payload?.dr?.theirRatchetPub_b64 || null;
+    if (!theirRatchetPubB64) {
+      return { ok: false, error: 'MissingTheirRatchetPub', message: 'receiver checkpoint requires theirRatchetPub' };
+    }
+    let theirRatchetPubU8;
+    try {
+      theirRatchetPubU8 = b64u8(theirRatchetPubB64);
+    } catch (err) {
+      return { ok: false, error: 'InvalidTheirRatchetPub', message: err?.message || 'theirRatchetPub decode failed' };
+    }
+    if (!(theirRatchetPubU8 instanceof Uint8Array) || theirRatchetPubU8.length === 0) {
+      return { ok: false, error: 'MissingTheirRatchetPub', message: 'receiver checkpoint requires theirRatchetPub' };
+    }
     if (DEBUG.replay && putAttemptLogCount < LOG_LIMIT) {
       putAttemptLogCount += 1;
       try {
@@ -311,7 +379,10 @@ export const ReceiverCheckpoints = {
       skippedCount
     };
     const checkpointHash = await hashStringHex(JSON.stringify(payload));
-    const theirRatchetPubHash = await hashBytesHex(b64u8(payload.dr.theirRatchetPub_b64 || ''));
+    const theirRatchetPubHash = await hashBytesHex(theirRatchetPubU8);
+    if (!theirRatchetPubHash) {
+      return { ok: false, error: 'TheirRatchetPubHashUnavailable', message: 'theirRatchetPub hash failed' };
+    }
     const ckRHash = await hashBytesHex(b64u8(payload.dr.ckR_b64 || ''));
     const skippedHash = skippedCanonical ? await hashStringHex(skippedCanonical) : null;
     const wrapped = await wrapWithMK_JSON(payload, mkRaw, WRAP_INFO_TAG);
@@ -376,7 +447,15 @@ export const ReceiverCheckpoints = {
 
   async loadLatestCheckpoint({ conversationId, peerAccountDigest, peerDeviceId }) {
     const mkRaw = getMkRaw();
-    if (!mkRaw) return { error: 'MKMissing' };
+    if (!mkRaw) {
+      logMkMissingHardblock({
+        sourceTag: 'receiver-checkpoints:load',
+        reason: 'mk_missing',
+        conversationId,
+        peerDeviceId
+      });
+      return { error: 'MK_MISSING_HARDBLOCK' };
+    }
     if (!conversationId || !peerDeviceId) return { error: 'MissingParams' };
     if (DEBUG.replay && getAttemptLogCount < LOG_LIMIT) {
       getAttemptLogCount += 1;
@@ -429,11 +508,51 @@ export const ReceiverCheckpoints = {
     try {
       payload = await unwrapWithMK_JSON(checkpoint.wrapped_checkpoint, mkRaw);
     } catch (err) {
-      return { error: 'UnwrapFailed', message: err?.message || 'unwrap failed' };
+      await logMkUnwrapHardblock({
+        sourceTag: 'receiver-checkpoints:load',
+        errorMessage: err?.message || 'unwrap failed',
+        mkRaw,
+        conversationId,
+        peerDeviceId
+      });
+      return { error: 'MK_UNWRAP_FAILED_HARDBLOCK', message: err?.message || 'unwrap failed' };
+    }
+    if (DEBUG.replay && theirPubLogCount < LOG_LIMIT) {
+      theirPubLogCount += 1;
+      try {
+        const metaTheirRatchetPubHash = checkpoint?.theirRatchetPubHash || null;
+        let payloadTheirRatchetPubHash = null;
+        try {
+          payloadTheirRatchetPubHash = await hashBytesHex(b64u8(payload?.dr?.theirRatchetPub_b64 || ''));
+        } catch {
+          payloadTheirRatchetPubHash = null;
+        }
+        const match = !!metaTheirRatchetPubHash
+          && !!payloadTheirRatchetPubHash
+          && payloadTheirRatchetPubHash.slice(0, metaTheirRatchetPubHash.length) === metaTheirRatchetPubHash;
+        log({
+          replayCheckpointTheirPubVerify: {
+            conversationId,
+            peerDeviceId,
+            metaTheirRatchetPubHash,
+            payloadTheirRatchetPubHash,
+            match
+          }
+        });
+      } catch {
+        /* ignore logging errors */
+      }
     }
     const integrity = await verifyPayloadAgainstMetadata(payload, checkpoint);
     if (!integrity.ok) {
-      return { error: 'UnwrapFailed', message: integrity.reason || 'integrity check failed' };
+      await logMkUnwrapHardblock({
+        sourceTag: 'receiver-checkpoints:load',
+        errorMessage: integrity.reason || 'integrity check failed',
+        mkRaw,
+        conversationId,
+        peerDeviceId
+      });
+      return { error: 'MK_UNWRAP_FAILED_HARDBLOCK', message: integrity.reason || 'integrity check failed' };
     }
     const holder = buildHolderFromPayload(payload, {
       stateKey: `replay-${conversationId || 'unknown'}::${peerAccountDigest || 'unknown'}::${peerDeviceId || 'unknown'}`
