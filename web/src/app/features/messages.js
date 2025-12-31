@@ -1278,6 +1278,8 @@ export async function listSecureAndDecrypt(params = {}) {
   const replayCheckpointByDevice = new Map();
   const replayGateTraceSampleLimit = 3;
   let replayGateTraceSampleCount = 0;
+  const replayHolderSkipLogLimit = 3;
+  let replayHolderSkipLogCount = 0;
   const directionFilterSampleLimit = 3;
   let directionFilterSampleCount = 0;
   const decryptFailSampleLimit = 3;
@@ -1435,6 +1437,21 @@ export async function listSecureAndDecrypt(params = {}) {
     }
     for (const devId of replayDevices) {
       if (stateByDevice.has(devId)) continue;
+      if (selfDeviceId && devId === selfDeviceId) {
+        if (DEBUG.replay && replayHolderSkipLogCount < replayHolderSkipLogLimit) {
+          replayHolderSkipLogCount += 1;
+          try {
+            log({
+              replayHolderSkip: {
+                conversationId: conversationId || null,
+                deviceIdSuffix4: devId ? String(devId).slice(-4) : null,
+                reason: 'selfDevice'
+              }
+            });
+          } catch {}
+        }
+        continue;
+      }
       const holder = await loadReplayHolderForDevice(devId);
       stateByDevice.set(devId, holder);
     }
