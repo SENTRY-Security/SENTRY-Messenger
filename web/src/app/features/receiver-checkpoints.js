@@ -119,6 +119,11 @@ async function hashStringHex(str) {
   }
 }
 
+function normalizeHashCase(value) {
+  if (!value || typeof value !== 'string') return null;
+  return value.toUpperCase();
+}
+
 function cloneU8(src) {
   if (src instanceof Uint8Array) return new Uint8Array(src);
   return null;
@@ -264,31 +269,31 @@ async function verifyPayloadAgainstMetadata(payload, checkpointMeta = {}) {
   const dr = payload?.dr || {};
   const metaNr = Number.isFinite(checkpointMeta?.Nr) ? Number(checkpointMeta.Nr) : null;
   if (metaNr !== null && Number(dr?.Nr) !== metaNr) return { ok: false, reason: 'NrMismatch' };
-  const theirHashMeta = checkpointMeta?.theirRatchetPubHash || null;
+  const theirHashMeta = normalizeHashCase(checkpointMeta?.theirRatchetPubHash);
   if (theirHashMeta) {
-    const theirHash = await hashBytesHex(b64u8(dr?.theirRatchetPub_b64 || ''));
+    const theirHash = normalizeHashCase(await hashBytesHex(b64u8(dr?.theirRatchetPub_b64 || '')));
     if (!theirHash || theirHash.slice(0, theirHashMeta.length) !== theirHashMeta) {
       return { ok: false, reason: 'TheirPubMismatch' };
     }
   }
-  const ckRHashMeta = checkpointMeta?.ckRHash || null;
+  const ckRHashMeta = normalizeHashCase(checkpointMeta?.ckRHash);
   if (ckRHashMeta) {
-    const ckRHash = await hashBytesHex(b64u8(dr?.ckR_b64 || ''));
+    const ckRHash = normalizeHashCase(await hashBytesHex(b64u8(dr?.ckR_b64 || '')));
     if (!ckRHash || ckRHash.slice(0, ckRHashMeta.length) !== ckRHashMeta) {
       return { ok: false, reason: 'CkRHashMismatch' };
     }
   }
-  const skippedHashMeta = checkpointMeta?.skippedHash || null;
+  const skippedHashMeta = normalizeHashCase(checkpointMeta?.skippedHash);
   if (skippedHashMeta) {
     const canonical = serializeSkippedKeys(mapFromSkippedObject(dr?.skipped)).canonical || '';
-    const skippedHash = await hashStringHex(canonical);
+    const skippedHash = normalizeHashCase(await hashStringHex(canonical));
     if (!skippedHash || skippedHash.slice(0, skippedHashMeta.length) !== skippedHashMeta) {
       return { ok: false, reason: 'SkippedHashMismatch' };
     }
   }
-  const checkpointHashMeta = checkpointMeta?.checkpointHash || null;
+  const checkpointHashMeta = normalizeHashCase(checkpointMeta?.checkpointHash);
   if (checkpointHashMeta) {
-    const payloadHash = await hashStringHex(JSON.stringify(payload));
+    const payloadHash = normalizeHashCase(await hashStringHex(JSON.stringify(payload)));
     if (!payloadHash || payloadHash.slice(0, checkpointHashMeta.length) !== checkpointHashMeta) {
       return { ok: false, reason: 'CheckpointHashMismatch' };
     }
@@ -520,10 +525,10 @@ export const ReceiverCheckpoints = {
     if (DEBUG.replay && theirPubLogCount < LOG_LIMIT) {
       theirPubLogCount += 1;
       try {
-        const metaTheirRatchetPubHash = checkpoint?.theirRatchetPubHash || null;
+        const metaTheirRatchetPubHash = normalizeHashCase(checkpoint?.theirRatchetPubHash);
         let payloadTheirRatchetPubHash = null;
         try {
-          payloadTheirRatchetPubHash = await hashBytesHex(b64u8(payload?.dr?.theirRatchetPub_b64 || ''));
+          payloadTheirRatchetPubHash = normalizeHashCase(await hashBytesHex(b64u8(payload?.dr?.theirRatchetPub_b64 || '')));
         } catch {
           payloadTheirRatchetPubHash = null;
         }
