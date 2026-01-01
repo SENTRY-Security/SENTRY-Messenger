@@ -2,7 +2,7 @@
 DELETE FROM attachments;
 DELETE FROM messages_secure;
 DELETE FROM messages;
-DELETE FROM outbound_message_keys;
+DELETE FROM message_key_vault;
 DELETE FROM conversation_acl;
 DELETE FROM conversations;
 DELETE FROM contact_secret_backups;

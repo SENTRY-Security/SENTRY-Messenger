@@ -38,11 +38,9 @@ import { enqueueReceiptJob } from './queue/receipts.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
-import { OutboundKeyVault } from './outbound-key-vault.js';
+import { MessageKeyVault } from './message-key-vault.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
-const VAULT_RECORD_ATTEMPT_LOG_LIMIT = 3;
-let vaultRecordAttemptLogCount = 0;
 import { enqueueMediaMetaJob } from './queue/media.js';
 
 const drConsole = DEBUG.drVerbose === true
@@ -83,36 +81,6 @@ async function hashBytesHex(u8) {
     return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
   } catch {
     return null;
-  }
-}
-
-async function summarizeVaultRecordMk(mkB64) {
-  const summary = { mkLen: typeof mkB64 === 'string' ? mkB64.length : 0, mkHash: null };
-  if (!mkB64 || typeof mkB64 !== 'string') return summary;
-  try {
-    const mkBytes = b64u8(mkB64);
-    summary.mkLen = mkBytes instanceof Uint8Array ? mkBytes.length : summary.mkLen;
-    const hash = await hashBytesHex(mkBytes instanceof Uint8Array ? mkBytes : null);
-    summary.mkHash = hash ? hash.slice(0, 32) : null;
-  } catch {
-    /* ignore hashing errors */
-  }
-  return summary;
-}
-
-async function emitVaultRecordAttempt(fields = {}, mkB64 = null) {
-  if (!(DEBUG.replay && vaultRecordAttemptLogCount < VAULT_RECORD_ATTEMPT_LOG_LIMIT)) return;
-  vaultRecordAttemptLogCount += 1;
-  try {
-    const mkSummary = await summarizeVaultRecordMk(mkB64);
-    log({
-      vaultRecordAttempt: {
-        ...fields,
-        ...mkSummary
-      }
-    });
-  } catch {
-    /* ignore logging errors */
   }
 }
 
@@ -1463,6 +1431,17 @@ async function sendDrPlaintext(params = {}) {
   });
 
   try {
+    const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
+    await MessageKeyVault.putMessageKey({
+      conversationId: finalConversationId,
+      messageId,
+      senderDeviceId,
+      targetDeviceId: receiverDeviceId,
+      direction: 'outgoing',
+      msgType,
+      headerCounter: vaultCounter,
+      messageKeyB64
+    });
     startOutboxProcessor();
     const job = await enqueueOutboxJob({
       conversationId: finalConversationId,
@@ -1540,60 +1519,19 @@ async function sendDrPlaintext(params = {}) {
       status: result?.status ?? null,
       ok: !!result?.ok
     });
-    if (messageKeyB64) {
-      const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
-      const serverMessageId = msg.id || messageId;
-      await emitVaultRecordAttempt({
-        conversationId: finalConversationId,
-        msgType,
-        messageId,
-        serverMessageId,
-        headerCounter: vaultCounter,
-        senderDeviceId,
-        targetDeviceId: receiverDeviceId,
-        selfDeviceId
-      }, messageKeyB64);
-      const vaultResult = await OutboundKeyVault.recordOutboundKey({
-        conversationId: finalConversationId,
-        serverMessageId,
-        messageId,
-        senderDeviceId,
-        targetDeviceId: receiverDeviceId,
-        headerCounter: vaultCounter,
-        msgType,
-        messageKeyB64
+    try {
+      log({
+        sendSuccessTrace: {
+          conversationId: finalConversationId,
+          serverMessageId: msg.id || messageId,
+          messageId,
+          msgType,
+          headerCounter: vaultCounter,
+          senderDeviceId,
+          targetDeviceId: receiverDeviceId
+        }
       });
-      if (!vaultResult?.ok) {
-        try {
-          log({
-            vaultRecordFailed: {
-              conversationId: finalConversationId,
-              serverMessageId,
-              messageId,
-              headerCounter: vaultCounter,
-              senderDeviceId,
-              targetDeviceId: receiverDeviceId,
-              msgType,
-              reason: vaultResult?.reason || 'unknown'
-            }
-          });
-        } catch {}
-        throw new Error('vault record failed');
-      }
-      try {
-        log({
-          sendSuccessTrace: {
-            conversationId: finalConversationId,
-            serverMessageId,
-            messageId,
-            msgType,
-            headerCounter: vaultCounter,
-            senderDeviceId,
-            targetDeviceId: receiverDeviceId
-          }
-        });
-      } catch {}
-    }
+    } catch {}
     return { msg, convId: finalConversationId, secure: true };
   } catch (err) {
     if (!err?.__drDeliveryLogged) {
@@ -2034,6 +1972,37 @@ export async function sendDrMedia(params = {}) {
     }));
   } catch {}
 
+  const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
+  const restoreSendFailure = (err) => {
+    const holder = drState({ peerAccountDigest: peer, peerDeviceId });
+    const currentCounter = Number(holder?.NsTotal);
+    const shouldRestore = preSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= transportCounter);
+    if (shouldRestore) {
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+      const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
+      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < transportCounter)) {
+        refreshed.NsTotal = transportCounter;
+      }
+    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < transportCounter)) {
+      holder.NsTotal = transportCounter;
+    }
+    throw err;
+  };
+  try {
+    await MessageKeyVault.putMessageKey({
+      conversationId,
+      messageId,
+      senderDeviceId,
+      targetDeviceId: receiverDeviceId,
+      direction: 'outgoing',
+      msgType,
+      headerCounter: vaultCounter,
+      messageKeyB64
+    });
+  } catch (err) {
+    restoreSendFailure(err);
+  }
+
   startOutboxProcessor();
   const job = await enqueueMediaMetaJob({
     conversationId,
@@ -2058,19 +2027,7 @@ export async function sendDrMedia(params = {}) {
   });
   const result = await processOutboxJobNow(job.jobId);
   if (!result.ok) {
-    const holder = drState({ peerAccountDigest: peer, peerDeviceId });
-    const currentCounter = Number(holder?.NsTotal);
-    const shouldRestore = preSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= transportCounter);
-    if (shouldRestore) {
-      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
-      const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
-      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < transportCounter)) {
-        refreshed.NsTotal = transportCounter;
-      }
-    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < transportCounter)) {
-      holder.NsTotal = transportCounter;
-    }
-    throw new Error(result.error || 'sendMedia failed');
+    restoreSendFailure(new Error(result.error || 'sendMedia failed'));
   }
   logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
 
@@ -2091,60 +2048,19 @@ export async function sendDrMedia(params = {}) {
     });
   }
   persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
-  if (messageKeyB64) {
-    const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
-    const serverMessageId = finalMessageId;
-    await emitVaultRecordAttempt({
-      conversationId,
-      msgType,
-      messageId: finalMessageId,
-      serverMessageId,
-      headerCounter: vaultCounter,
-      senderDeviceId,
-      targetDeviceId: receiverDeviceId,
-      selfDeviceId: senderDeviceId
-    }, messageKeyB64);
-    const vaultResult = await OutboundKeyVault.recordOutboundKey({
-      conversationId,
-      serverMessageId,
-      messageId: finalMessageId,
-      senderDeviceId,
-      targetDeviceId: receiverDeviceId,
-      headerCounter: vaultCounter,
-      msgType,
-      messageKeyB64
+  try {
+    log({
+      sendSuccessTrace: {
+        conversationId,
+        serverMessageId: finalMessageId,
+        messageId: finalMessageId,
+        msgType,
+        headerCounter: vaultCounter,
+        senderDeviceId,
+        targetDeviceId: receiverDeviceId
+      }
     });
-    if (!vaultResult?.ok) {
-      try {
-        log({
-          vaultRecordFailed: {
-            conversationId,
-            serverMessageId,
-            messageId: finalMessageId,
-            headerCounter: vaultCounter,
-            senderDeviceId,
-            targetDeviceId: receiverDeviceId,
-            msgType,
-            reason: vaultResult?.reason || 'unknown'
-          }
-        });
-      } catch {}
-      throw new Error('vault record failed');
-    }
-    try {
-      log({
-        sendSuccessTrace: {
-          conversationId,
-          serverMessageId,
-          messageId: finalMessageId,
-          msgType,
-          headerCounter: vaultCounter,
-          senderDeviceId,
-          targetDeviceId: receiverDeviceId
-        }
-      });
-    } catch {}
-  }
+  } catch {}
 
   return {
     msg: {

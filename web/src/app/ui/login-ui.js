@@ -19,7 +19,6 @@ import {
 } from '../core/store.js';
 import { exchangeSDM, unlockAndInit } from '../features/login-flow.js';
 import { exchangeFromURLIfPresent, exchangeWithParams, parseSdmParams } from '../features/sdm.js';
-import { sdmDebugKit } from '../api/auth.js';
 import {
   summarizeContactSecretsPayload,
   getContactSecretsStorageKeys,
@@ -416,8 +415,6 @@ const btnSdmExchangeEl = document.getElementById('btnSdmExchange');
 const sessionView = $('#sessionView');
 const pwdEl = $('#pwd');
 const unlockBtn = $('#btnUnlock');
-const actionsBlock = document.querySelector('.actions');
-const simDebugBtn = document.getElementById('btnSimDebug');
 const passwordWrapper = document.getElementById('passwordWrapper');
 const confirmWrapper = document.getElementById('confirmWrapper');
 const pwdConfirmEl = document.getElementById('pwdConfirm');
@@ -425,7 +422,6 @@ const passwordToggles = document.querySelectorAll('.password-toggle');
 export const AUDIO_PERMISSION_KEY = 'audio-permission';
 
 let loginInProgress = false;
-const SIM_DEBUG_STORAGE_KEY = 'ntag424-sim:debug-kit';
 let newAccount = false;
 let welcomeAcknowledged = false;
 
@@ -468,20 +464,6 @@ const bootstrapStepDefs = [
 const bootstrapStepMap = new Map();
 let bootstrapInitialized = false;
 
-function loadSimDebugState() {
-  try {
-    const raw = localStorage.getItem(SIM_DEBUG_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSimDebugState(data) {
-  try {
-    localStorage.setItem(SIM_DEBUG_STORAGE_KEY, JSON.stringify(data || {}));
-  } catch {}
-}
 
 function resetBootstrapProgress() {
   bootstrapInitialized = false;
@@ -698,33 +680,6 @@ function setUidVerifyingState(active) {
   updateUidDisplay();
 }
 
-function isLikelyDesktop() {
-  try {
-    // e2e: allow forcing debug UI via ?e2e=1
-    if (typeof window !== 'undefined' && window.location && window.location.search) {
-      const p = new URLSearchParams(window.location.search);
-      if (p.get('e2e') === '1') return true;
-    }
-    const mm = typeof window.matchMedia === 'function' ? window.matchMedia.bind(window) : null;
-    const pointerFine = mm ? mm('(pointer: fine)').matches : false;
-    const pointerCoarse = mm ? mm('(pointer: coarse)').matches : false;
-    const hoverCapable = mm ? mm('(hover: hover)').matches : false;
-    const touchPoints = typeof navigator !== 'undefined' ? Number(navigator.maxTouchPoints || 0) : 0;
-    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
-    const desktopUA = /Windows NT|Macintosh|Linux x86_64/.test(ua);
-    if (pointerFine || (hoverCapable && touchPoints === 0)) return true;
-    if (!pointerCoarse && desktopUA) return true;
-    if (localStorage.getItem('ntag424-sim:forceDebug') === '1') return true;
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-if (isLikelyDesktop() && simDebugBtn) {
-  simDebugBtn.classList.remove('hidden');
-  simDebugBtn.addEventListener('click', onSimDebugClick);
-}
 
 // ---- Health & Clear ----
 const btnHealth = document.getElementById('btnHealth');
@@ -806,37 +761,6 @@ async function onSdmExchange() {
   }
 }
 
-async function onSimDebugClick() {
-  try {
-    const stored = loadSimDebugState();
-    const payload = stored?.uidHex ? { uidHex: stored.uidHex } : {};
-    const { r, data } = await sdmDebugKit(payload);
-    if (!r.ok) {
-      const text = typeof data === 'string' ? data : JSON.stringify(data);
-      log({ debugSimError: `debug-kit failed (${r.status})`, detail: text });
-      return;
-    }
-    const kit = data || {};
-    if (!kit.uidHex || !kit.sdmcounter || !kit.sdmmac) {
-      throw new Error('後端回傳的 debug 資料不完整');
-    }
-
-    saveSimDebugState({ uidHex: kit.uidHex });
-    const nonce = kit.nonce || `debug-${Date.now()}`;
-    const params = new URLSearchParams({
-      uid: kit.uidHex,
-      sdmcounter: kit.sdmcounter,
-      sdmmac: kit.sdmmac,
-      nonce,
-      e2e: '1'
-    });
-    const target = `${window.location.origin}/pages/login?${params.toString()}`;
-    log({ debugSimRedirect: target });
-    window.location.href = target;
-  } catch (err) {
-    log({ debugSimError: String(err?.message || err) });
-  }
-}
 
 // auto-exchange from URL if params present (via features/sdm)
 (async function autoExchangeFromURL() {

@@ -5,37 +5,28 @@ import { ensureCallWorkerConfig, callWorkerRequest } from '../services/call-work
 import { logger } from '../utils/logger.js';
 
 const VAULT_SERVER_LOG_LIMIT = 5;
-let vaultServerPutLogCount = 0;
-let vaultServerGetLogCount = 0;
+let vaultPutLogCount = 0;
+let vaultGetLogCount = 0;
 
-function logVaultServer(kind, payload) {
-  if (kind === 'put' && vaultServerPutLogCount >= VAULT_SERVER_LOG_LIMIT) return;
-  if (kind === 'get' && vaultServerGetLogCount >= VAULT_SERVER_LOG_LIMIT) return;
-  if (kind === 'put') vaultServerPutLogCount += 1;
-  if (kind === 'get') vaultServerGetLogCount += 1;
-  const event = kind === 'put' ? 'vaultServerPut' : 'vaultServerGet';
-  const normalized = {
-    status: payload?.status ?? null,
-    accountDigestSuffix4: payload?.accountDigestSuffix4 ?? payload?.accountDigest ?? null,
-    conversationIdPrefix8: payload?.conversationIdPrefix8 ?? payload?.conversationId ?? null,
-    messageIdPrefix8: payload?.messageIdPrefix8 ?? payload?.messageId ?? null,
-    senderDeviceIdSuffix4: payload?.senderDeviceIdSuffix4 ?? null,
-    errorCode: payload?.errorCode ?? null
-  };
-  logger.info({ event, ...normalized });
+function logMessageKeyVault(kind, payload) {
+  if (kind === 'put' && vaultPutLogCount >= VAULT_SERVER_LOG_LIMIT) return;
+  if (kind === 'get' && vaultGetLogCount >= VAULT_SERVER_LOG_LIMIT) return;
+  if (kind === 'put') vaultPutLogCount += 1;
+  if (kind === 'get') vaultGetLogCount += 1;
+  const event = kind === 'put' ? 'messageKeyVaultPut' : 'messageKeyVaultGet';
+  logger.info({ event, ...payload });
 }
 
 const PutSchema = z.object({
   conversationId: z.string().min(8),
   messageId: z.string().min(8),
-  serverMessageId: z.string().min(8).optional(),
   senderDeviceId: z.string().min(1),
-  targetDeviceId: z.string().min(1).optional(),
-  headerCounter: z.number().int(),
+  targetDeviceId: z.string().min(1),
+  direction: z.enum(['incoming', 'outgoing']),
   msgType: z.string().max(64).optional(),
-  wrapped_mk: z.any(),
-  wrap_context: z.any().optional(),
-  retentionLimit: z.number().int().optional(),
+  headerCounter: z.number().int().nonnegative().nullable().optional(),
+  wrapped_mk: z.object({}).passthrough(),
+  wrap_context: z.object({}).passthrough(),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
@@ -46,11 +37,8 @@ const PutSchema = z.object({
 
 const GetSchema = z.object({
   conversationId: z.string().min(8),
-  messageId: z.string().min(1).optional(),
-  serverMessageId: z.string().min(1).optional(),
-  senderDeviceId: z.string().min(1).optional(),
-  targetDeviceId: z.string().min(1).optional(),
-  headerCounter: z.number().int().optional(),
+  messageId: z.string().min(1),
+  senderDeviceId: z.string().min(1),
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
@@ -70,7 +58,7 @@ function respondAccountError(res, err, fallback = 'authorization failed') {
   return res.status(500).json({ error: 'AccountAuthFailed', message: err?.message || fallback });
 }
 
-export const putOutboundKey = async (req, res) => {
+export const putMessageKeyVault = async (req, res) => {
   if (!ensureCallWorkerConfig(res)) return;
 
   let input;
@@ -90,41 +78,36 @@ export const putOutboundKey = async (req, res) => {
     return respondAccountError(res, err);
   }
 
-  const headerDeviceId = req.get('x-device-id');
-  if (headerDeviceId && input.senderDeviceId && headerDeviceId.trim() !== input.senderDeviceId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId mismatch with X-Device-Id' });
-  }
-
   const payload = {
     accountDigest: auth.accountDigest,
     conversationId: input.conversationId,
     messageId: input.messageId,
-    serverMessageId: input.serverMessageId || null,
     senderDeviceId: input.senderDeviceId,
-    targetDeviceId: input.targetDeviceId || null,
-    headerCounter: input.headerCounter,
+    targetDeviceId: input.targetDeviceId,
+    direction: input.direction,
     msgType: input.msgType || null,
+    headerCounter: input.headerCounter ?? null,
     wrapped_mk: input.wrapped_mk,
-    wrap_context: input.wrap_context || null,
-    retentionLimit: input.retentionLimit ?? undefined
+    wrap_context: input.wrap_context
   };
 
   try {
-    const data = await callWorkerRequest('/d1/outbound-key-vault/put', {
+    const data = await callWorkerRequest('/d1/message-key-vault/put', {
       method: 'POST',
       body: payload
     });
-    logVaultServer('put', {
-      accountDigest: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
-      conversationId: input.conversationId.slice(0, 8),
-      messageId: input.messageId.slice(0, 8),
+    logMessageKeyVault('put', {
+      accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      conversationIdPrefix8: input.conversationId.slice(0, 8),
+      messageIdPrefix8: input.messageId.slice(0, 8),
+      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
       status: 200,
       errorCode: null
     });
     return res.json(data || { ok: true });
   } catch (err) {
     logger.error({
-      event: 'outboundVault.put.failed',
+      event: 'messageKeyVault.put.failed',
       status: err?.status,
       error: err?.message || err
     });
@@ -132,10 +115,11 @@ export const putOutboundKey = async (req, res) => {
     const payload = err?.payload && typeof err.payload === 'object'
       ? err.payload
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
-    logVaultServer('put', {
-      accountDigest: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
-      conversationId: input.conversationId.slice(0, 8),
-      messageId: input.messageId.slice(0, 8),
+    logMessageKeyVault('put', {
+      accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      conversationIdPrefix8: input.conversationId.slice(0, 8),
+      messageIdPrefix8: input.messageId.slice(0, 8),
+      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
       status,
       errorCode: payload?.error || null
     });
@@ -143,7 +127,7 @@ export const putOutboundKey = async (req, res) => {
   }
 };
 
-export const getOutboundKey = async (req, res) => {
+export const getMessageKeyVault = async (req, res) => {
   if (!ensureCallWorkerConfig(res)) return;
 
   let input;
@@ -166,30 +150,27 @@ export const getOutboundKey = async (req, res) => {
   const payload = {
     accountDigest: auth.accountDigest,
     conversationId: input.conversationId,
-    messageId: input.messageId || null,
-    serverMessageId: input.serverMessageId || null,
-    senderDeviceId: input.senderDeviceId || null,
-    targetDeviceId: input.targetDeviceId || null,
-    headerCounter: input.headerCounter ?? null
+    messageId: input.messageId,
+    senderDeviceId: input.senderDeviceId
   };
 
   try {
-    const data = await callWorkerRequest('/d1/outbound-key-vault/get', {
+    const data = await callWorkerRequest('/d1/message-key-vault/get', {
       method: 'POST',
       body: payload
     });
-    logVaultServer('get', {
+    logMessageKeyVault('get', {
       accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
       conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId ? input.messageId.slice(0, 8) : null,
-      senderDeviceIdSuffix4: input.senderDeviceId ? input.senderDeviceId.slice(-4) : null,
+      messageIdPrefix8: input.messageId.slice(0, 8),
+      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
       status: 200,
       errorCode: null
     });
-    return res.json(data || { ok: true, entry: null });
+    return res.json(data || { ok: true, wrapped_mk: null, wrap_context: null });
   } catch (err) {
     logger.error({
-      event: 'outboundVault.get.failed',
+      event: 'messageKeyVault.get.failed',
       status: err?.status,
       error: err?.message || err
     });
@@ -197,11 +178,11 @@ export const getOutboundKey = async (req, res) => {
     const payload = err?.payload && typeof err.payload === 'object'
       ? err.payload
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
-    logVaultServer('get', {
+    logMessageKeyVault('get', {
       accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
       conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId ? input.messageId.slice(0, 8) : null,
-      senderDeviceIdSuffix4: input.senderDeviceId ? input.senderDeviceId.slice(-4) : null,
+      messageIdPrefix8: input.messageId.slice(0, 8),
+      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
       status,
       errorCode: payload?.error || null
     });
