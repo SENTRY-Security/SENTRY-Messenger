@@ -935,10 +935,15 @@ export async function listSecureAndDecrypt(params = {}) {
     silent = false,
     priority = 'live'
   } = params;
-  const allowReplayRaw = allowReplay;
   const mutateStateRaw = mutateState;
-  const computedIsHistoryReplay = allowReplay === true && mutateState === false;
-  const logReplayGateTrace = (where, payload = {}) => {
+  const allowReplayRaw = mutateState === false ? true : allowReplay;
+  const computedIsHistoryReplay = allowReplayRaw === true && mutateState === false;
+  const replayCtx = {
+    allowReplay: allowReplayRaw,
+    mutateState: mutateStateRaw,
+    computedIsHistoryReplay
+  };
+  const logReplayGateTrace = (where, payload = {}, ctx = replayCtx) => {
     if (!DEBUG.replay) return;
     const {
       conversationId: payloadConversationId,
@@ -947,15 +952,18 @@ export async function listSecureAndDecrypt(params = {}) {
       ...rest
     } = payload || {};
     try {
+      const ctxAllowReplay = ctx?.allowReplay;
+      const ctxMutateState = ctx?.mutateState;
+      const ctxComputed = ctx?.computedIsHistoryReplay;
       log({
         replayGateTrace: {
           where,
           conversationId: payloadConversationId ?? conversationId ?? null,
           messageId: messageId ?? null,
           serverMessageId: serverMessageId ?? null,
-          allowReplayRaw,
-          mutateStateRaw,
-          computedIsHistoryReplay,
+          allowReplayRaw: ctxAllowReplay,
+          mutateStateRaw: ctxMutateState,
+          computedIsHistoryReplay: ctxComputed,
           ...rest
         }
       });
@@ -1302,6 +1310,10 @@ export async function listSecureAndDecrypt(params = {}) {
   let duplicateCounterSampleCount = 0;
   const historyReplayTraceLimit = 3;
   let historyReplayTraceCount = 0;
+  const replayInvariantViolationLimit = 3;
+  let replayInvariantViolationCount = 0;
+  const replayDrPathBlockedLimit = 3;
+  let replayDrPathBlockedCount = 0;
   const logSkipLine = (fields = {}) => {
     logMsgEvent('skip', {
       conversationId,
@@ -1408,8 +1420,47 @@ export async function listSecureAndDecrypt(params = {}) {
 
   const yieldToReplayError = new Error('yieldToReplay');
   yieldToReplayError.__yieldToReplay = true;
-  const handleInboxJob = async (job) => {
-    const trackState = shouldTrackState;
+  const handleInboxJob = async (job, ctx) => {
+    const replayCtxLocal = ctx && typeof ctx === 'object' ? ctx : null;
+    const allowReplayRaw = replayCtxLocal?.allowReplay;
+    const mutateStateRaw = replayCtxLocal?.mutateState;
+    const computedIsHistoryReplay = replayCtxLocal?.computedIsHistoryReplay;
+    if (typeof mutateStateRaw !== 'boolean' || typeof computedIsHistoryReplay !== 'boolean') {
+      if (replayInvariantViolationCount < replayInvariantViolationLimit) {
+        replayInvariantViolationCount += 1;
+        try {
+          log({
+            replayInvariantViolation: {
+              where: 'handleInboxJob',
+              reason: 'ctx_invalid',
+              conversationId: conversationId || null,
+              messageId: job?.messageId || null,
+              allowReplayRaw: typeof allowReplayRaw === 'boolean' ? allowReplayRaw : null,
+              mutateStateRaw: typeof mutateStateRaw === 'boolean' ? mutateStateRaw : null,
+              computedIsHistoryReplay: typeof computedIsHistoryReplay === 'boolean' ? computedIsHistoryReplay : null
+            }
+          });
+        } catch {}
+      }
+      throw new Error('REPLAY_CTX_INVALID');
+    }
+    if (mutateStateRaw === false && computedIsHistoryReplay !== true) {
+      if (replayInvariantViolationCount < replayInvariantViolationLimit) {
+        replayInvariantViolationCount += 1;
+        try {
+          log({
+            replayInvariantViolation: {
+              where: 'handleInboxJob',
+              allowReplayRaw,
+              mutateStateRaw,
+              computedIsHistoryReplay
+            }
+          });
+        } catch {}
+      }
+      throw new Error('REPLAY_INVARIANT_VIOLATION');
+    }
+    const trackState = mutateStateRaw !== false;
     const raw = job?.raw || {};
     const jobPacket = job?.payloadEnvelope || null;
     let payloadMsgType = null;
@@ -1929,7 +1980,7 @@ export async function listSecureAndDecrypt(params = {}) {
           messageId,
           serverMessageId,
           directionComputed: direction || 'unknown'
-        });
+        }, replayCtxLocal);
       }
 
       if (QUEUE_LOG_ENABLED) {
@@ -2121,6 +2172,30 @@ export async function listSecureAndDecrypt(params = {}) {
         await handleDecryptedMessage(text, messageKeyB64);
         return;
       }
+      if (computedIsHistoryReplay) {
+        if (replayDrPathBlockedCount < replayDrPathBlockedLimit) {
+          replayDrPathBlockedCount += 1;
+          try {
+            log({
+              replayDrPathBlocked: {
+                where: 'messages:handleInboxJob',
+                conversationId: convId || conversationId || null,
+                messageId: messageId || null,
+                serverMessageId: serverMessageId || null,
+                allowReplayRaw,
+                mutateStateRaw,
+                computedIsHistoryReplay,
+                directionComputed: direction || 'unknown',
+                senderDeviceId: senderDeviceId || null,
+                targetDeviceId: targetDeviceId || null,
+                selfDeviceId: selfDeviceId || null,
+                peerDeviceId: peerDeviceForMessage || null
+              }
+            });
+          } catch {}
+        }
+        throw new Error('REPLAY_DR_PATH_BLOCKED');
+      }
 
       state = getStateForDevice(peerDeviceForMessage);
       state.baseKey = state.baseKey || {};
@@ -2137,7 +2212,7 @@ export async function listSecureAndDecrypt(params = {}) {
         if (hasSendChain || sendCounter > 0) {
           throw new Error('DR state bound to different conversation; please resync contact');
         }
-        if (!computedIsHistoryReplay && shouldTrackState) {
+        if (!computedIsHistoryReplay && trackState) {
           deps.clearDrState(
             { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
             { __drDebugTag: 'web/src/app/features/messages.js:1119:handleInboxJob:conv-mismatch-clear' }
@@ -2157,7 +2232,7 @@ export async function listSecureAndDecrypt(params = {}) {
         (direction === 'incoming' || direction === 'unknown') &&
         (!hasRatchetCore || !hasReceiveChain)
       ) {
-        if (!computedIsHistoryReplay && shouldTrackState) {
+        if (!computedIsHistoryReplay && trackState) {
           deps.clearDrState(
             { peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage },
             { __drDebugTag: 'web/src/app/features/messages.js:1131:handleInboxJob:responder-inbound-clear' }
@@ -2170,7 +2245,7 @@ export async function listSecureAndDecrypt(params = {}) {
       }
       // 若仍缺可用 state，直接 fail（無任何 fallback）。
       if (!hasUsableDrState(state)) {
-        if (shouldTrackState && !computedIsHistoryReplay && deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
+        if (trackState && !computedIsHistoryReplay && deps.ensureDrReceiverState && peerKey && peerDeviceForMessage) {
           await deps.ensureDrReceiverState({ peerAccountDigest: peerKey, peerDeviceId: peerDeviceForMessage, conversationId: convId });
           state = getStateForDevice(peerDeviceForMessage);
         }
@@ -2209,7 +2284,7 @@ export async function listSecureAndDecrypt(params = {}) {
       const stateNs = Number.isFinite(Number(state?.Ns)) ? Number(state.Ns) : null;
       const sameReceiveChain = state?.theirRatchetPub && typeof header?.ek_pub_b64 === 'string'
         && naclB64(state.theirRatchetPub) === header.ek_pub_b64;
-      const enableDuplicateGuard = shouldTrackState; // disable duplicate drop in replay-only mode
+      const enableDuplicateGuard = trackState; // disable duplicate drop in replay-only mode
       if (enableDuplicateGuard && sameReceiveChain && Number.isFinite(effectiveHeaderCounter) && currentNr >= effectiveHeaderCounter) {
         logDeliverySkip('duplicateCounter', {
           counter: effectiveHeaderCounter,
@@ -2268,7 +2343,7 @@ export async function listSecureAndDecrypt(params = {}) {
       });
       const preDecryptState = summarizeDrState(state);
       if (!text) {
-        const packetKey = shouldTrackState
+        const packetKey = trackState
           ? messageId
           : `${messageId || serverMessageId || 'unknown'}::${conversationId || convId || 'unknown'}::${peerDeviceForMessage || 'unknown-device'}`;
         text = await deps.drDecryptText(state, pkt, {
@@ -2473,7 +2548,7 @@ export async function listSecureAndDecrypt(params = {}) {
         control: controlLike,
         error: msg
       });
-      if (shouldTrackState && !computedIsHistoryReplay) {
+      if (trackState && !computedIsHistoryReplay) {
         const failKey = `${conversationId}::${peerKey}::${peerDeviceForMessage || 'unknown-device'}`;
         const nextFail = (drFailureCounter.get(failKey) || 0) + 1;
         drFailureCounter.set(failKey, nextFail);
@@ -2578,6 +2653,7 @@ export async function listSecureAndDecrypt(params = {}) {
   if (shouldYieldToReplay('beforeProcess')) {
     return buildYieldResult();
   }
+  const allowReplayForProcess = allowReplayRaw;
   logReplayGateTrace('messages:listSecureAndDecrypt:processInboxInvoke', {
     conversationId,
     silent: !!silent,
@@ -2586,9 +2662,9 @@ export async function listSecureAndDecrypt(params = {}) {
   });
   await processInboxForConversation({
     conversationId,
-    allowReplay,
+    allowReplay: allowReplayForProcess,
     mutateState,
-    handler: async (job) => {
+    handler: async (job, ctx) => {
       try {
         if (drDebug) {
           logDrCore('inbox:process-job', {
@@ -2598,7 +2674,7 @@ export async function listSecureAndDecrypt(params = {}) {
             createdAt: job?.createdAt || null
           }, { level: 'log', force: true });
         }
-        await handleInboxJob(job);
+        await handleInboxJob(job, ctx);
       } catch (err) {
         const semanticKind = err?.__semanticKind || null;
         const semanticSubtype = err?.__semanticSubtype || null;

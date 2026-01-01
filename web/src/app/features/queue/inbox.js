@@ -161,6 +161,11 @@ async function processSingle(job, handler) {
 export async function processInboxForConversation({ conversationId, handler, allowReplay = false, mutateState = true }) {
   if (!conversationId || typeof handler !== 'function') return { processed: 0 };
   const computedIsHistoryReplay = allowReplay === true && mutateState === false;
+  const replayCtx = {
+    allowReplay,
+    mutateState,
+    computedIsHistoryReplay
+  };
   if (DEBUG.replay) {
     try {
       log({
@@ -177,9 +182,10 @@ export async function processInboxForConversation({ conversationId, handler, all
     } catch {}
   }
   const due = await fetchDueJobs(conversationId);
+  const handlerWithCtx = (job) => handler(job, replayCtx);
   let processed = 0;
   for (const job of due) {
-    const result = await processSingle(job, handler);
+    const result = await processSingle(job, handlerWithCtx);
     processed += 1;
     if (result?.yielded) break;
     if (processed >= 50) break; // avoid starving other conversations

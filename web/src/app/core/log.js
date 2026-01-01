@@ -19,6 +19,8 @@ const REPLAY_DEBUG_KEYS = new Set([
   'conversationResetTrace',
   'replayGateTrace',
   'historyReplayFlagTrace',
+  'replayInvariantViolation',
+  'replayDrPathBlocked',
   'replayCallsite',
   'replayFetchResult',
   'replaySummary',
