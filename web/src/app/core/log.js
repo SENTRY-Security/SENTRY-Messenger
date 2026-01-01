@@ -41,7 +41,9 @@ const REPLAY_DEBUG_KEYS = new Set([
   'contactSecretsRestoreTrace',
   'contactSecretsSanitizeDropTrace',
   'vaultGateDecisionTrace',
-  'contactSecretWriteTrace'
+  'contactSecretWriteTrace',
+  'drSnapshotRestoreReject',
+  'drHydrateFailedTrace'
 ]);
 const REPLAY_ACTION_VALUES = new Set();
 const FETCH_NOISE_KEYS = new Set(['fetchStart', 'fetchDone', 'fetchJSONDone', 'fetchFail']);

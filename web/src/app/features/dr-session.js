@@ -46,11 +46,40 @@ const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
 import { enqueueMediaMetaJob } from './queue/media.js';
 const SEND_PREFLIGHT_TRACE_LIMIT = 3;
 let sendPreflightTraceCount = 0;
+const DR_SNAPSHOT_REJECT_LIMIT = 3;
+const DR_HYDRATE_FAIL_LIMIT = 3;
+let drSnapshotRejectCount = 0;
+let drHydrateFailCount = 0;
 
 function logSendPreflightTrace(payload = {}) {
   if (sendPreflightTraceCount >= SEND_PREFLIGHT_TRACE_LIMIT) return;
   sendPreflightTraceCount += 1;
   log({ sendPreflightSecretTrace: payload });
+}
+
+function suffix(value, len) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length > len ? trimmed.slice(-len) : trimmed;
+}
+
+function stateKeySuffix6(peerAccountDigest, peerDeviceId) {
+  if (!peerAccountDigest && !peerDeviceId) return null;
+  const key = `${peerAccountDigest || 'unknown'}::${peerDeviceId || 'unknown'}`;
+  return suffix(key, 6);
+}
+
+function logDrSnapshotRestoreReject(payload = {}) {
+  if (drSnapshotRejectCount >= DR_SNAPSHOT_REJECT_LIMIT) return;
+  drSnapshotRejectCount += 1;
+  log({ drSnapshotRestoreReject: payload });
+}
+
+function logDrHydrateFailedTrace(payload = {}) {
+  if (drHydrateFailCount >= DR_HYDRATE_FAIL_LIMIT) return;
+  drHydrateFailCount += 1;
+  log({ drHydrateFailedTrace: payload });
 }
 
 const drConsole = DEBUG.drVerbose === true
@@ -509,6 +538,7 @@ function sanitizeSnapshotInput(snapshot, { sourceTag = 'snapshot', peerAccountDi
     theirRatchetPub_b64: requireSnapshotKeyString(snapshot, 'theirRatchetPub_b64', 'theirRatchetPub', { ...keyCtx, allowNull: true }),
     pendingSendRatchet: !!snapshot.pendingSendRatchet,
     role: typeof snapshot.role === 'string' ? snapshot.role.trim() || null : null,
+    selfDeviceId: typeof snapshot.selfDeviceId === 'string' ? snapshot.selfDeviceId.trim() || null : null,
     updatedAt: (() => {
       const ts = Number(snapshot.updatedAt ?? snapshot.snapshotTs ?? snapshot.ts);
       return Number.isFinite(ts) && ts > 0 ? ts : null;
@@ -769,16 +799,47 @@ export function restoreDrStateFromSnapshot(params = {}) {
   const peer = resolvePeerDigest(params);
   const peerDeviceId = params?.peerDeviceId ?? null;
   const selfDeviceId = ensureDeviceId();
-  if (!peer && !targetState) return false;
-  const data = sanitizeSnapshotInput(snapshot, { sourceTag, peerAccountDigest: peer, peerDeviceId });
-  if (!data) return false;
+  const snapshotSelfDeviceIdRaw = typeof snapshot?.selfDeviceId === 'string' ? snapshot.selfDeviceId : null;
+  const snapshotRoleRaw = typeof snapshot?.role === 'string' ? snapshot.role.trim() || null : null;
+  let data = null;
+  const logReject = (reason) => {
+    const snapshotSelfDeviceId = typeof data?.selfDeviceId === 'string' ? data.selfDeviceId : snapshotSelfDeviceIdRaw;
+    const role = typeof data?.role === 'string' ? data.role : snapshotRoleRaw;
+    logDrSnapshotRestoreReject({
+      reason,
+      peerAccountDigestSuffix4: suffix(peer, 4),
+      peerDeviceIdSuffix4: suffix(peerDeviceId, 4),
+      selfDeviceIdSuffix4: suffix(selfDeviceId, 4),
+      snapshotSelfDeviceIdSuffix4: suffix(snapshotSelfDeviceId, 4),
+      role: role || null,
+      stateKeySuffix6: stateKeySuffix6(peer, peerDeviceId)
+    });
+  };
+  if (!peer && !targetState) {
+    logReject('SANITIZE_MISSING_FIELD');
+    return false;
+  }
+  data = sanitizeSnapshotInput(snapshot, { sourceTag, peerAccountDigest: peer, peerDeviceId });
+  if (!data) {
+    logReject('SNAPSHOT_SCHEMA_INVALID');
+    return false;
+  }
   // 丟棄非本機裝置的 responder 快照，避免 guest 端錯用對端狀態。
   if (selfDeviceId) {
-    if (data.selfDeviceId && data.selfDeviceId !== selfDeviceId) return false;
-    if (data.role && data.role.toLowerCase() === 'responder' && peerDeviceId && selfDeviceId !== peerDeviceId) return false;
+    if (data.selfDeviceId && data.selfDeviceId !== selfDeviceId) {
+      logReject('SELF_DEVICE_MISMATCH');
+      return false;
+    }
+    if (!data.selfDeviceId && data.role && data.role.toLowerCase() === 'responder' && peerDeviceId && selfDeviceId !== peerDeviceId) {
+      logReject('PEER_DEVICE_MISMATCH');
+      return false;
+    }
   }
   const holder = targetState || drState({ peerAccountDigest: peer, peerDeviceId });
-  if (!holder) return false;
+  if (!holder) {
+    logReject('SANITIZE_MISSING_FIELD');
+    return false;
+  }
   // 若已有 send 鏈且 Ns>0，避免被缺 send 鏈或較小 Ns 的快照覆蓋。
   const hasExistingSend = holder?.ckS instanceof Uint8Array && holder.ckS.length > 0 && Number.isFinite(holder?.Ns) && Number(holder.Ns) > 0;
   const incomingHasSend = !!data.ckS_b64 && typeof data.ckS_b64 === 'string';
@@ -795,9 +856,11 @@ export function restoreDrStateFromSnapshot(params = {}) {
         sourceTag
       }));
     }
+    logReject('ROLE_GATING_REJECT');
     return false;
   }
   if (!targetState && !force && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
+    logReject('ROLE_GATING_REJECT');
     return false;
   }
   holder.rk = decodeKeyString(data.rk_b64, { keyName: 'rk', peerAccountDigest: peer, peerDeviceId, sourceTag });
@@ -1403,7 +1466,23 @@ async function sendDrPlaintext(params = {}) {
   if (!hasDrState) {
     // 嚴禁 fallback：若缺會話，僅允許顯式重建，直接報錯。
     if (hasDrInit) {
-      await ensureDrReceiverState({ peerAccountDigest: peer, peerDeviceId, conversationId });
+      try {
+        await ensureDrReceiverState({ peerAccountDigest: peer, peerDeviceId, conversationId });
+      } catch (err) {
+        const message = err?.message || String(err);
+        if (message.includes('DR hydrate failed: restore returned false')) {
+          logDrHydrateFailedTrace({
+            stateKeySuffix6: stateKeySuffix6(peer, peerDeviceId),
+            peerAccountDigestSuffix4: suffix(peer, 4),
+            peerDeviceIdSuffix4: suffix(peerDeviceId, 4),
+            selfDeviceIdSuffix4: suffix(selfDeviceId, 4),
+            role: preflightSecret?.role || null,
+            hasSnapshot: !!preflightSecret?.drState,
+            hasToken: !!(preflightSecret?.conversationToken || tokenB64)
+          });
+        }
+        throw err;
+      }
     } else {
       throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
     }
