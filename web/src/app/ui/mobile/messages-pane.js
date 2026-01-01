@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getAccountToken, getAccountDigest, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
+import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
@@ -3407,50 +3407,57 @@ export function initMessagesPane({
         hasToken: !!state.conversationToken
       }));
     } catch {}
-    const statusBeforeEnsure = getCachedSecureStatus(activePeerKey);
-    let initialStatus = statusBeforeEnsure;
-    if (!initialStatus || initialStatus.status === SECURE_CONVERSATION_STATUS.IDLE) {
-      initialStatus = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.PENDING, null);
-    }
-    if (initialStatus) {
-      applySecureStatusForActivePeer(activePeerKey, initialStatus);
-    }
     let ensureStatusInfo = null;
-    try {
-      ensureStatusInfo = await ensureSecureConversationReady({
-        peerAccountDigest: activePeerKey,
-        conversationId: state.conversationId || null,
-        reason: 'open-conversation',
-        source: 'messages-pane:setActiveConversation',
-        skipInitialCheckpoint: true
-      });
-    } catch (err) {
-      const errorMsg = err?.message || err || '建立安全對話失敗，請稍後再試。';
-      log({ ensureSecureConversationError: errorMsg, peerAccountDigest: activePeerKey });
-      const corruptInfo = getCorruptContact?.({ peerAccountDigest: activePeerKey, peerDeviceId }) || null;
-      const failReason = corruptInfo ? 'CONTACT_CORRUPT' : 'ENSURE_SECURE_CONVERSATION_FAILED';
-      const cachedWasPending = statusBeforeEnsure?.status === SECURE_CONVERSATION_STATUS.PENDING;
-      const isNotReadyError = typeof errorMsg === 'string'
-        && (/缺少安全會話狀態/.test(errorMsg) || /逾時/.test(errorMsg) || /timeout/i.test(errorMsg));
-      if (!corruptInfo && entry?.isReady && cachedWasPending && isNotReadyError) {
-        pendingSecureReadyPeer = activePeerKey;
-        ensureStatusInfo = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.PENDING, null);
-        log({ ensureSecureConversationPending: { peerAccountDigest: activePeerKey, reason: failReason, error: errorMsg } });
-      } else {
-        const cached = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
-        applySecureStatusForActivePeer(activePeerKey, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
-        applyMessagesLayout();
-        logSetActiveFail({
-          reason: failReason,
-          peerKey: activePeerKey,
-          peerDigest,
-          peerDeviceId,
-          entry,
-          conversation,
-          error: errorMsg
-        });
-        return;
+    const vaultGateReady = !!(state.conversationToken && state.conversationId && getMkRaw());
+    if (!vaultGateReady) {
+      const statusBeforeEnsure = getCachedSecureStatus(activePeerKey);
+      let initialStatus = statusBeforeEnsure;
+      if (!initialStatus || initialStatus.status === SECURE_CONVERSATION_STATUS.IDLE) {
+        initialStatus = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.PENDING, null);
       }
+      if (initialStatus) {
+        applySecureStatusForActivePeer(activePeerKey, initialStatus);
+      }
+      try {
+        ensureStatusInfo = await ensureSecureConversationReady({
+          peerAccountDigest: activePeerKey,
+          conversationId: state.conversationId || null,
+          reason: 'open-conversation',
+          source: 'messages-pane:setActiveConversation',
+          skipInitialCheckpoint: true
+        });
+      } catch (err) {
+        const errorMsg = err?.message || err || '建立安全對話失敗，請稍後再試。';
+        log({ ensureSecureConversationError: errorMsg, peerAccountDigest: activePeerKey });
+        const corruptInfo = getCorruptContact?.({ peerAccountDigest: activePeerKey, peerDeviceId }) || null;
+        const failReason = corruptInfo ? 'CONTACT_CORRUPT' : 'ENSURE_SECURE_CONVERSATION_FAILED';
+        const cachedWasPending = statusBeforeEnsure?.status === SECURE_CONVERSATION_STATUS.PENDING;
+        const isNotReadyError = typeof errorMsg === 'string'
+          && (/缺少安全會話狀態/.test(errorMsg) || /逾時/.test(errorMsg) || /timeout/i.test(errorMsg));
+        if (!corruptInfo && entry?.isReady && cachedWasPending && isNotReadyError) {
+          pendingSecureReadyPeer = activePeerKey;
+          ensureStatusInfo = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.PENDING, null);
+          log({ ensureSecureConversationPending: { peerAccountDigest: activePeerKey, reason: failReason, error: errorMsg } });
+        } else {
+          const cached = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.FAILED, String(errorMsg));
+          applySecureStatusForActivePeer(activePeerKey, cached || { status: SECURE_CONVERSATION_STATUS.FAILED, error: String(errorMsg) });
+          applyMessagesLayout();
+          logSetActiveFail({
+            reason: failReason,
+            peerKey: activePeerKey,
+            peerDigest,
+            peerDeviceId,
+            entry,
+            conversation,
+            error: errorMsg
+          });
+          return;
+        }
+      }
+    } else {
+      ensureStatusInfo = cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.READY, null);
+      pendingSecureReadyPeer = null;
+      applySecureStatusForActivePeer(activePeerKey, ensureStatusInfo);
     }
     const cachedSecureStatus = getCachedSecureStatus(activePeerKey);
     const statusInfo = ensureStatusInfo

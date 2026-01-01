@@ -34,7 +34,8 @@ const REPLAY_DEBUG_KEYS = new Set([
   'avatar:env-written',
   'mkHardblockTrace',
   'mkUnwrapHardblockTrace',
-  'deviceIdRestoreTrace'
+  'deviceIdRestoreTrace',
+  'contactSecretsRoleNormalizeTrace'
 ]);
 const REPLAY_ACTION_VALUES = new Set();
 const FETCH_NOISE_KEYS = new Set(['fetchStart', 'fetchDone', 'fetchJSONDone', 'fetchFail']);

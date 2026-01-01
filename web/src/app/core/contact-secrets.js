@@ -30,6 +30,29 @@ const CORRUPT_REASON_DEFAULT = 'invalid-contact-secret';
 const PENDING_REASON_DEFAULT = 'pending-material';
 let lastRestoreSummary = null;
 let lastRestoreError = null;
+const ROLE_NORMALIZE_LOG_LIMIT = 5;
+let roleNormalizeLogCount = 0;
+
+function normalizeContactRole(rawRole, { source = null, peerAccountDigest = null, peerDeviceId = null, logChange = false } = {}) {
+  const val = typeof rawRole === 'string' ? rawRole.toLowerCase() : null;
+  if (!val) return null;
+  let normalized = val;
+  if (val === 'responder') normalized = 'owner';
+  else if (val === 'initiator') normalized = 'guest';
+  if (logChange && normalized !== val && roleNormalizeLogCount < ROLE_NORMALIZE_LOG_LIMIT) {
+    roleNormalizeLogCount += 1;
+    log({
+      contactSecretsRoleNormalizeTrace: {
+        fromRole: val,
+        toRole: normalized,
+        peerAccountDigest: peerAccountDigest || null,
+        peerDeviceId: peerDeviceId || null,
+        source: source || null
+      }
+    });
+  }
+  return normalized;
+}
 
 function ensureCorruptContactMap() {
   if (!(sessionStore.corruptContacts instanceof Map)) {
@@ -1440,11 +1463,16 @@ function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
   if (!peerAccountDigest) return null;
   const conversation = entry.conversation || {};
   const explicitPeerDeviceId = normalizePeerDeviceId(entry.peerDeviceId || null);
-  const role = typeof entry.role === 'string' ? entry.role.toLowerCase() : null;
   const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : null;
   const deviceKeys = devices ? Object.keys(devices).map((k) => normalizePeerDeviceId(k)).filter(Boolean) : [];
   const peerDeviceId = explicitPeerDeviceId || (deviceKeys.length === 1 ? deviceKeys[0] : null);
   if (!peerDeviceId) return null;
+  const role = normalizeContactRole(entry.role, {
+    source,
+    peerAccountDigest,
+    peerDeviceId,
+    logChange: true
+  });
   const identity = normalizePeerIdentity({
     peerAccountDigest,
     peerDeviceId
@@ -1592,8 +1620,7 @@ function normalizeContactSecretUpdate(update = {}) {
 
   const applyRole = (raw) => {
     if (raw === undefined) return;
-    const val = normalizeOptionalString(raw);
-    structured.role = { has: true, value: val ? val.toLowerCase() : null };
+    structured.role = { has: true, value: normalizeContactRole(raw) };
   };
 
   function applyDrState(raw) {

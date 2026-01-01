@@ -122,6 +122,10 @@ const DECRYPTED_CACHE_MAX_PER_CONV = 500;
 const TIMELINE_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
 const decryptFailLogDedup = new Set();
 const semanticIgnoreLogDedup = new Set();
+const NON_REPLAYABLE_SIGNAL_TYPES = new Set([
+  CONTROL_MESSAGE_TYPES.READ_RECEIPT,
+  CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT
+]);
 
 function normalizeHeaderCounter(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -1051,6 +1055,7 @@ export async function listSecureAndDecrypt(params = {}) {
     skipped_directionFilter: 0,
     skipped_duplicateCounter: 0,
     skipped_processedContactShare: 0,
+    skipped_nonReplayableSignal: 0,
     skipped_securePending: 0,
     decryptOk: 0,
     decryptFail: 0,
@@ -2091,6 +2096,25 @@ export async function listSecureAndDecrypt(params = {}) {
           targetDeviceId: targetDeviceId || null
         };
         throw new Error(`contact-share missing senderDeviceId (available=${JSON.stringify(availableDevices)})`);
+      }
+      const normalizedMsgType = typeof msgTypeForDecrypt === 'string' ? msgTypeForDecrypt.toLowerCase() : null;
+      if (isHistoryReplay && normalizedMsgType && NON_REPLAYABLE_SIGNAL_TYPES.has(normalizedMsgType)) {
+        replayCounters.skipped_nonReplayableSignal += 1;
+        try {
+          log({
+            replaySkipSample: {
+              skipReason: 'nonReplayableSignal',
+              conversationId: convId || conversationId || null,
+              messageId: messageId || null,
+              serverMessageId: serverMessageId || null,
+              msgType: normalizedMsgType
+            }
+          });
+        } catch {}
+        if (convId && messageId) {
+          markMessageProcessed(convId, messageId);
+        }
+        return;
       }
       if (drDebug) {
         logDrCore('inbox:receive', {
