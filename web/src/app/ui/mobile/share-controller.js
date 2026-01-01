@@ -22,7 +22,7 @@ import {
   drState,
   normalizePeerIdentity
 } from '../../core/store.js';
-import { generateRandomNickname, normalizeNickname, persistProfileForAccount } from '../../features/profile.js';
+import { generateRandomNickname, normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
@@ -1057,7 +1057,8 @@ export function setupShareController(options) {
           {
             nickname: payload.nickname,
             avatar: payload.avatar || null,
-            updatedAt: payload.updatedAt || payload.addedAt || Math.floor(Date.now() / 1000)
+            updatedAt: payload.updatedAt || payload.addedAt || Math.floor(Date.now() / 1000),
+            sourceTag: PROFILE_WRITE_SOURCE.CONTACT_SHARE
           },
           peerAccountOnly
         );

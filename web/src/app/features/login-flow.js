@@ -11,6 +11,7 @@ import { devkeysFetch, devkeysStore } from '../api/devkeys.js';
 import { prekeysPublish } from '../api/prekeys.js';
 import { fetchAccountEvidence } from '../api/account.js';
 import { log } from '../core/log.js';
+import { DEBUG } from '../ui/mobile/debug-flags.js';
 import {
   getSession, setSession,
   getHasMK, setHasMK,
@@ -105,6 +106,15 @@ async function emitMkSetTrace(sourceTag, mkRaw) {
         deviceIdSuffix4: (getDeviceId() || '').slice(-4) || null
       }
     });
+  } catch {}
+}
+
+let identityTraceCount = 0;
+function emitIdentityTrace(payload) {
+  if (!DEBUG.identityTrace || identityTraceCount >= 5) return;
+  identityTraceCount += 1;
+  try {
+    log({ identityTrace: payload });
   } catch {}
 }
 
@@ -203,6 +213,14 @@ export async function exchangeSDM(p) {
   } else {
     setOpaqueServerId(null);
   }
+
+  emitIdentityTrace({
+    sourceTag: 'sdm-exchange',
+    uidHexSuffix4: uidHex ? uidHex.slice(-4) : null,
+    uidDigestSuffix4: data?.uidDigest ? String(data.uidDigest).slice(-4) : null,
+    accountDigestSuffix4: (getAccountDigest() || data.accountDigest || data.account_digest || '').slice(-4) || null,
+    hasMK: !!data?.hasMK
+  });
 
   return {
     session: getSession(),

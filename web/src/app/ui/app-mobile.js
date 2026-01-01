@@ -54,7 +54,8 @@ import {
   loadLatestProfile as loadProfileControlState,
   persistProfileForAccount,
   normalizeNickname as normalizeProfileNickname,
-  seedProfileCounterOnce
+  seedProfileCounterOnce,
+  PROFILE_WRITE_SOURCE
 } from '../features/profile.js';
 import {
   sessionStore,
@@ -3598,7 +3599,10 @@ async function hydrateProfileSnapshotForDigest(peerDigest) {
   const hasProfile = !!normalizedNick || !!localSnapshot.avatar;
   if (!hasProfile || isFallbackProfileName(localSnapshot.nickname, digest)) return;
   try {
-    await persistProfileForAccount({ ...localSnapshot, nickname: normalizedNick || localSnapshot.nickname }, digest);
+    await persistProfileForAccount(
+      { ...localSnapshot, nickname: normalizedNick || localSnapshot.nickname, sourceTag: PROFILE_WRITE_SOURCE.PROFILE_SNAPSHOT },
+      digest
+    );
     log({ profileSnapshotPersisted: true, peerAccountDigest: digest });
   } catch (err) {
     log({ profileSnapshotPersistError: err?.message || err, peerAccountDigest: digest });

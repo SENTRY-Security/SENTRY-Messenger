@@ -160,11 +160,12 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
   const summary = snapshot?.summary || null;
   const entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
   const withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
-  if (entryCount > 0 && withDrState === 0) {
+  const isForced = !!force || reason === 'secure-logout' || reason === 'force-logout';
+  if (entryCount > 0 && withDrState === 0 && !isForced) {
     log({ contactSecretsBackupSkipped: 'withDrState-absent', reason, entries: entryCount });
     return false;
   }
-  if (!force && snapshot.checksum && snapshot.checksum === lastUploadedChecksum) {
+  if (!isForced && snapshot.checksum && snapshot.checksum === lastUploadedChecksum) {
     return false;
   }
   try {

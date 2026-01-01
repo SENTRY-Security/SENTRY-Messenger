@@ -9,11 +9,9 @@ import {
   ensureDeviceId,
   allocateDeviceCounter,
   setDeviceCounter,
-  normalizeAccountDigest,
-  getUidHex
+  normalizeAccountDigest
 } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../crypto/aead.js';
-import { buildIdenticonImage } from '../lib/identicon.js';
 import { log } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
@@ -22,7 +20,30 @@ const PROFILE_ALLOWED_INFO_TAGS = new Set([PROFILE_INFO_TAG]);
 const PROFILE_MESSAGE_TYPE = 'profile-update';
 const PROFILE_CONV_PREFIX = 'profile:';
 const AVATAR_CONV_PREFIX = 'avatar-';
-let avatarBugLogCount = 0;
+const AVATAR_WRITE_LOG_LIMIT = 5;
+let avatarWriteLogCount = 0;
+
+export const PROFILE_WRITE_SOURCE = Object.freeze({
+  EXPLICIT: 'explicit_user_action',
+  USER_NICKNAME: 'user-nickname',
+  AUTO_NICKNAME: 'auto-nickname-normalize',
+  CONTACT_SHARE: 'contact-share',
+  PROFILE_SNAPSHOT: 'profile-snapshot-hydrate'
+});
+
+function shouldLogAvatarWrite() {
+  return DEBUG.avatarBug && avatarWriteLogCount < AVATAR_WRITE_LOG_LIMIT;
+}
+
+function emitAvatarWriteLog(payload) {
+  if (!shouldLogAvatarWrite()) return;
+  avatarWriteLogCount += 1;
+  try {
+    log({ profileWriteTrace: payload });
+  } catch {
+    /* ignore logging errors */
+  }
+}
 
 function logProfileCounter(payload) {
   if (!DEBUG.profileCounter) return;
@@ -100,16 +121,18 @@ export function generateRandomNickname() {
   return `${adj}-${noun}-${suffix}`;
 }
 
-function normalizeProfilePayload(profile, { fallbackNickname } = {}) {
+function normalizeProfilePayload(profile, { fallbackNickname, allowAvatar = true } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const nickname = normalizeNickname(profile?.nickname || '') || fallbackNickname || '';
   const payload = {
     type: PROFILE_MESSAGE_TYPE,
     nickname,
-    avatar: profile?.avatar || null,
     updatedAt: Number.isFinite(profile?.updatedAt) ? Number(profile.updatedAt) : now,
     version: Number.isFinite(profile?.version) ? Number(profile.version) : 1
   };
+  if (allowAvatar && Object.prototype.hasOwnProperty.call(profile || {}, 'avatar')) {
+    if (typeof profile.avatar !== 'undefined') payload.avatar = profile.avatar;
+  }
   if (profile?.ts && !payload.ts) {
     const tsVal = Number(profile.ts);
     if (Number.isFinite(tsVal)) payload.ts = tsVal;
@@ -158,6 +181,8 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
   if (!candidates.length) return null;
 
   const ordered = candidates.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  let latest = null;
+  let fallbackAvatar = null;
   for (const entry of ordered) {
     const msgId = entry?.item?.id || null;
     const createdAt = entry?.createdAt || null;
@@ -182,11 +207,35 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
         }
       });
       const profile = await unwrapWithMK_JSON(normalizedEnvelope, mk);
-      console.log('[profile] loaded profile', profile);
-      return { ...profile, msgId, ts: createdAt };
+      const hasAvatarField = Object.prototype.hasOwnProperty.call(profile || {}, 'avatar');
+      const wrapped = { ...profile, msgId, ts: createdAt };
+      if (!latest) {
+        latest = wrapped;
+        if (hasAvatarField) {
+          console.log('[profile] loaded profile', latest);
+          return latest;
+        }
+      }
+      if (!fallbackAvatar && hasAvatarField && profile?.avatar) {
+        fallbackAvatar = profile.avatar;
+      }
+      if (latest && !Object.prototype.hasOwnProperty.call(latest, 'avatar') && fallbackAvatar) {
+        const merged = { ...latest, avatar: fallbackAvatar };
+        console.log('[profile] loaded profile', merged);
+        return merged;
+      }
     } catch (err) {
       log({ profileHydrateSkip: { msgId, createdAt, reason: err?.message || 'profile decode failed' } });
     }
+  }
+  if (latest) {
+    if (!Object.prototype.hasOwnProperty.call(latest, 'avatar') && fallbackAvatar) {
+      const merged = { ...latest, avatar: fallbackAvatar };
+      console.log('[profile] loaded profile', merged);
+      return merged;
+    }
+    console.log('[profile] loaded profile', latest);
+    return latest;
   }
   return null;
 }
@@ -272,53 +321,51 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   const convId = profileConversationId(accountDigest);
   const deviceId = ensureDeviceId();
   if (!mk || !convId || !selfDigest || !deviceId) throw new Error('Not unlocked: MK/account missing');
+  const inputProfile = profile && typeof profile === 'object' ? profile : {};
+  const sourceTag = typeof inputProfile?.sourceTag === 'string'
+    ? inputProfile.sourceTag
+    : typeof inputProfile?.source === 'string'
+      ? inputProfile.source
+      : 'unknown';
+  const explicitAvatarWrite = sourceTag === PROFILE_WRITE_SOURCE.EXPLICIT;
+  const targetIsSelf = !!(targetDigest && selfDigest && targetDigest === selfDigest);
+  const hasAvatarField = Object.prototype.hasOwnProperty.call(inputProfile, 'avatar');
+  const avatarWasNull = hasAvatarField && inputProfile?.avatar === null;
+  const allowSelfAvatarWrite = targetIsSelf ? explicitAvatarWrite : true;
+  const shouldStripAvatar = targetIsSelf && hasAvatarField && !explicitAvatarWrite;
+  let normalizedInput = inputProfile;
+  if (shouldStripAvatar) {
+    normalizedInput = { ...inputProfile };
+    delete normalizedInput.avatar;
+  }
   const fallbackNickname = targetDigest ? `好友 ${targetDigest.slice(-4)}` : '';
-  const obj = normalizeProfilePayload(profile, { fallbackNickname });
-  if (obj?.avatar) {
-    const env = obj.avatar?.env || null;
-    console.log('[profile] avatar:env-written', {
-      hasInfoTag: !!env?.info_tag,
-      hasKeyType: !!env?.key_type,
-      hasIv: !!env?.iv_b64,
-      hasSalt: !!env?.hkdf_salt_b64,
-      objKey: obj.avatar?.objKey || null
+  const allowAvatar = !targetIsSelf || allowSelfAvatarWrite;
+  const obj = normalizeProfilePayload(normalizedInput, { fallbackNickname, allowAvatar });
+  if (shouldLogAvatarWrite()) {
+    const avatarObjKey = hasAvatarField && inputProfile?.avatar?.objKey ? String(inputProfile.avatar.objKey) : null;
+    const env = hasAvatarField ? inputProfile?.avatar?.env || null : null;
+    const identiconHint = hasAvatarField
+      ? inputProfile?.avatar?.identiconSeed || inputProfile?.avatar?.identiconSvg || inputProfile?.avatar?.identicon
+      : null;
+    const hashInputRaw = hasAvatarField
+      ? env?.ct_b64 || avatarObjKey || JSON.stringify(env || {})
+      : null;
+    const payloadHash = hashInputRaw ? await hashString(String(hashInputRaw)) : null;
+    emitAvatarWriteLog({
+      callsiteTag: 'persistProfileControlState',
+      targetAccountDigestSuffix8: targetDigest ? targetDigest.slice(-8) : null,
+      selfAccountDigestSuffix8: selfDigest ? selfDigest.slice(-8) : null,
+      sourceTag,
+      hasAvatarField,
+      avatarWasNull,
+      attemptedIdenticonWrite: identiconHint ? true : null,
+      avatarObjKeySuffix8: avatarObjKey ? avatarObjKey.slice(-8) : null,
+      avatarPayloadHash: payloadHash || null,
+      avatarPayloadHashSource: hashInputRaw ? (env?.ct_b64 ? 'env.ct_b64' : (avatarObjKey ? 'objKey' : 'avatar.env')) : null,
+      targetIsSelf,
+      avatarWriteAllowed: allowSelfAvatarWrite,
+      avatarStripped: shouldStripAvatar
     });
-    if (DEBUG.avatarBug && avatarBugLogCount < 3) {
-      avatarBugLogCount += 1;
-      const targetIsSelf = !!(targetDigest && selfDigest && targetDigest === selfDigest);
-      const selfAvatarObjKey = (() => {
-        try {
-          if (typeof window !== 'undefined') {
-            return window.sessionStore?.profileState?.avatar?.objKey || null;
-          }
-        } catch {
-          /* ignore access errors */
-        }
-        return null;
-      })();
-      const hashInputRaw = env?.ct_b64 || obj.avatar?.objKey || JSON.stringify(env || {});
-      const payloadHash = await hashString(typeof hashInputRaw === 'string' ? hashInputRaw : JSON.stringify(hashInputRaw));
-      const selfAvatarHash = await hashString(selfAvatarObjKey || '');
-      const sourceTag = profile?.sourceTag || profile?.source || (targetIsSelf ? 'self-profile' : 'contact-share');
-      const triggeredBy = profile?.triggeredBy || (targetIsSelf ? 'self-profile' : 'contact-share');
-      try {
-        log({
-          avatarWriteTrace: {
-            objKey: obj.avatar?.objKey || null,
-            payloadHash: payloadHash || null,
-            payloadHashSource: env?.ct_b64 ? 'env.ct_b64' : (obj.avatar?.objKey ? 'objKey' : 'avatar.env'),
-            selfAvatarObjKey: selfAvatarObjKey || null,
-            selfAvatarHash: selfAvatarHash || null,
-            matchesSelfAvatar: !!(selfAvatarObjKey && obj.avatar?.objKey && selfAvatarObjKey === obj.avatar.objKey),
-            targetAccountDigest: targetDigest || null,
-            selfAccountDigest: selfDigest || null,
-            peerAccountDigest: targetDigest && selfDigest && targetDigest !== selfDigest ? targetDigest : null,
-            sourceTag,
-            triggeredBy
-          }
-        });
-      } catch {}
-    }
   }
   const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
   const normalizedEnvelope = assertEnvelopeStrict(envelope, { allowInfoTags: PROFILE_ALLOWED_INFO_TAGS });
@@ -375,7 +422,11 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
 }
 
 export async function loadLatestProfile(accountDigest = null) {
-  return loadProfileControlState(accountDigest, { limit: 1 });
+  const targetDigest = normalizeAccountDigest(accountDigest || getAccountDigest());
+  const selfDigest = normalizeAccountDigest(getAccountDigest());
+  const isSelf = !accountDigest || (!!targetDigest && !!selfDigest && targetDigest === selfDigest);
+  const limit = isSelf ? 5 : 1;
+  return loadProfileControlState(accountDigest, { limit });
 }
 
 export async function saveProfile(profile) {
@@ -383,9 +434,11 @@ export async function saveProfile(profile) {
   if (saved === false) return false;
   const overridesForContacts = {
     nickname: saved.nickname || null,
-    avatar: saved.avatar || null,
     updatedAt: saved.updatedAt
   };
+  if (Object.prototype.hasOwnProperty.call(saved || {}, 'avatar')) {
+    overridesForContacts.avatar = saved.avatar || null;
+  }
 
   // 對所有已知好友推播 contacts-reload，讓對方同步暱稱/頭像
   try {
@@ -434,23 +487,25 @@ export async function ensureProfileNickname() {
 
   if (!normalized) {
     const nickname = generateRandomNickname();
-    const entry = { nickname, updatedAt: now };
+    const entry = { nickname, updatedAt: now, sourceTag: PROFILE_WRITE_SOURCE.AUTO_NICKNAME };
     const saved = await saveProfile(entry).catch((err) => {
       console.error('profile save failed', err);
       return entry;
     });
-    console.log('[profile] generated nickname', saved);
-    return saved;
+    const merged = { ...(profile || {}), ...(saved || entry) };
+    console.log('[profile] generated nickname', merged);
+    return merged;
   }
 
   if (normalized !== profile?.nickname) {
-    const entry = { ...(profile || {}), nickname: normalized, updatedAt: now };
+    const entry = { nickname: normalized, updatedAt: now, sourceTag: PROFILE_WRITE_SOURCE.AUTO_NICKNAME };
     const saved = await saveProfile(entry).catch((err) => {
       console.error('profile normalize failed', err);
       return entry;
     });
-    console.log('[profile] normalized nickname', saved);
-    return saved;
+    const merged = { ...(profile || {}), ...(saved || entry) };
+    console.log('[profile] normalized nickname', merged);
+    return merged;
   }
 
   return { ...profile, nickname: normalized };
@@ -493,34 +548,13 @@ export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {
 }
 
 /**
- * For new accounts: create and upload a default identicon avatar if none exists.
- * Uses provided seed (uidHex preferred) or falls back to account digest.
+ * Default identicon persistence is disabled; identicon is UI-only.
  */
 export async function ensureDefaultAvatarFromSeed({ seed, force = false } = {}) {
-  const mk = getMkRaw();
-  const convId = profileConversationId();
-  if (!mk || !convId) throw new Error('Not unlocked: MK/account missing');
-  const profile = await loadLatestProfile().catch(() => null);
-  if (!force && profile?.avatar?.objKey) {
-    return { ok: true, skipped: true, reason: 'has-avatar' };
+  if (force) {
+    return { ok: false, skipped: true, reason: 'auto-avatar-disabled' };
   }
-  const identiconSeed =
-    (typeof seed === 'string' && seed.trim()) ||
-    getUidHex?.() ||
-    (getAccountDigest() || '').toUpperCase();
-  if (!identiconSeed) throw new Error('missing identicon seed');
-  const identicon = await buildIdenticonImage(identiconSeed, { size: 512, format: 'image/jpeg', quality: 0.88 });
-  if (!identicon?.blob) throw new Error('identicon render failed');
-  const file = new File([identicon.blob], 'avatar-identicon.jpg', { type: identicon.blob.type || 'image/jpeg' });
-  const avatarMeta = await uploadAvatar({ file, thumbDataUrl: identicon.dataUrl });
-  const nextProfile = {
-    ...(profile || {}),
-    avatar: { ...avatarMeta, autoGenerated: true },
-    nickname: profile?.nickname || generateRandomNickname(),
-    updatedAt: Math.floor(Date.now() / 1000)
-  };
-  const saved = await saveProfile(nextProfile).catch(() => nextProfile);
-  return { ok: true, avatar: saved?.avatar || avatarMeta };
+  return { ok: true, skipped: true, reason: 'auto-avatar-disabled' };
 }
 
 export async function loadAvatarBlob(profile) {

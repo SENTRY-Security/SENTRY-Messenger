@@ -2708,6 +2708,23 @@ export async function listSecureAndDecrypt(params = {}) {
     }
   });
 
+  if (computedIsHistoryReplay && replayCounters.messageKeyVaultMissing > 0) {
+    try {
+      log({
+        mkHardblockTrace: {
+          sourceTag: 'messages:listSecureAndDecrypt',
+          reason: 'vault_missing_replay',
+          conversationId: conversationId || null,
+          missingCount: replayCounters.messageKeyVaultMissing,
+          decryptFail: replayCounters.decryptFail
+        }
+      });
+    } catch {}
+    const err = new Error('不可回放：缺少訊息密鑰');
+    err.code = 'REPLAY_VAULT_MISSING';
+    throw err;
+  }
+
   if (shouldYieldToReplay('afterProcess')) {
     return buildYieldResult();
   }

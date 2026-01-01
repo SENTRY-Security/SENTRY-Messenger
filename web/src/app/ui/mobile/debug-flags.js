@@ -11,7 +11,8 @@ export const DEBUG = {
   uiNoise: false,
   queueNoise: false,
   avatarBug: false,
-  conversationReset: true
+  conversationReset: true,
+  identityTrace: false
 };
 
 export const DEBUG_CONTACT_PROFILE = DEBUG.profileCounter;

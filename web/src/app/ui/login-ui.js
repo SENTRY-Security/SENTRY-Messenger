@@ -4,6 +4,7 @@
 
 // Removed import of fetchJSON, jsonReq from ../core/http.js
 import { log, setLogSink } from '../core/log.js';
+import { DEBUG } from './mobile/debug-flags.js';
 import { initVersionInfoButton } from './version-info.js';
 import {
   getSession, setSession,
@@ -31,7 +32,6 @@ import {
   getLegacyContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
-import { ensureDefaultAvatarFromSeed } from '../features/profile.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -56,6 +56,29 @@ async function emitMkSetTrace(sourceTag, mkRaw) {
         mkHash12,
         accountDigestSuffix4: (getAccountDigest() || '').slice(-4) || null,
         deviceIdSuffix4: (ensureDeviceId?.() || '').slice(-4) || null
+      }
+    });
+  } catch {}
+}
+
+let identityTraceCount = 0;
+async function emitIdentityTrace(sourceTag, extra = {}) {
+  if (!DEBUG.identityTrace || identityTraceCount >= 5) return;
+  identityTraceCount += 1;
+  try {
+    const { mkHash12 } = await summarizeMkForLog(getMkRaw());
+    const accountDigest = getAccountDigest() || null;
+    const uidHex = getUidHex() || null;
+    let deviceId = null;
+    try { deviceId = ensureDeviceId(); } catch { deviceId = null; }
+    log({
+      identityTrace: {
+        sourceTag,
+        accountDigestSuffix4: accountDigest ? accountDigest.slice(-4) : null,
+        uidHexSuffix4: uidHex ? uidHex.slice(-4) : null,
+        deviceIdSuffix4: deviceId ? deviceId.slice(-4) : null,
+        mkHash12: mkHash12 || null,
+        ...extra
       }
     });
   } catch {}
@@ -864,7 +887,6 @@ async function onUnlock() {
       log({ deviceIdError: err?.message || err });
       throw err;
     }
-    let deviceIdForAvatar = deviceIdAfterUnlock;
     try {
       const stored = sessionStorage?.getItem('device_id');
       console.log('[login-ui] deviceId:sessionStorage', stored || null);
@@ -872,25 +894,9 @@ async function onUnlock() {
       log({ deviceIdStorageError: err?.message || err });
     }
     if (newAccount) {
-      const avatarSeed = getUidHex?.() || getAccountDigest();
-      if (avatarSeed) {
-        updateBootstrapStep('avatar-init', 'start');
-        try {
-          console.log('[login-ui] deviceId:avatar-init:start', deviceIdForAvatar, 'seed', avatarSeed);
-          const res = await ensureDefaultAvatarFromSeed({ seed: avatarSeed });
-          if (res?.skipped) {
-            updateBootstrapStep('avatar-init', 'skip', '已存在頭像');
-          } else {
-            updateBootstrapStep('avatar-init', 'success', '預設頭像已設定');
-          }
-        } catch (err) {
-          log({ avatarInitError: err?.message || err });
-          updateBootstrapStep('avatar-init', 'error', err?.message || err);
-        }
-      } else {
-        updateBootstrapStep('avatar-init', 'skip', '缺少識別種子');
-      }
+      updateBootstrapStep('avatar-init', 'skip', '不再自動建立頭像');
     }
+    await emitIdentityTrace('login-ui:post-unlock');
     try {
       const deviceIdBeforeRedirect = ensureDeviceId();
       console.log('[login-ui] deviceId:ensure:before-redirect', deviceIdBeforeRedirect);
