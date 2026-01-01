@@ -5,6 +5,7 @@ import { drState, normalizePeerIdentity, ensureDeviceId } from '../core/store.js
 import { getContactSecret, getCorruptContact } from '../core/contact-secrets.js';
 import { ensureDrReceiverState } from './dr-session.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
+import { ReceiverCheckpoints } from './receiver-checkpoints.js';
 
 // Re-export for consumers that already depend on manager namespace (e.g., messages.js)
 export { ensureDrReceiverState } from './dr-session.js';
@@ -19,6 +20,7 @@ const DEFAULT_POLL_INTERVAL_MS = 400;
 
 const listeners = new Set();
 const peerStates = new Map();
+const initialCheckpointRecorded = new Set();
 
 function resolvePeerIdentity(value) {
   if (!value) return { key: null, deviceId: null };
@@ -158,6 +160,53 @@ function delay(ms) {
   });
 }
 
+async function ensureInitialReceiverCheckpoint({ peerAccountDigest, peerDeviceId, conversationId = null } = {}) {
+  const { key, deviceId } = resolvePeerIdentity({ peerAccountDigest, peerDeviceId });
+  if (!key || !deviceId) {
+    const err = new Error('peerAccountDigest and peerDeviceId required');
+    err.code = 'InitialCheckpointMissingIdentity';
+    err.isInitialCheckpointFailure = true;
+    throw err;
+  }
+  const state = drState({ peerAccountDigest: key, peerDeviceId: deviceId });
+  const convId = conversationId || state?.baseKey?.conversationId || null;
+  if (!convId) {
+    const err = new Error('receiver checkpoint requires conversationId');
+    err.code = 'InitialCheckpointMissingConversationId';
+    err.isInitialCheckpointFailure = true;
+    throw err;
+  }
+  const recordKey = `${key}::${deviceId}::${convId}`;
+  if (initialCheckpointRecorded.has(recordKey)) return;
+  let result;
+  try {
+    result = await ReceiverCheckpoints.recordCheckpoint({
+      conversationId: convId,
+      peerAccountDigest: key,
+      peerDeviceId: deviceId,
+      state,
+      cursorMessageId: undefined,
+      serverMessageId: undefined,
+      headerCounter: undefined,
+      // Use epoch to guarantee message_ts <= first inbound message ts.
+      messageTs: 0
+    });
+  } catch (cause) {
+    const err = new Error(cause?.message || 'initial receiver checkpoint write failed');
+    err.code = cause?.code || 'ReceiverCheckpointInitialWriteFailed';
+    err.isInitialCheckpointFailure = true;
+    err.cause = cause;
+    throw err;
+  }
+  if (!result?.ok) {
+    const err = new Error(result?.message || 'initial receiver checkpoint write failed');
+    err.code = result?.error || 'ReceiverCheckpointInitialWriteFailed';
+    err.isInitialCheckpointFailure = true;
+    throw err;
+  }
+  initialCheckpointRecorded.add(recordKey);
+}
+
 export function subscribeSecureConversation(listener) {
   if (typeof listener !== 'function') throw new Error('listener 必須是函式');
   listeners.add(listener);
@@ -180,7 +229,8 @@ export async function ensureSecureConversationReady({
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   reason = 'ensure',
   source = 'ensureSecureConversationReady',
-  conversationId = null
+  conversationId = null,
+  skipInitialCheckpoint = false
 } = {}) {
   const { key, deviceId } = resolvePeerIdentity({ peerAccountDigest, peerDeviceId });
   if (!key || !deviceId) throw new Error('peerAccountDigest and peerDeviceId required');
@@ -195,6 +245,18 @@ export async function ensureSecureConversationReady({
   }
 
   if (hasReceiverReady({ peerAccountDigest, peerDeviceId: deviceId })) {
+    if (!skipInitialCheckpoint) {
+      try {
+        await ensureInitialReceiverCheckpoint({
+          peerAccountDigest: key,
+          peerDeviceId: deviceId,
+          conversationId
+        });
+      } catch (err) {
+        setStatus(key, STATUS_FAILED, { reason: 'initial-checkpoint-failed', source, attempts: entry.attempts || 0, error: err });
+        throw err;
+      }
+    }
     if (entry.status !== STATUS_READY) {
       setStatus(key, STATUS_READY, { reason: 'already-ready', source, attempts: entry.attempts || 0 });
     }
@@ -218,11 +280,34 @@ export async function ensureSecureConversationReady({
           setStatus(key, STATUS_PENDING, { reason: 'missing-material', source, attempts: entry.attempts });
           return cloneStatus(key, peerStates.get(key));
         }
+        if (!skipInitialCheckpoint) {
+          await ensureInitialReceiverCheckpoint({
+            peerAccountDigest: key,
+            peerDeviceId: deviceId,
+            conversationId
+          });
+        }
         setStatus(key, STATUS_READY, { reason: 'ensure-success', source, attempts: entry.attempts });
         return cloneStatus(key, peerStates.get(key));
       } catch (err) {
+        if (err?.isInitialCheckpointFailure) {
+          setStatus(key, STATUS_FAILED, { reason: 'initial-checkpoint-failed', source, attempts: entry.attempts, error: err });
+          throw err;
+        }
         lastError = err;
         if (hasReceiverReady({ peerAccountDigest, peerDeviceId: deviceId })) {
+          if (!skipInitialCheckpoint) {
+            try {
+              await ensureInitialReceiverCheckpoint({
+                peerAccountDigest: key,
+                peerDeviceId: deviceId,
+                conversationId
+              });
+            } catch (initialErr) {
+              setStatus(key, STATUS_FAILED, { reason: 'initial-checkpoint-failed', source, attempts: entry.attempts, error: initialErr });
+              throw initialErr;
+            }
+          }
           setStatus(key, STATUS_READY, { reason: 'ensure-late-success', source, attempts: entry.attempts });
           return cloneStatus(key, peerStates.get(key));
         }

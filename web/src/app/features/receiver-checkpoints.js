@@ -129,6 +129,19 @@ function cloneU8(src) {
   return null;
 }
 
+export function assertReceiverStateCompleteForCheckpoint(state) {
+  if (
+    !state?.rk ||
+    !(state?.ckR instanceof Uint8Array) ||
+    !(state?.myRatchetPriv instanceof Uint8Array) ||
+    !(state?.myRatchetPub instanceof Uint8Array)
+  ) {
+    const err = new Error('receiver checkpoint requires complete DR state (rk/ckR/myRatchet)');
+    err.code = 'ReceiverCheckpointStateIncomplete';
+    throw err;
+  }
+}
+
 function serializeSkippedKeys(skippedKeys, { perChainLimit = SKIPPED_PER_CHAIN_LIMIT, totalLimit = SKIPPED_TOTAL_LIMIT } = {}) {
   const out = {};
   const canonical = [];
@@ -164,9 +177,7 @@ function buildPayloadFromState({
   headerCounter,
   messageTs
 }) {
-  if (!state?.rk || !(state?.ckR instanceof Uint8Array) || !(state?.myRatchetPriv instanceof Uint8Array) || !(state?.myRatchetPub instanceof Uint8Array)) {
-    throw new Error('receiver checkpoint requires complete DR state (rk/ckR/myRatchet)');
-  }
+  assertReceiverStateCompleteForCheckpoint(state);
   const { skipped, totalCount, canonical } = serializeSkippedKeys(state.skippedKeys);
   const payload = {
     v: 1,
@@ -323,6 +334,10 @@ export const ReceiverCheckpoints = {
       return { ok: false, error: 'MK_MISSING_HARDBLOCK' };
     }
     if (!conversationId || !peerDeviceId || !state) return { ok: false, error: 'MissingParams' };
+    const normalizedMessageTs = Number.isFinite(messageTs) ? Math.floor(messageTs) : null;
+    if (normalizedMessageTs === null) {
+      return { ok: false, error: 'MissingMessageTs', message: 'receiver checkpoint requires message_ts' };
+    }
     const accountDigest = (getAccountDigest() || '').toUpperCase() || null;
     let payloadInfo;
     try {
@@ -334,7 +349,7 @@ export const ReceiverCheckpoints = {
         cursorMessageId,
         cursorServerMessageId: serverMessageId,
         headerCounter,
-        messageTs
+        messageTs: normalizedMessageTs
       });
     } catch (err) {
       return { ok: false, error: 'StateInvalid', message: err?.message || 'checkpoint payload build failed' };
@@ -398,6 +413,7 @@ export const ReceiverCheckpoints = {
         cursorMessageId: payload.cursor.messageId,
         cursorServerMessageId: payload.cursor.serverMessageId,
         headerCounter: payload.cursor.headerCounter,
+        messageTs: normalizedMessageTs,
         Nr: payload.dr.Nr,
         Ns: payload.dr.Ns,
         PN: payload.dr.PN,
@@ -450,7 +466,7 @@ export const ReceiverCheckpoints = {
     }
   },
 
-  async loadLatestCheckpoint({ conversationId, peerAccountDigest, peerDeviceId }) {
+  async loadLatestCheckpoint({ conversationId, peerAccountDigest, peerDeviceId, beforeTs }) {
     const mkRaw = getMkRaw();
     if (!mkRaw) {
       logMkMissingHardblock({
@@ -462,13 +478,15 @@ export const ReceiverCheckpoints = {
       return { error: 'MK_MISSING_HARDBLOCK' };
     }
     if (!conversationId || !peerDeviceId) return { error: 'MissingParams' };
+    const hasBeforeTs = Number.isFinite(beforeTs) && beforeTs > 0;
     if (DEBUG.replay && getAttemptLogCount < LOG_LIMIT) {
       getAttemptLogCount += 1;
       try {
         log({
           checkpointGetLatestAttempt: {
             conversationId,
-            peerDeviceId
+            peerDeviceId,
+            beforeTs: hasBeforeTs ? Math.floor(beforeTs) : null
           }
         });
       } catch {
@@ -477,7 +495,11 @@ export const ReceiverCheckpoints = {
     }
     let res;
     try {
-      res = await apiGetLatestReceiverCheckpoint({ conversationId, peerDeviceId });
+      res = await apiGetLatestReceiverCheckpoint({
+        conversationId,
+        peerDeviceId,
+        beforeTs: Number.isFinite(beforeTs) ? Math.floor(beforeTs) : undefined
+      });
     } catch (err) {
       return { error: err?.payload?.error || 'RequestFailed', status: err?.status || null, message: err?.message || 'request failed' };
     }
@@ -486,12 +508,17 @@ export const ReceiverCheckpoints = {
     if (DEBUG.replay && getResultLogCount < LOG_LIMIT) {
       getResultLogCount += 1;
       try {
+        const checkpoint = data?.checkpoint || null;
         log({
           checkpointGetLatestResult: {
             conversationId,
             peerDeviceId,
             status,
-            error: data?.error || null
+            error: data?.error || null,
+            beforeTs: hasBeforeTs ? Math.floor(beforeTs) : null,
+            messageTs: Number.isFinite(checkpoint?.messageTs) ? Math.floor(checkpoint.messageTs) : null,
+            cursorMessageId: checkpoint?.cursorMessageId || null,
+            cursorServerMessageId: checkpoint?.cursorServerMessageId || null
           }
         });
       } catch {
@@ -503,7 +530,7 @@ export const ReceiverCheckpoints = {
       return { error: data?.error || 'RequestFailed', status, message: data?.message || null };
     }
     if (data?.error === 'NotFound' || status === 404 || !data?.checkpoint) {
-      return { error: 'NotFound', status: res?.r?.status || 404 };
+      return { error: hasBeforeTs ? 'CheckpointMissingBeforeTs' : 'NotFound', status: res?.r?.status || 404 };
     }
     const checkpoint = data.checkpoint || null;
     if (!checkpoint?.wrapped_checkpoint) {

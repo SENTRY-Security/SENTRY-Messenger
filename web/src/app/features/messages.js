@@ -33,7 +33,7 @@ import {
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
 import { OutboundKeyVault } from './outbound-key-vault.js';
-import { ReceiverCheckpoints } from './receiver-checkpoints.js';
+import { ReceiverCheckpoints, assertReceiverStateCompleteForCheckpoint } from './receiver-checkpoints.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 as naclB64u8, b64 as naclB64 } from '../crypto/nacl.js';
@@ -127,6 +127,10 @@ const DECRYPTED_CACHE_MAX_PER_CONV = 500;
 const TIMELINE_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
 const decryptFailLogDedup = new Set();
 const semanticIgnoreLogDedup = new Set();
+const CHECKPOINT_GATE_LOG_LIMIT = 3;
+const CHECKPOINT_WRITE_LOG_LIMIT = 3;
+let checkpointGateMovedLogCount = 0;
+let checkpointWriteLogCount = 0;
 
 function normalizeMessageId(messageObj) {
   if (!messageObj) return null;
@@ -973,6 +977,24 @@ export async function listSecureAndDecrypt(params = {}) {
   }
   if (!conversationId) throw new Error('conversationId required');
   const requestPriority = priority === 'replay' ? 'replay' : 'live';
+  const skipInitialCheckpoint = mutateState === true;
+  if (skipInitialCheckpoint && checkpointGateMovedLogCount < CHECKPOINT_GATE_LOG_LIMIT) {
+    checkpointGateMovedLogCount += 1;
+    try {
+      log({
+        checkpointGateMoved: {
+          conversationId: conversationId || null,
+          peerDeviceId: peerDeviceId || null,
+          mutateState: true,
+          replay: false,
+          priority: requestPriority,
+          allowReplay: !!allowReplay,
+          stage: 'pre-decrypt',
+          source: 'messages:listSecureAndDecrypt'
+        }
+      });
+    } catch {}
+  }
   logReplayGateTrace('messages:listSecureAndDecrypt:enter', {
     silent: !!silent,
     priority: requestPriority,
@@ -1276,6 +1298,9 @@ export async function listSecureAndDecrypt(params = {}) {
   const secureStatusByDevice = new Map();
   const ensuredConversations = new Set();
   const replayCheckpointByDevice = new Map();
+  const replayAnchorByDevice = new Map();
+  const replayAnchorLogLimit = 3;
+  let replayAnchorLogCount = 0;
   const replayGateTraceSampleLimit = 3;
   let replayGateTraceSampleCount = 0;
   const replayHolderSkipLogLimit = 3;
@@ -1316,6 +1341,44 @@ export async function listSecureAndDecrypt(params = {}) {
     }
   } catch {}
 
+  if (!shouldTrackState && selfDeviceId) {
+    for (const it of sortedItems) {
+      const senderDev = it?.senderDeviceId || it?.sender_device_id || null;
+      const receiverDev = it?.receiverDeviceId || it?.receiver_device_id || it?.target_device_id || it?.targetDeviceId || null;
+      if (!senderDev || !receiverDev) continue;
+      if (receiverDev !== selfDeviceId) continue;
+      if (senderDev === selfDeviceId) continue;
+      let rawMsgType = null;
+      const headerRaw = it?.header_json || it?.headerJson || null;
+      if (headerRaw) {
+        let header = null;
+        if (typeof headerRaw === 'string') {
+          try { header = JSON.parse(headerRaw); } catch {}
+        } else if (headerRaw && typeof headerRaw === 'object') {
+          header = headerRaw;
+        }
+        const meta = header?.meta || null;
+        rawMsgType = typeof meta?.msg_type === 'string'
+          ? meta.msg_type
+          : (typeof meta?.msgType === 'string' ? meta.msgType : null);
+      }
+      if (normalizeControlMessageType(rawMsgType)) continue;
+      const createdAtRaw = Number(it?.created_at ?? it?.createdAt ?? null);
+      const msgTs = Number.isFinite(createdAtRaw) && createdAtRaw > 0
+        ? Math.floor(createdAtRaw)
+        : toMessageTimestamp(it);
+      if (!Number.isFinite(msgTs)) continue;
+      const prev = replayAnchorByDevice.get(senderDev);
+      if (!prev || msgTs < prev.beforeTs) {
+        replayAnchorByDevice.set(senderDev, {
+          beforeTs: msgTs,
+          messageId: toMessageId(it) || null,
+          msgType: rawMsgType || null
+        });
+      }
+    }
+  }
+
   const getPeerRef = (deviceId) => ({
     peerAccountDigest: identity.accountDigest || peerKey,
     peerDeviceId: deviceId
@@ -1324,10 +1387,26 @@ export async function listSecureAndDecrypt(params = {}) {
   const loadReplayHolderForDevice = async (deviceId) => {
     if (!deviceId) throw new Error('peerDeviceId required for replay holder');
     if (replayCheckpointByDevice.has(deviceId)) return replayCheckpointByDevice.get(deviceId);
+    const anchor = replayAnchorByDevice.get(deviceId) || null;
+    if (DEBUG.replay && anchor && replayAnchorLogCount < replayAnchorLogLimit) {
+      replayAnchorLogCount += 1;
+      try {
+        log({
+          replayCheckpointAnchor: {
+            conversationId,
+            peerDeviceId: deviceId,
+            beforeTs: anchor.beforeTs,
+            messageId: anchor.messageId,
+            msgType: anchor.msgType
+          }
+        });
+      } catch {}
+    }
     const checkpointResult = await deps.loadLatestReceiverCheckpoint({
       conversationId,
       peerAccountDigest: peerAccountDigestNormalized || peerKey,
-      peerDeviceId: deviceId
+      peerDeviceId: deviceId,
+      beforeTs: anchor?.beforeTs ?? null
     });
     const errorCode = checkpointResult?.error || null;
     if (errorCode === 'MK_MISSING_HARDBLOCK' || errorCode === 'MKMissing') {
@@ -1389,7 +1468,8 @@ export async function listSecureAndDecrypt(params = {}) {
       peerDeviceId: deviceId,
       reason: 'list-messages',
       source: 'messages:listSecureAndDecrypt',
-      conversationId
+      conversationId,
+      skipInitialCheckpoint
     });
     const status = statusInfo?.status || null;
     secureStatusByDevice.set(deviceId, status);
@@ -1633,7 +1713,7 @@ export async function listSecureAndDecrypt(params = {}) {
       meta = header?.meta || null;
       payload = { meta: meta || null };
       const msgTs = Number(meta?.ts || raw?.created_at || raw?.createdAt || job?.createdAt || null);
-      messageTs = Number.isFinite(msgTs) ? msgTs : null;
+      messageTs = Number.isFinite(msgTs) ? Math.floor(msgTs) : null;
       const packetConversationId = packet?.conversationId || raw?.conversationId || raw?.conversation_id || conversationId || null;
       meta = payload?.meta || null;
       payloadMsgType = normalizeControlMessageType(meta?.msg_type || meta?.msgType || null);
@@ -2144,37 +2224,85 @@ export async function listSecureAndDecrypt(params = {}) {
 
       const shouldCheckpoint = direction === 'incoming'
         && trackState
-        && semantic.kind === SEMANTIC_KIND.USER_MESSAGE
         && !!peerDeviceForMessage;
-      const checkpointLoggable = direction === 'incoming' && trackState && !!peerDeviceForMessage;
       if (shouldCheckpoint) {
-        const checkpointResult = await deps.recordReceiverCheckpoint({
-          conversationId: convId || conversationId || null,
-          peerAccountDigest: peerAccountDigestNormalized || peerKey || null,
-          peerDeviceId: peerDeviceForMessage,
-          state,
-          cursorMessageId: messageId || null,
-          serverMessageId,
-          headerCounter: Number.isFinite(headerCounter) ? headerCounter : transportCounter,
-          messageTs
-        });
-        if (!checkpointResult?.ok) {
-          const err = new Error(checkpointResult?.message || '不可回放：receiver checkpoint 寫入失敗');
-          err.code = checkpointResult?.error || 'ReceiverCheckpointWriteFailed';
+        if (!Number.isFinite(messageTs)) {
+          const err = new Error('不可回放：缺少 message_ts');
+          err.code = 'CheckpointMissingMessageTs';
           throw err;
         }
-      } else if (checkpointLoggable && DEBUG.replay) {
+        const messageTypeForLog = payloadMsgType || msgTypeForDecrypt || null;
+        const headerCounterForLog = Number.isFinite(headerCounter) ? headerCounter : transportCounter;
+        const shouldLogCheckpointWrite = checkpointWriteLogCount < CHECKPOINT_WRITE_LOG_LIMIT;
+        if (shouldLogCheckpointWrite) {
+          try {
+            log({
+              checkpointWriteAttempt: {
+                conversationId: convId || conversationId || null,
+                peerDeviceId: peerDeviceForMessage || null,
+                messageId: messageId || null,
+                msgType: messageTypeForLog,
+                Nr: Number.isFinite(state?.Nr) ? Math.floor(state.Nr) : null,
+                headerCounter: headerCounterForLog
+              }
+            });
+          } catch {}
+        }
         try {
-          log({
-            checkpointSkip: {
-              conversationId: convId || conversationId || null,
-              peerDeviceId: peerDeviceForMessage,
-              reason: 'ineligibleMessageType',
-              semanticKind: semantic.kind,
-              semanticSubtype: semantic.subtype
-            }
+          assertReceiverStateCompleteForCheckpoint(state);
+          const checkpointResult = await deps.recordReceiverCheckpoint({
+            conversationId: convId || conversationId || null,
+            peerAccountDigest: peerAccountDigestNormalized || peerKey || null,
+            peerDeviceId: peerDeviceForMessage,
+            state,
+            cursorMessageId: messageId || null,
+            serverMessageId,
+            headerCounter: headerCounterForLog,
+            messageTs
           });
-        } catch {}
+          if (!checkpointResult?.ok) {
+            const err = new Error(checkpointResult?.message || '不可回放：receiver checkpoint 寫入失敗');
+            err.code = checkpointResult?.error || 'ReceiverCheckpointWriteFailed';
+            throw err;
+          }
+          if (shouldLogCheckpointWrite) {
+            try {
+              log({
+                checkpointWriteResult: {
+                  conversationId: convId || conversationId || null,
+                  peerDeviceId: peerDeviceForMessage || null,
+                  messageId: messageId || null,
+                  msgType: messageTypeForLog,
+                  Nr: Number.isFinite(state?.Nr) ? Math.floor(state.Nr) : null,
+                  headerCounter: headerCounterForLog,
+                  ok: true,
+                  error: null
+                }
+              });
+            } catch {}
+          }
+        } catch (err) {
+          if (shouldLogCheckpointWrite) {
+            try {
+              log({
+                checkpointWriteResult: {
+                  conversationId: convId || conversationId || null,
+                  peerDeviceId: peerDeviceForMessage || null,
+                  messageId: messageId || null,
+                  msgType: messageTypeForLog,
+                  Nr: Number.isFinite(state?.Nr) ? Math.floor(state.Nr) : null,
+                  headerCounter: headerCounterForLog,
+                  ok: false,
+                  error: err?.code || null,
+                  message: err?.message || null
+                }
+              });
+            } catch {}
+          }
+          throw err;
+        } finally {
+          if (shouldLogCheckpointWrite) checkpointWriteLogCount += 1;
+        }
       }
 
       if (trackState) {

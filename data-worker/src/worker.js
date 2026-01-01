@@ -2332,6 +2332,7 @@ function summarizeReceiverCheckpointShape(body = {}) {
     accountDigest: shapeOf(body?.accountDigest || body?.account_digest),
     conversationId: shapeOf(body?.conversationId || body?.conversation_id),
     peerDeviceId: shapeOf(body?.peerDeviceId || body?.peer_device_id),
+    messageTs: shapeOf(body?.messageTs || body?.message_ts),
     cursorMessageId: shapeOf(body?.cursorMessageId || body?.cursor_message_id),
     cursorServerMessageId: shapeOf(body?.cursorServerMessageId || body?.cursor_server_message_id),
     headerCounter: shapeOf(body?.headerCounter ?? body?.header_counter),
@@ -2364,6 +2365,14 @@ async function handleReceiverCheckpointRoutes(req, env) {
     const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
     const peerDeviceId = normalizeDeviceId(body?.peerDeviceId || body?.peer_device_id);
+    const messageTsValue = body?.messageTs ?? body?.message_ts;
+    const messageTsNumber = messageTsValue === null
+      || messageTsValue === undefined
+      || messageTsValue === ''
+      || (typeof messageTsValue === 'string' && messageTsValue.trim() === '')
+      ? NaN
+      : Number(messageTsValue);
+    const messageTs = Number.isFinite(messageTsNumber) ? Math.floor(messageTsNumber) : null;
     const cursorMessageId = normalizeMessageId(body?.cursorMessageId || body?.cursor_message_id);
     const cursorServerMessageId = normalizeMessageId(body?.cursorServerMessageId || body?.cursor_server_message_id);
     const headerCounter = Number(body?.headerCounter ?? body?.header_counter);
@@ -2383,12 +2392,12 @@ async function handleReceiverCheckpointRoutes(req, env) {
       ? Number(body.retentionLimit)
       : RECEIVER_CHECKPOINT_RETENTION;
 
-    if (!accountDigest || !conversationId || !peerDeviceId || !wrapped || !Number.isFinite(nr)) {
+    if (!accountDigest || !conversationId || !peerDeviceId || !wrapped || !Number.isFinite(nr) || messageTs === null || messageTs < 0) {
       console.warn('receiverCheckpoint.put.badPayload', {
         reason: 'required-missing',
         shape: bodyShape
       });
-      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, peerDeviceId, nr, wrapped_checkpoint required' }, { status: 400 });
+      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, peerDeviceId, message_ts, nr, wrapped_checkpoint required' }, { status: 400 });
     }
     if (!validateWrappedCheckpointEnvelope(wrapped)) {
       console.warn('receiverCheckpoint.put.badPayload', {
@@ -2435,8 +2444,8 @@ async function handleReceiverCheckpointRoutes(req, env) {
             account_digest, conversation_id, peer_device_id,
             cursor_message_id, cursor_server_message_id, header_counter,
             nr, ns, pn, their_ratchet_pub_hash, ckR_hash, skipped_hash, skipped_count,
-            wrap_info_tag, checkpoint_hash, wrapped_checkpoint_json, wrap_context_json, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, strftime('%s','now'))`
+            wrap_info_tag, checkpoint_hash, wrapped_checkpoint_json, wrap_context_json, message_ts, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, strftime('%s','now'))`
       ).bind(
         accountDigest,
         conversationId,
@@ -2454,7 +2463,8 @@ async function handleReceiverCheckpointRoutes(req, env) {
         wrapInfoTag || (typeof wrapped?.info === 'string' ? wrapped.info : null),
         checkpointHash,
         JSON.stringify(wrapped),
-        wrapContext ? JSON.stringify(wrapContext) : null
+        wrapContext ? JSON.stringify(wrapContext) : null,
+        messageTs
       ).run();
     } catch (err) {
       console.warn('receiver_checkpoint_put_failed', err?.message || err);
@@ -2475,6 +2485,8 @@ async function handleReceiverCheckpointRoutes(req, env) {
     const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
     const peerDeviceId = normalizeDeviceId(body?.peerDeviceId || body?.peer_device_id);
+    const beforeTsRaw = Number(body?.beforeTs ?? body?.before_ts);
+    const beforeTs = Number.isFinite(beforeTsRaw) && beforeTsRaw > 0 ? Math.floor(beforeTsRaw) : null;
     if (!accountDigest || !conversationId || !peerDeviceId) {
       return json({ error: 'BadRequest', message: 'accountDigest, conversationId, peerDeviceId required' }, { status: 400 });
     }
@@ -2493,12 +2505,19 @@ async function handleReceiverCheckpointRoutes(req, env) {
       throw err;
     }
 
+    const params = [accountDigest, conversationId, peerDeviceId];
+    let beforeClause = '';
+    if (beforeTs) {
+      params.push(beforeTs);
+      beforeClause = 'AND message_ts <= ?4';
+    }
     const row = await env.DB.prepare(
       `SELECT * FROM receiver_checkpoints
          WHERE account_digest=?1 AND conversation_id=?2 AND peer_device_id=?3
-         ORDER BY created_at DESC, id DESC
+         ${beforeClause}
+         ORDER BY message_ts DESC, id DESC
          LIMIT 1`
-    ).bind(accountDigest, conversationId, peerDeviceId).first();
+    ).bind(...params).first();
     if (!row) {
       return json({ error: 'NotFound', message: 'receiver checkpoint not found' }, { status: 404 });
     }
@@ -2522,6 +2541,7 @@ async function handleReceiverCheckpointRoutes(req, env) {
         checkpointHash: row.checkpoint_hash,
         wrapped_checkpoint: safeJSON(row.wrapped_checkpoint_json),
         wrap_context: safeJSON(row.wrap_context_json),
+        messageTs: Number.isFinite(Number(row.message_ts)) ? Number(row.message_ts) : null,
         createdAt: Number(row.created_at) || null
       }
     });

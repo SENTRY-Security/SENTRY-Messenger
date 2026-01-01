@@ -25,6 +25,7 @@ function logPayloadShape(kind, payload) {
       cursorMessageId: shapeOf(payload?.cursorMessageId),
       cursorServerMessageId: shapeOf(payload?.cursorServerMessageId),
       headerCounter: shapeOf(payload?.headerCounter),
+      messageTs: shapeOf(payload?.messageTs),
       Nr: shapeOf(payload?.Nr),
       Ns: shapeOf(payload?.Ns),
       PN: shapeOf(payload?.PN),
@@ -69,10 +70,12 @@ export async function putReceiverCheckpoint(params = {}) {
   const conversationId = normalizeString(params?.conversationId);
   const peerDeviceId = normalizeString(params?.peerDeviceId);
   const nr = normalizeInt(params?.Nr ?? params?.nr);
+  const messageTs = normalizeInt(params?.messageTs ?? params?.message_ts);
   const wrappedCheckpoint = params?.wrapped_checkpoint;
   if (!conversationId) throw new Error('conversationId required');
   if (!peerDeviceId) throw new Error('peerDeviceId required');
   if (!Number.isFinite(nr)) throw new Error('Nr required');
+  if (!Number.isFinite(messageTs)) throw new Error('messageTs required');
   if (wrappedCheckpoint === null || wrappedCheckpoint === undefined) throw new Error('wrapped_checkpoint required');
   const payload = buildAccountPayload({
     overrides: {
@@ -81,6 +84,7 @@ export async function putReceiverCheckpoint(params = {}) {
       cursorMessageId: normalizeString(params.cursorMessageId),
       cursorServerMessageId: normalizeString(params.cursorServerMessageId),
       headerCounter: normalizeInt(params.headerCounter),
+      messageTs,
       Nr: nr,
       Ns: normalizeInt(params.Ns),
       PN: normalizeInt(params.PN),
@@ -103,10 +107,12 @@ export async function putReceiverCheckpoint(params = {}) {
 export async function getLatestReceiverCheckpoint(params = {}) {
   if (!params?.conversationId) throw new Error('conversationId required');
   if (!params?.peerDeviceId) throw new Error('peerDeviceId required');
+  const beforeTs = normalizeInt(params?.beforeTs);
   const payload = buildAccountPayload({
     overrides: {
       conversationId: params.conversationId,
-      peerDeviceId: params.peerDeviceId
+      peerDeviceId: params.peerDeviceId,
+      beforeTs
     }
   });
   const r = await fetchWithTimeout('/api/v1/receiver-checkpoints/get-latest', jsonReq(payload), 10000);

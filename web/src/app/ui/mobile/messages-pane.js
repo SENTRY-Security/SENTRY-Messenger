@@ -3421,7 +3421,8 @@ export function initMessagesPane({
         peerAccountDigest: activePeerKey,
         conversationId: state.conversationId || null,
         reason: 'open-conversation',
-        source: 'messages-pane:setActiveConversation'
+        source: 'messages-pane:setActiveConversation',
+        skipInitialCheckpoint: true
       });
     } catch (err) {
       const errorMsg = err?.message || err || '建立安全對話失敗，請稍後再試。';
