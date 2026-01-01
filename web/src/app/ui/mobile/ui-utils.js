@@ -68,6 +68,12 @@ export function b64u8(str) {
   return b64ToBytes(str);
 }
 
+export function shouldNotifyForMessage({ computedIsHistoryReplay = false, silent = false } = {}) {
+  if (computedIsHistoryReplay) return false;
+  if (silent) return false;
+  return true;
+}
+
 export async function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

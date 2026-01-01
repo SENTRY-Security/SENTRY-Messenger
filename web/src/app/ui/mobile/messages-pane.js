@@ -20,7 +20,7 @@ import {
 import { sessionStore, resetMessageState } from './session-store.js';
 import { deleteContactSecret, getContactSecret, getCorruptContact } from '../../core/contact-secrets.js';
 import { clearDrState } from '../../core/store.js';
-import { escapeHtml, fmtSize } from './ui-utils.js';
+import { escapeHtml, fmtSize, shouldNotifyForMessage } from './ui-utils.js';
 import { contactCoreCounts, getContactCore, upsertContactCore, listReadyContacts, removeContactCore } from './contact-core-store.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
@@ -94,12 +94,32 @@ const logReplayFetchResult = (payload = {}) => {
 };
 const CONVERSATION_RESET_TRACE_LIMIT = 5;
 let conversationResetTraceCount = 0;
+const SECURE_MODAL_GATE_TRACE_LIMIT = 3;
+let secureModalGateTraceCount = 0;
+const VAULT_GATE_DECISION_TRACE_LIMIT = 3;
+let vaultGateDecisionTraceCount = 0;
 
 function logConversationResetTrace(payload = {}) {
   if (conversationResetTraceCount >= CONVERSATION_RESET_TRACE_LIMIT) return;
   conversationResetTraceCount += 1;
   try {
     log({ conversationResetTrace: payload });
+  } catch {}
+}
+
+function logSecureModalGateTrace(payload = {}) {
+  if (secureModalGateTraceCount >= SECURE_MODAL_GATE_TRACE_LIMIT) return;
+  secureModalGateTraceCount += 1;
+  try {
+    log({ secureModalGateTrace: payload });
+  } catch {}
+}
+
+function logVaultGateDecisionTrace(payload = {}) {
+  if (vaultGateDecisionTraceCount >= VAULT_GATE_DECISION_TRACE_LIMIT) return;
+  vaultGateDecisionTraceCount += 1;
+  try {
+    log({ vaultGateDecisionTrace: payload });
   } catch {}
 }
 
@@ -877,7 +897,24 @@ export function initMessagesPane({
     if (!showSecurityModal) return;
     const status = statusInfo?.status || null;
     const key = normalizePeerKey(peerAccountDigest);
+    const state = getMessageState();
+    const mkReady = !!getMkRaw();
+    const vaultGateReady = !!(state.conversationToken && state.conversationId && mkReady);
+    logSecureModalGateTrace({
+      peerAccountDigest: key || null,
+      conversationId: state.conversationId || null,
+      hasToken: !!state.conversationToken,
+      mkReady,
+      vaultGateReady,
+      status
+    });
     const shouldShow = status === SECURE_CONVERSATION_STATUS.PENDING;
+    if (shouldShow && vaultGateReady) {
+      if (activeSecurityModalPeer === key) {
+        hideSecurityModal();
+      }
+      return;
+    }
     if (shouldShow) {
       if (activeSecurityModalPeer !== key) {
         showSecurityModal({
@@ -2880,6 +2917,8 @@ export function initMessagesPane({
         messageId: null,
         serverMessageId: null
       });
+      const allowReceipts = mutateState !== false;
+      const onMessageDecrypted = (payload) => handleMessageDecrypted({ ...payload, allowReceipts });
       const listResult = await listSecureAndDecrypt({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
@@ -2892,7 +2931,7 @@ export function initMessagesPane({
         allowReplay: true,
         priority: requestPriority,
         silent: !!silent,
-        onMessageDecrypted: handleMessageDecrypted,
+        onMessageDecrypted,
         prefetchedList: prefetch
           ? {
               items: Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [],
@@ -3408,7 +3447,15 @@ export function initMessagesPane({
       }));
     } catch {}
     let ensureStatusInfo = null;
-    const vaultGateReady = !!(state.conversationToken && state.conversationId && getMkRaw());
+    const mkReady = !!getMkRaw();
+    const vaultGateReady = !!(state.conversationToken && state.conversationId && mkReady);
+    logVaultGateDecisionTrace({
+      peerAccountDigest: activePeerKey || null,
+      conversationId: state.conversationId || null,
+      hasToken: !!state.conversationToken,
+      mkReady,
+      vaultGateReady
+    });
     if (!vaultGateReady) {
       const statusBeforeEnsure = getCachedSecureStatus(activePeerKey);
       let initialStatus = statusBeforeEnsure;
@@ -3658,17 +3705,23 @@ export function initMessagesPane({
     renderConversationList();
 
     if (entry.direction === 'incoming' && !isActive) {
-      playNotificationSound?.();
-      const previewText = buildConversationSnippet(entry.text || '') || entry.text || '有新訊息';
-      const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
-      const initialsToast = initialsFromName(nickname, peerDigest || '').slice(0, 2);
-      const toastPeerDeviceId = thread?.peerDeviceId || peerDevice || null;
-      showToast?.(`${nickname}：${previewText}`, {
-        onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId: toastPeerDeviceId }),
-        avatarUrl: avatarUrlToast,
-        avatarInitials: initialsToast,
-        subtitle: entry.ts ? formatTimestamp(entry.ts) : ''
+      const shouldNotify = shouldNotifyForMessage({
+        computedIsHistoryReplay: !!entry?.isHistoryReplay,
+        silent: !!entry?.silent
       });
+      if (shouldNotify) {
+        playNotificationSound?.();
+        const previewText = buildConversationSnippet(entry.text || '') || entry.text || '有新訊息';
+        const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
+        const initialsToast = initialsFromName(nickname, peerDigest || '').slice(0, 2);
+        const toastPeerDeviceId = thread?.peerDeviceId || peerDevice || null;
+        showToast?.(`${nickname}：${previewText}`, {
+          onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId: toastPeerDeviceId }),
+          avatarUrl: avatarUrlToast,
+          avatarInitials: initialsToast,
+          subtitle: entry.ts ? formatTimestamp(entry.ts) : ''
+        });
+      }
     }
   }
 
@@ -3713,10 +3766,12 @@ export function initMessagesPane({
     }
   }
 
-  function handleMessageDecrypted({ message }) {
+  function handleMessageDecrypted({ message, allowReceipts = true } = {}) {
     if (!message) return;
     if (message.direction === 'incoming') {
-      sendReadReceiptForMessage(message);
+      if (allowReceipts) {
+        sendReadReceiptForMessage(message);
+      }
     } else if (message.direction === 'outgoing') {
       applyReceiptState(message);
     }

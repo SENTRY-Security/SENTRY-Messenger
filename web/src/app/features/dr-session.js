@@ -39,9 +39,19 @@ import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { MessageKeyVault } from './message-key-vault.js';
+import { listSecureMessages } from '../api/messages.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
+const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
 import { enqueueMediaMetaJob } from './queue/media.js';
+const SEND_PREFLIGHT_TRACE_LIMIT = 3;
+let sendPreflightTraceCount = 0;
+
+function logSendPreflightTrace(payload = {}) {
+  if (sendPreflightTraceCount >= SEND_PREFLIGHT_TRACE_LIMIT) return;
+  sendPreflightTraceCount += 1;
+  log({ sendPreflightSecretTrace: payload });
+}
 
 const drConsole = DEBUG.drVerbose === true
   ? console
@@ -245,6 +255,94 @@ function reserveTransportCounter(state, {
     } catch {}
   }
   return reserved;
+}
+
+async function seedTransportCounterFromServer({
+  conversationId,
+  peerAccountDigest = null,
+  peerDeviceId = null,
+  state = null,
+  sourceTag = 'seed-transport-counter'
+} = {}) {
+  const convId = conversationId || null;
+  if (!convId || !state) return false;
+  let deviceId = null;
+  let digest = null;
+  try {
+    deviceId = ensureDeviceId();
+    digest = normalizeAccountDigest(getAccountDigest());
+  } catch {
+    return false;
+  }
+  if (!deviceId || !digest) return false;
+  const seedKey = `${convId}::${deviceId}`;
+  if (transportCounterSeeded.has(seedKey)) return false;
+  transportCounterSeeded.add(seedKey);
+
+  try {
+    const { r, data } = await listSecureMessages({ conversationId: convId, limit: 50 });
+    if (!r?.ok) {
+      log({
+        transportCounterSeedError: {
+          conversationId: convId,
+          peerAccountDigest,
+          peerDeviceId,
+          status: r?.status ?? null,
+          source: sourceTag
+        }
+      });
+      return false;
+    }
+    const items = Array.isArray(data?.items) ? data.items : [];
+    let maxCounter = 0;
+    for (const entry of items) {
+      const senderAccount = normalizeAccountDigest(entry?.sender_account_digest || entry?.senderAccountDigest || null);
+      if (senderAccount && senderAccount !== digest) continue;
+      const senderDevice = entry?.sender_device_id || entry?.senderDeviceId || null;
+      if (senderDevice && senderDevice !== deviceId) continue;
+      const candidates = [];
+      const directCounter = Number(entry?.counter ?? entry?.n);
+      if (Number.isFinite(directCounter) && directCounter > 0) candidates.push(directCounter);
+      try {
+        const header = entry?.header_json ? JSON.parse(entry.header_json) : entry?.header;
+        const headerDeviceId = header?.device_id || header?.deviceId || null;
+        if (!headerDeviceId || headerDeviceId === deviceId) {
+          const headerCounter = Number(header?.n ?? header?.counter);
+          if (Number.isFinite(headerCounter) && headerCounter > 0) candidates.push(headerCounter);
+        }
+      } catch {}
+      for (const c of candidates) {
+        if (Number.isFinite(c) && c > maxCounter) maxCounter = c;
+      }
+      if (maxCounter && senderDevice && senderDevice === deviceId) break;
+    }
+    if (maxCounter > 0 && Number(state.NsTotal) < maxCounter) {
+      state.NsTotal = maxCounter;
+      log({
+        transportCounterSeeded: {
+          conversationId: convId,
+          peerAccountDigest,
+          peerDeviceId,
+          senderDeviceId: deviceId,
+          maxCounter,
+          source: sourceTag
+        }
+      });
+      return true;
+    }
+    return false;
+  } catch (err) {
+    log({
+      transportCounterSeedError: {
+        conversationId: convId,
+        peerAccountDigest,
+        peerDeviceId,
+        error: err?.message || err,
+        source: sourceTag
+      }
+    });
+    return false;
+  }
 }
 
 function ensureHolderId(holder) {
@@ -1287,6 +1385,20 @@ async function sendDrPlaintext(params = {}) {
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
   let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
+  const preflightSecret = getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId }) || null;
+  const preflightHasRk = !!(preflightSecret?.drState?.rk_b64 || preflightSecret?.drState?.rk);
+  logSendPreflightTrace({
+    peerKey: peerDeviceId ? `${peer}::${peerDeviceId}` : peer,
+    peerAccountDigest: peer || null,
+    peerDeviceId: peerDeviceId || null,
+    secretPeerDeviceId: preflightSecret?.peerDeviceId || null,
+    deviceId: selfDeviceId || null,
+    role: preflightSecret?.role || null,
+    hasRk: preflightHasRk,
+    hasToken: !!(preflightSecret?.conversationToken || tokenB64),
+    conversationId: preflightSecret?.conversationId || conversationId || null,
+    hasDrInit
+  });
 
   if (!hasDrState) {
     // 嚴禁 fallback：若缺會話，僅允許顯式重建，直接報錯。
@@ -1297,6 +1409,11 @@ async function sendDrPlaintext(params = {}) {
     }
     state = drState({ peerAccountDigest: peer, peerDeviceId });
     hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+    if (!hasDrState) {
+      const err = new Error('contact-secrets persist blocked: missing rk');
+      err.code = 'MISSING_RK';
+      throw err;
+    }
   }
 
   if (!hasDrState && !hasDrInit) {
@@ -1319,6 +1436,16 @@ async function sendDrPlaintext(params = {}) {
 
   let finalConversationId = conversationId;
   if (!finalConversationId) finalConversationId = await conversationIdFromToken(tokenB64);
+
+  if (state?.baseKey?.snapshot === true) {
+    await seedTransportCounterFromServer({
+      conversationId: finalConversationId,
+      peerAccountDigest: peer,
+      peerDeviceId,
+      state,
+      sourceTag: 'send-preflight'
+    });
+  }
 
   const transportCounter = reserveTransportCounter(state, {
     peerAccountDigest: peer,
@@ -2407,12 +2534,7 @@ export async function ensureDrReceiverState(params = {}) {
       selfDeviceId &&
       snapshotSelfDeviceId &&
       snapshotSelfDeviceId !== selfDeviceId;
-    const responderDeviceMismatch =
-      selfDeviceId &&
-      snapshotRoleRaw === 'responder' &&
-      peerDeviceId &&
-      selfDeviceId !== peerDeviceId;
-    if (stateSelfMismatch || responderDeviceMismatch) {
+    if (stateSelfMismatch) {
       logHydrate('hydrate-fail', {
         reason: 'SELF_DEVICE_GATING',
         snapshotSelfDeviceId,

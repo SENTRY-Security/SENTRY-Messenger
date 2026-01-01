@@ -35,7 +35,13 @@ const REPLAY_DEBUG_KEYS = new Set([
   'mkHardblockTrace',
   'mkUnwrapHardblockTrace',
   'deviceIdRestoreTrace',
-  'contactSecretsRoleNormalizeTrace'
+  'contactSecretsRoleNormalizeTrace',
+  'secureModalGateTrace',
+  'sendPreflightSecretTrace',
+  'contactSecretsRestoreTrace',
+  'contactSecretsSanitizeDropTrace',
+  'vaultGateDecisionTrace',
+  'contactSecretWriteTrace'
 ]);
 const REPLAY_ACTION_VALUES = new Set();
 const FETCH_NOISE_KEYS = new Set(['fetchStart', 'fetchDone', 'fetchJSONDone', 'fetchFail']);

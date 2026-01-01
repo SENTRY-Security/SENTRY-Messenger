@@ -1829,7 +1829,9 @@ export async function listSecureAndDecrypt(params = {}) {
           callLog: messageObj.callLog || null,
           senderDigest: senderDigest || messageObj.senderDigest || null,
           senderDeviceId: senderDeviceId || messageObj.senderDeviceId || null,
-          peerDeviceId: messageObj.peerDeviceId || null
+          peerDeviceId: messageObj.peerDeviceId || null,
+          isHistoryReplay: computedIsHistoryReplay,
+          silent: !!silent
         };
         const appended = timelineAppendUserMessage(convId, timelineEntry);
         if (appended) {

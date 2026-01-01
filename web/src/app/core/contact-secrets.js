@@ -32,6 +32,30 @@ let lastRestoreSummary = null;
 let lastRestoreError = null;
 const ROLE_NORMALIZE_LOG_LIMIT = 5;
 let roleNormalizeLogCount = 0;
+const CONTACT_SECRETS_RESTORE_TRACE_LIMIT = 3;
+const CONTACT_SECRETS_SANITIZE_DROP_LIMIT = 3;
+const CONTACT_SECRET_WRITE_TRACE_LIMIT = 3;
+let contactSecretsRestoreTraceCount = 0;
+let contactSecretsSanitizeDropCount = 0;
+let contactSecretWriteTraceCount = 0;
+
+function logContactSecretsRestoreTrace(payload = {}) {
+  if (contactSecretsRestoreTraceCount >= CONTACT_SECRETS_RESTORE_TRACE_LIMIT) return;
+  contactSecretsRestoreTraceCount += 1;
+  log({ contactSecretsRestoreTrace: payload });
+}
+
+function logContactSecretsSanitizeDropTrace(payload = {}) {
+  if (contactSecretsSanitizeDropCount >= CONTACT_SECRETS_SANITIZE_DROP_LIMIT) return;
+  contactSecretsSanitizeDropCount += 1;
+  log({ contactSecretsSanitizeDropTrace: payload });
+}
+
+function logContactSecretWriteTrace(payload = {}) {
+  if (contactSecretWriteTraceCount >= CONTACT_SECRET_WRITE_TRACE_LIMIT) return;
+  contactSecretWriteTraceCount += 1;
+  log({ contactSecretWriteTrace: payload });
+}
 
 function normalizeContactRole(rawRole, { source = null, peerAccountDigest = null, peerDeviceId = null, logChange = false } = {}) {
   const val = typeof rawRole === 'string' ? rawRole.toLowerCase() : null;
@@ -1026,8 +1050,29 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     for (const entry of structured.entries) {
       try {
         const normalized = normalizeStructuredEntry(entry, { source: reason });
-        if (!normalized) continue;
+        if (!normalized) {
+          const rawDigest = normalizeAccountDigest(
+            entry?.peerAccountDigest || entry?.peer_account_digest || entry?.accountDigest || entry?.account_digest || entry?.peerKey || entry?.peer_key || entry?.peer || null
+          );
+          const rawDevice = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
+          logContactSecretsRestoreTrace({
+            reason: 'normalize-entry-failed',
+            peerAccountDigest: rawDigest || null,
+            peerDeviceId: rawDevice || null,
+            source: reason || null
+          });
+          continue;
+        }
         const { peerKey, aliases, record, corruptDevices = [] } = normalized;
+        const explicitPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
+        if (explicitPeerDeviceId && record?.peerDeviceId && explicitPeerDeviceId !== record.peerDeviceId) {
+          logContactSecretsRestoreTrace({
+            reason: 'peer-device-normalized',
+            peerAccountDigest: peerKey || null,
+            peerDeviceId: record.peerDeviceId || null,
+            source: reason || null
+          });
+        }
         totalEntries += 1;
         const devices = record.devices && typeof record.devices === 'object' ? record.devices : {};
         let hasDr = false;
@@ -1144,16 +1189,37 @@ export function sanitizeContactSecretsForDevice({ map = null, deviceId = null, r
     const selfDeviceRecord = devices[selfDeviceId];
     const role = typeof record?.role === 'string' ? record.role.toLowerCase() : null;
     if (!peerDeviceId) {
+      logContactSecretsSanitizeDropTrace({
+        reason: 'missing-peer-device',
+        peerKey,
+        peerDeviceId: null,
+        role: role || null,
+        deviceId: selfDeviceId
+      });
       targetMap.delete(peerKey);
       removed += 1;
       continue;
     }
     if (role === 'responder' && peerDeviceId !== selfDeviceId) {
+      logContactSecretsSanitizeDropTrace({
+        reason: 'responder-peer-mismatch',
+        peerKey,
+        peerDeviceId,
+        role,
+        deviceId: selfDeviceId
+      });
       targetMap.delete(peerKey);
       removed += 1;
       continue;
     }
     if (!selfDeviceRecord) {
+      logContactSecretsSanitizeDropTrace({
+        reason: 'missing-self-device-record',
+        peerKey,
+        peerDeviceId,
+        role: role || null,
+        deviceId: selfDeviceId
+      });
       targetMap.delete(peerKey);
       removed += 1;
       continue;
@@ -1654,7 +1720,6 @@ function normalizeContactSecretUpdate(update = {}) {
     if (Object.prototype.hasOwnProperty.call(update.conversation, 'peerDeviceId')) {
       const peerDev = update.conversation.peerDeviceId;
       structured.conversation.peerDeviceId = { has: true, value: normalizePeerDeviceId(peerDev) };
-      applyPeerDeviceId(peerDev);
     }
     if (Object.prototype.hasOwnProperty.call(update.conversation, 'drInit')) {
       structured.conversation.drInit = { has: true, value: update.conversation.drInit || null };
@@ -1731,9 +1796,48 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     || null;
   const { key, aliases, identity } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint, conversationId: conversationIdHint });
   if (!key) return;
+  const parsedKey = parsePeerKey(key);
+  const desiredPeerDeviceId = (structured.peerDeviceId.has ? structured.peerDeviceId.value : null) || peerDeviceIdHint || null;
+  const shouldMigratePeerDevice =
+    desiredPeerDeviceId
+    && parsedKey.accountDigest
+    && parsedKey.deviceId
+    && desiredPeerDeviceId !== parsedKey.deviceId;
+  const finalKey = shouldMigratePeerDevice
+    ? `${parsedKey.accountDigest}::${desiredPeerDeviceId}`
+    : key;
   const map = ensureMap();
   const existing = map.get(key) || null;
-  const next = cloneContactSecretRecord(existing);
+  const existingAtFinal = finalKey !== key ? (map.get(finalKey) || null) : null;
+  const base = existingAtFinal || existing;
+  const next = cloneContactSecretRecord(base);
+  const mergeMissingFields = (source) => {
+    if (!source || typeof source !== 'object') return;
+    if (!next.role && source.role) next.role = source.role;
+    if (!next.conversationToken && source.conversationToken) next.conversationToken = source.conversationToken;
+    if (!next.conversationId && source.conversationId) next.conversationId = source.conversationId;
+    if (!next.conversationDrInit && source.conversationDrInit) next.conversationDrInit = source.conversationDrInit;
+    if (!next.peerDeviceId && source.peerDeviceId) next.peerDeviceId = source.peerDeviceId;
+    if (!next.updatedAt && source.updatedAt) next.updatedAt = source.updatedAt;
+    if (source.devices && typeof source.devices === 'object') {
+      for (const [devId, devVal] of Object.entries(source.devices)) {
+        if (!devId || !devVal || typeof devVal !== 'object') continue;
+        const target = ensureDeviceRecord(next, devId, { create: true });
+        if (!target) continue;
+        if (!target.drState && devVal.drState) target.drState = devVal.drState;
+        if (!target.drSeed && devVal.drSeed) target.drSeed = devVal.drSeed;
+        if (!Array.isArray(target.drHistory) || !target.drHistory.length) {
+          target.drHistory = Array.isArray(devVal.drHistory) ? devVal.drHistory.slice() : [];
+        }
+        if (!target.drHistoryCursorTs && devVal.drHistoryCursorTs) target.drHistoryCursorTs = devVal.drHistoryCursorTs;
+        if (!target.drHistoryCursorId && devVal.drHistoryCursorId) target.drHistoryCursorId = devVal.drHistoryCursorId;
+        if (!target.updatedAt && devVal.updatedAt) target.updatedAt = devVal.updatedAt;
+      }
+    }
+  };
+  if (existingAtFinal && existing && existingAtFinal !== existing) {
+    mergeMissingFields(cloneContactSecretRecord(existing));
+  }
   if (identity?.deviceId) {
     next.peerDeviceId = identity.deviceId;
   } else if (peerDeviceIdHint) {
@@ -1776,15 +1880,33 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     devVal.drState = normalizeDrSnapshot(devVal.drState, {
       setDefaultUpdatedAt: false,
       source: sourceTag,
-      peerKey: key,
+      peerKey: finalKey,
       deviceId: devId,
       strictB64: true
     });
   }
 
-  map.set(key, next);
-  registerContactAliases(key, aliases);
+  map.set(finalKey, next);
+  if (finalKey !== key) {
+    map.delete(key);
+    clearContactAliases(key);
+  }
+  const aliasList = finalKey === key ? aliases : Array.from(new Set([...(aliases || []), key]));
+  registerContactAliases(finalKey, aliasList);
   persistContactSecrets();
+  logContactSecretWriteTrace({
+    peerKey: finalKey,
+    prevPeerKey: finalKey !== key ? key : null,
+    peerDeviceId: next.peerDeviceId || identity?.deviceId || null,
+    deviceId: resolvedDeviceId,
+    role: next.role || null,
+    hasDrState: !!deviceRecord.drState,
+    hasRk: !!(deviceRecord.drState?.rk_b64 || deviceRecord.drState?.rk),
+    conversationId: next.conversationId || null,
+    hasToken: !!next.conversationToken,
+    source: sourceTag,
+    migrated: finalKey !== key
+  });
   debugLog('set', {
     peerAccountDigest: normalizeAccountDigest(key) || key || null,
     peerDeviceId: next.peerDeviceId || identity?.deviceId || null,
