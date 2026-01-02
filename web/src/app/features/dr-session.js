@@ -36,7 +36,7 @@ import {
 } from './queue/outbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
-import { log } from '../core/log.js';
+import { log, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { MessageKeyVault } from './message-key-vault.js';
 import { listSecureMessages } from '../api/messages.js';
@@ -55,6 +55,16 @@ function logSendPreflightTrace(payload = {}) {
   if (sendPreflightTraceCount >= SEND_PREFLIGHT_TRACE_LIMIT) return;
   sendPreflightTraceCount += 1;
   log({ sendPreflightSecretTrace: payload });
+}
+
+function logOutgoingSendTrace(stage, messageId, serverMessageId = null) {
+  if (!stage) return;
+  logCapped('outgoingSendTrace', {
+    stage,
+    localId: messageId || null,
+    messageId: messageId || null,
+    serverMessageId: serverMessageId || null
+  });
 }
 
 function suffix(value, len) {
@@ -1638,16 +1648,24 @@ async function sendDrPlaintext(params = {}) {
 
   try {
     const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
-    await MessageKeyVault.putMessageKey({
-      conversationId: finalConversationId,
-      messageId,
-      senderDeviceId,
-      targetDeviceId: receiverDeviceId,
-      direction: 'outgoing',
-      msgType,
-      headerCounter: vaultCounter,
-      messageKeyB64
-    });
+    try {
+      await MessageKeyVault.putMessageKey({
+        conversationId: finalConversationId,
+        messageId,
+        senderDeviceId,
+        targetDeviceId: receiverDeviceId,
+        direction: 'outgoing',
+        msgType,
+        headerCounter: vaultCounter,
+        messageKeyB64
+      });
+      logOutgoingSendTrace('vault_put_ok', messageId, null);
+    } catch (err) {
+      logOutgoingSendTrace('vault_put_fail', messageId, null);
+      err.stage = 'vault_put_fail';
+      err.code = err.code || 'VaultPutFailed';
+      throw err;
+    }
     startOutboxProcessor();
     const job = await enqueueOutboxJob({
       conversationId: finalConversationId,
@@ -1673,6 +1691,7 @@ async function sendDrPlaintext(params = {}) {
     });
     const result = await processOutboxJobNow(job.jobId);
     if (!result.ok) {
+      logOutgoingSendTrace('send_fail', messageId, null);
       logMsgEvent('send:fail', {
         direction: 'outgoing',
         conversationId: finalConversationId,
@@ -1689,6 +1708,8 @@ async function sendDrPlaintext(params = {}) {
       const status = Number.isFinite(result?.status) ? ` (status=${result.status})` : '';
       const sendErr = new Error((result.error || 'sendText failed') + status);
       sendErr.status = Number.isFinite(result?.status) ? Number(result.status) : undefined;
+      sendErr.code = sendErr.code || sendErr.status || 'SendFailed';
+      sendErr.stage = 'send_fail';
       sendErr.__drDeliveryLogged = true;
       throw sendErr;
     }
@@ -1725,6 +1746,7 @@ async function sendDrPlaintext(params = {}) {
       status: result?.status ?? null,
       ok: !!result?.ok
     });
+    logOutgoingSendTrace('send_ok', messageId, msg.id || null);
     try {
       log({
         sendSuccessTrace: {
@@ -1793,10 +1815,22 @@ export async function sendDrText(params = {}) {
 export async function sendDrDeliveryReceipt(params = {}) {
   const { messageId: targetMessageId, ...rest } = params;
   if (!targetMessageId) throw new Error('messageId required for delivery receipt');
+  const now = Math.floor(Date.now() / 1000);
+  const receiverDeviceId = ensureDeviceId();
+  const convId = params?.conversationId || params?.convId || null;
+  const payload = {
+    type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
+    messageId: targetMessageId,
+    ackedMessageId: targetMessageId,
+    conversationId: convId,
+    receiverDeviceId,
+    ts: now
+  };
   return sendDrPlaintext({
     ...rest,
+    convId,
     messageId: buildReceiptMessageId(targetMessageId),
-    text: JSON.stringify({ type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT, messageId: targetMessageId }),
+    text: JSON.stringify(payload),
     metaOverrides: {
       msg_type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
       control: 'receipt',
@@ -2205,7 +2239,11 @@ export async function sendDrMedia(params = {}) {
       headerCounter: vaultCounter,
       messageKeyB64
     });
+    logOutgoingSendTrace('vault_put_ok', messageId, null);
   } catch (err) {
+    logOutgoingSendTrace('vault_put_fail', messageId, null);
+    err.stage = 'vault_put_fail';
+    err.code = err.code || 'VaultPutFailed';
     restoreSendFailure(err);
   }
 
@@ -2233,7 +2271,12 @@ export async function sendDrMedia(params = {}) {
   });
   const result = await processOutboxJobNow(job.jobId);
   if (!result.ok) {
-    restoreSendFailure(new Error(result.error || 'sendMedia failed'));
+    logOutgoingSendTrace('send_fail', messageId, null);
+    const sendErr = new Error(result.error || 'sendMedia failed');
+    sendErr.status = Number.isFinite(result?.status) ? Number(result.status) : null;
+    sendErr.code = sendErr.code || sendErr.status || 'SendFailed';
+    sendErr.stage = 'send_fail';
+    restoreSendFailure(sendErr);
   }
   logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
 
@@ -2243,6 +2286,7 @@ export async function sendDrMedia(params = {}) {
     throw new Error('messageId mismatch from server');
   }
   const finalMessageId = ackId || job.messageId;
+  logOutgoingSendTrace('send_ok', messageId, finalMessageId);
   if (preSnapshot) {
     recordDrMessageHistory({
       peerAccountDigest: peer,

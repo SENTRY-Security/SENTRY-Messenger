@@ -7,7 +7,7 @@ import { devkeysStore } from '../../api/devkeys.js';
 import { encodeFriendInvite, decodeFriendInvite } from '../../lib/invite.js';
 import { generateQR } from '../../lib/qr.js';
 import QrScanner from '../../lib/vendor/qr-scanner.min.js';
-import { log } from '../../core/log.js';
+import { log, logCapped } from '../../core/log.js';
 import { x3dhInitiate } from '../../crypto/dr.js';
 import { genX25519Keypair } from '../../crypto/nacl.js';
 import { b64 } from '../../crypto/nacl.js';
@@ -87,6 +87,18 @@ export function setupShareController(options) {
   let autoProfileBroadcasted = false;
   const CONTACT_BROADCAST_DEBOUNCE_MS = 600;
   const pendingContactUpdates = new Map();
+  const PROFILE_PREFLIGHT_TRACE_CAP = 5;
+  let profilePreflightTraceCount = 0;
+
+  function shouldTraceProfilePreflight(reasonKey) {
+    return reasonKey === 'nickname' || reasonKey === 'avatar';
+  }
+
+  function logProfilePreflightTrace(payload) {
+    if (profilePreflightTraceCount >= PROFILE_PREFLIGHT_TRACE_CAP) return;
+    profilePreflightTraceCount += 1;
+    log({ profilePreflightTrace: payload });
+  }
 
   const contactSecretMap = restoreContactSecrets();
   primeStoredDrSnapshots(contactSecretMap);
@@ -756,6 +768,7 @@ export function setupShareController(options) {
     const conversationToken = conversation?.token_b64 || conversation?.tokenB64 || sessionKey || null;
     const conversationId = conversation?.conversation_id || conversation?.conversationId || null;
     const resolvedPeerDeviceId = peerDeviceId || null; // 嚴格要求顯式指定對方裝置
+    const resolvedPeerKey = targetDigest && resolvedPeerDeviceId ? `${targetDigest}::${resolvedPeerDeviceId}` : null;
     if (senderDeviceId && resolvedPeerDeviceId && String(resolvedPeerDeviceId) === String(senderDeviceId)) {
       throw new Error('contact-share target device resolves to self');
     }
@@ -777,7 +790,32 @@ export function setupShareController(options) {
     if (!resolvedPeerDeviceId) {
       throw new Error('contact-share missing peerDeviceId (strict path)');
     }
+    const reasonKey = typeof reason === 'string' ? reason.toLowerCase() : null;
+    const shouldTracePreflight = shouldTraceProfilePreflight(reasonKey);
+    const mkReady = !!getMkRaw();
     const preflightState = drState({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId });
+    let restoreError = null;
+    let hasRk = preflightState?.rk instanceof Uint8Array;
+    let snapshotHasRk = false;
+    if (!hasRk) {
+      const secretRecord = getContactSecret(targetDigest, { peerDeviceId: resolvedPeerDeviceId });
+      const snapshot = secretRecord?.drState || null;
+      snapshotHasRk = !!(snapshot && (snapshot.rk_b64 || snapshot.rk));
+      if (snapshotHasRk) {
+        try {
+          restoreDrStateFromSnapshot({
+            peerAccountDigest: targetDigest,
+            peerDeviceId: resolvedPeerDeviceId,
+            snapshot,
+            targetState: preflightState,
+            sourceTag: 'contact-share-preflight'
+          });
+        } catch (err) {
+          restoreError = err;
+        }
+        hasRk = preflightState?.rk instanceof Uint8Array;
+      }
+    }
     const preflightPayload = {
       peerAccountDigest: targetDigest || null,
       peerDeviceId: resolvedPeerDeviceId || null,
@@ -786,11 +824,54 @@ export function setupShareController(options) {
       rkType: preflightState?.rk?.constructor?.name || typeof preflightState?.rk || null,
       rkByteLength: preflightState?.rk instanceof Uint8Array ? preflightState.rk.byteLength : null
     };
-    if (!(preflightState?.rk instanceof Uint8Array)) {
+    const preflightFailed = !!restoreError || !hasRk;
+    if (preflightFailed) {
       console.error('[contact-share:preflight-fail]', preflightPayload);
+      const availablePeerKeys = (() => {
+        if (!targetDigest || !(contactSecretMap instanceof Map)) return null;
+        const prefix = `${targetDigest}::`;
+        const keys = [];
+        for (const key of contactSecretMap.keys()) {
+          if (typeof key === 'string' && key.startsWith(prefix)) keys.push(key);
+        }
+        return keys.length ? keys : null;
+      })();
+      const candidate = (() => {
+        if (!snapshotHasRk) return 'A';
+        if (availablePeerKeys && resolvedPeerKey && !availablePeerKeys.includes(resolvedPeerKey)) return 'D';
+        if (restoreError) return 'C';
+        return 'B';
+      })();
+      logCapped('contactSharePreflightTrace', {
+        reasonCode: restoreError ? 'PREFLIGHT_RESTORE_ERROR' : 'PREFLIGHT_MISSING_RK',
+        resolvedPeerKey,
+        availablePeerKeys,
+        snapshotHasRk,
+        liveStateHasRk: !!(preflightState?.rk instanceof Uint8Array),
+        candidate,
+        sourceTag: 'sendContactShare'
+      }, 5);
+    } else {
+      console.log('[contact-share:preflight-ok]', preflightPayload);
+    }
+    if (shouldTracePreflight) {
+      logProfilePreflightTrace({
+        operation: reasonKey,
+        needsRk: true,
+        hasRk,
+        needsMk: false,
+        mkReady,
+        conversationId: conversationId || null,
+        target: 'peer',
+        errorCode: preflightFailed ? (restoreError ? 'restore-error' : 'missing-rk') : null
+      });
+    }
+    if (restoreError) {
+      throw restoreError;
+    }
+    if (!hasRk) {
       throw new Error('contact-share sender missing DR rk');
     }
-    console.log('[contact-share:preflight-ok]', preflightPayload);
     const payload = await buildLocalContactPayload({ conversation, drInit, overrides });
     if (reason) {
       payload.reason = reason;

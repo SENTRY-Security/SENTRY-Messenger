@@ -1,8 +1,10 @@
-import { log } from '../../core/log.js';
+import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
+import { retryOutboxMessage } from '../../features/queue/outbox.js';
+import { MessageKeyVault } from '../../features/message-key-vault.js';
 import {
   ensureSecureConversationReady,
   subscribeSecureConversation,
@@ -344,20 +346,6 @@ export function initMessagesPane({
 
   function scheduleActivePoll() {
     stopActivePoll();
-    const state = getMessageState();
-    if (!state.conversationId || !state.conversationToken || !state.activePeerDigest) return;
-    activePollTimer = setTimeout(() => {
-      activePollTimer = null;
-      const current = getMessageState();
-      if (!current.conversationId || !current.conversationToken || !current.activePeerDigest) return;
-      if (current.loading) {
-        scheduleActivePoll();
-        return;
-      }
-      loadActiveConversationMessages({ append: false, silent: true, reason: 'poll' })
-        .catch((err) => log({ activePollError: err?.message || err }))
-        .finally(() => scheduleActivePoll());
-    }, ACTIVE_POLL_INTERVAL_MS);
   }
 
   function normalizePeerKey(value) {
@@ -775,7 +763,12 @@ export function initMessagesPane({
       localMessage = { ...viewerMessage };
       localMessage.id = localMessage.id || entry.id;
       localMessage.messageId = localMessage.id;
+      localMessage.localId = localMessage.id;
+      localMessage.serverMessageId = null;
+      localMessage.status = 'pending';
       localMessage.pending = true;
+      localMessage.failureReason = null;
+      localMessage.failureCode = null;
       localMessage.msgType = 'call-log';
       localMessage.direction = isOutgoing ? 'outgoing' : 'incoming';
       localMessage.ts = localMessage.ts || entry.ts;
@@ -826,12 +819,24 @@ export function initMessagesPane({
         endedAt,
         conversation: { conversation_id: conversationId },
         messageId: entry.id
-      }).then(() => {
+      }).then((res) => {
+        if (localMessage) {
+          try {
+            applyOutgoingSent(localMessage, res, localMessage.ts || entry.ts);
+          } catch (err) {
+            applyOutgoingFailure(localMessage, err, '通話記錄傳送失敗');
+          }
+          updateMessagesUI({ preserveScroll: true });
+        }
         try {
           console.info('[call] log:send ' + JSON.stringify({ ...logPayload, ok: true }));
         } catch {}
       }).catch((err) => {
         log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest, peerDeviceId });
+        if (localMessage) {
+          applyOutgoingFailure(localMessage, err, '通話記錄傳送失敗');
+          updateMessagesUI({ preserveScroll: true });
+        }
         try {
           console.info('[call] log:send ' + JSON.stringify({ ...logPayload, ok: false, reason: err?.message || err }));
         } catch {}
@@ -1718,7 +1723,7 @@ export function initMessagesPane({
     if (!elements.scrollEl || !state.hasMore || state.loading || autoLoadOlderInProgress) return;
     autoLoadOlderInProgress = true;
     setLoadMoreState('loading');
-    loadActiveConversationMessages({ append: true })
+    loadActiveConversationMessages({ append: true, reason: 'scroll' })
       .catch((err) => log({ loadOlderError: err?.message || err }))
       .finally(() => {
         autoLoadOlderInProgress = false;
@@ -2724,28 +2729,28 @@ export function initMessagesPane({
       metaRow.appendChild(ts);
       if (messageType !== 'call-log') {
         const statusSpan = document.createElement('span');
-        const status = typeof msg?.status === 'string' ? msg.status : (msg.read ? 'read' : null);
-        const isLastDoubleTick = msg.direction === 'outgoing' && msg.id && msg.id === lastDoubleTickId;
+        const status = typeof msg?.status === 'string' ? msg.status : null;
+        const pending = status === 'pending' || msg.pending === true;
+        const delivered = status === 'delivered' || status === 'read';
+        const failed = status === 'failed';
+        const statusMessageId = msg?.id || msg?.messageId || msg?.localId || null;
+        if (statusMessageId) statusSpan.dataset.messageId = statusMessageId;
         if (msg.direction === 'incoming') {
           statusSpan.className = 'message-status peer';
           statusSpan.textContent = '';
-        } else if (isLastDoubleTick) {
-          statusSpan.className = 'message-status read';
-          statusSpan.textContent = '✓✓';
-        } else if (msg.pending) {
+        } else if (pending) {
           statusSpan.className = 'message-status pending';
           statusSpan.textContent = '';
-        } else if (status === 'failed') {
+        } else if (failed) {
           statusSpan.className = 'message-status failed';
           statusSpan.textContent = '!';
+          const failureTip = msg?.failureReason || msg?.failureCode || '';
+          if (failureTip) statusSpan.title = failureTip;
+        } else if (delivered) {
+          statusSpan.className = 'message-status delivered';
+          statusSpan.textContent = '✓✓';
         } else {
-          if (status === 'read') {
-            statusSpan.className = 'message-status read';
-          } else if (status === 'delivered') {
-            statusSpan.className = 'message-status delivered';
-          } else {
-            statusSpan.className = 'message-status sent';
-          }
+          statusSpan.className = 'message-status sent';
           statusSpan.textContent = '✓';
         }
         metaRow.appendChild(statusSpan);
@@ -2827,7 +2832,7 @@ export function initMessagesPane({
       const cursor = append ? state.nextCursor : undefined;
       const cursorTs = cursor?.ts ?? cursor ?? undefined;
       const cursorId = cursor?.id ?? undefined;
-      const fetchLimit = 50;
+      const fetchLimit = 20;
       const mutateState = mutateLive && !replayMode && !append;
       const requestPriority = replayMode ? 'replay' : 'live';
       const forceReplay = replayMode && !append;
@@ -2952,6 +2957,17 @@ export function initMessagesPane({
         serverItemCount = null,
         replayStats = {}
       } = listResult;
+      if (reason === 'ws-reconnect' || reason === 'open' || reason === 'scroll') {
+        const cursorPayload = cursor
+          ? { ts: cursorTs ?? null, id: cursorId ?? null }
+          : null;
+        logCapped('wsSyncTrace', {
+          trigger: reason,
+          conversationId: state.conversationId || null,
+          count: Array.isArray(resultItems) ? resultItems.length : 0,
+          cursor: cursorPayload
+        });
+      }
       logReplayFetchResult({
         conversationId: state.conversationId || null,
         itemsLength: Array.isArray(resultItems) ? resultItems.length : null,
@@ -3057,7 +3073,8 @@ export function initMessagesPane({
         for (const msg of timelineMessages) {
           if (msg?.id && receiptUpdates.includes(msg.id)) {
             msg.read = true;
-            msg.status = 'read';
+            msg.status = 'delivered';
+            msg.pending = false;
             receiptsChanged = true;
           }
         }
@@ -3542,8 +3559,7 @@ export function initMessagesPane({
           }));
         } catch {}
       }
-      await loadActiveConversationMessages({ append: false, replay: !historyReplayDone });
-      scheduleActivePoll();
+      await loadActiveConversationMessages({ append: false, replay: !historyReplayDone, reason: 'open' });
     }
   }
 
@@ -3598,9 +3614,13 @@ export function initMessagesPane({
     if (!messageId) {
       throw new Error('messageId required for local outgoing message');
     }
+    let senderDeviceId = null;
+    try { senderDeviceId = ensureDeviceId(); } catch {}
     const message = {
+      localId: messageId,
       id: messageId,
       messageId,
+      serverMessageId: null,
       ts: ts || Math.floor(Date.now() / 1000),
       text,
       direction: 'outgoing',
@@ -3608,8 +3628,14 @@ export function initMessagesPane({
       media: media ? { ...media } : null,
       abortController: null,
       status: 'pending',
+      pending: true,
+      failureReason: null,
+      failureCode: null,
       read: false,
-      msgType: type
+      msgType: type,
+      peerAccountDigest: state.activePeerDigest || null,
+      peerDeviceId: state.activePeerDeviceId || null,
+      senderDeviceId
     };
     if (message.type === 'media' && message.media) {
       if (!message.text) message.text = `[檔案] ${message.media.name || '附件'}`;
@@ -3640,6 +3666,14 @@ export function initMessagesPane({
         /* ignore */
       }
     }
+    try {
+      logCapped('outgoingSendTrace', {
+        stage: 'ui_append',
+        localId: message.localId || messageId,
+        messageId: message.messageId || messageId,
+        serverMessageId: message.serverMessageId || null
+      });
+    } catch {}
     refreshTimelineState(convId);
     updateMessagesUI({ scrollToEnd: true });
     scrollMessagesToBottom();
@@ -3727,30 +3761,189 @@ export function initMessagesPane({
 
   function applyReceiptState(message) {
     if (!message || message.direction !== 'outgoing' || !message.id) return;
+    const currentStatus = typeof message.status === 'string' ? message.status : null;
+    if (currentStatus === 'pending' || message.pending === true) return;
+    if (currentStatus === 'failed') return;
     const state = getMessageState();
     const receipt = state.conversationId ? getMessageReceipt(state.conversationId, message.id) : null;
     const delivered = state.conversationId ? getMessageDelivery(state.conversationId, message.id) : null;
     if (receipt?.read) {
-      // 有 read 收據視為成功，覆寫失敗狀態。
+      // read 視為已送達。
       message.read = true;
-      message.status = 'read';
+      message.status = 'delivered';
+      message.pending = false;
+      if (currentStatus !== 'delivered') {
+        logCapped('deliveryAckTrace', {
+          stage: 'applied',
+          ackedMessageId: message.id,
+          conversationId: state.conversationId || null
+        });
+      }
       return;
     }
     if (delivered?.delivered) {
-      // 有 delivered 收據也視為成功，清除失敗驚嘆號。
       message.read = false;
       message.status = 'delivered';
+      message.pending = false;
+      if (currentStatus !== 'delivered') {
+        logCapped('deliveryAckTrace', {
+          stage: 'applied',
+          ackedMessageId: message.id,
+          conversationId: state.conversationId || null
+        });
+      }
       return;
     }
-    if (message.status !== 'failed' && !message.status) {
+    if (!currentStatus) {
       message.read = false;
       message.status = 'sent';
+      message.pending = false;
     }
   }
 
   function applyReceiptsToMessages(list) {
     if (!Array.isArray(list)) return;
     for (const msg of list) applyReceiptState(msg);
+  }
+
+  function extractFailureDetails(err, fallbackReason = 'send failed') {
+    const reason = typeof err?.message === 'string'
+      ? err.message
+      : (typeof err === 'string' ? err : fallbackReason);
+    let code = err?.code || err?.errorCode || err?.stage || null;
+    if (!code && Number.isFinite(err?.status)) code = `HTTP_${Number(err.status)}`;
+    if (!code) code = 'Unknown';
+    if (code !== null && code !== undefined) code = String(code);
+    return { reason, code };
+  }
+
+  function applyOutgoingPending(message) {
+    if (!message) return;
+    message.status = 'pending';
+    message.pending = true;
+    message.failureReason = null;
+    message.failureCode = null;
+  }
+
+  function applyOutgoingSent(message, res, fallbackTs) {
+    if (!message) return;
+    const localId = message.localId || message.messageId || message.id || null;
+    const serverId = res?.msg?.id || res?.id || res?.serverMessageId || res?.server_message_id || null;
+    if (serverId && localId && serverId !== localId) {
+      throw new Error('messageId mismatch from server');
+    }
+    const finalId = serverId || message.id || localId;
+    if (finalId) message.id = finalId;
+    message.serverMessageId = serverId || finalId;
+    message.status = 'sent';
+    message.pending = false;
+    message.failureReason = null;
+    message.failureCode = null;
+    const ts = res?.msg?.ts || res?.created_at || res?.createdAt || fallbackTs;
+    if (Number.isFinite(ts)) message.ts = ts;
+  }
+
+  function applyOutgoingFailure(message, err, fallbackReason) {
+    if (!message) return;
+    const details = extractFailureDetails(err, fallbackReason);
+    message.status = 'failed';
+    message.pending = false;
+    message.failureReason = details.reason || fallbackReason;
+    message.failureCode = details.code || 'Unknown';
+  }
+
+  async function resendFailedOutgoingMessage(message) {
+    if (!message || message.direction !== 'outgoing') return;
+    if (message.status !== 'failed') return;
+    const state = getMessageState();
+    const convId = message.conversationId || state.conversationId || null;
+    const messageId = message.localId || message.messageId || message.id || null;
+    if (!convId || !messageId) {
+      applyOutgoingFailure(message, new Error('missing conversation or message id'), '無法重送：缺少對話資訊');
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    applyOutgoingPending(message);
+    updateMessagesUI({ preserveScroll: true });
+    let retryResult = null;
+    try {
+      retryResult = await retryOutboxMessage({ conversationId: convId, messageId });
+    } catch (err) {
+      retryResult = { ok: false, error: err?.message || err, errorCode: err?.code || null };
+    }
+    if (retryResult?.ok) {
+      try {
+        applyOutgoingSent(message, retryResult.data, message.ts || Math.floor(Date.now() / 1000));
+      } catch (err) {
+        applyOutgoingFailure(message, err, '重送失敗');
+      }
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    if (retryResult?.errorCode !== 'OutboxJobMissing') {
+      applyOutgoingFailure(message, retryResult, '重送失敗');
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    let senderDeviceId = message.senderDeviceId || null;
+    if (!senderDeviceId) {
+      try { senderDeviceId = ensureDeviceId(); } catch {}
+    }
+    if (!senderDeviceId) {
+      applyOutgoingFailure(message, new Error('deviceId missing'), '無法重送：缺少裝置資訊');
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    const vaultRes = await MessageKeyVault.getMessageKey({ conversationId: convId, messageId, senderDeviceId });
+    if (vaultRes?.ok) {
+      applyOutgoingFailure(message, new Error('outbox payload missing'), '無法重送：缺少出站封包');
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    if (vaultRes?.error && vaultRes.error !== 'NotFound') {
+      applyOutgoingFailure(message, new Error(vaultRes?.message || 'vault get failed'), '無法重送：金鑰讀取失敗');
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    if (message.type && message.type !== 'text') {
+      applyOutgoingFailure(message, new Error('outbox payload missing for media'), '無法重送：缺少原始內容');
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    const peerAccountDigest = message.peerAccountDigest || state.activePeerDigest || resolvePeerForConversation(convId, state.activePeerDigest);
+    const peerDeviceId = message.peerDeviceId || resolveTargetDeviceForConv(convId, peerAccountDigest) || state.activePeerDeviceId || null;
+    if (!peerAccountDigest || !peerDeviceId) {
+      applyOutgoingFailure(message, new Error('peer missing'), '無法重送：缺少對端裝置資訊');
+      updateMessagesUI({ preserveScroll: true });
+      return;
+    }
+    try {
+      const res = await sendDrText({
+        peerAccountDigest,
+        peerDeviceId,
+        text: message.text || '',
+        messageId
+      });
+      applyOutgoingSent(message, res, message.ts || Math.floor(Date.now() / 1000));
+      updateMessagesUI({ preserveScroll: true });
+      const convIdFinal = res?.convId || convId;
+      if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
+      const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
+      let senderDeviceId = null;
+      try { senderDeviceId = ensureDeviceId(); } catch {}
+      wsSendFn({
+        type: 'message-new',
+        targetAccountDigest: peerAccountDigest,
+        conversationId: convIdFinal,
+        preview: message.text || '',
+        ts: message.ts || Math.floor(Date.now() / 1000),
+        targetDeviceId,
+        senderDeviceId
+      });
+    } catch (err) {
+      applyOutgoingFailure(message, err, '重送失敗');
+      updateMessagesUI({ preserveScroll: true });
+    }
   }
 
   function applyAckDeliveryReceipt({ convId, ack, localMessage }) {
@@ -3957,16 +4150,8 @@ export function initMessagesPane({
             state.conversationId = res.convId;
           }
           if (msg) {
-            const serverId = res?.msg?.id || res?.id || null;
-            if (serverId && serverId !== messageId) {
-              throw new Error('messageId mismatch from server');
-            }
-            msg.id = serverId || msg.id;
-            msg.ts = res?.msg?.ts || msg.ts || Math.floor(Date.now() / 1000);
+            applyOutgoingSent(msg, res, Math.floor(Date.now() / 1000));
             msg.text = res?.msg?.text || msg.text;
-            msg.pending = false;
-            msg.status = 'sent';
-            applyAckDeliveryReceipt({ convId, ack: res, localMessage: msg });
             if (!msg.media) msg.media = {};
             msg.media = {
               ...msg.media,
@@ -3999,8 +4184,7 @@ export function initMessagesPane({
           const msg = findMessageById(localMsg.id);
           if (msg) {
             applyUploadProgress(msg, { percent: msg.media?.progress ?? 0, error: err?.message || err });
-            msg.pending = false;
-            msg.status = 'failed';
+            applyOutgoingFailure(msg, err, '檔案傳送失敗');
             msg.text = `[上傳失敗] ${msg.media?.name || file.name || '附件'}`;
           }
           setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
@@ -4465,7 +4649,8 @@ export function initMessagesPane({
           const msg = findMessageById(targetId);
           if (msg) {
             msg.read = true;
-            msg.status = 'read';
+            msg.status = 'delivered';
+            msg.pending = false;
             updateMessagesUI({ preserveScroll: true });
           }
         }
@@ -4474,8 +4659,9 @@ export function initMessagesPane({
         if (targetId && state.conversationId) {
           recordMessageDelivered(state.conversationId, targetId, tsRaw);
           const msg = findMessageById(targetId);
-          if (msg && msg.status !== 'read') {
+          if (msg) {
             msg.status = 'delivered';
+            msg.pending = false;
             updateMessagesUI({ preserveScroll: true });
           }
         }
@@ -4662,8 +4848,21 @@ export function initMessagesPane({
       elements.scrollEl.addEventListener('wheel', handleMessagesWheel, { passive: true });
     }
 
+    elements.messagesList?.addEventListener('click', (event) => {
+      const target = event.target?.closest?.('.message-status.failed');
+      if (!target) return;
+      const messageId = target.dataset?.messageId || null;
+      if (!messageId) return;
+      const msg = findMessageById(messageId);
+      if (!msg || msg.status !== 'failed') return;
+      resendFailedOutgoingMessage(msg).catch((err) => {
+        applyOutgoingFailure(msg, err, '重送失敗');
+        updateMessagesUI({ preserveScroll: true });
+      });
+    });
+
     elements.loadMoreBtn?.addEventListener('click', () => {
-      loadActiveConversationMessages({ append: true });
+      loadActiveConversationMessages({ append: true, reason: 'scroll' });
     });
 
     elements.createGroupBtn?.addEventListener('click', handleCreateGroup);
@@ -4726,15 +4925,7 @@ export function initMessagesPane({
           });
         }
         if (localMsg) {
-          const serverId = res?.msg?.id || res?.id || null;
-          if (serverId && serverId !== messageId) {
-            throw new Error('messageId mismatch from server');
-          }
-          localMsg.id = serverId || localMsg.id;
-          localMsg.status = 'sent';
-          localMsg.pending = false;
-          localMsg.ts = res?.msg?.ts || localMsg.ts || ts;
-          applyAckDeliveryReceipt({ convId: res?.convId || state.conversationId, ack: res, localMessage: localMsg });
+          applyOutgoingSent(localMsg, res, ts);
           updateMessagesUI({ preserveScroll: true });
         }
         const convId = res?.convId || state.conversationId;
@@ -4762,8 +4953,7 @@ export function initMessagesPane({
         }
         setMessagesStatus('傳送失敗：' + (err?.message || err), true);
         if (localMsg) {
-          localMsg.status = 'failed';
-          localMsg.pending = false;
+          applyOutgoingFailure(localMsg, err, '傳送失敗');
           updateMessagesUI({ preserveScroll: true });
         }
       } finally {
@@ -4837,7 +5027,7 @@ export function initMessagesPane({
       const state = getMessageState();
       if (state.activePeerDigest && state.conversationToken) {
         try {
-          await loadActiveConversationMessages({ append: false, replay: true });
+          await loadActiveConversationMessages({ append: false, replay: false, silent: true, reason: 'ws-reconnect' });
         } catch (err) {
           log({ refreshAfterReconnectLoadError: err?.message || err });
         }

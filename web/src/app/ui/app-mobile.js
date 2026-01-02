@@ -2,7 +2,7 @@
 // Mobile-first App UI with bottom navigation: Contacts, Messages, Drive, Profile.
 // Implements Drive tab using existing encrypted media features.
 
-import { log, setLogSink } from '../core/log.js';
+import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import {
@@ -12,6 +12,7 @@ import {
   setDevicePriv,
   resetAll, clearSecrets,
   drState,
+  getDrSessMap,
   getAccountToken,
   getAccountDigest,
   getWrappedMK,
@@ -2537,6 +2538,28 @@ async function hydrateDrSnapshotsAfterBackup() {
   try {
     clearDrState(null, { __drDebugTag: 'web/src/app/ui/app-mobile.js:hydrateDrSnapshotsAfterBackup' });
     const restored = hydrateDrStatesFromContactSecrets();
+    try {
+      const selfDeviceId = getDeviceId() || ensureDeviceId() || null;
+      const secretMap = restoreContactSecrets();
+      const drMap = getDrSessMap();
+      if (secretMap instanceof Map && drMap instanceof Map) {
+        for (const [peerKey] of secretMap.entries()) {
+          const info = getContactSecret(peerKey, { deviceId: selfDeviceId });
+          if (!info) continue;
+          const identity = normalizePeerIdentity(peerKey);
+          const resolvedPeerKey = identity.key || peerKey || null;
+          const holder = resolvedPeerKey ? drMap.get(resolvedPeerKey) : null;
+          logCapped('contactShareHydrateTrace', {
+            reasonCode: 'POST_LOGIN_HYDRATE',
+            peerKey: resolvedPeerKey,
+            snapshotHasRk: !!(info?.drState?.rk_b64 || info?.drState?.rk),
+            liveStateHasRk: !!(holder?.rk instanceof Uint8Array),
+            role: info?.role || null,
+            sourceTag: 'post-login-hydrate'
+          }, 5);
+        }
+      }
+    } catch {}
     try { await hydrateConversationsFromSecrets(); } catch {}
     log({ drSnapshotsRestored: restored });
     try {
@@ -3787,6 +3810,12 @@ async function connectWebSocket() {
     }
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
+    const msgType = msg?.type || null;
+    if (isForensicsWsSecureMessage(msgType)) {
+      try {
+        logForensicsEvent('WS_RECV', buildWsForensicsSummary(msg));
+      } catch {}
+    }
     handleWebSocketMessage(msg);
   };
   ws.onclose = (evt) => {
@@ -3861,6 +3890,29 @@ function updateConnectionIndicator(state) {
     return;
   }
   connectionIndicator.innerHTML = `<span class="dot" aria-hidden="true"></span>離線`;
+}
+
+function isForensicsWsSecureMessage(type) {
+  return type === 'secure-message' || type === 'message-new';
+}
+
+function buildWsForensicsSummary(msg = {}) {
+  const conversationId = String(msg?.conversationId || msg?.conversation_id || '').trim() || null;
+  const messageId = msg?.messageId || msg?.message_id || msg?.id || null;
+  const serverMessageId = msg?.serverMessageId || msg?.server_message_id || null;
+  const senderDeviceId = msg?.senderDeviceId || msg?.sender_device_id || null;
+  const targetDeviceId = msg?.targetDeviceId || msg?.target_device_id || null;
+  const msgType = msg?.msgType || msg?.msg_type || msg?.type || null;
+  const ts = msg?.ts ?? msg?.timestamp ?? msg?.createdAt ?? msg?.created_at ?? null;
+  return {
+    conversationId,
+    messageId,
+    serverMessageId,
+    senderDeviceId,
+    targetDeviceId,
+    msgType,
+    ts
+  };
 }
 
 function handleWebSocketMessage(msg) {
@@ -3987,6 +4039,14 @@ function handleWebSocketMessage(msg) {
         });
       } catch {}
     }
+    try {
+      const summary = buildWsForensicsSummary(msg);
+      logForensicsEvent('WS_DISPATCH', {
+        ...summary,
+        conversationId: convId || summary.conversationId || null,
+        handler: 'messagesPane.handleIncomingSecureMessage'
+      });
+    } catch {}
     messagesPane.handleIncomingSecureMessage(msg);
     return;
   }

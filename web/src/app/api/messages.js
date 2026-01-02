@@ -6,6 +6,7 @@
 
 import { fetchWithTimeout, jsonReq } from '../core/http.js';
 import { buildAccountPayload, ensureDeviceId } from '../core/store.js';
+import { logForensicsEvent } from '../core/log.js';
 export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrapper
 
 function buildAccountHeaders() {
@@ -20,6 +21,29 @@ function buildAccountHeaders() {
     /* header 留空，讓上層錯誤自行拋出 */
   }
   return headers;
+}
+
+function extractMessageId(item) {
+  if (typeof item?.id === 'string' && item.id.length) return item.id;
+  if (typeof item?.messageId === 'string' && item.messageId.length) return item.messageId;
+  if (typeof item?.message_id === 'string' && item.message_id.length) return item.message_id;
+  if (typeof item?.serverMessageId === 'string' && item.serverMessageId.length) return item.serverMessageId;
+  if (typeof item?.server_message_id === 'string' && item.server_message_id.length) return item.server_message_id;
+  return null;
+}
+
+function summarizeMessageIds(items = []) {
+  const ids = [];
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      const id = extractMessageId(item);
+      if (id) ids.push(id);
+    }
+  }
+  const idsCount = ids.length;
+  const headIds = ids.slice(0, 3);
+  const tailIds = idsCount > 3 ? ids.slice(-3) : ids.slice();
+  return { idsCount, headIds, tailIds };
 }
 
 /**
@@ -100,6 +124,16 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
   const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
+  try {
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const summary = summarizeMessageIds(items);
+    logForensicsEvent('FETCH_LIST', {
+      conversationId,
+      serverItemCount: Array.isArray(data?.items) ? items.length : null,
+      ...summary,
+      source: 'listSecureMessages'
+    });
+  } catch {}
   return { r, data };
 }
 

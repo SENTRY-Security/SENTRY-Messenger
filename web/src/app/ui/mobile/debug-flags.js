@@ -1,6 +1,7 @@
 // Centralized debug switches (front-end + local diagnostics)
 export const DEBUG = {
   replay: true,
+  forensics: false,
   drVerbose: false,
   profileCounter: false,
   drCounter: false,

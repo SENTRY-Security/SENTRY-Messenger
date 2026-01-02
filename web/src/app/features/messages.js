@@ -59,7 +59,7 @@ import { enqueueReceiptJob } from './queue/receipts.js';
 import { MessageKeyVault } from './message-key-vault.js';
 import { toU8Strict } from '../../shared/utils/u8-strict.js';
 import { logDrCore, logMsgEvent, shouldLogDrCore } from '../lib/logging.js';
-import { log } from '../core/log.js';
+import { log, logForensicsEvent, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const FETCH_LOG_ENABLED = DEBUG.fetchNoise === true;
@@ -433,6 +433,22 @@ function toMessageId(raw) {
   if (typeof raw?.message_id === 'string' && raw.message_id.length) return raw.message_id;
   if (typeof raw?.messageId === 'string' && raw.messageId.length) return raw.messageId;
   return null;
+}
+
+function summarizeMessageIds(items = []) {
+  const ids = [];
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      const id = toMessageId(item)
+        || (typeof item?.serverMessageId === 'string' && item.serverMessageId.length ? item.serverMessageId : null)
+        || (typeof item?.server_message_id === 'string' && item.server_message_id.length ? item.server_message_id : null);
+      if (id) ids.push(id);
+    }
+  }
+  const idsCount = ids.length;
+  const headIds = ids.slice(0, 3);
+  const tailIds = idsCount > 3 ? ids.slice(-3) : ids.slice();
+  return { idsCount, headIds, tailIds };
 }
 
 function buildStateKey({ conversationId, peerKey, peerDeviceId }) {
@@ -1289,6 +1305,15 @@ export async function listSecureAndDecrypt(params = {}) {
       }
     });
   } catch {}
+  try {
+    const summary = summarizeMessageIds(items);
+    logForensicsEvent('FETCH_LIST', {
+      conversationId: conversationId || null,
+      serverItemCount: serverItemCount ?? null,
+      ...summary,
+      source: 'listSecureAndDecrypt'
+    });
+  } catch {}
   const selfDigest = (deps.getAccountDigest && deps.getAccountDigest()) ? String(deps.getAccountDigest()).toUpperCase() : null;
 
   // 依 clearAfter 過濾舊訊息
@@ -1632,6 +1657,15 @@ export async function listSecureAndDecrypt(params = {}) {
         msgType: payloadMsgType || msgTypeForDecrypt,
         targetDeviceId
       });
+      logForensicsEvent('DECRYPT_OK', {
+        conversationId: convId || conversationId || null,
+        messageId: messageId || null,
+        direction: direction || null,
+        msgType: payloadMsgType || msgTypeForDecrypt || null,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null,
+        headerCounter: Number.isFinite(headerCounter) ? headerCounter : null
+      });
       replayCounters.decryptOk += 1;
 
       const semantic = classifyDecryptedPayload(text, { meta, header });
@@ -1786,6 +1820,11 @@ export async function listSecureAndDecrypt(params = {}) {
           }
         } else if (isDeliveryReceipt) {
           recordMessageDelivered(convId, messageObj.targetMessageId, messageTs || null);
+          logCapped('deliveryAckTrace', {
+            stage: 'received',
+            ackedMessageId: messageObj.targetMessageId,
+            conversationId: convId || null
+          });
         }
         if (convId && messageId) {
           markMessageProcessed(convId, messageId);
@@ -1850,6 +1889,13 @@ export async function listSecureAndDecrypt(params = {}) {
           } catch {
             /* ignore */
           }
+          logForensicsEvent('UI_APPEND', {
+            conversationId: convId || null,
+            messageId: timelineEntry.messageId || cacheMessageId || messageId || null,
+            direction: timelineEntry.direction || null,
+            msgType: timelineEntry.msgType || null,
+            ts: timelineEntry.ts || null
+          });
         }
         out.push(messageObj);
         if (!computedIsHistoryReplay && messageObj.direction === 'incoming' && messageObj.id) {
@@ -2472,6 +2518,18 @@ export async function listSecureAndDecrypt(params = {}) {
           reason: msg
         });
       }
+      logForensicsEvent('DECRYPT_FAIL', {
+        conversationId: convId || conversationId || null,
+        messageId: failedMessageId || null,
+        direction: direction || null,
+        msgType: msgTypeLabel || payloadMsgType || rawMsgType || msgTypeForDecrypt || null,
+        senderDeviceId: senderDeviceId || null,
+        targetDeviceId: targetDeviceId || null,
+        headerCounter: Number.isFinite(headerCounter) ? headerCounter : null,
+        errorName,
+        errorMessage,
+        gate: 'decryptFail'
+      });
       logMsgEvent('decrypt:fail', {
         conversationId: convId,
         direction,
@@ -2885,6 +2943,30 @@ export function recordMessageDelivered(conversationId, messageId, ts = null) {
 }
 
 function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId, tokenB64, peerDeviceId }) {
-  // Temporarily disabled to reduce noise while investigating core decrypt issues.
-  return;
+  if (!conversationId || !peerAccountDigest || !messageId) return;
+  if (!peerDeviceId) return;
+  const dedupeKey = `${conversationId}:${messageId}`;
+  if (sentDeliveryReceipts.has(dedupeKey)) return;
+  sentDeliveryReceipts.add(dedupeKey);
+  if (typeof deps.sendDeliveryReceipt !== 'function') return;
+  const ackPromise = deps.sendDeliveryReceipt({
+    peerAccountDigest,
+    peerDeviceId,
+    messageId,
+    conversationId,
+    convId: conversationId,
+    tokenB64
+  });
+  if (ackPromise && typeof ackPromise.then === 'function') {
+    ackPromise.then(() => {
+      logCapped('deliveryAckTrace', {
+        stage: 'sent',
+        ackedMessageId: messageId,
+        conversationId
+      });
+    }).catch((err) => {
+      sentDeliveryReceipts.delete(dedupeKey);
+      log({ deliveryReceiptError: err?.message || err, conversationId, messageId });
+    });
+  }
 }

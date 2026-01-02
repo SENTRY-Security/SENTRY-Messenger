@@ -18,6 +18,8 @@
 // - DR_SESS: Map(peer_accountDigest::peerDeviceId -> DR state object)
 // - OPAQUE_SERVER_ID: server identity string for OPAQUE handshake (optional)
 
+import { logCapped } from './log.js';
+
 // --- primitives ---
 let _SESSION = null;
 let _HAS_MK = false;
@@ -87,6 +89,14 @@ export function logDrStateClear(tag, stateKey, holder) {
   try {
     console.warn('[dr-debug:state-clear]', entry);
   } catch {}
+  logCapped('contactShareStateChangeTrace', {
+    reasonCode: 'CLEAR_DR_STATE',
+    fromKey: stateKey || null,
+    toKey: null,
+    hasRkBefore: holder?.rk instanceof Uint8Array,
+    hasRkAfter: false,
+    sourceTag: tag || null
+  }, 5);
 }
 
 function logDrStateCreate(stateKey, holder) {

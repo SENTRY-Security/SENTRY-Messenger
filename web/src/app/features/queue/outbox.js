@@ -6,7 +6,7 @@ import {
   listOutboxRecords,
   putOutboxRecord
 } from './db.js';
-import { log } from '../../core/log.js';
+import { log, logForensicsEvent } from '../../core/log.js';
 
 const TYPE_MESSAGE = 'message';
 const TYPE_RECEIPT = 'receipt';
@@ -175,6 +175,14 @@ async function attemptSend(job) {
     err.details = data || null;
     throw err;
   }
+  try {
+    logForensicsEvent('SEND_ACK', {
+      conversationId: job?.conversationId || null,
+      messageId: job?.messageId || null,
+      serverMessageId: data?.id || data?.serverMessageId || data?.server_message_id || null,
+      status: r?.status || null
+    });
+  } catch {}
   return { r, data };
 }
 
@@ -266,6 +274,40 @@ export async function processOutboxJobNow(jobId) {
   } catch (err) {
     return { ok: false, error: err?.message || String(err), status: Number.isFinite(err?.status) ? Number(err.status) : null };
   }
+}
+
+export async function retryOutboxMessage({ conversationId, messageId } = {}) {
+  const convId = typeof conversationId === 'string' ? conversationId.trim() : '';
+  const msgId = typeof messageId === 'string' ? messageId.trim() : '';
+  if (!convId || !msgId) {
+    return { ok: false, error: 'conversationId and messageId required', errorCode: 'MissingParams' };
+  }
+  const jobId = `${TYPE_MESSAGE}:${convId}:${msgId}`;
+  const existing = await getOutboxRecord(jobId);
+  if (!existing || existing.type !== TYPE_MESSAGE) {
+    return { ok: false, error: 'job not found', errorCode: 'OutboxJobMissing' };
+  }
+  if (existing.state === STATE_SENT) {
+    return {
+      ok: true,
+      jobId,
+      job: existing,
+      alreadySent: true,
+      status: existing?.lastStatus || 202,
+      data: existing?.lastResponse || { accepted: true, id: msgId }
+    };
+  }
+  if (existing.state === STATE_INFLIGHT) {
+    return {
+      ok: false,
+      jobId,
+      job: existing,
+      error: 'send in progress',
+      errorCode: 'OutboxInflight'
+    };
+  }
+  const result = await processOutboxJobNow(jobId);
+  return { ...result, jobId, job: existing };
 }
 
 export function startOutboxProcessor() {

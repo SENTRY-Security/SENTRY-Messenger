@@ -2,7 +2,7 @@
 // Centralized helpers to persist and access contact-share secrets.
 
 import { sessionStore } from '../ui/mobile/session-store.js';
-import { log } from './log.js';
+import { log, logCapped } from './log.js';
 import { b64 } from '../crypto/nacl.js';
 import {
   getAccountDigest,
@@ -1188,7 +1188,16 @@ export function sanitizeContactSecretsForDevice({ map = null, deviceId = null, r
     const devices = record?.devices && typeof record.devices === 'object' ? record.devices : {};
     const selfDeviceRecord = devices[selfDeviceId];
     const role = typeof record?.role === 'string' ? record.role.toLowerCase() : null;
+    const hasRkBefore = selfDeviceRecord ? !!(selfDeviceRecord.drState?.rk_b64 || selfDeviceRecord.drState?.rk) : null;
     if (!peerDeviceId) {
+      logCapped('contactShareStateChangeTrace', {
+        reasonCode: 'SANITIZE_DROP',
+        fromKey: peerKey,
+        toKey: null,
+        hasRkBefore,
+        hasRkAfter: false,
+        sourceTag: `sanitize:${reason}`
+      }, 5);
       logContactSecretsSanitizeDropTrace({
         reason: 'missing-peer-device',
         peerKey,
@@ -1201,6 +1210,14 @@ export function sanitizeContactSecretsForDevice({ map = null, deviceId = null, r
       continue;
     }
     if (role === 'responder' && peerDeviceId !== selfDeviceId) {
+      logCapped('contactShareStateChangeTrace', {
+        reasonCode: 'SANITIZE_DROP',
+        fromKey: peerKey,
+        toKey: null,
+        hasRkBefore,
+        hasRkAfter: false,
+        sourceTag: `sanitize:${reason}`
+      }, 5);
       logContactSecretsSanitizeDropTrace({
         reason: 'responder-peer-mismatch',
         peerKey,
@@ -1213,6 +1230,14 @@ export function sanitizeContactSecretsForDevice({ map = null, deviceId = null, r
       continue;
     }
     if (!selfDeviceRecord) {
+      logCapped('contactShareStateChangeTrace', {
+        reasonCode: 'SANITIZE_DROP',
+        fromKey: peerKey,
+        toKey: null,
+        hasRkBefore,
+        hasRkAfter: false,
+        sourceTag: `sanitize:${reason}`
+      }, 5);
       logContactSecretsSanitizeDropTrace({
         reason: 'missing-self-device-record',
         peerKey,
@@ -1848,6 +1873,22 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     || opts.deviceId
     || ensureDeviceId();
   const deviceRecord = ensureDeviceRecord(next, resolvedDeviceId, { create: true });
+  let migrateTrace = null;
+  if (finalKey !== key) {
+    const beforeRecord = existing;
+    const beforeSelected = beforeRecord && resolvedDeviceId
+      ? selectDeviceRecord(beforeRecord, resolvedDeviceId)
+      : { deviceId: null, deviceRecord: null };
+    const beforeDeviceRecord = beforeSelected.deviceId === resolvedDeviceId ? beforeSelected.deviceRecord : null;
+    migrateTrace = {
+      reasonCode: 'MIGRATE_PEERKEY',
+      fromKey: key,
+      toKey: finalKey,
+      hasRkBefore: beforeDeviceRecord ? !!(beforeDeviceRecord.drState?.rk_b64 || beforeDeviceRecord.drState?.rk) : null,
+      hasRkAfter: null,
+      sourceTag
+    };
+  }
 
   if (structured.conversation.token.has) next.conversationToken = structured.conversation.token.value;
   if (structured.conversation.id.has) next.conversationId = structured.conversation.id.value;
@@ -1907,6 +1948,10 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     source: sourceTag,
     migrated: finalKey !== key
   });
+  if (migrateTrace) {
+    migrateTrace.hasRkAfter = !!(deviceRecord?.drState?.rk_b64 || deviceRecord?.drState?.rk);
+    logCapped('contactShareStateChangeTrace', migrateTrace, 5);
+  }
   debugLog('set', {
     peerAccountDigest: normalizeAccountDigest(key) || key || null,
     peerDeviceId: next.peerDeviceId || identity?.deviceId || null,

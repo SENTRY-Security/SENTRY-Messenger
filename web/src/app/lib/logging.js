@@ -123,6 +123,7 @@ const drVerboseEnabled = DEBUG.drVerbose === true || DEBUG.drCounter === true;
 function shouldLogMsgEvent(event, opts = {}) {
   const ev = String(event || '');
   const level = opts?.level || null;
+  if (DEBUG.forensics === true) return level === 'error';
   if (level === 'error') return true;
   if (ev === 'decrypt:fail' || ev === 'send:fail' || ev === 'fetch:fail') return true;
   if (ev.startsWith('fetch:')) return fetchNoiseEnabled;
@@ -145,6 +146,7 @@ export function logMsgEvent(event, payload = {}, opts = {}) {
 }
 
 export function logDrCore(event, payload = {}, opts = {}) {
+  if (DEBUG.forensics === true && !opts?.force) return;
   if (!shouldLogDrCore() && !opts.force) return;
   logJsonLine(DR_CORE_PREFIX, { event, ...payload });
 }
@@ -152,6 +154,7 @@ export function logDrCore(event, payload = {}, opts = {}) {
 export function logUiNoise(event, payload = {}, opts = {}) {
   const throttleMs = Number(opts?.throttleMs) || 0;
   const throttleKey = opts?.throttleKey || event;
+  if (DEBUG.forensics === true && !opts?.force) return;
   const debugEnabled = shouldLogUiNoise();
   if (!debugEnabled && !throttleMs && !opts?.force) return;
 
