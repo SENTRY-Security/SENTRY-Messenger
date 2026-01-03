@@ -5,6 +5,7 @@ import { listSecureMessages, createSecureMessage } from '../api/messages.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
 import {
   getMkRaw,
+  getUidHex,
   getAccountDigest,
   ensureDeviceId,
   allocateDeviceCounter,
@@ -14,6 +15,7 @@ import {
 import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../crypto/aead.js';
 import { log } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
+import { buildIdenticonImage } from '../lib/identicon.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';
 const PROFILE_ALLOWED_INFO_TAGS = new Set([PROFILE_INFO_TAG]);
@@ -28,7 +30,8 @@ export const PROFILE_WRITE_SOURCE = Object.freeze({
   USER_NICKNAME: 'user-nickname',
   AUTO_NICKNAME: 'auto-nickname-normalize',
   CONTACT_SHARE: 'contact-share',
-  PROFILE_SNAPSHOT: 'profile-snapshot-hydrate'
+  PROFILE_SNAPSHOT: 'profile-snapshot-hydrate',
+  AVATAR_INIT: 'avatar-init-identicon'
 });
 
 function shouldLogAvatarWrite() {
@@ -181,8 +184,6 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
   if (!candidates.length) return null;
 
   const ordered = candidates.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  let latest = null;
-  let fallbackAvatar = null;
   for (const entry of ordered) {
     const msgId = entry?.item?.id || null;
     const createdAt = entry?.createdAt || null;
@@ -207,35 +208,12 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
         }
       });
       const profile = await unwrapWithMK_JSON(normalizedEnvelope, mk);
-      const hasAvatarField = Object.prototype.hasOwnProperty.call(profile || {}, 'avatar');
       const wrapped = { ...profile, msgId, ts: createdAt };
-      if (!latest) {
-        latest = wrapped;
-        if (hasAvatarField) {
-          console.log('[profile] loaded profile', latest);
-          return latest;
-        }
-      }
-      if (!fallbackAvatar && hasAvatarField && profile?.avatar) {
-        fallbackAvatar = profile.avatar;
-      }
-      if (latest && !Object.prototype.hasOwnProperty.call(latest, 'avatar') && fallbackAvatar) {
-        const merged = { ...latest, avatar: fallbackAvatar };
-        console.log('[profile] loaded profile', merged);
-        return merged;
-      }
+      console.log('[profile] loaded profile', wrapped);
+      return wrapped;
     } catch (err) {
       log({ profileHydrateSkip: { msgId, createdAt, reason: err?.message || 'profile decode failed' } });
     }
-  }
-  if (latest) {
-    if (!Object.prototype.hasOwnProperty.call(latest, 'avatar') && fallbackAvatar) {
-      const merged = { ...latest, avatar: fallbackAvatar };
-      console.log('[profile] loaded profile', merged);
-      return merged;
-    }
-    console.log('[profile] loaded profile', latest);
-    return latest;
   }
   return null;
 }
@@ -330,15 +308,25 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   const explicitAvatarWrite = sourceTag === PROFILE_WRITE_SOURCE.EXPLICIT;
   const targetIsSelf = !!(targetDigest && selfDigest && targetDigest === selfDigest);
   const hasAvatarField = Object.prototype.hasOwnProperty.call(inputProfile, 'avatar');
+  const hasNicknameField = Object.prototype.hasOwnProperty.call(inputProfile, 'nickname');
   const avatarWasNull = hasAvatarField && inputProfile?.avatar === null;
-  const allowSelfAvatarWrite = targetIsSelf ? explicitAvatarWrite : true;
-  const shouldStripAvatar = targetIsSelf && hasAvatarField && !explicitAvatarWrite;
+  const allowSelfAvatarWrite = targetIsSelf
+    ? (explicitAvatarWrite || sourceTag === PROFILE_WRITE_SOURCE.AVATAR_INIT)
+    : true;
+  const shouldStripAvatar = targetIsSelf && hasAvatarField && !allowSelfAvatarWrite;
   let normalizedInput = inputProfile;
   if (shouldStripAvatar) {
     normalizedInput = { ...inputProfile };
     delete normalizedInput.avatar;
   }
-  const fallbackNickname = targetDigest ? `好友 ${targetDigest.slice(-4)}` : '';
+  if (targetIsSelf && !hasNicknameField) {
+    const existing = await loadLatestProfile().catch(() => null);
+    if (existing?.nickname) {
+      if (normalizedInput === inputProfile) normalizedInput = { ...inputProfile };
+      normalizedInput.nickname = existing.nickname;
+    }
+  }
+  const fallbackNickname = '';
   const allowAvatar = !targetIsSelf || allowSelfAvatarWrite;
   const obj = normalizeProfilePayload(normalizedInput, { fallbackNickname, allowAvatar });
   if (shouldLogAvatarWrite()) {
@@ -481,33 +469,13 @@ export async function persistProfileForAccount(profile, accountDigest) {
 }
 
 export async function ensureProfileNickname() {
-  let profile = await loadLatestProfile().catch(() => null);
-  const now = Math.floor(Date.now() / 1000);
+  const profile = await loadLatestProfile().catch(() => null);
+  if (!profile) return profile;
   const normalized = normalizeNickname(profile?.nickname || '');
-
-  if (!normalized) {
-    const nickname = generateRandomNickname();
-    const entry = { nickname, updatedAt: now, sourceTag: PROFILE_WRITE_SOURCE.AUTO_NICKNAME };
-    const saved = await saveProfile(entry).catch((err) => {
-      console.error('profile save failed', err);
-      return entry;
-    });
-    const merged = { ...(profile || {}), ...(saved || entry) };
-    console.log('[profile] generated nickname', merged);
-    return merged;
-  }
-
+  if (!normalized) return { ...profile, nickname: profile?.nickname || '' };
   if (normalized !== profile?.nickname) {
-    const entry = { nickname: normalized, updatedAt: now, sourceTag: PROFILE_WRITE_SOURCE.AUTO_NICKNAME };
-    const saved = await saveProfile(entry).catch((err) => {
-      console.error('profile normalize failed', err);
-      return entry;
-    });
-    const merged = { ...(profile || {}), ...(saved || entry) };
-    console.log('[profile] normalized nickname', merged);
-    return merged;
+    return { ...profile, nickname: normalized };
   }
-
   return { ...profile, nickname: normalized };
 }
 
@@ -555,6 +523,31 @@ export async function ensureDefaultAvatarFromSeed({ seed, force = false } = {}) 
     return { ok: false, skipped: true, reason: 'auto-avatar-disabled' };
   }
   return { ok: true, skipped: true, reason: 'auto-avatar-disabled' };
+}
+
+export async function initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag = PROFILE_WRITE_SOURCE.AVATAR_INIT } = {}) {
+  const digest = normalizeAccountDigest(getAccountDigest());
+  if (!digest) throw new Error('account digest missing');
+  const uid = uidHex || getUidHex();
+  if (!uid) throw new Error('uid missing');
+  let existing = null;
+  try {
+    existing = await loadLatestProfile();
+  } catch (err) {
+    const wrapped = new Error(err?.message || 'profile lookup failed');
+    wrapped.code = 'ProfileLookupFailed';
+    throw wrapped;
+  }
+  if (existing?.avatar) {
+    return { ok: true, skipped: true, reason: 'avatar-exists' };
+  }
+  const rendered = await buildIdenticonImage(uid, { size: 512, format: 'image/png', quality: 0.92 });
+  if (!rendered?.blob) throw new Error('identicon render failed');
+  const file = new File([rendered.blob], `avatar-${digest.slice(-6)}.png`, { type: rendered.blob.type || 'image/png' });
+  const avatarMeta = await uploadAvatar({ file, thumbDataUrl: rendered.dataUrl || null });
+  const now = Math.floor(Date.now() / 1000);
+  const saved = await saveProfile({ avatar: avatarMeta, updatedAt: now, sourceTag });
+  return { ok: true, avatar: saved?.avatar || avatarMeta };
 }
 
 export async function loadAvatarBlob(profile) {

@@ -1,16 +1,16 @@
-// Share controller (Signal-style): QR only carries inviteId + secret + owner deviceId.
-// Flow: generate invite -> scan -> accept -> X3DH -> derive conversation token -> DR init -> contact-share.
+// Share controller (Signal-style): QR carries inviteId + owner metadata + prekey bundle.
+// Flow: generate invite -> scan -> sealed dropbox deliver -> owner consume (X3DH).
 
-import { friendsCreateInvite, friendsAcceptInvite } from '../../api/friends.js';
+import { invitesCreate, invitesDeliver, invitesConsume, invitesStatus } from '../../api/invites.js';
 import { prekeysPublish } from '../../api/prekeys.js';
 import { devkeysStore } from '../../api/devkeys.js';
 import { encodeFriendInvite, decodeFriendInvite } from '../../lib/invite.js';
 import { generateQR } from '../../lib/qr.js';
 import QrScanner from '../../lib/vendor/qr-scanner.min.js';
 import { log, logCapped } from '../../core/log.js';
-import { x3dhInitiate } from '../../crypto/dr.js';
 import { genX25519Keypair } from '../../crypto/nacl.js';
 import { b64 } from '../../crypto/nacl.js';
+import { sealInviteEnvelope, openInviteEnvelope } from '../../crypto/invite-dropbox.js';
 import {
   setDevicePriv,
   getMkRaw,
@@ -18,52 +18,32 @@ import {
   getDeviceId,
   ensureDeviceId,
   clearDrState,
-  clearDrStatesByAccount,
   drState,
   normalizePeerIdentity
 } from '../../core/store.js';
-import { generateRandomNickname, normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
+import { normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
-import { sessionStore } from './session-store.js';
+import { sessionStore, restorePendingInvites, persistPendingInvites } from './session-store.js';
 import { upsertContactCore } from './contact-core-store.js';
-import { primeDrStateFromInitiator, bootstrapDrFromGuestBundle, restoreDrStateFromSnapshot, snapshotDrState, sendDrText } from '../../features/dr-session.js';
+import { bootstrapDrFromGuestBundle, persistDrSnapshot, snapshotDrState, sendDrText } from '../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
-import { bytesToB64Url, b64UrlToBytes } from '../../../shared/utils/base64.js';
-import { toU8Strict } from '../../../shared/utils/u8-strict.js';
 import { logMsgEvent, logUiNoise } from '../../lib/logging.js';
 import { DEBUG } from './debug-flags.js';
 
-const INVITE_INFO = new TextEncoder().encode('invite-token');
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
 // 手動標記目前 QR/聯絡人分享流程的版本，用來追蹤是否為最新部署
-const QR_BUILD_VERSION = 'qr-20250212-01';
-const AUTO_PROFILE_BROADCAST_DELAY_MS = 1200;
+const QR_BUILD_VERSION = 'qr-20250308-01';
+const INVITE_PROTOCOL_VERSION = 3;
+const INVITE_QR_TYPE = 'invite_dropbox';
+const INVITE_STATUS_POLL_MS = 12000;
+const CONTACT_INIT_VERSION = 1;
+const CONTACT_INIT_TYPE = 'contact-init';
+const ACCOUNT_DIGEST_REGEX = /^[0-9A-F]{64}$/;
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 const queueNoiseEnabled = DEBUG.queueNoise === true;
-
-async function deriveInviteTokenB64Url(secretB64Url) {
-  const secretBytes = b64UrlToBytes(secretB64Url);
-  if (!secretBytes) throw new Error('invalid invite secret');
-  const baseKey = await crypto.subtle.importKey(
-    'raw',
-    toU8Strict(secretBytes, 'web/src/app/ui/mobile/share-controller.js:43:deriveInviteTokenB64Url'),
-    'HKDF',
-    false,
-    ['deriveBits']
-  );
-  const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: INVITE_INFO }, baseKey, 256);
-  return bytesToB64Url(new Uint8Array(bits));
-}
-
-async function hashInviteTokenHex(inviteTokenB64Url) {
-  const tokenBytes = b64UrlToBytes(inviteTokenB64Url);
-  if (!tokenBytes) throw new Error('invalid invite token');
-  const digest = await crypto.subtle.digest('SHA-256', tokenBytes);
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 export function setupShareController(options) {
   const {
@@ -84,7 +64,6 @@ export function setupShareController(options) {
 
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
-  let autoProfileBroadcasted = false;
   const CONTACT_BROADCAST_DEBOUNCE_MS = 600;
   const pendingContactUpdates = new Map();
   const PROFILE_PREFLIGHT_TRACE_CAP = 5;
@@ -100,14 +79,87 @@ export function setupShareController(options) {
     log({ profilePreflightTrace: payload });
   }
 
+  const pendingInviteTimers = new Map();
+
+  function ensurePendingInviteStore() {
+    const store = restorePendingInvites();
+    return store instanceof Map ? store : new Map();
+  }
+
+  function notifyPendingInvitesChanged() {
+    try {
+      document.dispatchEvent(new CustomEvent('contacts:pending-invites-updated'));
+    } catch {}
+  }
+
+  function schedulePendingInviteExpiry(entry) {
+    if (!entry?.inviteId || !entry?.expiresAt) return;
+    const inviteId = String(entry.inviteId).trim();
+    if (!inviteId) return;
+    const expiresAt = Number(entry.expiresAt);
+    if (!Number.isFinite(expiresAt)) return;
+    const existingTimer = pendingInviteTimers.get(inviteId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      pendingInviteTimers.delete(inviteId);
+    }
+    const delayMs = Math.max(0, expiresAt * 1000 - Date.now());
+    if (delayMs === 0) {
+      markPendingInviteExpired(inviteId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      pendingInviteTimers.delete(inviteId);
+      markPendingInviteExpired(inviteId);
+    }, delayMs);
+    pendingInviteTimers.set(inviteId, timer);
+  }
+
+  function markPendingInviteExpired(inviteId) {
+    const store = ensurePendingInviteStore();
+    const id = String(inviteId || '').trim();
+    if (!id) return;
+    if (!store.has(id)) return;
+    notifyPendingInvitesChanged();
+  }
+
+  function upsertPendingInvite(entry) {
+    const store = ensurePendingInviteStore();
+    const id = typeof entry?.inviteId === 'string' ? entry.inviteId.trim() : '';
+    if (!id) return null;
+    const expiresAt = Number(entry?.expiresAt || 0);
+    if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+    const next = { inviteId: id, expiresAt };
+    store.set(id, next);
+    persistPendingInvites();
+    schedulePendingInviteExpiry(next);
+    notifyPendingInvitesChanged();
+    return next;
+  }
+
+  function removePendingInvite(inviteId) {
+    const store = ensurePendingInviteStore();
+    const id = typeof inviteId === 'string' ? inviteId.trim() : '';
+    if (!id) return;
+    store.delete(id);
+    const timer = pendingInviteTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      pendingInviteTimers.delete(id);
+    }
+    persistPendingInvites();
+    notifyPendingInvitesChanged();
+  }
+
   const contactSecretMap = restoreContactSecrets();
-  primeStoredDrSnapshots(contactSecretMap);
 
   const {
     inviteBtn,
     inviteCountdownEl,
     inviteQrBox,
     inviteRefreshBtn,
+    inviteRetryBtn,
+    inviteConsumeBtn,
     btnShareModal,
     shareModal,
     shareModalBackdrop,
@@ -137,6 +189,15 @@ export function setupShareController(options) {
   shareModalCloseButtons.forEach((btn) => btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closeShareModal(); }));
   document.addEventListener('keydown', handleEscapeKey);
   ensureQrPlaceholder();
+  setInviteActionState({ hasInvite: false, expired: false, loading: false });
+  shareState.inviteStatusNextPollAt = 0;
+  shareState.inviteStatusPollInFlight = false;
+  const pendingInviteStore = ensurePendingInviteStore();
+  if (pendingInviteStore instanceof Map) {
+    for (const entry of pendingInviteStore.values()) {
+      schedulePendingInviteExpiry(entry);
+    }
+  }
 
   inviteRefreshBtn?.addEventListener('click', () => {
     if (inviteRefreshBtn.disabled) return;
@@ -144,6 +205,24 @@ export function setupShareController(options) {
     onGenerateInvite().finally(() => {
       inviteRefreshBtn.disabled = false;
     });
+  });
+  inviteRetryBtn?.addEventListener('click', () => {
+    if (inviteRetryBtn.disabled) return;
+    inviteRetryBtn.disabled = true;
+    onGenerateInvite().finally(() => {
+      inviteRetryBtn.disabled = false;
+    });
+  });
+  inviteConsumeBtn?.addEventListener('click', () => {
+    const inviteId = shareState.currentInvite?.inviteId || null;
+    if (!inviteId) {
+      setInviteStatus('沒有可取回的邀請。', { isError: true });
+      return;
+    }
+    consumeInviteDropbox(inviteId, { source: 'manual' })
+      .catch((err) => {
+        setInviteStatus(formatInviteConsumeError(err), { isError: true });
+      });
   });
 
   function lockBodyScroll() {
@@ -160,27 +239,11 @@ export function setupShareController(options) {
 
   function normalizePeerKey(value, { peerDeviceId } = {}) {
     const identity = normalizePeerIdentity({
-      peerAccountDigest: value?.peerAccountDigest ?? value?.accountDigest ?? value,
+      peerAccountDigest: value?.peerAccountDigest ?? value,
       peerDeviceId
     });
     if (!identity.key || !identity.deviceId) return null;
     return identity.key;
-  }
-
-  function primeStoredDrSnapshots(map) {
-    const deviceId = getDeviceId() || 'default';
-    if (!(map instanceof Map)) return;
-    for (const [peerKey, info] of map.entries()) {
-      const digest = normalizePeerKey(peerKey);
-      if (!digest) continue;
-      const merged = getContactSecret(digest, { deviceId });
-      if (!merged?.drState) continue;
-      try {
-        restoreDrStateFromSnapshot({ peerAccountDigest: digest, snapshot: merged.drState });
-      } catch (err) {
-        console.error('[share-controller]', { drSnapshotRestoreError: err?.message || err, peerAccountDigest: digest });
-      }
-    }
   }
 
   function hasLiveDrState(peerDigest) {
@@ -329,7 +392,6 @@ export function setupShareController(options) {
       id: devicePriv.spk_id || devicePriv.spkId || 1,
       pub: devicePriv.spk_pub_b64,
       sig: devicePriv.spk_sig_b64,
-      ik: devicePriv.ik_pub_b64,
       ik_pub: devicePriv.ik_pub_b64
     };
     const payload = {
@@ -383,11 +445,284 @@ export function setupShareController(options) {
     inviteCountdownEl.classList.toggle('is-loading', !!loading && !!message);
   }
 
+  function formatInviteConsumeError(err) {
+    const status = Number(err?.status || err?.response?.status || 0);
+    const code = err?.code || err?.data?.error || err?.data?.code || null;
+    if (status === 404 || code === 'NotFound') return '沒有可取回的邀請。';
+    if (status === 409 || code === 'AlreadyConsumed') return '邀請已取回。';
+    if (status === 410 || code === 'Expired') return '邀請已過期，無法取回。';
+    if (status === 401 || status === 403) return '需要登入才能取回邀請。';
+    if (code === 'InviteEnvelopeInvalid') return '邀請密文格式不符，請請好友重新生成。';
+    if (code === 'InvitePayloadInvalid' || code === 'InvitePayloadUnexpectedField') return '邀請內容格式不符，請請好友重新生成。';
+    if (code === 'InvitePayloadVersionMismatch' || code === 'InvitePayloadTypeMismatch') return '邀請版本不符，請請好友重新生成。';
+    if (code === 'InvitePayloadBundleInvalid') return '邀請內容缺少必要金鑰資訊。';
+    return err?.message || '取回邀請失敗。';
+  }
+
+  function invitePayloadError(code, message, details) {
+    const err = new Error(message);
+    err.code = code;
+    if (details) err.details = details;
+    return err;
+  }
+
+  function assertNoExtraKeys(obj, allowedKeys, code) {
+    for (const key of Object.keys(obj)) {
+      if (!allowedKeys.has(key)) {
+        throw invitePayloadError(code, `unexpected field: ${key}`, { field: key });
+      }
+    }
+  }
+
+  function requireStringField(value, field, code) {
+    if (typeof value !== 'string') {
+      throw invitePayloadError(code, `${field} required`);
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      throw invitePayloadError(code, `${field} required`);
+    }
+    return trimmed;
+  }
+
+  function requireAccountDigest(value, field, code) {
+    const raw = requireStringField(value, field, code);
+    const cleaned = raw.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+    if (!ACCOUNT_DIGEST_REGEX.test(cleaned)) {
+      throw invitePayloadError(code, `${field} invalid`);
+    }
+    return cleaned;
+  }
+
+  function normalizeGuestBundleStrict(bundle) {
+    if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
+      throw invitePayloadError('InvitePayloadBundleInvalid', 'guestBundle required');
+    }
+    const allowed = new Set(['ik_pub', 'spk_pub', 'spk_sig', 'opk_id', 'opk_pub', 'ek_pub']);
+    assertNoExtraKeys(bundle, allowed, 'InvitePayloadUnexpectedField');
+    const ik_pub = requireStringField(bundle.ik_pub, 'guestBundle.ik_pub', 'InvitePayloadBundleInvalid');
+    const spk_pub = requireStringField(bundle.spk_pub, 'guestBundle.spk_pub', 'InvitePayloadBundleInvalid');
+    const ek_pub = requireStringField(bundle.ek_pub, 'guestBundle.ek_pub', 'InvitePayloadBundleInvalid');
+    const spk_sig = requireStringField(bundle.spk_sig, 'guestBundle.spk_sig', 'InvitePayloadBundleInvalid');
+    const opkIdRaw = bundle.opk_id;
+    if (opkIdRaw === null || opkIdRaw === undefined || opkIdRaw === '') {
+      throw invitePayloadError('InvitePayloadBundleInvalid', 'guestBundle.opk_id required');
+    }
+    const opkId = Number(opkIdRaw);
+    if (!Number.isFinite(opkId) || opkId < 0) {
+      throw invitePayloadError('InvitePayloadBundleInvalid', 'guestBundle.opk_id invalid');
+    }
+    const opk_pub = requireStringField(bundle.opk_pub, 'guestBundle.opk_pub', 'InvitePayloadBundleInvalid');
+    return {
+      ik_pub,
+      spk_pub,
+      spk_sig,
+      opk_id: opkId,
+      opk_pub,
+      ek_pub
+    };
+  }
+
+  function toDrGuestBundle(bundle) {
+    if (!bundle) return null;
+    return { ...bundle };
+  }
+
+  function normalizeGuestProfileSnapshot(profile) {
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+      throw invitePayloadError('InvitePayloadProfileInvalid', 'guestProfile required');
+    }
+    const allowed = new Set(['nickname', 'avatar', 'updatedAt', 'addedAt']);
+    assertNoExtraKeys(profile, allowed, 'InvitePayloadUnexpectedField');
+    const nicknameRaw = typeof profile.nickname === 'string' ? profile.nickname : '';
+    const nickname = normalizeNickname(nicknameRaw) || nicknameRaw.trim();
+    const avatar = Object.prototype.hasOwnProperty.call(profile, 'avatar') ? profile.avatar : null;
+    if (avatar !== null && avatar !== undefined && (typeof avatar !== 'object' || Array.isArray(avatar))) {
+      throw invitePayloadError('InvitePayloadProfileInvalid', 'guestProfile.avatar invalid');
+    }
+    const updatedAtRaw = Number(profile.updatedAt || profile.addedAt || 0);
+    const addedAtRaw = Number(profile.addedAt || 0);
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : null;
+    const addedAt = Number.isFinite(addedAtRaw) && addedAtRaw > 0 ? addedAtRaw : null;
+    if (!nickname && !avatar) {
+      throw invitePayloadError('InvitePayloadProfileInvalid', 'guestProfile missing nickname/avatar');
+    }
+    return {
+      nickname: nickname || '',
+      avatar: avatar ?? null,
+      updatedAt,
+      addedAt
+    };
+  }
+
+  function normalizeContactInitPayload(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw invitePayloadError('InvitePayloadInvalid', 'payload required');
+    }
+    const allowed = new Set([
+      'v',
+      'type',
+      'guestAccountDigest',
+      'guestDeviceId',
+      'guestBundle',
+      'guestProfile'
+    ]);
+    assertNoExtraKeys(payload, allowed, 'InvitePayloadUnexpectedField');
+    const v = Number(payload.v ?? 0);
+    if (!Number.isFinite(v) || v !== CONTACT_INIT_VERSION) {
+      throw invitePayloadError('InvitePayloadVersionMismatch', 'payload version mismatch');
+    }
+    const type = requireStringField(payload.type, 'type', 'InvitePayloadInvalid');
+    if (type !== CONTACT_INIT_TYPE) {
+      throw invitePayloadError('InvitePayloadTypeMismatch', 'payload type mismatch');
+    }
+    const guestAccountDigest = requireAccountDigest(payload.guestAccountDigest, 'guestAccountDigest', 'InvitePayloadInvalid');
+    const guestDeviceId = requireStringField(payload.guestDeviceId, 'guestDeviceId', 'InvitePayloadInvalid');
+    const guestBundle = normalizeGuestBundleStrict(payload.guestBundle);
+    const guestProfile = normalizeGuestProfileSnapshot(payload.guestProfile);
+    return {
+      v,
+      type,
+      guestAccountDigest,
+      guestDeviceId,
+      guestBundle,
+      guestProfile
+    };
+  }
+
+  function clearInviteCountdown() {
+    if (shareState.inviteTimerId) {
+      clearInterval(shareState.inviteTimerId);
+      shareState.inviteTimerId = null;
+    }
+  }
+
+  function formatCountdown(seconds) {
+    const safe = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+    const min = Math.floor(safe / 60);
+    const sec = safe % 60;
+    return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  }
+
+  function setInviteActionState({ hasInvite = false, expired = false, loading = false } = {}) {
+    if (inviteRefreshBtn) inviteRefreshBtn.disabled = !!loading;
+    if (inviteRetryBtn) {
+      inviteRetryBtn.style.display = expired ? 'inline-flex' : 'none';
+      inviteRetryBtn.disabled = !!loading;
+    }
+    if (inviteConsumeBtn) {
+      inviteConsumeBtn.style.display = hasInvite ? 'inline-flex' : 'none';
+      inviteConsumeBtn.disabled = !hasInvite || expired || !!loading;
+    }
+  }
+
+  function renderInviteCountdown(remainingSec) {
+    if (!inviteCountdownEl) return;
+    const status = shareState.currentInvite?.status || '';
+    const prefix = status === 'DELIVERED'
+      ? '已投遞 '
+      : status === 'CONSUMED'
+        ? '已取回 '
+        : '';
+    inviteCountdownEl.textContent = `${prefix}${formatCountdown(remainingSec)}`;
+    inviteCountdownEl.classList.remove('is-error', 'is-loading');
+  }
+
+  function markInviteExpired() {
+    if (!shareState.currentInvite) return;
+    shareState.currentInvite.expired = true;
+    clearInviteCountdown();
+    setInviteStatus('已過期', { isError: true });
+    setInviteActionState({ hasInvite: true, expired: true, loading: false });
+    if (inviteQrBox) {
+      inviteQrBox.innerHTML = '';
+      inviteQrBox.textContent = '邀請已過期';
+    }
+  }
+
+  function applyInviteStatusSnapshot(snapshot) {
+    if (!shareState.currentInvite || !snapshot) return;
+    shareState.currentInvite.status = snapshot.status || shareState.currentInvite.status || null;
+    shareState.currentInvite.deliveredAt = snapshot.deliveredAt || null;
+    shareState.currentInvite.consumedAt = snapshot.consumedAt || null;
+    if (snapshot.isExpired) {
+      markInviteExpired();
+    }
+  }
+
+  async function refreshInviteStatus(inviteId, { source = 'poll' } = {}) {
+    const id = String(inviteId || '').trim();
+    if (!id) throw new Error('inviteId required');
+    const snapshot = await invitesStatus({ inviteId: id });
+    if (!snapshot || snapshot.inviteId !== id) {
+      throw new Error('invite status response mismatch');
+    }
+    applyInviteStatusSnapshot(snapshot);
+    log({
+      inviteStatusRefreshed: {
+        inviteId: snapshot.inviteId,
+        status: snapshot.status || null,
+        isExpired: !!snapshot.isExpired,
+        source
+      }
+    });
+    return snapshot;
+  }
+
+  function maybePollInviteStatus() {
+    const invite = shareState.currentInvite;
+    if (!invite || !invite.inviteId) return;
+    if (shareState.inviteStatusPollInFlight) return;
+    const now = Date.now();
+    if (shareState.inviteStatusNextPollAt && now < shareState.inviteStatusNextPollAt) return;
+    shareState.inviteStatusNextPollAt = now + INVITE_STATUS_POLL_MS;
+    shareState.inviteStatusPollInFlight = true;
+    refreshInviteStatus(invite.inviteId, { source: 'poll' })
+      .catch((err) => {
+        log({
+          inviteStatusFailed: {
+            inviteId: invite.inviteId,
+            reasonCode: err?.code || err?.data?.error || err?.data?.code || 'InviteStatusFailed',
+            message: err?.message || err
+          }
+        });
+      })
+      .finally(() => {
+        shareState.inviteStatusPollInFlight = false;
+      });
+  }
+
+  function updateInviteCountdown() {
+    const invite = shareState.currentInvite;
+    if (!invite || !Number.isFinite(invite.expiresAt)) return;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const remaining = Math.max(0, Math.ceil(invite.expiresAt - nowSec));
+    if (remaining <= 0) {
+      markInviteExpired();
+      return;
+    }
+    renderInviteCountdown(remaining);
+    maybePollInviteStatus();
+  }
+
+  function startInviteCountdown() {
+    clearInviteCountdown();
+    updateInviteCountdown();
+    shareState.inviteTimerId = setInterval(updateInviteCountdown, 1000);
+  }
+
+  function isInviteExpired(invite) {
+    if (!invite || !Number.isFinite(invite.expiresAt)) return true;
+    const nowSec = Math.floor(Date.now() / 1000);
+    return invite.expiresAt <= nowSec;
+  }
+
   function renderInviteQr(invite) {
     if (!inviteQrBox) return;
-    const payload = encodeFriendInvite(invite);
     inviteQrBox.innerHTML = '';
     try {
+      const payload = encodeFriendInvite(invite);
+      if (!payload) throw new Error('invite payload empty');
       const canvas = generateQR(payload, 220);
       if (canvas) {
         removeQrPlaceholder();
@@ -410,48 +745,71 @@ export function setupShareController(options) {
     const ownerDeviceId = ensureDeviceId();
     if (!ownerAccountDigest || !ownerDeviceId) {
       setInviteStatus('尚未登入，無法生成交友邀請，請重新登入後再試。', { isError: true });
+      setInviteActionState({ hasInvite: false, expired: false, loading: false });
       return;
     }
-    setInviteStatus('檢查交友金鑰配置…', { loading: true });
-    await ensureOwnerPrekeys({ force: false, reason: 'invite' });
-    setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
-    const secretBytes = crypto.getRandomValues(new Uint8Array(32));
-    const secretB64Url = bytesToB64Url(secretBytes);
-    const inviteToken = await deriveInviteTokenB64Url(secretB64Url);
-    const tokenHash = await hashInviteTokenHex(inviteToken);
-    const invite = await friendsCreateInvite({ deviceId: ownerDeviceId, inviteToken });
-    if (!invite || !invite.inviteId || !invite.expiresAt) {
-      throw new Error('伺服器回傳內容不完整');
+    clearInviteCountdown();
+    setInviteActionState({ hasInvite: false, expired: false, loading: true });
+    try {
+      setInviteStatus('檢查交友金鑰配置…', { loading: true });
+      await ensureOwnerPrekeys({ force: false, reason: 'invite' });
+      setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
+      const invite = await invitesCreate();
+      if (!invite || !invite.inviteId || !invite.expiresAt || !invite.ownerPublicKeyB64 || !invite.prekeyBundle) {
+        throw new Error('伺服器回傳內容不完整');
+      }
+      shareState.currentInvite = {
+        inviteId: String(invite.inviteId),
+        expiresAt: Number(invite.expiresAt),
+        ownerAccountDigest: invite.ownerAccountDigest || ownerAccountDigest,
+        ownerDeviceId: invite.ownerDeviceId || ownerDeviceId,
+        ownerPublicKeyB64: String(invite.ownerPublicKeyB64 || ''),
+        v: INVITE_PROTOCOL_VERSION,
+        type: INVITE_QR_TYPE,
+        prekeyBundle: invite.prekeyBundle || null
+      };
+      shareState.inviteStatusNextPollAt = 0;
+      shareState.inviteStatusPollInFlight = false;
+      shareState.currentInvite.expired = false;
+      console.log('[share-controller]', {
+        inviteGenerated: {
+          inviteId: shareState.currentInvite.inviteId,
+          expiresAt: shareState.currentInvite.expiresAt,
+          ownerDeviceId,
+          qrVersion: QR_BUILD_VERSION
+        }
+      });
+      log({
+        inviteGenerated: {
+          inviteId: shareState.currentInvite.inviteId,
+          expiresAt: shareState.currentInvite.expiresAt,
+          ownerDeviceId,
+          qrVersion: QR_BUILD_VERSION
+        }
+      });
+      renderInviteQr(shareState.currentInvite);
+      startInviteCountdown();
+      setInviteActionState({ hasInvite: true, expired: false, loading: false });
+    } catch (err) {
+      const msg = err?.message || '邀請建立失敗';
+      setInviteStatus(msg, { isError: true });
+      setInviteActionState({ hasInvite: false, expired: false, loading: false });
+      throw err;
     }
-    shareState.currentInvite = {
-      inviteId: String(invite.inviteId),
-      secret: String(secretB64Url),
-      expiresAt: Number(invite.expiresAt),
-      ownerAccountDigest,
-      ownerDeviceId,
-      version: 2,
-      // 將伺服端回傳的 prekey bundle (含 opk) 一併塞進 QR，避免掃描端使用不一致的 opk。
-      prekeyBundle: invite.prekeyBundle || null
-    };
-    console.log('[share-controller]', {
-      inviteGenerated: {
-        inviteId: shareState.currentInvite.inviteId,
-        expiresAt: shareState.currentInvite.expiresAt,
-        ownerDeviceId,
-        qrVersion: QR_BUILD_VERSION
+  }
+
+  function ensureActiveInvite() {
+    if (shareState.currentInvite) {
+      if (isInviteExpired(shareState.currentInvite)) {
+        markInviteExpired();
+        return Promise.resolve();
       }
-    });
-    log({
-      inviteGenerated: {
-        inviteId: shareState.currentInvite.inviteId,
-        expiresAt: shareState.currentInvite.expiresAt,
-        ownerDeviceId,
-        qrVersion: QR_BUILD_VERSION
-      }
-    });
-    setInviteStatus('安全邀請通道已生成，建立 QR 中…', { loading: true });
-    renderInviteQr(shareState.currentInvite);
-    setInviteStatus('安全邀請通道已生成，請好友掃描 QR', { loading: false });
+      renderInviteQr(shareState.currentInvite);
+      startInviteCountdown();
+      setInviteActionState({ hasInvite: true, expired: false, loading: false });
+      return Promise.resolve();
+    }
+    return onGenerateInvite();
   }
 
   function openShareModal(defaultMode = 'qr') {
@@ -462,7 +820,9 @@ export function setupShareController(options) {
     lockBodyScroll();
     const target = defaultMode === 'scan' ? 'scan' : 'qr';
     showShareMode(target);
-    onGenerateInvite().catch((err) => console.error('[share-controller]', { inviteEnsureError: err?.message || err }));
+    if (target === 'qr') {
+      ensureActiveInvite().catch((err) => console.error('[share-controller]', { inviteEnsureError: err?.message || err }));
+    }
   }
 
   function closeShareModal() {
@@ -472,6 +832,7 @@ export function setupShareController(options) {
     shareModal.setAttribute('aria-hidden', 'true');
     shareFlip?.classList.remove('flipped');
     stopInviteScanner();
+    clearInviteCountdown();
     unlockBodyScroll();
   }
 
@@ -486,7 +847,7 @@ export function setupShareController(options) {
     } else {
       shareFlip?.classList.remove('flipped');
       stopInviteScanner();
-      onGenerateInvite().catch((err) => console.error('[share-controller]', { inviteEnsureError: err?.message || err }));
+      ensureActiveInvite().catch((err) => console.error('[share-controller]', { inviteEnsureError: err?.message || err }));
     }
   }
 
@@ -568,192 +929,107 @@ export function setupShareController(options) {
     try {
       const parsed = decodeFriendInvite(raw);
       console.log('[share-controller]', { inviteScanParsed: parsed });
-      if (!parsed) throw new Error('無法解析好友邀請內容');
-      const version = Number.isFinite(parsed.version) ? Number(parsed.version) : 1;
-      if (version !== 2) {
-        throw new Error('邀請版本不符，請請好友重新生成 (需要 v2)');
+      const expiresAt = Number(parsed.expiresAt || 0);
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (!Number.isFinite(expiresAt)) {
+        throw new Error('invite 缺少 expiresAt');
+      }
+      if (expiresAt <= nowSec) {
+        throw new Error('邀請已過期，請請好友重新生成 QR。');
       }
       const ownerIdentity = normalizePeerIdentity({
-        peerAccountDigest: parsed.ownerAccountDigest || null,
-        peerDeviceId: parsed.ownerDeviceId || null
+        peerAccountDigest: parsed.ownerAccountDigest,
+        peerDeviceId: parsed.ownerDeviceId
       });
-      const ownerAccountDigest = ownerIdentity.accountDigest || null;
+      const ownerAccountDigest = ownerIdentity.accountDigest || parsed.ownerAccountDigest || null;
       const ownerDeviceId = ownerIdentity.deviceId || parsed.ownerDeviceId || null;
+      if (!ownerAccountDigest) throw new Error('invite 缺少 ownerAccountDigest');
       if (!ownerDeviceId) throw new Error('invite 缺少 ownerDeviceId');
-
-      // 掃碼前先清除舊的 DR state / contact secret，確保以全新 initiator 狀態建立。
-      try {
-        if (ownerAccountDigest) {
-          clearDrStatesByAccount(ownerAccountDigest, { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:545:invite-scan-reset-account' });
-        }
-        clearDrState(
-          { peerAccountDigest: ownerAccountDigest, peerDeviceId: ownerDeviceId },
-          { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:547:invite-scan-reset-device' }
-        );
-        const normPeerKey = normalizePeerKey(ownerAccountDigest, { peerDeviceId: ownerDeviceId });
-        if (normPeerKey) {
-          setContactSecret(normPeerKey, { dr: null, conversation: null, meta: { source: 'invite-scan-reset' } });
-        }
-      } catch (err) {
-        console.warn('[share-controller]', { inviteScanResetError: err?.message || err });
-      }
+      const ownerPublicKeyB64 = String(parsed.ownerPublicKeyB64 || '').trim();
+      if (!ownerPublicKeyB64) throw new Error('invite 缺少 ownerPublicKeyB64');
+      const ownerBundle = normalizeInviteOwnerBundle(parsed?.prekeyBundle || null);
+      if (!ownerBundle?.opk?.pub) throw new Error('invite prekey bundle 缺少 opk');
+      const resolvedOwnerDigest = ownerAccountDigest;
+      const resolvedOwnerDeviceId = ownerDeviceId;
+      if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
+      if (!resolvedOwnerDeviceId) throw new Error('owner device 不完整，請重試');
 
       const devicePriv = await ensureDevicePrivLoaded();
       if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入後再試');
-      const inviteToken = await deriveInviteTokenB64Url(parsed.secret);
+      const guestAccountDigest = (getAccountDigest() || '').toUpperCase();
+      if (!guestAccountDigest) throw new Error('缺少 guestAccountDigest，請重新登入後再試');
+      const guestDeviceId = ensureDeviceId();
+      if (!guestDeviceId) throw new Error('缺少 guestDeviceId，請重新登入後再試');
       const ekPair = await genX25519Keypair();
-      const guestBundle = buildGuestBundleForAccept(devicePriv, ekPair);
-      const res = await friendsAcceptInvite({ inviteId: parsed.inviteId, inviteToken, guestBundle });
-      console.log('[share-controller]', { inviteScanAccepted: res });
+      const guestBundle = buildGuestBundleForAccept(devicePriv, ekPair, ownerBundle?.opk || null);
 
-      const ownerBundleFromInvite = normalizeInviteOwnerBundle(parsed?.prekeyBundle || null);
-      const ownerBundleFromServer = normalizeInviteOwnerBundle(res?.ownerPrekeyBundle || res?.owner_prekey_bundle);
-      const ownerBundle = ownerBundleFromInvite || ownerBundleFromServer;
-      if (!ownerBundle) throw new Error('owner prekey bundle 缺少，請重新掃描 QR');
-      if (ownerBundleFromInvite && ownerBundleFromServer) {
-        const sameIk = ownerBundleFromInvite.ik_pub === ownerBundleFromServer.ik_pub;
-        const sameSpk = ownerBundleFromInvite.spk_pub === ownerBundleFromServer.spk_pub;
-        const sameSig = ownerBundleFromInvite.spk_sig === ownerBundleFromServer.spk_sig;
-        const inviteOpk = ownerBundleFromInvite.opk?.pub || null;
-        const serverOpk = ownerBundleFromServer.opk?.pub || null;
-        const inviteOpkId = ownerBundleFromInvite.opk?.id ?? null;
-        const serverOpkId = ownerBundleFromServer.opk?.id ?? null;
-        const opkMatch = inviteOpk && serverOpk && inviteOpk === serverOpk && inviteOpkId === serverOpkId;
-        if (!sameIk || !sameSpk || !sameSig || !opkMatch) {
-          console.error('[share-controller]', {
-            ownerBundleMismatch: true,
-            inviteOpkId,
-            serverOpkId,
-            inviteOpk,
-            serverOpk
-          });
-          throw new Error('邀請金鑰與伺服端金鑰不一致，請重新生成並掃描 QR');
-        }
+      const profileSnapshot = await buildLocalContactPayload();
+      const normalizedNick = normalizeNickname(profileSnapshot?.nickname || '') || '';
+      const hasAvatar = !!profileSnapshot?.avatar;
+      if (!normalizedNick && !hasAvatar) {
+        throw new Error('請先設定暱稱或頭像後再投遞邀請。');
       }
-      const resolvedOwnerDigest = ownerAccountDigest || ownerBundle?.account_digest || null;
-      const resolvedOwnerDeviceId = ownerDeviceId || ownerBundle?.device_id || null;
-      if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
-      const peerKey = resolvedOwnerDigest && resolvedOwnerDeviceId ? `${resolvedOwnerDigest}::${resolvedOwnerDeviceId}` : null;
-      if (resolvedOwnerDigest && resolvedOwnerDeviceId) {
-        try {
-          if (contactCoreVerbose) {
-            console.log('[contact-core] phase1-pending', {
-              peerDigestLen: resolvedOwnerDigest?.length || 0,
-              peerDeviceId: resolvedOwnerDeviceId || null,
-              hasConvId: false,
-              hasToken: false
-            });
-          }
-        } catch {}
-        upsertContactCore({
-          peerAccountDigest: resolvedOwnerDigest,
-          peerDeviceId: resolvedOwnerDeviceId
-        }, 'share-controller:invite-scan');
-      }
-      const x3dhState = await x3dhInitiate(devicePriv, ownerBundle, ekPair);
-      const conversation = await deriveConversationContextFromSecret(x3dhState.rk, { deviceId: resolvedOwnerDeviceId });
-
-      const drInitPayload = { guest_bundle: buildGuestBundle(devicePriv, ownerBundle, x3dhState), role: 'initiator' };
-      const conversationContext = {
-        token_b64: conversation.tokenB64,
-        conversation_id: conversation.conversationId,
-        peerDeviceId: resolvedOwnerDeviceId,
-        dr_init: drInitPayload
+      const guestProfile = {
+        nickname: normalizedNick || profileSnapshot.nickname || '',
+        avatar: profileSnapshot.avatar || null,
+        updatedAt: profileSnapshot.updatedAt || profileSnapshot.addedAt || nowSec,
+        addedAt: profileSnapshot.addedAt || nowSec
       };
-      if (!x3dhState.baseKey) x3dhState.baseKey = {};
-      x3dhState.baseKey.role = 'initiator';
-      x3dhState.baseKey.conversationId = conversationContext.conversation_id;
-      if (!(x3dhState.rk instanceof Uint8Array)) {
-        console.error('[contact-init:preflight-fail]', {
-          peerAccountDigest: resolvedOwnerDigest || null,
-          peerDeviceId: resolvedOwnerDeviceId || null,
-          callsite: 'invite-accept',
-          rkType: x3dhState?.rk?.constructor?.name || typeof x3dhState?.rk || null
-        });
-        throw new Error('contact-init missing DR rk');
-      }
-      console.log('[contact-init:preflight-ok]', {
-        peerAccountDigest: resolvedOwnerDigest || null,
-        peerDeviceId: resolvedOwnerDeviceId || null,
-        callsite: 'invite-accept',
-        rkByteLength: x3dhState.rk?.byteLength ?? null
-      });
-
-      upsertContactCore({
-        peerAccountDigest: resolvedOwnerDigest,
-        peerDeviceId: resolvedOwnerDeviceId,
-        conversationId: conversationContext.conversation_id,
-        conversationToken: conversationContext.token_b64,
-        conversation: conversationContext,
-        contactSecret: conversation.tokenB64
-      }, 'share-controller:ready-upgrade');
-      try {
-        if (contactCoreVerbose) {
-          console.log('[contact-core] phase2-ready', {
-            peerKey,
-            hasConvId: !!conversationContext.conversation_id,
-            hasToken: !!conversationContext.token_b64
-          });
-        }
-      } catch {}
-
       const contactInitPayload = {
-        type: 'contact-init',
-        guestAccountDigest: (getAccountDigest() || '').toUpperCase(),
-        guestDeviceId: ensureDeviceId(),
-        guestBundle: drInitPayload.guest_bundle,
-        conversation: conversationContext
+        v: CONTACT_INIT_VERSION,
+        type: CONTACT_INIT_TYPE,
+        guestAccountDigest,
+        guestDeviceId,
+        guestBundle,
+        guestProfile
       };
-      sendContactInit(resolvedOwnerDigest, resolvedOwnerDeviceId, contactInitPayload);
-      console.log('[share-controller]', { contactInitSent: { targetDigest: resolvedOwnerDigest, targetDeviceId: resolvedOwnerDeviceId, conversationId: conversationContext.conversation_id } });
+      if (inviteScanStatus) inviteScanStatus.textContent = '投遞中…';
+      const envelope = await sealInviteEnvelope({
+        ownerPublicKeyB64,
+        payload: contactInitPayload,
+        expiresAt
+      });
+      await invitesDeliver({ inviteId: parsed.inviteId, ciphertextEnvelope: envelope });
+      console.log('[share-controller]', { inviteDropboxDelivered: { inviteId: parsed.inviteId, targetDigest: resolvedOwnerDigest, targetDeviceId: resolvedOwnerDeviceId } });
 
-      const alreadyLive = hasLiveDrState(resolvedOwnerDigest);
-      if (!alreadyLive) {
-        clearDrState(
-          resolvedOwnerDigest,
-          { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:645:contact-init-prime-clear' }
-        );
-        primeDrStateFromInitiator({
-          peerAccountDigest: resolvedOwnerDigest,
-          peerDeviceId: resolvedOwnerDeviceId,
-          state: x3dhState,
-          conversationId: conversationContext.conversation_id
-        });
-      }
-      storeContactSecretMapping({
-        peerAccountDigest: resolvedOwnerDigest,
-        peerDeviceId: resolvedOwnerDeviceId,
-        sessionKey: conversation.tokenB64,
-        conversation: conversationContext,
-        drState: x3dhState,
-        role: 'guest'
+      upsertPendingInvite({
+        inviteId: parsed.inviteId,
+        expiresAt
       });
 
-      await sendContactShare({
-        peerAccountDigest: resolvedOwnerDigest,
-        conversation: conversationContext,
-        sessionKey: conversation.tokenB64,
-        peerDeviceId: resolvedOwnerDeviceId,
-        drInit: drInitPayload
-      });
-
-      if (inviteScanStatus) inviteScanStatus.textContent = '成功加入好友！';
+      if (inviteScanStatus) inviteScanStatus.textContent = '投遞成功，等待對方取回';
       switchTab('contacts');
       setTimeout(() => {
         if (shareState.open) closeShareModal();
       }, 700);
     } catch (err) {
       const msg = err?.message || String(err);
-      const friendly = msg.toLowerCase().includes('expired')
-        ? '邀請已過期，請請好友重新生成 QR。'
-        : msg;
-      console.error('[share-controller]', { inviteScanError: msg });
+      const status = Number(err?.status || err?.response?.status || 0);
+      const code = err?.code || err?.data?.error || err?.data?.code || null;
+      let friendly = msg;
+      let shouldRestart = true;
+      if (status === 409 || code === 'InviteAlreadyDelivered') {
+        friendly = '邀請已被使用，請請好友重新生成 QR。';
+        shouldRestart = false;
+      } else if (status === 410 || code === 'Expired' || msg.toLowerCase().includes('expired')) {
+        friendly = '邀請已過期，請請好友重新生成 QR。';
+        shouldRestart = false;
+      } else if (code && String(code).startsWith('InviteQr')) {
+        friendly = '無法解析邀請內容，請請好友重新生成 QR。';
+        shouldRestart = false;
+      } else if (status === 401 || status === 403) {
+        friendly = '需要登入才能投遞邀請，請重新登入後再試。';
+        shouldRestart = false;
+      }
+      console.error('[share-controller]', { inviteScanError: msg, status, code });
       if (inviteScanStatus) inviteScanStatus.textContent = friendly || '無法解析邀請內容';
-      setTimeout(() => {
-        if (shareState.open && shareState.mode === 'scan') {
-          restartInviteScannerWithMessage('請再試一次，將 QR 置中掃描');
-        }
-      }, 1600);
+      if (shouldRestart) {
+        setTimeout(() => {
+          if (shareState.open && shareState.mode === 'scan') {
+            restartInviteScannerWithMessage('請再試一次，將 QR 置中掃描');
+          }
+        }, 1600);
+      }
     }
   }
 
@@ -794,37 +1070,17 @@ export function setupShareController(options) {
     const shouldTracePreflight = shouldTraceProfilePreflight(reasonKey);
     const mkReady = !!getMkRaw();
     const preflightState = drState({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId });
-    let restoreError = null;
-    let hasRk = preflightState?.rk instanceof Uint8Array;
-    let snapshotHasRk = false;
-    if (!hasRk) {
-      const secretRecord = getContactSecret(targetDigest, { peerDeviceId: resolvedPeerDeviceId });
-      const snapshot = secretRecord?.drState || null;
-      snapshotHasRk = !!(snapshot && (snapshot.rk_b64 || snapshot.rk));
-      if (snapshotHasRk) {
-        try {
-          restoreDrStateFromSnapshot({
-            peerAccountDigest: targetDigest,
-            peerDeviceId: resolvedPeerDeviceId,
-            snapshot,
-            targetState: preflightState,
-            sourceTag: 'contact-share-preflight'
-          });
-        } catch (err) {
-          restoreError = err;
-        }
-        hasRk = preflightState?.rk instanceof Uint8Array;
-      }
-    }
+    const hasRk = preflightState?.rk instanceof Uint8Array;
     const preflightPayload = {
       peerAccountDigest: targetDigest || null,
       peerDeviceId: resolvedPeerDeviceId || null,
       callsite: 'sendContactShare',
       hasState: !!preflightState,
       rkType: preflightState?.rk?.constructor?.name || typeof preflightState?.rk || null,
-      rkByteLength: preflightState?.rk instanceof Uint8Array ? preflightState.rk.byteLength : null
+      rkByteLength: preflightState?.rk instanceof Uint8Array ? preflightState.rk.byteLength : null,
+      hasRk
     };
-    const preflightFailed = !!restoreError || !hasRk;
+    const preflightFailed = !hasRk;
     if (preflightFailed) {
       console.error('[contact-share:preflight-fail]', preflightPayload);
       const availablePeerKeys = (() => {
@@ -836,19 +1092,11 @@ export function setupShareController(options) {
         }
         return keys.length ? keys : null;
       })();
-      const candidate = (() => {
-        if (!snapshotHasRk) return 'A';
-        if (availablePeerKeys && resolvedPeerKey && !availablePeerKeys.includes(resolvedPeerKey)) return 'D';
-        if (restoreError) return 'C';
-        return 'B';
-      })();
       logCapped('contactSharePreflightTrace', {
-        reasonCode: restoreError ? 'PREFLIGHT_RESTORE_ERROR' : 'PREFLIGHT_MISSING_RK',
+        reasonCode: 'PREFLIGHT_MISSING_LIVE_RK',
         resolvedPeerKey,
         availablePeerKeys,
-        snapshotHasRk,
         liveStateHasRk: !!(preflightState?.rk instanceof Uint8Array),
-        candidate,
         sourceTag: 'sendContactShare'
       }, 5);
     } else {
@@ -863,20 +1111,17 @@ export function setupShareController(options) {
         mkReady,
         conversationId: conversationId || null,
         target: 'peer',
-        errorCode: preflightFailed ? (restoreError ? 'restore-error' : 'missing-rk') : null
+        errorCode: preflightFailed ? 'missing-live-rk' : null
       });
     }
-    if (restoreError) {
-      throw restoreError;
-    }
     if (!hasRk) {
-      throw new Error('contact-share sender missing DR rk');
+      throw new Error('contact-share sender missing live DR rk');
     }
     const payload = await buildLocalContactPayload({ conversation, drInit, overrides });
     if (reason) {
       payload.reason = reason;
     }
-    payload.reason = payload.reason || 'invite-accept';
+    payload.reason = payload.reason || 'invite-consume';
     const contactPayload = { ...payload };
     const envelope = await encryptContactPayload(sessionKey || conversationToken, contactPayload);
     const metaOverrides = {
@@ -983,7 +1228,7 @@ export function setupShareController(options) {
       }
     }
     const overrideNickname = overrides?.nickname;
-    const effectiveNickname = overrideNickname || nickname || generateRandomNickname();
+    const effectiveNickname = overrideNickname || nickname || '';
     const payload = {
       nickname: effectiveNickname,
       avatar,
@@ -994,10 +1239,90 @@ export function setupShareController(options) {
     return payload;
   }
 
+  function normalizeContactShareConversation(conversation) {
+    if (!conversation || typeof conversation !== 'object' || Array.isArray(conversation)) {
+      throw invitePayloadError('ContactSharePayloadInvalid', 'conversation required');
+    }
+    const allowed = new Set(['token_b64', 'conversation_id', 'peerDeviceId', 'dr_init']);
+    assertNoExtraKeys(conversation, allowed, 'ContactSharePayloadInvalid');
+    const token_b64 = requireStringField(conversation.token_b64, 'conversation.token_b64', 'ContactSharePayloadInvalid');
+    const conversation_id = requireStringField(conversation.conversation_id, 'conversation.conversation_id', 'ContactSharePayloadInvalid');
+    let peerDeviceId = null;
+    if (Object.prototype.hasOwnProperty.call(conversation, 'peerDeviceId')) {
+      peerDeviceId = requireStringField(conversation.peerDeviceId, 'conversation.peerDeviceId', 'ContactSharePayloadInvalid');
+    }
+    let dr_init = null;
+    if (Object.prototype.hasOwnProperty.call(conversation, 'dr_init')) {
+      if (!conversation.dr_init || typeof conversation.dr_init !== 'object' || Array.isArray(conversation.dr_init)) {
+        throw invitePayloadError('ContactSharePayloadInvalid', 'conversation.dr_init invalid');
+      }
+      const drAllowed = new Set(['guest_bundle', 'role']);
+      assertNoExtraKeys(conversation.dr_init, drAllowed, 'ContactSharePayloadInvalid');
+      let guest_bundle = null;
+      if (Object.prototype.hasOwnProperty.call(conversation.dr_init, 'guest_bundle')) {
+        guest_bundle = normalizeGuestBundleStrict(conversation.dr_init.guest_bundle);
+      }
+      const roleRaw = typeof conversation.dr_init.role === 'string' ? conversation.dr_init.role.trim() : '';
+      const role = roleRaw || null;
+      if (guest_bundle || role) {
+        dr_init = {
+          ...(role ? { role } : null),
+          ...(guest_bundle ? { guest_bundle } : null)
+        };
+      }
+    }
+    return {
+      token_b64,
+      conversation_id,
+      peerDeviceId,
+      dr_init
+    };
+  }
+
+  function normalizeContactSharePayload(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw invitePayloadError('ContactSharePayloadInvalid', 'payload required');
+    }
+    const allowed = new Set(['nickname', 'avatar', 'updatedAt', 'addedAt', 'conversation', 'reason']);
+    assertNoExtraKeys(payload, allowed, 'ContactSharePayloadInvalid');
+    const nickname = requireStringField(payload.nickname, 'nickname', 'ContactSharePayloadInvalid');
+    const avatar = Object.prototype.hasOwnProperty.call(payload, 'avatar') ? payload.avatar : null;
+    if (avatar !== null && avatar !== undefined && (typeof avatar !== 'object' || Array.isArray(avatar))) {
+      throw invitePayloadError('ContactSharePayloadInvalid', 'avatar invalid');
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'reason') && typeof payload.reason !== 'string') {
+      throw invitePayloadError('ContactSharePayloadInvalid', 'reason invalid');
+    }
+    const updatedAtRaw = Object.prototype.hasOwnProperty.call(payload, 'updatedAt')
+      ? Number(payload.updatedAt)
+      : 0;
+    const addedAtRaw = Object.prototype.hasOwnProperty.call(payload, 'addedAt')
+      ? Number(payload.addedAt)
+      : 0;
+    if (Object.prototype.hasOwnProperty.call(payload, 'updatedAt') && !Number.isFinite(updatedAtRaw)) {
+      throw invitePayloadError('ContactSharePayloadInvalid', 'updatedAt invalid');
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'addedAt') && !Number.isFinite(addedAtRaw)) {
+      throw invitePayloadError('ContactSharePayloadInvalid', 'addedAt invalid');
+    }
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : null;
+    const addedAt = Number.isFinite(addedAtRaw) && addedAtRaw > 0 ? addedAtRaw : null;
+    const reason = typeof payload.reason === 'string' ? payload.reason.trim() : null;
+    const conversation = normalizeContactShareConversation(payload.conversation);
+    return {
+      nickname,
+      avatar: avatar ?? null,
+      updatedAt,
+      addedAt,
+      reason,
+      conversation
+    };
+  }
+
   async function handleContactShareEvent(msg) {
     const identity = normalizePeerIdentity({
-      peerAccountDigest: msg?.fromAccountDigest || msg?.peerAccountDigest || null,
-      peerDeviceId: msg?.senderDeviceId || msg?.peerDeviceId || null
+      peerAccountDigest: msg?.peerAccountDigest || null,
+      peerDeviceId: msg?.peerDeviceId || null
     });
     const peerKey = identity.key;
     const peerDeviceId = identity.deviceId || null;
@@ -1031,7 +1356,7 @@ export function setupShareController(options) {
         console.warn('[share-controller]', { contactSharePeerDeviceUpdateError: err?.message || err, peerAccountDigest: peerKey });
       }
     }
-    const sessionKey = stored?.conversationToken || null;
+    let sessionKey = stored?.conversationToken || null;
     if (!sessionKey) {
       console.warn('[share-controller]', { contactShareMissingSession: peerKey, peerDeviceId, selfDeviceId });
       return;
@@ -1042,8 +1367,12 @@ export function setupShareController(options) {
       return;
     }
     try {
-      const payload = await decryptContactPayload(sessionKey, envelope);
-      const normalizedNickname = normalizeNickname(payload?.nickname || '') || payload?.nickname || generateRandomNickname();
+      const rawPayload = await decryptContactPayload(sessionKey, envelope);
+      const payload = normalizeContactSharePayload(rawPayload);
+      const normalizedNickname = normalizeNickname(payload.nickname || '');
+      if (!normalizedNickname) {
+        throw invitePayloadError('ContactSharePayloadInvalid', 'nickname invalid');
+      }
       payload.nickname = normalizedNickname;
       try {
         console.log('[share-controller]', {
@@ -1052,32 +1381,28 @@ export function setupShareController(options) {
             peerDeviceId,
             hasAvatar: !!payload.avatar,
             nickname: payload.nickname || null,
-            conversationId: conversation?.conversation_id || null
+            conversationId: payload.conversation?.conversation_id || null
           }
         });
       } catch {}
       const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
       const reasonKey = reasonRaw ? reasonRaw.toLowerCase() : null;
-      const conversationRaw = payload?.conversation || null;
-      const conversationTokenB64 = conversationRaw?.token_b64 || conversationRaw?.tokenB64 || null;
-      const conversationIdFromPayload = conversationRaw?.conversation_id || conversationRaw?.conversationId || null;
-      if (!conversationRaw || !conversationTokenB64 || !conversationIdFromPayload) {
-        console.warn('[share-controller]', { contactShareMissingConversation: peerKey });
-        return;
-      }
+      const conversationRaw = payload.conversation;
+      const conversationTokenB64 = conversationRaw.token_b64;
+      const conversationIdFromPayload = conversationRaw.conversation_id;
       const conversation = {
         token_b64: conversationTokenB64,
         conversation_id: conversationIdFromPayload,
-        dr_init: conversationRaw?.dr_init || conversationRaw?.drInit || null,
+        dr_init: conversationRaw.dr_init || null,
         // 對端裝置必須存在，強制用 senderDeviceId 作為 peerDeviceId
         peerDeviceId
       };
-      if (conversation.peerDeviceId && peerDeviceId && conversation.peerDeviceId !== peerDeviceId) {
+      if (conversationRaw.peerDeviceId && peerDeviceId && conversationRaw.peerDeviceId !== peerDeviceId) {
         console.warn('[share-controller]', {
           contactSharePeerDeviceMismatch: true,
           peerAccountDigest: peerKey,
           fromEvent: peerDeviceId,
-          fromPayload: conversation.peerDeviceId
+          fromPayload: conversationRaw.peerDeviceId
         });
         if (notifyToast) {
           notifyToast('對方裝置資訊不符，請請好友重新掃描 QR', { variant: 'warning' });
@@ -1189,70 +1514,30 @@ export function setupShareController(options) {
   }
 
   function normalizeGuestBundle(bundle) {
-    if (!bundle || typeof bundle !== 'object') return null;
-    const clean = (value) => (typeof value === 'string' ? value.trim() : '');
-    const ek = clean(bundle.ek_pub || bundle.ek || bundle.ephemeral_pub || '');
-    const sig = clean(bundle.spk_sig || bundle.spkSig || bundle.signature || '');
-    if (!ek || !sig) return null;
-    const normalized = { ek_pub: ek, spk_sig: sig };
-    const ik = clean(bundle.ik_pub || bundle.ik || bundle.identity_pub || '');
-    if (ik) normalized.ik_pub = ik;
-    const spk = clean(bundle.spk_pub || bundle.spk || '');
-    if (spk) normalized.spk_pub = spk;
-    const opkIdRaw = bundle.opk_id ?? bundle.opkId ?? bundle.opk?.id;
-    if (opkIdRaw !== undefined && opkIdRaw !== null && opkIdRaw !== '') {
-      const parsed = Number(opkIdRaw);
-      if (Number.isFinite(parsed)) normalized.opk_id = parsed;
-    }
-    return normalized;
-  }
-
-  function sendContactInit(ownerDigest, ownerDeviceId, payload) {
-    if (!wsTransport || typeof wsTransport !== 'function') {
-      throw new Error('無法建立安全通道（WS 未連線），請稍後重試');
-    }
-    if (!ownerDigest || !ownerDeviceId) {
-      throw new Error('缺少目標帳號或裝置資訊，無法送出安全邀請');
-    }
-    if (!payload?.guestBundle || !payload?.conversation?.conversation_id || !payload?.conversation?.token_b64) {
-      throw new Error('安全邀請內容不完整');
-    }
-    const guestAccountDigest = (getAccountDigest() || '').toUpperCase();
-    if (!guestAccountDigest) {
-      throw new Error('缺少 guestAccountDigest，請重新登入後再試');
-    }
-    wsTransport({
-      type: 'contact-init',
-      targetAccountDigest: ownerDigest,
-      targetDeviceId: ownerDeviceId,
-      senderAccountDigest: guestAccountDigest,
-      guestAccountDigest,
-      senderDeviceId: ensureDeviceId(),
-      conversation: payload.conversation,
-      guestBundle: payload.guestBundle
-    });
+    const normalized = normalizeGuestBundleStrict(bundle);
+    return toDrGuestBundle(normalized);
   }
 
   async function handleContactInitEvent(msg = {}) {
-    const guestIdentity = normalizePeerIdentity(msg.guestAccountDigest || msg.senderAccountDigest || msg.peerAccountDigest || null);
-    const peerDigest = guestIdentity.accountDigest || null;
-    const peerDeviceId = msg.senderDeviceId || msg.guestDeviceId || msg.peerDeviceId || guestIdentity.deviceId || null;
-    const targetDeviceId = msg.targetDeviceId || null;
-    const conversation = msg.conversation ? { ...msg.conversation } : {};
-    const guestBundle = msg.guestBundle || null;
-    if (!peerDigest || !peerDeviceId) {
-      console.warn('[share-controller]', { contactInitMissingFields: true, reason: 'missing-guest-digest-or-device', peerDigest, peerDeviceId });
-      return;
-    }
-    if (!conversation?.conversation_id || !conversation?.token_b64 || !guestBundle) {
-      console.warn('[share-controller]', { contactInitMissingFields: true, reason: 'conversation-or-bundle', peerDigest, peerDeviceId, hasConv: !!conversation?.conversation_id });
-      return;
-    }
+    const peerDigest = requireAccountDigest(msg?.guestAccountDigest, 'guestAccountDigest', 'InvitePayloadInvalid');
+    const peerDeviceId = requireStringField(msg?.guestDeviceId, 'guestDeviceId', 'InvitePayloadInvalid');
+    const guestBundleRaw = msg?.guestBundle || null;
+    const guestProfileRaw = msg?.guestProfile || null;
+    const normalizedBundle = normalizeGuestBundleStrict(guestBundleRaw);
+    const guestProfile = normalizeGuestProfileSnapshot(guestProfileRaw);
+    const profileUpdatedAt = guestProfile.updatedAt || guestProfile.addedAt || Math.floor(Date.now() / 1000);
+    const profileNickname = normalizeNickname(guestProfile.nickname || '') || guestProfile.nickname || null;
+    const profileAvatar = guestProfile.avatar || null;
+    const drGuestBundle = toDrGuestBundle(normalizedBundle);
     const selfDeviceId = ensureDeviceId();
-    const directionComputed = selfDeviceId && targetDeviceId && selfDeviceId === targetDeviceId ? 'incoming' : 'unknown';
+    if (!selfDeviceId) {
+      throw invitePayloadError('InvitePayloadInvalid', 'self deviceId missing');
+    }
+    const targetDeviceId = selfDeviceId;
+    const directionComputed = selfDeviceId === targetDeviceId ? 'incoming' : 'unknown';
     if (queueNoiseEnabled) {
       logMsgEvent('contact-init:device-check', {
-        conversationId: conversation?.conversation_id || null,
+        conversationId: null,
         messageId: msg?.messageId || null,
         senderDeviceId: peerDeviceId || null,
         targetDeviceId: targetDeviceId || null,
@@ -1264,19 +1549,54 @@ export function setupShareController(options) {
     if (selfDeviceId && peerDeviceId && selfDeviceId === peerDeviceId) {
       throw new Error('SELF_DEVICE_ID_CORRUPTED: selfDeviceId equals peerDeviceId');
     }
-    // 同側欄位驗證：conversation.peerDeviceId 應等於 targetDeviceId（本端），若不一致則拒收。
-    if (conversation.peerDeviceId && targetDeviceId && conversation.peerDeviceId !== targetDeviceId) {
-      console.warn('[share-controller]', {
-        contactInitTargetDeviceMismatch: true,
+    console.log('[share-controller]', { contactInitReceived: { peerDigest, peerDeviceId, conversationId: null } });
+    clearDrState(
+      { peerAccountDigest: peerDigest, peerDeviceId },
+      { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:1125:contact-init-handler-clear' }
+    );
+    // 只有 owner/responder 端（對端裝置等於本機）才允許 responder bootstrap。
+    console.log('[responder-bootstrap:enter]', {
+      selfDeviceId: selfDeviceId || null,
+      peerDeviceId: peerDeviceId || null,
+      targetDeviceId: targetDeviceId || null
+    });
+    if (selfDeviceId && targetDeviceId && selfDeviceId === targetDeviceId) {
+      await bootstrapDrFromGuestBundle({
         peerAccountDigest: peerDigest,
-        targetDeviceId,
-        conversationPeerDeviceId: conversation.peerDeviceId
+        peerDeviceId,
+        guestBundle: drGuestBundle,
+        force: true
       });
-      return;
     }
-    // peer 裝置一律採 senderDeviceId；conversation.peerDeviceId 僅表示本端 target，不覆寫 peer。
-    conversation.peerDeviceId = conversation.peerDeviceId || targetDeviceId || null;
-    console.log('[share-controller]', { contactInitReceived: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
+    const responderHolder = drState({ peerAccountDigest: peerDigest, peerDeviceId });
+    if (!(responderHolder?.rk instanceof Uint8Array)) {
+      console.error('[responder-bootstrap:invalid-rk]', {
+        peerAccountDigest: peerDigest,
+        peerDeviceId,
+        callsite: 'contact-init-handler',
+        rkType: responderHolder?.rk?.constructor?.name || typeof responderHolder?.rk || null,
+        rkIsView: ArrayBuffer.isView(responderHolder?.rk),
+        rkByteLength: typeof responderHolder?.rk?.byteLength === 'number' ? responderHolder.rk.byteLength : null
+      });
+      throw new Error('responder bootstrap missing rk');
+    }
+    console.log('[responder-bootstrap-ok]', {
+      peerAccountDigest: peerDigest,
+      peerDeviceId,
+      callsite: 'contact-init-handler',
+      rkByteLength: responderHolder.rk?.byteLength ?? null
+    });
+    const conversationContext = await deriveConversationContextFromSecret(responderHolder.rk, { deviceId: targetDeviceId });
+    const conversation = {
+      conversation_id: conversationContext.conversationId,
+      token_b64: conversationContext.tokenB64,
+      peerDeviceId: targetDeviceId,
+      dr_init: { guest_bundle: normalizedBundle, role: 'initiator' }
+    };
+    if (responderHolder?.baseKey) {
+      responderHolder.baseKey.conversationId = conversation.conversation_id;
+      persistDrSnapshot({ peerAccountDigest: peerDigest, peerDeviceId, state: responderHolder });
+    }
     try {
       if (contactCoreVerbose) {
         console.log('[contact-core] pre-upsert', {
@@ -1294,132 +1614,123 @@ export function setupShareController(options) {
       peerDeviceId: peerDeviceId || null,
       conversationId: conversation.conversation_id,
       conversationToken: conversation.token_b64,
-      conversation
+      conversation,
+      nickname: profileNickname,
+      avatar: profileAvatar,
+      profileUpdatedAt
     }, 'share-controller:contact-init-received');
-      storeContactSecretMapping({
-        peerAccountDigest: peerDigest,
-        peerDeviceId, // 這裡代表對端（guest）的裝置
-        sessionKey: conversation.token_b64,
-        conversation,
-        drState: null,
-        role: 'owner'
-      });
-      try {
-        clearDrState(
-          { peerAccountDigest: peerDigest, peerDeviceId },
-          { __drDebugTag: 'web/src/app/ui/mobile/share-controller.js:1125:contact-init-handler-clear' }
-        );
-        // 只有 owner/responder 端（對端裝置等於本機）才允許 responder bootstrap。
-        console.log('[responder-bootstrap:enter]', {
-          selfDeviceId: selfDeviceId || null,
-          peerDeviceId: peerDeviceId || null,
-          targetDeviceId: targetDeviceId || null
-        });
-        if (selfDeviceId && targetDeviceId && selfDeviceId === targetDeviceId) {
-          await bootstrapDrFromGuestBundle({
-            peerAccountDigest: peerDigest,
-            peerDeviceId,
-            guestBundle,
-            force: true,
-            conversationId: conversation.conversation_id
-          });
-        }
-      } catch (err) {
-        console.error('[share-controller]', { contactInitBootstrapError: err?.message || err, peerAccountDigest: peerDigest });
-      }
-      const responderHolder = drState({ peerAccountDigest: peerDigest, peerDeviceId });
-      if (!(responderHolder?.rk instanceof Uint8Array)) {
-        console.error('[responder-bootstrap:invalid-rk]', {
-          peerAccountDigest: peerDigest,
-          peerDeviceId,
-          callsite: 'contact-init-handler',
-          rkType: responderHolder?.rk?.constructor?.name || typeof responderHolder?.rk || null,
-          rkIsView: ArrayBuffer.isView(responderHolder?.rk),
-          rkByteLength: typeof responderHolder?.rk?.byteLength === 'number' ? responderHolder.rk.byteLength : null
-        });
-        throw new Error('responder bootstrap missing rk');
-      }
-      console.log('[responder-bootstrap-ok]', {
-        peerAccountDigest: peerDigest,
-        peerDeviceId,
-        callsite: 'contact-init-handler',
-        rkByteLength: responderHolder.rk?.byteLength ?? null
-      });
-      try {
-        await sendContactShare({
-          peerAccountDigest: peerDigest,
-          conversation,
-          sessionKey: conversation.token_b64,
-        peerDeviceId, // 對端裝置
-        drInit: conversation.dr_init || null
-      });
-      console.log('[share-controller]', { contactInitContactShareSent: { peerDigest, peerDeviceId, conversationId: conversation.conversation_id } });
-      // 被掃描端完成回傳後，自動關閉 QR modal。
-      if (shareState.open) {
-        setTimeout(() => {
-          if (shareState.open) closeShareModal();
-        }, 500);
-      }
+    try {
+      await persistProfileForAccount(
+        {
+          nickname: profileNickname,
+          avatar: profileAvatar,
+          updatedAt: profileUpdatedAt,
+          sourceTag: PROFILE_WRITE_SOURCE.PROFILE_SNAPSHOT
+        },
+        peerDigest
+      );
     } catch (err) {
-      console.error('[share-controller]', { contactInitContactShareError: err?.message || err, peerDigest, peerDeviceId });
+      log({ contactInitProfilePersistError: err?.message || err, peerAccountDigest: peerDigest });
+    }
+    storeContactSecretMapping({
+      peerAccountDigest: peerDigest,
+      peerDeviceId, // 這裡代表對端（guest）的裝置
+      sessionKey: conversation.token_b64,
+      conversation,
+      drState: null,
+      role: 'owner'
+    });
+  }
+
+  async function consumeInviteDropbox(inviteId, { source = 'manual' } = {}) {
+    const id = String(inviteId || '').trim();
+    if (!id) throw new Error('inviteId required');
+    const invite = shareState.currentInvite;
+    if (invite && isInviteExpired(invite)) {
+      throw new Error('邀請已過期，無法取回');
+    }
+    setInviteActionState({ hasInvite: !!invite, expired: false, loading: true });
+    if (source === 'manual') {
+      setInviteStatus('取回邀請中…', { loading: true });
+    }
+    try {
+      const devicePriv = await ensureDevicePrivLoaded();
+      if (!devicePriv?.spk_priv_b64) {
+        throw new Error('裝置私鑰缺失，無法解密邀請');
+      }
+      const res = await invitesConsume({ inviteId: id });
+      const envelope = res?.ciphertextEnvelope || null;
+      if (!envelope) {
+        throw new Error('伺服器回傳內容不完整');
+      }
+      let payload = null;
+      try {
+        payload = await openInviteEnvelope({
+          ownerPrivateKeyB64: devicePriv.spk_priv_b64,
+          envelope
+        });
+      } catch (err) {
+        throw invitePayloadError('InviteEnvelopeInvalid', err?.message || 'invite envelope invalid');
+      }
+      const normalized = normalizeContactInitPayload(payload);
+      const msg = {
+        guestAccountDigest: normalized.guestAccountDigest,
+        guestDeviceId: normalized.guestDeviceId,
+        guestBundle: normalized.guestBundle,
+        guestProfile: normalized.guestProfile
+      };
+      await handleContactInitEvent(msg);
+      setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });
+      if (source === 'manual') {
+        setInviteStatus('已取回邀請', { loading: false });
+      }
+      return msg;
+    } catch (err) {
+      setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });
+      throw err;
     }
   }
 
   function normalizeInviteOwnerBundle(bundle) {
-    if (!bundle) return null;
-    let obj = bundle;
-    if (typeof bundle === 'string') {
-      let rawStr = bundle;
-      const tryParse = (str) => {
-        try { return JSON.parse(str); } catch { return null; }
-      };
-      obj = tryParse(rawStr);
-      if (!obj) {
-        try {
-          const norm = rawStr.replace(/-/g, '+').replace(/_/g, '/');
-          const padded = norm.padEnd(norm.length + ((4 - (norm.length % 4)) % 4), '=');
-          const decoded = atob(padded);
-          obj = tryParse(decoded);
-        } catch {
-          obj = null;
-        }
-      }
+    if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
+      throw invitePayloadError('InviteQrBundleInvalid', 'invite prekey bundle required');
     }
-    if (!obj || typeof obj !== 'object') return null;
-    const ik = String(obj.ik_pub || obj.ik || '').trim();
-    const spk = String(obj.spk_pub || obj.spk || '').trim();
-    const sig = String(obj.spk_sig || '').trim();
-    if (!ik || !spk || !sig) return null;
-    let opk = null;
-    if (obj.opk && typeof obj.opk === 'object') {
-      const pub = String(obj.opk.pub || obj.opk.opk_pub || '').trim();
-      const rawId = obj.opk.id ?? obj.opk.opk_id;
-      const id = Number(rawId);
-      if (pub) opk = { id: Number.isFinite(id) ? id : null, pub };
+    const allowed = new Set(['ik_pub', 'spk_pub', 'spk_sig', 'opk_id', 'opk_pub']);
+    assertNoExtraKeys(bundle, allowed, 'InviteQrBundleInvalid');
+    const ikPubB64 = requireStringField(bundle.ik_pub, 'prekeyBundle.ik_pub', 'InviteQrBundleInvalid');
+    const spkPubB64 = requireStringField(bundle.spk_pub, 'prekeyBundle.spk_pub', 'InviteQrBundleInvalid');
+    const signatureB64 = requireStringField(bundle.spk_sig, 'prekeyBundle.spk_sig', 'InviteQrBundleInvalid');
+    const opkIdRaw = bundle.opk_id;
+    if (opkIdRaw === null || opkIdRaw === undefined || opkIdRaw === '') {
+      throw invitePayloadError('InviteQrBundleInvalid', 'prekeyBundle.opk_id required');
     }
-    return { ik_pub: ik, spk_pub: spk, spk_sig: sig, opk };
+    const opkId = Number(opkIdRaw);
+    if (!Number.isFinite(opkId) || opkId < 0) {
+      throw invitePayloadError('InviteQrBundleInvalid', 'prekeyBundle.opk_id invalid');
+    }
+    const opkPubB64 = requireStringField(bundle.opk_pub, 'prekeyBundle.opk_pub', 'InviteQrBundleInvalid');
+    return {
+      ik_pub: ikPubB64,
+      spk_pub: spkPubB64,
+      spk_sig: signatureB64,
+      opk: { id: opkId, pub: opkPubB64 }
+    };
   }
 
-  function buildGuestBundleForAccept(devicePriv, ekPair) {
-    const bundle = {
+  function buildGuestBundleForAccept(devicePriv, ekPair, opkMeta) {
+    const opkId = opkMeta?.id ?? null;
+    const opkPubB64 = opkMeta?.pub ?? null;
+    if (opkId === null || opkId === undefined || !opkPubB64) {
+      throw new Error('opk required for guest bundle');
+    }
+    return {
       ik_pub: devicePriv.ik_pub_b64,
-      ek_pub: b64(ekPair?.publicKey || new Uint8Array())
+      spk_pub: devicePriv.spk_pub_b64,
+      spk_sig: devicePriv.spk_sig_b64,
+      ek_pub: b64(ekPair?.publicKey || new Uint8Array()),
+      opk_id: opkId,
+      opk_pub: opkPubB64
     };
-    if (devicePriv.spk_pub_b64) bundle.spk_pub = devicePriv.spk_pub_b64;
-    if (devicePriv.spk_sig_b64) bundle.spk_sig = devicePriv.spk_sig_b64;
-    return bundle;
-  }
-
-  function buildGuestBundle(devicePriv, ownerBundle, x3dhState) {
-    const ekPub = x3dhState?.myRatchetPub instanceof Uint8Array ? x3dhState.myRatchetPub : new Uint8Array();
-    const bundle = {
-      ik_pub: devicePriv.ik_pub_b64,
-      ek_pub: b64(ekPub)
-    };
-    if (devicePriv.spk_pub_b64) bundle.spk_pub = devicePriv.spk_pub_b64;
-    if (devicePriv.spk_sig_b64) bundle.spk_sig = devicePriv.spk_sig_b64;
-    if (ownerBundle?.opk && ownerBundle.opk.id != null) bundle.opk_id = ownerBundle.opk.id;
-    return bundle;
   }
 
   async function ensureDevicePrivLoaded() {
@@ -1570,6 +1881,7 @@ export function setupShareController(options) {
     closeShareModal,
     showShareMode,
     handleInviteScan,
+    consumeInviteDropbox,
     handleContactShareEvent,
     handleContactInitEvent,
     broadcastContactUpdate,
@@ -1578,15 +1890,5 @@ export function setupShareController(options) {
     }
   };
 
-  profileInitPromise
-    ?.then(() => {
-      if (autoProfileBroadcasted) return;
-      autoProfileBroadcasted = true;
-      setTimeout(() => {
-        if (!contactSecretMap || !(contactSecretMap instanceof Map) || contactSecretMap.size === 0) return;
-        broadcastContactUpdate({ reason: 'profile' })
-          .catch((err) => console.warn('[share-controller]', { autoProfileBroadcastError: err?.message || err }));
-      }, AUTO_PROFILE_BROADCAST_DELAY_MS);
-    })
-    .catch(() => {});
+  profileInitPromise?.catch(() => {});
 }

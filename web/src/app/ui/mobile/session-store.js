@@ -51,6 +51,9 @@ const defaultWsState = {
   reconnectTimer: null
 };
 
+const PENDING_INVITES_STORAGE_KEY = 'pendingInvites-v1';
+let pendingInvitesRestored = false;
+
 const defaultSubscriptionState = {
   found: false,
   expiresAt: null,
@@ -83,6 +86,7 @@ export const sessionStore = {
   contactSecrets: new Map(),
   corruptContacts: new Map(),
   pendingContacts: new Map(),
+  pendingInvites: new Map(),
   corruptContactBackups: new Map(),
   lastCorruptContactBackup: null,
   onlineContacts: new Set(),
@@ -125,6 +129,7 @@ export function resetContacts() {
   if (sessionStore.conversationThreads) sessionStore.conversationThreads.clear();
   if (sessionStore.corruptContacts) sessionStore.corruptContacts.clear();
   if (sessionStore.pendingContacts) sessionStore.pendingContacts.clear();
+  if (sessionStore.pendingInvites) sessionStore.pendingInvites.clear();
   if (sessionStore.corruptContactBackups) sessionStore.corruptContactBackups.clear();
   sessionStore.lastCorruptContactBackup = null;
   sessionStore.onlineContacts.clear();
@@ -138,6 +143,60 @@ export function resetProfileState() {
 
 export function resetSettingsState() {
   sessionStore.settingsState = null;
+}
+
+function ensurePendingInviteMap() {
+  if (!(sessionStore.pendingInvites instanceof Map)) {
+    const entries = sessionStore.pendingInvites && typeof sessionStore.pendingInvites.entries === 'function'
+      ? Array.from(sessionStore.pendingInvites.entries())
+      : [];
+    sessionStore.pendingInvites = new Map(entries);
+  }
+  return sessionStore.pendingInvites;
+}
+
+export function restorePendingInvites() {
+  const store = ensurePendingInviteMap();
+  if (pendingInvitesRestored) return store;
+  pendingInvitesRestored = true;
+  let parsed = [];
+  try {
+    const raw = typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem(PENDING_INVITES_STORAGE_KEY)
+      : null;
+    if (raw) parsed = JSON.parse(raw);
+  } catch {
+    parsed = [];
+  }
+  if (!Array.isArray(parsed)) return store;
+  for (const entry of parsed) {
+    const inviteId = typeof entry?.inviteId === 'string' ? entry.inviteId.trim() : '';
+    if (!inviteId) continue;
+    const expiresAt = Number(entry?.expiresAt || 0);
+    store.set(inviteId, {
+      inviteId,
+      expiresAt: Number.isFinite(expiresAt) ? expiresAt : null
+    });
+  }
+  return store;
+}
+
+export function persistPendingInvites() {
+  const store = ensurePendingInviteMap();
+  const payload = Array.from(store.values()).map((entry) => ({
+    inviteId: entry?.inviteId || null,
+    expiresAt: entry?.expiresAt || null
+  })).filter((entry) => typeof entry.inviteId === 'string' && entry.inviteId.trim().length);
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(PENDING_INVITES_STORAGE_KEY, JSON.stringify(payload));
+    }
+  } catch {}
+}
+
+export function listPendingInvites() {
+  const store = ensurePendingInviteMap();
+  return Array.from(store.values());
 }
 
 export async function hydrateConversationsFromSecrets() {

@@ -438,7 +438,6 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       id: devicePriv.spk_id || devicePriv.spkId || 1,
       pub: devicePriv.spk_pub_b64,
       sig: devicePriv.spk_sig_b64,
-      ik: devicePriv.ik_pub_b64,
       ik_pub: devicePriv.ik_pub_b64
     } : null);
     if (!resolvedDeviceId) throw new Error('deviceId missing for prekeys publish');

@@ -4,7 +4,6 @@ DROP TABLE IF EXISTS tags;
 DROP TABLE IF EXISTS prekey_users;
 DROP TABLE IF EXISTS prekey_opk;
 DROP TABLE IF EXISTS device_backup;
-DROP TABLE IF EXISTS friend_invites;
 
 CREATE TABLE accounts (
   account_digest TEXT PRIMARY KEY,
@@ -47,28 +46,6 @@ CREATE TABLE device_backup (
   updated_at       INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
 );
-
-CREATE TABLE friend_invites (
-  invite_id TEXT PRIMARY KEY,
-  owner_account_digest TEXT NOT NULL,
-  owner_uid TEXT,
-  secret TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER,
-  prekey_bundle TEXT,
-  channel_seed TEXT,
-  owner_contact_json TEXT,
-  owner_contact_ts INTEGER,
-  guest_account_digest TEXT,
-  guest_uid TEXT,
-  guest_contact_json TEXT,
-  guest_contact_ts INTEGER,
-  guest_bundle_json TEXT,
-  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  FOREIGN KEY (owner_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_friend_invites_owner ON friend_invites(owner_account_digest);
 
 CREATE TRIGGER trg_prekey_users_updated
   AFTER UPDATE ON prekey_users

@@ -3,7 +3,6 @@
 
 import { drState, normalizePeerIdentity, ensureDeviceId } from '../core/store.js';
 import { getContactSecret, getCorruptContact } from '../core/contact-secrets.js';
-import { ensureDrReceiverState } from './dr-session.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
 
 // Re-export for consumers that already depend on manager namespace (e.g., messages.js)
@@ -13,9 +12,6 @@ const STATUS_IDLE = 'idle';
 const STATUS_PENDING = 'pending';
 const STATUS_READY = 'ready';
 const STATUS_FAILED = 'failed';
-
-const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_POLL_INTERVAL_MS = 400;
 
 const listeners = new Set();
 const peerStates = new Map();
@@ -152,12 +148,6 @@ function hasReceiverReady({ peerAccountDigest, peerDeviceId }) {
   return !!(hasSendChain && isGuestLike);
 }
 
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 export function subscribeSecureConversation(listener) {
   if (typeof listener !== 'function') throw new Error('listener 必須是函式');
   listeners.add(listener);
@@ -176,8 +166,8 @@ export function getSecureConversationStatus(peer) {
 export async function ensureSecureConversationReady({
   peerAccountDigest,
   peerDeviceId = null,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+  timeoutMs,
+  pollIntervalMs,
   reason = 'ensure',
   source = 'ensureSecureConversationReady',
   conversationId = null
@@ -201,47 +191,9 @@ export async function ensureSecureConversationReady({
     return cloneStatus(key, peerStates.get(key));
   }
 
-  if (entry.pendingPromise) {
-    return entry.pendingPromise;
-  }
-
-  entry.attempts = 0;
-  const worker = (async () => {
-    let lastError = null;
-    const deadline = Date.now() + Math.max(timeoutMs, pollIntervalMs);
-    while (Date.now() <= deadline) {
-      entry.attempts += 1;
-      try {
-        const ensured = await ensureDrReceiverState({ peerAccountDigest, peerDeviceId: deviceId, conversationId });
-        // ensureDrReceiverState 回傳 false 代表 contact 仍 pending（缺材料）
-        if (ensured === false) {
-          setStatus(key, STATUS_PENDING, { reason: 'missing-material', source, attempts: entry.attempts });
-          return cloneStatus(key, peerStates.get(key));
-        }
-        setStatus(key, STATUS_READY, { reason: 'ensure-success', source, attempts: entry.attempts });
-        return cloneStatus(key, peerStates.get(key));
-      } catch (err) {
-        lastError = err;
-        if (hasReceiverReady({ peerAccountDigest, peerDeviceId: deviceId })) {
-          setStatus(key, STATUS_READY, { reason: 'ensure-late-success', source, attempts: entry.attempts });
-          return cloneStatus(key, peerStates.get(key));
-        }
-      }
-      await delay(pollIntervalMs);
-    }
-    const error = lastError || new Error('建立安全對話逾時');
-    setStatus(key, STATUS_FAILED, { reason: 'timeout', source, attempts: entry.attempts, error });
-    throw error;
-  })();
-
-  entry.pendingPromise = worker.finally(() => {
-    const current = peerStates.get(key);
-    if (current) current.pendingPromise = null;
-  });
-
-  setStatus(key, STATUS_PENDING, { reason, source, attempts: entry.attempts });
-
-  return entry.pendingPromise;
+  entry.attempts = (entry.attempts || 0) + 1;
+  setStatus(key, STATUS_PENDING, { reason: 'missing-live-state', source, attempts: entry.attempts });
+  return cloneStatus(key, peerStates.get(key));
 }
 
 export function handleSecureConversationControlMessage({

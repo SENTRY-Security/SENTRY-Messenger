@@ -2166,6 +2166,8 @@ const btnUploadOpen = document.getElementById('btnUploadOpen');
 const inviteBtn = document.getElementById('btnInviteQr');
 const inviteCountdownEl = document.getElementById('inviteCountdown');
 const inviteRefreshBtn = document.getElementById('inviteRefreshBtn');
+const inviteRetryBtn = document.getElementById('inviteRetryBtn');
+const inviteConsumeBtn = document.getElementById('inviteConsumeBtn');
 const inviteQrBox = document.getElementById('inviteQrBox');
 const inviteScanVideo = document.getElementById('inviteScanVideo');
 const inviteScanStatus = document.getElementById('inviteScanStatus');
@@ -2535,46 +2537,7 @@ async function logRestoreOverview({ reason = 'post-login', force = false } = {})
 }
 
 async function hydrateDrSnapshotsAfterBackup() {
-  try {
-    clearDrState(null, { __drDebugTag: 'web/src/app/ui/app-mobile.js:hydrateDrSnapshotsAfterBackup' });
-    const restored = hydrateDrStatesFromContactSecrets();
-    try {
-      const selfDeviceId = getDeviceId() || ensureDeviceId() || null;
-      const secretMap = restoreContactSecrets();
-      const drMap = getDrSessMap();
-      if (secretMap instanceof Map && drMap instanceof Map) {
-        for (const [peerKey] of secretMap.entries()) {
-          const info = getContactSecret(peerKey, { deviceId: selfDeviceId });
-          if (!info) continue;
-          const identity = normalizePeerIdentity(peerKey);
-          const resolvedPeerKey = identity.key || peerKey || null;
-          const holder = resolvedPeerKey ? drMap.get(resolvedPeerKey) : null;
-          logCapped('contactShareHydrateTrace', {
-            reasonCode: 'POST_LOGIN_HYDRATE',
-            peerKey: resolvedPeerKey,
-            snapshotHasRk: !!(info?.drState?.rk_b64 || info?.drState?.rk),
-            liveStateHasRk: !!(holder?.rk instanceof Uint8Array),
-            role: info?.role || null,
-            sourceTag: 'post-login-hydrate'
-          }, 5);
-        }
-      }
-    } catch {}
-    try { await hydrateConversationsFromSecrets(); } catch {}
-    log({ drSnapshotsRestored: restored });
-    try {
-      const snapshotRecord = readContactSnapshot(localStorage, getContactSecretsStorageKeys(getContactSecretKeyOptions()));
-      if (snapshotRecord?.value) {
-        log({ contactSecretsAppLoadSummary: summarizeContactSecretsPayload(snapshotRecord.value) });
-      } else {
-        log({ contactSecretsAppLoadSummary: { entries: 0, bytes: 0, parseError: 'missing' } });
-      }
-    } catch (err) {
-      log({ contactSecretsAppLoadSummaryError: err?.message || err });
-    }
-  } catch (e) {
-    log({ drSnapshotHydrateError: e?.message || e });
-  }
+  return;
 }
 
 async function runPostLoginContactHydrate() {
@@ -2712,6 +2675,8 @@ shareController = setupShareController({
     inviteCountdownEl,
     inviteQrBox,
     inviteRefreshBtn,
+    inviteRetryBtn,
+    inviteConsumeBtn,
     btnShareModal,
     shareModal,
     shareModalBackdrop,
@@ -3605,31 +3570,66 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
   }
 }
 
-async function hydrateProfileSnapshotForDigest(peerDigest) {
-  const digest = toProfileDigest(peerDigest);
-  if (!digest) return;
-  let profile = await loadProfileControlState(digest).catch((err) => {
-    log({ profileHydrateError: err?.message || err, peerAccountDigest: digest });
-    return null;
-  });
-  if (profile && (normalizeProfileNickname(profile?.nickname || '') || profile?.avatar)) {
+  async function hydrateProfileSnapshotForDigest(peerDigest) {
+    const digest = toProfileDigest(peerDigest);
+    if (!digest) {
+      log({
+        peerProfilePullFailed: {
+          peerAccountDigest: peerDigest || null,
+          reasonCode: 'PeerProfileInvalidDigest',
+          message: 'profile digest invalid',
+          sourceTag: 'app-mobile:profile-hydrate'
+        }
+      });
+      return;
+    }
+    let profile = null;
+    try {
+      profile = await loadProfileControlState(digest);
+    } catch (err) {
+      log({
+        peerProfilePullFailed: {
+          peerAccountDigest: digest,
+          reasonCode: 'PeerProfileDecryptFailed',
+          message: err?.message || err,
+          sourceTag: 'app-mobile:profile-hydrate'
+        }
+      });
+      return;
+    }
+    if (!profile) {
+      log({
+        peerProfilePullFailed: {
+          peerAccountDigest: digest,
+          reasonCode: 'PeerProfileNotFound',
+          message: 'profile not found',
+          sourceTag: 'app-mobile:profile-hydrate'
+        }
+      });
+      return;
+    }
+    const normalizedNick = normalizeProfileNickname(profile?.nickname || '');
+    const hasProfile = !!normalizedNick || !!profile?.avatar;
+    if (!hasProfile) {
+      log({
+        peerProfilePullFailed: {
+          peerAccountDigest: digest,
+          reasonCode: 'PeerProfileEmpty',
+          message: 'profile missing nickname/avatar',
+          sourceTag: 'app-mobile:profile-hydrate'
+        }
+      });
+      return;
+    }
     applyProfileSnapshotToStores(digest, profile);
-    return;
-  }
-  const localSnapshot = resolveLocalProfileSnapshot(digest);
-  if (!localSnapshot) return;
-  const normalizedNick = normalizeProfileNickname(localSnapshot.nickname || '');
-  const hasProfile = !!normalizedNick || !!localSnapshot.avatar;
-  if (!hasProfile || isFallbackProfileName(localSnapshot.nickname, digest)) return;
-  try {
-    await persistProfileForAccount(
-      { ...localSnapshot, nickname: normalizedNick || localSnapshot.nickname, sourceTag: PROFILE_WRITE_SOURCE.PROFILE_SNAPSHOT },
-      digest
-    );
-    log({ profileSnapshotPersisted: true, peerAccountDigest: digest });
-  } catch (err) {
-    log({ profileSnapshotPersistError: err?.message || err, peerAccountDigest: digest });
-  }
+    log({
+      peerProfilePullSuccess: {
+        peerAccountDigest: digest,
+        hasNickname: !!normalizedNick,
+        hasAvatar: !!profile?.avatar,
+        sourceTag: 'app-mobile:profile-hydrate'
+      }
+    });
 }
 
 async function hydrateProfileSnapshots() {
@@ -3637,7 +3637,7 @@ async function hydrateProfileSnapshots() {
   profileHydrationStarted = true;
   const targets = collectProfileHydrateTargets();
   for (const digest of targets) {
-    // 逐個執行，避免洪泛請求；失敗靜默略過。
+    // 逐個執行，避免洪泛請求；失敗會記錄原因。
     // eslint-disable-next-line no-await-in-loop
     await hydrateProfileSnapshotForDigest(digest);
   }
@@ -3949,36 +3949,15 @@ function handleWebSocketMessage(msg) {
     }
     return;
   }
-  if (type === 'contact-share') {
+  if (type === 'invite-delivered') {
     if (!isTargetingThisDevice(msg)) return;
-    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
-      log({ contactShareMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
+    const inviteId = msg?.inviteId || null;
+    if (!inviteId) {
+      log({ inviteDeliveredMissingId: true });
       return;
     }
-    const receiverDigestRaw = msg?.receiverAccountDigest || msg?.receiver_account_digest || null;
-    const receiverDigest = receiverDigestRaw ? String(receiverDigestRaw).toUpperCase() : null;
-    const selfDigest = (getAccountDigest() || '').toUpperCase();
-    if (selfDigest && receiverDigest && receiverDigest !== selfDigest) {
-      log({ contactShareReceiverMismatch: { receiverDigest, selfDigest } });
-      return;
-    }
-    handleContactShareEvent(msg).catch((err) => log({ contactShareError: err?.message || err }));
-    return;
-  }
-  if (type === 'contact-init') {
-    if (!isTargetingThisDevice(msg)) return;
-    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
-      log({ contactInitMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
-      return;
-    }
-    const receiverDigestRaw = msg?.receiverAccountDigest || msg?.receiver_account_digest || null;
-    const receiverDigest = receiverDigestRaw ? String(receiverDigestRaw).toUpperCase() : null;
-    const selfDigest = (getAccountDigest() || '').toUpperCase();
-    if (selfDigest && receiverDigest && receiverDigest !== selfDigest) {
-      log({ contactInitReceiverMismatch: { receiverDigest, selfDigest } });
-      return;
-    }
-    handleContactInitEvent(msg).catch((err) => log({ contactInitError: err?.message || err }));
+    shareController?.consumeInviteDropbox?.(inviteId, { source: 'ws' })
+      .catch((err) => log({ inviteConsumeError: err?.message || err, inviteId }));
     return;
   }
   if (type === 'contacts-reload') {

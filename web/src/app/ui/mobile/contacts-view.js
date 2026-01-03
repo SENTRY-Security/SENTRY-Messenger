@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { sessionStore } from './session-store.js';
+import { sessionStore, restorePendingInvites, listPendingInvites } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret, restoreContactSecrets } from '../../core/contact-secrets.js';
@@ -56,6 +56,7 @@ export function initContactsView(options) {
 
   if (!sessionStore.conversationIndex) sessionStore.conversationIndex = new Map();
   const conversationIndex = sessionStore.conversationIndex;
+  restorePendingInvites();
   if (!sessionStore.deletedContacts) sessionStore.deletedContacts = new Set();
   const deletedContacts = sessionStore.deletedContacts;
   const isHex64 = (value) => typeof value === 'string' && /^[0-9a-fA-F]{64}$/.test(value.trim());
@@ -100,12 +101,15 @@ export function initContactsView(options) {
     contactsListEl.innerHTML = '';
 
     const contacts = listReadyContacts();
+    const pendingInvites = Array.isArray(listPendingInvites())
+      ? listPendingInvites().filter((entry) => entry?.inviteId)
+      : [];
     sessionStore.contactState = contacts;
     if (contactCoreVerbose) {
       try { console.log('[contact-core] render:list ' + JSON.stringify({ readyCount: contacts.length })); } catch {}
     }
 
-    if (!contacts.length) {
+    if (!contacts.length && !pendingInvites.length) {
       presenceManager.clearPresenceState();
       const empty = document.createElement('li');
       empty.className = 'contact-empty';
@@ -115,6 +119,34 @@ export function initContactsView(options) {
       updateContactCount();
       try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch {}
       return;
+    }
+    if (!contacts.length) {
+      presenceManager.clearPresenceState();
+    }
+
+    if (pendingInvites.length) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      pendingInvites.forEach((entry) => {
+        const expiresAt = Number(entry?.expiresAt || 0);
+        const isExpired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowSec;
+        const titleText = isExpired ? '邀請已過期' : '等待對方確認';
+        const metaText = isExpired ? '邀請已過期，請重新掃描' : '等待對方確認';
+        const li = document.createElement('li');
+        li.className = 'contact-item pending-invite';
+        li.dataset.inviteId = String(entry.inviteId);
+        li.setAttribute('aria-disabled', 'true');
+        li.innerHTML = `
+          <div class="item-content">
+            <div class="avatar">${escapeHtml('?')}</div>
+            <div class="info">
+              <div class="name">
+                <span class="name-text">${escapeHtml(titleText)}</span>
+              </div>
+              <div class="meta">${escapeHtml(metaText)}</div>
+            </div>
+          </div>`;
+        contactsListEl.appendChild(li);
+      });
     }
 
     const selfDigest = (getAccountDigest() || '').toUpperCase();
@@ -200,6 +232,7 @@ export function initContactsView(options) {
       contactsListEl.appendChild(li);
     });
     updateStats?.();
+    updateContactCount();
     try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch {}
   }
 
@@ -415,17 +448,60 @@ export function initContactsView(options) {
     contactsScrollEl.addEventListener('touchcancel', handleTouchEnd, { passive: true });
   }
 
+  function normalizeGuestBundleStrict(bundle) {
+    if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
+      throw new Error('guest bundle missing');
+    }
+    const allowed = new Set(['ik_pub', 'spk_pub', 'spk_sig', 'opk_id', 'opk_pub', 'ek_pub']);
+    for (const key of Object.keys(bundle)) {
+      if (!allowed.has(key)) {
+        throw new Error(`guest bundle unexpected field: ${key}`);
+      }
+    }
+    const ikPubB64 = typeof bundle.ik_pub === 'string' ? bundle.ik_pub.trim() : '';
+    const spkPubB64 = typeof bundle.spk_pub === 'string' ? bundle.spk_pub.trim() : '';
+    const signatureB64 = typeof bundle.spk_sig === 'string' ? bundle.spk_sig.trim() : '';
+    const ekPubB64 = typeof bundle.ek_pub === 'string' ? bundle.ek_pub.trim() : '';
+    const opkIdRaw = bundle.opk_id;
+    if (!ikPubB64 || !spkPubB64 || !signatureB64 || !ekPubB64) {
+      throw new Error('guest bundle missing keys');
+    }
+    if (opkIdRaw === null || opkIdRaw === undefined || opkIdRaw === '') {
+      throw new Error('guest bundle missing opk_id');
+    }
+    const opkId = Number(opkIdRaw);
+    if (!Number.isFinite(opkId) || opkId < 0) {
+      throw new Error('guest bundle invalid opk_id');
+    }
+    return {
+      ik_pub: ikPubB64,
+      spk_pub: spkPubB64,
+      spk_sig: signatureB64,
+      opk_id: opkId,
+      ek_pub: ekPubB64
+    };
+  }
+
   function scheduleDrBootstrap(peerAccountDigest, conversation) {
+    // v1 strict: do not hydrate/bootstrap DR state during replay/hydrate.
+    return;
     const key = contactKey(peerAccountDigest);
     if (!key || !conversation) return;
-    const bundle = conversation?.dr_init?.guest_bundle || conversation?.drInit?.guestBundle;
+    const bundle = conversation?.dr_init?.guest_bundle;
     const peerDeviceId = conversation?.peerDeviceId || null;
     if (!bundle) return;
     const selfDeviceId = ensureDeviceId();
     // 僅 owner 端（peerDeviceId 等於自己）才允許 responder bootstrap，guest 端禁止。
     if (!selfDeviceId || !peerDeviceId || selfDeviceId !== peerDeviceId) return;
-    bootstrapDrFromGuestBundle({ peerAccountDigest: key, peerDeviceId, guestBundle: bundle }).catch((err) => {
-      log({ drBootstrapLoadError: err?.message || err });
+    let normalized = null;
+    try {
+      normalized = normalizeGuestBundleStrict(bundle);
+    } catch (err) {
+      log({ drBootstrapLoadError: err?.message || err, reasonCode: 'GuestBundleInvalid', peerAccountDigest: key });
+      return;
+    }
+    bootstrapDrFromGuestBundle({ peerAccountDigest: key, peerDeviceId, guestBundle: normalized }).catch((err) => {
+      log({ drBootstrapLoadError: err?.message || err, reasonCode: 'BootstrapFailed', peerAccountDigest: key });
     });
   }
 
@@ -1092,6 +1168,9 @@ export function initContactsView(options) {
     const peer = contactKey(detail.peerAccountDigest || detail.peer || detail.peerDigest);
     if (!peer) return;
     removeContactState(peer, { notifyPeer: false });
+  });
+  document.addEventListener('contacts:pending-invites-updated', () => {
+    try { renderContacts(); } catch (err) { log({ contactsRenderError: err?.message || err, source: 'pending-invites' }); }
   });
 
   return {

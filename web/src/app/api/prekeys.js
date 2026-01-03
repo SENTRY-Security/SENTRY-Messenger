@@ -5,7 +5,7 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchJSON } from '../core/http.js';
-import { getAccountToken, getAccountDigest, ensureDeviceId, getDevicePriv } from '../core/store.js';
+import { getAccountToken, getAccountDigest, ensureDeviceId } from '../core/store.js';
 
 const AccountDigestRegex = /^[0-9A-F]{64}$/;
 
@@ -34,11 +34,9 @@ export async function prekeysPublish({ accountToken, accountDigest, deviceId, si
   if (device) body.deviceId = device;
   if (signedPrekey) {
     const enriched = { ...signedPrekey };
-    if (!enriched.ik && !enriched.ik_pub) {
-      const priv = getDevicePriv?.();
-      if (priv?.ik_pub_b64) enriched.ik_pub = priv.ik_pub_b64;
+    if (!enriched.ik_pub) {
+      throw new Error('signedPrekey.ik_pub required');
     }
-    if (!enriched.ik && !enriched.ik_pub && enriched.ikPub) enriched.ik_pub = enriched.ikPub;
     body.signedPrekey = enriched;
   }
   if (Array.isArray(opks)) body.opks = opks;

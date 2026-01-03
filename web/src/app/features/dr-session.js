@@ -1059,153 +1059,7 @@ export function persistDrSnapshot(params = {}) {
 }
 
 export function hydrateDrStatesFromContactSecrets() {
-  const map = restoreContactSecrets();
-  if (!(map instanceof Map)) return 0;
-  const deviceId = ensureDeviceId();
-  let restoredCount = 0;
-  let eligibleEntries = 0;
-  let skippedInvalidRole = 0;
-  let skippedDeviceMismatch = 0;
-  let skippedResponderPeerMismatch = 0;
-  let missingSnapshotEntries = 0;
-  let historyFallbackCount = 0;
-  for (const [peerDigest] of map.entries()) {
-    const info = getContactSecret(peerDigest, { deviceId });
-    if (!info) {
-      clearDrStatesByAccount(peerDigest, { __drDebugTag: 'web/src/app/features/dr-session.js:675:hydrate-missing-contact-secret' });
-      continue;
-    }
-    const peerDeviceIdResolved = normalizePeerDeviceId(info.peerDeviceId || null);
-    // conversationId 正規化：若存在 contacts-* 假 ID 與實際 ID，保留實際 ID。
-    if (info?.conversationId && typeof info.conversationId === 'string' && info.conversationId.startsWith('contacts-') && info?.conversation?.id && !String(info.conversation.id).startsWith('contacts-')) {
-      setContactSecret(peerDigest, { deviceId, conversation: { id: info.conversation.id, token: info.conversationToken || null }, meta: { source: 'hydrate-conversation-normalize' } });
-      info.conversationId = info.conversation.id;
-    }
-    if (info?.conversationId && typeof info.conversationId === 'string' && info.conversationId.startsWith('contacts-') && !info?.conversation?.id) {
-      // contacts-* 但沒有實際 conv，直接清除，避免假 conv 污染。
-      setContactSecret(peerDigest, { deviceId, conversation: null, dr: null, meta: { source: 'hydrate-drop-contacts-conv' } });
-      clearDrStatesByAccount(peerDigest, { __drDebugTag: 'web/src/app/features/dr-session.js:687:hydrate-drop-contacts-conv' });
-      continue;
-    }
-    // 若缺角色且 peerDeviceId != self，預設為 guest，避免還原 responder 快照。
-    if (!info.role && peerDeviceIdResolved && deviceId && peerDeviceIdResolved !== deviceId) {
-      setContactSecret(peerDigest, { deviceId, role: 'guest', meta: { source: 'hydrate-set-guest-role' } });
-      info.role = 'guest';
-    }
-    if (!peerDeviceIdResolved) {
-      // 無法解析對端裝置時，清除記憶體中同 digest 的 state 避免沿用舊 responder。
-      clearDrStatesByAccount(peerDigest, { __drDebugTag: 'web/src/app/features/dr-session.js:697:hydrate-missing-peer-device' });
-      continue;
-    }
-    let snapshot = info.drState || null;
-    let snapshotFromHistory = false;
-    if (!snapshot && Array.isArray(info.drHistory) && info.drHistory.length) {
-      const fallback = info.drHistory[info.drHistory.length - 1];
-      if (fallback?.snapshot) {
-        snapshot = fallback.snapshot;
-        snapshotFromHistory = true;
-      }
-    }
-    const hydrateSourceTag = snapshotFromHistory ? 'hydrateDrStatesFromContactSecrets:history' : 'hydrateDrStatesFromContactSecrets';
-    const quarantinePeerKey = normalizePeerKeyForQuarantine({
-      peerAccountDigest: peerDigest,
-      peerDeviceId: peerDeviceIdResolved,
-      sourceTag: hydrateSourceTag
-    });
-    const snapshotValidation = prevalidateSnapshotOrQuarantine(snapshot, {
-      peerAccountDigest: peerDigest,
-      peerDeviceId: peerDeviceIdResolved,
-      peerKey: quarantinePeerKey,
-      sourceTag: hydrateSourceTag
-    });
-    if (!snapshotValidation.ok) {
-      if (snapshotValidation.pending) {
-        missingSnapshotEntries += 1;
-      }
-      continue;
-    }
-    snapshot = snapshotValidation.snapshot;
-    if (!snapshot) {
-      missingSnapshotEntries += 1;
-      if (isAutomationEnv()) {
-        drConsole.log('[dr] hydrate skip (no-snapshot)', JSON.stringify({
-          peerAccountDigest: peerDigest,
-          hasHistory: Array.isArray(info?.drHistory) && info.drHistory.length > 0,
-          historyLen: Array.isArray(info?.drHistory) ? info.drHistory.length : 0
-        }));
-      }
-      continue;
-    }
-    eligibleEntries += 1;
-    const relationshipRole = typeof info.role === 'string' ? info.role.toLowerCase() : null;
-    const snapshotRole = typeof snapshot?.role === 'string' ? snapshot.role.toLowerCase() : null;
-    const snapshotSelfDeviceId = typeof snapshot?.selfDeviceId === 'string' ? snapshot.selfDeviceId : null;
-    const expectedSnapshotRole = (() => {
-      if (relationshipRole === 'owner') return 'responder';
-      if (relationshipRole === 'guest') return 'initiator';
-      return null;
-    })();
-    const isGuestLike = relationshipRole === 'guest'
-      || expectedSnapshotRole === 'initiator'
-      // 沒有明確角色但 peerDeviceId 與 self 不同，也視為 guest 端以避免錯用 responder
-      || (!relationshipRole && deviceId && peerDeviceIdResolved && deviceId !== peerDeviceIdResolved);
-    if (deviceId && snapshotSelfDeviceId && snapshotSelfDeviceId !== deviceId) {
-      skippedDeviceMismatch += 1;
-      if (isAutomationEnv()) {
-        drConsole.log('[dr] hydrate skip (self-device-mismatch)', JSON.stringify({
-          peerAccountDigest: peerDigest,
-          peerDeviceId: peerDeviceIdResolved,
-          snapshotSelfDeviceId
-        }));
-      }
-      continue;
-    }
-    if (isGuestLike && snapshotRole === 'responder') {
-      skippedResponderPeerMismatch += 1;
-      if (isAutomationEnv()) {
-        drConsole.log('[dr] hydrate skip (responder-peer-mismatch)', JSON.stringify({
-          peerAccountDigest: peerDigest,
-          peerDeviceId: peerDeviceIdResolved,
-          selfDeviceId: deviceId
-        }));
-      }
-      continue;
-    }
-    if (expectedSnapshotRole && snapshotRole && snapshotRole !== expectedSnapshotRole) {
-      skippedInvalidRole += 1;
-      continue;
-    }
-    const applied = restoreDrStateFromSnapshot({ peerAccountDigest: peerDigest, peerDeviceId: peerDeviceIdResolved, snapshot });
-    if (applied) {
-      const holder = drState({ peerAccountDigest: peerDigest, peerDeviceId: peerDeviceIdResolved });
-      if (holder) {
-        holder.historyCursorTs = Number.isFinite(info?.drHistoryCursorTs) ? info.drHistoryCursorTs : null;
-        holder.historyCursorId = info?.drHistoryCursorId || null;
-      }
-      restoredCount += 1;
-      if (snapshotFromHistory) {
-        historyFallbackCount += 1;
-        setContactSecret(peerDigest, {
-          deviceId,
-          dr: { state: snapshot },
-          meta: { source: 'hydrateDrStateFallback' }
-        });
-      }
-    }
-  }
-  if (isAutomationEnv()) {
-    drConsole.log('[dr] hydrate snapshot summary', {
-      total: map.size,
-      eligibleEntries,
-      restored: restoredCount,
-      skippedInvalidRole,
-      skippedDeviceMismatch,
-      skippedResponderPeerMismatch,
-      missingSnapshotEntries,
-      historyFallbackCount
-    });
-  }
-  return restoredCount;
+  return 0;
 }
 
 export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}) {
@@ -1327,6 +1181,78 @@ async function ensureDevicePrivLoaded() {
   return ensureDevicePrivAvailable();
 }
 
+function assertNoExtraKeys(obj, allowed, label) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) {
+      throw new Error(`${label} unexpected field: ${key}`);
+    }
+  }
+}
+
+function normalizeGuestBundleStrict(bundle) {
+  if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
+    throw new Error('guest bundle missing');
+  }
+  const allowed = new Set(['ik_pub', 'spk_pub', 'spk_sig', 'opk_id', 'opk_pub', 'ek_pub']);
+  assertNoExtraKeys(bundle, allowed, 'guest bundle');
+  const ikPubB64 = typeof bundle.ik_pub === 'string' ? bundle.ik_pub.trim() : '';
+  const spkPubB64 = typeof bundle.spk_pub === 'string' ? bundle.spk_pub.trim() : '';
+  const signatureB64 = typeof bundle.spk_sig === 'string' ? bundle.spk_sig.trim() : '';
+  const ekPubB64 = typeof bundle.ek_pub === 'string' ? bundle.ek_pub.trim() : '';
+  const opkIdRaw = bundle.opk_id;
+  if (!ikPubB64 || !spkPubB64 || !signatureB64 || !ekPubB64) {
+    throw new Error('guest bundle missing keys');
+  }
+  if (opkIdRaw === null || opkIdRaw === undefined || opkIdRaw === '') {
+    throw new Error('guest bundle missing opk_id');
+  }
+  const opkId = Number(opkIdRaw);
+  if (!Number.isFinite(opkId) || opkId < 0) {
+    throw new Error('guest bundle invalid opk_id');
+  }
+  return {
+    ik_pub: ikPubB64,
+    spk_pub: spkPubB64,
+    spk_sig: signatureB64,
+    opk_id: opkId,
+    ek_pub: ekPubB64
+  };
+}
+
+function normalizePeerBundleFromPrekeys(bundle) {
+  if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
+    throw new Error('peer bundle missing');
+  }
+  const topAllowed = new Set(['ok', 'deviceId', 'signedPrekey', 'opk']);
+  assertNoExtraKeys(bundle, topAllowed, 'peer bundle');
+  const signedPrekey = bundle.signedPrekey;
+  const opk = bundle.opk;
+  if (!signedPrekey || typeof signedPrekey !== 'object' || Array.isArray(signedPrekey)) {
+    throw new Error('peer bundle missing signedPrekey');
+  }
+  if (!opk || typeof opk !== 'object' || Array.isArray(opk)) {
+    throw new Error('peer bundle missing opk');
+  }
+  const spkAllowed = new Set(['id', 'pub', 'sig', 'ik_pub']);
+  const opkAllowed = new Set(['id', 'pub']);
+  assertNoExtraKeys(signedPrekey, spkAllowed, 'signedPrekey');
+  assertNoExtraKeys(opk, opkAllowed, 'opk');
+  const ikPub = typeof signedPrekey.ik_pub === 'string' ? signedPrekey.ik_pub.trim() : '';
+  const spkPub = typeof signedPrekey.pub === 'string' ? signedPrekey.pub.trim() : '';
+  const spkSig = typeof signedPrekey.sig === 'string' ? signedPrekey.sig.trim() : '';
+  const opkId = Number(opk.id);
+  const opkPub = typeof opk.pub === 'string' ? opk.pub.trim() : '';
+  if (!ikPub || !spkPub || !spkSig) throw new Error('signedPrekey missing keys');
+  if (!Number.isFinite(opkId) || !opkPub) throw new Error('opk missing keys');
+  return {
+    ik_pub: ikPub,
+    spk_pub: spkPub,
+    spk_sig: spkSig,
+    opk: { id: opkId, pub: opkPub }
+  };
+}
+
 /**
  * 確保（本端→對方）的 DR 會話已初始化。
  * 會：
@@ -1352,7 +1278,8 @@ export async function ensureDrSession(params = {}) {
   const { r: rb, data: bundle } = await prekeysBundle({ peer_accountDigest: peer });
   if (!rb.ok) throw new Error('prekeys.bundle failed: ' + (typeof bundle === 'string' ? bundle : JSON.stringify(bundle)));
 
-  const st = await x3dhInitiate(priv, bundle);
+  const peerBundle = normalizePeerBundleFromPrekeys(bundle);
+  const st = await x3dhInitiate(priv, peerBundle);
   const targetHolder = holder || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!targetHolder) throw new Error('DR holder missing for peer device');
   copyDrState(targetHolder, st, { callsiteTag: 'recoverDrState' });
@@ -1457,7 +1384,7 @@ async function sendDrPlaintext(params = {}) {
   let conversationId = convContext?.conversation_id || convContext?.conversationId || null;
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
   let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
-  const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
+  const hasDrInit = !!(convContext?.dr_init?.guest_bundle);
   const preflightSecret = getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId }) || null;
   const preflightHasRk = !!(preflightSecret?.drState?.rk_b64 || preflightSecret?.drState?.rk);
   logSendPreflightTrace({
@@ -2044,7 +1971,7 @@ export async function sendDrMedia(params = {}) {
 
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
   let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
-  const hasDrInit = !!(convContext?.dr_init?.guest_bundle || convContext?.dr_init?.guestBundle);
+  const hasDrInit = !!(convContext?.dr_init?.guest_bundle);
 
   if (!hasDrState) {
     try {
@@ -2949,7 +2876,7 @@ export async function ensureDrReceiverState(params = {}) {
 
   const context = conversationContextForPeer(peer) || {};
   const drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
-  const guestBundle = drInit?.guest_bundle || drInit?.guestBundle || null;
+  const guestBundle = drInit?.guest_bundle || null;
 
   const allowResponderBootstrap = (() => {
     // guest/initiator 端禁止 responder bootstrap；僅 owner/既有 responder 可啟動。
@@ -2960,6 +2887,17 @@ export async function ensureDrReceiverState(params = {}) {
     return false;
   })();
   if (guestBundle && allowResponderBootstrap) {
+    let normalizedGuestBundle = null;
+    try {
+      normalizedGuestBundle = normalizeGuestBundleStrict(guestBundle);
+    } catch (err) {
+      drConsole.error('[dr-log:bootstrap-guest-bundle-invalid]', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        reason: err?.message || err
+      });
+      throw err;
+    }
     const holderNow = drState({ peerAccountDigest: peer, peerDeviceId });
     const roleNow = holderNow?.baseKey?.role;
     const hasReceiveChain = holderNow?.ckR instanceof Uint8Array && holderNow.ckR.length > 0 && roleNow === 'responder';
@@ -3021,7 +2959,13 @@ export async function ensureDrReceiverState(params = {}) {
         conversationId
       });
     } catch {}
-    await bootstrapDrFromGuestBundle({ peerAccountDigest: peer, guestBundle, force: shouldForce, peerDeviceId, conversationId });
+    await bootstrapDrFromGuestBundle({
+      peerAccountDigest: peer,
+      guestBundle: normalizedGuestBundle,
+      force: shouldForce,
+      peerDeviceId,
+      conversationId
+    });
     const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
     if (conversationId) {
       refreshed.baseKey = refreshed.baseKey || {};

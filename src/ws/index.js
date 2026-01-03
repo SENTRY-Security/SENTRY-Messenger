@@ -435,97 +435,6 @@ function handleClientMessage(ws, data) {
     }
     return;
   }
-  if (msg.type === 'contact-share') {
-    const targetDigest = extractPeerAccountDigest(msg);
-    if (!targetDigest) return;
-    const fromDigest = ws.__accountDigest || null;
-    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
-    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
-    if (!senderDeviceId || !targetDeviceId) {
-      logger.warn({
-        event: 'ws.contact-share.missing-device',
-        fromDigest,
-        targetDigest,
-        senderDeviceId: senderDeviceId || null,
-        targetDeviceId: targetDeviceId || null
-      }, 'drop contact-share due to missing deviceId');
-      return;
-    }
-    broadcastByDigest(targetDigest, {
-      type: 'contact-share',
-      fromAccountDigest: fromDigest,
-      senderDeviceId,
-      targetDeviceId,
-      inviteId: msg.inviteId || null,
-      envelope: msg.envelope || null,
-      ts: Date.now()
-    });
-    return;
-  }
-  if (msg.type === 'contact-init') {
-    const targetDigest = extractPeerAccountDigest(msg);
-    if (!targetDigest) return;
-    const fromDigest = ws.__accountDigest || null;
-    if (!fromDigest) {
-      logger.warn({ event: 'ws.contact-init.missing-guest-digest' }, 'drop contact-init due to missing guest digest');
-      return;
-    }
-    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
-    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
-    const conversation = safeCloneObject(msg.conversation);
-    const guestBundle = safeCloneObject(msg.guestBundle);
-    if (msg.guestAccountDigest && canonicalAccountDigest(msg.guestAccountDigest) && canonicalAccountDigest(msg.guestAccountDigest) !== fromDigest) {
-      logger.warn({
-        event: 'ws.contact-init.guest-digest-mismatch',
-        fromDigest,
-        guestAccountDigest: canonicalAccountDigest(msg.guestAccountDigest)
-      }, 'drop contact-init due to guest digest mismatch');
-      return;
-    }
-    if (!senderDeviceId || !targetDeviceId || !conversation || !guestBundle) {
-      logger.warn({
-        event: 'ws.contact-init.missing-fields',
-        fromDigest,
-        targetDigest,
-        senderDeviceId: senderDeviceId || null,
-        targetDeviceId: targetDeviceId || null,
-        hasConversation: !!conversation,
-        hasGuestBundle: !!guestBundle
-      }, 'drop contact-init due to missing fields');
-      return;
-    }
-    if (!conversation.conversation_id || !conversation.token_b64) {
-      logger.warn({
-        event: 'ws.contact-init.invalid-conversation',
-        fromDigest,
-        targetDigest,
-        conversationId: conversation.conversation_id || null
-      }, 'drop contact-init due to invalid conversation');
-      return;
-    }
-    const guestAccountDigest = canonicalAccountDigest(msg.guestAccountDigest) || fromDigest;
-    logger.info({
-      event: 'ws.contact-init.forward',
-      fromDigest,
-      targetDigest,
-      senderDeviceId,
-      targetDeviceId,
-      conversationId: conversation.conversation_id
-    }, 'forward contact-init');
-    broadcastByDigest(targetDigest, {
-      type: 'contact-init',
-      senderAccountDigest: fromDigest,
-      guestAccountDigest,
-      peerAccountDigest: guestAccountDigest,
-      peerDeviceId: senderDeviceId,
-      senderDeviceId,
-      targetDeviceId,
-      conversation,
-      guestBundle,
-      ts: Date.now()
-    });
-    return;
-  }
   if (msg.type === 'contact-removed') {
     const targetDigest = extractPeerAccountDigest(msg);
     if (!targetDigest) return;
@@ -748,30 +657,14 @@ export function setupWebSocket(server) {
         ts: Date.now()
       });
     },
-    sendContactShare(_unused, { fromAccountDigest, envelope, targetAccountDigest, senderDeviceId, targetDeviceId, conversationId = null }) {
+    sendInviteDelivered(_unused, { targetAccountDigest, targetDeviceId = null, inviteId }) {
       const digest = canonicalAccountDigest(targetAccountDigest);
-      const senderDev = canonicalDeviceId(senderDeviceId);
+      if (!digest || !inviteId) return;
       const targetDev = canonicalDeviceId(targetDeviceId);
-      if (!digest || !envelope) return;
-      if (!senderDev || !targetDev) {
-        logger.warn({
-          event: 'ws.sendContactShare.missing-device',
-          targetAccountDigest: digest,
-          senderAccountDigest: canonicalAccountDigest(fromAccountDigest),
-          senderDeviceId: senderDev || null,
-          targetDeviceId: targetDev || null,
-          conversationId: conversationId || null
-        }, 'drop contact-share due to missing deviceId');
-        return;
-      }
-      const senderDigest = canonicalAccountDigest(fromAccountDigest);
       broadcastByDigest(digest, {
-        type: 'contact-share',
-        fromAccountDigest: senderDigest,
-        senderDeviceId: senderDev,
-        targetDeviceId: targetDev,
-        conversationId: conversationId || null,
-        envelope,
+        type: 'invite-delivered',
+        inviteId,
+        targetDeviceId: targetDev || null,
         ts: Date.now()
       });
     },

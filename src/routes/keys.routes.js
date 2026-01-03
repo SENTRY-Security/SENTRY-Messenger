@@ -20,7 +20,7 @@ const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 const AccountSelectorSchema = z.object({
   accountToken: z.string().min(8).optional(),
   accountDigest: z.string().regex(AccountDigestRegex).optional()
-});
+}).strict();
 const withAccountSelectorGuard = (schema) => schema.superRefine((value, ctx) => {
   if (!value.accountToken && !value.accountDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
@@ -30,25 +30,25 @@ const withAccountSelectorGuard = (schema) => schema.superRefine((value, ctx) => 
 const OpkSchema = z.object({
   id: z.number().int().nonnegative(),
   pub: z.string().min(8)
-});
+}).strict();
 
 const SignedPrekeySchema = z.object({
   id: z.number().int().nonnegative(),
   pub: z.string().min(8),
   sig: z.string().min(8),
-  ik_pub: z.string().min(8).optional()
-});
+  ik_pub: z.string().min(8)
+}).strict();
 
 const PublishSchema = withAccountSelectorGuard(AccountSelectorSchema.extend({
   deviceId: z.string().min(1),
   signedPrekey: SignedPrekeySchema,
   opks: z.array(OpkSchema).optional().default([])
-}));
+}).strict());
 
 const BundleSchema = z.object({
   peer_accountDigest: z.string().regex(AccountDigestRegex),
   peer_deviceId: z.string().min(1).optional()
-});
+}).strict();
 
 // ---- Helpers ----
 function cfgGuard(res) {
@@ -102,7 +102,7 @@ r.post('/keys/publish', async (req, res) => {
       id: input.signedPrekey.id,
       pub: input.signedPrekey.pub,
       sig: input.signedPrekey.sig,
-      ik_pub: input.signedPrekey.ik_pub || input.signedPrekey.ik || undefined
+      ik_pub: input.signedPrekey.ik_pub
     };
     const payload = {
       accountDigest,

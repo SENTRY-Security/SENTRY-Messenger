@@ -18,39 +18,6 @@ INSERT INTO accounts_v2 (account_digest, account_token, uid_digest, last_ctr, wr
 DROP TABLE accounts;
 ALTER TABLE accounts_v2 RENAME TO accounts;
 
--- friend_invites: drop owner_uid / guest_uid
-CREATE TABLE friend_invites_v2 (
-  invite_id TEXT PRIMARY KEY,
-  owner_account_digest TEXT NOT NULL,
-  secret TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER,
-  prekey_bundle TEXT,
-  channel_seed TEXT,
-  owner_contact_json TEXT,
-  owner_contact_ts INTEGER,
-  guest_account_digest TEXT,
-  guest_contact_json TEXT,
-  guest_contact_ts INTEGER,
-  guest_bundle_json TEXT,
-  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  FOREIGN KEY (owner_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-);
-
-INSERT INTO friend_invites_v2 (
-  invite_id, owner_account_digest, secret, expires_at, used_at,
-  prekey_bundle, channel_seed, owner_contact_json, owner_contact_ts,
-  guest_account_digest, guest_contact_json, guest_contact_ts, guest_bundle_json, created_at
-) SELECT
-  invite_id, owner_account_digest, secret, expires_at, used_at,
-  prekey_bundle, channel_seed, owner_contact_json, owner_contact_ts,
-  guest_account_digest, guest_contact_json, guest_contact_ts, guest_bundle_json, created_at
-  FROM friend_invites;
-
-DROP TABLE friend_invites;
-ALTER TABLE friend_invites_v2 RENAME TO friend_invites;
-CREATE INDEX IF NOT EXISTS idx_friend_invites_owner ON friend_invites(owner_account_digest);
-
 -- call_sessions: drop caller_uid / callee_uid
 CREATE TABLE call_sessions_v2 (
   call_id TEXT PRIMARY KEY,

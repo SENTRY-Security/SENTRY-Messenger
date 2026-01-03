@@ -713,6 +713,26 @@ form {
 .contact-item .presence-dot.online {
   display: inline-flex;
 }
+.contact-item.pending-invite {
+  opacity: 0.6;
+  cursor: default;
+  pointer-events: none;
+}
+.contact-item.pending-invite .avatar {
+  background: #e5e7eb;
+  color: #9ca3af;
+  border-color: rgba(15, 23, 42, 0.2);
+}
+.contact-item.pending-invite .name-text {
+  color: #6b7280;
+}
+.contact-item.pending-invite .meta {
+  color: #6b7280;
+}
+.contact-item.pending-invite .presence-dot,
+.contact-item.pending-invite .item-delete {
+  display: none;
+}
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;

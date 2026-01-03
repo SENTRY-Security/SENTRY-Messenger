@@ -157,10 +157,10 @@ function takeSkippedKey(st, chainId, index) {
 
 export async function x3dhInitiate(devicePriv, peerBundle, overrideEk = null) {
   await loadNacl();
-  const peerIkRaw = peerBundle.ik_pub || peerBundle.ik || peerBundle.identity_pub;
-  const peerSpkRaw = peerBundle.spk_pub || peerBundle.spk;
-  const peerSpkSigRaw = peerBundle.spk_sig || peerBundle.spkSig || peerBundle.signature;
-  const peerOpkRaw = peerBundle.opk?.pub || peerBundle.opk_pub || null;
+  const peerIkRaw = peerBundle?.ik_pub;
+  const peerSpkRaw = peerBundle?.spk_pub;
+  const peerSpkSigRaw = peerBundle?.spk_sig;
+  const peerOpkRaw = peerBundle?.opk?.pub || null;
   if (!peerIkRaw || !peerSpkRaw) throw new Error('peer bundle missing identity or signed prekey');
   if (!peerSpkSigRaw) throw new Error('peer bundle missing signed prekey signature');
   if (!peerOpkRaw) throw new Error('peer bundle missing one-time prekey');
@@ -228,14 +228,14 @@ export async function x3dhInitiate(devicePriv, peerBundle, overrideEk = null) {
 export async function x3dhRespond(devicePriv, guestBundle) {
   await loadNacl();
   if (!guestBundle || typeof guestBundle !== 'object') throw new Error('guest bundle required');
-  const ekPub = guestBundle.ek_pub || guestBundle.ek || guestBundle.ephemeral_pub;
+  const ekPub = guestBundle.ek_pub;
   if (!ekPub) throw new Error('guest bundle missing ek_pub');
-  const guestIkRaw = guestBundle.ik_pub || guestBundle.ik || guestBundle.identity_pub;
-  const guestSpkRaw = guestBundle.spk_pub || guestBundle.spk;
-  const guestSpkSigRaw = guestBundle.spk_sig || guestBundle.spkSig || guestBundle.signature;
+  const guestIkRaw = guestBundle.ik_pub;
+  const guestSpkRaw = guestBundle.spk_pub;
+  const guestSpkSigRaw = guestBundle.spk_sig;
   if (!guestIkRaw || !guestSpkRaw) throw new Error('guest bundle missing identity or signed prekey');
   if (!guestSpkSigRaw) throw new Error('guest bundle missing signed prekey signature');
-  const opkId = guestBundle.opk_id ?? guestBundle.opkId ?? guestBundle.opk?.id ?? null;
+  const opkId = guestBundle.opk_id;
   if (opkId === null || opkId === undefined || !Number.isFinite(Number(opkId))) {
     throw new Error('guest bundle missing opk_id for responder');
   }

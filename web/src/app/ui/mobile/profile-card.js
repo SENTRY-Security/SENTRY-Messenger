@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import Cropper from '../../lib/vendor/cropper.esm.js';
-import { ensureProfileNickname, saveProfile, normalizeNickname, generateRandomNickname, uploadAvatar, loadAvatarBlob, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
+import { loadLatestProfile, saveProfile, normalizeNickname, uploadAvatar, loadAvatarBlob, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
 import { sessionStore } from './session-store.js';
 import { escapeHtml, blobToDataURL } from './ui-utils.js';
 
@@ -38,13 +38,15 @@ export function initProfileCard(options) {
   async function loadProfile() {
     let loaded = null;
     try {
-      loaded = await ensureProfileNickname();
+      loaded = await loadLatestProfile();
     } catch (err) {
       log({ profileInitError: err?.message || err, stack: err?.stack || null });
       throw err;
     }
-    sessionStore.profileState = loaded || { nickname: generateRandomNickname(), updatedAt: Math.floor(Date.now() / 1000) };
-    sessionStore.profileState.nickname = normalizeNickname(sessionStore.profileState.nickname) || generateRandomNickname();
+    sessionStore.profileState = loaded || { nickname: '', updatedAt: Math.floor(Date.now() / 1000) };
+    if (sessionStore.profileState?.nickname) {
+      sessionStore.profileState.nickname = normalizeNickname(sessionStore.profileState.nickname) || sessionStore.profileState.nickname;
+    }
     log({ profileLoad: sessionStore.profileState });
     updateProfileNicknameUI();
     await updateProfileAvatarUI();
@@ -397,14 +399,14 @@ export function initProfileCard(options) {
         const next = {
           ...(sessionStore.profileState || {}),
           avatar: avatarMeta,
-          nickname: sessionStore.profileState?.nickname || generateRandomNickname(),
+          nickname: sessionStore.profileState?.nickname || '',
           updatedAt: Math.floor(Date.now() / 1000),
           sourceTag: PROFILE_WRITE_SOURCE.EXPLICIT
         };
         const saved = await saveProfile(next);
         sessionStore.profileState = saved || next;
         const sanitizedNick = normalizeNickname(sessionStore.profileState.nickname);
-        sessionStore.profileState.nickname = sanitizedNick || sessionStore.profileState.nickname || generateRandomNickname();
+        sessionStore.profileState.nickname = sanitizedNick || sessionStore.profileState.nickname || '';
         updateProfileNicknameUI();
         await updateProfileAvatarUI();
         updateStats?.();
@@ -460,7 +462,7 @@ export function initProfileCard(options) {
       if (avatar) avatar = { ...avatar };
     }
     const payload = {
-      nickname: nickname || generateRandomNickname(),
+      nickname: nickname || '',
       avatar,
       addedAt: Math.floor(Date.now() / 1000)
     };

@@ -13,7 +13,7 @@ import {
   normalizeAccountDigest,
   normalizeDeviceId
 } from '../core/store.js';
-import { normalizeNickname, generateRandomNickname } from './profile.js';
+import { normalizeNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
@@ -136,27 +136,23 @@ export async function loadContacts() {
               conversation_id: String(contact.conversation.conversation_id),
               ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
             }
-          : (secretInfo?.conversationToken && secretInfo?.conversationId
-              ? {
-                  token_b64: secretInfo.conversationToken,
-                  conversation_id: secretInfo.conversationId,
-                  ...(secretInfo?.conversationDrInit ? { dr_init: secretInfo.conversationDrInit } : null)
-                }
-              : null);
+          : null;
         const conversationUpdate = {};
         if (conversation?.token_b64) conversationUpdate.token = conversation.token_b64;
         if (conversation?.conversation_id) conversationUpdate.id = conversation.conversation_id;
         if (conversation?.dr_init) conversationUpdate.drInit = conversation.dr_init;
-        pendingSecretUpdate = {
-          ...(Object.keys(conversationUpdate).length ? { conversation: conversationUpdate } : {}),
-          meta: { source: 'contacts:pending-secret' }
-        };
+        if (Object.keys(conversationUpdate).length) {
+          pendingSecretUpdate = {
+            conversation: conversationUpdate,
+            meta: { source: 'contacts:pending-secret' }
+          };
+        }
       } else {
         console.warn('[contacts] unsupported envelope format', { id: item?.id, envelope });
         continue;
       }
 
-      const normalized = normalizeNickname(contact?.nickname || '') || contact?.nickname || generateRandomNickname();
+      const normalized = normalizeNickname(contact?.nickname || '') || '';
       if (!conversation) {
         conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
           ? {
@@ -311,12 +307,17 @@ export async function saveContact(contact) {
     });
   }
 
+  const normalizedNickname = normalizeNickname(contact?.nickname || '');
+  const avatar = contact?.avatar || null;
+  if (!normalizedNickname && !avatar) {
+    throw new Error('contact nickname/avatar required');
+  }
   const payload = {
     peerAccountDigest: peerKey,
     accountDigest: peerAccountDigest,
     peerDeviceId,
-    nickname: normalizeNickname(contact?.nickname || '') || generateRandomNickname(),
-    avatar: contact?.avatar || null,
+    nickname: normalizedNickname,
+    avatar,
     addedAt: Number(contact?.addedAt || nowTs())
   };
   if (conversation) payload.conversation = conversation;

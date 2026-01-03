@@ -32,6 +32,7 @@ import {
   getLegacyContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
+import { initProfileAvatarFromIdenticonOnce } from '../features/profile.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -894,7 +895,18 @@ async function onUnlock() {
       log({ deviceIdStorageError: err?.message || err });
     }
     if (newAccount) {
-      updateBootstrapStep('avatar-init', 'skip', '不再自動建立頭像');
+      updateBootstrapStep('avatar-init', 'start');
+      try {
+        const result = await initProfileAvatarFromIdenticonOnce({ uidHex: getUidHex() });
+        if (result?.skipped) {
+          updateBootstrapStep('avatar-init', 'skip', result.reason || '已存在頭像');
+        } else {
+          updateBootstrapStep('avatar-init', 'success');
+        }
+      } catch (err) {
+        updateBootstrapStep('avatar-init', 'error', err?.message || err);
+        throw err;
+      }
     }
     await emitIdentityTrace('login-ui:post-unlock');
     try {

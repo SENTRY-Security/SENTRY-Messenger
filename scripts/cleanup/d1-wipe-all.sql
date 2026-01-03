@@ -7,11 +7,9 @@ DELETE FROM conversation_acl;
 DELETE FROM conversations;
 DELETE FROM contact_secret_backups;
 DELETE FROM opaque_records;
+DELETE FROM invite_dropbox;
 -- Optional legacy snapshot tables (ignore if absent)
 -- DELETE FROM contact_snapshots;
-DELETE FROM friend_invite_accepts;
-DELETE FROM friend_invites;
--- DELETE FROM friend_invites_v2;
 -- DELETE FROM contact_messages;
 DELETE FROM call_events;
 DELETE FROM call_sessions;

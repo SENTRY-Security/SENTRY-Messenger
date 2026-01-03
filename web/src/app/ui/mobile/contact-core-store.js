@@ -28,9 +28,7 @@ const HANDSHAKE_SOURCE_ALLOWLIST = new Set([
   'contacts-view:local-cache',
   'contacts-view:secrets',
   'share-controller:contact-init-received',
-  'share-controller:contact-share',
-  'share-controller:invite-accept',
-  'share-controller:invite-scan'
+  'share-controller:contact-share'
 ]);
 
 const isHandshakeSource = (sourceTag) => {

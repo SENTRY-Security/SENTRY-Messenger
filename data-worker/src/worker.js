@@ -3,7 +3,7 @@ import { toU8Strict } from './u8-strict.js';
 
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
-const INVITE_ENCODER = new TextEncoder();
+const INVITE_INFO_TAG = 'contact-init/dropbox/v1';
 
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -196,22 +196,33 @@ function parseBackupPayload(rawPayload) {
 
 function normalizeOpk(opk) {
   if (!opk || typeof opk !== 'object') return null;
-  const id = Number(opk.id ?? opk.opk_id);
-  const pub = typeof opk.pub === 'string' ? opk.pub.trim() : (typeof opk.opk_pub === 'string' ? opk.opk_pub.trim() : null);
+  const allowed = new Set(['id', 'pub']);
+  for (const key of Object.keys(opk)) {
+    if (!allowed.has(key)) return null;
+  }
+  const id = Number(opk.id);
+  const pub = typeof opk.pub === 'string' ? opk.pub.trim() : null;
   if (!Number.isFinite(id) || !pub) return null;
   return { id, pub: pub.slice(0, 4096) };
 }
 
 function normalizeSignedPrekey(spk) {
   if (!spk || typeof spk !== 'object') return null;
-  const id = Number(spk.id ?? spk.spk_id);
-  const pub = typeof spk.pub === 'string' ? spk.pub.trim() : (typeof spk.spk_pub === 'string' ? spk.spk_pub.trim() : null);
-  const sig = typeof spk.sig === 'string' ? spk.sig.trim() : (typeof spk.spk_sig === 'string' ? spk.spk_sig.trim() : null);
-  const ik = typeof spk.ik === 'string' ? spk.ik.trim() : (typeof spk.ik_pub === 'string' ? spk.ik_pub.trim() : null);
-  if (!Number.isFinite(id) || !pub || !sig) return null;
-  const normalized = { id, pub: pub.slice(0, 4096), sig: sig.slice(0, 4096) };
-  if (ik) normalized.ik_pub = ik.slice(0, 4096);
-  return normalized;
+  const allowed = new Set(['id', 'pub', 'sig', 'ik_pub']);
+  for (const key of Object.keys(spk)) {
+    if (!allowed.has(key)) return null;
+  }
+  const id = Number(spk.id);
+  const pub = typeof spk.pub === 'string' ? spk.pub.trim() : null;
+  const sig = typeof spk.sig === 'string' ? spk.sig.trim() : null;
+  const ikPub = typeof spk.ik_pub === 'string' ? spk.ik_pub.trim() : null;
+  if (!Number.isFinite(id) || !pub || !sig || !ikPub) return null;
+  return {
+    id,
+    pub: pub.slice(0, 4096),
+    sig: sig.slice(0, 4096),
+    ik_pub: ikPub.slice(0, 4096)
+  };
 }
 
 function normalizeGroupId(value) {
@@ -252,55 +263,44 @@ function normalizeGroupAvatar(value) {
   return null;
 }
 
-async function lookupIkFromBackup(env, accountDigest) {
-  if (!accountDigest) return null;
-  try {
-    const row = await env.DB.prepare(
-      `SELECT wrapped_dev_json FROM device_backup WHERE account_digest=?1`
-    ).bind(accountDigest).first();
-    const parsed = safeJSON(row?.wrapped_dev_json);
-    const ik = parsed?.ik_pub_b64 || parsed?.ik_pub || null;
-    if (ik && typeof ik === 'string' && ik.trim()) return ik.trim();
-  } catch (err) {
-    console.warn('ik_lookup_backup_failed', err?.message || err);
+function normalizeInviteDropboxEnvelope(envelope) {
+  if (!envelope || typeof envelope !== 'object') return null;
+  const allowedKeys = new Set(['v', 'aead', 'info', 'sealed', 'createdAt', 'expiresAt']);
+  for (const key of Object.keys(envelope)) {
+    if (!allowedKeys.has(key)) return null;
   }
-  return null;
-}
-
-function normalizeOwnerPrekeyBundle(bundle) {
-  if (!bundle || typeof bundle !== 'object') return null;
-  const ik = String(bundle.ik_pub || bundle.ik || '').trim();
-  const spk = String(bundle.spk_pub || bundle.spk || '').trim();
-  const sig = String(bundle.spk_sig || '').trim();
-  if (!ik || !spk || !sig) return null;
-  let opk = null;
-  if (bundle.opk && typeof bundle.opk === 'object') {
-    const idNum = Number(bundle.opk.id ?? bundle.opk.opk_id);
-    const pub = String(bundle.opk.pub || bundle.opk.opk_pub || '').trim();
-    if (pub) {
-      opk = { id: Number.isFinite(idNum) ? idNum : null, pub };
-    }
+  const v = Number(envelope.v ?? 0);
+  const aead = String(envelope.aead || '').trim();
+  const info = String(envelope.info || '').trim();
+  const createdAt = Number(envelope.createdAt || 0);
+  const expiresAt = Number(envelope.expiresAt || 0);
+  if (!Number.isFinite(v) || v !== 1) return null;
+  if (aead !== 'aes-256-gcm') return null;
+  if (info !== INVITE_INFO_TAG) return null;
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return null;
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+  const sealed = envelope.sealed;
+  if (!sealed || typeof sealed !== 'object') return null;
+  const sealedAllowed = new Set(['eph_pub_b64', 'iv_b64', 'ct_b64']);
+  for (const key of Object.keys(sealed)) {
+    if (!sealedAllowed.has(key)) return null;
   }
-  return opk ? { ik_pub: ik, spk_pub: spk, spk_sig: sig, opk } : { ik_pub: ik, spk_pub: spk, spk_sig: sig, opk: null };
-}
-
-function normalizeGuestBundle(bundle) {
-  if (!bundle || typeof bundle !== 'object') return null;
-  const ek = String(bundle.ek_pub || bundle.ek || bundle.ephemeral_pub || '').trim();
-  if (!ek) return null;
-  const ik = bundle.ik_pub || bundle.ik || bundle.identity_pub ? String(bundle.ik_pub || bundle.ik || bundle.identity_pub || '').trim() : null;
-  const spk = bundle.spk_pub ? String(bundle.spk_pub || '').trim() : null;
-  const sig = bundle.spk_sig || bundle.spkSig || bundle.signature ? String(bundle.spk_sig || bundle.spkSig || bundle.signature || '').trim() : null;
-  const opkId = bundle.opk_id ?? bundle.opkId ?? bundle.opk?.id;
-  const out = { ek_pub: ek };
-  if (ik) out.ik_pub = ik;
-  if (spk) out.spk_pub = spk;
-  if (sig) out.spk_sig = sig;
-  if (opkId != null && opkId !== '') {
-    const num = Number(opkId);
-    if (Number.isFinite(num)) out.opk_id = num;
-  }
-  return out;
+  const ephPub = String(sealed.eph_pub_b64 || '').trim();
+  const iv = String(sealed.iv_b64 || '').trim();
+  const ct = String(sealed.ct_b64 || '').trim();
+  if (!ephPub || !iv || !ct) return null;
+  return {
+    v,
+    aead,
+    info,
+    sealed: {
+      eph_pub_b64: ephPub,
+      iv_b64: iv,
+      ct_b64: ct
+    },
+    createdAt,
+    expiresAt
+  };
 }
 
 async function allocateOwnerPrekeyBundle(env, ownerAccountDigest, preferredDeviceId = null) {
@@ -479,10 +479,6 @@ async function insertContactMessage(env, { convAccountDigest, peerAccountDigest,
   } catch (err) {
     console.warn('contact_message_insert_failed', err?.message || err);
   }
-}
-
-async function ensureFriendInviteTable(env) {
-  await ensureDataTables(env);
 }
 
 async function removeConversationAccess(env, { conversationId, accountDigest }) {
@@ -918,22 +914,6 @@ async function digestAccountToken(token) {
   return bytesToHex(new Uint8Array(digest));
 }
 
-async function hashInviteTokenHex(token, env) {
-  const keyMaterial = typeof env?.INVITE_TOKEN_KEY === 'string' ? env.INVITE_TOKEN_KEY : '';
-  if (!keyMaterial || keyMaterial.length < 8) {
-    throw new Error('INVITE_TOKEN_KEY missing or too short (>=8 chars required)');
-  }
-  const key = await crypto.subtle.importKey(
-    'raw',
-    toU8Strict(INVITE_ENCODER.encode(String(keyMaterial)), 'data-worker/src/worker.js:908:hashInviteTokenHex'),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const mac = await crypto.subtle.sign('HMAC', key, INVITE_ENCODER.encode(String(token || '')));
-  return Array.from(new Uint8Array(mac)).map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {}, { allowCreate = false, preferredAccountToken = null, preferredAccountDigest = null } = {}) {
   const db = env.DB;
   const normalizedUid = uidHex ? normalizeUid(uidHex) : null;
@@ -1063,7 +1043,7 @@ async function ensureDataTables(env) {
     'media_objects',
     'opaque_records',
     'device_backup',
-    'friend_invites',
+    'invite_dropbox',
     'call_sessions',
     'call_events',
     'contact_secret_backups',
@@ -1089,7 +1069,7 @@ async function ensureDataTables(env) {
         ...missingTables.map((name) => `table:${name}`),
         ...missingColumns.map((name) => `column:${name}`)
       ];
-      const message = `D1 schema missing (${detail.join(', ') || 'none'}); run migrations (including 0025_message_key_vault.sql).`;
+      const message = `D1 schema missing (${detail.join(', ') || 'none'}); run migrations (including 0026_invite_dropbox.sql and latest schema drops).`;
       console.error(message);
       throw new Error(message);
     }
@@ -1318,13 +1298,22 @@ async function handleTagsRoutes(req, env) {
   return null;
 }
 
-// ---- 主入口 ----
-async function handleFriendsRoutes(req, env) {
+async function markInviteExpired(env, inviteId, nowSec) {
+  if (!inviteId) return;
+  await env.DB.prepare(
+    `UPDATE invite_dropbox
+        SET status='EXPIRED',
+            updated_at=?2
+      WHERE invite_id=?1 AND status IN ('CREATED', 'DELIVERED')`
+  ).bind(inviteId, nowSec).run();
+}
+
+async function handleInviteDropboxRoutes(req, env) {
   const url = new URL(req.url);
 
-  // 建立好友邀請
-  if (req.method === 'POST' && url.pathname === '/d1/friends/invite') {
-    await ensureFriendInviteTable(env);
+  // Create invite dropbox (owner)
+  if (req.method === 'POST' && url.pathname === '/d1/invites/create') {
+    await ensureDataTables(env);
     let body;
     try {
       body = await req.json();
@@ -1332,228 +1321,333 @@ async function handleFriendsRoutes(req, env) {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
     const inviteId = String(body?.inviteId || '').trim();
-    const tokenHash = typeof body?.tokenHash === 'string' ? body.tokenHash.trim() : '';
-    const expiresAt = Number(body?.expiresAt || 0);
-    const accountTokenRaw = body?.accountToken || body?.account_token || null;
-    const accountDigestRaw = body?.accountDigest || body?.account_digest || null;
-    const accountToken = typeof accountTokenRaw === 'string' && accountTokenRaw.length ? accountTokenRaw : null;
-    const accountDigest = typeof accountDigestRaw === 'string' && accountDigestRaw.length ? String(accountDigestRaw).replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null;
-    const deviceIdBody = normalizeDeviceId(body?.deviceId || body?.device_id);
-
-    if (!inviteId || !tokenHash || tokenHash.length < 32 || !Number.isFinite(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) {
-      return json({ error: 'BadRequest', message: 'invalid invite payload' }, { status: 400 });
+    const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
+    const ownerDeviceId = normalizeDeviceId(body?.deviceId);
+    if (!inviteId || inviteId.length < 8) {
+      return json({ error: 'BadRequest', message: 'inviteId required' }, { status: 400 });
+    }
+    if (!accountToken) {
+      return json({ error: 'Unauthorized', message: 'accountToken required' }, { status: 401 });
+    }
+    if (!ownerDeviceId) {
+      return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
     }
 
-    let ownerAccount;
+    const existing = await env.DB.prepare(
+      `SELECT invite_id FROM invite_dropbox WHERE invite_id=?1`
+    ).bind(inviteId).first();
+    if (existing) {
+      return json({ error: 'InviteAlreadyExists' }, { status: 409 });
+    }
+
+    let account;
     try {
-      ownerAccount = await resolveAccount(env, { accountToken, accountDigest }, { allowCreate: !!(accountToken || accountDigest), preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
+      account = await resolveAccount(env, {
+        accountToken,
+        accountDigest
+      }, { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
     } catch (err) {
       return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
     }
-
-    if (!ownerAccount) {
-      return json({ error: 'AccountNotFound' }, { status: 404 });
+    if (!account) {
+      return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
     }
 
-    let ownerBundle = normalizeOwnerPrekeyBundle(body?.prekeyBundle || body?.prekey_bundle);
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + 300;
+    const ownerBundle = await allocateOwnerPrekeyBundle(env, account.account_digest, ownerDeviceId);
     if (!ownerBundle) {
-      ownerBundle = await allocateOwnerPrekeyBundle(env, ownerAccount.account_digest, deviceIdBody);
-      if (!ownerBundle) {
-        return json({ error: 'PrekeyUnavailable', message: 'owner prekey bundle unavailable' }, { status: 409 });
+      return json({ error: 'PrekeyUnavailable', message: 'owner prekey bundle unavailable' }, { status: 409 });
+    }
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'ownerPublicKey')) {
+      return json({ error: 'BadRequest', code: 'InviteSchemaMismatch', message: 'ownerPublicKey not allowed' }, { status: 400 });
+    }
+    const ownerPublicKeyInput = String(body?.ownerPublicKeyB64 || '').trim();
+    const ownerPublicKeyB64 = ownerPublicKeyInput || String(ownerBundle.spk_pub || '').trim();
+    if (!ownerPublicKeyB64) {
+      return json({ error: 'BadRequest', code: 'InviteSchemaInvalid', message: 'ownerPublicKeyB64 required' }, { status: 400 });
+    }
+    if (ownerPublicKeyInput && ownerBundle.spk_pub && ownerPublicKeyInput !== ownerBundle.spk_pub) {
+      return json({ error: 'OwnerPublicKeyMismatch', message: 'ownerPublicKeyB64 mismatch' }, { status: 400 });
+    }
+
+    await env.DB.prepare(
+      `INSERT INTO invite_dropbox (
+          invite_id, owner_account_digest, owner_device_id,
+          owner_public_key_b64, expires_at, status, created_at, updated_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, 'CREATED', ?6, ?7)`
+    ).bind(
+      inviteId,
+      account.account_digest,
+      ownerDeviceId,
+      ownerPublicKeyB64,
+      expiresAt,
+      now,
+      now
+    ).run();
+
+    const prekeyBundle = ownerBundle
+      ? {
+        ik_pub: String(ownerBundle.ik_pub || '').trim(),
+        spk_pub: String(ownerBundle.spk_pub || '').trim(),
+        spk_sig: String(ownerBundle.spk_sig || '').trim(),
+        opk_id: ownerBundle.opk?.id ?? null,
+        opk_pub: String(ownerBundle.opk?.pub || '').trim() || null
       }
-    }
-
-    const existingInvite = await env.DB.prepare(
-      `SELECT invite_id FROM friend_invites WHERE invite_id=?1`
-    ).bind(inviteId).all();
-
-    if (existingInvite?.results?.length) {
-      await env.DB.prepare(
-        `UPDATE friend_invites
-            SET owner_account_digest=?2,
-                token_hash=?3,
-                expires_at=?4,
-                invite_version=2,
-                owner_device_id=?5,
-                prekey_ik_pub=?6,
-                prekey_spk_pub=?7,
-                prekey_spk_sig=?8,
-                prekey_opk_id=?9,
-                prekey_opk_pub=?10,
-                used_at=NULL
-          WHERE invite_id=?1`
-      ).bind(
-        inviteId,
-        ownerAccount.account_digest,
-        tokenHash,
-        expiresAt,
-        deviceIdBody,
-        ownerBundle.ik_pub || null,
-        ownerBundle.spk_pub || null,
-        ownerBundle.spk_sig || null,
-        ownerBundle.opk?.id ?? null,
-        ownerBundle.opk?.pub ?? null
-      ).run();
-    } else {
-      await env.DB.prepare(
-        `INSERT INTO friend_invites(
-            invite_id, owner_account_digest, token_hash, expires_at,
-            invite_version, owner_device_id, used_at, created_at,
-            prekey_ik_pub, prekey_spk_pub, prekey_spk_sig, prekey_opk_id, prekey_opk_pub
-         ) VALUES (?1, ?2, ?3, ?4, 2, ?5, NULL, strftime('%s','now'), ?6, ?7, ?8, ?9, ?10)`
-      ).bind(
-        inviteId,
-        ownerAccount.account_digest,
-        tokenHash,
-        expiresAt,
-        deviceIdBody,
-        ownerBundle.ik_pub || null,
-        ownerBundle.spk_pub || null,
-        ownerBundle.spk_sig || null,
-        ownerBundle.opk?.id ?? null,
-        ownerBundle.opk?.pub ?? null
-      ).run();
-    }
+      : null;
 
     return json({
       ok: true,
       inviteId,
-      expires_at: expiresAt,
-      owner_account_digest: ownerAccount.account_digest,
-      invite_version: 2,
-      prekey_bundle: ownerBundle
+      expiresAt,
+      ownerAccountDigest: account.account_digest,
+      ownerDeviceId,
+      ownerPublicKeyB64,
+      prekeyBundle
     });
   }
 
-  // Contact-share（會話內分享封裝）
-  if (req.method === 'POST' && url.pathname === '/d1/friends/contact/share') {
-    await ensureFriendInviteTable(env);
+  // Deliver invite payload (guest)
+  if (req.method === 'POST' && url.pathname === '/d1/invites/deliver') {
+    await ensureDataTables(env);
     let body;
     try {
       body = await req.json();
     } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
-
-    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
-    const peerAccountDigest = normalizeAccountDigest(body?.peerAccountDigest || body?.peer_account_digest);
-    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
-    const envelope = normalizeEnvelope(body?.envelope);
-    const senderDeviceId = normalizeDeviceId(
-      req.headers.get('x-device-id')
-      || body?.deviceId
-      || body?.device_id
-      || body?.senderDeviceId
-      || body?.sender_device_id
-    );
-    const peerDeviceId = normalizeDeviceId(
-      body?.peerDeviceId
-      || body?.peer_device_id
-      || body?.targetDeviceId
-      || body?.target_device_id
-    );
-    if (!accountDigest || !peerAccountDigest || !envelope || !conversationId || !senderDeviceId || !peerDeviceId) {
-      return json({ error: 'BadRequest', message: 'accountDigest, peerAccountDigest, conversationId, senderDeviceId, peerDeviceId and envelope required' }, { status: 400 });
+    const inviteId = String(body?.inviteId || '').trim();
+    const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
+    const senderDeviceId = normalizeDeviceId(body?.deviceId);
+    const envelope = normalizeInviteDropboxEnvelope(body?.ciphertextEnvelope);
+    if (!inviteId || inviteId.length < 8) {
+      return json({ error: 'BadRequest', message: 'inviteId required' }, { status: 400 });
+    }
+    if (!accountToken) {
+      return json({ error: 'Unauthorized', message: 'accountToken required' }, { status: 401 });
+    }
+    if (!senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
+    }
+    if (!envelope) {
+      return json({ error: 'BadRequest', code: 'InviteEnvelopeInvalid', message: 'ciphertextEnvelope invalid' }, { status: 400 });
     }
 
-    const senderAcl = await env.DB.prepare(
-      `SELECT 1 FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2 AND device_id=?3`
-    ).bind(conversationId, accountDigest, senderDeviceId).first();
-    if (!senderAcl) {
-      return json({ error: 'Forbidden', code: 'ConversationDeviceMismatch', message: 'sender device not authorized' }, { status: 403 });
-    }
-    const peerAclRow = await env.DB.prepare(
-      `SELECT device_id FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2`
-    ).bind(conversationId, peerAccountDigest).first();
-    if (peerAclRow && peerAclRow.device_id !== peerDeviceId) {
-      return json({ error: 'Forbidden', code: 'ConversationDeviceMismatch', message: 'peer device mismatch' }, { status: 403 });
-    }
-
-    await grantConversationAccess(env, {
-      conversationId,
-      accountDigest: peerAccountDigest,
-      deviceId: peerDeviceId
-    });
-
-    await env.DB.prepare(
-      `INSERT INTO conversations (id) VALUES (?1) ON CONFLICT(id) DO NOTHING`
-    ).bind(conversationId).run();
-
-    let counter = 1;
+    let account;
     try {
-      const row = await env.DB.prepare(`
-        SELECT MAX(counter) AS max_counter
-          FROM messages_secure
-         WHERE conversation_id=?1
-           AND sender_account_digest=?2
-           AND sender_device_id=?3
-      `).bind(conversationId, accountDigest, senderDeviceId).first();
-      const maxCounter = Number(row?.max_counter ?? 0);
-      if (Number.isFinite(maxCounter) && maxCounter > 0) counter = maxCounter + 1;
+      account = await resolveAccount(env, {
+        accountToken,
+        accountDigest
+      }, { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
     } catch (err) {
-      console.warn('contact_share_counter_lookup_failed', err?.message || err);
+      return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+    }
+    if (!account) {
+      return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
     }
 
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ivB64 = bytesToBase64Url(iv);
-    const ts = Math.floor(Date.now() / 1000);
-    const header = {
-      contact: 1,
-      v: 1,
-      peerAccountDigest: accountDigest,
-      ts,
-      envelope,
-      iv_b64: ivB64,
-      n: counter,
-      device_id: senderDeviceId
-    };
-    const headerJson = JSON.stringify(header);
-    const ciphertextB64 = bytesToBase64Url(new TextEncoder().encode(headerJson));
-    const messageId = typeof body?.id === 'string' && body.id.trim().length ? body.id.trim() : null;
-    if (!messageId) {
-      return json({ error: 'BadRequest', message: 'id (messageId) required' }, { status: 400 });
+    const row = await env.DB.prepare(
+      `SELECT invite_id, owner_account_digest, owner_device_id, expires_at, status
+         FROM invite_dropbox WHERE invite_id=?1`
+    ).bind(inviteId).first();
+    if (!row) return json({ error: 'NotFound' }, { status: 404 });
+    const now = Math.floor(Date.now() / 1000);
+    if (Number(row.expires_at) <= now) {
+      await markInviteExpired(env, inviteId, now);
+      return json({ error: 'Expired' }, { status: 410 });
+    }
+    if (envelope.expiresAt !== Number(row.expires_at)) {
+      return json({ error: 'InviteExpiresMismatch', message: 'envelope expires mismatch' }, { status: 400 });
+    }
+    if (row.status !== 'CREATED') {
+      return json({ error: 'InviteAlreadyDelivered' }, { status: 409 });
     }
 
-    try {
-      await env.DB.prepare(`
-        INSERT INTO messages_secure (
-          id, conversation_id, sender_account_digest, sender_device_id,
-          receiver_account_digest, receiver_device_id, header_json, ciphertext_b64,
-          counter, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-      `).bind(
-        messageId,
-        conversationId,
-        accountDigest,
-        senderDeviceId,
-        peerAccountDigest,
-        peerDeviceId,
-        headerJson,
-        ciphertextB64,
-        counter,
-        ts
-      ).run();
-    } catch (err) {
-      console.warn('contact_share_insert_failed', err?.message || err);
-      return json({ error: 'InsertFailed', message: 'unable to store contact share' }, { status: 500 });
+    const upd = await env.DB.prepare(
+      `UPDATE invite_dropbox
+          SET status='DELIVERED',
+              delivered_by_account_digest=?2,
+              delivered_by_device_id=?3,
+              delivered_at=?4,
+              ciphertext_json=?5,
+              updated_at=?6
+        WHERE invite_id=?1 AND status='CREATED'`
+    ).bind(
+      inviteId,
+      account.account_digest,
+      senderDeviceId,
+      now,
+      JSON.stringify(envelope),
+      now
+    ).run();
+    if (!upd || (upd.meta && upd.meta.changes === 0)) {
+      return json({ error: 'InviteAlreadyDelivered' }, { status: 409 });
     }
 
     return json({
       ok: true,
-      targetAccountDigest: peerAccountDigest,
-      senderAccountDigest: accountDigest,
-      ts,
-      conversationId,
-      senderDeviceId,
-      peerDeviceId,
-      id: messageId,
-      counter
+      inviteId,
+      ownerAccountDigest: row.owner_account_digest,
+      ownerDeviceId: row.owner_device_id,
+      deliveredAt: now
     });
   }
 
+  // Consume invite payload (owner)
+  if (req.method === 'POST' && url.pathname === '/d1/invites/consume') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const inviteId = String(body?.inviteId || '').trim();
+    const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
+    if (!inviteId || inviteId.length < 8) {
+      return json({ error: 'BadRequest', message: 'inviteId required' }, { status: 400 });
+    }
+    if (!accountToken) {
+      return json({ error: 'Unauthorized', message: 'accountToken required' }, { status: 401 });
+    }
+
+    let account;
+    try {
+      account = await resolveAccount(env, {
+        accountToken,
+        accountDigest
+      }, { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
+    } catch (err) {
+      return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+    }
+    if (!account) {
+      return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
+    }
+
+    const row = await env.DB.prepare(
+      `SELECT invite_id, owner_account_digest, owner_device_id, expires_at, status, ciphertext_json
+         FROM invite_dropbox WHERE invite_id=?1`
+    ).bind(inviteId).first();
+    if (!row) return json({ error: 'NotFound' }, { status: 404 });
+    const now = Math.floor(Date.now() / 1000);
+    if (Number(row.expires_at) <= now) {
+      await markInviteExpired(env, inviteId, now);
+      return json({ error: 'Expired' }, { status: 410 });
+    }
+    if (row.owner_account_digest !== account.account_digest) {
+      return json({ error: 'Forbidden', message: 'invite owner mismatch' }, { status: 403 });
+    }
+    if (row.status !== 'DELIVERED') {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
+    const envelope = safeJSON(row.ciphertext_json);
+    if (!envelope) {
+      return json({ error: 'PayloadMissing', message: 'ciphertext missing' }, { status: 500 });
+    }
+
+    const upd = await env.DB.prepare(
+      `UPDATE invite_dropbox
+          SET status='CONSUMED',
+              consumed_at=?2,
+              ciphertext_json=NULL,
+              updated_at=?3
+        WHERE invite_id=?1 AND status='DELIVERED'`
+    ).bind(inviteId, now, now).run();
+    if (!upd || (upd.meta && upd.meta.changes === 0)) {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
+
+    return json({
+      ok: true,
+      inviteId,
+      ownerDeviceId: row.owner_device_id,
+      expiresAt: row.expires_at,
+      ciphertextEnvelope: envelope
+    });
+  }
+
+  // Check invite status (owner or deliverer)
+  if (req.method === 'POST' && url.pathname === '/d1/invites/status') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const inviteId = String(body?.inviteId || '').trim();
+    const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
+    if (!inviteId || inviteId.length < 8) {
+      return json({ error: 'BadRequest', message: 'inviteId required' }, { status: 400 });
+    }
+    if (!accountToken) {
+      return json({ error: 'Unauthorized', message: 'accountToken required' }, { status: 401 });
+    }
+
+    let account;
+    try {
+      account = await resolveAccount(env, {
+        accountToken,
+        accountDigest
+      }, { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
+    } catch (err) {
+      return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+    }
+    if (!account) {
+      return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
+    }
+
+    const row = await env.DB.prepare(
+      `SELECT invite_id, owner_account_digest, owner_device_id,
+              delivered_by_account_digest, delivered_by_device_id,
+              status, created_at, delivered_at, consumed_at, expires_at
+         FROM invite_dropbox WHERE invite_id=?1`
+    ).bind(inviteId).first();
+    if (!row) return json({ error: 'NotFound' }, { status: 404 });
+
+    const requester = account.account_digest;
+    const isOwner = row.owner_account_digest === requester;
+    const isDeliverer = row.delivered_by_account_digest && row.delivered_by_account_digest === requester;
+    if (!isOwner && !isDeliverer) {
+      return json({ error: 'Forbidden', message: 'invite access denied' }, { status: 403 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const isExpired = Number(row.expires_at) <= now;
+    let status = row.status;
+    if (isExpired && status !== 'CONSUMED') {
+      await markInviteExpired(env, inviteId, now);
+      status = 'EXPIRED';
+    }
+    return json({
+      inviteId: row.invite_id,
+      status,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at || null,
+      deliveredAt: row.delivered_at || null,
+      consumedAt: row.consumed_at || null,
+      deliveredByDigest: row.delivered_by_account_digest || null,
+      deliveredByDeviceId: row.delivered_by_device_id || null,
+      ownerDigest: row.owner_account_digest || null,
+      ownerDeviceId: row.owner_device_id || null,
+      isExpired
+    });
+  }
+
+  return null;
+}
+
+// ---- 主入口 ----
+async function handleFriendsRoutes(req, env) {
+  const url = new URL(req.url);
+
   // 刪除聯絡（依 peer）
   if (req.method === 'POST' && url.pathname === '/d1/friends/contact-delete') {
-    await ensureFriendInviteTable(env);
+    await ensureDataTables(env);
     let body;
     try {
       body = await req.json();
@@ -1593,96 +1687,6 @@ async function handleFriendsRoutes(req, env) {
     return json({ ok: true, ts: now, results });
   }
 
-  // 接受好友邀請
-  if (req.method === 'POST' && url.pathname === '/d1/friends/accept') {
-    await ensureFriendInviteTable(env);
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
-    }
-    const inviteId = String(body?.inviteId || '').trim();
-    const inviteToken = String(body?.inviteToken || body?.invite_token || body?.secret || '').trim();
-    const guestBundle = normalizeGuestBundle(body?.guestBundle || body?.guest_bundle);
-    if (!inviteId || !inviteToken) {
-      return json({ error: 'BadRequest', message: 'inviteId & inviteToken required' }, { status: 400 });
-    }
-
-    const rows = await env.DB.prepare(
-      `SELECT invite_id, owner_account_digest, token_hash, expires_at, used_at, owner_device_id, invite_version,
-              prekey_ik_pub, prekey_spk_pub, prekey_spk_sig, prekey_opk_id, prekey_opk_pub
-       FROM friend_invites WHERE invite_id=?1`
-    ).bind(inviteId).all();
-    const row = rows?.results?.[0];
-    if (!row) return json({ error: 'NotFound' }, { status: 404 });
-    let tokenHash;
-    try {
-      tokenHash = await hashInviteTokenHex(inviteToken, env);
-    } catch (err) {
-      console.warn('invite_token_hmac_key_missing', err?.message || err);
-      return json({ error: 'ConfigError', message: err?.message || 'invite token key missing' }, { status: 500 });
-    }
-    if (row.token_hash !== tokenHash) return json({ error: 'Forbidden', message: 'invite token mismatch' }, { status: 403 });
-    const now = Math.floor(Date.now() / 1000);
-    if (row.expires_at < now) return json({ error: 'Expired' }, { status: 410 });
-    if (row.used_at) return json({ error: 'AlreadyUsed' }, { status: 409 });
-
-    const guestBundleNormalized = normalizeGuestBundle(guestBundle);
-    if (!guestBundleNormalized) {
-      return json({ error: 'BadRequest', message: 'guestBundle required' }, { status: 400 });
-    }
-
-    let ownerBundle = normalizeOwnerPrekeyBundle({
-      ik_pub: row.prekey_ik_pub,
-      spk_pub: row.prekey_spk_pub,
-      spk_sig: row.prekey_spk_sig,
-      opk: row.prekey_opk_id != null ? { id: row.prekey_opk_id, pub: row.prekey_opk_pub } : null
-    });
-    if (!ownerBundle) {
-      ownerBundle = await allocateOwnerPrekeyBundle(env, row.owner_account_digest, row.owner_device_id);
-      if (!ownerBundle) {
-        return json({ error: 'PrekeyUnavailable', message: 'owner prekey bundle unavailable' }, { status: 409 });
-      }
-      try {
-        await env.DB.prepare(
-          `UPDATE friend_invites
-              SET prekey_ik_pub=?2, prekey_spk_pub=?3, prekey_spk_sig=?4, prekey_opk_id=?5, prekey_opk_pub=?6
-            WHERE invite_id=?1`
-        ).bind(
-          inviteId,
-          ownerBundle.ik_pub || null,
-          ownerBundle.spk_pub || null,
-          ownerBundle.spk_sig || null,
-          ownerBundle.opk?.id ?? null,
-          ownerBundle.opk?.pub ?? null
-        ).run();
-      } catch (err) {
-        console.warn('invite_store_prekey_fallback_failed', err?.message || err);
-      }
-    }
-
-    await env.DB.prepare(
-      `UPDATE friend_invites
-          SET used_at=?2
-        WHERE invite_id=?1`
-    ).bind(
-      inviteId,
-      now
-    ).run();
-
-    return json({
-      ok: true,
-      owner_account_digest: row.owner_account_digest,
-      expires_at: row.expires_at,
-      owner_prekey_bundle: ownerBundle,
-      owner_device_id: row.owner_device_id || null,
-      invite_version: Number(row.invite_version || 2),
-      invite_id: inviteId,
-      guest_bundle: guestBundleNormalized
-    });
-  }
-
   return null;
 }
 
@@ -1699,7 +1703,7 @@ async function handlePrekeysRoutes(req, env) {
     }
     const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
     const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id);
-    const signedPrekey = normalizeSignedPrekey(body?.signedPrekey || body?.signed_prekey || body?.spk);
+    const signedPrekey = normalizeSignedPrekey(body?.signedPrekey);
     const opks = Array.isArray(body?.opks) ? body.opks.map(normalizeOpk) : [];
     if (!accountDigest || !deviceId || !signedPrekey) {
       return json({ error: 'BadRequest', message: 'accountDigest, deviceId, signedPrekey required' }, { status: 400 });
@@ -1751,16 +1755,8 @@ async function handlePrekeysRoutes(req, env) {
 
   // Fetch per-device bundle (consume one OPK)
   if (req.method === 'GET' && url.pathname === '/d1/prekeys/bundle') {
-    const peerAccountDigest = normalizeAccountDigest(
-      url.searchParams.get('peerAccountDigest')
-      || url.searchParams.get('peer_account_digest')
-      || url.searchParams.get('accountDigest')
-    );
-    let peerDeviceId = normalizeDeviceId(
-      url.searchParams.get('peerDeviceId')
-      || url.searchParams.get('peer_device_id')
-      || url.searchParams.get('deviceId')
-    );
+    const peerAccountDigest = normalizeAccountDigest(url.searchParams.get('peerAccountDigest'));
+    let peerDeviceId = normalizeDeviceId(url.searchParams.get('peerDeviceId'));
     if (!peerAccountDigest) {
       return json({ error: 'BadRequest', message: 'peerAccountDigest required' }, { status: 400 });
     }
@@ -1789,10 +1785,7 @@ async function handlePrekeysRoutes(req, env) {
       console.warn('prekeys_bundle_spk_missing', { peerAccountDigest, peerDeviceId });
       return json({ error: 'PrekeyUnavailable', message: 'signed prekey missing' }, { status: 404 });
     }
-    let ikPub = spkRow.ik_pub || null;
-    if (!ikPub) {
-      ikPub = await lookupIkFromBackup(env, peerAccountDigest);
-    }
+    const ikPub = spkRow.ik_pub || null;
     if (!ikPub) {
       console.warn('prekeys_bundle_ik_missing', { peerAccountDigest, peerDeviceId });
       return json({ error: 'PrekeyUnavailable', message: 'ik_pub missing for peer device' }, { status: 409 });
@@ -3559,11 +3552,6 @@ async function handleAccountsRoutes(req, env) {
       );
     }
 
-    summary.friendInvites = await del(
-      `DELETE FROM friend_invites WHERE owner_account_digest=?1`,
-      [accountDigest]
-    );
-
     summary.contactSecretBackups = await del(
       `DELETE FROM contact_secret_backups WHERE account_digest=?1`,
       [accountDigest]
@@ -3666,6 +3654,9 @@ export default {
     // 先搬好的 Tags/OPAQUE/DevKeys
     const tagResult = await handleTagsRoutes(req, env);
     if (tagResult) return tagResult;
+
+    const inviteDropboxResult = await handleInviteDropboxRoutes(req, env);
+    if (inviteDropboxResult) return inviteDropboxResult;
 
     // Friends / Invites
     const friendsResult = await handleFriendsRoutes(req, env);
