@@ -303,6 +303,41 @@ function normalizeInviteDropboxEnvelope(envelope) {
   };
 }
 
+const INVITE_DELIVER_ALIAS_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest',
+  'device_id',
+  'ciphertext_envelope'
+]);
+const INVITE_CONSUME_ALIAS_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest',
+  'device_id',
+  'ciphertext_envelope'
+]);
+const INVITE_STATUS_ALIAS_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest'
+]);
+
+function findAliasKey(payload, aliasKeys) {
+  if (!payload || typeof payload !== 'object') return null;
+  for (const key of Object.keys(payload)) {
+    if (aliasKeys.has(key)) return key;
+  }
+  return null;
+}
+
+function inviteAliasError(key) {
+  return json(
+    { error: 'BadRequest', code: 'InviteSchemaMismatch', message: `alias field not allowed: ${key}`, field: key },
+    { status: 400 }
+  );
+}
+
 async function allocateOwnerPrekeyBundle(env, ownerAccountDigest, preferredDeviceId = null) {
   if (!ownerAccountDigest) return null;
   let deviceId = normalizeDeviceId(preferredDeviceId);
@@ -1064,6 +1099,11 @@ async function ensureDataTables(env) {
     } catch {
       missingColumns.push('accounts.wrapped_mk_json');
     }
+    try {
+      await env.DB.prepare(`SELECT updated_at FROM invite_dropbox LIMIT 0`).all();
+    } catch {
+      missingColumns.push('invite_dropbox.updated_at');
+    }
     if (missingTables.length || missingColumns.length) {
       const detail = [
         ...missingTables.map((name) => `table:${name}`),
@@ -1417,6 +1457,8 @@ async function handleInviteDropboxRoutes(req, env) {
     } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
+    const aliasKey = findAliasKey(body, INVITE_DELIVER_ALIAS_FIELDS);
+    if (aliasKey) return inviteAliasError(aliasKey);
     const inviteId = String(body?.inviteId || '').trim();
     const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
     const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
@@ -1504,6 +1546,8 @@ async function handleInviteDropboxRoutes(req, env) {
     } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
+    const aliasKey = findAliasKey(body, INVITE_CONSUME_ALIAS_FIELDS);
+    if (aliasKey) return inviteAliasError(aliasKey);
     const inviteId = String(body?.inviteId || '').trim();
     const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
     const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
@@ -1578,6 +1622,8 @@ async function handleInviteDropboxRoutes(req, env) {
     } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
+    const aliasKey = findAliasKey(body, INVITE_STATUS_ALIAS_FIELDS);
+    if (aliasKey) return inviteAliasError(aliasKey);
     const inviteId = String(body?.inviteId || '').trim();
     const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
     const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
@@ -1604,7 +1650,7 @@ async function handleInviteDropboxRoutes(req, env) {
     const row = await env.DB.prepare(
       `SELECT invite_id, owner_account_digest, owner_device_id,
               delivered_by_account_digest, delivered_by_device_id,
-              status, created_at, delivered_at, consumed_at, expires_at
+              status, created_at, delivered_at, consumed_at, expires_at, updated_at
          FROM invite_dropbox WHERE invite_id=?1`
     ).bind(inviteId).first();
     if (!row) return json({ error: 'NotFound' }, { status: 404 });
@@ -1619,15 +1665,18 @@ async function handleInviteDropboxRoutes(req, env) {
     const now = Math.floor(Date.now() / 1000);
     const isExpired = Number(row.expires_at) <= now;
     let status = row.status;
+    let updatedAt = row.updated_at || row.created_at || null;
     if (isExpired && status !== 'CONSUMED') {
       await markInviteExpired(env, inviteId, now);
       status = 'EXPIRED';
+      updatedAt = now;
     }
     return json({
       inviteId: row.invite_id,
       status,
       expiresAt: row.expires_at,
       createdAt: row.created_at || null,
+      updatedAt,
       deliveredAt: row.delivered_at || null,
       consumedAt: row.consumed_at || null,
       deliveredByDigest: row.delivered_by_account_digest || null,

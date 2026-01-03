@@ -32,7 +32,7 @@ import {
   getLegacyContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
-import { initProfileAvatarFromIdenticonOnce } from '../features/profile.js';
+import { initProfileDefaultsOnce } from '../features/profile.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -483,6 +483,7 @@ const bootstrapStepDefs = [
   { key: 'prekeys-publish', label: '上傳預共享金鑰' },
   { key: 'wrap-device', label: '備份裝置金鑰' },
   { key: 'devkeys-store', label: '儲存裝置備份' },
+  { key: 'nickname-init', label: '設定初始暱稱中' },
   { key: 'avatar-init', label: '設定初始頭像中' }
 ];
 const bootstrapStepMap = new Map();
@@ -518,7 +519,7 @@ function initBootstrapProgress() {
   bootstrapStepMap.clear();
   for (const def of bootstrapStepDefs) {
     if (newAccount && def.key === 'prekeys-sync') continue;
-    if (!newAccount && def.key === 'avatar-init') continue;
+    if (!newAccount && (def.key === 'nickname-init' || def.key === 'avatar-init')) continue;
     const li = document.createElement('li');
     li.dataset.step = def.key;
     const row = document.createElement('div');
@@ -895,16 +896,26 @@ async function onUnlock() {
       log({ deviceIdStorageError: err?.message || err });
     }
     if (newAccount) {
+      updateBootstrapStep('nickname-init', 'start');
       updateBootstrapStep('avatar-init', 'start');
       try {
-        const result = await initProfileAvatarFromIdenticonOnce({ uidHex: getUidHex() });
+        const result = await initProfileDefaultsOnce({ uidHex: getUidHex(), evidence: r?.evidence || null });
         if (result?.skipped) {
-          updateBootstrapStep('avatar-init', 'skip', result.reason || '已存在頭像');
+          const reason = result.reason || '已存在暱稱/頭像';
+          updateBootstrapStep('nickname-init', 'skip', reason);
+          updateBootstrapStep('avatar-init', 'skip', reason);
         } else {
-          updateBootstrapStep('avatar-init', 'success');
+          updateBootstrapStep('nickname-init', 'success');
+          if (result?.avatarWritten) {
+            updateBootstrapStep('avatar-init', 'success');
+          } else {
+            updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+          }
         }
       } catch (err) {
-        updateBootstrapStep('avatar-init', 'error', err?.message || err);
+        const msg = err?.message || err;
+        updateBootstrapStep('nickname-init', 'error', msg);
+        updateBootstrapStep('avatar-init', 'error', msg);
         throw err;
       }
     }

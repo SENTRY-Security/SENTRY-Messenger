@@ -92,13 +92,21 @@ export function normalizeNickname(raw) {
   return collapsed;
 }
 
-// Expanded pools to widen nickname entropy (50+ each, balanced length to keep <=24 chars after join)
+// Deterministic nickname pools (ASCII lowercase, fixed size for stable hashing).
 const adjectives = [
   'bright', 'calm', 'swift', 'lucky', 'merry', 'brave', 'gentle', 'bold', 'clever', 'sunny',
   'serene', 'lively', 'noble', 'vivid', 'cozy', 'quiet', 'sharp', 'breezy', 'daring', 'eager',
   'silver', 'amber', 'crimson', 'azure', 'ivory', 'jade', 'golden', 'rustic', 'spry', 'zen',
   'cosmic', 'fuzzy', 'glowing', 'hazy', 'misty', 'pearl', 'plucky', 'prism', 'pure', 'shy',
-  'sincere', 'steady', 'tidy', 'warm', 'witty', 'zesty', 'silky', 'dappled', 'spruce', 'candid'
+  'sincere', 'steady', 'tidy', 'warm', 'witty', 'zesty', 'silky', 'dappled', 'spruce', 'candid',
+  'agile', 'airy', 'ancient', 'aqua', 'ardent', 'autumn', 'balanced', 'basic', 'brisk', 'cheerful',
+  'clear', 'crisp', 'dapper', 'earnest', 'easy', 'fair', 'faint', 'fast', 'fiery', 'floral',
+  'fresh', 'friendly', 'frosty', 'grand', 'green', 'hardy', 'honest', 'humble', 'ideal', 'jolly',
+  'keen', 'kind', 'lucid', 'mellow', 'mild', 'modern', 'nimble', 'open', 'pale', 'patient',
+  'peaceful', 'polished', 'proud', 'quick', 'radiant', 'rare', 'regal', 'rich', 'rugged', 'safe',
+  'shiny', 'simple', 'sleek', 'smart', 'smooth', 'snowy', 'solid', 'sturdy', 'subtle', 'tender',
+  'tranquil', 'true', 'wise', 'young', 'zealous', 'zippy', 'zany', 'rapid', 'rosy', 'luminous',
+  'muted', 'neat', 'prime', 'quaint', 'sandy', 'stormy', 'sunlit', 'verdant'
 ];
 const nouns = [
   'sparrow', 'willow', 'aurora', 'nebula', 'harbor', 'meadow', 'ember', 'cascade', 'horizon', 'canyon',
@@ -106,21 +114,37 @@ const nouns = [
   'nova', 'meteor', 'quasar', 'orbit', 'zenith', 'lyric', 'echo', 'grove', 'harvest', 'quill',
   'ripple', 'terrace', 'summit', 'valley', 'brook', 'glade', 'drift', 'anchor', 'voyage', 'stride',
   'lumen', 'petal', 'tidal', 'prairie', 'shore', 'dune', 'gale', 'moraine', 'fjord', 'breeze',
-  'thicket', 'spoke', 'emberglow', 'starling', 'heather', 'auric'
+  'thicket', 'spoke', 'emberglow', 'starling', 'heather', 'auric', 'otter', 'fox', 'wolf', 'bear',
+  'raven', 'wren', 'finch', 'owl', 'lynx', 'puma', 'bison', 'seal', 'whale', 'tiger',
+  'eagle', 'falcon', 'heron', 'ibis', 'koi', 'elk', 'moose', 'stag', 'doe', 'rabbit',
+  'hare', 'badger', 'beaver', 'coyote', 'dolphin', 'coral', 'kelp', 'lotus', 'orchid', 'rose',
+  'lilac', 'tulip', 'fern', 'moss', 'granite', 'pebble', 'stone', 'ridge', 'cliff', 'plain',
+  'field', 'orchard', 'garden', 'forest', 'timber', 'river', 'stream', 'creek', 'spring', 'tide',
+  'wave', 'foam', 'frost', 'cloud', 'sky', 'rain', 'snow', 'plume', 'feather', 'crown',
+  'arrow', 'compass', 'lantern', 'beacon', 'island', 'islet', 'glacier', 'hollow'
 ];
 
-function randomFrom(arr) {
-  const buf = new Uint32Array(1);
-  crypto.getRandomValues(buf);
-  return arr[buf[0] % arr.length];
+async function sha256Bytes(value) {
+  if (!value || typeof value !== 'string') throw new Error('nickname seed missing');
+  if (typeof crypto === 'undefined' || !crypto.subtle || typeof TextEncoder === 'undefined') {
+    throw new Error('crypto.subtle unavailable for nickname seed');
+  }
+  const data = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return new Uint8Array(digest);
 }
 
-export function generateRandomNickname() {
-  const adj = randomFrom(adjectives);
-  const noun = randomFrom(nouns);
-  // 3-char base36 suffix for higher entropy (36^3=46,656 combos)
-  const rand = crypto.getRandomValues(new Uint32Array(1))[0] % 46656;
-  const suffix = rand.toString(36).padStart(3, '0');
+export async function generateDeterministicNickname({ accountDigest, deviceId } = {}) {
+  const digest = normalizeAccountDigest(accountDigest || getAccountDigest());
+  const device = typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : ensureDeviceId();
+  if (!digest || !device) throw new Error('accountDigest/deviceId required for nickname seed');
+  const seedInput = `${digest}:${device}`;
+  const hash = await sha256Bytes(seedInput);
+  const adjSeed = ((hash[0] << 24) | (hash[1] << 16) | (hash[2] << 8) | hash[3]) >>> 0;
+  const nounSeed = ((hash[4] << 24) | (hash[5] << 16) | (hash[6] << 8) | hash[7]) >>> 0;
+  const adj = adjectives[adjSeed % adjectives.length];
+  const noun = nouns[nounSeed % nouns.length];
+  const suffix = digest.slice(-4).toLowerCase();
   return `${adj}-${noun}-${suffix}`;
 }
 
@@ -477,6 +501,63 @@ export async function ensureProfileNickname() {
     return { ...profile, nickname: normalized };
   }
   return { ...profile, nickname: normalized };
+}
+
+export async function initProfileDefaultsOnce({ uidHex, evidence, sourceTag = PROFILE_WRITE_SOURCE.EXPLICIT } = {}) {
+  const hasEvidence = evidence && typeof evidence === 'object';
+  const isFirstRegistration = hasEvidence
+    && !evidence.backupExists
+    && !evidence.vaultExists
+    && !evidence.messagesExists;
+  if (!isFirstRegistration) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: hasEvidence ? 'server-evidence-present' : 'evidence-missing',
+      nicknameWritten: false,
+      avatarWritten: false
+    };
+  }
+  const digest = normalizeAccountDigest(getAccountDigest());
+  const deviceId = ensureDeviceId();
+  if (!digest) throw new Error('account digest missing');
+  if (!deviceId) throw new Error('deviceId missing');
+  let existing = null;
+  try {
+    existing = await loadLatestProfile();
+  } catch (err) {
+    const wrapped = new Error(err?.message || 'profile lookup failed');
+    wrapped.code = 'ProfileLookupFailed';
+    throw wrapped;
+  }
+  const existingNickname = typeof existing?.nickname === 'string' ? existing.nickname.trim() : '';
+  const hasNickname = !!existingNickname;
+  const hasAvatar = !!existing?.avatar;
+  if (hasNickname || hasAvatar) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: hasNickname ? 'nickname-exists' : 'avatar-exists',
+      nicknameWritten: false,
+      avatarWritten: false
+    };
+  }
+  const generated = await generateDeterministicNickname({ accountDigest: digest, deviceId });
+  const normalized = normalizeNickname(generated);
+  if (!normalized) throw new Error('nickname generation failed');
+  const now = Math.floor(Date.now() / 1000);
+  const savedNickname = await saveProfile({ nickname: normalized, updatedAt: now, sourceTag });
+  if (savedNickname === false) throw new Error('profile nickname save failed');
+  const avatarResult = await initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag: PROFILE_WRITE_SOURCE.AVATAR_INIT });
+  return {
+    ok: true,
+    skipped: false,
+    nicknameWritten: true,
+    avatarWritten: !avatarResult?.skipped,
+    nickname: savedNickname?.nickname || normalized,
+    avatar: avatarResult?.avatar || null,
+    avatarReason: avatarResult?.reason || null
+  };
 }
 
 export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {

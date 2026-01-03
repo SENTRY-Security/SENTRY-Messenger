@@ -602,5 +602,12 @@ export async function unlockAndInit({ password, onProgress } = {}) {
     }
   }
 
-  return { unlocked, initialized, replenished, next_opk_id: nextId, wrapped_dev: wrappedDevEnvelope };
+  return {
+    unlocked,
+    initialized,
+    replenished,
+    next_opk_id: nextId,
+    wrapped_dev: wrappedDevEnvelope,
+    evidence
+  };
 }

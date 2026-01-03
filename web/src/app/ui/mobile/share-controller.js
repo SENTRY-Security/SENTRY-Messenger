@@ -466,6 +466,14 @@ export function setupShareController(options) {
     return err;
   }
 
+  function assertNoAliasKeys(obj, aliasKeys, code) {
+    for (const key of Object.keys(obj)) {
+      if (aliasKeys.has(key)) {
+        throw invitePayloadError(code, `alias field not allowed: ${key}`, { field: key });
+      }
+    }
+  }
+
   function assertNoExtraKeys(obj, allowedKeys, code) {
     for (const key of Object.keys(obj)) {
       if (!allowedKeys.has(key)) {
@@ -498,6 +506,8 @@ export function setupShareController(options) {
     if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
       throw invitePayloadError('InvitePayloadBundleInvalid', 'guestBundle required');
     }
+    const aliasKeys = new Set(['ikPubB64', 'spkPubB64', 'spkSigB64', 'opkId', 'opkPubB64', 'ekPubB64']);
+    assertNoAliasKeys(bundle, aliasKeys, 'InvitePayloadUnexpectedField');
     const allowed = new Set(['ik_pub', 'spk_pub', 'spk_sig', 'opk_id', 'opk_pub', 'ek_pub']);
     assertNoExtraKeys(bundle, allowed, 'InvitePayloadUnexpectedField');
     const ik_pub = requireStringField(bundle.ik_pub, 'guestBundle.ik_pub', 'InvitePayloadBundleInvalid');
@@ -532,6 +542,8 @@ export function setupShareController(options) {
     if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
       throw invitePayloadError('InvitePayloadProfileInvalid', 'guestProfile required');
     }
+    const aliasKeys = new Set(['updated_at', 'added_at', 'display_name', 'nick']);
+    assertNoAliasKeys(profile, aliasKeys, 'InvitePayloadUnexpectedField');
     const allowed = new Set(['nickname', 'avatar', 'updatedAt', 'addedAt']);
     assertNoExtraKeys(profile, allowed, 'InvitePayloadUnexpectedField');
     const nicknameRaw = typeof profile.nickname === 'string' ? profile.nickname : '';
@@ -559,6 +571,8 @@ export function setupShareController(options) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw invitePayloadError('InvitePayloadInvalid', 'payload required');
     }
+    const aliasKeys = new Set(['guest_account_digest', 'guest_device_id', 'guest_bundle', 'guest_profile']);
+    assertNoAliasKeys(payload, aliasKeys, 'InvitePayloadUnexpectedField');
     const allowed = new Set([
       'v',
       'type',
@@ -1526,8 +1540,9 @@ export function setupShareController(options) {
     const normalizedBundle = normalizeGuestBundleStrict(guestBundleRaw);
     const guestProfile = normalizeGuestProfileSnapshot(guestProfileRaw);
     const profileUpdatedAt = guestProfile.updatedAt || guestProfile.addedAt || Math.floor(Date.now() / 1000);
-    const profileNickname = normalizeNickname(guestProfile.nickname || '') || guestProfile.nickname || null;
-    const profileAvatar = guestProfile.avatar || null;
+    const profileNickname = normalizeNickname(guestProfile.nickname || '') || null;
+    const hasProfileAvatar = guestProfile.avatar !== null && guestProfile.avatar !== undefined;
+    const profileAvatar = hasProfileAvatar ? guestProfile.avatar : null;
     const drGuestBundle = toDrGuestBundle(normalizedBundle);
     const selfDeviceId = ensureDeviceId();
     if (!selfDeviceId) {
@@ -1609,26 +1624,27 @@ export function setupShareController(options) {
         });
       }
     } catch {}
-    upsertContactCore({
+    const contactCorePayload = {
       peerAccountDigest: peerDigest,
       peerDeviceId: peerDeviceId || null,
       conversationId: conversation.conversation_id,
       conversationToken: conversation.token_b64,
       conversation,
-      nickname: profileNickname,
-      avatar: profileAvatar,
       profileUpdatedAt
-    }, 'share-controller:contact-init-received');
+    };
+    if (profileNickname) contactCorePayload.nickname = profileNickname;
+    if (hasProfileAvatar) contactCorePayload.avatar = profileAvatar;
+    upsertContactCore(contactCorePayload, 'share-controller:contact-init-received');
     try {
-      await persistProfileForAccount(
-        {
-          nickname: profileNickname,
-          avatar: profileAvatar,
-          updatedAt: profileUpdatedAt,
-          sourceTag: PROFILE_WRITE_SOURCE.PROFILE_SNAPSHOT
-        },
-        peerDigest
-      );
+      const profilePayload = {
+        updatedAt: profileUpdatedAt,
+        sourceTag: PROFILE_WRITE_SOURCE.PROFILE_SNAPSHOT
+      };
+      if (profileNickname) profilePayload.nickname = profileNickname;
+      if (hasProfileAvatar) profilePayload.avatar = profileAvatar;
+      if (profilePayload.nickname || Object.prototype.hasOwnProperty.call(profilePayload, 'avatar')) {
+        await persistProfileForAccount(profilePayload, peerDigest);
+      }
     } catch (err) {
       log({ contactInitProfilePersistError: err?.message || err, peerAccountDigest: peerDigest });
     }
@@ -1640,6 +1656,18 @@ export function setupShareController(options) {
       drState: null,
       role: 'owner'
     });
+    try {
+      await sendContactShare({
+        peerAccountDigest: peerDigest,
+        conversation,
+        sessionKey: conversation.token_b64,
+        peerDeviceId,
+        drInit: conversation.dr_init || null,
+        reason: 'invite-consume'
+      });
+    } catch (err) {
+      log({ contactInitShareError: err?.message || err, peerAccountDigest: peerDigest });
+    }
   }
 
   async function consumeInviteDropbox(inviteId, { source = 'manual' } = {}) {
