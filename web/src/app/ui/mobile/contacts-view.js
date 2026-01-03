@@ -1,5 +1,6 @@
-import { log } from '../../core/log.js';
-import { sessionStore, restorePendingInvites, listPendingInvites } from './session-store.js';
+import { log, logCapped } from '../../core/log.js';
+import { invitesStatus } from '../../api/invites.js';
+import { sessionStore, restorePendingInvites, listPendingInvites, persistPendingInvites } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret, restoreContactSecrets } from '../../core/contact-secrets.js';
@@ -82,6 +83,7 @@ export function initContactsView(options) {
   let pullStartX = 0;
   let pullDistance = 0;
   let contactsRefreshing = false;
+  let pendingInviteStatusInFlight = false;
 
   const contactKey = (entry) => {
     // entry 可能是 digest、digest::deviceId 或物件
@@ -129,8 +131,8 @@ export function initContactsView(options) {
       pendingInvites.forEach((entry) => {
         const expiresAt = Number(entry?.expiresAt || 0);
         const isExpired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowSec;
-        const titleText = isExpired ? '邀請已過期' : '等待對方確認';
-        const metaText = isExpired ? '邀請已過期，請重新掃描' : '等待對方確認';
+        const titleText = isExpired ? '已過期' : '同步中，等待對方完成建立';
+        const metaText = isExpired ? '已過期' : '同步中，等待對方完成建立';
         const li = document.createElement('li');
         li.className = 'contact-item pending-invite';
         li.dataset.inviteId = String(entry.inviteId);
@@ -913,6 +915,66 @@ export function initContactsView(options) {
     console.log('[contacts-view]', { contactsReloadDone: contactCoreReadyCount() });
   }
 
+  async function refreshPendingInviteStatus({ source = 'startup' } = {}) {
+    if (pendingInviteStatusInFlight) return;
+    const pending = Array.isArray(listPendingInvites())
+      ? listPendingInvites().filter((entry) => entry?.inviteId)
+      : [];
+    if (!pending.length) return;
+    pendingInviteStatusInFlight = true;
+    const nowSec = Math.floor(Date.now() / 1000);
+    let changed = false;
+    let shouldReload = false;
+    const store = restorePendingInvites();
+    try {
+      for (const entry of pending) {
+        const inviteId = typeof entry?.inviteId === 'string' ? entry.inviteId.trim() : '';
+        if (!inviteId) continue;
+        let snapshot = null;
+        try {
+          snapshot = await invitesStatus({ inviteId });
+        } catch (err) {
+          log({ pendingInviteStatusError: err?.message || err, inviteId, source });
+          continue;
+        }
+        const status = typeof snapshot?.status === 'string' ? snapshot.status.toUpperCase() : '';
+        if (status === 'EXPIRED') {
+          const existing = store.get(inviteId);
+          const nextExpiresAt = nowSec;
+          if (existing && Number(existing.expiresAt || 0) !== nextExpiresAt) {
+            store.set(inviteId, { ...existing, inviteId, expiresAt: nextExpiresAt });
+            changed = true;
+          }
+          continue;
+        }
+        if (status === 'CONSUMED') {
+          const existing = store.get(inviteId);
+          const hasSessionMaterial = !!(existing?.conversationToken && existing?.conversationId);
+          if (!hasSessionMaterial) {
+            if (store.delete(inviteId)) {
+              changed = true;
+            }
+            shouldReload = true;
+          }
+        }
+      }
+    } finally {
+      pendingInviteStatusInFlight = false;
+    }
+    if (changed) {
+      persistPendingInvites();
+      try { document.dispatchEvent(new CustomEvent('contacts:pending-invites-updated')); } catch {}
+    }
+    if (shouldReload && !contactsRefreshing) {
+      try {
+        await loadInitialContacts();
+        renderContacts();
+      } catch (err) {
+        log({ pendingInviteContactsReloadError: err?.message || err });
+      }
+    }
+  }
+
   async function addContactEntry({
     peerAccountDigest,
     peerDeviceId,
@@ -1087,6 +1149,11 @@ export function initContactsView(options) {
         hasConversation: !!entry?.conversation?.conversation_id,
         peerDeviceId: entry?.conversation?.peerDeviceId || null
       });
+      logCapped('contactAddSavedProof', {
+        peerKeySuffix4: typeof key === 'string' ? key.slice(-4) : null,
+        hasConversation: !!entry?.conversation?.conversation_id,
+        hasSecret: !!entry?.contactSecret
+      }, 5);
       try {
         if (contactCoreVerbose) {
           console.log('[contact-core] pre-upsert', {
@@ -1155,6 +1222,9 @@ export function initContactsView(options) {
   }
 
   setupPullToRefresh();
+  refreshPendingInviteStatus({ source: 'startup' }).catch((err) => {
+    log({ pendingInviteStatusRefreshError: err?.message || err });
+  });
 
   document.addEventListener('contacts:show-delete', (event) => {
     const detail = event?.detail || {};

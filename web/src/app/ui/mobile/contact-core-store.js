@@ -413,6 +413,87 @@ export function getContactCore(peerKey) {
   return cloneEntry(coreMap.get(key) || null);
 }
 
+export function findContactCoreByAccountDigest(peerAccountDigest) {
+  const digest = normalizeAccountDigest(peerAccountDigest);
+  if (!digest) return [];
+  const matches = [];
+  for (const [peerKey, entry] of coreMap.entries()) {
+    const entryDigest = entry?.peerAccountDigest
+      || (typeof peerKey === 'string' && peerKey.includes('::') ? peerKey.split('::')[0] : null);
+    if (entryDigest === digest) {
+      matches.push({ peerKey, entry: cloneEntry(entry) });
+    }
+  }
+  return matches;
+}
+
+export function migrateContactCorePeerDevice({ peerAccountDigest, fromPeerDeviceId, toPeerDeviceId, sourceTag = 'unknown' } = {}) {
+  const fromKey = toPeerKey({ peerAccountDigest, peerDeviceId: fromPeerDeviceId });
+  const toKey = toPeerKey({ peerAccountDigest, peerDeviceId: toPeerDeviceId });
+  if (!fromKey || !toKey || fromKey === toKey) return null;
+  const existing = coreMap.get(fromKey) || null;
+  if (!existing) {
+    logJson('reject', { peerKey: fromKey, reason: 'migrate-missing', sourceTag });
+    return null;
+  }
+  if (coreMap.has(toKey)) {
+    logJson('reject', { peerKey: toKey, reason: 'migrate-target-exists', sourceTag });
+    return null;
+  }
+  const nextEntry = {
+    ...existing,
+    peerKey: toKey,
+    peerDeviceId: toPeerDeviceId
+  };
+  coreMap.set(toKey, nextEntry);
+  coreMap.delete(fromKey);
+  const contactIndex = ensureContactIndex();
+  if (contactIndex.has(fromKey)) {
+    const prevContact = contactIndex.get(fromKey) || {};
+    contactIndex.delete(fromKey);
+    contactIndex.set(toKey, {
+      ...prevContact,
+      peerAccountDigest: toKey,
+      accountDigest: existing.peerAccountDigest || prevContact.accountDigest || null,
+      peerDeviceId: toPeerDeviceId
+    });
+  }
+  if (existing?.conversationId) {
+    const convId = existing.conversationId;
+    const conversationIndex = ensureConversationIndex();
+    const prevConv = conversationIndex.get(convId);
+    if (prevConv) {
+      conversationIndex.set(convId, {
+        ...prevConv,
+        peerAccountDigest: toKey,
+        peerDeviceId: toPeerDeviceId
+      });
+    }
+    const threads = ensureConversationThreads();
+    const prevThread = threads.get(convId);
+    if (prevThread) {
+      threads.set(convId, {
+        ...prevThread,
+        peerAccountDigest: toKey,
+        peerDeviceId: toPeerDeviceId
+      });
+    }
+  }
+  const state = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
+  const idx = state.findIndex((c) => (c?.peerAccountDigest || c?.accountDigest || c) === fromKey);
+  if (idx >= 0) {
+    state[idx] = {
+      ...state[idx],
+      peerAccountDigest: toKey,
+      accountDigest: existing.peerAccountDigest || state[idx]?.accountDigest || null,
+      peerDeviceId: toPeerDeviceId
+    };
+    sessionStore.contactState = state;
+  }
+  logJson('migrate', { fromPeerKey: fromKey, toPeerKey: toKey, sourceTag });
+  return cloneEntry(nextEntry);
+}
+
 export function listReadyContacts() {
   return Array.from(coreMap.values())
     .filter((entry) => entry?.isReady)

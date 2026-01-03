@@ -322,6 +322,24 @@ const INVITE_STATUS_ALIAS_FIELDS = new Set([
   'account_token',
   'account_digest'
 ]);
+const INVITE_DELIVER_ALLOWED_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest',
+  'deviceId',
+  'ciphertextEnvelope'
+]);
+const INVITE_CONSUME_ALLOWED_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest',
+  'deviceId'
+]);
+const INVITE_STATUS_ALLOWED_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest'
+]);
 
 function findAliasKey(payload, aliasKeys) {
   if (!payload || typeof payload !== 'object') return null;
@@ -331,9 +349,24 @@ function findAliasKey(payload, aliasKeys) {
   return null;
 }
 
+function findUnexpectedKey(payload, allowedKeys) {
+  if (!payload || typeof payload !== 'object') return null;
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) return key;
+  }
+  return null;
+}
+
 function inviteAliasError(key) {
   return json(
     { error: 'BadRequest', code: 'InviteSchemaMismatch', message: `alias field not allowed: ${key}`, field: key },
+    { status: 400 }
+  );
+}
+
+function inviteUnexpectedFieldError(key) {
+  return json(
+    { error: 'BadRequest', code: 'InviteSchemaMismatch', message: `unexpected field: ${key}`, field: key },
     { status: 400 }
   );
 }
@@ -1429,11 +1462,11 @@ async function handleInviteDropboxRoutes(req, env) {
 
     const prekeyBundle = ownerBundle
       ? {
-        ik_pub: String(ownerBundle.ik_pub || '').trim(),
-        spk_pub: String(ownerBundle.spk_pub || '').trim(),
-        spk_sig: String(ownerBundle.spk_sig || '').trim(),
-        opk_id: ownerBundle.opk?.id ?? null,
-        opk_pub: String(ownerBundle.opk?.pub || '').trim() || null
+        ikPubB64: String(ownerBundle.ik_pub || '').trim(),
+        spkPubB64: String(ownerBundle.spk_pub || '').trim(),
+        signatureB64: String(ownerBundle.spk_sig || '').trim(),
+        opkId: ownerBundle.opk?.id ?? null,
+        opkPubB64: String(ownerBundle.opk?.pub || '').trim() || null
       }
       : null;
 
@@ -1459,6 +1492,8 @@ async function handleInviteDropboxRoutes(req, env) {
     }
     const aliasKey = findAliasKey(body, INVITE_DELIVER_ALIAS_FIELDS);
     if (aliasKey) return inviteAliasError(aliasKey);
+    const unexpectedKey = findUnexpectedKey(body, INVITE_DELIVER_ALLOWED_FIELDS);
+    if (unexpectedKey) return inviteUnexpectedFieldError(unexpectedKey);
     const inviteId = String(body?.inviteId || '').trim();
     const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
     const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
@@ -1548,6 +1583,8 @@ async function handleInviteDropboxRoutes(req, env) {
     }
     const aliasKey = findAliasKey(body, INVITE_CONSUME_ALIAS_FIELDS);
     if (aliasKey) return inviteAliasError(aliasKey);
+    const unexpectedKey = findUnexpectedKey(body, INVITE_CONSUME_ALLOWED_FIELDS);
+    if (unexpectedKey) return inviteUnexpectedFieldError(unexpectedKey);
     const inviteId = String(body?.inviteId || '').trim();
     const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
     const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
@@ -1584,6 +1621,19 @@ async function handleInviteDropboxRoutes(req, env) {
     if (row.owner_account_digest !== account.account_digest) {
       return json({ error: 'Forbidden', message: 'invite owner mismatch' }, { status: 403 });
     }
+    if (row.status === 'CONSUMED') {
+      const envelope = safeJSON(row.ciphertext_json);
+      if (!envelope) {
+        return json({ error: 'PayloadMissing', message: 'ciphertext missing' }, { status: 500 });
+      }
+      return json({
+        ok: true,
+        inviteId,
+        ownerDeviceId: row.owner_device_id,
+        expiresAt: row.expires_at,
+        ciphertextEnvelope: envelope
+      });
+    }
     if (row.status !== 'DELIVERED') {
       return json({ error: 'NotFound' }, { status: 404 });
     }
@@ -1596,11 +1646,27 @@ async function handleInviteDropboxRoutes(req, env) {
       `UPDATE invite_dropbox
           SET status='CONSUMED',
               consumed_at=?2,
-              ciphertext_json=NULL,
               updated_at=?3
         WHERE invite_id=?1 AND status='DELIVERED'`
     ).bind(inviteId, now, now).run();
     if (!upd || (upd.meta && upd.meta.changes === 0)) {
+      const retry = await env.DB.prepare(
+        `SELECT status, ciphertext_json, owner_device_id, expires_at
+           FROM invite_dropbox WHERE invite_id=?1`
+      ).bind(inviteId).first();
+      if (retry?.status === 'CONSUMED') {
+        const retryEnvelope = safeJSON(retry.ciphertext_json);
+        if (!retryEnvelope) {
+          return json({ error: 'PayloadMissing', message: 'ciphertext missing' }, { status: 500 });
+        }
+        return json({
+          ok: true,
+          inviteId,
+          ownerDeviceId: retry.owner_device_id,
+          expiresAt: retry.expires_at,
+          ciphertextEnvelope: retryEnvelope
+        });
+      }
       return json({ error: 'NotFound' }, { status: 404 });
     }
 
@@ -1624,6 +1690,8 @@ async function handleInviteDropboxRoutes(req, env) {
     }
     const aliasKey = findAliasKey(body, INVITE_STATUS_ALIAS_FIELDS);
     if (aliasKey) return inviteAliasError(aliasKey);
+    const unexpectedKey = findUnexpectedKey(body, INVITE_STATUS_ALLOWED_FIELDS);
+    if (unexpectedKey) return inviteUnexpectedFieldError(unexpectedKey);
     const inviteId = String(body?.inviteId || '').trim();
     const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
     const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
@@ -1678,12 +1746,7 @@ async function handleInviteDropboxRoutes(req, env) {
       createdAt: row.created_at || null,
       updatedAt,
       deliveredAt: row.delivered_at || null,
-      consumedAt: row.consumed_at || null,
-      deliveredByDigest: row.delivered_by_account_digest || null,
-      deliveredByDeviceId: row.delivered_by_device_id || null,
-      ownerDigest: row.owner_account_digest || null,
-      ownerDeviceId: row.owner_device_id || null,
-      isExpired
+      consumedAt: row.consumed_at || null
     });
   }
 

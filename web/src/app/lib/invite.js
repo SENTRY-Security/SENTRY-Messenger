@@ -13,11 +13,11 @@ const INVITE_ALLOWED_KEYS = new Set([
   'prekeyBundle'
 ]);
 const BUNDLE_ALLOWED_KEYS = new Set([
-  'ik_pub',
-  'spk_pub',
-  'spk_sig',
-  'opk_id',
-  'opk_pub'
+  'ikPubB64',
+  'spkPubB64',
+  'signatureB64',
+  'opkId',
+  'opkPubB64'
 ]);
 
 function schemaError(code, message) {
@@ -52,24 +52,24 @@ function normalizeOwnerBundle(bundle) {
     throw schemaError('InviteQrBundleInvalid', 'prekeyBundle required');
   }
   assertNoExtraKeys(bundle, BUNDLE_ALLOWED_KEYS, 'InviteQrBundleInvalid');
-  const ikPubB64 = requireNonEmptyString(bundle.ik_pub, 'InviteQrBundleInvalid', 'ik_pub');
-  const spkPubB64 = requireNonEmptyString(bundle.spk_pub, 'InviteQrBundleInvalid', 'spk_pub');
-  const signatureB64 = requireNonEmptyString(bundle.spk_sig, 'InviteQrBundleInvalid', 'spk_sig');
-  const opkIdRaw = bundle.opk_id;
+  const ikPubB64 = requireNonEmptyString(bundle.ikPubB64, 'InviteQrBundleInvalid', 'ikPubB64');
+  const spkPubB64 = requireNonEmptyString(bundle.spkPubB64, 'InviteQrBundleInvalid', 'spkPubB64');
+  const signatureB64 = requireNonEmptyString(bundle.signatureB64, 'InviteQrBundleInvalid', 'signatureB64');
+  const opkIdRaw = bundle.opkId;
   if (opkIdRaw === null || opkIdRaw === undefined || opkIdRaw === '') {
-    throw schemaError('InviteQrBundleInvalid', 'opk_id required');
+    throw schemaError('InviteQrBundleInvalid', 'opkId required');
   }
   const opkId = Number(opkIdRaw);
   if (!Number.isFinite(opkId) || opkId < 0) {
-    throw schemaError('InviteQrBundleInvalid', 'opk_id invalid');
+    throw schemaError('InviteQrBundleInvalid', 'opkId invalid');
   }
-  const opkPubB64 = requireNonEmptyString(bundle.opk_pub, 'InviteQrBundleInvalid', 'opk_pub');
+  const opkPubB64 = requireNonEmptyString(bundle.opkPubB64, 'InviteQrBundleInvalid', 'opkPubB64');
   return {
-    ik_pub: ikPubB64,
-    spk_pub: spkPubB64,
-    spk_sig: signatureB64,
-    opk_id: opkId,
-    opk_pub: opkPubB64
+    ikPubB64,
+    spkPubB64,
+    signatureB64,
+    opkId,
+    opkPubB64
   };
 }
 

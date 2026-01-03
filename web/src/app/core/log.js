@@ -46,6 +46,8 @@ const REPLAY_DEBUG_KEYS = new Set([
   'contactShareHydrateTrace',
   'contactSharePreflightTrace',
   'contactShareStateChangeTrace',
+  'contactCoreMismatchTrace',
+  'contactCorePeerDeviceMigrated',
   'drSnapshotRestoreReject',
   'drHydrateFailedTrace',
   'outgoingSendTrace',
@@ -73,7 +75,9 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'deliveryAckTrace',
   'vaultPutTrace',
   'vaultGetTrace',
-  'wsSyncTrace'
+  'wsSyncTrace',
+  'contactCoreMismatchTrace',
+  'contactCorePeerDeviceMigrated'
 ]);
 const FORENSICS_CAP_DEFAULT = 20;
 const REPLAY_ACTION_VALUES = new Set();

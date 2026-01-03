@@ -56,6 +56,64 @@ const InviteStatusSchema = z.object({
   accountDigest: z.string().regex(AccountDigestRegex).optional()
 }).strict();
 
+const INVITE_DELIVER_ALIAS_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest',
+  'ciphertext_envelope'
+]);
+const INVITE_CONSUME_ALIAS_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest'
+]);
+const INVITE_STATUS_ALIAS_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest'
+]);
+const INVITE_DELIVER_ALLOWED_FIELDS = new Set([
+  'inviteId',
+  'ciphertextEnvelope',
+  'accountToken',
+  'accountDigest'
+]);
+const INVITE_CONSUME_ALLOWED_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest'
+]);
+const INVITE_STATUS_ALLOWED_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest'
+]);
+
+function rejectInviteSchemaMismatch(res, body, { allowedFields, aliasFields }) {
+  if (!body || typeof body !== 'object') return null;
+  for (const key of Object.keys(body)) {
+    if (aliasFields.has(key)) {
+      return res.status(400).json({
+        error: 'BadRequest',
+        code: 'InviteSchemaMismatch',
+        message: `alias field not allowed: ${key}`,
+        field: key
+      });
+    }
+  }
+  for (const key of Object.keys(body)) {
+    if (!allowedFields.has(key)) {
+      return res.status(400).json({
+        error: 'BadRequest',
+        code: 'InviteSchemaMismatch',
+        message: `unexpected field: ${key}`,
+        field: key
+      });
+    }
+  }
+  return null;
+}
+
 export const createInviteDropbox = async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
@@ -158,6 +216,11 @@ export const deliverInviteDropbox = async (req, res) => {
   if (!senderDeviceId) {
     return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
   }
+  const schemaError = rejectInviteSchemaMismatch(res, req.body, {
+    allowedFields: INVITE_DELIVER_ALLOWED_FIELDS,
+    aliasFields: INVITE_DELIVER_ALIAS_FIELDS
+  });
+  if (schemaError) return schemaError;
   let input;
   try {
     input = InviteDeliverSchema.parse(req.body || {});
@@ -255,6 +318,11 @@ export const consumeInviteDropbox = async (req, res) => {
   if (!senderDeviceId) {
     return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
   }
+  const schemaError = rejectInviteSchemaMismatch(res, req.body, {
+    allowedFields: INVITE_CONSUME_ALLOWED_FIELDS,
+    aliasFields: INVITE_CONSUME_ALIAS_FIELDS
+  });
+  if (schemaError) return schemaError;
   let input;
   try {
     input = InviteConsumeSchema.parse(req.body || {});
@@ -340,6 +408,11 @@ export const statusInviteDropbox = async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
+  const schemaError = rejectInviteSchemaMismatch(res, req.body, {
+    allowedFields: INVITE_STATUS_ALLOWED_FIELDS,
+    aliasFields: INVITE_STATUS_ALIAS_FIELDS
+  });
+  if (schemaError) return schemaError;
   let input;
   try {
     input = InviteStatusSchema.parse(req.body || {});

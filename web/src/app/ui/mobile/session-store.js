@@ -1,4 +1,5 @@
 import { restoreContactSecrets } from '../../core/contact-secrets.js';
+import { logCapped } from '../../core/log.js';
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
 
 const cloneValue = (value) => {
@@ -64,6 +65,53 @@ const defaultSubscriptionState = {
   accountCreatedAt: null
 };
 
+const CONVERSATION_INDEX_PATCHED = Symbol('conversationIndexPatched');
+
+function buildConversationIndexCallsite() {
+  const stack = new Error().stack;
+  if (!stack) return null;
+  const lines = stack.split('\n').map((line) => line.trim());
+  const filtered = lines.filter((line) => !line.includes('session-store.js'));
+  return filtered.slice(0, 3).join(' | ') || null;
+}
+
+function sanitizeConversationIndexEntry(entry, { callsite = null, suppressLog = false } = {}) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const rawPeer = entry.peerAccountDigest;
+  if (typeof rawPeer !== 'string' || !rawPeer.includes('::')) return entry;
+  if (!suppressLog) {
+    logCapped('conversationIndexPeerDigestAssert', {
+      peerAccountDigest: rawPeer,
+      callsite: callsite || buildConversationIndexCallsite() || 'unknown'
+    }, 1);
+  }
+  const [digestPart, devicePart] = rawPeer.split('::');
+  const digest = normalizeAccountDigest(digestPart) || (typeof digestPart === 'string' ? digestPart.trim() : null);
+  const deviceId = normalizePeerDeviceId(entry.peerDeviceId || devicePart || null);
+  const peerKey = entry.peerKey || (digest && deviceId ? `${digest}::${deviceId}` : rawPeer);
+  return {
+    ...entry,
+    peerAccountDigest: digest || null,
+    peerDeviceId: entry.peerDeviceId || deviceId || null,
+    peerKey
+  };
+}
+
+function patchConversationIndex(map) {
+  if (!(map instanceof Map)) return map;
+  if (map[CONVERSATION_INDEX_PATCHED]) return map;
+  const originalSet = map.set.bind(map);
+  Object.defineProperty(map, CONVERSATION_INDEX_PATCHED, { value: true });
+  map.set = (key, value) => originalSet(key, sanitizeConversationIndexEntry(value));
+  for (const [convId, entry] of map.entries()) {
+    const sanitized = sanitizeConversationIndexEntry(entry, { callsite: 'conversationIndex:hydrate', suppressLog: true });
+    if (sanitized !== entry) {
+      originalSet(convId, sanitized);
+    }
+  }
+  return map;
+}
+
 function resetState(target, defaults) {
   if (!target || typeof target !== 'object' || !defaults) return;
   const defaultClone = cloneValue(defaults);
@@ -100,6 +148,7 @@ export const sessionStore = {
 };
 
 sessionStore.historyReplayDoneByConvId = sessionStore.historyReplayDoneByConvId || {};
+patchConversationIndex(sessionStore.conversationIndex);
 
 export function resetShareState() {
   resetState(sessionStore.shareState, defaultShareState);
@@ -173,9 +222,17 @@ export function restorePendingInvites() {
     const inviteId = typeof entry?.inviteId === 'string' ? entry.inviteId.trim() : '';
     if (!inviteId) continue;
     const expiresAt = Number(entry?.expiresAt || 0);
+    const ownerAccountDigest = normalizeAccountDigest(entry?.ownerAccountDigest || null);
+    const ownerDeviceId = normalizePeerDeviceId(entry?.ownerDeviceId || null);
+    const conversationId = typeof entry?.conversationId === 'string' ? entry.conversationId.trim() : '';
+    const conversationToken = typeof entry?.conversationToken === 'string' ? entry.conversationToken.trim() : '';
     store.set(inviteId, {
       inviteId,
-      expiresAt: Number.isFinite(expiresAt) ? expiresAt : null
+      expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+      ownerAccountDigest: ownerAccountDigest || null,
+      ownerDeviceId: ownerDeviceId || null,
+      conversationId: conversationId || null,
+      conversationToken: conversationToken || null
     });
   }
   return store;
@@ -185,7 +242,11 @@ export function persistPendingInvites() {
   const store = ensurePendingInviteMap();
   const payload = Array.from(store.values()).map((entry) => ({
     inviteId: entry?.inviteId || null,
-    expiresAt: entry?.expiresAt || null
+    expiresAt: entry?.expiresAt || null,
+    ownerAccountDigest: entry?.ownerAccountDigest || null,
+    ownerDeviceId: entry?.ownerDeviceId || null,
+    conversationId: entry?.conversationId || null,
+    conversationToken: entry?.conversationToken || null
   })).filter((entry) => typeof entry.inviteId === 'string' && entry.inviteId.trim().length);
   try {
     if (typeof sessionStorage !== 'undefined') {
