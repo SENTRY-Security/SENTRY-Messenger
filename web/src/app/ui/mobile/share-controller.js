@@ -2028,6 +2028,14 @@ export function setupShareController(options) {
       if (source === 'manual') {
         setInviteStatus('已取回邀請', { loading: false });
       }
+      if (shareState.open && source !== 'manual') {
+        const tab = typeof getCurrentTab === 'function' ? getCurrentTab() : null;
+        if (typeof switchTab === 'function' && tab !== 'contacts') {
+          switchTab('contacts');
+        }
+        closeShareModal();
+        logCapped('inviteConsumeUiExit', { inviteId: id, source }, LOG_CAP);
+      }
       return msg;
     } catch (err) {
       const errorCode = err?.code || err?.data?.error || err?.data?.code || null;
