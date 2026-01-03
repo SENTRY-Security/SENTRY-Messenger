@@ -46,6 +46,10 @@ const REPLAY_DEBUG_KEYS = new Set([
   'contactShareHydrateTrace',
   'contactSharePreflightTrace',
   'contactShareStateChangeTrace',
+  'incomingTokenLookupTrace',
+  'inviteSessionTokenMissingDropped',
+  'inviteSessionIndexWriteTrace',
+  'conversationIndexRestoredFromPending',
   'contactCoreMismatchTrace',
   'contactCorePeerDeviceMigrated',
   'drSnapshotRestoreReject',
@@ -77,7 +81,11 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'vaultGetTrace',
   'wsSyncTrace',
   'contactCoreMismatchTrace',
-  'contactCorePeerDeviceMigrated'
+  'contactCorePeerDeviceMigrated',
+  'incomingTokenLookupTrace',
+  'inviteSessionTokenMissingDropped',
+  'inviteSessionIndexWriteTrace',
+  'conversationIndexRestoredFromPending'
 ]);
 const FORENSICS_CAP_DEFAULT = 20;
 const REPLAY_ACTION_VALUES = new Set();

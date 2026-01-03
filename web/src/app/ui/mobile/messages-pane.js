@@ -19,7 +19,7 @@ import {
   conversationIdFromToken,
   deriveConversationContextFromSecret
 } from '../../features/conversation.js';
-import { sessionStore, resetMessageState } from './session-store.js';
+import { sessionStore, resetMessageState, restorePendingInvites } from './session-store.js';
 import { deleteContactSecret, getContactSecret, getCorruptContact } from '../../core/contact-secrets.js';
 import { clearDrState } from '../../core/store.js';
 import { escapeHtml, fmtSize, shouldNotifyForMessage } from './ui-utils.js';
@@ -315,6 +315,7 @@ export function initMessagesPane({
   let keyboardOffsetPx = 0;
   let keyboardActive = false;
   let viewportGuardTimer = null;
+  let conversationIndexRestoredFromPending = false;
 
   const secureStatusCache = new Map();
   let pendingSecureReadyPeer = null;
@@ -988,6 +989,50 @@ export function initMessagesPane({
         ? Array.from(sessionStore.conversationIndex.entries())
         : [];
       sessionStore.conversationIndex = new Map(entries);
+    }
+    if (!conversationIndexRestoredFromPending) {
+      conversationIndexRestoredFromPending = true;
+      const pendingInvites = restorePendingInvites();
+      const nowSec = Math.floor(Date.now() / 1000);
+      let restoredCount = 0;
+      const sampleConversationIdsPrefix8 = [];
+      if (pendingInvites instanceof Map) {
+        for (const entry of pendingInvites.values()) {
+          const expiresAt = Number(entry?.expiresAt || 0);
+          if (!Number.isFinite(expiresAt) || expiresAt <= nowSec) continue;
+          const conversationId = typeof entry?.conversationId === 'string' ? entry.conversationId.trim() : '';
+          const conversationToken = typeof entry?.conversationToken === 'string' ? entry.conversationToken.trim() : '';
+          if (!conversationId || !conversationToken) continue;
+          const ownerAccountDigest = normalizeAccountDigest(entry?.ownerAccountDigest || null);
+          const ownerDeviceId = normalizePeerDeviceId(entry?.ownerDeviceId || null);
+          const prev = sessionStore.conversationIndex.get(conversationId) || {};
+          const next = { ...prev };
+          let changed = false;
+          if (!prev.token_b64) {
+            next.token_b64 = conversationToken;
+            changed = true;
+          }
+          if (!prev.peerAccountDigest && ownerAccountDigest) {
+            next.peerAccountDigest = ownerAccountDigest;
+            changed = true;
+          }
+          if (!prev.peerDeviceId && ownerDeviceId) {
+            next.peerDeviceId = ownerDeviceId;
+            changed = true;
+          }
+          if (!changed) continue;
+          sessionStore.conversationIndex.set(conversationId, next);
+          restoredCount += 1;
+          if (sampleConversationIdsPrefix8.length < 3) {
+            sampleConversationIdsPrefix8.push(conversationId.slice(0, 8));
+          }
+        }
+      }
+      logCapped('conversationIndexRestoredFromPending', {
+        restoredCount,
+        sampleConversationIdsPrefix8,
+        source: 'pendingInvites'
+      }, 5);
     }
     return sessionStore.conversationIndex;
   }
@@ -4468,6 +4513,7 @@ export function initMessagesPane({
       return;
     }
     const state = getMessageState();
+    let existingConvEntry = null;
     try {
       try {
         if (DEBUG.ws) {
@@ -4563,20 +4609,31 @@ export function initMessagesPane({
       }
 
       const convIndex = ensureConversationIndex();
+      existingConvEntry = convIndex.get(convId) || null;
+      const tokenB64 = existingConvEntry?.token_b64 || null;
+      const convEntryPeerDevice = existingConvEntry?.peerDeviceId || null;
+      logCapped('incomingTokenLookupTrace', {
+        conversationIdPrefix8: convId ? convId.slice(0, 8) : null,
+        hasConvEntry: !!existingConvEntry,
+        hasToken: !!tokenB64,
+        peerDeviceSuffix4: convEntryPeerDevice ? String(convEntryPeerDevice).slice(-4) : null
+      }, 5);
+      if (!tokenB64) {
+        const err = new Error('INVITE_SESSION_TOKEN_MISSING');
+        err.code = 'INVITE_SESSION_TOKEN_MISSING';
+        throw err;
+      }
       const contactPeerFromConvId = (convId && convId.startsWith('contacts-'))
         ? convId.slice('contacts-'.length).trim().toUpperCase()
         : null;
-      const existingConvEntry = convIndex.get(convId) || null;
       const peerFromEvent = ensurePeerAccountDigest(event);
-      const tokenFromEvent = event?.tokenB64 || event?.token_b64 || null;
-      const tokenB64 = tokenFromEvent || existingConvEntry?.token_b64 || null;
       const peerDigestRaw = contactPeerFromConvId
         || peerFromEvent
         || existingConvEntry?.peerAccountDigest
         || null;
       const { digest: peerDigestForWrite } = splitPeerKey(peerDigestRaw);
       const resolvedPeerDeviceId = normalizePeerDeviceId(senderDeviceId || existingConvEntry?.peerDeviceId || peerDeviceId || null);
-      if (!peerDigestForWrite || !resolvedPeerDeviceId || !tokenB64) {
+      if (!peerDigestForWrite || !resolvedPeerDeviceId) {
         console.warn('[secure-message] missing core', { convId, peerDigest: peerDigestRaw, resolvedPeerDeviceId, hasToken: !!tokenB64 });
         log({ secureMessageMissingCore: { convId, peerDigest: peerDigestRaw, resolvedPeerDeviceId, hasToken: !!tokenB64 } });
         if (!peerDigestForWrite) {
@@ -4589,6 +4646,12 @@ export function initMessagesPane({
         return;
       }
       const peerKey = normalizePeerKey({ peerAccountDigest: peerDigestForWrite, peerDeviceId: resolvedPeerDeviceId }) || peerDigestRaw;
+      const activePeerKey = normalizePeerKey(state.activePeerDigest);
+      if (activePeerKey && peerKey && activePeerKey === peerKey) {
+        if (!state.conversationId && convId) state.conversationId = convId;
+        if (!state.conversationToken && tokenB64) state.conversationToken = tokenB64;
+        if (!state.activePeerDeviceId && resolvedPeerDeviceId) state.activePeerDeviceId = resolvedPeerDeviceId;
+      }
       upsertContactCore({
         peerAccountDigest: peerDigestForWrite,
         peerDeviceId: resolvedPeerDeviceId,
@@ -4676,7 +4739,7 @@ export function initMessagesPane({
       return;
     }
 
-    const active = state.conversationId === convId && state.activePeerDigest === peerDigest;
+    const active = state.conversationId === convId && activePeerKey === peerKey;
     if (active) {
       if (!state.conversationId && convId) state.conversationId = convId;
       if (!state.conversationToken && tokenB64) state.conversationToken = tokenB64;
@@ -4696,6 +4759,34 @@ export function initMessagesPane({
       return;
     }
   } catch (err) {
+    const isInviteTokenMissing = err?.code === 'INVITE_SESSION_TOKEN_MISSING'
+      || err?.message === 'INVITE_SESSION_TOKEN_MISSING';
+    if (isInviteTokenMissing) {
+      const peerDigestFromEvent = normalizeAccountDigest(
+        event?.peerAccountDigest
+        || event?.senderAccountDigest
+        || event?.targetAccountDigest
+        || null
+      );
+      const peerDigestFromEntry = existingConvEntry?.peerAccountDigest
+        ? splitPeerKey(existingConvEntry.peerAccountDigest).digest
+        : null;
+      const peerAccountDigest = peerDigestFromEvent || peerDigestFromEntry || null;
+      const peerDeviceId = normalizePeerDeviceId(
+        event?.senderDeviceId
+        || event?.peerDeviceId
+        || existingConvEntry?.peerDeviceId
+        || null
+      );
+      logCapped('inviteSessionTokenMissingDropped', {
+        conversationId: convId || null,
+        peerAccountDigest,
+        peerDeviceId,
+        reasonCode: 'INVITE_SESSION_TOKEN_MISSING',
+        callsite: 'messages-pane:incomingSecureMessage'
+      }, 5);
+      return;
+    }
     try {
       console.error('[secure-message] handler error', err);
       log({ secureMessageHandlerError: { convId, error: err?.message || String(err) } });

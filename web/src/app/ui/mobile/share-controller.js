@@ -28,7 +28,7 @@ import { encryptContactPayload, decryptContactPayload } from '../../features/con
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from './session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice } from './contact-core-store.js';
-import { bootstrapDrFromGuestBundle, persistDrSnapshot, snapshotDrState, sendDrText } from '../../features/dr-session.js';
+import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, sendDrText } from '../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 import { logMsgEvent, logUiNoise } from '../../lib/logging.js';
@@ -1159,6 +1159,24 @@ export function setupShareController(options) {
         peerAccountDigest: resolvedOwnerDigest,
         peerDeviceId: resolvedOwnerDeviceId
       });
+      logCapped('inviteSessionIndexWriteTrace', {
+        inviteId: parsed?.inviteId || null,
+        conversationIdPrefix8: safePrefix(conversationId, 8),
+        hasToken: !!conversationToken,
+        ownerDigestSuffix4: safeSuffix(resolvedOwnerDigest || '', 4),
+        ownerDeviceSuffix4: safeSuffix(resolvedOwnerDeviceId || '', 4)
+      }, LOG_CAP);
+      const drHolder = drState({ peerAccountDigest: resolvedOwnerDigest, peerDeviceId: resolvedOwnerDeviceId });
+      if (drHolder && !(drHolder.rk instanceof Uint8Array)) {
+        copyDrState(drHolder, initiatorState, { callsiteTag: 'invite-scan:preflight' });
+      }
+      if (drHolder) {
+        drHolder.baseKey = drHolder.baseKey || {};
+        if (!drHolder.baseKey.role) drHolder.baseKey.role = 'initiator';
+        if (!drHolder.baseKey.conversationId) drHolder.baseKey.conversationId = conversationId;
+        if (!drHolder.baseKey.peerAccountDigest) drHolder.baseKey.peerAccountDigest = resolvedOwnerDigest;
+        if (!drHolder.baseKey.peerDeviceId) drHolder.baseKey.peerDeviceId = resolvedOwnerDeviceId;
+      }
       logCapped('inviteSessionMaterialReady', {
         inviteId: parsed?.inviteId || null,
         conversationIdPrefix8: safePrefix(conversationId, 8),
