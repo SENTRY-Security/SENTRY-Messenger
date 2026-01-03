@@ -1904,7 +1904,8 @@ export async function listSecureAndDecrypt(params = {}) {
             peerAccountDigest: peerKey,
             messageId: messageObj.id,
             tokenB64,
-            peerDeviceId: peerDeviceForMessage
+            peerDeviceId: peerDeviceForMessage,
+            vaultPutStatus: 'ok'
           });
           if (sendReadReceipt) {
             maybeSendReadReceipt(convId, peerKey, peerDeviceForMessage, messageObj.id);
@@ -2942,13 +2943,20 @@ export function recordMessageDelivered(conversationId, messageId, ts = null) {
   return true;
 }
 
-function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId, tokenB64, peerDeviceId }) {
+function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId, tokenB64, peerDeviceId, vaultPutStatus = null }) {
   if (!conversationId || !peerAccountDigest || !messageId) return;
   if (!peerDeviceId) return;
   const dedupeKey = `${conversationId}:${messageId}`;
   if (sentDeliveryReceipts.has(dedupeKey)) return;
   sentDeliveryReceipts.add(dedupeKey);
   if (typeof deps.sendDeliveryReceipt !== 'function') return;
+  if (vaultPutStatus) {
+    logCapped('receiverDeliveryReceiptTrace', {
+      messageId,
+      vaultPutStatus,
+      receiptType: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT
+    });
+  }
   const ackPromise = deps.sendDeliveryReceipt({
     peerAccountDigest,
     peerDeviceId,

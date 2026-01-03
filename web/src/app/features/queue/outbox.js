@@ -6,7 +6,7 @@ import {
   listOutboxRecords,
   putOutboxRecord
 } from './db.js';
-import { log, logForensicsEvent } from '../../core/log.js';
+import { log, logCapped, logForensicsEvent } from '../../core/log.js';
 
 const TYPE_MESSAGE = 'message';
 const TYPE_RECEIPT = 'receipt';
@@ -22,8 +22,8 @@ const PROCESS_INTERVAL_MS = 4_000;
 
 const convLocks = new Set();
 const hooks = {
-  onSent: null,
-  onFailed: null
+  onSent: new Set(),
+  onFailed: new Set()
 };
 
 let processorTimer = null;
@@ -31,6 +31,27 @@ let processing = false;
 let debug = false;
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+function logOutboxJobTrace({
+  job,
+  stage,
+  ok = null,
+  statusCode = null,
+  error = null,
+  reasonCode = null
+} = {}) {
+  if (!job) return;
+  logCapped('outboxJobTrace', {
+    conversationId: job.conversationId || null,
+    messageId: job.messageId || null,
+    jobId: job.jobId || null,
+    stage: stage || null,
+    ok: typeof ok === 'boolean' ? ok : null,
+    statusCode: Number.isFinite(Number(statusCode)) ? Number(statusCode) : null,
+    error: error || null,
+    reasonCode: reasonCode || null
+  }, 5);
+}
 
 function safeParseHeader(headerJson) {
   if (!headerJson) return null;
@@ -96,8 +117,8 @@ function normalizeJob(input = {}) {
 }
 
 export function setOutboxHooks(opts = {}) {
-  if (typeof opts.onSent === 'function') hooks.onSent = opts.onSent;
-  if (typeof opts.onFailed === 'function') hooks.onFailed = opts.onFailed;
+  if (typeof opts.onSent === 'function') hooks.onSent.add(opts.onSent);
+  if (typeof opts.onFailed === 'function') hooks.onFailed.add(opts.onFailed);
 }
 
 export function setOutboxDebug(flag = true) {
@@ -107,6 +128,12 @@ export function setOutboxDebug(flag = true) {
 export async function enqueueOutboxJob(input = {}) {
   const job = normalizeJob(input);
   await putOutboxRecord(job);
+  logOutboxJobTrace({
+    job,
+    stage: 'ENQUEUE',
+    ok: true,
+    reasonCode: 'OUTBOX_ENQUEUE'
+  });
   scheduleProcessor(50);
   return job;
 }
@@ -166,11 +193,21 @@ async function attemptSend(job) {
     } catch {}
   }
   const ackOk = r?.status === 202 && data && data.accepted === true && data.id;
-  if (!ackOk) {
-    const msg = typeof data?.message === 'string' ? data.message
+  const failureMessage = ackOk
+    ? null
+    : (typeof data?.message === 'string' ? data.message
       : typeof data?.error === 'string' ? data.error
-      : `ack failed (status=${r?.status || 'unknown'})`;
-    const err = new Error(msg);
+      : `ack failed (status=${r?.status || 'unknown'})`);
+  logOutboxJobTrace({
+    job,
+    stage: ackOk ? 'ACK_OK' : 'ACK_FAIL',
+    ok: ackOk,
+    statusCode: r?.status || null,
+    error: failureMessage,
+    reasonCode: ackOk ? 'OUTBOX_ACK_OK' : 'OUTBOX_ACK_FAIL'
+  });
+  if (!ackOk) {
+    const err = new Error(failureMessage);
     err.status = r?.status;
     err.details = data || null;
     throw err;
@@ -197,8 +234,10 @@ async function markFailure(job, err) {
   if (debug) {
     console.warn('[outbox]', { event: 'failed', jobId: job?.jobId, conv: job?.conversationId, status: next?.lastStatus || null, error: err?.message || err });
   }
-  if (next?.state === STATE_DEAD && typeof hooks.onFailed === 'function') {
-    try { await hooks.onFailed(next, err); } catch {}
+  if (next?.state === STATE_DEAD && hooks.onFailed.size) {
+    for (const hook of hooks.onFailed) {
+      try { await hook(next, err); } catch {}
+    }
   }
 }
 
@@ -215,18 +254,36 @@ async function markSent(job, response) {
   if (debug) {
     console.log('[outbox]', { event: 'sent', jobId: job?.jobId, conv: job?.conversationId, status: response?.r?.status || null });
   }
-  if (typeof hooks.onSent === 'function') {
-    try { await hooks.onSent(next, response); } catch {}
+  if (hooks.onSent.size) {
+    for (const hook of hooks.onSent) {
+      try { await hook(next, response); } catch {}
+    }
   }
   return next;
 }
 
 async function processSingle(job) {
-  if (!job || convLocks.has(job.conversationId)) return false;
+  if (!job) return false;
+  if (convLocks.has(job.conversationId)) {
+    logOutboxJobTrace({
+      job,
+      stage: 'INFLIGHT_SKIP',
+      ok: false,
+      error: 'conversation_locked',
+      reasonCode: 'OUTBOX_INFLIGHT_SKIP'
+    });
+    return false;
+  }
   convLocks.add(job.conversationId);
   let updated = null;
   try {
     updated = await updateJob(job.jobId, { state: STATE_INFLIGHT, lastError: null });
+    logOutboxJobTrace({
+      job: updated || job,
+      stage: 'PROCESS_SINGLE',
+      ok: null,
+      reasonCode: 'OUTBOX_PROCESS_SINGLE'
+    });
     if (job.type === TYPE_MEDIA_UPLOAD) {
       await markSent(updated || job, { r: { status: 200 }, data: { ok: true, skipped: 'media-upload' } });
       return true;
@@ -254,7 +311,16 @@ export async function processOutbox() {
     const dueJobs = await fetchDueJobs();
     for (const job of dueJobs) {
       // skip if another job of same conversation is inflight
-      if (convLocks.has(job.conversationId)) continue;
+      if (convLocks.has(job.conversationId)) {
+        logOutboxJobTrace({
+          job,
+          stage: 'INFLIGHT_SKIP',
+          ok: false,
+          error: 'conversation_locked',
+          reasonCode: 'OUTBOX_INFLIGHT_SKIP'
+        });
+        continue;
+      }
       await processSingle(job);
     }
   } finally {
@@ -270,8 +336,24 @@ export async function processOutboxJobNow(jobId) {
     await processSingle(job);
     const latest = await getOutboxRecord(jobId);
     const ok = latest?.state === STATE_SENT;
+    logOutboxJobTrace({
+      job: latest || job,
+      stage: 'PROCESS_SINGLE',
+      ok,
+      statusCode: latest?.lastStatus ?? null,
+      error: latest?.lastError || null,
+      reasonCode: 'OUTBOX_PROCESS_NOW'
+    });
     return { ok, job: latest, data: latest?.lastResponse || null, status: latest?.lastStatus || null, error: latest?.lastError || null };
   } catch (err) {
+    logOutboxJobTrace({
+      job,
+      stage: 'PROCESS_SINGLE',
+      ok: false,
+      statusCode: err?.status ?? null,
+      error: err?.message || String(err),
+      reasonCode: 'OUTBOX_PROCESS_NOW_ERROR'
+    });
     return { ok: false, error: err?.message || String(err), status: Number.isFinite(err?.status) ? Number(err.status) : null };
   }
 }

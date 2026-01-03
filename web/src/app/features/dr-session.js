@@ -67,6 +67,17 @@ function logOutgoingSendTrace(stage, messageId, serverMessageId = null) {
   });
 }
 
+function logDrSendTrace({ messageId, stage, jobId = null, error = null } = {}) {
+  if (!messageId || !stage) return;
+  logCapped('drSendTrace', {
+    messageId,
+    stage,
+    jobId: jobId || null,
+    error: error || null,
+    timestamp: Date.now()
+  }, 5);
+}
+
 function suffix(value, len) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -1587,8 +1598,10 @@ async function sendDrPlaintext(params = {}) {
         messageKeyB64
       });
       logOutgoingSendTrace('vault_put_ok', messageId, null);
+      logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });
     } catch (err) {
       logOutgoingSendTrace('vault_put_fail', messageId, null);
+      logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: err?.message || String(err) });
       err.stage = 'vault_put_fail';
       err.code = err.code || 'VaultPutFailed';
       throw err;
@@ -1616,6 +1629,17 @@ async function sendDrPlaintext(params = {}) {
           }
         : null
     });
+    logDrSendTrace({ messageId, stage: 'OUTBOX_ENQUEUE', jobId: job?.jobId || null });
+    logCapped('outboxJobTrace', {
+      conversationId: finalConversationId,
+      messageId,
+      jobId: job?.jobId || null,
+      stage: 'ENQUEUE',
+      ok: null,
+      statusCode: null,
+      error: null,
+      reasonCode: 'DR_ENQUEUE_OUTBOX'
+    }, 5);
     const result = await processOutboxJobNow(job.jobId);
     if (!result.ok) {
       logOutgoingSendTrace('send_fail', messageId, null);
@@ -2167,8 +2191,10 @@ export async function sendDrMedia(params = {}) {
       messageKeyB64
     });
     logOutgoingSendTrace('vault_put_ok', messageId, null);
+    logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });
   } catch (err) {
     logOutgoingSendTrace('vault_put_fail', messageId, null);
+    logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: err?.message || String(err) });
     err.stage = 'vault_put_fail';
     err.code = err.code || 'VaultPutFailed';
     restoreSendFailure(err);
@@ -2196,6 +2222,7 @@ export async function sendDrMedia(params = {}) {
         }
       : null
   });
+  logDrSendTrace({ messageId, stage: 'OUTBOX_ENQUEUE', jobId: job?.jobId || null });
   const result = await processOutboxJobNow(job.jobId);
   if (!result.ok) {
     logOutgoingSendTrace('send_fail', messageId, null);

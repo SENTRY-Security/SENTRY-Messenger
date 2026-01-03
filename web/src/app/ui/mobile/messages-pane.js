@@ -3,7 +3,7 @@ import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, nor
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
-import { retryOutboxMessage } from '../../features/queue/outbox.js';
+import { retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
 import { MessageKeyVault } from '../../features/message-key-vault.js';
 import {
   ensureSecureConversationReady,
@@ -60,6 +60,7 @@ const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [] };
+let outboxHooksRegistered = false;
 let pendingNewMessageHint = false;
 const uiNoiseEnabled = DEBUG.uiNoise === true;
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
@@ -312,6 +313,7 @@ export function initMessagesPane({
     videoBtn: dom.messagesVideoBtn ?? document.getElementById('messagesVideoBtn')
   };
   let pendingWsRefresh = 0;
+  let receiptRenderPending = false;
   let keyboardOffsetPx = 0;
   let keyboardActive = false;
   let viewportGuardTimer = null;
@@ -827,7 +829,7 @@ export function initMessagesPane({
           } catch (err) {
             applyOutgoingFailure(localMessage, err, '通話記錄傳送失敗');
           }
-          updateMessagesUI({ preserveScroll: true });
+          updateMessagesStatusUI();
         }
         try {
           console.info('[call] log:send ' + JSON.stringify({ ...logPayload, ok: true }));
@@ -836,7 +838,7 @@ export function initMessagesPane({
         log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest, peerDeviceId });
         if (localMessage) {
           applyOutgoingFailure(localMessage, err, '通話記錄傳送失敗');
-          updateMessagesUI({ preserveScroll: true });
+          updateMessagesStatusUI();
         }
         try {
           console.info('[call] log:send ' + JSON.stringify({ ...logPayload, ok: false, reason: err?.message || err }));
@@ -3124,11 +3126,13 @@ export function initMessagesPane({
           }
         }
       }
-      applyReceiptsToMessages(timelineMessages);
+      const receiptsApplied = applyReceiptsToMessages(timelineMessages);
+      const receiptRenderNeeded = receiptsApplied || receiptRenderPending;
+      receiptRenderPending = false;
       const shouldScrollToEnd = !append && !forceReplay && nearBottom;
       const preserveScroll = append || !shouldScrollToEnd;
       updateMessagesUI({ scrollToEnd: shouldScrollToEnd, preserveScroll, newMessageIds });
-      if (receiptsChanged) {
+      if (receiptsChanged || receiptRenderNeeded) {
         updateMessagesUI({ preserveScroll: true, forceFullRender: true });
       }
       if (state.activePeerDigest) {
@@ -3710,6 +3714,13 @@ export function initMessagesPane({
       } catch {
         /* ignore */
       }
+      logOutgoingUiStatusTrace({
+        message,
+        fromStatus: null,
+        toStatus: 'pending',
+        reasonCode: 'UI_APPEND',
+        stage: 'appendLocalOutgoingMessage'
+      });
     }
     try {
       logCapped('outgoingSendTrace', {
@@ -3804,16 +3815,103 @@ export function initMessagesPane({
     }
   }
 
+  function resolveOutgoingStatusMessageId(message) {
+    if (!message) return null;
+    return message.id || message.messageId || message.localId || null;
+  }
+
+  function logOutgoingStatusTrace(message, fromStatus, toStatus, reasonCode) {
+    const messageId = resolveOutgoingStatusMessageId(message);
+    if (!messageId) return;
+    if (fromStatus === toStatus) return;
+    logCapped('outgoingStatusTrace', {
+      messageId,
+      fromStatus: fromStatus || null,
+      toStatus,
+      reasonCode
+    });
+  }
+
+  const OUTGOING_UI_REASON_CODES = new Set([
+    'UI_APPEND',
+    'SEND_THROW',
+    'OUTBOX_SENT',
+    'RECEIPT_APPLY'
+  ]);
+
+  function normalizeOutgoingUiReasonCode({ reasonCode, toStatus, stage } = {}) {
+    const raw = typeof reasonCode === 'string' ? reasonCode.trim() : '';
+    if (OUTGOING_UI_REASON_CODES.has(raw)) return raw;
+    if (toStatus === 'pending') return 'UI_APPEND';
+    if (toStatus === 'sent') return 'OUTBOX_SENT';
+    if (toStatus === 'failed') return 'SEND_THROW';
+    if (toStatus === 'delivered') return 'RECEIPT_APPLY';
+    if (stage === 'applyReceiptState') return 'RECEIPT_APPLY';
+    return 'UI_APPEND';
+  }
+
+  function logOutgoingUiStatusTrace({
+    message,
+    fromStatus,
+    toStatus,
+    reasonCode,
+    stage,
+    ok = null,
+    statusCode = null,
+    error = null,
+    jobId = null
+  } = {}) {
+    const messageId = resolveOutgoingStatusMessageId(message);
+    if (!messageId) return;
+    const normalizedReasonCode = normalizeOutgoingUiReasonCode({ reasonCode, toStatus, stage });
+    const rawReason = typeof reasonCode === 'string' ? reasonCode.trim() : '';
+    const reasonDetail = rawReason && rawReason !== normalizedReasonCode ? rawReason : null;
+    logCapped('outgoingUiStatusTrace', {
+      conversationId: message?.conversationId || null,
+      messageId,
+      jobId: jobId || null,
+      stage: stage || null,
+      status: toStatus || null,
+      fromStatus: fromStatus || null,
+      toStatus: toStatus || null,
+      ok: typeof ok === 'boolean' ? ok : null,
+      statusCode: Number.isFinite(Number(statusCode)) ? Number(statusCode) : null,
+      error: error || null,
+      reasonCode: normalizedReasonCode || null,
+      reasonDetail,
+      timestamp: Date.now()
+    });
+  }
+
+  function updateMessagesStatusUI() {
+    updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+  }
+
   function applyReceiptState(message) {
-    if (!message || message.direction !== 'outgoing' || !message.id) return;
+    if (!message || message.direction !== 'outgoing' || !message.id) return false;
     const currentStatus = typeof message.status === 'string' ? message.status : null;
-    if (currentStatus === 'pending' || message.pending === true) return;
-    if (currentStatus === 'failed') return;
     const state = getMessageState();
     const receipt = state.conversationId ? getMessageReceipt(state.conversationId, message.id) : null;
     const delivered = state.conversationId ? getMessageDelivery(state.conversationId, message.id) : null;
     if (receipt?.read) {
       // read 視為已送達。
+      const shouldUpdate = currentStatus !== 'delivered' || message.pending === true || message.read !== true;
+      if (shouldUpdate) {
+        logCapped('receiptApplyTrace', {
+          messageId: message.id,
+          currentStatus,
+          receiptType: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
+          appliedToStatus: 'delivered'
+        });
+        logOutgoingStatusTrace(message, currentStatus, 'delivered', 'RECEIPT_VAULT_PUT_OK');
+        logOutgoingUiStatusTrace({
+          message,
+          fromStatus: currentStatus,
+          toStatus: 'delivered',
+          reasonCode: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
+          stage: 'applyReceiptState'
+        });
+      }
       message.read = true;
       message.status = 'delivered';
       message.pending = false;
@@ -3824,9 +3922,26 @@ export function initMessagesPane({
           conversationId: state.conversationId || null
         });
       }
-      return;
+      return shouldUpdate;
     }
     if (delivered?.delivered) {
+      const shouldUpdate = currentStatus !== 'delivered' || message.pending === true || message.read === true;
+      if (shouldUpdate) {
+        logCapped('receiptApplyTrace', {
+          messageId: message.id,
+          currentStatus,
+          receiptType: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
+          appliedToStatus: 'delivered'
+        });
+        logOutgoingStatusTrace(message, currentStatus, 'delivered', 'RECEIPT_VAULT_PUT_OK');
+        logOutgoingUiStatusTrace({
+          message,
+          fromStatus: currentStatus,
+          toStatus: 'delivered',
+          reasonCode: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
+          stage: 'applyReceiptState'
+        });
+      }
       message.read = false;
       message.status = 'delivered';
       message.pending = false;
@@ -3837,18 +3952,26 @@ export function initMessagesPane({
           conversationId: state.conversationId || null
         });
       }
-      return;
+      return shouldUpdate;
     }
+    if (currentStatus === 'failed') return false;
+    if (currentStatus === 'pending' || message.pending === true) return false;
     if (!currentStatus) {
       message.read = false;
       message.status = 'sent';
       message.pending = false;
+      return true;
     }
+    return false;
   }
 
   function applyReceiptsToMessages(list) {
-    if (!Array.isArray(list)) return;
-    for (const msg of list) applyReceiptState(msg);
+    if (!Array.isArray(list)) return false;
+    let changed = false;
+    for (const msg of list) {
+      if (applyReceiptState(msg)) changed = true;
+    }
+    return changed;
   }
 
   function extractFailureDetails(err, fallbackReason = 'send failed') {
@@ -3862,16 +3985,25 @@ export function initMessagesPane({
     return { reason, code };
   }
 
-  function applyOutgoingPending(message) {
+  function applyOutgoingPending(message, reasonCode = 'PENDING_RESET') {
     if (!message) return;
+    const fromStatus = typeof message.status === 'string' ? message.status : null;
     message.status = 'pending';
     message.pending = true;
     message.failureReason = null;
     message.failureCode = null;
+    logOutgoingUiStatusTrace({
+      message,
+      fromStatus,
+      toStatus: 'pending',
+      reasonCode,
+      stage: 'applyOutgoingPending'
+    });
   }
 
-  function applyOutgoingSent(message, res, fallbackTs) {
+  function applyOutgoingSent(message, res, fallbackTs, reasonCode = 'ACK_202') {
     if (!message) return;
+    const fromStatus = typeof message.status === 'string' ? message.status : null;
     const localId = message.localId || message.messageId || message.id || null;
     const serverId = res?.msg?.id || res?.id || res?.serverMessageId || res?.server_message_id || null;
     if (serverId && localId && serverId !== localId) {
@@ -3886,15 +4018,42 @@ export function initMessagesPane({
     message.failureCode = null;
     const ts = res?.msg?.ts || res?.created_at || res?.createdAt || fallbackTs;
     if (Number.isFinite(ts)) message.ts = ts;
+    logOutgoingUiStatusTrace({
+      message,
+      fromStatus,
+      toStatus: 'sent',
+      reasonCode,
+      stage: 'applyOutgoingSent',
+      ok: true,
+      statusCode: res?.status ?? res?.r?.status ?? res?.statusCode ?? null,
+      jobId: res?.jobId ?? res?.job?.jobId ?? null
+    });
+    logOutgoingStatusTrace(message, fromStatus, 'sent', reasonCode);
   }
 
-  function applyOutgoingFailure(message, err, fallbackReason) {
+  function applyOutgoingFailure(message, err, fallbackReason, reasonCode = 'SEND_FAIL') {
     if (!message) return;
+    const fromStatus = typeof message.status === 'string' ? message.status : null;
     const details = extractFailureDetails(err, fallbackReason);
+    const statusCode = Number.isFinite(err?.status) ? Number(err.status) : null;
+    const jobId = err?.jobId ?? err?.job?.jobId ?? null;
+    const finalReasonCode = reasonCode || err?.stage || err?.code || 'SEND_FAIL';
     message.status = 'failed';
     message.pending = false;
     message.failureReason = details.reason || fallbackReason;
     message.failureCode = details.code || 'Unknown';
+    logOutgoingUiStatusTrace({
+      message,
+      fromStatus,
+      toStatus: 'failed',
+      reasonCode: finalReasonCode,
+      stage: 'applyOutgoingFailure',
+      ok: false,
+      statusCode,
+      error: details.reason || fallbackReason || null,
+      jobId
+    });
+    logOutgoingStatusTrace(message, fromStatus, 'failed', 'SEND_FAIL');
   }
 
   async function resendFailedOutgoingMessage(message) {
@@ -3905,11 +4064,11 @@ export function initMessagesPane({
     const messageId = message.localId || message.messageId || message.id || null;
     if (!convId || !messageId) {
       applyOutgoingFailure(message, new Error('missing conversation or message id'), '無法重送：缺少對話資訊');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
-    applyOutgoingPending(message);
-    updateMessagesUI({ preserveScroll: true });
+    applyOutgoingPending(message, 'RESEND');
+    updateMessagesStatusUI();
     let retryResult = null;
     try {
       retryResult = await retryOutboxMessage({ conversationId: convId, messageId });
@@ -3922,12 +4081,12 @@ export function initMessagesPane({
       } catch (err) {
         applyOutgoingFailure(message, err, '重送失敗');
       }
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
     if (retryResult?.errorCode !== 'OutboxJobMissing') {
       applyOutgoingFailure(message, retryResult, '重送失敗');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
     let senderDeviceId = message.senderDeviceId || null;
@@ -3936,30 +4095,30 @@ export function initMessagesPane({
     }
     if (!senderDeviceId) {
       applyOutgoingFailure(message, new Error('deviceId missing'), '無法重送：缺少裝置資訊');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
     const vaultRes = await MessageKeyVault.getMessageKey({ conversationId: convId, messageId, senderDeviceId });
     if (vaultRes?.ok) {
       applyOutgoingFailure(message, new Error('outbox payload missing'), '無法重送：缺少出站封包');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
     if (vaultRes?.error && vaultRes.error !== 'NotFound') {
       applyOutgoingFailure(message, new Error(vaultRes?.message || 'vault get failed'), '無法重送：金鑰讀取失敗');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
     if (message.type && message.type !== 'text') {
       applyOutgoingFailure(message, new Error('outbox payload missing for media'), '無法重送：缺少原始內容');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
     const peerAccountDigest = message.peerAccountDigest || state.activePeerDigest || resolvePeerForConversation(convId, state.activePeerDigest);
     const peerDeviceId = message.peerDeviceId || resolveTargetDeviceForConv(convId, peerAccountDigest) || state.activePeerDeviceId || null;
     if (!peerAccountDigest || !peerDeviceId) {
       applyOutgoingFailure(message, new Error('peer missing'), '無法重送：缺少對端裝置資訊');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       return;
     }
     try {
@@ -3970,7 +4129,7 @@ export function initMessagesPane({
         messageId
       });
       applyOutgoingSent(message, res, message.ts || Math.floor(Date.now() / 1000));
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
       const convIdFinal = res?.convId || convId;
       if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
       const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
@@ -3987,7 +4146,7 @@ export function initMessagesPane({
       });
     } catch (err) {
       applyOutgoingFailure(message, err, '重送失敗');
-      updateMessagesUI({ preserveScroll: true });
+      updateMessagesStatusUI();
     }
   }
 
@@ -4000,7 +4159,7 @@ export function initMessagesPane({
     recordMessageDelivered(convId, messageId, deliveredAt);
     if (localMessage) {
       localMessage.id = localMessage.id || messageId;
-      applyReceiptState(localMessage);
+      if (applyReceiptState(localMessage)) updateMessagesStatusUI();
     }
   }
 
@@ -4011,7 +4170,7 @@ export function initMessagesPane({
         sendReadReceiptForMessage(message);
       }
     } else if (message.direction === 'outgoing') {
-      applyReceiptState(message);
+      if (applyReceiptState(message)) receiptRenderPending = true;
     }
   }
 
@@ -4087,6 +4246,12 @@ export function initMessagesPane({
   function findMessageById(id) {
     const state = getMessageState();
     return state.messages.find((msg) => msg.id === id) || null;
+  }
+
+  function findTimelineMessageById(conversationId, messageId) {
+    if (!conversationId || !messageId) return null;
+    const timeline = timelineGetTimeline(conversationId);
+    return timeline.find((msg) => normalizeTimelineMessageId(msg) === messageId) || null;
   }
 
   function applyUploadProgress(message, { percent, error }) {
@@ -4234,7 +4399,7 @@ export function initMessagesPane({
           }
           setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
         } finally {
-          updateMessagesUI({ scrollToEnd: true });
+          updateMessagesUI({ scrollToEnd: true, forceFullRender: true });
         }
       }
       setMessagesStatus('');
@@ -4710,11 +4875,8 @@ export function initMessagesPane({
         if (targetId && state.conversationId) {
           recordMessageRead(state.conversationId, targetId, tsRaw);
           const msg = findMessageById(targetId);
-          if (msg) {
-            msg.read = true;
-            msg.status = 'delivered';
-            msg.pending = false;
-            updateMessagesUI({ preserveScroll: true });
+          if (msg && applyReceiptState(msg)) {
+            updateMessagesStatusUI();
           }
         }
       } else if (normalizedControlType === CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT) {
@@ -4722,10 +4884,8 @@ export function initMessagesPane({
         if (targetId && state.conversationId) {
           recordMessageDelivered(state.conversationId, targetId, tsRaw);
           const msg = findMessageById(targetId);
-          if (msg) {
-            msg.status = 'delivered';
-            msg.pending = false;
-            updateMessagesUI({ preserveScroll: true });
+          if (msg && applyReceiptState(msg)) {
+            updateMessagesStatusUI();
           }
         }
       } else {
@@ -4948,7 +5108,7 @@ export function initMessagesPane({
       if (!msg || msg.status !== 'failed') return;
       resendFailedOutgoingMessage(msg).catch((err) => {
         applyOutgoingFailure(msg, err, '重送失敗');
-        updateMessagesUI({ preserveScroll: true });
+        updateMessagesStatusUI();
       });
     });
 
@@ -5017,7 +5177,7 @@ export function initMessagesPane({
         }
         if (localMsg) {
           applyOutgoingSent(localMsg, res, ts);
-          updateMessagesUI({ preserveScroll: true });
+          updateMessagesStatusUI();
         }
         const convId = res?.convId || state.conversationId;
         if (res?.convId) state.conversationId = res.convId;
@@ -5044,8 +5204,8 @@ export function initMessagesPane({
         }
         setMessagesStatus('傳送失敗：' + (err?.message || err), true);
         if (localMsg) {
-          applyOutgoingFailure(localMsg, err, '傳送失敗');
-          updateMessagesUI({ preserveScroll: true });
+          applyOutgoingFailure(localMsg, err, '傳送失敗', 'UI_SEND_THROW');
+          updateMessagesStatusUI();
         }
       } finally {
         if (elements.sendBtn) elements.sendBtn.disabled = false;
@@ -5069,6 +5229,54 @@ export function initMessagesPane({
     elements.pane?.addEventListener('touchmove', blockDragIfKeyboard, { passive: false });
     elements.composer?.addEventListener('touchmove', blockDragIfKeyboard, { passive: false });
     elements.headerEl?.addEventListener('touchmove', blockDragIfKeyboard, { passive: false });
+  }
+
+  function registerOutboxHooks() {
+    if (outboxHooksRegistered) return;
+    outboxHooksRegistered = true;
+    setOutboxHooks({
+      onSent: async (job, response) => {
+        if (!job || job.type !== 'message') return;
+        const convId = job?.conversationId || null;
+        const messageId = job?.messageId || null;
+        if (!convId || !messageId) return;
+        const message = findTimelineMessageById(convId, messageId);
+        if (!message || message.direction !== 'outgoing') return;
+        const status = typeof message.status === 'string' ? message.status : null;
+        if (status === 'delivered' || status === 'read') return;
+        const payload = response?.data || job?.lastResponse || null;
+        const payloadWithJobId = payload && typeof payload === 'object'
+          ? { ...payload, jobId: job?.jobId || null }
+          : { jobId: job?.jobId || null };
+        const fallbackTs = Number.isFinite(Number(job?.createdAt))
+          ? Math.floor(Number(job.createdAt))
+          : (Number.isFinite(Number(message.ts)) ? Number(message.ts) : Math.floor(Date.now() / 1000));
+        try {
+          applyOutgoingSent(message, payloadWithJobId, fallbackTs, 'OUTBOX_SENT_HOOK');
+        } catch (err) {
+          applyOutgoingFailure(message, err, '傳送失敗', 'OUTBOX_SENT_HOOK_ERROR');
+        }
+        const state = getMessageState();
+        if (state.conversationId === convId) updateMessagesStatusUI();
+      },
+      onFailed: async (job, err) => {
+        if (!job || job.type !== 'message') return;
+        const convId = job?.conversationId || null;
+        const messageId = job?.messageId || null;
+        if (!convId || !messageId) return;
+        const message = findTimelineMessageById(convId, messageId);
+        if (!message || message.direction !== 'outgoing') return;
+        const status = typeof message.status === 'string' ? message.status : null;
+        if (status === 'delivered' || status === 'read') return;
+        const errWithJob = err || new Error('outbox send failed');
+        if (job?.jobId && errWithJob && typeof errWithJob === 'object' && !errWithJob.jobId) {
+          errWithJob.jobId = job.jobId;
+        }
+        applyOutgoingFailure(message, errWithJob, '傳送失敗', 'OUTBOX_FAILED_HOOK');
+        const state = getMessageState();
+        if (state.conversationId === convId) updateMessagesStatusUI();
+      }
+    });
   }
 
   function initKeyboardListeners() {
@@ -5107,6 +5315,7 @@ export function initMessagesPane({
     startViewportGuard();
   }
 
+  registerOutboxHooks();
   ensureSetup();
   initKeyboardListeners();
   renderGroupDrafts();
