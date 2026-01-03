@@ -1221,11 +1221,35 @@ export function initContactsView(options) {
     }
   }
 
+  async function refreshContactsAfterInviteConsume() {
+    if (contactsRefreshing) return;
+    contactsRefreshing = true;
+    logCapped('contactsRefreshAfterInviteConsume', {
+      stage: 'start',
+      readyCount: contactCoreReadyCount()
+    }, 5);
+    let errorMessage = null;
+    try {
+      await loadInitialContacts();
+      renderContacts();
+    } catch (err) {
+      errorMessage = err?.message || String(err);
+    } finally {
+      const donePayload = { stage: 'done', readyCount: contactCoreReadyCount() };
+      if (errorMessage) donePayload.error = errorMessage;
+      logCapped('contactsRefreshAfterInviteConsume', donePayload, 5);
+      contactsRefreshing = false;
+    }
+  }
+
   setupPullToRefresh();
   refreshPendingInviteStatus({ source: 'startup' }).catch((err) => {
     log({ pendingInviteStatusRefreshError: err?.message || err });
   });
 
+  document.addEventListener('contacts:refresh-after-consume', () => {
+    refreshContactsAfterInviteConsume();
+  });
   document.addEventListener('contacts:show-delete', (event) => {
     const detail = event?.detail || {};
     const targetPeer = contactKey(detail.peerAccountDigest || detail.peer || detail.peerDigest);

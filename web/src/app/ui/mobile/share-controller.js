@@ -1977,6 +1977,12 @@ export function setupShareController(options) {
     } catch (err) {
       log({ contactInitShareError: err?.message || err, peerAccountDigest: peerDigest });
     }
+    return {
+      inviteId,
+      peerDigest,
+      peerDeviceId,
+      conversationId: conversation.conversation_id || null
+    };
   }
 
   async function consumeInviteDropbox(inviteId, { source = 'manual' } = {}) {
@@ -2021,7 +2027,30 @@ export function setupShareController(options) {
         guestBundle: normalized.guestBundle,
         guestProfile: normalized.guestProfile
       };
-      await handleContactInitEvent(msg, { inviteId: id });
+      const initResult = await handleContactInitEvent(msg, { inviteId: id });
+      const refreshMeta = {
+        inviteId: id,
+        peerDigestSuffix4: safeSuffix(initResult?.peerDigest || '', 4),
+        peerDeviceSuffix4: safeSuffix(initResult?.peerDeviceId || '', 4),
+        conversationIdPrefix8: safePrefix(initResult?.conversationId || '', 8)
+      };
+      logCapped('inviteConsumeContactRefreshTrigger', { ...refreshMeta, stage: 'before' }, LOG_CAP);
+      let refreshDispatchOk = false;
+      let refreshDispatchError = null;
+      try {
+        document.dispatchEvent(new CustomEvent('contacts:refresh-after-consume', {
+          detail: { inviteId: id }
+        }));
+        refreshDispatchOk = true;
+      } catch (err) {
+        refreshDispatchError = err?.message || err;
+      }
+      logCapped('inviteConsumeContactRefreshTrigger', {
+        ...refreshMeta,
+        stage: 'after',
+        dispatchOk: refreshDispatchOk,
+        error: refreshDispatchError
+      }, LOG_CAP);
       logCapped('inviteConsumeResult', { inviteId: id, ok: true }, LOG_CAP);
       console.log('[share-controller]', `[invite-consume] result=${JSON.stringify({ inviteId: id, ok: true })}`);
       setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });

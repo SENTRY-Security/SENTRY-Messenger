@@ -52,6 +52,8 @@ const REPLAY_DEBUG_KEYS = new Set([
   'conversationIndexRestoredFromPending',
   'contactCoreMismatchTrace',
   'contactCorePeerDeviceMigrated',
+  'inviteConsumeContactRefreshTrigger',
+  'contactsRefreshAfterInviteConsume',
   'drSnapshotRestoreReject',
   'drHydrateFailedTrace',
   'outgoingSendTrace',
@@ -85,7 +87,9 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'incomingTokenLookupTrace',
   'inviteSessionTokenMissingDropped',
   'inviteSessionIndexWriteTrace',
-  'conversationIndexRestoredFromPending'
+  'conversationIndexRestoredFromPending',
+  'inviteConsumeContactRefreshTrigger',
+  'contactsRefreshAfterInviteConsume'
 ]);
 const FORENSICS_CAP_DEFAULT = 20;
 const REPLAY_ACTION_VALUES = new Set();
