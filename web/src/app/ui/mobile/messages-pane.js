@@ -246,21 +246,91 @@ function normalizePlaceholderKey(value) {
   return str || null;
 }
 
+function sliceDeviceIdSuffix4(value) {
+  if (value === null || value === undefined) return null;
+  const str = String(value);
+  if (!str) return null;
+  return str.length > 4 ? str.slice(-4) : str;
+}
+
+function resolvePlaceholderSenderDeviceId(raw) {
+  if (!raw) return null;
+  const meta = raw?.meta || raw?.header?.meta || null;
+  const header = raw?.header && typeof raw.header === 'object' ? raw.header : null;
+  const senderDeviceId = meta?.sender_device_id
+    || meta?.senderDeviceId
+    || raw?.senderDeviceId
+    || raw?.sender_device_id
+    || header?.device_id
+    || header?.deviceId
+    || null;
+  if (typeof senderDeviceId !== 'string') return null;
+  const trimmed = senderDeviceId.trim();
+  return trimmed || null;
+}
+
+function normalizePlaceholderRawMessageId(raw) {
+  if (!raw) return null;
+  const candidates = [raw.id, raw.message_id, raw.messageId];
+  for (const val of candidates) {
+    if (typeof val === 'string' && val.trim()) return val.trim();
+  }
+  return null;
+}
+
+function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, conversationId } = {}) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const selfId = typeof selfDeviceId === 'string' ? selfDeviceId.trim() : '';
+  if (!selfId) return [];
+  const entries = [];
+  for (const item of items) {
+    const messageId = normalizePlaceholderRawMessageId(item);
+    if (!messageId) continue;
+    const senderDeviceId = resolvePlaceholderSenderDeviceId(item);
+    if (!senderDeviceId) continue;
+    const direction = senderDeviceId === selfId ? 'outgoing' : 'incoming';
+    entries.push({ messageId, direction });
+    logCapped('placeholderDirectionTrace', {
+      conversationId: conversationId || null,
+      messageId,
+      direction,
+      senderDeviceIdSuffix4: sliceDeviceIdSuffix4(senderDeviceId)
+    }, 5);
+  }
+  return entries;
+}
+
 function getPlaceholderState(conversationId) {
   const key = normalizePlaceholderKey(conversationId);
   if (!key) return null;
   return placeholderStateByConvId.get(key) || null;
 }
 
-function getPlaceholderCount(conversationId) {
+function getPlaceholderEntries(conversationId) {
   const state = getPlaceholderState(conversationId);
-  const count = Number(state?.count || 0);
-  return Number.isFinite(count) && count > 0 ? count : 0;
+  if (!state || !Array.isArray(state.entries)) return [];
+  return state.entries;
 }
 
-function setPlaceholderState({ conversationId, count, reason = null, source = null } = {}) {
+function getPlaceholderCount(conversationId) {
+  const entries = getPlaceholderEntries(conversationId);
+  const count = entries.length;
+  return count > 0 ? count : 0;
+}
+
+function setPlaceholderState({ conversationId, count, reason = null, source = null, entries = null } = {}) {
   const key = normalizePlaceholderKey(conversationId);
-  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  const safeEntries = Array.isArray(entries)
+    ? entries.map((entry) => {
+      const messageId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
+      const direction = entry?.direction === 'incoming' || entry?.direction === 'outgoing'
+        ? entry.direction
+        : null;
+      if (!messageId || !direction) return null;
+      return { messageId, direction };
+    }).filter(Boolean)
+    : null;
+  const safeCount = safeEntries ? safeEntries.length : 0;
   if (!key || safeCount <= 0) return null;
   const existing = placeholderStateByConvId.get(key);
   if (existing) return existing;
@@ -268,7 +338,7 @@ function setPlaceholderState({ conversationId, count, reason = null, source = nu
     safeCount,
     Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0)
   );
-  const state = { count: safeCount, shimmerActive, createdAt: Date.now(), reason, source };
+  const state = { count: safeCount, shimmerActive, createdAt: Date.now(), reason, source, entries: safeEntries || [] };
   placeholderStateByConvId.set(key, state);
   logCapped('placeholderBatchTrace', {
     conversationId: key,
@@ -318,17 +388,31 @@ function consumePlaceholderBatch(conversationId, entries = []) {
   if (!key) return false;
   const state = placeholderStateByConvId.get(key);
   if (!state || !Array.isArray(entries) || !entries.length) return false;
+  const removeCounts = new Map();
   for (const entry of entries) {
     const messageId = normalizePlaceholderMessageId(entry);
-    if (messageId) addPlaceholderRevealId(key, messageId);
+    if (!messageId) continue;
+    addPlaceholderRevealId(key, messageId);
+    removeCounts.set(messageId, (removeCounts.get(messageId) || 0) + 1);
   }
-  const nextCount = Math.max(0, Number(state.count || 0) - entries.length);
-  if (nextCount <= 0) {
+  if (!Array.isArray(state.entries)) return false;
+  const remaining = [];
+  for (const placeholder of state.entries) {
+    const messageId = placeholder?.messageId || null;
+    const pending = messageId ? (removeCounts.get(messageId) || 0) : 0;
+    if (pending > 0) {
+      removeCounts.set(messageId, pending - 1);
+      continue;
+    }
+    remaining.push(placeholder);
+  }
+  if (!remaining.length) {
     placeholderStateByConvId.delete(key);
   } else {
-    state.count = nextCount;
+    state.entries = remaining;
+    state.count = remaining.length;
     state.shimmerActive = Math.min(
-      nextCount,
+      state.count,
       Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0)
     );
   }
@@ -2847,18 +2931,22 @@ export function initMessagesPane({
     }
   }
 
-  function appendPlaceholderRows({ count = 0, startIndex = 0 } = {}) {
+  function appendPlaceholderRows({ entries = [], startIndex = 0 } = {}) {
     if (!elements.messagesList) return;
-    const total = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    const list = Array.isArray(entries) ? entries : [];
+    const total = list.length;
     if (!total) return;
     const shimmerMax = Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0);
     const shimmerStart = Math.max(0, total - shimmerMax);
     for (let i = 0; i < total; i += 1) {
+      const entry = list[i];
+      const direction = entry?.direction;
+      if (direction !== 'incoming' && direction !== 'outgoing') continue;
       const li = document.createElement('li');
       li.className = 'message-placeholder-item';
       const row = document.createElement('div');
       row.className = 'message-row message-placeholder-row';
-      const isOutgoing = ((i + startIndex) % 2) === 1;
+      const isOutgoing = direction === 'outgoing';
       if (isOutgoing) row.style.justifyContent = 'flex-end';
       const bubble = document.createElement('div');
       bubble.className = 'message-bubble message-placeholder';
@@ -2879,7 +2967,8 @@ export function initMessagesPane({
     const appendedIds = [];
     const timelineMessages = refreshTimelineState(state.conversationId);
     const timelineIds = timelineMessages.map((m) => normalizeTimelineMessageId(m));
-    const placeholderCount = getPlaceholderCount(state.conversationId);
+    const placeholderEntries = getPlaceholderEntries(state.conversationId);
+    const placeholderCount = placeholderEntries.length;
     const hasPlaceholders = placeholderCount > 0;
     const anchorNeeded = preserveScroll || (!scrollToEnd && !isNearMessagesBottom());
     const anchor = anchorNeeded ? captureScrollAnchor() : null;
@@ -2923,7 +3012,7 @@ export function initMessagesPane({
       elements.messagesEmpty?.classList.add('hidden');
       renderState.renderedIds = [];
       renderState.conversationId = state.conversationId || null;
-      appendPlaceholderRows({ count: placeholderCount, startIndex: 0 });
+      appendPlaceholderRows({ entries: placeholderEntries, startIndex: 0 });
       renderState.placeholderCount = placeholderCount;
       updateLoadMoreVisibility();
       updateMessagesScrollOverflow();
@@ -3144,7 +3233,7 @@ export function initMessagesPane({
     }
 
     if (placeholderCount > 0) {
-      appendPlaceholderRows({ count: placeholderCount, startIndex: renderIndex });
+      appendPlaceholderRows({ entries: placeholderEntries, startIndex: renderIndex });
     }
 
     renderState.conversationId = state.conversationId || null;
@@ -3289,14 +3378,20 @@ export function initMessagesPane({
       }
 
       if (!append && !silent && (timelineSizeBefore || 0) === 0 && !getPlaceholderState(state.conversationId)) {
-        const prefetchedCount = Array.isArray(prefetch?.data?.items) ? prefetch.data.items.length : null;
-        const placeholderCount = Number.isFinite(prefetchedCount) ? prefetchedCount : fetchLimit;
-        const source = Number.isFinite(prefetchedCount) ? 'prefetch' : 'limit';
+        const prefetchedItems = Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [];
+        let selfDeviceId = null;
+        try { selfDeviceId = ensureDeviceId(); } catch {}
+        const placeholderEntries = buildPlaceholderEntriesFromRaw({
+          items: prefetchedItems,
+          selfDeviceId,
+          conversationId: state.conversationId
+        });
         const created = setPlaceholderState({
           conversationId: state.conversationId,
-          count: placeholderCount,
+          entries: placeholderEntries,
+          count: placeholderEntries.length,
           reason: reason || 'enter',
-          source
+          source: 'prefetch'
         });
         if (created) {
           updateMessagesUI({ scrollToEnd: true, forceFullRender: true });
