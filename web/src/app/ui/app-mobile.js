@@ -85,6 +85,7 @@ import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 import { resetAllProcessedMessages, resetReceiptStore, syncOfflineDecryptNow } from '../features/messages.js';
+import { OFFLINE_SYNC_LOG_CAP, OFFLINE_SYNC_TRIGGER_COALESCE_MS } from '../features/messages-sync-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
@@ -193,6 +194,7 @@ let mediaPermissionActivePrompt = null;
 let mediaPermissionPollingTimer = null;
 let cachedMicrophoneStream = null;
 let backgroundLogoutTimer = null;
+let offlineSyncTriggerLastAtMs = 0;
 const SIM_STORAGE_PREFIX = (() => {
   try { return getSimStoragePrefix(); } catch { return 'ntag424-sim:'; }
 })();
@@ -3932,6 +3934,7 @@ function handleWebSocketMessage(msg) {
       messagesPane.refreshAfterReconnect?.();
       syncOfflineDecryptNow({ source: 'ws_reconnect' })
         .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'ws_reconnect' }));
+      messagesPane.reconcileOutgoingStatusNow?.({ source: 'ws_reconnect' });
       flushOutbox({ sourceTag: 'ws_auth_ok' }).catch(() => {});
     }
     return;
@@ -4058,6 +4061,23 @@ function handleWebSocketMessage(msg) {
   } catch {}
 })();
 
+function triggerResumeSync({ source } = {}) {
+  const now = Date.now();
+  const coalesced = offlineSyncTriggerLastAtMs
+    && Number.isFinite(OFFLINE_SYNC_TRIGGER_COALESCE_MS)
+    && (now - offlineSyncTriggerLastAtMs) < OFFLINE_SYNC_TRIGGER_COALESCE_MS;
+  logCapped('offlineSyncTriggerTrace', {
+    source: source || null,
+    coalesced,
+    tsMs: now
+  }, OFFLINE_SYNC_LOG_CAP);
+  if (coalesced) return;
+  offlineSyncTriggerLastAtMs = now;
+  syncOfflineDecryptNow({ source })
+    .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source }));
+  messagesPane?.reconcileOutgoingStatusNow?.({ source });
+}
+
 if (typeof document !== 'undefined') {
   // 透過 DR secure-message 傳遞的 contact-share（由 features/messages 解密後發出事件）
   document.addEventListener('contact-share', (ev) => {
@@ -4098,6 +4118,9 @@ if (typeof document !== 'undefined') {
       backgroundLogoutTimer = null;
     }
     log({ autoLogoutVisibilityChange: document.visibilityState });
+    if (!document.hidden) {
+      triggerResumeSync({ source: 'visibility_resume' });
+    }
     if (document.hidden) {
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
@@ -4108,6 +4131,11 @@ if (typeof document !== 'undefined') {
 }
 
 if (typeof window !== 'undefined') {
+  window.addEventListener('pageshow', (event) => {
+    if (event && event.persisted) {
+      triggerResumeSync({ source: 'pageshow_resume' });
+    }
+  });
   window.addEventListener('pagehide', (event) => {
     if (logoutInProgress) return;
     if (event && event.persisted) return;

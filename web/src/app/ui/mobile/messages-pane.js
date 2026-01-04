@@ -1,6 +1,7 @@
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, syncOfflineDecryptNow } from '../../features/messages.js';
+import { OFFLINE_SYNC_LOG_CAP, OUTGOING_STATUS_RECONCILE_ID_LIMIT } from '../../features/messages-sync-policy.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
 import { flushOutbox, retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
@@ -3681,6 +3682,11 @@ export function initMessagesPane({
       await loadActiveConversationMessages({ append: false, replay: !historyReplayDone, reason: 'open' });
       syncOfflineDecryptNow({ source: 'enter_conversation' })
         .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'enter_conversation' }));
+      triggerOutgoingStatusReconcile({
+        conversationId: state.conversationId || null,
+        peerAccountDigest: state.activePeerDigest || null,
+        source: 'enter_conversation'
+      });
     }
   }
 
@@ -3916,7 +3922,7 @@ export function initMessagesPane({
 
   function resolveOutgoingStatusMessageId(message) {
     if (!message) return null;
-    return message.id || message.messageId || message.localId || null;
+    return message.id || message.messageId || message.message_id || message.localId || null;
   }
 
   function logOutgoingStatusTrace(message, fromStatus, toStatus, reasonCode) {
@@ -4093,6 +4099,157 @@ export function initMessagesPane({
     return true;
   }
 
+  function isHistoryReplayDoneForConversation(conversationId) {
+    const replayMap = sessionStore.historyReplayDoneByConvId || {};
+    return replayMap[conversationId] === true;
+  }
+
+  function resolveOutgoingStatusPeerDigest(conversationId, peerAccountDigest = null) {
+    const state = getMessageState();
+    const activePeer = state.conversationId === conversationId ? state.activePeerDigest : null;
+    const convIndexEntry = sessionStore.conversationIndex?.get?.(conversationId) || null;
+    const threadEntry = sessionStore.conversationThreads?.get?.(conversationId) || null;
+    const candidate = peerAccountDigest
+      || activePeer
+      || convIndexEntry?.peerAccountDigest
+      || convIndexEntry?.peerKey
+      || threadEntry?.peerAccountDigest
+      || threadEntry?.peerKey
+      || null;
+    return toDigestOnly(candidate);
+  }
+
+  function gatherRecentOutgoingNeedingStatus(conversationId, limit = OUTGOING_STATUS_RECONCILE_ID_LIMIT) {
+    const convId = String(conversationId || '').trim();
+    if (!convId || !Number.isFinite(Number(limit)) || Number(limit) <= 0) {
+      return { messageIds: [], messageMap: new Map() };
+    }
+    const timeline = timelineGetTimeline(convId);
+    const messageIds = [];
+    const messageMap = new Map();
+    const seen = new Set();
+    if (!Array.isArray(timeline)) return { messageIds, messageMap };
+    for (let i = timeline.length - 1; i >= 0 && messageIds.length < limit; i -= 1) {
+      const msg = timeline[i];
+      if (!msg || msg.direction !== 'outgoing') continue;
+      const status = typeof msg.status === 'string' ? msg.status : null;
+      if (status === 'failed' || status === 'delivered' || status === 'read') continue;
+      if (status !== 'sent' && status !== 'pending' && msg.pending !== true) continue;
+      const messageId = resolveOutgoingStatusMessageId(msg);
+      if (!messageId || seen.has(messageId)) continue;
+      seen.add(messageId);
+      messageIds.push(messageId);
+      messageMap.set(messageId, msg);
+    }
+    return { messageIds, messageMap };
+  }
+
+  async function reconcileOutgoingStatusForConversation({ conversationId, peerAccountDigest, source } = {}) {
+    const convId = String(conversationId || '').trim();
+    if (!convId) return false;
+    if (!isHistoryReplayDoneForConversation(convId)) return false;
+    const { messageIds, messageMap } = gatherRecentOutgoingNeedingStatus(convId, OUTGOING_STATUS_RECONCILE_ID_LIMIT);
+    if (!messageIds.length) return false;
+    let senderDeviceId = null;
+    try {
+      senderDeviceId = ensureDeviceId();
+    } catch (err) {
+      logCapped('outgoingStatusReconcileError', {
+        conversationIdPrefix8: convId.slice(0, 8),
+        error: err?.message || err
+      }, OFFLINE_SYNC_LOG_CAP);
+      return false;
+    }
+    const receiverDigest = resolveOutgoingStatusPeerDigest(convId, peerAccountDigest);
+    if (!receiverDigest) {
+      logCapped('outgoingStatusReconcileError', {
+        conversationIdPrefix8: convId.slice(0, 8),
+        error: 'missing receiverAccountDigest'
+      }, OFFLINE_SYNC_LOG_CAP);
+      return false;
+    }
+    try {
+      const { r, data } = await fetchOutgoingStatus({
+        conversationId: convId,
+        senderDeviceId,
+        receiverAccountDigest: receiverDigest,
+        messageIds
+      });
+      if (!r?.ok || !data?.ok) {
+        logCapped('outgoingStatusReconcileError', {
+          conversationIdPrefix8: convId.slice(0, 8),
+          error: `status_${r?.status ?? 'unknown'}`
+        }, OFFLINE_SYNC_LOG_CAP);
+        return false;
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const statusById = new Map();
+      for (const item of items) {
+        const messageId = resolveOutgoingStatusMessageId(item);
+        if (!messageId) continue;
+        statusById.set(messageId, item);
+      }
+      let deliveredCount = 0;
+      let sentCount = 0;
+      let notFoundCount = 0;
+      let changed = false;
+      for (const messageId of messageIds) {
+        const item = statusById.get(messageId) || null;
+        if (!item) {
+          notFoundCount += 1;
+          continue;
+        }
+        const outgoingCount = Number(item?.outgoingCount) || 0;
+        const incomingCount = Number(item?.incomingCount) || 0;
+        let nextStatus = null;
+        if (outgoingCount > 0 && incomingCount > 0) {
+          nextStatus = 'delivered';
+          deliveredCount += 1;
+        } else if (outgoingCount > 0) {
+          nextStatus = 'sent';
+          sentCount += 1;
+        } else {
+          notFoundCount += 1;
+          continue;
+        }
+        const msg = messageMap.get(messageId);
+        if (msg && applyOutgoingVaultStatus(msg, nextStatus, 'OUTGOING_STATUS_RECONCILE')) {
+          changed = true;
+        }
+      }
+      logCapped('outgoingStatusReconcileTrace', {
+        conversationIdPrefix8: convId.slice(0, 8),
+        requestedCount: messageIds.length,
+        deliveredCount,
+        sentCount,
+        notFoundCount,
+        source: source || null
+      }, OFFLINE_SYNC_LOG_CAP);
+      if (changed) {
+        const state = getMessageState();
+        if (state.conversationId === convId) updateMessagesStatusUI();
+      }
+      return changed;
+    } catch (err) {
+      logCapped('outgoingStatusReconcileError', {
+        conversationIdPrefix8: convId.slice(0, 8),
+        error: err?.message || err
+      }, OFFLINE_SYNC_LOG_CAP);
+      return false;
+    }
+  }
+
+  function triggerOutgoingStatusReconcile({ conversationId, peerAccountDigest, source } = {}) {
+    const state = getMessageState();
+    const convId = conversationId || state.conversationId || null;
+    if (!convId) return;
+    reconcileOutgoingStatusForConversation({
+      conversationId: convId,
+      peerAccountDigest: peerAccountDigest || (state.conversationId === convId ? state.activePeerDigest : null),
+      source
+    });
+  }
+
   async function reconstructOutgoingVaultStatus({ conversationId, peerAccountDigest, timelineMessages } = {}) {
     if (!conversationId || !peerAccountDigest || !Array.isArray(timelineMessages) || !timelineMessages.length) return false;
     let senderDeviceId = null;
@@ -4211,6 +4368,11 @@ export function initMessagesPane({
       jobId: res?.jobId ?? res?.job?.jobId ?? null
     });
     logOutgoingStatusTrace(message, fromStatus, 'sent', reasonCode);
+    triggerOutgoingStatusReconcile({
+      conversationId: message.conversationId || null,
+      peerAccountDigest: message.peerAccountDigest || null,
+      source: 'send_ok'
+    });
   }
 
   function applyOutgoingFailure(message, err, fallbackReason, reasonCode = 'SEND_FAIL') {
@@ -5770,6 +5932,9 @@ export function initMessagesPane({
           log({ refreshAfterReconnectLoadError: err?.message || err });
         }
       }
+    },
+    reconcileOutgoingStatusNow: ({ conversationId, peerAccountDigest, source } = {}) => {
+      triggerOutgoingStatusReconcile({ conversationId, peerAccountDigest, source });
     },
     updateLayoutMode,
     renderConversationList,

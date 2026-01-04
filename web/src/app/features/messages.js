@@ -146,7 +146,9 @@ const OFFLINE_SYNC_SOURCES = new Set([
   'login',
   'ws_reconnect',
   'pull_to_refresh',
-  'enter_conversation'
+  'enter_conversation',
+  'visibility_resume',
+  'pageshow_resume'
 ]);
 const OFFLINE_SYNC_PREFIX_LEN = 8;
 const OFFLINE_SYNC_SUFFIX_LEN = 4;
@@ -3558,28 +3560,16 @@ async function flushPendingVaultPutsNow() {
 function collectOfflineCatchupTargets() {
   const targets = [];
   const seen = new Set();
-  const activeState = sessionStore?.messageState || null;
-  if (activeState?.conversationId && activeState?.conversationToken && activeState?.activePeerDigest && activeState?.activePeerDeviceId) {
-    const convId = String(activeState.conversationId);
-    targets.push({
-      conversationId: convId,
-      tokenB64: activeState.conversationToken,
-      peerAccountDigest: activeState.activePeerDigest,
-      peerDeviceId: activeState.activePeerDeviceId
-    });
-    seen.add(convId);
-  }
-  const readyList = Array.isArray(listReadyContacts()) ? listReadyContacts() : [];
-  let added = 0;
-  for (const entry of readyList) {
-    if (added >= OFFLINE_CATCHUP_CONVERSATION_LIMIT) break;
-    const conversationId = entry?.conversationId || entry?.conversation?.conversation_id || null;
-    const tokenB64 = entry?.conversationToken || entry?.conversation?.token_b64 || null;
+  const maxTargets = OFFLINE_CATCHUP_CONVERSATION_LIMIT;
+  const addTarget = (entry) => {
+    if (!entry || targets.length >= maxTargets) return false;
+    const conversationId = entry?.conversationId || null;
+    const tokenB64 = entry?.tokenB64 || entry?.token_b64 || null;
     const peerAccountDigest = entry?.peerAccountDigest || entry?.peerKey || null;
     const peerDeviceId = entry?.peerDeviceId || null;
-    if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) continue;
+    if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) return false;
     const convKey = String(conversationId);
-    if (seen.has(convKey)) continue;
+    if (seen.has(convKey)) return false;
     seen.add(convKey);
     targets.push({
       conversationId: convKey,
@@ -3587,7 +3577,96 @@ function collectOfflineCatchupTargets() {
       peerAccountDigest,
       peerDeviceId
     });
-    added += 1;
+    return true;
+  };
+
+  const activeState = sessionStore?.messageState || null;
+  addTarget({
+    conversationId: activeState?.conversationId || null,
+    tokenB64: activeState?.conversationToken || null,
+    peerAccountDigest: activeState?.activePeerDigest || null,
+    peerDeviceId: activeState?.activePeerDeviceId || null
+  });
+
+  const candidates = [];
+  let order = 0;
+  const readyList = Array.isArray(listReadyContacts()) ? listReadyContacts() : [];
+  for (const entry of readyList) {
+    const conversationId = entry?.conversationId || entry?.conversation?.conversation_id || null;
+    const tokenB64 = entry?.conversationToken || entry?.conversation?.token_b64 || null;
+    const peerAccountDigest = entry?.peerAccountDigest || entry?.peerKey || null;
+    const peerDeviceId = entry?.peerDeviceId || null;
+    if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) continue;
+    candidates.push({
+      conversationId: String(conversationId),
+      tokenB64,
+      peerAccountDigest,
+      peerDeviceId,
+      order
+    });
+    order += 1;
+  }
+  const convIndexEntries = sessionStore?.conversationIndex && typeof sessionStore.conversationIndex.entries === 'function'
+    ? Array.from(sessionStore.conversationIndex.entries())
+    : [];
+  for (const [convId, entry] of convIndexEntries) {
+    const conversationId = entry?.conversationId || convId || null;
+    const tokenB64 = entry?.token_b64 || entry?.conversationToken || entry?.tokenB64 || null;
+    const peerAccountDigest = entry?.peerAccountDigest || entry?.peerKey || null;
+    const peerDeviceId = entry?.peerDeviceId || null;
+    if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) continue;
+    candidates.push({
+      conversationId: String(conversationId),
+      tokenB64,
+      peerAccountDigest,
+      peerDeviceId,
+      order
+    });
+    order += 1;
+  }
+
+  const merged = new Map();
+  for (const entry of candidates) {
+    const key = entry.conversationId;
+    const prev = merged.get(key);
+    if (!prev) {
+      merged.set(key, entry);
+      continue;
+    }
+    merged.set(key, {
+      ...prev,
+      tokenB64: prev.tokenB64 || entry.tokenB64,
+      peerAccountDigest: prev.peerAccountDigest || entry.peerAccountDigest,
+      peerDeviceId: prev.peerDeviceId || entry.peerDeviceId
+    });
+  }
+
+  const threads = sessionStore?.conversationThreads;
+  let hasActivity = false;
+  const ordered = Array.from(merged.values()).map((entry) => {
+    const thread = threads?.get?.(entry.conversationId) || null;
+    const lastActiveTs = entry?.lastActiveTs
+      ?? thread?.lastActiveTs
+      ?? thread?.lastMessageTs
+      ?? thread?.lastReadTs
+      ?? null;
+    const lastActive = Number.isFinite(Number(lastActiveTs)) ? Number(lastActiveTs) : null;
+    if (lastActive !== null) hasActivity = true;
+    return { ...entry, lastActiveTs: lastActive };
+  });
+
+  ordered.sort((a, b) => {
+    if (hasActivity) {
+      const aTs = a.lastActiveTs || 0;
+      const bTs = b.lastActiveTs || 0;
+      if (bTs !== aTs) return bTs - aTs;
+    }
+    return a.order - b.order;
+  });
+
+  for (const entry of ordered) {
+    if (targets.length >= maxTargets) break;
+    addTarget(entry);
   }
   return targets;
 }
@@ -3603,6 +3682,11 @@ export async function syncOfflineDecryptNow({ source } = {}) {
   const targets = collectOfflineCatchupTargets();
   const plannedCount = targets.length;
   const conversationIds = targets.map((entry) => slicePrefix(entry?.conversationId)).filter(Boolean).slice(0, OFFLINE_SYNC_LOG_CAP);
+  logCapped('offlineCatchupTargetsTrace', {
+    source: sourceTag,
+    plannedCount,
+    sampleConvPrefix8: conversationIds
+  }, OFFLINE_SYNC_LOG_CAP);
   let attemptedCount = 0;
   let successCount = 0;
   let failCount = 0;
