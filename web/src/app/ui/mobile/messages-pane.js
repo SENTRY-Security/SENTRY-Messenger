@@ -3,7 +3,7 @@ import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, nor
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, syncOfflineDecryptNow } from '../../features/messages.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
-import { retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
+import { flushOutbox, retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
 import { MessageKeyVault } from '../../features/message-key-vault.js';
 import {
   ensureSecureConversationReady,
@@ -4209,173 +4209,177 @@ export function initMessagesPane({
   }
 
   async function resendFailedOutgoingMessage(message) {
-    if (!message || message.direction !== 'outgoing') return;
-    if (message.status !== 'failed') return;
-    if (message.failureCode === 'COUNTER_TOO_LOW_REPLACED') {
-      updateMessagesStatusUI();
-      return;
-    }
-    const state = getMessageState();
-    const convId = message.conversationId || state.conversationId || null;
-    const messageId = message.localId || message.messageId || message.id || null;
-    if (!convId || !messageId) {
-      applyOutgoingFailure(message, new Error('missing conversation or message id'), '無法重送：缺少對話資訊');
-      updateMessagesStatusUI();
-      return;
-    }
-    applyOutgoingPending(message, 'RESEND');
-    updateMessagesStatusUI();
-    let retryResult = null;
     try {
-      retryResult = await retryOutboxMessage({ conversationId: convId, messageId });
-    } catch (err) {
-      retryResult = { ok: false, error: err?.message || err, errorCode: err?.code || null };
-    }
-    if (retryResult?.ok) {
+      if (!message || message.direction !== 'outgoing') return;
+      if (message.status !== 'failed') return;
+      if (message.failureCode === 'COUNTER_TOO_LOW_REPLACED') {
+        updateMessagesStatusUI();
+        return;
+      }
+      const state = getMessageState();
+      const convId = message.conversationId || state.conversationId || null;
+      const messageId = message.localId || message.messageId || message.id || null;
+      if (!convId || !messageId) {
+        applyOutgoingFailure(message, new Error('missing conversation or message id'), '無法重送：缺少對話資訊');
+        updateMessagesStatusUI();
+        return;
+      }
+      applyOutgoingPending(message, 'RESEND');
+      updateMessagesStatusUI();
+      let retryResult = null;
       try {
-        applyOutgoingSent(message, retryResult.data, message.ts || Math.floor(Date.now() / 1000));
+        retryResult = await retryOutboxMessage({ conversationId: convId, messageId });
       } catch (err) {
-        applyOutgoingFailure(message, err, '重送失敗');
+        retryResult = { ok: false, error: err?.message || err, errorCode: err?.code || null };
       }
-      updateMessagesStatusUI();
-      return;
-    }
-    if (retryResult?.errorCode === 'COUNTER_TOO_LOW_REPLACED') {
-      applyCounterTooLowReplaced(message);
-      updateMessagesStatusUI();
-      return;
-    }
-    if (retryResult?.errorCode === 'OutboxInflight') {
-      updateMessagesStatusUI();
-      return;
-    }
-    if (isCounterTooLowError(retryResult)) {
-      updateMessagesStatusUI();
-      return;
-    }
-    if (retryResult?.errorCode !== 'OutboxJobMissing') {
-      applyOutgoingFailure(message, retryResult, '重送失敗');
-      updateMessagesStatusUI();
-      return;
-    }
-    let senderDeviceId = message.senderDeviceId || null;
-    if (!senderDeviceId) {
-      try { senderDeviceId = ensureDeviceId(); } catch {}
-    }
-    if (!senderDeviceId) {
-      applyOutgoingFailure(message, new Error('deviceId missing'), '無法重送：缺少裝置資訊');
-      updateMessagesStatusUI();
-      return;
-    }
-    const vaultRes = await MessageKeyVault.getMessageKey({ conversationId: convId, messageId, senderDeviceId });
-    if (vaultRes?.ok) {
-      applyOutgoingFailure(message, new Error('outbox payload missing'), '無法重送：缺少出站封包');
-      updateMessagesStatusUI();
-      return;
-    }
-    if (vaultRes?.error && vaultRes.error !== 'NotFound') {
-      applyOutgoingFailure(message, new Error(vaultRes?.message || 'vault get failed'), '無法重送：金鑰讀取失敗');
-      updateMessagesStatusUI();
-      return;
-    }
-    if (message.type && message.type !== 'text') {
-      applyOutgoingFailure(message, new Error('outbox payload missing for media'), '無法重送：缺少原始內容');
-      updateMessagesStatusUI();
-      return;
-    }
-    const peerAccountDigest = message.peerAccountDigest || state.activePeerDigest || resolvePeerForConversation(convId, state.activePeerDigest);
-    const peerDeviceId = message.peerDeviceId || resolveTargetDeviceForConv(convId, peerAccountDigest) || state.activePeerDeviceId || null;
-    if (!peerAccountDigest || !peerDeviceId) {
-      applyOutgoingFailure(message, new Error('peer missing'), '無法重送：缺少對端裝置資訊');
-      updateMessagesStatusUI();
-      return;
-    }
-    try {
-      const res = await sendDrText({
-        peerAccountDigest,
-        peerDeviceId,
-        text: message.text || '',
-        messageId
-      });
-      const replacementInfo = getReplacementInfo(res);
-      const convIdFinal = res?.convId || convId;
-      if (replacementInfo) {
-        applyCounterTooLowReplaced(message);
-        const replacementTs = res?.msg?.ts || message.ts || Math.floor(Date.now() / 1000);
-        let replacementMsg = convIdFinal ? findTimelineMessageById(convIdFinal, replacementInfo.newMessageId) : null;
-        if (!replacementMsg) {
-          replacementMsg = appendLocalOutgoingMessage({
-            text: message.text || '',
-            ts: replacementTs,
-            id: replacementInfo.newMessageId
-          });
-        }
-        if (!res?.queued && replacementMsg) {
-          applyOutgoingSent(replacementMsg, res, replacementTs, 'COUNTER_TOO_LOW_REPLACED');
+      if (retryResult?.ok) {
+        try {
+          applyOutgoingSent(message, retryResult.data, message.ts || Math.floor(Date.now() / 1000));
+        } catch (err) {
+          applyOutgoingFailure(message, err, '重送失敗');
         }
         updateMessagesStatusUI();
-        if (!res?.queued && convIdFinal) {
-          const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
-          let senderDeviceId = null;
-          try { senderDeviceId = ensureDeviceId(); } catch {}
-          wsSendFn({
-            type: 'message-new',
-            targetAccountDigest: peerAccountDigest,
-            conversationId: convIdFinal,
-            preview: message.text || '',
-            ts: replacementTs,
-            targetDeviceId,
-            senderDeviceId
-          });
+        return;
+      }
+      if (retryResult?.errorCode === 'COUNTER_TOO_LOW_REPLACED') {
+        applyCounterTooLowReplaced(message);
+        updateMessagesStatusUI();
+        return;
+      }
+      if (retryResult?.errorCode === 'OutboxInflight') {
+        updateMessagesStatusUI();
+        return;
+      }
+      if (isCounterTooLowError(retryResult)) {
+        updateMessagesStatusUI();
+        return;
+      }
+      if (retryResult?.errorCode !== 'OutboxJobMissing') {
+        applyOutgoingFailure(message, retryResult, '重送失敗');
+        updateMessagesStatusUI();
+        return;
+      }
+      let senderDeviceId = message.senderDeviceId || null;
+      if (!senderDeviceId) {
+        try { senderDeviceId = ensureDeviceId(); } catch {}
+      }
+      if (!senderDeviceId) {
+        applyOutgoingFailure(message, new Error('deviceId missing'), '無法重送：缺少裝置資訊');
+        updateMessagesStatusUI();
+        return;
+      }
+      const vaultRes = await MessageKeyVault.getMessageKey({ conversationId: convId, messageId, senderDeviceId });
+      if (vaultRes?.ok) {
+        applyOutgoingFailure(message, new Error('outbox payload missing'), '無法重送：缺少出站封包');
+        updateMessagesStatusUI();
+        return;
+      }
+      if (vaultRes?.error && vaultRes.error !== 'NotFound') {
+        applyOutgoingFailure(message, new Error(vaultRes?.message || 'vault get failed'), '無法重送：金鑰讀取失敗');
+        updateMessagesStatusUI();
+        return;
+      }
+      if (message.type && message.type !== 'text') {
+        applyOutgoingFailure(message, new Error('outbox payload missing for media'), '無法重送：缺少原始內容');
+        updateMessagesStatusUI();
+        return;
+      }
+      const peerAccountDigest = message.peerAccountDigest || state.activePeerDigest || resolvePeerForConversation(convId, state.activePeerDigest);
+      const peerDeviceId = message.peerDeviceId || resolveTargetDeviceForConv(convId, peerAccountDigest) || state.activePeerDeviceId || null;
+      if (!peerAccountDigest || !peerDeviceId) {
+        applyOutgoingFailure(message, new Error('peer missing'), '無法重送：缺少對端裝置資訊');
+        updateMessagesStatusUI();
+        return;
+      }
+      try {
+        const res = await sendDrText({
+          peerAccountDigest,
+          peerDeviceId,
+          text: message.text || '',
+          messageId
+        });
+        const replacementInfo = getReplacementInfo(res);
+        const convIdFinal = res?.convId || convId;
+        if (replacementInfo) {
+          applyCounterTooLowReplaced(message);
+          const replacementTs = res?.msg?.ts || message.ts || Math.floor(Date.now() / 1000);
+          let replacementMsg = convIdFinal ? findTimelineMessageById(convIdFinal, replacementInfo.newMessageId) : null;
+          if (!replacementMsg) {
+            replacementMsg = appendLocalOutgoingMessage({
+              text: message.text || '',
+              ts: replacementTs,
+              id: replacementInfo.newMessageId
+            });
+          }
+          if (!res?.queued && replacementMsg) {
+            applyOutgoingSent(replacementMsg, res, replacementTs, 'COUNTER_TOO_LOW_REPLACED');
+          }
+          updateMessagesStatusUI();
+          if (!res?.queued && convIdFinal) {
+            const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
+            let senderDeviceId = null;
+            try { senderDeviceId = ensureDeviceId(); } catch {}
+            wsSendFn({
+              type: 'message-new',
+              targetAccountDigest: peerAccountDigest,
+              conversationId: convIdFinal,
+              preview: message.text || '',
+              ts: replacementTs,
+              targetDeviceId,
+              senderDeviceId
+            });
+          }
+          if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
+          return;
         }
+        if (res?.queued) {
+          updateMessagesStatusUI();
+          return;
+        }
+        applyOutgoingSent(message, res, message.ts || Math.floor(Date.now() / 1000));
+        updateMessagesStatusUI();
         if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
-        return;
-      }
-      if (res?.queued) {
-        updateMessagesStatusUI();
-        return;
-      }
-      applyOutgoingSent(message, res, message.ts || Math.floor(Date.now() / 1000));
-      updateMessagesStatusUI();
-      if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
-      const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
-      let senderDeviceId = null;
-      try { senderDeviceId = ensureDeviceId(); } catch {}
-      wsSendFn({
-        type: 'message-new',
-        targetAccountDigest: peerAccountDigest,
-        conversationId: convIdFinal,
-        preview: message.text || '',
-        ts: message.ts || Math.floor(Date.now() / 1000),
-        targetDeviceId,
-        senderDeviceId
-      });
-    } catch (err) {
-      const replacementInfo = getReplacementInfo(err);
-      if (replacementInfo) {
-        applyCounterTooLowReplaced(message);
-        const replacementTs = message.ts || Math.floor(Date.now() / 1000);
-        let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
-        if (!replacementMsg) {
-          replacementMsg = appendLocalOutgoingMessage({
-            text: message.text || '',
-            ts: replacementTs,
-            id: replacementInfo.newMessageId
-          });
+        const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
+        let senderDeviceId = null;
+        try { senderDeviceId = ensureDeviceId(); } catch {}
+        wsSendFn({
+          type: 'message-new',
+          targetAccountDigest: peerAccountDigest,
+          conversationId: convIdFinal,
+          preview: message.text || '',
+          ts: message.ts || Math.floor(Date.now() / 1000),
+          targetDeviceId,
+          senderDeviceId
+        });
+      } catch (err) {
+        const replacementInfo = getReplacementInfo(err);
+        if (replacementInfo) {
+          applyCounterTooLowReplaced(message);
+          const replacementTs = message.ts || Math.floor(Date.now() / 1000);
+          let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
+          if (!replacementMsg) {
+            replacementMsg = appendLocalOutgoingMessage({
+              text: message.text || '',
+              ts: replacementTs,
+              id: replacementInfo.newMessageId
+            });
+          }
+          if (replacementMsg) {
+            applyOutgoingFailure(replacementMsg, err, '重送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+          }
+          updateMessagesStatusUI();
+          return;
         }
-        if (replacementMsg) {
-          applyOutgoingFailure(replacementMsg, err, '重送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+        if (isCounterTooLowError(err)) {
+          applyCounterTooLowReplaced(message);
+          updateMessagesStatusUI();
+          return;
         }
+        applyOutgoingFailure(message, err, '重送失敗');
         updateMessagesStatusUI();
-        return;
       }
-      if (isCounterTooLowError(err)) {
-        applyCounterTooLowReplaced(message);
-        updateMessagesStatusUI();
-        return;
-      }
-      applyOutgoingFailure(message, err, '重送失敗');
-      updateMessagesStatusUI();
+    } finally {
+      flushOutbox({ sourceTag: 'resend' }).catch(() => {});
     }
   }
 

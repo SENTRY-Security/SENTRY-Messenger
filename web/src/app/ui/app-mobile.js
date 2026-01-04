@@ -5,6 +5,7 @@
 import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
+import { flushOutbox } from '../features/queue/outbox.js';
 import {
   getMkRaw,
   setMkRaw,
@@ -3662,6 +3663,7 @@ postLoginInitPromise
     messagesPane.renderConversationList();
     syncOfflineDecryptNow({ source: 'login' })
       .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'login' }));
+    flushOutbox({ sourceTag: 'post_login' }).catch(() => {});
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
@@ -3928,6 +3930,7 @@ function handleWebSocketMessage(msg) {
       messagesPane.refreshAfterReconnect?.();
       syncOfflineDecryptNow({ source: 'ws_reconnect' })
         .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'ws_reconnect' }));
+      flushOutbox({ sourceTag: 'ws_auth_ok' }).catch(() => {});
     }
     return;
   }

@@ -1668,7 +1668,6 @@ async function sendDrPlaintext(params = {}) {
       err.code = err.code || 'VaultPutFailed';
       throw err;
     }
-    startOutboxProcessor();
     const job = await enqueueOutboxJob({
       conversationId: finalConversationId,
       messageId,
@@ -1847,7 +1846,6 @@ async function sendDrPlaintext(params = {}) {
           throw err;
         }
 
-        startOutboxProcessor();
         const repairJob = await enqueueOutboxJob({
           conversationId: finalConversationId,
           messageId: replacementMessageId,
@@ -2545,7 +2543,6 @@ export async function sendDrMedia(params = {}) {
     restoreSendFailure(err);
   }
 
-  startOutboxProcessor();
   const job = await enqueueMediaMetaJob({
     conversationId,
     messageId,
@@ -2714,7 +2711,6 @@ export async function sendDrMedia(params = {}) {
         restoreSendFailure(err);
       }
 
-      startOutboxProcessor();
       const repairJob = await enqueueMediaMetaJob({
         conversationId,
         messageId: replacementMessageId,

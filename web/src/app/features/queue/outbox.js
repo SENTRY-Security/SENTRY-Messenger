@@ -19,7 +19,6 @@ const STATE_INFLIGHT = 'inflight';
 const STATE_SENT = 'sent';
 const STATE_DEAD = 'dead-letter';
 
-const PROCESS_INTERVAL_MS = 4_000;
 const COUNTER_TOO_LOW_CODE = 'CounterTooLow';
 
 const convLocks = new Set();
@@ -28,8 +27,11 @@ const hooks = {
   onFailed: new Set()
 };
 
-let processorTimer = null;
-let processorNextAt = null;
+let nextDueTimer = null;
+let nextDueAtMs = null;
+let flushInFlight = false;
+let flushPending = false;
+let pendingSourceTag = null;
 let processing = false;
 let debug = false;
 
@@ -56,6 +58,33 @@ function logOutboxJobTrace({
   }, 5);
 }
 
+function logOutboxFlushTriggerTrace({ sourceTag, queuedJobs, dueJobs, nextDueAtMs } = {}) {
+  logCapped('outboxFlushTriggerTrace', {
+    sourceTag: sourceTag || null,
+    queuedJobs: Number.isFinite(Number(queuedJobs)) ? Number(queuedJobs) : 0,
+    dueJobs: Number.isFinite(Number(dueJobs)) ? Number(dueJobs) : 0,
+    nextDueAtMs: Number.isFinite(Number(nextDueAtMs)) ? Number(nextDueAtMs) : null
+  }, 5);
+}
+
+function logOutboxScheduleTrace({ scheduled, runAtMs, reasonCode } = {}) {
+  logCapped('outboxScheduleTrace', {
+    scheduled: !!scheduled,
+    runAtMs: Number.isFinite(Number(runAtMs)) ? Number(runAtMs) : null,
+    reasonCode: reasonCode || null
+  }, 5);
+}
+
+function logOutboxProcessSummary({ processed, sentOk, sentFail, skippedLocked, remainingDue } = {}) {
+  logCapped('outboxProcessSummary', {
+    processed: Number.isFinite(Number(processed)) ? Number(processed) : 0,
+    sentOk: Number.isFinite(Number(sentOk)) ? Number(sentOk) : 0,
+    sentFail: Number.isFinite(Number(sentFail)) ? Number(sentFail) : 0,
+    skippedLocked: Number.isFinite(Number(skippedLocked)) ? Number(skippedLocked) : 0,
+    remainingDue: Number.isFinite(Number(remainingDue)) ? Number(remainingDue) : 0
+  }, 5);
+}
+
 function safeParseHeader(headerJson) {
   if (!headerJson) return null;
   if (typeof headerJson === 'object') return headerJson;
@@ -66,16 +95,49 @@ function safeParseHeader(headerJson) {
   }
 }
 
-function scheduleProcessor(delay = PROCESS_INTERVAL_MS) {
-  const nextAt = Date.now() + delay;
-  if (processorTimer && processorNextAt && processorNextAt <= nextAt) return;
-  if (processorTimer) clearTimeout(processorTimer);
-  processorNextAt = nextAt;
-  processorTimer = setTimeout(() => {
-    processorTimer = null;
-    processorNextAt = null;
-    processOutbox();
-  }, delay);
+function scheduleNextDue(runAtMs, reasonCode) {
+  const nextAt = Number.isFinite(Number(runAtMs)) ? Number(runAtMs) : null;
+  const now = Date.now();
+  if (!nextAt || nextAt <= now) {
+    if (nextDueTimer) {
+      clearTimeout(nextDueTimer);
+      nextDueTimer = null;
+      nextDueAtMs = null;
+      logOutboxScheduleTrace({ scheduled: false, runAtMs: null, reasonCode: reasonCode || 'clear' });
+    }
+    return;
+  }
+  if (nextDueAtMs === nextAt && nextDueTimer) return;
+  if (nextDueTimer) clearTimeout(nextDueTimer);
+  nextDueAtMs = nextAt;
+  nextDueTimer = setTimeout(() => {
+    nextDueTimer = null;
+    nextDueAtMs = null;
+    flushOutbox({ sourceTag: 'next_due' }).catch(() => {});
+  }, Math.max(0, nextAt - now));
+  logOutboxScheduleTrace({ scheduled: true, runAtMs: nextDueAtMs, reasonCode: reasonCode || 'schedule' });
+}
+
+function deferFlush(sourceTag) {
+  const tag = sourceTag || 'deferred';
+  if (typeof queueMicrotask === 'function') {
+    queueMicrotask(() => {
+      flushOutbox({ sourceTag: tag }).catch(() => {});
+    });
+    return;
+  }
+  setTimeout(() => {
+    flushOutbox({ sourceTag: tag }).catch(() => {});
+  }, 0);
+}
+
+function requestFlush(sourceTag) {
+  if (flushInFlight) {
+    flushPending = true;
+    if (sourceTag) pendingSourceTag = sourceTag;
+    return;
+  }
+  deferFlush(sourceTag);
 }
 
 function normalizeJob(input = {}) {
@@ -144,7 +206,7 @@ export async function enqueueOutboxJob(input = {}) {
     ok: true,
     reasonCode: 'OUTBOX_ENQUEUE'
   });
-  scheduleProcessor(50);
+  flushOutbox({ sourceTag: 'enqueue' }).catch(() => {});
   return job;
 }
 
@@ -178,29 +240,42 @@ function shouldRetryTransient({ errorCode, statusCode }) {
   return true;
 }
 
-async function fetchDueJobs() {
-  const all = await listOutboxRecords();
+function computeOutboxState(all = []) {
   const pendingByConversation = new Map();
+  let queuedJobs = 0;
+  let nextDueAt = null;
+  const now = Date.now();
   for (const job of all) {
     if (!job || job.state === STATE_SENT || job.state === STATE_DEAD) continue;
     const conversationId = job?.conversationId || null;
     if (!conversationId) continue;
+    const isReadyState = job.state === STATE_QUEUED || !job.state;
+    if (isReadyState) queuedJobs += 1;
+    const nextAttemptAt = Number(job.nextAttemptAt);
+    if (Number.isFinite(nextAttemptAt) && nextAttemptAt > now) {
+      if (!nextDueAt || nextAttemptAt < nextDueAt) nextDueAt = nextAttemptAt;
+    }
     const current = pendingByConversation.get(conversationId);
     if (!current || compareJobOrder(job, current) < 0) {
       pendingByConversation.set(conversationId, job);
     }
   }
-  const filtered = [];
+  const dueJobs = [];
   for (const job of pendingByConversation.values()) {
-    if (isDue(job)) filtered.push(job);
+    if (isDue(job)) dueJobs.push(job);
   }
-  filtered.sort((a, b) => {
+  dueJobs.sort((a, b) => {
     const aTs = Number(a?.nextAttemptAt) || 0;
     const bTs = Number(b?.nextAttemptAt) || 0;
     if (aTs !== bTs) return aTs - bTs;
     return compareJobOrder(a, b);
   });
-  return filtered;
+  return { dueJobs, queuedJobs, nextDueAtMs: nextDueAt };
+}
+
+async function collectOutboxState() {
+  const all = await listOutboxRecords();
+  return computeOutboxState(all);
 }
 
 async function attemptSend(job) {
@@ -288,7 +363,6 @@ async function markFailure(job, err) {
         error: errorMessage,
         reasonCode: 'TRANSIENT_RETRY'
       });
-      scheduleProcessor(TRANSIENT_RETRY_INTERVAL_MS);
       return;
     }
   }
@@ -373,14 +447,55 @@ async function processSingle(job) {
   }
 }
 
-export async function processOutbox() {
+export async function flushOutbox({ sourceTag } = {}) {
+  const tag = typeof sourceTag === 'string' && sourceTag.trim().length ? sourceTag.trim() : 'unknown';
+  const state = await collectOutboxState();
+  logOutboxFlushTriggerTrace({
+    sourceTag: tag,
+    queuedJobs: state.queuedJobs,
+    dueJobs: state.dueJobs.length,
+    nextDueAtMs: state.nextDueAtMs
+  });
+  scheduleNextDue(state.nextDueAtMs, 'flush_trigger');
+  if (flushInFlight) {
+    flushPending = true;
+    pendingSourceTag = tag;
+    return;
+  }
+  flushInFlight = true;
+  try {
+    if (processing) {
+      flushPending = true;
+      pendingSourceTag = tag;
+      return;
+    }
+    if (state.dueJobs.length) {
+      await processOutbox({ dueJobs: state.dueJobs });
+    }
+  } finally {
+    flushInFlight = false;
+    if (flushPending) {
+      const followTag = pendingSourceTag || 'pending';
+      flushPending = false;
+      pendingSourceTag = null;
+      deferFlush(followTag);
+    }
+  }
+}
+
+export async function processOutbox({ dueJobs } = {}) {
   if (processing) return;
   processing = true;
+  let processed = 0;
+  let sentOk = 0;
+  let sentFail = 0;
+  let skippedLocked = 0;
   try {
-    const dueJobs = await fetchDueJobs();
-    for (const job of dueJobs) {
+    const jobs = Array.isArray(dueJobs) ? dueJobs : (await collectOutboxState()).dueJobs;
+    for (const job of jobs) {
       // skip if another job of same conversation is inflight
       if (convLocks.has(job.conversationId)) {
+        skippedLocked += 1;
         logOutboxJobTrace({
           job,
           stage: 'INFLIGHT_SKIP',
@@ -390,18 +505,32 @@ export async function processOutbox() {
         });
         continue;
       }
-      await processSingle(job);
+      processed += 1;
+      const ok = await processSingle(job);
+      if (ok) sentOk += 1;
+      else sentFail += 1;
     }
   } finally {
     processing = false;
-    scheduleProcessor();
   }
+  const postState = await collectOutboxState();
+  logOutboxProcessSummary({
+    processed,
+    sentOk,
+    sentFail,
+    skippedLocked,
+    remainingDue: postState.dueJobs.length
+  });
+  scheduleNextDue(postState.nextDueAtMs, 'post_process');
+  if (processed > 0) requestFlush('job_complete');
 }
 
 export async function processOutboxJobNow(jobId) {
   const job = await getOutboxRecord(jobId);
   if (!job) return { ok: false, error: 'job not found' };
+  let didAttempt = false;
   try {
+    didAttempt = true;
     await processSingle(job);
     const latest = await getOutboxRecord(jobId);
     const ok = latest?.state === STATE_SENT;
@@ -431,6 +560,8 @@ export async function processOutboxJobNow(jobId) {
       reasonCode: 'OUTBOX_PROCESS_NOW_ERROR'
     });
     return { ok: false, error: err?.message || String(err), status: Number.isFinite(err?.status) ? Number(err.status) : null };
+  } finally {
+    if (didAttempt) requestFlush('process_now');
   }
 }
 
@@ -481,7 +612,7 @@ export async function retryOutboxMessage({ conversationId, messageId } = {}) {
 }
 
 export function startOutboxProcessor() {
-  scheduleProcessor(100);
+  flushOutbox({ sourceTag: 'startup' }).catch(() => {});
 }
 
 export function isConversationLocked(conversationId) {
