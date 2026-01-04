@@ -53,7 +53,11 @@ const defaultWsState = {
 };
 
 const PENDING_INVITES_STORAGE_KEY = 'pendingInvites-v1';
+const OFFLINE_DECRYPT_CURSOR_STORAGE_KEY = 'offlineDecryptCursor-v1';
+const PENDING_VAULT_PUT_STORAGE_KEY = 'pendingVaultPut-v1';
 let pendingInvitesRestored = false;
+let offlineDecryptCursorRestored = false;
+let pendingVaultPutsRestored = false;
 
 const defaultSubscriptionState = {
   found: false,
@@ -135,6 +139,8 @@ export const sessionStore = {
   corruptContacts: new Map(),
   pendingContacts: new Map(),
   pendingInvites: new Map(),
+  offlineDecryptCursor: new Map(),
+  pendingVaultPuts: [],
   corruptContactBackups: new Map(),
   lastCorruptContactBackup: null,
   onlineContacts: new Set(),
@@ -258,6 +264,96 @@ export function persistPendingInvites() {
 export function listPendingInvites() {
   const store = ensurePendingInviteMap();
   return Array.from(store.values());
+}
+
+function ensureOfflineDecryptCursorMap() {
+  if (!(sessionStore.offlineDecryptCursor instanceof Map)) {
+    const entries = sessionStore.offlineDecryptCursor && typeof sessionStore.offlineDecryptCursor.entries === 'function'
+      ? Array.from(sessionStore.offlineDecryptCursor.entries())
+      : [];
+    sessionStore.offlineDecryptCursor = new Map(entries);
+  }
+  return sessionStore.offlineDecryptCursor;
+}
+
+export function restoreOfflineDecryptCursorStore() {
+  const store = ensureOfflineDecryptCursorMap();
+  if (offlineDecryptCursorRestored) return store;
+  offlineDecryptCursorRestored = true;
+  let parsed = [];
+  try {
+    const raw = typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem(OFFLINE_DECRYPT_CURSOR_STORAGE_KEY)
+      : null;
+    if (raw) parsed = JSON.parse(raw);
+  } catch {
+    parsed = [];
+  }
+  if (!Array.isArray(parsed)) return store;
+  for (const entry of parsed) {
+    const conversationId = typeof entry?.conversationId === 'string' ? entry.conversationId.trim() : '';
+    if (!conversationId) continue;
+    const cursorTs = Number.isFinite(Number(entry?.cursorTs)) ? Number(entry.cursorTs) : null;
+    const cursorId = typeof entry?.cursorId === 'string' ? entry.cursorId.trim() : null;
+    const hasMoreAtCursor = entry?.hasMoreAtCursor === true;
+    const updatedAt = Number.isFinite(Number(entry?.updatedAt)) ? Number(entry.updatedAt) : null;
+    store.set(conversationId, { cursorTs, cursorId, hasMoreAtCursor, updatedAt });
+  }
+  return store;
+}
+
+export function persistOfflineDecryptCursorStore() {
+  const store = ensureOfflineDecryptCursorMap();
+  const payload = [];
+  for (const [conversationId, entry] of store.entries()) {
+    if (!conversationId) continue;
+    payload.push({
+      conversationId,
+      cursorTs: Number.isFinite(Number(entry?.cursorTs)) ? Number(entry.cursorTs) : null,
+      cursorId: typeof entry?.cursorId === 'string' ? entry.cursorId.trim() : null,
+      hasMoreAtCursor: entry?.hasMoreAtCursor === true,
+      updatedAt: Number.isFinite(Number(entry?.updatedAt)) ? Number(entry.updatedAt) : null
+    });
+  }
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(OFFLINE_DECRYPT_CURSOR_STORAGE_KEY, JSON.stringify(payload));
+    }
+  } catch {}
+}
+
+function ensurePendingVaultPutQueue() {
+  if (!Array.isArray(sessionStore.pendingVaultPuts)) {
+    sessionStore.pendingVaultPuts = Array.isArray(sessionStore.pendingVaultPuts) ? sessionStore.pendingVaultPuts : [];
+  }
+  return sessionStore.pendingVaultPuts;
+}
+
+export function restorePendingVaultPuts() {
+  const queue = ensurePendingVaultPutQueue();
+  if (pendingVaultPutsRestored) return queue;
+  pendingVaultPutsRestored = true;
+  let parsed = [];
+  try {
+    const raw = typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem(PENDING_VAULT_PUT_STORAGE_KEY)
+      : null;
+    if (raw) parsed = JSON.parse(raw);
+  } catch {
+    parsed = [];
+  }
+  if (!Array.isArray(parsed)) return queue;
+  sessionStore.pendingVaultPuts = parsed.filter((entry) => entry && typeof entry === 'object');
+  return sessionStore.pendingVaultPuts;
+}
+
+export function persistPendingVaultPuts() {
+  const queue = ensurePendingVaultPutQueue();
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(PENDING_VAULT_PUT_STORAGE_KEY, JSON.stringify(queue));
+    }
+  } catch {}
 }
 
 export async function hydrateConversationsFromSecrets() {

@@ -8,7 +8,7 @@ import { hydrateConversationsFromSecrets } from './session-store.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
-import { markConversationTombstone } from '../../features/messages.js';
+import { markConversationTombstone, syncOfflineDecryptNow } from '../../features/messages.js';
 import { DEBUG } from './debug-flags.js';
 import {
   upsertContactCore,
@@ -433,6 +433,8 @@ export function initContactsView(options) {
       try {
         await loadInitialContacts();
       } finally {
+        syncOfflineDecryptNow({ source: 'pull_to_refresh' })
+          .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'pull_to_refresh' }));
         contactsRefreshing = false;
         resetContactsPull({ animate: true });
       }

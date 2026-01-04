@@ -1,6 +1,6 @@
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter } from '../../features/messages.js';
+import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, syncOfflineDecryptNow } from '../../features/messages.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
 import { retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
@@ -1759,7 +1759,8 @@ export function initMessagesPane({
 
   function handleMessagesScroll() {
     if (!elements.scrollEl) return;
-    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
+    const atBottom = isNearMessagesBottom();
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !atBottom) {
       elements.input.blur();
     }
     const state = getMessageState();
@@ -1773,14 +1774,14 @@ export function initMessagesPane({
     } else {
       setLoadMoreState('idle');
     }
-    if (isNearMessagesBottom()) {
+    if (atBottom) {
       setNewMessageHint(false);
     }
   }
 
   function handleMessagesTouchEnd() {
     if (!elements.scrollEl) return;
-    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !isNearMessagesBottom()) {
       elements.input.blur();
     }
     if (elements.scrollEl.scrollTop <= 0) {
@@ -1790,7 +1791,7 @@ export function initMessagesPane({
 
   function handleMessagesWheel() {
     if (!elements.scrollEl) return;
-    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !isNearMessagesBottom()) {
       elements.input.blur();
     }
     if (elements.scrollEl.scrollTop <= 0) {
@@ -3651,6 +3652,8 @@ export function initMessagesPane({
         } catch {}
       }
       await loadActiveConversationMessages({ append: false, replay: !historyReplayDone, reason: 'open' });
+      syncOfflineDecryptNow({ source: 'enter_conversation' })
+        .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'enter_conversation' }));
     }
   }
 

@@ -82,7 +82,7 @@ import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
-import { resetAllProcessedMessages, resetReceiptStore } from '../features/messages.js';
+import { resetAllProcessedMessages, resetReceiptStore, syncOfflineDecryptNow } from '../features/messages.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
@@ -3660,6 +3660,8 @@ postLoginInitPromise
   .catch((err) => log({ contactsInitError: err?.message || err }))
   .finally(() => {
     messagesPane.renderConversationList();
+    syncOfflineDecryptNow({ source: 'login' })
+      .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'login' }));
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
@@ -3924,6 +3926,8 @@ function handleWebSocketMessage(msg) {
     if (msg?.ok) {
       presenceManager.sendPresenceSubscribe();
       messagesPane.refreshAfterReconnect?.();
+      syncOfflineDecryptNow({ source: 'ws_reconnect' })
+        .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'ws_reconnect' }));
     }
     return;
   }

@@ -32,7 +32,14 @@ import {
   snapshotDrState as sessionSnapshotDrState,
   cloneDrStateHolder as sessionCloneDrStateHolder
 } from './dr-session.js';
-import { sessionStore } from '../ui/mobile/session-store.js';
+import {
+  sessionStore,
+  restoreOfflineDecryptCursorStore,
+  persistOfflineDecryptCursorStore,
+  restorePendingVaultPuts,
+  persistPendingVaultPuts
+} from '../ui/mobile/session-store.js';
+import { listReadyContacts } from '../ui/mobile/contact-core-store.js';
 import { b64UrlToBytes as uiB64UrlToBytes } from '../ui/mobile/ui-utils.js';
 import { b64u8 as naclB64u8, b64 as naclB64 } from '../crypto/nacl.js';
 import { saveEnvelopeMeta as mediaSaveEnvelopeMeta } from './media.js';
@@ -57,6 +64,14 @@ import { sendDrReadReceipt as featureSendDrReadReceipt, sendDrDeliveryReceipt as
 import { enqueueInboxJob, processInboxForConversation } from './queue/inbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
 import { MessageKeyVault } from './message-key-vault.js';
+import {
+  OFFLINE_CATCHUP_CONVERSATION_LIMIT,
+  OFFLINE_CATCHUP_MESSAGE_LIMIT,
+  PENDING_VAULT_PUT_QUEUE_LIMIT,
+  PENDING_VAULT_PUT_RETRY_MAX,
+  PENDING_VAULT_PUT_RETRY_INTERVAL_MS,
+  OFFLINE_SYNC_LOG_CAP
+} from './messages-sync-policy.js';
 import { toU8Strict } from '../../shared/utils/u8-strict.js';
 import { logDrCore, logMsgEvent, shouldLogDrCore } from '../lib/logging.js';
 import { log, logForensicsEvent, logCapped } from '../core/log.js';
@@ -126,6 +141,42 @@ const NON_REPLAYABLE_SIGNAL_TYPES = new Set([
   CONTROL_MESSAGE_TYPES.READ_RECEIPT,
   CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT
 ]);
+const OFFLINE_SYNC_SOURCES = new Set([
+  'login',
+  'ws_reconnect',
+  'pull_to_refresh',
+  'enter_conversation'
+]);
+const OFFLINE_SYNC_PREFIX_LEN = 8;
+const OFFLINE_SYNC_SUFFIX_LEN = 4;
+const OFFLINE_SYNC_ERROR_MAX = 120;
+
+function slicePrefix(value, len = OFFLINE_SYNC_PREFIX_LEN) {
+  if (value === null || typeof value === 'undefined') return null;
+  const str = String(value);
+  return str.length ? str.slice(0, len) : null;
+}
+
+function sliceSuffix(value, len = OFFLINE_SYNC_SUFFIX_LEN) {
+  if (value === null || typeof value === 'undefined') return null;
+  const str = String(value);
+  return str.length ? str.slice(-len) : null;
+}
+
+function truncateErrorMessage(value, maxLen = OFFLINE_SYNC_ERROR_MAX) {
+  const str = value ? String(value) : '';
+  if (!str) return null;
+  if (str.length <= maxLen) return str;
+  return `${str.slice(0, maxLen)}...`;
+}
+
+function resolveErrorCode(err) {
+  if (!err) return null;
+  if (typeof err?.code === 'string' || typeof err?.code === 'number') return String(err.code);
+  if (typeof err?.errorCode === 'string' || typeof err?.errorCode === 'number') return String(err.errorCode);
+  if (typeof err?.status === 'number') return String(err.status);
+  return null;
+}
 
 function normalizeHeaderCounter(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -1610,6 +1661,7 @@ export async function listSecureAndDecrypt(params = {}) {
     };
     const handleDecryptedMessage = async (text, messageKeyB64) => {
       decryptFailMessageCache.delete(messageId);
+      let vaultPutStatus = null;
       if (!computedIsHistoryReplay) {
         const vaultMsgType = payloadMsgType || msgTypeForDecrypt || rawMsgType || null;
         if (!messageKeyB64) {
@@ -1626,6 +1678,7 @@ export async function listSecureAndDecrypt(params = {}) {
             messageKeyB64,
             headerCounter
           });
+          vaultPutStatus = 'ok';
         } catch (err) {
           try {
             log({
@@ -1642,7 +1695,21 @@ export async function listSecureAndDecrypt(params = {}) {
               }
             });
           } catch {}
-          throw err;
+          if (direction === 'incoming') {
+            vaultPutStatus = 'pending';
+            enqueuePendingVaultPut({
+              conversationId: convId || conversationId || null,
+              messageId,
+              senderDeviceId,
+              targetDeviceId: targetDeviceId || null,
+              direction,
+              msgType: vaultMsgType,
+              messageKeyB64,
+              headerCounter
+            }, err);
+          } else {
+            throw err;
+          }
         }
       }
       logMsgEvent('decrypt:ok', {
@@ -1905,7 +1972,7 @@ export async function listSecureAndDecrypt(params = {}) {
             messageId: messageObj.id,
             tokenB64,
             peerDeviceId: peerDeviceForMessage,
-            vaultPutStatus: 'ok'
+            vaultPutStatus: vaultPutStatus || 'ok'
           });
           if (sendReadReceipt) {
             maybeSendReadReceipt(convId, peerKey, peerDeviceForMessage, messageObj.id);
@@ -2977,4 +3044,355 @@ function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId
       log({ deliveryReceiptError: err?.message || err, conversationId, messageId });
     });
   }
+}
+
+function buildPendingVaultPutKey({ conversationId, messageId, senderDeviceId } = {}) {
+  return `${conversationId || 'unknown'}::${messageId || 'unknown'}::${senderDeviceId || 'unknown'}`;
+}
+
+function buildPendingTracePayload(item, action, attemptCount, errorCode = null, status = null) {
+  const attempt = Number.isFinite(Number(attemptCount)) ? Number(attemptCount) : 0;
+  const payload = {
+    action,
+    conversationId: slicePrefix(item?.conversationId),
+    messageId: item?.messageId || null,
+    senderDeviceId: sliceSuffix(item?.senderDeviceId),
+    attemptCount: attempt
+  };
+  if (errorCode) payload.errorCode = errorCode;
+  if (Number.isFinite(Number(status))) payload.status = Number(status);
+  return payload;
+}
+
+function buildRetryTracePayload(item, attemptCount, result, errorCode = null, status = null) {
+  const attempt = Number.isFinite(Number(attemptCount)) ? Number(attemptCount) : 0;
+  const payload = {
+    conversationId: slicePrefix(item?.conversationId),
+    messageId: item?.messageId || null,
+    attemptCount: attempt,
+    result
+  };
+  if (Number.isFinite(Number(status))) payload.status = Number(status);
+  if (errorCode) payload.errorCode = errorCode;
+  return payload;
+}
+
+function enqueuePendingVaultPut(params = {}, err = null) {
+  const conversationId = params?.conversationId || null;
+  const messageId = params?.messageId || null;
+  const senderDeviceId = params?.senderDeviceId || null;
+  const targetDeviceId = params?.targetDeviceId || null;
+  const direction = params?.direction || null;
+  const msgType = params?.msgType || null;
+  const messageKeyB64 = params?.messageKeyB64 || null;
+  const headerCounter = normalizeHeaderCounter(params?.headerCounter);
+  if (!conversationId || !messageId || !senderDeviceId || !messageKeyB64) return false;
+  if (direction !== 'incoming') return false;
+  const queue = restorePendingVaultPuts();
+  const key = buildPendingVaultPutKey({ conversationId, messageId, senderDeviceId });
+  const existing = Array.isArray(queue)
+    ? queue.find((entry) => buildPendingVaultPutKey(entry) === key)
+    : null;
+  const errorCode = resolveErrorCode(err);
+  const status = typeof err?.status === 'number' ? err.status : null;
+  if (existing) {
+    existing.messageKeyB64 = messageKeyB64 || existing.messageKeyB64;
+    existing.targetDeviceId = targetDeviceId || existing.targetDeviceId;
+    existing.direction = direction || existing.direction;
+    existing.msgType = msgType || existing.msgType;
+    existing.headerCounter = headerCounter ?? existing.headerCounter ?? null;
+    existing.lastError = err?.message || existing.lastError || null;
+    existing.lastErrorCode = errorCode || existing.lastErrorCode || null;
+    existing.lastStatus = Number.isFinite(Number(status)) ? Number(status) : existing.lastStatus ?? null;
+    existing.updatedAt = Date.now();
+    if (!Number.isFinite(Number(existing.nextAttemptAt))) {
+      existing.nextAttemptAt = Date.now() + PENDING_VAULT_PUT_RETRY_INTERVAL_MS;
+    }
+    persistPendingVaultPuts();
+    return false;
+  }
+  if (queue.length >= PENDING_VAULT_PUT_QUEUE_LIMIT) {
+    const dropped = queue.shift();
+    if (dropped) {
+      logCapped('vaultPutPendingTrace', buildPendingTracePayload(
+        dropped,
+        'drop_oldest',
+        dropped?.attemptCount ?? 0,
+        dropped?.lastErrorCode ?? null,
+        dropped?.lastStatus ?? null
+      ), OFFLINE_SYNC_LOG_CAP);
+    }
+  }
+  const now = Date.now();
+  const item = {
+    conversationId,
+    messageId,
+    senderDeviceId,
+    targetDeviceId: targetDeviceId || null,
+    direction,
+    msgType,
+    messageKeyB64,
+    headerCounter,
+    attemptCount: 0,
+    nextAttemptAt: now + PENDING_VAULT_PUT_RETRY_INTERVAL_MS,
+    lastError: err?.message || (err ? String(err) : null),
+    lastErrorCode: errorCode || null,
+    lastStatus: Number.isFinite(Number(status)) ? Number(status) : null,
+    exhausted: false,
+    enqueuedAt: now,
+    updatedAt: now
+  };
+  queue.push(item);
+  logCapped('vaultPutPendingTrace', buildPendingTracePayload(
+    item,
+    'enqueue',
+    0,
+    errorCode || null,
+    status
+  ), OFFLINE_SYNC_LOG_CAP);
+  persistPendingVaultPuts();
+  return true;
+}
+
+async function flushPendingVaultPutsNow() {
+  const queue = restorePendingVaultPuts();
+  if (!Array.isArray(queue) || !queue.length) return { attempted: 0, success: 0, failed: 0 };
+  const mkRaw = typeof deps.getMkRaw === 'function' ? deps.getMkRaw() : null;
+  if (!mkRaw) return { attempted: 0, success: 0, failed: 0 };
+  const now = Date.now();
+  const nextQueue = [];
+  let attempted = 0;
+  let success = 0;
+  let failed = 0;
+  for (const item of queue) {
+    if (!item || item.exhausted === true) {
+      nextQueue.push(item);
+      continue;
+    }
+    if (!item.conversationId || !item.messageId || !item.senderDeviceId || !item.messageKeyB64) {
+      nextQueue.push(item);
+      continue;
+    }
+    const nextAttemptAt = Number(item.nextAttemptAt) || 0;
+    if (nextAttemptAt > now) {
+      nextQueue.push(item);
+      continue;
+    }
+    const baseAttemptCount = Number(item.attemptCount) || 0;
+    if (baseAttemptCount >= PENDING_VAULT_PUT_RETRY_MAX) {
+      if (!item.exhausted) {
+        item.exhausted = true;
+        logCapped('vaultPutPendingTrace', buildPendingTracePayload(
+          item,
+          'exhausted',
+          baseAttemptCount,
+          item.lastErrorCode ?? null,
+          item.lastStatus ?? null
+        ), OFFLINE_SYNC_LOG_CAP);
+      }
+      nextQueue.push(item);
+      continue;
+    }
+    const attemptCount = baseAttemptCount + 1;
+    attempted += 1;
+    logCapped('vaultPutPendingTrace', buildPendingTracePayload(
+      item,
+      'retry',
+      attemptCount,
+      item.lastErrorCode ?? null,
+      item.lastStatus ?? null
+    ), OFFLINE_SYNC_LOG_CAP);
+    try {
+      await vaultPutMessageKey({
+        conversationId: item.conversationId,
+        messageId: item.messageId,
+        senderDeviceId: item.senderDeviceId,
+        targetDeviceId: item.targetDeviceId || null,
+        direction: item.direction || 'incoming',
+        msgType: item.msgType || null,
+        messageKeyB64: item.messageKeyB64,
+        headerCounter: normalizeHeaderCounter(item.headerCounter)
+      });
+      success += 1;
+      logCapped('vaultPutRetryTrace', buildRetryTracePayload(
+        item,
+        attemptCount,
+        'ok',
+        null,
+        null
+      ), OFFLINE_SYNC_LOG_CAP);
+      logCapped('vaultPutPendingTrace', buildPendingTracePayload(
+        item,
+        'success',
+        attemptCount,
+        null,
+        null
+      ), OFFLINE_SYNC_LOG_CAP);
+      continue;
+    } catch (err) {
+      failed += 1;
+      const errorCode = resolveErrorCode(err);
+      const status = typeof err?.status === 'number' ? err.status : null;
+      const updated = {
+        ...item,
+        attemptCount,
+        nextAttemptAt: Date.now() + PENDING_VAULT_PUT_RETRY_INTERVAL_MS,
+        lastError: err?.message || (err ? String(err) : null),
+        lastErrorCode: errorCode || null,
+        lastStatus: Number.isFinite(Number(status)) ? Number(status) : null,
+        updatedAt: Date.now()
+      };
+      logCapped('vaultPutRetryTrace', buildRetryTracePayload(
+        item,
+        attemptCount,
+        'failed',
+        errorCode || null,
+        status
+      ), OFFLINE_SYNC_LOG_CAP);
+      if (attemptCount >= PENDING_VAULT_PUT_RETRY_MAX) {
+        updated.exhausted = true;
+        logCapped('vaultPutPendingTrace', buildPendingTracePayload(
+          updated,
+          'exhausted',
+          attemptCount,
+          errorCode || null,
+          status
+        ), OFFLINE_SYNC_LOG_CAP);
+      }
+      nextQueue.push(updated);
+    }
+  }
+  sessionStore.pendingVaultPuts = nextQueue;
+  persistPendingVaultPuts();
+  return { attempted, success, failed };
+}
+
+function collectOfflineCatchupTargets() {
+  const targets = [];
+  const seen = new Set();
+  const activeState = sessionStore?.messageState || null;
+  if (activeState?.conversationId && activeState?.conversationToken && activeState?.activePeerDigest && activeState?.activePeerDeviceId) {
+    const convId = String(activeState.conversationId);
+    targets.push({
+      conversationId: convId,
+      tokenB64: activeState.conversationToken,
+      peerAccountDigest: activeState.activePeerDigest,
+      peerDeviceId: activeState.activePeerDeviceId
+    });
+    seen.add(convId);
+  }
+  const readyList = Array.isArray(listReadyContacts()) ? listReadyContacts() : [];
+  let added = 0;
+  for (const entry of readyList) {
+    if (added >= OFFLINE_CATCHUP_CONVERSATION_LIMIT) break;
+    const conversationId = entry?.conversationId || entry?.conversation?.conversation_id || null;
+    const tokenB64 = entry?.conversationToken || entry?.conversation?.token_b64 || null;
+    const peerAccountDigest = entry?.peerAccountDigest || entry?.peerKey || null;
+    const peerDeviceId = entry?.peerDeviceId || null;
+    if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) continue;
+    const convKey = String(conversationId);
+    if (seen.has(convKey)) continue;
+    seen.add(convKey);
+    targets.push({
+      conversationId: convKey,
+      tokenB64,
+      peerAccountDigest,
+      peerDeviceId
+    });
+    added += 1;
+  }
+  return targets;
+}
+
+function normalizeOfflineSyncSource(source) {
+  const key = typeof source === 'string' ? source : '';
+  return OFFLINE_SYNC_SOURCES.has(key) ? key : 'login';
+}
+
+export async function syncOfflineDecryptNow({ source } = {}) {
+  const sourceTag = normalizeOfflineSyncSource(source);
+  const cursorStore = restoreOfflineDecryptCursorStore();
+  const targets = collectOfflineCatchupTargets();
+  const plannedCount = targets.length;
+  const conversationIds = targets.map((entry) => slicePrefix(entry?.conversationId)).filter(Boolean).slice(0, OFFLINE_SYNC_LOG_CAP);
+  let attemptedCount = 0;
+  let successCount = 0;
+  let failCount = 0;
+  const failures = [];
+  for (const target of targets) {
+    attemptedCount += 1;
+    const convId = target?.conversationId || null;
+    try {
+      const cursorEntry = cursorStore instanceof Map ? cursorStore.get(String(convId)) : null;
+      const cursorTs = cursorEntry?.cursorTs ?? null;
+      const cursorId = cursorEntry?.cursorId ?? null;
+      const result = await listSecureAndDecrypt({
+        conversationId: convId,
+        tokenB64: target?.tokenB64 || null,
+        peerAccountDigest: target?.peerAccountDigest || null,
+        peerDeviceId: target?.peerDeviceId || null,
+        limit: OFFLINE_CATCHUP_MESSAGE_LIMIT,
+        cursorTs: cursorTs ?? null,
+        cursorId: cursorId ?? null,
+        mutateState: true,
+        allowReplay: false,
+        sendReadReceipt: false,
+        silent: true,
+        priority: 'live'
+      });
+      const errors = Array.isArray(result?.errors) ? result.errors : [];
+      const nextCursor = result?.nextCursor
+        || (result?.nextCursorTs != null
+          ? { ts: result.nextCursorTs, id: result?.nextCursorId ?? null }
+          : null);
+      if (result?.hasMoreAtCursor && nextCursor) {
+        cursorStore.set(String(convId), {
+          cursorTs: nextCursor?.ts ?? null,
+          cursorId: nextCursor?.id ?? null,
+          hasMoreAtCursor: true,
+          updatedAt: Date.now()
+        });
+      } else if (cursorStore instanceof Map) {
+        cursorStore.delete(String(convId));
+      }
+      if (errors.length) {
+        failCount += 1;
+        const errorMessage = truncateErrorMessage(errors[0]);
+        failures.push({
+          conversationId: slicePrefix(convId),
+          errorMessage: errorMessage || 'listSecureAndDecrypt failed'
+        });
+      } else {
+        successCount += 1;
+      }
+    } catch (err) {
+      failCount += 1;
+      const errorCode = resolveErrorCode(err);
+      const errorMessage = errorCode ? null : truncateErrorMessage(err?.message || err);
+      failures.push({
+        conversationId: slicePrefix(convId),
+        ...(errorCode ? { errorCode } : { errorMessage: errorMessage || 'listSecureAndDecrypt failed' })
+      });
+    }
+  }
+  persistOfflineDecryptCursorStore();
+  logCapped('offlineDecryptFlushTrace', {
+    source: sourceTag,
+    conversationIds,
+    plannedCount,
+    attemptedCount,
+    successCount,
+    failCount,
+    failures: failures.slice(0, OFFLINE_SYNC_LOG_CAP)
+  }, OFFLINE_SYNC_LOG_CAP);
+  await flushPendingVaultPutsNow();
+  return { plannedCount, attemptedCount, successCount, failCount };
+}
+
+export async function syncNow(params = {}) {
+  return syncOfflineDecryptNow(params);
+}
+
+export async function flushNow(params = {}) {
+  return syncOfflineDecryptNow(params);
 }

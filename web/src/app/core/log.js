@@ -68,6 +68,9 @@ const REPLAY_DEBUG_KEYS = new Set([
   'receiptApplyTrace',
   'vaultPutTrace',
   'vaultGetTrace',
+  'offlineDecryptFlushTrace',
+  'vaultPutPendingTrace',
+  'vaultPutRetryTrace',
   'wsSyncTrace'
 ]);
 const FORENSICS_DEBUG_KEYS = new Set([
@@ -98,6 +101,9 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'vaultPutTrace',
   'vaultGetTrace',
   'wsSyncTrace',
+  'offlineDecryptFlushTrace',
+  'vaultPutPendingTrace',
+  'vaultPutRetryTrace',
   'contactCoreMismatchTrace',
   'contactCorePeerDeviceMigrated',
   'incomingTokenLookupTrace',
