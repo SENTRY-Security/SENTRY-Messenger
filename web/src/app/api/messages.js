@@ -92,6 +92,41 @@ export async function createSecureMessage({
   return { r, data };
 }
 
+export async function fetchSendState({ conversationId, senderDeviceId } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  const senderDevice = senderDeviceId || ensureDeviceId();
+  if (!senderDevice) throw new Error('senderDeviceId required');
+  const overrides = {
+    conversationId,
+    senderDeviceId: senderDevice
+  };
+  const payload = buildAccountPayload({ overrides });
+  const r = await fetchWithTimeout('/api/v1/messages/send-state', jsonReq(payload), 15000);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  return { r, data };
+}
+
+export async function fetchOutgoingStatus({ conversationId, senderDeviceId, receiverAccountDigest, messageIds } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  if (!receiverAccountDigest) throw new Error('receiverAccountDigest required');
+  const ids = Array.isArray(messageIds) ? messageIds.filter(Boolean).map((id) => String(id).trim()).filter(Boolean) : [];
+  if (!ids.length) throw new Error('messageIds required');
+  const senderDevice = senderDeviceId || ensureDeviceId();
+  if (!senderDevice) throw new Error('senderDeviceId required');
+  const overrides = {
+    conversationId,
+    senderDeviceId: senderDevice,
+    receiverAccountDigest,
+    messageIds: ids
+  };
+  const payload = buildAccountPayload({ overrides });
+  const r = await fetchWithTimeout('/api/v1/messages/outgoing-status', jsonReq(payload), 15000);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  return { r, data };
+}
+
 /**
  * List messages in a conversation (newest first by server implementation).
  * GET /api/v1/conversations/:convId/messages?limit=&cursorTs=

@@ -26,7 +26,7 @@ import { escapeHtml, fmtSize, shouldNotifyForMessage } from './ui-utils.js';
 import { contactCoreCounts, getContactCore, upsertContactCore, listReadyContacts, removeContactCore } from './contact-core-store.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
-import { deleteSecureConversation, listSecureMessages as apiListSecureMessages } from '../../api/messages.js';
+import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, fetchOutgoingStatus } from '../../api/messages.js';
 import { createGroup as apiCreateGroup } from '../../api/groups.js';
 import {
   CALL_EVENT,
@@ -823,6 +823,16 @@ export function initMessagesPane({
         conversation: { conversation_id: conversationId },
         messageId: entry.id
       }).then((res) => {
+        const replacementInfo = getReplacementInfo(res);
+        if (localMessage && replacementInfo) {
+          applyCounterTooLowReplaced(localMessage);
+          updateMessagesStatusUI();
+          return;
+        }
+        if (localMessage && res?.queued) {
+          updateMessagesStatusUI();
+          return;
+        }
         if (localMessage) {
           try {
             applyOutgoingSent(localMessage, res, localMessage.ts || entry.ts);
@@ -837,8 +847,17 @@ export function initMessagesPane({
       }).catch((err) => {
         log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest, peerDeviceId });
         if (localMessage) {
-          applyOutgoingFailure(localMessage, err, '通話記錄傳送失敗');
-          updateMessagesStatusUI();
+          const replacementInfo = getReplacementInfo(err);
+          if (replacementInfo) {
+            applyCounterTooLowReplaced(localMessage);
+            updateMessagesStatusUI();
+          } else if (isCounterTooLowError(err)) {
+            applyCounterTooLowReplaced(localMessage);
+            updateMessagesStatusUI();
+          } else {
+            applyOutgoingFailure(localMessage, err, '通話記錄傳送失敗');
+            updateMessagesStatusUI();
+          }
         }
         try {
           console.info('[call] log:send ' + JSON.stringify({ ...logPayload, ok: false, reason: err?.message || err }));
@@ -3077,6 +3096,14 @@ export function initMessagesPane({
       }
       let receiptsChanged = false;
       const timelineMessages = refreshTimelineState(state.conversationId);
+      let vaultStatusChanged = false;
+      if (!append) {
+        vaultStatusChanged = await reconstructOutgoingVaultStatus({
+          conversationId: state.conversationId,
+          peerAccountDigest: state.activePeerDigest,
+          timelineMessages
+        });
+      }
       const afterIdSet = collectTimelineIdSet(timelineMessages);
       const newMessageIds = Array.from(afterIdSet).filter((id) => !beforeIdSet.has(id));
       if (DEBUG.replay) {
@@ -3119,6 +3146,7 @@ export function initMessagesPane({
       if (Array.isArray(receiptUpdates)) {
         for (const msg of timelineMessages) {
           if (msg?.id && receiptUpdates.includes(msg.id)) {
+            if (msg?.status === 'failed') continue;
             msg.read = true;
             msg.status = 'delivered';
             msg.pending = false;
@@ -3127,7 +3155,7 @@ export function initMessagesPane({
         }
       }
       const receiptsApplied = applyReceiptsToMessages(timelineMessages);
-      const receiptRenderNeeded = receiptsApplied || receiptRenderPending;
+      const receiptRenderNeeded = receiptsApplied || receiptRenderPending || vaultStatusChanged;
       receiptRenderPending = false;
       const shouldScrollToEnd = !append && !forceReplay && nearBottom;
       const preserveScroll = append || !shouldScrollToEnd;
@@ -3895,6 +3923,7 @@ export function initMessagesPane({
     const delivered = state.conversationId ? getMessageDelivery(state.conversationId, message.id) : null;
     if (receipt?.read) {
       // read 視為已送達。
+      if (currentStatus === 'failed') return false;
       const shouldUpdate = currentStatus !== 'delivered' || message.pending === true || message.read !== true;
       if (shouldUpdate) {
         logCapped('receiptApplyTrace', {
@@ -3925,6 +3954,7 @@ export function initMessagesPane({
       return shouldUpdate;
     }
     if (delivered?.delivered) {
+      if (currentStatus === 'failed') return false;
       const shouldUpdate = currentStatus !== 'delivered' || message.pending === true || message.read === true;
       if (shouldUpdate) {
         logCapped('receiptApplyTrace', {
@@ -3974,6 +4004,82 @@ export function initMessagesPane({
     return changed;
   }
 
+  function applyOutgoingVaultStatus(message, nextStatus, reasonCode = 'VAULT_RECONSTRUCT') {
+    if (!message || message.direction !== 'outgoing') return false;
+    const fromStatus = typeof message.status === 'string' ? message.status : null;
+    if (fromStatus === 'failed') return false;
+    if (fromStatus === 'delivered' && nextStatus === 'sent') return false;
+    if (fromStatus === nextStatus && message.pending !== true) return false;
+    message.status = nextStatus;
+    message.pending = false;
+    if (nextStatus === 'delivered') {
+      if (message.read !== true) message.read = false;
+    } else {
+      message.read = false;
+    }
+    logOutgoingUiStatusTrace({
+      message,
+      fromStatus,
+      toStatus: nextStatus,
+      reasonCode,
+      stage: 'applyOutgoingVaultStatus'
+    });
+    logOutgoingStatusTrace(message, fromStatus, nextStatus, reasonCode);
+    return true;
+  }
+
+  async function reconstructOutgoingVaultStatus({ conversationId, peerAccountDigest, timelineMessages } = {}) {
+    if (!conversationId || !peerAccountDigest || !Array.isArray(timelineMessages) || !timelineMessages.length) return false;
+    let senderDeviceId = null;
+    let senderDigest = null;
+    try {
+      senderDeviceId = ensureDeviceId();
+      senderDigest = normalizeAccountDigest(getAccountDigest());
+    } catch {
+      return false;
+    }
+    if (!senderDeviceId || !senderDigest) return false;
+    const peerDigest = normalizeAccountDigest(peerAccountDigest) || peerAccountDigest;
+    const outgoingMessages = timelineMessages.filter((msg) => msg?.direction === 'outgoing');
+    const messageIds = outgoingMessages
+      .map((msg) => resolveOutgoingStatusMessageId(msg))
+      .filter(Boolean);
+    if (!messageIds.length) return false;
+    const cappedMessageIds = messageIds.slice(-200);
+    try {
+      const { r, data } = await fetchOutgoingStatus({
+        conversationId,
+        senderDeviceId,
+        receiverAccountDigest: peerDigest,
+        messageIds: cappedMessageIds
+      });
+      if (!r?.ok || !data?.ok) return false;
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const statusById = new Map(items.map((item) => [item?.messageId, item]));
+      let changed = false;
+      for (const msg of outgoingMessages) {
+        const messageId = resolveOutgoingStatusMessageId(msg);
+        if (!messageId) continue;
+        const item = statusById.get(messageId);
+        if (!item) continue;
+        const outgoingCount = Number(item?.outgoingCount) || 0;
+        const incomingCount = Number(item?.incomingCount) || 0;
+        let nextStatus = null;
+        if (outgoingCount > 0 && incomingCount > 0) {
+          nextStatus = 'delivered';
+        } else if (outgoingCount > 0) {
+          nextStatus = 'sent';
+        }
+        if (!nextStatus) continue;
+        if (applyOutgoingVaultStatus(msg, nextStatus)) changed = true;
+      }
+      return changed;
+    } catch (err) {
+      log({ outgoingVaultReconstructError: err?.message || err });
+      return false;
+    }
+  }
+
   function extractFailureDetails(err, fallbackReason = 'send failed') {
     const reason = typeof err?.message === 'string'
       ? err.message
@@ -3983,6 +4089,14 @@ export function initMessagesPane({
     if (!code) code = 'Unknown';
     if (code !== null && code !== undefined) code = String(code);
     return { reason, code };
+  }
+
+  function isCounterTooLowError(err) {
+    if (!err) return false;
+    const code = err?.code || err?.errorCode || err?.details?.error || err?.details?.code || err?.error || null;
+    if (code && String(code) === 'CounterTooLow') return true;
+    const message = typeof err?.message === 'string' ? err.message : '';
+    return message.includes('CounterTooLow');
   }
 
   function applyOutgoingPending(message, reasonCode = 'PENDING_RESET') {
@@ -4004,6 +4118,8 @@ export function initMessagesPane({
   function applyOutgoingSent(message, res, fallbackTs, reasonCode = 'ACK_202') {
     if (!message) return;
     const fromStatus = typeof message.status === 'string' ? message.status : null;
+    if (fromStatus === 'failed' || fromStatus === 'delivered' || fromStatus === 'read') return;
+    if (isCounterTooLowError(res)) return;
     const localId = message.localId || message.messageId || message.id || null;
     const serverId = res?.msg?.id || res?.id || res?.serverMessageId || res?.server_message_id || null;
     if (serverId && localId && serverId !== localId) {
@@ -4034,6 +4150,7 @@ export function initMessagesPane({
   function applyOutgoingFailure(message, err, fallbackReason, reasonCode = 'SEND_FAIL') {
     if (!message) return;
     const fromStatus = typeof message.status === 'string' ? message.status : null;
+    if (fromStatus === 'delivered' || fromStatus === 'read') return;
     const details = extractFailureDetails(err, fallbackReason);
     const statusCode = Number.isFinite(err?.status) ? Number(err.status) : null;
     const jobId = err?.jobId ?? err?.job?.jobId ?? null;
@@ -4056,9 +4173,31 @@ export function initMessagesPane({
     logOutgoingStatusTrace(message, fromStatus, 'failed', 'SEND_FAIL');
   }
 
+  function buildCounterTooLowReplacementError() {
+    const err = new Error('CounterTooLow replaced');
+    err.code = 'COUNTER_TOO_LOW_REPLACED';
+    return err;
+  }
+
+  function applyCounterTooLowReplaced(message, reasonCode = 'COUNTER_TOO_LOW_REPLACED') {
+    if (!message) return;
+    const err = buildCounterTooLowReplacementError();
+    applyOutgoingFailure(message, err, '傳送失敗', reasonCode);
+  }
+
+  function getReplacementInfo(payload) {
+    const info = payload?.replacement;
+    if (!info || !info.newMessageId) return null;
+    return info;
+  }
+
   async function resendFailedOutgoingMessage(message) {
     if (!message || message.direction !== 'outgoing') return;
     if (message.status !== 'failed') return;
+    if (message.failureCode === 'COUNTER_TOO_LOW_REPLACED') {
+      updateMessagesStatusUI();
+      return;
+    }
     const state = getMessageState();
     const convId = message.conversationId || state.conversationId || null;
     const messageId = message.localId || message.messageId || message.id || null;
@@ -4081,6 +4220,19 @@ export function initMessagesPane({
       } catch (err) {
         applyOutgoingFailure(message, err, '重送失敗');
       }
+      updateMessagesStatusUI();
+      return;
+    }
+    if (retryResult?.errorCode === 'COUNTER_TOO_LOW_REPLACED') {
+      applyCounterTooLowReplaced(message);
+      updateMessagesStatusUI();
+      return;
+    }
+    if (retryResult?.errorCode === 'OutboxInflight') {
+      updateMessagesStatusUI();
+      return;
+    }
+    if (isCounterTooLowError(retryResult)) {
       updateMessagesStatusUI();
       return;
     }
@@ -4128,9 +4280,46 @@ export function initMessagesPane({
         text: message.text || '',
         messageId
       });
+      const replacementInfo = getReplacementInfo(res);
+      const convIdFinal = res?.convId || convId;
+      if (replacementInfo) {
+        applyCounterTooLowReplaced(message);
+        const replacementTs = res?.msg?.ts || message.ts || Math.floor(Date.now() / 1000);
+        let replacementMsg = convIdFinal ? findTimelineMessageById(convIdFinal, replacementInfo.newMessageId) : null;
+        if (!replacementMsg) {
+          replacementMsg = appendLocalOutgoingMessage({
+            text: message.text || '',
+            ts: replacementTs,
+            id: replacementInfo.newMessageId
+          });
+        }
+        if (!res?.queued && replacementMsg) {
+          applyOutgoingSent(replacementMsg, res, replacementTs, 'COUNTER_TOO_LOW_REPLACED');
+        }
+        updateMessagesStatusUI();
+        if (!res?.queued && convIdFinal) {
+          const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
+          let senderDeviceId = null;
+          try { senderDeviceId = ensureDeviceId(); } catch {}
+          wsSendFn({
+            type: 'message-new',
+            targetAccountDigest: peerAccountDigest,
+            conversationId: convIdFinal,
+            preview: message.text || '',
+            ts: replacementTs,
+            targetDeviceId,
+            senderDeviceId
+          });
+        }
+        if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
+        return;
+      }
+      if (res?.queued) {
+        updateMessagesStatusUI();
+        return;
+      }
       applyOutgoingSent(message, res, message.ts || Math.floor(Date.now() / 1000));
       updateMessagesStatusUI();
-      const convIdFinal = res?.convId || convId;
       if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
       const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
       let senderDeviceId = null;
@@ -4145,6 +4334,29 @@ export function initMessagesPane({
         senderDeviceId
       });
     } catch (err) {
+      const replacementInfo = getReplacementInfo(err);
+      if (replacementInfo) {
+        applyCounterTooLowReplaced(message);
+        const replacementTs = message.ts || Math.floor(Date.now() / 1000);
+        let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
+        if (!replacementMsg) {
+          replacementMsg = appendLocalOutgoingMessage({
+            text: message.text || '',
+            ts: replacementTs,
+            id: replacementInfo.newMessageId
+          });
+        }
+        if (replacementMsg) {
+          applyOutgoingFailure(replacementMsg, err, '重送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+        }
+        updateMessagesStatusUI();
+        return;
+      }
+      if (isCounterTooLowError(err)) {
+        applyCounterTooLowReplaced(message);
+        updateMessagesStatusUI();
+        return;
+      }
       applyOutgoingFailure(message, err, '重送失敗');
       updateMessagesStatusUI();
     }
@@ -4356,48 +4568,112 @@ export function initMessagesPane({
           }
           const msg = findMessageById(localMsg.id);
           const convId = res?.convId || state.conversationId;
+          const replacementInfo = getReplacementInfo(res);
           if (res?.convId && !state.conversationId) {
             state.conversationId = res.convId;
           }
-          if (msg) {
-            applyOutgoingSent(msg, res, Math.floor(Date.now() / 1000));
-            msg.text = res?.msg?.text || msg.text;
-            if (!msg.media) msg.media = {};
-            msg.media = {
-              ...msg.media,
-              ...res?.msg?.media,
-              name: (res?.msg?.media?.name || msg.media.name || file.name || '附件'),
-              size: Number.isFinite(res?.msg?.media?.size) ? res.msg.media.size : (typeof file.size === 'number' ? file.size : msg.media.size || null),
-              contentType: res?.msg?.media?.contentType || msg.media.contentType || file.type || 'application/octet-stream',
-              localUrl: msg.media.localUrl || localUrl,
-              previewUrl: res?.msg?.media?.previewUrl || msg.media.previewUrl || msg.media.localUrl || localUrl,
+          const applyMediaMeta = (targetMsg, payload) => {
+            if (!targetMsg) return;
+            if (!targetMsg.media) targetMsg.media = {};
+            targetMsg.text = payload?.msg?.text || targetMsg.text;
+            targetMsg.media = {
+              ...targetMsg.media,
+              ...payload?.msg?.media,
+              name: (payload?.msg?.media?.name || targetMsg.media.name || file.name || '附件'),
+              size: Number.isFinite(payload?.msg?.media?.size) ? payload.msg.media.size : (typeof file.size === 'number' ? file.size : targetMsg.media.size || null),
+              contentType: payload?.msg?.media?.contentType || targetMsg.media.contentType || file.type || 'application/octet-stream',
+              localUrl: targetMsg.media.localUrl || localUrl,
+              previewUrl: payload?.msg?.media?.previewUrl || targetMsg.media.previewUrl || targetMsg.media.localUrl || localUrl,
               uploading: false,
               progress: 100,
-              envelope: res?.msg?.media?.envelope || msg.media.envelope || null,
-              objectKey: res?.msg?.media?.objectKey || msg.media.objectKey || res?.upload?.objectKey || null,
-              preview: res?.msg?.media?.preview || msg.media.preview || null
+              envelope: payload?.msg?.media?.envelope || targetMsg.media.envelope || null,
+              objectKey: payload?.msg?.media?.objectKey || targetMsg.media.objectKey || payload?.upload?.objectKey || null,
+              preview: payload?.msg?.media?.preview || targetMsg.media.preview || null
             };
+          };
+          if (replacementInfo && msg) {
+            applyCounterTooLowReplaced(msg);
+            const replacementTs = res?.msg?.ts || Math.floor(Date.now() / 1000);
+            let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
+            if (!replacementMsg) {
+              const mediaClone = msg.media ? { ...msg.media } : null;
+              if (mediaClone) {
+                mediaClone.uploading = false;
+                mediaClone.progress = 100;
+              }
+              replacementMsg = appendLocalOutgoingMessage({
+                text: msg.text || previewText,
+                ts: replacementTs,
+                id: replacementInfo.newMessageId,
+                type: 'media',
+                media: mediaClone
+              });
+            }
+            applyMediaMeta(replacementMsg, res);
+            if (!res?.queued && replacementMsg) {
+              applyOutgoingSent(replacementMsg, res, replacementTs, 'COUNTER_TOO_LOW_REPLACED');
+            }
+            updateMessagesStatusUI();
+          } else if (res?.queued) {
+            applyMediaMeta(msg, res);
+            updateMessagesStatusUI();
+          } else if (msg) {
+            applyOutgoingSent(msg, res, Math.floor(Date.now() / 1000));
+            applyMediaMeta(msg, res);
           }
-          if (state.activePeerDigest) {
+          if (state.activePeerDigest && !res?.queued) {
             const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
-          wsSendFn({
-            type: 'message-new',
-            targetAccountDigest: state.activePeerDigest,
-            conversationId: convId,
-            preview: msg?.text || previewText,
-            ts: msg?.ts || Math.floor(Date.now() / 1000),
-            senderDeviceId: ensureDeviceId(),
-            targetDeviceId
-          });
-        }
+            wsSendFn({
+              type: 'message-new',
+              targetAccountDigest: state.activePeerDigest,
+              conversationId: convId,
+              preview: msg?.text || previewText,
+              ts: msg?.ts || Math.floor(Date.now() / 1000),
+              senderDeviceId: ensureDeviceId(),
+              targetDeviceId
+            });
+          }
         } catch (err) {
           const msg = findMessageById(localMsg.id);
-          if (msg) {
-            applyUploadProgress(msg, { percent: msg.media?.progress ?? 0, error: err?.message || err });
-            applyOutgoingFailure(msg, err, '檔案傳送失敗');
-            msg.text = `[上傳失敗] ${msg.media?.name || file.name || '附件'}`;
+          const replacementInfo = getReplacementInfo(err);
+          if (replacementInfo && msg) {
+            applyCounterTooLowReplaced(msg);
+            const replacementTs = Math.floor(Date.now() / 1000);
+            let replacementMsg = state.conversationId
+              ? findTimelineMessageById(state.conversationId, replacementInfo.newMessageId)
+              : null;
+            if (!replacementMsg) {
+              const mediaClone = msg.media ? { ...msg.media } : null;
+              if (mediaClone) {
+                mediaClone.uploading = false;
+                mediaClone.progress = 100;
+              }
+              replacementMsg = appendLocalOutgoingMessage({
+                text: msg.text || previewText,
+                ts: replacementTs,
+                id: replacementInfo.newMessageId,
+                type: 'media',
+                media: mediaClone
+              });
+            }
+            if (replacementMsg) {
+              applyOutgoingFailure(replacementMsg, err, '檔案傳送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+              applyUploadProgress(replacementMsg, { percent: replacementMsg.media?.progress ?? 0, error: err?.message || err });
+            }
+            updateMessagesStatusUI();
+            return;
           }
-          setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
+          if (msg && isCounterTooLowError(err)) {
+            applyCounterTooLowReplaced(msg);
+            updateMessagesStatusUI();
+          } else {
+            if (msg) {
+              applyUploadProgress(msg, { percent: msg.media?.progress ?? 0, error: err?.message || err });
+              applyOutgoingFailure(msg, err, '檔案傳送失敗');
+              msg.text = `[上傳失敗] ${msg.media?.name || file.name || '附件'}`;
+            }
+            setMessagesStatus('檔案傳送失敗：' + (err?.message || err), true);
+          }
         } finally {
           updateMessagesUI({ scrollToEnd: true, forceFullRender: true });
         }
@@ -5159,6 +5435,10 @@ export function initMessagesPane({
       const ts = Math.floor(Date.now() / 1000);
       const messageId = crypto.randomUUID();
       const localMsg = appendLocalOutgoingMessage({ text, ts, id: messageId });
+      if (elements.input) {
+        elements.input.value = '';
+        elements.input.focus();
+      }
       try {
         const res = await sendDrText({
           peerAccountDigest: state.activePeerDigest,
@@ -5175,19 +5455,29 @@ export function initMessagesPane({
             }
           });
         }
-        if (localMsg) {
+        const replacementInfo = getReplacementInfo(res);
+        const convId = res?.convId || state.conversationId;
+        if (res?.convId) state.conversationId = res.convId;
+        if (replacementInfo && localMsg) {
+          applyCounterTooLowReplaced(localMsg);
+          const replacementTs = res?.msg?.ts || ts;
+          let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
+          if (!replacementMsg) {
+            replacementMsg = appendLocalOutgoingMessage({ text, ts: replacementTs, id: replacementInfo.newMessageId });
+          }
+          if (!res?.queued && replacementMsg) {
+            applyOutgoingSent(replacementMsg, res, replacementTs, 'COUNTER_TOO_LOW_REPLACED');
+          }
+          updateMessagesStatusUI();
+        } else if (res?.queued) {
+          updateMessagesStatusUI();
+        } else if (localMsg) {
           applyOutgoingSent(localMsg, res, ts);
           updateMessagesStatusUI();
         }
-        const convId = res?.convId || state.conversationId;
-        if (res?.convId) state.conversationId = res.convId;
         const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
-        if (elements.input) {
-          elements.input.value = '';
-          elements.input.focus();
-        }
         setMessagesStatus('');
-        if (convId && state.activePeerDigest) {
+        if (convId && state.activePeerDigest && !res?.queued) {
           wsSendFn({
             type: 'message-new',
             targetAccountDigest: state.activePeerDigest,
@@ -5201,6 +5491,27 @@ export function initMessagesPane({
       } catch (err) {
         if (uiNoiseEnabled) {
           log({ messageComposerError: err?.message || err });
+        }
+        const replacementInfo = getReplacementInfo(err);
+        if (replacementInfo && localMsg) {
+          applyCounterTooLowReplaced(localMsg);
+          const replacementTs = ts || Math.floor(Date.now() / 1000);
+          let replacementMsg = state.conversationId
+            ? findTimelineMessageById(state.conversationId, replacementInfo.newMessageId)
+            : null;
+          if (!replacementMsg) {
+            replacementMsg = appendLocalOutgoingMessage({ text, ts: replacementTs, id: replacementInfo.newMessageId });
+          }
+          if (replacementMsg) {
+            applyOutgoingFailure(replacementMsg, err, '傳送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+          }
+          updateMessagesStatusUI();
+          return;
+        }
+        if (localMsg && isCounterTooLowError(err)) {
+          applyCounterTooLowReplaced(localMsg);
+          updateMessagesStatusUI();
+          return;
         }
         setMessagesStatus('傳送失敗：' + (err?.message || err), true);
         if (localMsg) {
@@ -5243,7 +5554,7 @@ export function initMessagesPane({
         const message = findTimelineMessageById(convId, messageId);
         if (!message || message.direction !== 'outgoing') return;
         const status = typeof message.status === 'string' ? message.status : null;
-        if (status === 'delivered' || status === 'read') return;
+        if (status === 'failed' || status === 'delivered' || status === 'read') return;
         const payload = response?.data || job?.lastResponse || null;
         const payloadWithJobId = payload && typeof payload === 'object'
           ? { ...payload, jobId: job?.jobId || null }
@@ -5272,7 +5583,16 @@ export function initMessagesPane({
         if (job?.jobId && errWithJob && typeof errWithJob === 'object' && !errWithJob.jobId) {
           errWithJob.jobId = job.jobId;
         }
-        applyOutgoingFailure(message, errWithJob, '傳送失敗', 'OUTBOX_FAILED_HOOK');
+        const isCounterTooLow = isCounterTooLowError(errWithJob);
+        const failureErr = isCounterTooLow ? buildCounterTooLowReplacementError() : errWithJob;
+        if (failureErr && typeof failureErr === 'object' && errWithJob && typeof errWithJob === 'object') {
+          if (errWithJob.status) failureErr.status = errWithJob.status;
+          if (errWithJob.jobId && !failureErr.jobId) failureErr.jobId = errWithJob.jobId;
+        }
+        const reasonCode = isCounterTooLow
+          ? 'COUNTER_TOO_LOW_REPLACED'
+          : 'OUTBOX_FAILED_HOOK';
+        applyOutgoingFailure(message, failureErr, '傳送失敗', reasonCode);
         const state = getMessageState();
         if (state.conversationId === convId) updateMessagesStatusUI();
       }

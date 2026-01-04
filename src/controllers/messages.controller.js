@@ -98,6 +98,30 @@ const DeleteSecureConversationSchema = z.object({
   }
 });
 
+const SendStateSchema = z.object({
+  conversationId: z.string().min(8),
+  senderDeviceId: z.string().min(1),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
+});
+
+const OutgoingStatusSchema = z.object({
+  conversationId: z.string().min(8),
+  senderDeviceId: z.string().min(1),
+  receiverAccountDigest: z.string().regex(AccountDigestRegex),
+  messageIds: z.array(z.string().min(8)).max(200),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
+});
+
 function extractAccountFromRequest(req) {
   const readHeader = (name) => {
     const value = req.get(name);
@@ -691,6 +715,153 @@ export const listSecureMessages = async (req, res) => {
       limit: req.query.limit ? Number(req.query.limit) : null,
       error: err?.message || String(err)
     });
+    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+};
+
+export const getSendState = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
+  let input;
+  try {
+    input = SendStateSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err?.errors?.[0]?.message || 'invalid input' });
+  }
+
+  const account = extractAccountFromRequest(req);
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Token or X-Account-Digest required' });
+  }
+  if (account.accountDigestInvalid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Digest invalid format' });
+  }
+  if (!account.deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Device-Id header required' });
+  }
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: input.conversationId,
+      accountToken: input.accountToken || account.accountToken,
+      accountDigest: input.accountDigest || account.accountDigest,
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
+  const senderDeviceId = canonDevice(input.senderDeviceId || account.deviceId);
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId required' });
+  }
+  const headerDeviceId = canonDevice(account.deviceId || null);
+  if (headerDeviceId && senderDeviceId !== headerDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId mismatch' });
+  }
+
+  const path = '/d1/messages/send-state';
+  const body = JSON.stringify({
+    accountDigest: auth.accountDigest,
+    conversationId: auth.conversationId,
+    senderDeviceId
+  });
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  try {
+    const r = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    if (!r.ok) {
+      return res.status(502).json({ error: 'D1ReadFailed', status: r.status, details: data });
+    }
+    return res.json(data);
+  } catch (err) {
+    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+};
+
+export const listOutgoingStatus = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
+  let input;
+  try {
+    input = OutgoingStatusSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err?.errors?.[0]?.message || 'invalid input' });
+  }
+
+  const account = extractAccountFromRequest(req);
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Token or X-Account-Digest required' });
+  }
+  if (account.accountDigestInvalid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Digest invalid format' });
+  }
+  if (!account.deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Device-Id header required' });
+  }
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: input.conversationId,
+      accountToken: input.accountToken || account.accountToken,
+      accountDigest: input.accountDigest || account.accountDigest,
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
+  const senderDeviceId = canonDevice(input.senderDeviceId || account.deviceId);
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId required' });
+  }
+  const headerDeviceId = canonDevice(account.deviceId || null);
+  if (headerDeviceId && senderDeviceId !== headerDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId mismatch' });
+  }
+
+  const messageIds = Array.from(new Set((input.messageIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  if (!messageIds.length) {
+    return res.status(400).json({ error: 'BadRequest', message: 'messageIds required' });
+  }
+
+  const path = '/d1/messages/outgoing-status';
+  const body = JSON.stringify({
+    conversationId: auth.conversationId,
+    senderAccountDigest: auth.accountDigest,
+    receiverAccountDigest: input.receiverAccountDigest,
+    senderDeviceId,
+    messageIds
+  });
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  try {
+    const r = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    if (!r.ok) {
+      return res.status(502).json({ error: 'D1ReadFailed', status: r.status, details: data });
+    }
+    return res.json(data);
+  } catch (err) {
     return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
   }
 };

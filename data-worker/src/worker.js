@@ -1937,6 +1937,109 @@ async function handlePrekeysRoutes(req, env) {
 async function handleMessagesRoutes(req, env) {
   const url = new URL(req.url);
 
+  if (req.method === 'POST' && url.pathname === '/d1/messages/send-state') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+    if (!conversationId || !accountDigest || !senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'conversationId, accountDigest, senderDeviceId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    const row = await env.DB.prepare(`
+      SELECT id, counter
+        FROM messages_secure
+       WHERE conversation_id=?1
+         AND sender_account_digest=?2
+         AND sender_device_id=?3
+       ORDER BY counter DESC, created_at DESC, id DESC
+       LIMIT 1
+    `).bind(conversationId, accountDigest, senderDeviceId).first();
+    const lastAcceptedCounter = Number(row?.counter);
+    const expectedCounter = Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter + 1 : 1;
+    return json({
+      ok: true,
+      expectedCounter,
+      lastAcceptedCounter: Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter : null,
+      lastAcceptedMessageId: row?.id || null,
+      serverTime: Math.floor(Date.now() / 1000)
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/d1/messages/outgoing-status') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const senderAccountDigest = normalizeAccountDigest(body?.senderAccountDigest || body?.sender_account_digest);
+    const receiverAccountDigest = normalizeAccountDigest(body?.receiverAccountDigest || body?.receiver_account_digest);
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+    const messageIdsInput = Array.isArray(body?.messageIds) ? body.messageIds : [];
+    const messageIds = messageIdsInput
+      .map((value) => normalizeMessageId(value))
+      .filter(Boolean);
+    if (!conversationId || !senderAccountDigest || !receiverAccountDigest || !senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'conversationId, senderAccountDigest, receiverAccountDigest, senderDeviceId required' }, { status: 400 });
+    }
+    if (!messageIds.length) {
+      return json({ error: 'BadRequest', message: 'messageIds required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    const placeholders = messageIds.map((_, idx) => `?${idx + 5}`).join(', ');
+    const params = [conversationId, senderDeviceId, senderAccountDigest, receiverAccountDigest, ...messageIds];
+    const stmt = env.DB.prepare(`
+      SELECT message_id, account_digest, direction, COUNT(*) AS row_count
+        FROM message_key_vault
+       WHERE conversation_id=?1
+         AND sender_device_id=?2
+         AND account_digest IN (?3, ?4)
+         AND direction IN ('outgoing', 'incoming')
+         AND message_id IN (${placeholders})
+       GROUP BY message_id, account_digest, direction
+    `).bind(...params);
+    const { results } = await stmt.all();
+    const counterByMessage = new Map();
+    for (const messageId of messageIds) {
+      counterByMessage.set(messageId, { outgoingCount: 0, incomingCount: 0 });
+    }
+    for (const row of results) {
+      const messageId = row?.message_id || null;
+      if (!messageId || !counterByMessage.has(messageId)) continue;
+      const entry = counterByMessage.get(messageId);
+      if (!entry) continue;
+      const rowCount = Number(row?.row_count) || 0;
+      const account = row?.account_digest || '';
+      const direction = row?.direction || '';
+      if (account === senderAccountDigest && direction === 'outgoing') {
+        entry.outgoingCount += rowCount;
+      } else if (account === receiverAccountDigest && direction === 'incoming') {
+        entry.incomingCount += rowCount;
+      }
+    }
+    const items = messageIds.map((messageId) => {
+      const entry = counterByMessage.get(messageId) || { outgoingCount: 0, incomingCount: 0 };
+      return {
+        messageId,
+        outgoingCount: entry.outgoingCount,
+        incomingCount: entry.incomingCount,
+        totalCount: entry.outgoingCount + entry.incomingCount
+      };
+    });
+    return json({
+      ok: true,
+      items,
+      serverTime: Math.floor(Date.now() / 1000)
+    });
+  }
+
   // Secure message insert
   if (req.method === 'POST' && url.pathname === '/d1/messages') {
     let body;

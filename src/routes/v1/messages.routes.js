@@ -5,6 +5,8 @@ import {
   createSecureMessage,
   listMessages,
   listSecureMessages,
+  getSendState,
+  listOutgoingStatus,
   deleteMessages,
   deleteSecureConversation
 } from '../../controllers/messages.controller.js';
@@ -22,6 +24,12 @@ r.get('/conversations/:convId/messages', asyncH(listMessages));
 
 // GET /api/v1/messages/secure?conversationId=
 r.get('/messages/secure', asyncH(listSecureMessages));
+
+// POST /api/v1/messages/send-state
+r.post('/messages/send-state', asyncH(getSendState));
+
+// POST /api/v1/messages/outgoing-status
+r.post('/messages/outgoing-status', asyncH(listOutgoingStatus));
 
 // POST /api/v1/messages/delete
 r.post('/messages/delete', asyncH(deleteMessages));

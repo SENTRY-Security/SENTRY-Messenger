@@ -32,17 +32,20 @@ import {
   enqueueOutboxJob,
   processOutboxJobNow,
   setOutboxHooks,
-  startOutboxProcessor
+  startOutboxProcessor,
+  isConversationLocked
 } from './queue/outbox.js';
 import { enqueueReceiptJob } from './queue/receipts.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { MessageKeyVault } from './message-key-vault.js';
-import { listSecureMessages } from '../api/messages.js';
+import { listSecureMessages, fetchSendState } from '../api/messages.js';
+import { COUNTER_TOO_LOW_MODE } from './queue/send-policy.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
+const COUNTER_TOO_LOW_CODE = 'CounterTooLow';
 import { enqueueMediaMetaJob } from './queue/media.js';
 const SEND_PREFLIGHT_TRACE_LIMIT = 3;
 let sendPreflightTraceCount = 0;
@@ -75,6 +78,25 @@ function logDrSendTrace({ messageId, stage, jobId = null, error = null } = {}) {
     jobId: jobId || null,
     error: error || null,
     timestamp: Date.now()
+  }, 5);
+}
+
+function logSendStateTrace({ conversationId, expectedCounter, lastAcceptedCounter }) {
+  if (!conversationId) return;
+  logCapped('sendStateTrace', {
+    conversationIdPrefix8: String(conversationId).slice(0, 8),
+    expectedCounter: Number.isFinite(expectedCounter) ? expectedCounter : null,
+    lastAcceptedCounter: Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter : null
+  }, 5);
+}
+
+function logCounterTooLowTrace({ conversationId, oldMessageId, newMessageId, expectedCounter }) {
+  if (!conversationId) return;
+  logCapped('counterTooLowTrace', {
+    conversationIdPrefix8: String(conversationId).slice(0, 8),
+    oldMessageId: oldMessageId || null,
+    newMessageId: newMessageId || null,
+    expectedCounter: Number.isFinite(expectedCounter) ? expectedCounter : null
   }, 5);
 }
 
@@ -393,6 +415,40 @@ async function seedTransportCounterFromServer({
     });
     return false;
   }
+}
+
+async function fetchAuthoritativeSendState({ conversationId, senderDeviceId }) {
+  if (!conversationId || !senderDeviceId) {
+    const err = new Error('send-state requires conversationId and senderDeviceId');
+    err.code = 'SendStateBadRequest';
+    throw err;
+  }
+  const { r, data } = await fetchSendState({ conversationId, senderDeviceId });
+  if (!r?.ok || !data?.ok) {
+    const err = new Error('send-state fetch failed');
+    err.code = 'SendStateFetchFailed';
+    err.status = r?.status ?? null;
+    err.details = data || null;
+    throw err;
+  }
+  const expectedCounter = Number(data?.expectedCounter);
+  if (!Number.isFinite(expectedCounter) || expectedCounter <= 0) {
+    const err = new Error('send-state expectedCounter invalid');
+    err.code = 'SendStateInvalid';
+    err.details = data || null;
+    throw err;
+  }
+  logSendStateTrace({
+    conversationId,
+    expectedCounter,
+    lastAcceptedCounter: Number(data?.lastAcceptedCounter)
+  });
+  return {
+    expectedCounter,
+    lastAcceptedCounter: Number.isFinite(Number(data?.lastAcceptedCounter)) ? Number(data.lastAcceptedCounter) : null,
+    lastAcceptedMessageId: data?.lastAcceptedMessageId || null,
+    serverTime: Number.isFinite(Number(data?.serverTime)) ? Number(data.serverTime) : null
+  };
 }
 
 function ensureHolderId(holder) {
@@ -1484,6 +1540,8 @@ async function sendDrPlaintext(params = {}) {
 
   const senderDeviceId = ensureDeviceId();
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
+  let failureSnapshot = preSnapshot;
+  let failureCounter = transportCounter;
   logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: preSnapshot || null });
   const pkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
@@ -1499,34 +1557,38 @@ async function sendDrPlaintext(params = {}) {
   const receiverAccountDigest = peer; // 目標必須鎖定對端
   const receiverDeviceId = peerDeviceId; // 目標裝置為對端指定 device
 
-  const meta = {
-    ts: now,
-    sender_digest: accountDigest || null,
-    senderDigest: accountDigest || null,
-    sender_device_id: senderDeviceId || null,
-    senderDeviceId: senderDeviceId || null,
-    msg_type: msgType
-  };
-  if (metaOverrides && typeof metaOverrides === 'object') {
-    for (const [key, value] of Object.entries(metaOverrides)) {
-      if (key === 'msg_type' || key === 'ts' || key === 'sender_digest' || key === 'sender_device_id') continue;
-      if (value === undefined) continue;
-      meta[key] = value;
+  const buildOutgoingMeta = (tsValue) => {
+    const metaPayload = {
+      ts: tsValue,
+      sender_digest: accountDigest || null,
+      senderDigest: accountDigest || null,
+      sender_device_id: senderDeviceId || null,
+      senderDeviceId: senderDeviceId || null,
+      msg_type: msgType
+    };
+    if (metaOverrides && typeof metaOverrides === 'object') {
+      for (const [key, value] of Object.entries(metaOverrides)) {
+        if (key === 'msg_type' || key === 'ts' || key === 'sender_digest' || key === 'sender_device_id') continue;
+        if (value === undefined) continue;
+        metaPayload[key] = value;
+      }
     }
-  }
-  meta.sender_digest = accountDigest || null;
-  meta.senderDigest = accountDigest || null;
-  meta.sender_device_id = senderDeviceId || null;
-  meta.senderDeviceId = senderDeviceId || null;
-  // 強制標記訊息目標：鎖定對端 digest/device，不允許 fallback。
-  meta.targetAccountDigest = receiverAccountDigest;
-  meta.target_account_digest = receiverAccountDigest;
-  meta.receiverAccountDigest = receiverAccountDigest;
-  meta.receiver_account_digest = receiverAccountDigest;
-  meta.targetDeviceId = receiverDeviceId;
-  meta.target_device_id = receiverDeviceId;
-  meta.receiverDeviceId = receiverDeviceId;
-  meta.receiver_device_id = receiverDeviceId;
+    metaPayload.sender_digest = accountDigest || null;
+    metaPayload.senderDigest = accountDigest || null;
+    metaPayload.sender_device_id = senderDeviceId || null;
+    metaPayload.senderDeviceId = senderDeviceId || null;
+    // 強制標記訊息目標：鎖定對端 digest/device，不允許 fallback。
+    metaPayload.targetAccountDigest = receiverAccountDigest;
+    metaPayload.target_account_digest = receiverAccountDigest;
+    metaPayload.receiverAccountDigest = receiverAccountDigest;
+    metaPayload.receiver_account_digest = receiverAccountDigest;
+    metaPayload.targetDeviceId = receiverDeviceId;
+    metaPayload.target_device_id = receiverDeviceId;
+    metaPayload.receiverDeviceId = receiverDeviceId;
+    metaPayload.receiver_device_id = receiverDeviceId;
+    return metaPayload;
+  };
+  const meta = buildOutgoingMeta(now);
 
   logDrCore('send:snapshot', {
     peerAccountDigest: peer,
@@ -1640,7 +1702,38 @@ async function sendDrPlaintext(params = {}) {
       error: null,
       reasonCode: 'DR_ENQUEUE_OUTBOX'
     }, 5);
+    if (isConversationLocked(finalConversationId)) {
+      logDrSendTrace({ messageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: job?.jobId || null });
+      if (postSnapshot && peer && peerDeviceId) {
+        const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: postSnapshot });
+        logDrCore('send:persist', {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          messageId,
+          persisted,
+          Ns: postSnapshot?.Ns ?? null,
+          Nr: postSnapshot?.Nr ?? null,
+          hasCkS: !!postSnapshot?.ckS_b64
+        }, { level: 'log' });
+      }
+      return {
+        queued: true,
+        jobId: job?.jobId || null,
+        convId: finalConversationId,
+        msg: { id: messageId },
+        secure: true
+      };
+    }
     const result = await processOutboxJobNow(job.jobId);
+    if (!result.ok && result?.job?.state === 'queued') {
+      return {
+        queued: true,
+        jobId: job?.jobId || null,
+        convId: finalConversationId,
+        msg: { id: messageId },
+        secure: true
+      };
+    }
     if (!result.ok) {
       logOutgoingSendTrace('send_fail', messageId, null);
       logMsgEvent('send:fail', {
@@ -1656,10 +1749,256 @@ async function sendDrPlaintext(params = {}) {
         status: result?.status ?? null,
         error: result?.error || 'sendText failed'
       }, { level: 'error' });
+      const errorCode = result?.errorCode || null;
+      if (errorCode === COUNTER_TOO_LOW_CODE && COUNTER_TOO_LOW_MODE === 'A_ROUTE_ONLY') {
+        const replacementMessageId = crypto.randomUUID();
+        const replacementInfo = {
+          oldMessageId: messageId,
+          newMessageId: replacementMessageId,
+          expectedCounter: null
+        };
+        const sendState = await fetchAuthoritativeSendState({
+          conversationId: finalConversationId,
+          senderDeviceId
+        });
+        const expectedCounter = sendState.expectedCounter;
+        replacementInfo.expectedCounter = expectedCounter;
+        state.NsTotal = expectedCounter - 1;
+        failureCounter = expectedCounter;
+        failureSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
+        logCounterTooLowTrace({
+          conversationId: finalConversationId,
+          oldMessageId: messageId,
+          newMessageId: replacementMessageId,
+          expectedCounter
+        });
+
+        const repairTransportCounter = reserveTransportCounter(state, {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          conversationId: finalConversationId,
+          messageId: replacementMessageId,
+          msgType
+        });
+        const repairPreSnapshot = failureSnapshot;
+        logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: repairPreSnapshot || null });
+        const repairPkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
+        const repairMessageKeyB64 = repairPkt?.message_key_b64 || null;
+        const afterRepairTotal = Number(state?.NsTotal);
+        if (!Number.isFinite(afterRepairTotal) || afterRepairTotal === repairTransportCounter + 1 || afterRepairTotal < repairTransportCounter) {
+          state.NsTotal = repairTransportCounter;
+        }
+        const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
+        const repairNow = Math.floor(Date.now() / 1000);
+        const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
+        const repairMeta = buildOutgoingMeta(repairNow);
+        const repairHeaderPayload = {
+          ...repairPkt.header,
+          peerAccountDigest: peer || null,
+          peerDeviceId: peerDeviceId || null,
+          iv_b64: repairPkt.iv_b64,
+          meta: repairMeta
+        };
+        const repairHeaderJson = JSON.stringify(repairHeaderPayload);
+        const repairCtB64 = repairPkt.ciphertext_b64;
+        const repairPacketKeyLog = repairPkt?.header?.ek_pub_b64
+          ? `${finalConversationId || ''}::${String(repairPkt.header.ek_pub_b64).slice(0, 12)}::${repairPkt.header?.n ?? ''}`
+          : null;
+        try {
+          drConsole.log('[msg] send:counter', JSON.stringify({
+            messageId: replacementMessageId,
+            msgType: repairMeta?.msg_type || null,
+            headerN: repairHeaderN,
+            transportCounter: repairTransportCounter
+          }));
+        } catch {}
+        logMsgEvent('send:start', {
+          direction: 'outgoing',
+          conversationId: finalConversationId,
+          messageId: replacementMessageId,
+          serverMessageId: null,
+          packetKey: repairPacketKeyLog,
+          senderDigest: accountDigest || null,
+          senderDeviceId,
+          peerAccountDigest: peer,
+          peerDeviceId
+        });
+
+        const repairVaultCounter = Number.isFinite(repairHeaderN) ? repairHeaderN : repairTransportCounter;
+        try {
+          await MessageKeyVault.putMessageKey({
+            conversationId: finalConversationId,
+            messageId: replacementMessageId,
+            senderDeviceId,
+            targetDeviceId: receiverDeviceId,
+            direction: 'outgoing',
+            msgType,
+            headerCounter: repairVaultCounter,
+            messageKeyB64: repairMessageKeyB64
+          });
+          logOutgoingSendTrace('vault_put_ok', replacementMessageId, null);
+          logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_OK' });
+        } catch (err) {
+          logOutgoingSendTrace('vault_put_fail', replacementMessageId, null);
+          logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_FAIL', error: err?.message || String(err) });
+          err.stage = 'vault_put_fail';
+          err.code = err.code || 'VaultPutFailed';
+          err.replacement = replacementInfo;
+          throw err;
+        }
+
+        startOutboxProcessor();
+        const repairJob = await enqueueOutboxJob({
+          conversationId: finalConversationId,
+          messageId: replacementMessageId,
+          headerJson: repairHeaderJson,
+          header: repairHeaderPayload,
+          ciphertextB64: repairCtB64,
+          counter: repairTransportCounter,
+          senderDeviceId,
+          receiverAccountDigest: peer,
+          receiverDeviceId: receiverDeviceId || null,
+          createdAt: repairNow,
+          peerAccountDigest: peer,
+          peerDeviceId: peerDeviceId || null,
+          meta: { msg_type: repairMeta.msg_type },
+          dr: repairPreSnapshot
+            ? {
+                snapshotBefore: repairPreSnapshot,
+                snapshotAfter: repairPostSnapshot,
+                messageKeyB64: repairMessageKeyB64
+              }
+            : null
+        });
+        logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_ENQUEUE', jobId: repairJob?.jobId || null });
+        logCapped('outboxJobTrace', {
+          conversationId: finalConversationId,
+          messageId: replacementMessageId,
+          jobId: repairJob?.jobId || null,
+          stage: 'ENQUEUE',
+          ok: null,
+          statusCode: null,
+          error: null,
+          reasonCode: 'DR_ENQUEUE_OUTBOX_REPAIR'
+        }, 5);
+        if (isConversationLocked(finalConversationId)) {
+          if (repairPostSnapshot && peer && peerDeviceId) {
+            const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: repairPostSnapshot });
+            logDrCore('send:persist', {
+              peerAccountDigest: peer,
+              peerDeviceId,
+              messageId: replacementMessageId,
+              persisted,
+              Ns: repairPostSnapshot?.Ns ?? null,
+              Nr: repairPostSnapshot?.Nr ?? null,
+              hasCkS: !!repairPostSnapshot?.ckS_b64
+            }, { level: 'log' });
+          }
+          return {
+            queued: true,
+            jobId: repairJob?.jobId || null,
+            convId: finalConversationId,
+            msg: { id: replacementMessageId },
+            secure: true,
+            replacement: replacementInfo
+          };
+        }
+        const repairResult = await processOutboxJobNow(repairJob.jobId);
+        if (!repairResult.ok && repairResult?.job?.state === 'queued') {
+          return {
+            queued: true,
+            jobId: repairJob?.jobId || null,
+            convId: finalConversationId,
+            msg: { id: replacementMessageId },
+            secure: true,
+            replacement: replacementInfo
+          };
+        }
+        if (!repairResult.ok) {
+          logOutgoingSendTrace('send_fail', replacementMessageId, null);
+          logMsgEvent('send:fail', {
+            direction: 'outgoing',
+            conversationId: finalConversationId,
+            messageId: replacementMessageId,
+            serverMessageId: null,
+            packetKey: repairPacketKeyLog,
+            senderDigest: accountDigest || null,
+            senderDeviceId,
+            peerAccountDigest: peer,
+            peerDeviceId,
+            status: repairResult?.status ?? null,
+            error: repairResult?.error || 'sendText failed'
+          }, { level: 'error' });
+          const status = Number.isFinite(repairResult?.status) ? ` (status=${repairResult.status})` : '';
+          const repairErr = new Error((repairResult.error || 'sendText failed') + status);
+          repairErr.status = Number.isFinite(repairResult?.status) ? Number(repairResult.status) : undefined;
+          const repairErrorCode = repairResult?.errorCode || null;
+          repairErr.code = repairErrorCode || repairErr.code || repairErr.status || 'SendFailed';
+          if (repairErrorCode) repairErr.errorCode = repairErrorCode;
+          repairErr.stage = 'send_fail';
+          repairErr.__drDeliveryLogged = true;
+          repairErr.replacement = replacementInfo;
+          throw repairErr;
+        }
+        if (repairPostSnapshot && peer && peerDeviceId) {
+          const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: repairPostSnapshot });
+          logDrCore('send:persist', {
+            peerAccountDigest: peer,
+            peerDeviceId,
+            messageId: replacementMessageId,
+            persisted,
+            Ns: repairPostSnapshot?.Ns ?? null,
+            Nr: repairPostSnapshot?.Nr ?? null,
+            hasCkS: !!repairPostSnapshot?.ckS_b64
+          }, { level: 'log' });
+        }
+        sendFailureCounter.delete(`${peer}::${receiverDeviceId || 'unknown'}`);
+        logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: repairPostSnapshot });
+        const repairMsg = repairResult.data && typeof repairResult.data === 'object' ? repairResult.data : {};
+        const repairAckId = typeof repairMsg?.id === 'string' && repairMsg.id ? repairMsg.id : null;
+        if (repairAckId && repairAckId !== replacementMessageId) {
+          throw new Error('messageId mismatch from server');
+        }
+        if (!repairAckId) repairMsg.id = replacementMessageId;
+        logMsgEvent('send:done', {
+          direction: 'outgoing',
+          conversationId: finalConversationId,
+          messageId: replacementMessageId,
+          serverMessageId: repairMsg.id || null,
+          packetKey: repairPacketKeyLog,
+          senderDigest: accountDigest || null,
+          senderDeviceId,
+          peerAccountDigest: peer,
+          peerDeviceId,
+          status: repairResult?.status ?? null,
+          ok: !!repairResult?.ok
+        });
+        logOutgoingSendTrace('send_ok', replacementMessageId, repairMsg.id || null);
+        try {
+          log({
+            sendSuccessTrace: {
+              conversationId: finalConversationId,
+              serverMessageId: repairMsg.id || replacementMessageId,
+              messageId: replacementMessageId,
+              msgType,
+              headerCounter: repairVaultCounter,
+              senderDeviceId,
+              targetDeviceId: receiverDeviceId
+            }
+          });
+        } catch {}
+        return {
+          msg: repairMsg,
+          convId: finalConversationId,
+          secure: true,
+          replacement: replacementInfo
+        };
+      }
       const status = Number.isFinite(result?.status) ? ` (status=${result.status})` : '';
       const sendErr = new Error((result.error || 'sendText failed') + status);
       sendErr.status = Number.isFinite(result?.status) ? Number(result.status) : undefined;
-      sendErr.code = sendErr.code || sendErr.status || 'SendFailed';
+      sendErr.code = errorCode || sendErr.code || sendErr.status || 'SendFailed';
+      if (errorCode) sendErr.errorCode = errorCode;
       sendErr.stage = 'send_fail';
       sendErr.__drDeliveryLogged = true;
       throw sendErr;
@@ -1737,15 +2076,15 @@ async function sendDrPlaintext(params = {}) {
     }
     const holder = drState({ peerAccountDigest: peer, peerDeviceId });
     const currentCounter = Number(holder?.NsTotal);
-    const shouldRestore = preSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= transportCounter);
+    const shouldRestore = failureSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= failureCounter);
     if (shouldRestore) {
-      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: failureSnapshot, force: true, sourceTag: 'send-failed' });
       const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
-      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < transportCounter)) {
-        refreshed.NsTotal = transportCounter;
+      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < failureCounter)) {
+        refreshed.NsTotal = failureCounter;
       }
-    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < transportCounter)) {
-      holder.NsTotal = transportCounter;
+    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < failureCounter)) {
+      holder.NsTotal = failureCounter;
     }
     throw err;
   }
@@ -2105,6 +2444,8 @@ export async function sendDrMedia(params = {}) {
     msgType
   });
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
+  let failureSnapshot = preSnapshot;
+  let failureCounter = transportCounter;
   logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
   const pkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
@@ -2119,37 +2460,41 @@ export async function sendDrMedia(params = {}) {
   const receiverDeviceId = peerDeviceId;
   const receiverAccountDigest = peer;
 
-  const meta = {
-    ts: now,
-    sender_digest: accountDigest || null,
-    senderDigest: accountDigest || null,
-    sender_device_id: senderDeviceId || null,
-    senderDeviceId: senderDeviceId || null,
-    targetAccountDigest: receiverAccountDigest || null,
-    target_account_digest: receiverAccountDigest || null,
-    receiverAccountDigest: receiverAccountDigest || null,
-    receiver_account_digest: receiverAccountDigest || null,
-    targetDeviceId: receiverDeviceId || null,
-    target_device_id: receiverDeviceId || null,
-    receiverDeviceId: receiverDeviceId || null,
-    receiver_device_id: receiverDeviceId || null,
-    msg_type: msgType,
-    media: {
-      object_key: metadata.objectKey,
-      size: metadata.size,
-      name: metadata.name,
-      content_type: metadata.contentType
-    }
-  };
-  if (metadata.preview?.objectKey) {
-    meta.media.preview = {
-      object_key: metadata.preview.objectKey,
-      size: metadata.preview.size,
-      content_type: metadata.preview.contentType,
-      width: metadata.preview.width,
-      height: metadata.preview.height
+  const buildMediaMeta = (tsValue) => {
+    const metaPayload = {
+      ts: tsValue,
+      sender_digest: accountDigest || null,
+      senderDigest: accountDigest || null,
+      sender_device_id: senderDeviceId || null,
+      senderDeviceId: senderDeviceId || null,
+      targetAccountDigest: receiverAccountDigest || null,
+      target_account_digest: receiverAccountDigest || null,
+      receiverAccountDigest: receiverAccountDigest || null,
+      receiver_account_digest: receiverAccountDigest || null,
+      targetDeviceId: receiverDeviceId || null,
+      target_device_id: receiverDeviceId || null,
+      receiverDeviceId: receiverDeviceId || null,
+      receiver_device_id: receiverDeviceId || null,
+      msg_type: msgType,
+      media: {
+        object_key: metadata.objectKey,
+        size: metadata.size,
+        name: metadata.name,
+        content_type: metadata.contentType
+      }
     };
-  }
+    if (metadata.preview?.objectKey) {
+      metaPayload.media.preview = {
+        object_key: metadata.preview.objectKey,
+        size: metadata.preview.size,
+        content_type: metadata.preview.contentType,
+        width: metadata.preview.width,
+        height: metadata.preview.height
+      };
+    }
+    return metaPayload;
+  };
+  const meta = buildMediaMeta(now);
   const headerPayload = { ...pkt.header, iv_b64: pkt.iv_b64, meta };
   const headerJson = JSON.stringify(headerPayload);
   const ctB64 = pkt.ciphertext_b64;
@@ -2167,15 +2512,15 @@ export async function sendDrMedia(params = {}) {
   const restoreSendFailure = (err) => {
     const holder = drState({ peerAccountDigest: peer, peerDeviceId });
     const currentCounter = Number(holder?.NsTotal);
-    const shouldRestore = preSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= transportCounter);
+    const shouldRestore = failureSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= failureCounter);
     if (shouldRestore) {
-      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: preSnapshot, force: true, sourceTag: 'send-failed' });
+      restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: failureSnapshot, force: true, sourceTag: 'send-failed' });
       const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
-      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < transportCounter)) {
-        refreshed.NsTotal = transportCounter;
+      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < failureCounter)) {
+        refreshed.NsTotal = failureCounter;
       }
-    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < transportCounter)) {
-      holder.NsTotal = transportCounter;
+    } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < failureCounter)) {
+      holder.NsTotal = failureCounter;
     }
     throw err;
   };
@@ -2219,16 +2564,328 @@ export async function sendDrMedia(params = {}) {
           snapshotBefore: preSnapshot,
           snapshotAfter: postSnapshot,
           messageKeyB64
-        }
+      }
       : null
   });
   logDrSendTrace({ messageId, stage: 'OUTBOX_ENQUEUE', jobId: job?.jobId || null });
+  if (isConversationLocked(conversationId)) {
+    logDrSendTrace({ messageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: job?.jobId || null });
+    if (postSnapshot && peer && peerDeviceId) {
+      const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: postSnapshot });
+      logDrCore('send:persist', {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        messageId,
+        persisted,
+        Ns: postSnapshot?.Ns ?? null,
+        Nr: postSnapshot?.Nr ?? null,
+        hasCkS: !!postSnapshot?.ckS_b64
+      }, { level: 'log' });
+    }
+    return {
+      queued: true,
+      jobId: job?.jobId || null,
+      convId: conversationId,
+      secure: true,
+      msg: {
+        id: messageId,
+        ts: now,
+        text: `[檔案] ${metadata.name}`,
+        type: 'media',
+        media: {
+          objectKey: metadata.objectKey,
+          name: metadata.name,
+          size: metadata.size,
+          contentType: metadata.contentType,
+          envelope: metadata.envelope,
+          dir: metadata.dir,
+          createdAt: now,
+          preview: metadata.preview || null,
+          previewUrl: previewLocalUrl || null
+        }
+      },
+      upload: {
+        objectKey: metadata.objectKey,
+        envelope: metadata.envelope,
+        size: uploadResult.size
+      }
+    };
+  }
   const result = await processOutboxJobNow(job.jobId);
+  if (!result.ok && result?.job?.state === 'queued') {
+    return {
+      queued: true,
+      jobId: job?.jobId || null,
+      convId: conversationId,
+      secure: true,
+      msg: {
+        id: messageId,
+        ts: now,
+        text: `[檔案] ${metadata.name}`,
+        type: 'media',
+        media: {
+          objectKey: metadata.objectKey,
+          name: metadata.name,
+          size: metadata.size,
+          contentType: metadata.contentType,
+          envelope: metadata.envelope,
+          dir: metadata.dir,
+          createdAt: now,
+          preview: metadata.preview || null,
+          previewUrl: previewLocalUrl || null
+        }
+      },
+      upload: {
+        objectKey: metadata.objectKey,
+        envelope: metadata.envelope,
+        size: uploadResult.size
+      }
+    };
+  }
   if (!result.ok) {
     logOutgoingSendTrace('send_fail', messageId, null);
+    const errorCode = result?.errorCode || null;
+    if (errorCode === COUNTER_TOO_LOW_CODE && COUNTER_TOO_LOW_MODE === 'A_ROUTE_ONLY') {
+      const replacementMessageId = crypto.randomUUID();
+      const replacementInfo = {
+        oldMessageId: messageId,
+        newMessageId: replacementMessageId,
+        expectedCounter: null
+      };
+      const sendState = await fetchAuthoritativeSendState({
+        conversationId,
+        senderDeviceId
+      });
+      const expectedCounter = sendState.expectedCounter;
+      replacementInfo.expectedCounter = expectedCounter;
+      state.NsTotal = expectedCounter - 1;
+      failureCounter = expectedCounter;
+      failureSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
+      logCounterTooLowTrace({
+        conversationId,
+        oldMessageId: messageId,
+        newMessageId: replacementMessageId,
+        expectedCounter
+      });
+
+      const repairTransportCounter = reserveTransportCounter(state, {
+        peerAccountDigest: peer,
+        peerDeviceId,
+        conversationId,
+        messageId: replacementMessageId,
+        msgType
+      });
+      const repairPreSnapshot = failureSnapshot;
+      logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: repairPreSnapshot || null, objectKey: metadata.objectKey });
+      const repairPkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
+      const repairMessageKeyB64 = repairPkt?.message_key_b64 || null;
+      const afterRepairTotal = Number(state?.NsTotal);
+      if (!Number.isFinite(afterRepairTotal) || afterRepairTotal === repairTransportCounter + 1 || afterRepairTotal < repairTransportCounter) {
+        state.NsTotal = repairTransportCounter;
+      }
+      const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
+      const repairNow = Math.floor(Date.now() / 1000);
+      const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
+      const repairMeta = buildMediaMeta(repairNow);
+      const repairHeaderPayload = { ...repairPkt.header, iv_b64: repairPkt.iv_b64, meta: repairMeta };
+      const repairHeaderJson = JSON.stringify(repairHeaderPayload);
+      const repairCtB64 = repairPkt.ciphertext_b64;
+
+      const repairVaultCounter = Number.isFinite(repairHeaderN) ? repairHeaderN : repairTransportCounter;
+      try {
+        await MessageKeyVault.putMessageKey({
+          conversationId,
+          messageId: replacementMessageId,
+          senderDeviceId,
+          targetDeviceId: receiverDeviceId,
+          direction: 'outgoing',
+          msgType,
+          headerCounter: repairVaultCounter,
+          messageKeyB64: repairMessageKeyB64
+        });
+        logOutgoingSendTrace('vault_put_ok', replacementMessageId, null);
+        logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_OK' });
+      } catch (err) {
+        logOutgoingSendTrace('vault_put_fail', replacementMessageId, null);
+        logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_FAIL', error: err?.message || String(err) });
+        err.stage = 'vault_put_fail';
+        err.code = err.code || 'VaultPutFailed';
+        err.replacement = replacementInfo;
+        restoreSendFailure(err);
+      }
+
+      startOutboxProcessor();
+      const repairJob = await enqueueMediaMetaJob({
+        conversationId,
+        messageId: replacementMessageId,
+        headerJson: repairHeaderJson,
+        header: repairHeaderPayload,
+        ciphertextB64: repairCtB64,
+        counter: repairTransportCounter,
+        senderDeviceId,
+        receiverAccountDigest: peer,
+        receiverDeviceId: receiverDeviceId || null,
+        createdAt: repairNow,
+        meta: { msg_type: msgType, media: metadata },
+        peerAccountDigest: peer,
+        dr: repairPreSnapshot
+          ? {
+              snapshotBefore: repairPreSnapshot,
+              snapshotAfter: repairPostSnapshot,
+              messageKeyB64: repairMessageKeyB64
+            }
+          : null
+      });
+      logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_ENQUEUE', jobId: repairJob?.jobId || null });
+      if (isConversationLocked(conversationId)) {
+        logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: repairJob?.jobId || null });
+        if (repairPostSnapshot && peer && peerDeviceId) {
+          const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: repairPostSnapshot });
+          logDrCore('send:persist', {
+            peerAccountDigest: peer,
+            peerDeviceId,
+            messageId: replacementMessageId,
+            persisted,
+            Ns: repairPostSnapshot?.Ns ?? null,
+            Nr: repairPostSnapshot?.Nr ?? null,
+            hasCkS: !!repairPostSnapshot?.ckS_b64
+          }, { level: 'log' });
+        }
+        return {
+          queued: true,
+          jobId: repairJob?.jobId || null,
+          convId: conversationId,
+          secure: true,
+          msg: {
+            id: replacementMessageId,
+            ts: repairNow,
+            text: `[檔案] ${metadata.name}`,
+            type: 'media',
+            media: {
+              objectKey: metadata.objectKey,
+              name: metadata.name,
+              size: metadata.size,
+              contentType: metadata.contentType,
+              envelope: metadata.envelope,
+              dir: metadata.dir,
+              createdAt: repairNow,
+              preview: metadata.preview || null,
+              previewUrl: previewLocalUrl || null
+            }
+          },
+          upload: {
+            objectKey: metadata.objectKey,
+            envelope: metadata.envelope,
+            size: uploadResult.size
+          },
+          replacement: replacementInfo
+        };
+      }
+      const repairResult = await processOutboxJobNow(repairJob.jobId);
+      if (!repairResult.ok && repairResult?.job?.state === 'queued') {
+        return {
+          queued: true,
+          jobId: repairJob?.jobId || null,
+          convId: conversationId,
+          secure: true,
+          msg: {
+            id: replacementMessageId,
+            ts: repairNow,
+            text: `[檔案] ${metadata.name}`,
+            type: 'media',
+            media: {
+              objectKey: metadata.objectKey,
+              name: metadata.name,
+              size: metadata.size,
+              contentType: metadata.contentType,
+              envelope: metadata.envelope,
+              dir: metadata.dir,
+              createdAt: repairNow,
+              preview: metadata.preview || null,
+              previewUrl: previewLocalUrl || null
+            }
+          },
+          upload: {
+            objectKey: metadata.objectKey,
+            envelope: metadata.envelope,
+            size: uploadResult.size
+          },
+          replacement: replacementInfo
+        };
+      }
+      if (!repairResult.ok) {
+        logOutgoingSendTrace('send_fail', replacementMessageId, null);
+        const repairErr = new Error(repairResult.error || 'sendMedia failed');
+        repairErr.status = Number.isFinite(repairResult?.status) ? Number(repairResult.status) : null;
+        const repairErrorCode = repairResult?.errorCode || null;
+        repairErr.code = repairErrorCode || repairErr.code || repairErr.status || 'SendFailed';
+        if (repairErrorCode) repairErr.errorCode = repairErrorCode;
+        repairErr.stage = 'send_fail';
+        repairErr.replacement = replacementInfo;
+        restoreSendFailure(repairErr);
+      }
+      const repairData = repairResult.data && typeof repairResult.data === 'object' ? repairResult.data : {};
+      const repairAckId = typeof repairData?.id === 'string' && repairData.id ? repairData.id : null;
+      if (repairAckId && repairAckId !== replacementMessageId) {
+        throw new Error('messageId mismatch from server');
+      }
+      const finalRepairMessageId = repairAckId || replacementMessageId;
+      logOutgoingSendTrace('send_ok', replacementMessageId, finalRepairMessageId);
+      if (repairPreSnapshot) {
+        recordDrMessageHistory({
+          peerAccountDigest: peer,
+          messageTs: repairNow,
+          messageId: finalRepairMessageId,
+          snapshot: repairPreSnapshot,
+          snapshotNext: repairPostSnapshot,
+          messageKeyB64: repairMessageKeyB64
+        });
+      }
+      persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
+      try {
+        log({
+          sendSuccessTrace: {
+            conversationId,
+            serverMessageId: finalRepairMessageId,
+            messageId: finalRepairMessageId,
+            msgType,
+            headerCounter: repairVaultCounter,
+            senderDeviceId,
+            targetDeviceId: receiverDeviceId
+          }
+        });
+      } catch {}
+      return {
+        msg: {
+          id: finalRepairMessageId,
+          ts: repairNow,
+          text: `[檔案] ${metadata.name}`,
+          type: 'media',
+          media: {
+            objectKey: metadata.objectKey,
+            name: metadata.name,
+            size: metadata.size,
+            contentType: metadata.contentType,
+            envelope: metadata.envelope,
+            dir: metadata.dir,
+            createdAt: repairNow,
+            preview: metadata.preview || null,
+            previewUrl: previewLocalUrl || null
+          }
+        },
+        convId: conversationId,
+        secure: true,
+        upload: {
+          objectKey: metadata.objectKey,
+          envelope: metadata.envelope,
+          size: uploadResult.size
+        },
+        replacement: replacementInfo
+      };
+    }
     const sendErr = new Error(result.error || 'sendMedia failed');
     sendErr.status = Number.isFinite(result?.status) ? Number(result.status) : null;
-    sendErr.code = sendErr.code || sendErr.status || 'SendFailed';
+    sendErr.code = errorCode || sendErr.code || sendErr.status || 'SendFailed';
     sendErr.stage = 'send_fail';
     restoreSendFailure(sendErr);
   }

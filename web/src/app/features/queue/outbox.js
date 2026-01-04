@@ -1,4 +1,4 @@
-// Outbox queue for secure messages: per-conversation single-worker, single-shot (no retry/backoff).
+// Outbox queue for secure messages: per-conversation single-worker with transient retry (network/5xx only).
 
 import { createSecureMessage } from '../../api/messages.js';
 import {
@@ -7,6 +7,7 @@ import {
   putOutboxRecord
 } from './db.js';
 import { log, logCapped, logForensicsEvent } from '../../core/log.js';
+import { TRANSIENT_RETRY_MAX, TRANSIENT_RETRY_INTERVAL_MS } from './send-policy.js';
 
 const TYPE_MESSAGE = 'message';
 const TYPE_RECEIPT = 'receipt';
@@ -19,6 +20,7 @@ const STATE_SENT = 'sent';
 const STATE_DEAD = 'dead-letter';
 
 const PROCESS_INTERVAL_MS = 4_000;
+const COUNTER_TOO_LOW_CODE = 'CounterTooLow';
 
 const convLocks = new Set();
 const hooks = {
@@ -27,6 +29,7 @@ const hooks = {
 };
 
 let processorTimer = null;
+let processorNextAt = null;
 let processing = false;
 let debug = false;
 
@@ -64,8 +67,15 @@ function safeParseHeader(headerJson) {
 }
 
 function scheduleProcessor(delay = PROCESS_INTERVAL_MS) {
+  const nextAt = Date.now() + delay;
+  if (processorTimer && processorNextAt && processorNextAt <= nextAt) return;
   if (processorTimer) clearTimeout(processorTimer);
-  processorTimer = setTimeout(processOutbox, delay);
+  processorNextAt = nextAt;
+  processorTimer = setTimeout(() => {
+    processorTimer = null;
+    processorNextAt = null;
+    processOutbox();
+  }, delay);
 }
 
 function normalizeJob(input = {}) {
@@ -149,17 +159,46 @@ async function updateJob(jobId, patch = {}) {
 function isDue(job) {
   if (!job) return false;
   const isReadyState = job.state === STATE_QUEUED || !job.state;
-  return isReadyState;
+  if (!isReadyState) return false;
+  const nextAttemptAt = Number(job.nextAttemptAt);
+  if (Number.isFinite(nextAttemptAt) && nextAttemptAt > Date.now()) return false;
+  return true;
+}
+
+function compareJobOrder(a, b) {
+  const aCreated = Number(a?.createdAt) || 0;
+  const bCreated = Number(b?.createdAt) || 0;
+  if (aCreated !== bCreated) return aCreated - bCreated;
+  return String(a?.jobId || '').localeCompare(String(b?.jobId || ''));
+}
+
+function shouldRetryTransient({ errorCode, statusCode }) {
+  if (errorCode === COUNTER_TOO_LOW_CODE) return false;
+  if (Number.isFinite(statusCode)) return statusCode >= 500;
+  return true;
 }
 
 async function fetchDueJobs() {
   const all = await listOutboxRecords();
-  const filtered = all.filter((job) => job && isDue(job));
+  const pendingByConversation = new Map();
+  for (const job of all) {
+    if (!job || job.state === STATE_SENT || job.state === STATE_DEAD) continue;
+    const conversationId = job?.conversationId || null;
+    if (!conversationId) continue;
+    const current = pendingByConversation.get(conversationId);
+    if (!current || compareJobOrder(job, current) < 0) {
+      pendingByConversation.set(conversationId, job);
+    }
+  }
+  const filtered = [];
+  for (const job of pendingByConversation.values()) {
+    if (isDue(job)) filtered.push(job);
+  }
   filtered.sort((a, b) => {
-    const aTs = Number(a.nextAttemptAt) || 0;
-    const bTs = Number(b.nextAttemptAt) || 0;
+    const aTs = Number(a?.nextAttemptAt) || 0;
+    const bTs = Number(b?.nextAttemptAt) || 0;
     if (aTs !== bTs) return aTs - bTs;
-    return (a.jobId || '').localeCompare(b.jobId || '');
+    return compareJobOrder(a, b);
   });
   return filtered;
 }
@@ -210,6 +249,7 @@ async function attemptSend(job) {
     const err = new Error(failureMessage);
     err.status = r?.status;
     err.details = data || null;
+    if (typeof data?.error === 'string') err.code = data.error;
     throw err;
   }
   try {
@@ -224,15 +264,44 @@ async function attemptSend(job) {
 }
 
 async function markFailure(job, err) {
+  const errorMessage = err?.message || err || 'send failed';
+  const errorCodeRaw = err?.code || err?.errorCode || err?.details?.error || err?.details?.code || null;
+  const errorCode = errorCodeRaw ? String(errorCodeRaw) : null;
+  const statusCode = Number.isFinite(err?.status) ? Number(err.status) : null;
+  if (job?.type === TYPE_MESSAGE && shouldRetryTransient({ errorCode, statusCode })) {
+    const retryCount = Number(job.retryCount) || 0;
+    if (retryCount < TRANSIENT_RETRY_MAX) {
+      const nextAttemptAt = Date.now() + TRANSIENT_RETRY_INTERVAL_MS;
+      const next = await updateJob(job.jobId, {
+        state: STATE_QUEUED,
+        retryCount: retryCount + 1,
+        nextAttemptAt,
+        lastError: errorMessage,
+        lastErrorCode: errorCode,
+        lastStatus: statusCode
+      });
+      logOutboxJobTrace({
+        job: next || job,
+        stage: 'RETRY_SCHEDULED',
+        ok: false,
+        statusCode,
+        error: errorMessage,
+        reasonCode: 'TRANSIENT_RETRY'
+      });
+      scheduleProcessor(TRANSIENT_RETRY_INTERVAL_MS);
+      return;
+    }
+  }
   const next = await updateJob(job.jobId, {
     state: STATE_DEAD,
     retryCount: 0,
     nextAttemptAt: null,
-    lastError: err?.message || err || 'send failed',
-    lastStatus: Number.isFinite(err?.status) ? Number(err.status) : null
+    lastError: errorMessage,
+    lastErrorCode: errorCode,
+    lastStatus: statusCode
   });
   if (debug) {
-    console.warn('[outbox]', { event: 'failed', jobId: job?.jobId, conv: job?.conversationId, status: next?.lastStatus || null, error: err?.message || err });
+    console.warn('[outbox]', { event: 'failed', jobId: job?.jobId, conv: job?.conversationId, status: next?.lastStatus || null, error: errorMessage });
   }
   if (next?.state === STATE_DEAD && hooks.onFailed.size) {
     for (const hook of hooks.onFailed) {
@@ -344,7 +413,14 @@ export async function processOutboxJobNow(jobId) {
       error: latest?.lastError || null,
       reasonCode: 'OUTBOX_PROCESS_NOW'
     });
-    return { ok, job: latest, data: latest?.lastResponse || null, status: latest?.lastStatus || null, error: latest?.lastError || null };
+    return {
+      ok,
+      job: latest,
+      data: latest?.lastResponse || null,
+      status: latest?.lastStatus || null,
+      error: latest?.lastError || null,
+      errorCode: latest?.lastErrorCode || null
+    };
   } catch (err) {
     logOutboxJobTrace({
       job,
@@ -369,6 +445,9 @@ export async function retryOutboxMessage({ conversationId, messageId } = {}) {
   if (!existing || existing.type !== TYPE_MESSAGE) {
     return { ok: false, error: 'job not found', errorCode: 'OutboxJobMissing' };
   }
+  if (existing.lastErrorCode === COUNTER_TOO_LOW_CODE) {
+    return { ok: false, error: 'CounterTooLow requires replacement send', errorCode: 'COUNTER_TOO_LOW_REPLACED' };
+  }
   if (existing.state === STATE_SENT) {
     return {
       ok: true,
@@ -388,12 +467,26 @@ export async function retryOutboxMessage({ conversationId, messageId } = {}) {
       errorCode: 'OutboxInflight'
     };
   }
+  if (convLocks.has(existing.conversationId)) {
+    return {
+      ok: false,
+      jobId,
+      job: existing,
+      error: 'send in progress',
+      errorCode: 'OutboxInflight'
+    };
+  }
   const result = await processOutboxJobNow(jobId);
   return { ...result, jobId, job: existing };
 }
 
 export function startOutboxProcessor() {
   scheduleProcessor(100);
+}
+
+export function isConversationLocked(conversationId) {
+  if (!conversationId) return false;
+  return convLocks.has(conversationId);
 }
 
 export function snapshotOutboxState() {
