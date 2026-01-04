@@ -118,28 +118,6 @@ function scheduleNextDue(runAtMs, reasonCode) {
   logOutboxScheduleTrace({ scheduled: true, runAtMs: nextDueAtMs, reasonCode: reasonCode || 'schedule' });
 }
 
-function deferFlush(sourceTag) {
-  const tag = sourceTag || 'deferred';
-  if (typeof queueMicrotask === 'function') {
-    queueMicrotask(() => {
-      flushOutbox({ sourceTag: tag }).catch(() => {});
-    });
-    return;
-  }
-  setTimeout(() => {
-    flushOutbox({ sourceTag: tag }).catch(() => {});
-  }, 0);
-}
-
-function requestFlush(sourceTag) {
-  if (flushInFlight) {
-    flushPending = true;
-    if (sourceTag) pendingSourceTag = sourceTag;
-    return;
-  }
-  deferFlush(sourceTag);
-}
-
 function normalizeJob(input = {}) {
   const messageId = typeof input.messageId === 'string' && input.messageId.trim().length
     ? input.messageId.trim()
@@ -449,37 +427,41 @@ async function processSingle(job) {
 
 export async function flushOutbox({ sourceTag } = {}) {
   const tag = typeof sourceTag === 'string' && sourceTag.trim().length ? sourceTag.trim() : 'unknown';
-  const state = await collectOutboxState();
-  logOutboxFlushTriggerTrace({
-    sourceTag: tag,
-    queuedJobs: state.queuedJobs,
-    dueJobs: state.dueJobs.length,
-    nextDueAtMs: state.nextDueAtMs
-  });
-  scheduleNextDue(state.nextDueAtMs, 'flush_trigger');
-  if (flushInFlight) {
+  if (flushInFlight || processing) {
     flushPending = true;
     pendingSourceTag = tag;
     return;
   }
   flushInFlight = true;
+  let handledPending = false;
+  let followTag = null;
   try {
-    if (processing) {
-      flushPending = true;
-      pendingSourceTag = tag;
-      return;
-    }
-    if (state.dueJobs.length) {
-      await processOutbox({ dueJobs: state.dueJobs });
+    while (true) {
+      const state = await collectOutboxState();
+      const cycleTag = handledPending ? (followTag || 'pending') : tag;
+      logOutboxFlushTriggerTrace({
+        sourceTag: cycleTag,
+        queuedJobs: state.queuedJobs,
+        dueJobs: state.dueJobs.length,
+        nextDueAtMs: state.nextDueAtMs
+      });
+      scheduleNextDue(state.nextDueAtMs, handledPending ? 'flush_pending' : 'flush_trigger');
+      if (state.dueJobs.length) {
+        await processOutbox({ dueJobs: state.dueJobs });
+      }
+      if (flushPending && !handledPending) {
+        flushPending = false;
+        handledPending = true;
+        followTag = pendingSourceTag || 'pending';
+        pendingSourceTag = null;
+        continue;
+      }
+      break;
     }
   } finally {
     flushInFlight = false;
-    if (flushPending) {
-      const followTag = pendingSourceTag || 'pending';
-      flushPending = false;
-      pendingSourceTag = null;
-      deferFlush(followTag);
-    }
+    flushPending = false;
+    pendingSourceTag = null;
   }
 }
 
@@ -491,24 +473,35 @@ export async function processOutbox({ dueJobs } = {}) {
   let sentFail = 0;
   let skippedLocked = 0;
   try {
-    const jobs = Array.isArray(dueJobs) ? dueJobs : (await collectOutboxState()).dueJobs;
-    for (const job of jobs) {
-      // skip if another job of same conversation is inflight
-      if (convLocks.has(job.conversationId)) {
-        skippedLocked += 1;
-        logOutboxJobTrace({
-          job,
-          stage: 'INFLIGHT_SKIP',
-          ok: false,
-          error: 'conversation_locked',
-          reasonCode: 'OUTBOX_INFLIGHT_SKIP'
-        });
-        continue;
+    let jobs = Array.isArray(dueJobs) ? dueJobs : null;
+    while (true) {
+      if (!jobs) {
+        const state = await collectOutboxState();
+        jobs = state.dueJobs;
       }
-      processed += 1;
-      const ok = await processSingle(job);
-      if (ok) sentOk += 1;
-      else sentFail += 1;
+      if (!jobs.length) break;
+      let progressed = false;
+      for (const job of jobs) {
+        // skip if another job of same conversation is inflight
+        if (convLocks.has(job.conversationId)) {
+          skippedLocked += 1;
+          logOutboxJobTrace({
+            job,
+            stage: 'INFLIGHT_SKIP',
+            ok: false,
+            error: 'conversation_locked',
+            reasonCode: 'OUTBOX_INFLIGHT_SKIP'
+          });
+          continue;
+        }
+        processed += 1;
+        progressed = true;
+        const ok = await processSingle(job);
+        if (ok) sentOk += 1;
+        else sentFail += 1;
+      }
+      if (!progressed) break;
+      jobs = null;
     }
   } finally {
     processing = false;
@@ -522,7 +515,6 @@ export async function processOutbox({ dueJobs } = {}) {
     remainingDue: postState.dueJobs.length
   });
   scheduleNextDue(postState.nextDueAtMs, 'post_process');
-  if (processed > 0) requestFlush('job_complete');
 }
 
 export async function processOutboxJobNow(jobId) {
@@ -561,7 +553,12 @@ export async function processOutboxJobNow(jobId) {
     });
     return { ok: false, error: err?.message || String(err), status: Number.isFinite(err?.status) ? Number(err.status) : null };
   } finally {
-    if (didAttempt) requestFlush('process_now');
+    if (didAttempt) {
+      try {
+        const postState = await collectOutboxState();
+        scheduleNextDue(postState.nextDueAtMs, 'process_now');
+      } catch {}
+    }
   }
 }
 
