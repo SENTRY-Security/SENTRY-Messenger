@@ -5046,6 +5046,11 @@ export function initMessagesPane({
         updateMessagesStatusUI();
         return;
       }
+      const retryReason = retryResult?.errorCode || retryResult?.reasonCode || null;
+      if (retryReason === 'OUTBOX_WAIT_LOWER_COUNTER' || retryReason === 'OUTBOX_NOT_DUE') {
+        updateMessagesStatusUI();
+        return;
+      }
       if (isCounterTooLowError(retryResult)) {
         updateMessagesStatusUI();
         return;

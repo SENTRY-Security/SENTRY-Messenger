@@ -21,6 +21,9 @@ const STATE_SENT = 'sent';
 const STATE_DEAD = 'dead-letter';
 
 const COUNTER_TOO_LOW_CODE = 'CounterTooLow';
+const OUTBOX_WAIT_LOWER_COUNTER = 'OUTBOX_WAIT_LOWER_COUNTER';
+const OUTBOX_MISSING_COUNTER = 'OUTBOX_MISSING_COUNTER';
+const OUTBOX_NOT_DUE = 'OUTBOX_NOT_DUE';
 
 const convLocks = new Set();
 const hooks = {
@@ -47,10 +50,14 @@ function logOutboxJobTrace({
   reasonCode = null
 } = {}) {
   if (!job) return;
+  const conversationId = job.conversationId || null;
+  const counter = getJobCounter(job);
   logCapped('outboxJobTrace', {
-    conversationId: job.conversationId || null,
+    conversationId,
+    conversationIdPrefix8: conversationId ? String(conversationId).slice(0, 8) : null,
     messageId: job.messageId || null,
     jobId: job.jobId || null,
+    counter: Number.isFinite(counter) ? counter : null,
     stage: stage || null,
     ok: typeof ok === 'boolean' ? ok : null,
     statusCode: Number.isFinite(Number(statusCode)) ? Number(statusCode) : null,
@@ -103,6 +110,26 @@ function safeParseHeader(headerJson) {
   }
 }
 
+function normalizeCounter(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function getJobCounter(job = {}) {
+  const direct = normalizeCounter(job?.counter);
+  if (direct != null) return direct;
+  const header = job?.header || (job?.headerJson ? safeParseHeader(job.headerJson) : null);
+  const headerCounter = normalizeCounter(header?.counter);
+  return headerCounter;
+}
+
+function requiresCounter(job = {}) {
+  if (!job) return false;
+  if (isReceiptJob(job)) return false;
+  if (job.type === TYPE_MEDIA_UPLOAD) return false;
+  return true;
+}
+
 function scheduleNextDue(runAtMs, reasonCode) {
   const nextAt = Number.isFinite(Number(runAtMs)) ? Number(runAtMs) : null;
   const now = Date.now();
@@ -140,6 +167,10 @@ function normalizeJob(input = {}) {
     if (!input.ciphertextB64) throw new Error('ciphertextB64 required');
     if (!input.headerJson && !input.header) throw new Error('headerJson/header required');
   }
+  const headerObj = input.header || (input.headerJson ? safeParseHeader(input.headerJson) : null);
+  const counter = Number.isFinite(Number(input.counter))
+    ? Number(input.counter)
+    : normalizeCounter(headerObj?.counter);
   const ts = Number.isFinite(Number(input.createdAt))
     ? Number(input.createdAt)
     : nowSeconds();
@@ -155,7 +186,7 @@ function normalizeJob(input = {}) {
     headerJson: input.headerJson || null,
     header: input.header || null,
     ciphertextB64: input.ciphertextB64 || null,
-    counter: Number.isFinite(Number(input.counter)) ? Number(input.counter) : null,
+    counter,
     senderDeviceId: input.senderDeviceId || null,
     receiverAccountDigest: input.receiverAccountDigest || null,
     receiverDeviceId: input.receiverDeviceId || null,
@@ -233,6 +264,67 @@ function compareJobOrder(a, b) {
   return String(a?.jobId || '').localeCompare(String(b?.jobId || ''));
 }
 
+function compareCounterOrder(a, b) {
+  const aCounter = getJobCounter(a);
+  const bCounter = getJobCounter(b);
+  if (Number.isFinite(aCounter) && Number.isFinite(bCounter) && aCounter !== bCounter) return aCounter - bCounter;
+  if (Number.isFinite(aCounter) && !Number.isFinite(bCounter)) return -1;
+  if (!Number.isFinite(aCounter) && Number.isFinite(bCounter)) return 1;
+  return compareJobOrder(a, b);
+}
+
+async function hardFailMissingCounter(job, {
+  reasonCode = OUTBOX_MISSING_COUNTER,
+  error = 'missing counter',
+  stage = 'PROCESS_SINGLE'
+} = {}) {
+  if (!job?.jobId) return null;
+  if (job?.state === STATE_DEAD || job?.state === STATE_SENT) return job;
+  const next = await updateJob(job.jobId, {
+    state: STATE_DEAD,
+    retryCount: 0,
+    nextAttemptAt: null,
+    lastError: error,
+    lastErrorCode: reasonCode,
+    lastStatus: null
+  });
+  logOutboxJobTrace({
+    job: next || job,
+    stage,
+    ok: false,
+    error,
+    reasonCode
+  });
+  return next || job;
+}
+
+async function sanitizeOutboxRecords(all = []) {
+  if (!Array.isArray(all) || !all.length) return Array.isArray(all) ? all : [];
+  const sanitized = [];
+  for (const job of all) {
+    if (!job || job.state === STATE_SENT || job.state === STATE_DEAD) {
+      sanitized.push(job);
+      continue;
+    }
+    if (!requiresCounter(job)) {
+      sanitized.push(job);
+      continue;
+    }
+    const counter = getJobCounter(job);
+    if (!Number.isFinite(counter)) {
+      await hardFailMissingCounter(job);
+      continue;
+    }
+    if (!Number.isFinite(Number(job.counter))) {
+      const next = await updateJob(job.jobId, { counter });
+      sanitized.push(next || { ...job, counter });
+      continue;
+    }
+    sanitized.push(job);
+  }
+  return sanitized;
+}
+
 function shouldRetryTransient({ errorCode, statusCode }) {
   if (errorCode === COUNTER_TOO_LOW_CODE) return false;
   if (Number.isFinite(statusCode)) return statusCode >= 500;
@@ -250,18 +342,58 @@ function computeOutboxState(all = []) {
     if (!conversationId) continue;
     const isReadyState = job.state === STATE_QUEUED || !job.state;
     if (isReadyState) queuedJobs += 1;
-    const nextAttemptAt = Number(job.nextAttemptAt);
-    if (Number.isFinite(nextAttemptAt) && nextAttemptAt > now) {
-      if (!nextDueAt || nextAttemptAt < nextDueAt) nextDueAt = nextAttemptAt;
-    }
-    const current = pendingByConversation.get(conversationId);
-    if (!current || compareJobOrder(job, current) < 0) {
-      pendingByConversation.set(conversationId, job);
-    }
+    const list = pendingByConversation.get(conversationId) || [];
+    list.push(job);
+    pendingByConversation.set(conversationId, list);
   }
   const dueJobs = [];
-  for (const job of pendingByConversation.values()) {
-    if (isDue(job)) dueJobs.push(job);
+  for (const jobs of pendingByConversation.values()) {
+    const counterJobs = jobs.filter((job) => requiresCounter(job));
+    let selected = null;
+    if (counterJobs.length) {
+      counterJobs.sort(compareCounterOrder);
+      selected = counterJobs[0];
+      logOutboxJobTrace({
+        job: selected,
+        stage: 'SELECT_NEXT',
+        ok: null,
+        reasonCode: 'OUTBOX_SELECT_MIN_COUNTER'
+      });
+      for (const skipped of counterJobs.slice(1)) {
+        logOutboxJobTrace({
+          job: skipped,
+          stage: 'SKIP_HIGHER_COUNTER',
+          ok: false,
+          reasonCode: OUTBOX_WAIT_LOWER_COUNTER
+        });
+      }
+    } else {
+      const ordered = jobs.slice().sort(compareJobOrder);
+      selected = ordered[0] || null;
+      if (selected) {
+        logOutboxJobTrace({
+          job: selected,
+          stage: 'SELECT_NEXT',
+          ok: null,
+          reasonCode: 'OUTBOX_SELECT_FALLBACK'
+        });
+      }
+    }
+    if (!selected) continue;
+    if (isDue(selected)) {
+      dueJobs.push(selected);
+    } else {
+      logOutboxJobTrace({
+        job: selected,
+        stage: 'NOT_DUE',
+        ok: false,
+        reasonCode: OUTBOX_NOT_DUE
+      });
+      const nextAttemptAt = Number(selected.nextAttemptAt);
+      if (Number.isFinite(nextAttemptAt) && nextAttemptAt > now) {
+        if (!nextDueAt || nextAttemptAt < nextDueAt) nextDueAt = nextAttemptAt;
+      }
+    }
   }
   dueJobs.sort((a, b) => {
     const aTs = Number(a?.nextAttemptAt) || 0;
@@ -274,16 +406,18 @@ function computeOutboxState(all = []) {
 
 async function collectOutboxState() {
   const all = await listOutboxRecords();
-  return computeOutboxState(all);
+  const sanitized = await sanitizeOutboxRecords(all);
+  return computeOutboxState(sanitized);
 }
 
 async function attemptSend(job) {
+  const resolvedCounter = getJobCounter(job);
   const payload = {
     conversationId: job.conversationId,
     header: job.header || (job.headerJson ? safeParseHeader(job.headerJson) : null),
     headerJson: job.headerJson || null,
     ciphertextB64: job.ciphertextB64,
-    counter: job.counter,
+    counter: resolvedCounter,
     senderDeviceId: job.senderDeviceId,
     receiverAccountDigest: job.receiverAccountDigest,
     receiverDeviceId: job.receiverDeviceId,
@@ -418,6 +552,10 @@ async function processSingle(job) {
     try { await deleteOutboxRecord(job.jobId); } catch {}
     return false;
   }
+  if (requiresCounter(job) && !Number.isFinite(getJobCounter(job))) {
+    await hardFailMissingCounter(job);
+    return false;
+  }
   if (convLocks.has(job.conversationId)) {
     logOutboxJobTrace({
       job,
@@ -431,7 +569,12 @@ async function processSingle(job) {
   convLocks.add(job.conversationId);
   let updated = null;
   try {
-    updated = await updateJob(job.jobId, { state: STATE_INFLIGHT, lastError: null });
+    const counter = getJobCounter(job);
+    const patch = { state: STATE_INFLIGHT, lastError: null };
+    if (requiresCounter(job) && Number.isFinite(counter) && !Number.isFinite(Number(job?.counter))) {
+      patch.counter = counter;
+    }
+    updated = await updateJob(job.jobId, patch);
     logOutboxJobTrace({
       job: updated || job,
       stage: 'PROCESS_SINGLE',
@@ -456,6 +599,85 @@ async function processSingle(job) {
   } finally {
     convLocks.delete(job.conversationId);
   }
+}
+
+async function getConversationHeadJob(conversationId) {
+  if (!conversationId) return { head: null, mode: 'empty' };
+  const all = await listOutboxRecords();
+  const counterJobs = [];
+  const fallbackJobs = [];
+  for (const job of all) {
+    if (!job || job.state === STATE_SENT || job.state === STATE_DEAD) continue;
+    if (job.conversationId !== conversationId) continue;
+    if (!requiresCounter(job)) {
+      fallbackJobs.push(job);
+      continue;
+    }
+    const counter = getJobCounter(job);
+    if (!Number.isFinite(counter)) {
+      await hardFailMissingCounter(job);
+      continue;
+    }
+    if (!Number.isFinite(Number(job.counter))) {
+      const next = await updateJob(job.jobId, { counter });
+      counterJobs.push(next || { ...job, counter });
+      continue;
+    }
+    counterJobs.push(job);
+  }
+  if (counterJobs.length) {
+    let head = counterJobs[0];
+    for (const job of counterJobs.slice(1)) {
+      if (compareCounterOrder(job, head) < 0) head = job;
+    }
+    return { head, mode: 'counter' };
+  }
+  if (fallbackJobs.length) {
+    fallbackJobs.sort(compareJobOrder);
+    return { head: fallbackJobs[0], mode: 'fallback' };
+  }
+  return { head: null, mode: 'empty' };
+}
+
+async function canProcessJob(job) {
+  if (!job) {
+    return {
+      ok: false,
+      reasonCode: 'OUTBOX_JOB_MISSING',
+      stage: 'PROCESS_SINGLE',
+      error: 'job missing',
+      skipLog: true
+    };
+  }
+  if (requiresCounter(job) && !Number.isFinite(getJobCounter(job))) {
+    await hardFailMissingCounter(job);
+    return {
+      ok: false,
+      reasonCode: OUTBOX_MISSING_COUNTER,
+      stage: 'PROCESS_SINGLE',
+      error: 'missing counter',
+      skipLog: true
+    };
+  }
+  const headInfo = await getConversationHeadJob(job.conversationId);
+  if (headInfo?.head && headInfo.head.jobId !== job.jobId) {
+    return {
+      ok: false,
+      reasonCode: OUTBOX_WAIT_LOWER_COUNTER,
+      stage: 'SKIP_HIGHER_COUNTER',
+      error: 'waiting for lower counter',
+      headJobId: headInfo.head.jobId
+    };
+  }
+  if (!isDue(job)) {
+    return {
+      ok: false,
+      reasonCode: OUTBOX_NOT_DUE,
+      stage: 'NOT_DUE',
+      error: 'job not due'
+    };
+  }
+  return { ok: true };
 }
 
 export async function flushOutbox({ sourceTag } = {}) {
@@ -527,6 +749,19 @@ export async function processOutbox({ dueJobs } = {}) {
           });
           continue;
         }
+        const gate = await canProcessJob(job);
+        if (!gate.ok) {
+          if (!gate.skipLog) {
+            logOutboxJobTrace({
+              job,
+              stage: gate.stage,
+              ok: false,
+              error: gate.error || null,
+              reasonCode: gate.reasonCode
+            });
+          }
+          continue;
+        }
         processed += 1;
         progressed = true;
         const ok = await processSingle(job);
@@ -553,9 +788,31 @@ export async function processOutbox({ dueJobs } = {}) {
 export async function processOutboxJobNow(jobId) {
   const job = await getOutboxRecord(jobId);
   if (!job) return { ok: false, error: 'job not found' };
-  let didAttempt = false;
+  const gate = await canProcessJob(job);
+  if (!gate.ok) {
+    const latest = await getOutboxRecord(jobId);
+    if (!gate.skipLog) {
+      logOutboxJobTrace({
+        job: latest || job,
+        stage: gate.stage,
+        ok: false,
+        error: gate.error || null,
+        reasonCode: gate.reasonCode
+      });
+    }
+    try {
+      const postState = await collectOutboxState();
+      scheduleNextDue(postState.nextDueAtMs, 'process_now');
+    } catch {}
+    return {
+      ok: false,
+      job: latest || job,
+      error: gate.error || 'send blocked',
+      errorCode: gate.reasonCode,
+      reasonCode: gate.reasonCode
+    };
+  }
   try {
-    didAttempt = true;
     await processSingle(job);
     const latest = await getOutboxRecord(jobId);
     const ok = latest?.state === STATE_SENT;
@@ -586,12 +843,10 @@ export async function processOutboxJobNow(jobId) {
     });
     return { ok: false, error: err?.message || String(err), status: Number.isFinite(err?.status) ? Number(err.status) : null };
   } finally {
-    if (didAttempt) {
-      try {
-        const postState = await collectOutboxState();
-        scheduleNextDue(postState.nextDueAtMs, 'process_now');
-      } catch {}
-    }
+    try {
+      const postState = await collectOutboxState();
+      scheduleNextDue(postState.nextDueAtMs, 'process_now');
+    } catch {}
   }
 }
 
