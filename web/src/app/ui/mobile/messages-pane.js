@@ -97,6 +97,8 @@ const logReplayFetchResult = (payload = {}) => {
 };
 const CONVERSATION_RESET_TRACE_LIMIT = 5;
 let conversationResetTraceCount = 0;
+const ACTIVE_PEER_RESET_GUARD_TRACE_LIMIT = 5;
+let activePeerResetGuardTraceCount = 0;
 const SECURE_MODAL_GATE_TRACE_LIMIT = 3;
 let secureModalGateTraceCount = 0;
 const VAULT_GATE_DECISION_TRACE_LIMIT = 3;
@@ -107,6 +109,14 @@ function logConversationResetTrace(payload = {}) {
   conversationResetTraceCount += 1;
   try {
     log({ conversationResetTrace: payload });
+  } catch {}
+}
+
+function logActivePeerResetGuardTrace(payload = {}) {
+  if (activePeerResetGuardTraceCount >= ACTIVE_PEER_RESET_GUARD_TRACE_LIMIT) return;
+  activePeerResetGuardTraceCount += 1;
+  try {
+    log({ activePeerResetGuardTrace: payload });
   } catch {}
 }
 
@@ -1870,7 +1880,14 @@ export function initMessagesPane({
     if (state.activePeerDigest) {
       const exists = contacts.some((c) => contactPeerKey(c) === state.activePeerDigest);
       if (!exists) {
-        const { digest: activeDigest, deviceId: activeDeviceId } = splitPeerKey(state.activePeerDigest || null);
+        const { digest: activeDigest, deviceId: activeDeviceIdFromKey } = splitPeerKey(state.activePeerDigest || null);
+        const resolvedActiveDeviceId = activeDeviceIdFromKey || state.activePeerDeviceId || null;
+        const activePeerKey = activeDigest && resolvedActiveDeviceId ? `${activeDigest}::${resolvedActiveDeviceId}` : null;
+        const activeCoreEntry = activePeerKey ? getContactCore(activePeerKey) : null;
+        const hasCore = !!activeCoreEntry;
+        const isCoreReady = !!activeCoreEntry?.isReady;
+        const coreHasConversation = !!activeCoreEntry?.conversationId && !!activeCoreEntry?.conversationToken;
+        const shouldKeepActivePeer = hasCore && isCoreReady && coreHasConversation;
         const hasActiveConversation = !!(state.conversationId && state.conversationToken);
         const isViewingMessages = isDesktopLayout() || state.viewMode === 'detail';
         const activationInFlight = state.loading || pendingSecureReadyPeer === state.activePeerDigest;
@@ -1879,14 +1896,24 @@ export function initMessagesPane({
           conversationId: state?.conversationId || null,
           peerKey: state?.activePeerDigest || null,
           peerDigest: activeDigest || state?.activePeerDigest || null,
-          peerDeviceId: activeDeviceId || state?.activePeerDeviceId || null,
+          peerDeviceId: resolvedActiveDeviceId || null,
           hasToken: !!state?.conversationToken,
           hasConversationId: !!state?.conversationId,
-          'entry.isReady': null,
+          'entry.isReady': activeCoreEntry?.isReady ?? null,
           sourceTag: 'messages-pane:renderConversationList',
           deferred: hasActiveConversation && (isViewingMessages || activationInFlight)
         });
-        if (!hasActiveConversation || (!isViewingMessages && !activationInFlight)) {
+        if (shouldKeepActivePeer) {
+          logActivePeerResetGuardTrace({
+            reason: 'ACTIVE_PEER_REMOVED',
+            peerKey: activePeerKey,
+            hasCore,
+            isReady: isCoreReady,
+            keptConversationId: !!state?.conversationId,
+            keptToken: !!state?.conversationToken,
+            sourceTag: 'messages-pane:renderConversationList'
+          });
+        } else if (!hasActiveConversation || (!isViewingMessages && !activationInFlight)) {
           resetMessageStateWithPlaceholders();
           state = getMessageState();
           if (!isDesktopLayout()) state.viewMode = 'list';

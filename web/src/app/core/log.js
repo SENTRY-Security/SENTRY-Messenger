@@ -17,6 +17,7 @@ import { DEBUG } from '../ui/mobile/debug-flags.js';
 // Only keep high-signal replay/forensic events by default.
 const REPLAY_DEBUG_KEYS = new Set([
   'conversationResetTrace',
+  'activePeerResetGuardTrace',
   'replayGateTrace',
   'historyReplayFlagTrace',
   'replayInvariantViolation',
@@ -102,6 +103,7 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'HARDFAIL',
   'mkHardblockTrace',
   'mkUnwrapHardblockTrace',
+  'activePeerResetGuardTrace',
   'outgoingSendTrace',
   'outgoingStatusTrace',
   'outgoingUiStatusTrace',
