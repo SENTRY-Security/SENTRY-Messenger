@@ -11,3 +11,15 @@ export const PENDING_VAULT_PUT_QUEUE_LIMIT = 500;
 export const PENDING_VAULT_PUT_RETRY_MAX = 3;
 export const PENDING_VAULT_PUT_RETRY_INTERVAL_MS = 2000;
 export const OFFLINE_SYNC_LOG_CAP = 5;
+export const NOTIFY_RETRY_INITIAL_DELAY_MS = 3000;
+export const NOTIFY_RETRY_INTERVAL_MS = 2000;
+export const NOTIFY_RETRY_MAX_ATTEMPTS = 3;
+// Single setTimeout policy for notify-retry scheduling; cap delay to avoid runaway timers.
+const NOTIFY_RETRY_MAX_DELAY_MS = 10_000;
+
+export function scheduleNotifyRetryTimeout(fn, delayMs) {
+  const safeDelay = Math.min(Math.max(0, Number(delayMs) || 0), NOTIFY_RETRY_MAX_DELAY_MS);
+  return setTimeout(() => {
+    if (typeof fn === 'function') fn();
+  }, safeDelay);
+}

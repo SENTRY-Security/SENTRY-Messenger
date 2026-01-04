@@ -1165,9 +1165,12 @@ export async function listSecureAndDecrypt(params = {}) {
     serverItemCount: 0,
     replayStats: {
       decryptFail: 0,
+      decryptOk: 0,
       messageKeyVaultMissing: 0,
       directionFilterSkips: 0,
-      duplicateCounterSkips: 0
+      duplicateCounterSkips: 0,
+      fetchedItems: 0,
+      vaultPutIncomingOk: 0
     }
   });
   const replayCounters = {
@@ -1182,6 +1185,7 @@ export async function listSecureAndDecrypt(params = {}) {
     decryptOk: 0,
     decryptFail: 0,
     messageKeyVaultMissing: 0,
+    vaultPutIncomingOk: 0,
     timelineAppendCount: 0
   };
   const uniqueAppendedIds = new Set();
@@ -1582,7 +1586,9 @@ export async function listSecureAndDecrypt(params = {}) {
   const ensureReceiverStateReady = (deviceId) => {
     const current = getStateForDevice(deviceId);
     if (!hasUsableDrState(current)) {
-      throw new Error('DR state unavailable for conversation');
+      const err = new Error('DR state unavailable for conversation');
+      err.code = 'DR_STATE_UNAVAILABLE';
+      throw err;
     }
     return current;
   };
@@ -1882,6 +1888,9 @@ export async function listSecureAndDecrypt(params = {}) {
         headerCounter: Number.isFinite(headerCounter) ? headerCounter : null
       });
       replayCounters.decryptOk += 1;
+      if (direction === 'incoming' && vaultPutStatus === 'ok') {
+        replayCounters.vaultPutIncomingOk += 1;
+      }
 
       const semantic = classifyDecryptedPayload(text, { meta, header });
       logSemanticClassification({
@@ -2364,7 +2373,9 @@ export async function listSecureAndDecrypt(params = {}) {
             }
           });
         } catch {}
-        throw new Error('targetDeviceId missing for live decrypt');
+        const err = new Error('targetDeviceId missing for live decrypt');
+        err.code = 'TARGET_DEVICE_MISSING';
+        throw err;
       }
       const isReplaySelfOutgoing = computedIsHistoryReplay && senderMatchesSelfDevice && direction === 'outgoing';
       if (DEBUG.replay && historyReplayTraceCount < historyReplayTraceLimit) {
@@ -2568,7 +2579,9 @@ export async function listSecureAndDecrypt(params = {}) {
         const hasSendChain = state?.ckS instanceof Uint8Array && state.ckS.length > 0;
         const sendCounter = Number.isFinite(state?.Ns) ? state.Ns : 0;
         if (hasSendChain || sendCounter > 0) {
-          throw new Error('DR state bound to different conversation; please resync contact');
+          const err = new Error('DR state bound to different conversation; please resync contact');
+          err.code = 'DR_STATE_CONVERSATION_MISMATCH';
+          throw err;
         }
         if (!computedIsHistoryReplay && trackState) {
           deps.clearDrState(
@@ -2608,7 +2621,9 @@ export async function listSecureAndDecrypt(params = {}) {
           state = getStateForDevice(peerDeviceForMessage);
         }
         if (!hasUsableDrState(state)) {
-          throw new Error('DR state unavailable for conversation');
+          const err = new Error('DR state unavailable for conversation');
+          err.code = 'DR_STATE_UNAVAILABLE';
+          throw err;
         }
       }
       if (convId && state) {
@@ -3128,9 +3143,12 @@ export async function listSecureAndDecrypt(params = {}) {
     receiptUpdates: Array.from(receiptUpdates),
     replayStats: {
       decryptFail: replayCounters.decryptFail,
+      decryptOk: replayCounters.decryptOk,
       messageKeyVaultMissing: replayCounters.messageKeyVaultMissing,
       directionFilterSkips: replayCounters.skipped_directionFilter,
-      duplicateCounterSkips: replayCounters.skipped_duplicateCounter
+      duplicateCounterSkips: replayCounters.skipped_duplicateCounter,
+      fetchedItems: replayCounters.fetchedItems,
+      vaultPutIncomingOk: replayCounters.vaultPutIncomingOk
     }
   };
   } finally {
@@ -3711,6 +3729,62 @@ function normalizeOfflineSyncSource(source) {
   return OFFLINE_SYNC_SOURCES.has(key) ? key : 'login';
 }
 
+const DECRYPT_UNABLE_REASON_CODES = new Set([
+  'DR_STATE_UNAVAILABLE',
+  'DR_STATE_CONVERSATION_MISMATCH',
+  'TARGET_DEVICE_MISSING',
+  'MK_MISSING'
+]);
+
+function resolveCatchupFailReason({ err = null, errors = null } = {}) {
+  const rawCode = err?.code || err?.errorCode || err?.stage || null;
+  const code = rawCode ? String(rawCode) : '';
+  const message = typeof err?.message === 'string' ? err.message : '';
+  if (code === 'DR_STATE_UNAVAILABLE' || message.includes('DR state unavailable')) return 'DR_STATE_UNAVAILABLE';
+  if (code === 'DR_STATE_CONVERSATION_MISMATCH' || message.includes('DR state bound to different conversation')) {
+    return 'DR_STATE_CONVERSATION_MISMATCH';
+  }
+  if (code === 'TARGET_DEVICE_MISSING' || message.includes('targetDeviceId missing')) return 'TARGET_DEVICE_MISSING';
+  if (code === 'MK_MISSING_HARDBLOCK') return 'MK_MISSING';
+  if (code === 'REPLAY_VAULT_MISSING' || message.includes('缺少訊息密鑰')) return 'REPLAY_VAULT_MISSING';
+  if (typeof err?.status === 'number' || (code && code.startsWith('HTTP_')) || message.includes('HTTP')) return 'NETWORK';
+  if (Array.isArray(errors)) {
+    const sample = errors.map((entry) => (entry?.message || entry)).filter(Boolean).join(' ');
+    if (sample.includes('同步進行中')) return 'LOCKED';
+    if (sample.includes('安全對話建立中')) return 'LOCKED';
+    if (sample.includes('HTTP')) return 'NETWORK';
+  }
+  return null;
+}
+
+function logDecryptUnableTrace({ conversationId, reasonCode, errorMessage, sourceTag } = {}) {
+  if (!reasonCode || !DECRYPT_UNABLE_REASON_CODES.has(reasonCode)) return;
+  logCapped('decryptUnableTrace', {
+    conversationId: conversationId || null,
+    reasonCode,
+    error: errorMessage || null,
+    source: sourceTag || null
+  }, OFFLINE_SYNC_LOG_CAP);
+}
+
+function logCatchupTrace({
+  conversationId,
+  sourceTag,
+  itemsFetched = null,
+  decryptOkCount = null,
+  vaultPutIncomingOkCount = null,
+  failReason = null
+} = {}) {
+  logCapped('bRouteCatchupTrace', {
+    conversationId: conversationId || null,
+    source: sourceTag || null,
+    itemsFetched: Number.isFinite(Number(itemsFetched)) ? Number(itemsFetched) : null,
+    decryptOkCount: Number.isFinite(Number(decryptOkCount)) ? Number(decryptOkCount) : null,
+    vaultPutIncomingOkCount: Number.isFinite(Number(vaultPutIncomingOkCount)) ? Number(vaultPutIncomingOkCount) : null,
+    failReason: failReason || null
+  }, OFFLINE_SYNC_LOG_CAP);
+}
+
 export async function syncOfflineDecryptNow({ source } = {}) {
   const sourceTag = normalizeOfflineSyncSource(source);
   const cursorStore = restoreOfflineDecryptCursorStore();
@@ -3748,6 +3822,10 @@ export async function syncOfflineDecryptNow({ source } = {}) {
         priority: 'live'
       });
       const errors = Array.isArray(result?.errors) ? result.errors : [];
+      const stats = result?.replayStats || {};
+      const itemsFetched = stats?.fetchedItems ?? result?.serverItemCount ?? result?.items?.length ?? 0;
+      const decryptOkCount = stats?.decryptOk ?? 0;
+      const vaultPutIncomingOkCount = stats?.vaultPutIncomingOk ?? 0;
       const nextCursor = result?.nextCursor
         || (result?.nextCursorTs != null
           ? { ts: result.nextCursorTs, id: result?.nextCursorId ?? null }
@@ -3764,6 +3842,21 @@ export async function syncOfflineDecryptNow({ source } = {}) {
       }
       if (errors.length) {
         failCount += 1;
+        const failReason = resolveCatchupFailReason({ errors });
+        logCatchupTrace({
+          conversationId: convId,
+          sourceTag,
+          itemsFetched,
+          decryptOkCount,
+          vaultPutIncomingOkCount,
+          failReason
+        });
+        logDecryptUnableTrace({
+          conversationId: convId,
+          reasonCode: failReason,
+          errorMessage: truncateErrorMessage(errors[0]),
+          sourceTag
+        });
         const errorMessage = truncateErrorMessage(errors[0]);
         failures.push({
           conversationId: slicePrefix(convId),
@@ -3771,11 +3864,34 @@ export async function syncOfflineDecryptNow({ source } = {}) {
         });
       } else {
         successCount += 1;
+        logCatchupTrace({
+          conversationId: convId,
+          sourceTag,
+          itemsFetched,
+          decryptOkCount,
+          vaultPutIncomingOkCount,
+          failReason: null
+        });
       }
     } catch (err) {
       failCount += 1;
       const errorCode = resolveErrorCode(err);
       const errorMessage = errorCode ? null : truncateErrorMessage(err?.message || err);
+      const failReason = resolveCatchupFailReason({ err });
+      logCatchupTrace({
+        conversationId: convId,
+        sourceTag,
+        itemsFetched: 0,
+        decryptOkCount: 0,
+        vaultPutIncomingOkCount: 0,
+        failReason
+      });
+      logDecryptUnableTrace({
+        conversationId: convId,
+        reasonCode: failReason,
+        errorMessage: errorMessage || null,
+        sourceTag
+      });
       failures.push({
         conversationId: slicePrefix(convId),
         ...(errorCode ? { errorCode } : { errorMessage: errorMessage || 'listSecureAndDecrypt failed' })

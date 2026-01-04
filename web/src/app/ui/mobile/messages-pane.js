@@ -1,7 +1,14 @@
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, syncOfflineDecryptNow } from '../../features/messages.js';
-import { OFFLINE_SYNC_LOG_CAP, OUTGOING_STATUS_RECONCILE_ID_LIMIT } from '../../features/messages-sync-policy.js';
+import {
+  OFFLINE_SYNC_LOG_CAP,
+  OUTGOING_STATUS_RECONCILE_ID_LIMIT,
+  NOTIFY_RETRY_INITIAL_DELAY_MS,
+  NOTIFY_RETRY_INTERVAL_MS,
+  NOTIFY_RETRY_MAX_ATTEMPTS,
+  scheduleNotifyRetryTimeout
+} from '../../features/messages-sync-policy.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
 import { flushOutbox, retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
@@ -15,7 +22,7 @@ import {
   listSecureConversationStatuses
 } from '../../features/secure-conversation-manager.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from '../../features/secure-conversation-signals.js';
-import { SEMANTIC_KIND } from '../../features/semantic.js';
+import { SEMANTIC_KIND, CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES, normalizeSemanticSubtype } from '../../features/semantic.js';
 import {
   conversationIdFromToken,
   deriveConversationContextFromSecret
@@ -62,10 +69,17 @@ const placeholderStateByConvId = new Map();
 const placeholderRevealByConvId = new Map();
 const PLACEHOLDER_FAILED_TEXT = '無法解密';
 const PLACEHOLDER_TRACE_PREFIX_LEN = 8;
+const PLACEHOLDER_ALLOWED_TYPES = new Set(['text', 'media']);
+const PLACEHOLDER_FAIL_REASONS = new Set([
+  'DR_STATE_UNAVAILABLE',
+  'DR_STATE_CONVERSATION_MISMATCH',
+  'TARGET_DEVICE_MISSING'
+]);
 const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0 };
+const notifyRetryQueue = new Map();
 let outboxHooksRegistered = false;
 let pendingNewMessageHint = false;
 const uiNoiseEnabled = DEBUG.uiNoise === true;
@@ -155,6 +169,28 @@ function logVaultGateDecisionTrace(payload = {}) {
 function normalizeMsgTypeValue(value) {
   if (!value || typeof value !== 'string') return null;
   return value.trim().toLowerCase();
+}
+
+function resolveDecryptUnableReason(err) {
+  const rawCode = err?.code || err?.errorCode || err?.stage || null;
+  const code = rawCode ? String(rawCode) : '';
+  const message = typeof err?.message === 'string' ? err.message : '';
+  if (code === 'DR_STATE_UNAVAILABLE' || message.includes('DR state unavailable')) return 'DR_STATE_UNAVAILABLE';
+  if (code === 'DR_STATE_CONVERSATION_MISMATCH' || message.includes('DR state bound to different conversation')) {
+    return 'DR_STATE_CONVERSATION_MISMATCH';
+  }
+  if (code === 'TARGET_DEVICE_MISSING' || message.includes('targetDeviceId missing')) return 'TARGET_DEVICE_MISSING';
+  return null;
+}
+
+function logDecryptUnableTrace({ conversationId, reasonCode, errorMessage, sourceTag } = {}) {
+  if (!reasonCode) return;
+  logCapped('decryptUnableTrace', {
+    conversationId: conversationId || null,
+    reasonCode,
+    error: errorMessage || null,
+    source: sourceTag || null
+  }, 5);
 }
 
 function isUserBannerEntry(entry) {
@@ -342,6 +378,28 @@ function deriveMessageDirectionFromEnvelopeMeta(item, selfDeviceId, selfDigest) 
   return { direction: 'incoming', known: false, reasonCode, senderDeviceId: senderDeviceId || null };
 }
 
+function resolvePlaceholderSubtype(item) {
+  let header = item?.header && typeof item.header === 'object' ? item.header : null;
+  if (!header) {
+    const headerJson = item?.header_json || item?.headerJson || null;
+    if (typeof headerJson === 'string') {
+      try { header = JSON.parse(headerJson); } catch {}
+    }
+  }
+  const meta = item?.meta || header?.meta || item?.header?.meta || null;
+  const rawType = meta?.msg_type
+    || meta?.msgType
+    || header?.meta?.msg_type
+    || header?.meta?.msgType
+    || item?.msg_type
+    || item?.msgType
+    || null;
+  let subtype = normalizeSemanticSubtype(rawType);
+  if (!subtype && (meta?.media || header?.meta?.media || item?.media)) subtype = 'media';
+  if (!subtype) subtype = 'text';
+  return subtype;
+}
+
 function normalizePlaceholderRawMessageId(raw) {
   if (!raw) return null;
   const candidates = [raw.id, raw.message_id, raw.messageId];
@@ -352,27 +410,58 @@ function normalizePlaceholderRawMessageId(raw) {
 }
 
 function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conversationId } = {}) {
-  if (!Array.isArray(items) || !items.length) return { entries: [], directionKnownCount: 0 };
+  if (!Array.isArray(items) || !items.length) {
+    return {
+      entries: [],
+      directionKnownCount: 0,
+      excludedControlCount: 0,
+      excludedNonUserCount: 0,
+      excludedUnknownDirectionCount: 0,
+      incomingCount: 0,
+      outgoingCount: 0
+    };
+  }
   const entries = [];
   const seen = new Set();
   let directionKnownCount = 0;
+  let excludedControlCount = 0;
+  let excludedNonUserCount = 0;
+  let excludedUnknownDirectionCount = 0;
+  let incomingCount = 0;
+  let outgoingCount = 0;
   const convPrefix = sliceConversationIdPrefix(conversationId);
   for (const item of items) {
     const messageId = normalizePlaceholderRawMessageId(item);
     if (!messageId || seen.has(messageId)) continue;
     seen.add(messageId);
+    const subtype = resolvePlaceholderSubtype(item);
+    const isControlSubtype = subtype
+      ? (CONTROL_STATE_SUBTYPES.has(subtype) || TRANSIENT_SIGNAL_SUBTYPES.has(subtype))
+      : false;
+    if (isControlSubtype) {
+      excludedControlCount += 1;
+      continue;
+    }
+    if (!PLACEHOLDER_ALLOWED_TYPES.has(subtype)) {
+      excludedNonUserCount += 1;
+      continue;
+    }
     const derived = deriveMessageDirectionFromEnvelopeMeta(item, selfDeviceId, selfDigest);
     const direction = derived?.direction === 'outgoing' ? 'outgoing' : 'incoming';
     const directionKnown = derived?.known === true;
-    if (directionKnown) directionKnownCount += 1;
-    entries.push({ messageId, direction, directionKnown, status: 'pending' });
     if (!directionKnown) {
+      excludedUnknownDirectionCount += 1;
       logCapped('placeholderDirectionFallbackTrace', {
         conversationIdPrefix8: convPrefix,
         messageIdPrefix8: messageId.slice(0, PLACEHOLDER_TRACE_PREFIX_LEN),
         reasonCode: derived?.reasonCode || 'unknown'
       }, 5);
+      continue;
     }
+    directionKnownCount += 1;
+    if (direction === 'outgoing') outgoingCount += 1;
+    else incomingCount += 1;
+    entries.push({ messageId, direction, directionKnown: true, status: 'pending' });
     const senderDeviceId = derived?.senderDeviceId || resolvePlaceholderSenderDeviceId(item);
     logCapped('placeholderDirectionTrace', {
       conversationId: conversationId || null,
@@ -381,7 +470,25 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
       senderDeviceIdSuffix4: sliceDeviceIdSuffix4(senderDeviceId)
     }, 5);
   }
-  return { entries, directionKnownCount };
+  logCapped('placeholderTrace', {
+    stage: 'build',
+    conversationId: conversationId || null,
+    placeholderCount: entries.length,
+    excludedControlCount,
+    excludedNonUserCount,
+    excludedUnknownDirectionCount,
+    incomingCount,
+    outgoingCount
+  }, 5);
+  return {
+    entries,
+    directionKnownCount,
+    excludedControlCount,
+    excludedNonUserCount,
+    excludedUnknownDirectionCount,
+    incomingCount,
+    outgoingCount
+  };
 }
 
 function resolvePlaceholderMode({ replayMode, reason } = {}) {
@@ -508,6 +615,13 @@ function markPlaceholderFailures(conversationId, entries = []) {
       updated += 1;
     }
   }
+  if (updated > 0) {
+    logCapped('placeholderTrace', {
+      stage: 'stuck_to_error',
+      conversationId: key,
+      updatedCount: updated
+    }, 5);
+  }
   return { updated };
 }
 
@@ -543,6 +657,7 @@ function consumePlaceholderBatch(conversationId, entries = []) {
   if (!key) return false;
   const state = placeholderStateByConvId.get(key);
   if (!state || !Array.isArray(entries) || !entries.length) return false;
+  const beforeCount = Array.isArray(state.entries) ? state.entries.length : 0;
   const removeCounts = new Map();
   for (const entry of entries) {
     const messageId = normalizePlaceholderMessageId(entry);
@@ -570,6 +685,14 @@ function consumePlaceholderBatch(conversationId, entries = []) {
       state.count,
       Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0)
     );
+  }
+  const removedCount = beforeCount > remaining.length ? beforeCount - remaining.length : 0;
+  if (removedCount > 0) {
+    logCapped('placeholderTrace', {
+      stage: 'reveal',
+      conversationId: key,
+      revealCount: removedCount
+    }, 5);
   }
   return true;
 }
@@ -1790,6 +1913,8 @@ export function initMessagesPane({
       syncConversationThreadsFromContacts();
       await refreshConversationPreviews({ force: true });
       renderConversationList();
+      syncOfflineDecryptNow({ source: 'pull_to_refresh' })
+        .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'pull_to_refresh' }));
     } catch (err) {
       log({ conversationPullRefreshError: err?.message || err });
     } finally {
@@ -3798,6 +3923,20 @@ export function initMessagesPane({
       }
       syncThreadFromActiveMessages();
     } catch (err) {
+      const reasonCode = resolveDecryptUnableReason(err);
+      if (reasonCode && PLACEHOLDER_FAIL_REASONS.has(reasonCode)) {
+        const placeholders = getPlaceholderEntries(state.conversationId);
+        const failureResult = markPlaceholderFailures(state.conversationId, placeholders);
+        if (failureResult.updated > 0) {
+          logDecryptUnableTrace({
+            conversationId: state.conversationId || null,
+            reasonCode,
+            errorMessage: err?.message || err,
+            sourceTag: 'messages-pane:loadActiveConversationMessages'
+          });
+          updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+        }
+      }
       if (!silent) setMessagesStatus('載入失敗：' + (err?.message || err), true);
     } finally {
       state.loading = false;
@@ -4907,6 +5046,140 @@ export function initMessagesPane({
     return message.includes('CounterTooLow');
   }
 
+  function buildNotifyRetryKey({ conversationId, messageId, targetDeviceId } = {}) {
+    if (!conversationId || !messageId || !targetDeviceId) return null;
+    return `${conversationId}::${messageId}::${targetDeviceId}`;
+  }
+
+  function isMessageDeliveredForRetry(conversationId, messageId) {
+    if (!conversationId || !messageId) return false;
+    const receipt = getMessageReceipt(conversationId, messageId);
+    if (receipt?.read) return true;
+    const delivered = getMessageDelivery(conversationId, messageId);
+    return !!delivered?.delivered;
+  }
+
+  function logNotifyRetryTrace({ conversationId, messageId, targetDeviceId, attempt, reasonCode, ok } = {}) {
+    logCapped('notifyRetryTrace', {
+      conversationId: conversationId || null,
+      messageId: messageId || null,
+      targetDeviceId: targetDeviceId || null,
+      attempt: Number.isFinite(Number(attempt)) ? Number(attempt) : null,
+      reasonCode: reasonCode || null,
+      ok: typeof ok === 'boolean' ? ok : null
+    }, 5);
+  }
+
+  function sendMessageNewNotify({
+    message,
+    conversationId,
+    messageId,
+    targetAccountDigest,
+    targetDeviceId,
+    preview,
+    ts,
+    senderDeviceId,
+    attempt = 0,
+    reasonCode = 'TIMEOUT_WAIT_DELIVERED'
+  } = {}) {
+    if (!conversationId || !targetAccountDigest) return false;
+    let senderDevice = senderDeviceId || null;
+    if (!senderDevice) {
+      try { senderDevice = ensureDeviceId(); } catch {}
+    }
+    const payload = {
+      type: 'message-new',
+      targetAccountDigest,
+      conversationId,
+      preview: preview || '',
+      ts: Number.isFinite(Number(ts)) ? Number(ts) : Math.floor(Date.now() / 1000),
+      targetDeviceId: targetDeviceId || null,
+      senderDeviceId: senderDevice || null
+    };
+    let ok = false;
+    try {
+      ok = !!wsSendFn(payload);
+    } catch {
+      ok = false;
+    }
+    const finalReason = ok ? reasonCode : 'WS_SEND_ERROR';
+    logNotifyRetryTrace({
+      conversationId,
+      messageId,
+      targetDeviceId,
+      attempt,
+      reasonCode: finalReason,
+      ok
+    });
+    if (message && attempt === 0) {
+      message.notifySent = true;
+    }
+    return ok;
+  }
+
+  function scheduleNotifyRetryAttempt(key) {
+    const entry = notifyRetryQueue.get(key);
+    if (!entry) return;
+    if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
+      notifyRetryQueue.delete(key);
+      return;
+    }
+    const nextAttempt = entry.attempt + 1;
+    if (nextAttempt > NOTIFY_RETRY_MAX_ATTEMPTS) {
+      notifyRetryQueue.delete(key);
+      return;
+    }
+    sendMessageNewNotify({
+      conversationId: entry.conversationId,
+      messageId: entry.messageId,
+      targetAccountDigest: entry.targetAccountDigest,
+      targetDeviceId: entry.targetDeviceId,
+      preview: entry.preview,
+      ts: entry.ts,
+      senderDeviceId: entry.senderDeviceId,
+      attempt: nextAttempt,
+      reasonCode: 'TIMEOUT_WAIT_DELIVERED'
+    });
+    entry.attempt = nextAttempt;
+    entry.updatedAt = Date.now();
+    if (nextAttempt < NOTIFY_RETRY_MAX_ATTEMPTS) {
+      entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), NOTIFY_RETRY_INTERVAL_MS);
+    } else {
+      notifyRetryQueue.delete(key);
+    }
+  }
+
+  function enqueueNotifyRetry({
+    conversationId,
+    messageId,
+    targetAccountDigest,
+    targetDeviceId,
+    preview,
+    ts,
+    senderDeviceId
+  } = {}) {
+    const key = buildNotifyRetryKey({ conversationId, messageId, targetDeviceId });
+    if (!key) return false;
+    if (notifyRetryQueue.has(key)) return false;
+    if (isMessageDeliveredForRetry(conversationId, messageId)) return false;
+    const entry = {
+      conversationId,
+      messageId,
+      targetAccountDigest,
+      targetDeviceId,
+      preview: preview || '',
+      ts: Number.isFinite(Number(ts)) ? Number(ts) : null,
+      senderDeviceId: senderDeviceId || null,
+      attempt: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      timerId: null
+    };
+    notifyRetryQueue.set(key, entry);
+    entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), NOTIFY_RETRY_INITIAL_DELAY_MS);
+    return true;
+  }
+
   function applyOutgoingPending(message, reasonCode = 'PENDING_RESET') {
     if (!message) return;
     const fromStatus = typeof message.status === 'string' ? message.status : null;
@@ -4958,6 +5231,27 @@ export function initMessagesPane({
       peerAccountDigest: message.peerAccountDigest || null,
       source: 'send_ok'
     });
+    try {
+      const state = getMessageState();
+      const convId = message.conversationId || state.conversationId || null;
+      const peerAccountDigest = message.peerAccountDigest || state.activePeerDigest || null;
+      const targetAccountDigest = toDigestOnly(peerAccountDigest);
+      const targetDeviceId = message.peerDeviceId
+        || resolveTargetDeviceForConv(convId, peerAccountDigest)
+        || state.activePeerDeviceId
+        || null;
+      if (convId && finalId && targetAccountDigest && targetDeviceId) {
+        enqueueNotifyRetry({
+          conversationId: convId,
+          messageId: finalId,
+          targetAccountDigest,
+          targetDeviceId,
+          preview: message.text || '',
+          ts: message.ts || fallbackTs,
+          senderDeviceId: message.senderDeviceId || null
+        });
+      }
+    } catch {}
   }
 
   function applyOutgoingFailure(message, err, fallbackReason, reasonCode = 'SEND_FAIL') {
@@ -5119,17 +5413,15 @@ export function initMessagesPane({
           if (!res?.queued && convIdFinal) {
             const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
             const targetAccountDigest = toDigestOnly(peerAccountDigest);
-            let senderDeviceId = null;
-            try { senderDeviceId = ensureDeviceId(); } catch {}
             if (targetAccountDigest) {
-              wsSendFn({
-                type: 'message-new',
-                targetAccountDigest,
+              sendMessageNewNotify({
+                message: replacementMsg,
                 conversationId: convIdFinal,
-                preview: message.text || '',
-                ts: replacementTs,
+                messageId: replacementMsg?.id || replacementInfo.newMessageId,
+                targetAccountDigest,
                 targetDeviceId,
-                senderDeviceId
+                preview: message.text || '',
+                ts: replacementTs
               });
             }
           }
@@ -5145,17 +5437,15 @@ export function initMessagesPane({
         if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
         const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
         const targetAccountDigest = toDigestOnly(peerAccountDigest);
-        let senderDeviceId = null;
-        try { senderDeviceId = ensureDeviceId(); } catch {}
         if (targetAccountDigest) {
-          wsSendFn({
-            type: 'message-new',
-            targetAccountDigest,
+          sendMessageNewNotify({
+            message,
             conversationId: convIdFinal,
-            preview: message.text || '',
-            ts: message.ts || Math.floor(Date.now() / 1000),
+            messageId: message.id || messageId,
+            targetAccountDigest,
             targetDeviceId,
-            senderDeviceId
+            preview: message.text || '',
+            ts: message.ts || Math.floor(Date.now() / 1000)
           });
         }
       } catch (err) {
@@ -5412,6 +5702,7 @@ export function initMessagesPane({
           const msg = findMessageById(localMsg.id);
           const convId = res?.convId || state.conversationId;
           const replacementInfo = getReplacementInfo(res);
+          let replacementMsg = null;
           if (res?.convId && !state.conversationId) {
             state.conversationId = res.convId;
           }
@@ -5437,7 +5728,7 @@ export function initMessagesPane({
           if (replacementInfo && msg) {
             applyCounterTooLowReplaced(msg);
             const replacementTs = res?.msg?.ts || Math.floor(Date.now() / 1000);
-            let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
+            replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
             if (!replacementMsg) {
               const mediaClone = msg.media ? { ...msg.media } : null;
               if (mediaClone) {
@@ -5465,17 +5756,18 @@ export function initMessagesPane({
             applyMediaMeta(msg, res);
           }
           if (state.activePeerDigest && !res?.queued) {
+            const notifyMessage = replacementMsg || msg;
             const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
             const targetAccountDigest = toDigestOnly(state.activePeerDigest);
             if (targetAccountDigest) {
-              wsSendFn({
-                type: 'message-new',
-                targetAccountDigest,
+              sendMessageNewNotify({
+                message: notifyMessage,
                 conversationId: convId,
-                preview: msg?.text || previewText,
-                ts: msg?.ts || Math.floor(Date.now() / 1000),
-                senderDeviceId: ensureDeviceId(),
-                targetDeviceId
+                messageId: notifyMessage?.id || localMsg.id,
+                targetAccountDigest,
+                targetDeviceId,
+                preview: notifyMessage?.text || previewText,
+                ts: notifyMessage?.ts || Math.floor(Date.now() / 1000)
               });
             }
           }
@@ -6327,10 +6619,11 @@ export function initMessagesPane({
         const replacementInfo = getReplacementInfo(res);
         const convId = res?.convId || state.conversationId;
         if (res?.convId) state.conversationId = res.convId;
+        let replacementMsg = null;
         if (replacementInfo && localMsg) {
           applyCounterTooLowReplaced(localMsg);
           const replacementTs = res?.msg?.ts || ts;
-          let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
+          replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
           if (!replacementMsg) {
             replacementMsg = appendLocalOutgoingMessage({ text, ts: replacementTs, id: replacementInfo.newMessageId });
           }
@@ -6347,16 +6640,17 @@ export function initMessagesPane({
         const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
         setMessagesStatus('');
         if (convId && state.activePeerDigest && !res?.queued) {
+          const notifyMessage = replacementMsg || localMsg;
           const targetAccountDigest = toDigestOnly(state.activePeerDigest);
           if (targetAccountDigest) {
-            wsSendFn({
-              type: 'message-new',
-              targetAccountDigest,
+            sendMessageNewNotify({
+              message: notifyMessage,
               conversationId: convId,
-              preview: text,
-              ts,
+              messageId: notifyMessage?.id || messageId,
+              targetAccountDigest,
               targetDeviceId,
-              senderDeviceId: ensureDeviceId()
+              preview: notifyMessage?.text || text,
+              ts: notifyMessage?.ts || ts
             });
           }
         }
@@ -6440,6 +6734,25 @@ export function initMessagesPane({
           applyOutgoingFailure(message, err, '傳送失敗', 'OUTBOX_SENT_HOOK_ERROR');
         }
         const state = getMessageState();
+        if (!message.notifySent) {
+          const peerDigest = message.peerAccountDigest || state.activePeerDigest || null;
+          const targetAccountDigest = toDigestOnly(peerDigest);
+          const targetDeviceId = message.peerDeviceId
+            || resolveTargetDeviceForConv(convId, peerDigest)
+            || state.activePeerDeviceId
+            || null;
+          if (targetAccountDigest) {
+            sendMessageNewNotify({
+              message,
+              conversationId: convId,
+              messageId: message.id || message.messageId || message.localId || null,
+              targetAccountDigest,
+              targetDeviceId,
+              preview: message.text || '',
+              ts: message.ts || fallbackTs
+            });
+          }
+        }
         if (state.conversationId === convId) updateMessagesStatusUI();
       },
       onFailed: async (job, err) => {
