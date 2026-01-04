@@ -337,6 +337,7 @@ export function initMessagesPane({
   let conversationPullStartX = 0;
   let conversationPullDistance = 0;
   let conversationsRefreshing = false;
+  let suppressInputBlurOnce = false;
   const CONV_PULL_THRESHOLD = 60;
   const CONV_PULL_MAX = 140;
   const contactSyncInFlight = new Set();
@@ -365,6 +366,19 @@ export function initMessagesPane({
       digest: normalizeAccountDigest(digestPart),
       deviceId: normalizePeerDeviceId(devicePart)
     };
+  }
+
+  function suppressComposerBlurOnce() {
+    if (suppressInputBlurOnce) return;
+    suppressInputBlurOnce = true;
+    const clear = () => {
+      suppressInputBlurOnce = false;
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => requestAnimationFrame(clear));
+    } else {
+      setTimeout(clear, 0);
+    }
   }
 
   function logContactCoreWriteSkip({ callsite, conversationId = null, hasDeviceId = false }) {
@@ -1745,7 +1759,7 @@ export function initMessagesPane({
 
   function handleMessagesScroll() {
     if (!elements.scrollEl) return;
-    if (elements.input && document.activeElement === elements.input) {
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
       elements.input.blur();
     }
     const state = getMessageState();
@@ -1766,7 +1780,7 @@ export function initMessagesPane({
 
   function handleMessagesTouchEnd() {
     if (!elements.scrollEl) return;
-    if (elements.input && document.activeElement === elements.input) {
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
       elements.input.blur();
     }
     if (elements.scrollEl.scrollTop <= 0) {
@@ -1776,7 +1790,7 @@ export function initMessagesPane({
 
   function handleMessagesWheel() {
     if (!elements.scrollEl) return;
-    if (elements.input && document.activeElement === elements.input) {
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
       elements.input.blur();
     }
     if (elements.scrollEl.scrollTop <= 0) {
@@ -5434,6 +5448,7 @@ export function initMessagesPane({
       if (elements.sendBtn) elements.sendBtn.disabled = true;
       const ts = Math.floor(Date.now() / 1000);
       const messageId = crypto.randomUUID();
+      suppressComposerBlurOnce();
       const localMsg = appendLocalOutgoingMessage({ text, ts, id: messageId });
       if (elements.input) {
         elements.input.value = '';
