@@ -2831,8 +2831,8 @@ export async function listSecureAndDecrypt(params = {}) {
         peerDeviceId: peerDeviceForMessage || null,
         stateKey
       }, { level: 'error' });
-      if (failedMessageId) decryptFailDedup.add(failedMessageId);
-      if (failedMessageId) {
+      if (!computedIsHistoryReplay && failedMessageId) decryptFailDedup.add(failedMessageId);
+      if (!computedIsHistoryReplay && failedMessageId) {
         decryptFailMessageCache.set(failedMessageId, stateKey);
         logDrCore('decrypt:message-cache-set', { conversationId: convId, messageId: failedMessageId, stateKey });
       }
