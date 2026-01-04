@@ -55,6 +55,67 @@ export function appendUserMessage(conversationId, entry = {}) {
   return true;
 }
 
+export function appendBatch(entries = [], opts = {}) {
+  const list = Array.isArray(entries) ? entries : [];
+  if (!list.length) {
+    return { appendedCount: 0, skippedCount: 0, appendedEntries: [] };
+  }
+  const appendedEntries = [];
+  const grouped = new Map();
+  let skippedCount = 0;
+  const directionalOrder = opts && typeof opts === 'object' ? opts.directionalOrder : null;
+
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') {
+      skippedCount += 1;
+      continue;
+    }
+    const convId = normalizeConversationId(entry.conversationId || entry.convId || entry.conversation_id);
+    const messageId = normalizeMessageId(entry.messageId || entry.id);
+    const msgType = normalizeMsgType(entry.msgType || entry.type || entry.subtype);
+    if (!convId || !messageId) {
+      skippedCount += 1;
+      continue;
+    }
+    if (msgType && !USER_MESSAGE_TYPES.has(msgType)) {
+      skippedCount += 1;
+      continue;
+    }
+
+    let convMap = timelineMap.get(convId);
+    if (!convMap) {
+      convMap = new Map();
+      timelineMap.set(convId, convMap);
+    }
+    if (convMap.has(messageId)) {
+      skippedCount += 1;
+      continue;
+    }
+    const stored = entry && typeof entry === 'object' ? entry : {};
+    stored.conversationId = convId;
+    stored.messageId = messageId;
+    stored.msgType = msgType || stored.msgType || stored.type || null;
+    convMap.set(messageId, stored);
+    appendedEntries.push(stored);
+
+    const group = grouped.get(convId) || [];
+    group.push(stored);
+    if (!grouped.has(convId)) grouped.set(convId, group);
+  }
+
+  for (const [convId, groupEntries] of grouped.entries()) {
+    const lastEntry = groupEntries[groupEntries.length - 1] || null;
+    emitAppend({
+      conversationId: convId,
+      entry: lastEntry,
+      entries: groupEntries,
+      directionalOrder: directionalOrder || null
+    });
+  }
+
+  return { appendedCount: appendedEntries.length, skippedCount, appendedEntries };
+}
+
 export function hasMessage(conversationId, messageId) {
   const convId = normalizeConversationId(conversationId);
   const mid = normalizeMessageId(messageId);

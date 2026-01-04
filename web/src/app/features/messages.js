@@ -57,7 +57,7 @@ import {
   resolveViewerRole
 } from './calls/call-log.js';
 import {
-  appendUserMessage as timelineAppendUserMessage,
+  appendBatch as timelineAppendBatch,
   clearConversation as clearTimelineConversation
 } from './timeline-store.js';
 import { sendDrReadReceipt as featureSendDrReadReceipt, sendDrDeliveryReceipt as featureSendDrDeliveryReceipt } from './dr-session.js';
@@ -1266,6 +1266,66 @@ export async function listSecureAndDecrypt(params = {}) {
   const errs = [];
   const receiptUpdates = new Set();
   const deadLetters = [];
+  const timelineBatch = [];
+  let timelineBatchCommitted = false;
+  let timelineBatchResult = { appendedCount: 0, skippedCount: 0, appendedEntries: [] };
+  const nowMs = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
+    ? performance.now()
+    : Date.now();
+  const commitTimelineBatch = () => {
+    if (timelineBatchCommitted) return timelineBatchResult;
+    timelineBatchCommitted = true;
+    const batchSize = timelineBatch.length;
+    if (!batchSize) return timelineBatchResult;
+    const appendStart = nowMs();
+    const appendResult = timelineAppendBatch(timelineBatch, { directionalOrder: 'chronological' });
+    const appendEnd = nowMs();
+    const appendedEntries = Array.isArray(appendResult?.appendedEntries) ? appendResult.appendedEntries : [];
+    const appendedCount = Number.isFinite(appendResult?.appendedCount)
+      ? Number(appendResult.appendedCount)
+      : appendedEntries.length;
+    const skippedCount = Number.isFinite(appendResult?.skippedCount)
+      ? Number(appendResult.skippedCount)
+      : Math.max(0, batchSize - appendedCount);
+    const tookMs = Math.max(0, Math.round(appendEnd - appendStart));
+
+    replayCounters.timelineAppendCount += appendedCount;
+    for (const entry of appendedEntries) {
+      const appendedId = entry?.messageId || entry?.id || null;
+      if (appendedId) uniqueAppendedIds.add(appendedId);
+      try {
+        console.info('[msg] ' + JSON.stringify({
+          event: 'timeline:append',
+          conversationId: entry?.conversationId || conversationId || null,
+          messageId: entry?.messageId || entry?.id || null,
+          direction: entry?.direction || null,
+          msgType: entry?.msgType || null,
+          ts: entry?.ts || null
+        }));
+      } catch {
+        /* ignore */
+      }
+      logForensicsEvent('UI_APPEND', {
+        conversationId: entry?.conversationId || conversationId || null,
+        messageId: entry?.messageId || entry?.id || null,
+        direction: entry?.direction || null,
+        msgType: entry?.msgType || null,
+        ts: entry?.ts || null
+      });
+    }
+
+    logCapped('batchAppendTrace', {
+      conversationId: conversationId || null,
+      batchSize,
+      mode: computedIsHistoryReplay ? 'replay' : 'live',
+      appendedCount,
+      skippedCount,
+      tookMs
+    }, 5);
+
+    timelineBatchResult = { appendedCount, skippedCount, appendedEntries };
+    return timelineBatchResult;
+  };
   let state = null;
   let items = [];
   let nextCursorTs = null;
@@ -1939,31 +1999,7 @@ export async function listSecureAndDecrypt(params = {}) {
           isHistoryReplay: computedIsHistoryReplay,
           silent: !!silent
         };
-        const appended = timelineAppendUserMessage(convId, timelineEntry);
-        if (appended) {
-          replayCounters.timelineAppendCount += 1;
-          const appendedId = timelineEntry.messageId || cacheMessageId || messageId || null;
-          if (appendedId) uniqueAppendedIds.add(appendedId);
-          try {
-            console.info('[msg] ' + JSON.stringify({
-              event: 'timeline:append',
-              conversationId: convId || null,
-              messageId: timelineEntry.messageId || cacheMessageId || messageId || null,
-              direction: timelineEntry.direction || null,
-              msgType: timelineEntry.msgType || null,
-              ts: timelineEntry.ts || null
-            }));
-          } catch {
-            /* ignore */
-          }
-          logForensicsEvent('UI_APPEND', {
-            conversationId: convId || null,
-            messageId: timelineEntry.messageId || cacheMessageId || messageId || null,
-            direction: timelineEntry.direction || null,
-            msgType: timelineEntry.msgType || null,
-            ts: timelineEntry.ts || null
-          });
-        }
+        timelineBatch.push(timelineEntry);
         out.push(messageObj);
         if (messageObj.direction === 'incoming' && messageObj.id) {
           const shouldSendDeliveryReceipt = !computedIsHistoryReplay && vaultPutStatus === 'ok';
@@ -2876,6 +2912,7 @@ export async function listSecureAndDecrypt(params = {}) {
       }
     }
   });
+  commitTimelineBatch();
 
   if (computedIsHistoryReplay && replayCounters.messageKeyVaultMissing > 0) {
     try {

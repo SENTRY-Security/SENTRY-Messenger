@@ -3795,19 +3795,21 @@ export function initMessagesPane({
     );
   }
 
-  function handleTimelineAppend({ conversationId, entry }) {
+  function handleTimelineAppend({ conversationId, entry, entries, directionalOrder } = {}) {
     const convId = String(conversationId || '').trim();
-    if (!convId || !entry) return;
+    const batchEntries = Array.isArray(entries) && entries.length ? entries : (entry ? [entry] : []);
+    if (!convId || !batchEntries.length) return;
     const state = getMessageState();
     const convIndex = ensureConversationIndex();
     const convEntry = convIndex.get(convId) || null;
     const threads = getConversationThreads();
     const existingThread = threads.get(convId) || null;
-    const peerDigest = resolvePeerForConversation(convId, entry?.peerAccountDigest || entry?.senderDigest || null);
+    const lastEntry = batchEntries[batchEntries.length - 1] || null;
+    const peerDigest = resolvePeerForConversation(convId, lastEntry?.peerAccountDigest || lastEntry?.senderDigest || null);
     const contactEntry = peerDigest ? sessionStore.contactIndex?.get?.(peerDigest) || null : null;
     const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `好友 ${peerDigest.slice(-4)}` : '好友');
     const avatar = contactEntry?.avatar || existingThread?.avatar || null;
-    const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || entry?.peerDeviceId || entry?.senderDeviceId || null;
+    const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || lastEntry?.peerDeviceId || lastEntry?.senderDeviceId || null;
     const tokenB64 = convEntry?.token_b64 || existingThread?.conversationToken || null;
 
     const thread = upsertConversationThread({
@@ -3820,12 +3822,22 @@ export function initMessagesPane({
     }) || threads.get(convId);
     if (!thread) return;
     if (peerDigest) ensureThreadPeer(thread, peerDigest);
-    thread.lastMessageText = entry.text || entry.error || '';
-    thread.lastMessageTs = typeof entry.ts === 'number' ? entry.ts : thread.lastMessageTs || null;
-    thread.lastMessageId = entry.messageId || entry.id || thread.lastMessageId || null;
-    thread.lastDirection = entry.direction || thread.lastDirection || null;
+
+    let incomingCount = 0;
+    for (const item of batchEntries) {
+      thread.lastMessageText = item.text || item.error || '';
+      thread.lastMessageTs = typeof item.ts === 'number' ? item.ts : thread.lastMessageTs || null;
+      thread.lastMessageId = item.messageId || item.id || thread.lastMessageId || null;
+      thread.lastDirection = item.direction || thread.lastDirection || null;
+      if (item.direction === 'incoming') incomingCount += 1;
+    }
 
     const isActive = state.conversationId === convId && (!peerDigest || state.activePeerDigest === peerDigest);
+    const shouldLogBatchRender = Array.isArray(entries);
+    const nowMs = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now()
+      : Date.now();
+    const renderStart = shouldLogBatchRender ? nowMs() : null;
     if (isActive) {
       thread.unreadCount = 0;
       thread.lastReadTs = thread.lastMessageTs || thread.lastReadTs || null;
@@ -3833,29 +3845,44 @@ export function initMessagesPane({
       applyReceiptsToMessages(state.messages);
       updateMessagesUI({ scrollToEnd: true });
       syncThreadFromActiveMessages();
-    } else if (entry.direction === 'incoming') {
-      thread.unreadCount = Math.max(0, Number(thread.unreadCount) || 0) + 1;
+    } else if (incomingCount > 0) {
+      thread.unreadCount = Math.max(0, Number(thread.unreadCount) || 0) + incomingCount;
     }
     refreshContactsUnreadBadges();
     renderConversationList();
 
-    if (entry.direction === 'incoming' && !isActive) {
-      const shouldNotify = shouldNotifyForMessage({
-        computedIsHistoryReplay: !!entry?.isHistoryReplay,
-        silent: !!entry?.silent
-      });
-      if (shouldNotify) {
-        playNotificationSound?.();
-        const previewText = buildConversationSnippet(entry.text || '') || entry.text || '有新訊息';
-        const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
-        const initialsToast = initialsFromName(nickname, peerDigest || '').slice(0, 2);
-        const toastPeerDeviceId = thread?.peerDeviceId || peerDevice || null;
-        showToast?.(`${nickname}：${previewText}`, {
-          onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId: toastPeerDeviceId }),
-          avatarUrl: avatarUrlToast,
-          avatarInitials: initialsToast,
-          subtitle: entry.ts ? formatTimestamp(entry.ts) : ''
+    const renderReason = directionalOrder
+      ? `timeline-batch-append:${directionalOrder}`
+      : 'timeline-batch-append';
+    if (shouldLogBatchRender && renderStart !== null) {
+      const renderTookMs = Math.max(0, Math.round(nowMs() - renderStart));
+      logCapped('batchRenderTrace', {
+        conversationId: convId || null,
+        reason: renderReason,
+        tookMs: renderTookMs
+      }, 5);
+    }
+
+    if (!isActive) {
+      for (const item of batchEntries) {
+        if (item.direction !== 'incoming') continue;
+        const shouldNotify = shouldNotifyForMessage({
+          computedIsHistoryReplay: !!item?.isHistoryReplay,
+          silent: !!item?.silent
         });
+        if (shouldNotify) {
+          playNotificationSound?.();
+          const previewText = buildConversationSnippet(item.text || '') || item.text || '有新訊息';
+          const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
+          const initialsToast = initialsFromName(nickname, peerDigest || '').slice(0, 2);
+          const toastPeerDeviceId = thread?.peerDeviceId || peerDevice || null;
+          showToast?.(`${nickname}：${previewText}`, {
+            onClick: () => openConversationFromToast({ peerAccountDigest: peerDigest, convId, tokenB64, peerDeviceId: toastPeerDeviceId }),
+            avatarUrl: avatarUrlToast,
+            avatarInitials: initialsToast,
+            subtitle: item.ts ? formatTimestamp(item.ts) : ''
+          });
+        }
       }
     }
   }
