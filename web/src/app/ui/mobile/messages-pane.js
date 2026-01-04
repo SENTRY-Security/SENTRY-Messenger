@@ -26,7 +26,7 @@ import { escapeHtml, fmtSize, shouldNotifyForMessage } from './ui-utils.js';
 import { contactCoreCounts, getContactCore, upsertContactCore, listReadyContacts, removeContactCore } from './contact-core-store.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
-import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, fetchOutgoingStatus } from '../../api/messages.js';
+import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, fetchOutgoingStatus, toDigestOnly } from '../../api/messages.js';
 import { createGroup as apiCreateGroup } from '../../api/groups.js';
 import {
   CALL_EVENT,
@@ -354,11 +354,6 @@ export function initMessagesPane({
 
   function normalizePeerKey(value) {
     return normalizeDigestString(value?.peerAccountDigest ?? value);
-  }
-
-  function toDigestOnly(value) {
-    const identity = normalizePeerIdentity(value?.peerAccountDigest ?? value);
-    return identity.accountDigest || null;
   }
 
   function splitPeerKey(value) {

@@ -45,7 +45,7 @@ function logAuthHeaderTrace(endpoint, headers = {}) {
   }, 5);
 }
 
-function normalizeOutgoingReceiverDigest(value, { endpoint = '/api/v1/messages/outgoing-status', field = 'receiverAccountDigest' } = {}) {
+export function toDigestOnly(value, { endpoint = '/api/v1/messages/outgoing-status', field = 'receiverAccountDigest' } = {}) {
   if (!value) return null;
   const raw = typeof value === 'string'
     ? value
@@ -75,9 +75,18 @@ function buildMessageAuthHeaders({ endpoint, deviceId } = {}) {
   if (!headers['X-Account-Token'] && !headers['X-Account-Digest']) {
     throw new Error('accountToken or accountDigest required');
   }
-  const senderDevice = typeof deviceId === 'string' && deviceId.trim()
-    ? deviceId.trim()
-    : ensureDeviceId();
+  const providedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+  if (deviceId && !providedDeviceId) throw new Error('senderDeviceId required');
+  let storedDeviceId = null;
+  try {
+    storedDeviceId = ensureDeviceId();
+  } catch (err) {
+    if (!providedDeviceId) throw err;
+  }
+  if (providedDeviceId && storedDeviceId && providedDeviceId !== storedDeviceId) {
+    throw new Error('senderDeviceId mismatch');
+  }
+  const senderDevice = providedDeviceId || storedDeviceId;
   if (!senderDevice) throw new Error('senderDeviceId required');
   headers['X-Device-Id'] = senderDevice;
   logAuthHeaderTrace(endpoint, headers);
@@ -86,27 +95,28 @@ function buildMessageAuthHeaders({ endpoint, deviceId } = {}) {
 
 function buildOutgoingStatusRequest({ conversationId, senderDeviceId, receiverAccountDigest, messageIds } = {}) {
   if (!conversationId) throw new Error('conversationId required');
-  const receiverDigest = normalizeOutgoingReceiverDigest(receiverAccountDigest, {
+  const receiverDigest = toDigestOnly(receiverAccountDigest, {
     endpoint: '/api/v1/messages/outgoing-status',
     field: 'receiverAccountDigest'
   });
   if (!receiverDigest) throw new Error('receiverAccountDigest required');
   const ids = Array.isArray(messageIds) ? messageIds.filter(Boolean).map((id) => String(id).trim()).filter(Boolean) : [];
   if (!ids.length) throw new Error('messageIds required');
-  const senderDevice = senderDeviceId || ensureDeviceId();
-  if (!senderDevice) throw new Error('senderDeviceId required');
-  const { headers } = buildMessageAuthHeaders({
+  const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({
     endpoint: '/api/v1/messages/outgoing-status',
-    deviceId: senderDevice
+    deviceId: senderDeviceId
   });
-  return {
-    headers,
-    body: {
+  const body = buildAccountPayload({
+    overrides: {
       conversationId,
-      senderDeviceId: senderDevice,
+      senderDeviceId: resolvedDeviceId,
       receiverAccountDigest: receiverDigest,
       messageIds: ids
     }
+  });
+  return {
+    headers,
+    body
   };
 }
 
@@ -181,16 +191,15 @@ export async function createSecureMessage({
 
 export async function fetchSendState({ conversationId, senderDeviceId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
-  const senderDevice = senderDeviceId || ensureDeviceId();
-  if (!senderDevice) throw new Error('senderDeviceId required');
-  const overrides = {
-    conversationId,
-    senderDeviceId: senderDevice
-  };
-  const payload = buildAccountPayload({ overrides });
-  const { headers } = buildMessageAuthHeaders({
+  const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({
     endpoint: '/api/v1/messages/send-state',
-    deviceId: senderDevice
+    deviceId: senderDeviceId
+  });
+  const payload = buildAccountPayload({
+    overrides: {
+      conversationId,
+      senderDeviceId: resolvedDeviceId
+    }
   });
   const r = await fetchWithTimeout('/api/v1/messages/send-state', jsonReq(payload, headers), 15000);
   const text = await r.text();
