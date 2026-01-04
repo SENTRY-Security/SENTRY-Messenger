@@ -1265,6 +1265,27 @@ export async function listSecureAndDecrypt(params = {}) {
     }, { level: 'warn' });
     throw new Error('peer identity required (digest + deviceId)');
   }
+  const readyCoreEntries = Array.isArray(listReadyContacts()) ? listReadyContacts() : [];
+  const mkReadyForPendingBypass = !!mkRawForReplay;
+  const shouldBypassSecurePending = (deviceId, conversationIdOverride = null) => {
+    if (!mkReadyForPendingBypass || !readyCoreEntries.length) return false;
+    const convKey = conversationIdOverride != null ? String(conversationIdOverride) : (conversationId ? String(conversationId) : null);
+    const keyForDevice = deviceId
+      ? storeNormalizePeerIdentity({ peerAccountDigest: peerKey, peerDeviceId: deviceId }).key
+      : null;
+    for (const entry of readyCoreEntries) {
+      const entryConvId = entry?.conversationId || entry?.conversation?.conversation_id || null;
+      const entryToken = entry?.conversationToken || entry?.conversation?.token_b64 || null;
+      if (!entry?.isReady || !entryConvId || !entryToken) continue;
+      if (convKey && String(entryConvId) === convKey) return true;
+      if (keyForDevice) {
+        const entryKey = entry?.peerKey
+          || storeNormalizePeerIdentity({ peerAccountDigest: entry?.peerAccountDigest, peerDeviceId: entry?.peerDeviceId }).key;
+        if (entryKey && entryKey === keyForDevice) return true;
+      }
+    }
+    return false;
+  };
   // 若入口補齊了 peerDeviceId，寫回 state，避免後續呼叫仍為空。
   try {
     if (resolvedPeerDeviceId && sessionStore?.messageState) {
@@ -1282,6 +1303,12 @@ export async function listSecureAndDecrypt(params = {}) {
   if (!lockAttempt?.granted || !lockAttempt.token) {
     const reason = requestPriority === 'live' ? 'yieldToReplay' : 'secureFetchLock';
     logReplayEarlyReturn(reason, { holderPriority: lockAttempt?.holderPriority || null });
+    logCapped('secureFetchInFlightTrace', {
+      conversationId,
+      reason,
+      requestPriority,
+      holderPriority: lockAttempt?.holderPriority || null
+    }, 5);
     emitReplaySummary();
     return buildEmptyResult(['同步進行中，請稍後再試']);
   }
@@ -1560,7 +1587,7 @@ export async function listSecureAndDecrypt(params = {}) {
     return current;
   };
 
-  const ensureConversationReadyForDevice = async (deviceId) => {
+  const ensureConversationReadyForDevice = async (deviceId, conversationIdOverride = null) => {
     if (!deviceId) return { status: null };
     const key = `${peerKey}::${deviceId}`;
     if (ensuredConversations.has(key)) {
@@ -1573,7 +1600,13 @@ export async function listSecureAndDecrypt(params = {}) {
       source: 'messages:listSecureAndDecrypt',
       conversationId
     });
-    const status = statusInfo?.status || null;
+    let status = statusInfo?.status || null;
+    if (status === SECURE_CONVERSATION_STATUS.PENDING) {
+      const convIdForBypass = conversationIdOverride != null ? conversationIdOverride : conversationId;
+      if (shouldBypassSecurePending(deviceId, convIdForBypass)) {
+        status = SECURE_CONVERSATION_STATUS.READY;
+      }
+    }
     secureStatusByDevice.set(deviceId, status);
     if (status === SECURE_CONVERSATION_STATUS.PENDING) {
       return { status };
@@ -1584,7 +1617,7 @@ export async function listSecureAndDecrypt(params = {}) {
 
   // 預先確保初始 peerDevice 的會話就緒與 state 存在（live only）。
   if (peerDevice && !computedIsHistoryReplay) {
-    const initialStatus = await ensureConversationReadyForDevice(peerDevice);
+    const initialStatus = await ensureConversationReadyForDevice(peerDevice, conversationId);
     if (initialStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
       replayCounters.skipped_securePending += 1;
       logReplayEarlyReturn('securePending', { peerDeviceId: peerDevice });
@@ -2357,7 +2390,9 @@ export async function listSecureAndDecrypt(params = {}) {
         logDeliverySkip('directionFilter', { senderDeviceId, targetDeviceId, selfDeviceId });
         return;
       }
-      const secureStatus = computedIsHistoryReplay ? { status: null } : await ensureConversationReadyForDevice(peerDeviceForMessage);
+      const secureStatus = computedIsHistoryReplay
+        ? { status: null }
+        : await ensureConversationReadyForDevice(peerDeviceForMessage, packetConversationId || conversationId);
       if (!computedIsHistoryReplay && secureStatus?.status === SECURE_CONVERSATION_STATUS.PENDING) {
         logDeliverySkip('securePending', { peerDeviceId: peerDeviceForMessage, conversationId: packetConversationId || conversationId });
         return;

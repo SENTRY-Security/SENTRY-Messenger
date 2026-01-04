@@ -24,7 +24,7 @@ import { sessionStore, resetMessageState, restorePendingInvites } from './sessio
 import { deleteContactSecret, getContactSecret, getCorruptContact } from '../../core/contact-secrets.js';
 import { clearDrState } from '../../core/store.js';
 import { escapeHtml, fmtSize, shouldNotifyForMessage } from './ui-utils.js';
-import { contactCoreCounts, getContactCore, upsertContactCore, listReadyContacts, removeContactCore } from './contact-core-store.js';
+import { contactCoreCounts, getContactCore, findContactCoreByAccountDigest, upsertContactCore, listReadyContacts, removeContactCore } from './contact-core-store.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
 import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, fetchOutgoingStatus, toDigestOnly } from '../../api/messages.js';
@@ -100,6 +100,8 @@ const CONVERSATION_RESET_TRACE_LIMIT = 5;
 let conversationResetTraceCount = 0;
 const ACTIVE_PEER_RESET_GUARD_TRACE_LIMIT = 5;
 let activePeerResetGuardTraceCount = 0;
+const ACTIVE_PEER_STATE_REHYDRATE_TRACE_LIMIT = 5;
+let activePeerStateRehydrateTraceCount = 0;
 const SECURE_MODAL_GATE_TRACE_LIMIT = 3;
 let secureModalGateTraceCount = 0;
 const VAULT_GATE_DECISION_TRACE_LIMIT = 3;
@@ -118,6 +120,14 @@ function logActivePeerResetGuardTrace(payload = {}) {
   activePeerResetGuardTraceCount += 1;
   try {
     log({ activePeerResetGuardTrace: payload });
+  } catch {}
+}
+
+function logActivePeerStateRehydrateTrace(payload = {}) {
+  if (activePeerStateRehydrateTraceCount >= ACTIVE_PEER_STATE_REHYDRATE_TRACE_LIMIT) return;
+  activePeerStateRehydrateTraceCount += 1;
+  try {
+    log({ activePeerStateRehydrateTrace: payload });
   } catch {}
 }
 
@@ -376,6 +386,73 @@ export function initMessagesPane({
     return {
       digest: normalizeAccountDigest(digestPart),
       deviceId: normalizePeerDeviceId(devicePart)
+    };
+  }
+
+  function resolveContactCoreEntry(peerKeyValue, peerDeviceId) {
+    const normalizedKey = normalizePeerKey(peerKeyValue);
+    if (normalizedKey) {
+      return { peerKey: normalizedKey, entry: getContactCore(normalizedKey) };
+    }
+    const { digest } = splitPeerKey(peerKeyValue);
+    const normalizedDeviceId = normalizePeerDeviceId(peerDeviceId || null);
+    if (digest && normalizedDeviceId) {
+      const derivedKey = normalizePeerKey({ peerAccountDigest: digest, peerDeviceId: normalizedDeviceId });
+      if (derivedKey) {
+        return { peerKey: derivedKey, entry: getContactCore(derivedKey) };
+      }
+    }
+    if (!digest) return { peerKey: null, entry: null };
+    const matches = findContactCoreByAccountDigest(digest);
+    if (matches.length === 1) {
+      return { peerKey: matches[0].peerKey || null, entry: matches[0].entry || null };
+    }
+    return { peerKey: null, entry: null };
+  }
+
+  function resolveReadyContactCoreEntry(peerKeyValue, peerDeviceId, conversationId) {
+    const resolved = resolveContactCoreEntry(peerKeyValue, peerDeviceId);
+    const baseEntry = resolved.entry;
+    const baseReady = !!(baseEntry?.isReady && baseEntry.conversationId && baseEntry.conversationToken);
+    if (baseReady) {
+      return { peerKey: resolved.peerKey, entry: baseEntry };
+    }
+    const convKey = conversationId ? String(conversationId) : null;
+    if (convKey) {
+      const readyList = Array.isArray(listReadyContacts()) ? listReadyContacts() : [];
+      for (const entry of readyList) {
+        const entryConvId = entry?.conversationId || entry?.conversation?.conversation_id || null;
+        const entryToken = entry?.conversationToken || entry?.conversation?.token_b64 || null;
+        if (!entry?.isReady || !entryConvId || !entryToken) continue;
+        if (String(entryConvId) === convKey) {
+          return { peerKey: entry.peerKey || resolved.peerKey, entry };
+        }
+      }
+    }
+    return { peerKey: resolved.peerKey, entry: baseEntry };
+  }
+
+  function isCoreVaultReady(peerKeyValue, peerDeviceId, conversationId) {
+    if (!getMkRaw()) return false;
+    const info = resolveReadyContactCoreEntry(peerKeyValue, peerDeviceId, conversationId);
+    const entry = info.entry;
+    return !!(entry?.isReady && entry.conversationId && entry.conversationToken);
+  }
+
+  function resolveSecureStatusForUi(peerKeyValue, statusInfo, stateOverride = null) {
+    const status = statusInfo?.status || null;
+    if (status !== SECURE_CONVERSATION_STATUS.PENDING) {
+      return { status, statusInfo, bypassed: false };
+    }
+    const state = stateOverride || getMessageState();
+    const coreReady = isCoreVaultReady(peerKeyValue, state.activePeerDeviceId, state.conversationId);
+    if (!coreReady) {
+      return { status, statusInfo, bypassed: false };
+    }
+    return {
+      status: SECURE_CONVERSATION_STATUS.READY,
+      statusInfo: { ...statusInfo, status: SECURE_CONVERSATION_STATUS.READY, error: null },
+      bypassed: true
     };
   }
 
@@ -947,9 +1024,30 @@ export function initMessagesPane({
 
   function updateSecurityModalForPeer(peerAccountDigest, statusInfo) {
     if (!showSecurityModal) return;
-    const status = statusInfo?.status || null;
     const key = normalizePeerKey(peerAccountDigest);
     const state = getMessageState();
+    const activePeerValue = state.activePeerDigest || null;
+    const resolvedCore = resolveReadyContactCoreEntry(activePeerValue, state.activePeerDeviceId, state.conversationId);
+    const resolvedPeerKey = resolvedCore.peerKey;
+    const activeCoreEntry = resolvedCore.entry;
+    const canRehydrate = (!key || !resolvedPeerKey || key === resolvedPeerKey)
+      && activeCoreEntry?.isReady
+      && activeCoreEntry.conversationId
+      && activeCoreEntry.conversationToken
+      && (!state.conversationId || !state.conversationToken);
+    if (canRehydrate) {
+      const filledConversationId = !state.conversationId;
+      const filledToken = !state.conversationToken;
+      if (filledConversationId) state.conversationId = activeCoreEntry.conversationId;
+      if (filledToken) state.conversationToken = activeCoreEntry.conversationToken;
+      logActivePeerStateRehydrateTrace({
+        peerKey: resolvedPeerKey || activePeerValue || null,
+        filledConversationIdPrefix8: filledConversationId ? String(activeCoreEntry.conversationId).slice(0, 8) : null,
+        filledTokenLen: filledToken ? String(activeCoreEntry.conversationToken).length : null
+      });
+    }
+    const statusResolution = resolveSecureStatusForUi(key || activePeerValue, statusInfo, state);
+    const status = statusResolution.status;
     const mkReady = !!getMkRaw();
     const vaultGateReady = !!(state.conversationToken && state.conversationId && mkReady);
     logSecureModalGateTrace({
@@ -958,7 +1056,9 @@ export function initMessagesPane({
       hasToken: !!state.conversationToken,
       mkReady,
       vaultGateReady,
-      status
+      status: statusInfo?.status || null,
+      statusEffective: status,
+      pendingBypassed: statusResolution.bypassed
     });
     const shouldShow = status === SECURE_CONVERSATION_STATUS.PENDING;
     if (shouldShow && vaultGateReady) {
@@ -991,7 +1091,8 @@ export function initMessagesPane({
       if (!state.activePeerDigest) hideSecurityModal();
       return;
     }
-    const status = statusInfo?.status || null;
+    const statusResolution = resolveSecureStatusForUi(key, statusInfo, state);
+    const status = statusResolution.status;
     updateSecurityModalForPeer(key, statusInfo);
     if (status === SECURE_CONVERSATION_STATUS.PENDING) {
       setMessagesStatus('正在建立安全對話…');
@@ -1563,7 +1664,8 @@ export function initMessagesPane({
     const subscriptionOk = isSubscriptionActive();
     const key = state.activePeerDigest ? String(state.activePeerDigest).toUpperCase() : null;
     const statusInfo = key ? getCachedSecureStatus(key) : null;
-    const status = statusInfo?.status || null;
+    const statusResolution = key ? resolveSecureStatusForUi(key, statusInfo, state) : { status: null };
+    const status = statusResolution.status;
     const conversationReady = !!(state.conversationToken && state.activePeerDigest);
     const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
     const enabled = conversationReady && !blocked;
@@ -1883,19 +1985,21 @@ export function initMessagesPane({
       if (!exists) {
         const { digest: activeDigest, deviceId: activeDeviceIdFromKey } = splitPeerKey(state.activePeerDigest || null);
         const resolvedActiveDeviceId = activeDeviceIdFromKey || state.activePeerDeviceId || null;
-        const activePeerKey = activeDigest && resolvedActiveDeviceId ? `${activeDigest}::${resolvedActiveDeviceId}` : null;
-        const activeCoreEntry = activePeerKey ? getContactCore(activePeerKey) : null;
+        const resolvedCore = resolveReadyContactCoreEntry(state.activePeerDigest, resolvedActiveDeviceId, state.conversationId);
+        const activePeerKey = resolvedCore.peerKey;
+        const activeCoreEntry = resolvedCore.entry;
         const hasCore = !!activeCoreEntry;
         const isCoreReady = !!activeCoreEntry?.isReady;
         const coreHasConversation = !!activeCoreEntry?.conversationId && !!activeCoreEntry?.conversationToken;
-        const shouldKeepActivePeer = hasCore && isCoreReady && coreHasConversation;
+        const coreVaultReady = isCoreVaultReady(activePeerKey || state.activePeerDigest, resolvedActiveDeviceId, state.conversationId);
+        const shouldKeepActivePeer = (hasCore && isCoreReady && coreHasConversation) || coreVaultReady;
         const hasActiveConversation = !!(state.conversationId && state.conversationToken);
         const isViewingMessages = isDesktopLayout() || state.viewMode === 'detail';
         const activationInFlight = state.loading || pendingSecureReadyPeer === state.activePeerDigest;
         logConversationResetTrace({
           reason: 'ACTIVE_PEER_REMOVED',
           conversationId: state?.conversationId || null,
-          peerKey: state?.activePeerDigest || null,
+          peerKey: activePeerKey || state?.activePeerDigest || null,
           peerDigest: activeDigest || state?.activePeerDigest || null,
           peerDeviceId: resolvedActiveDeviceId || null,
           hasToken: !!state?.conversationToken,
@@ -1910,6 +2014,7 @@ export function initMessagesPane({
             peerKey: activePeerKey,
             hasCore,
             isReady: isCoreReady,
+            coreVaultReady,
             keptConversationId: !!state?.conversationId,
             keptToken: !!state?.conversationToken,
             sourceTag: 'messages-pane:renderConversationList'
@@ -3584,14 +3689,21 @@ export function initMessagesPane({
       }));
     } catch {}
     let ensureStatusInfo = null;
+    const coreReadyInfo = resolveReadyContactCoreEntry(activePeerKey, peerDeviceId, state.conversationId);
+    if (coreReadyInfo?.entry?.isReady && coreReadyInfo.entry.conversationId && coreReadyInfo.entry.conversationToken) {
+      if (!state.conversationId) state.conversationId = coreReadyInfo.entry.conversationId;
+      if (!state.conversationToken) state.conversationToken = coreReadyInfo.entry.conversationToken;
+    }
     const mkReady = !!getMkRaw();
-    const vaultGateReady = !!(state.conversationToken && state.conversationId && mkReady);
+    const coreVaultReady = isCoreVaultReady(activePeerKey, peerDeviceId, state.conversationId);
+    const vaultGateReady = !!(state.conversationToken && state.conversationId && mkReady) || coreVaultReady;
     logVaultGateDecisionTrace({
       peerAccountDigest: activePeerKey || null,
       conversationId: state.conversationId || null,
       hasToken: !!state.conversationToken,
       mkReady,
-      vaultGateReady
+      vaultGateReady,
+      coreVaultReady
     });
     if (!vaultGateReady) {
       const statusBeforeEnsure = getCachedSecureStatus(activePeerKey);
@@ -3647,15 +3759,16 @@ export function initMessagesPane({
     const statusInfo = ensureStatusInfo
       || cachedSecureStatus
       || cacheSecureStatus(activePeerKey, SECURE_CONVERSATION_STATUS.READY, null);
-    if (statusInfo?.status === SECURE_CONVERSATION_STATUS.PENDING) {
+    const statusResolution = resolveSecureStatusForUi(activePeerKey, statusInfo, state);
+    if (statusResolution.status === SECURE_CONVERSATION_STATUS.PENDING) {
       pendingSecureReadyPeer = pendingSecureReadyPeer || activePeerKey;
-    } else if (statusInfo?.status === SECURE_CONVERSATION_STATUS.READY) {
+    } else if (statusResolution.status === SECURE_CONVERSATION_STATUS.READY) {
       pendingSecureReadyPeer = null;
     }
     applySecureStatusForActivePeer(activePeerKey, statusInfo);
     updateComposerAvailability();
     refreshActivePeerMetadata(activePeerKey, { fallbackName: nickname });
-    if (statusInfo?.status === SECURE_CONVERSATION_STATUS.READY) {
+    if (statusResolution.status === SECURE_CONVERSATION_STATUS.READY) {
       setMessagesStatus('');
     }
     renderConversationList();
