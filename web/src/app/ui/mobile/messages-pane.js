@@ -53,14 +53,17 @@ import {
 } from '../../features/calls/call-log.js';
 import { bytesToB64Url } from './ui-utils.js';
 import { logMsgEvent } from '../../lib/logging.js';
+import { PLACEHOLDER_SHIMMER_MAX_ACTIVE, PLACEHOLDER_REVEAL_MS, PLACEHOLDER_TEXT } from './messages-ui-policy.js';
 import { DEBUG } from './debug-flags.js';
 const sentCallLogIds = new Set();
 const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
+const placeholderStateByConvId = new Map();
+const placeholderRevealByConvId = new Map();
 const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
-const renderState = { conversationId: null, renderedIds: [] };
+const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0 };
 let outboxHooksRegistered = false;
 let pendingNewMessageHint = false;
 const uiNoiseEnabled = DEBUG.uiNoise === true;
@@ -231,6 +234,112 @@ function clearCallLogPlaceholders() {
   callLogPlaceholders.clear();
 }
 
+function normalizePlaceholderMessageId(entry) {
+  if (!entry) return null;
+  const id = entry.id || entry.messageId || entry.serverMessageId || entry.server_message_id || null;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+function normalizePlaceholderKey(value) {
+  if (value === null || value === undefined) return null;
+  const str = String(value).trim();
+  return str || null;
+}
+
+function getPlaceholderState(conversationId) {
+  const key = normalizePlaceholderKey(conversationId);
+  if (!key) return null;
+  return placeholderStateByConvId.get(key) || null;
+}
+
+function getPlaceholderCount(conversationId) {
+  const state = getPlaceholderState(conversationId);
+  const count = Number(state?.count || 0);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+function setPlaceholderState({ conversationId, count, reason = null, source = null } = {}) {
+  const key = normalizePlaceholderKey(conversationId);
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (!key || safeCount <= 0) return null;
+  const existing = placeholderStateByConvId.get(key);
+  if (existing) return existing;
+  const shimmerActive = Math.min(
+    safeCount,
+    Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0)
+  );
+  const state = { count: safeCount, shimmerActive, createdAt: Date.now(), reason, source };
+  placeholderStateByConvId.set(key, state);
+  logCapped('placeholderBatchTrace', {
+    conversationId: key,
+    count: safeCount,
+    shimmerActive,
+    reason: reason || null,
+    source: source || null
+  }, 5);
+  return state;
+}
+
+function clearPlaceholderState(conversationId) {
+  const key = normalizePlaceholderKey(conversationId);
+  if (!key) return;
+  placeholderStateByConvId.delete(key);
+}
+
+function addPlaceholderRevealId(conversationId, messageId) {
+  const key = normalizePlaceholderKey(conversationId);
+  const mid = typeof messageId === 'string' && messageId.trim() ? messageId.trim() : null;
+  if (!key || !mid) return;
+  let set = placeholderRevealByConvId.get(key);
+  if (!set) {
+    set = new Set();
+    placeholderRevealByConvId.set(key, set);
+  }
+  set.add(mid);
+  logCapped('placeholderRevealTrace', {
+    conversationId: key,
+    messageId: mid
+  }, 5);
+}
+
+function consumePlaceholderReveal(conversationId, messageId) {
+  const key = normalizePlaceholderKey(conversationId);
+  const mid = typeof messageId === 'string' && messageId.trim() ? messageId.trim() : null;
+  if (!key || !mid) return false;
+  const set = placeholderRevealByConvId.get(key);
+  if (!set || !set.has(mid)) return false;
+  set.delete(mid);
+  if (!set.size) placeholderRevealByConvId.delete(key);
+  return true;
+}
+
+function consumePlaceholderBatch(conversationId, entries = []) {
+  const key = normalizePlaceholderKey(conversationId);
+  if (!key) return false;
+  const state = placeholderStateByConvId.get(key);
+  if (!state || !Array.isArray(entries) || !entries.length) return false;
+  for (const entry of entries) {
+    const messageId = normalizePlaceholderMessageId(entry);
+    if (messageId) addPlaceholderRevealId(key, messageId);
+  }
+  const nextCount = Math.max(0, Number(state.count || 0) - entries.length);
+  if (nextCount <= 0) {
+    placeholderStateByConvId.delete(key);
+  } else {
+    state.count = nextCount;
+    state.shimmerActive = Math.min(
+      nextCount,
+      Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0)
+    );
+  }
+  return true;
+}
+
+function resetPlaceholderState() {
+  placeholderStateByConvId.clear();
+  placeholderRevealByConvId.clear();
+}
+
 function getMessageState() {
   if (!sessionStore.messageState) {
     resetMessageStateWithPlaceholders();
@@ -252,10 +361,12 @@ function getMessageState() {
 
 function resetMessageStateWithPlaceholders() {
   clearCallLogPlaceholders();
+  resetPlaceholderState();
   resetMessageState();
   stopActivePoll();
   renderState.conversationId = null;
   renderState.renderedIds = [];
+  renderState.placeholderCount = 0;
   pendingNewMessageHint = false;
 }
 
@@ -2736,12 +2847,40 @@ export function initMessagesPane({
     }
   }
 
+  function appendPlaceholderRows({ count = 0, startIndex = 0 } = {}) {
+    if (!elements.messagesList) return;
+    const total = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    if (!total) return;
+    const shimmerMax = Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0);
+    const shimmerStart = Math.max(0, total - shimmerMax);
+    for (let i = 0; i < total; i += 1) {
+      const li = document.createElement('li');
+      li.className = 'message-placeholder-item';
+      const row = document.createElement('div');
+      row.className = 'message-row message-placeholder-row';
+      const isOutgoing = ((i + startIndex) % 2) === 1;
+      if (isOutgoing) row.style.justifyContent = 'flex-end';
+      const bubble = document.createElement('div');
+      bubble.className = 'message-bubble message-placeholder';
+      bubble.classList.add(isOutgoing ? 'placeholder-outgoing' : 'placeholder-incoming');
+      if (shimmerMax > 0 && i >= shimmerStart) {
+        bubble.classList.add('placeholder-shimmer');
+      }
+      bubble.textContent = PLACEHOLDER_TEXT || '';
+      row.appendChild(bubble);
+      li.appendChild(row);
+      elements.messagesList.appendChild(li);
+    }
+  }
+
   function updateMessagesUI({ scrollToEnd = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
     if (!elements.messagesList) return;
     const state = getMessageState();
     const appendedIds = [];
     const timelineMessages = refreshTimelineState(state.conversationId);
     const timelineIds = timelineMessages.map((m) => normalizeTimelineMessageId(m));
+    const placeholderCount = getPlaceholderCount(state.conversationId);
+    const hasPlaceholders = placeholderCount > 0;
     const anchorNeeded = preserveScroll || (!scrollToEnd && !isNearMessagesBottom());
     const anchor = anchorNeeded ? captureScrollAnchor() : null;
 
@@ -2767,23 +2906,44 @@ export function initMessagesPane({
       } catch {}
     }
 
-    if (!timelineMessages.length) {
+    if (!timelineMessages.length && !hasPlaceholders) {
       elements.messagesList.innerHTML = '';
       elements.messagesEmpty?.classList.remove('hidden');
       renderState.renderedIds = [];
       renderState.conversationId = state.conversationId || null;
+      renderState.placeholderCount = 0;
       updateLoadMoreVisibility();
       updateMessagesScrollOverflow();
       if (!scrollToEnd && anchor) restoreScrollFromAnchor(anchor);
       return;
     }
 
+    if (!timelineMessages.length && hasPlaceholders) {
+      elements.messagesList.innerHTML = '';
+      elements.messagesEmpty?.classList.add('hidden');
+      renderState.renderedIds = [];
+      renderState.conversationId = state.conversationId || null;
+      appendPlaceholderRows({ count: placeholderCount, startIndex: 0 });
+      renderState.placeholderCount = placeholderCount;
+      updateLoadMoreVisibility();
+      updateMessagesScrollOverflow();
+      if (scrollToEnd) {
+        scrollMessagesToBottom();
+      } else if (anchor) {
+        restoreScrollFromAnchor(anchor);
+      }
+      return;
+    }
+
     elements.messagesEmpty?.classList.add('hidden');
     const convChanged = renderState.conversationId !== state.conversationId;
+    const placeholderCountChanged = !convChanged && renderState.placeholderCount !== placeholderCount;
     const prefixMatches = !convChanged && renderState.renderedIds.length > 0
       ? renderState.renderedIds.every((id, idx) => id === timelineIds[idx])
       : false;
-    const canAppend = !forceFullRender && prefixMatches && renderState.renderedIds.length <= timelineMessages.length;
+    const forcePlaceholderRender = hasPlaceholders || placeholderCountChanged;
+    const canAppend = !forceFullRender && !forcePlaceholderRender
+      && prefixMatches && renderState.renderedIds.length <= timelineMessages.length;
     const startIndex = canAppend ? renderState.renderedIds.length : 0;
     if (!canAppend) {
       elements.messagesList.innerHTML = '';
@@ -2926,8 +3086,15 @@ export function initMessagesPane({
         row.style.gap = '0';
       }
       const bubble = document.createElement('div');
+      const messageId = normalizeTimelineMessageId(msg);
       bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
-      if (msg.id) bubble.dataset.messageId = msg.id;
+      if (messageId) bubble.dataset.messageId = messageId;
+      if (messageId && consumePlaceholderReveal(state.conversationId, messageId)) {
+        bubble.classList.add('message-reveal');
+        if (Number.isFinite(PLACEHOLDER_REVEAL_MS)) {
+          bubble.style.animationDuration = `${PLACEHOLDER_REVEAL_MS}ms`;
+        }
+      }
       if (messageType === 'media' && msg.media) {
         renderMediaBubble(bubble, msg);
       } else {
@@ -2976,8 +3143,13 @@ export function initMessagesPane({
       } catch {}
     }
 
+    if (placeholderCount > 0) {
+      appendPlaceholderRows({ count: placeholderCount, startIndex: renderIndex });
+    }
+
     renderState.conversationId = state.conversationId || null;
     renderState.renderedIds = timelineIds.filter(Boolean);
+    renderState.placeholderCount = placeholderCount;
     updateLoadMoreVisibility();
 
     if (elements.scrollEl) {
@@ -3113,6 +3285,21 @@ export function initMessagesPane({
           prefetch = { r, data: { ...(data || {}), items: newItems } };
         } catch (err) {
           log({ prefetchMessagesError: err?.message || err });
+        }
+      }
+
+      if (!append && !silent && (timelineSizeBefore || 0) === 0 && !getPlaceholderState(state.conversationId)) {
+        const prefetchedCount = Array.isArray(prefetch?.data?.items) ? prefetch.data.items.length : null;
+        const placeholderCount = Number.isFinite(prefetchedCount) ? prefetchedCount : fetchLimit;
+        const source = Number.isFinite(prefetchedCount) ? 'prefetch' : 'limit';
+        const created = setPlaceholderState({
+          conversationId: state.conversationId,
+          count: placeholderCount,
+          reason: reason || 'enter',
+          source
+        });
+        if (created) {
+          updateMessagesUI({ scrollToEnd: true, forceFullRender: true });
         }
       }
 
@@ -3305,6 +3492,9 @@ export function initMessagesPane({
       const receiptsApplied = applyReceiptsToMessages(timelineMessages);
       const receiptRenderNeeded = receiptsApplied || receiptRenderPending || vaultStatusChanged;
       receiptRenderPending = false;
+      if (!append && !silent) {
+        clearPlaceholderState(state.conversationId);
+      }
       const shouldScrollToEnd = !append && !forceReplay && nearBottom;
       const preserveScroll = append || !shouldScrollToEnd;
       updateMessagesUI({ scrollToEnd: shouldScrollToEnd, preserveScroll, newMessageIds });
@@ -3945,6 +4135,10 @@ export function initMessagesPane({
     const convId = String(conversationId || '').trim();
     const batchEntries = Array.isArray(entries) && entries.length ? entries : (entry ? [entry] : []);
     if (!convId || !batchEntries.length) return;
+    const hasBatchEntries = Array.isArray(entries) && entries.length;
+    if (hasBatchEntries) {
+      consumePlaceholderBatch(convId, entries);
+    }
     const state = getMessageState();
     const convIndex = ensureConversationIndex();
     const convEntry = convIndex.get(convId) || null;

@@ -92,6 +92,8 @@ const REPLAY_DEBUG_KEYS = new Set([
   'timelineBatchAssertTrace',
   'batchAppendTrace',
   'batchRenderTrace',
+  'placeholderBatchTrace',
+  'placeholderRevealTrace',
   'wsSyncTrace'
 ]);
 const FORENSICS_DEBUG_KEYS = new Set([
@@ -146,6 +148,8 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'timelineBatchAssertTrace',
   'batchAppendTrace',
   'batchRenderTrace',
+  'placeholderBatchTrace',
+  'placeholderRevealTrace',
   'contactCoreMismatchTrace',
   'contactCorePeerDeviceMigrated',
   'incomingTokenLookupTrace',
