@@ -98,7 +98,8 @@ const defaultDeps = {
   ensureDrReceiverState: managerEnsureDrReceiverState,
   clearDrState: storeClearDrState,
   sendReadReceipt: featureSendDrReadReceipt,
-  sendDeliveryReceipt: featureSendDrDeliveryReceipt
+  sendDeliveryReceipt: featureSendDrDeliveryReceipt,
+  wsSend: null
 };
 
 const deps = { ...defaultDeps };
@@ -109,6 +110,10 @@ export function __setMessagesTestOverrides(overrides = {}) {
 
 export function __resetMessagesTestOverrides() {
   Object.assign(deps, defaultDeps);
+}
+
+export function setMessagesWsSender(fn) {
+  deps.wsSend = typeof fn === 'function' ? fn : null;
 }
 
 const decoder = new TextDecoder();
@@ -484,6 +489,55 @@ function toMessageId(raw) {
   if (typeof raw?.message_id === 'string' && raw.message_id.length) return raw.message_id;
   if (typeof raw?.messageId === 'string' && raw.messageId.length) return raw.messageId;
   return null;
+}
+
+function valueType(value) {
+  return value === null || value === undefined ? 'null' : typeof value;
+}
+
+function sampleDigits(value, maxLen = 16) {
+  if (value === null || value === undefined) return null;
+  const digits = String(value).replace(/\D/g, '');
+  if (!digits) return null;
+  return digits.slice(0, maxLen);
+}
+
+function sampleIdPrefix(value, maxLen = 8) {
+  if (value === null || value === undefined) return null;
+  const str = String(value);
+  if (!str) return null;
+  return str.slice(0, maxLen);
+}
+
+function resolveMessageTimestampField(raw) {
+  const candidates = [
+    { field: 'created_at', value: raw?.created_at },
+    { field: 'createdAt', value: raw?.createdAt },
+    { field: 'ts', value: raw?.ts },
+    { field: 'timestamp', value: raw?.timestamp },
+    { field: 'meta.ts', value: raw?.meta?.ts }
+  ];
+  for (const candidate of candidates) {
+    const n = Number(candidate.value);
+    if (Number.isFinite(n) && n > 0) {
+      return { field: candidate.field, value: candidate.value, result: Math.floor(n) };
+    }
+  }
+  return { field: 'none', value: null, result: null };
+}
+
+function resolveMessageIdField(raw) {
+  const candidates = [
+    { field: 'id', value: raw?.id },
+    { field: 'message_id', value: raw?.message_id },
+    { field: 'messageId', value: raw?.messageId }
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate.value === 'string' && candidate.value.length) {
+      return { field: candidate.field, value: candidate.value, result: candidate.value };
+    }
+  }
+  return { field: 'none', value: null, result: null };
 }
 
 function summarizeMessageIds(items = []) {
@@ -1009,6 +1063,9 @@ export async function listSecureAndDecrypt(params = {}) {
   const mutateStateRaw = mutateState;
   const allowReplayRaw = mutateState === false ? true : allowReplay;
   const computedIsHistoryReplay = allowReplayRaw === true && mutateState === false;
+  const sourceHint = prefetchedList
+    ? 'FROM_LOCAL_OBJECT'
+    : (typeof deps.listSecureMessages === 'function' ? 'FROM_D1_ITEM' : 'FROM_UNKNOWN');
   const replayCtx = {
     allowReplay: allowReplayRaw,
     mutateState: mutateStateRaw,
@@ -1999,10 +2056,67 @@ export async function listSecureAndDecrypt(params = {}) {
           isHistoryReplay: computedIsHistoryReplay,
           silent: !!silent
         };
-        timelineBatch.push(timelineEntry);
+        const entryMessageId = timelineEntry.messageId;
+        const entryTs = timelineEntry.ts;
+        const idRawType = entryMessageId === null ? 'null' : typeof entryMessageId;
+        const tsRawType = entryTs === null ? 'null' : typeof entryTs;
+        const hasId = entryMessageId !== null && entryMessageId !== undefined
+          && (typeof entryMessageId !== 'string' || entryMessageId.trim().length > 0);
+        const hasTs = entryTs !== null && entryTs !== undefined;
+        const idValid = typeof entryMessageId === 'string' && entryMessageId.trim().length > 0;
+        const tsValid = typeof entryTs === 'number' && Number.isFinite(entryTs)
+          && Number.isInteger(entryTs) && entryTs > 0;
+        let reasonCode = null;
+        if (!idValid) {
+          reasonCode = hasId ? 'INVALID_ID' : 'MISSING_ID';
+        } else if (!tsValid) {
+          reasonCode = hasTs ? 'INVALID_TS' : 'MISSING_TS';
+        }
+        if (reasonCode) {
+          const rawCreatedAt = raw?.created_at ?? raw?.createdAt ?? null;
+          const rawIdCandidate = raw?.id
+            ?? raw?.message_id
+            ?? raw?.messageId
+            ?? raw?.serverMessageId
+            ?? raw?.server_message_id
+            ?? null;
+          const rawMetaTs = meta?.ts ?? raw?.meta?.ts ?? null;
+          const rawHeaderN = header?.n ?? raw?.n ?? null;
+          logCapped('messageItemSchemaSourceTrace', {
+            stage: 'P1_SOURCE',
+            conversationId: convId || null,
+            reasonCode,
+            rawCreatedAtType: valueType(rawCreatedAt),
+            rawCreatedAtValueSample: sampleDigits(rawCreatedAt),
+            rawIdType: valueType(rawIdCandidate),
+            rawIdValueSample: sampleIdPrefix(rawIdCandidate),
+            rawMetaTsType: valueType(rawMetaTs),
+            rawMetaTsValueSample: sampleDigits(rawMetaTs),
+            rawHeaderNType: valueType(rawHeaderN),
+            rawHeaderNValueSample: sampleDigits(rawHeaderN),
+            rawDirection: direction || null,
+            rawMsgType: rawMsgType || null,
+            rawHasHeaderJson: !!(raw?.header_json || raw?.headerJson || raw?.header),
+            sourceHint
+          }, 5);
+          logCapped('messageItemSchemaDropTrace', {
+            conversationId: convId || null,
+            reasonCode,
+            hasId,
+            hasTs,
+            tsRawType,
+            idRawType,
+            sampleIdPrefix8: idValid ? entryMessageId.trim().slice(0, 8) : null,
+            sampleTs: hasTs ? entryTs : null,
+            stage: 'P1_MESSAGES'
+          }, 5);
+        } else {
+          timelineBatch.push(timelineEntry);
+        }
         out.push(messageObj);
         if (messageObj.direction === 'incoming' && messageObj.id) {
           const shouldSendDeliveryReceipt = !computedIsHistoryReplay && vaultPutStatus === 'ok';
+          const shouldSendVaultAckWs = shouldTrackState && !computedIsHistoryReplay && vaultPutStatus === 'ok';
           const receiptGateReason = computedIsHistoryReplay
             ? 'REPLAY'
             : (vaultPutStatus === 'ok'
@@ -2026,6 +2140,24 @@ export async function listSecureAndDecrypt(params = {}) {
               peerDeviceId: peerDeviceForMessage,
               vaultPutStatus
             });
+          }
+          if (shouldSendVaultAckWs) {
+            const senderAccountDigest = (senderDigest && senderDigest.length === 64)
+              ? senderDigest
+              : (peerAccountDigestNormalized && peerAccountDigestNormalized.length === 64 ? peerAccountDigestNormalized : null);
+            const receiverAccountDigest = selfDigest && selfDigest.length === 64 ? selfDigest : null;
+            const senderDevice = typeof senderDeviceId === 'string' && senderDeviceId.trim().length ? senderDeviceId.trim() : null;
+            const receiverDevice = typeof selfDeviceId === 'string' && selfDeviceId.trim().length ? selfDeviceId.trim() : null;
+            if (senderAccountDigest && receiverAccountDigest && senderDevice && receiverDevice) {
+              maybeSendVaultAckWs({
+                conversationId: convId,
+                messageId: messageObj.id,
+                senderAccountDigest,
+                senderDeviceId: senderDevice,
+                receiverAccountDigest,
+                receiverDeviceId: receiverDevice
+              });
+            }
           }
           if (!computedIsHistoryReplay && sendReadReceipt) {
             maybeSendReadReceipt(convId, peerKey, peerDeviceForMessage, messageObj.id);
@@ -2784,6 +2916,8 @@ export async function listSecureAndDecrypt(params = {}) {
     if (shouldYieldToReplay('enqueue')) {
       return buildYieldResult();
     }
+    const resolvedTs = resolveMessageTimestampField(raw);
+    const resolvedId = resolveMessageIdField(raw);
     const msgTs = toMessageTimestamp(raw);
     const headerJson = raw?.header_json || raw?.headerJson || (raw?.header ? JSON.stringify(raw.header) : null);
     const ciphertextB64 = raw?.ciphertext_b64 || raw?.ciphertextB64 || null;
@@ -2792,6 +2926,22 @@ export async function listSecureAndDecrypt(params = {}) {
       try { headerForKey = JSON.parse(headerJson); } catch {}
     }
     const serverMessageId = toMessageId(raw);
+    const shouldLogFieldResolver = resolvedTs.field === 'none'
+      || resolvedId.field === 'none'
+      || !Number.isFinite(msgTs)
+      || !serverMessageId;
+    if (shouldLogFieldResolver) {
+      logCapped('messageItemFieldResolverTrace', {
+        stage: 'RESOLVE',
+        conversationId: conversationId || null,
+        pickedTsField: resolvedTs.field,
+        pickedIdField: resolvedId.field,
+        pickedTsSample: sampleDigits(resolvedTs.value),
+        pickedIdPrefix8: sampleIdPrefix(resolvedId.value),
+        resultTs: Number.isFinite(msgTs) ? msgTs : null,
+        resultIdPrefix8: sampleIdPrefix(serverMessageId)
+      }, 5);
+    }
     if (!serverMessageId) {
       throw new Error('messageId missing from fetched item');
     }
@@ -3103,6 +3253,32 @@ function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId
       log({ deliveryReceiptError: err?.message || err, conversationId, messageId });
     });
   }
+}
+
+function maybeSendVaultAckWs({ conversationId, messageId, senderAccountDigest, senderDeviceId, receiverAccountDigest, receiverDeviceId }) {
+  if (!conversationId || !messageId || !senderAccountDigest || !senderDeviceId || !receiverAccountDigest || !receiverDeviceId) return;
+  if (typeof deps.wsSend !== 'function') return;
+  const payload = {
+    type: 'vault-ack',
+    conversationId,
+    messageId,
+    senderAccountDigest,
+    senderDeviceId,
+    receiverAccountDigest,
+    receiverDeviceId,
+    targetAccountDigest: senderAccountDigest,
+    targetDeviceId: senderDeviceId,
+    ts: Math.floor(Date.now() / 1000)
+  };
+  try {
+    deps.wsSend(payload);
+    logCapped('vaultAckWsSentTrace', {
+      conversationId,
+      messageId,
+      senderDigest: senderAccountDigest,
+      receiverDigest: receiverAccountDigest
+    }, 5);
+  } catch {}
 }
 
 function buildPendingVaultPutKey({ conversationId, messageId, senderDeviceId } = {}) {

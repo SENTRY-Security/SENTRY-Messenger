@@ -6,6 +6,7 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
+import { setMessagesWsSender } from '../features/messages.js';
 import {
   getMkRaw,
   setMkRaw,
@@ -3869,6 +3870,7 @@ function wsSend(payload) {
 }
 
 messagesPane.setWsSend(wsSend);
+setMessagesWsSender(wsSend);
 shareController?.setWsSend?.(wsSend);
 setCallSignalSender(wsSend);
 if (!wsMonitorTimer) {
@@ -3985,6 +3987,11 @@ function handleWebSocketMessage(msg) {
     const identity = resolveWsPeer(msg);
     if (!identity.key) return;
     presenceManager.setContactPresence(identity, !!msg?.online);
+    return;
+  }
+  if (type === 'vault-ack') {
+    if (!isTargetingThisDevice(msg)) return;
+    messagesPane.handleVaultAckEvent?.(msg);
     return;
   }
   if (type === 'conversation-deleted') {

@@ -1,4 +1,5 @@
 // Client-only append-only timeline store for user messages.
+import { logCapped } from '../core/log.js';
 
 const USER_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
 const timelineMap = new Map(); // conversationId -> Map(messageId -> entry)
@@ -63,6 +64,8 @@ export function appendBatch(entries = [], opts = {}) {
   const appendedEntries = [];
   const grouped = new Map();
   let skippedCount = 0;
+  let schemaDroppedCount = 0;
+  let batchConversationId = null;
   const directionalOrder = opts && typeof opts === 'object' ? opts.directionalOrder : null;
 
   for (const entry of list) {
@@ -71,7 +74,40 @@ export function appendBatch(entries = [], opts = {}) {
       continue;
     }
     const convId = normalizeConversationId(entry.conversationId || entry.convId || entry.conversation_id);
-    const messageId = normalizeMessageId(entry.messageId || entry.id);
+    if (!batchConversationId && convId) batchConversationId = convId;
+    const rawMessageId = entry.messageId || entry.id;
+    const rawTs = entry.ts;
+    const idRawType = rawMessageId === null ? 'null' : typeof rawMessageId;
+    const tsRawType = rawTs === null ? 'null' : typeof rawTs;
+    const hasId = rawMessageId !== null && rawMessageId !== undefined
+      && (typeof rawMessageId !== 'string' || rawMessageId.trim().length > 0);
+    const hasTs = rawTs !== null && rawTs !== undefined;
+    const idValid = typeof rawMessageId === 'string' && rawMessageId.trim().length > 0;
+    const tsValid = typeof rawTs === 'number' && Number.isFinite(rawTs)
+      && Number.isInteger(rawTs) && rawTs > 0;
+    let reasonCode = null;
+    if (!idValid) {
+      reasonCode = hasId ? 'INVALID_ID' : 'MISSING_ID';
+    } else if (!tsValid) {
+      reasonCode = hasTs ? 'INVALID_TS' : 'MISSING_TS';
+    }
+    if (reasonCode) {
+      schemaDroppedCount += 1;
+      skippedCount += 1;
+      logCapped('messageItemSchemaDropTrace', {
+        conversationId: convId || null,
+        reasonCode,
+        hasId,
+        hasTs,
+        tsRawType,
+        idRawType,
+        sampleIdPrefix8: idValid ? rawMessageId.trim().slice(0, 8) : null,
+        sampleTs: hasTs ? rawTs : null,
+        stage: 'P2_TIMELINE_STORE'
+      }, 5);
+      continue;
+    }
+    const messageId = normalizeMessageId(rawMessageId);
     const msgType = normalizeMsgType(entry.msgType || entry.type || entry.subtype);
     if (!convId || !messageId) {
       skippedCount += 1;
@@ -113,6 +149,14 @@ export function appendBatch(entries = [], opts = {}) {
     });
   }
 
+  logCapped('timelineBatchAssertTrace', {
+    conversationId: batchConversationId || null,
+    batchSize: list.length,
+    droppedCount: schemaDroppedCount,
+    reasonCode: schemaDroppedCount > 0 ? 'SCHEMA_DROP' : 'SCHEMA_OK',
+    stage: 'APPEND_BATCH'
+  }, 5);
+
   return { appendedCount: appendedEntries.length, skippedCount, appendedEntries };
 }
 
@@ -131,6 +175,7 @@ export function getTimeline(conversationId) {
   if (!(convMap instanceof Map) || !convMap.size) return [];
   const list = Array.from(convMap.values()).filter(Boolean);
   list.sort((a, b) => {
+    // Defensive defaults only; schema drops should prevent missing ts/id from entering the store.
     const tsA = Number(a?.ts) || 0;
     const tsB = Number(b?.ts) || 0;
     if (tsA !== tsB) return tsA - tsB;

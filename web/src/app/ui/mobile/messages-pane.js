@@ -356,6 +356,11 @@ export function initMessagesPane({
     return normalizeDigestString(value?.peerAccountDigest ?? value);
   }
 
+  function toDigestOnly(value) {
+    const identity = normalizePeerIdentity(value?.peerAccountDigest ?? value);
+    return identity.accountDigest || null;
+  }
+
   function splitPeerKey(value) {
     const key = typeof value === 'string' ? value : normalizePeerKey(value);
     if (!key || typeof key !== 'string' || !key.includes('::')) {
@@ -3115,7 +3120,7 @@ export function initMessagesPane({
       if (!append) {
         vaultStatusChanged = await reconstructOutgoingVaultStatus({
           conversationId: state.conversationId,
-          peerAccountDigest: state.activePeerDigest,
+          peerAccountDigest: toDigestOnly(state.activePeerDigest),
           timelineMessages
         });
       }
@@ -4083,7 +4088,8 @@ export function initMessagesPane({
       return false;
     }
     if (!senderDeviceId || !senderDigest) return false;
-    const peerDigest = normalizeAccountDigest(peerAccountDigest) || peerAccountDigest;
+    const peerDigest = toDigestOnly(peerAccountDigest);
+    if (!peerDigest) return false;
     const outgoingMessages = timelineMessages.filter((msg) => msg?.direction === 'outgoing');
     const messageIds = outgoingMessages
       .map((msg) => resolveOutgoingStatusMessageId(msg))
@@ -4344,17 +4350,20 @@ export function initMessagesPane({
           updateMessagesStatusUI();
           if (!res?.queued && convIdFinal) {
             const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
+            const targetAccountDigest = toDigestOnly(peerAccountDigest);
             let senderDeviceId = null;
             try { senderDeviceId = ensureDeviceId(); } catch {}
-            wsSendFn({
-              type: 'message-new',
-              targetAccountDigest: peerAccountDigest,
-              conversationId: convIdFinal,
-              preview: message.text || '',
-              ts: replacementTs,
-              targetDeviceId,
-              senderDeviceId
-            });
+            if (targetAccountDigest) {
+              wsSendFn({
+                type: 'message-new',
+                targetAccountDigest,
+                conversationId: convIdFinal,
+                preview: message.text || '',
+                ts: replacementTs,
+                targetDeviceId,
+                senderDeviceId
+              });
+            }
           }
           if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
           return;
@@ -4367,17 +4376,20 @@ export function initMessagesPane({
         updateMessagesStatusUI();
         if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
         const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
+        const targetAccountDigest = toDigestOnly(peerAccountDigest);
         let senderDeviceId = null;
         try { senderDeviceId = ensureDeviceId(); } catch {}
-        wsSendFn({
-          type: 'message-new',
-          targetAccountDigest: peerAccountDigest,
-          conversationId: convIdFinal,
-          preview: message.text || '',
-          ts: message.ts || Math.floor(Date.now() / 1000),
-          targetDeviceId,
-          senderDeviceId
-        });
+        if (targetAccountDigest) {
+          wsSendFn({
+            type: 'message-new',
+            targetAccountDigest,
+            conversationId: convIdFinal,
+            preview: message.text || '',
+            ts: message.ts || Math.floor(Date.now() / 1000),
+            targetDeviceId,
+            senderDeviceId
+          });
+        }
       } catch (err) {
         const replacementInfo = getReplacementInfo(err);
         if (replacementInfo) {
@@ -4671,15 +4683,18 @@ export function initMessagesPane({
           }
           if (state.activePeerDigest && !res?.queued) {
             const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
-            wsSendFn({
-              type: 'message-new',
-              targetAccountDigest: state.activePeerDigest,
-              conversationId: convId,
-              preview: msg?.text || previewText,
-              ts: msg?.ts || Math.floor(Date.now() / 1000),
-              senderDeviceId: ensureDeviceId(),
-              targetDeviceId
-            });
+            const targetAccountDigest = toDigestOnly(state.activePeerDigest);
+            if (targetAccountDigest) {
+              wsSendFn({
+                type: 'message-new',
+                targetAccountDigest,
+                conversationId: convId,
+                preview: msg?.text || previewText,
+                ts: msg?.ts || Math.floor(Date.now() / 1000),
+                senderDeviceId: ensureDeviceId(),
+                targetDeviceId
+              });
+            }
           }
         } catch (err) {
           const msg = findMessageById(localMsg.id);
@@ -4884,7 +4899,8 @@ export function initMessagesPane({
       onConfirm: async () => {
         try {
           if (!peerDeviceId) throw new Error('缺少對方 deviceId，請重新同步好友後再試');
-          await deleteSecureConversation({ conversationId, peerAccountDigest: key, targetDeviceId: peerDeviceId });
+          const peerDigest = toDigestOnly(key);
+          await deleteSecureConversation({ conversationId, peerAccountDigest: peerDigest, targetDeviceId: peerDeviceId });
           sessionStore.deletedConversations?.add?.(conversationId);
           getConversationThreads().delete(conversationId);
           sessionStore.conversationIndex?.delete?.(conversationId);
@@ -4915,7 +4931,7 @@ export function initMessagesPane({
           renderConversationList();
           wsSendFn({
             type: 'conversation-deleted',
-            targetAccountDigest: key,
+            targetAccountDigest: peerDigest,
             conversationId,
             senderDeviceId: ensureDeviceId(),
             targetDeviceId: peerDeviceId
@@ -5279,6 +5295,25 @@ export function initMessagesPane({
 
   }
 
+  function handleVaultAckEvent(event) {
+    const convId = String(event?.conversationId || event?.conversation_id || '').trim();
+    const messageId = String(event?.messageId || event?.message_id || '').trim();
+    if (!convId || !messageId) return;
+    let tsRaw = Number(event?.ts ?? event?.timestamp);
+    if (Number.isFinite(tsRaw) && tsRaw > 10_000_000_000) {
+      tsRaw = Math.floor(tsRaw / 1000);
+    }
+    if (!Number.isFinite(tsRaw) || tsRaw <= 0) tsRaw = Math.floor(Date.now() / 1000);
+    recordMessageDelivered(convId, messageId, tsRaw);
+    logCapped('vaultAckWsRecvTrace', { conversationId: convId || null, messageId: messageId || null }, 5);
+    const state = getMessageState();
+    if (state.conversationId !== convId) return;
+    const localMessage = findMessageById(messageId) || findTimelineMessageById(convId, messageId);
+    if (localMessage && applyReceiptState(localMessage)) {
+      updateMessagesStatusUI();
+    }
+  }
+
   function handleContactOpenConversation(detail) {
     const identity = normalizePeerIdentity({
       peerAccountDigest: detail?.peerAccountDigest,
@@ -5527,15 +5562,18 @@ export function initMessagesPane({
         const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
         setMessagesStatus('');
         if (convId && state.activePeerDigest && !res?.queued) {
-          wsSendFn({
-            type: 'message-new',
-            targetAccountDigest: state.activePeerDigest,
-            conversationId: convId,
-            preview: text,
-            ts,
-            targetDeviceId,
-            senderDeviceId: ensureDeviceId()
-          });
+          const targetAccountDigest = toDigestOnly(state.activePeerDigest);
+          if (targetAccountDigest) {
+            wsSendFn({
+              type: 'message-new',
+              targetAccountDigest,
+              conversationId: convId,
+              preview: text,
+              ts,
+              targetDeviceId,
+              senderDeviceId: ensureDeviceId()
+            });
+          }
         }
       } catch (err) {
         if (uiNoiseEnabled) {
@@ -5713,6 +5751,7 @@ export function initMessagesPane({
     setActiveConversation,
     appendLocalOutgoingMessage,
     handleIncomingSecureMessage,
+    handleVaultAckEvent,
     handleContactOpenConversation,
     handleContactEntryUpdated,
     setMessagesStatus,

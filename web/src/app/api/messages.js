@@ -5,8 +5,8 @@
 // ESM only; depends on core/http. No UI logic here.
 
 import { fetchWithTimeout, jsonReq } from '../core/http.js';
-import { buildAccountPayload, ensureDeviceId } from '../core/store.js';
-import { logForensicsEvent } from '../core/log.js';
+import { buildAccountPayload, ensureDeviceId, normalizeAccountDigest } from '../core/store.js';
+import { logCapped, logForensicsEvent } from '../core/log.js';
 export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrapper
 
 function buildAccountHeaders() {
@@ -21,6 +21,93 @@ function buildAccountHeaders() {
     /* header 留空，讓上層錯誤自行拋出 */
   }
   return headers;
+}
+
+function suffix(value, size) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(-size);
+}
+
+function logAuthHeaderTrace(endpoint, headers = {}) {
+  if (!endpoint) return;
+  const accountToken = headers['X-Account-Token'] || headers['x-account-token'] || null;
+  const accountDigest = headers['X-Account-Digest'] || headers['x-account-digest'] || null;
+  const deviceId = headers['X-Device-Id'] || headers['x-device-id'] || null;
+  logCapped('apiAuthHeaderTrace', {
+    endpoint,
+    hasXAccountToken: !!accountToken,
+    hasXAccountDigest: !!accountDigest,
+    hasXDeviceId: !!deviceId,
+    accountDigestSuffix4: suffix(accountDigest, 4),
+    deviceIdSuffix4: suffix(deviceId, 4)
+  }, 5);
+}
+
+function normalizeOutgoingReceiverDigest(value, { endpoint = '/api/v1/messages/outgoing-status', field = 'receiverAccountDigest' } = {}) {
+  if (!value) return null;
+  const raw = typeof value === 'string'
+    ? value
+    : (value?.peerAccountDigest ?? value?.peerDigest ?? value?.accountDigest ?? value);
+  const rawString = typeof raw === 'string' ? raw : null;
+  const beforeHasDoubleColon = !!(rawString && rawString.includes('::'));
+  const digestOnly = rawString ? rawString.split('::')[0] : raw;
+  const normalized = normalizeAccountDigest(digestOnly);
+  if (beforeHasDoubleColon) {
+    logCapped('apiDigestNormalizeTrace', {
+      endpoint,
+      field,
+      beforeHasDoubleColon,
+      afterIs64Hex: !!normalized,
+      beforeSuffix8: suffix(rawString, 8),
+      afterSuffix8: suffix(normalized, 8)
+    }, 5);
+  }
+  return normalized;
+}
+
+function buildMessageAuthHeaders({ endpoint, deviceId } = {}) {
+  const payload = buildAccountPayload();
+  const headers = {};
+  if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
+  if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
+  if (!headers['X-Account-Token'] && !headers['X-Account-Digest']) {
+    throw new Error('accountToken or accountDigest required');
+  }
+  const senderDevice = typeof deviceId === 'string' && deviceId.trim()
+    ? deviceId.trim()
+    : ensureDeviceId();
+  if (!senderDevice) throw new Error('senderDeviceId required');
+  headers['X-Device-Id'] = senderDevice;
+  logAuthHeaderTrace(endpoint, headers);
+  return { headers, senderDeviceId: senderDevice };
+}
+
+function buildOutgoingStatusRequest({ conversationId, senderDeviceId, receiverAccountDigest, messageIds } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  const receiverDigest = normalizeOutgoingReceiverDigest(receiverAccountDigest, {
+    endpoint: '/api/v1/messages/outgoing-status',
+    field: 'receiverAccountDigest'
+  });
+  if (!receiverDigest) throw new Error('receiverAccountDigest required');
+  const ids = Array.isArray(messageIds) ? messageIds.filter(Boolean).map((id) => String(id).trim()).filter(Boolean) : [];
+  if (!ids.length) throw new Error('messageIds required');
+  const senderDevice = senderDeviceId || ensureDeviceId();
+  if (!senderDevice) throw new Error('senderDeviceId required');
+  const { headers } = buildMessageAuthHeaders({
+    endpoint: '/api/v1/messages/outgoing-status',
+    deviceId: senderDevice
+  });
+  return {
+    headers,
+    body: {
+      conversationId,
+      senderDeviceId: senderDevice,
+      receiverAccountDigest: receiverDigest,
+      messageIds: ids
+    }
+  };
 }
 
 function extractMessageId(item) {
@@ -101,27 +188,24 @@ export async function fetchSendState({ conversationId, senderDeviceId } = {}) {
     senderDeviceId: senderDevice
   };
   const payload = buildAccountPayload({ overrides });
-  const r = await fetchWithTimeout('/api/v1/messages/send-state', jsonReq(payload), 15000);
+  const { headers } = buildMessageAuthHeaders({
+    endpoint: '/api/v1/messages/send-state',
+    deviceId: senderDevice
+  });
+  const r = await fetchWithTimeout('/api/v1/messages/send-state', jsonReq(payload, headers), 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
   return { r, data };
 }
 
 export async function fetchOutgoingStatus({ conversationId, senderDeviceId, receiverAccountDigest, messageIds } = {}) {
-  if (!conversationId) throw new Error('conversationId required');
-  if (!receiverAccountDigest) throw new Error('receiverAccountDigest required');
-  const ids = Array.isArray(messageIds) ? messageIds.filter(Boolean).map((id) => String(id).trim()).filter(Boolean) : [];
-  if (!ids.length) throw new Error('messageIds required');
-  const senderDevice = senderDeviceId || ensureDeviceId();
-  if (!senderDevice) throw new Error('senderDeviceId required');
-  const overrides = {
+  const { body, headers } = buildOutgoingStatusRequest({
     conversationId,
-    senderDeviceId: senderDevice,
+    senderDeviceId,
     receiverAccountDigest,
-    messageIds: ids
-  };
-  const payload = buildAccountPayload({ overrides });
-  const r = await fetchWithTimeout('/api/v1/messages/outgoing-status', jsonReq(payload), 15000);
+    messageIds
+  });
+  const r = await fetchWithTimeout('/api/v1/messages/outgoing-status', jsonReq(body, headers), 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
   return { r, data };

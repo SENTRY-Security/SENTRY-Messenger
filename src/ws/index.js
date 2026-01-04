@@ -496,6 +496,46 @@ function handleClientMessage(ws, data) {
     });
     return;
   }
+  if (msg.type === 'vault-ack') {
+    if (!ws.__accountDigest) return;
+    const targetDigest = extractPeerAccountDigest(msg);
+    const conversationId = String(msg.conversationId || '').trim();
+    const messageId = String(msg.messageId || msg.message_id || '').trim();
+    if (!targetDigest || !conversationId || !messageId) return;
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
+    const receiverDeviceId = canonicalDeviceId(msg.receiverDeviceId);
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId || msg.senderDeviceId);
+    if (!senderDeviceId || !receiverDeviceId || !targetDeviceId) {
+      logger.warn({
+        event: 'ws.vault-ack.missing-device',
+        fromDigest: ws.__accountDigest || null,
+        targetDigest,
+        conversationId,
+        senderDeviceId: senderDeviceId || null,
+        receiverDeviceId: receiverDeviceId || null,
+        targetDeviceId: targetDeviceId || null
+      }, 'drop vault-ack due to missing deviceId');
+      return;
+    }
+    const tsRaw = Number(msg.ts);
+    const ts = Number.isFinite(tsRaw) && tsRaw > 0
+      ? tsRaw
+      : Math.floor(Date.now() / 1000);
+    broadcastByDigest(targetDigest, {
+      type: 'vault-ack',
+      conversationId,
+      messageId,
+      senderAccountDigest: targetDigest,
+      senderDeviceId,
+      receiverAccountDigest: ws.__accountDigest,
+      receiverDeviceId,
+      targetAccountDigest: targetDigest,
+      targetDeviceId,
+      peerAccountDigest: ws.__accountDigest,
+      ts
+    });
+    return;
+  }
   if (msg.type === 'conversation-deleted') {
     if (!ws.__accountDigest) return;
     const targetDigest = extractPeerAccountDigest(msg);
