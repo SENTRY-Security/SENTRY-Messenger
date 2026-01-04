@@ -60,9 +60,7 @@ import {
   appendBatch as timelineAppendBatch,
   clearConversation as clearTimelineConversation
 } from './timeline-store.js';
-import { sendDrReadReceipt as featureSendDrReadReceipt, sendDrDeliveryReceipt as featureSendDrDeliveryReceipt } from './dr-session.js';
 import { enqueueInboxJob, processInboxForConversation } from './queue/inbox.js';
-import { enqueueReceiptJob } from './queue/receipts.js';
 import { MessageKeyVault } from './message-key-vault.js';
 import {
   OFFLINE_CATCHUP_CONVERSATION_LIMIT,
@@ -97,8 +95,6 @@ const defaultDeps = {
   ensureSecureConversationReady: managerEnsureSecureConversationReady,
   ensureDrReceiverState: managerEnsureDrReceiverState,
   clearDrState: storeClearDrState,
-  sendReadReceipt: featureSendDrReadReceipt,
-  sendDeliveryReceipt: featureSendDrDeliveryReceipt,
   wsSend: null
 };
 
@@ -3195,8 +3191,46 @@ export function recordMessageRead(conversationId, messageId, ts = null) {
 }
 
 function maybeSendReadReceipt(conversationId, peerAccountDigest, peerDeviceId, messageId) {
-  // Temporarily disabled to reduce noise while investigating core decrypt issues.
-  return;
+  if (!conversationId || !peerAccountDigest || !peerDeviceId || !messageId) return;
+  if (typeof deps.wsSend !== 'function') return;
+  ensureSentReceiptsLoaded();
+  const dedupeKey = `${conversationId}:${messageId}`;
+  if (sentReadReceipts.has(dedupeKey)) return;
+  const identity = storeNormalizePeerIdentity({ peerAccountDigest, peerDeviceId });
+  const targetAccountDigest = identity?.accountDigest
+    || (typeof peerAccountDigest === 'string' ? peerAccountDigest.split('::')[0] : null);
+  let senderDeviceId = null;
+  try {
+    senderDeviceId = storeEnsureDeviceId();
+  } catch {}
+  if (!targetAccountDigest || !senderDeviceId) return;
+  const senderAccountDigest = typeof deps.getAccountDigest === 'function' ? deps.getAccountDigest() : null;
+  const payload = {
+    type: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
+    conversationId,
+    messageId,
+    senderAccountDigest: senderAccountDigest || null,
+    senderDeviceId,
+    targetAccountDigest,
+    targetDeviceId: peerDeviceId,
+    ts: Math.floor(Date.now() / 1000)
+  };
+  sentReadReceipts.add(dedupeKey);
+  try {
+    const result = deps.wsSend(payload);
+    if (result && typeof result.then === 'function') {
+      result.then(() => persistSentReceipts())
+        .catch(() => sentReadReceipts.delete(dedupeKey));
+      return;
+    }
+    if (result === false) {
+      sentReadReceipts.delete(dedupeKey);
+      return;
+    }
+    persistSentReceipts();
+  } catch {
+    sentReadReceipts.delete(dedupeKey);
+  }
 }
 
 export function recordMessageDelivered(conversationId, messageId, ts = null) {
@@ -3217,7 +3251,7 @@ export function recordMessageDelivered(conversationId, messageId, ts = null) {
 function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId, tokenB64, peerDeviceId, vaultPutStatus = null }) {
   if (!conversationId || !peerAccountDigest || !messageId) return;
   if (!peerDeviceId) return;
-  if (typeof deps.sendDeliveryReceipt !== 'function') return;
+  if (typeof deps.wsSend !== 'function') return;
   const dedupeKey = `${conversationId}:${messageId}`;
   if (sentDeliveryReceipts.has(dedupeKey)) return;
   if (vaultPutStatus) {
@@ -3227,31 +3261,50 @@ function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId
       receiptType: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT
     });
   }
-  let ackPromise;
   try {
-    ackPromise = deps.sendDeliveryReceipt({
-      peerAccountDigest,
-      peerDeviceId,
-      messageId,
+    const identity = storeNormalizePeerIdentity({ peerAccountDigest, peerDeviceId });
+    const targetAccountDigest = identity?.accountDigest
+      || (typeof peerAccountDigest === 'string' ? peerAccountDigest.split('::')[0] : null);
+    let senderDeviceId = null;
+    try {
+      senderDeviceId = storeEnsureDeviceId();
+    } catch {}
+    if (!targetAccountDigest || !senderDeviceId) return;
+    const senderAccountDigest = typeof deps.getAccountDigest === 'function' ? deps.getAccountDigest() : null;
+    const payload = {
+      type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
       conversationId,
-      convId: conversationId,
-      tokenB64
-    });
-  } catch (err) {
-    return;
-  }
-  sentDeliveryReceipts.add(dedupeKey);
-  if (ackPromise && typeof ackPromise.then === 'function') {
-    ackPromise.then(() => {
+      messageId,
+      senderAccountDigest: senderAccountDigest || null,
+      senderDeviceId,
+      targetAccountDigest,
+      targetDeviceId: peerDeviceId,
+      ts: Math.floor(Date.now() / 1000)
+    };
+    sentDeliveryReceipts.add(dedupeKey);
+    const result = deps.wsSend(payload);
+    if (result && typeof result.then === 'function') {
+      result.then(() => {
+        logCapped('deliveryAckTrace', {
+          stage: 'sent',
+          ackedMessageId: messageId,
+          conversationId
+        });
+      }).catch((err) => {
+        sentDeliveryReceipts.delete(dedupeKey);
+        log({ deliveryReceiptError: err?.message || err, conversationId, messageId });
+      });
+    } else if (result === false) {
+      sentDeliveryReceipts.delete(dedupeKey);
+    } else {
       logCapped('deliveryAckTrace', {
         stage: 'sent',
         ackedMessageId: messageId,
         conversationId
       });
-    }).catch((err) => {
-      sentDeliveryReceipts.delete(dedupeKey);
-      log({ deliveryReceiptError: err?.message || err, conversationId, messageId });
-    });
+    }
+  } catch (err) {
+    return;
   }
 }
 

@@ -2,7 +2,7 @@ import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, syncOfflineDecryptNow } from '../../features/messages.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
-import { sendDrText, sendDrMedia, sendDrCallLog, sendDrReadReceipt } from '../../features/dr-session.js';
+import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
 import { flushOutbox, retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
 import { MessageKeyVault } from '../../features/message-key-vault.js';
 import {
@@ -4030,12 +4030,6 @@ export function initMessagesPane({
     }
     if (currentStatus === 'failed') return false;
     if (currentStatus === 'pending' || message.pending === true) return false;
-    if (!currentStatus) {
-      message.read = false;
-      message.status = 'sent';
-      message.pending = false;
-      return true;
-    }
     return false;
   }
 
@@ -4503,7 +4497,22 @@ export function initMessagesPane({
       return;
     }
     try {
-      await sendDrReadReceipt({ peerAccountDigest: state.activePeerDigest, peerDeviceId, messageId: message.id });
+      const payload = {
+        type: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
+        conversationId: state.conversationId,
+        messageId: message.id,
+        senderAccountDigest: getAccountDigest() || null,
+        senderDeviceId: ensureDeviceId(),
+        targetAccountDigest: toDigestOnly(state.activePeerDigest),
+        targetDeviceId: peerDeviceId,
+        ts: Math.floor(Date.now() / 1000)
+      };
+      const result = wsSendFn(payload);
+      if (result && typeof result.then === 'function') {
+        await result;
+      } else if (result === false) {
+        sentReadReceiptIds.delete(dedupeKey);
+      }
     } catch (err) {
       log({ readReceiptError: err?.message || err, messageId: message.id });
       sentReadReceiptIds.delete(dedupeKey);

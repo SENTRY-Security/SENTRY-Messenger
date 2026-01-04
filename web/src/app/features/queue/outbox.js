@@ -2,6 +2,7 @@
 
 import { createSecureMessage } from '../../api/messages.js';
 import {
+  deleteOutboxRecord,
   getOutboxRecord,
   listOutboxRecords,
   putOutboxRecord
@@ -83,6 +84,13 @@ function logOutboxProcessSummary({ processed, sentOk, sentFail, skippedLocked, r
     skippedLocked: Number.isFinite(Number(skippedLocked)) ? Number(skippedLocked) : 0,
     remainingDue: Number.isFinite(Number(remainingDue)) ? Number(remainingDue) : 0
   }, 5);
+}
+
+function isReceiptJob(job = {}) {
+  if (!job) return false;
+  if (job.type === TYPE_RECEIPT) return true;
+  const jobId = typeof job.jobId === 'string' ? job.jobId : '';
+  return jobId.startsWith('receipt:') || jobId.startsWith(`${TYPE_RECEIPT}:`);
 }
 
 function safeParseHeader(headerJson) {
@@ -176,6 +184,19 @@ export function setOutboxDebug(flag = true) {
 }
 
 export async function enqueueOutboxJob(input = {}) {
+  if (isReceiptJob(input)) {
+    const jobId = typeof input?.jobId === 'string' ? input.jobId : null;
+    if (jobId) {
+      try { await deleteOutboxRecord(jobId); } catch {}
+    }
+    logCapped('outboxReceiptBlockedTrace', {
+      conversationId: input?.conversationId || null,
+      messageId: input?.messageId || null,
+      jobId: input?.jobId || null,
+      reasonCode: 'RECEIPT_BLOCKED'
+    }, 5);
+    return { ok: false, skipped: true, error: 'receipt outbox disabled' };
+  }
   const job = normalizeJob(input);
   await putOutboxRecord(job);
   logOutboxJobTrace({
@@ -385,6 +406,18 @@ async function markSent(job, response) {
 
 async function processSingle(job) {
   if (!job) return false;
+  if (isReceiptJob(job)) {
+    logOutboxJobTrace({
+      job,
+      stage: 'RECEIPT_BLOCKED',
+      ok: false,
+      error: 'receipt outbox disabled',
+      reasonCode: 'RECEIPT_BLOCKED'
+    });
+    log({ outboxReceiptBlocked: { conversationId: job?.conversationId || null, messageId: job?.messageId || null, jobId: job?.jobId || null } });
+    try { await deleteOutboxRecord(job.jobId); } catch {}
+    return false;
+  }
   if (convLocks.has(job.conversationId)) {
     logOutboxJobTrace({
       job,

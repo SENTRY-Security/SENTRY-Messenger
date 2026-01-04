@@ -35,7 +35,6 @@ import {
   startOutboxProcessor,
   isConversationLocked
 } from './queue/outbox.js';
-import { enqueueReceiptJob } from './queue/receipts.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
@@ -2101,45 +2100,27 @@ export async function sendDrText(params = {}) {
 }
 
 export async function sendDrDeliveryReceipt(params = {}) {
-  const { messageId: targetMessageId, ...rest } = params;
-  if (!targetMessageId) throw new Error('messageId required for delivery receipt');
-  const now = Math.floor(Date.now() / 1000);
-  const receiverDeviceId = ensureDeviceId();
-  const convId = params?.conversationId || params?.convId || null;
-  const payload = {
-    type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
-    messageId: targetMessageId,
-    ackedMessageId: targetMessageId,
-    conversationId: convId,
-    receiverDeviceId,
-    ts: now
-  };
-  return sendDrPlaintext({
-    ...rest,
-    convId,
-    messageId: buildReceiptMessageId(targetMessageId),
-    text: JSON.stringify(payload),
-    metaOverrides: {
-      msg_type: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
-      control: 'receipt',
-      target_message_id: targetMessageId
-    }
-  });
+  const targetMessageId = params?.messageId || null;
+  logCapped('receiptDrBlockedTrace', {
+    receiptType: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
+    targetMessageId: targetMessageId || null,
+    conversationId: params?.conversationId || params?.convId || null
+  }, 5);
+  const err = new Error('receipt must not use Double Ratchet');
+  err.code = 'RECEIPT_DR_DISABLED';
+  throw err;
 }
 
 export async function sendDrReadReceipt(params = {}) {
-  const { messageId: targetMessageId, ...rest } = params;
-  if (!targetMessageId) throw new Error('messageId required for read receipt');
-  return sendDrPlaintext({
-    ...rest,
-    messageId: buildReceiptMessageId(targetMessageId),
-    text: JSON.stringify({ type: CONTROL_MESSAGE_TYPES.READ_RECEIPT, messageId: targetMessageId }),
-    metaOverrides: {
-      msg_type: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
-      control: 'receipt',
-      target_message_id: targetMessageId
-    }
-  });
+  const targetMessageId = params?.messageId || null;
+  logCapped('receiptDrBlockedTrace', {
+    receiptType: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
+    targetMessageId: targetMessageId || null,
+    conversationId: params?.conversationId || params?.convId || null
+  }, 5);
+  const err = new Error('receipt must not use Double Ratchet');
+  err.code = 'RECEIPT_DR_DISABLED';
+  throw err;
 }
 
 const MEDIA_PREVIEW_MAX_DIMENSION = 480;
