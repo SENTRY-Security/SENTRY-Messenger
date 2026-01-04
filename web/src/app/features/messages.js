@@ -1965,16 +1965,33 @@ export async function listSecureAndDecrypt(params = {}) {
           });
         }
         out.push(messageObj);
-        if (!computedIsHistoryReplay && messageObj.direction === 'incoming' && messageObj.id) {
-          maybeSendDeliveryReceipt({
-            conversationId: convId,
-            peerAccountDigest: peerKey,
-            messageId: messageObj.id,
-            tokenB64,
-            peerDeviceId: peerDeviceForMessage,
-            vaultPutStatus: vaultPutStatus || 'ok'
-          });
-          if (sendReadReceipt) {
+        if (messageObj.direction === 'incoming' && messageObj.id) {
+          const shouldSendDeliveryReceipt = !computedIsHistoryReplay && vaultPutStatus === 'ok';
+          const receiptGateReason = computedIsHistoryReplay
+            ? 'REPLAY'
+            : (vaultPutStatus === 'ok'
+              ? 'VAULT_OK'
+              : (vaultPutStatus === 'pending' ? 'VAULT_PENDING' : 'VAULT_UNKNOWN'));
+          logCapped('receiverDeliveryReceiptGateTrace', {
+            conversationId: convId || null,
+            messageId: messageObj.id || null,
+            peerDeviceId: peerDeviceForMessage || null,
+            vaultPutStatus: vaultPutStatus || null,
+            computedIsHistoryReplay: !!computedIsHistoryReplay,
+            decision: shouldSendDeliveryReceipt ? 'send' : 'skip',
+            reasonCode: receiptGateReason
+          }, 5);
+          if (shouldSendDeliveryReceipt) {
+            maybeSendDeliveryReceipt({
+              conversationId: convId,
+              peerAccountDigest: peerKey,
+              messageId: messageObj.id,
+              tokenB64,
+              peerDeviceId: peerDeviceForMessage,
+              vaultPutStatus
+            });
+          }
+          if (!computedIsHistoryReplay && sendReadReceipt) {
             maybeSendReadReceipt(convId, peerKey, peerDeviceForMessage, messageObj.id);
           }
         }
@@ -3013,10 +3030,9 @@ export function recordMessageDelivered(conversationId, messageId, ts = null) {
 function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId, tokenB64, peerDeviceId, vaultPutStatus = null }) {
   if (!conversationId || !peerAccountDigest || !messageId) return;
   if (!peerDeviceId) return;
+  if (typeof deps.sendDeliveryReceipt !== 'function') return;
   const dedupeKey = `${conversationId}:${messageId}`;
   if (sentDeliveryReceipts.has(dedupeKey)) return;
-  sentDeliveryReceipts.add(dedupeKey);
-  if (typeof deps.sendDeliveryReceipt !== 'function') return;
   if (vaultPutStatus) {
     logCapped('receiverDeliveryReceiptTrace', {
       messageId,
@@ -3024,14 +3040,20 @@ function maybeSendDeliveryReceipt({ conversationId, peerAccountDigest, messageId
       receiptType: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT
     });
   }
-  const ackPromise = deps.sendDeliveryReceipt({
-    peerAccountDigest,
-    peerDeviceId,
-    messageId,
-    conversationId,
-    convId: conversationId,
-    tokenB64
-  });
+  let ackPromise;
+  try {
+    ackPromise = deps.sendDeliveryReceipt({
+      peerAccountDigest,
+      peerDeviceId,
+      messageId,
+      conversationId,
+      convId: conversationId,
+      tokenB64
+    });
+  } catch (err) {
+    return;
+  }
+  sentDeliveryReceipts.add(dedupeKey);
   if (ackPromise && typeof ackPromise.then === 'function') {
     ackPromise.then(() => {
       logCapped('deliveryAckTrace', {
