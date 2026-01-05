@@ -439,6 +439,8 @@
       .messages-pane.is-desktop .messages-thread { flex:1 1 auto; min-height:0; }
       .messages-pane.is-desktop .messages-scroll { flex:1 1 auto; }
       .messages-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:12px; }
+      .messages-placeholders { margin-bottom:12px; }
+      .messages-placeholders:empty { margin-bottom:0; }
       .message-row { display:flex; align-items:flex-end; gap:8px; }
       .message-avatar { width:38px; height:38px; border-radius:50%; overflow:hidden; background:#e2e8f0; display:flex; align-items:center; justify-content:center; font-size:14px; color:#64748b; flex-shrink:0; }
       .message-avatar img { width:100%; height:100%; object-fit:cover; display:block; }
@@ -451,6 +453,7 @@
       .message-bubble.message-placeholder { position:relative; overflow:hidden; background:#e2e8f0; color:#94a3b8; border:1px solid rgba(148,163,184,0.35); box-shadow:0 6px 18px rgba(15,23,42,0.06); }
       .message-bubble.message-placeholder.placeholder-outgoing { margin-left:auto; }
       .message-bubble.message-placeholder.placeholder-incoming { margin-right:auto; }
+      .message-bubble.message-placeholder.placeholder-unknown { opacity:0.9; }
       .message-bubble.message-placeholder.placeholder-failed { background:#fee2e2; color:#b91c1c; border-color:rgba(239,68,68,0.35); }
       .message-bubble.message-placeholder.placeholder-shimmer::before { content:''; position:absolute; inset:0; background:linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.75) 50%, rgba(255,255,255,0) 100%); transform:translateX(-100%); animation: msg-shimmer 1.2s linear infinite; }
       .message-bubble.message-reveal { position:relative; overflow:hidden; animation: msg-reveal 160ms ease-out; }
@@ -825,6 +828,7 @@
                   <span class="spinner" aria-hidden="true"></span>
                 </div>
                 <div id="messagesEmpty" class="messages-empty">尚未選擇任何對話</div>
+                <ul id="messagePlaceholders" class="messages-list messages-placeholders"></ul>
                 <ul id="messagesList" class="messages-list"></ul>
               </div>
               <form id="messageComposer" class="messages-composer">

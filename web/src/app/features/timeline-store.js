@@ -23,6 +23,20 @@ function normalizeMsgType(value) {
   return lower || null;
 }
 
+function resolveEntryTsMs(entry) {
+  const tsMsRaw = Number(entry?.tsMs);
+  if (Number.isFinite(tsMsRaw)) return tsMsRaw;
+  const tsRaw = Number(entry?.ts);
+  if (!Number.isFinite(tsRaw)) return 0;
+  if (tsRaw > 10_000_000_000) return tsRaw;
+  return tsRaw * 1000;
+}
+
+function resolveEntrySeq(entry) {
+  const seqRaw = Number(entry?.tsSeq);
+  return Number.isFinite(seqRaw) ? seqRaw : null;
+}
+
 function emitAppend(event) {
   for (const listener of Array.from(appendListeners)) {
     try {
@@ -176,9 +190,12 @@ export function getTimeline(conversationId) {
   const list = Array.from(convMap.values()).filter(Boolean);
   list.sort((a, b) => {
     // Defensive defaults only; schema drops should prevent missing ts/id from entering the store.
-    const tsA = Number(a?.ts) || 0;
-    const tsB = Number(b?.ts) || 0;
+    const tsA = resolveEntryTsMs(a);
+    const tsB = resolveEntryTsMs(b);
     if (tsA !== tsB) return tsA - tsB;
+    const seqA = resolveEntrySeq(a);
+    const seqB = resolveEntrySeq(b);
+    if (seqA !== null && seqB !== null && seqA !== seqB) return seqA - seqB;
     const idA = normalizeMessageId(a?.messageId || a?.id) || '';
     const idB = normalizeMessageId(b?.messageId || b?.id) || '';
     return idA.localeCompare(idB);

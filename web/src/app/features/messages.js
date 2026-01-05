@@ -524,6 +524,33 @@ function toMessageId(raw) {
   return null;
 }
 
+function hashMessageId(value) {
+  if (!value) return 0;
+  const str = String(value);
+  let hash = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function deriveMessageOffsetMs(messageId) {
+  if (!messageId) return 0;
+  return hashMessageId(messageId) % 1000;
+}
+
+function resolveMessageTsMs(ts, messageId) {
+  if (!Number.isFinite(ts)) return null;
+  const n = Number(ts);
+  if (n > 10_000_000_000) return Math.floor(n);
+  return Math.floor(n) * 1000 + deriveMessageOffsetMs(messageId);
+}
+
+function resolveMessageTsSeq(messageId) {
+  if (!messageId) return null;
+  return hashMessageId(messageId);
+}
+
 function valueType(value) {
   return value === null || value === undefined ? 'null' : typeof value;
 }
@@ -595,17 +622,24 @@ function buildStateKey({ conversationId, peerKey, peerDeviceId }) {
 
 function sortMessagesByTimeline(items) {
   if (!Array.isArray(items) || items.length <= 1) return items || [];
-  const enriched = items.map((item) => ({
-    raw: item,
-    ts: toMessageTimestamp(item),
-    id: toMessageId(item)
-  }));
+  const enriched = items.map((item) => {
+    const id = toMessageId(item);
+    return {
+      raw: item,
+      id,
+      tsMs: resolveMessageTsMs(toMessageTimestamp(item), id),
+      seq: resolveMessageTsSeq(id)
+    };
+  });
   enriched.sort((a, b) => {
-    const aHasTs = Number.isFinite(a.ts);
-    const bHasTs = Number.isFinite(b.ts);
-    if (aHasTs && bHasTs && a.ts !== b.ts) return a.ts - b.ts;
+    const aHasTs = Number.isFinite(a.tsMs);
+    const bHasTs = Number.isFinite(b.tsMs);
+    if (aHasTs && bHasTs && a.tsMs !== b.tsMs) return a.tsMs - b.tsMs;
     if (aHasTs && !bHasTs) return 1;
     if (!aHasTs && bHasTs) return -1;
+    const aHasSeq = Number.isFinite(a.seq);
+    const bHasSeq = Number.isFinite(b.seq);
+    if (aHasSeq && bHasSeq && a.seq !== b.seq) return a.seq - b.seq;
     if (a.id && b.id && a.id !== b.id) return a.id.localeCompare(b.id);
     if (a.id && !b.id) return 1;
     if (!a.id && b.id) return -1;
@@ -997,6 +1031,8 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
     throw new Error('messageId missing for message object');
   }
   const timestamp = Number.isFinite(ts) ? ts : null;
+  const tsMs = resolveMessageTsMs(timestamp, baseId);
+  const tsSeq = resolveMessageTsSeq(baseId);
   const msgType = typeof meta?.msg_type === 'string' ? meta.msg_type : null;
   const targetMessageId = meta?.targetMessageId || (() => {
     if (typeof plaintext === 'string') {
@@ -1012,6 +1048,8 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
   const base = {
     id: baseId,
     ts: timestamp,
+    tsMs,
+    tsSeq,
     header,
     meta,
     direction,
@@ -1411,18 +1449,17 @@ export async function listSecureAndDecrypt(params = {}) {
   const receiptUpdates = new Set();
   const deadLetters = [];
   const timelineBatch = [];
-  let timelineBatchCommitted = false;
-  let timelineBatchResult = { appendedCount: 0, skippedCount: 0, appendedEntries: [] };
+  const timelineBatchResult = { appendedCount: 0, skippedCount: 0, appendedEntries: [] };
   const nowMs = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
     ? performance.now()
     : Date.now();
-  const commitTimelineBatch = () => {
-    if (timelineBatchCommitted) return timelineBatchResult;
-    timelineBatchCommitted = true;
+  const TIMELINE_FLUSH_CHUNK = 1;
+  const flushTimelineBatch = () => {
     const batchSize = timelineBatch.length;
     if (!batchSize) return timelineBatchResult;
+    const batch = timelineBatch.splice(0, timelineBatch.length);
     const appendStart = nowMs();
-    const appendResult = timelineAppendBatch(timelineBatch, { directionalOrder: 'chronological' });
+    const appendResult = timelineAppendBatch(batch, { directionalOrder: 'chronological' });
     const appendEnd = nowMs();
     const appendedEntries = Array.isArray(appendResult?.appendedEntries) ? appendResult.appendedEntries : [];
     const appendedCount = Number.isFinite(appendResult?.appendedCount)
@@ -1467,7 +1504,9 @@ export async function listSecureAndDecrypt(params = {}) {
       tookMs
     }, 5);
 
-    timelineBatchResult = { appendedCount, skippedCount, appendedEntries };
+    timelineBatchResult.appendedCount += appendedCount;
+    timelineBatchResult.skippedCount += skippedCount;
+    timelineBatchResult.appendedEntries.push(...appendedEntries);
     return timelineBatchResult;
   };
   let state = null;
@@ -2139,12 +2178,22 @@ export async function listSecureAndDecrypt(params = {}) {
             msgType: resolvedMsgType || messageObj.type || payloadMsgType || msgTypeForDecrypt || null
           });
         }
+        const entryMessageId = cacheMessageId || messageId || null;
+        const entryTs = messageObj.ts || messageTs || null;
+        const entryTsMs = Number.isFinite(messageObj.tsMs)
+          ? messageObj.tsMs
+          : resolveMessageTsMs(entryTs, entryMessageId);
+        const entryTsSeq = Number.isFinite(messageObj.tsSeq)
+          ? messageObj.tsSeq
+          : resolveMessageTsSeq(entryMessageId);
         const timelineEntry = {
           conversationId: convId,
-          messageId: cacheMessageId || messageId || null,
+          messageId: entryMessageId,
           direction: messageObj.direction || direction || 'incoming',
           msgType: resolvedMsgType || messageObj.type || payloadMsgType || msgTypeForDecrypt || null,
-          ts: messageObj.ts || messageTs || null,
+          ts: entryTs,
+          tsMs: entryTsMs,
+          tsSeq: entryTsSeq,
           text: messageObj.text || null,
           media: messageObj.media || null,
           callLog: messageObj.callLog || null,
@@ -2154,8 +2203,6 @@ export async function listSecureAndDecrypt(params = {}) {
           isHistoryReplay: computedIsHistoryReplay,
           silent: !!silent
         };
-        const entryMessageId = timelineEntry.messageId;
-        const entryTs = timelineEntry.ts;
         const idRawType = entryMessageId === null ? 'null' : typeof entryMessageId;
         const tsRawType = entryTs === null ? 'null' : typeof entryTs;
         const hasId = entryMessageId !== null && entryMessageId !== undefined
@@ -2210,6 +2257,9 @@ export async function listSecureAndDecrypt(params = {}) {
           }, 5);
         } else {
           timelineBatch.push(timelineEntry);
+          if (timelineBatch.length >= TIMELINE_FLUSH_CHUNK) {
+            flushTimelineBatch();
+          }
         }
         out.push(messageObj);
         if (messageObj.direction === 'incoming' && messageObj.id) {
@@ -3168,7 +3218,7 @@ export async function listSecureAndDecrypt(params = {}) {
       }
     }
   });
-  commitTimelineBatch();
+  flushTimelineBatch();
 
   if (computedIsHistoryReplay && replayCounters.messageKeyVaultMissing > 0) {
     try {

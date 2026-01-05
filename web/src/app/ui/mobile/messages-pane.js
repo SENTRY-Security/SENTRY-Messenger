@@ -126,6 +126,7 @@ const SECURE_MODAL_GATE_TRACE_LIMIT = 3;
 let secureModalGateTraceCount = 0;
 const VAULT_GATE_DECISION_TRACE_LIMIT = 3;
 let vaultGateDecisionTraceCount = 0;
+const outgoingTsSeqByConvId = new Map();
 
 function logConversationResetTrace(payload = {}) {
   if (conversationResetTraceCount >= CONVERSATION_RESET_TRACE_LIMIT) return;
@@ -448,28 +449,30 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
       continue;
     }
     const derived = deriveMessageDirectionFromEnvelopeMeta(item, selfDeviceId, selfDigest);
-    const direction = derived?.direction === 'outgoing' ? 'outgoing' : 'incoming';
-    const directionKnown = derived?.known === true;
-    if (!directionKnown) {
+    let direction = 'unknown';
+    let directionKnown = false;
+    if (derived?.known === true) {
+      direction = derived?.direction === 'outgoing' ? 'outgoing' : 'incoming';
+      directionKnown = true;
+      directionKnownCount += 1;
+      if (direction === 'outgoing') outgoingCount += 1;
+      else incomingCount += 1;
+      const senderDeviceId = derived?.senderDeviceId || resolvePlaceholderSenderDeviceId(item);
+      logCapped('placeholderDirectionTrace', {
+        conversationId: conversationId || null,
+        messageId,
+        direction,
+        senderDeviceIdSuffix4: sliceDeviceIdSuffix4(senderDeviceId)
+      }, 5);
+    } else {
       excludedUnknownDirectionCount += 1;
       logCapped('placeholderDirectionFallbackTrace', {
         conversationIdPrefix8: convPrefix,
         messageIdPrefix8: messageId.slice(0, PLACEHOLDER_TRACE_PREFIX_LEN),
         reasonCode: derived?.reasonCode || 'unknown'
       }, 5);
-      continue;
     }
-    directionKnownCount += 1;
-    if (direction === 'outgoing') outgoingCount += 1;
-    else incomingCount += 1;
-    entries.push({ messageId, direction, directionKnown: true, status: 'pending' });
-    const senderDeviceId = derived?.senderDeviceId || resolvePlaceholderSenderDeviceId(item);
-    logCapped('placeholderDirectionTrace', {
-      conversationId: conversationId || null,
-      messageId,
-      direction,
-      senderDeviceIdSuffix4: sliceDeviceIdSuffix4(senderDeviceId)
-    }, 5);
+    entries.push({ messageId, direction, directionKnown, status: 'pending' });
   }
   logCapped('placeholderTrace', {
     stage: 'build',
@@ -522,7 +525,7 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
   const safeEntries = Array.isArray(entries)
     ? entries.map((entry) => {
       const messageId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
-      const direction = entry?.direction === 'incoming' || entry?.direction === 'outgoing'
+      const direction = entry?.direction === 'incoming' || entry?.direction === 'outgoing' || entry?.direction === 'unknown'
         ? entry.direction
         : null;
       const status = entry?.status === 'failed' ? 'failed' : 'pending';
@@ -796,6 +799,7 @@ export function initMessagesPane({
     conversationRefreshLabelEl: dom.conversationRefreshLabelEl ?? document.querySelector('#conversationRefresh .label'),
     createGroupBtn: dom.createGroupBtn ?? document.getElementById('btnCreateGroup'),
     groupDraftsEl: dom.groupDraftsEl ?? document.getElementById('groupDrafts'),
+    messagesPlaceholders: dom.messagesPlaceholdersEl ?? document.getElementById('messagePlaceholders'),
     messagesList: dom.messagesListEl ?? document.getElementById('messagesList'),
     messagesEmpty: dom.messagesEmptyEl ?? document.getElementById('messagesEmpty'),
     peerName: dom.messagesPeerNameEl ?? document.getElementById('messagesPeerName'),
@@ -2619,6 +2623,7 @@ export function initMessagesPane({
 
   function clearMessagesView() {
     if (elements.messagesList) elements.messagesList.innerHTML = '';
+    if (elements.messagesPlaceholders) elements.messagesPlaceholders.innerHTML = '';
     elements.messagesEmpty?.classList.remove('hidden');
     updateLoadMoreVisibility();
   }
@@ -3109,6 +3114,21 @@ export function initMessagesPane({
     return null;
   }
 
+  function hashMessageId(value) {
+    if (!value) return 0;
+    const str = String(value);
+    let hash = 0;
+    for (let i = 0; i < str.length; i += 1) {
+      hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+    }
+    return hash;
+  }
+
+  function deriveMessageOffsetMs(messageId) {
+    if (!messageId) return 0;
+    return hashMessageId(messageId) % 1000;
+  }
+
   function extractMessageTimestamp(raw) {
     if (!raw) return null;
     const candidates = [raw.created_at, raw.createdAt, raw.ts, raw.timestamp, raw.meta?.ts];
@@ -3119,19 +3139,36 @@ export function initMessagesPane({
     return null;
   }
 
+  function extractMessageTimestampMs(raw) {
+    const ts = extractMessageTimestamp(raw);
+    if (!Number.isFinite(ts)) return null;
+    if (ts > 10_000_000_000) return Math.floor(ts);
+    const messageId = normalizeRawMessageId(raw);
+    return Math.floor(ts) * 1000 + deriveMessageOffsetMs(messageId);
+  }
+
+  function extractMessageTimestampSeq(raw) {
+    const messageId = normalizeRawMessageId(raw);
+    return messageId ? hashMessageId(messageId) : null;
+  }
+
   function sortMessagesByTimelineLocal(items = []) {
     if (!Array.isArray(items) || items.length <= 1) return Array.isArray(items) ? items : [];
     const enriched = items.map((item) => ({
       raw: item,
-      ts: extractMessageTimestamp(item),
+      tsMs: extractMessageTimestampMs(item),
+      seq: extractMessageTimestampSeq(item),
       id: normalizeRawMessageId(item)
     }));
     enriched.sort((a, b) => {
-      const aHasTs = Number.isFinite(a.ts);
-      const bHasTs = Number.isFinite(b.ts);
-      if (aHasTs && bHasTs && a.ts !== b.ts) return a.ts - b.ts;
+      const aHasTs = Number.isFinite(a.tsMs);
+      const bHasTs = Number.isFinite(b.tsMs);
+      if (aHasTs && bHasTs && a.tsMs !== b.tsMs) return a.tsMs - b.tsMs;
       if (aHasTs && !bHasTs) return 1;
       if (!aHasTs && bHasTs) return -1;
+      const aHasSeq = Number.isFinite(a.seq);
+      const bHasSeq = Number.isFinite(b.seq);
+      if (aHasSeq && bHasSeq && a.seq !== b.seq) return a.seq - b.seq;
       if (a.id && b.id && a.id !== b.id) return a.id.localeCompare(b.id);
       if (a.id && !b.id) return 1;
       if (!a.id && b.id) return -1;
@@ -3235,7 +3272,7 @@ export function initMessagesPane({
   }
 
   function appendPlaceholderRows({ entries = [], startIndex = 0 } = {}) {
-    if (!elements.messagesList) return;
+    if (!elements.messagesPlaceholders) return;
     const list = Array.isArray(entries) ? entries : [];
     const total = list.length;
     if (!total) return;
@@ -3244,7 +3281,6 @@ export function initMessagesPane({
     for (let i = 0; i < total; i += 1) {
       const entry = list[i];
       const direction = entry?.direction;
-      if (direction !== 'incoming' && direction !== 'outgoing') continue;
       const status = entry?.status === 'failed' ? 'failed' : 'pending';
       const isFailed = status === 'failed';
       const li = document.createElement('li');
@@ -3252,10 +3288,15 @@ export function initMessagesPane({
       const row = document.createElement('div');
       row.className = 'message-row message-placeholder-row';
       const isOutgoing = direction === 'outgoing';
-      if (isOutgoing) row.style.justifyContent = 'flex-end';
+      const isIncoming = direction === 'incoming';
+      const isUnknown = !isOutgoing && !isIncoming;
+      if (isUnknown) row.style.justifyContent = 'center';
+      else if (isOutgoing) row.style.justifyContent = 'flex-end';
       const bubble = document.createElement('div');
       bubble.className = 'message-bubble message-placeholder';
-      bubble.classList.add(isOutgoing ? 'placeholder-outgoing' : 'placeholder-incoming');
+      if (isOutgoing) bubble.classList.add('placeholder-outgoing');
+      else if (isIncoming) bubble.classList.add('placeholder-incoming');
+      else bubble.classList.add('placeholder-unknown');
       if (isFailed) {
         bubble.classList.add('placeholder-failed');
       } else if (shimmerMax > 0 && i >= shimmerStart) {
@@ -3264,7 +3305,7 @@ export function initMessagesPane({
       bubble.textContent = isFailed ? PLACEHOLDER_FAILED_TEXT : (PLACEHOLDER_TEXT || '');
       row.appendChild(bubble);
       li.appendChild(row);
-      elements.messagesList.appendChild(li);
+      elements.messagesPlaceholders.appendChild(li);
     }
   }
 
@@ -3277,6 +3318,9 @@ export function initMessagesPane({
     const placeholderEntries = getPlaceholderEntries(state.conversationId);
     const placeholderCount = placeholderEntries.length;
     const hasPlaceholders = placeholderCount > 0;
+    const convChanged = renderState.conversationId !== state.conversationId;
+    const placeholderCountChanged = convChanged || renderState.placeholderCount !== placeholderCount;
+    const shouldRenderPlaceholders = forceFullRender || placeholderCountChanged;
     const anchorNeeded = preserveScroll || (!scrollToEnd && !isNearMessagesBottom());
     const anchor = anchorNeeded ? captureScrollAnchor() : null;
 
@@ -3304,6 +3348,7 @@ export function initMessagesPane({
 
     if (!timelineMessages.length && !hasPlaceholders) {
       elements.messagesList.innerHTML = '';
+      if (elements.messagesPlaceholders) elements.messagesPlaceholders.innerHTML = '';
       elements.messagesEmpty?.classList.remove('hidden');
       renderState.renderedIds = [];
       renderState.conversationId = state.conversationId || null;
@@ -3319,7 +3364,10 @@ export function initMessagesPane({
       elements.messagesEmpty?.classList.add('hidden');
       renderState.renderedIds = [];
       renderState.conversationId = state.conversationId || null;
-      appendPlaceholderRows({ entries: placeholderEntries, startIndex: 0 });
+      if (shouldRenderPlaceholders && elements.messagesPlaceholders) {
+        elements.messagesPlaceholders.innerHTML = '';
+        appendPlaceholderRows({ entries: placeholderEntries, startIndex: 0 });
+      }
       renderState.placeholderCount = placeholderCount;
       updateLoadMoreVisibility();
       updateMessagesScrollOverflow();
@@ -3332,13 +3380,16 @@ export function initMessagesPane({
     }
 
     elements.messagesEmpty?.classList.add('hidden');
-    const convChanged = renderState.conversationId !== state.conversationId;
-    const placeholderCountChanged = !convChanged && renderState.placeholderCount !== placeholderCount;
+    if (shouldRenderPlaceholders && elements.messagesPlaceholders) {
+      elements.messagesPlaceholders.innerHTML = '';
+      if (hasPlaceholders) {
+        appendPlaceholderRows({ entries: placeholderEntries, startIndex: 0 });
+      }
+    }
     const prefixMatches = !convChanged && renderState.renderedIds.length > 0
       ? renderState.renderedIds.every((id, idx) => id === timelineIds[idx])
       : false;
-    const forcePlaceholderRender = hasPlaceholders || placeholderCountChanged;
-    const canAppend = !forceFullRender && !forcePlaceholderRender
+    const canAppend = !forceFullRender && !convChanged
       && prefixMatches && renderState.renderedIds.length <= timelineMessages.length;
     const startIndex = canAppend ? renderState.renderedIds.length : 0;
     if (!canAppend) {
@@ -3538,10 +3589,6 @@ export function initMessagesPane({
       try {
         logUiAppend(msg, { index: currentIndex });
       } catch {}
-    }
-
-    if (placeholderCount > 0) {
-      appendPlaceholderRows({ entries: placeholderEntries, startIndex: renderIndex });
     }
 
     renderState.conversationId = state.conversationId || null;
@@ -4449,6 +4496,17 @@ export function initMessagesPane({
     updateThreadAvatar(key, avatarData || null);
   }
 
+  function nextOutgoingTsSeq(conversationId, tsMs) {
+    const key = conversationId || 'unknown';
+    const entry = outgoingTsSeqByConvId.get(key);
+    if (entry && entry.tsMs === tsMs) {
+      entry.seq += 1;
+      return entry.seq;
+    }
+    outgoingTsSeqByConvId.set(key, { tsMs, seq: 0 });
+    return 0;
+  }
+
   function handleContactEntryUpdated(detail = {}) {
     const peerDigest = normalizePeerKey(detail?.peerAccountDigest);
     if (!peerDigest) return;
@@ -4474,12 +4532,16 @@ export function initMessagesPane({
     }
   }
 
-  function appendLocalOutgoingMessage({ text, ts, id, type = 'text', media = null }) {
+  function appendLocalOutgoingMessage({ text, ts, tsMs = null, id, type = 'text', media = null }) {
     const state = getMessageState();
     const messageId = typeof id === 'string' && id.trim().length ? id.trim() : null;
     if (!messageId) {
       throw new Error('messageId required for local outgoing message');
     }
+    const convId = state.conversationId || null;
+    const resolvedTsMs = Number.isFinite(tsMs) ? Math.floor(tsMs) : Date.now();
+    const resolvedTs = Number.isFinite(ts) ? ts : Math.floor(resolvedTsMs / 1000);
+    const tsSeq = nextOutgoingTsSeq(convId, resolvedTsMs);
     let senderDeviceId = null;
     try { senderDeviceId = ensureDeviceId(); } catch {}
     const message = {
@@ -4487,7 +4549,9 @@ export function initMessagesPane({
       id: messageId,
       messageId,
       serverMessageId: null,
-      ts: ts || Math.floor(Date.now() / 1000),
+      ts: resolvedTs,
+      tsMs: resolvedTsMs,
+      tsSeq,
       text,
       direction: 'outgoing',
       type,
@@ -4514,7 +4578,6 @@ export function initMessagesPane({
   } else {
     message.type = 'text';
   }
-    const convId = state.conversationId || null;
     message.conversationId = convId;
     message.msgType = message.type;
     const appended = convId ? timelineAppendUserMessage(convId, message) : false;
@@ -7066,6 +7129,7 @@ export function initMessagesPane({
   function ensureSetup() {
     if (!elements.pane) elements.pane = document.querySelector('.messages-pane');
     if (elements.pane) elements.pane.style.overscrollBehavior = 'contain';
+    if (!elements.messagesPlaceholders) elements.messagesPlaceholders = document.getElementById('messagePlaceholders');
     if (!elements.messagesList) elements.messagesList = document.getElementById('messagesList');
     if (!elements.messagesEmpty) elements.messagesEmpty = document.getElementById('messagesEmpty');
     if (!elements.scrollEl) elements.scrollEl = document.getElementById('messagesScroll');
