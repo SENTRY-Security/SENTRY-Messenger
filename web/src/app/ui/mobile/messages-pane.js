@@ -73,7 +73,8 @@ const PLACEHOLDER_ALLOWED_TYPES = new Set(['text', 'media']);
 const PLACEHOLDER_FAIL_REASONS = new Set([
   'DR_STATE_UNAVAILABLE',
   'DR_STATE_CONVERSATION_MISMATCH',
-  'TARGET_DEVICE_MISSING'
+  'TARGET_DEVICE_MISSING',
+  'MK_MISSING'
 ]);
 const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
@@ -83,6 +84,7 @@ const notifyRetryQueue = new Map();
 let outboxHooksRegistered = false;
 let pendingNewMessageHint = false;
 let bRouteResultListenerInstalled = false;
+let notifyRetryListenerInstalled = false;
 const uiNoiseEnabled = DEBUG.uiNoise === true;
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 const logReplayCallsite = (name, payload = {}) => {
@@ -182,6 +184,9 @@ function resolveDecryptUnableReason(err) {
     return 'DR_STATE_CONVERSATION_MISMATCH';
   }
   if (code === 'TARGET_DEVICE_MISSING' || message.includes('targetDeviceId missing')) return 'TARGET_DEVICE_MISSING';
+  if (code === 'MK_MISSING_HARDBLOCK' || code === 'REPLAY_VAULT_MISSING' || message.includes('缺少訊息密鑰')) {
+    return 'MK_MISSING';
+  }
   return null;
 }
 
@@ -429,6 +434,7 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
   let excludedControlCount = 0;
   let excludedNonUserCount = 0;
   let excludedUnknownDirectionCount = 0;
+  let excludedMissingTsCount = 0;
   let incomingCount = 0;
   let outgoingCount = 0;
   const convPrefix = sliceConversationIdPrefix(conversationId);
@@ -472,7 +478,28 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
         reasonCode: derived?.reasonCode || 'unknown'
       }, 5);
     }
-    entries.push({ messageId, direction, directionKnown, status: 'pending' });
+    if (!directionKnown) continue;
+    const ts = extractMessageTimestamp(item);
+    if (!Number.isFinite(ts)) {
+      excludedMissingTsCount += 1;
+      logCapped('placeholderTrace', {
+        stage: 'missing_ts',
+        conversationIdPrefix8: convPrefix,
+        messageIdPrefix8: messageId.slice(0, PLACEHOLDER_TRACE_PREFIX_LEN)
+      }, 5);
+      continue;
+    }
+    const tsMs = extractMessageTimestampMs(item);
+    const tsSeq = extractMessageTimestampSeq(item);
+    entries.push({
+      messageId,
+      direction,
+      directionKnown,
+      status: 'pending',
+      ts: Math.floor(ts),
+      tsMs: Number.isFinite(tsMs) ? tsMs : null,
+      tsSeq: Number.isFinite(tsSeq) ? tsSeq : null
+    });
   }
   logCapped('placeholderTrace', {
     stage: 'build',
@@ -481,6 +508,7 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
     excludedControlCount,
     excludedNonUserCount,
     excludedUnknownDirectionCount,
+    excludedMissingTsCount,
     incomingCount,
     outgoingCount
   }, 5);
@@ -525,13 +553,17 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
   const safeEntries = Array.isArray(entries)
     ? entries.map((entry) => {
       const messageId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
-      const direction = entry?.direction === 'incoming' || entry?.direction === 'outgoing' || entry?.direction === 'unknown'
+      const direction = entry?.direction === 'incoming' || entry?.direction === 'outgoing'
         ? entry.direction
         : null;
+      const tsRaw = Number(entry?.ts);
+      const tsValid = Number.isFinite(tsRaw) && Number.isInteger(tsRaw) && tsRaw > 0;
       const status = entry?.status === 'failed' ? 'failed' : 'pending';
       const directionKnown = entry?.directionKnown === true;
-      if (!messageId || !direction) return null;
-      return { messageId, direction, status, directionKnown };
+      if (!messageId || !direction || !tsValid) return null;
+      const tsMs = Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null;
+      const tsSeq = Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null;
+      return { messageId, direction, status, directionKnown, ts: Math.floor(tsRaw), tsMs, tsSeq };
     }).filter(Boolean)
     : [];
   const safeCount = safeEntries.length;
@@ -862,6 +894,20 @@ export function initMessagesPane({
           updateMessagesUI({ preserveScroll: true, forceFullRender: true });
         }
       }
+    });
+  }
+  if (!notifyRetryListenerInstalled && typeof document !== 'undefined') {
+    notifyRetryListenerInstalled = true;
+    document.addEventListener('ws-notify-sent', (event) => {
+      const detail = event?.detail || {};
+      const retryKey = typeof detail?.retryKey === 'string' ? detail.retryKey.trim() : '';
+      if (!retryKey) return;
+      const attempt = normalizeNotifyRetryAttempt(detail?.attempt);
+      handleNotifyRetryQueueFlush({
+        retryKey,
+        attempt,
+        source: detail?.source || null
+      });
     });
   }
 
@@ -3333,18 +3379,81 @@ export function initMessagesPane({
     }
   }
 
+  function resolveRenderEntryTsMs(entry) {
+    const tsMsRaw = Number(entry?.tsMs);
+    if (Number.isFinite(tsMsRaw)) return tsMsRaw;
+    const tsRaw = Number(entry?.ts);
+    if (!Number.isFinite(tsRaw)) return 0;
+    if (tsRaw > 10_000_000_000) return tsRaw;
+    return tsRaw * 1000;
+  }
+
+  function resolveRenderEntrySeq(entry) {
+    const seqRaw = Number(entry?.tsSeq);
+    return Number.isFinite(seqRaw) ? seqRaw : null;
+  }
+
+  function buildRenderEntries({ timelineMessages = [], placeholderEntries = [] } = {}) {
+    const placeholders = Array.isArray(placeholderEntries) ? placeholderEntries : [];
+    if (!placeholders.length) {
+      return { entries: Array.isArray(timelineMessages) ? timelineMessages : [], shimmerIds: new Set() };
+    }
+    const timelineList = Array.isArray(timelineMessages) ? timelineMessages : [];
+    const existingIds = new Set(timelineList.map((msg) => normalizeTimelineMessageId(msg)).filter(Boolean));
+    const shimmerIds = new Set();
+    const shimmerMax = Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0);
+    if (shimmerMax > 0) {
+      const start = Math.max(0, placeholders.length - shimmerMax);
+      for (let i = start; i < placeholders.length; i += 1) {
+        const id = placeholders[i]?.messageId || null;
+        if (id) shimmerIds.add(id);
+      }
+    }
+    const merged = timelineList.slice();
+    for (const entry of placeholders) {
+      const messageId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
+      if (!messageId || existingIds.has(messageId)) continue;
+      const ts = Number(entry?.ts);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      merged.push({
+        messageId,
+        direction: entry?.direction === 'outgoing' ? 'outgoing' : 'incoming',
+        status: entry?.status === 'failed' ? 'failed' : 'pending',
+        ts: Math.floor(ts),
+        tsMs: Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null,
+        tsSeq: Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null,
+        placeholder: true,
+        type: 'placeholder',
+        msgType: 'placeholder'
+      });
+    }
+    merged.sort((a, b) => {
+      const tsA = resolveRenderEntryTsMs(a);
+      const tsB = resolveRenderEntryTsMs(b);
+      if (tsA !== tsB) return tsA - tsB;
+      const seqA = resolveRenderEntrySeq(a);
+      const seqB = resolveRenderEntrySeq(b);
+      if (seqA !== null && seqB !== null && seqA !== seqB) return seqA - seqB;
+      const idA = normalizeTimelineMessageId(a) || '';
+      const idB = normalizeTimelineMessageId(b) || '';
+      return idA.localeCompare(idB);
+    });
+    return { entries: merged, shimmerIds };
+  }
+
   function updateMessagesUI({ scrollToEnd = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
     if (!elements.messagesList) return;
     const state = getMessageState();
     const appendedIds = [];
     const timelineMessages = refreshTimelineState(state.conversationId);
-    const timelineIds = timelineMessages.map((m) => normalizeTimelineMessageId(m));
     const placeholderEntries = getPlaceholderEntries(state.conversationId);
     const placeholderCount = placeholderEntries.length;
-    const hasPlaceholders = placeholderCount > 0;
+    const { entries: renderEntries, shimmerIds } = buildRenderEntries({
+      timelineMessages,
+      placeholderEntries
+    });
+    const renderIds = renderEntries.map((m) => normalizeTimelineMessageId(m));
     const convChanged = renderState.conversationId !== state.conversationId;
-    const placeholderCountChanged = convChanged || renderState.placeholderCount !== placeholderCount;
-    const shouldRenderPlaceholders = forceFullRender || placeholderCountChanged;
     const anchorNeeded = preserveScroll || (!scrollToEnd && !isNearMessagesBottom());
     const anchor = anchorNeeded ? captureScrollAnchor() : null;
 
@@ -3353,7 +3462,7 @@ export function initMessagesPane({
         console.info('[msg] ' + JSON.stringify({
           event: 'ui:render',
           conversationId: state.conversationId || null,
-          itemCount: timelineMessages.length
+          itemCount: renderEntries.length
         }));
       } catch {
         /* ignore */
@@ -3362,59 +3471,34 @@ export function initMessagesPane({
         logMsgEvent('ui:list', {
           stage: 'ui',
           conversationId: state.conversationId || null,
-          itemCount: timelineMessages.length,
-          ids: timelineMessages.slice(0, 5).map((m) => (m && (m.id || m.messageId || m.serverMessageId || null))),
+          itemCount: renderEntries.length,
+          ids: renderEntries.slice(0, 5).map((m) => (m && (m.id || m.messageId || m.serverMessageId || null))),
           peerDigest: state.activePeerDigest || null,
           peerDeviceId: state.activePeerDeviceId || null
         });
       } catch {}
     }
 
-    if (!timelineMessages.length && !hasPlaceholders) {
+    if (!renderEntries.length) {
       elements.messagesList.innerHTML = '';
       if (elements.messagesPlaceholders) elements.messagesPlaceholders.innerHTML = '';
       elements.messagesEmpty?.classList.remove('hidden');
       renderState.renderedIds = [];
       renderState.conversationId = state.conversationId || null;
-      renderState.placeholderCount = 0;
+      renderState.placeholderCount = placeholderCount;
       updateLoadMoreVisibility();
       updateMessagesScrollOverflow();
       if (!scrollToEnd && anchor) restoreScrollFromAnchor(anchor);
       return;
     }
 
-    if (!timelineMessages.length && hasPlaceholders) {
-      elements.messagesList.innerHTML = '';
-      elements.messagesEmpty?.classList.add('hidden');
-      renderState.renderedIds = [];
-      renderState.conversationId = state.conversationId || null;
-      if (shouldRenderPlaceholders && elements.messagesPlaceholders) {
-        elements.messagesPlaceholders.innerHTML = '';
-        appendPlaceholderRows({ entries: placeholderEntries, startIndex: 0 });
-      }
-      renderState.placeholderCount = placeholderCount;
-      updateLoadMoreVisibility();
-      updateMessagesScrollOverflow();
-      if (scrollToEnd) {
-        scrollMessagesToBottom();
-      } else if (anchor) {
-        restoreScrollFromAnchor(anchor);
-      }
-      return;
-    }
-
     elements.messagesEmpty?.classList.add('hidden');
-    if (shouldRenderPlaceholders && elements.messagesPlaceholders) {
-      elements.messagesPlaceholders.innerHTML = '';
-      if (hasPlaceholders) {
-        appendPlaceholderRows({ entries: placeholderEntries, startIndex: 0 });
-      }
-    }
+    if (elements.messagesPlaceholders) elements.messagesPlaceholders.innerHTML = '';
     const prefixMatches = !convChanged && renderState.renderedIds.length > 0
-      ? renderState.renderedIds.every((id, idx) => id === timelineIds[idx])
+      ? renderState.renderedIds.every((id, idx) => id === renderIds[idx])
       : false;
     const canAppend = !forceFullRender && !convChanged
-      && prefixMatches && renderState.renderedIds.length <= timelineMessages.length;
+      && prefixMatches && renderState.renderedIds.length <= renderEntries.length;
     const startIndex = canAppend ? renderState.renderedIds.length : 0;
     if (!canAppend) {
       elements.messagesList.innerHTML = '';
@@ -3471,7 +3555,7 @@ export function initMessagesPane({
     let prevTs = null;
     let prevDateKey = null;
     if (startIndex > 0) {
-      const prevMsg = timelineMessages[startIndex - 1];
+      const prevMsg = renderEntries[startIndex - 1];
       const tsVal = Number(prevMsg?.ts ?? null);
       if (Number.isFinite(tsVal)) {
         prevTs = tsVal;
@@ -3479,8 +3563,8 @@ export function initMessagesPane({
       }
     }
     let renderIndex = startIndex;
-    for (let i = startIndex; i < timelineMessages.length; i += 1) {
-      const msg = timelineMessages[i];
+    for (let i = startIndex; i < renderEntries.length; i += 1) {
+      const msg = renderEntries[i];
       const currentIndex = renderIndex;
       renderIndex += 1;
       const tsVal = Number(msg.ts || null);
@@ -3502,6 +3586,32 @@ export function initMessagesPane({
       const li = document.createElement('li');
       const messageType = msg.type || (msg.media ? 'media' : 'text');
       if (!msg.type) msg.type = messageType;
+      if (msg.placeholder === true || messageType === 'placeholder') {
+        li.className = 'message-placeholder-item';
+        const row = document.createElement('div');
+        row.className = 'message-row message-placeholder-row';
+        const isOutgoing = msg.direction === 'outgoing';
+        if (isOutgoing) row.style.justifyContent = 'flex-end';
+        const bubble = document.createElement('div');
+        const messageId = normalizeTimelineMessageId(msg);
+        bubble.className = 'message-bubble message-placeholder';
+        if (messageId) bubble.dataset.messageId = messageId;
+        if (isOutgoing) bubble.classList.add('placeholder-outgoing');
+        else bubble.classList.add('placeholder-incoming');
+        if (msg.status === 'failed') {
+          bubble.classList.add('placeholder-failed');
+        } else if (messageId && shimmerIds.has(messageId)) {
+          bubble.classList.add('placeholder-shimmer');
+        }
+        bubble.textContent = msg.status === 'failed' ? PLACEHOLDER_FAILED_TEXT : (PLACEHOLDER_TEXT || '');
+        row.appendChild(bubble);
+        li.appendChild(row);
+        elements.messagesList.appendChild(li);
+        try {
+          logUiAppend(msg, { msgType: 'placeholder', index: currentIndex });
+        } catch {}
+        continue;
+      }
       if (messageType === 'call-log' && msg.callLog) {
         li.className = 'call-log-entry';
         const chip = document.createElement('div');
@@ -3616,7 +3726,7 @@ export function initMessagesPane({
     }
 
     renderState.conversationId = state.conversationId || null;
-    renderState.renderedIds = timelineIds.filter(Boolean);
+    renderState.renderedIds = renderIds.filter(Boolean);
     renderState.placeholderCount = placeholderCount;
     updateLoadMoreVisibility();
 
@@ -5213,6 +5323,68 @@ export function initMessagesPane({
     }
   }
 
+  function setNotifyRetryTimer(entry, key, delayMs) {
+    if (!entry || !key) return;
+    if (entry.timerId) {
+      try { clearTimeout(entry.timerId); } catch {}
+    }
+    entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), delayMs);
+  }
+
+  function applyNotifyRetryAttemptSuccess({ entry, attemptIndex }) {
+    if (!entry || !Number.isFinite(Number(attemptIndex))) return null;
+    const normalizedAttempt = normalizeNotifyRetryAttempt(attemptIndex);
+    if (normalizedAttempt === null || normalizedAttempt <= entry.attempt) return null;
+    entry.attempt = normalizedAttempt;
+    entry.pendingAttempt = null;
+    entry.updatedAt = Date.now();
+    const message = updateNotifyRetryMessageState({
+      conversationId: entry.conversationId,
+      messageId: entry.messageId,
+      attempt: normalizedAttempt,
+      finalState: null
+    });
+    const state = getMessageState();
+    if (message && state.conversationId === entry.conversationId) {
+      updateMessagesStatusUI();
+    }
+    return message;
+  }
+
+  function handleNotifyRetryQueueFlush({ retryKey, attempt = null, source = null } = {}) {
+    if (!retryKey) return;
+    const entry = notifyRetryQueue.get(retryKey);
+    if (!entry) return;
+    if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
+      finalizeNotifyRetryState({
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+        finalState: 'DELIVERED',
+        attemptsUsed: entry.attempt
+      });
+      return;
+    }
+    const pendingAttempt = normalizeNotifyRetryAttempt(entry.pendingAttempt);
+    const incomingAttempt = normalizeNotifyRetryAttempt(attempt);
+    if (incomingAttempt !== null && incomingAttempt <= 0) return;
+    const attemptIndex = incomingAttempt || pendingAttempt || entry.attempt + 1;
+    if (attemptIndex <= entry.attempt) {
+      entry.pendingAttempt = null;
+      return;
+    }
+    entry.pendingAttempt = null;
+    logNotifyRetryAttemptTrace({
+      conversationId: entry.conversationId,
+      messageId: entry.messageId,
+      attemptIndex,
+      wsReady: true,
+      sentOk: true,
+      reasonCode: source ? `WS_QUEUE_FLUSH:${source}` : 'WS_QUEUE_FLUSH'
+    });
+    applyNotifyRetryAttemptSuccess({ entry, attemptIndex });
+    setNotifyRetryTimer(entry, retryKey, NOTIFY_RETRY_INTERVAL_MS);
+  }
+
   function finalizeNotifyRetryState({ conversationId, messageId, finalState, attemptsUsed } = {}) {
     if (!conversationId || !messageId || !finalState) return;
     const existing = findTimelineMessageById(conversationId, messageId);
@@ -5301,7 +5473,11 @@ export function initMessagesPane({
 
   function buildNotifyRetryKey({ conversationId, messageId, targetDeviceId } = {}) {
     if (!conversationId || !messageId || !targetDeviceId) return null;
-    return `${conversationId}::${messageId}::${targetDeviceId}`;
+    const conv = String(conversationId).trim();
+    const mid = String(messageId).trim();
+    const target = String(targetDeviceId).trim();
+    if (!conv || !mid || !target) return null;
+    return `${conv}::${mid}::${target}`;
   }
 
   function isMessageDeliveredForRetry(conversationId, messageId) {
@@ -5349,13 +5525,28 @@ export function initMessagesPane({
       targetDeviceId: targetDeviceId || null,
       senderDeviceId: senderDevice || null
     };
+    const retryKey = buildNotifyRetryKey({ conversationId, messageId, targetDeviceId });
+    if (retryKey) {
+      try {
+        Object.defineProperty(payload, '__notifyRetryKey', { value: retryKey, enumerable: false });
+        Object.defineProperty(payload, '__notifyRetryAttempt', { value: attempt, enumerable: false });
+      } catch {
+        try {
+          payload.__notifyRetryKey = retryKey;
+          payload.__notifyRetryAttempt = attempt;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    const wsReady = resolveWsReadyForRetry();
     let ok = false;
     try {
       ok = !!wsSendFn(payload);
     } catch {
       ok = false;
     }
-    const finalReason = ok ? reasonCode : 'WS_SEND_ERROR';
+    const finalReason = ok ? reasonCode : (wsReady === false ? 'WS_QUEUED' : 'WS_SEND_ERROR');
     logNotifyRetryTrace({
       conversationId,
       messageId,
@@ -5364,7 +5555,7 @@ export function initMessagesPane({
       reasonCode: finalReason,
       ok
     });
-    if (message && attempt === 0) {
+    if (message && attempt === 0 && (ok || wsReady === false)) {
       message.notifySent = true;
     }
     return ok;
@@ -5374,7 +5565,6 @@ export function initMessagesPane({
     const entry = notifyRetryQueue.get(key);
     if (!entry) return;
     if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
-      notifyRetryQueue.delete(key);
       finalizeNotifyRetryState({
         conversationId: entry.conversationId,
         messageId: entry.messageId,
@@ -5383,9 +5573,7 @@ export function initMessagesPane({
       });
       return;
     }
-    const nextAttempt = entry.attempt + 1;
-    if (nextAttempt > NOTIFY_RETRY_MAX_ATTEMPTS) {
-      notifyRetryQueue.delete(key);
+    if (entry.attempt >= NOTIFY_RETRY_MAX_ATTEMPTS) {
       finalizeNotifyRetryState({
         conversationId: entry.conversationId,
         messageId: entry.messageId,
@@ -5394,7 +5582,52 @@ export function initMessagesPane({
       });
       return;
     }
+    const nextAttempt = entry.attempt + 1;
     const wsReady = resolveWsReadyForRetry();
+    const hasQueuedKey = typeof wsSendFn?.hasQueuedNotifyKey === 'function'
+      ? wsSendFn.hasQueuedNotifyKey(key)
+      : false;
+
+    if (wsReady === false) {
+      if (hasQueuedKey || entry.pendingAttempt) {
+        if (hasQueuedKey && !entry.pendingAttempt) entry.pendingAttempt = nextAttempt;
+        logNotifyRetryAttemptTrace({
+          conversationId: entry.conversationId,
+          messageId: entry.messageId,
+          attemptIndex: entry.pendingAttempt || nextAttempt,
+          wsReady: false,
+          sentOk: false,
+          reasonCode: 'WS_QUEUE_DUPLICATE'
+        });
+        setNotifyRetryTimer(entry, key, NOTIFY_RETRY_INTERVAL_MS);
+        return;
+      }
+      entry.pendingAttempt = nextAttempt;
+      sendMessageNewNotify({
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+        targetAccountDigest: entry.targetAccountDigest,
+        targetDeviceId: entry.targetDeviceId,
+        preview: entry.preview,
+        ts: entry.ts,
+        senderDeviceId: entry.senderDeviceId,
+        attempt: nextAttempt,
+        reasonCode: 'TIMEOUT_WAIT_DELIVERED'
+      });
+      logNotifyRetryAttemptTrace({
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+        attemptIndex: nextAttempt,
+        wsReady: false,
+        sentOk: false,
+        reasonCode: 'WS_QUEUED'
+      });
+      entry.updatedAt = Date.now();
+      setNotifyRetryTimer(entry, key, NOTIFY_RETRY_INTERVAL_MS);
+      return;
+    }
+
+    entry.pendingAttempt = null;
     const sentOk = sendMessageNewNotify({
       conversationId: entry.conversationId,
       messageId: entry.messageId,
@@ -5410,33 +5643,15 @@ export function initMessagesPane({
       conversationId: entry.conversationId,
       messageId: entry.messageId,
       attemptIndex: nextAttempt,
-      wsReady,
+      wsReady: wsReady === true ? true : null,
       sentOk,
       reasonCode: sentOk ? 'TIMEOUT_WAIT_DELIVERED' : 'WS_SEND_ERROR'
     });
-    entry.attempt = nextAttempt;
+    if (sentOk) {
+      applyNotifyRetryAttemptSuccess({ entry, attemptIndex: nextAttempt });
+    }
     entry.updatedAt = Date.now();
-    const message = updateNotifyRetryMessageState({
-      conversationId: entry.conversationId,
-      messageId: entry.messageId,
-      attempt: nextAttempt,
-      finalState: null
-    });
-    const state = getMessageState();
-    if (message && state.conversationId === entry.conversationId) {
-      updateMessagesStatusUI();
-    }
-    if (nextAttempt < NOTIFY_RETRY_MAX_ATTEMPTS) {
-      entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), NOTIFY_RETRY_INTERVAL_MS);
-    } else {
-      notifyRetryQueue.delete(key);
-      finalizeNotifyRetryState({
-        conversationId: entry.conversationId,
-        messageId: entry.messageId,
-        finalState: 'TIMEOUT',
-        attemptsUsed: nextAttempt
-      });
-    }
+    setNotifyRetryTimer(entry, key, NOTIFY_RETRY_INTERVAL_MS);
   }
 
   function enqueueNotifyRetry({
@@ -5463,12 +5678,13 @@ export function initMessagesPane({
       ts: Number.isFinite(Number(ts)) ? Number(ts) : null,
       senderDeviceId: senderDeviceId || null,
       attempt: 0,
+      pendingAttempt: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       timerId: null
     };
     notifyRetryQueue.set(key, entry);
-    entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), NOTIFY_RETRY_FIRST_WAIT_MS);
+    setNotifyRetryTimer(entry, key, NOTIFY_RETRY_FIRST_WAIT_MS);
     const messageState = message || updateNotifyRetryMessageState({
       conversationId,
       messageId,
@@ -5885,11 +6101,15 @@ export function initMessagesPane({
     const finalState = typeof message?.notifyRetryFinal === 'string' ? message.notifyRetryFinal : null;
     if (finalState === 'TIMEOUT') return '✕';
     const attempt = attemptRaw ?? 0;
-    if (attempt >= NOTIFY_RETRY_MAX_ATTEMPTS) return '✕';
-    if (attempt <= 0) return '➀';
-    if (attempt === 1) return '➁';
-    if (attempt === 2) return '➂';
-    return '✕';
+    if (attempt <= 0) return null;
+    if (attempt >= NOTIFY_RETRY_MAX_ATTEMPTS) {
+      return attempt === NOTIFY_RETRY_MAX_ATTEMPTS ? '⑤' : '✕';
+    }
+    if (attempt === 1) return '①';
+    if (attempt === 2) return '②';
+    if (attempt === 3) return '③';
+    if (attempt === 4) return '④';
+    return null;
   }
 
 

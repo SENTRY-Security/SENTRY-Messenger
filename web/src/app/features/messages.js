@@ -1413,7 +1413,12 @@ export async function listSecureAndDecrypt(params = {}) {
     });
   }
   const lockToken = lockAttempt.token;
-  const buildYieldResult = () => buildEmptyResult(requestPriority === 'live' ? ['同步進行中，請稍後再試'] : []);
+  const buildYieldResult = () => {
+    if (bRoute === true) {
+      queueBRouteRetry(conversationId, sourceTag || null);
+    }
+    return buildEmptyResult(requestPriority === 'live' ? ['同步進行中，請稍後再試'] : []);
+  };
   const shouldYieldToReplay = (stage = null) => {
     if (!lockToken?.cancelled) return false;
     logReplayEarlyReturn('yieldToReplay', {

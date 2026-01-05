@@ -245,6 +245,7 @@ let wsConn = null;
 let wsReconnectTimer = null;
 let wsAuthTokenInfo = null;
 const pendingWsMessages = [];
+const pendingWsNotifyKeys = new Set();
 let presenceManager = null;
 let wsMonitorTimer = null;
 
@@ -3806,7 +3807,14 @@ async function connectWebSocket() {
     }
     if (pendingWsMessages.length) {
       for (const msg of pendingWsMessages.splice(0)) {
-        try { ws.send(JSON.stringify(msg)); } catch (err) { log({ wsSendError: err?.message || err }); }
+        const retryKey = resolveNotifyRetryKey(msg);
+        if (retryKey) pendingWsNotifyKeys.delete(retryKey);
+        try {
+          ws.send(JSON.stringify(msg));
+          dispatchNotifyRetryFlush(msg, 'queue');
+        } catch (err) {
+          log({ wsSendError: err?.message || err });
+        }
       }
     }
   };
@@ -3854,9 +3862,48 @@ async function connectWebSocket() {
   };
 }
 
+function resolveNotifyRetryKey(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rawKey = payload.__notifyRetryKey;
+  if (typeof rawKey !== 'string') return null;
+  const trimmed = rawKey.trim();
+  return trimmed || null;
+}
+
+function resolveNotifyRetryAttempt(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const raw = payload.__notifyRetryAttempt;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  return Math.max(0, Math.floor(num));
+}
+
+function dispatchNotifyRetryFlush(payload, source = null) {
+  const retryKey = resolveNotifyRetryKey(payload);
+  if (!retryKey) return;
+  const attempt = resolveNotifyRetryAttempt(payload);
+  try {
+    if (typeof document === 'undefined' || !document?.dispatchEvent) return;
+    document.dispatchEvent(new CustomEvent('ws-notify-sent', {
+      detail: {
+        retryKey,
+        attempt,
+        source: source || null
+      }
+    }));
+  } catch {
+    /* ignore */
+  }
+}
+
 function wsSend(payload) {
+  const retryKey = resolveNotifyRetryKey(payload);
   if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+    if (retryKey && pendingWsNotifyKeys.has(retryKey)) {
+      return false;
+    }
     pendingWsMessages.push(payload);
+    if (retryKey) pendingWsNotifyKeys.add(retryKey);
     ensureWebSocket();
     return false;
   }
@@ -3865,13 +3912,23 @@ function wsSend(payload) {
     return true;
   } catch (err) {
     log({ wsSendError: err?.message || err });
-    pendingWsMessages.push(payload);
+    if (retryKey && !pendingWsNotifyKeys.has(retryKey)) {
+      pendingWsMessages.push(payload);
+      pendingWsNotifyKeys.add(retryKey);
+    } else if (!retryKey) {
+      pendingWsMessages.push(payload);
+    }
     ensureWebSocket();
     return false;
   }
 }
 
 wsSend.isReady = () => !!(wsConn && wsConn.readyState === WebSocket.OPEN);
+wsSend.hasQueuedNotifyKey = (key) => {
+  if (!key) return false;
+  const trimmed = String(key).trim();
+  return trimmed ? pendingWsNotifyKeys.has(trimmed) : false;
+};
 
 messagesPane.setWsSend(wsSend);
 setMessagesWsSender(wsSend);
