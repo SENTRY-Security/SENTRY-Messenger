@@ -974,7 +974,11 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
 
   try {
     disposeCallMediaSession();
-    flushDrSnapshotsBeforeLogout();
+    flushDrSnapshotsBeforeLogout('secure-logout', {
+      forceRemote: true,
+      keepalive: true,
+      sourceTag: 'app-mobile:secure-logout'
+    });
   } catch (err) {
     log({ contactSecretsSnapshotFlushError: err?.message || err, reason: 'secure-logout-call' });
   }
@@ -1334,7 +1338,7 @@ function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
   return meta;
 }
 
-function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
+function flushDrSnapshotsBeforeLogout(reason = 'secure-logout', { forceRemote = false, keepalive = false, sourceTag = null } = {}) {
   const startedAt = Date.now();
   const peerSet = new Set();
   if (sessionStore.contactSecrets instanceof Map) {
@@ -1385,9 +1389,13 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
     log({ contactSecretsPersistError: err?.message || err, reason: 'flushDrSnapshotsBeforeLogout' });
   }
   try {
-    if (REMOTE_BACKUP_FORCE_ON_LOGOUT === true) {
-      triggerContactSecretsBackup('secure-logout', { force: true, keepalive: true, sourceTag: 'app-mobile:flush-before-logout' })
-        .catch((err) => log({ contactSecretsBackupDuringLogoutError: err?.message || err }));
+    const shouldForceRemote = forceRemote || REMOTE_BACKUP_FORCE_ON_LOGOUT === true;
+    if (shouldForceRemote) {
+      triggerContactSecretsBackup(reason || 'secure-logout', {
+        force: true,
+        keepalive: keepalive === true,
+        sourceTag: sourceTag || `app-mobile:flush:${reason || 'secure-logout'}`
+      }).catch((err) => log({ contactSecretsBackupDuringLogoutError: err?.message || err }));
     }
   } catch (err) {
     log({ contactSecretsBackupDuringLogoutError: err?.message || err });
@@ -2601,7 +2609,12 @@ async function logRestoreOverview({ reason = 'post-login', force = false } = {})
 }
 
 async function hydrateDrSnapshotsAfterBackup() {
-  return;
+  try {
+    return hydrateDrStatesFromContactSecrets({ source: 'post-login-hydrate' });
+  } catch (err) {
+    log({ drSnapshotHydrateError: err?.message || err, source: 'post-login-hydrate' });
+    return { restoredCount: 0, skippedCount: 0, errorCount: 1 };
+  }
 }
 
 async function runPostLoginContactHydrate() {
@@ -4239,6 +4252,11 @@ if (typeof document !== 'undefined') {
       triggerResumeSync({ source: 'visibility_resume' });
     }
     if (document.hidden) {
+      flushDrSnapshotsBeforeLogout('visibilitychange', {
+        forceRemote: true,
+        keepalive: true,
+        sourceTag: 'app-mobile:visibilitychange'
+      });
       flushContactSecretsLocal('visibilitychange');
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
@@ -4257,6 +4275,11 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', (event) => {
     if (logoutInProgress) return;
     if (event && event.persisted) return;
+    flushDrSnapshotsBeforeLogout('pagehide', {
+      forceRemote: true,
+      keepalive: true,
+      sourceTag: 'app-mobile:pagehide'
+    });
     flushContactSecretsLocal('pagehide');
     if (isReloadNavigation()) {
       forceReloadLogout();

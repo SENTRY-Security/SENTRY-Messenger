@@ -17,7 +17,7 @@
 // /app/features/messages.js
 // Feature: list conversation messages and decrypt DR packets using secure conversation tokens.
 
-import { listSecureMessages as apiListSecureMessages } from '../api/messages.js';
+import { listSecureMessages as apiListSecureMessages, getSecureMessageByCounter as apiGetSecureMessageByCounter } from '../api/messages.js';
 import { drDecryptText as cryptoDrDecryptText, buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
 import {
   drState as storeDrState,
@@ -30,7 +30,8 @@ import {
 import {
   persistDrSnapshot as sessionPersistDrSnapshot,
   snapshotDrState as sessionSnapshotDrState,
-  cloneDrStateHolder as sessionCloneDrStateHolder
+  cloneDrStateHolder as sessionCloneDrStateHolder,
+  hydrateDrStatesFromContactSecrets as sessionHydrateDrStatesFromContactSecrets
 } from './dr-session.js';
 import {
   sessionStore,
@@ -68,6 +69,8 @@ import {
   PENDING_VAULT_PUT_QUEUE_LIMIT,
   PENDING_VAULT_PUT_RETRY_MAX,
   PENDING_VAULT_PUT_RETRY_INTERVAL_MS,
+  COUNTER_GAP_RETRY_MAX,
+  COUNTER_GAP_RETRY_INTERVAL_MS,
   OFFLINE_SYNC_LOG_CAP
 } from './messages-sync-policy.js';
 import { toU8Strict } from '../../shared/utils/u8-strict.js';
@@ -75,13 +78,13 @@ import { logDrCore, logMsgEvent, shouldLogDrCore } from '../lib/logging.js';
 import { log, logForensicsEvent, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { triggerContactSecretsBackup } from './contact-backup.js';
-import { REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH } from './restore-policy.js';
 
 const FETCH_LOG_ENABLED = DEBUG.fetchNoise === true;
 const QUEUE_LOG_ENABLED = DEBUG.queueNoise === true;
 
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
+  getSecureMessageByCounter: apiGetSecureMessageByCounter,
   drDecryptText: cryptoDrDecryptText,
   buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
   drState: storeDrState,
@@ -89,6 +92,7 @@ const defaultDeps = {
   persistDrSnapshot: sessionPersistDrSnapshot,
   snapshotDrState: sessionSnapshotDrState,
   cloneDrStateHolder: sessionCloneDrStateHolder,
+  hydrateDrStatesFromContactSecrets: sessionHydrateDrStatesFromContactSecrets,
   getMkRaw: storeGetMkRaw,
   b64UrlToBytes: uiB64UrlToBytes,
   b64u8: naclB64u8,
@@ -135,7 +139,6 @@ let receiptsLoaded = false;
 const deliveredStore = new Map();
 const sentDeliveryReceipts = new Set(); // `${conversationId}:${messageId}`
 let deliveredLoaded = false;
-let decryptOkSinceBackup = 0;
 const decryptFailDedup = new Set(); // messageId -> failed once
 const decryptFailMessageCache = new Map(); // messageId -> stateKey
 const decryptedMessageStore = new Map(); // conversationId -> Map(messageId -> messageObj)
@@ -191,6 +194,38 @@ function normalizeHeaderCounter(value) {
   if (value === null || value === undefined || value === '') return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+function normalizeTransportCounter(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function getIncomingCounterState(state) {
+  const value = Number(state?.NrTotal);
+  return Number.isFinite(value) ? value : null;
+}
+
+function updateIncomingCounterState(state, counter) {
+  if (!state || !Number.isFinite(counter)) return false;
+  const current = Number(state.NrTotal);
+  if (!Number.isFinite(current) || counter > current) {
+    state.NrTotal = counter;
+    return true;
+  }
+  return false;
+}
+
+function buildCounterMessageId(counter) {
+  if (!Number.isFinite(counter)) return null;
+  return `counter:${counter}`;
+}
+
+function sleepMs(delayMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, Number(delayMs) || 0));
+  });
 }
 
 async function vaultPutMessageKey(params = {}) {
@@ -1034,6 +1069,15 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
   if (!baseId) {
     throw new Error('messageId missing for message object');
   }
+  const counterRaw =
+    header?.n
+    ?? header?.counter
+    ?? raw?.counter
+    ?? raw?.n
+    ?? raw?.header?.n
+    ?? raw?.header?.counter
+    ?? null;
+  const counter = Number.isFinite(Number(counterRaw)) ? Number(counterRaw) : null;
   const timestamp = Number.isFinite(ts) ? ts : null;
   const tsMs = resolveMessageTsMs(timestamp, baseId);
   const tsSeq = resolveMessageTsSeq(baseId);
@@ -1058,6 +1102,7 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, me
     meta,
     direction,
     raw,
+    counter,
     type: 'text',
     text: typeof plaintext === 'string' ? plaintext : '',
     messageKey_b64: messageKeyB64 || null
@@ -1822,6 +1867,7 @@ export async function listSecureAndDecrypt(params = {}) {
     let stateKey = null;
     let messageId = null;
     let headerCounter = null;
+    let transportCounter = null;
     let serverMessageId = null;
     let senderDigest = null;
     let direction = 'unknown';
@@ -1996,7 +2042,6 @@ export async function listSecureAndDecrypt(params = {}) {
       replayCounters.decryptOk += 1;
       if (direction === 'incoming' && vaultPutStatus === 'ok') {
         replayCounters.vaultPutIncomingOk += 1;
-        maybeTriggerBackupAfterDecrypt({ sourceTag: 'messages:decrypt-ok' });
       }
 
       const semantic = classifyDecryptedPayload(text, { meta, header });
@@ -2007,8 +2052,12 @@ export async function listSecureAndDecrypt(params = {}) {
         subtype: semantic.subtype
       });
 
+      let snapshotPersisted = false;
       if (trackState) {
-        deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
+        if (direction === 'incoming' && Number.isFinite(headerCounter)) {
+          updateIncomingCounterState(state, headerCounter);
+        }
+        snapshotPersisted = !!deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
         if (msgTypeForDecrypt === 'contact-share' && stableContactShareKey) {
           let set = processedContactShare.get(convId);
           if (!set) {
@@ -2017,6 +2066,10 @@ export async function listSecureAndDecrypt(params = {}) {
           }
           set.add(stableContactShareKey);
         }
+      }
+      if (!computedIsHistoryReplay && trackState && direction === 'incoming' && snapshotPersisted) {
+        const backupSourceTag = isGapFillJob ? 'messages:gap-fill' : 'messages:decrypt-ok';
+        maybeTriggerBackupAfterDecrypt({ sourceTag: backupSourceTag });
       }
 
       if (semantic.kind === SEMANTIC_KIND.IGNORABLE) {
@@ -2196,6 +2249,9 @@ export async function listSecureAndDecrypt(params = {}) {
         const entryTsSeq = Number.isFinite(messageObj.tsSeq)
           ? messageObj.tsSeq
           : resolveMessageTsSeq(entryMessageId);
+        const entryCounter = Number.isFinite(messageObj?.counter)
+          ? messageObj.counter
+          : (Number.isFinite(headerCounter) ? headerCounter : null);
         const timelineEntry = {
           conversationId: convId,
           messageId: entryMessageId,
@@ -2204,6 +2260,7 @@ export async function listSecureAndDecrypt(params = {}) {
           ts: entryTs,
           tsMs: entryTsMs,
           tsSeq: entryTsSeq,
+          counter: entryCounter,
           text: messageObj.text || null,
           media: messageObj.media || null,
           callLog: messageObj.callLog || null,
@@ -2355,12 +2412,16 @@ export async function listSecureAndDecrypt(params = {}) {
         throw new Error('缺少訊息標頭或密文，無法進行 DR 解密');
       }
         if (header?.fallback) throw new Error('偵測到舊版 fallback 封包，已不再支援');
+        const packetCounter = jobPacket?.counter ?? raw?.counter ?? raw?.n ?? header?.n ?? null;
         packet = {
           header_json: headerRaw,
           ciphertext_b64: ciphertextB64,
-          counter: jobPacket?.counter ?? header?.n ?? null
+          counter: packetCounter
         };
-      headerCounter = normalizeHeaderCounter(header?.n ?? packet?.counter ?? null);
+      transportCounter = normalizeTransportCounter(packet?.counter);
+      headerCounter = Number.isFinite(transportCounter)
+        ? transportCounter
+        : normalizeHeaderCounter(header?.n ?? null);
       const pkt = {
         aead: 'aes-256-gcm',
         header,
@@ -2641,7 +2702,8 @@ export async function listSecureAndDecrypt(params = {}) {
           } catch {}
           if (errorCode === 'NotFound' || errorCode === 'MissingParams' || errorCode === 'MKMissing') {
             replayCounters.messageKeyVaultMissing += 1;
-            throw new Error('不可回放：缺少訊息密鑰');
+            queueBRouteRetry(convId || conversationId || null, 'replay-vault-missing');
+            return;
           }
           throw new Error('不可回放：vault 取回失敗');
         }
@@ -2771,11 +2833,11 @@ export async function listSecureAndDecrypt(params = {}) {
       const currentNr = Number.isFinite(Number(state?.Nr)) ? Number(state.Nr) : 0;
       state.Nr = currentNr; // normalize to numeric to avoid string comparisons
       const effectiveHeaderCounter = Number.isFinite(headerCounter) ? headerCounter : null;
-      const transportCounter = Number.isFinite(Number(packet?.counter)) ? Number(packet.counter) : null;
       const stateNs = Number.isFinite(Number(state?.Ns)) ? Number(state.Ns) : null;
       const sameReceiveChain = state?.theirRatchetPub && typeof header?.ek_pub_b64 === 'string'
         && naclB64(state.theirRatchetPub) === header.ek_pub_b64;
       const enableDuplicateGuard = trackState; // disable duplicate drop in replay-only mode
+      const isGapFillJob = !!(replayCtxLocal?.gapFill || job?.meta?.gapFill || job?.gapFill);
       if (enableDuplicateGuard && sameReceiveChain && Number.isFinite(effectiveHeaderCounter) && currentNr >= effectiveHeaderCounter) {
         logDeliverySkip('duplicateCounter', {
           counter: effectiveHeaderCounter,
@@ -2784,6 +2846,21 @@ export async function listSecureAndDecrypt(params = {}) {
           Ns: stateNs
         });
         return;
+      }
+      if (!computedIsHistoryReplay && !isGapFillJob && trackState && direction === 'incoming' && Number.isFinite(transportCounter)) {
+        const lastCounter = getIncomingCounterState(state);
+        const baseline = Number.isFinite(lastCounter) ? lastCounter : 0;
+        if (transportCounter > baseline + 1) {
+          await fillCounterGap({
+            conversationId: convId || conversationId || null,
+            fromCounter: baseline + 1,
+            toCounter: transportCounter - 1,
+            senderDeviceId: peerDeviceForMessage || null,
+            senderAccountDigest: senderDigest || peerAccountDigestNormalized || null,
+            referenceTs: messageTs,
+            ctx: { ...replayCtxLocal, gapFill: true }
+          });
+        }
       }
       logDrCore('decrypt:attempt', {
         conversationId: convId,
@@ -2891,6 +2968,10 @@ export async function listSecureAndDecrypt(params = {}) {
           : Number.isFinite(Number(job?.raw?.counter ?? job?.raw?.n))
             ? Number(job.raw.counter ?? job.raw.n)
             : null;
+      const failureCounter = Number.isFinite(transportCounter)
+        ? transportCounter
+        : (Number.isFinite(headerCounter) ? headerCounter : null);
+      const failureTs = Number.isFinite(messageTs) ? messageTs : null;
       if (DEBUG.replay && decryptFailSampleCount < decryptFailSampleLimit) {
         decryptFailSampleCount += 1;
         try {
@@ -2930,6 +3011,9 @@ export async function listSecureAndDecrypt(params = {}) {
       if (shouldCountForUi) {
         errs.push({
           messageId: failedMessageId || null,
+          counter: failureCounter,
+          direction: direction || null,
+          ts: failureTs,
           msgType: msgTypeLabel || null,
           kind: semantic.kind,
           subtype: semantic.subtype,
@@ -3074,6 +3158,96 @@ export async function listSecureAndDecrypt(params = {}) {
       throw err;
     }
   };
+
+  async function fillCounterGap({
+    conversationId: gapConversationId,
+    fromCounter,
+    toCounter,
+    senderDeviceId,
+    senderAccountDigest,
+    referenceTs,
+    ctx
+  } = {}) {
+    if (!gapConversationId || !Number.isFinite(fromCounter) || !Number.isFinite(toCounter) || fromCounter > toCounter) {
+      return { attempted: 0, success: 0, failed: 0 };
+    }
+    if (typeof deps.getSecureMessageByCounter !== 'function') {
+      throw new Error('gap fill unavailable: getSecureMessageByCounter missing');
+    }
+    const context = ctx && typeof ctx === 'object' ? ctx : { allowReplay: false, mutateState: true, computedIsHistoryReplay: false };
+    let attempted = 0;
+    let success = 0;
+    let failed = 0;
+    const fallbackTs = Number.isFinite(referenceTs) ? Math.floor(referenceTs) : Math.floor(Date.now() / 1000);
+    for (let counter = fromCounter; counter <= toCounter; counter += 1) {
+      attempted += 1;
+      let lastErr = null;
+      let item = null;
+      for (let attempt = 1; attempt <= COUNTER_GAP_RETRY_MAX; attempt += 1) {
+        try {
+          const { r, data } = await deps.getSecureMessageByCounter({
+            conversationId: gapConversationId,
+            counter,
+            senderDeviceId,
+            senderAccountDigest
+          });
+          if (r?.ok && data?.ok && data?.item) {
+            item = data.item;
+            break;
+          }
+          const errMsg = typeof data === 'string'
+            ? data
+            : (data?.message || data?.error || 'gap fetch failed');
+          const err = new Error(errMsg);
+          err.status = r?.status ?? null;
+          lastErr = err;
+        } catch (err) {
+          lastErr = err;
+        }
+        if (attempt < COUNTER_GAP_RETRY_MAX) {
+          await sleepMs(COUNTER_GAP_RETRY_INTERVAL_MS);
+        }
+      }
+      if (!item) {
+        failed += 1;
+        const failureId = buildCounterMessageId(counter);
+        errs.push({
+          messageId: failureId,
+          counter,
+          direction: 'incoming',
+          ts: fallbackTs,
+          kind: SEMANTIC_KIND.USER_MESSAGE,
+          subtype: null,
+          control: false,
+          reason: lastErr?.message || 'gap fetch failed'
+        });
+        continue;
+      }
+      const messageId = item?.id || item?.message_id || item?.messageId || buildCounterMessageId(counter);
+      const packet = {
+        header_json: item?.header_json || item?.headerJson || item?.header || null,
+        ciphertext_b64: item?.ciphertext_b64 || item?.ciphertextB64 || null,
+        counter: item?.counter ?? counter
+      };
+      const job = {
+        jobId: `${gapConversationId}:${messageId || counter}`,
+        messageId,
+        conversationId: gapConversationId,
+        payloadEnvelope: packet,
+        raw: item,
+        createdAt: Number(item?.created_at || item?.createdAt || null) || Math.floor(Date.now() / 1000),
+        meta: { gapFill: true }
+      };
+      try {
+        await handleInboxJob(job, context);
+        success += 1;
+      } catch (err) {
+        if (err?.__yieldToReplay) throw err;
+        failed += 1;
+      }
+    }
+    return { attempted, success, failed };
+  }
 
   if (shouldYieldToReplay('beforeEnqueue')) {
     return buildYieldResult();
@@ -3242,9 +3416,7 @@ export async function listSecureAndDecrypt(params = {}) {
         }
       });
     } catch {}
-    const err = new Error('不可回放：缺少訊息密鑰');
-    err.code = 'REPLAY_VAULT_MISSING';
-    throw err;
+    queueBRouteRetry(conversationId || null, 'replay-vault-missing');
   }
 
   if (shouldYieldToReplay('afterProcess')) {
@@ -3263,6 +3435,7 @@ export async function listSecureAndDecrypt(params = {}) {
       decryptFail: replayCounters.decryptFail,
       decryptOk: replayCounters.decryptOk,
       messageKeyVaultMissing: replayCounters.messageKeyVaultMissing,
+      outboundVaultMissing: replayCounters.messageKeyVaultMissing,
       directionFilterSkips: replayCounters.skipped_directionFilter,
       duplicateCounterSkips: replayCounters.skipped_duplicateCounter,
       fetchedItems: replayCounters.fetchedItems,
@@ -3848,14 +4021,10 @@ function normalizeOfflineSyncSource(source) {
 }
 
 function maybeTriggerBackupAfterDecrypt({ sourceTag } = {}) {
-  const batch = Number(REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH);
-  if (!Number.isFinite(batch) || batch <= 0) return;
-  decryptOkSinceBackup += 1;
-  if (decryptOkSinceBackup < batch) return;
-  decryptOkSinceBackup = 0;
   try {
-    triggerContactSecretsBackup('decrypt-batch', {
+    triggerContactSecretsBackup('decrypt-ok', {
       force: false,
+      allowWithoutDrState: true,
       sourceTag: sourceTag || 'messages:decrypt-ok'
     }).catch(() => {});
   } catch {}
@@ -3967,6 +4136,11 @@ function logCatchupTrace({
 export async function syncOfflineDecryptNow({ source, reasonCode } = {}) {
   const sourceTag = normalizeOfflineSyncSource(source);
   const sourceLabel = normalizeBRouteSourceLabel(sourceTag);
+  try {
+    if (typeof deps.hydrateDrStatesFromContactSecrets === 'function') {
+      deps.hydrateDrStatesFromContactSecrets({ source: `syncOfflineDecryptNow:${sourceTag}` });
+    }
+  } catch {}
   const cursorStore = restoreOfflineDecryptCursorStore();
   const targets = collectOfflineCatchupTargets();
   const plannedCount = targets.length;

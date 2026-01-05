@@ -1715,7 +1715,7 @@ async function sendDrPlaintext(params = {}) {
   });
 
   try {
-    const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
+    const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
     try {
       await MessageKeyVault.putMessageKey({
         conversationId: finalConversationId,
@@ -1891,7 +1891,7 @@ async function sendDrPlaintext(params = {}) {
           peerDeviceId
         });
 
-        const repairVaultCounter = Number.isFinite(repairHeaderN) ? repairHeaderN : repairTransportCounter;
+        const repairVaultCounter = Number.isFinite(repairTransportCounter) ? repairTransportCounter : repairHeaderN;
         try {
           await MessageKeyVault.putMessageKey({
             conversationId: finalConversationId,
@@ -2556,7 +2556,7 @@ export async function sendDrMedia(params = {}) {
     }));
   } catch {}
 
-  const vaultCounter = Number.isFinite(headerN) ? headerN : transportCounter;
+  const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
   const restoreSendFailure = (err) => {
     const holder = drState({ peerAccountDigest: peer, peerDeviceId });
     const currentCounter = Number(holder?.NsTotal);
@@ -2738,7 +2738,7 @@ export async function sendDrMedia(params = {}) {
       const repairHeaderJson = JSON.stringify(repairHeaderPayload);
       const repairCtB64 = repairPkt.ciphertext_b64;
 
-      const repairVaultCounter = Number.isFinite(repairHeaderN) ? repairHeaderN : repairTransportCounter;
+      const repairVaultCounter = Number.isFinite(repairTransportCounter) ? repairTransportCounter : repairHeaderN;
       try {
         await MessageKeyVault.putMessageKey({
           conversationId,

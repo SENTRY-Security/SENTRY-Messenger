@@ -151,7 +151,15 @@ async function decryptSnapshotPayload(envelope, mkRaw) {
   }
 }
 
-export async function triggerContactSecretsBackup(reason = 'manual', { force = false, keepalive = false, sourceTag = null } = {}) {
+export async function triggerContactSecretsBackup(
+  reason = 'manual',
+  {
+    force = false,
+    keepalive = false,
+    sourceTag = null,
+    allowWithoutDrState = false
+  } = {}
+) {
   const isForced = !!force || reason === 'secure-logout' || reason === 'force-logout';
   const summaryHint = latestPersistDetail?.summary || null;
   const hintEntries = Number.isFinite(Number(summaryHint?.entries)) ? Number(summaryHint.entries) : null;
@@ -161,7 +169,8 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
     sourceTag: sourceTag || reason || null,
     force: isForced,
     entries: hintEntries,
-    withDrState: hintWithDrState
+    withDrState: hintWithDrState,
+    allowWithoutDrState: allowWithoutDrState === true ? true : null
   }, 5);
   if (backupDisabled) {
     if (!isForced) {
@@ -207,7 +216,7 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
     }
     return false;
   }
-  if (entryCount > 0 && withDrState === 0 && !isForced) {
+  if (entryCount > 0 && withDrState === 0 && !isForced && !allowWithoutDrState) {
     logCapped('contactSecretsBackupSkippedTrace', {
       reason,
       sourceTag: sourceTag || reason || null,

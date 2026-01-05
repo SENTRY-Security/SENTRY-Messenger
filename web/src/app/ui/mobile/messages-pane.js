@@ -80,6 +80,7 @@ const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0 };
+// Deprecated per-message retry state: only the latest outgoing message is eligible for notify retry.
 const notifyRetryQueue = new Map();
 let outboxHooksRegistered = false;
 let pendingNewMessageHint = false;
@@ -134,6 +135,12 @@ function normalizeTimelineMessageId(msg) {
   if (!msg) return null;
   const id = msg.id || msg.messageId || msg.serverMessageId || msg.server_message_id || null;
   return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+function normalizeCounterValue(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
 }
 
 function normalizeRawMessageId(raw) {
@@ -332,10 +339,34 @@ function clearCallLogPlaceholders() {
   callLogPlaceholders.clear();
 }
 
+function buildPlaceholderCounterId(counter) {
+  if (!Number.isFinite(counter)) return null;
+  return `counter:${counter}`;
+}
+
+function normalizePlaceholderCounter(entry) {
+  if (!entry) return null;
+  const direct = normalizeCounterValue(entry.counter ?? entry.headerCounter ?? entry.header_counter);
+  if (direct !== null) return direct;
+  const header = entry?.header && typeof entry.header === 'object' ? entry.header : null;
+  const headerCounter = normalizeCounterValue(header?.n ?? header?.counter);
+  if (headerCounter !== null) return headerCounter;
+  const headerJson = entry?.header_json || entry?.headerJson || null;
+  if (typeof headerJson === 'string') {
+    try {
+      const parsed = JSON.parse(headerJson);
+      return normalizeCounterValue(parsed?.n ?? parsed?.counter);
+    } catch {}
+  }
+  return null;
+}
+
 function normalizePlaceholderMessageId(entry) {
   if (!entry) return null;
   const id = entry.id || entry.messageId || entry.serverMessageId || entry.server_message_id || null;
-  return typeof id === 'string' && id.trim() ? id.trim() : null;
+  if (typeof id === 'string' && id.trim()) return id.trim();
+  const counter = normalizePlaceholderCounter(entry);
+  return counter === null ? null : buildPlaceholderCounterId(counter);
 }
 
 function normalizePlaceholderKey(value) {
@@ -460,6 +491,25 @@ function resolvePlaceholderSubtype(item) {
   return subtype;
 }
 
+function resolvePlaceholderCounter(item) {
+  if (!item) return null;
+  const direct = normalizeCounterValue(
+    item?.counter ?? item?.n ?? item?.headerCounter ?? item?.header_counter
+  );
+  if (direct !== null) return direct;
+  const header = item?.header && typeof item.header === 'object' ? item.header : null;
+  const headerCounter = normalizeCounterValue(header?.n ?? header?.counter);
+  if (headerCounter !== null) return headerCounter;
+  const headerJson = item?.header_json || item?.headerJson || null;
+  if (typeof headerJson === 'string') {
+    try {
+      const parsed = JSON.parse(headerJson);
+      return normalizeCounterValue(parsed?.n ?? parsed?.counter);
+    } catch {}
+  }
+  return null;
+}
+
 function normalizePlaceholderRawMessageId(raw) {
   if (!raw) return null;
   const candidates = [raw.id, raw.message_id, raw.messageId];
@@ -483,6 +533,7 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
   }
   const entries = [];
   const seen = new Set();
+  const seenCounters = new Set();
   let directionKnownCount = 0;
   let excludedControlCount = 0;
   let excludedNonUserCount = 0;
@@ -492,9 +543,15 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
   let outgoingCount = 0;
   const convPrefix = sliceConversationIdPrefix(conversationId);
   for (const item of items) {
-    const messageId = normalizePlaceholderRawMessageId(item);
+    const counter = resolvePlaceholderCounter(item);
+    let messageId = normalizePlaceholderRawMessageId(item);
+    if (!messageId && counter !== null) {
+      messageId = buildPlaceholderCounterId(counter);
+    }
     if (!messageId || seen.has(messageId)) continue;
+    if (counter !== null && seenCounters.has(counter)) continue;
     seen.add(messageId);
+    if (counter !== null) seenCounters.add(counter);
     const subtype = resolvePlaceholderSubtype(item);
     const isControlSubtype = subtype
       ? (CONTROL_STATE_SUBTYPES.has(subtype) || TRANSIENT_SIGNAL_SUBTYPES.has(subtype))
@@ -546,6 +603,7 @@ function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest, conve
     const tsSeq = extractMessageTimestampSeq(item);
     entries.push({
       messageId,
+      counter,
       direction,
       directionKnown,
       status: 'pending',
@@ -605,7 +663,9 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
   const key = normalizePlaceholderKey(conversationId);
   const safeEntries = Array.isArray(entries)
     ? entries.map((entry) => {
-      const messageId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
+      const counter = normalizeCounterValue(entry?.counter);
+      const messageIdRaw = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
+      const messageId = messageIdRaw || (counter !== null ? buildPlaceholderCounterId(counter) : null);
       const direction = entry?.direction === 'incoming' || entry?.direction === 'outgoing'
         ? entry.direction
         : null;
@@ -613,10 +673,19 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
       const tsValid = Number.isFinite(tsRaw) && Number.isInteger(tsRaw) && tsRaw > 0;
       const status = entry?.status === 'failed' ? 'failed' : 'pending';
       const directionKnown = entry?.directionKnown === true;
-      if (!messageId || !direction || !tsValid) return null;
+      if (!messageId || !direction || (!tsValid && counter === null)) return null;
       const tsMs = Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null;
       const tsSeq = Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null;
-      return { messageId, direction, status, directionKnown, ts: Math.floor(tsRaw), tsMs, tsSeq };
+      return {
+        messageId,
+        counter,
+        direction,
+        status,
+        directionKnown,
+        ts: tsValid ? Math.floor(tsRaw) : null,
+        tsMs,
+        tsSeq
+      };
     }).filter(Boolean)
     : [];
   const safeCount = safeEntries.length;
@@ -626,10 +695,18 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
   if (existing) {
     const existingEntries = Array.isArray(existing.entries) ? existing.entries : [];
     const seen = new Set(existingEntries.map((entry) => entry?.messageId).filter(Boolean));
+    const seenCounters = new Set(
+      existingEntries
+        .map((entry) => normalizeCounterValue(entry?.counter))
+        .filter((val) => Number.isFinite(val))
+    );
     let addedCount = 0;
     for (const entry of safeEntries) {
       if (!entry?.messageId || seen.has(entry.messageId)) continue;
+      const entryCounter = normalizeCounterValue(entry?.counter);
+      if (entryCounter !== null && seenCounters.has(entryCounter)) continue;
       seen.add(entry.messageId);
+      if (entryCounter !== null) seenCounters.add(entryCounter);
       existingEntries.push(entry);
       addedCount += 1;
     }
@@ -687,22 +764,71 @@ function clearPlaceholderState(conversationId) {
 
 function markPlaceholderFailures(conversationId, entries = []) {
   const key = normalizePlaceholderKey(conversationId);
-  if (!key || !Array.isArray(entries) || !entries.length) return { updated: 0 };
+  if (!key || !Array.isArray(entries) || !entries.length) return { updated: 0, added: 0 };
   const state = placeholderStateByConvId.get(key);
-  if (!state || !Array.isArray(state.entries) || !state.entries.length) return { updated: 0 };
+  const existingEntries = state?.entries && Array.isArray(state.entries) ? state.entries : [];
+  const existingIds = new Set(existingEntries.map((entry) => entry?.messageId).filter(Boolean));
+  const existingCounters = new Set(
+    existingEntries
+      .map((entry) => normalizeCounterValue(entry?.counter))
+      .filter((val) => Number.isFinite(val))
+  );
   const failedIds = new Set();
+  const failedCounters = new Set();
+  const newEntries = [];
+  const nowTs = Math.floor(Date.now() / 1000);
   for (const entry of entries) {
     const messageId = normalizePlaceholderMessageId(entry);
+    const counter = normalizePlaceholderCounter(entry);
     if (messageId) failedIds.add(messageId);
+    if (counter !== null) failedCounters.add(counter);
+    const hasId = messageId && existingIds.has(messageId);
+    const hasCounter = counter !== null && existingCounters.has(counter);
+    if (hasId || hasCounter) continue;
+    const tsRaw = Number(entry?.ts ?? entry?.timestamp ?? entry?.createdAt ?? entry?.created_at ?? null);
+    const ts = Number.isFinite(tsRaw) && tsRaw > 0 ? Math.floor(tsRaw) : nowTs;
+    const tsMs = Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null;
+    const tsSeq = Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null;
+    const direction = entry?.direction === 'outgoing' ? 'outgoing' : 'incoming';
+    const safeId = messageId || (counter !== null ? buildPlaceholderCounterId(counter) : null);
+    if (!safeId) continue;
+    newEntries.push({
+      messageId: safeId,
+      counter,
+      direction,
+      directionKnown: true,
+      status: 'failed',
+      ts,
+      tsMs,
+      tsSeq
+    });
+    existingIds.add(safeId);
+    if (counter !== null) existingCounters.add(counter);
   }
-  if (!failedIds.size) return { updated: 0 };
   let updated = 0;
-  for (const placeholder of state.entries) {
-    if (!placeholder?.messageId || placeholder.status === 'failed') continue;
-    if (failedIds.has(placeholder.messageId)) {
-      placeholder.status = 'failed';
-      updated += 1;
+  if (existingEntries.length) {
+    for (const placeholder of existingEntries) {
+      if (!placeholder?.messageId || placeholder.status === 'failed') continue;
+      const placeholderCounter = normalizeCounterValue(placeholder.counter);
+      if (
+        failedIds.has(placeholder.messageId)
+        || (placeholderCounter !== null && failedCounters.has(placeholderCounter))
+      ) {
+        placeholder.status = 'failed';
+        updated += 1;
+      }
     }
+  }
+  let added = 0;
+  if (newEntries.length) {
+    const result = setPlaceholderState({
+      conversationId: key,
+      entries: newEntries,
+      reason: 'decrypt-failed',
+      source: 'placeholder-failure',
+      trace: { mode: 'failure', directionKnownCount: newEntries.length }
+    });
+    added = result?.addedCount || 0;
   }
   if (updated > 0) {
     logCapped('placeholderTrace', {
@@ -711,7 +837,7 @@ function markPlaceholderFailures(conversationId, entries = []) {
       updatedCount: updated
     }, 5);
   }
-  return { updated };
+  return { updated, added };
 }
 
 function addPlaceholderRevealId(conversationId, messageId) {
@@ -748,19 +874,31 @@ function consumePlaceholderBatch(conversationId, entries = []) {
   if (!state || !Array.isArray(entries) || !entries.length) return false;
   const beforeCount = Array.isArray(state.entries) ? state.entries.length : 0;
   const removeCounts = new Map();
+  const removeCounters = new Map();
   for (const entry of entries) {
     const messageId = normalizePlaceholderMessageId(entry);
-    if (!messageId) continue;
-    addPlaceholderRevealId(key, messageId);
-    removeCounts.set(messageId, (removeCounts.get(messageId) || 0) + 1);
+    const counter = normalizePlaceholderCounter(entry);
+    if (messageId) {
+      addPlaceholderRevealId(key, messageId);
+      removeCounts.set(messageId, (removeCounts.get(messageId) || 0) + 1);
+    }
+    if (counter !== null) {
+      removeCounters.set(counter, (removeCounters.get(counter) || 0) + 1);
+    }
   }
   if (!Array.isArray(state.entries)) return false;
   const remaining = [];
   for (const placeholder of state.entries) {
     const messageId = placeholder?.messageId || null;
-    const pending = messageId ? (removeCounts.get(messageId) || 0) : 0;
-    if (pending > 0) {
-      removeCounts.set(messageId, pending - 1);
+    const placeholderCounter = normalizeCounterValue(placeholder?.counter);
+    const pendingId = messageId ? (removeCounts.get(messageId) || 0) : 0;
+    const pendingCounter = placeholderCounter !== null ? (removeCounters.get(placeholderCounter) || 0) : 0;
+    if (pendingId > 0) {
+      removeCounts.set(messageId, pendingId - 1);
+      continue;
+    }
+    if (pendingCounter > 0) {
+      removeCounters.set(placeholderCounter, pendingCounter - 1);
       continue;
     }
     remaining.push(placeholder);
@@ -3379,19 +3517,26 @@ export function initMessagesPane({
     }
   }
 
-  function resolveRenderEntryTsMs(entry) {
-    const tsMsRaw = Number(entry?.tsMs);
-    if (Number.isFinite(tsMsRaw)) return tsMsRaw;
-    const tsRaw = Number(entry?.ts);
-    if (!Number.isFinite(tsRaw)) return 0;
-    if (tsRaw > 10_000_000_000) return tsRaw;
-    return tsRaw * 1000;
-  }
+function resolveRenderEntryTsMs(entry) {
+  const tsMsRaw = Number(entry?.tsMs);
+  if (Number.isFinite(tsMsRaw)) return tsMsRaw;
+  const tsRaw = Number(entry?.ts);
+  if (!Number.isFinite(tsRaw)) return null;
+  if (tsRaw > 10_000_000_000) return tsRaw;
+  return tsRaw * 1000;
+}
 
-  function resolveRenderEntrySeq(entry) {
-    const seqRaw = Number(entry?.tsSeq);
-    return Number.isFinite(seqRaw) ? seqRaw : null;
-  }
+function resolveRenderEntrySeq(entry) {
+  const seqRaw = Number(entry?.tsSeq);
+  return Number.isFinite(seqRaw) ? seqRaw : null;
+}
+
+function resolveRenderEntryCounter(entry) {
+  const direct = normalizeCounterValue(entry?.counter ?? entry?.headerCounter ?? entry?.header_counter);
+  if (direct !== null) return direct;
+  const header = entry?.header && typeof entry.header === 'object' ? entry.header : null;
+  return normalizeCounterValue(header?.n ?? header?.counter);
+}
 
   function buildRenderEntries({ timelineMessages = [], placeholderEntries = [] } = {}) {
     const placeholders = Array.isArray(placeholderEntries) ? placeholderEntries : [];
@@ -3400,6 +3545,11 @@ export function initMessagesPane({
     }
     const timelineList = Array.isArray(timelineMessages) ? timelineMessages : [];
     const existingIds = new Set(timelineList.map((msg) => normalizeTimelineMessageId(msg)).filter(Boolean));
+    const existingCounters = new Set(
+      timelineList
+        .map((msg) => resolveRenderEntryCounter(msg))
+        .filter((val) => Number.isFinite(val))
+    );
     const shimmerIds = new Set();
     const shimmerMax = Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0);
     if (shimmerMax > 0) {
@@ -3412,14 +3562,17 @@ export function initMessagesPane({
     const merged = timelineList.slice();
     for (const entry of placeholders) {
       const messageId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
+      const counter = resolveRenderEntryCounter(entry);
       if (!messageId || existingIds.has(messageId)) continue;
+      if (counter !== null && existingCounters.has(counter)) continue;
       const ts = Number(entry?.ts);
-      if (!Number.isFinite(ts) || ts <= 0) continue;
+      const tsValid = Number.isFinite(ts) && ts > 0;
       merged.push({
         messageId,
+        counter,
         direction: entry?.direction === 'outgoing' ? 'outgoing' : 'incoming',
         status: entry?.status === 'failed' ? 'failed' : 'pending',
-        ts: Math.floor(ts),
+        ts: tsValid ? Math.floor(ts) : null,
         tsMs: Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null,
         tsSeq: Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null,
         placeholder: true,
@@ -3430,7 +3583,15 @@ export function initMessagesPane({
     merged.sort((a, b) => {
       const tsA = resolveRenderEntryTsMs(a);
       const tsB = resolveRenderEntryTsMs(b);
-      if (tsA !== tsB) return tsA - tsB;
+      const hasTsA = tsA !== null;
+      const hasTsB = tsB !== null;
+      if (hasTsA && hasTsB && tsA !== tsB) return tsA - tsB;
+      if (hasTsA !== hasTsB) return hasTsA ? -1 : 1;
+      const counterA = resolveRenderEntryCounter(a);
+      const counterB = resolveRenderEntryCounter(b);
+      if (counterA !== null && counterB !== null && counterA !== counterB) return counterA - counterB;
+      if (counterA !== null && counterB === null) return -1;
+      if (counterA === null && counterB !== null) return 1;
       const seqA = resolveRenderEntrySeq(a);
       const seqB = resolveRenderEntrySeq(b);
       if (seqA !== null && seqB !== null && seqA !== seqB) return seqA - seqB;
@@ -3516,16 +3677,16 @@ export function initMessagesPane({
       conversationId: state.conversationId || null,
       selfDigest
     });
-    const lastDoubleTickId = tickState.lastDoubleTickId || null;
+    const latestOutgoingId = tickState.latestOutgoingId || null;
+    const latestOutgoingDelivered = !!tickState.latestOutgoingDelivered;
     if (uiNoiseEnabled) {
       try {
         if (console?.debug) {
           console.debug('[msg] ' + JSON.stringify({
             event: 'tick:state',
             conversationId: state.conversationId || null,
-            lastUserId: tickState.lastUserId || null,
-            lastUserFromSelf: tickState.lastUserFromSelf,
-            lastDoubleTickId
+            latestOutgoingId,
+            latestOutgoingDelivered
           }));
         }
       } catch {}
@@ -3567,7 +3728,8 @@ export function initMessagesPane({
       const msg = renderEntries[i];
       const currentIndex = renderIndex;
       renderIndex += 1;
-      const tsVal = Number(msg.ts || null);
+      const tsRaw = msg?.ts;
+      const tsVal = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
       const hasTs = Number.isFinite(tsVal);
       const dateKey = hasTs ? new Date(tsVal * 1000).toDateString() : null;
       if (hasTs) {
@@ -3696,18 +3858,23 @@ export function initMessagesPane({
         const delivered = status === 'delivered' || status === 'read';
         const failed = status === 'failed';
         const statusMessageId = msg?.id || msg?.messageId || msg?.localId || null;
+        const isOutgoing = msg.direction === 'outgoing';
+        const isLatestOutgoing = !!(isOutgoing && statusMessageId && latestOutgoingId && statusMessageId === latestOutgoingId);
         if (statusMessageId) statusSpan.dataset.messageId = statusMessageId;
         if (msg.direction === 'incoming') {
           statusSpan.className = 'message-status peer';
-          statusSpan.textContent = '';
-        } else if (pending) {
-          statusSpan.className = 'message-status pending';
           statusSpan.textContent = '';
         } else if (failed) {
           statusSpan.className = 'message-status failed';
           statusSpan.textContent = '!';
           const failureTip = msg?.failureReason || msg?.failureCode || '';
           if (failureTip) statusSpan.title = failureTip;
+        } else if (!isLatestOutgoing) {
+          statusSpan.className = 'message-status hidden';
+          statusSpan.textContent = '';
+        } else if (pending) {
+          statusSpan.className = 'message-status pending';
+          statusSpan.textContent = '';
         } else if (delivered) {
           statusSpan.className = 'message-status delivered';
           statusSpan.textContent = '✓✓';
@@ -4735,6 +4902,7 @@ export function initMessagesPane({
         reasonCode: 'UI_APPEND',
         stage: 'appendLocalOutgoingMessage'
       });
+      pruneNotifyRetryQueueForConversation(convId, messageId);
     }
     try {
       logCapped('outgoingSendTrace', {
@@ -4942,6 +5110,30 @@ export function initMessagesPane({
     updateMessagesUI({ preserveScroll: true, forceFullRender: true });
   }
 
+  function markOlderOutgoingDelivered(conversationId, messageId) {
+    if (!conversationId || !messageId) return false;
+    const timeline = timelineGetTimeline(conversationId);
+    if (!Array.isArray(timeline) || !timeline.length) return false;
+    const targetId = normalizeTimelineMessageId({ id: messageId, messageId });
+    const targetIndex = timeline.findIndex((msg) => normalizeTimelineMessageId(msg) === targetId);
+    if (targetIndex <= 0) return false;
+    let changed = false;
+    for (let i = 0; i < targetIndex; i += 1) {
+      const msg = timeline[i];
+      if (!isUserTimelineMessage(msg)) continue;
+      if (msg.direction !== 'outgoing') continue;
+      const currentStatus = typeof msg.status === 'string' ? msg.status : null;
+      if (currentStatus === 'failed') continue;
+      if (currentStatus !== 'delivered' || msg.pending === true || msg.read === true) {
+        msg.status = 'delivered';
+        msg.pending = false;
+        msg.read = false;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   function applyReceiptState(message) {
     if (!message || message.direction !== 'outgoing' || !message.id) return false;
     const currentStatus = typeof message.status === 'string' ? message.status : null;
@@ -4977,6 +5169,9 @@ export function initMessagesPane({
         finalState: 'DELIVERED',
         attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
       });
+      const cascadeUpdated = isLatestOutgoingForRetry(state.conversationId, message.id)
+        ? markOlderOutgoingDelivered(state.conversationId, message.id)
+        : false;
       if (currentStatus !== 'delivered') {
         logCapped('deliveryAckTrace', {
           stage: 'applied',
@@ -4984,7 +5179,7 @@ export function initMessagesPane({
           conversationId: state.conversationId || null
         });
       }
-      return shouldUpdate;
+      return shouldUpdate || cascadeUpdated;
     }
     if (delivered?.delivered) {
       if (currentStatus === 'failed') return false;
@@ -5014,6 +5209,9 @@ export function initMessagesPane({
         finalState: 'DELIVERED',
         attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
       });
+      const cascadeUpdated = isLatestOutgoingForRetry(state.conversationId, message.id)
+        ? markOlderOutgoingDelivered(state.conversationId, message.id)
+        : false;
       if (currentStatus !== 'delivered') {
         logCapped('deliveryAckTrace', {
           stage: 'applied',
@@ -5021,7 +5219,7 @@ export function initMessagesPane({
           conversationId: state.conversationId || null
         });
       }
-      return shouldUpdate;
+      return shouldUpdate || cascadeUpdated;
     }
     if (currentStatus === 'failed') return false;
     if (currentStatus === 'pending' || message.pending === true) return false;
@@ -5296,8 +5494,10 @@ export function initMessagesPane({
     return Math.max(0, Math.floor(num));
   }
 
+  // Deprecated per-message notify retry flags; only update the latest outgoing for compatibility.
   function updateNotifyRetryMessageState({ conversationId, messageId, attempt = null, finalState = null } = {}) {
     if (!conversationId || !messageId) return null;
+    if (!isLatestOutgoingForRetry(conversationId, messageId)) return null;
     const message = findTimelineMessageById(conversationId, messageId);
     if (!message) return null;
     const normalizedAttempt = normalizeNotifyRetryAttempt(attempt);
@@ -5316,6 +5516,19 @@ export function initMessagesPane({
     for (const key of Array.from(notifyRetryQueue.keys())) {
       if (!key.startsWith(prefix)) continue;
       const entry = notifyRetryQueue.get(key);
+      if (entry?.timerId) {
+        try { clearTimeout(entry.timerId); } catch {}
+      }
+      notifyRetryQueue.delete(key);
+    }
+  }
+
+  function pruneNotifyRetryQueueForConversation(conversationId, keepMessageId = null) {
+    if (!conversationId) return;
+    for (const key of Array.from(notifyRetryQueue.keys())) {
+      const entry = notifyRetryQueue.get(key);
+      if (!entry || entry.conversationId !== conversationId) continue;
+      if (keepMessageId && entry.messageId === keepMessageId) continue;
       if (entry?.timerId) {
         try { clearTimeout(entry.timerId); } catch {}
       }
@@ -5355,6 +5568,10 @@ export function initMessagesPane({
     if (!retryKey) return;
     const entry = notifyRetryQueue.get(retryKey);
     if (!entry) return;
+    if (!isLatestOutgoingForRetry(entry.conversationId, entry.messageId)) {
+      clearNotifyRetryQueueForMessage(entry.conversationId, entry.messageId);
+      return;
+    }
     if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
       finalizeNotifyRetryState({
         conversationId: entry.conversationId,
@@ -5512,6 +5729,7 @@ export function initMessagesPane({
     reasonCode = 'TIMEOUT_WAIT_DELIVERED'
   } = {}) {
     if (!conversationId || !targetAccountDigest) return false;
+    if (messageId && !isLatestOutgoingForRetry(conversationId, messageId)) return false;
     let senderDevice = senderDeviceId || null;
     if (!senderDevice) {
       try { senderDevice = ensureDeviceId(); } catch {}
@@ -5564,6 +5782,10 @@ export function initMessagesPane({
   function scheduleNotifyRetryAttempt(key) {
     const entry = notifyRetryQueue.get(key);
     if (!entry) return;
+    if (!isLatestOutgoingForRetry(entry.conversationId, entry.messageId)) {
+      clearNotifyRetryQueueForMessage(entry.conversationId, entry.messageId);
+      return;
+    }
     if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
       finalizeNotifyRetryState({
         conversationId: entry.conversationId,
@@ -5666,6 +5888,9 @@ export function initMessagesPane({
   } = {}) {
     const key = buildNotifyRetryKey({ conversationId, messageId, targetDeviceId });
     if (!key) return false;
+    const latestId = resolveLatestOutgoingMessageIdForConversation(conversationId);
+    if (!latestId || latestId !== messageId) return false;
+    pruneNotifyRetryQueueForConversation(conversationId, messageId);
     if (notifyRetryQueue.size >= NOTIFY_RETRY_QUEUE_LIMIT) return false;
     if (notifyRetryQueue.has(key)) return false;
     if (isMessageDeliveredForRetry(conversationId, messageId)) return false;
@@ -6063,52 +6288,51 @@ export function initMessagesPane({
     return senderDigest ? senderDigest === selfDigest : msg.direction === 'outgoing';
   }
 
-  function computeDoubleTickState({ timelineMessages, conversationId, selfDigest } = {}) {
+  function resolveLatestOutgoingMessage(timelineMessages, selfDigest) {
     const normalizedSelf = normalizeAccountDigest(selfDigest || null);
-    let lastUserId = null;
-    let lastUserFromSelf = false;
-    let lastDoubleTickId = null;
-    if (!Array.isArray(timelineMessages) || !timelineMessages.length) {
-      return { lastUserId, lastUserFromSelf, lastDoubleTickId };
-    }
+    if (!Array.isArray(timelineMessages) || !timelineMessages.length) return null;
     for (let i = timelineMessages.length - 1; i >= 0; i -= 1) {
       const msg = timelineMessages[i];
       if (!isUserTimelineMessage(msg)) continue;
-      const msgId = msg?.id || msg?.messageId || msg?.serverMessageId || null;
-      if (!lastUserId) {
-        lastUserId = msgId || null;
-        lastUserFromSelf = isOutgoingFromSelf(msg, normalizedSelf);
-        if (!lastUserFromSelf) break;
-      }
-      if (!isOutgoingFromSelf(msg, normalizedSelf) || !msgId || !conversationId) continue;
-      const receipt = getMessageReceipt(conversationId, msgId);
-      const delivered = getMessageDelivery(conversationId, msgId);
-      if (receipt?.read || delivered?.delivered) {
-        lastDoubleTickId = msgId;
-        break;
-      }
+      if (!isOutgoingFromSelf(msg, normalizedSelf)) continue;
+      return msg;
     }
-    return { lastUserId, lastUserFromSelf, lastDoubleTickId };
+    return null;
+  }
+
+  function computeDoubleTickState({ timelineMessages, conversationId, selfDigest } = {}) {
+    const latestOutgoing = resolveLatestOutgoingMessage(timelineMessages, selfDigest);
+    const latestOutgoingId = latestOutgoing?.id || latestOutgoing?.messageId || latestOutgoing?.serverMessageId || null;
+    let latestOutgoingDelivered = false;
+    if (latestOutgoingId && conversationId) {
+      const receipt = getMessageReceipt(conversationId, latestOutgoingId);
+      const delivered = getMessageDelivery(conversationId, latestOutgoingId);
+      latestOutgoingDelivered = !!(receipt?.read || delivered?.delivered);
+    }
+    return { latestOutgoingId, latestOutgoingDelivered };
   }
 
   function computeDoubleTickMessageId(params = {}) {
     const state = computeDoubleTickState(params);
-    return state.lastDoubleTickId || null;
+    return state.latestOutgoingDelivered ? state.latestOutgoingId || null : null;
+  }
+
+  function resolveLatestOutgoingMessageIdForConversation(conversationId) {
+    if (!conversationId) return null;
+    const timeline = timelineGetTimeline(conversationId);
+    let selfDigest = null;
+    try { selfDigest = normalizeAccountDigest(getAccountDigest()); } catch {}
+    const latest = resolveLatestOutgoingMessage(timeline, selfDigest);
+    return latest?.id || latest?.messageId || latest?.serverMessageId || null;
+  }
+
+  function isLatestOutgoingForRetry(conversationId, messageId) {
+    if (!conversationId || !messageId) return false;
+    const latestId = resolveLatestOutgoingMessageIdForConversation(conversationId);
+    return !!(latestId && latestId === messageId);
   }
 
   function resolveNotifyRetryBadge(message) {
-    const attemptRaw = normalizeNotifyRetryAttempt(message?.notifyRetryAttempt);
-    const finalState = typeof message?.notifyRetryFinal === 'string' ? message.notifyRetryFinal : null;
-    if (finalState === 'TIMEOUT') return '✕';
-    const attempt = attemptRaw ?? 0;
-    if (attempt <= 0) return null;
-    if (attempt >= NOTIFY_RETRY_MAX_ATTEMPTS) {
-      return attempt === NOTIFY_RETRY_MAX_ATTEMPTS ? '⑤' : '✕';
-    }
-    if (attempt === 1) return '①';
-    if (attempt === 2) return '②';
-    if (attempt === 3) return '③';
-    if (attempt === 4) return '④';
     return null;
   }
 
@@ -6638,6 +6862,18 @@ export function initMessagesPane({
         nextCursorId: syncResult?.nextCursor?.id ?? null,
         errorsLength: Array.isArray(syncResult?.errors) ? syncResult.errors.length : null
       });
+      const syncErrors = Array.isArray(syncResult?.errors) ? syncResult.errors : [];
+      const syncDeadLetters = Array.isArray(syncResult?.deadLetters) ? syncResult.deadLetters : [];
+      const placeholderFailures = syncErrors.concat(syncDeadLetters).filter((entry) => !isControlBannerEntry(entry));
+      if (placeholderFailures.length) {
+        const failureResult = markPlaceholderFailures(convId, placeholderFailures);
+        if ((failureResult?.updated || 0) > 0 || (failureResult?.added || 0) > 0) {
+          const state = getMessageState();
+          if (state.conversationId === convId) {
+            updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+          }
+        }
+      }
       try {
         if (DEBUG.ws) {
           console.log('[contact-sync:done]', { convId, peerDigest, reason: reason || null });

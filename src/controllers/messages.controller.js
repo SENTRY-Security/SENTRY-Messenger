@@ -719,6 +719,69 @@ export const listSecureMessages = async (req, res) => {
   }
 };
 
+export const getSecureMessageByCounter = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
+  const conversationIdRaw = req.query.conversationId || req.query.conversation_id;
+  if (!conversationIdRaw) {
+    return res.status(400).json({ error: 'BadRequest', message: 'conversationId required' });
+  }
+  const counter = Number(req.query.counter);
+  if (!Number.isFinite(counter)) {
+    return res.status(400).json({ error: 'BadRequest', message: 'counter required' });
+  }
+
+  const account = extractAccountFromRequest(req);
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Token or X-Account-Digest required' });
+  }
+  if (account.accountDigestInvalid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Digest invalid format' });
+  }
+  if (!account.deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Device-Id header required' });
+  }
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: conversationIdRaw,
+      accountToken: account.accountToken,
+      accountDigest: account.accountDigest,
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
+  const params = new URLSearchParams();
+  params.set('conversationId', auth.conversationId);
+  params.set('counter', String(counter));
+  const senderDeviceId = canonDevice(req.query.senderDeviceId || req.query.sender_device_id || null);
+  if (senderDeviceId) params.set('senderDeviceId', senderDeviceId);
+  const senderAccountDigest = canonAccount(req.query.senderAccountDigest || req.query.sender_account_digest || null);
+  if (senderAccountDigest) params.set('senderAccountDigest', senderAccountDigest);
+
+  const path = `/d1/messages/by-counter?${params.toString()}`;
+  const sig = signHmac(path, '', HMAC_SECRET);
+  try {
+    const r = await fetch(`${DATA_API}${path}`, {
+      headers: { 'x-auth': sig }
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    if (!r.ok) {
+      return res.status(r.status === 404 ? 404 : 502).json({ error: 'D1ReadFailed', status: r.status, details: data });
+    }
+    return res.json(data);
+  } catch (err) {
+    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+};
+
 export const getSendState = async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });

@@ -265,6 +265,23 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
   return { r, data };
 }
 
+export async function getSecureMessageByCounter({ conversationId, counter, senderDeviceId, senderAccountDigest } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  if (!Number.isFinite(Number(counter))) throw new Error('counter required');
+  const qs = new URLSearchParams();
+  qs.set('conversationId', conversationId);
+  qs.set('counter', String(counter));
+  if (senderDeviceId) qs.set('senderDeviceId', String(senderDeviceId));
+  const senderDigest = senderAccountDigest ? normalizeAccountDigest(senderAccountDigest) : null;
+  if (senderDigest) qs.set('senderAccountDigest', senderDigest);
+  const url = `/api/v1/messages/by-counter?${qs.toString()}`;
+  const headers = buildAccountHeaders();
+  const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  return { r, data };
+}
+
 export async function deleteSecureConversation({ conversationId, peerAccountDigest, targetDeviceId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   if (!peerAccountDigest) throw new Error('peerAccountDigest required');

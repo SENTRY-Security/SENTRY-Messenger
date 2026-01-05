@@ -2040,6 +2040,57 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
+  if (req.method === 'GET' && url.pathname === '/d1/messages/by-counter') {
+    const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    const counterRaw = url.searchParams.get('counter');
+    const senderDeviceRaw = url.searchParams.get('senderDeviceId') || url.searchParams.get('sender_device_id');
+    const senderDigestRaw = url.searchParams.get('senderAccountDigest') || url.searchParams.get('sender_account_digest');
+    const conversationId = normalizeConversationId(conversationIdRaw);
+    const counter = Number(counterRaw);
+    const senderDeviceId = normalizeDeviceId(senderDeviceRaw || null);
+    const senderAccountDigest = normalizeAccountDigest(senderDigestRaw || null);
+    if (!conversationId || !Number.isFinite(counter)) {
+      return json({ error: 'BadRequest', message: 'conversationId and counter required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    const where = ['conversation_id=?1', 'counter=?2'];
+    const params = [conversationId, counter];
+    if (senderDeviceId) {
+      where.push(`sender_device_id=?${params.length + 1}`);
+      params.push(senderDeviceId);
+    }
+    if (senderAccountDigest) {
+      where.push(`sender_account_digest=?${params.length + 1}`);
+      params.push(senderAccountDigest);
+    }
+    const row = await env.DB.prepare(`
+      SELECT id, conversation_id, sender_account_digest, sender_device_id, receiver_account_digest, receiver_device_id,
+             header_json, ciphertext_b64, counter, created_at
+        FROM messages_secure
+       WHERE ${where.join(' AND ')}
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1
+    `).bind(...params).first();
+    if (!row) {
+      return json({ error: 'NotFound', message: 'message not found' }, { status: 404 });
+    }
+    return json({
+      ok: true,
+      item: {
+        id: row.id,
+        conversation_id: row.conversation_id,
+        sender_account_digest: row.sender_account_digest,
+        sender_device_id: row.sender_device_id,
+        receiver_account_digest: row.receiver_account_digest,
+        receiver_device_id: row.receiver_device_id,
+        header_json: row.header_json,
+        ciphertext_b64: row.ciphertext_b64,
+        counter: row.counter,
+        created_at: row.created_at
+      }
+    });
+  }
+
   // Secure message insert
   if (req.method === 'POST' && url.pathname === '/d1/messages') {
     let body;
