@@ -115,6 +115,8 @@ export function setMessagesWsSender(fn) {
 const decoder = new TextDecoder();
 const secureFetchBackoff = new Map();
 const secureFetchLocks = new Map(); // conversationId -> lock token
+const bRouteRetryPending = new Map(); // conversationId -> { sourceTag, updatedAt }
+let bRouteRetryInFlight = false;
 const tombstonedConversations = new Set(); // legacy; kept for compatibility
 const conversationClearAfter = new Map(); // conversationId -> unix ts to ignore older messages
 const processedMessageCache = new Map(); // conversationId -> Set(messageId)
@@ -295,16 +297,17 @@ export function getConversationClearAfter(conversationId) {
   return Number.isFinite(ts) ? ts : null;
 }
 
-function createSecureFetchLockToken(priority) {
+function createSecureFetchLockToken(priority, owner = null) {
   return {
     id: Symbol('secureFetchLock'),
     priority: priority === 'replay' ? 'replay' : 'live',
+    owner: owner || null,
     cancelled: false,
     cancelReason: null
   };
 }
 
-function acquireSecureFetchLock(conversationId, priority = 'live') {
+function acquireSecureFetchLock(conversationId, priority = 'live', owner = null) {
   const key = String(conversationId);
   const holder = secureFetchLocks.get(key);
   if (holder) {
@@ -312,10 +315,14 @@ function acquireSecureFetchLock(conversationId, priority = 'live') {
       holder.cancelled = true;
       holder.cancelReason = 'yieldToReplay';
     } else {
-      return { granted: false, holderPriority: holder.priority || 'live' };
+      return {
+        granted: false,
+        holderPriority: holder.priority || 'live',
+        holderOwner: holder.owner || null
+      };
     }
   }
-  const token = createSecureFetchLockToken(priority);
+  const token = createSecureFetchLockToken(priority, owner);
   secureFetchLocks.set(key, token);
   return { granted: true, token };
 }
@@ -326,7 +333,35 @@ function releaseSecureFetchLock(conversationId, token) {
   const holder = secureFetchLocks.get(key);
   if (holder && holder.id === token.id) {
     secureFetchLocks.delete(key);
+    schedulePendingBRouteRetry(key);
   }
+}
+
+function queueBRouteRetry(conversationId, sourceTag = null) {
+  if (!conversationId) return;
+  const key = String(conversationId);
+  const rawSource = typeof sourceTag === 'string' ? sourceTag.trim() : '';
+  const cleanedSource = rawSource.startsWith('b-route:') ? rawSource.slice('b-route:'.length) : rawSource;
+  bRouteRetryPending.set(key, {
+    sourceTag: cleanedSource || null,
+    updatedAt: Date.now()
+  });
+}
+
+function schedulePendingBRouteRetry(conversationId) {
+  if (!conversationId) return;
+  const key = String(conversationId);
+  const entry = bRouteRetryPending.get(key);
+  if (!entry) return;
+  bRouteRetryPending.delete(key);
+  if (bRouteRetryInFlight) return;
+  bRouteRetryInFlight = true;
+  Promise.resolve()
+    .then(() => syncOfflineDecryptNow({ source: entry.sourceTag || 'login', reasonCode: 'LOCK_RETRY' }))
+    .catch(() => {})
+    .finally(() => {
+      bRouteRetryInFlight = false;
+    });
 }
 
 function getReceiptStorageKey() {
@@ -1056,7 +1091,9 @@ export async function listSecureAndDecrypt(params = {}) {
     sendReadReceipt = true,
     prefetchedList = null,
     silent = false,
-    priority = 'live'
+    priority = 'live',
+    sourceTag = null,
+    bRoute = false
   } = params;
   const mutateStateRaw = mutateState;
   const allowReplayRaw = mutateState === false ? true : allowReplay;
@@ -1124,6 +1161,9 @@ export async function listSecureAndDecrypt(params = {}) {
   }
   if (!conversationId) throw new Error('conversationId required');
   const requestPriority = priority === 'replay' ? 'replay' : 'live';
+  const lockOwner = (typeof sourceTag === 'string' && sourceTag.trim())
+    ? sourceTag.trim()
+    : (typeof params?.__debugSource === 'string' ? params.__debugSource : null);
   logReplayGateTrace('messages:listSecureAndDecrypt:enter', {
     silent: !!silent,
     priority: requestPriority,
@@ -1154,11 +1194,12 @@ export async function listSecureAndDecrypt(params = {}) {
     err.code = 'MK_MISSING_HARDBLOCK';
     throw err;
   }
-  const buildEmptyResult = (errors = []) => ({
+  const buildEmptyResult = (errors = [], extra = {}) => ({
     items: [],
     nextCursorTs: null,
     nextCursor: null,
     hasMoreAtCursor: false,
+    lockInfo: extra.lockInfo || null,
     errors,
     deadLetters: [],
     receiptUpdates: [],
@@ -1303,18 +1344,35 @@ export async function listSecureAndDecrypt(params = {}) {
     /* ignore */
   }
   const clearAfter = getConversationClearAfter(conversationId);
-  const lockAttempt = acquireSecureFetchLock(conversationId, requestPriority);
+  const lockAttempt = acquireSecureFetchLock(
+    conversationId,
+    requestPriority,
+    lockOwner || requestPriority
+  );
   if (!lockAttempt?.granted || !lockAttempt.token) {
     const reason = requestPriority === 'live' ? 'yieldToReplay' : 'secureFetchLock';
-    logReplayEarlyReturn(reason, { holderPriority: lockAttempt?.holderPriority || null });
+    logReplayEarlyReturn(reason, {
+      holderPriority: lockAttempt?.holderPriority || null,
+      holderOwner: lockAttempt?.holderOwner || null
+    });
     logCapped('secureFetchInFlightTrace', {
       conversationId,
       reason,
       requestPriority,
-      holderPriority: lockAttempt?.holderPriority || null
+      holderPriority: lockAttempt?.holderPriority || null,
+      holderOwner: lockAttempt?.holderOwner || null
     }, 5);
+    if (bRoute === true) {
+      queueBRouteRetry(conversationId, sourceTag || null);
+    }
     emitReplaySummary();
-    return buildEmptyResult(['同步進行中，請稍後再試']);
+    return buildEmptyResult(['同步進行中，請稍後再試'], {
+      lockInfo: {
+        holderPriority: lockAttempt?.holderPriority || null,
+        holderOwner: lockAttempt?.holderOwner || null,
+        requestPriority
+      }
+    });
   }
   const lockToken = lockAttempt.token;
   const buildYieldResult = () => buildEmptyResult(requestPriority === 'live' ? ['同步進行中，請稍後再試'] : []);
@@ -3729,6 +3787,16 @@ function normalizeOfflineSyncSource(source) {
   return OFFLINE_SYNC_SOURCES.has(key) ? key : 'login';
 }
 
+function normalizeBRouteSourceLabel(source) {
+  const key = typeof source === 'string' ? source : '';
+  if (key === 'ws_reconnect') return 'ws_auth_ok';
+  if (key === 'pull_to_refresh') return 'pull';
+  if (key === 'enter_conversation') return 'enter';
+  if (key === 'visibility_resume') return 'visibility';
+  if (key === 'pageshow_resume') return 'pageshow';
+  return key || 'login';
+}
+
 const DECRYPT_UNABLE_REASON_CODES = new Set([
   'DR_STATE_UNAVAILABLE',
   'DR_STATE_CONVERSATION_MISMATCH',
@@ -3736,10 +3804,13 @@ const DECRYPT_UNABLE_REASON_CODES = new Set([
   'MK_MISSING'
 ]);
 
-function resolveCatchupFailReason({ err = null, errors = null } = {}) {
+function resolveCatchupFailReason({ err = null, errors = null, lockInfo = null } = {}) {
+  if (lockInfo) return 'LOCKED';
   const rawCode = err?.code || err?.errorCode || err?.stage || null;
   const code = rawCode ? String(rawCode) : '';
   const message = typeof err?.message === 'string' ? err.message : '';
+  if (code === 'INVITE_SESSION_TOKEN_MISSING' || message.includes('INVITE_SESSION_TOKEN_MISSING')) return 'TOKEN_MISSING';
+  if (message.includes('token') && message.includes('missing')) return 'TOKEN_MISSING';
   if (code === 'DR_STATE_UNAVAILABLE' || message.includes('DR state unavailable')) return 'DR_STATE_UNAVAILABLE';
   if (code === 'DR_STATE_CONVERSATION_MISMATCH' || message.includes('DR state bound to different conversation')) {
     return 'DR_STATE_CONVERSATION_MISMATCH';
@@ -3750,6 +3821,8 @@ function resolveCatchupFailReason({ err = null, errors = null } = {}) {
   if (typeof err?.status === 'number' || (code && code.startsWith('HTTP_')) || message.includes('HTTP')) return 'NETWORK';
   if (Array.isArray(errors)) {
     const sample = errors.map((entry) => (entry?.message || entry)).filter(Boolean).join(' ');
+    if (sample.includes('INVITE_SESSION_TOKEN_MISSING')) return 'TOKEN_MISSING';
+    if (sample.includes('token') && sample.includes('missing')) return 'TOKEN_MISSING';
     if (sample.includes('同步進行中')) return 'LOCKED';
     if (sample.includes('安全對話建立中')) return 'LOCKED';
     if (sample.includes('HTTP')) return 'NETWORK';
@@ -3765,6 +3838,37 @@ function logDecryptUnableTrace({ conversationId, reasonCode, errorMessage, sourc
     error: errorMessage || null,
     source: sourceTag || null
   }, OFFLINE_SYNC_LOG_CAP);
+}
+
+function logBRouteTriggerTrace({ sourceLabel, plannedConvs, reasonCode } = {}) {
+  logCapped('bRouteTriggerTrace', {
+    source: sourceLabel || null,
+    plannedConvs: Array.isArray(plannedConvs) ? plannedConvs : [],
+    reasonCode: reasonCode || null
+  }, 5);
+}
+
+function logBRouteResultTrace({
+  conversationId,
+  itemsFetched = null,
+  decryptOkCount = null,
+  vaultPutIncomingOkCount = null,
+  errorMessage = null
+} = {}) {
+  logCapped('bRouteResultTrace', {
+    conversationIdPrefix8: slicePrefix(conversationId),
+    fetchedItems: Number.isFinite(Number(itemsFetched)) ? Number(itemsFetched) : null,
+    decryptOk: Number.isFinite(Number(decryptOkCount)) ? Number(decryptOkCount) : null,
+    vaultPutIncomingOk: Number.isFinite(Number(vaultPutIncomingOkCount)) ? Number(vaultPutIncomingOkCount) : null,
+    errorMessage: errorMessage || null
+  }, 5);
+}
+
+function emitBRouteResultEvent(detail = {}) {
+  try {
+    if (typeof document === 'undefined' || !document?.dispatchEvent) return;
+    document.dispatchEvent(new CustomEvent('b-route-result', { detail }));
+  } catch {}
 }
 
 function logCatchupTrace({
@@ -3785,21 +3889,30 @@ function logCatchupTrace({
   }, OFFLINE_SYNC_LOG_CAP);
 }
 
-export async function syncOfflineDecryptNow({ source } = {}) {
+export async function syncOfflineDecryptNow({ source, reasonCode } = {}) {
   const sourceTag = normalizeOfflineSyncSource(source);
+  const sourceLabel = normalizeBRouteSourceLabel(sourceTag);
   const cursorStore = restoreOfflineDecryptCursorStore();
   const targets = collectOfflineCatchupTargets();
   const plannedCount = targets.length;
   const conversationIds = targets.map((entry) => slicePrefix(entry?.conversationId)).filter(Boolean).slice(0, OFFLINE_SYNC_LOG_CAP);
+  const reasonRaw = typeof reasonCode === 'string' && reasonCode.trim() ? reasonCode.trim() : null;
   logCapped('offlineCatchupTargetsTrace', {
     source: sourceTag,
     plannedCount,
     sampleConvPrefix8: conversationIds
   }, OFFLINE_SYNC_LOG_CAP);
+  logBRouteTriggerTrace({
+    sourceLabel,
+    plannedConvs: conversationIds,
+    reasonCode: reasonRaw || (plannedCount > 0 ? 'PLANNED' : 'NO_TARGETS')
+  });
   let attemptedCount = 0;
   let successCount = 0;
   let failCount = 0;
   const failures = [];
+  const results = [];
+  const lockedConversations = [];
   for (const target of targets) {
     attemptedCount += 1;
     const convId = target?.conversationId || null;
@@ -3819,8 +3932,11 @@ export async function syncOfflineDecryptNow({ source } = {}) {
         allowReplay: false,
         sendReadReceipt: false,
         silent: true,
-        priority: 'live'
+        priority: 'live',
+        sourceTag: `b-route:${sourceTag}`,
+        bRoute: true
       });
+      const lockInfo = result?.lockInfo || null;
       const errors = Array.isArray(result?.errors) ? result.errors : [];
       const stats = result?.replayStats || {};
       const itemsFetched = stats?.fetchedItems ?? result?.serverItemCount ?? result?.items?.length ?? 0;
@@ -3840,9 +3956,52 @@ export async function syncOfflineDecryptNow({ source } = {}) {
       } else if (cursorStore instanceof Map) {
         cursorStore.delete(String(convId));
       }
+      const failReason = errors.length ? resolveCatchupFailReason({ errors, lockInfo }) : null;
+      let errorMessage = errors.length ? truncateErrorMessage(errors[0]) : null;
+      if (lockInfo?.holderOwner || lockInfo?.holderPriority) {
+        const holderPriority = lockInfo?.holderPriority || 'unknown';
+        const holderOwner = lockInfo?.holderOwner || null;
+        errorMessage = `LOCKED:${holderPriority}${holderOwner ? `:${holderOwner}` : ''}`;
+      }
+      logBRouteResultTrace({
+        conversationId: convId,
+        itemsFetched,
+        decryptOkCount,
+        vaultPutIncomingOkCount,
+        errorMessage: errors.length ? errorMessage : null
+      });
+      results.push({
+        conversationId: convId,
+        itemsFetched,
+        decryptOkCount,
+        vaultPutIncomingOkCount,
+        failReason: failReason || null,
+        errorMessage: errorMessage || null,
+        lockInfo: lockInfo
+          ? {
+              holderPriority: lockInfo?.holderPriority || null,
+              holderOwner: lockInfo?.holderOwner || null
+            }
+          : null
+      });
+      emitBRouteResultEvent({
+        conversationId: convId,
+        source: sourceLabel,
+        fetchedItems: itemsFetched,
+        decryptOk: decryptOkCount,
+        vaultPutIncomingOk: vaultPutIncomingOkCount,
+        failReason: failReason || null,
+        errorMessage: errorMessage || null,
+        lockInfo: lockInfo
+          ? {
+              holderPriority: lockInfo?.holderPriority || null,
+              holderOwner: lockInfo?.holderOwner || null
+            }
+          : null
+      });
+      if (failReason === 'LOCKED') lockedConversations.push(convId);
       if (errors.length) {
         failCount += 1;
-        const failReason = resolveCatchupFailReason({ errors });
         logCatchupTrace({
           conversationId: convId,
           sourceTag,
@@ -3857,7 +4016,6 @@ export async function syncOfflineDecryptNow({ source } = {}) {
           errorMessage: truncateErrorMessage(errors[0]),
           sourceTag
         });
-        const errorMessage = truncateErrorMessage(errors[0]);
         failures.push({
           conversationId: slicePrefix(convId),
           errorMessage: errorMessage || 'listSecureAndDecrypt failed'
@@ -3892,6 +4050,34 @@ export async function syncOfflineDecryptNow({ source } = {}) {
         errorMessage: errorMessage || null,
         sourceTag
       });
+      logBRouteResultTrace({
+        conversationId: convId,
+        itemsFetched: 0,
+        decryptOkCount: 0,
+        vaultPutIncomingOkCount: 0,
+        errorMessage: errorMessage || errorCode || 'listSecureAndDecrypt failed'
+      });
+      results.push({
+        conversationId: convId,
+        itemsFetched: 0,
+        decryptOkCount: 0,
+        vaultPutIncomingOkCount: 0,
+        failReason: failReason || null,
+        errorMessage: errorMessage || null,
+        errorCode: errorCode || null,
+        lockInfo: null
+      });
+      emitBRouteResultEvent({
+        conversationId: convId,
+        source: sourceLabel,
+        fetchedItems: 0,
+        decryptOk: 0,
+        vaultPutIncomingOk: 0,
+        failReason: failReason || null,
+        errorMessage: errorMessage || null,
+        errorCode: errorCode || null,
+        lockInfo: null
+      });
       failures.push({
         conversationId: slicePrefix(convId),
         ...(errorCode ? { errorCode } : { errorMessage: errorMessage || 'listSecureAndDecrypt failed' })
@@ -3909,7 +4095,7 @@ export async function syncOfflineDecryptNow({ source } = {}) {
     failures: failures.slice(0, OFFLINE_SYNC_LOG_CAP)
   }, OFFLINE_SYNC_LOG_CAP);
   await flushPendingVaultPutsNow();
-  return { plannedCount, attemptedCount, successCount, failCount };
+  return { plannedCount, attemptedCount, successCount, failCount, results, lockedConversations };
 }
 
 export async function syncNow(params = {}) {

@@ -3871,6 +3871,8 @@ function wsSend(payload) {
   }
 }
 
+wsSend.isReady = () => !!(wsConn && wsConn.readyState === WebSocket.OPEN);
+
 messagesPane.setWsSend(wsSend);
 setMessagesWsSender(wsSend);
 shareController?.setWsSend?.(wsSend);

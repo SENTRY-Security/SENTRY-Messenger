@@ -1,14 +1,14 @@
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, syncOfflineDecryptNow } from '../../features/messages.js';
+import { OFFLINE_SYNC_LOG_CAP, OUTGOING_STATUS_RECONCILE_ID_LIMIT } from '../../features/messages-sync-policy.js';
 import {
-  OFFLINE_SYNC_LOG_CAP,
-  OUTGOING_STATUS_RECONCILE_ID_LIMIT,
-  NOTIFY_RETRY_INITIAL_DELAY_MS,
+  NOTIFY_RETRY_FIRST_WAIT_MS,
   NOTIFY_RETRY_INTERVAL_MS,
   NOTIFY_RETRY_MAX_ATTEMPTS,
+  NOTIFY_RETRY_QUEUE_LIMIT,
   scheduleNotifyRetryTimeout
-} from '../../features/messages-sync-policy.js';
+} from '../../features/messages-notify-policy.js';
 import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
 import { flushOutbox, retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
@@ -82,6 +82,7 @@ const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0
 const notifyRetryQueue = new Map();
 let outboxHooksRegistered = false;
 let pendingNewMessageHint = false;
+let bRouteResultListenerInstalled = false;
 const uiNoiseEnabled = DEBUG.uiNoise === true;
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 const logReplayCallsite = (name, payload = {}) => {
@@ -836,6 +837,27 @@ export function initMessagesPane({
   const CONV_PULL_MAX = 140;
   const contactSyncInFlight = new Set();
   unsubscribeTimeline = subscribeTimeline(handleTimelineAppend);
+  if (!bRouteResultListenerInstalled && typeof document !== 'undefined') {
+    bRouteResultListenerInstalled = true;
+    document.addEventListener('b-route-result', (event) => {
+      const detail = event?.detail || {};
+      const convId = detail?.conversationId || null;
+      if (!convId) return;
+      const failReason = typeof detail?.failReason === 'string' ? detail.failReason : null;
+      const errorMessage = typeof detail?.errorMessage === 'string' ? detail.errorMessage : null;
+      const locked = failReason === 'LOCKED' || (errorMessage && errorMessage.startsWith('LOCKED:'));
+      if (locked || (!failReason && !errorMessage)) return;
+      const placeholders = getPlaceholderEntries(convId);
+      if (!placeholders.length) return;
+      const result = markPlaceholderFailures(convId, placeholders);
+      if (result.updated > 0) {
+        const state = getMessageState();
+        if (state.conversationId === convId) {
+          updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+        }
+      }
+    });
+  }
 
   const normalizeDigestString = (value) => {
     const identity = normalizePeerIdentity(value);
@@ -1805,7 +1827,8 @@ export function initMessagesPane({
             mutateState: false,
             sendReadReceipt: false,
             onMessageDecrypted: null,
-            silent: true
+            silent: true,
+            sourceTag: 'messages-pane:refreshConversationPreviews'
           });
           logReplayFetchResult({
             conversationId: thread.conversationId,
@@ -3505,7 +3528,8 @@ export function initMessagesPane({
           statusSpan.textContent = '✓✓';
         } else {
           statusSpan.className = 'message-status sent';
-          statusSpan.textContent = '✓';
+          const retryBadge = resolveNotifyRetryBadge(msg);
+          statusSpan.textContent = retryBadge ? `✓${retryBadge}` : '✓';
         }
         metaRow.appendChild(statusSpan);
       }
@@ -3725,6 +3749,9 @@ export function initMessagesPane({
         priority: requestPriority,
         silent: !!silent,
         onMessageDecrypted,
+        sourceTag: reason
+          ? `messages-pane:loadActiveConversationMessages:${reason}`
+          : 'messages-pane:loadActiveConversationMessages',
         prefetchedList: prefetch
           ? {
               items: Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [],
@@ -4575,6 +4602,7 @@ export function initMessagesPane({
     let incomingCount = 0;
     let playedSound = false;
     for (const item of batchEntries) {
+      if (!isUserTimelineMessage(item)) continue;
       thread.lastMessageText = item.text || item.error || '';
       thread.lastMessageTs = typeof item.ts === 'number' ? item.ts : thread.lastMessageTs || null;
       thread.lastMessageId = item.messageId || item.id || thread.lastMessageId || null;
@@ -4615,6 +4643,7 @@ export function initMessagesPane({
 
     if (!isActive) {
       for (const item of batchEntries) {
+        if (!isUserTimelineMessage(item)) continue;
         if (item.direction !== 'incoming') continue;
         const shouldNotify = shouldNotifyForMessage({
           computedIsHistoryReplay: !!item?.isHistoryReplay,
@@ -4745,6 +4774,12 @@ export function initMessagesPane({
       message.read = true;
       message.status = 'delivered';
       message.pending = false;
+      finalizeNotifyRetryState({
+        conversationId: state.conversationId,
+        messageId: message.id,
+        finalState: 'DELIVERED',
+        attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
+      });
       if (currentStatus !== 'delivered') {
         logCapped('deliveryAckTrace', {
           stage: 'applied',
@@ -4776,6 +4811,12 @@ export function initMessagesPane({
       message.read = false;
       message.status = 'delivered';
       message.pending = false;
+      finalizeNotifyRetryState({
+        conversationId: state.conversationId,
+        messageId: message.id,
+        finalState: 'DELIVERED',
+        attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
+      });
       if (currentStatus !== 'delivered') {
         logCapped('deliveryAckTrace', {
           stage: 'applied',
@@ -4809,6 +4850,12 @@ export function initMessagesPane({
     message.pending = false;
     if (nextStatus === 'delivered') {
       if (message.read !== true) message.read = false;
+      finalizeNotifyRetryState({
+        conversationId: message.conversationId || null,
+        messageId: resolveOutgoingStatusMessageId(message),
+        finalState: 'DELIVERED',
+        attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
+      });
     } else {
       message.read = false;
     }
@@ -5046,6 +5093,125 @@ export function initMessagesPane({
     return message.includes('CounterTooLow');
   }
 
+  function normalizeNotifyRetryAttempt(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    return Math.max(0, Math.floor(num));
+  }
+
+  function updateNotifyRetryMessageState({ conversationId, messageId, attempt = null, finalState = null } = {}) {
+    if (!conversationId || !messageId) return null;
+    const message = findTimelineMessageById(conversationId, messageId);
+    if (!message) return null;
+    const normalizedAttempt = normalizeNotifyRetryAttempt(attempt);
+    if (normalizedAttempt !== null) message.notifyRetryAttempt = normalizedAttempt;
+    if (finalState === null) {
+      if (message.notifyRetryFinal) message.notifyRetryFinal = null;
+    } else if (typeof finalState === 'string') {
+      message.notifyRetryFinal = finalState;
+    }
+    return message;
+  }
+
+  function clearNotifyRetryQueueForMessage(conversationId, messageId) {
+    if (!conversationId || !messageId) return;
+    const prefix = `${conversationId}::${messageId}::`;
+    for (const key of Array.from(notifyRetryQueue.keys())) {
+      if (!key.startsWith(prefix)) continue;
+      const entry = notifyRetryQueue.get(key);
+      if (entry?.timerId) {
+        try { clearTimeout(entry.timerId); } catch {}
+      }
+      notifyRetryQueue.delete(key);
+    }
+  }
+
+  function finalizeNotifyRetryState({ conversationId, messageId, finalState, attemptsUsed } = {}) {
+    if (!conversationId || !messageId || !finalState) return;
+    const existing = findTimelineMessageById(conversationId, messageId);
+    if (existing?.notifyRetryFinal === finalState) return;
+    const message = updateNotifyRetryMessageState({
+      conversationId,
+      messageId,
+      attempt: attemptsUsed ?? null,
+      finalState
+    });
+    clearNotifyRetryQueueForMessage(conversationId, messageId);
+    logNotifyRetryFinalTrace({
+      conversationId,
+      messageId,
+      finalState,
+      attemptsUsed
+    });
+    if (finalState === 'TIMEOUT') {
+      logOutgoingSentAwaitTrace({
+        conversationId,
+        messageId,
+        currentStatus: 'sent',
+        deliveredKnown: false,
+        retryState: 'failed'
+      });
+    }
+    const state = getMessageState();
+    if (message && state.conversationId === conversationId) {
+      updateMessagesStatusUI();
+    }
+  }
+
+  function logNotifyRetryScheduleTrace({ conversationId, messageId, attemptMax, intervalMs, reasonCode } = {}) {
+    logCapped('notifyRetryScheduleTrace', {
+      messageId: messageId || null,
+      convIdPrefix8: sliceConversationIdPrefix(conversationId),
+      attemptMax: Number.isFinite(Number(attemptMax)) ? Number(attemptMax) : null,
+      intervalMs: Number.isFinite(Number(intervalMs)) ? Number(intervalMs) : null,
+      reasonCode: reasonCode || null
+    }, 5);
+  }
+
+  function logNotifyRetryAttemptTrace({
+    conversationId,
+    messageId,
+    attemptIndex,
+    wsReady,
+    sentOk,
+    reasonCode
+  } = {}) {
+    logCapped('notifyRetryAttemptTrace', {
+      messageId: messageId || null,
+      convIdPrefix8: sliceConversationIdPrefix(conversationId),
+      attemptIndex: Number.isFinite(Number(attemptIndex)) ? Number(attemptIndex) : null,
+      wsReady: typeof wsReady === 'boolean' ? wsReady : null,
+      sentOk: typeof sentOk === 'boolean' ? sentOk : null,
+      reasonCode: reasonCode || null
+    }, 5);
+  }
+
+  function logNotifyRetryFinalTrace({ conversationId, messageId, finalState, attemptsUsed } = {}) {
+    logCapped('notifyRetryFinalTrace', {
+      messageId: messageId || null,
+      convIdPrefix8: sliceConversationIdPrefix(conversationId),
+      finalState: finalState || null,
+      attemptsUsed: Number.isFinite(Number(attemptsUsed)) ? Number(attemptsUsed) : null
+    }, 5);
+  }
+
+  function logOutgoingSentAwaitTrace({ conversationId, messageId, currentStatus, deliveredKnown, retryState } = {}) {
+    logCapped('outgoingSentAwaitTrace', {
+      messageId: messageId || null,
+      currentStatus: currentStatus || null,
+      deliveredKnown: typeof deliveredKnown === 'boolean' ? deliveredKnown : null,
+      retryState: retryState ?? null,
+      convIdPrefix8: sliceConversationIdPrefix(conversationId)
+    }, 5);
+  }
+
+  function resolveWsReadyForRetry() {
+    try {
+      if (typeof wsSendFn?.isReady === 'function') return !!wsSendFn.isReady();
+    } catch {}
+    return null;
+  }
+
   function buildNotifyRetryKey({ conversationId, messageId, targetDeviceId } = {}) {
     if (!conversationId || !messageId || !targetDeviceId) return null;
     return `${conversationId}::${messageId}::${targetDeviceId}`;
@@ -5122,14 +5288,27 @@ export function initMessagesPane({
     if (!entry) return;
     if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
       notifyRetryQueue.delete(key);
+      finalizeNotifyRetryState({
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+        finalState: 'DELIVERED',
+        attemptsUsed: entry.attempt
+      });
       return;
     }
     const nextAttempt = entry.attempt + 1;
     if (nextAttempt > NOTIFY_RETRY_MAX_ATTEMPTS) {
       notifyRetryQueue.delete(key);
+      finalizeNotifyRetryState({
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+        finalState: 'TIMEOUT',
+        attemptsUsed: entry.attempt
+      });
       return;
     }
-    sendMessageNewNotify({
+    const wsReady = resolveWsReadyForRetry();
+    const sentOk = sendMessageNewNotify({
       conversationId: entry.conversationId,
       messageId: entry.messageId,
       targetAccountDigest: entry.targetAccountDigest,
@@ -5140,16 +5319,41 @@ export function initMessagesPane({
       attempt: nextAttempt,
       reasonCode: 'TIMEOUT_WAIT_DELIVERED'
     });
+    logNotifyRetryAttemptTrace({
+      conversationId: entry.conversationId,
+      messageId: entry.messageId,
+      attemptIndex: nextAttempt,
+      wsReady,
+      sentOk,
+      reasonCode: sentOk ? 'TIMEOUT_WAIT_DELIVERED' : 'WS_SEND_ERROR'
+    });
     entry.attempt = nextAttempt;
     entry.updatedAt = Date.now();
+    const message = updateNotifyRetryMessageState({
+      conversationId: entry.conversationId,
+      messageId: entry.messageId,
+      attempt: nextAttempt,
+      finalState: null
+    });
+    const state = getMessageState();
+    if (message && state.conversationId === entry.conversationId) {
+      updateMessagesStatusUI();
+    }
     if (nextAttempt < NOTIFY_RETRY_MAX_ATTEMPTS) {
       entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), NOTIFY_RETRY_INTERVAL_MS);
     } else {
       notifyRetryQueue.delete(key);
+      finalizeNotifyRetryState({
+        conversationId: entry.conversationId,
+        messageId: entry.messageId,
+        finalState: 'TIMEOUT',
+        attemptsUsed: nextAttempt
+      });
     }
   }
 
   function enqueueNotifyRetry({
+    message,
     conversationId,
     messageId,
     targetAccountDigest,
@@ -5160,6 +5364,7 @@ export function initMessagesPane({
   } = {}) {
     const key = buildNotifyRetryKey({ conversationId, messageId, targetDeviceId });
     if (!key) return false;
+    if (notifyRetryQueue.size >= NOTIFY_RETRY_QUEUE_LIMIT) return false;
     if (notifyRetryQueue.has(key)) return false;
     if (isMessageDeliveredForRetry(conversationId, messageId)) return false;
     const entry = {
@@ -5176,7 +5381,29 @@ export function initMessagesPane({
       timerId: null
     };
     notifyRetryQueue.set(key, entry);
-    entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), NOTIFY_RETRY_INITIAL_DELAY_MS);
+    entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), NOTIFY_RETRY_FIRST_WAIT_MS);
+    const messageState = message || updateNotifyRetryMessageState({
+      conversationId,
+      messageId,
+      attempt: 0,
+      finalState: null
+    });
+    if (messageState) {
+      logOutgoingSentAwaitTrace({
+        conversationId,
+        messageId,
+        currentStatus: messageState?.status || 'sent',
+        deliveredKnown: isMessageDeliveredForRetry(conversationId, messageId),
+        retryState: 0
+      });
+    }
+    logNotifyRetryScheduleTrace({
+      conversationId,
+      messageId,
+      attemptMax: NOTIFY_RETRY_MAX_ATTEMPTS,
+      intervalMs: NOTIFY_RETRY_INTERVAL_MS,
+      reasonCode: 'ON_SENT'
+    });
     return true;
   }
 
@@ -5213,6 +5440,19 @@ export function initMessagesPane({
     message.pending = false;
     message.failureReason = null;
     message.failureCode = null;
+    updateNotifyRetryMessageState({
+      conversationId: message.conversationId || null,
+      messageId: finalId,
+      attempt: 0,
+      finalState: null
+    });
+    logOutgoingSentAwaitTrace({
+      conversationId: message.conversationId || null,
+      messageId: finalId,
+      currentStatus: 'sent',
+      deliveredKnown: isMessageDeliveredForRetry(message.conversationId || null, finalId),
+      retryState: 0
+    });
     const ts = res?.msg?.ts || res?.created_at || res?.createdAt || fallbackTs;
     if (Number.isFinite(ts)) message.ts = ts;
     logOutgoingUiStatusTrace({
@@ -5242,6 +5482,7 @@ export function initMessagesPane({
         || null;
       if (convId && finalId && targetAccountDigest && targetDeviceId) {
         enqueueNotifyRetry({
+          message,
           conversationId: convId,
           messageId: finalId,
           targetAccountDigest,
@@ -5550,6 +5791,18 @@ export function initMessagesPane({
   function computeDoubleTickMessageId(params = {}) {
     const state = computeDoubleTickState(params);
     return state.lastDoubleTickId || null;
+  }
+
+  function resolveNotifyRetryBadge(message) {
+    const attemptRaw = normalizeNotifyRetryAttempt(message?.notifyRetryAttempt);
+    const finalState = typeof message?.notifyRetryFinal === 'string' ? message.notifyRetryFinal : null;
+    if (finalState === 'TIMEOUT') return '✕';
+    const attempt = attemptRaw ?? 0;
+    if (attempt >= NOTIFY_RETRY_MAX_ATTEMPTS) return '✕';
+    if (attempt <= 0) return '➀';
+    if (attempt === 1) return '➁';
+    if (attempt === 2) return '➂';
+    return '✕';
   }
 
 
@@ -6065,7 +6318,10 @@ export function initMessagesPane({
         allowReplay: false,
         sendReadReceipt: false,
         onMessageDecrypted: () => {},
-        silent: false
+        silent: false,
+        sourceTag: reason
+          ? `messages-pane:syncContactConversation:${reason}`
+          : 'messages-pane:syncContactConversation'
       });
       logReplayFetchResult({
         conversationId: convId || null,
