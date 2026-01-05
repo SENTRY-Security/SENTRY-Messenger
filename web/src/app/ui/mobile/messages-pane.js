@@ -799,6 +799,7 @@ export function initMessagesPane({
     conversationRefreshLabelEl: dom.conversationRefreshLabelEl ?? document.querySelector('#conversationRefresh .label'),
     createGroupBtn: dom.createGroupBtn ?? document.getElementById('btnCreateGroup'),
     groupDraftsEl: dom.groupDraftsEl ?? document.getElementById('groupDrafts'),
+    messagesWsIndicator: dom.messagesWsIndicatorEl ?? document.getElementById('messagesWsIndicator'),
     messagesPlaceholders: dom.messagesPlaceholdersEl ?? document.getElementById('messagePlaceholders'),
     messagesList: dom.messagesListEl ?? document.getElementById('messagesList'),
     messagesEmpty: dom.messagesEmptyEl ?? document.getElementById('messagesEmpty'),
@@ -837,6 +838,7 @@ export function initMessagesPane({
   let conversationPullDistance = 0;
   let conversationsRefreshing = false;
   let suppressInputBlurOnce = false;
+  let wsIndicatorObserver = null;
   const CONV_PULL_THRESHOLD = 60;
   const CONV_PULL_MAX = 140;
   const contactSyncInFlight = new Set();
@@ -2475,6 +2477,28 @@ export function initMessagesPane({
     const scroller = elements.scrollEl;
     if (!scroller) return;
     scroller.style.overflowY = 'auto';
+  }
+
+  function syncMessagesWsIndicator() {
+    if (!elements.messagesWsIndicator) return;
+    const source = document.getElementById('connectionIndicator');
+    if (!source) return;
+    elements.messagesWsIndicator.classList.remove('online', 'connecting');
+    if (source.classList.contains('online')) {
+      elements.messagesWsIndicator.classList.add('online');
+    } else if (source.classList.contains('connecting')) {
+      elements.messagesWsIndicator.classList.add('connecting');
+    }
+  }
+
+  function ensureMessagesWsIndicatorMirror() {
+    if (!elements.messagesWsIndicator) return;
+    const source = document.getElementById('connectionIndicator');
+    if (!source) return;
+    syncMessagesWsIndicator();
+    if (wsIndicatorObserver || typeof MutationObserver === 'undefined') return;
+    wsIndicatorObserver = new MutationObserver(() => syncMessagesWsIndicator());
+    wsIndicatorObserver.observe(source, { attributes: true, attributeFilter: ['class'] });
   }
 
   function renderConversationList() {
@@ -7129,6 +7153,7 @@ export function initMessagesPane({
   function ensureSetup() {
     if (!elements.pane) elements.pane = document.querySelector('.messages-pane');
     if (elements.pane) elements.pane.style.overscrollBehavior = 'contain';
+    if (!elements.messagesWsIndicator) elements.messagesWsIndicator = document.getElementById('messagesWsIndicator');
     if (!elements.messagesPlaceholders) elements.messagesPlaceholders = document.getElementById('messagePlaceholders');
     if (!elements.messagesList) elements.messagesList = document.getElementById('messagesList');
     if (!elements.messagesEmpty) elements.messagesEmpty = document.getElementById('messagesEmpty');
@@ -7137,6 +7162,7 @@ export function initMessagesPane({
     if (!elements.loadMoreBtn) elements.loadMoreBtn = document.getElementById('messagesLoadMore');
     if (!elements.loadMoreLabel) elements.loadMoreLabel = document.querySelector('#messagesLoadMore .label');
     if (!elements.loadMoreSpinner) elements.loadMoreSpinner = document.querySelector('#messagesLoadMore .spinner');
+    ensureMessagesWsIndicatorMirror();
     startViewportGuard();
   }
 

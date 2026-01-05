@@ -40,6 +40,8 @@
       .connection-indicator .dot { width:10px; height:10px; border-radius:999px; background:#ef4444; box-shadow:0 0 0 1px rgba(15,23,42,0.08); transition:background .2s ease, box-shadow .2s ease; }
       .connection-indicator.online .dot { background:#22c55e; box-shadow:0 0 0 1px rgba(34,197,94,0.4); }
       .connection-indicator.connecting .dot { background:#f97316; box-shadow:0 0 0 1px rgba(249,115,22,0.35); }
+      .messages-ws-indicator { justify-content:center; width:16px; height:16px; }
+      .messages-ws-indicator .dot { width:8px; height:8px; }
       .user-menu { position:relative; }
       .user-avatar-btn { width:36px; height:36px; border-radius:50%; border:1px solid rgba(15,23,42,0.08); background:#f8fafc; padding:0; display:inline-flex; align-items:center; justify-content:center; overflow:visible; box-shadow:0 6px 18px rgba(15,23,42,0.12); cursor:pointer; transition:transform .16s ease, box-shadow .16s ease; }
       .user-avatar-btn:active { transform:scale(0.97); }
@@ -819,6 +821,7 @@
                   <span id="messagesStatus" class="status"></span>
                 </div>
                 <div class="messages-actions">
+                  <span id="messagesWsIndicator" class="connection-indicator messages-ws-indicator" aria-hidden="true"><span class="dot" aria-hidden="true"></span></span>
                   <button id="messagesCallBtn" type="button" class="messages-action-btn" aria-label="語音通話" title="語音通話" disabled><i class='bx bx-phone'></i></button>
                 </div>
               </div>
