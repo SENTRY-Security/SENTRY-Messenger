@@ -1,7 +1,7 @@
 // Client-only append-only timeline store for user messages.
 import { logCapped } from '../core/log.js';
 
-const USER_MESSAGE_TYPES = new Set(['text', 'media', 'call-log']);
+const USER_MESSAGE_TYPES = new Set(['text', 'media', 'call-log', 'placeholder']);
 const timelineMap = new Map(); // conversationId -> Map(messageId -> entry)
 const appendListeners = new Set();
 
@@ -23,6 +23,11 @@ function normalizeMsgType(value) {
   return lower || null;
 }
 
+function normalizeCounterValue(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
 function resolveEntryTsMs(entry) {
   const tsMsRaw = Number(entry?.tsMs);
   if (Number.isFinite(tsMsRaw)) return tsMsRaw;
@@ -35,6 +40,22 @@ function resolveEntryTsMs(entry) {
 function resolveEntrySeq(entry) {
   const seqRaw = Number(entry?.tsSeq);
   return Number.isFinite(seqRaw) ? seqRaw : null;
+}
+
+function resolveEntryCounter(entry) {
+  const direct = normalizeCounterValue(entry?.counter ?? entry?.headerCounter ?? entry?.header_counter);
+  if (direct !== null) return direct;
+  const header = entry?.header && typeof entry.header === 'object' ? entry.header : null;
+  return normalizeCounterValue(header?.n ?? header?.counter);
+}
+
+function resolveEntrySenderDeviceId(entry) {
+  return entry?.senderDeviceId
+    || entry?.sender_device_id
+    || entry?.meta?.senderDeviceId
+    || entry?.meta?.sender_device_id
+    || entry?.header?.device_id
+    || null;
 }
 
 function emitAppend(event) {
@@ -174,6 +195,73 @@ export function appendBatch(entries = [], opts = {}) {
   return { appendedCount: appendedEntries.length, skippedCount, appendedEntries };
 }
 
+export function upsertTimelineEntry(conversationId, entry = {}) {
+  const convId = normalizeConversationId(conversationId);
+  const messageId = normalizeMessageId(entry.messageId || entry.id);
+  const msgType = normalizeMsgType(entry.msgType || entry.type || entry.subtype);
+  if (!convId || !messageId) return { ok: false };
+  if (msgType && !USER_MESSAGE_TYPES.has(msgType)) return { ok: false };
+  let convMap = timelineMap.get(convId);
+  if (!convMap) {
+    convMap = new Map();
+    timelineMap.set(convId, convMap);
+  }
+  const existing = convMap.get(messageId) || null;
+  const stored = (entry && typeof entry === 'object') ? entry : {};
+  const merged = existing ? { ...existing, ...stored } : { ...stored };
+  merged.conversationId = convId;
+  merged.messageId = messageId;
+  merged.msgType = msgType || merged.msgType || merged.type || null;
+  convMap.set(messageId, merged);
+  emitAppend({ conversationId: convId, entry: merged, updated: !!existing });
+  return { ok: true, updated: !!existing, entry: merged };
+}
+
+export function findTimelineEntryByCounter(conversationId, counter) {
+  const convId = normalizeConversationId(conversationId);
+  if (!convId || !Number.isFinite(counter)) return null;
+  const convMap = timelineMap.get(convId);
+  if (!(convMap instanceof Map)) return null;
+  for (const entry of convMap.values()) {
+    if (resolveEntryCounter(entry) === counter) return entry;
+  }
+  return null;
+}
+
+export function replaceTimelineEntryByCounter(conversationId, counter, entry = {}) {
+  const convId = normalizeConversationId(conversationId);
+  if (!convId || !Number.isFinite(counter)) return { ok: false };
+  let convMap = timelineMap.get(convId);
+  let replaced = false;
+  if (convMap instanceof Map) {
+    for (const [key, existing] of convMap.entries()) {
+      if (resolveEntryCounter(existing) === counter) {
+        convMap.delete(key);
+        replaced = true;
+        break;
+      }
+    }
+  }
+  const result = upsertTimelineEntry(convId, entry);
+  return { ok: !!result?.ok, replaced, entry: result?.entry || null };
+}
+
+export function updateTimelineEntryStatusByCounter(conversationId, counter, status, { reason = null } = {}) {
+  const convId = normalizeConversationId(conversationId);
+  if (!convId || !Number.isFinite(counter)) return false;
+  const convMap = timelineMap.get(convId);
+  if (!(convMap instanceof Map)) return false;
+  for (const [key, entry] of convMap.entries()) {
+    if (resolveEntryCounter(entry) !== counter) continue;
+    const updated = { ...entry, status };
+    if (reason) updated.error = reason;
+    convMap.set(key, updated);
+    emitAppend({ conversationId: convId, entry: updated, updated: true });
+    return true;
+  }
+  return false;
+}
+
 export function hasMessage(conversationId, messageId) {
   const convId = normalizeConversationId(conversationId);
   const mid = normalizeMessageId(messageId);
@@ -193,9 +281,13 @@ export function getTimeline(conversationId) {
     const tsA = resolveEntryTsMs(a);
     const tsB = resolveEntryTsMs(b);
     if (tsA !== tsB) return tsA - tsB;
-    const seqA = resolveEntrySeq(a);
-    const seqB = resolveEntrySeq(b);
-    if (seqA !== null && seqB !== null && seqA !== seqB) return seqA - seqB;
+    const counterA = resolveEntryCounter(a);
+    const counterB = resolveEntryCounter(b);
+    const senderA = resolveEntrySenderDeviceId(a);
+    const senderB = resolveEntrySenderDeviceId(b);
+    if (senderA && senderB && senderA === senderB && counterA !== null && counterB !== null && counterA !== counterB) {
+      return counterA - counterB;
+    }
     const idA = normalizeMessageId(a?.messageId || a?.id) || '';
     const idB = normalizeMessageId(b?.messageId || b?.id) || '';
     return idA.localeCompare(idB);

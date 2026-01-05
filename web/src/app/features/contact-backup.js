@@ -199,10 +199,10 @@ export async function triggerContactSecretsBackup(
     }
     return false;
   }
-  const snapshot = latestPersistDetail || buildContactSecretsSnapshot();
-  const summary = snapshot?.summary || null;
-  const entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
-  const withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
+  let snapshot = latestPersistDetail || buildContactSecretsSnapshot();
+  let summary = snapshot?.summary || null;
+  let entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
+  let withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
   if (!snapshot?.payload) {
     if (!isForced) {
       logCapped('contactSecretsBackupSkippedTrace', {
@@ -216,7 +216,25 @@ export async function triggerContactSecretsBackup(
     }
     return false;
   }
-  if (entryCount > 0 && withDrState === 0 && !isForced && !allowWithoutDrState) {
+  let shouldSkipForNoDrState = entryCount > 0 && withDrState === 0 && !isForced && !allowWithoutDrState;
+  if (shouldSkipForNoDrState) {
+    const refreshed = buildContactSecretsSnapshot();
+    const refreshedSummary = refreshed?.summary || null;
+    const refreshedEntries = Number.isFinite(Number(refreshedSummary?.entries)) ? Number(refreshedSummary.entries) : null;
+    const refreshedWithDrState = Number.isFinite(Number(refreshedSummary?.withDrState))
+      ? Number(refreshedSummary.withDrState)
+      : null;
+    snapshot = refreshed || snapshot;
+    summary = refreshedSummary || summary;
+    entryCount = refreshedEntries !== null ? refreshedEntries : entryCount;
+    withDrState = refreshedWithDrState !== null ? refreshedWithDrState : withDrState;
+    if (refreshedWithDrState === null) {
+      shouldSkipForNoDrState = false;
+    } else if (refreshedWithDrState > 0) {
+      shouldSkipForNoDrState = false;
+    }
+  }
+  if (shouldSkipForNoDrState) {
     logCapped('contactSecretsBackupSkippedTrace', {
       reason,
       sourceTag: sourceTag || reason || null,

@@ -5,6 +5,10 @@ export const OFFLINE_CATCHUP_CONVERSATION_LIMIT = 5;
 export const OFFLINE_CATCHUP_MESSAGE_LIMIT = 50;
 // Coalesce resume triggers (visibility/pageshow) to avoid duplicate sync bursts.
 export const OFFLINE_SYNC_TRIGGER_COALESCE_MS = 1000;
+// Cap server catch-up probes to a small set of recent conversations.
+export const SERVER_CATCHUP_CONVERSATION_LIMIT = 5;
+// Debounce server catch-up triggers to coalesce bursty resume events.
+export const SERVER_CATCHUP_TRIGGER_COALESCE_MS = 500;
 // Limit outgoing-status reconciliation batch size to keep requests lightweight.
 export const OUTGOING_STATUS_RECONCILE_ID_LIMIT = 50;
 export const PENDING_VAULT_PUT_QUEUE_LIMIT = 500;

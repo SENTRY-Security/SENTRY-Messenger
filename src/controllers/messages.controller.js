@@ -719,6 +719,77 @@ export const listSecureMessages = async (req, res) => {
   }
 };
 
+export const getSecureMaxCounter = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
+  const conversationIdRaw = req.query.conversationId || req.query.conversation_id;
+  if (!conversationIdRaw || String(conversationIdRaw).trim().length < 8) {
+    return res.status(400).json({ error: 'BadRequest', message: 'conversationId required' });
+  }
+  const senderDeviceId = canonDevice(req.query.senderDeviceId || req.query.sender_device_id || null);
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId required' });
+  }
+
+  const account = extractAccountFromRequest(req);
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Token or X-Account-Digest required' });
+  }
+  if (account.accountDigestInvalid) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Account-Digest invalid format' });
+  }
+  if (!account.deviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'X-Device-Id header required' });
+  }
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: conversationIdRaw,
+      accountToken: account.accountToken,
+      accountDigest: account.accountDigest,
+      deviceId: account.deviceId || null,
+      requireDeviceId: true
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
+  const path = '/d1/messages/secure/max-counter';
+  const body = JSON.stringify({
+    conversationId: auth.conversationId,
+    senderDeviceId
+  });
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  try {
+    const r = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    if (!r.ok) {
+      return res.status(502).json({ error: 'D1ReadFailed', status: r.status, details: data });
+    }
+    const maxCounterRaw = data?.maxCounter ?? data?.max_counter ?? null;
+    const maxCounter = Number.isFinite(Number(maxCounterRaw)) ? Number(maxCounterRaw) : null;
+    const tsRaw = data?.ts ?? data?.serverTime ?? data?.server_time ?? null;
+    const ts = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
+    return res.json({
+      conversationId: auth.conversationId,
+      senderDeviceId,
+      maxCounter,
+      ts
+    });
+  } catch (err) {
+    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+};
+
 export const getSecureMessageByCounter = async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });

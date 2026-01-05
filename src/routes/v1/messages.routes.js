@@ -5,6 +5,7 @@ import {
   createSecureMessage,
   listMessages,
   listSecureMessages,
+  getSecureMaxCounter,
   getSecureMessageByCounter,
   getSendState,
   listOutgoingStatus,
@@ -25,6 +26,9 @@ r.get('/conversations/:convId/messages', asyncH(listMessages));
 
 // GET /api/v1/messages/secure?conversationId=
 r.get('/messages/secure', asyncH(listSecureMessages));
+
+// GET /api/v1/messages/secure/max-counter?conversationId=&senderDeviceId=
+r.get('/messages/secure/max-counter', asyncH(getSecureMaxCounter));
 
 // GET /api/v1/messages/by-counter?conversationId=&counter=
 r.get('/messages/by-counter', asyncH(getSecureMessageByCounter));

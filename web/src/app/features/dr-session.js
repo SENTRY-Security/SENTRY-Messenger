@@ -1787,7 +1787,7 @@ async function sendDrPlaintext(params = {}) {
         queued: true,
         jobId: job?.jobId || null,
         convId: finalConversationId,
-        msg: { id: messageId },
+        msg: { id: messageId, counter: vaultCounter },
         secure: true
       };
     }
@@ -1797,7 +1797,7 @@ async function sendDrPlaintext(params = {}) {
         queued: true,
         jobId: job?.jobId || null,
         convId: finalConversationId,
-        msg: { id: messageId },
+        msg: { id: messageId, counter: vaultCounter },
         secure: true
       };
     }
@@ -1964,7 +1964,7 @@ async function sendDrPlaintext(params = {}) {
             queued: true,
             jobId: repairJob?.jobId || null,
             convId: finalConversationId,
-            msg: { id: replacementMessageId },
+            msg: { id: replacementMessageId, counter: repairVaultCounter },
             secure: true,
             replacement: replacementInfo
           };
@@ -1975,7 +1975,7 @@ async function sendDrPlaintext(params = {}) {
             queued: true,
             jobId: repairJob?.jobId || null,
             convId: finalConversationId,
-            msg: { id: replacementMessageId },
+            msg: { id: replacementMessageId, counter: repairVaultCounter },
             secure: true,
             replacement: replacementInfo
           };
@@ -2053,6 +2053,7 @@ async function sendDrPlaintext(params = {}) {
             }
           });
         } catch {}
+        repairMsg.counter = repairVaultCounter;
         return {
           msg: repairMsg,
           convId: finalConversationId,
@@ -2116,6 +2117,7 @@ async function sendDrPlaintext(params = {}) {
         }
       });
     } catch {}
+    msg.counter = vaultCounter;
     return { msg, convId: finalConversationId, secure: true };
   } catch (err) {
     if (!err?.__drDeliveryLogged) {
@@ -2636,6 +2638,7 @@ export async function sendDrMedia(params = {}) {
       secure: true,
       msg: {
         id: messageId,
+        counter: vaultCounter,
         ts: now,
         text: `[檔案] ${metadata.name}`,
         type: 'media',
@@ -2667,6 +2670,7 @@ export async function sendDrMedia(params = {}) {
       secure: true,
       msg: {
         id: messageId,
+        counter: vaultCounter,
         ts: now,
         text: `[檔案] ${metadata.name}`,
         type: 'media',
@@ -2804,6 +2808,7 @@ export async function sendDrMedia(params = {}) {
           secure: true,
           msg: {
             id: replacementMessageId,
+            counter: repairVaultCounter,
             ts: repairNow,
             text: `[檔案] ${metadata.name}`,
             type: 'media',
@@ -2836,6 +2841,7 @@ export async function sendDrMedia(params = {}) {
           secure: true,
           msg: {
             id: replacementMessageId,
+            counter: repairVaultCounter,
             ts: repairNow,
             text: `[檔案] ${metadata.name}`,
             type: 'media',
@@ -2904,6 +2910,7 @@ export async function sendDrMedia(params = {}) {
       return {
         msg: {
           id: finalRepairMessageId,
+          counter: repairVaultCounter,
           ts: repairNow,
           text: `[檔案] ${metadata.name}`,
           type: 'media',
@@ -2972,6 +2979,7 @@ export async function sendDrMedia(params = {}) {
   return {
     msg: {
       id: finalMessageId,
+      counter: vaultCounter,
       ts: now,
       text: `[檔案] ${metadata.name}`,
       type: 'media',

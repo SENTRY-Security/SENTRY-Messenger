@@ -193,6 +193,21 @@ export function setupShareController(options) {
     return null;
   }
 
+  function findPendingInviteByDigest(peerAccountDigest) {
+    const identity = normalizePeerIdentity({ peerAccountDigest });
+    const digest = identity.accountDigest || null;
+    if (!digest) return null;
+    const store = ensurePendingInviteStore();
+    let match = null;
+    for (const entry of store.values()) {
+      if (entry?.ownerAccountDigest !== digest) continue;
+      if (!match || Number(entry?.expiresAt || 0) > Number(match?.expiresAt || 0)) {
+        match = entry;
+      }
+    }
+    return match;
+  }
+
   function removePendingInviteByPeer({ peerAccountDigest, peerDeviceId } = {}) {
     const identity = normalizePeerIdentity({ peerAccountDigest, peerDeviceId });
     const digest = identity.accountDigest || null;
@@ -1535,64 +1550,126 @@ export function setupShareController(options) {
   }
 
   async function handleContactShareEvent(msg) {
-    const identity = normalizePeerIdentity({
-      peerAccountDigest: msg?.peerAccountDigest || null,
-      peerDeviceId: msg?.peerDeviceId || null
-    });
-    const peerKey = identity.key;
-    const peerDeviceId = identity.deviceId || null;
-    const peerDigest = identity.accountDigest
-      || (typeof peerKey === 'string' && peerKey.includes('::') ? peerKey.split('::')[0] : peerKey)
-      || null;
-    console.log('[share-controller]', {
-      contactShareHandleStart: {
-        peerAccountDigest: peerKey || null,
-        peerDeviceId: peerDeviceId || null,
-        hasEnvelope: !!msg?.envelope
-      }
-    });
-    if (!peerKey || !peerDeviceId) {
-      console.warn('[share-controller]', { contactShareMissingPeerDevice: true, peerAccountDigest: peerKey || null, peerDeviceId });
-      if (notifyToast) {
-        notifyToast('收到未知裝置的聯絡更新，請請好友重新掃碼', { variant: 'warning' });
-      }
-      return;
-    }
     const selfDeviceId = ensureDeviceId();
-    const stored = getContactSecret(peerKey, { deviceId: selfDeviceId });
-    if (stored?.peerDeviceId && peerDeviceId && stored.peerDeviceId !== peerDeviceId) {
-      console.warn('[share-controller]', {
-        contactSharePeerDeviceConflict: true,
-        peerAccountDigest: peerKey,
-        storedPeerDeviceId: stored.peerDeviceId,
-        incomingPeerDeviceId: peerDeviceId
-      });
-      // 將 peerDeviceId 置換為最新，避免卡在舊裝置紀錄。
-      try {
-        setContactSecret(peerKey, { peerDeviceId, meta: { source: 'contact-share-peer-device-update' } });
-      } catch (err) {
-        console.warn('[share-controller]', { contactSharePeerDeviceUpdateError: err?.message || err, peerAccountDigest: peerKey });
-      }
+    const rawPeerAccountDigest = msg?.peerAccountDigest || msg?.peer_account_digest || msg?.peerKey || msg?.peer || null;
+    const rawPeerDeviceId = msg?.peerDeviceId || msg?.peer_device_id || msg?.peerDevice || null;
+    const rawIdentity = normalizePeerIdentity({ peerAccountDigest: rawPeerAccountDigest || null });
+    const peerDigest = rawIdentity.accountDigest || null;
+    const normalizePeerDeviceCandidate = (value) => {
+      if (!value) return null;
+      const identity = normalizePeerIdentity({ peerAccountDigest: peerDigest || null, peerDeviceId: value });
+      const deviceId = identity.deviceId || null;
+      if (!deviceId) return null;
+      if (selfDeviceId && deviceId === selfDeviceId) return null;
+      return deviceId;
+    };
+    const eventSenderDeviceId = normalizePeerDeviceCandidate(
+      msg?.senderDeviceId
+        || msg?.sender_device_id
+        || msg?.fromDeviceId
+        || msg?.from_device_id
+        || null
+    );
+    const headerSenderDeviceId = normalizePeerDeviceCandidate(
+      msg?.header?.meta?.senderDeviceId
+        || msg?.header?.meta?.sender_device_id
+        || msg?.meta?.senderDeviceId
+        || msg?.meta?.sender_device_id
+        || msg?.header?.senderDeviceId
+        || msg?.header?.sender_device_id
+        || msg?.header?.device_id
+        || msg?.envelope?.senderDeviceId
+        || msg?.envelope?.sender_device_id
+        || null
+    );
+    const peerDeviceIdFromEvent = normalizePeerDeviceCandidate(rawPeerDeviceId);
+    const peerDeviceIdFromKey = normalizePeerDeviceCandidate(rawIdentity.deviceId);
+    const pendingInviteByDigest = peerDigest ? findPendingInviteByDigest(peerDigest) : null;
+    const pendingOwnerDeviceId = normalizePeerDeviceCandidate(pendingInviteByDigest?.ownerDeviceId || null);
+    const resolvedPeerDeviceId = eventSenderDeviceId
+      || headerSenderDeviceId
+      || peerDeviceIdFromEvent
+      || peerDeviceIdFromKey
+      || pendingOwnerDeviceId
+      || null;
+    const resolvedIdentity = normalizePeerIdentity({ peerAccountDigest: peerDigest, peerDeviceId: resolvedPeerDeviceId });
+    const resolvedPeerDigest = resolvedIdentity.accountDigest || peerDigest || null;
+    const peerDeviceId = resolvedIdentity.deviceId || null;
+    const peerKey = resolvedIdentity.key;
+    const stored = resolvedPeerDigest && peerDeviceId
+      ? getContactSecret(resolvedPeerDigest, { deviceId: selfDeviceId, peerDeviceId })
+      : null;
+    let pendingInvite = null;
+    if (resolvedPeerDigest && peerDeviceId) {
+      logCapped('contactSharePendingLookupTrace', {
+        resolvedPeerDigestSuffix4: safeSuffix(resolvedPeerDigest || '', 4),
+        resolvedPeerDeviceSuffix4: safeSuffix(peerDeviceId || '', 4),
+        pendingFound: false,
+        pendingInviteId: null
+      }, LOG_CAP);
+      pendingInvite = findPendingInviteByPeer({ peerAccountDigest: resolvedPeerDigest, peerDeviceId });
+      logCapped('contactSharePendingLookupTrace', {
+        resolvedPeerDigestSuffix4: safeSuffix(resolvedPeerDigest || '', 4),
+        resolvedPeerDeviceSuffix4: safeSuffix(peerDeviceId || '', 4),
+        pendingFound: !!pendingInvite,
+        pendingInviteId: pendingInvite?.inviteId ? safeSuffix(String(pendingInvite.inviteId), 4) : null
+      }, LOG_CAP);
     }
-    const pendingInvite = findPendingInviteByPeer({ peerAccountDigest: peerDigest, peerDeviceId });
     let sessionKey = stored?.conversationToken || pendingInvite?.conversationToken || null;
     const conversationIdHint = stored?.conversationId
       || stored?.conversation?.conversation_id
       || pendingInvite?.conversationId
       || null;
+    logCapped('contactSharePeerResolveTrace', {
+      selfDeviceIdSuffix4: safeSuffix(selfDeviceId || '', 4),
+      rawPeerAccountDigest: safePrefix(rawPeerAccountDigest || '', 16) || safeSuffix(rawPeerAccountDigest || '', 4),
+      rawPeerDeviceIdSuffix4: safeSuffix(rawPeerDeviceId || '', 4),
+      resolvedPeerDigestSuffix4: safeSuffix(resolvedPeerDigest || '', 4),
+      resolvedPeerDeviceSuffix4: safeSuffix(peerDeviceId || '', 4),
+      ownerDeviceIdFromPendingSuffix4: safeSuffix(pendingInviteByDigest?.ownerDeviceId || '', 4),
+      hasTokenAfterResolve: !!sessionKey
+    }, LOG_CAP);
+    console.log('[share-controller]', {
+      contactShareHandleStart: {
+        peerAccountDigest: resolvedPeerDigest || null,
+        peerDeviceId: peerDeviceId || null,
+        hasEnvelope: !!msg?.envelope
+      }
+    });
+    if (!resolvedPeerDigest || !peerDeviceId) {
+      console.warn('[share-controller]', { contactShareMissingPeerDevice: true, peerAccountDigest: resolvedPeerDigest || null, peerDeviceId });
+      if (notifyToast) {
+        notifyToast('收到未知裝置的聯絡更新，請請好友重新掃碼', { variant: 'warning' });
+      }
+      return;
+    }
+    if (stored?.peerDeviceId && peerDeviceId && stored.peerDeviceId !== peerDeviceId) {
+      console.warn('[share-controller]', {
+        contactSharePeerDeviceConflict: true,
+        peerAccountDigest: resolvedPeerDigest,
+        storedPeerDeviceId: stored.peerDeviceId,
+        incomingPeerDeviceId: peerDeviceId
+      });
+      // 將 peerDeviceId 置換為最新，避免卡在舊裝置紀錄。
+      try {
+        setContactSecret(resolvedPeerDigest, { peerDeviceId, meta: { source: 'contact-share-peer-device-update' } });
+      } catch (err) {
+        console.warn('[share-controller]', { contactSharePeerDeviceUpdateError: err?.message || err, peerAccountDigest: resolvedPeerDigest });
+      }
+    }
     logCapped('contactShareDecryptAttempt', {
-      peerDigestSuffix4: safeSuffix(peerDigest || '', 4),
+      peerDigestSuffix4: safeSuffix(resolvedPeerDigest || '', 4),
       peerDeviceIdSuffix4: safeSuffix(peerDeviceId || '', 4),
       hasToken: !!sessionKey,
       conversationIdPrefix8: safePrefix(conversationIdHint || '', 8)
     }, LOG_CAP);
     if (!sessionKey) {
-      console.warn('[share-controller]', { contactShareMissingSession: peerKey, peerDeviceId, selfDeviceId });
+      console.warn('[share-controller]', { contactShareMissingSession: resolvedPeerDigest, peerDeviceId, selfDeviceId });
       return;
     }
     const envelope = msg?.envelope;
     if (!envelope?.iv || !envelope?.ct) {
-      console.warn('[share-controller]', { contactShareMissingEnvelope: true, peerAccountDigest: peerKey, peerDeviceId });
+      console.warn('[share-controller]', { contactShareMissingEnvelope: true, peerAccountDigest: resolvedPeerDigest, peerDeviceId });
       return;
     }
     try {
@@ -1606,7 +1683,7 @@ export function setupShareController(options) {
       try {
         console.log('[share-controller]', {
           contactSharePayload: {
-            peerAccountDigest: peerKey,
+            peerAccountDigest: resolvedPeerDigest,
             peerDeviceId,
             hasAvatar: !!payload.avatar,
             nickname: payload.nickname || null,
@@ -1615,7 +1692,7 @@ export function setupShareController(options) {
         });
       } catch {}
       logCapped('contactShareDecryptSuccess', {
-        peerDigestSuffix4: safeSuffix(peerDigest || '', 4),
+        peerDigestSuffix4: safeSuffix(resolvedPeerDigest || '', 4),
         peerDeviceIdSuffix4: safeSuffix(peerDeviceId || '', 4)
       }, LOG_CAP);
       const reasonRaw = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
@@ -1633,7 +1710,7 @@ export function setupShareController(options) {
       if (conversationRaw.peerDeviceId && peerDeviceId && conversationRaw.peerDeviceId !== peerDeviceId) {
         console.warn('[share-controller]', {
           contactSharePeerDeviceMismatch: true,
-          peerAccountDigest: peerKey,
+          peerAccountDigest: resolvedPeerDigest,
           fromEvent: peerDeviceId,
           fromPayload: conversationRaw.peerDeviceId
         });
@@ -1648,7 +1725,7 @@ export function setupShareController(options) {
           console.log('[contact-core] pre-upsert', {
             sourceTag: 'share-controller:contact-share',
             peerKey,
-            peerAccountDigest: peerKey || null,
+            peerAccountDigest: resolvedPeerDigest || null,
             peerDeviceId,
             conversationId: conversation.conversation_id || null,
             hasToken: !!conversation.token_b64
@@ -1656,7 +1733,8 @@ export function setupShareController(options) {
         }
       } catch {}
       const added = await addContactEntry({
-        peerAccountDigest: peerKey,
+        peerAccountDigest: resolvedPeerDigest,
+        peerDeviceId,
         nickname: payload.nickname,
         avatar: payload.avatar || null,
         addedAt: payload.addedAt || null,
@@ -1665,9 +1743,8 @@ export function setupShareController(options) {
         contactSecret: conversation.token_b64
       });
       if (added) {
-        removePendingInviteByPeer({ peerAccountDigest: peerDigest, peerDeviceId });
+        removePendingInviteByPeer({ peerAccountDigest: resolvedPeerDigest, peerDeviceId });
       }
-      const selfDeviceId = ensureDeviceId();
       const drRoleRaw = conversation?.dr_init?.role || conversation?.drInit?.role || null;
       const drRole = typeof drRoleRaw === 'string' ? drRoleRaw.toLowerCase() : null;
       const selfRole = (() => {
@@ -1676,16 +1753,13 @@ export function setupShareController(options) {
         return stored?.role || null;
       })();
       storeContactSecretMapping({
-        peerAccountDigest: peerKey,
+        peerAccountDigest: resolvedPeerDigest,
         peerDeviceId,
         sessionKey: conversation.token_b64,
         conversation,
         role: selfRole || stored?.role || null
       });
       try {
-        const peerAccountOnly = peerKey && typeof peerKey === 'string' && peerKey.includes('::')
-          ? peerKey.split('::')[0]
-          : peerKey;
         await persistProfileForAccount(
           {
             nickname: payload.nickname,
@@ -1693,21 +1767,21 @@ export function setupShareController(options) {
             updatedAt: payload.updatedAt || payload.addedAt || Math.floor(Date.now() / 1000),
             sourceTag: PROFILE_WRITE_SOURCE.CONTACT_SHARE
           },
-          peerAccountOnly
+          resolvedPeerDigest
         );
       } catch (err) {
-        log({ contactShareProfilePersistError: err?.message || err, peerAccountDigest: peerKey });
+        log({ contactShareProfilePersistError: err?.message || err, peerAccountDigest: resolvedPeerDigest });
       }
       const drInitRaw = conversation.dr_init || null;
       const normalizedBundle = drInitRaw?.guest_bundle ? normalizeGuestBundle(drInitRaw.guest_bundle) : null;
       // 只有當對方裝置等於本機（owner/responder 端）才允許 responder bootstrap；guest 端禁止。
       const allowResponderBootstrap = !!(selfDeviceId && peerDeviceId && selfDeviceId === peerDeviceId);
       if (normalizedBundle && allowResponderBootstrap) {
-        const alreadyLive = hasLiveDrState(peerKey);
+        const alreadyLive = hasLiveDrState({ peerAccountDigest: resolvedPeerDigest, peerDeviceId });
         if (!alreadyLive) {
           try {
             await bootstrapDrFromGuestBundle({
-              peerAccountDigest: peerKey,
+              peerAccountDigest: resolvedPeerDigest,
               peerDeviceId,
               guestBundle: normalizedBundle
             });

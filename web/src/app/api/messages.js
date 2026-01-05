@@ -282,6 +282,21 @@ export async function getSecureMessageByCounter({ conversationId, counter, sende
   return { r, data };
 }
 
+export async function fetchSecureMaxCounter({ conversationId, senderDeviceId } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  const deviceId = typeof senderDeviceId === 'string' ? senderDeviceId.trim() : '';
+  if (!deviceId) throw new Error('senderDeviceId required');
+  const qs = new URLSearchParams();
+  qs.set('conversationId', conversationId);
+  qs.set('senderDeviceId', deviceId);
+  const endpoint = '/api/v1/messages/secure/max-counter';
+  const { headers } = buildMessageAuthHeaders({ endpoint });
+  const r = await fetchWithTimeout(`${endpoint}?${qs.toString()}`, { method: 'GET', headers }, 15000);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  return { r, data };
+}
+
 export async function deleteSecureConversation({ conversationId, peerAccountDigest, targetDeviceId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   if (!peerAccountDigest) throw new Error('peerAccountDigest required');

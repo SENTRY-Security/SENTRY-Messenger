@@ -1,18 +1,25 @@
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
-import { listSecureAndDecrypt, resetProcessedMessages, getMessageReceipt, recordMessageRead, getMessageDelivery, recordMessageDelivered, clearConversationTombstone, clearConversationHistory, getConversationClearAfter, syncOfflineDecryptNow } from '../../features/messages.js';
-import { OFFLINE_SYNC_LOG_CAP, OUTGOING_STATUS_RECONCILE_ID_LIMIT } from '../../features/messages-sync-policy.js';
 import {
-  NOTIFY_RETRY_FIRST_WAIT_MS,
-  NOTIFY_RETRY_INTERVAL_MS,
-  NOTIFY_RETRY_MAX_ATTEMPTS,
-  NOTIFY_RETRY_QUEUE_LIMIT,
-  scheduleNotifyRetryTimeout
-} from '../../features/messages-notify-policy.js';
-import { appendUserMessage as timelineAppendUserMessage, getTimeline as timelineGetTimeline, subscribeTimeline } from '../../features/timeline-store.js';
+  listSecureAndDecrypt,
+  resetProcessedMessages,
+  recordMessageRead,
+  recordMessageDelivered,
+  clearConversationTombstone,
+  clearConversationHistory,
+  getConversationClearAfter,
+  getVaultAckCounter,
+  recordVaultAckCounter,
+  triggerServerCatchup
+} from '../../features/messages.js';
+import {
+  appendUserMessage as timelineAppendUserMessage,
+  getTimeline as timelineGetTimeline,
+  subscribeTimeline,
+  updateTimelineEntryStatusByCounter
+} from '../../features/timeline-store.js';
 import { sendDrText, sendDrMedia, sendDrCallLog } from '../../features/dr-session.js';
-import { flushOutbox, retryOutboxMessage, setOutboxHooks } from '../../features/queue/outbox.js';
-import { MessageKeyVault } from '../../features/message-key-vault.js';
+import { setOutboxHooks } from '../../features/queue/outbox.js';
 import {
   ensureSecureConversationReady,
   subscribeSecureConversation,
@@ -34,7 +41,7 @@ import { escapeHtml, fmtSize, shouldNotifyForMessage } from './ui-utils.js';
 import { contactCoreCounts, getContactCore, findContactCoreByAccountDigest, upsertContactCore, listReadyContacts, removeContactCore } from './contact-core-store.js';
 import { downloadAndDecrypt } from '../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
-import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, fetchOutgoingStatus, toDigestOnly } from '../../api/messages.js';
+import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, toDigestOnly } from '../../api/messages.js';
 import { createGroup as apiCreateGroup } from '../../api/groups.js';
 import {
   CALL_EVENT,
@@ -68,6 +75,7 @@ const callLogPlaceholders = new Map();
 const placeholderStateByConvId = new Map();
 const placeholderRevealByConvId = new Map();
 const PLACEHOLDER_FAILED_TEXT = '無法解密';
+const PLACEHOLDER_BLOCKED_TEXT = '暫時無法解密';
 const PLACEHOLDER_TRACE_PREFIX_LEN = 8;
 const PLACEHOLDER_ALLOWED_TYPES = new Set(['text', 'media']);
 const PLACEHOLDER_FAIL_REASONS = new Set([
@@ -80,12 +88,9 @@ const GROUPS_ENABLED = false;
 const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0 };
-// Deprecated per-message retry state: only the latest outgoing message is eligible for notify retry.
-const notifyRetryQueue = new Map();
 let outboxHooksRegistered = false;
 let pendingNewMessageHint = false;
 let bRouteResultListenerInstalled = false;
-let notifyRetryListenerInstalled = false;
 const uiNoiseEnabled = DEBUG.uiNoise === true;
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 const logReplayCallsite = (name, payload = {}) => {
@@ -648,9 +653,13 @@ function getPlaceholderState(conversationId) {
 }
 
 function getPlaceholderEntries(conversationId) {
-  const state = getPlaceholderState(conversationId);
-  if (!state || !Array.isArray(state.entries)) return [];
-  return state.entries;
+  if (!conversationId) return [];
+  const timeline = timelineGetTimeline(conversationId);
+  if (!Array.isArray(timeline) || !timeline.length) return [];
+  return timeline.filter((entry) => {
+    const msgType = normalizeMsgTypeValue(entry?.msgType || entry?.type || entry?.subtype || entry?.meta?.msg_type);
+    return entry?.placeholder === true || msgType === 'placeholder';
+  });
 }
 
 function getPlaceholderCount(conversationId) {
@@ -765,70 +774,14 @@ function clearPlaceholderState(conversationId) {
 function markPlaceholderFailures(conversationId, entries = []) {
   const key = normalizePlaceholderKey(conversationId);
   if (!key || !Array.isArray(entries) || !entries.length) return { updated: 0, added: 0 };
-  const state = placeholderStateByConvId.get(key);
-  const existingEntries = state?.entries && Array.isArray(state.entries) ? state.entries : [];
-  const existingIds = new Set(existingEntries.map((entry) => entry?.messageId).filter(Boolean));
-  const existingCounters = new Set(
-    existingEntries
-      .map((entry) => normalizeCounterValue(entry?.counter))
-      .filter((val) => Number.isFinite(val))
-  );
-  const failedIds = new Set();
-  const failedCounters = new Set();
-  const newEntries = [];
-  const nowTs = Math.floor(Date.now() / 1000);
-  for (const entry of entries) {
-    const messageId = normalizePlaceholderMessageId(entry);
-    const counter = normalizePlaceholderCounter(entry);
-    if (messageId) failedIds.add(messageId);
-    if (counter !== null) failedCounters.add(counter);
-    const hasId = messageId && existingIds.has(messageId);
-    const hasCounter = counter !== null && existingCounters.has(counter);
-    if (hasId || hasCounter) continue;
-    const tsRaw = Number(entry?.ts ?? entry?.timestamp ?? entry?.createdAt ?? entry?.created_at ?? null);
-    const ts = Number.isFinite(tsRaw) && tsRaw > 0 ? Math.floor(tsRaw) : nowTs;
-    const tsMs = Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null;
-    const tsSeq = Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null;
-    const direction = entry?.direction === 'outgoing' ? 'outgoing' : 'incoming';
-    const safeId = messageId || (counter !== null ? buildPlaceholderCounterId(counter) : null);
-    if (!safeId) continue;
-    newEntries.push({
-      messageId: safeId,
-      counter,
-      direction,
-      directionKnown: true,
-      status: 'failed',
-      ts,
-      tsMs,
-      tsSeq
-    });
-    existingIds.add(safeId);
-    if (counter !== null) existingCounters.add(counter);
-  }
   let updated = 0;
-  if (existingEntries.length) {
-    for (const placeholder of existingEntries) {
-      if (!placeholder?.messageId || placeholder.status === 'failed') continue;
-      const placeholderCounter = normalizeCounterValue(placeholder.counter);
-      if (
-        failedIds.has(placeholder.messageId)
-        || (placeholderCounter !== null && failedCounters.has(placeholderCounter))
-      ) {
-        placeholder.status = 'failed';
-        updated += 1;
-      }
+  for (const entry of entries) {
+    const counter = normalizePlaceholderCounter(entry);
+    if (counter === null) continue;
+    const reason = entry?.reason || entry?.error || null;
+    if (updateTimelineEntryStatusByCounter(key, counter, 'failed', { reason })) {
+      updated += 1;
     }
-  }
-  let added = 0;
-  if (newEntries.length) {
-    const result = setPlaceholderState({
-      conversationId: key,
-      entries: newEntries,
-      reason: 'decrypt-failed',
-      source: 'placeholder-failure',
-      trace: { mode: 'failure', directionKnownCount: newEntries.length }
-    });
-    added = result?.addedCount || 0;
   }
   if (updated > 0) {
     logCapped('placeholderTrace', {
@@ -837,7 +790,7 @@ function markPlaceholderFailures(conversationId, entries = []) {
       updatedCount: updated
     }, 5);
   }
-  return { updated, added };
+  return { updated, added: 0 };
 }
 
 function addPlaceholderRevealId(conversationId, messageId) {
@@ -1087,21 +1040,6 @@ export function initMessagesPane({
       }
     });
   }
-  if (!notifyRetryListenerInstalled && typeof document !== 'undefined') {
-    notifyRetryListenerInstalled = true;
-    document.addEventListener('ws-notify-sent', (event) => {
-      const detail = event?.detail || {};
-      const retryKey = typeof detail?.retryKey === 'string' ? detail.retryKey.trim() : '';
-      if (!retryKey) return;
-      const attempt = normalizeNotifyRetryAttempt(detail?.attempt);
-      handleNotifyRetryQueueFlush({
-        retryKey,
-        attempt,
-        source: detail?.source || null
-      });
-    });
-  }
-
   const normalizeDigestString = (value) => {
     const identity = normalizePeerIdentity(value);
     return identity.key || null;
@@ -2179,8 +2117,6 @@ export function initMessagesPane({
       syncConversationThreadsFromContacts();
       await refreshConversationPreviews({ force: true });
       renderConversationList();
-      syncOfflineDecryptNow({ source: 'pull_to_refresh' })
-        .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'pull_to_refresh' }));
     } catch (err) {
       log({ conversationPullRefreshError: err?.message || err });
     } finally {
@@ -3489,8 +3425,11 @@ export function initMessagesPane({
     for (let i = 0; i < total; i += 1) {
       const entry = list[i];
       const direction = entry?.direction;
-      const status = entry?.status === 'failed' ? 'failed' : 'pending';
+      const status = entry?.status === 'failed'
+        ? 'failed'
+        : (entry?.status === 'blocked' ? 'blocked' : 'pending');
       const isFailed = status === 'failed';
+      const isBlocked = status === 'blocked';
       const li = document.createElement('li');
       li.className = 'message-placeholder-item';
       const row = document.createElement('div');
@@ -3505,12 +3444,14 @@ export function initMessagesPane({
       if (isOutgoing) bubble.classList.add('placeholder-outgoing');
       else if (isIncoming) bubble.classList.add('placeholder-incoming');
       else bubble.classList.add('placeholder-unknown');
-      if (isFailed) {
+      if (isFailed || isBlocked) {
         bubble.classList.add('placeholder-failed');
       } else if (shimmerMax > 0 && i >= shimmerStart) {
         bubble.classList.add('placeholder-shimmer');
       }
-      bubble.textContent = isFailed ? PLACEHOLDER_FAILED_TEXT : (PLACEHOLDER_TEXT || '');
+      bubble.textContent = isFailed
+        ? PLACEHOLDER_FAILED_TEXT
+        : (isBlocked ? PLACEHOLDER_BLOCKED_TEXT : (PLACEHOLDER_TEXT || ''));
       row.appendChild(bubble);
       li.appendChild(row);
       elements.messagesPlaceholders.appendChild(li);
@@ -3538,68 +3479,20 @@ function resolveRenderEntryCounter(entry) {
   return normalizeCounterValue(header?.n ?? header?.counter);
 }
 
-  function buildRenderEntries({ timelineMessages = [], placeholderEntries = [] } = {}) {
-    const placeholders = Array.isArray(placeholderEntries) ? placeholderEntries : [];
-    if (!placeholders.length) {
-      return { entries: Array.isArray(timelineMessages) ? timelineMessages : [], shimmerIds: new Set() };
-    }
-    const timelineList = Array.isArray(timelineMessages) ? timelineMessages : [];
-    const existingIds = new Set(timelineList.map((msg) => normalizeTimelineMessageId(msg)).filter(Boolean));
-    const existingCounters = new Set(
-      timelineList
-        .map((msg) => resolveRenderEntryCounter(msg))
-        .filter((val) => Number.isFinite(val))
-    );
+  function buildRenderEntries({ timelineMessages = [] } = {}) {
+    const list = Array.isArray(timelineMessages) ? timelineMessages : [];
     const shimmerIds = new Set();
+    const placeholders = list.filter((entry) => entry?.placeholder === true || entry?.msgType === 'placeholder');
+    const pending = placeholders.filter((entry) => entry?.status !== 'failed' && entry?.status !== 'blocked');
     const shimmerMax = Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0);
-    if (shimmerMax > 0) {
-      const start = Math.max(0, placeholders.length - shimmerMax);
-      for (let i = start; i < placeholders.length; i += 1) {
-        const id = placeholders[i]?.messageId || null;
+    if (shimmerMax > 0 && pending.length) {
+      const start = Math.max(0, pending.length - shimmerMax);
+      for (let i = start; i < pending.length; i += 1) {
+        const id = pending[i]?.messageId || pending[i]?.id || null;
         if (id) shimmerIds.add(id);
       }
     }
-    const merged = timelineList.slice();
-    for (const entry of placeholders) {
-      const messageId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
-      const counter = resolveRenderEntryCounter(entry);
-      if (!messageId || existingIds.has(messageId)) continue;
-      if (counter !== null && existingCounters.has(counter)) continue;
-      const ts = Number(entry?.ts);
-      const tsValid = Number.isFinite(ts) && ts > 0;
-      merged.push({
-        messageId,
-        counter,
-        direction: entry?.direction === 'outgoing' ? 'outgoing' : 'incoming',
-        status: entry?.status === 'failed' ? 'failed' : 'pending',
-        ts: tsValid ? Math.floor(ts) : null,
-        tsMs: Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null,
-        tsSeq: Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null,
-        placeholder: true,
-        type: 'placeholder',
-        msgType: 'placeholder'
-      });
-    }
-    merged.sort((a, b) => {
-      const tsA = resolveRenderEntryTsMs(a);
-      const tsB = resolveRenderEntryTsMs(b);
-      const hasTsA = tsA !== null;
-      const hasTsB = tsB !== null;
-      if (hasTsA && hasTsB && tsA !== tsB) return tsA - tsB;
-      if (hasTsA !== hasTsB) return hasTsA ? -1 : 1;
-      const counterA = resolveRenderEntryCounter(a);
-      const counterB = resolveRenderEntryCounter(b);
-      if (counterA !== null && counterB !== null && counterA !== counterB) return counterA - counterB;
-      if (counterA !== null && counterB === null) return -1;
-      if (counterA === null && counterB !== null) return 1;
-      const seqA = resolveRenderEntrySeq(a);
-      const seqB = resolveRenderEntrySeq(b);
-      if (seqA !== null && seqB !== null && seqA !== seqB) return seqA - seqB;
-      const idA = normalizeTimelineMessageId(a) || '';
-      const idB = normalizeTimelineMessageId(b) || '';
-      return idA.localeCompare(idB);
-    });
-    return { entries: merged, shimmerIds };
+    return { entries: list, shimmerIds };
   }
 
   function updateMessagesUI({ scrollToEnd = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
@@ -3610,8 +3503,7 @@ function resolveRenderEntryCounter(entry) {
     const placeholderEntries = getPlaceholderEntries(state.conversationId);
     const placeholderCount = placeholderEntries.length;
     const { entries: renderEntries, shimmerIds } = buildRenderEntries({
-      timelineMessages,
-      placeholderEntries
+      timelineMessages
     });
     const renderIds = renderEntries.map((m) => normalizeTimelineMessageId(m));
     const convChanged = renderState.conversationId !== state.conversationId;
@@ -3760,12 +3652,17 @@ function resolveRenderEntryCounter(entry) {
         if (messageId) bubble.dataset.messageId = messageId;
         if (isOutgoing) bubble.classList.add('placeholder-outgoing');
         else bubble.classList.add('placeholder-incoming');
-        if (msg.status === 'failed') {
+        const status = msg.status === 'failed'
+          ? 'failed'
+          : (msg.status === 'blocked' ? 'blocked' : 'pending');
+        if (status === 'failed' || status === 'blocked') {
           bubble.classList.add('placeholder-failed');
         } else if (messageId && shimmerIds.has(messageId)) {
           bubble.classList.add('placeholder-shimmer');
         }
-        bubble.textContent = msg.status === 'failed' ? PLACEHOLDER_FAILED_TEXT : (PLACEHOLDER_TEXT || '');
+        bubble.textContent = status === 'failed'
+          ? PLACEHOLDER_FAILED_TEXT
+          : (status === 'blocked' ? PLACEHOLDER_BLOCKED_TEXT : (PLACEHOLDER_TEXT || ''));
         row.appendChild(bubble);
         li.appendChild(row);
         elements.messagesList.appendChild(li);
@@ -3855,11 +3752,11 @@ function resolveRenderEntryCounter(entry) {
         const statusSpan = document.createElement('span');
         const status = typeof msg?.status === 'string' ? msg.status : null;
         const pending = status === 'pending' || msg.pending === true;
-        const delivered = status === 'delivered' || status === 'read';
         const failed = status === 'failed';
         const statusMessageId = msg?.id || msg?.messageId || msg?.localId || null;
         const isOutgoing = msg.direction === 'outgoing';
         const isLatestOutgoing = !!(isOutgoing && statusMessageId && latestOutgoingId && statusMessageId === latestOutgoingId);
+        const delivered = isLatestOutgoing ? latestOutgoingDelivered : false;
         if (statusMessageId) statusSpan.dataset.messageId = statusMessageId;
         if (msg.direction === 'incoming') {
           statusSpan.className = 'message-status peer';
@@ -3880,8 +3777,7 @@ function resolveRenderEntryCounter(entry) {
           statusSpan.textContent = '✓✓';
         } else {
           statusSpan.className = 'message-status sent';
-          const retryBadge = resolveNotifyRetryBadge(msg);
-          statusSpan.textContent = retryBadge ? `✓${retryBadge}` : '✓';
+          statusSpan.textContent = '✓';
         }
         metaRow.appendChild(statusSpan);
       }
@@ -4034,7 +3930,7 @@ function resolveRenderEntryCounter(entry) {
       }
 
       const prefetchedItems = Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [];
-      if (prefetchedItems.length) {
+      if (false) {
         let selfDeviceId = null;
         let selfDigest = null;
         try { selfDeviceId = ensureDeviceId(); } catch {}
@@ -4113,7 +4009,6 @@ function resolveRenderEntryCounter(entry) {
         nextCursor,
         nextCursorTs,
         errors,
-        receiptUpdates,
         deadLetters,
         hasMoreAtCursor,
         items: resultItems = [],
@@ -4199,16 +4094,7 @@ function resolveRenderEntryCounter(entry) {
       } else if (!silent) {
         setMessagesStatus('', false);
       }
-      let receiptsChanged = false;
       const timelineMessages = refreshTimelineState(state.conversationId);
-      let vaultStatusChanged = false;
-      if (!append) {
-        vaultStatusChanged = await reconstructOutgoingVaultStatus({
-          conversationId: state.conversationId,
-          peerAccountDigest: toDigestOnly(state.activePeerDigest),
-          timelineMessages
-        });
-      }
       const afterIdSet = collectTimelineIdSet(timelineMessages);
       const newMessageIds = Array.from(afterIdSet).filter((id) => !beforeIdSet.has(id));
       if (DEBUG.replay) {
@@ -4248,19 +4134,8 @@ function resolveRenderEntryCounter(entry) {
           }));
         } catch {}
       }
-      if (Array.isArray(receiptUpdates)) {
-        for (const msg of timelineMessages) {
-          if (msg?.id && receiptUpdates.includes(msg.id)) {
-            if (msg?.status === 'failed') continue;
-            msg.read = true;
-            msg.status = 'delivered';
-            msg.pending = false;
-            receiptsChanged = true;
-          }
-        }
-      }
       const receiptsApplied = applyReceiptsToMessages(timelineMessages);
-      const receiptRenderNeeded = receiptsApplied || receiptRenderPending || vaultStatusChanged;
+      const receiptRenderNeeded = receiptsApplied || receiptRenderPending;
       receiptRenderPending = false;
       if (!hasFailedPlaceholders && !hasAnyErrors && !hasAnyDeadLetters) {
         clearPlaceholderState(state.conversationId);
@@ -4268,7 +4143,7 @@ function resolveRenderEntryCounter(entry) {
       const shouldScrollToEnd = !append && !forceReplay && nearBottom;
       const preserveScroll = append || !shouldScrollToEnd;
       updateMessagesUI({ scrollToEnd: shouldScrollToEnd, preserveScroll, newMessageIds });
-      if (receiptsChanged || receiptRenderNeeded) {
+      if (receiptRenderNeeded) {
         updateMessagesUI({ preserveScroll: true, forceFullRender: true });
       }
       if (state.activePeerDigest) {
@@ -4631,6 +4506,12 @@ function resolveRenderEntryCounter(entry) {
     state.conversationToken = conversation.token_b64;
     state.conversationId = conversation.conversation_id;
     resetProcessedMessages(state.conversationId);
+    triggerServerCatchup({
+      source: 'enter_conversation',
+      conversationId: state.conversationId,
+      peerAccountDigest: peerDigest,
+      peerDeviceId
+    });
     const timelineMessages = refreshTimelineState(state.conversationId);
     const timelineSizeBefore = Array.isArray(timelineMessages) ? timelineMessages.length : 0;
     const hasTimelineMessages = timelineSizeBefore > 0;
@@ -4767,13 +4648,6 @@ function resolveRenderEntryCounter(entry) {
         } catch {}
       }
       await loadActiveConversationMessages({ append: false, replay: !historyReplayDone, reason: 'open' });
-      syncOfflineDecryptNow({ source: 'enter_conversation' })
-        .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'enter_conversation' }));
-      triggerOutgoingStatusReconcile({
-        conversationId: state.conversationId || null,
-        peerAccountDigest: state.activePeerDigest || null,
-        source: 'enter_conversation'
-      });
     }
   }
 
@@ -4830,6 +4704,71 @@ function resolveRenderEntryCounter(entry) {
     }
     if (!hasConversation) {
       renderConversationList();
+    }
+  }
+
+  function pruneNotifyRetryQueueForConversation(conversationId) {
+    const convId = typeof conversationId === 'string' ? conversationId.trim() : '';
+    if (!convId) return;
+
+    const messageState = sessionStore?.messageState || null;
+    const root = typeof globalThis !== 'undefined' ? globalThis : null;
+    const candidates = [
+      messageState?.notifyRetryQueue,
+      messageState?.notifyRetryQueueByConvId,
+      messageState?.notifyRetryStateByConvId,
+      sessionStore?.notifyRetryQueue,
+      sessionStore?.notifyRetryQueueByConvId,
+      sessionStore?.notifyRetryStateByConvId,
+      root?.notifyRetryQueue,
+      root?.notifyRetryQueueByConvId,
+      root?.notifyRetryStateByConvId
+    ].filter(Boolean);
+
+    if (!candidates.length) return;
+
+    for (const queue of candidates) {
+      if (queue instanceof Map) {
+        for (const [key, value] of queue.entries()) {
+          const itemConvId = value?.conversationId || value?.convId || null;
+          if (key === convId || itemConvId === convId) {
+            queue.delete(key);
+          }
+        }
+        continue;
+      }
+      if (queue instanceof Set) {
+        for (const item of queue) {
+          const itemConvId = item?.conversationId || item?.convId || null;
+          if (item === convId || itemConvId === convId) {
+            queue.delete(item);
+          }
+        }
+        continue;
+      }
+      if (Array.isArray(queue)) {
+        for (let i = queue.length - 1; i >= 0; i -= 1) {
+          const item = queue[i];
+          const itemConvId = item?.conversationId || item?.convId || null;
+          if (itemConvId === convId) {
+            queue.splice(i, 1);
+          }
+        }
+        continue;
+      }
+      if (queue && typeof queue === 'object') {
+        if (Object.prototype.hasOwnProperty.call(queue, convId)) {
+          delete queue[convId];
+          continue;
+        }
+        for (const key of Object.keys(queue)) {
+          const value = queue[key];
+          const itemConvId = value?.conversationId || value?.convId || null;
+          if (itemConvId === convId) {
+            delete queue[key];
+          }
+        }
+      }
     }
   }
 
@@ -5110,119 +5049,50 @@ function resolveRenderEntryCounter(entry) {
     updateMessagesUI({ preserveScroll: true, forceFullRender: true });
   }
 
-  function markOlderOutgoingDelivered(conversationId, messageId) {
-    if (!conversationId || !messageId) return false;
-    const timeline = timelineGetTimeline(conversationId);
-    if (!Array.isArray(timeline) || !timeline.length) return false;
-    const targetId = normalizeTimelineMessageId({ id: messageId, messageId });
-    const targetIndex = timeline.findIndex((msg) => normalizeTimelineMessageId(msg) === targetId);
-    if (targetIndex <= 0) return false;
-    let changed = false;
-    for (let i = 0; i < targetIndex; i += 1) {
-      const msg = timeline[i];
-      if (!isUserTimelineMessage(msg)) continue;
-      if (msg.direction !== 'outgoing') continue;
-      const currentStatus = typeof msg.status === 'string' ? msg.status : null;
-      if (currentStatus === 'failed') continue;
-      if (currentStatus !== 'delivered' || msg.pending === true || msg.read === true) {
-        msg.status = 'delivered';
-        msg.pending = false;
-        msg.read = false;
-        changed = true;
-      }
-    }
-    return changed;
-  }
-
   function applyReceiptState(message) {
-    if (!message || message.direction !== 'outgoing' || !message.id) return false;
+    if (!message || message.direction !== 'outgoing') return false;
     const currentStatus = typeof message.status === 'string' ? message.status : null;
+    if (currentStatus === 'failed') return false;
     const state = getMessageState();
-    const receipt = state.conversationId ? getMessageReceipt(state.conversationId, message.id) : null;
-    const delivered = state.conversationId ? getMessageDelivery(state.conversationId, message.id) : null;
-    if (receipt?.read) {
-      // read 視為已送達。
-      if (currentStatus === 'failed') return false;
-      const shouldUpdate = currentStatus !== 'delivered' || message.pending === true || message.read !== true;
-      if (shouldUpdate) {
-        logCapped('receiptApplyTrace', {
-          messageId: message.id,
-          currentStatus,
-          receiptType: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
-          appliedToStatus: 'delivered'
-        });
-        logOutgoingStatusTrace(message, currentStatus, 'delivered', 'RECEIPT_VAULT_PUT_OK');
-        logOutgoingUiStatusTrace({
-          message,
-          fromStatus: currentStatus,
-          toStatus: 'delivered',
-          reasonCode: CONTROL_MESSAGE_TYPES.READ_RECEIPT,
-          stage: 'applyReceiptState'
-        });
-      }
-      message.read = true;
-      message.status = 'delivered';
-      message.pending = false;
-      finalizeNotifyRetryState({
-        conversationId: state.conversationId,
-        messageId: message.id,
-        finalState: 'DELIVERED',
-        attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
-      });
-      const cascadeUpdated = isLatestOutgoingForRetry(state.conversationId, message.id)
-        ? markOlderOutgoingDelivered(state.conversationId, message.id)
-        : false;
-      if (currentStatus !== 'delivered') {
-        logCapped('deliveryAckTrace', {
-          stage: 'applied',
-          ackedMessageId: message.id,
-          conversationId: state.conversationId || null
-        });
-      }
-      return shouldUpdate || cascadeUpdated;
-    }
-    if (delivered?.delivered) {
-      if (currentStatus === 'failed') return false;
+    const convId = message.conversationId || state.conversationId || null;
+    if (!convId) return false;
+    const messageId = resolveOutgoingStatusMessageId(message);
+    if (!messageId || !isLatestOutgoingForStatus(convId, messageId)) return false;
+    const counter = resolveRenderEntryCounter(message);
+    if (!Number.isFinite(counter)) return false;
+    const ackCounter = getVaultAckCounter(convId);
+    const delivered = Number.isFinite(ackCounter) && ackCounter >= counter;
+    if (delivered) {
       const shouldUpdate = currentStatus !== 'delivered' || message.pending === true || message.read === true;
       if (shouldUpdate) {
-        logCapped('receiptApplyTrace', {
-          messageId: message.id,
-          currentStatus,
-          receiptType: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
-          appliedToStatus: 'delivered'
-        });
-        logOutgoingStatusTrace(message, currentStatus, 'delivered', 'RECEIPT_VAULT_PUT_OK');
+        logOutgoingStatusTrace(message, currentStatus, 'delivered', 'VAULT_ACK_COUNTER');
         logOutgoingUiStatusTrace({
           message,
           fromStatus: currentStatus,
           toStatus: 'delivered',
-          reasonCode: CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT,
+          reasonCode: 'VAULT_ACK_COUNTER',
           stage: 'applyReceiptState'
         });
       }
       message.read = false;
       message.status = 'delivered';
       message.pending = false;
-      finalizeNotifyRetryState({
-        conversationId: state.conversationId,
-        messageId: message.id,
-        finalState: 'DELIVERED',
-        attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
-      });
-      const cascadeUpdated = isLatestOutgoingForRetry(state.conversationId, message.id)
-        ? markOlderOutgoingDelivered(state.conversationId, message.id)
-        : false;
-      if (currentStatus !== 'delivered') {
-        logCapped('deliveryAckTrace', {
-          stage: 'applied',
-          ackedMessageId: message.id,
-          conversationId: state.conversationId || null
-        });
-      }
-      return shouldUpdate || cascadeUpdated;
+      return shouldUpdate;
     }
-    if (currentStatus === 'failed') return false;
-    if (currentStatus === 'pending' || message.pending === true) return false;
+    if (currentStatus === 'delivered') {
+      message.read = false;
+      message.status = 'sent';
+      message.pending = false;
+      logOutgoingUiStatusTrace({
+        message,
+        fromStatus: currentStatus,
+        toStatus: 'sent',
+        reasonCode: 'VAULT_ACK_MISSING',
+        stage: 'applyReceiptState'
+      });
+      logOutgoingStatusTrace(message, currentStatus, 'sent', 'VAULT_ACK_MISSING');
+      return true;
+    }
     return false;
   }
 
@@ -5235,238 +5105,8 @@ function resolveRenderEntryCounter(entry) {
     return changed;
   }
 
-  function applyOutgoingVaultStatus(message, nextStatus, reasonCode = 'VAULT_RECONSTRUCT') {
-    if (!message || message.direction !== 'outgoing') return false;
-    const fromStatus = typeof message.status === 'string' ? message.status : null;
-    if (fromStatus === 'failed') return false;
-    if (fromStatus === 'delivered' && nextStatus === 'sent') return false;
-    if (fromStatus === nextStatus && message.pending !== true) return false;
-    message.status = nextStatus;
-    message.pending = false;
-    if (nextStatus === 'delivered') {
-      if (message.read !== true) message.read = false;
-      finalizeNotifyRetryState({
-        conversationId: message.conversationId || null,
-        messageId: resolveOutgoingStatusMessageId(message),
-        finalState: 'DELIVERED',
-        attemptsUsed: normalizeNotifyRetryAttempt(message.notifyRetryAttempt)
-      });
-    } else {
-      message.read = false;
-    }
-    logOutgoingUiStatusTrace({
-      message,
-      fromStatus,
-      toStatus: nextStatus,
-      reasonCode,
-      stage: 'applyOutgoingVaultStatus'
-    });
-    logOutgoingStatusTrace(message, fromStatus, nextStatus, reasonCode);
-    return true;
-  }
-
-  function isHistoryReplayDoneForConversation(conversationId) {
-    const replayMap = sessionStore.historyReplayDoneByConvId || {};
-    return replayMap[conversationId] === true;
-  }
-
-  function resolveOutgoingStatusPeerDigest(conversationId, peerAccountDigest = null) {
-    const state = getMessageState();
-    const activePeer = state.conversationId === conversationId ? state.activePeerDigest : null;
-    const convIndexEntry = sessionStore.conversationIndex?.get?.(conversationId) || null;
-    const threadEntry = sessionStore.conversationThreads?.get?.(conversationId) || null;
-    const candidate = peerAccountDigest
-      || activePeer
-      || convIndexEntry?.peerAccountDigest
-      || convIndexEntry?.peerKey
-      || threadEntry?.peerAccountDigest
-      || threadEntry?.peerKey
-      || null;
-    return toDigestOnly(candidate);
-  }
-
-  function gatherRecentOutgoingNeedingStatus(conversationId, limit = OUTGOING_STATUS_RECONCILE_ID_LIMIT) {
-    const convId = String(conversationId || '').trim();
-    if (!convId || !Number.isFinite(Number(limit)) || Number(limit) <= 0) {
-      return { messageIds: [], messageMap: new Map() };
-    }
-    const timeline = timelineGetTimeline(convId);
-    const messageIds = [];
-    const messageMap = new Map();
-    const seen = new Set();
-    if (!Array.isArray(timeline)) return { messageIds, messageMap };
-    for (let i = timeline.length - 1; i >= 0 && messageIds.length < limit; i -= 1) {
-      const msg = timeline[i];
-      if (!msg || msg.direction !== 'outgoing') continue;
-      const status = typeof msg.status === 'string' ? msg.status : null;
-      if (status === 'failed' || status === 'delivered' || status === 'read') continue;
-      if (status !== 'sent' && status !== 'pending' && msg.pending !== true) continue;
-      const messageId = resolveOutgoingStatusMessageId(msg);
-      if (!messageId || seen.has(messageId)) continue;
-      seen.add(messageId);
-      messageIds.push(messageId);
-      messageMap.set(messageId, msg);
-    }
-    return { messageIds, messageMap };
-  }
-
-  async function reconcileOutgoingStatusForConversation({ conversationId, peerAccountDigest, source } = {}) {
-    const convId = String(conversationId || '').trim();
-    if (!convId) return false;
-    if (!isHistoryReplayDoneForConversation(convId)) return false;
-    const { messageIds, messageMap } = gatherRecentOutgoingNeedingStatus(convId, OUTGOING_STATUS_RECONCILE_ID_LIMIT);
-    if (!messageIds.length) return false;
-    let senderDeviceId = null;
-    try {
-      senderDeviceId = ensureDeviceId();
-    } catch (err) {
-      logCapped('outgoingStatusReconcileError', {
-        conversationIdPrefix8: convId.slice(0, 8),
-        error: err?.message || err
-      }, OFFLINE_SYNC_LOG_CAP);
-      return false;
-    }
-    const receiverDigest = resolveOutgoingStatusPeerDigest(convId, peerAccountDigest);
-    if (!receiverDigest) {
-      logCapped('outgoingStatusReconcileError', {
-        conversationIdPrefix8: convId.slice(0, 8),
-        error: 'missing receiverAccountDigest'
-      }, OFFLINE_SYNC_LOG_CAP);
-      return false;
-    }
-    try {
-      const { r, data } = await fetchOutgoingStatus({
-        conversationId: convId,
-        senderDeviceId,
-        receiverAccountDigest: receiverDigest,
-        messageIds
-      });
-      if (!r?.ok || !data?.ok) {
-        logCapped('outgoingStatusReconcileError', {
-          conversationIdPrefix8: convId.slice(0, 8),
-          error: `status_${r?.status ?? 'unknown'}`
-        }, OFFLINE_SYNC_LOG_CAP);
-        return false;
-      }
-      const items = Array.isArray(data?.items) ? data.items : [];
-      const statusById = new Map();
-      for (const item of items) {
-        const messageId = resolveOutgoingStatusMessageId(item);
-        if (!messageId) continue;
-        statusById.set(messageId, item);
-      }
-      let deliveredCount = 0;
-      let sentCount = 0;
-      let notFoundCount = 0;
-      let changed = false;
-      for (const messageId of messageIds) {
-        const item = statusById.get(messageId) || null;
-        if (!item) {
-          notFoundCount += 1;
-          continue;
-        }
-        const outgoingCount = Number(item?.outgoingCount) || 0;
-        const incomingCount = Number(item?.incomingCount) || 0;
-        let nextStatus = null;
-        if (outgoingCount > 0 && incomingCount > 0) {
-          nextStatus = 'delivered';
-          deliveredCount += 1;
-        } else if (outgoingCount > 0) {
-          nextStatus = 'sent';
-          sentCount += 1;
-        } else {
-          notFoundCount += 1;
-          continue;
-        }
-        const msg = messageMap.get(messageId);
-        if (msg && applyOutgoingVaultStatus(msg, nextStatus, 'OUTGOING_STATUS_RECONCILE')) {
-          changed = true;
-        }
-      }
-      logCapped('outgoingStatusReconcileTrace', {
-        conversationIdPrefix8: convId.slice(0, 8),
-        requestedCount: messageIds.length,
-        deliveredCount,
-        sentCount,
-        notFoundCount,
-        source: source || null
-      }, OFFLINE_SYNC_LOG_CAP);
-      if (changed) {
-        const state = getMessageState();
-        if (state.conversationId === convId) updateMessagesStatusUI();
-      }
-      return changed;
-    } catch (err) {
-      logCapped('outgoingStatusReconcileError', {
-        conversationIdPrefix8: convId.slice(0, 8),
-        error: err?.message || err
-      }, OFFLINE_SYNC_LOG_CAP);
-      return false;
-    }
-  }
-
-  function triggerOutgoingStatusReconcile({ conversationId, peerAccountDigest, source } = {}) {
-    const state = getMessageState();
-    const convId = conversationId || state.conversationId || null;
-    if (!convId) return;
-    reconcileOutgoingStatusForConversation({
-      conversationId: convId,
-      peerAccountDigest: peerAccountDigest || (state.conversationId === convId ? state.activePeerDigest : null),
-      source
-    });
-  }
-
-  async function reconstructOutgoingVaultStatus({ conversationId, peerAccountDigest, timelineMessages } = {}) {
-    if (!conversationId || !peerAccountDigest || !Array.isArray(timelineMessages) || !timelineMessages.length) return false;
-    let senderDeviceId = null;
-    let senderDigest = null;
-    try {
-      senderDeviceId = ensureDeviceId();
-      senderDigest = normalizeAccountDigest(getAccountDigest());
-    } catch {
-      return false;
-    }
-    if (!senderDeviceId || !senderDigest) return false;
-    const peerDigest = toDigestOnly(peerAccountDigest);
-    if (!peerDigest) return false;
-    const outgoingMessages = timelineMessages.filter((msg) => msg?.direction === 'outgoing');
-    const messageIds = outgoingMessages
-      .map((msg) => resolveOutgoingStatusMessageId(msg))
-      .filter(Boolean);
-    if (!messageIds.length) return false;
-    const cappedMessageIds = messageIds.slice(-200);
-    try {
-      const { r, data } = await fetchOutgoingStatus({
-        conversationId,
-        senderDeviceId,
-        receiverAccountDigest: peerDigest,
-        messageIds: cappedMessageIds
-      });
-      if (!r?.ok || !data?.ok) return false;
-      const items = Array.isArray(data?.items) ? data.items : [];
-      const statusById = new Map(items.map((item) => [item?.messageId, item]));
-      let changed = false;
-      for (const msg of outgoingMessages) {
-        const messageId = resolveOutgoingStatusMessageId(msg);
-        if (!messageId) continue;
-        const item = statusById.get(messageId);
-        if (!item) continue;
-        const outgoingCount = Number(item?.outgoingCount) || 0;
-        const incomingCount = Number(item?.incomingCount) || 0;
-        let nextStatus = null;
-        if (outgoingCount > 0 && incomingCount > 0) {
-          nextStatus = 'delivered';
-        } else if (outgoingCount > 0) {
-          nextStatus = 'sent';
-        }
-        if (!nextStatus) continue;
-        if (applyOutgoingVaultStatus(msg, nextStatus)) changed = true;
-      }
-      return changed;
-    } catch (err) {
-      log({ outgoingVaultReconstructError: err?.message || err });
-      return false;
-    }
+  function triggerOutgoingStatusReconcile() {
+    return false;
   }
 
   function extractFailureDetails(err, fallbackReason = 'send failed') {
@@ -5488,469 +5128,6 @@ function resolveRenderEntryCounter(entry) {
     return message.includes('CounterTooLow');
   }
 
-  function normalizeNotifyRetryAttempt(value) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return null;
-    return Math.max(0, Math.floor(num));
-  }
-
-  // Deprecated per-message notify retry flags; only update the latest outgoing for compatibility.
-  function updateNotifyRetryMessageState({ conversationId, messageId, attempt = null, finalState = null } = {}) {
-    if (!conversationId || !messageId) return null;
-    if (!isLatestOutgoingForRetry(conversationId, messageId)) return null;
-    const message = findTimelineMessageById(conversationId, messageId);
-    if (!message) return null;
-    const normalizedAttempt = normalizeNotifyRetryAttempt(attempt);
-    if (normalizedAttempt !== null) message.notifyRetryAttempt = normalizedAttempt;
-    if (finalState === null) {
-      if (message.notifyRetryFinal) message.notifyRetryFinal = null;
-    } else if (typeof finalState === 'string') {
-      message.notifyRetryFinal = finalState;
-    }
-    return message;
-  }
-
-  function clearNotifyRetryQueueForMessage(conversationId, messageId) {
-    if (!conversationId || !messageId) return;
-    const prefix = `${conversationId}::${messageId}::`;
-    for (const key of Array.from(notifyRetryQueue.keys())) {
-      if (!key.startsWith(prefix)) continue;
-      const entry = notifyRetryQueue.get(key);
-      if (entry?.timerId) {
-        try { clearTimeout(entry.timerId); } catch {}
-      }
-      notifyRetryQueue.delete(key);
-    }
-  }
-
-  function pruneNotifyRetryQueueForConversation(conversationId, keepMessageId = null) {
-    if (!conversationId) return;
-    for (const key of Array.from(notifyRetryQueue.keys())) {
-      const entry = notifyRetryQueue.get(key);
-      if (!entry || entry.conversationId !== conversationId) continue;
-      if (keepMessageId && entry.messageId === keepMessageId) continue;
-      if (entry?.timerId) {
-        try { clearTimeout(entry.timerId); } catch {}
-      }
-      notifyRetryQueue.delete(key);
-    }
-  }
-
-  function setNotifyRetryTimer(entry, key, delayMs) {
-    if (!entry || !key) return;
-    if (entry.timerId) {
-      try { clearTimeout(entry.timerId); } catch {}
-    }
-    entry.timerId = scheduleNotifyRetryTimeout(() => scheduleNotifyRetryAttempt(key), delayMs);
-  }
-
-  function applyNotifyRetryAttemptSuccess({ entry, attemptIndex }) {
-    if (!entry || !Number.isFinite(Number(attemptIndex))) return null;
-    const normalizedAttempt = normalizeNotifyRetryAttempt(attemptIndex);
-    if (normalizedAttempt === null || normalizedAttempt <= entry.attempt) return null;
-    entry.attempt = normalizedAttempt;
-    entry.pendingAttempt = null;
-    entry.updatedAt = Date.now();
-    const message = updateNotifyRetryMessageState({
-      conversationId: entry.conversationId,
-      messageId: entry.messageId,
-      attempt: normalizedAttempt,
-      finalState: null
-    });
-    const state = getMessageState();
-    if (message && state.conversationId === entry.conversationId) {
-      updateMessagesStatusUI();
-    }
-    return message;
-  }
-
-  function handleNotifyRetryQueueFlush({ retryKey, attempt = null, source = null } = {}) {
-    if (!retryKey) return;
-    const entry = notifyRetryQueue.get(retryKey);
-    if (!entry) return;
-    if (!isLatestOutgoingForRetry(entry.conversationId, entry.messageId)) {
-      clearNotifyRetryQueueForMessage(entry.conversationId, entry.messageId);
-      return;
-    }
-    if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
-      finalizeNotifyRetryState({
-        conversationId: entry.conversationId,
-        messageId: entry.messageId,
-        finalState: 'DELIVERED',
-        attemptsUsed: entry.attempt
-      });
-      return;
-    }
-    const pendingAttempt = normalizeNotifyRetryAttempt(entry.pendingAttempt);
-    const incomingAttempt = normalizeNotifyRetryAttempt(attempt);
-    if (incomingAttempt !== null && incomingAttempt <= 0) return;
-    const attemptIndex = incomingAttempt || pendingAttempt || entry.attempt + 1;
-    if (attemptIndex <= entry.attempt) {
-      entry.pendingAttempt = null;
-      return;
-    }
-    entry.pendingAttempt = null;
-    logNotifyRetryAttemptTrace({
-      conversationId: entry.conversationId,
-      messageId: entry.messageId,
-      attemptIndex,
-      wsReady: true,
-      sentOk: true,
-      reasonCode: source ? `WS_QUEUE_FLUSH:${source}` : 'WS_QUEUE_FLUSH'
-    });
-    applyNotifyRetryAttemptSuccess({ entry, attemptIndex });
-    setNotifyRetryTimer(entry, retryKey, NOTIFY_RETRY_INTERVAL_MS);
-  }
-
-  function finalizeNotifyRetryState({ conversationId, messageId, finalState, attemptsUsed } = {}) {
-    if (!conversationId || !messageId || !finalState) return;
-    const existing = findTimelineMessageById(conversationId, messageId);
-    if (existing?.notifyRetryFinal === finalState) return;
-    const message = updateNotifyRetryMessageState({
-      conversationId,
-      messageId,
-      attempt: attemptsUsed ?? null,
-      finalState
-    });
-    clearNotifyRetryQueueForMessage(conversationId, messageId);
-    logNotifyRetryFinalTrace({
-      conversationId,
-      messageId,
-      finalState,
-      attemptsUsed
-    });
-    if (finalState === 'TIMEOUT') {
-      logOutgoingSentAwaitTrace({
-        conversationId,
-        messageId,
-        currentStatus: 'sent',
-        deliveredKnown: false,
-        retryState: 'failed'
-      });
-    }
-    const state = getMessageState();
-    if (message && state.conversationId === conversationId) {
-      updateMessagesStatusUI();
-    }
-  }
-
-  function logNotifyRetryScheduleTrace({ conversationId, messageId, attemptMax, intervalMs, reasonCode } = {}) {
-    logCapped('notifyRetryScheduleTrace', {
-      messageId: messageId || null,
-      convIdPrefix8: sliceConversationIdPrefix(conversationId),
-      attemptMax: Number.isFinite(Number(attemptMax)) ? Number(attemptMax) : null,
-      intervalMs: Number.isFinite(Number(intervalMs)) ? Number(intervalMs) : null,
-      reasonCode: reasonCode || null
-    }, 5);
-  }
-
-  function logNotifyRetryAttemptTrace({
-    conversationId,
-    messageId,
-    attemptIndex,
-    wsReady,
-    sentOk,
-    reasonCode
-  } = {}) {
-    logCapped('notifyRetryAttemptTrace', {
-      messageId: messageId || null,
-      convIdPrefix8: sliceConversationIdPrefix(conversationId),
-      attemptIndex: Number.isFinite(Number(attemptIndex)) ? Number(attemptIndex) : null,
-      wsReady: typeof wsReady === 'boolean' ? wsReady : null,
-      sentOk: typeof sentOk === 'boolean' ? sentOk : null,
-      reasonCode: reasonCode || null
-    }, 5);
-  }
-
-  function logNotifyRetryFinalTrace({ conversationId, messageId, finalState, attemptsUsed } = {}) {
-    logCapped('notifyRetryFinalTrace', {
-      messageId: messageId || null,
-      convIdPrefix8: sliceConversationIdPrefix(conversationId),
-      finalState: finalState || null,
-      attemptsUsed: Number.isFinite(Number(attemptsUsed)) ? Number(attemptsUsed) : null
-    }, 5);
-  }
-
-  function logOutgoingSentAwaitTrace({ conversationId, messageId, currentStatus, deliveredKnown, retryState } = {}) {
-    logCapped('outgoingSentAwaitTrace', {
-      messageId: messageId || null,
-      currentStatus: currentStatus || null,
-      deliveredKnown: typeof deliveredKnown === 'boolean' ? deliveredKnown : null,
-      retryState: retryState ?? null,
-      convIdPrefix8: sliceConversationIdPrefix(conversationId)
-    }, 5);
-  }
-
-  function resolveWsReadyForRetry() {
-    try {
-      if (typeof wsSendFn?.isReady === 'function') return !!wsSendFn.isReady();
-    } catch {}
-    return null;
-  }
-
-  function buildNotifyRetryKey({ conversationId, messageId, targetDeviceId } = {}) {
-    if (!conversationId || !messageId || !targetDeviceId) return null;
-    const conv = String(conversationId).trim();
-    const mid = String(messageId).trim();
-    const target = String(targetDeviceId).trim();
-    if (!conv || !mid || !target) return null;
-    return `${conv}::${mid}::${target}`;
-  }
-
-  function isMessageDeliveredForRetry(conversationId, messageId) {
-    if (!conversationId || !messageId) return false;
-    const receipt = getMessageReceipt(conversationId, messageId);
-    if (receipt?.read) return true;
-    const delivered = getMessageDelivery(conversationId, messageId);
-    return !!delivered?.delivered;
-  }
-
-  function logNotifyRetryTrace({ conversationId, messageId, targetDeviceId, attempt, reasonCode, ok } = {}) {
-    logCapped('notifyRetryTrace', {
-      conversationId: conversationId || null,
-      messageId: messageId || null,
-      targetDeviceId: targetDeviceId || null,
-      attempt: Number.isFinite(Number(attempt)) ? Number(attempt) : null,
-      reasonCode: reasonCode || null,
-      ok: typeof ok === 'boolean' ? ok : null
-    }, 5);
-  }
-
-  function sendMessageNewNotify({
-    message,
-    conversationId,
-    messageId,
-    targetAccountDigest,
-    targetDeviceId,
-    preview,
-    ts,
-    senderDeviceId,
-    attempt = 0,
-    reasonCode = 'TIMEOUT_WAIT_DELIVERED'
-  } = {}) {
-    if (!conversationId || !targetAccountDigest) return false;
-    if (messageId && !isLatestOutgoingForRetry(conversationId, messageId)) return false;
-    let senderDevice = senderDeviceId || null;
-    if (!senderDevice) {
-      try { senderDevice = ensureDeviceId(); } catch {}
-    }
-    const payload = {
-      type: 'message-new',
-      targetAccountDigest,
-      conversationId,
-      preview: preview || '',
-      ts: Number.isFinite(Number(ts)) ? Number(ts) : Math.floor(Date.now() / 1000),
-      targetDeviceId: targetDeviceId || null,
-      senderDeviceId: senderDevice || null
-    };
-    const retryKey = buildNotifyRetryKey({ conversationId, messageId, targetDeviceId });
-    if (retryKey) {
-      try {
-        Object.defineProperty(payload, '__notifyRetryKey', { value: retryKey, enumerable: false });
-        Object.defineProperty(payload, '__notifyRetryAttempt', { value: attempt, enumerable: false });
-      } catch {
-        try {
-          payload.__notifyRetryKey = retryKey;
-          payload.__notifyRetryAttempt = attempt;
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-    const wsReady = resolveWsReadyForRetry();
-    let ok = false;
-    try {
-      ok = !!wsSendFn(payload);
-    } catch {
-      ok = false;
-    }
-    const finalReason = ok ? reasonCode : (wsReady === false ? 'WS_QUEUED' : 'WS_SEND_ERROR');
-    logNotifyRetryTrace({
-      conversationId,
-      messageId,
-      targetDeviceId,
-      attempt,
-      reasonCode: finalReason,
-      ok
-    });
-    if (message && attempt === 0 && (ok || wsReady === false)) {
-      message.notifySent = true;
-    }
-    return ok;
-  }
-
-  function scheduleNotifyRetryAttempt(key) {
-    const entry = notifyRetryQueue.get(key);
-    if (!entry) return;
-    if (!isLatestOutgoingForRetry(entry.conversationId, entry.messageId)) {
-      clearNotifyRetryQueueForMessage(entry.conversationId, entry.messageId);
-      return;
-    }
-    if (isMessageDeliveredForRetry(entry.conversationId, entry.messageId)) {
-      finalizeNotifyRetryState({
-        conversationId: entry.conversationId,
-        messageId: entry.messageId,
-        finalState: 'DELIVERED',
-        attemptsUsed: entry.attempt
-      });
-      return;
-    }
-    if (entry.attempt >= NOTIFY_RETRY_MAX_ATTEMPTS) {
-      finalizeNotifyRetryState({
-        conversationId: entry.conversationId,
-        messageId: entry.messageId,
-        finalState: 'TIMEOUT',
-        attemptsUsed: entry.attempt
-      });
-      return;
-    }
-    const nextAttempt = entry.attempt + 1;
-    const wsReady = resolveWsReadyForRetry();
-    const hasQueuedKey = typeof wsSendFn?.hasQueuedNotifyKey === 'function'
-      ? wsSendFn.hasQueuedNotifyKey(key)
-      : false;
-
-    if (wsReady === false) {
-      if (hasQueuedKey || entry.pendingAttempt) {
-        if (hasQueuedKey && !entry.pendingAttempt) entry.pendingAttempt = nextAttempt;
-        logNotifyRetryAttemptTrace({
-          conversationId: entry.conversationId,
-          messageId: entry.messageId,
-          attemptIndex: entry.pendingAttempt || nextAttempt,
-          wsReady: false,
-          sentOk: false,
-          reasonCode: 'WS_QUEUE_DUPLICATE'
-        });
-        setNotifyRetryTimer(entry, key, NOTIFY_RETRY_INTERVAL_MS);
-        return;
-      }
-      entry.pendingAttempt = nextAttempt;
-      sendMessageNewNotify({
-        conversationId: entry.conversationId,
-        messageId: entry.messageId,
-        targetAccountDigest: entry.targetAccountDigest,
-        targetDeviceId: entry.targetDeviceId,
-        preview: entry.preview,
-        ts: entry.ts,
-        senderDeviceId: entry.senderDeviceId,
-        attempt: nextAttempt,
-        reasonCode: 'TIMEOUT_WAIT_DELIVERED'
-      });
-      logNotifyRetryAttemptTrace({
-        conversationId: entry.conversationId,
-        messageId: entry.messageId,
-        attemptIndex: nextAttempt,
-        wsReady: false,
-        sentOk: false,
-        reasonCode: 'WS_QUEUED'
-      });
-      entry.updatedAt = Date.now();
-      setNotifyRetryTimer(entry, key, NOTIFY_RETRY_INTERVAL_MS);
-      return;
-    }
-
-    entry.pendingAttempt = null;
-    const sentOk = sendMessageNewNotify({
-      conversationId: entry.conversationId,
-      messageId: entry.messageId,
-      targetAccountDigest: entry.targetAccountDigest,
-      targetDeviceId: entry.targetDeviceId,
-      preview: entry.preview,
-      ts: entry.ts,
-      senderDeviceId: entry.senderDeviceId,
-      attempt: nextAttempt,
-      reasonCode: 'TIMEOUT_WAIT_DELIVERED'
-    });
-    logNotifyRetryAttemptTrace({
-      conversationId: entry.conversationId,
-      messageId: entry.messageId,
-      attemptIndex: nextAttempt,
-      wsReady: wsReady === true ? true : null,
-      sentOk,
-      reasonCode: sentOk ? 'TIMEOUT_WAIT_DELIVERED' : 'WS_SEND_ERROR'
-    });
-    if (sentOk) {
-      applyNotifyRetryAttemptSuccess({ entry, attemptIndex: nextAttempt });
-    }
-    entry.updatedAt = Date.now();
-    setNotifyRetryTimer(entry, key, NOTIFY_RETRY_INTERVAL_MS);
-  }
-
-  function enqueueNotifyRetry({
-    message,
-    conversationId,
-    messageId,
-    targetAccountDigest,
-    targetDeviceId,
-    preview,
-    ts,
-    senderDeviceId
-  } = {}) {
-    const key = buildNotifyRetryKey({ conversationId, messageId, targetDeviceId });
-    if (!key) return false;
-    const latestId = resolveLatestOutgoingMessageIdForConversation(conversationId);
-    if (!latestId || latestId !== messageId) return false;
-    pruneNotifyRetryQueueForConversation(conversationId, messageId);
-    if (notifyRetryQueue.size >= NOTIFY_RETRY_QUEUE_LIMIT) return false;
-    if (notifyRetryQueue.has(key)) return false;
-    if (isMessageDeliveredForRetry(conversationId, messageId)) return false;
-    const entry = {
-      conversationId,
-      messageId,
-      targetAccountDigest,
-      targetDeviceId,
-      preview: preview || '',
-      ts: Number.isFinite(Number(ts)) ? Number(ts) : null,
-      senderDeviceId: senderDeviceId || null,
-      attempt: 0,
-      pendingAttempt: null,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      timerId: null
-    };
-    notifyRetryQueue.set(key, entry);
-    setNotifyRetryTimer(entry, key, NOTIFY_RETRY_FIRST_WAIT_MS);
-    const messageState = message || updateNotifyRetryMessageState({
-      conversationId,
-      messageId,
-      attempt: 0,
-      finalState: null
-    });
-    if (messageState) {
-      logOutgoingSentAwaitTrace({
-        conversationId,
-        messageId,
-        currentStatus: messageState?.status || 'sent',
-        deliveredKnown: isMessageDeliveredForRetry(conversationId, messageId),
-        retryState: 0
-      });
-    }
-    logNotifyRetryScheduleTrace({
-      conversationId,
-      messageId,
-      attemptMax: NOTIFY_RETRY_MAX_ATTEMPTS,
-      intervalMs: NOTIFY_RETRY_INTERVAL_MS,
-      reasonCode: 'ON_SENT'
-    });
-    return true;
-  }
-
-  function applyOutgoingPending(message, reasonCode = 'PENDING_RESET') {
-    if (!message) return;
-    const fromStatus = typeof message.status === 'string' ? message.status : null;
-    message.status = 'pending';
-    message.pending = true;
-    message.failureReason = null;
-    message.failureCode = null;
-    logOutgoingUiStatusTrace({
-      message,
-      fromStatus,
-      toStatus: 'pending',
-      reasonCode,
-      stage: 'applyOutgoingPending'
-    });
-  }
-
   function applyOutgoingSent(message, res, fallbackTs, reasonCode = 'ACK_202') {
     if (!message) return;
     const fromStatus = typeof message.status === 'string' ? message.status : null;
@@ -5964,23 +5141,12 @@ function resolveRenderEntryCounter(entry) {
     const finalId = serverId || message.id || localId;
     if (finalId) message.id = finalId;
     message.serverMessageId = serverId || finalId;
+    const resCounter = normalizeCounterValue(res?.msg?.counter ?? res?.msg?.headerCounter ?? res?.counter ?? res?.headerCounter);
+    if (resCounter !== null) message.counter = resCounter;
     message.status = 'sent';
     message.pending = false;
     message.failureReason = null;
     message.failureCode = null;
-    updateNotifyRetryMessageState({
-      conversationId: message.conversationId || null,
-      messageId: finalId,
-      attempt: 0,
-      finalState: null
-    });
-    logOutgoingSentAwaitTrace({
-      conversationId: message.conversationId || null,
-      messageId: finalId,
-      currentStatus: 'sent',
-      deliveredKnown: isMessageDeliveredForRetry(message.conversationId || null, finalId),
-      retryState: 0
-    });
     const ts = res?.msg?.ts || res?.created_at || res?.createdAt || fallbackTs;
     if (Number.isFinite(ts)) message.ts = ts;
     logOutgoingUiStatusTrace({
@@ -5994,33 +5160,6 @@ function resolveRenderEntryCounter(entry) {
       jobId: res?.jobId ?? res?.job?.jobId ?? null
     });
     logOutgoingStatusTrace(message, fromStatus, 'sent', reasonCode);
-    triggerOutgoingStatusReconcile({
-      conversationId: message.conversationId || null,
-      peerAccountDigest: message.peerAccountDigest || null,
-      source: 'send_ok'
-    });
-    try {
-      const state = getMessageState();
-      const convId = message.conversationId || state.conversationId || null;
-      const peerAccountDigest = message.peerAccountDigest || state.activePeerDigest || null;
-      const targetAccountDigest = toDigestOnly(peerAccountDigest);
-      const targetDeviceId = message.peerDeviceId
-        || resolveTargetDeviceForConv(convId, peerAccountDigest)
-        || state.activePeerDeviceId
-        || null;
-      if (convId && finalId && targetAccountDigest && targetDeviceId) {
-        enqueueNotifyRetry({
-          message,
-          conversationId: convId,
-          messageId: finalId,
-          targetAccountDigest,
-          targetDeviceId,
-          preview: message.text || '',
-          ts: message.ts || fallbackTs,
-          senderDeviceId: message.senderDeviceId || null
-        });
-      }
-    } catch {}
   }
 
   function applyOutgoingFailure(message, err, fallbackReason, reasonCode = 'SEND_FAIL') {
@@ -6067,201 +5206,6 @@ function resolveRenderEntryCounter(entry) {
     return info;
   }
 
-  async function resendFailedOutgoingMessage(message) {
-    try {
-      if (!message || message.direction !== 'outgoing') return;
-      if (message.status !== 'failed') return;
-      if (message.failureCode === 'COUNTER_TOO_LOW_REPLACED') {
-        updateMessagesStatusUI();
-        return;
-      }
-      const state = getMessageState();
-      const convId = message.conversationId || state.conversationId || null;
-      const messageId = message.localId || message.messageId || message.id || null;
-      if (!convId || !messageId) {
-        applyOutgoingFailure(message, new Error('missing conversation or message id'), '無法重送：缺少對話資訊');
-        updateMessagesStatusUI();
-        return;
-      }
-      applyOutgoingPending(message, 'RESEND');
-      updateMessagesStatusUI();
-      let retryResult = null;
-      try {
-        retryResult = await retryOutboxMessage({ conversationId: convId, messageId });
-      } catch (err) {
-        retryResult = { ok: false, error: err?.message || err, errorCode: err?.code || null };
-      }
-      if (retryResult?.ok) {
-        try {
-          applyOutgoingSent(message, retryResult.data, message.ts || Math.floor(Date.now() / 1000));
-        } catch (err) {
-          applyOutgoingFailure(message, err, '重送失敗');
-        }
-        updateMessagesStatusUI();
-        return;
-      }
-      if (retryResult?.errorCode === 'COUNTER_TOO_LOW_REPLACED') {
-        applyCounterTooLowReplaced(message);
-        updateMessagesStatusUI();
-        return;
-      }
-      if (retryResult?.errorCode === 'OutboxInflight') {
-        updateMessagesStatusUI();
-        return;
-      }
-      const retryReason = retryResult?.errorCode || retryResult?.reasonCode || null;
-      if (retryReason === 'OUTBOX_WAIT_LOWER_COUNTER' || retryReason === 'OUTBOX_NOT_DUE') {
-        updateMessagesStatusUI();
-        return;
-      }
-      if (isCounterTooLowError(retryResult)) {
-        updateMessagesStatusUI();
-        return;
-      }
-      if (retryResult?.errorCode !== 'OutboxJobMissing') {
-        applyOutgoingFailure(message, retryResult, '重送失敗');
-        updateMessagesStatusUI();
-        return;
-      }
-      let senderDeviceId = message.senderDeviceId || null;
-      if (!senderDeviceId) {
-        try { senderDeviceId = ensureDeviceId(); } catch {}
-      }
-      if (!senderDeviceId) {
-        applyOutgoingFailure(message, new Error('deviceId missing'), '無法重送：缺少裝置資訊');
-        updateMessagesStatusUI();
-        return;
-      }
-      const vaultRes = await MessageKeyVault.getMessageKey({ conversationId: convId, messageId, senderDeviceId });
-      if (vaultRes?.ok) {
-        applyOutgoingFailure(message, new Error('outbox payload missing'), '無法重送：缺少出站封包');
-        updateMessagesStatusUI();
-        return;
-      }
-      if (vaultRes?.error && vaultRes.error !== 'NotFound') {
-        applyOutgoingFailure(message, new Error(vaultRes?.message || 'vault get failed'), '無法重送：金鑰讀取失敗');
-        updateMessagesStatusUI();
-        return;
-      }
-      if (message.type && message.type !== 'text') {
-        applyOutgoingFailure(message, new Error('outbox payload missing for media'), '無法重送：缺少原始內容');
-        updateMessagesStatusUI();
-        return;
-      }
-      const peerAccountDigest = message.peerAccountDigest || state.activePeerDigest || resolvePeerForConversation(convId, state.activePeerDigest);
-      const peerDeviceId = message.peerDeviceId || resolveTargetDeviceForConv(convId, peerAccountDigest) || state.activePeerDeviceId || null;
-      if (!peerAccountDigest || !peerDeviceId) {
-        applyOutgoingFailure(message, new Error('peer missing'), '無法重送：缺少對端裝置資訊');
-        updateMessagesStatusUI();
-        return;
-      }
-      try {
-        const res = await sendDrText({
-          peerAccountDigest,
-          peerDeviceId,
-          text: message.text || '',
-          messageId
-        });
-        const replacementInfo = getReplacementInfo(res);
-        const convIdFinal = res?.convId || convId;
-        if (replacementInfo) {
-          applyCounterTooLowReplaced(message);
-          const replacementTs = res?.msg?.ts || message.ts || Math.floor(Date.now() / 1000);
-          let replacementMsg = convIdFinal ? findTimelineMessageById(convIdFinal, replacementInfo.newMessageId) : null;
-          if (!replacementMsg) {
-            replacementMsg = appendLocalOutgoingMessage({
-              text: message.text || '',
-              ts: replacementTs,
-              id: replacementInfo.newMessageId
-            });
-          }
-          if (!res?.queued && replacementMsg) {
-            applyOutgoingSent(replacementMsg, res, replacementTs, 'COUNTER_TOO_LOW_REPLACED');
-          }
-          updateMessagesStatusUI();
-          if (!res?.queued && convIdFinal) {
-            const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
-            const targetAccountDigest = toDigestOnly(peerAccountDigest);
-            if (targetAccountDigest) {
-              sendMessageNewNotify({
-                message: replacementMsg,
-                conversationId: convIdFinal,
-                messageId: replacementMsg?.id || replacementInfo.newMessageId,
-                targetAccountDigest,
-                targetDeviceId,
-                preview: message.text || '',
-                ts: replacementTs
-              });
-            }
-          }
-          if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
-          return;
-        }
-        if (res?.queued) {
-          updateMessagesStatusUI();
-          return;
-        }
-        applyOutgoingSent(message, res, message.ts || Math.floor(Date.now() / 1000));
-        updateMessagesStatusUI();
-        if (convIdFinal && !state.conversationId) state.conversationId = convIdFinal;
-        const targetDeviceId = resolveTargetDeviceForConv(convIdFinal, peerAccountDigest);
-        const targetAccountDigest = toDigestOnly(peerAccountDigest);
-        if (targetAccountDigest) {
-          sendMessageNewNotify({
-            message,
-            conversationId: convIdFinal,
-            messageId: message.id || messageId,
-            targetAccountDigest,
-            targetDeviceId,
-            preview: message.text || '',
-            ts: message.ts || Math.floor(Date.now() / 1000)
-          });
-        }
-      } catch (err) {
-        const replacementInfo = getReplacementInfo(err);
-        if (replacementInfo) {
-          applyCounterTooLowReplaced(message);
-          const replacementTs = message.ts || Math.floor(Date.now() / 1000);
-          let replacementMsg = convId ? findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
-          if (!replacementMsg) {
-            replacementMsg = appendLocalOutgoingMessage({
-              text: message.text || '',
-              ts: replacementTs,
-              id: replacementInfo.newMessageId
-            });
-          }
-          if (replacementMsg) {
-            applyOutgoingFailure(replacementMsg, err, '重送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
-          }
-          updateMessagesStatusUI();
-          return;
-        }
-        if (isCounterTooLowError(err)) {
-          applyCounterTooLowReplaced(message);
-          updateMessagesStatusUI();
-          return;
-        }
-        applyOutgoingFailure(message, err, '重送失敗');
-        updateMessagesStatusUI();
-      }
-    } finally {
-      flushOutbox({ sourceTag: 'resend' }).catch(() => {});
-    }
-  }
-
-  function applyAckDeliveryReceipt({ convId, ack, localMessage }) {
-    const receipt = ack?.receipt || null;
-    if (!receipt || receipt.type !== 'delivery') return;
-    const messageId = receipt.message_id || ack?.msg?.id || ack?.id || localMessage?.id || null;
-    if (!messageId || !convId) return;
-    const deliveredAt = Number.isFinite(receipt.delivered_at) ? receipt.delivered_at : (ack?.msg?.ts || null);
-    recordMessageDelivered(convId, messageId, deliveredAt);
-    if (localMessage) {
-      localMessage.id = localMessage.id || messageId;
-      if (applyReceiptState(localMessage)) updateMessagesStatusUI();
-    }
-  }
-
   function handleMessageDecrypted({ message, allowReceipts = true } = {}) {
     if (!message) return;
     if (message.direction === 'incoming') {
@@ -6303,13 +5247,12 @@ function resolveRenderEntryCounter(entry) {
   function computeDoubleTickState({ timelineMessages, conversationId, selfDigest } = {}) {
     const latestOutgoing = resolveLatestOutgoingMessage(timelineMessages, selfDigest);
     const latestOutgoingId = latestOutgoing?.id || latestOutgoing?.messageId || latestOutgoing?.serverMessageId || null;
-    let latestOutgoingDelivered = false;
-    if (latestOutgoingId && conversationId) {
-      const receipt = getMessageReceipt(conversationId, latestOutgoingId);
-      const delivered = getMessageDelivery(conversationId, latestOutgoingId);
-      latestOutgoingDelivered = !!(receipt?.read || delivered?.delivered);
-    }
-    return { latestOutgoingId, latestOutgoingDelivered };
+    const latestOutgoingCounter = resolveRenderEntryCounter(latestOutgoing);
+    const ackCounter = conversationId ? getVaultAckCounter(conversationId) : null;
+    const latestOutgoingDelivered = Number.isFinite(latestOutgoingCounter)
+      && Number.isFinite(ackCounter)
+      && ackCounter >= latestOutgoingCounter;
+    return { latestOutgoingId, latestOutgoingDelivered, latestOutgoingCounter, ackCounter };
   }
 
   function computeDoubleTickMessageId(params = {}) {
@@ -6326,16 +5269,11 @@ function resolveRenderEntryCounter(entry) {
     return latest?.id || latest?.messageId || latest?.serverMessageId || null;
   }
 
-  function isLatestOutgoingForRetry(conversationId, messageId) {
+  function isLatestOutgoingForStatus(conversationId, messageId) {
     if (!conversationId || !messageId) return false;
     const latestId = resolveLatestOutgoingMessageIdForConversation(conversationId);
     return !!(latestId && latestId === messageId);
   }
-
-  function resolveNotifyRetryBadge(message) {
-    return null;
-  }
-
 
   async function sendReadReceiptForMessage(message) {
     if (!message || message.direction !== 'incoming' || !message.id) return;
@@ -6534,26 +5472,14 @@ function resolveRenderEntryCounter(entry) {
             updateMessagesStatusUI();
           } else if (res?.queued) {
             applyMediaMeta(msg, res);
+            const queuedCounter = normalizeCounterValue(res?.msg?.counter ?? res?.counter ?? res?.headerCounter);
+            if (msg && queuedCounter !== null) {
+              msg.counter = queuedCounter;
+            }
             updateMessagesStatusUI();
           } else if (msg) {
             applyOutgoingSent(msg, res, Math.floor(Date.now() / 1000));
             applyMediaMeta(msg, res);
-          }
-          if (state.activePeerDigest && !res?.queued) {
-            const notifyMessage = replacementMsg || msg;
-            const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
-            const targetAccountDigest = toDigestOnly(state.activePeerDigest);
-            if (targetAccountDigest) {
-              sendMessageNewNotify({
-                message: notifyMessage,
-                conversationId: convId,
-                messageId: notifyMessage?.id || localMsg.id,
-                targetAccountDigest,
-                targetDeviceId,
-                preview: notifyMessage?.text || previewText,
-                ts: notifyMessage?.ts || Math.floor(Date.now() / 1000)
-              });
-            }
           }
         } catch (err) {
           const msg = findMessageById(localMsg.id);
@@ -7174,18 +6100,33 @@ function resolveRenderEntryCounter(entry) {
   function handleVaultAckEvent(event) {
     const convId = String(event?.conversationId || event?.conversation_id || '').trim();
     const messageId = String(event?.messageId || event?.message_id || '').trim();
-    if (!convId || !messageId) return;
+    if (!convId) return;
     let tsRaw = Number(event?.ts ?? event?.timestamp);
     if (Number.isFinite(tsRaw) && tsRaw > 10_000_000_000) {
       tsRaw = Math.floor(tsRaw / 1000);
     }
     if (!Number.isFinite(tsRaw) || tsRaw <= 0) tsRaw = Math.floor(Date.now() / 1000);
-    recordMessageDelivered(convId, messageId, tsRaw);
-    logCapped('vaultAckWsRecvTrace', { conversationId: convId || null, messageId: messageId || null }, 5);
+    let ackCounter = normalizeCounterValue(event?.counter ?? event?.headerCounter ?? event?.header_counter);
+    const localMessage = messageId ? (findMessageById(messageId) || findTimelineMessageById(convId, messageId)) : null;
+    if (ackCounter === null && localMessage) {
+      ackCounter = resolveRenderEntryCounter(localMessage);
+    }
+    if (!Number.isFinite(ackCounter)) return;
+    if (localMessage && !Number.isFinite(resolveRenderEntryCounter(localMessage))) {
+      localMessage.counter = ackCounter;
+    }
+    recordVaultAckCounter(convId, ackCounter, tsRaw);
+    logCapped('vaultAckWsRecvTrace', {
+      conversationId: convId || null,
+      messageId: messageId || null,
+      counter: ackCounter
+    }, 5);
     const state = getMessageState();
     if (state.conversationId !== convId) return;
-    const localMessage = findMessageById(messageId) || findTimelineMessageById(convId, messageId);
-    if (localMessage && applyReceiptState(localMessage)) {
+    let selfDigest = null;
+    try { selfDigest = normalizeAccountDigest(getAccountDigest()); } catch {}
+    const latestOutgoing = resolveLatestOutgoingMessage(timelineGetTimeline(convId), selfDigest);
+    if (latestOutgoing && applyReceiptState(latestOutgoing)) {
       updateMessagesStatusUI();
     }
   }
@@ -7337,14 +6278,7 @@ function resolveRenderEntryCounter(entry) {
     elements.messagesList?.addEventListener('click', (event) => {
       const target = event.target?.closest?.('.message-status.failed');
       if (!target) return;
-      const messageId = target.dataset?.messageId || null;
-      if (!messageId) return;
-      const msg = findMessageById(messageId);
-      if (!msg || msg.status !== 'failed') return;
-      resendFailedOutgoingMessage(msg).catch((err) => {
-        applyOutgoingFailure(msg, err, '重送失敗');
-        updateMessagesStatusUI();
-      });
+      showToast?.('訊息傳送失敗，請重新發送', { variant: 'warning' });
     });
 
     elements.loadMoreBtn?.addEventListener('click', () => {
@@ -7431,28 +6365,16 @@ function resolveRenderEntryCounter(entry) {
           }
           updateMessagesStatusUI();
         } else if (res?.queued) {
+          const queuedCounter = normalizeCounterValue(res?.msg?.counter ?? res?.counter ?? res?.headerCounter);
+          if (localMsg && queuedCounter !== null) {
+            localMsg.counter = queuedCounter;
+          }
           updateMessagesStatusUI();
         } else if (localMsg) {
           applyOutgoingSent(localMsg, res, ts);
           updateMessagesStatusUI();
         }
-        const targetDeviceId = resolveTargetDeviceForConv(convId, state.activePeerDigest);
         setMessagesStatus('');
-        if (convId && state.activePeerDigest && !res?.queued) {
-          const notifyMessage = replacementMsg || localMsg;
-          const targetAccountDigest = toDigestOnly(state.activePeerDigest);
-          if (targetAccountDigest) {
-            sendMessageNewNotify({
-              message: notifyMessage,
-              conversationId: convId,
-              messageId: notifyMessage?.id || messageId,
-              targetAccountDigest,
-              targetDeviceId,
-              preview: notifyMessage?.text || text,
-              ts: notifyMessage?.ts || ts
-            });
-          }
-        }
       } catch (err) {
         if (uiNoiseEnabled) {
           log({ messageComposerError: err?.message || err });
@@ -7533,25 +6455,6 @@ function resolveRenderEntryCounter(entry) {
           applyOutgoingFailure(message, err, '傳送失敗', 'OUTBOX_SENT_HOOK_ERROR');
         }
         const state = getMessageState();
-        if (!message.notifySent) {
-          const peerDigest = message.peerAccountDigest || state.activePeerDigest || null;
-          const targetAccountDigest = toDigestOnly(peerDigest);
-          const targetDeviceId = message.peerDeviceId
-            || resolveTargetDeviceForConv(convId, peerDigest)
-            || state.activePeerDeviceId
-            || null;
-          if (targetAccountDigest) {
-            sendMessageNewNotify({
-              message,
-              conversationId: convId,
-              messageId: message.id || message.messageId || message.localId || null,
-              targetAccountDigest,
-              targetDeviceId,
-              preview: message.text || '',
-              ts: message.ts || fallbackTs
-            });
-          }
-        }
         if (state.conversationId === convId) updateMessagesStatusUI();
       },
       onFailed: async (job, err) => {

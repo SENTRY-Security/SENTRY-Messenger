@@ -2040,6 +2040,41 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
+  if (req.method === 'POST' && url.pathname === '/d1/messages/secure/max-counter') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+    const senderAccountDigest = normalizeAccountDigest(body?.senderAccountDigest || body?.sender_account_digest);
+    if (!conversationId || !senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'conversationId and senderDeviceId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    const where = ['conversation_id=?1', 'sender_device_id=?2'];
+    const params = [conversationId, senderDeviceId];
+    if (senderAccountDigest) {
+      where.push(`sender_account_digest=?${params.length + 1}`);
+      params.push(senderAccountDigest);
+    }
+    const row = await env.DB.prepare(`
+      SELECT MAX(counter) AS max_counter
+        FROM messages_secure
+       WHERE ${where.join(' AND ')}
+    `).bind(...params).first();
+    const maxCounter = Number.isFinite(Number(row?.max_counter)) ? Number(row.max_counter) : null;
+    return json({
+      ok: true,
+      conversationId,
+      senderDeviceId,
+      maxCounter,
+      ts: Math.floor(Date.now() / 1000)
+    });
+  }
+
   if (req.method === 'GET' && url.pathname === '/d1/messages/by-counter') {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     const counterRaw = url.searchParams.get('counter');
