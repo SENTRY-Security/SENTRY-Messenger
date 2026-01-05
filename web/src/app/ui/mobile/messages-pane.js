@@ -130,6 +130,59 @@ const VAULT_GATE_DECISION_TRACE_LIMIT = 3;
 let vaultGateDecisionTraceCount = 0;
 const outgoingTsSeqByConvId = new Map();
 
+function normalizeTimelineMessageId(msg) {
+  if (!msg) return null;
+  const id = msg.id || msg.messageId || msg.serverMessageId || msg.server_message_id || null;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+function normalizeRawMessageId(raw) {
+  if (!raw) return null;
+  const candidates = [raw.id, raw.message_id, raw.messageId];
+  for (const val of candidates) {
+    if (typeof val === 'string' && val.trim()) return val.trim();
+  }
+  return null;
+}
+
+function hashMessageId(value) {
+  if (!value) return 0;
+  const str = String(value);
+  let hash = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function deriveMessageOffsetMs(messageId) {
+  if (!messageId) return 0;
+  return hashMessageId(messageId) % 1000;
+}
+
+function extractMessageTimestamp(raw) {
+  if (!raw) return null;
+  const candidates = [raw.created_at, raw.createdAt, raw.ts, raw.timestamp, raw.meta?.ts];
+  for (const val of candidates) {
+    const n = Number(val);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return null;
+}
+
+function extractMessageTimestampMs(raw) {
+  const ts = extractMessageTimestamp(raw);
+  if (!Number.isFinite(ts)) return null;
+  if (ts > 10_000_000_000) return Math.floor(ts);
+  const messageId = normalizeRawMessageId(raw);
+  return Math.floor(ts) * 1000 + deriveMessageOffsetMs(messageId);
+}
+
+function extractMessageTimestampSeq(raw) {
+  const messageId = normalizeRawMessageId(raw);
+  return messageId ? hashMessageId(messageId) : null;
+}
+
 function logConversationResetTrace(payload = {}) {
   if (conversationResetTraceCount >= CONVERSATION_RESET_TRACE_LIMIT) return;
   conversationResetTraceCount += 1;
@@ -3167,59 +3220,6 @@ export function initMessagesPane({
     bubble.appendChild(wrapper);
     attachMediaPreview(preview, media);
     renderUploadOverlay(wrapper, media);
-  }
-
-  function normalizeTimelineMessageId(msg) {
-    if (!msg) return null;
-    const id = msg.id || msg.messageId || msg.serverMessageId || msg.server_message_id || null;
-    return typeof id === 'string' && id.trim() ? id.trim() : null;
-  }
-
-  function normalizeRawMessageId(raw) {
-    if (!raw) return null;
-    const candidates = [raw.id, raw.message_id, raw.messageId];
-    for (const val of candidates) {
-      if (typeof val === 'string' && val.trim()) return val.trim();
-    }
-    return null;
-  }
-
-  function hashMessageId(value) {
-    if (!value) return 0;
-    const str = String(value);
-    let hash = 0;
-    for (let i = 0; i < str.length; i += 1) {
-      hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
-    }
-    return hash;
-  }
-
-  function deriveMessageOffsetMs(messageId) {
-    if (!messageId) return 0;
-    return hashMessageId(messageId) % 1000;
-  }
-
-  function extractMessageTimestamp(raw) {
-    if (!raw) return null;
-    const candidates = [raw.created_at, raw.createdAt, raw.ts, raw.timestamp, raw.meta?.ts];
-    for (const val of candidates) {
-      const n = Number(val);
-      if (Number.isFinite(n) && n > 0) return Math.floor(n);
-    }
-    return null;
-  }
-
-  function extractMessageTimestampMs(raw) {
-    const ts = extractMessageTimestamp(raw);
-    if (!Number.isFinite(ts)) return null;
-    if (ts > 10_000_000_000) return Math.floor(ts);
-    const messageId = normalizeRawMessageId(raw);
-    return Math.floor(ts) * 1000 + deriveMessageOffsetMs(messageId);
-  }
-
-  function extractMessageTimestampSeq(raw) {
-    const messageId = normalizeRawMessageId(raw);
-    return messageId ? hashMessageId(messageId) : null;
   }
 
   function sortMessagesByTimelineLocal(items = []) {

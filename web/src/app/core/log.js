@@ -42,6 +42,11 @@ const REPLAY_DEBUG_KEYS = new Set([
   'sendPreflightSecretTrace',
   'contactSecretsRestoreTrace',
   'contactSecretsSanitizeDropTrace',
+  'contactSecretsBackupTriggerTrace',
+  'contactSecretsBackupSkippedTrace',
+  'contactSecretsBackupResultTrace',
+  'contactSecretsSnapshotFlushStartTrace',
+  'contactSecretsSnapshotFlushDoneTrace',
   'vaultGateDecisionTrace',
   'contactSecretWriteTrace',
   'profilePreflightTrace',
@@ -57,6 +62,10 @@ const REPLAY_DEBUG_KEYS = new Set([
   'inviteConsumeContactRefreshTrigger',
   'contactsRefreshAfterInviteConsume',
   'drSnapshotRestoreReject',
+  'drStateHydrateBatchStartTrace',
+  'drStateHydrateBatchDoneTrace',
+  'restorePipelineStageTrace',
+  'restorePipelineDoneTrace',
   'drHydrateFailedTrace',
   'outgoingSendTrace',
   'outgoingStatusTrace',
@@ -181,7 +190,16 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'inviteSessionIndexWriteTrace',
   'conversationIndexRestoredFromPending',
   'inviteConsumeContactRefreshTrigger',
-  'contactsRefreshAfterInviteConsume'
+  'contactsRefreshAfterInviteConsume',
+  'contactSecretsBackupTriggerTrace',
+  'contactSecretsBackupSkippedTrace',
+  'contactSecretsBackupResultTrace',
+  'contactSecretsSnapshotFlushStartTrace',
+  'contactSecretsSnapshotFlushDoneTrace',
+  'drStateHydrateBatchStartTrace',
+  'drStateHydrateBatchDoneTrace',
+  'restorePipelineStageTrace',
+  'restorePipelineDoneTrace'
 ]);
 const FORENSICS_CAP_DEFAULT = 20;
 const REPLAY_ACTION_VALUES = new Set();

@@ -25,7 +25,8 @@ import {
   normalizePeerDeviceId,
   getDeviceId,
   ensureDeviceId,
-  clearDrState
+  clearDrState,
+  setBeforeClearDrStateHook
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -86,6 +87,8 @@ import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 import { resetAllProcessedMessages, resetReceiptStore, syncOfflineDecryptNow } from '../features/messages.js';
 import { OFFLINE_SYNC_LOG_CAP, OFFLINE_SYNC_TRIGGER_COALESCE_MS } from '../features/messages-sync-policy.js';
+import { startRestorePipeline } from '../features/restore-coordinator.js';
+import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
@@ -120,6 +123,15 @@ function summarizeMkForLog(mkRaw) {
     return summary;
   }).catch(() => summary);
 }
+
+setBeforeClearDrStateHook(({ reason } = {}) => {
+  if (LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT !== true) return;
+  try {
+    persistContactSecrets();
+  } catch (err) {
+    log({ contactSecretsPersistError: err?.message || err, reason: reason || 'before-clear-dr' });
+  }
+});
 
 let mkSetTraceLogged = false;
 async function emitMkSetTrace(sourceTag, mkRaw) {
@@ -969,7 +981,11 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
 
   try {
     persistContactSecrets();
-    triggerContactSecretsBackup('secure-logout', { force: true, keepalive: true }).catch((err) => {
+    triggerContactSecretsBackup('secure-logout', {
+      force: REMOTE_BACKUP_FORCE_ON_LOGOUT === true,
+      keepalive: true,
+      sourceTag: 'app-mobile:secureLogout'
+    }).catch((err) => {
       log({ contactSecretsBackupDuringLogoutError: err?.message || err });
     });
   } catch (err) {
@@ -1319,45 +1335,88 @@ function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
 }
 
 function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
-  try {
-    const peerSet = new Set();
-    if (sessionStore.contactSecrets instanceof Map) {
-      for (const key of sessionStore.contactSecrets.keys()) {
-        if (key) peerSet.add(key);
-      }
+  const startedAt = Date.now();
+  const peerSet = new Set();
+  if (sessionStore.contactSecrets instanceof Map) {
+    for (const key of sessionStore.contactSecrets.keys()) {
+      if (key) peerSet.add(key);
     }
-    if (sessionStore.contactIndex instanceof Map) {
-      for (const key of sessionStore.contactIndex.keys()) {
-        if (key) peerSet.add(key);
-      }
+  }
+  if (sessionStore.contactIndex instanceof Map) {
+    for (const key of sessionStore.contactIndex.keys()) {
+      if (key) peerSet.add(key);
     }
-    let attempted = 0;
-    let persisted = 0;
-    const missingState = [];
-    for (const peerDigest of peerSet) {
-      attempted += 1;
-      const peerDeviceId = entry?.conversation?.peerDeviceId || null;
-      if (!peerDeviceId) throw new Error('peerDeviceId missing for contact restore');
-      const state = drState({ peerAccountDigest: peerDigest, peerDeviceId });
+  }
+  logCapped('contactSecretsSnapshotFlushStartTrace', {
+    reason,
+    peers: peerSet.size
+  }, 5);
+  let attempted = 0;
+  let persisted = 0;
+  const missingState = [];
+  for (const peerKey of peerSet) {
+    attempted += 1;
+    const identity = normalizePeerIdentity(peerKey);
+    const peerAccountDigest = identity?.accountDigest || null;
+    const peerDeviceId = identity?.deviceId || null;
+    if (!peerAccountDigest || !peerDeviceId) {
+      missingState.push(peerKey);
+      continue;
+    }
+    try {
+      const state = drState({ peerAccountDigest, peerDeviceId });
       if (state?.rk) {
-        if (persistDrSnapshot({ peerAccountDigest: peerDigest, state })) {
+        if (persistDrSnapshot({ peerAccountDigest, peerDeviceId, state })) {
           persisted += 1;
+        } else {
+          missingState.push(peerKey);
         }
       } else {
-        missingState.push(peerDigest);
+        missingState.push(peerKey);
       }
+    } catch (err) {
+      missingState.push(peerKey);
+      log({ contactSecretsSnapshotFlushError: err?.message || err, reason });
     }
-    log({
-      contactSecretsSnapshotFlush: {
-        reason,
-        peers: peerSet.size,
-        attempted,
-        persisted,
-        missingState
-      }
-    });
+  }
+  try {
+    persistContactSecrets();
   } catch (err) {
-    log({ contactSecretsSnapshotFlushError: err?.message || err, reason });
+    log({ contactSecretsPersistError: err?.message || err, reason: 'flushDrSnapshotsBeforeLogout' });
+  }
+  try {
+    if (REMOTE_BACKUP_FORCE_ON_LOGOUT === true) {
+      triggerContactSecretsBackup('secure-logout', { force: true, keepalive: true, sourceTag: 'app-mobile:flush-before-logout' })
+        .catch((err) => log({ contactSecretsBackupDuringLogoutError: err?.message || err }));
+    }
+  } catch (err) {
+    log({ contactSecretsBackupDuringLogoutError: err?.message || err });
+  }
+  logCapped('contactSecretsSnapshotFlushDoneTrace', {
+    reason,
+    peers: peerSet.size,
+    attempted,
+    persisted,
+    missingStateCount: missingState.length,
+    tookMs: Math.max(0, Date.now() - startedAt)
+  }, 5);
+  log({
+    contactSecretsSnapshotFlush: {
+      reason,
+      peers: peerSet.size,
+      attempted,
+      persisted,
+      missingState
+    }
+  });
+}
+
+function flushContactSecretsLocal(reason = 'manual') {
+  if (LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT !== true) return;
+  try {
+    persistContactSecrets();
+  } catch (err) {
+    log({ contactSecretsPersistError: err?.message || err, reason });
   }
 }
 
@@ -3665,8 +3724,7 @@ postLoginInitPromise
   .catch((err) => log({ contactsInitError: err?.message || err }))
   .finally(() => {
     messagesPane.renderConversationList();
-    syncOfflineDecryptNow({ source: 'login' })
-      .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'login' }));
+    startRestorePipeline({ source: 'login' }).catch(() => {});
     flushOutbox({ sourceTag: 'post_login' }).catch(() => {});
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
@@ -4181,6 +4239,7 @@ if (typeof document !== 'undefined') {
       triggerResumeSync({ source: 'visibility_resume' });
     }
     if (document.hidden) {
+      flushContactSecretsLocal('visibilitychange');
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
         handleBackgroundAutoLogout();
@@ -4198,6 +4257,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', (event) => {
     if (logoutInProgress) return;
     if (event && event.persisted) return;
+    flushContactSecretsLocal('pagehide');
     if (isReloadNavigation()) {
       forceReloadLogout();
       return;

@@ -1,6 +1,6 @@
 import { encryptWithMK, decryptWithMK, b64, b64u8, assertEnvelopeStrict } from '../crypto/aead.js';
 import { getMkRaw, ensureDeviceId, getAccountDigest } from '../core/store.js';
-import { log } from '../core/log.js';
+import { log, logCapped } from '../core/log.js';
 import { uploadContactSecretsBackup, fetchContactSecretsBackup } from '../api/contact-secrets.js';
 import {
   buildContactSecretsSnapshot,
@@ -151,21 +151,83 @@ async function decryptSnapshotPayload(envelope, mkRaw) {
   }
 }
 
-export async function triggerContactSecretsBackup(reason = 'manual', { force = false, keepalive = false } = {}) {
-  if (backupDisabled) return false;
+export async function triggerContactSecretsBackup(reason = 'manual', { force = false, keepalive = false, sourceTag = null } = {}) {
+  const isForced = !!force || reason === 'secure-logout' || reason === 'force-logout';
+  const summaryHint = latestPersistDetail?.summary || null;
+  const hintEntries = Number.isFinite(Number(summaryHint?.entries)) ? Number(summaryHint.entries) : null;
+  const hintWithDrState = Number.isFinite(Number(summaryHint?.withDrState)) ? Number(summaryHint.withDrState) : null;
+  logCapped('contactSecretsBackupTriggerTrace', {
+    reason,
+    sourceTag: sourceTag || reason || null,
+    force: isForced,
+    entries: hintEntries,
+    withDrState: hintWithDrState
+  }, 5);
+  if (backupDisabled) {
+    if (!isForced) {
+      logCapped('contactSecretsBackupSkippedTrace', {
+        reason,
+        sourceTag: sourceTag || reason || null,
+        force: isForced,
+        entries: hintEntries,
+        withDrState: hintWithDrState,
+        skipReason: 'backup-disabled'
+      }, 5);
+    }
+    return false;
+  }
   const mk = getMkRaw();
-  if (!mk) return false;
+  if (!mk) {
+    if (!isForced) {
+      logCapped('contactSecretsBackupSkippedTrace', {
+        reason,
+        sourceTag: sourceTag || reason || null,
+        force: isForced,
+        entries: hintEntries,
+        withDrState: hintWithDrState,
+        skipReason: 'mk-missing'
+      }, 5);
+    }
+    return false;
+  }
   const snapshot = latestPersistDetail || buildContactSecretsSnapshot();
-  if (!snapshot?.payload) return false;
   const summary = snapshot?.summary || null;
   const entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
   const withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
-  const isForced = !!force || reason === 'secure-logout' || reason === 'force-logout';
+  if (!snapshot?.payload) {
+    if (!isForced) {
+      logCapped('contactSecretsBackupSkippedTrace', {
+        reason,
+        sourceTag: sourceTag || reason || null,
+        force: isForced,
+        entries: entryCount,
+        withDrState,
+        skipReason: 'snapshot-missing'
+      }, 5);
+    }
+    return false;
+  }
   if (entryCount > 0 && withDrState === 0 && !isForced) {
+    logCapped('contactSecretsBackupSkippedTrace', {
+      reason,
+      sourceTag: sourceTag || reason || null,
+      force: isForced,
+      entries: entryCount,
+      withDrState,
+      skipReason: 'withDrState-absent'
+    }, 5);
     log({ contactSecretsBackupSkipped: 'withDrState-absent', reason, entries: entryCount });
     return false;
   }
   if (!isForced && snapshot.checksum && snapshot.checksum === lastUploadedChecksum) {
+    logCapped('contactSecretsBackupSkippedTrace', {
+      reason,
+      sourceTag: sourceTag || reason || null,
+      force: isForced,
+      entries: entryCount,
+      withDrState,
+      skipReason: 'checksum-unchanged'
+    }, 5);
     return false;
   }
   try {
@@ -185,17 +247,46 @@ export async function triggerContactSecretsBackup(reason = 'manual', { force = f
     if (r.status === 404) {
       backupDisabled = true;
       log({ contactSecretsBackupDisabled: 'upload-404' });
+      logCapped('contactSecretsBackupResultTrace', {
+        ok: false,
+        status: r.status,
+        snapshotVersion: summary?.version || null,
+        updatedAt: summary?.generatedAt || null,
+        bytes: summary?.bytes || null
+      }, 5);
       return false;
     }
     if (r.ok) {
       lastUploadedChecksum = snapshot.checksum || null;
       log({ contactSecretsBackupUploaded: { status: r.status, snapshotVersion: snapshot.summary?.version || null, entries: snapshot.summary?.entries || null } });
+      logCapped('contactSecretsBackupResultTrace', {
+        ok: true,
+        status: r.status,
+        snapshotVersion: summary?.version || null,
+        updatedAt: summary?.generatedAt || null,
+        bytes: summary?.bytes || null
+      }, 5);
       return true;
     }
     log({ contactSecretsBackupUploadFailed: { status: r.status, reason } });
+    logCapped('contactSecretsBackupResultTrace', {
+      ok: false,
+      status: r.status,
+      snapshotVersion: summary?.version || null,
+      updatedAt: summary?.generatedAt || null,
+      bytes: summary?.bytes || null
+    }, 5);
     return false;
   } catch (err) {
     log({ contactSecretsBackupUploadError: err?.message || err, reason });
+    logCapped('contactSecretsBackupResultTrace', {
+      ok: false,
+      status: null,
+      snapshotVersion: summary?.version || null,
+      updatedAt: summary?.generatedAt || null,
+      bytes: summary?.bytes || null,
+      errorMessage: err?.message || String(err)
+    }, 5);
     return false;
   }
 }

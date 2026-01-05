@@ -30,6 +30,7 @@ let _ACCOUNT_DIGEST = null;
 let _DEVICE_ID = null;
 let _MK_RAW = null;        // Uint8Array
 let _DEVICE_PRIV = null;   // object
+let _beforeClearDrStateHook = null;
 const _DEVICE_PRIV_WAITERS = new Set();
 const _DR_SESS = new Map(); // peerKey (accountDigest::deviceId) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
 const _DR_PEER_ALIASES = null; // legacy unused
@@ -495,12 +496,27 @@ export function clearDrState(peerInput, opts = {}) {
     opts.__drDebugTag ||
     'core/store.js:465:clearDrState';
   if (!peerInput) {
+    if (typeof _beforeClearDrStateHook === 'function') {
+      try {
+        _beforeClearDrStateHook({ peerAccountDigest: null, peerDeviceId: null, reason: debugTag });
+      } catch {}
+    }
     logAllDrStates(debugTag);
     _DR_SESS.clear();
     return;
   }
+  const identity = normalizePeerIdentity(peerInput);
   const { key } = resolveDrKey(peerInput);
   if (!key) return;
+  if (typeof _beforeClearDrStateHook === 'function') {
+    try {
+      _beforeClearDrStateHook({
+        peerAccountDigest: identity?.accountDigest || identity?.key || null,
+        peerDeviceId: identity?.deviceId || null,
+        reason: debugTag
+      });
+    } catch {}
+  }
   const holder = _DR_SESS.get(key) || null;
   logDrStateClear(debugTag, key, holder);
   _DR_SESS.delete(key);
@@ -517,6 +533,11 @@ export function clearDrStatesByAccount(peerAccountDigest, opts = {}) {
       : peerAccountDigest
   );
   if (!digest) return;
+  if (typeof _beforeClearDrStateHook === 'function') {
+    try {
+      _beforeClearDrStateHook({ peerAccountDigest: digest, peerDeviceId: null, reason: debugTag });
+    } catch {}
+  }
   const toDelete = [];
   for (const key of _DR_SESS.keys()) {
     if (typeof key === 'string' && key.startsWith(`${digest}::`)) {
@@ -528,6 +549,10 @@ export function clearDrStatesByAccount(peerAccountDigest, opts = {}) {
     logDrStateClear(debugTag, k, holder);
     _DR_SESS.delete(k);
   }
+}
+
+export function setBeforeClearDrStateHook(fn) {
+  _beforeClearDrStateHook = typeof fn === 'function' ? fn : null;
 }
 
 // --- clear helpers ---

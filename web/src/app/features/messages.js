@@ -74,6 +74,8 @@ import { toU8Strict } from '../../shared/utils/u8-strict.js';
 import { logDrCore, logMsgEvent, shouldLogDrCore } from '../lib/logging.js';
 import { log, logForensicsEvent, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
+import { triggerContactSecretsBackup } from './contact-backup.js';
+import { REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH } from './restore-policy.js';
 
 const FETCH_LOG_ENABLED = DEBUG.fetchNoise === true;
 const QUEUE_LOG_ENABLED = DEBUG.queueNoise === true;
@@ -133,6 +135,7 @@ let receiptsLoaded = false;
 const deliveredStore = new Map();
 const sentDeliveryReceipts = new Set(); // `${conversationId}:${messageId}`
 let deliveredLoaded = false;
+let decryptOkSinceBackup = 0;
 const decryptFailDedup = new Set(); // messageId -> failed once
 const decryptFailMessageCache = new Map(); // messageId -> stateKey
 const decryptedMessageStore = new Map(); // conversationId -> Map(messageId -> messageObj)
@@ -146,6 +149,7 @@ const NON_REPLAYABLE_SIGNAL_TYPES = new Set([
 ]);
 const OFFLINE_SYNC_SOURCES = new Set([
   'login',
+  'restore_pipeline',
   'ws_reconnect',
   'pull_to_refresh',
   'enter_conversation',
@@ -1992,6 +1996,7 @@ export async function listSecureAndDecrypt(params = {}) {
       replayCounters.decryptOk += 1;
       if (direction === 'incoming' && vaultPutStatus === 'ok') {
         replayCounters.vaultPutIncomingOk += 1;
+        maybeTriggerBackupAfterDecrypt({ sourceTag: 'messages:decrypt-ok' });
       }
 
       const semantic = classifyDecryptedPayload(text, { meta, header });
@@ -3842,6 +3847,20 @@ function normalizeOfflineSyncSource(source) {
   return OFFLINE_SYNC_SOURCES.has(key) ? key : 'login';
 }
 
+function maybeTriggerBackupAfterDecrypt({ sourceTag } = {}) {
+  const batch = Number(REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH);
+  if (!Number.isFinite(batch) || batch <= 0) return;
+  decryptOkSinceBackup += 1;
+  if (decryptOkSinceBackup < batch) return;
+  decryptOkSinceBackup = 0;
+  try {
+    triggerContactSecretsBackup('decrypt-batch', {
+      force: false,
+      sourceTag: sourceTag || 'messages:decrypt-ok'
+    }).catch(() => {});
+  } catch {}
+}
+
 function normalizeBRouteSourceLabel(source) {
   const key = typeof source === 'string' ? source : '';
   if (key === 'ws_reconnect') return 'ws_auth_ok';
@@ -3849,6 +3868,7 @@ function normalizeBRouteSourceLabel(source) {
   if (key === 'enter_conversation') return 'enter';
   if (key === 'visibility_resume') return 'visibility';
   if (key === 'pageshow_resume') return 'pageshow';
+  if (key === 'restore_pipeline') return 'restore_pipeline';
   return key || 'login';
 }
 

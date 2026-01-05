@@ -41,6 +41,8 @@ import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { MessageKeyVault } from './message-key-vault.js';
 import { listSecureMessages, fetchSendState } from '../api/messages.js';
 import { COUNTER_TOO_LOW_MODE } from './queue/send-policy.js';
+import { triggerContactSecretsBackup } from './contact-backup.js';
+import { REMOTE_BACKUP_TRIGGER_SEND_OK_BATCH } from './restore-policy.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
@@ -52,6 +54,7 @@ const DR_SNAPSHOT_REJECT_LIMIT = 3;
 const DR_HYDRATE_FAIL_LIMIT = 3;
 let drSnapshotRejectCount = 0;
 let drHydrateFailCount = 0;
+let sendOkSinceBackup = 0;
 
 function logSendPreflightTrace(payload = {}) {
   if (sendPreflightTraceCount >= SEND_PREFLIGHT_TRACE_LIMIT) return;
@@ -97,6 +100,20 @@ function logCounterTooLowTrace({ conversationId, oldMessageId, newMessageId, exp
     newMessageId: newMessageId || null,
     expectedCounter: Number.isFinite(expectedCounter) ? expectedCounter : null
   }, 5);
+}
+
+function maybeTriggerBackupAfterSend({ sourceTag } = {}) {
+  const batch = Number(REMOTE_BACKUP_TRIGGER_SEND_OK_BATCH);
+  if (!Number.isFinite(batch) || batch <= 0) return;
+  sendOkSinceBackup += 1;
+  if (sendOkSinceBackup < batch) return;
+  sendOkSinceBackup = 0;
+  try {
+    triggerContactSecretsBackup('send-batch', {
+      force: false,
+      sourceTag: sourceTag || 'dr-session:outbox-sent'
+    }).catch(() => {});
+  } catch {}
 }
 
 function suffix(value, len) {
@@ -1124,8 +1141,60 @@ export function persistDrSnapshot(params = {}) {
   }
 }
 
-export function hydrateDrStatesFromContactSecrets() {
-  return 0;
+export function hydrateDrStatesFromContactSecrets({ source = 'hydrateDrStatesFromContactSecrets' } = {}) {
+  const startedAt = Date.now();
+  const map = restoreContactSecrets();
+  const entries = map instanceof Map ? Array.from(map.entries()) : [];
+  const selfDeviceId = ensureDeviceId();
+  let restoredCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+
+  logCapped('drStateHydrateBatchStartTrace', {
+    entries: entries.length,
+    source: source || null,
+    selfDeviceIdSuffix4: selfDeviceId ? String(selfDeviceId).slice(-4) : null
+  }, 5);
+
+  for (const [peerKey, record] of entries) {
+    const identity = normalizePeerIdentity(peerKey);
+    const peerAccountDigest = identity?.accountDigest || null;
+    const peerDeviceId = identity?.deviceId || null;
+    if (!peerAccountDigest || !peerDeviceId || !selfDeviceId) {
+      skippedCount += 1;
+      continue;
+    }
+    const deviceRecords = record?.devices && typeof record.devices === 'object' ? record.devices : null;
+    const deviceRecord = deviceRecords ? deviceRecords[selfDeviceId] : null;
+    const snapshot = deviceRecord?.drState || record?.drState || null;
+    if (!snapshot) {
+      skippedCount += 1;
+      continue;
+    }
+    try {
+      const ok = restoreDrStateFromSnapshot({
+        peerAccountDigest,
+        peerDeviceId,
+        snapshot,
+        sourceTag: source || 'hydrateDrStatesFromContactSecrets'
+      });
+      if (ok) restoredCount += 1;
+      else skippedCount += 1;
+    } catch {
+      errorCount += 1;
+    }
+  }
+
+  const tookMs = Math.max(0, Date.now() - startedAt);
+  logCapped('drStateHydrateBatchDoneTrace', {
+    restoredCount,
+    skippedCount,
+    errorCount,
+    tookMs,
+    source: source || null
+  }, 5);
+
+  return { restoredCount, skippedCount, errorCount };
 }
 
 export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}) {
@@ -3845,6 +3914,9 @@ try {
             persisted
           }));
         } catch {}
+        if (persisted) {
+          maybeTriggerBackupAfterSend({ sourceTag: 'dr-session:outbox-sent' });
+        }
       }
     }
   });
