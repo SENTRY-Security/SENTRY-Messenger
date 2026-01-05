@@ -1811,6 +1811,7 @@ export async function listSecureAndDecrypt(params = {}) {
     const allowReplayRaw = replayCtxLocal?.allowReplay;
     const mutateStateRaw = replayCtxLocal?.mutateState;
     const computedIsHistoryReplay = replayCtxLocal?.computedIsHistoryReplay;
+    const isGapFillJob = !!(replayCtxLocal?.gapFill || job?.meta?.gapFill || job?.gapFill);
     if (typeof mutateStateRaw !== 'boolean' || typeof computedIsHistoryReplay !== 'boolean') {
       if (replayInvariantViolationCount < replayInvariantViolationLimit) {
         replayInvariantViolationCount += 1;
@@ -2837,7 +2838,6 @@ export async function listSecureAndDecrypt(params = {}) {
       const sameReceiveChain = state?.theirRatchetPub && typeof header?.ek_pub_b64 === 'string'
         && naclB64(state.theirRatchetPub) === header.ek_pub_b64;
       const enableDuplicateGuard = trackState; // disable duplicate drop in replay-only mode
-      const isGapFillJob = !!(replayCtxLocal?.gapFill || job?.meta?.gapFill || job?.gapFill);
       if (enableDuplicateGuard && sameReceiveChain && Number.isFinite(effectiveHeaderCounter) && currentNr >= effectiveHeaderCounter) {
         logDeliverySkip('duplicateCounter', {
           counter: effectiveHeaderCounter,
