@@ -57,6 +57,7 @@ const REPLAY_DEBUG_KEYS = new Set([
   'inviteSessionTokenMissingDropped',
   'inviteSessionIndexWriteTrace',
   'conversationIndexRestoredFromPending',
+  'pendingInviteConversationIndexHydrate',
   'contactCoreMismatchTrace',
   'contactCorePeerDeviceMigrated',
   'inviteConsumeContactRefreshTrigger',

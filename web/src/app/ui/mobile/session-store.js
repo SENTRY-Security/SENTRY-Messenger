@@ -56,6 +56,7 @@ const PENDING_INVITES_STORAGE_KEY = 'pendingInvites-v1';
 const OFFLINE_DECRYPT_CURSOR_STORAGE_KEY = 'offlineDecryptCursor-v1';
 const PENDING_VAULT_PUT_STORAGE_KEY = 'pendingVaultPut-v1';
 let pendingInvitesRestored = false;
+let pendingInvitesConvIndexHydrated = false;
 let offlineDecryptCursorRestored = false;
 let pendingVaultPutsRestored = false;
 
@@ -210,9 +211,63 @@ function ensurePendingInviteMap() {
   return sessionStore.pendingInvites;
 }
 
+function hydrateConversationIndexFromPendingInvites(store, { source = 'restorePendingInvites' } = {}) {
+  if (pendingInvitesConvIndexHydrated) return;
+  pendingInvitesConvIndexHydrated = true;
+  if (!(sessionStore.conversationIndex instanceof Map)) {
+    const entries = sessionStore.conversationIndex && typeof sessionStore.conversationIndex.entries === 'function'
+      ? Array.from(sessionStore.conversationIndex.entries())
+      : [];
+    sessionStore.conversationIndex = new Map(entries);
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  let restoredCount = 0;
+  const sampleConversationIdsPrefix8 = [];
+  if (store instanceof Map) {
+    for (const entry of store.values()) {
+      const expiresAt = Number(entry?.expiresAt || 0);
+      if (!Number.isFinite(expiresAt) || expiresAt <= nowSec) continue;
+      const conversationId = typeof entry?.conversationId === 'string' ? entry.conversationId.trim() : '';
+      const conversationToken = typeof entry?.conversationToken === 'string' ? entry.conversationToken.trim() : '';
+      if (!conversationId || !conversationToken) continue;
+      const ownerAccountDigest = normalizeAccountDigest(entry?.ownerAccountDigest || null);
+      const ownerDeviceId = normalizePeerDeviceId(entry?.ownerDeviceId || null);
+      const prev = sessionStore.conversationIndex.get(conversationId) || {};
+      const next = { ...prev };
+      let changed = false;
+      if (!prev.token_b64) {
+        next.token_b64 = conversationToken;
+        changed = true;
+      }
+      if (!prev.peerAccountDigest && ownerAccountDigest) {
+        next.peerAccountDigest = ownerAccountDigest;
+        changed = true;
+      }
+      if (!prev.peerDeviceId && ownerDeviceId) {
+        next.peerDeviceId = ownerDeviceId;
+        changed = true;
+      }
+      if (!changed) continue;
+      sessionStore.conversationIndex.set(conversationId, next);
+      restoredCount += 1;
+      if (sampleConversationIdsPrefix8.length < 3) {
+        sampleConversationIdsPrefix8.push(conversationId.slice(0, 8));
+      }
+    }
+  }
+  logCapped('pendingInviteConversationIndexHydrate', {
+    restoredCount,
+    sampleConversationIdsPrefix8,
+    source: source || null
+  }, 5);
+}
+
 export function restorePendingInvites() {
   const store = ensurePendingInviteMap();
-  if (pendingInvitesRestored) return store;
+  if (pendingInvitesRestored) {
+    hydrateConversationIndexFromPendingInvites(store);
+    return store;
+  }
   pendingInvitesRestored = true;
   let parsed = [];
   try {
@@ -241,6 +296,7 @@ export function restorePendingInvites() {
       conversationToken: conversationToken || null
     });
   }
+  hydrateConversationIndexFromPendingInvites(store);
   return store;
 }
 
