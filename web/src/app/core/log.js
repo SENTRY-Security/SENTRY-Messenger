@@ -238,6 +238,12 @@ const PRESENCE_NOISE_KEYS = new Set(['presence', 'presenceUpdate', 'presenceSnap
 let _sink = null;   // function | Element | null
 let _sinkIsFn = false;
 const CAPPED_LOG_COUNTS = new Map();
+const LOG_CAP_OVERRIDE = new Map([
+  ['aRouteVaultMissingEnqueueTrace', 5],
+  ['bRouteGapTaskTrace', 5],
+  ['placeholderReplayTrace', 5],
+  ['placeholderGapTrace', 5]
+]);
 const FORENSICS_LOG_COUNTS = new Map();
 
 function shouldAllowReplayPayload(payload) {
@@ -354,7 +360,8 @@ export function log(x) {
 
 export function logCapped(key, payload, cap = 5) {
   if (!key) return;
-  const limit = Number.isFinite(cap) ? cap : 5;
+  const override = LOG_CAP_OVERRIDE.get(key);
+  const limit = Number.isFinite(override) ? override : (Number.isFinite(cap) ? cap : 5);
   const count = CAPPED_LOG_COUNTS.get(key) || 0;
   if (count >= limit) return;
   CAPPED_LOG_COUNTS.set(key, count + 1);

@@ -3935,7 +3935,46 @@ export async function listSecureAndDecrypt(params = {}) {
           } catch {}
           if (errorCode === 'NotFound' || errorCode === 'MissingParams' || errorCode === 'MKMissing') {
             replayCounters.messageKeyVaultMissing += 1;
-            queueBRouteRetry(convId || conversationId || null, 'replay-vault-missing');
+            const repairConversationId = convId || conversationId || null;
+            const targetCounter = Number.isFinite(headerCounter) ? headerCounter : null;
+            const repairSenderDeviceId = senderDeviceId || peerDeviceForMessage || null;
+            const repairSenderDigest = senderDigest || peerAccountDigestNormalized || peerKey || null;
+            if (replayPlaceholderUpdates) {
+              replayPlaceholderUpdates.missing.push({
+                conversationId: repairConversationId,
+                messageId,
+                counter: targetCounter,
+                direction: direction || 'incoming',
+                ts: messageTs ?? null,
+                tsMs: null,
+                senderDeviceId: repairSenderDeviceId,
+                reason: 'vault_missing'
+              });
+            }
+            const canEnqueueRepair = direction === 'incoming'
+              && repairConversationId
+              && Number.isFinite(targetCounter)
+              && repairSenderDeviceId
+              && repairSenderDigest;
+            if (canEnqueueRepair) {
+              logARouteVaultMissingEnqueueTrace({
+                conversationId: repairConversationId,
+                targetCounter,
+                messageId,
+                senderDeviceId: repairSenderDeviceId,
+                reason: 'vault_missing'
+              });
+              const enqueueResult = enqueueMissingKeyTask({
+                conversationId: repairConversationId,
+                targetCounter,
+                senderDeviceId: repairSenderDeviceId,
+                senderAccountDigest: repairSenderDigest,
+                messageId,
+                tokenB64: tokenB64 || null,
+                reason: 'A_ROUTE_VAULT_MISSING'
+              }, { deferRun: true });
+              if (enqueueResult?.enqueued) stagedLiveRepairConversations.add(String(repairConversationId));
+            }
             return;
           }
           throw new Error('不可回放：vault 取回失敗');
@@ -4656,7 +4695,6 @@ export async function listSecureAndDecrypt(params = {}) {
         }
       });
     } catch {}
-    queueBRouteRetry(conversationId || null, 'replay-vault-missing');
   }
 
   if (shouldYieldToReplay('afterProcess')) {

@@ -3868,11 +3868,13 @@ function resolveRenderEntryCounter(entry) {
       }
       const bubble = document.createElement('div');
       const messageId = normalizeTimelineMessageId(msg);
+      const isReplayEntry = msg?.isHistoryReplay === true;
       bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
       if (messageId) bubble.dataset.messageId = messageId;
       const shouldReveal = messageId
-        && (consumeReplayPlaceholderReveal(state.conversationId, messageId)
-          || consumeGapPlaceholderReveal(state.conversationId, messageId));
+        && (isReplayEntry
+          ? consumeReplayPlaceholderReveal(state.conversationId, messageId)
+          : consumeGapPlaceholderReveal(state.conversationId, messageId));
       if (shouldReveal) {
         bubble.classList.add('message-reveal');
         if (Number.isFinite(PLACEHOLDER_REVEAL_MS)) {
@@ -5033,11 +5035,14 @@ function resolveRenderEntryCounter(entry) {
     const convId = String(conversationId || '').trim();
     const batchEntries = Array.isArray(entries) && entries.length ? entries : (entry ? [entry] : []);
     if (!convId || !batchEntries.length) return;
-    const hasBatchEntries = Array.isArray(entries) && entries.length;
-    if (hasBatchEntries) {
-      consumeReplayPlaceholderBatch(convId, entries);
+    const replayEntries = batchEntries.filter((item) => item?.isHistoryReplay === true);
+    if (replayEntries.length) {
+      consumeReplayPlaceholderBatch(convId, replayEntries);
     }
-    invalidateGapPlaceholderState(convId);
+    const hasLiveEntries = batchEntries.some((item) => item?.isHistoryReplay !== true);
+    if (hasLiveEntries) {
+      invalidateGapPlaceholderState(convId);
+    }
     const state = getMessageState();
     const convIndex = ensureConversationIndex();
     const convEntry = convIndex.get(convId) || null;
