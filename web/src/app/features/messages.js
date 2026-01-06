@@ -186,6 +186,9 @@ const serverCatchupProcessing = new Set(); // conversationId
 const serverCatchupLastTriggerAt = new Map(); // conversationId -> tsMs
 let serverCatchupTriggerTimer = null;
 let serverCatchupTriggerSource = null;
+const liveDecryptRepairQueue = new Map(); // conversationId -> job
+const liveDecryptRepairProcessing = new Set(); // conversationId
+const liveDecryptRepairScheduled = new Set(); // conversationId
 
 function slicePrefix(value, len = OFFLINE_SYNC_PREFIX_LEN) {
   if (value === null || typeof value === 'undefined') return null;
@@ -250,6 +253,20 @@ function sleepMs(delayMs) {
   return new Promise((resolve) => {
     setTimeout(resolve, Math.max(0, Number(delayMs) || 0));
   });
+}
+
+function isCounterFetchClientError(status) {
+  return Number.isFinite(status) && status >= 400 && status < 500;
+}
+
+function shouldRetryCounterFetch(status) {
+  if (!Number.isFinite(status)) return true;
+  return status >= 500;
+}
+
+function resolveCounterFetchFailureReason(status, error) {
+  if (isCounterFetchClientError(status)) return 'unable_to_decrypt';
+  return error || 'gap fetch failed';
 }
 
 async function vaultPutMessageKey(params = {}) {
@@ -1639,34 +1656,22 @@ async function fetchSecureMessageForCounter({
   senderAccountDigest
 } = {}) {
   if (!conversationId || !Number.isFinite(counter)) return { ok: false, error: 'missing params' };
-  if (typeof deps.getSecureMessageByCounter === 'function') {
-    try {
-      const { r, data } = await deps.getSecureMessageByCounter({
-        conversationId,
-        counter,
-        senderDeviceId,
-        senderAccountDigest
-      });
-      if (r?.ok && data?.ok && data?.item) return { ok: true, item: data.item };
-      const message = data?.message || data?.error || (typeof data === 'string' ? data : 'gap fetch failed');
-      return { ok: false, status: r?.status ?? null, error: message };
-    } catch (err) {
-      return { ok: false, error: err?.message || String(err) };
-    }
+  if (typeof deps.getSecureMessageByCounter !== 'function') {
+    return { ok: false, error: 'getSecureMessageByCounter missing' };
   }
-  if (typeof deps.listSecureMessages === 'function') {
-    try {
-      const { r, data } = await deps.listSecureMessages({ conversationId, limit: OFFLINE_CATCHUP_MESSAGE_LIMIT });
-      if (!r?.ok) return { ok: false, status: r?.status ?? null, error: 'listSecureMessages failed' };
-      const items = Array.isArray(data?.items) ? data.items : [];
-      const found = items.find((item) => Number(item?.counter ?? item?.n) === counter);
-      if (found) return { ok: true, item: found };
-      return { ok: false, error: 'counter not found' };
-    } catch (err) {
-      return { ok: false, error: err?.message || String(err) };
-    }
+  try {
+    const { r, data } = await deps.getSecureMessageByCounter({
+      conversationId,
+      counter,
+      senderDeviceId,
+      senderAccountDigest
+    });
+    if (r?.ok && data?.ok && data?.item) return { ok: true, item: data.item };
+    const message = data?.message || data?.error || (typeof data === 'string' ? data : 'gap fetch failed');
+    return { ok: false, status: r?.status ?? null, error: message };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
   }
-  return { ok: false, error: 'getSecureMessageByCounter missing' };
 }
 
 async function decryptPipelineItem(item, ctx = {}) {
@@ -1914,6 +1919,7 @@ async function processDecryptPipelineForConversation({
       if (activeItem?.needsFetch) {
         let fetched = null;
         let lastErr = null;
+        let lastStatus = null;
         for (let attempt = 1; attempt <= COUNTER_GAP_RETRY_MAX; attempt += 1) {
           const result = await fetchSecureMessageForCounter({
             conversationId,
@@ -1924,19 +1930,26 @@ async function processDecryptPipelineForConversation({
           if (result?.ok && result?.item) {
             fetched = result.item;
             lastErr = null;
+            lastStatus = null;
             break;
           }
           lastErr = result?.error || 'gap fetch failed';
+          lastStatus = result?.status ?? null;
+          if (!shouldRetryCounterFetch(lastStatus)) {
+            break;
+          }
           if (attempt < COUNTER_GAP_RETRY_MAX) {
             await sleepMs(COUNTER_GAP_RETRY_INTERVAL_MS);
           }
         }
         if (!fetched) {
           const failureCount = incrementPipelineFailure(streamKey, counter);
-          if (failureCount >= COUNTER_GAP_RETRY_MAX) {
-            markPlaceholderStatus(conversationId, counter, 'failed', lastErr);
+          const noRetry = isCounterFetchClientError(lastStatus);
+          const failureReason = resolveCounterFetchFailureReason(lastStatus, lastErr);
+          if (noRetry || failureCount >= COUNTER_GAP_RETRY_MAX) {
+            markPlaceholderStatus(conversationId, counter, 'failed', failureReason);
           } else {
-            markPlaceholderStatus(conversationId, counter, 'blocked', lastErr);
+            markPlaceholderStatus(conversationId, counter, 'blocked', failureReason);
           }
           errors.push({
             messageId: buildCounterMessageId(counter),
@@ -1945,7 +1958,7 @@ async function processDecryptPipelineForConversation({
             ts: activeItem?.ts ?? null,
             kind: SEMANTIC_KIND.USER_MESSAGE,
             control: false,
-            reason: lastErr || 'gap fetch failed'
+            reason: failureReason
           });
           decryptFail += 1;
           break;
@@ -2051,6 +2064,7 @@ async function processDecryptPipelineForConversation({
     }
   } finally {
     decryptPipelineLocks.delete(conversationId);
+    maybeScheduleLiveDecryptRepairOnUnlock(conversationId);
   }
   return { decrypted, errors, decryptOk, decryptFail, vaultPutIncomingOk };
 }
@@ -2209,7 +2223,7 @@ export async function listSecureAndDecrypt(params = {}) {
     timelineAppendCount: 0
   };
   const uniqueAppendedIds = new Set();
-  let vaultMissingLiveFallbackParams = null;
+  const stagedLiveRepairConversations = new Set();
   let replaySummaryLogged = false;
   const emitReplaySummary = (extra = {}) => {
     if (replaySummaryLogged) return;
@@ -2697,22 +2711,23 @@ export async function listSecureAndDecrypt(params = {}) {
       const errorCode = vaultKeyResult?.error || null;
       const isVaultMissing = errorCode === 'NotFound' || vaultKeyResult?.status === 404;
       const fallbackPeerDigest = peerAccountDigestNormalized || peerAccountDigest || null;
-      const canLiveFallback = directionComputed === 'incoming'
+      const repairSenderDeviceId = item.senderDeviceId || peerDevice || null;
+      const repairSenderDigest = item.senderAccountDigest || fallbackPeerDigest || null;
+      const canEnqueueRepair = directionComputed === 'incoming'
         && isVaultMissing
         && conversationId
-        && tokenB64
-        && fallbackPeerDigest
-        && peerDevice
-        && selfDeviceId;
-      if (canLiveFallback && !vaultMissingLiveFallbackParams) {
-        const fallbackLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
-        vaultMissingLiveFallbackParams = {
+        && repairSenderDeviceId
+        && repairSenderDigest;
+      if (canEnqueueRepair) {
+        const enqueueResult = enqueueLiveDecryptRepair({
           conversationId,
-          tokenB64,
-          peerAccountDigest: fallbackPeerDigest,
-          peerDeviceId: peerDevice,
-          limit: fallbackLimit
-        };
+          targetCounter: item.counter,
+          senderDeviceId: repairSenderDeviceId,
+          senderAccountDigest: repairSenderDigest,
+          messageId,
+          source: 'A_ROUTE_VAULT_MISSING'
+        }, { deferRun: true });
+        if (enqueueResult?.enqueued) stagedLiveRepairConversations.add(String(conversationId));
       }
       vaultMissingCount += 1;
       ensurePlaceholderEntry({
@@ -2723,17 +2738,7 @@ export async function listSecureAndDecrypt(params = {}) {
         ts: item.ts ?? null,
         tsMs: item.tsMs ?? null
       });
-      enqueueDecryptPipelineItem({
-        conversationId,
-        senderDeviceId: item.senderDeviceId,
-        senderAccountDigest: item.senderAccountDigest || peerAccountDigestNormalized || null,
-        counter: item.counter,
-        serverMessageId: messageId,
-        needsFetch: true,
-        tokenB64: item.tokenB64 || null,
-        flags: { gapFill: true, liveIncoming: false }
-      });
-      if (!canLiveFallback) {
+      if (!canEnqueueRepair) {
         errs.push({
           messageId,
           counter: item.counter,
@@ -2812,12 +2817,16 @@ export async function listSecureAndDecrypt(params = {}) {
     }
   }
 
-  if (!computedIsHistoryReplay && mutateState !== false) {
+  const shouldProcessPipeline = !computedIsHistoryReplay && mutateState !== false;
+  if (shouldProcessPipeline) {
+    const pipelineSendReadReceipt = !computedIsHistoryReplay && mutateState !== false
+      ? sendReadReceipt
+      : false;
     const pipelineResult = await processDecryptPipelineForConversation({
       conversationId,
       peerAccountDigest: peerAccountDigestNormalized || peerAccountDigest || null,
       onMessageDecrypted,
-      sendReadReceipt,
+      sendReadReceipt: pipelineSendReadReceipt,
       sourceTag: sourceTag || null,
       silent: !!silent
     });
@@ -4381,6 +4390,7 @@ export async function listSecureAndDecrypt(params = {}) {
     for (let counter = fromCounter; counter <= toCounter; counter += 1) {
       attempted += 1;
       let lastErr = null;
+      let lastStatus = null;
       let item = null;
       for (let attempt = 1; attempt <= COUNTER_GAP_RETRY_MAX; attempt += 1) {
         try {
@@ -4400,8 +4410,13 @@ export async function listSecureAndDecrypt(params = {}) {
           const err = new Error(errMsg);
           err.status = r?.status ?? null;
           lastErr = err;
+          lastStatus = err.status ?? null;
         } catch (err) {
           lastErr = err;
+          lastStatus = err?.status ?? null;
+        }
+        if (!shouldRetryCounterFetch(lastStatus)) {
+          break;
         }
         if (attempt < COUNTER_GAP_RETRY_MAX) {
           await sleepMs(COUNTER_GAP_RETRY_INTERVAL_MS);
@@ -4410,6 +4425,8 @@ export async function listSecureAndDecrypt(params = {}) {
       if (!item) {
         failed += 1;
         const failureId = buildCounterMessageId(counter);
+        const lastErrMessage = lastErr && typeof lastErr === 'object' ? lastErr.message : lastErr;
+        const failureReason = resolveCounterFetchFailureReason(lastStatus, lastErrMessage);
         errs.push({
           messageId: failureId,
           counter,
@@ -4418,7 +4435,7 @@ export async function listSecureAndDecrypt(params = {}) {
           kind: SEMANTIC_KIND.USER_MESSAGE,
           subtype: null,
           control: false,
-          reason: lastErr?.message || 'gap fetch failed'
+          reason: failureReason
         });
         continue;
       }
@@ -4645,22 +4662,10 @@ export async function listSecureAndDecrypt(params = {}) {
   } finally {
     releaseSecureFetchLock(conversationId, lockToken);
     emitReplaySummary();
-    if (vaultMissingLiveFallbackParams) {
-      const fallbackParams = vaultMissingLiveFallbackParams;
-      vaultMissingLiveFallbackParams = null;
-      void listSecureAndDecrypt({
-        conversationId: fallbackParams.conversationId,
-        tokenB64: fallbackParams.tokenB64,
-        peerAccountDigest: fallbackParams.peerAccountDigest,
-        peerDeviceId: fallbackParams.peerDeviceId,
-        limit: fallbackParams.limit,
-        mutateState: true,
-        allowReplay: false,
-        sendReadReceipt: false,
-        silent: true,
-        priority: 'live',
-        sourceTag: 'messages:vault_missing_live_fallback'
-      }).catch(() => {});
+    if (stagedLiveRepairConversations.size) {
+      for (const convId of stagedLiveRepairConversations) {
+        scheduleLiveDecryptRepair(convId);
+      }
     }
   }
 }
@@ -5344,6 +5349,137 @@ async function fetchServerMaxCounter({ conversationId, senderDeviceId } = {}) {
     const errorCode = resolveErrorCode(err);
     logServerCatchupApiTrace({ endpoint, ok: false, status: null, errorCode: errorCode || null });
     return { ok: false, maxCounter: null };
+  }
+}
+
+function scheduleLiveDecryptRepair(conversationId) {
+  const key = conversationId ? String(conversationId) : null;
+  if (!key || liveDecryptRepairScheduled.has(key)) return;
+  liveDecryptRepairScheduled.add(key);
+  Promise.resolve().then(() => {
+    liveDecryptRepairScheduled.delete(key);
+    runLiveDecryptRepair(key).catch(() => {});
+  });
+}
+
+function markLiveDecryptRepairPending(conversationId) {
+  const key = conversationId ? String(conversationId) : null;
+  if (!key) return;
+  const job = liveDecryptRepairQueue.get(key);
+  if (job) job.pendingOnUnlock = true;
+}
+
+function maybeScheduleLiveDecryptRepairOnUnlock(conversationId) {
+  const key = conversationId ? String(conversationId) : null;
+  if (!key) return;
+  const job = liveDecryptRepairQueue.get(key);
+  if (!job || !job.pendingOnUnlock) return;
+  job.pendingOnUnlock = false;
+  scheduleLiveDecryptRepair(key);
+}
+
+function enqueueLiveDecryptRepair(params = {}, opts = {}) {
+  const convId = params?.conversationId ? String(params.conversationId) : null;
+  const targetCounter = Number(params?.targetCounter);
+  if (!convId || !Number.isFinite(targetCounter)) return { enqueued: false, reason: 'missing params' };
+  const existing = liveDecryptRepairQueue.get(convId);
+  const resolvedSenderDeviceId = params?.senderDeviceId || existing?.senderDeviceId || null;
+  if (!resolvedSenderDeviceId) return { enqueued: false, reason: 'missing senderDeviceId' };
+  const nextCounter = existing && Number.isFinite(existing?.targetCounter)
+    ? Math.max(Number(existing.targetCounter), targetCounter)
+    : targetCounter;
+  const next = {
+    conversationId: convId,
+    targetCounter: nextCounter,
+    senderDeviceId: resolvedSenderDeviceId,
+    senderAccountDigest: params?.senderAccountDigest || existing?.senderAccountDigest || null,
+    messageId: params?.messageId || existing?.messageId || null,
+    tokenB64: params?.tokenB64 || existing?.tokenB64 || null,
+    source: params?.source || existing?.source || null,
+    pendingOnUnlock: existing?.pendingOnUnlock === true,
+    updatedAt: Date.now(),
+    version: (existing?.version || 0) + 1
+  };
+  liveDecryptRepairQueue.set(convId, next);
+  if (!opts?.deferRun) scheduleLiveDecryptRepair(convId);
+  return { enqueued: true, deduped: !!existing, conversationId: convId, targetCounter: nextCounter };
+}
+
+async function runLiveDecryptRepair(conversationId) {
+  const convId = conversationId ? String(conversationId) : null;
+  if (!convId || liveDecryptRepairProcessing.has(convId)) return;
+  const job = liveDecryptRepairQueue.get(convId);
+  if (!job) return;
+  liveDecryptRepairProcessing.add(convId);
+  const jobVersion = job?.version || 0;
+  let keepJob = true;
+  let reschedule = false;
+  try {
+    const senderDeviceId = job?.senderDeviceId || null;
+    const targetCounter = Number(job?.targetCounter);
+    if (!senderDeviceId || !Number.isFinite(targetCounter)) {
+      keepJob = false;
+      return;
+    }
+    let senderDigest = job?.senderAccountDigest || null;
+    if (!senderDigest) {
+      const thread = sessionStore?.conversationThreads?.get?.(convId) || null;
+      senderDigest = thread?.peerAccountDigest || thread?.peerKey || null;
+      if (!senderDigest) {
+        const entry = sessionStore?.conversationIndex?.get?.(convId) || null;
+        senderDigest = entry?.peerAccountDigest || entry?.peerKey || null;
+      }
+    }
+    const normalized = storeNormalizePeerIdentity({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+    const peerDigest = normalized?.accountDigest || senderDigest || null;
+    const localCounterRaw = resolveLocalIncomingCounter({
+      peerAccountDigest: peerDigest || senderDigest || null,
+      peerDeviceId: senderDeviceId
+    });
+    const localCounter = Number.isFinite(Number(localCounterRaw)) ? Number(localCounterRaw) : 0;
+    const maxResult = await fetchServerMaxCounter({ conversationId: convId, senderDeviceId });
+    if (!maxResult?.ok) return;
+    const serverMaxCounter = Number.isFinite(Number(maxResult?.maxCounter)) ? Number(maxResult.maxCounter) : null;
+    if (!Number.isFinite(serverMaxCounter)) return;
+    const effectiveTarget = Math.min(targetCounter, serverMaxCounter);
+    const fromCounter = Math.max(1, localCounter + 1);
+    if (effectiveTarget < fromCounter) {
+      keepJob = false;
+      return;
+    }
+    for (let counter = fromCounter; counter <= effectiveTarget; counter += 1) {
+      enqueueDecryptPipelineItem({
+        conversationId: convId,
+        senderDeviceId,
+        senderAccountDigest: peerDigest || senderDigest || null,
+        counter,
+        serverMessageId: buildCounterMessageId(counter),
+        needsFetch: true,
+        tokenB64: job?.tokenB64 || null,
+        flags: { gapFill: true, liveIncoming: false, repair: true }
+      });
+    }
+    const result = await processDecryptPipelineForConversation({
+      conversationId: convId,
+      peerAccountDigest: peerDigest || senderDigest || null,
+      sendReadReceipt: false,
+      silent: true,
+      sourceTag: `b-route:repair:${job?.source || 'unknown'}`
+    });
+    if (result?.locked) {
+      markLiveDecryptRepairPending(convId);
+      return;
+    }
+    keepJob = false;
+  } finally {
+    liveDecryptRepairProcessing.delete(convId);
+    const current = liveDecryptRepairQueue.get(convId);
+    if (!keepJob && current && current.version === jobVersion) {
+      liveDecryptRepairQueue.delete(convId);
+    } else if (current && current.version !== jobVersion && !current.pendingOnUnlock) {
+      reschedule = true;
+    }
+    if (reschedule) scheduleLiveDecryptRepair(convId);
   }
 }
 
