@@ -27,6 +27,87 @@ function resolveNextCursor(data) {
   return { ts: ts ?? null, id: id ?? null };
 }
 
+function normalizeMessageIdValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+export function findItemByMessageId(items = [], messageId) {
+  const target = normalizeMessageIdValue(messageId);
+  if (!target || !Array.isArray(items) || !items.length) return null;
+  for (const item of items) {
+    const candidates = [
+      item?.messageId,
+      item?.message_id,
+      item?.id,
+      item?.serverMessageId,
+      item?.server_message_id,
+      item?.serverMsgId
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeMessageIdValue(candidate);
+      if (normalized && normalized === target) return item;
+    }
+  }
+  return null;
+}
+
+export async function fetchSecureMessageById({
+  conversationId,
+  messageId,
+  getSecureMessageById = null
+} = {}) {
+  const base = {
+    supported: false,
+    item: null,
+    errors: []
+  };
+  const targetId = normalizeMessageIdValue(messageId);
+  if (!conversationId || !targetId) {
+    return {
+      ...base,
+      errors: ['conversationId and messageId required']
+    };
+  }
+  if (typeof getSecureMessageById !== 'function') {
+    return base;
+  }
+  try {
+    const { r, data } = await getSecureMessageById({ conversationId, messageId: targetId });
+    const errors = Array.isArray(data?.errors) ? data.errors.slice() : [];
+    if (!r?.ok && !errors.length) {
+      const msg = data?.message || data?.error || (typeof data === 'string' ? data : null);
+      if (msg) errors.push(msg);
+    }
+    let item = data?.item || data?.message || data?.msg || null;
+    if (!item && Array.isArray(data?.items) && data.items.length === 1) {
+      item = data.items[0];
+    }
+    if (!item && data && typeof data === 'object' && !Array.isArray(data)) {
+      const hasCipher = Object.prototype.hasOwnProperty.call(data, 'ciphertext_b64')
+        || Object.prototype.hasOwnProperty.call(data, 'ciphertextB64');
+      if (hasCipher) item = data;
+    }
+    return {
+      supported: true,
+      item,
+      errors
+    };
+  } catch (err) {
+    const msg = err?.message || String(err);
+    return {
+      supported: true,
+      item: null,
+      errors: msg ? [msg] : []
+    };
+  }
+}
+
 export async function listSecureMessagesLive({
   conversationId,
   limit = 20,
@@ -69,9 +150,14 @@ export async function listSecureMessagesLive({
 
 export function createLiveServerApi(deps = {}) {
   const listSecureMessages = deps.listSecureMessages || apiListSecureMessages;
+  const getSecureMessageById = deps.getSecureMessageById || null;
   return {
     async listSecureMessagesLive(params = {}) {
       return listSecureMessagesLive({ ...params, listSecureMessages });
-    }
+    },
+    async fetchSecureMessageById(params = {}) {
+      return fetchSecureMessageById({ ...params, getSecureMessageById });
+    },
+    findItemByMessageId
   };
 }

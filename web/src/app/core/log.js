@@ -31,6 +31,7 @@ const REPLAY_DEBUG_KEYS = new Set([
   'liveMvpRouteTrace',
   'liveMvpReadyTrace',
   'liveMvpFetchTrace',
+  'liveMvpSelectTrace',
   'liveMvpDecryptTrace',
   'liveMvpPersistTrace',
   'liveMvpSummaryTrace',
@@ -152,6 +153,7 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'liveMvpRouteTrace',
   'liveMvpReadyTrace',
   'liveMvpFetchTrace',
+  'liveMvpSelectTrace',
   'liveMvpDecryptTrace',
   'liveMvpPersistTrace',
   'liveMvpSummaryTrace',
@@ -266,6 +268,7 @@ const LOG_CAP_OVERRIDE = new Map([
   ['liveMvpRouteTrace', 5],
   ['liveMvpReadyTrace', 5],
   ['liveMvpFetchTrace', 5],
+  ['liveMvpSelectTrace', 5],
   ['liveMvpDecryptTrace', 5],
   ['liveMvpPersistTrace', 5],
   ['liveMvpSummaryTrace', 5]

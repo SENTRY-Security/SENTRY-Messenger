@@ -4,7 +4,11 @@
 import { logCapped } from '../../core/log.js';
 import { createLiveLegacyAdapters } from './adapters/index.js';
 import { createLiveStateAccess } from './state-live.js';
-import { listSecureMessagesLive } from './server-api-live.js';
+import {
+  fetchSecureMessageById,
+  findItemByMessageId,
+  listSecureMessagesLive
+} from './server-api-live.js';
 
 const LIVE_MVP_LOG_CAP = 5;
 const LIVE_MVP_FETCH_LIMIT = 20;
@@ -29,19 +33,23 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   const logger = typeof deps.logCapped === 'function' ? deps.logCapped : logCapped;
   const adapters = deps?.adapters || createLiveLegacyAdapters();
   const stateAccess = deps?.stateAccess || createLiveStateAccess({ adapters });
-  const fetcher = deps?.listSecureMessagesLive || listSecureMessagesLive;
+  const listFetcher = deps?.listSecureMessagesLive || listSecureMessagesLive;
+  const fetchById = deps?.fetchSecureMessageById || fetchSecureMessageById;
+  const findById = deps?.findItemByMessageId || findItemByMessageId;
 
   const conversationId = params?.conversationId || null;
   const tokenB64 = params?.tokenB64 || null;
   const peerAccountDigest = params?.peerAccountDigest || null;
   const peerDeviceId = params?.peerDeviceId || null;
   const sourceTag = params?.sourceTag || null;
+  const targetMessageId = params?.messageId || params?.serverMessageId || null;
   const conversationIdPrefix8 = slicePrefix(conversationId, 8);
+  const targetMessageIdPrefix8 = slicePrefix(targetMessageId, 8);
 
   const startedAt = nowMs();
   let readyResult = { ok: false, reasonCode: 'UNKNOWN' };
   let fetchResult = { items: [], errors: [], nextCursor: null };
-  let decryptResult = { decryptedMessages: [], processedCount: 0, skippedCount: 0, okCount: 0, failCount: 0 };
+  let decryptResult = { decryptedMessage: null, processedCount: 0, skippedCount: 0, okCount: 0, failCount: 0 };
   let persistResult = { vaultPutOk: 0, appendOk: false, appendedCount: 0 };
 
   try {
@@ -81,40 +89,123 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
     return { ok: false, reasonCode: readyResult?.reasonCode || 'READY_FAILED' };
   }
 
+  if (!targetMessageId) {
+    logger('liveMvpSelectTrace', {
+      conversationIdPrefix8,
+      targetMessageIdPrefix8,
+      listItemsLength: 0,
+      matched: false,
+      reasonCode: 'NOT_FOUND'
+    }, LIVE_MVP_LOG_CAP);
+
+    const tookMs = Math.max(0, Math.round(nowMs() - startedAt));
+    logger('liveMvpSummaryTrace', {
+      conversationIdPrefix8,
+      sourceTag: sourceTag || null,
+      tookMs,
+      readyOk: true,
+      reasonCode: 'MISSING_MESSAGE_ID',
+      fetchedCount: 0,
+      decryptOk: 0,
+      decryptFail: 0,
+      decryptSkipped: 0,
+      vaultPutOk: 0,
+      appendedCount: 0
+    }, LIVE_MVP_LOG_CAP);
+    return { ok: false, reasonCode: 'MISSING_MESSAGE_ID' };
+  }
+
+  let selectedItem = null;
+  let listItemsLength = 0;
+  let selectionMatched = false;
+  let selectionReasonCode = 'NOT_FOUND';
+  let fetchErrors = [];
+  let fetchNextCursor = null;
+
   try {
-    fetchResult = await fetcher({
+    const byIdResult = await fetchById({
       conversationId,
-      limit: LIVE_MVP_FETCH_LIMIT,
-      cursorTs: null,
-      cursorId: null
+      messageId: targetMessageId,
+      getSecureMessageById: deps?.getSecureMessageById
     });
+    if (byIdResult?.supported) {
+      fetchErrors = Array.isArray(byIdResult?.errors) ? byIdResult.errors : [];
+      if (byIdResult?.item) {
+        selectedItem = byIdResult.item;
+        listItemsLength = 1;
+      }
+    } else {
+      fetchResult = await listFetcher({
+        conversationId,
+        limit: LIVE_MVP_FETCH_LIMIT,
+        cursorTs: null,
+        cursorId: null
+      });
+      const items = Array.isArray(fetchResult?.items) ? fetchResult.items : [];
+      fetchErrors = Array.isArray(fetchResult?.errors) ? fetchResult.errors : [];
+      fetchNextCursor = fetchResult?.nextCursor || null;
+      listItemsLength = items.length;
+      selectedItem = findById(items, targetMessageId);
+    }
   } catch (err) {
     const msg = err?.message || String(err);
-    fetchResult = {
-      items: [],
-      errors: msg ? [msg] : [],
-      nextCursor: null
-    };
+    fetchErrors = msg ? [msg] : [];
   }
+
+  selectionMatched = !!selectedItem;
+  selectionReasonCode = selectionMatched ? 'MATCHED' : 'NOT_FOUND';
 
   logger('liveMvpFetchTrace', {
     conversationIdPrefix8,
-    itemsLength: Array.isArray(fetchResult?.items) ? fetchResult.items.length : 0,
-    errorsLength: Array.isArray(fetchResult?.errors) ? fetchResult.errors.length : 0,
-    hasNextCursor: !!fetchResult?.nextCursor
+    itemsLength: listItemsLength,
+    errorsLength: Array.isArray(fetchErrors) ? fetchErrors.length : 0,
+    hasNextCursor: !!fetchNextCursor
   }, LIVE_MVP_LOG_CAP);
 
+  logger('liveMvpSelectTrace', {
+    conversationIdPrefix8,
+    targetMessageIdPrefix8,
+    listItemsLength,
+    matched: selectionMatched,
+    reasonCode: selectionReasonCode
+  }, LIVE_MVP_LOG_CAP);
+
+  if (!selectionMatched) {
+    const tookMs = Math.max(0, Math.round(nowMs() - startedAt));
+    logger('liveMvpSummaryTrace', {
+      conversationIdPrefix8,
+      sourceTag: sourceTag || null,
+      tookMs,
+      readyOk: true,
+      reasonCode: selectionReasonCode,
+      fetchedCount: 0,
+      decryptOk: 0,
+      decryptFail: 0,
+      decryptSkipped: 0,
+      vaultPutOk: 0,
+      appendedCount: 0
+    }, LIVE_MVP_LOG_CAP);
+    return { ok: false, reasonCode: selectionReasonCode };
+  }
+
+  fetchResult = {
+    items: selectedItem ? [selectedItem] : [],
+    errors: fetchErrors,
+    nextCursor: fetchNextCursor
+  };
+
   try {
-    decryptResult = await stateAccess.decryptIncomingBatch({
+    decryptResult = await stateAccess.decryptIncomingSingle({
       conversationId,
       tokenB64,
       peerAccountDigest,
       peerDeviceId,
-      items: fetchResult?.items || []
+      item: selectedItem,
+      targetMessageId
     });
   } catch (err) {
     decryptResult = {
-      decryptedMessages: [],
+      decryptedMessage: null,
       processedCount: 0,
       skippedCount: 0,
       okCount: 0,
@@ -132,9 +223,9 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   }, LIVE_MVP_LOG_CAP);
 
   try {
-    persistResult = await stateAccess.persistAndAppendBatch({
+    persistResult = await stateAccess.persistAndAppendSingle({
       conversationId,
-      decryptedMessages: decryptResult?.decryptedMessages || []
+      decryptedMessage: decryptResult?.decryptedMessage || null
     });
   } catch (err) {
     persistResult = {

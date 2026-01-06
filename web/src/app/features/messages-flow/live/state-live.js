@@ -17,11 +17,25 @@ function hasUsableDrState(holder) {
   return hasReceive || hasSend;
 }
 
-function normalizeMessageId(raw) {
-  if (typeof raw?.id === 'string' && raw.id.length) return raw.id;
-  if (typeof raw?.message_id === 'string' && raw.message_id.length) return raw.message_id;
-  if (typeof raw?.messageId === 'string' && raw.messageId.length) return raw.messageId;
+function normalizeMessageIdValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return null;
+}
+
+function normalizeMessageId(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return normalizeMessageIdValue(raw.id)
+    || normalizeMessageIdValue(raw.message_id)
+    || normalizeMessageIdValue(raw.messageId)
+    || normalizeMessageIdValue(raw.serverMessageId)
+    || normalizeMessageIdValue(raw.server_message_id)
+    || normalizeMessageIdValue(raw.serverMsgId)
+    || null;
 }
 
 function toMessageTimestamp(raw) {
@@ -112,34 +126,6 @@ function resolveCounter(raw, header) {
   return Number.isFinite(num) ? num : null;
 }
 
-function resolveDirectionComputed(raw, header, {
-  selfDeviceId,
-  selfDigest,
-  peerDeviceId,
-  peerAccountDigest
-} = {}) {
-  const direct = raw?.directionComputed || raw?.direction_computed || raw?.direction || null;
-  if (typeof direct === 'string' && direct.trim()) {
-    return direct.trim().toLowerCase();
-  }
-  const senderDeviceId = resolveSenderDeviceId(raw, header);
-  const targetDeviceId = resolveTargetDeviceId(raw, header);
-  const senderDigest = resolveSenderDigest(raw, header);
-  const selfDevice = typeof selfDeviceId === 'string' && selfDeviceId ? selfDeviceId : null;
-  const peerDevice = typeof peerDeviceId === 'string' && peerDeviceId ? peerDeviceId : null;
-  const selfDigestUpper = typeof selfDigest === 'string' && selfDigest ? selfDigest.toUpperCase() : null;
-  const peerDigestUpper = typeof peerAccountDigest === 'string' && peerAccountDigest
-    ? peerAccountDigest.toUpperCase()
-    : null;
-  if (targetDeviceId && selfDevice && targetDeviceId === selfDevice) return 'incoming';
-  if (senderDeviceId && selfDevice && senderDeviceId === selfDevice) return 'outgoing';
-  if (senderDeviceId && peerDevice && senderDeviceId === peerDevice) return 'incoming';
-  if (targetDeviceId && peerDevice && targetDeviceId === peerDevice) return 'outgoing';
-  if (senderDigest && selfDigestUpper && senderDigest === selfDigestUpper) return 'outgoing';
-  if (senderDigest && peerDigestUpper && senderDigest === peerDigestUpper) return 'incoming';
-  return null;
-}
-
 function resolveMsgType(meta, header) {
   if (!meta && !header?.meta) return null;
   return meta?.msg_type
@@ -192,43 +178,45 @@ async function ensureLiveReady(params = {}, adapters) {
   return { ok: true };
 }
 
-async function decryptIncomingBatch(params = {}, adapters) {
+async function decryptIncomingSingle(params = {}, adapters) {
   const conversationId = params?.conversationId || null;
   const peerAccountDigest = params?.peerAccountDigest || null;
   const peerDeviceId = params?.peerDeviceId || null;
-  const items = Array.isArray(params?.items) ? params.items : [];
-  if (!conversationId || !peerAccountDigest || !peerDeviceId) {
+  const raw = params?.item || params?.raw || null;
+  const targetMessageId = normalizeMessageIdValue(
+    params?.targetMessageId || params?.messageId || params?.serverMessageId || null
+  );
+
+  const base = {
+    ok: false,
+    reasonCode: 'UNKNOWN',
+    decryptedMessage: null,
+    processedCount: 0,
+    skippedCount: 0,
+    okCount: 0,
+    failCount: 0
+  };
+
+  if (!conversationId || !peerAccountDigest || !peerDeviceId || !raw) {
     return {
-      ok: false,
+      ...base,
       reasonCode: 'MISSING_PARAMS',
-      decryptedMessages: [],
-      processedCount: 0,
-      skippedCount: items.length,
-      okCount: 0,
-      failCount: 0
+      skippedCount: raw ? 1 : 0
     };
   }
   if (!adapters?.drDecryptText || !adapters?.drState) {
     return {
-      ok: false,
+      ...base,
       reasonCode: 'ADAPTERS_UNAVAILABLE',
-      decryptedMessages: [],
-      processedCount: 0,
-      skippedCount: items.length,
-      okCount: 0,
-      failCount: 0
+      skippedCount: 1
     };
   }
   const state = adapters.drState({ peerAccountDigest, peerDeviceId });
   if (!hasUsableDrState(state)) {
     return {
-      ok: false,
+      ...base,
       reasonCode: 'DR_STATE_UNAVAILABLE',
-      decryptedMessages: [],
-      processedCount: 0,
-      skippedCount: items.length,
-      okCount: 0,
-      failCount: 0
+      skippedCount: 1
     };
   }
 
@@ -238,119 +226,109 @@ async function decryptIncomingBatch(params = {}, adapters) {
   if (!state.baseKey.peerAccountDigest) state.baseKey.peerAccountDigest = peerAccountDigest;
 
   let selfDeviceId = null;
-  let selfDigest = null;
   try {
     selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
   } catch {}
-  try {
-    selfDigest = adapters.getAccountDigest ? adapters.getAccountDigest() : null;
-  } catch {}
-  if (typeof selfDigest === 'string') selfDigest = selfDigest.toUpperCase();
 
-  const decryptedMessages = [];
-  let processedCount = 0;
-  let skippedCount = 0;
-  let decryptSuccessCount = 0;
-  let okCount = 0;
-  let failCount = 0;
-
-  for (const raw of items) {
-    const header = resolveHeader(raw);
-    const ciphertextB64 = resolveCiphertextB64(raw);
-    const directionComputed = resolveDirectionComputed(raw, header, {
-      selfDeviceId,
-      selfDigest,
-      peerAccountDigest,
-      peerDeviceId
-    });
-    if (directionComputed !== 'incoming') {
-      skippedCount += 1;
-      continue;
-    }
-    if (!header || !ciphertextB64 || !header.iv_b64) {
-      skippedCount += 1;
-      continue;
-    }
-
-    processedCount += 1;
-    const counter = resolveCounter(raw, header);
-    const messageId = normalizeMessageId(raw);
-    const meta = raw?.meta || header?.meta || null;
-    const msgTypeHint = resolveMsgType(meta, header);
-    const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
-    let messageKeyB64 = null;
-    let plaintext = null;
-
-    try {
-      plaintext = await adapters.drDecryptText(state, {
-        aead: 'aes-256-gcm',
-        header,
-        iv_b64: header.iv_b64,
-        ciphertext_b64: ciphertextB64
-      }, {
-        onMessageKey: (mk) => { messageKeyB64 = mk; },
-        packetKey,
-        msgType: msgTypeHint || 'text'
-      });
-      decryptSuccessCount += 1;
-    } catch {
-      failCount += 1;
-      continue;
-    }
-    if (!messageKeyB64) {
-      failCount += 1;
-      continue;
-    }
-
-    const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE || semantic.subtype !== 'text') {
-      skippedCount += 1;
-      continue;
-    }
-
-    const ts = toMessageTimestamp(raw);
-    if (!messageId || !Number.isFinite(ts)) {
-      skippedCount += 1;
-      continue;
-    }
-
-    const senderDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId || null;
-    const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
-    const senderDigest = resolveSenderDigest(raw, header);
-    const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
-
-    decryptedMessages.push({
-      id: messageId,
-      messageId,
-      ts,
-      tsMs: resolveMessageTsMs(ts),
-      direction: 'incoming',
-      msgType: 'text',
-      text,
-      messageKeyB64,
-      counter,
-      headerCounter: counter,
-      senderDeviceId,
-      targetDeviceId,
-      senderDigest
-    });
-    okCount += 1;
+  const header = resolveHeader(raw);
+  const ciphertextB64 = resolveCiphertextB64(raw);
+  if (!header || !ciphertextB64 || !header.iv_b64) {
+    return {
+      ...base,
+      reasonCode: 'MISSING_CIPHERTEXT',
+      skippedCount: 1
+    };
   }
 
-  if (decryptSuccessCount > 0 && adapters?.persistDrSnapshot) {
+  const counter = resolveCounter(raw, header);
+  const meta = raw?.meta || header?.meta || null;
+  const msgTypeHint = resolveMsgType(meta, header);
+  const rawMessageId = normalizeMessageId(raw);
+  const messageId = rawMessageId || targetMessageId;
+  const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
+  let messageKeyB64 = null;
+  let plaintext = null;
+
+  try {
+    plaintext = await adapters.drDecryptText(state, {
+      aead: 'aes-256-gcm',
+      header,
+      iv_b64: header.iv_b64,
+      ciphertext_b64: ciphertextB64
+    }, {
+      onMessageKey: (mk) => { messageKeyB64 = mk; },
+      packetKey,
+      msgType: msgTypeHint || 'text'
+    });
+  } catch {
+    return {
+      ...base,
+      reasonCode: 'DECRYPT_FAIL',
+      processedCount: 1,
+      failCount: 1
+    };
+  }
+
+  const result = {
+    ...base,
+    processedCount: 1
+  };
+
+  if (!messageKeyB64) {
+    result.reasonCode = 'MISSING_MESSAGE_KEY';
+    result.failCount = 1;
+  } else {
+    const semantic = classifyDecryptedPayload(plaintext, { meta, header });
+    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE || semantic.subtype !== 'text') {
+      result.reasonCode = 'CONTROL_SKIP';
+      result.skippedCount = 1;
+    } else {
+      const ts = toMessageTimestamp(raw);
+      if (!messageId || !Number.isFinite(ts)) {
+        result.reasonCode = 'MISSING_MESSAGE_FIELDS';
+        result.skippedCount = 1;
+      } else {
+        const senderDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId || null;
+        const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
+        const senderDigest = resolveSenderDigest(raw, header);
+        const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
+
+        result.ok = true;
+        result.reasonCode = null;
+        result.decryptedMessage = {
+          id: messageId,
+          messageId,
+          ts,
+          tsMs: resolveMessageTsMs(ts),
+          direction: 'incoming',
+          msgType: 'text',
+          text,
+          messageKeyB64,
+          counter,
+          headerCounter: counter,
+          senderDeviceId,
+          targetDeviceId,
+          senderDigest
+        };
+        result.okCount = 1;
+      }
+    }
+  }
+
+  if (adapters?.persistDrSnapshot) {
     try {
       adapters.persistDrSnapshot({ peerAccountDigest, peerDeviceId, state });
     } catch {}
   }
 
-  return {
-    ok: true,
-    decryptedMessages,
-    processedCount,
-    skippedCount,
-    okCount,
-    failCount
-  };
+  return result;
+}
+
+async function persistAndAppendSingle(params = {}, adapters) {
+  const conversationId = params?.conversationId || null;
+  const decryptedMessage = params?.decryptedMessage || params?.message || null;
+  const decryptedMessages = decryptedMessage ? [decryptedMessage] : [];
+  return persistAndAppendBatch({ conversationId, decryptedMessages }, adapters);
 }
 
 async function persistAndAppendBatch(params = {}, adapters) {
@@ -435,7 +413,8 @@ export function createLiveStateAccess(deps = {}) {
 
   return {
     ensureLiveReady: (params = {}) => ensureLiveReady(params, adapters),
-    decryptIncomingBatch: (params = {}) => decryptIncomingBatch(params, adapters),
+    decryptIncomingSingle: (params = {}) => decryptIncomingSingle(params, adapters),
+    persistAndAppendSingle: (params = {}) => persistAndAppendSingle(params, adapters),
     persistAndAppendBatch: (params = {}) => persistAndAppendBatch(params, adapters)
   };
 }

@@ -72,10 +72,48 @@ function resolveTokenB64(event, ctx) {
     || null;
 }
 
+function normalizeMessageIdValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function resolveMessageId(event, ctx) {
+  return normalizeMessageIdValue(
+    event?.messageId
+      || event?.message_id
+      || event?.id
+      || ctx?.messageId
+      || ctx?.message_id
+      || ctx?.id
+      || null
+  );
+}
+
+function resolveServerMessageId(event, ctx) {
+  return normalizeMessageIdValue(
+    event?.serverMessageId
+      || event?.server_message_id
+      || event?.serverMsgId
+      || ctx?.serverMessageId
+      || ctx?.server_message_id
+      || ctx?.serverMsgId
+      || null
+  );
+}
+
 function buildLiveMvpParams({ event, ctx, sourceTag }) {
   const conversationId = resolveConversationId(event, ctx);
+  const messageId = resolveMessageId(event, ctx);
+  const serverMessageId = resolveServerMessageId(event, ctx);
   return {
     conversationId,
+    messageId,
+    serverMessageId,
     peerAccountDigest: normalizeDigestOnly(
       ctx?.peerAccountDigest
         || event?.peerAccountDigest
@@ -224,6 +262,7 @@ function createLegacyFacadeAdapter() {
         && liveParams?.tokenB64
         && liveParams?.peerAccountDigest
         && liveParams?.peerDeviceId
+        && (liveParams?.messageId || liveParams?.serverMessageId)
       );
       const decision = USE_MESSAGES_FLOW_LIVE
         ? (hasLiveParams ? 'dual_path' : 'skip_missing_params')
