@@ -6,9 +6,20 @@ import {
   getSecureMessageByCounter as apiGetSecureMessageByCounter,
   fetchSecureMaxCounter as apiFetchSecureMaxCounter
 } from '../../../../api/messages.js';
-import { ensureDrReceiverState as legacyEnsureDrReceiverState } from '../../../dr-session.js';
+import {
+  ensureDrReceiverState as legacyEnsureDrReceiverState,
+  persistDrSnapshot as legacyPersistDrSnapshot
+} from '../../../dr-session.js';
 import { listSecureAndDecrypt as legacyListSecureAndDecrypt } from '../../../messages.js';
 import { MessageKeyVault } from '../../../message-key-vault.js';
+import { ensureSecureConversationReady as legacyEnsureSecureConversationReady } from '../../../secure-conversation-manager.js';
+import { appendBatch as timelineAppendBatch } from '../../../timeline-store.js';
+import { drDecryptText as legacyDrDecryptText } from '../../../../crypto/dr.js';
+import {
+  drState as storeDrState,
+  getAccountDigest as storeGetAccountDigest,
+  getDeviceId as storeGetDeviceId
+} from '../../../../core/store.js';
 
 function normalizeCursor(cursor) {
   if (cursor === null || cursor === undefined) return { cursorTs: null, cursorId: null };
@@ -33,6 +44,13 @@ export function createLiveLegacyAdapters(deps = {}) {
   const ensureDrReceiverState = deps.ensureDrReceiverState || legacyEnsureDrReceiverState;
   const listSecureAndDecrypt = deps.listSecureAndDecrypt || legacyListSecureAndDecrypt;
   const vaultPutIncomingKey = deps.vaultPutIncomingKey || MessageKeyVault.putMessageKey;
+  const ensureSecureConversationReady = deps.ensureSecureConversationReady || legacyEnsureSecureConversationReady;
+  const drState = deps.drState || storeDrState;
+  const drDecryptText = deps.drDecryptText || legacyDrDecryptText;
+  const persistDrSnapshot = deps.persistDrSnapshot || legacyPersistDrSnapshot;
+  const getAccountDigest = deps.getAccountDigest || storeGetAccountDigest;
+  const getDeviceId = deps.getDeviceId || storeGetDeviceId;
+  const appendTimelineBatch = deps.appendTimelineBatch || timelineAppendBatch;
 
   return {
     // Legacy API passthrough; TODO: replace with live server API wrapper.
@@ -65,6 +83,34 @@ export function createLiveLegacyAdapters(deps = {}) {
       });
     },
 
+    // Legacy secure conversation readiness check.
+    ensureSecureConversationReady(params = {}) {
+      return ensureSecureConversationReady(params);
+    },
+
+    // Legacy DR state access; TODO: replace with live state access.
+    drState(params = {}) {
+      return drState(params);
+    },
+
+    // Legacy DR decrypt; TODO: replace with live decrypt implementation.
+    drDecryptText(state, packet, opts = {}) {
+      return drDecryptText(state, packet, opts);
+    },
+
+    // Legacy DR snapshot persistence; TODO: replace with live state access.
+    persistDrSnapshot(params = {}) {
+      return persistDrSnapshot(params);
+    },
+
+    // Legacy account/device accessors.
+    getAccountDigest() {
+      return getAccountDigest();
+    },
+    getDeviceId() {
+      return getDeviceId();
+    },
+
     // Legacy decrypt pipeline; TODO: replace with live decrypt implementation.
     decryptLiveItem(item, context = {}) {
       const conversationId = context?.conversationId
@@ -89,6 +135,11 @@ export function createLiveLegacyAdapters(deps = {}) {
     // Legacy vault write; TODO: replace with live vault gateway.
     vaultPutIncomingKey(params = {}) {
       return vaultPutIncomingKey(params);
+    },
+
+    // Legacy timeline append; TODO: replace with live timeline gateway.
+    appendTimelineBatch(entries = [], opts = {}) {
+      return appendTimelineBatch(entries, opts);
     }
   };
 }

@@ -28,6 +28,12 @@ const REPLAY_DEBUG_KEYS = new Set([
   'scrollFetchRouteTrace',
   'liveRouteTrace',
   'liveCoordinatorTrace',
+  'liveMvpRouteTrace',
+  'liveMvpReadyTrace',
+  'liveMvpFetchTrace',
+  'liveMvpDecryptTrace',
+  'liveMvpPersistTrace',
+  'liveMvpSummaryTrace',
   'gapFillQueueTrace',
   'replaySummary',
   'replaySkipSample',
@@ -132,7 +138,7 @@ const REPLAY_DEBUG_KEYS = new Set([
   'notifyRetryAttemptTrace',
   'notifyRetryFinalTrace',
   'notificationTrace',
-  'wsSyncTrace'
+  'wsSyncTrace',
 ]);
 const FORENSICS_DEBUG_KEYS = new Set([
   'WS_RECV',
@@ -143,6 +149,12 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'scrollFetchRouteTrace',
   'liveRouteTrace',
   'liveCoordinatorTrace',
+  'liveMvpRouteTrace',
+  'liveMvpReadyTrace',
+  'liveMvpFetchTrace',
+  'liveMvpDecryptTrace',
+  'liveMvpPersistTrace',
+  'liveMvpSummaryTrace',
   'gapFillQueueTrace',
   'VAULT_PUT_ATTEMPT',
   'VAULT_PUT_RESULT',
@@ -232,7 +244,7 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'drStateHydrateBatchStartTrace',
   'drStateHydrateBatchDoneTrace',
   'restorePipelineStageTrace',
-  'restorePipelineDoneTrace'
+  'restorePipelineDoneTrace',
 ]);
 const FORENSICS_CAP_DEFAULT = 20;
 const REPLAY_ACTION_VALUES = new Set();

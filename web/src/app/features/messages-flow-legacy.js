@@ -16,7 +16,7 @@ import {
   SERVER_CATCHUP_TRIGGER_COALESCE_MS
 } from './messages-sync-policy.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
-import { runLiveCatchupForConversation } from './messages-flow/live/coordinator.js';
+import { runLiveWsIncomingMvp } from './messages-flow/live/coordinator.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 
 const LEGACY_OPTION_LOG_CAP = 5;
@@ -65,17 +65,6 @@ function resolveConversationId(event, ctx) {
     || null;
 }
 
-function resolveTargetCounter(event) {
-  const raw = event?.counter
-    ?? event?.header?.counter
-    ?? event?.header?.meta?.counter
-    ?? event?.meta?.counter
-    ?? event?.message?.counter
-    ?? null;
-  const num = Number(raw);
-  return Number.isFinite(num) ? num : null;
-}
-
 function resolveTokenB64(event, ctx) {
   return ctx?.tokenB64
     || event?.tokenB64
@@ -83,7 +72,7 @@ function resolveTokenB64(event, ctx) {
     || null;
 }
 
-function buildLiveCoordinatorParams({ event, ctx, triggerSource }) {
+function buildLiveMvpParams({ event, ctx, sourceTag }) {
   const conversationId = resolveConversationId(event, ctx);
   return {
     conversationId,
@@ -100,9 +89,7 @@ function buildLiveCoordinatorParams({ event, ctx, triggerSource }) {
       || event?.sender_device_id
       || null,
     tokenB64: resolveTokenB64(event, ctx),
-    triggerSource: triggerSource || null,
-    targetCounter: resolveTargetCounter(event),
-    mode: 'ws_incoming'
+    sourceTag: sourceTag || null
   };
 }
 
@@ -231,29 +218,36 @@ function createLegacyFacadeAdapter() {
       const triggerSource = (isPayloadObject
         ? (payloadOrEvent?.triggerSource || payloadOrEvent?.source)
         : ctx?.triggerSource) || 'ws_incoming';
-      const conversationId = resolveConversationId(event, ctx);
-      const decision = USE_MESSAGES_FLOW_LIVE ? 'dual_path' : 'legacy_only';
-      logCapped('liveRouteTrace', {
-        triggerSource,
-        conversationIdPrefix8: toConversationIdPrefix8(conversationId),
+      const liveParams = buildLiveMvpParams({ event, ctx, sourceTag: triggerSource });
+      const hasLiveParams = !!(
+        liveParams?.conversationId
+        && liveParams?.tokenB64
+        && liveParams?.peerAccountDigest
+        && liveParams?.peerDeviceId
+      );
+      const decision = USE_MESSAGES_FLOW_LIVE
+        ? (hasLiveParams ? 'dual_path' : 'skip_missing_params')
+        : 'legacy_only';
+      logCapped('liveMvpRouteTrace', {
+        sourceTag: triggerSource || null,
+        conversationIdPrefix8: toConversationIdPrefix8(liveParams?.conversationId),
         decision,
+        reasonCode: USE_MESSAGES_FLOW_LIVE && !hasLiveParams ? 'MISSING_PARAMS' : null,
         flagState: USE_MESSAGES_FLOW_LIVE
       }, LIVE_ROUTE_LOG_CAP);
 
-      if (USE_MESSAGES_FLOW_LIVE) {
-        const params = buildLiveCoordinatorParams({ event, ctx, triggerSource });
+      const legacyResult = typeof handler === 'function' ? handler(event) : null;
+
+      if (USE_MESSAGES_FLOW_LIVE && hasLiveParams) {
         try {
-          const livePromise = runLiveCatchupForConversation(params, { adapters: liveLegacyAdapters });
+          const livePromise = runLiveWsIncomingMvp(liveParams, { adapters: liveLegacyAdapters });
           if (livePromise && typeof livePromise.catch === 'function') {
             livePromise.catch(() => {});
           }
         } catch {}
       }
 
-      if (typeof handler === 'function') {
-        return handler(event);
-      }
-      return null;
+      return legacyResult;
     },
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
