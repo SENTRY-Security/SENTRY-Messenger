@@ -34,6 +34,7 @@ export function onEnterConversation({
   loadActiveConversationMessages,
   replay,
   reason,
+  loadOptions,
   runCatchup = true
 } = {}) {
   if (runCatchup && conversationId) {
@@ -45,11 +46,15 @@ export function onEnterConversation({
     });
   }
   if (typeof loadActiveConversationMessages === 'function') {
-    return loadActiveConversationMessages({
+    const params = {
       append: false,
       replay,
       reason
-    });
+    };
+    if (loadOptions && typeof loadOptions === 'object') {
+      Object.assign(params, loadOptions);
+    }
+    return loadActiveConversationMessages(params);
   }
   return null;
 }

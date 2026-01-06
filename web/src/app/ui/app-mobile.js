@@ -2,6 +2,8 @@
 // Mobile-first App UI with bottom navigation: Contacts, Messages, Drive, Profile.
 // Implements Drive tab using existing encrypted media features.
 
+// app lifecycle only. Do not add message pipeline logic; call messages-flow-legacy facade.
+
 import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
@@ -87,16 +89,16 @@ import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 import {
   resetAllProcessedMessages,
-  resetReceiptStore,
-  syncOfflineDecryptNow,
-  triggerServerCatchupForTargets
+  resetReceiptStore
 } from '../features/messages.js';
 import {
-  OFFLINE_SYNC_LOG_CAP,
-  OFFLINE_SYNC_TRIGGER_COALESCE_MS,
-  SERVER_CATCHUP_TRIGGER_COALESCE_MS
-} from '../features/messages-sync-policy.js';
-import { startRestorePipelineAfterLogin } from '../features/messages-flow-legacy.js';
+  onPullToRefreshContacts,
+  onVisibilityResume,
+  onWsIncomingMessageNew,
+  reconcileOutgoingStatusForConversation,
+  runOfflineCatchupNow,
+  startRestorePipelineAfterLogin
+} from '../features/messages-flow-legacy.js';
 import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
@@ -215,7 +217,6 @@ let mediaPermissionActivePrompt = null;
 let mediaPermissionPollingTimer = null;
 let cachedMicrophoneStream = null;
 let backgroundLogoutTimer = null;
-let offlineSyncTriggerLastAtMs = 0;
 const SIM_STORAGE_PREFIX = (() => {
   try { return getSimStoragePrefix(); } catch { return 'ntag424-sim:'; }
 })();
@@ -2456,8 +2457,10 @@ const { loadInitialContacts, renderContacts, addContactEntry: addContactEntryRaw
 if (typeof window !== 'undefined') {
   try {
     window.__refreshContacts = async () => {
-      await loadInitialContacts();
-      renderContacts();
+      await onPullToRefreshContacts({
+        loadInitialContacts,
+        renderContacts
+      });
     };
     window.__debugDumpPostLogin = () => logRestoreOverview({ reason: 'manual', force: true });
   } catch {}
@@ -2471,16 +2474,16 @@ const contactDiagLoggedKeys = new Set();
 document.addEventListener('contactSecrets:restored', () => {
   if (contactSecretsRefreshInFlight) return;
   contactSecretsRefreshInFlight = true;
-  loadInitialContacts()
-    .then(() => {
-      messagesPane.syncConversationThreadsFromContacts();
-      return messagesPane.refreshConversationPreviews({ force: true });
-    })
-    .catch((err) => log({ contactsInitError: err?.message || err, source: 'contactSecrets:restored' }))
-    .finally(() => {
+  onPullToRefreshContacts({
+    loadInitialContacts,
+    syncConversationThreadsFromContacts: messagesPane.syncConversationThreadsFromContacts,
+    refreshConversationPreviews: messagesPane.refreshConversationPreviews,
+    onError: (err) => log({ contactsInitError: err?.message || err, source: 'contactSecrets:restored' }),
+    onFinally: () => {
       try { messagesPane.renderConversationList(); } catch {}
       contactSecretsRefreshInFlight = false;
-    });
+    }
+  });
 });
 
 function summarizeTokenForDiag(token) {
@@ -3757,7 +3760,7 @@ postLoginInitPromise
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
-    triggerServerCatchupForTargets({ source: 'login' });
+    runOfflineCatchupNow({ source: 'login', runOfflineDecrypt: false });
   });
 
 function updateProfileStats() {
@@ -4025,10 +4028,14 @@ function handleWebSocketMessage(msg) {
     if (msg?.ok) {
       presenceManager.sendPresenceSubscribe();
       messagesPane.refreshAfterReconnect?.();
-      syncOfflineDecryptNow({ source: 'ws_reconnect' })
-        .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source: 'ws_reconnect' }));
-      triggerServerCatchupForTargets({ source: 'ws_reconnect' });
-      messagesPane.reconcileOutgoingStatusNow?.({ source: 'ws_reconnect' });
+      runOfflineCatchupNow({
+        source: 'ws_reconnect',
+        onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'ws_reconnect' }),
+        reconcileOutgoingStatus: (params) => reconcileOutgoingStatusForConversation({
+          ...params,
+          reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
+        })
+      });
       flushOutbox({ sourceTag: 'ws_auth_ok' }).catch(() => {});
     }
     return;
@@ -4102,7 +4109,10 @@ function handleWebSocketMessage(msg) {
       handleSettingsSecureMessage();
       return;
     }
-    messagesPane.handleIncomingSecureMessage(msg);
+    onWsIncomingMessageNew({
+      event: msg,
+      handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
+    });
     return;
   }
   if (type === 'secure-message' || type === 'message-new') {
@@ -4137,7 +4147,10 @@ function handleWebSocketMessage(msg) {
         handler: 'messagesPane.handleIncomingSecureMessage'
       });
     } catch {}
-    messagesPane.handleIncomingSecureMessage(msg);
+    onWsIncomingMessageNew({
+      event: msg,
+      handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
+    });
     return;
   }
 }
@@ -4154,24 +4167,6 @@ function handleWebSocketMessage(msg) {
     });
   } catch {}
 })();
-
-function triggerResumeSync({ source } = {}) {
-  const now = Date.now();
-  const coalesced = offlineSyncTriggerLastAtMs
-    && Number.isFinite(OFFLINE_SYNC_TRIGGER_COALESCE_MS)
-    && (now - offlineSyncTriggerLastAtMs) < OFFLINE_SYNC_TRIGGER_COALESCE_MS;
-  logCapped('offlineSyncTriggerTrace', {
-    source: source || null,
-    coalesced,
-    tsMs: now
-  }, OFFLINE_SYNC_LOG_CAP);
-  if (coalesced) return;
-  offlineSyncTriggerLastAtMs = now;
-  syncOfflineDecryptNow({ source })
-    .catch((err) => log({ offlineDecryptSyncError: err?.message || err, source }));
-  triggerServerCatchupForTargets({ source, debounceMs: SERVER_CATCHUP_TRIGGER_COALESCE_MS });
-  messagesPane?.reconcileOutgoingStatusNow?.({ source });
-}
 
 if (typeof document !== 'undefined') {
   // 透過 DR secure-message 傳遞的 contact-share（由 features/messages 解密後發出事件）
@@ -4214,7 +4209,14 @@ if (typeof document !== 'undefined') {
     }
     log({ autoLogoutVisibilityChange: document.visibilityState });
     if (!document.hidden) {
-      triggerResumeSync({ source: 'visibility_resume' });
+      onVisibilityResume({
+        source: 'visibility_resume',
+        onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'visibility_resume' }),
+        reconcileOutgoingStatus: (params) => reconcileOutgoingStatusForConversation({
+          ...params,
+          reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
+        })
+      });
     }
     if (document.hidden) {
       flushDrSnapshotsBeforeLogout('visibilitychange', {
@@ -4234,7 +4236,14 @@ if (typeof document !== 'undefined') {
 if (typeof window !== 'undefined') {
   window.addEventListener('pageshow', (event) => {
     if (event && event.persisted) {
-      triggerResumeSync({ source: 'pageshow_resume' });
+      onVisibilityResume({
+        source: 'pageshow_resume',
+        onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'pageshow_resume' }),
+        reconcileOutgoingStatus: (params) => reconcileOutgoingStatusForConversation({
+          ...params,
+          reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
+        })
+      });
     }
   });
   window.addEventListener('pagehide', (event) => {

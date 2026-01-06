@@ -1,3 +1,5 @@
+// UI only. Do not add message pipeline logic; call messages-flow-legacy facade.
+
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import {
@@ -9,9 +11,9 @@ import {
   clearConversationHistory,
   getConversationClearAfter,
   getVaultAckCounter,
-  recordVaultAckCounter,
-  triggerServerCatchup
+  recordVaultAckCounter
 } from '../../features/messages.js';
+import { onEnterConversation } from '../../features/messages-flow-legacy.js';
 import {
   appendUserMessage as timelineAppendUserMessage,
   getTimeline as timelineGetTimeline,
@@ -1267,6 +1269,7 @@ export function initMessagesPane({
     if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(() => requestAnimationFrame(clear));
     } else {
+      // UI-only fallback: keep async blur reset without flow side effects.
       setTimeout(clear, 0);
     }
   }
@@ -2738,6 +2741,7 @@ export function initMessagesPane({
     if (typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(() => scrollMessagesToBottom());
     } else {
+      // UI-only fallback for browsers without RAF.
       setTimeout(() => scrollMessagesToBottom(), 0);
     }
   }
@@ -4666,8 +4670,7 @@ function resolveRenderEntryCounter(entry) {
     state.conversationToken = conversation.token_b64;
     state.conversationId = conversation.conversation_id;
     resetProcessedMessages(state.conversationId);
-    triggerServerCatchup({
-      source: 'enter_conversation',
+    onEnterConversation({
       conversationId: state.conversationId,
       peerAccountDigest: peerDigest,
       peerDeviceId
@@ -4807,7 +4810,13 @@ function resolveRenderEntryCounter(entry) {
           }));
         } catch {}
       }
-      await loadActiveConversationMessages({ append: false, replay: !historyReplayDone, reason: 'open' });
+      await onEnterConversation({
+        conversationId: state.conversationId,
+        loadActiveConversationMessages,
+        replay: !historyReplayDone,
+        reason: 'open',
+        runCatchup: false
+      });
     }
   }
 
@@ -6387,7 +6396,11 @@ function resolveRenderEntryCounter(entry) {
       state.activePeerDigest = null;
       state.conversationId = conversationId;
       state.conversationToken = token;
-      loadActiveConversationMessages({ append: false })
+      onEnterConversation({
+        conversationId,
+        loadActiveConversationMessages,
+        runCatchup: false
+      })
         .then(() => scrollMessagesToBottom())
         .catch((err) => {
           if (uiNoiseEnabled) log({ toastOpenConversationError: err?.message || err });
@@ -6701,7 +6714,14 @@ function resolveRenderEntryCounter(entry) {
       const state = getMessageState();
       if (state.activePeerDigest && state.conversationToken) {
         try {
-          await loadActiveConversationMessages({ append: false, replay: false, silent: true, reason: 'ws-reconnect' });
+          await onEnterConversation({
+            conversationId: state.conversationId,
+            loadActiveConversationMessages,
+            replay: false,
+            reason: 'ws-reconnect',
+            loadOptions: { silent: true },
+            runCatchup: false
+          });
         } catch (err) {
           log({ refreshAfterReconnectLoadError: err?.message || err });
         }
