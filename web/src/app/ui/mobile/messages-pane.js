@@ -12,7 +12,7 @@ import {
   getVaultAckCounter,
   recordVaultAckCounter
 } from '../../features/messages.js';
-import { onEnterConversation, runListSecureAndDecryptLegacy } from '../../features/messages-flow-legacy.js';
+import { legacyFacade } from '../../features/messages-flow-legacy.js';
 import {
   appendUserMessage as timelineAppendUserMessage,
   getTimeline as timelineGetTimeline,
@@ -2127,7 +2127,7 @@ export function initMessagesPane({
             messageId: null,
             serverMessageId: null
           });
-          const previewResult = await runListSecureAndDecryptLegacy({
+          const previewResult = await legacyFacade.onScrollFetchMore({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerAccountDigest: peerDigest,
@@ -4132,7 +4132,7 @@ function resolveRenderEntryCounter(entry) {
       });
       const allowReceipts = mutateState !== false;
       const onMessageDecrypted = (payload) => handleMessageDecrypted({ ...payload, allowReceipts });
-      const listResult = await runListSecureAndDecryptLegacy({
+      const listResult = await legacyFacade.onScrollFetchMore({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
@@ -4673,8 +4673,9 @@ function resolveRenderEntryCounter(entry) {
     state.conversationToken = conversation.token_b64;
     state.conversationId = conversation.conversation_id;
     resetProcessedMessages(state.conversationId);
-    onEnterConversation({
+    legacyFacade.onEnterConversation({
       conversationId: state.conversationId,
+      peerKey: activePeerKey,
       peerAccountDigest: peerDigest,
       peerDeviceId
     });
@@ -4813,8 +4814,9 @@ function resolveRenderEntryCounter(entry) {
           }));
         } catch {}
       }
-      await onEnterConversation({
+      await legacyFacade.onEnterConversation({
         conversationId: state.conversationId,
+        peerKey: activePeerKey,
         loadActiveConversationMessages,
         replay: !historyReplayDone,
         reason: 'open',
@@ -5942,7 +5944,7 @@ function resolveRenderEntryCounter(entry) {
         messageId: null,
         serverMessageId: null
       });
-      const syncResult = await runListSecureAndDecryptLegacy({
+      const syncResult = await legacyFacade.onScrollFetchMore({
         conversationId: convId,
         tokenB64: tokenB64 || null,
         peerAccountDigest: peerDigest,
@@ -6401,7 +6403,7 @@ function resolveRenderEntryCounter(entry) {
       state.activePeerDigest = null;
       state.conversationId = conversationId;
       state.conversationToken = token;
-      onEnterConversation({
+      legacyFacade.onEnterConversation({
         conversationId,
         loadActiveConversationMessages,
         runCatchup: false
@@ -6719,8 +6721,9 @@ function resolveRenderEntryCounter(entry) {
       const state = getMessageState();
       if (state.activePeerDigest && state.conversationToken) {
         try {
-          await onEnterConversation({
+          await legacyFacade.onEnterConversation({
             conversationId: state.conversationId,
+            peerKey: state.activePeerDigest,
             loadActiveConversationMessages,
             replay: false,
             reason: 'ws-reconnect',

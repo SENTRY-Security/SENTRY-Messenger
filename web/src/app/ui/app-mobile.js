@@ -91,14 +91,7 @@ import {
   resetAllProcessedMessages,
   resetReceiptStore
 } from '../features/messages.js';
-import {
-  onPullToRefreshContacts,
-  onVisibilityResume,
-  onWsIncomingMessageNew,
-  reconcileOutgoingStatusForConversation,
-  runOfflineCatchupNow,
-  startRestorePipelineAfterLogin
-} from '../features/messages-flow-legacy.js';
+import { legacyFacade } from '../features/messages-flow-legacy.js';
 import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
@@ -2457,7 +2450,7 @@ const { loadInitialContacts, renderContacts, addContactEntry: addContactEntryRaw
 if (typeof window !== 'undefined') {
   try {
     window.__refreshContacts = async () => {
-      const result = await onPullToRefreshContacts({
+      const result = await legacyFacade.onPullToRefreshContacts({
         loadInitialContacts,
         renderContacts
       });
@@ -2477,7 +2470,7 @@ const contactDiagLoggedKeys = new Set();
 document.addEventListener('contactSecrets:restored', async () => {
   if (contactSecretsRefreshInFlight) return;
   contactSecretsRefreshInFlight = true;
-  const result = await onPullToRefreshContacts({
+  const result = await legacyFacade.onPullToRefreshContacts({
     loadInitialContacts,
     syncConversationThreadsFromContacts: messagesPane.syncConversationThreadsFromContacts,
     refreshConversationPreviews: messagesPane.refreshConversationPreviews,
@@ -3761,12 +3754,12 @@ postLoginInitPromise
   .catch((err) => log({ contactsInitError: err?.message || err }))
   .finally(() => {
     messagesPane.renderConversationList();
-    startRestorePipelineAfterLogin({ source: 'login' }).catch(() => {});
+    legacyFacade.onLoginResume({ source: 'login', runOfflineCatchup: false });
     flushOutbox({ sourceTag: 'post_login' }).catch(() => {});
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
-    runOfflineCatchupNow({ source: 'login', runOfflineDecrypt: false });
+    legacyFacade.onLoginResume({ source: 'login', runRestore: false, runOfflineDecrypt: false });
   });
 
 function updateProfileStats() {
@@ -4034,10 +4027,11 @@ function handleWebSocketMessage(msg) {
     if (msg?.ok) {
       presenceManager.sendPresenceSubscribe();
       messagesPane.refreshAfterReconnect?.();
-      runOfflineCatchupNow({
+      legacyFacade.onLoginResume({
         source: 'ws_reconnect',
+        runRestore: false,
         onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'ws_reconnect' }),
-        reconcileOutgoingStatus: (params) => reconcileOutgoingStatusForConversation({
+        reconcileOutgoingStatus: (params) => legacyFacade.reconcileOutgoingStatusNow({
           ...params,
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
@@ -4115,7 +4109,7 @@ function handleWebSocketMessage(msg) {
       handleSettingsSecureMessage();
       return;
     }
-    onWsIncomingMessageNew({
+    legacyFacade.onWsIncomingMessageNew({
       event: msg,
       handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
     });
@@ -4153,7 +4147,7 @@ function handleWebSocketMessage(msg) {
         handler: 'messagesPane.handleIncomingSecureMessage'
       });
     } catch {}
-    onWsIncomingMessageNew({
+    legacyFacade.onWsIncomingMessageNew({
       event: msg,
       handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
     });
@@ -4215,10 +4209,10 @@ if (typeof document !== 'undefined') {
     }
     log({ autoLogoutVisibilityChange: document.visibilityState });
     if (!document.hidden) {
-      onVisibilityResume({
+      legacyFacade.onVisibilityResume({
         source: 'visibility_resume',
         onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'visibility_resume' }),
-        reconcileOutgoingStatus: (params) => reconcileOutgoingStatusForConversation({
+        reconcileOutgoingStatus: (params) => legacyFacade.reconcileOutgoingStatusNow({
           ...params,
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
@@ -4242,10 +4236,10 @@ if (typeof document !== 'undefined') {
 if (typeof window !== 'undefined') {
   window.addEventListener('pageshow', (event) => {
     if (event && event.persisted) {
-      onVisibilityResume({
+      legacyFacade.onVisibilityResume({
         source: 'pageshow_resume',
         onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'pageshow_resume' }),
-        reconcileOutgoingStatus: (params) => reconcileOutgoingStatusForConversation({
+        reconcileOutgoingStatus: (params) => legacyFacade.reconcileOutgoingStatusNow({
           ...params,
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
