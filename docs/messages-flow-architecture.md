@@ -24,6 +24,9 @@
 - Crypto: DR readiness/decrypt/skip-key derivation (no schema changes).
 - Presentation: placeholder planning + decrypted message application hooks.
 - Reconcile: plan catchup jobs based on counters and incoming state.
+- Current layout (Phase 1):
+  - A route (replay-only) modules live in `web/src/app/features/messages-flow/`: server-api.js, vault-replay.js, normalize.js, scroll-fetch.js.
+  - Shared scaffolding lives in `web/src/app/features/messages-flow/`: index.js, queue.js, state.js, crypto.js, presentation.js, reconcile.js.
 
 ## 4. 入口事件（login/ws/enter/resume/scroll）如何轉 job
 - login: onLoginResume -> enqueue login_resume job.

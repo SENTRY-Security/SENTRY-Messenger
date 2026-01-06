@@ -12,7 +12,7 @@ import {
   getAccountDigest
 } from '../core/store.js';
 import { encryptAndPut, signGet, downloadAndDecrypt } from '../features/media.js';
-import { listSecureAndDecrypt } from '../features/messages.js';
+import { legacyFacade } from '../features/messages-flow-legacy.js';
 import { ensureDrSession, sendDrText } from '../features/dr-session.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
@@ -290,13 +290,19 @@ async function onLoadMessages() {
     const peer = prompt('輸入對方帳號 digest（hex）：');
     if (!conversationId || !tokenB64 || !peer) return;
     const peerDigest = String(peer).replace(/[^0-9a-f]/gi, '').toUpperCase();
-    throw new Error('peerDeviceId missing: UI 不應以手動輸入方式取得，請從既有會話資料提供');
-    const { items, nextCursor, nextCursorTs, errors } = await listSecureAndDecrypt({
+    const peerDeviceId = null;
+    if (!peerDeviceId) {
+      throw new Error('peerDeviceId missing: UI 不應以手動輸入方式取得，請從既有會話資料提供');
+    }
+    const { items, nextCursor, nextCursorTs, errors } = await legacyFacade.onScrollFetchMore({
       conversationId,
       tokenB64,
       peerAccountDigest: peerDigest,
-      limit: 20,
-      sendReadReceipt: true
+      peerDeviceId,
+      options: {
+        limit: 20,
+        sendReadReceipt: true
+      }
     });
     renderMessages(items);
     if (errors && errors.length) log({ decryptErrors: errors });

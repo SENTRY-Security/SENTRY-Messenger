@@ -15,8 +15,10 @@ import {
   OFFLINE_SYNC_TRIGGER_COALESCE_MS,
   SERVER_CATCHUP_TRIGGER_COALESCE_MS
 } from './messages-sync-policy.js';
+import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
 
 const LEGACY_OPTION_LOG_CAP = 5;
+const USE_MESSAGES_FLOW_SCROLL_FETCH = false;
 const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
   'allowReplay',
   'cursorId',
@@ -31,6 +33,14 @@ const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
   'sourceTag'
 ]);
 const LEGACY_ENTER_CONVERSATION_ALLOWLIST = new Set(['silent']);
+const messagesFlowScrollFetch = createMessagesFlowScrollFetch();
+
+function toConversationIdPrefix8(conversationId) {
+  if (!conversationId) return null;
+  const trimmed = String(conversationId).trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 8);
+}
 
 function pickLegacyOptions(options, allowlist, { source } = {}) {
   if (!options || typeof options !== 'object') return {};
@@ -279,6 +289,37 @@ function createLegacyFacadeAdapter() {
         } else {
           mergedOptions.cursorTs = cursor;
         }
+      }
+      const limit = Number.isFinite(Number(mergedOptions.limit)) ? Number(mergedOptions.limit) : null;
+      const hasCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined;
+      const isReplay = mergedOptions.mutateState === false;
+      const useMessagesFlow = USE_MESSAGES_FLOW_SCROLL_FETCH && isReplay;
+      const reasonCode = USE_MESSAGES_FLOW_SCROLL_FETCH
+        ? (isReplay ? 'OK' : 'MUTATE_STATE_NOT_REPLAY')
+        : 'FLAG_OFF';
+      logCapped('scrollFetchRouteTrace', {
+        conversationIdPrefix8: toConversationIdPrefix8(conversationId),
+        route: useMessagesFlow ? 'messages-flow' : 'legacy',
+        reasonCode,
+        hasCursor,
+        limit
+      }, 5);
+      if (useMessagesFlow) {
+        const normalizedCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined
+          ? { ts: mergedOptions.cursorTs ?? null, id: mergedOptions.cursorId ?? null }
+          : null;
+        return messagesFlowScrollFetch({
+          conversationId,
+          cursor: normalizedCursor,
+          limit: mergedOptions.limit,
+          isReplay: true
+        }).then((result) => ({
+          items: Array.isArray(result?.items) ? result.items : [],
+          errors: Array.isArray(result?.errors) ? result.errors : [],
+          nextCursor: result?.nextCursor ?? null,
+          nextCursorTs: result?.nextCursor?.ts ?? null,
+          hasMoreAtCursor: !!result?.nextCursor
+        }));
       }
       return runListSecureAndDecryptLegacy({
         conversationId,

@@ -1,5 +1,4 @@
-// /app/features/messages-flow/index.js
-// Facade for the next-gen message flow.
+// Facade for the next-gen messages flow (A-route only).
 // This layer only translates events into jobs and schedules them.
 // It must not decrypt, touch vault, or call server APIs directly.
 
@@ -83,3 +82,5 @@ export function createMessagesFlowFacade(deps = {}) {
     }
   };
 }
+
+export { createMessagesFlowScrollFetch } from '../messages-flow/scroll-fetch.js';
