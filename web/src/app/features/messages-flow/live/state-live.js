@@ -112,7 +112,12 @@ function resolveCounter(raw, header) {
   return Number.isFinite(num) ? num : null;
 }
 
-function resolveDirectionComputed(raw, header, selfDeviceId, selfDigest) {
+function resolveDirectionComputed(raw, header, {
+  selfDeviceId,
+  selfDigest,
+  peerDeviceId,
+  peerAccountDigest
+} = {}) {
   const direct = raw?.directionComputed || raw?.direction_computed || raw?.direction || null;
   if (typeof direct === 'string' && direct.trim()) {
     return direct.trim().toLowerCase();
@@ -120,12 +125,19 @@ function resolveDirectionComputed(raw, header, selfDeviceId, selfDigest) {
   const senderDeviceId = resolveSenderDeviceId(raw, header);
   const targetDeviceId = resolveTargetDeviceId(raw, header);
   const senderDigest = resolveSenderDigest(raw, header);
-  const selfDevice = typeof selfDeviceId === 'string' ? selfDeviceId : null;
-  const selfDigestUpper = typeof selfDigest === 'string' ? selfDigest.toUpperCase() : null;
+  const selfDevice = typeof selfDeviceId === 'string' && selfDeviceId ? selfDeviceId : null;
+  const peerDevice = typeof peerDeviceId === 'string' && peerDeviceId ? peerDeviceId : null;
+  const selfDigestUpper = typeof selfDigest === 'string' && selfDigest ? selfDigest.toUpperCase() : null;
+  const peerDigestUpper = typeof peerAccountDigest === 'string' && peerAccountDigest
+    ? peerAccountDigest.toUpperCase()
+    : null;
   if (targetDeviceId && selfDevice && targetDeviceId === selfDevice) return 'incoming';
   if (senderDeviceId && selfDevice && senderDeviceId === selfDevice) return 'outgoing';
+  if (senderDeviceId && peerDevice && senderDeviceId === peerDevice) return 'incoming';
+  if (targetDeviceId && peerDevice && targetDeviceId === peerDevice) return 'outgoing';
   if (senderDigest && selfDigestUpper && senderDigest === selfDigestUpper) return 'outgoing';
-  return 'incoming';
+  if (senderDigest && peerDigestUpper && senderDigest === peerDigestUpper) return 'incoming';
+  return null;
 }
 
 function resolveMsgType(meta, header) {
@@ -139,9 +151,10 @@ function resolveMsgType(meta, header) {
 
 async function ensureLiveReady(params = {}, adapters) {
   const conversationId = params?.conversationId || null;
+  const tokenB64 = params?.tokenB64 || null;
   const peerAccountDigest = params?.peerAccountDigest || null;
   const peerDeviceId = params?.peerDeviceId || null;
-  if (!conversationId || !peerAccountDigest || !peerDeviceId) {
+  if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) {
     return { ok: false, reasonCode: 'MISSING_PARAMS' };
   }
   if (!adapters?.ensureSecureConversationReady || !adapters?.ensureDrReceiverState || !adapters?.drState) {
@@ -244,7 +257,12 @@ async function decryptIncomingBatch(params = {}, adapters) {
   for (const raw of items) {
     const header = resolveHeader(raw);
     const ciphertextB64 = resolveCiphertextB64(raw);
-    const directionComputed = resolveDirectionComputed(raw, header, selfDeviceId, selfDigest);
+    const directionComputed = resolveDirectionComputed(raw, header, {
+      selfDeviceId,
+      selfDigest,
+      peerAccountDigest,
+      peerDeviceId
+    });
     if (directionComputed !== 'incoming') {
       skippedCount += 1;
       continue;
@@ -279,6 +297,10 @@ async function decryptIncomingBatch(params = {}, adapters) {
       failCount += 1;
       continue;
     }
+    if (!messageKeyB64) {
+      failCount += 1;
+      continue;
+    }
 
     const semantic = classifyDecryptedPayload(plaintext, { meta, header });
     if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE || semantic.subtype !== 'text') {
@@ -307,6 +329,7 @@ async function decryptIncomingBatch(params = {}, adapters) {
       text,
       messageKeyB64,
       counter,
+      headerCounter: counter,
       senderDeviceId,
       targetDeviceId,
       senderDigest
@@ -344,6 +367,7 @@ async function persistAndAppendBatch(params = {}, adapters) {
 
   let vaultPutOk = 0;
   let vaultPutFail = 0;
+  const appendableMessages = [];
   for (const message of decryptedMessages) {
     const messageId = message?.messageId || message?.id || null;
     if (!messageId || !message?.messageKeyB64) {
@@ -359,9 +383,12 @@ async function persistAndAppendBatch(params = {}, adapters) {
         direction: message?.direction || 'incoming',
         msgType: message?.msgType || 'text',
         messageKeyB64: message?.messageKeyB64 || null,
-        headerCounter: Number.isFinite(message?.counter) ? Number(message.counter) : null
+        headerCounter: Number.isFinite(message?.headerCounter)
+          ? Number(message.headerCounter)
+          : (Number.isFinite(message?.counter) ? Number(message.counter) : null)
       });
       vaultPutOk += 1;
+      appendableMessages.push(message);
     } catch {
       vaultPutFail += 1;
     }
@@ -369,8 +396,8 @@ async function persistAndAppendBatch(params = {}, adapters) {
 
   let appendOk = true;
   let appendedCount = 0;
-  if (decryptedMessages.length) {
-    const entries = decryptedMessages.map((message) => ({
+  if (appendableMessages.length) {
+    const entries = appendableMessages.map((message) => ({
       conversationId,
       messageId: message?.messageId || message?.id || null,
       direction: message?.direction || 'incoming',
@@ -386,10 +413,12 @@ async function persistAndAppendBatch(params = {}, adapters) {
     try {
       const result = adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' }) || null;
       const count = Number(result?.appendedCount);
-      appendedCount = Number.isFinite(count) ? count : 0;
+      appendedCount = Number.isFinite(count) ? count : entries.length;
     } catch {
       appendOk = false;
     }
+  } else if (decryptedMessages.length) {
+    appendOk = false;
   }
 
   return {

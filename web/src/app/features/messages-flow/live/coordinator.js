@@ -40,7 +40,7 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
 
   const startedAt = nowMs();
   let readyResult = { ok: false, reasonCode: 'UNKNOWN' };
-  let fetchResult = { ok: false, status: null, items: [], errorsLength: 0 };
+  let fetchResult = { items: [], errors: [], nextCursor: null };
   let decryptResult = { decryptedMessages: [], processedCount: 0, skippedCount: 0, okCount: 0, failCount: 0 };
   let persistResult = { vaultPutOk: 0, appendOk: false, appendedCount: 0 };
 
@@ -84,23 +84,24 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   try {
     fetchResult = await fetcher({
       conversationId,
-      limit: LIVE_MVP_FETCH_LIMIT
+      limit: LIVE_MVP_FETCH_LIMIT,
+      cursorTs: null,
+      cursorId: null
     });
   } catch (err) {
+    const msg = err?.message || String(err);
     fetchResult = {
-      ok: false,
-      status: null,
       items: [],
-      errorsLength: 1,
-      errors: [err?.message || String(err)]
+      errors: msg ? [msg] : [],
+      nextCursor: null
     };
   }
 
   logger('liveMvpFetchTrace', {
     conversationIdPrefix8,
-    status: fetchResult?.status ?? null,
     itemsLength: Array.isArray(fetchResult?.items) ? fetchResult.items.length : 0,
-    errorsLength: Number.isFinite(fetchResult?.errorsLength) ? fetchResult.errorsLength : 0
+    errorsLength: Array.isArray(fetchResult?.errors) ? fetchResult.errors.length : 0,
+    hasNextCursor: !!fetchResult?.nextCursor
   }, LIVE_MVP_LOG_CAP);
 
   try {

@@ -19,27 +19,30 @@ function resolveNextCursorId(data) {
   return null;
 }
 
+function resolveNextCursor(data) {
+  if (data?.nextCursor) return data.nextCursor;
+  const ts = resolveNextCursorTs(data);
+  const id = resolveNextCursorId(data);
+  if (ts == null && id == null) return null;
+  return { ts: ts ?? null, id: id ?? null };
+}
+
 export async function listSecureMessagesLive({
   conversationId,
   limit = 20,
-  cursorTs,
-  cursorId,
+  cursorTs = null,
+  cursorId = null,
   listSecureMessages = apiListSecureMessages
 } = {}) {
   const base = {
-    ok: false,
-    status: null,
     items: [],
     errors: [],
-    errorsLength: 0,
-    nextCursorTs: null,
-    nextCursorId: null
+    nextCursor: null
   };
   if (!conversationId) {
     return {
       ...base,
-      errors: ['conversationId required'],
-      errorsLength: 1
+      errors: ['conversationId required']
     };
   }
   try {
@@ -51,20 +54,15 @@ export async function listSecureMessagesLive({
       if (msg) errors.push(msg);
     }
     return {
-      ok: !!r?.ok,
-      status: r?.status ?? null,
       items,
       errors,
-      errorsLength: errors.length,
-      nextCursorTs: resolveNextCursorTs(data),
-      nextCursorId: resolveNextCursorId(data)
+      nextCursor: resolveNextCursor(data)
     };
   } catch (err) {
     const msg = err?.message || String(err);
     return {
       ...base,
-      errors: msg ? [msg] : [],
-      errorsLength: msg ? 1 : 0
+      errors: msg ? [msg] : []
     };
   }
 }

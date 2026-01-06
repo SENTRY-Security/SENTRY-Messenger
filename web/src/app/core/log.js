@@ -262,7 +262,13 @@ const LOG_CAP_OVERRIDE = new Map([
   ['aRouteVaultMissingEnqueueTrace', 5],
   ['bRouteGapTaskTrace', 5],
   ['placeholderReplayTrace', 5],
-  ['placeholderGapTrace', 5]
+  ['placeholderGapTrace', 5],
+  ['liveMvpRouteTrace', 5],
+  ['liveMvpReadyTrace', 5],
+  ['liveMvpFetchTrace', 5],
+  ['liveMvpDecryptTrace', 5],
+  ['liveMvpPersistTrace', 5],
+  ['liveMvpSummaryTrace', 5]
 ]);
 const FORENSICS_LOG_COUNTS = new Map();
 
