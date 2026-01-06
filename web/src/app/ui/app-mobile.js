@@ -2457,10 +2457,13 @@ const { loadInitialContacts, renderContacts, addContactEntry: addContactEntryRaw
 if (typeof window !== 'undefined') {
   try {
     window.__refreshContacts = async () => {
-      await onPullToRefreshContacts({
+      const result = await onPullToRefreshContacts({
         loadInitialContacts,
         renderContacts
       });
+      if (result?.ok === false) {
+        log({ contactsRefreshError: result.errorMessage || 'unknown', source: '__refreshContacts' });
+      }
     };
     window.__debugDumpPostLogin = () => logRestoreOverview({ reason: 'manual', force: true });
   } catch {}
@@ -2471,10 +2474,10 @@ let postLoginHydrateInFlight = false;
 let readyCountLogged = false;
 let restoreOverviewLogged = false;
 const contactDiagLoggedKeys = new Set();
-document.addEventListener('contactSecrets:restored', () => {
+document.addEventListener('contactSecrets:restored', async () => {
   if (contactSecretsRefreshInFlight) return;
   contactSecretsRefreshInFlight = true;
-  onPullToRefreshContacts({
+  const result = await onPullToRefreshContacts({
     loadInitialContacts,
     syncConversationThreadsFromContacts: messagesPane.syncConversationThreadsFromContacts,
     refreshConversationPreviews: messagesPane.refreshConversationPreviews,
@@ -2484,6 +2487,9 @@ document.addEventListener('contactSecrets:restored', () => {
       contactSecretsRefreshInFlight = false;
     }
   });
+  if (result?.ok === false) {
+    log({ contactsInitError: result.errorMessage || 'unknown', source: 'contactSecrets:restored' });
+  }
 });
 
 function summarizeTokenForDiag(token) {

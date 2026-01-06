@@ -40,3 +40,16 @@ web/src/app/ui/app-mobile.js:61:  persistProfileForAccount,
 web/src/app/ui/app-mobile.js:2802:  handleContactInitEvent,
 web/src/app/features/profile.js:491:export async function persistProfileForAccount(profile, accountDigest) {
 ```
+
+## UI-only boundary verification (rg)
+
+```
+rg -n "listSecureAndDecrypt\\(" web/src/app/ui/mobile/messages-pane.js
+# expected: 0 hits
+
+rg -n "import \\{.*listSecureAndDecrypt" web/src/app/ui/mobile/messages-pane.js
+# expected: 0 hits
+
+rg -n "listSecureAndDecrypt\\(" web/src/app/features/messages-flow-legacy.js
+# expected: >=1 hits (wrapper)
+```

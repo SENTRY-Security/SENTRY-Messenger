@@ -3,7 +3,6 @@
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import {
-  listSecureAndDecrypt,
   resetProcessedMessages,
   recordMessageRead,
   recordMessageDelivered,
@@ -13,7 +12,7 @@ import {
   getVaultAckCounter,
   recordVaultAckCounter
 } from '../../features/messages.js';
-import { onEnterConversation } from '../../features/messages-flow-legacy.js';
+import { onEnterConversation, runListSecureAndDecryptLegacy } from '../../features/messages-flow-legacy.js';
 import {
   appendUserMessage as timelineAppendUserMessage,
   getTimeline as timelineGetTimeline,
@@ -2128,17 +2127,19 @@ export function initMessagesPane({
             messageId: null,
             serverMessageId: null
           });
-          const previewResult = await listSecureAndDecrypt({
+          const previewResult = await runListSecureAndDecryptLegacy({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerAccountDigest: peerDigest,
             peerDeviceId: thread.peerDeviceId,
-            limit: 20,
-            mutateState: false,
-            sendReadReceipt: false,
-            onMessageDecrypted: null,
-            silent: true,
-            sourceTag: 'messages-pane:refreshConversationPreviews'
+            options: {
+              limit: 20,
+              mutateState: false,
+              sendReadReceipt: false,
+              onMessageDecrypted: null,
+              silent: true,
+              sourceTag: 'messages-pane:refreshConversationPreviews'
+            }
           });
           logReplayFetchResult({
             conversationId: thread.conversationId,
@@ -4131,30 +4132,32 @@ function resolveRenderEntryCounter(entry) {
       });
       const allowReceipts = mutateState !== false;
       const onMessageDecrypted = (payload) => handleMessageDecrypted({ ...payload, allowReceipts });
-      const listResult = await listSecureAndDecrypt({
+      const listResult = await runListSecureAndDecryptLegacy({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
         peerDeviceId: state.activePeerDeviceId || null,
-        limit: fetchLimit,
-        cursorTs,
-        cursorId,
-        mutateState,
-        allowReplay: true,
-        priority: requestPriority,
-        silent: !!silent,
-        onMessageDecrypted,
-        sourceTag: reason
-          ? `messages-pane:loadActiveConversationMessages:${reason}`
-          : 'messages-pane:loadActiveConversationMessages',
-        prefetchedList: prefetch
-          ? {
-              items: Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [],
-              nextCursor: prefetch?.data?.nextCursor ?? null,
-              nextCursorTs: prefetch?.data?.nextCursorTs ?? null,
-              hasMoreAtCursor: !!prefetch?.data?.hasMoreAtCursor
-            }
-          : null
+        options: {
+          limit: fetchLimit,
+          cursorTs,
+          cursorId,
+          mutateState,
+          allowReplay: true,
+          priority: requestPriority,
+          silent: !!silent,
+          onMessageDecrypted,
+          sourceTag: reason
+            ? `messages-pane:loadActiveConversationMessages:${reason}`
+            : 'messages-pane:loadActiveConversationMessages',
+          prefetchedList: prefetch
+            ? {
+                items: Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [],
+                nextCursor: prefetch?.data?.nextCursor ?? null,
+                nextCursorTs: prefetch?.data?.nextCursorTs ?? null,
+                hasMoreAtCursor: !!prefetch?.data?.hasMoreAtCursor
+              }
+            : null
+        }
       });
       const {
         nextCursor,
@@ -5939,19 +5942,21 @@ function resolveRenderEntryCounter(entry) {
         messageId: null,
         serverMessageId: null
       });
-      const syncResult = await listSecureAndDecrypt({
+      const syncResult = await runListSecureAndDecryptLegacy({
         conversationId: convId,
         tokenB64: tokenB64 || null,
         peerAccountDigest: peerDigest,
         peerDeviceId: resolvedPeerDeviceId,
-        mutateState: true,
-        allowReplay: false,
-        sendReadReceipt: false,
-        onMessageDecrypted: () => {},
-        silent: false,
-        sourceTag: reason
-          ? `messages-pane:syncContactConversation:${reason}`
-          : 'messages-pane:syncContactConversation'
+        options: {
+          mutateState: true,
+          allowReplay: false,
+          sendReadReceipt: false,
+          onMessageDecrypted: () => {},
+          silent: false,
+          sourceTag: reason
+            ? `messages-pane:syncContactConversation:${reason}`
+            : 'messages-pane:syncContactConversation'
+        }
       });
       logReplayFetchResult({
         conversationId: convId || null,

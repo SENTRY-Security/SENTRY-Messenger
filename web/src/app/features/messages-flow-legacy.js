@@ -3,6 +3,7 @@
 
 import { logCapped } from '../core/log.js';
 import {
+  listSecureAndDecrypt,
   syncOfflineDecryptNow,
   triggerServerCatchup,
   triggerServerCatchupForTargets
@@ -15,6 +16,38 @@ import {
 } from './messages-sync-policy.js';
 
 let offlineSyncTriggerLastAtMs = 0;
+const LEGACY_OPTION_LOG_CAP = 5;
+const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
+  'allowReplay',
+  'cursorId',
+  'cursorTs',
+  'limit',
+  'mutateState',
+  'onMessageDecrypted',
+  'prefetchedList',
+  'priority',
+  'sendReadReceipt',
+  'silent',
+  'sourceTag'
+]);
+const LEGACY_ENTER_CONVERSATION_ALLOWLIST = new Set(['silent']);
+
+function pickLegacyOptions(options, allowlist, { source } = {}) {
+  if (!options || typeof options !== 'object') return {};
+  const allowed = {};
+  const dropped = [];
+  for (const key of Object.keys(options)) {
+    if (allowlist.has(key)) {
+      allowed[key] = options[key];
+    } else {
+      dropped.push(key);
+    }
+  }
+  if (dropped.length) {
+    logCapped('legacyFlowOptionDrop', { source: source || null, dropped }, LEGACY_OPTION_LOG_CAP);
+  }
+  return allowed;
+}
 
 export function startRestorePipelineAfterLogin({ source } = {}) {
   return startRestorePipeline({ source });
@@ -51,12 +84,34 @@ export function onEnterConversation({
       replay,
       reason
     };
-    if (loadOptions && typeof loadOptions === 'object') {
-      Object.assign(params, loadOptions);
+    const filteredOptions = pickLegacyOptions(loadOptions, LEGACY_ENTER_CONVERSATION_ALLOWLIST, {
+      source: 'onEnterConversation'
+    });
+    if (Object.prototype.hasOwnProperty.call(filteredOptions, 'silent')) {
+      params.silent = filteredOptions.silent;
     }
     return loadActiveConversationMessages(params);
   }
   return null;
+}
+
+export function runListSecureAndDecryptLegacy({
+  conversationId,
+  tokenB64,
+  peerAccountDigest,
+  peerDeviceId,
+  options
+} = {}) {
+  const filteredOptions = pickLegacyOptions(options, LEGACY_LIST_SECURE_ALLOWLIST, {
+    source: 'runListSecureAndDecryptLegacy'
+  });
+  return listSecureAndDecrypt({
+    conversationId,
+    tokenB64,
+    peerAccountDigest,
+    peerDeviceId,
+    ...filteredOptions
+  });
 }
 
 export async function onPullToRefreshContacts({
@@ -68,6 +123,7 @@ export async function onPullToRefreshContacts({
   onError,
   onFinally
 } = {}) {
+  let errorMessage = null;
   try {
     if (typeof loadInitialContacts === 'function') {
       await loadInitialContacts();
@@ -85,10 +141,21 @@ export async function onPullToRefreshContacts({
       renderConversationList();
     }
   } catch (err) {
-    if (typeof onError === 'function') onError(err);
+    errorMessage = err?.message || String(err);
+    if (typeof onError === 'function') {
+      try {
+        onError(err);
+      } catch (onErrorErr) {
+        if (!errorMessage) {
+          errorMessage = onErrorErr?.message || String(onErrorErr);
+        }
+      }
+    }
   } finally {
     if (typeof onFinally === 'function') onFinally();
   }
+  if (errorMessage) return { ok: false, errorMessage };
+  return { ok: true };
 }
 
 export function runOfflineCatchupNow({
