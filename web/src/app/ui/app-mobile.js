@@ -96,7 +96,7 @@ import {
   OFFLINE_SYNC_TRIGGER_COALESCE_MS,
   SERVER_CATCHUP_TRIGGER_COALESCE_MS
 } from '../features/messages-sync-policy.js';
-import { startRestorePipeline } from '../features/restore-coordinator.js';
+import { startRestorePipelineAfterLogin } from '../features/messages-flow-legacy.js';
 import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
@@ -3752,7 +3752,7 @@ postLoginInitPromise
   .catch((err) => log({ contactsInitError: err?.message || err }))
   .finally(() => {
     messagesPane.renderConversationList();
-    startRestorePipeline({ source: 'login' }).catch(() => {});
+    startRestorePipelineAfterLogin({ source: 'login' }).catch(() => {});
     flushOutbox({ sourceTag: 'post_login' }).catch(() => {});
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
