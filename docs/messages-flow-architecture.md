@@ -15,7 +15,7 @@
 - B 路徑 = live decrypt。
   - 條件：mutateState=true 且 allowReplay=false。
   - 可以推進 DR state 並 vaultPut incoming keys。
-  - 負責 gap-fill、counter 修補與 offline catchup。
+  - 本 MVP 僅 WS incoming 的 list → decrypt → persist，明確不含 gap-fill / by-counter / max-counter / offline catchup。
 
 ## 3. 模組分工（Facade/Queue/Server/State/Crypto/Presentation/Reconcile）
 - Facade：將 UI/WS 事件轉為 job 的入口，不做 decrypt/vault/API。
@@ -30,10 +30,10 @@
   - 共用骨架位於 `web/src/app/features/messages-flow/`：index.js, queue.js, state.js, crypto.js, presentation.js, reconcile.js。
 - B 路徑（live）骨架（Phase 2）：
   - Coordinator：`web/src/app/features/messages-flow/live/coordinator.js`（單一入口，僅負責編排）。
-  - Gap-fill：`web/src/app/features/messages-flow/live/gap-fill-queue.js` + `web/src/app/features/messages-flow/live/gap-fill-worker.js`（in-memory queue、事件驅動）。
-  - Server API：`web/src/app/features/messages-flow/live/server-api-live.js`（secure message list/max/by-counter）。
+  - Server API：`web/src/app/features/messages-flow/live/server-api-live.js`（secure message list）。
   - State：`web/src/app/features/messages-flow/live/state-live.js`（DR receiver state + vault put）。
   - Adapters：`web/src/app/features/messages-flow/live/adapters/`（legacy 橋接 messages.js/dr-session/message-key-vault/api）。
+  - Live MVP scope：僅 list → decrypt → persist；不含 gap-fill / by-counter / max-counter / offline catchup。
 - Live wiring 備註：
   - B 路徑 live 已完成接線，但預設關閉（`USE_MESSAGES_FLOW_LIVE=false`）。
   - flag 關閉時行為維持 legacy-only。

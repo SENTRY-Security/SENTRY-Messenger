@@ -2,15 +2,9 @@
 // Legacy adapter bindings for live (B-route) flow.
 
 import {
-  listSecureMessages as apiListSecureMessages,
-  getSecureMessageByCounter as apiGetSecureMessageByCounter,
-  fetchSecureMaxCounter as apiFetchSecureMaxCounter
-} from '../../../../api/messages.js';
-import {
   ensureDrReceiverState as legacyEnsureDrReceiverState,
   persistDrSnapshot as legacyPersistDrSnapshot
 } from '../../../dr-session.js';
-import { listSecureAndDecrypt as legacyListSecureAndDecrypt } from '../../../messages.js';
 import { MessageKeyVault } from '../../../message-key-vault.js';
 import { ensureSecureConversationReady as legacyEnsureSecureConversationReady } from '../../../secure-conversation-manager.js';
 import { appendBatch as timelineAppendBatch } from '../../../timeline-store.js';
@@ -21,60 +15,22 @@ import {
   getDeviceId as storeGetDeviceId
 } from '../../../../core/store.js';
 
-function normalizeCursor(cursor) {
-  if (cursor === null || cursor === undefined) return { cursorTs: null, cursorId: null };
-  if (typeof cursor === 'object') {
-    return {
-      cursorTs: cursor.ts ?? cursor.cursorTs ?? null,
-      cursorId: cursor.id ?? cursor.cursorId ?? null
-    };
-  }
-  return { cursorTs: cursor, cursorId: null };
-}
-
-function normalizeCounter(value) {
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
 export function createLiveLegacyAdapters(deps = {}) {
-  const listSecureMessages = deps.listSecureMessages || apiListSecureMessages;
-  const getSecureMessageByCounter = deps.getSecureMessageByCounter || apiGetSecureMessageByCounter;
-  const fetchSecureMaxCounter = deps.fetchSecureMaxCounter || apiFetchSecureMaxCounter;
-  const ensureDrReceiverState = deps.ensureDrReceiverState || legacyEnsureDrReceiverState;
-  const listSecureAndDecrypt = deps.listSecureAndDecrypt || legacyListSecureAndDecrypt;
-  const vaultPutIncomingKey = deps.vaultPutIncomingKey || MessageKeyVault.putMessageKey;
   const ensureSecureConversationReady = deps.ensureSecureConversationReady || legacyEnsureSecureConversationReady;
+  const ensureDrReceiverState = deps.ensureDrReceiverState || legacyEnsureDrReceiverState;
   const drState = deps.drState || storeDrState;
   const drDecryptText = deps.drDecryptText || legacyDrDecryptText;
   const persistDrSnapshot = deps.persistDrSnapshot || legacyPersistDrSnapshot;
+  const vaultPutIncomingKey = deps.vaultPutIncomingKey || MessageKeyVault.putMessageKey;
+  const appendTimelineBatch = deps.appendTimelineBatch || timelineAppendBatch;
   const getAccountDigest = deps.getAccountDigest || storeGetAccountDigest;
   const getDeviceId = deps.getDeviceId || storeGetDeviceId;
-  const appendTimelineBatch = deps.appendTimelineBatch || timelineAppendBatch;
 
   return {
-    // Legacy API passthrough; TODO: replace with live server API wrapper.
-    listSecureMessages(conversationId, limit, cursor) {
-      const { cursorTs, cursorId } = normalizeCursor(cursor);
-      return listSecureMessages({ conversationId, limit, cursorTs, cursorId });
+    ensureSecureConversationReady(params = {}) {
+      return ensureSecureConversationReady(params);
     },
 
-    // Legacy API passthrough; TODO: replace with live server max counter wrapper.
-    getMaxCounter(conversationId, senderDeviceId) {
-      return fetchSecureMaxCounter({ conversationId, senderDeviceId });
-    },
-
-    // Legacy API passthrough; TODO: replace with live counter lookup wrapper.
-    getMessageByCounter(conversationId, counter, opts = {}) {
-      return getSecureMessageByCounter({
-        conversationId,
-        counter: normalizeCounter(counter),
-        senderDeviceId: opts?.senderDeviceId || null,
-        senderAccountDigest: opts?.senderAccountDigest || null
-      });
-    },
-
-    // Legacy DR state bootstrap; TODO: replace with live state access.
     ensureDrReceiverState(conversationId, peerAccountDigest, peerDeviceId) {
       return ensureDrReceiverState({
         conversationId,
@@ -83,63 +39,32 @@ export function createLiveLegacyAdapters(deps = {}) {
       });
     },
 
-    // Legacy secure conversation readiness check.
-    ensureSecureConversationReady(params = {}) {
-      return ensureSecureConversationReady(params);
-    },
-
-    // Legacy DR state access; TODO: replace with live state access.
     drState(params = {}) {
       return drState(params);
     },
 
-    // Legacy DR decrypt; TODO: replace with live decrypt implementation.
     drDecryptText(state, packet, opts = {}) {
       return drDecryptText(state, packet, opts);
     },
 
-    // Legacy DR snapshot persistence; TODO: replace with live state access.
     persistDrSnapshot(params = {}) {
       return persistDrSnapshot(params);
     },
 
-    // Legacy account/device accessors.
-    getAccountDigest() {
-      return getAccountDigest();
-    },
-    getDeviceId() {
-      return getDeviceId();
-    },
-
-    // Legacy decrypt pipeline; TODO: replace with live decrypt implementation.
-    decryptLiveItem(item, context = {}) {
-      const conversationId = context?.conversationId
-        || item?.conversationId
-        || item?.conversation_id
-        || null;
-      return listSecureAndDecrypt({
-        conversationId,
-        tokenB64: context?.tokenB64 || null,
-        peerAccountDigest: context?.peerAccountDigest || null,
-        peerDeviceId: context?.peerDeviceId || null,
-        prefetchedList: item ? [item] : [],
-        limit: 1,
-        mutateState: true,
-        allowReplay: false,
-        priority: 'live',
-        bRoute: true,
-        sourceTag: 'messages-flow/live:decryptLiveItem'
-      });
-    },
-
-    // Legacy vault write; TODO: replace with live vault gateway.
     vaultPutIncomingKey(params = {}) {
       return vaultPutIncomingKey(params);
     },
 
-    // Legacy timeline append; TODO: replace with live timeline gateway.
     appendTimelineBatch(entries = [], opts = {}) {
       return appendTimelineBatch(entries, opts);
+    },
+
+    getAccountDigest() {
+      return getAccountDigest();
+    },
+
+    getDeviceId() {
+      return getDeviceId();
     }
   };
 }

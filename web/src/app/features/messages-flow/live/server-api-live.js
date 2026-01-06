@@ -70,28 +70,10 @@ export async function listSecureMessagesLive({
 }
 
 export function createLiveServerApi(deps = {}) {
-  const adapters = deps?.adapters || null;
   const listSecureMessages = deps.listSecureMessages || apiListSecureMessages;
-
   return {
     async listSecureMessagesLive(params = {}) {
       return listSecureMessagesLive({ ...params, listSecureMessages });
-    },
-
-    // TODO: implement using live server max counter wrapper.
-    async getMaxCounter(conversationId, senderDeviceId) {
-      if (adapters?.getMaxCounter) {
-        return adapters.getMaxCounter(conversationId, senderDeviceId);
-      }
-      throw new Error('messages-flow live server api not implemented');
-    },
-
-    // TODO: implement using live counter lookup wrapper.
-    async getMessageByCounter(conversationId, counter, opts = {}) {
-      if (adapters?.getMessageByCounter) {
-        return adapters.getMessageByCounter(conversationId, counter, opts);
-      }
-      throw new Error('messages-flow live server api not implemented');
     }
   };
 }
