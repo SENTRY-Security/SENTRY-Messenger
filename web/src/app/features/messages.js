@@ -2197,6 +2197,7 @@ export async function listSecureAndDecrypt(params = {}) {
     deadLetters: [],
     receiptUpdates: [],
     serverItemCount: 0,
+    replayPlaceholderUpdates: computedIsHistoryReplay ? { missing: [], resolved: [] } : null,
     replayStats: {
       decryptFail: 0,
       decryptOk: 0,
@@ -2222,6 +2223,9 @@ export async function listSecureAndDecrypt(params = {}) {
     vaultPutIncomingOk: 0,
     timelineAppendCount: 0
   };
+  const replayPlaceholderUpdates = computedIsHistoryReplay
+    ? { missing: [], resolved: [] }
+    : null;
   const uniqueAppendedIds = new Set();
   const stagedLiveRepairConversations = new Set();
   let replaySummaryLogged = false;
@@ -2718,26 +2722,38 @@ export async function listSecureAndDecrypt(params = {}) {
         && conversationId
         && repairSenderDeviceId
         && repairSenderDigest;
+      if (replayPlaceholderUpdates) {
+        replayPlaceholderUpdates.missing.push({
+          conversationId,
+          messageId,
+          counter: item.counter,
+          direction: directionComputed,
+          ts: item.ts ?? null,
+          tsMs: item.tsMs ?? null,
+          senderDeviceId: item.senderDeviceId || null,
+          reason: 'vault_missing'
+        });
+      }
       if (canEnqueueRepair) {
-        const enqueueResult = enqueueLiveDecryptRepair({
+        logARouteVaultMissingEnqueueTrace({
+          conversationId,
+          targetCounter: item.counter,
+          messageId,
+          senderDeviceId: repairSenderDeviceId,
+          reason: 'vault_missing'
+        });
+        const enqueueResult = enqueueMissingKeyTask({
           conversationId,
           targetCounter: item.counter,
           senderDeviceId: repairSenderDeviceId,
           senderAccountDigest: repairSenderDigest,
           messageId,
-          source: 'A_ROUTE_VAULT_MISSING'
+          tokenB64,
+          reason: 'A_ROUTE_VAULT_MISSING'
         }, { deferRun: true });
         if (enqueueResult?.enqueued) stagedLiveRepairConversations.add(String(conversationId));
       }
       vaultMissingCount += 1;
-      ensurePlaceholderEntry({
-        conversationId,
-        counter: item.counter,
-        senderDeviceId: item.senderDeviceId,
-        direction: directionComputed,
-        ts: item.ts ?? null,
-        tsMs: item.tsMs ?? null
-      });
       if (!canEnqueueRepair) {
         errs.push({
           messageId,
@@ -2788,6 +2804,13 @@ export async function listSecureAndDecrypt(params = {}) {
       messageId: item.serverMessageId || null,
       messageKeyB64: vaultKeyResult.messageKeyB64
     });
+    if (replayPlaceholderUpdates) {
+      replayPlaceholderUpdates.resolved.push({
+        conversationId,
+        messageId: messageObj?.id || messageId,
+        counter: item.counter
+      });
+    }
     if (conversationId && messageObj?.id) {
       putDecryptedMessage(conversationId, messageObj);
     }
@@ -2868,6 +2891,7 @@ export async function listSecureAndDecrypt(params = {}) {
     deadLetters: [],
     receiptUpdates: [],
     serverItemCount,
+    replayPlaceholderUpdates,
     replayStats: {
       decryptFail: replayCounters.decryptFail,
       decryptOk: replayCounters.decryptOk,
@@ -5281,6 +5305,78 @@ function normalizeCatchupSource(source) {
   return typeof source === 'string' && source.trim() ? source.trim() : 'unknown';
 }
 
+function logARouteVaultMissingEnqueueTrace({
+  conversationId,
+  targetCounter,
+  messageId,
+  senderDeviceId,
+  reason
+} = {}) {
+  logCapped('aRouteVaultMissingEnqueueTrace', {
+    conversationIdPrefix8: slicePrefix(conversationId),
+    targetCounter: Number.isFinite(Number(targetCounter)) ? Number(targetCounter) : null,
+    messageIdPrefix8: messageId ? String(messageId).slice(0, OFFLINE_SYNC_PREFIX_LEN) : null,
+    senderDeviceIdSuffix4: sliceSuffix(senderDeviceId),
+    reason: reason || null
+  }, 5);
+}
+
+function logBRouteGapTaskTrace({
+  stage,
+  conversationId,
+  targetCounter,
+  messageId,
+  senderDeviceId,
+  reason,
+  deduped,
+  enqueued,
+  result
+} = {}) {
+  logCapped('bRouteGapTaskTrace', {
+    stage: stage || null,
+    conversationIdPrefix8: slicePrefix(conversationId),
+    targetCounter: Number.isFinite(Number(targetCounter)) ? Number(targetCounter) : null,
+    messageIdPrefix8: messageId ? String(messageId).slice(0, OFFLINE_SYNC_PREFIX_LEN) : null,
+    senderDeviceIdSuffix4: sliceSuffix(senderDeviceId),
+    reason: reason || null,
+    deduped: typeof deduped === 'boolean' ? deduped : null,
+    enqueued: typeof enqueued === 'boolean' ? enqueued : null,
+    result: result || null
+  }, 5);
+}
+
+function enqueueMissingKeyTask(params = {}, opts = {}) {
+  const convId = params?.conversationId ? String(params.conversationId) : null;
+  const targetCounter = Number(params?.targetCounter);
+  if (!convId || !Number.isFinite(targetCounter)) return { enqueued: false, reason: 'missing params' };
+  const senderDeviceId = params?.senderDeviceId || null;
+  if (!senderDeviceId) return { enqueued: false, reason: 'missing senderDeviceId' };
+  const messageId = params?.messageId || null;
+  const senderAccountDigest = params?.senderAccountDigest || null;
+  const tokenB64 = params?.tokenB64 || null;
+  const reason = params?.reason || params?.source || null;
+  const result = enqueueLiveDecryptRepair({
+    conversationId: convId,
+    targetCounter,
+    senderDeviceId,
+    senderAccountDigest,
+    messageId,
+    tokenB64,
+    source: reason || 'missing_key'
+  }, opts);
+  logBRouteGapTaskTrace({
+    stage: 'enqueue',
+    conversationId: convId,
+    targetCounter: result?.targetCounter ?? targetCounter,
+    messageId,
+    senderDeviceId,
+    reason,
+    deduped: result?.deduped,
+    enqueued: result?.enqueued
+  });
+  return result;
+}
+
 function resolveLocalIncomingCounter({ peerAccountDigest, peerDeviceId } = {}) {
   if (!peerDeviceId) return null;
   try {
@@ -5412,11 +5508,23 @@ async function runLiveDecryptRepair(conversationId) {
   if (!job) return;
   liveDecryptRepairProcessing.add(convId);
   const jobVersion = job?.version || 0;
+  const jobMessageId = job?.messageId || null;
+  const jobSenderDeviceId = job?.senderDeviceId || null;
+  const jobTargetCounter = Number(job?.targetCounter);
+  const jobReason = job?.source || null;
   let keepJob = true;
   let reschedule = false;
+  logBRouteGapTaskTrace({
+    stage: 'dequeue',
+    conversationId: convId,
+    targetCounter: jobTargetCounter,
+    messageId: jobMessageId,
+    senderDeviceId: jobSenderDeviceId,
+    reason: jobReason
+  });
   try {
-    const senderDeviceId = job?.senderDeviceId || null;
-    const targetCounter = Number(job?.targetCounter);
+    const senderDeviceId = jobSenderDeviceId;
+    const targetCounter = jobTargetCounter;
     if (!senderDeviceId || !Number.isFinite(targetCounter)) {
       keepJob = false;
       return;
@@ -5470,6 +5578,17 @@ async function runLiveDecryptRepair(conversationId) {
       markLiveDecryptRepairPending(convId);
       return;
     }
+    if (Number(result?.decryptOk) > 0 || Number(result?.vaultPutIncomingOk) > 0) {
+      emitBRouteResultEvent({
+        conversationId: convId,
+        source: jobReason || 'missing_key',
+        fetchedItems: null,
+        decryptOk: Number(result?.decryptOk) || 0,
+        vaultPutIncomingOk: Number(result?.vaultPutIncomingOk) || 0,
+        failReason: null,
+        errorMessage: null
+      });
+    }
     keepJob = false;
   } finally {
     liveDecryptRepairProcessing.delete(convId);
@@ -5480,6 +5599,15 @@ async function runLiveDecryptRepair(conversationId) {
       reschedule = true;
     }
     if (reschedule) scheduleLiveDecryptRepair(convId);
+    logBRouteGapTaskTrace({
+      stage: 'finish',
+      conversationId: convId,
+      targetCounter: jobTargetCounter,
+      messageId: jobMessageId,
+      senderDeviceId: jobSenderDeviceId,
+      reason: jobReason,
+      result: keepJob ? (reschedule ? 'reschedule' : 'pending') : 'done'
+    });
   }
 }
 

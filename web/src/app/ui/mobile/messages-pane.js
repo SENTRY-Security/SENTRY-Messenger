@@ -72,8 +72,10 @@ import { DEBUG } from './debug-flags.js';
 const sentCallLogIds = new Set();
 const sentReadReceiptIds = new Set();
 const callLogPlaceholders = new Map();
-const placeholderStateByConvId = new Map();
-const placeholderRevealByConvId = new Map();
+const placeholderReplayStateByConv = new Map();
+const placeholderReplayRevealByConv = new Map();
+const placeholderGapStateByConv = new Map();
+const placeholderGapRevealByConv = new Map();
 const PLACEHOLDER_FAILED_TEXT = '無法解密';
 const PLACEHOLDER_BLOCKED_TEXT = '暫時無法解密';
 const PLACEHOLDER_TRACE_PREFIX_LEN = 8;
@@ -646,13 +648,18 @@ function resolvePlaceholderMode({ replayMode, reason } = {}) {
   return 'live';
 }
 
-function getPlaceholderState(conversationId) {
+function getReplayPlaceholderState(conversationId) {
   const key = normalizePlaceholderKey(conversationId);
   if (!key) return null;
-  return placeholderStateByConvId.get(key) || null;
+  return placeholderReplayStateByConv.get(key) || null;
 }
 
-function getPlaceholderEntries(conversationId) {
+function getReplayPlaceholderEntries(conversationId) {
+  const state = getReplayPlaceholderState(conversationId);
+  return Array.isArray(state?.entries) ? state.entries : [];
+}
+
+function listGapPlaceholderEntriesFromTimeline(conversationId) {
   if (!conversationId) return [];
   const timeline = timelineGetTimeline(conversationId);
   if (!Array.isArray(timeline) || !timeline.length) return [];
@@ -662,13 +669,43 @@ function getPlaceholderEntries(conversationId) {
   });
 }
 
+function getGapPlaceholderState(conversationId) {
+  const key = normalizePlaceholderKey(conversationId);
+  if (!key) return null;
+  const existing = placeholderGapStateByConv.get(key);
+  if (existing) return existing;
+  const entries = listGapPlaceholderEntriesFromTimeline(key);
+  const state = { count: entries.length, entries, createdAt: Date.now() };
+  placeholderGapStateByConv.set(key, state);
+  if (entries.length) {
+    logCapped('placeholderGapTrace', {
+      stage: 'sync',
+      conversationId: key,
+      placeholderCount: entries.length
+    }, 5);
+  }
+  return state;
+}
+
+function getGapPlaceholderEntries(conversationId) {
+  const state = getGapPlaceholderState(conversationId);
+  return Array.isArray(state?.entries) ? state.entries : [];
+}
+
+function invalidateGapPlaceholderState(conversationId) {
+  const key = normalizePlaceholderKey(conversationId);
+  if (!key) return;
+  placeholderGapStateByConv.delete(key);
+}
+
 function getPlaceholderCount(conversationId) {
-  const entries = getPlaceholderEntries(conversationId);
-  const count = entries.length;
+  const replayEntries = getReplayPlaceholderEntries(conversationId);
+  const gapEntries = getGapPlaceholderEntries(conversationId);
+  const count = replayEntries.length + gapEntries.length;
   return count > 0 ? count : 0;
 }
 
-function setPlaceholderState({ conversationId, reason = null, source = null, entries = null, trace = null } = {}) {
+function setReplayPlaceholderState({ conversationId, reason = null, source = null, entries = null, trace = null } = {}) {
   const key = normalizePlaceholderKey(conversationId);
   const safeEntries = Array.isArray(entries)
     ? entries.map((entry) => {
@@ -700,7 +737,7 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
   const safeCount = safeEntries.length;
   if (!key || safeCount <= 0) return { state: null, addedCount: 0 };
   const mode = typeof trace?.mode === 'string' ? trace.mode : null;
-  const existing = placeholderStateByConvId.get(key);
+  const existing = placeholderReplayStateByConv.get(key);
   if (existing) {
     const existingEntries = Array.isArray(existing.entries) ? existing.entries : [];
     const seen = new Set(existingEntries.map((entry) => entry?.messageId).filter(Boolean));
@@ -729,7 +766,8 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
     if (reason) existing.reason = reason;
     if (source) existing.source = source;
     const directionKnownCount = existingEntries.filter((entry) => entry?.directionKnown === true).length;
-    logCapped('placeholderBatchTrace', {
+    logCapped('placeholderReplayTrace', {
+      stage: 'batch',
       conversationId: key,
       conversationIdPrefix8: sliceConversationIdPrefix(key),
       mode,
@@ -747,11 +785,12 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
     Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0)
   );
   const state = { count: safeCount, shimmerActive, createdAt: Date.now(), reason, source, entries: safeEntries };
-  placeholderStateByConvId.set(key, state);
+  placeholderReplayStateByConv.set(key, state);
   const directionKnownCount = Number.isFinite(trace?.directionKnownCount)
     ? Number(trace.directionKnownCount)
     : safeEntries.filter((entry) => entry?.directionKnown === true).length;
-  logCapped('placeholderBatchTrace', {
+  logCapped('placeholderReplayTrace', {
+    stage: 'batch',
     conversationId: key,
     conversationIdPrefix8: sliceConversationIdPrefix(key),
     mode,
@@ -765,13 +804,86 @@ function setPlaceholderState({ conversationId, reason = null, source = null, ent
   return { state, addedCount: safeCount };
 }
 
-function clearPlaceholderState(conversationId) {
+function clearReplayPlaceholderState(conversationId) {
   const key = normalizePlaceholderKey(conversationId);
   if (!key) return;
-  placeholderStateByConvId.delete(key);
+  placeholderReplayStateByConv.delete(key);
 }
 
-function markPlaceholderFailures(conversationId, entries = []) {
+function markReplayPlaceholderFailures(conversationId, entries = []) {
+  const key = normalizePlaceholderKey(conversationId);
+  if (!key || !Array.isArray(entries) || !entries.length) return { updated: 0, added: 0 };
+  const state = placeholderReplayStateByConv.get(key) || { entries: [], count: 0, shimmerActive: 0 };
+  const existingEntries = Array.isArray(state.entries) ? state.entries : [];
+  const byMessageId = new Map();
+  const byCounter = new Map();
+  for (const entry of existingEntries) {
+    const entryId = typeof entry?.messageId === 'string' ? entry.messageId.trim() : null;
+    if (entryId) byMessageId.set(entryId, entry);
+    const entryCounter = normalizeCounterValue(entry?.counter);
+    if (entryCounter !== null) byCounter.set(entryCounter, entry);
+  }
+  let updated = 0;
+  let added = 0;
+  const normalizedEntries = entries.map((entry) => {
+    const counter = normalizePlaceholderCounter(entry);
+    const messageIdRaw = normalizePlaceholderMessageId(entry);
+    const messageId = messageIdRaw || (counter !== null ? buildPlaceholderCounterId(counter) : null);
+    const direction = entry?.direction === 'incoming' || entry?.direction === 'outgoing'
+      ? entry.direction
+      : null;
+    const tsRaw = Number(entry?.ts);
+    const tsValid = Number.isFinite(tsRaw) && Number.isInteger(tsRaw) && tsRaw > 0;
+    if (!messageId || !direction || (!tsValid && counter === null)) return null;
+    const tsMs = Number.isFinite(Number(entry?.tsMs)) ? Number(entry.tsMs) : null;
+    const tsSeq = Number.isFinite(Number(entry?.tsSeq)) ? Number(entry.tsSeq) : null;
+    return {
+      messageId,
+      counter,
+      direction,
+      status: 'failed',
+      ts: tsValid ? Math.floor(tsRaw) : null,
+      tsMs,
+      tsSeq,
+      reason: entry?.reason || entry?.error || 'vault_missing'
+    };
+  }).filter(Boolean);
+  for (const entry of normalizedEntries) {
+    const match = (entry.messageId && byMessageId.get(entry.messageId))
+      || (entry.counter !== null ? byCounter.get(entry.counter) : null);
+    if (match) {
+      if (match.status !== 'failed') updated += 1;
+      match.status = 'failed';
+      if (entry.reason) match.reason = entry.reason;
+      if (entry.ts !== null) match.ts = entry.ts;
+      if (entry.tsMs !== null) match.tsMs = entry.tsMs;
+      if (entry.tsSeq !== null) match.tsSeq = entry.tsSeq;
+      continue;
+    }
+    existingEntries.push(entry);
+    if (entry.messageId) byMessageId.set(entry.messageId, entry);
+    if (entry.counter !== null) byCounter.set(entry.counter, entry);
+    added += 1;
+  }
+  state.entries = existingEntries;
+  state.count = existingEntries.length;
+  state.shimmerActive = Math.min(
+    state.count,
+    Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0)
+  );
+  placeholderReplayStateByConv.set(key, state);
+  if (updated > 0 || added > 0) {
+    logCapped('placeholderReplayTrace', {
+      stage: 'vault_missing',
+      conversationId: key,
+      updatedCount: updated,
+      addedCount: added
+    }, 5);
+  }
+  return { updated, added };
+}
+
+function markGapPlaceholderFailures(conversationId, entries = []) {
   const key = normalizePlaceholderKey(conversationId);
   if (!key || !Array.isArray(entries) || !entries.length) return { updated: 0, added: 0 };
   let updated = 0;
@@ -784,7 +896,8 @@ function markPlaceholderFailures(conversationId, entries = []) {
     }
   }
   if (updated > 0) {
-    logCapped('placeholderTrace', {
+    invalidateGapPlaceholderState(key);
+    logCapped('placeholderGapTrace', {
       stage: 'stuck_to_error',
       conversationId: key,
       updatedCount: updated
@@ -793,14 +906,14 @@ function markPlaceholderFailures(conversationId, entries = []) {
   return { updated, added: 0 };
 }
 
-function addPlaceholderRevealId(conversationId, messageId) {
+function addReplayPlaceholderRevealId(conversationId, messageId) {
   const key = normalizePlaceholderKey(conversationId);
   const mid = typeof messageId === 'string' && messageId.trim() ? messageId.trim() : null;
   if (!key || !mid) return;
-  let set = placeholderRevealByConvId.get(key);
+  let set = placeholderReplayRevealByConv.get(key);
   if (!set) {
     set = new Set();
-    placeholderRevealByConvId.set(key, set);
+    placeholderReplayRevealByConv.set(key, set);
   }
   set.add(mid);
   logCapped('placeholderRevealTrace', {
@@ -809,21 +922,32 @@ function addPlaceholderRevealId(conversationId, messageId) {
   }, 5);
 }
 
-function consumePlaceholderReveal(conversationId, messageId) {
+function consumeReplayPlaceholderReveal(conversationId, messageId) {
   const key = normalizePlaceholderKey(conversationId);
   const mid = typeof messageId === 'string' && messageId.trim() ? messageId.trim() : null;
   if (!key || !mid) return false;
-  const set = placeholderRevealByConvId.get(key);
+  const set = placeholderReplayRevealByConv.get(key);
   if (!set || !set.has(mid)) return false;
   set.delete(mid);
-  if (!set.size) placeholderRevealByConvId.delete(key);
+  if (!set.size) placeholderReplayRevealByConv.delete(key);
   return true;
 }
 
-function consumePlaceholderBatch(conversationId, entries = []) {
+function consumeGapPlaceholderReveal(conversationId, messageId) {
+  const key = normalizePlaceholderKey(conversationId);
+  const mid = typeof messageId === 'string' && messageId.trim() ? messageId.trim() : null;
+  if (!key || !mid) return false;
+  const set = placeholderGapRevealByConv.get(key);
+  if (!set || !set.has(mid)) return false;
+  set.delete(mid);
+  if (!set.size) placeholderGapRevealByConv.delete(key);
+  return true;
+}
+
+function consumeReplayPlaceholderBatch(conversationId, entries = []) {
   const key = normalizePlaceholderKey(conversationId);
   if (!key) return false;
-  const state = placeholderStateByConvId.get(key);
+  const state = placeholderReplayStateByConv.get(key);
   if (!state || !Array.isArray(entries) || !entries.length) return false;
   const beforeCount = Array.isArray(state.entries) ? state.entries.length : 0;
   const removeCounts = new Map();
@@ -832,7 +956,7 @@ function consumePlaceholderBatch(conversationId, entries = []) {
     const messageId = normalizePlaceholderMessageId(entry);
     const counter = normalizePlaceholderCounter(entry);
     if (messageId) {
-      addPlaceholderRevealId(key, messageId);
+      addReplayPlaceholderRevealId(key, messageId);
       removeCounts.set(messageId, (removeCounts.get(messageId) || 0) + 1);
     }
     if (counter !== null) {
@@ -857,7 +981,7 @@ function consumePlaceholderBatch(conversationId, entries = []) {
     remaining.push(placeholder);
   }
   if (!remaining.length) {
-    placeholderStateByConvId.delete(key);
+    placeholderReplayStateByConv.delete(key);
   } else {
     state.entries = remaining;
     state.count = remaining.length;
@@ -868,7 +992,7 @@ function consumePlaceholderBatch(conversationId, entries = []) {
   }
   const removedCount = beforeCount > remaining.length ? beforeCount - remaining.length : 0;
   if (removedCount > 0) {
-    logCapped('placeholderTrace', {
+    logCapped('placeholderReplayTrace', {
       stage: 'reveal',
       conversationId: key,
       revealCount: removedCount
@@ -878,8 +1002,10 @@ function consumePlaceholderBatch(conversationId, entries = []) {
 }
 
 function resetPlaceholderState() {
-  placeholderStateByConvId.clear();
-  placeholderRevealByConvId.clear();
+  placeholderReplayStateByConv.clear();
+  placeholderReplayRevealByConv.clear();
+  placeholderGapStateByConv.clear();
+  placeholderGapRevealByConv.clear();
 }
 
 function getMessageState() {
@@ -1029,9 +1155,9 @@ export function initMessagesPane({
       const errorMessage = typeof detail?.errorMessage === 'string' ? detail.errorMessage : null;
       const locked = failReason === 'LOCKED' || (errorMessage && errorMessage.startsWith('LOCKED:'));
       if (locked || (!failReason && !errorMessage)) return;
-      const placeholders = getPlaceholderEntries(convId);
+      const placeholders = getGapPlaceholderEntries(convId);
       if (!placeholders.length) return;
-      const result = markPlaceholderFailures(convId, placeholders);
+      const result = markGapPlaceholderFailures(convId, placeholders);
       if (result.updated > 0) {
         const state = getMessageState();
         if (state.conversationId === convId) {
@@ -3500,8 +3626,9 @@ function resolveRenderEntryCounter(entry) {
     const state = getMessageState();
     const appendedIds = [];
     const timelineMessages = refreshTimelineState(state.conversationId);
-    const placeholderEntries = getPlaceholderEntries(state.conversationId);
-    const placeholderCount = placeholderEntries.length;
+    const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
+    const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
+    const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length;
     const { entries: renderEntries, shimmerIds } = buildRenderEntries({
       timelineMessages
     });
@@ -3534,8 +3661,17 @@ function resolveRenderEntryCounter(entry) {
 
     if (!renderEntries.length) {
       elements.messagesList.innerHTML = '';
-      if (elements.messagesPlaceholders) elements.messagesPlaceholders.innerHTML = '';
-      elements.messagesEmpty?.classList.remove('hidden');
+      if (elements.messagesPlaceholders) {
+        elements.messagesPlaceholders.innerHTML = '';
+        if (replayPlaceholderEntries.length) {
+          appendPlaceholderRows({ entries: replayPlaceholderEntries });
+        }
+      }
+      if (replayPlaceholderEntries.length) {
+        elements.messagesEmpty?.classList.add('hidden');
+      } else {
+        elements.messagesEmpty?.classList.remove('hidden');
+      }
       renderState.renderedIds = [];
       renderState.conversationId = state.conversationId || null;
       renderState.placeholderCount = placeholderCount;
@@ -3546,7 +3682,12 @@ function resolveRenderEntryCounter(entry) {
     }
 
     elements.messagesEmpty?.classList.add('hidden');
-    if (elements.messagesPlaceholders) elements.messagesPlaceholders.innerHTML = '';
+    if (elements.messagesPlaceholders) {
+      elements.messagesPlaceholders.innerHTML = '';
+      if (replayPlaceholderEntries.length) {
+        appendPlaceholderRows({ entries: replayPlaceholderEntries });
+      }
+    }
     const prefixMatches = !convChanged && renderState.renderedIds.length > 0
       ? renderState.renderedIds.every((id, idx) => id === renderIds[idx])
       : false;
@@ -3729,7 +3870,10 @@ function resolveRenderEntryCounter(entry) {
       const messageId = normalizeTimelineMessageId(msg);
       bubble.className = 'message-bubble ' + (msg.direction === 'outgoing' ? 'message-me' : 'message-peer');
       if (messageId) bubble.dataset.messageId = messageId;
-      if (messageId && consumePlaceholderReveal(state.conversationId, messageId)) {
+      const shouldReveal = messageId
+        && (consumeReplayPlaceholderReveal(state.conversationId, messageId)
+          || consumeGapPlaceholderReveal(state.conversationId, messageId));
+      if (shouldReveal) {
         bubble.classList.add('message-reveal');
         if (Number.isFinite(PLACEHOLDER_REVEAL_MS)) {
           bubble.style.animationDuration = `${PLACEHOLDER_REVEAL_MS}ms`;
@@ -3853,9 +3997,10 @@ function resolveRenderEntryCounter(entry) {
     const beforeIdSet = collectTimelineIdSet(beforeTimeline);
     const timelineSizeBefore = Array.isArray(beforeTimeline) ? beforeTimeline.length : null;
     const uiLatestKey = latestKeyFromTimeline(beforeTimeline);
+    let replayMode = false;
     try {
       const historyReplayDone = historyReplayDoneByConvId[startedConversationId] === true;
-      const replayMode = replay || !historyReplayDone;
+      replayMode = replay || !historyReplayDone;
       const cursor = append ? state.nextCursor : undefined;
       const cursorTs = cursor?.ts ?? cursor ?? undefined;
       const cursorId = cursor?.id ?? undefined;
@@ -3930,7 +4075,7 @@ function resolveRenderEntryCounter(entry) {
       }
 
       const prefetchedItems = Array.isArray(prefetch?.data?.items) ? prefetch.data.items : [];
-      if (false) {
+      if (replayMode && prefetchedItems.length) {
         let selfDeviceId = null;
         let selfDigest = null;
         try { selfDeviceId = ensureDeviceId(); } catch {}
@@ -3942,7 +4087,7 @@ function resolveRenderEntryCounter(entry) {
           selfDigest,
           conversationId: state.conversationId
         });
-        const placeholderResult = setPlaceholderState({
+        const placeholderResult = setReplayPlaceholderState({
           conversationId: state.conversationId,
           entries: placeholderEntries,
           reason: reason || (append ? 'scroll' : 'enter'),
@@ -4054,8 +4199,17 @@ function resolveRenderEntryCounter(entry) {
         ? deadLetters.filter((entry) => !isControlBannerEntry(entry))
         : [];
       const placeholderFailures = filteredErrors.concat(filteredDeadLetters);
-      const placeholderFailureResult = markPlaceholderFailures(state.conversationId, placeholderFailures);
-      const placeholderState = getPlaceholderState(state.conversationId);
+      const replayMissing = replayMode
+        ? (Array.isArray(listResult?.replayPlaceholderUpdates?.missing)
+          ? listResult.replayPlaceholderUpdates.missing
+          : [])
+        : [];
+      const placeholderFailureResult = replayMode
+        ? markReplayPlaceholderFailures(state.conversationId, replayMissing)
+        : markGapPlaceholderFailures(state.conversationId, placeholderFailures);
+      const placeholderState = replayMode
+        ? getReplayPlaceholderState(state.conversationId)
+        : getGapPlaceholderState(state.conversationId);
       const hasFailedPlaceholders = placeholderFailureResult.updated > 0
         || (Array.isArray(placeholderState?.entries)
           && placeholderState.entries.some((entry) => entry?.status === 'failed'));
@@ -4137,8 +4291,8 @@ function resolveRenderEntryCounter(entry) {
       const receiptsApplied = applyReceiptsToMessages(timelineMessages);
       const receiptRenderNeeded = receiptsApplied || receiptRenderPending;
       receiptRenderPending = false;
-      if (!hasFailedPlaceholders && !hasAnyErrors && !hasAnyDeadLetters) {
-        clearPlaceholderState(state.conversationId);
+      if (replayMode && !hasFailedPlaceholders && !hasAnyErrors && !hasAnyDeadLetters) {
+        clearReplayPlaceholderState(state.conversationId);
       }
       const shouldScrollToEnd = !append && !forceReplay && nearBottom;
       const preserveScroll = append || !shouldScrollToEnd;
@@ -4175,8 +4329,12 @@ function resolveRenderEntryCounter(entry) {
     } catch (err) {
       const reasonCode = resolveDecryptUnableReason(err);
       if (reasonCode && PLACEHOLDER_FAIL_REASONS.has(reasonCode)) {
-        const placeholders = getPlaceholderEntries(state.conversationId);
-        const failureResult = markPlaceholderFailures(state.conversationId, placeholders);
+        const placeholders = replayMode
+          ? getReplayPlaceholderEntries(state.conversationId)
+          : getGapPlaceholderEntries(state.conversationId);
+        const failureResult = replayMode
+          ? markReplayPlaceholderFailures(state.conversationId, placeholders)
+          : markGapPlaceholderFailures(state.conversationId, placeholders);
         if (failureResult.updated > 0) {
           logDecryptUnableTrace({
             conversationId: state.conversationId || null,
@@ -4877,8 +5035,9 @@ function resolveRenderEntryCounter(entry) {
     if (!convId || !batchEntries.length) return;
     const hasBatchEntries = Array.isArray(entries) && entries.length;
     if (hasBatchEntries) {
-      consumePlaceholderBatch(convId, entries);
+      consumeReplayPlaceholderBatch(convId, entries);
     }
+    invalidateGapPlaceholderState(convId);
     const state = getMessageState();
     const convIndex = ensureConversationIndex();
     const convEntry = convIndex.get(convId) || null;
@@ -5792,7 +5951,7 @@ function resolveRenderEntryCounter(entry) {
       const syncDeadLetters = Array.isArray(syncResult?.deadLetters) ? syncResult.deadLetters : [];
       const placeholderFailures = syncErrors.concat(syncDeadLetters).filter((entry) => !isControlBannerEntry(entry));
       if (placeholderFailures.length) {
-        const failureResult = markPlaceholderFailures(convId, placeholderFailures);
+        const failureResult = markGapPlaceholderFailures(convId, placeholderFailures);
         if ((failureResult?.updated || 0) > 0 || (failureResult?.added || 0) > 0) {
           const state = getMessageState();
           if (state.conversationId === convId) {
