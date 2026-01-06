@@ -362,34 +362,71 @@ export function getConversationClearAfter(conversationId) {
   return Number.isFinite(ts) ? ts : null;
 }
 
-function createSecureFetchLockToken(priority, owner = null) {
+function createSecureFetchLockToken(priority, owner = null, opts = {}) {
   return {
     id: Symbol('secureFetchLock'),
     priority: priority === 'replay' ? 'replay' : 'live',
     owner: owner || null,
     cancelled: false,
-    cancelReason: null
+    cancelReason: null,
+    isReplay: opts?.isReplay === true
   };
 }
 
-function acquireSecureFetchLock(conversationId, priority = 'live', owner = null) {
+function acquireSecureFetchLock(conversationId, priority = 'live', owner = null, opts = {}) {
   const key = String(conversationId);
   const holder = secureFetchLocks.get(key);
+  const holderIsReplay = holder?.isReplay === true || holder?.priority === 'replay';
+  const holderPriority = holderIsReplay ? 'replay' : (holder?.priority || 'live');
+  const allowLivePreemptReplay = opts?.allowLivePreemptReplay === true;
+  const isReplayRequest = opts?.isReplayRequest === true;
   if (holder) {
-    if (priority === 'replay' && holder.priority === 'live') {
+    if (priority === 'replay' && holderPriority === 'live') {
       holder.cancelled = true;
       holder.cancelReason = 'yieldToReplay';
-    } else {
+      const token = createSecureFetchLockToken(priority, owner, { isReplay: isReplayRequest });
+      secureFetchLocks.set(key, token);
       return {
-        granted: false,
-        holderPriority: holder.priority || 'live',
-        holderOwner: holder.owner || null
+        granted: true,
+        token,
+        holderPriority,
+        holderOwner: holder.owner || null,
+        decision: 'grant',
+        reasonCode: 'preempt_live_for_replay'
       };
     }
+    if (priority === 'live' && allowLivePreemptReplay && holderIsReplay) {
+      holder.cancelled = true;
+      holder.cancelReason = 'yieldToLive';
+      const token = createSecureFetchLockToken(priority, owner, { isReplay: isReplayRequest });
+      secureFetchLocks.set(key, token);
+      return {
+        granted: true,
+        token,
+        holderPriority,
+        holderOwner: holder.owner || null,
+        decision: 'grant',
+        reasonCode: 'preempt_replay_for_live'
+      };
+    }
+    return {
+      granted: false,
+      holderPriority: holderPriority || 'live',
+      holderOwner: holder?.owner || null,
+      decision: 'deny',
+      reasonCode: `held_by_${holderPriority || 'unknown'}`
+    };
   }
-  const token = createSecureFetchLockToken(priority, owner);
+  const token = createSecureFetchLockToken(priority, owner, { isReplay: isReplayRequest });
   secureFetchLocks.set(key, token);
-  return { granted: true, token };
+  return {
+    granted: true,
+    token,
+    holderPriority: null,
+    holderOwner: null,
+    decision: 'grant',
+    reasonCode: 'no_holder'
+  };
 }
 
 function releaseSecureFetchLock(conversationId, token) {
@@ -2172,6 +2209,7 @@ export async function listSecureAndDecrypt(params = {}) {
     timelineAppendCount: 0
   };
   const uniqueAppendedIds = new Set();
+  let vaultMissingLiveFallbackParams = null;
   let replaySummaryLogged = false;
   const emitReplaySummary = (extra = {}) => {
     if (replaySummaryLogged) return;
@@ -2286,11 +2324,26 @@ export async function listSecureAndDecrypt(params = {}) {
     /* ignore */
   }
   const clearAfter = getConversationClearAfter(conversationId);
+  const lockCallsite = typeof lockOwner === 'string' ? lockOwner : null;
+  const allowLivePreemptReplay = requestPriority === 'live'
+    && lockCallsite
+    && (lockCallsite.includes('ws-incoming') || lockCallsite.includes('vault_missing_live_fallback'));
   const lockAttempt = acquireSecureFetchLock(
     conversationId,
     requestPriority,
-    lockOwner || requestPriority
+    lockOwner || requestPriority,
+    {
+      allowLivePreemptReplay,
+      isReplayRequest: computedIsHistoryReplay || requestPriority === 'replay'
+    }
   );
+  logCapped('secureFetchLockDecisionTrace', {
+    conversationIdPrefix8: slicePrefix(conversationId),
+    requestPriority,
+    holderPriority: lockAttempt?.holderPriority || null,
+    decision: lockAttempt?.decision || (lockAttempt?.granted ? 'grant' : 'deny'),
+    reasonCode: lockAttempt?.reasonCode || null
+  }, 5);
   if (!lockAttempt?.granted || !lockAttempt.token) {
     const reason = requestPriority === 'live' ? 'yieldToReplay' : 'secureFetchLock';
     logReplayEarlyReturn(reason, {
@@ -2640,12 +2693,33 @@ export async function listSecureAndDecrypt(params = {}) {
       vaultKeyResult = { ok: false, error: err?.message || err };
     }
     if (!vaultKeyResult?.ok) {
+      const directionComputed = item.direction || 'incoming';
+      const errorCode = vaultKeyResult?.error || null;
+      const isVaultMissing = errorCode === 'NotFound' || vaultKeyResult?.status === 404;
+      const fallbackPeerDigest = peerAccountDigestNormalized || peerAccountDigest || null;
+      const canLiveFallback = directionComputed === 'incoming'
+        && isVaultMissing
+        && conversationId
+        && tokenB64
+        && fallbackPeerDigest
+        && peerDevice
+        && selfDeviceId;
+      if (canLiveFallback && !vaultMissingLiveFallbackParams) {
+        const fallbackLimit = Math.max(1, Math.min(Number(limit) || 20, 50));
+        vaultMissingLiveFallbackParams = {
+          conversationId,
+          tokenB64,
+          peerAccountDigest: fallbackPeerDigest,
+          peerDeviceId: peerDevice,
+          limit: fallbackLimit
+        };
+      }
       vaultMissingCount += 1;
       ensurePlaceholderEntry({
         conversationId,
         counter: item.counter,
         senderDeviceId: item.senderDeviceId,
-        direction: item.direction || 'incoming',
+        direction: directionComputed,
         ts: item.ts ?? null,
         tsMs: item.tsMs ?? null
       });
@@ -2659,16 +2733,18 @@ export async function listSecureAndDecrypt(params = {}) {
         tokenB64: item.tokenB64 || null,
         flags: { gapFill: true, liveIncoming: false }
       });
-      errs.push({
-        messageId,
-        counter: item.counter,
-        direction: item.direction || 'incoming',
-        ts: item.ts ?? null,
-        msgType: item.msgType || null,
-        kind: SEMANTIC_KIND.USER_MESSAGE,
-        control: false,
-        reason: 'vault_missing'
-      });
+      if (!canLiveFallback) {
+        errs.push({
+          messageId,
+          counter: item.counter,
+          direction: directionComputed,
+          ts: item.ts ?? null,
+          msgType: item.msgType || null,
+          kind: SEMANTIC_KIND.USER_MESSAGE,
+          control: false,
+          reason: 'vault_missing'
+        });
+      }
       continue;
     }
     let text = null;
@@ -4569,6 +4645,23 @@ export async function listSecureAndDecrypt(params = {}) {
   } finally {
     releaseSecureFetchLock(conversationId, lockToken);
     emitReplaySummary();
+    if (vaultMissingLiveFallbackParams) {
+      const fallbackParams = vaultMissingLiveFallbackParams;
+      vaultMissingLiveFallbackParams = null;
+      void listSecureAndDecrypt({
+        conversationId: fallbackParams.conversationId,
+        tokenB64: fallbackParams.tokenB64,
+        peerAccountDigest: fallbackParams.peerAccountDigest,
+        peerDeviceId: fallbackParams.peerDeviceId,
+        limit: fallbackParams.limit,
+        mutateState: true,
+        allowReplay: false,
+        sendReadReceipt: false,
+        silent: true,
+        priority: 'live',
+        sourceTag: 'messages:vault_missing_live_fallback'
+      }).catch(() => {});
+    }
   }
 }
 function wasMessageProcessed(conversationId, messageId) {
