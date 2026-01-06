@@ -1,57 +1,62 @@
-# Messages Flow Architecture
+# 訊息流程架構
 
 ## 1. 目標
-- Provide a stable facade entry surface for message flow events.
-- Separate routing (A/B) from crypto/state/presentation so legacy can be replaced step-by-step.
-- Keep UI event wiring simple and avoid direct calls into pipeline internals.
+- 提供穩定的門面層（facade）作為訊息流程事件入口。
+- 將路由（A/B）與 crypto/state/presentation 分離，讓 legacy 可逐步替換。
+- 保持 UI 事件接線簡單，避免直接呼叫 pipeline 內部實作。
 
-## 2. A route / B route 定義與邊界
-- A route = replay (vault-only).
-  - Conditions: mutateState=false and allowReplay=true.
-  - Only vaultGet + AES-GCM decrypt are allowed.
-  - No DR advancement, no gap-fill, no live decrypt triggers.
-  - May only hand off work to B route via jobs (no direct call).
-- B route = live decrypt.
-  - Conditions: mutateState=true and allowReplay=false.
-  - Can advance DR state and vaultPut incoming keys.
-  - Responsible for gap-fill, counter repair, and offline catchup.
+## 2. A 路徑 / B 路徑 定義與邊界
+- A 路徑 = replay（僅 vault）
+  - 條件：mutateState=false 且 allowReplay=true。
+  - 只允許 vaultGet + AES-GCM 解密。
+  - 不推進 DR、不做 gap-fill、不觸發 live decrypt。
+  - 若發現缺 key，只能產生 missing-key 訊號/狀態（例如在結果 errors 或 placeholder 狀態中標記 vault_missing）。
+  - 不得直接 enqueue B 路徑 job 或呼叫 live decrypt；是否進入 B 路徑由 Reconcile/Coordinator 決定。
+- B 路徑 = live decrypt。
+  - 條件：mutateState=true 且 allowReplay=false。
+  - 可以推進 DR state 並 vaultPut incoming keys。
+  - 負責 gap-fill、counter 修補與 offline catchup。
 
 ## 3. 模組分工（Facade/Queue/Server/State/Crypto/Presentation/Reconcile）
-- Facade: entry point that maps UI/WS events to jobs. No decrypt/vault/API.
-- Queue: in-memory job queue with dedupe; no timer loops.
-- Server API: wrap existing secure-message endpoints.
-- State: single access layer for contact-secrets and message_key_vault.
-- Crypto: DR readiness/decrypt/skip-key derivation (no schema changes).
-- Presentation: placeholder planning + decrypted message application hooks.
-- Reconcile: plan catchup jobs based on counters and incoming state.
-- Current layout (Phase 1):
-  - A route (replay-only) modules live in `web/src/app/features/messages-flow/`: server-api.js, vault-replay.js, normalize.js, scroll-fetch.js.
-  - Shared scaffolding lives in `web/src/app/features/messages-flow/`: index.js, queue.js, state.js, crypto.js, presentation.js, reconcile.js.
-- B route (live) skeleton (Phase 2):
-  - Coordinator: `web/src/app/features/messages-flow/live/coordinator.js` (single entry, orchestration only).
-  - Gap-fill: `web/src/app/features/messages-flow/live/gap-fill-queue.js` + `web/src/app/features/messages-flow/live/gap-fill-worker.js` (in-memory queue, event-driven).
-  - Server API: `web/src/app/features/messages-flow/live/server-api-live.js` (secure message list/max/by-counter).
-  - State: `web/src/app/features/messages-flow/live/state-live.js` (DR receiver state + vault put).
-  - Adapters: `web/src/app/features/messages-flow/live/adapters/` (legacy bridge to messages.js/dr-session/message-key-vault/api).
-- Live wiring note:
-  - B route live is wired but disabled by default (`USE_MESSAGES_FLOW_LIVE=false`).
-  - When the flag is off, behavior stays legacy-only.
+- Facade：將 UI/WS 事件轉為 job 的入口，不做 decrypt/vault/API。
+- Queue：in-memory job queue + dedupe；不使用 timer loop。
+- Server API：封裝既有 secure-message 端點。
+- State：contact-secrets 與 message_key_vault 的單一存取層。
+- Crypto：DR readiness/decrypt/skip-key derivation（不變更 schema）。
+- Presentation：placeholder 規劃 + 解密後訊息套用 hook。
+- Reconcile：依 counter 與 incoming 狀態規劃 catchup job。
+- 目前結構（Phase 1）：
+  - A 路徑（replay-only）模組位於 `web/src/app/features/messages-flow/`：server-api.js, vault-replay.js, normalize.js, scroll-fetch.js。
+  - 共用骨架位於 `web/src/app/features/messages-flow/`：index.js, queue.js, state.js, crypto.js, presentation.js, reconcile.js。
+- B 路徑（live）骨架（Phase 2）：
+  - Coordinator：`web/src/app/features/messages-flow/live/coordinator.js`（單一入口，僅負責編排）。
+  - Gap-fill：`web/src/app/features/messages-flow/live/gap-fill-queue.js` + `web/src/app/features/messages-flow/live/gap-fill-worker.js`（in-memory queue、事件驅動）。
+  - Server API：`web/src/app/features/messages-flow/live/server-api-live.js`（secure message list/max/by-counter）。
+  - State：`web/src/app/features/messages-flow/live/state-live.js`（DR receiver state + vault put）。
+  - Adapters：`web/src/app/features/messages-flow/live/adapters/`（legacy 橋接 messages.js/dr-session/message-key-vault/api）。
+- Live wiring 備註：
+  - B 路徑 live 已完成接線，但預設關閉（`USE_MESSAGES_FLOW_LIVE=false`）。
+  - flag 關閉時行為維持 legacy-only。
 
 ## 4. 入口事件（login/ws/enter/resume/scroll）如何轉 job
-- login: onLoginResume -> enqueue login_resume job.
-- ws: onWsIncomingMessageNew -> enqueue ws_incoming_message_new job.
-- enter: onEnterConversation -> enqueue enter_conversation job.
-- resume: onVisibilityResume -> enqueue visibility_resume job.
-- scroll: onScrollFetchMore -> enqueue scroll_fetch_more job.
+- login：onLoginResume -> enqueue login_resume job。
+- ws：onWsIncomingMessageNew -> enqueue ws_incoming_message_new job。
+- enter：onEnterConversation -> enqueue enter_conversation job。
+- resume：onVisibilityResume -> enqueue visibility_resume job。
+- scroll：onScrollFetchMore -> enqueue scroll_fetch_more job。
+- Job 只描述發生了什麼事件，不包含處理策略。
+- A/B 路徑是處理策略，由 Coordinator/Reconcile 依狀態選擇。
+- 同一個 job 在不同時刻可能走不同路徑；不得把路徑寫進 job 名稱（禁止 xxx_live / xxx_replay 這類拆分）。
 
-## 5. 禁止事項（UI 不直呼 pipeline、無 timer loop、A route 不觸發 B route）
-- UI must not call pipeline core functions directly; only call Facade.
-- No new setInterval / looping setTimeout.
-- A route must not trigger B route directly (handoff only via jobs).
+## 5. 禁止事項（UI 不直呼 pipeline、無 timer loop、A 路徑 不觸發 B 路徑）
+- Facade 是唯一允許被 UI / app lifecycle / WS handlers 呼叫的入口。
+- pipeline 內部模組（A/B 路徑、queue、server-api、crypto、state 等）不得被 UI/WS 直接 import 或呼叫。
+- 不新增 setInterval / 迴圈式 setTimeout。
+- A 路徑不得直接觸發 B 路徑，不得直接 enqueue B 路徑 job 或呼叫 live decrypt；是否進入 B 路徑由 Reconcile/Coordinator 決定。
 
 ## 6. 後續替換計畫（Phase 3：逐段替換順序）
-- Replace WS incoming handling with new facade + queue + reconcile.
-- Replace replay (A route) list path with server-api/state/crypto adapters.
-- Replace live decrypt (B route) with new crypto/state adapters.
-- Replace placeholder planning with presentation adapter wiring.
-- Remove legacy facade and legacy pipeline entry calls after parity.
+- 以新 facade + queue + reconcile 取代 WS incoming handling。
+- 以 server-api/state/crypto adapters 取代 replay（A 路徑）list path。
+- 以新的 crypto/state adapters 取代 live decrypt（B 路徑）。
+- 以 presentation adapter wiring 取代 placeholder planning。
+- 完成 parity 後移除 legacy facade 與 legacy pipeline 入口呼叫。
