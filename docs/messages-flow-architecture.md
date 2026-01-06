@@ -27,6 +27,15 @@
 - Current layout (Phase 1):
   - A route (replay-only) modules live in `web/src/app/features/messages-flow/`: server-api.js, vault-replay.js, normalize.js, scroll-fetch.js.
   - Shared scaffolding lives in `web/src/app/features/messages-flow/`: index.js, queue.js, state.js, crypto.js, presentation.js, reconcile.js.
+- B route (live) skeleton (Phase 2):
+  - Coordinator: `web/src/app/features/messages-flow/live/coordinator.js` (single entry, orchestration only).
+  - Gap-fill: `web/src/app/features/messages-flow/live/gap-fill-queue.js` + `web/src/app/features/messages-flow/live/gap-fill-worker.js` (in-memory queue, event-driven).
+  - Server API: `web/src/app/features/messages-flow/live/server-api-live.js` (secure message list/max/by-counter).
+  - State: `web/src/app/features/messages-flow/live/state-live.js` (DR receiver state + vault put).
+  - Adapters: `web/src/app/features/messages-flow/live/adapters/` (legacy bridge to messages.js/dr-session/message-key-vault/api).
+- Live wiring note:
+  - B route live is wired but disabled by default (`USE_MESSAGES_FLOW_LIVE=false`).
+  - When the flag is off, behavior stays legacy-only.
 
 ## 4. 入口事件（login/ws/enter/resume/scroll）如何轉 job
 - login: onLoginResume -> enqueue login_resume job.

@@ -16,9 +16,13 @@ import {
   SERVER_CATCHUP_TRIGGER_COALESCE_MS
 } from './messages-sync-policy.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
+import { runLiveCatchupForConversation } from './messages-flow/live/coordinator.js';
+import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 
 const LEGACY_OPTION_LOG_CAP = 5;
+const LIVE_ROUTE_LOG_CAP = 5;
 const USE_MESSAGES_FLOW_SCROLL_FETCH = false;
+const USE_MESSAGES_FLOW_LIVE = false;
 const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
   'allowReplay',
   'cursorId',
@@ -34,12 +38,72 @@ const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
 ]);
 const LEGACY_ENTER_CONVERSATION_ALLOWLIST = new Set(['silent']);
 const messagesFlowScrollFetch = createMessagesFlowScrollFetch();
+const liveLegacyAdapters = createLiveLegacyAdapters();
 
 function toConversationIdPrefix8(conversationId) {
   if (!conversationId) return null;
   const trimmed = String(conversationId).trim();
   if (!trimmed) return null;
   return trimmed.slice(0, 8);
+}
+
+function normalizeDigestOnly(value) {
+  if (!value) return null;
+  const raw = typeof value === 'string'
+    ? value
+    : (value?.peerAccountDigest || value?.peerDigest || value?.accountDigest || null);
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  return trimmed.split('::')[0] || null;
+}
+
+function resolveConversationId(event, ctx) {
+  return event?.conversationId
+    || event?.conversation_id
+    || ctx?.conversationId
+    || null;
+}
+
+function resolveTargetCounter(event) {
+  const raw = event?.counter
+    ?? event?.header?.counter
+    ?? event?.header?.meta?.counter
+    ?? event?.meta?.counter
+    ?? event?.message?.counter
+    ?? null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+function resolveTokenB64(event, ctx) {
+  return ctx?.tokenB64
+    || event?.tokenB64
+    || event?.token_b64
+    || null;
+}
+
+function buildLiveCoordinatorParams({ event, ctx, triggerSource }) {
+  const conversationId = resolveConversationId(event, ctx);
+  return {
+    conversationId,
+    peerAccountDigest: normalizeDigestOnly(
+      ctx?.peerAccountDigest
+        || event?.peerAccountDigest
+        || event?.senderAccountDigest
+        || event?.sender_account_digest
+        || null
+    ),
+    peerDeviceId: ctx?.peerDeviceId
+      || event?.peerDeviceId
+      || event?.senderDeviceId
+      || event?.sender_device_id
+      || null,
+    tokenB64: resolveTokenB64(event, ctx),
+    triggerSource: triggerSource || null,
+    targetCounter: resolveTargetCounter(event),
+    mode: 'ws_incoming'
+  };
 }
 
 function pickLegacyOptions(options, allowlist, { source } = {}) {
@@ -151,9 +215,41 @@ function createLegacyFacadeAdapter() {
     },
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
-    onWsIncomingMessageNew(payload = {}) {
-      const event = payload?.event || payload?.msg || payload || null;
-      const handler = payload?.handleIncomingSecureMessage;
+    onWsIncomingMessageNew(payloadOrEvent = {}, ctx = null) {
+      const hasExplicitCtx = !!(ctx && typeof ctx === 'object');
+      const isPayloadObject = !hasExplicitCtx && payloadOrEvent && typeof payloadOrEvent === 'object' && (
+        Object.prototype.hasOwnProperty.call(payloadOrEvent, 'event')
+        || Object.prototype.hasOwnProperty.call(payloadOrEvent, 'msg')
+        || typeof payloadOrEvent.handleIncomingSecureMessage === 'function'
+      );
+      const event = isPayloadObject
+        ? (payloadOrEvent?.event || payloadOrEvent?.msg || payloadOrEvent)
+        : (payloadOrEvent || null);
+      const handler = isPayloadObject
+        ? payloadOrEvent?.handleIncomingSecureMessage
+        : ctx?.handleIncomingSecureMessage;
+      const triggerSource = (isPayloadObject
+        ? (payloadOrEvent?.triggerSource || payloadOrEvent?.source)
+        : ctx?.triggerSource) || 'ws_incoming';
+      const conversationId = resolveConversationId(event, ctx);
+      const decision = USE_MESSAGES_FLOW_LIVE ? 'dual_path' : 'legacy_only';
+      logCapped('liveRouteTrace', {
+        triggerSource,
+        conversationIdPrefix8: toConversationIdPrefix8(conversationId),
+        decision,
+        flagState: USE_MESSAGES_FLOW_LIVE
+      }, LIVE_ROUTE_LOG_CAP);
+
+      if (USE_MESSAGES_FLOW_LIVE) {
+        const params = buildLiveCoordinatorParams({ event, ctx, triggerSource });
+        try {
+          const livePromise = runLiveCatchupForConversation(params, { adapters: liveLegacyAdapters });
+          if (livePromise && typeof livePromise.catch === 'function') {
+            livePromise.catch(() => {});
+          }
+        } catch {}
+      }
+
       if (typeof handler === 'function') {
         return handler(event);
       }
