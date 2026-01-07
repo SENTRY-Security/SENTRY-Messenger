@@ -116,6 +116,10 @@ export function createGapQueue(deps = {}) {
   const commitBRouteCounter = typeof deps.commitBRouteCounter === 'function'
     ? deps.commitBRouteCounter
     : liveCommitBRouteCounter;
+  const onCommit = typeof deps?.onCommit === 'function'
+    ? deps.onCommit
+    : (typeof deps?.emitCommit === 'function' ? deps.emitCommit : null);
+  const commitDeps = onCommit ? { onCommit } : {};
   const resolveConversationContext = typeof deps.resolveConversationContext === 'function'
     ? deps.resolveConversationContext
     : resolveConversationContextFromStore;
@@ -298,7 +302,7 @@ export function createGapQueue(deps = {}) {
             tokenB64: context?.tokenB64 || null,
             peerAccountDigest: context?.peerAccountDigest || null,
             peerDeviceId: context?.peerDeviceId || null
-          });
+          }, commitDeps);
           if (!commitResult?.ok) {
             failed = true;
             break;

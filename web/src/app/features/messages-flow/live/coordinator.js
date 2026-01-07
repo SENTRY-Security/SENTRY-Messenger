@@ -52,6 +52,37 @@ function slicePrefix(value, len = PREFIX_LEN) {
   return str.slice(0, len);
 }
 
+function buildCommitEvent({
+  conversationId = null,
+  counter = null,
+  messageId = null,
+  ok = false,
+  reasonCode = null,
+  didVaultPut = false
+} = {}) {
+  return {
+    conversationId,
+    counter: Number.isFinite(counter) ? counter : null,
+    messageId: messageId || null,
+    ok: !!ok,
+    reasonCode,
+    didVaultPut: !!didVaultPut,
+    tsMs: Date.now()
+  };
+}
+
+function emitCommitEvent(onCommit, logger, event, trace) {
+  if (typeof onCommit !== 'function') return;
+  try {
+    onCommit(event);
+  } catch {
+    logger('bRouteCommitEventTrace', {
+      ...trace,
+      onCommitError: true
+    }, B_ROUTE_COMMIT_LOG_CAP);
+  }
+}
+
 function nowMs() {
   if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
     return performance.now();
@@ -88,6 +119,9 @@ function finalizeLiveMvpResult(result, startedAt, reasonCode) {
 
 export async function commitBRouteCounter(params = {}, deps = {}) {
   const logger = typeof deps.logCapped === 'function' ? deps.logCapped : logCapped;
+  const onCommit = typeof deps?.onCommit === 'function'
+    ? deps.onCommit
+    : (typeof deps?.emitCommit === 'function' ? deps.emitCommit : null);
   const adapters = deps?.adapters || createLiveLegacyAdapters();
   const stateAccess = deps?.stateAccess || createLiveStateAccess({ adapters });
 
@@ -150,6 +184,19 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
       decryptOk: false,
       vaultPutOk: false
     }, B_ROUTE_COMMIT_LOG_CAP);
+    emitCommitEvent(onCommit, logger, buildCommitEvent({
+      conversationId,
+      counter: result.counter,
+      messageId: result.messageId,
+      ok: result.ok,
+      reasonCode: result.reasonCode,
+      didVaultPut: result.vaultPutOk
+    }), {
+      conversationIdPrefix8,
+      counter: result.counter,
+      messageIdPrefix8,
+      ok: result.ok
+    });
     return result;
   }
 
@@ -209,6 +256,20 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
       reasonCode: result.vaultPutOk ? null : result.reasonCode
     }, B_ROUTE_COMMIT_LOG_CAP);
   }
+
+  emitCommitEvent(onCommit, logger, buildCommitEvent({
+    conversationId,
+    counter: result.counter,
+    messageId: result.messageId,
+    ok: result.ok,
+    reasonCode: result.reasonCode,
+    didVaultPut: result.vaultPutOk
+  }), {
+    conversationIdPrefix8,
+    counter: result.counter,
+    messageIdPrefix8: resolvedMessageIdPrefix8,
+    ok: result.ok
+  });
 
   return result;
 }
