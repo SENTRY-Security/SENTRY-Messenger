@@ -335,7 +335,17 @@ export async function startRestorePipeline({ source } = {}) {
       recordStageResult('Stage4', {
         ok: true,
         reasonCode: 'SKIPPED_NO_CONVERSATIONS',
-        progress: { queuedConversations: 0, queuedJobs: 0, localCounterSource: 'unknown', localCounterUnknownReason: null }
+        progress: {
+          scannedConversations: 0,
+          enqueuedConversations: 0,
+          enqueuedJobs: 0,
+          localProcessedCounterMin: null,
+          localProcessedCounterMax: null,
+          serverMaxCounterMax: null,
+          localCounterUnknownCount: 0,
+          localCounterSource: 'unknown',
+          localCounterUnknownReason: null
+        }
       });
     } else if (!selfDeviceId) {
       recordStageResult('Stage4', {
@@ -346,18 +356,26 @@ export async function startRestorePipeline({ source } = {}) {
       return { ok: false, stage: 'Stage4', reasonCode: 'MISSING_DEVICE_ID' };
     } else {
       let localCounterUnknown = false;
+      let localCounterUnknownCount = 0;
       let queuedJobs = 0;
       let queuedConversations = 0;
+      let scannedConversations = conversationIds.length;
       let lastLocalProcessedCounter = 0;
       let lastServerMaxCounter = 0;
       let lastLocalCounterSource = 'unknown';
       let lastLocalCounterUnknownReason = null;
+      let localProcessedCounterMin = null;
+      let localProcessedCounterMax = null;
+      let serverMaxCounterMax = null;
       for (const conversationId of conversationIds) {
+        let localCounterKnown = true;
         let localCounterSource = 'drSessMap.NrTotal';
         let localCounterUnknownReason = null;
         let localProcessedCounter = await getLocalProcessedCounter({ conversationId }, {
           onUnknown: (payload = {}) => {
             localCounterUnknown = true;
+            localCounterKnown = false;
+            localCounterUnknownCount += 1;
             localCounterSource = typeof payload?.source === 'string' ? payload.source : 'unknown';
             localCounterUnknownReason = payload?.unknownReason || payload?.reasonCode || null;
           }
@@ -365,7 +383,19 @@ export async function startRestorePipeline({ source } = {}) {
         if (!Number.isFinite(localProcessedCounter)) {
           localProcessedCounter = 0;
           localCounterUnknown = true;
+          if (localCounterKnown) {
+            localCounterKnown = false;
+            localCounterUnknownCount += 1;
+          }
           localCounterSource = 'unknown';
+        }
+        if (localCounterKnown) {
+          localProcessedCounterMin = localProcessedCounterMin === null
+            ? localProcessedCounter
+            : Math.min(localProcessedCounterMin, localProcessedCounter);
+          localProcessedCounterMax = localProcessedCounterMax === null
+            ? localProcessedCounter
+            : Math.max(localProcessedCounterMax, localProcessedCounter);
         }
         lastLocalProcessedCounter = localProcessedCounter;
         lastLocalCounterSource = localCounterSource;
@@ -383,6 +413,9 @@ export async function startRestorePipeline({ source } = {}) {
           return { ok: false, stage: 'Stage4', reasonCode: 'MAX_COUNTER_UNKNOWN' };
         }
         lastServerMaxCounter = Number(maxCounter);
+        serverMaxCounterMax = serverMaxCounterMax === null
+          ? lastServerMaxCounter
+          : Math.max(serverMaxCounterMax, lastServerMaxCounter);
         if (maxCounter > localProcessedCounter) {
           const result = restoreGapQueue.enqueue({
             conversationId,
@@ -401,6 +434,13 @@ export async function startRestorePipeline({ source } = {}) {
         ok: true,
         reasonCode: localCounterUnknown ? 'LOCAL_COUNTER_UNKNOWN' : null,
         progress: {
+          scannedConversations,
+          enqueuedConversations: stats?.queuedConversations ?? queuedConversations,
+          enqueuedJobs: stats?.queuedJobs ?? queuedJobs,
+          localProcessedCounterMin,
+          localProcessedCounterMax,
+          serverMaxCounterMax,
+          localCounterUnknownCount,
           localProcessedCounter: lastLocalProcessedCounter,
           localCounterSource: lastLocalCounterSource,
           localCounterUnknownReason: localCounterUnknown ? lastLocalCounterUnknownReason : null,
@@ -425,3 +465,56 @@ export async function startRestorePipeline({ source } = {}) {
   logPipelineDone();
   return { ok: true };
 }
+
+export async function probeStage4Progress() {
+  const conversationIds = collectConversationIds();
+  const sampleIds = conversationIds.slice(0, 20);
+  let localProcessedCounterMin = null;
+  let localProcessedCounterMax = null;
+  let localCounterUnknownCount = 0;
+  for (const conversationId of sampleIds) {
+    let localCounterKnown = true;
+    const localProcessedCounter = await getLocalProcessedCounter({ conversationId }, {
+      onUnknown: () => {
+        localCounterKnown = false;
+        localCounterUnknownCount += 1;
+      }
+    });
+    if (!Number.isFinite(localProcessedCounter)) {
+      if (localCounterKnown) {
+        localCounterKnown = false;
+        localCounterUnknownCount += 1;
+      }
+      continue;
+    }
+    if (localCounterKnown) {
+      localProcessedCounterMin = localProcessedCounterMin === null
+        ? localProcessedCounter
+        : Math.min(localProcessedCounterMin, localProcessedCounter);
+      localProcessedCounterMax = localProcessedCounterMax === null
+        ? localProcessedCounter
+        : Math.max(localProcessedCounterMax, localProcessedCounter);
+    }
+  }
+  const stats = typeof restoreGapQueue?.getStats === 'function'
+    ? restoreGapQueue.getStats()
+    : null;
+  logCapped('restorePipelineStageTrace', {
+    stage: 'Stage4',
+    ok: true,
+    reasonCode: 'PROGRESS',
+    progress: {
+      scannedConversations: conversationIds.length,
+      sampledConversations: sampleIds.length,
+      enqueuedConversations: stats?.queuedConversations ?? null,
+      enqueuedJobs: stats?.queuedJobs ?? null,
+      scheduledConversations: stats?.scheduledConversations ?? null,
+      draining: stats?.draining ?? null,
+      localProcessedCounterMin,
+      localProcessedCounterMax,
+      localCounterUnknownCount
+    },
+    tsMs: nowMs()
+  }, RESTORE_PIPELINE_LOG_CAP);
+}
+
