@@ -531,3 +531,101 @@ export async function probeStage4Progress() {
   }, RESTORE_PIPELINE_LOG_CAP);
 }
 
+export async function waitForStage4Convergence(opts = {}) {
+  const maxIterations = Number.isFinite(opts.maxIterations)
+    ? Math.max(1, Math.floor(opts.maxIterations))
+    : 10;
+  const intervalMs = Number.isFinite(opts.intervalMs)
+    ? Math.max(0, Math.floor(opts.intervalMs))
+    : 500;
+  const sleep = (ms) => new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+  const readProgressSnapshot = async () => {
+    const conversationIds = collectConversationIds();
+    const sampleIds = conversationIds.slice(0, 20);
+    let localProcessedCounterMin = null;
+    let localProcessedCounterMax = null;
+    let localCounterUnknownCount = 0;
+    for (const conversationId of sampleIds) {
+      let localCounterKnown = true;
+      const localProcessedCounter = await getLocalProcessedCounter({ conversationId }, {
+        onUnknown: () => {
+          localCounterKnown = false;
+          localCounterUnknownCount += 1;
+        }
+      });
+      if (!Number.isFinite(localProcessedCounter)) {
+        if (localCounterKnown) {
+          localCounterKnown = false;
+          localCounterUnknownCount += 1;
+        }
+        continue;
+      }
+      if (localCounterKnown) {
+        localProcessedCounterMin = localProcessedCounterMin === null
+          ? localProcessedCounter
+          : Math.min(localProcessedCounterMin, localProcessedCounter);
+        localProcessedCounterMax = localProcessedCounterMax === null
+          ? localProcessedCounter
+          : Math.max(localProcessedCounterMax, localProcessedCounter);
+      }
+    }
+    const stats = typeof restoreGapQueue?.getStats === 'function'
+      ? restoreGapQueue.getStats()
+      : null;
+    return {
+      scannedConversations: conversationIds.length,
+      sampledConversations: sampleIds.length,
+      enqueuedConversations: stats?.queuedConversations ?? null,
+      enqueuedJobs: stats?.queuedJobs ?? null,
+      scheduledConversations: stats?.scheduledConversations ?? null,
+      draining: stats?.draining ?? null,
+      localProcessedCounterMin,
+      localProcessedCounterMax,
+      serverMaxCounterMax: null,
+      localCounterUnknownCount,
+      localCounterSource: null,
+      localCounterUnknownReason: null
+    };
+  };
+
+  let iterations = 0;
+  let lastProgress = await readProgressSnapshot();
+  let prevUnknownCount = Number.isFinite(lastProgress?.localCounterUnknownCount)
+    ? lastProgress.localCounterUnknownCount
+    : null;
+
+  for (let i = 0; i < maxIterations; i += 1) {
+    await sleep(intervalMs);
+    await probeStage4Progress();
+    lastProgress = await readProgressSnapshot();
+    iterations = i + 1;
+    const queueIdle = lastProgress?.enqueuedJobs === 0 && lastProgress?.draining === false;
+    const unknownCount = Number.isFinite(lastProgress?.localCounterUnknownCount)
+      ? lastProgress.localCounterUnknownCount
+      : null;
+    const unknownNotIncreasing = unknownCount === null || prevUnknownCount === null
+      ? true
+      : unknownCount <= prevUnknownCount;
+    if (queueIdle && unknownNotIncreasing) {
+      return {
+        ok: true,
+        reasonCode: 'CONVERGED',
+        iterations,
+        lastProgress
+      };
+    }
+    if (unknownCount !== null) {
+      prevUnknownCount = unknownCount;
+    }
+  }
+
+  return {
+    ok: false,
+    reasonCode: 'TIMEOUT',
+    iterations,
+    lastProgress
+  };
+}
+
