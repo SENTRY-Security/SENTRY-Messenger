@@ -324,6 +324,145 @@ async function decryptIncomingSingle(params = {}, adapters) {
   return result;
 }
 
+async function commitIncomingSingle(params = {}, adapters) {
+  const conversationId = params?.conversationId || null;
+  const peerAccountDigest = params?.peerAccountDigest || null;
+  const peerDeviceId = params?.peerDeviceId || null;
+  const raw = params?.item || params?.raw || null;
+  const targetMessageId = normalizeMessageIdValue(
+    params?.targetMessageId || params?.messageId || params?.serverMessageId || null
+  );
+  const baseCounter = Number.isFinite(params?.counter) ? Number(params.counter) : null;
+  const base = {
+    ok: false,
+    reasonCode: null,
+    counter: baseCounter,
+    messageId: null,
+    decryptOk: false,
+    vaultPutOk: false
+  };
+
+  if (!conversationId || !peerAccountDigest || !peerDeviceId || !raw) {
+    return { ...base, reasonCode: 'MISSING_PARAMS' };
+  }
+  if (!adapters?.drDecryptText || !adapters?.drState || !adapters?.vaultPutIncomingKey) {
+    return { ...base, reasonCode: 'ADAPTERS_UNAVAILABLE' };
+  }
+  const state = adapters.drState({ peerAccountDigest, peerDeviceId });
+  if (!hasUsableDrState(state)) {
+    return { ...base, reasonCode: 'DR_STATE_UNAVAILABLE' };
+  }
+
+  state.baseKey = state.baseKey || {};
+  if (!state.baseKey.conversationId) state.baseKey.conversationId = conversationId;
+  if (!state.baseKey.peerDeviceId) state.baseKey.peerDeviceId = peerDeviceId;
+  if (!state.baseKey.peerAccountDigest) state.baseKey.peerAccountDigest = peerAccountDigest;
+
+  let selfDeviceId = null;
+  try {
+    selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
+  } catch {}
+
+  const header = resolveHeader(raw);
+  const ciphertextB64 = resolveCiphertextB64(raw);
+  if (!header || !ciphertextB64 || !header.iv_b64) {
+    return { ...base, reasonCode: 'MISSING_CIPHERTEXT' };
+  }
+
+  const counter = resolveCounter(raw, header);
+  const resolvedCounter = Number.isFinite(counter) ? counter : baseCounter;
+  const meta = raw?.meta || header?.meta || null;
+  const msgTypeHint = resolveMsgType(meta, header);
+  const rawMessageId = normalizeMessageId(raw);
+  const messageId = rawMessageId || targetMessageId;
+  const packetKey = messageId || (Number.isFinite(resolvedCounter)
+    ? `${conversationId}:${resolvedCounter}`
+    : null);
+  let messageKeyB64 = null;
+
+  try {
+    await adapters.drDecryptText(state, {
+      aead: 'aes-256-gcm',
+      header,
+      iv_b64: header.iv_b64,
+      ciphertext_b64: ciphertextB64
+    }, {
+      onMessageKey: (mk) => { messageKeyB64 = mk; },
+      packetKey,
+      msgType: msgTypeHint || 'text'
+    });
+  } catch {
+    return { ...base, reasonCode: 'DECRYPT_FAIL', counter: resolvedCounter, messageId };
+  }
+
+  if (adapters?.persistDrSnapshot) {
+    try {
+      adapters.persistDrSnapshot({ peerAccountDigest, peerDeviceId, state });
+    } catch {}
+  }
+
+  if (!messageKeyB64) {
+    return {
+      ...base,
+      reasonCode: 'MISSING_MESSAGE_KEY',
+      counter: resolvedCounter,
+      messageId,
+      decryptOk: true
+    };
+  }
+  if (!messageId) {
+    return {
+      ...base,
+      reasonCode: 'MISSING_MESSAGE_FIELDS',
+      counter: resolvedCounter,
+      messageId,
+      decryptOk: true
+    };
+  }
+
+  const senderDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId || null;
+  const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
+  if (!senderDeviceId || !targetDeviceId) {
+    return {
+      ...base,
+      reasonCode: 'MISSING_MESSAGE_FIELDS',
+      counter: resolvedCounter,
+      messageId,
+      decryptOk: true
+    };
+  }
+
+  try {
+    await adapters.vaultPutIncomingKey({
+      conversationId,
+      messageId,
+      senderDeviceId,
+      targetDeviceId,
+      direction: 'incoming',
+      msgType: msgTypeHint || 'text',
+      messageKeyB64,
+      headerCounter: Number.isFinite(resolvedCounter) ? Number(resolvedCounter) : null
+    });
+  } catch {
+    return {
+      ...base,
+      reasonCode: 'VAULT_PUT_FAILED',
+      counter: resolvedCounter,
+      messageId,
+      decryptOk: true
+    };
+  }
+
+  return {
+    ok: true,
+    reasonCode: null,
+    counter: resolvedCounter,
+    messageId,
+    decryptOk: true,
+    vaultPutOk: true
+  };
+}
+
 async function persistAndAppendSingle(params = {}, adapters) {
   const conversationId = params?.conversationId || null;
   const decryptedMessage = params?.decryptedMessage || params?.message || null;
@@ -414,6 +553,7 @@ export function createLiveStateAccess(deps = {}) {
   return {
     ensureLiveReady: (params = {}) => ensureLiveReady(params, adapters),
     decryptIncomingSingle: (params = {}) => decryptIncomingSingle(params, adapters),
+    commitIncomingSingle: (params = {}) => commitIncomingSingle(params, adapters),
     persistAndAppendSingle: (params = {}) => persistAndAppendSingle(params, adapters),
     persistAndAppendBatch: (params = {}) => persistAndAppendBatch(params, adapters)
   };

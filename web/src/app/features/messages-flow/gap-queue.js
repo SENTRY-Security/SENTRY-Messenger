@@ -3,7 +3,13 @@
 
 import { logCapped } from '../../core/log.js';
 import { getSecureMessageByCounter as apiGetSecureMessageByCounter } from './server-api.js';
-import { GAP_QUEUE_RETRY_MAX, GAP_QUEUE_RETRY_INTERVAL_MS } from './policy.js';
+import {
+  GAP_QUEUE_RETRY_MAX,
+  GAP_QUEUE_RETRY_INTERVAL_MS,
+  USE_MESSAGES_FLOW_B_ROUTE_COMMIT
+} from './policy.js';
+import { commitBRouteCounter as liveCommitBRouteCounter } from './live/coordinator.js';
+import { sessionStore } from '../../ui/mobile/session-store.js';
 
 const GAP_QUEUE_LOG_CAP = 5;
 const GAP_QUEUE_LOG_KEYS = new Set([
@@ -42,6 +48,28 @@ function normalizeJob(input = {}) {
     targetCounter,
     createdAtMs
   };
+}
+
+function resolveConversationContextFromStore(conversationId) {
+  if (!conversationId) {
+    return { tokenB64: null, peerAccountDigest: null, peerDeviceId: null };
+  }
+  const convIndex = sessionStore?.conversationIndex;
+  const entry = convIndex && typeof convIndex.get === 'function'
+    ? convIndex.get(conversationId)
+    : null;
+  const threads = sessionStore?.conversationThreads;
+  const thread = threads && typeof threads.get === 'function'
+    ? threads.get(conversationId)
+    : null;
+  const tokenB64 = entry?.token_b64
+    || entry?.tokenB64
+    || thread?.conversationToken
+    || thread?.conversation?.token_b64
+    || null;
+  const peerAccountDigest = entry?.peerAccountDigest || thread?.peerAccountDigest || null;
+  const peerDeviceId = entry?.peerDeviceId || thread?.peerDeviceId || null;
+  return { tokenB64, peerAccountDigest, peerDeviceId };
 }
 
 function createQueueEntry(conversationId) {
@@ -84,6 +112,16 @@ export function createGapQueue(deps = {}) {
     ? deps.getLocalProcessedCounter
     : null;
   const sleep = typeof deps.sleep === 'function' ? deps.sleep : defaultSleep;
+
+  const commitBRouteCounter = typeof deps.commitBRouteCounter === 'function'
+    ? deps.commitBRouteCounter
+    : liveCommitBRouteCounter;
+  const resolveConversationContext = typeof deps.resolveConversationContext === 'function'
+    ? deps.resolveConversationContext
+    : resolveConversationContextFromStore;
+  const commitEnabled = USE_MESSAGES_FLOW_B_ROUTE_COMMIT
+    && typeof commitBRouteCounter === 'function'
+    && typeof resolveConversationContext === 'function';
 
   const queuedByConversation = new Map();
   const scheduled = new Set();
@@ -194,7 +232,7 @@ export function createGapQueue(deps = {}) {
           ok: true,
           messageIdPrefix8: slicePrefix(item?.id || item?.message_id || item?.messageId || null)
         });
-        return { ok: true };
+        return { ok: true, item };
       } catch (err) {
         lastError = err?.message || String(err);
         if (attempt < GAP_QUEUE_RETRY_MAX) {
@@ -250,6 +288,21 @@ export function createGapQueue(deps = {}) {
         if (!result.ok) {
           failed = true;
           break;
+        }
+        if (commitEnabled) {
+          const context = resolveConversationContext(conversationId) || {};
+          const commitResult = await commitBRouteCounter({
+            conversationId,
+            counter,
+            item: result.item || null,
+            tokenB64: context?.tokenB64 || null,
+            peerAccountDigest: context?.peerAccountDigest || null,
+            peerDeviceId: context?.peerDeviceId || null
+          });
+          if (!commitResult?.ok) {
+            failed = true;
+            break;
+          }
         }
         cursor = counter;
       }

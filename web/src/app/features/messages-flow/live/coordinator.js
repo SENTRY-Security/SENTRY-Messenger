@@ -13,6 +13,7 @@ import {
 
 const LIVE_MVP_LOG_CAP = 5;
 const LIVE_MVP_FETCH_LIMIT = 20;
+const B_ROUTE_COMMIT_LOG_CAP = 5;
 const PREFIX_LEN = 8;
 const LIVE_MVP_REASONS = Object.freeze({
   MISSING_PARAMS: 'MISSING_PARAMS',
@@ -83,6 +84,133 @@ function finalizeLiveMvpResult(result, startedAt, reasonCode) {
     tookMs,
     metrics: { ...result.metrics }
   };
+}
+
+export async function commitBRouteCounter(params = {}, deps = {}) {
+  const logger = typeof deps.logCapped === 'function' ? deps.logCapped : logCapped;
+  const adapters = deps?.adapters || createLiveLegacyAdapters();
+  const stateAccess = deps?.stateAccess || createLiveStateAccess({ adapters });
+
+  const conversationId = params?.conversationId || null;
+  const tokenB64 = params?.tokenB64 || null;
+  const peerAccountDigest = params?.peerAccountDigest || null;
+  const peerDeviceId = params?.peerDeviceId || null;
+  const raw = params?.item || params?.raw || null;
+
+  const messageId =
+    (raw && (raw.id || raw.message_id || raw.messageId))
+    || params?.messageId
+    || params?.serverMessageId
+    || null;
+  const counter = Number.isFinite(params?.counter)
+    ? Number(params.counter)
+    : (Number.isFinite(Number(raw?.counter)) ? Number(raw?.counter) : null);
+  const conversationIdPrefix8 = slicePrefix(conversationId, 8);
+  const messageIdPrefix8 = slicePrefix(messageId, 8);
+
+  logger('bRouteDecryptAttemptTrace', {
+    conversationIdPrefix8,
+    counter: Number.isFinite(counter) ? counter : null,
+    messageIdPrefix8,
+    hasItem: !!raw
+  }, B_ROUTE_COMMIT_LOG_CAP);
+
+  let readyResult = { ok: false, reasonCode: 'READY_FAILED' };
+  try {
+    readyResult = await stateAccess.ensureLiveReady({
+      conversationId,
+      tokenB64,
+      peerAccountDigest,
+      peerDeviceId
+    });
+  } catch (err) {
+    readyResult = {
+      ok: false,
+      reasonCode: 'READY_FAILED',
+      errorMessage: err?.message || String(err)
+    };
+  }
+
+  if (!readyResult?.ok) {
+    const reasonCode = readyResult?.reasonCode || 'READY_FAILED';
+    const result = {
+      ok: false,
+      reasonCode,
+      counter: Number.isFinite(counter) ? counter : null,
+      messageId,
+      decryptOk: false,
+      vaultPutOk: false
+    };
+    logger('bRouteDecryptResultTrace', {
+      conversationIdPrefix8,
+      counter: result.counter,
+      messageIdPrefix8,
+      ok: false,
+      reasonCode,
+      decryptOk: false,
+      vaultPutOk: false
+    }, B_ROUTE_COMMIT_LOG_CAP);
+    return result;
+  }
+
+  let commitResult = null;
+  try {
+    commitResult = await stateAccess.commitIncomingSingle({
+      conversationId,
+      peerAccountDigest,
+      peerDeviceId,
+      item: raw,
+      counter,
+      targetMessageId: messageId
+    });
+  } catch (err) {
+    commitResult = {
+      ok: false,
+      reasonCode: 'COMMIT_FAILED',
+      counter: Number.isFinite(counter) ? counter : null,
+      messageId,
+      decryptOk: false,
+      vaultPutOk: false,
+      errorMessage: err?.message || String(err)
+    };
+  }
+
+  const resolvedCounter = Number.isFinite(commitResult?.counter)
+    ? Number(commitResult.counter)
+    : (Number.isFinite(counter) ? counter : null);
+  const resolvedMessageId = commitResult?.messageId || messageId || null;
+  const resolvedMessageIdPrefix8 = slicePrefix(resolvedMessageId, 8);
+
+  const result = {
+    ok: !!commitResult?.ok,
+    reasonCode: commitResult?.reasonCode || null,
+    counter: resolvedCounter,
+    messageId: resolvedMessageId,
+    decryptOk: !!commitResult?.decryptOk,
+    vaultPutOk: !!commitResult?.vaultPutOk
+  };
+
+  logger('bRouteDecryptResultTrace', {
+    conversationIdPrefix8,
+    counter: result.counter,
+    messageIdPrefix8: resolvedMessageIdPrefix8,
+    ok: result.ok,
+    reasonCode: result.reasonCode,
+    decryptOk: result.decryptOk,
+    vaultPutOk: result.vaultPutOk
+  }, B_ROUTE_COMMIT_LOG_CAP);
+
+  if (result.decryptOk) {
+    logger('bRouteVaultPutTrace', {
+      conversationIdPrefix8,
+      counter: result.counter,
+      messageIdPrefix8: resolvedMessageIdPrefix8,
+      ok: result.vaultPutOk,
+      reasonCode: result.vaultPutOk ? null : result.reasonCode
+    }, B_ROUTE_COMMIT_LOG_CAP);
+  }
+
+  return result;
 }
 
 // Unified live coordinator entry (B-route).
