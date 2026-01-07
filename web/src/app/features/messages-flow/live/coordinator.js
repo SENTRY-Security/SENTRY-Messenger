@@ -2,6 +2,7 @@
 // B-route live coordinator: orchestrates live decrypt MVP.
 
 import { logCapped } from '../../core/log.js';
+import { createCommitNotifier } from '../notify.js';
 import { createLiveLegacyAdapters } from './adapters/index.js';
 import { createLiveStateAccess } from './state-live.js';
 import { validateLiveJob } from './job.js';
@@ -45,6 +46,8 @@ const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
   fetchErrorsLength: 0
 });
 
+const defaultCommitNotifier = createCommitNotifier();
+
 function slicePrefix(value, len = PREFIX_LEN) {
   if (value === null || value === undefined) return null;
   const str = String(value);
@@ -58,7 +61,8 @@ function buildCommitEvent({
   messageId = null,
   ok = false,
   reasonCode = null,
-  didVaultPut = false
+  didVaultPut = false,
+  sourceTag = null
 } = {}) {
   return {
     conversationId,
@@ -67,6 +71,7 @@ function buildCommitEvent({
     ok: !!ok,
     reasonCode,
     didVaultPut: !!didVaultPut,
+    sourceTag: sourceTag || null,
     tsMs: Date.now()
   };
 }
@@ -127,14 +132,44 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
     : (typeof deps?.presentation?.handleCommitEvent === 'function'
       ? deps.presentation.handleCommitEvent
       : null);
-  const onCommit = typeof handleCommitEvent === 'function'
+  const commitNotifier = typeof deps?.commitNotifier === 'function'
+    ? deps.commitNotifier
+    : (typeof deps?.commitNotifier?.handleCommitEvent === 'function'
+      ? deps.commitNotifier.handleCommitEvent
+      : defaultCommitNotifier);
+  const onCommit = (typeof commitNotifier === 'function'
+    || typeof handleCommitEvent === 'function'
+    || typeof onCommitBase === 'function')
     ? (event) => {
-      handleCommitEvent(event);
+      if (typeof commitNotifier === 'function') {
+        try {
+          commitNotifier(event);
+        } catch {
+          const source = typeof event?.sourceTag === 'string'
+            ? event.sourceTag
+            : (typeof event?.source === 'string' ? event.source : null);
+          const normalizedSource = source && String(source).trim()
+            ? String(source).trim()
+            : null;
+          logger('commitNotifyTrace', {
+            conversationIdPrefix8: slicePrefix(event?.conversationId, 8),
+            counter: Number.isFinite(event?.counter) ? event.counter : null,
+            ok: event?.ok === true,
+            didVaultPut: event?.didVaultPut === true,
+            deduped: false,
+            reasonCode: 'NOTIFY_HANDLER_THROW',
+            source: normalizedSource
+          }, B_ROUTE_COMMIT_LOG_CAP);
+        }
+      }
+      if (typeof handleCommitEvent === 'function') {
+        handleCommitEvent(event);
+      }
       if (typeof onCommitBase === 'function') {
         onCommitBase(event);
       }
     }
-    : onCommitBase;
+    : null;
   const adapters = deps?.adapters || createLiveLegacyAdapters();
   const stateAccess = deps?.stateAccess || createLiveStateAccess({ adapters });
 
@@ -143,6 +178,9 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
   const peerAccountDigest = params?.peerAccountDigest || null;
   const peerDeviceId = params?.peerDeviceId || null;
   const raw = params?.item || params?.raw || null;
+  const sourceTag = typeof params?.sourceTag === 'string'
+    ? params.sourceTag.trim()
+    : (typeof params?.source === 'string' ? params.source.trim() : null);
 
   const messageId =
     (raw && (raw.id || raw.message_id || raw.messageId))
@@ -203,7 +241,8 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
       messageId: result.messageId,
       ok: result.ok,
       reasonCode: result.reasonCode,
-      didVaultPut: result.vaultPutOk
+      didVaultPut: result.vaultPutOk,
+      sourceTag
     }), {
       conversationIdPrefix8,
       counter: result.counter,
@@ -276,7 +315,8 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
     messageId: result.messageId,
     ok: result.ok,
     reasonCode: result.reasonCode,
-    didVaultPut: result.vaultPutOk
+    didVaultPut: result.vaultPutOk,
+    sourceTag
   }), {
     conversationIdPrefix8,
     counter: result.counter,
