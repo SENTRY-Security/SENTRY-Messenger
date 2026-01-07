@@ -3,6 +3,7 @@
 // This file is the only place that calls legacy pipeline functions.
 
 import { logCapped } from '../core/log.js';
+import { getDeviceId as storeGetDeviceId } from '../core/store.js';
 import {
   listSecureAndDecrypt,
   syncOfflineDecryptNow,
@@ -439,12 +440,22 @@ function createLegacyFacadeAdapter() {
         });
       }
       if (USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
-        const senderDeviceId = typeof peerDeviceId === 'string' ? peerDeviceId : null;
-        void maxCounterProbe({
-          conversationId,
-          senderDeviceId,
-          source: 'enter_conversation'
-        });
+        const selfDeviceId = storeGetDeviceId();
+        if (!selfDeviceId) {
+          logCapped('maxCounterProbeTrace', {
+            source: 'enter_conversation',
+            conversationIdPrefix8: toConversationIdPrefix8(conversationId),
+            senderDeviceIdSuffix4: null,
+            ok: false,
+            reasonCode: 'MISSING_SENDER_DEVICE_ID'
+          }, 5);
+        } else {
+          void maxCounterProbe({
+            conversationId,
+            senderDeviceId: selfDeviceId,
+            source: 'enter_conversation'
+          });
+        }
       }
       if (typeof loadActiveConversationMessages === 'function') {
         const params = {
