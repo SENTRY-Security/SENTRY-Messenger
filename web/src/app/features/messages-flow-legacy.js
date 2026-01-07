@@ -4,6 +4,7 @@
 
 import { logCapped } from '../core/log.js';
 import { getDeviceId as storeGetDeviceId } from '../core/store.js';
+import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   listSecureAndDecrypt,
   syncOfflineDecryptNow,
@@ -82,6 +83,92 @@ function normalizeMessageIdValue(value) {
   }
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return null;
+}
+
+function normalizeConversationIdValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function normalizeSourceTag(value, fallback) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  if (typeof fallback === 'string') {
+    const trimmed = fallback.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
+function toDeviceIdSuffix4(deviceId) {
+  if (!deviceId) return null;
+  const trimmed = String(deviceId).trim();
+  if (!trimmed) return null;
+  return trimmed.slice(-4);
+}
+
+function collectActiveConversationIds() {
+  const ids = new Set();
+  const addId = (value) => {
+    const normalized = normalizeConversationIdValue(value);
+    if (normalized) ids.add(normalized);
+  };
+  addId(sessionStore?.messageState?.conversationId || null);
+  const convIndex = sessionStore?.conversationIndex;
+  if (convIndex && typeof convIndex.keys === 'function') {
+    for (const key of convIndex.keys()) {
+      addId(key);
+    }
+  }
+  const threads = sessionStore?.conversationThreads;
+  if (threads && typeof threads.keys === 'function') {
+    for (const key of threads.keys()) {
+      addId(key);
+    }
+  }
+  return Array.from(ids);
+}
+
+function triggerMaxCounterProbeForActiveConversations({ source } = {}) {
+  if (!USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) return;
+  const senderDeviceId = storeGetDeviceId();
+  const senderDeviceIdSuffix4 = toDeviceIdSuffix4(senderDeviceId);
+  const sourceTag = normalizeSourceTag(source, null);
+  if (!senderDeviceId) {
+    logCapped('maxCounterProbeTrace', {
+      source: sourceTag,
+      conversationIdPrefix8: null,
+      senderDeviceIdSuffix4: null,
+      ok: false,
+      reasonCode: 'MISSING_SENDER_DEVICE_ID'
+    }, 5);
+    return;
+  }
+  const conversationIds = collectActiveConversationIds();
+  if (!conversationIds.length) {
+    logCapped('maxCounterProbeTrace', {
+      source: sourceTag,
+      conversationIdPrefix8: null,
+      senderDeviceIdSuffix4,
+      ok: false,
+      reasonCode: 'MISSING_CONVERSATION_ID'
+    }, 5);
+    return;
+  }
+  for (const conversationId of conversationIds) {
+    void maxCounterProbe({
+      conversationId,
+      senderDeviceId,
+      source: sourceTag
+    });
+  }
 }
 
 function resolveWsConversationId(event, ctx) {
@@ -234,6 +321,9 @@ function createLegacyFacadeAdapter() {
           reconcileOutgoingStatus
         });
       }
+      triggerMaxCounterProbeForActiveConversations({
+        source: normalizeSourceTag(source, 'login_resume')
+      });
       return restorePromise || null;
     },
 
@@ -476,6 +566,7 @@ function createLegacyFacadeAdapter() {
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
     onPullToRefreshContacts({
+      source,
       loadInitialContacts,
       renderContacts,
       syncConversationThreadsFromContacts,
@@ -484,6 +575,9 @@ function createLegacyFacadeAdapter() {
       onError,
       onFinally
     } = {}) {
+      triggerMaxCounterProbeForActiveConversations({
+        source: normalizeSourceTag(source, 'pull_to_refresh')
+      });
       return (async () => {
         let errorMessage = null;
         try {
@@ -536,6 +630,9 @@ function createLegacyFacadeAdapter() {
         coalesced,
         tsMs: now
       }, OFFLINE_SYNC_LOG_CAP);
+      triggerMaxCounterProbeForActiveConversations({
+        source: normalizeSourceTag(source, 'visibility_resume')
+      });
       if (coalesced) return null;
       offlineSyncTriggerLastAtMs = now;
       return runOfflineCatchupNow({
