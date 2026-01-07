@@ -5,7 +5,7 @@ import {
   listSecureMessages as apiListSecureMessages,
   getSecureMessageByCounter as apiGetSecureMessageByCounter,
   fetchSecureMaxCounter as apiFetchSecureMaxCounter
-} from '../api/messages.js';
+} from '../../api/messages.js';
 
 function resolveListSecureError(data) {
   if (data?.message) return data.message;

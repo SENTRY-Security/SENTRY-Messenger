@@ -2,8 +2,8 @@
 // Vault-only decrypt path for scroll fetch replay mode.
 
 import { MessageKeyVault } from '../message-key-vault.js';
-import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
-import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
+import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../../crypto/dr.js';
+import { b64u8 as naclB64u8 } from '../../crypto/nacl.js';
 import { toU8Strict } from '../../shared/utils/u8-strict.js';
 import {
   normalizeSemanticSubtype,

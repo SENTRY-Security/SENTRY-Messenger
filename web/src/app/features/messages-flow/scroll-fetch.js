@@ -2,13 +2,13 @@
 // Scroll fetch pipeline: server list + vault-only decrypt. No state writes.
 
 import { MessageKeyVault } from '../message-key-vault.js';
-import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
-import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
+import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../../crypto/dr.js';
+import { b64u8 as naclB64u8 } from '../../crypto/nacl.js';
 import {
   getAccountDigest as storeGetAccountDigest,
   getDeviceId as storeGetDeviceId,
   getMkRaw as storeGetMkRaw
-} from '../core/store.js';
+} from '../../core/store.js';
 import { listSecureMessagesForReplay } from './server-api.js';
 import { decryptReplayBatch } from './vault-replay.js';
 import { normalizeReplayItems } from './normalize.js';
