@@ -51,6 +51,7 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 
 * **AGENTS.md**：協作規範（輸出格式、禁止事項、commit 規則）
 * **SKILL.md**：常用取證指令與工作習慣（rg/sed/git show 等）
+* **Messages Flow Invariants**：docs/messages-flow-invariants.md
 
 ---
 

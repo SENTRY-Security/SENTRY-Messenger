@@ -16,7 +16,8 @@ import {
   SERVER_CATCHUP_TRIGGER_COALESCE_MS
 } from './messages-sync-policy.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
-import { runLiveWsIncomingMvp } from './messages-flow/live/coordinator.js';
+import { consumeLiveJob } from './messages-flow/live/coordinator.js';
+import { createLiveJobFromWsEvent } from './messages-flow/live/job.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 import { decideNextAction } from './messages-flow/reconcile/decision.js';
 
@@ -67,6 +68,41 @@ function toMessageIdPrefix8(messageId) {
   return trimmed.slice(0, 8);
 }
 
+function normalizeMessageIdValue(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function resolveWsConversationId(event, ctx) {
+  return event?.conversationId
+    || event?.conversation_id
+    || ctx?.conversationId
+    || null;
+}
+
+function resolveWsMessageId(event, ctx) {
+  return normalizeMessageIdValue(
+    event?.messageId
+      || event?.message_id
+      || event?.id
+      || event?.serverMessageId
+      || event?.server_message_id
+      || event?.serverMsgId
+      || ctx?.messageId
+      || ctx?.message_id
+      || ctx?.id
+      || ctx?.serverMessageId
+      || ctx?.server_message_id
+      || ctx?.serverMsgId
+      || null
+  );
+}
+
 function summarizeLiveMvpMetrics(metrics) {
   if (!metrics || typeof metrics !== 'object') {
     return { ...LIVE_MVP_RESULT_METRICS_DEFAULTS };
@@ -84,90 +120,6 @@ function summarizeLiveMvpMetrics(metrics) {
     vaultPutFailCount: toNumber(metrics.vaultPutFailCount),
     appendedCount: toNumber(metrics.appendedCount),
     fetchErrorsLength: toNumber(metrics.fetchErrorsLength)
-  };
-}
-
-function normalizeDigestOnly(value) {
-  if (!value) return null;
-  const raw = typeof value === 'string'
-    ? value
-    : (value?.peerAccountDigest || value?.peerDigest || value?.accountDigest || null);
-  if (!raw) return null;
-  const trimmed = String(raw).trim();
-  if (!trimmed) return null;
-  return trimmed.split('::')[0] || null;
-}
-
-function resolveConversationId(event, ctx) {
-  return event?.conversationId
-    || event?.conversation_id
-    || ctx?.conversationId
-    || null;
-}
-
-function resolveTokenB64(event, ctx) {
-  return ctx?.tokenB64
-    || event?.tokenB64
-    || event?.token_b64
-    || null;
-}
-
-function normalizeMessageIdValue(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  return null;
-}
-
-function resolveMessageId(event, ctx) {
-  return normalizeMessageIdValue(
-    event?.messageId
-      || event?.message_id
-      || event?.id
-      || ctx?.messageId
-      || ctx?.message_id
-      || ctx?.id
-      || null
-  );
-}
-
-function resolveServerMessageId(event, ctx) {
-  return normalizeMessageIdValue(
-    event?.serverMessageId
-      || event?.server_message_id
-      || event?.serverMsgId
-      || ctx?.serverMessageId
-      || ctx?.server_message_id
-      || ctx?.serverMsgId
-      || null
-  );
-}
-
-function buildLiveMvpParams({ event, ctx, sourceTag }) {
-  const conversationId = resolveConversationId(event, ctx);
-  const messageId = resolveMessageId(event, ctx);
-  const serverMessageId = resolveServerMessageId(event, ctx);
-  return {
-    conversationId,
-    messageId,
-    serverMessageId,
-    peerAccountDigest: normalizeDigestOnly(
-      ctx?.peerAccountDigest
-        || event?.peerAccountDigest
-        || event?.senderAccountDigest
-        || event?.sender_account_digest
-        || null
-    ),
-    peerDeviceId: ctx?.peerDeviceId
-      || event?.peerDeviceId
-      || event?.senderDeviceId
-      || event?.sender_device_id
-      || null,
-    tokenB64: resolveTokenB64(event, ctx),
-    sourceTag: sourceTag || null
   };
 }
 
@@ -296,24 +248,25 @@ function createLegacyFacadeAdapter() {
       const triggerSource = (isPayloadObject
         ? (payloadOrEvent?.triggerSource || payloadOrEvent?.source)
         : ctx?.triggerSource) || 'ws_incoming';
-      const liveParams = buildLiveMvpParams({ event, ctx, sourceTag: triggerSource });
-      const hasLiveParams = !!(
-        liveParams?.conversationId
-        && liveParams?.tokenB64
-        && liveParams?.peerAccountDigest
-        && liveParams?.peerDeviceId
-        && (liveParams?.messageId || liveParams?.serverMessageId)
-      );
-      const decision = USE_MESSAGES_FLOW_LIVE
-        ? (hasLiveParams ? 'dual_path' : 'skip_missing_params')
-        : 'legacy_only';
-      logCapped('liveMvpRouteTrace', {
-        sourceTag: triggerSource || null,
-        conversationIdPrefix8: toConversationIdPrefix8(liveParams?.conversationId),
-        decision,
-        reasonCode: USE_MESSAGES_FLOW_LIVE && !hasLiveParams ? 'MISSING_PARAMS' : null,
-        flagState: USE_MESSAGES_FLOW_LIVE
-      }, LIVE_ROUTE_LOG_CAP);
+      const liveJobCtx = hasExplicitCtx
+        ? {
+          conversationId: ctx?.conversationId,
+          tokenB64: ctx?.tokenB64,
+          messageId: ctx?.messageId,
+          message_id: ctx?.message_id,
+          id: ctx?.id,
+          serverMessageId: ctx?.serverMessageId,
+          server_message_id: ctx?.server_message_id,
+          serverMsgId: ctx?.serverMsgId,
+          peerAccountDigest: ctx?.peerAccountDigest,
+          peerDeviceId: ctx?.peerDeviceId,
+          sourceTag: triggerSource
+        }
+        : { sourceTag: triggerSource };
+      const liveJobResult = createLiveJobFromWsEvent(event, liveJobCtx);
+      const liveJob = liveJobResult?.job || null;
+      const liveJobReason = liveJobResult?.reason || null;
+      const liveJobMessageId = liveJob?.messageId || liveJob?.serverMessageId || null;
 
       const isOnline = typeof ctx?.isOnline === 'boolean'
         ? ctx.isOnline
@@ -321,77 +274,106 @@ function createLegacyFacadeAdapter() {
       const decisionContext = {
         eventType: 'ws_incoming',
         flags: {
-          hasLiveMvp: USE_MESSAGES_FLOW_LIVE,
+          liveEnabled: USE_MESSAGES_FLOW_LIVE,
+          hasLiveJob: !!liveJob,
           isOnline
         },
-        observedState: {}
+        observedState: {
+          liveJobReason: liveJobReason || null
+        }
       };
       const decisionResult = decideNextAction(decisionContext);
+      const summaryConversationId = liveJob?.conversationId
+        || resolveWsConversationId(event, hasExplicitCtx ? ctx : null);
+      const summaryMessageId = liveJobMessageId
+        || resolveWsMessageId(event, hasExplicitCtx ? ctx : null);
+      const liveJobSummary = {
+        conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
+        messageIdPrefix8: toMessageIdPrefix8(summaryMessageId)
+      };
+
+      logCapped('liveMvpRouteTrace', {
+        sourceTag: triggerSource || null,
+        ...liveJobSummary,
+        decision: decisionResult?.action || null,
+        reasonCode: decisionResult?.reason || null,
+        jobReason: liveJobReason || null,
+        flagState: USE_MESSAGES_FLOW_LIVE
+      }, LIVE_ROUTE_LOG_CAP);
+
       logCapped('decisionTrace', {
         eventType: decisionContext.eventType,
         action: decisionResult?.action || null,
         reason: decisionResult?.reason || null,
-        conversationIdPrefix8: toConversationIdPrefix8(liveParams?.conversationId)
+        ...liveJobSummary,
+        jobReason: liveJobReason || null
       }, DECISION_TRACE_LOG_CAP);
 
       const legacyResult = typeof handler === 'function' ? handler(event) : null;
-      const liveMvpMessageId = liveParams?.messageId || liveParams?.serverMessageId || null;
-      const liveMvpResultMeta = {
-        conversationIdPrefix8: toConversationIdPrefix8(liveParams?.conversationId),
-        messageIdPrefix8: toMessageIdPrefix8(liveMvpMessageId)
-      };
+      const shouldTriggerLive = decisionResult?.action === 'TRIGGER_LIVE_MVP';
 
       if (!USE_MESSAGES_FLOW_LIVE) {
         logCapped('liveMvpResultTrace', {
           planned: false,
-          ...liveMvpResultMeta,
+          ...liveJobSummary,
           ok: null,
           reasonCode: null,
           tookMs: 0,
           metrics: summarizeLiveMvpMetrics(null)
         }, LIVE_MVP_RESULT_LOG_CAP);
-      } else if (!hasLiveParams) {
+      }
+
+      if (!shouldTriggerLive) {
+        if (USE_MESSAGES_FLOW_LIVE) {
+          logCapped('liveMvpResultTrace', {
+            planned: false,
+            ...liveJobSummary,
+            ok: null,
+            reasonCode: decisionResult?.reason || liveJobReason || null,
+            tookMs: 0,
+            metrics: summarizeLiveMvpMetrics(null)
+          }, LIVE_MVP_RESULT_LOG_CAP);
+        }
+        return legacyResult;
+      }
+
+      if (!USE_MESSAGES_FLOW_LIVE) {
+        return legacyResult;
+      }
+
+      if (!liveJob) {
         logCapped('liveMvpResultTrace', {
           planned: false,
-          ...liveMvpResultMeta,
+          ...liveJobSummary,
           ok: null,
-          reasonCode: 'MISSING_PARAMS',
+          reasonCode: liveJobReason || 'MISSING_PARAMS',
           tookMs: 0,
           metrics: summarizeLiveMvpMetrics(null)
         }, LIVE_MVP_RESULT_LOG_CAP);
-      } else {
-        try {
-          const livePromise = runLiveWsIncomingMvp(liveParams, { adapters: liveLegacyAdapters });
-          if (livePromise && typeof livePromise.then === 'function') {
-            livePromise
-              .then((liveResult) => {
-                const resultConversationIdPrefix8 = toConversationIdPrefix8(liveResult?.conversationId)
-                  || liveMvpResultMeta.conversationIdPrefix8;
-                const resultMessageIdPrefix8 = toMessageIdPrefix8(liveResult?.messageId)
-                  || liveMvpResultMeta.messageIdPrefix8;
-                logCapped('liveMvpResultTrace', {
-                  planned: true,
-                  ok: !!liveResult?.ok,
-                  reasonCode: liveResult?.reasonCode || null,
-                  conversationIdPrefix8: resultConversationIdPrefix8,
-                  messageIdPrefix8: resultMessageIdPrefix8,
-                  tookMs: Number.isFinite(Number(liveResult?.tookMs)) ? Number(liveResult?.tookMs) : 0,
-                  metrics: summarizeLiveMvpMetrics(liveResult?.metrics)
-                }, LIVE_MVP_RESULT_LOG_CAP);
-              })
-              .catch((err) => {
-                logCapped('liveMvpResultTrace', {
-                  planned: true,
-                  ok: false,
-                  reasonCode: err?.reasonCode || null,
-                  conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
-                  messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
-                  tookMs: Number.isFinite(Number(err?.tookMs)) ? Number(err?.tookMs) : 0,
-                  metrics: summarizeLiveMvpMetrics(null),
-                }, LIVE_MVP_RESULT_LOG_CAP);
-              });
-          } else if (livePromise && typeof livePromise.catch === 'function') {
-            livePromise.catch((err) => {
+        return legacyResult;
+      }
+
+      try {
+        const liveMvpResultMeta = { ...liveJobSummary };
+        const livePromise = consumeLiveJob(liveJob, { adapters: liveLegacyAdapters });
+        if (livePromise && typeof livePromise.then === 'function') {
+          livePromise
+            .then((liveResult) => {
+              const resultConversationIdPrefix8 = toConversationIdPrefix8(liveResult?.conversationId)
+                || liveMvpResultMeta.conversationIdPrefix8;
+              const resultMessageIdPrefix8 = toMessageIdPrefix8(liveResult?.messageId)
+                || liveMvpResultMeta.messageIdPrefix8;
+              logCapped('liveMvpResultTrace', {
+                planned: true,
+                ok: !!liveResult?.ok,
+                reasonCode: liveResult?.reasonCode || null,
+                conversationIdPrefix8: resultConversationIdPrefix8,
+                messageIdPrefix8: resultMessageIdPrefix8,
+                tookMs: Number.isFinite(Number(liveResult?.tookMs)) ? Number(liveResult?.tookMs) : 0,
+                metrics: summarizeLiveMvpMetrics(liveResult?.metrics)
+              }, LIVE_MVP_RESULT_LOG_CAP);
+            })
+            .catch((err) => {
               logCapped('liveMvpResultTrace', {
                 planned: true,
                 ok: false,
@@ -402,18 +384,29 @@ function createLegacyFacadeAdapter() {
                 metrics: summarizeLiveMvpMetrics(null),
               }, LIVE_MVP_RESULT_LOG_CAP);
             });
-          }
-        } catch (err) {
-          logCapped('liveMvpResultTrace', {
-            planned: true,
-            ok: false,
-            reasonCode: err?.reasonCode || null,
-            conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
-            messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
-            tookMs: 0,
-            metrics: summarizeLiveMvpMetrics(null),
-          }, LIVE_MVP_RESULT_LOG_CAP);
+        } else if (livePromise && typeof livePromise.catch === 'function') {
+          livePromise.catch((err) => {
+            logCapped('liveMvpResultTrace', {
+              planned: true,
+              ok: false,
+              reasonCode: err?.reasonCode || null,
+              conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
+              messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
+              tookMs: Number.isFinite(Number(err?.tookMs)) ? Number(err?.tookMs) : 0,
+              metrics: summarizeLiveMvpMetrics(null),
+            }, LIVE_MVP_RESULT_LOG_CAP);
+          });
         }
+      } catch (err) {
+        logCapped('liveMvpResultTrace', {
+          planned: true,
+          ok: false,
+          reasonCode: err?.reasonCode || null,
+          conversationIdPrefix8: liveJobSummary.conversationIdPrefix8,
+          messageIdPrefix8: liveJobSummary.messageIdPrefix8,
+          tookMs: 0,
+          metrics: summarizeLiveMvpMetrics(null),
+        }, LIVE_MVP_RESULT_LOG_CAP);
       }
 
       return legacyResult;

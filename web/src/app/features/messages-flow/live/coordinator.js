@@ -4,6 +4,7 @@
 import { logCapped } from '../../core/log.js';
 import { createLiveLegacyAdapters } from './adapters/index.js';
 import { createLiveStateAccess } from './state-live.js';
+import { validateLiveJob } from './job.js';
 import {
   fetchSecureMessageById,
   findItemByMessageId,
@@ -84,8 +85,21 @@ function finalizeLiveMvpResult(result, startedAt, reasonCode) {
   };
 }
 
-// MVP entry point for ws incoming live decrypt (B-route).
-export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
+// Unified live coordinator entry (B-route).
+export async function consumeLiveJob(job = null, deps = {}) {
+  const startedAt = nowMs();
+  const conversationId = job?.conversationId || null;
+  const targetMessageId = job?.messageId || job?.serverMessageId || null;
+  const baseResult = createLiveMvpResult({ conversationId, messageId: targetMessageId });
+  const validation = validateLiveJob(job);
+  if (!validation.ok) {
+    return finalizeLiveMvpResult(baseResult, startedAt, LIVE_MVP_REASONS.MISSING_PARAMS);
+  }
+  return runLiveWsIncomingMvp(job, deps);
+}
+
+// MVP runner for ws incoming live decrypt (B-route).
+async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   const logger = typeof deps.logCapped === 'function' ? deps.logCapped : logCapped;
   const adapters = deps?.adapters || createLiveLegacyAdapters();
   const stateAccess = deps?.stateAccess || createLiveStateAccess({ adapters });
@@ -93,12 +107,12 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   const fetchById = deps?.fetchSecureMessageById || fetchSecureMessageById;
   const findById = deps?.findItemByMessageId || findItemByMessageId;
 
-  const conversationId = params?.conversationId || null;
-  const tokenB64 = params?.tokenB64 || null;
-  const peerAccountDigest = params?.peerAccountDigest || null;
-  const peerDeviceId = params?.peerDeviceId || null;
-  const sourceTag = params?.sourceTag || null;
-  const targetMessageId = params?.messageId || params?.serverMessageId || null;
+  const conversationId = job?.conversationId || null;
+  const tokenB64 = job?.tokenB64 || null;
+  const peerAccountDigest = job?.peerAccountDigest || null;
+  const peerDeviceId = job?.peerDeviceId || null;
+  const sourceTag = job?.sourceTag || null;
+  const targetMessageId = job?.messageId || job?.serverMessageId || null;
   const conversationIdPrefix8 = slicePrefix(conversationId, 8);
   const targetMessageIdPrefix8 = slicePrefix(targetMessageId, 8);
 

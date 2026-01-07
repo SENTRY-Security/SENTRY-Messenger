@@ -33,6 +33,16 @@
   - Server API：`web/src/app/features/messages-flow/live/server-api-live.js`（secure message list）。
   - State：`web/src/app/features/messages-flow/live/state-live.js`（DR receiver state + vault put）。
   - Adapters：`web/src/app/features/messages-flow/live/adapters/`（legacy 橋接 messages.js/dr-session/message-key-vault/api）。
+  - Adapters 介面（鎖定）：
+    - ensureSecureConversationReady
+    - ensureDrReceiverState
+    - drState
+    - drDecryptText
+    - persistDrSnapshot
+    - vaultPutIncomingKey
+    - appendTimelineBatch
+    - getAccountDigest
+    - getDeviceId
   - Live MVP scope：僅 list → decrypt → persist；不含 gap-fill / by-counter / max-counter / offline catchup。
 - Live wiring 備註：
   - B 路徑 live 已完成接線，但預設關閉（`USE_MESSAGES_FLOW_LIVE=false`）。
