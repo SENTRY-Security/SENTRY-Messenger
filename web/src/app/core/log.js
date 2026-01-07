@@ -273,6 +273,7 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'drStateHydrateBatchDoneTrace',
   'restorePipelineStageTrace',
   'restorePipelineDoneTrace',
+  'localCounterProviderTrace',
 ]);
 const FORENSICS_CAP_DEFAULT = 20;
 const REPLAY_ACTION_VALUES = new Set();
@@ -308,7 +309,8 @@ const LOG_CAP_OVERRIDE = new Map([
   ['liveMvpSummaryTrace', 5],
   ['liveMvpResultTrace', 5],
   ['restorePipelineStageTrace', 5],
-  ['restorePipelineDoneTrace', 5]
+  ['restorePipelineDoneTrace', 5],
+  ['localCounterProviderTrace', 5]
 ]);
 const FORENSICS_LOG_COUNTS = new Map();
 

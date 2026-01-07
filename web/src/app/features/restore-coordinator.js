@@ -237,7 +237,7 @@ export async function startRestorePipeline({ source } = {}) {
       recordStageResult('Stage4', {
         ok: true,
         reasonCode: 'SKIPPED_NO_CONVERSATIONS',
-        progress: { queuedConversations: 0, queuedJobs: 0 }
+        progress: { queuedConversations: 0, queuedJobs: 0, localCounterSource: 'unknown', localCounterUnknownReason: null }
       });
     } else if (!selfDeviceId) {
       recordStageResult('Stage4', {
@@ -252,17 +252,26 @@ export async function startRestorePipeline({ source } = {}) {
       let queuedConversations = 0;
       let lastLocalProcessedCounter = 0;
       let lastServerMaxCounter = 0;
+      let lastLocalCounterSource = 'unknown';
+      let lastLocalCounterUnknownReason = null;
       for (const conversationId of conversationIds) {
+        let localCounterSource = 'drSessMap.NrTotal';
+        let localCounterUnknownReason = null;
         let localProcessedCounter = await getLocalProcessedCounter({ conversationId }, {
-          onUnknown: () => {
+          onUnknown: (payload = {}) => {
             localCounterUnknown = true;
+            localCounterSource = typeof payload?.source === 'string' ? payload.source : 'unknown';
+            localCounterUnknownReason = payload?.unknownReason || payload?.reasonCode || null;
           }
         });
         if (!Number.isFinite(localProcessedCounter)) {
           localProcessedCounter = 0;
           localCounterUnknown = true;
+          localCounterSource = 'unknown';
         }
         lastLocalProcessedCounter = localProcessedCounter;
+        lastLocalCounterSource = localCounterSource;
+        lastLocalCounterUnknownReason = localCounterUnknownReason;
         const { maxCounter } = await fetchSecureMaxCounter({
           conversationId,
           senderDeviceId: selfDeviceId
@@ -295,6 +304,8 @@ export async function startRestorePipeline({ source } = {}) {
         reasonCode: localCounterUnknown ? 'LOCAL_COUNTER_UNKNOWN' : null,
         progress: {
           localProcessedCounter: lastLocalProcessedCounter,
+          localCounterSource: lastLocalCounterSource,
+          localCounterUnknownReason: localCounterUnknown ? lastLocalCounterUnknownReason : null,
           serverMaxCounter: lastServerMaxCounter,
           queuedConversations: stats?.queuedConversations ?? queuedConversations,
           queuedJobs: stats?.queuedJobs ?? queuedJobs
