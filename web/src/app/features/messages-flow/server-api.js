@@ -3,6 +3,7 @@
 
 import {
   listSecureMessages as apiListSecureMessages,
+  getSecureMessageByCounter as apiGetSecureMessageByCounter,
   fetchSecureMaxCounter as apiFetchSecureMaxCounter
 } from '../api/messages.js';
 
@@ -18,6 +19,26 @@ function resolveMaxCounterError(data) {
   if (data?.error) return data.error;
   if (typeof data === 'string') return data;
   return 'fetchSecureMaxCounter failed';
+}
+
+function resolveByCounterError(data) {
+  if (data?.message) return data.message;
+  if (data?.error) return data.error;
+  if (typeof data === 'string') return data;
+  return 'getSecureMessageByCounter failed';
+}
+
+function resolveSecureMessageItem(data) {
+  if (data?.item) return data.item;
+  if (data?.message && typeof data.message === 'object') return data.message;
+  if (data?.msg && typeof data.msg === 'object') return data.msg;
+  if (Array.isArray(data?.items) && data.items.length === 1) return data.items[0];
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const hasCipher = Object.prototype.hasOwnProperty.call(data, 'ciphertext_b64')
+      || Object.prototype.hasOwnProperty.call(data, 'ciphertextB64');
+    if (hasCipher) return data;
+  }
+  return null;
 }
 
 function resolveNextCursor(data) {
@@ -61,6 +82,23 @@ export async function fetchSecureMaxCounter({
   const maxCounterRaw = data?.maxCounter ?? data?.max_counter ?? null;
   const maxCounter = Number.isFinite(Number(maxCounterRaw)) ? Number(maxCounterRaw) : null;
   return { maxCounter };
+}
+
+export async function getSecureMessageByCounter({
+  conversationId,
+  counter,
+  senderDeviceId,
+  getSecureMessageByCounter: fetchByCounter = apiGetSecureMessageByCounter
+} = {}) {
+  const { r, data } = await fetchByCounter({ conversationId, counter, senderDeviceId });
+  if (!r?.ok) {
+    throw new Error(resolveByCounterError(data));
+  }
+  const item = resolveSecureMessageItem(data);
+  if (!item) {
+    throw new Error('getSecureMessageByCounter missing item');
+  }
+  return { item };
 }
 
 export function createMessageServerApi(deps = {}) {
