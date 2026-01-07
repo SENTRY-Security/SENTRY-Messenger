@@ -5,7 +5,7 @@
 import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMediaKeys } from '../api/media.js';
 import { getMkRaw, buildAccountPayload } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
-import { toU8Strict } from '../../shared/utils/u8-strict.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 
 const encoder = new TextEncoder();
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB

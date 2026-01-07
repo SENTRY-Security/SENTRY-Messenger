@@ -8,7 +8,7 @@
 //
 // 注意：不匯入任何外部套件；使用瀏覽器 WebCrypto。
 
-import { toU8Strict } from '../../shared/utils/u8-strict.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 
 export const ALLOWED_ENVELOPE_INFO_TAGS = new Set([
   'blob/v1',

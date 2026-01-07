@@ -2,7 +2,7 @@ import { log } from '../../core/log.js';
 import { getContactSecret } from '../../core/contact-secrets.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '../../core/store.js';
 import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/base64.js';
-import { toU8Strict } from '../../../shared/utils/u8-strict.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 import {
   CALL_EVENT,
   subscribeCallEvent

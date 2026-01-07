@@ -12,7 +12,7 @@
 //   - m: memory in MiB; t: time (iterations); p: parallelism
 //   - mkRawU8 is a 32-byte Uint8Array
 //   - All crypto runs in the browser; server never sees the password nor MK
-import { toU8Strict } from '../../shared/utils/u8-strict.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 
 /** Dynamically load argon2-browser (UMD) if not present. */
 export async function loadArgon2() {

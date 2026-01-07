@@ -83,7 +83,7 @@ import {
   COUNTER_GAP_RETRY_INTERVAL_MS,
   OFFLINE_SYNC_LOG_CAP
 } from './messages-sync-policy.js';
-import { toU8Strict } from '../../shared/utils/u8-strict.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { logDrCore, logMsgEvent, shouldLogDrCore } from '../lib/logging.js';
 import { log, logForensicsEvent, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';

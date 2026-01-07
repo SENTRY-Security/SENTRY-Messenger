@@ -1,6 +1,6 @@
 import { genX25519Keypair, scalarMult, b64, b64u8 } from './nacl.js';
 import { bytesToB64, b64ToBytes } from '../../shared/utils/base64.js';
-import { toU8Strict } from '../../shared/utils/u8-strict.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 
 const INFO_TAG = 'contact-init/dropbox/v1';
 const SALT_BYTES = new TextEncoder().encode('invite-dropbox-salt');

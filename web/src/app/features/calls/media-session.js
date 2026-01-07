@@ -19,7 +19,7 @@ import {
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { CALL_SESSION_STATUS } from './state.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccountDigest } from '../../core/store.js';
-import { toU8Strict } from '../../../shared/utils/u8-strict.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
 
 let sendSignal = null;
