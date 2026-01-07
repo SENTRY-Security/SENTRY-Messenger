@@ -35,6 +35,7 @@ function createGapPlaceholderEntry(counter) {
   return {
     counter,
     status: GAP_PLACEHOLDER_STATUS.PENDING,
+    reveal: false,
     createdAtMs: now,
     updatedAtMs: now
   };
@@ -236,6 +237,7 @@ export function createMessagePresentation(deps = {}) {
 
     const now = Date.now();
     placeholder.status = GAP_PLACEHOLDER_STATUS.RESOLVED;
+    placeholder.reveal = true;
     placeholder.resolvedAtMs = now;
     placeholder.updatedAtMs = now;
 
@@ -247,7 +249,37 @@ export function createMessagePresentation(deps = {}) {
       resolved: true
     }, GAP_PLACEHOLDER_LOG_CAP);
 
+    logger('gapPlaceholderRevealTrace', {
+      conversationIdPrefix8,
+      counter: normalizedCounter,
+      ok: true,
+      resolved: true,
+      reasonCode: null
+    }, GAP_PLACEHOLDER_LOG_CAP);
+
     return { ok: true, resolved: true, reasonCode: null };
+  };
+
+  const getGapPlaceholder = (conversationId, counter) => {
+    const normalizedConversationId = normalizeConversationId(conversationId);
+    const normalizedCounter = normalizeCounter(counter);
+
+    if (!normalizedConversationId || !Number.isFinite(normalizedCounter)) {
+      return null;
+    }
+
+    const entry = gapByConversation.get(normalizedConversationId);
+    const placeholder = entry ? entry.get(normalizedCounter) : null;
+    if (!placeholder) return null;
+
+    return {
+      counter: placeholder.counter,
+      status: placeholder.status,
+      reveal: placeholder.reveal === true,
+      createdAtMs: placeholder.createdAtMs ?? null,
+      updatedAtMs: placeholder.updatedAtMs ?? null,
+      resolvedAtMs: placeholder.resolvedAtMs ?? null
+    };
   };
 
   const handleCommitEvent = (commitEvent = null) => {
@@ -273,6 +305,7 @@ export function createMessagePresentation(deps = {}) {
     },
 
     ensureGapPlaceholders,
+    getGapPlaceholder,
     resolveGapPlaceholder,
     handleCommitEvent
   };
