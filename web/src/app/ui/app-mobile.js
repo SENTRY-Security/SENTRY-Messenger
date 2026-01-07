@@ -91,7 +91,7 @@ import {
   resetAllProcessedMessages,
   resetReceiptStore
 } from '../features/messages.js';
-import { legacyFacade } from '../features/messages-flow-legacy.js';
+import { legacyFacade } from '../features/messages-flow-facade.js';
 import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';

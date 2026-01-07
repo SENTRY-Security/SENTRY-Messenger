@@ -12,7 +12,7 @@ import {
   getVaultAckCounter,
   recordVaultAckCounter
 } from '../../features/messages.js';
-import { legacyFacade } from '../../features/messages-flow-legacy.js';
+import { legacyFacade } from '../../features/messages-flow-facade.js';
 import {
   appendUserMessage as timelineAppendUserMessage,
   getTimeline as timelineGetTimeline,

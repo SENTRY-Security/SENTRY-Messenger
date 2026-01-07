@@ -12,7 +12,7 @@ import {
   getAccountDigest
 } from '../core/store.js';
 import { encryptAndPut, signGet, downloadAndDecrypt } from '../features/media.js';
-import { legacyFacade } from '../features/messages-flow-legacy.js';
+import { legacyFacade } from '../features/messages-flow-facade.js';
 import { ensureDrSession, sendDrText } from '../features/dr-session.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
