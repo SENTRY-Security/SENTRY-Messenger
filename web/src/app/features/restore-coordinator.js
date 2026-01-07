@@ -3,6 +3,7 @@ import { restoreContactSecrets } from '../core/contact-secrets.js';
 import { logCapped } from '../core/log.js';
 import { RESTORE_PIPELINE_LOG_CAP } from './restore-policy.js';
 import { fetchSecureMaxCounter } from './messages-flow/server-api.js';
+import { hydrateContactSecretsFromBackup } from './contact-backup.js';
 import { createGapQueue } from './messages-flow/gap-queue.js';
 import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
@@ -217,11 +218,72 @@ export async function startRestorePipeline({ source } = {}) {
   }
 
   setStage('Stage2');
-  recordStageResult('Stage2', {
-    ok: false,
-    reasonCode: 'STUBBED',
-    progress: { stubbed: true }
-  });
+  try {
+    const mk = getMkRaw();
+    const token = getAccountToken();
+    const hasMk = !!mk;
+    const hasToken = !!token;
+    const hasDeviceId = !!selfDeviceId;
+    if (!hasMk || !hasToken || !hasDeviceId) {
+      recordStageResult('Stage2', {
+        ok: true,
+        reasonCode: !hasMk
+          ? 'SKIPPED_MISSING_MK'
+          : (!hasToken ? 'SKIPPED_MISSING_TOKEN' : 'SKIPPED_MISSING_DEVICE_ID'),
+        progress: {
+          hasMk,
+          hasAccountToken: hasToken,
+          hasDeviceId
+        }
+      });
+    } else {
+      const result = await hydrateContactSecretsFromBackup({ reason: 'restore-pipeline-stage2' });
+      const status = result?.status ?? null;
+      const entries = Number.isFinite(result?.entries) ? result.entries : 0;
+      const corruptCount = Number.isFinite(result?.corruptCount) ? result.corruptCount : null;
+      if (result?.ok) {
+        recordStageResult('Stage2', {
+          ok: true,
+          reasonCode: null,
+          progress: {
+            entriesRestored: entries,
+            source: 'remote_backup',
+            status,
+            corruptCount
+          }
+        });
+      } else if (result?.noData || status === 404) {
+        recordStageResult('Stage2', {
+          ok: true,
+          reasonCode: 'SKIPPED_NO_BACKUP',
+          progress: {
+            entriesRestored: entries,
+            source: 'remote_backup',
+            status,
+            corruptCount,
+            noData: true
+          }
+        });
+      } else {
+        recordStageResult('Stage2', {
+          ok: false,
+          reasonCode: 'REMOTE_HYDRATE_FAILED',
+          progress: {
+            entriesRestored: entries,
+            source: 'remote_backup',
+            status,
+            corruptCount
+          }
+        });
+      }
+    }
+  } catch (err) {
+    recordStageResult('Stage2', {
+      ok: false,
+      reasonCode: 'REMOTE_HYDRATE_FAILED',
+      progress: { source: 'remote_backup' }
+    });
+  }
 
   setStage('Stage3');
   recordStageResult('Stage3', {
