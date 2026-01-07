@@ -86,6 +86,8 @@
 
 ## 5. 重構階段（所有 Agent 必須知道）
 
+> 若本節階段描述與 docs/messages-flow-spec.md 或 README.md 衝突，以規格與 README 為準。
+
 ### Phase 1（已完成）
 - legacy flow 全部集中到 facade
 - A route scroll fetch 模組化
