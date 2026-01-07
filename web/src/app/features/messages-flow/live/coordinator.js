@@ -1,7 +1,7 @@
 // /app/features/messages-flow/live/coordinator.js
 // B-route live coordinator: orchestrates live decrypt MVP.
 
-import { logCapped } from '../../core/log.js';
+import { logCapped } from '../../../core/log.js';
 import { createCommitNotifier } from '../notify.js';
 import { createLiveLegacyAdapters } from './adapters/index.js';
 import { createLiveStateAccess } from './state-live.js';
