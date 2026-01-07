@@ -207,6 +207,7 @@ bash ./scripts/deploy-prod.sh --apply-migrations
 ## **最新進度與工作項目**
 
 * messages-flow：B route 完整化（離線/重登補齊、counter gap、自動補 key）
+* messages-flow：gap-queue / B route commit 目前暫時性耦合 sessionStore，Phase 4 前需去耦合，改由 facade 或 restore pipeline 注入 conversation context
 * restore pipeline：登入後 DR holders batch hydrate，避免 plannedCount=0
 * legacy cleanup：等 messages-flow parity 後移除 messages.js pipeline 的入口與多餘 fallback
 
