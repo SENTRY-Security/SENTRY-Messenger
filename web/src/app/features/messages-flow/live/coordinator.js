@@ -119,9 +119,22 @@ function finalizeLiveMvpResult(result, startedAt, reasonCode) {
 
 export async function commitBRouteCounter(params = {}, deps = {}) {
   const logger = typeof deps.logCapped === 'function' ? deps.logCapped : logCapped;
-  const onCommit = typeof deps?.onCommit === 'function'
+  const onCommitBase = typeof deps?.onCommit === 'function'
     ? deps.onCommit
     : (typeof deps?.emitCommit === 'function' ? deps.emitCommit : null);
+  const handleCommitEvent = typeof deps?.handleCommitEvent === 'function'
+    ? deps.handleCommitEvent
+    : (typeof deps?.presentation?.handleCommitEvent === 'function'
+      ? deps.presentation.handleCommitEvent
+      : null);
+  const onCommit = typeof handleCommitEvent === 'function'
+    ? (event) => {
+      handleCommitEvent(event);
+      if (typeof onCommitBase === 'function') {
+        onCommitBase(event);
+      }
+    }
+    : onCommitBase;
   const adapters = deps?.adapters || createLiveLegacyAdapters();
   const stateAccess = deps?.stateAccess || createLiveStateAccess({ adapters });
 

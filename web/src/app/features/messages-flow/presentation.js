@@ -250,6 +250,17 @@ export function createMessagePresentation(deps = {}) {
     return { ok: true, resolved: true, reasonCode: null };
   };
 
+  const handleCommitEvent = (commitEvent = null) => {
+    if (!commitEvent || typeof commitEvent !== 'object') {
+      return { ok: false, resolved: false, reasonCode: 'INVALID_COMMIT_EVENT' };
+    }
+
+    const conversationId = normalizeConversationId(commitEvent.conversationId);
+    const counter = normalizeCounter(commitEvent.counter);
+
+    return resolveGapPlaceholder(conversationId, counter, commitEvent);
+  };
+
   return {
     // TODO: apply decrypted message to UI state.
     applyDecryptedMessage() {
@@ -262,6 +273,7 @@ export function createMessagePresentation(deps = {}) {
     },
 
     ensureGapPlaceholders,
-    resolveGapPlaceholder
+    resolveGapPlaceholder,
+    handleCommitEvent
   };
 }
