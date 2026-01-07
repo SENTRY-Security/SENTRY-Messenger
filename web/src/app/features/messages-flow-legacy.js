@@ -544,10 +544,11 @@ function createLegacyFacadeAdapter() {
       }
       const limit = Number.isFinite(Number(mergedOptions.limit)) ? Number(mergedOptions.limit) : null;
       const hasCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined;
-      const isReplay = mergedOptions.mutateState === false;
+      const allowReplay = mergedOptions.allowReplay === true;
+      const isReplay = allowReplay && mergedOptions.mutateState === false;
       const useMessagesFlow = USE_MESSAGES_FLOW_SCROLL_FETCH && isReplay;
       const reasonCode = USE_MESSAGES_FLOW_SCROLL_FETCH
-        ? (isReplay ? 'OK' : 'MUTATE_STATE_NOT_REPLAY')
+        ? (isReplay ? 'OK' : (allowReplay ? 'MUTATE_STATE_NOT_REPLAY' : 'ALLOW_REPLAY_OFF'))
         : 'FLAG_OFF';
       logCapped('scrollFetchRouteTrace', {
         conversationIdPrefix8: toConversationIdPrefix8(conversationId),
