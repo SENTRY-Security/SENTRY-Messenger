@@ -1,7 +1,7 @@
 # Messages Flow 不變量（Invariants）
 
 本文件定義 messages-flow 的不可違反行為不變量（Invariants）。
-本文件不是權威規格；若與 docs/messages-flow-architecture.md 衝突，一律以後者為準。
+本文件不是權威規格；若與 docs/messages-flow-spec.md 衝突，一律以後者為準。
 本文件目的為將最容易被重構或 AI 修改破壞的硬規則，以 MUST / MUST NOT / NEVER 形式固定。
 
 ## Layer 1：Implementation / Wiring Invariants（實作層）

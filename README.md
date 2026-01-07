@@ -95,7 +95,7 @@ node scripts/serve-web.mjs                         # 啟動本機 Pages
 
 ## **訊息流程架構（重構版）**
 
-> 權威文件：docs/messages-flow-architecture.md
+> 權威文件：docs/messages-flow-spec.md（messages-flow-architecture.md 為架構概覽）
 
 ### **A route / B route 定義與邊界**
 
