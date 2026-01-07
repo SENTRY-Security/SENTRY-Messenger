@@ -212,15 +212,13 @@ function createLegacyFacadeAdapter() {
       runOfflineDecrypt = true,
       runServerCatchup = true
     } = {}) {
+      void runRestore;
       void runOfflineCatchup;
       void runOfflineDecrypt;
       void runServerCatchup;
-      let restorePromise = null;
-      if (runRestore) {
-        restorePromise = startRestorePipeline({ source });
-        if (restorePromise && typeof restorePromise.catch === 'function') {
-          restorePromise.catch(() => {});
-        }
+      const restorePromise = startRestorePipeline({ source });
+      if (restorePromise && typeof restorePromise.catch === 'function') {
+        restorePromise.catch(() => {});
       }
       return restorePromise || null;
     },
@@ -258,6 +256,13 @@ function createLegacyFacadeAdapter() {
       const liveJob = liveJobResult?.job || null;
       const liveJobReason = liveJobResult?.reason || null;
       const liveJobMessageId = liveJob?.messageId || liveJob?.serverMessageId || null;
+      const legacyHandler = isPayloadObject ? payloadOrEvent?.handleIncomingSecureMessage : null;
+      const runLegacyHandler = () => {
+        if (typeof legacyHandler === 'function') {
+          return legacyHandler(event);
+        }
+        return { ok: true, reasonCode: 'SKIPPED_MISSING_PARAMS' };
+      };
 
       const isOnline = typeof ctx?.isOnline === 'boolean'
         ? ctx.isOnline
@@ -307,11 +312,11 @@ function createLegacyFacadeAdapter() {
           planned: false,
           ...liveJobSummary,
           ok: null,
-          reasonCode: 'LEGACY_DISABLED',
+          reasonCode: 'SKIPPED_FLAG_OFF',
           tookMs: 0,
           metrics: summarizeLiveMvpMetrics(null)
         }, LIVE_MVP_RESULT_LOG_CAP);
-        return { ok: false, reasonCode: 'LEGACY_DISABLED' };
+        return runLegacyHandler();
       }
 
       if (!shouldTriggerLive) {
@@ -337,7 +342,7 @@ function createLegacyFacadeAdapter() {
           tookMs: 0,
           metrics: summarizeLiveMvpMetrics(null)
         }, LIVE_MVP_RESULT_LOG_CAP);
-        return { ok: false, reasonCode: liveJobReason || 'MISSING_PARAMS' };
+        return runLegacyHandler();
       }
 
       try {
@@ -415,7 +420,6 @@ function createLegacyFacadeAdapter() {
       void runCatchup;
       void peerAccountDigest;
       void peerDeviceId;
-      void loadActiveConversationMessages;
       void replay;
       void reason;
       void loadOptions;
@@ -436,9 +440,14 @@ function createLegacyFacadeAdapter() {
             source: 'enter_conversation'
           });
         }
-        return { ok: true };
       }
-      return { ok: false, reasonCode: 'LEGACY_DISABLED' };
+      if (typeof loadActiveConversationMessages === 'function') {
+        const mergedLoadOptions = { ...(loadOptions || {}) };
+        if (replay !== undefined) mergedLoadOptions.replay = replay;
+        if (reason !== undefined) mergedLoadOptions.reason = reason;
+        loadActiveConversationMessages(mergedLoadOptions);
+      }
+      return { ok: true, reasonCode: USE_MESSAGES_FLOW_MAX_COUNTER_PROBE ? null : 'SKIPPED_FLAG_OFF' };
     },
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
