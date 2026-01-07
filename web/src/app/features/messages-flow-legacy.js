@@ -16,6 +16,8 @@ import {
   SERVER_CATCHUP_TRIGGER_COALESCE_MS
 } from './messages-sync-policy.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
+import { createGapQueue } from './messages-flow/gap-queue.js';
+import { createMaxCounterProbe } from './messages-flow/probe.js';
 import { consumeLiveJob } from './messages-flow/live/coordinator.js';
 import { createLiveJobFromWsEvent } from './messages-flow/live/job.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
@@ -37,6 +39,7 @@ const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
 const DECISION_TRACE_LOG_CAP = 5;
 const USE_MESSAGES_FLOW_SCROLL_FETCH = false;
 const USE_MESSAGES_FLOW_LIVE = false;
+const USE_MESSAGES_FLOW_MAX_COUNTER_PROBE = false;
 const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
   'allowReplay',
   'cursorId',
@@ -52,6 +55,8 @@ const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
 ]);
 const LEGACY_ENTER_CONVERSATION_ALLOWLIST = new Set(['silent']);
 const messagesFlowScrollFetch = createMessagesFlowScrollFetch();
+const maxCounterProbeQueue = createGapQueue();
+const maxCounterProbe = createMaxCounterProbe({ gapQueue: maxCounterProbeQueue });
 const liveLegacyAdapters = createLiveLegacyAdapters();
 
 function toConversationIdPrefix8(conversationId) {
@@ -431,6 +436,14 @@ function createLegacyFacadeAdapter() {
           conversationId,
           peerAccountDigest,
           peerDeviceId
+        });
+      }
+      if (USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
+        const senderDeviceId = typeof peerDeviceId === 'string' ? peerDeviceId : null;
+        void maxCounterProbe({
+          conversationId,
+          senderDeviceId,
+          source: 'enter_conversation'
         });
       }
       if (typeof loadActiveConversationMessages === 'function') {
