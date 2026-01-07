@@ -4,10 +4,13 @@ import { logCapped } from '../core/log.js';
 import { RESTORE_PIPELINE_LOG_CAP } from './restore-policy.js';
 import { fetchSecureMaxCounter } from './messages-flow/server-api.js';
 import { createGapQueue } from './messages-flow/gap-queue.js';
+import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 
 const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5'];
-const restoreGapQueue = createGapQueue();
+const restoreGapQueue = createGapQueue({
+  getLocalProcessedCounter: (conversationId) => getLocalProcessedCounter({ conversationId })
+});
 
 const initialState = () => ({
   stage: null,
@@ -247,15 +250,19 @@ export async function startRestorePipeline({ source } = {}) {
       let localCounterUnknown = false;
       let queuedJobs = 0;
       let queuedConversations = 0;
+      let lastLocalProcessedCounter = 0;
+      let lastServerMaxCounter = 0;
       for (const conversationId of conversationIds) {
-        const localProcessedCounterRaw = null;
-        let localProcessedCounter = Number.isFinite(localProcessedCounterRaw)
-          ? Number(localProcessedCounterRaw)
-          : null;
+        let localProcessedCounter = await getLocalProcessedCounter({ conversationId }, {
+          onUnknown: () => {
+            localCounterUnknown = true;
+          }
+        });
         if (!Number.isFinite(localProcessedCounter)) {
           localProcessedCounter = 0;
           localCounterUnknown = true;
         }
+        lastLocalProcessedCounter = localProcessedCounter;
         const { maxCounter } = await fetchSecureMaxCounter({
           conversationId,
           senderDeviceId: selfDeviceId
@@ -268,6 +275,7 @@ export async function startRestorePipeline({ source } = {}) {
           state.inFlight = false;
           return { ok: false, stage: 'Stage4', reasonCode: 'MAX_COUNTER_UNKNOWN' };
         }
+        lastServerMaxCounter = Number(maxCounter);
         if (maxCounter > localProcessedCounter) {
           const result = restoreGapQueue.enqueue({
             conversationId,
@@ -286,6 +294,8 @@ export async function startRestorePipeline({ source } = {}) {
         ok: true,
         reasonCode: localCounterUnknown ? 'LOCAL_COUNTER_UNKNOWN' : null,
         progress: {
+          localProcessedCounter: lastLocalProcessedCounter,
+          serverMaxCounter: lastServerMaxCounter,
           queuedConversations: stats?.queuedConversations ?? queuedConversations,
           queuedJobs: stats?.queuedJobs ?? queuedJobs
         }
