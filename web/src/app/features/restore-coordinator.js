@@ -1,25 +1,18 @@
-import { getAccountDigest, getAccountToken, getMkRaw, ensureDeviceId } from '../core/store.js';
+import { getAccountToken, getMkRaw, ensureDeviceId } from '../core/store.js';
 import { restoreContactSecrets } from '../core/contact-secrets.js';
-import { hydrateContactSecretsFromBackup } from './contact-backup.js';
-import { hydrateDrStatesFromContactSecrets } from './dr-session.js';
-import { syncOfflineDecryptNow } from './messages.js';
 import { logCapped } from '../core/log.js';
 import { RESTORE_PIPELINE_LOG_CAP } from './restore-policy.js';
+import { fetchSecureMaxCounter } from './messages-flow/server-api.js';
+import { createGapQueue } from './messages-flow/gap-queue.js';
+import { sessionStore } from '../ui/mobile/session-store.js';
 
-const STAGE_ORDER = [
-  { key: 'stage0', name: 'stage0_credentials_ready' },
-  { key: 'stage1', name: 'stage1_local_restore' },
-  { key: 'stage2', name: 'stage2_remote_hydrate' },
-  { key: 'stage3', name: 'stage3_hydrate_dr_holders' },
-  { key: 'stage4', name: 'stage4_sync_offline_decrypt' },
-  { key: 'stage5', name: 'stage5_done' }
-];
+const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5'];
+const restoreGapQueue = createGapQueue();
 
 const initialState = () => ({
   stage: null,
   stageIndex: -1,
   inFlight: false,
-  source: null,
   startedAt: null,
   updatedAt: null,
   stages: {},
@@ -28,6 +21,10 @@ const initialState = () => ({
 
 const state = initialState();
 
+function nowMs() {
+  return Date.now();
+}
+
 function clampTrace(list, max) {
   const cap = Number.isFinite(max) ? Math.max(1, Math.floor(max)) : 5;
   if (!Array.isArray(list)) return [];
@@ -35,56 +32,56 @@ function clampTrace(list, max) {
   return list.slice(list.length - cap);
 }
 
-function emitStageEvent(stageName, ok, metrics) {
+function emitStageEvent(stage, ok, reasonCode, progress) {
   if (typeof document === 'undefined' || !document?.dispatchEvent) return;
   try {
     document.dispatchEvent(new CustomEvent('restore:pipeline', {
-      detail: { stage: stageName, ok: !!ok, metrics: metrics || null }
+      detail: {
+        stage,
+        ok: !!ok,
+        reasonCode: reasonCode || null,
+        progress: progress || null
+      }
     }));
   } catch {}
 }
 
-function recordStageTrace(stageName, ok, metrics, errorMessage) {
-  const entry = {
-    stageName,
+function logStageTrace(stage, ok, reasonCode, progress) {
+  const payload = {
+    stage,
     ok: !!ok,
-    metrics: metrics || null,
-    errorMessage: errorMessage || null,
-    ts: Date.now()
+    reasonCode: reasonCode || null,
+    tsMs: nowMs()
   };
+  if (progress && typeof progress === 'object') {
+    payload.progress = progress;
+  }
+  logCapped('restorePipelineStageTrace', payload, RESTORE_PIPELINE_LOG_CAP);
+  emitStageEvent(stage, ok, reasonCode, progress);
+  return payload;
+}
+
+function recordStageResult(stage, { ok, reasonCode, progress } = {}) {
+  const entry = {
+    stage,
+    ok: !!ok,
+    reasonCode: reasonCode || null,
+    tsMs: nowMs(),
+    progress: progress || null
+  };
+  state.stages[stage] = entry;
   state.trace = clampTrace([...(state.trace || []), entry], RESTORE_PIPELINE_LOG_CAP);
-  logCapped('restorePipelineStageTrace', {
-    stageName,
-    ok: !!ok,
-    metrics: metrics || null,
-    errorMessage: errorMessage || null
-  }, RESTORE_PIPELINE_LOG_CAP);
-  emitStageEvent(stageName, ok, metrics);
+  logStageTrace(stage, ok, reasonCode, progress);
 }
 
-function setStage(key) {
-  const idx = STAGE_ORDER.findIndex((item) => item.key === key);
-  state.stage = key;
-  state.stageIndex = idx;
-  state.updatedAt = Date.now();
-}
-
-function recordStageResult(key, { ok, metrics, errorMessage } = {}) {
-  const stage = STAGE_ORDER.find((item) => item.key === key);
-  if (!stage) return;
-  const entry = {
-    ok: !!ok,
-    metrics: metrics || null,
-    errorMessage: errorMessage || null,
-    ts: Date.now()
-  };
-  state.stages[stage.key] = entry;
-  recordStageTrace(stage.name, ok, metrics, errorMessage);
+function setStage(stage) {
+  state.stage = stage;
+  state.stageIndex = STAGES.indexOf(stage);
+  state.updatedAt = nowMs();
 }
 
 function buildSummary() {
   const summary = {
-    source: state.source,
     startedAt: state.startedAt,
     updatedAt: state.updatedAt,
     stage: state.stage,
@@ -93,31 +90,52 @@ function buildSummary() {
     stages: {},
     trace: Array.isArray(state.trace) ? state.trace.slice() : []
   };
-  for (const item of STAGE_ORDER) {
-    summary.stages[item.key] = state.stages[item.key] || null;
+  for (const stage of STAGES) {
+    summary.stages[stage] = state.stages[stage] || null;
   }
   return summary;
 }
 
 function logPipelineDone() {
-  const tookMs = Number.isFinite(state.startedAt) ? Math.max(0, Date.now() - state.startedAt) : null;
-  const stageStats = {};
-  for (const item of STAGE_ORDER) {
-    const stageEntry = state.stages[item.key] || null;
-    stageStats[item.name] = stageEntry
-      ? {
-          ok: !!stageEntry.ok,
-          metrics: stageEntry.metrics || null,
-          errorMessage: stageEntry.errorMessage || null
-        }
-      : null;
-  }
   logCapped('restorePipelineDoneTrace', {
-    tookMs,
-    stages: stageStats,
-    source: state.source || null
+    stage: 'Stage5',
+    ok: true,
+    reasonCode: null,
+    tsMs: nowMs()
   }, RESTORE_PIPELINE_LOG_CAP);
-  emitStageEvent('stage5_done', true, { tookMs });
+  emitStageEvent('Stage5', true, null, null);
+}
+
+function normalizeConversationId(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function collectConversationIds() {
+  const ids = new Set();
+  const addId = (value) => {
+    const normalized = normalizeConversationId(value);
+    if (normalized) ids.add(normalized);
+  };
+  addId(sessionStore?.messageState?.conversationId || null);
+  const convIndex = sessionStore?.conversationIndex;
+  if (convIndex && typeof convIndex.keys === 'function') {
+    for (const key of convIndex.keys()) {
+      addId(key);
+    }
+  }
+  const threads = sessionStore?.conversationThreads;
+  if (threads && typeof threads.keys === 'function') {
+    for (const key of threads.keys()) {
+      addId(key);
+    }
+  }
+  return Array.from(ids);
 }
 
 export function getRestorePipelineState() {
@@ -136,143 +154,155 @@ export function resetRestorePipelineState() {
 }
 
 export async function startRestorePipeline({ source } = {}) {
-  if (state.inFlight) return buildSummary();
+  void source;
+  if (state.inFlight) {
+    return { ok: false, stage: state.stage || 'Stage0', reasonCode: 'IN_FLIGHT' };
+  }
   resetRestorePipelineState();
   state.inFlight = true;
-  state.source = typeof source === 'string' ? source : null;
-  state.startedAt = Date.now();
+  state.startedAt = nowMs();
   state.updatedAt = state.startedAt;
 
-  let hasMk = false;
-  let hasAccountDigest = false;
+  let selfDeviceId = null;
+
   try {
-    setStage('stage0');
+    setStage('Stage0');
     const mk = getMkRaw();
-    const digest = getAccountDigest();
     const token = getAccountToken();
-    const selfDeviceId = ensureDeviceId() || null;
-    hasMk = !!mk;
-    hasAccountDigest = !!digest;
-    const ok = hasMk && hasAccountDigest;
-    recordStageResult('stage0', {
+    selfDeviceId = ensureDeviceId() || null;
+    const hasMk = !!mk;
+    const hasToken = !!token;
+    const hasDeviceId = !!selfDeviceId;
+    const ok = hasMk && hasToken && hasDeviceId;
+    recordStageResult('Stage0', {
       ok,
-      metrics: {
+      reasonCode: ok ? null : 'MISSING_CREDENTIALS',
+      progress: {
         hasMk,
-        hasAccountDigest,
-        hasAccountToken: !!token,
-        selfDeviceIdSuffix4: selfDeviceId ? String(selfDeviceId).slice(-4) : null
-      },
-      errorMessage: ok ? null : 'credentials-missing'
-    });
-  } catch (err) {
-    recordStageResult('stage0', {
-      ok: false,
-      metrics: null,
-      errorMessage: err?.message || String(err)
-    });
-  }
-
-  try {
-    setStage('stage1');
-    const map = restoreContactSecrets();
-    const entries = map instanceof Map ? map.size : 0;
-    recordStageResult('stage1', {
-      ok: true,
-      metrics: { entries }
-    });
-  } catch (err) {
-    recordStageResult('stage1', {
-      ok: false,
-      metrics: null,
-      errorMessage: err?.message || String(err)
-    });
-  }
-
-  try {
-    setStage('stage2');
-    if (!hasMk) {
-      recordStageResult('stage2', {
-        ok: false,
-        metrics: { skipped: true, reason: 'mk-missing' },
-        errorMessage: 'mk-missing'
-      });
-    } else {
-      const result = await hydrateContactSecretsFromBackup({ reason: 'restore_pipeline' });
-      recordStageResult('stage2', {
-        ok: !!result?.ok,
-        metrics: {
-          ok: !!result?.ok,
-          status: result?.status ?? null,
-          entries: result?.entries ?? null,
-          corruptCount: result?.corruptCount ?? null,
-          snapshotVersion: result?.snapshotVersion || null
-        },
-        errorMessage: result?.ok ? null : (result?.corrupt ? 'corrupt-backup' : null)
-      });
-    }
-  } catch (err) {
-    recordStageResult('stage2', {
-      ok: false,
-      metrics: null,
-      errorMessage: err?.message || String(err)
-    });
-  }
-
-  try {
-    setStage('stage3');
-    const summary = hydrateDrStatesFromContactSecrets({ source: 'restore_pipeline' }) || {};
-    recordStageResult('stage3', {
-      ok: Number(summary?.errorCount || 0) === 0,
-      metrics: {
-        restoredCount: summary?.restoredCount ?? 0,
-        skippedCount: summary?.skippedCount ?? 0,
-        errorCount: summary?.errorCount ?? 0
+        hasAccountToken: hasToken,
+        hasDeviceId
       }
     });
+    if (!ok) {
+      state.inFlight = false;
+      return { ok: false, stage: 'Stage0', reasonCode: 'MISSING_CREDENTIALS' };
+    }
   } catch (err) {
-    recordStageResult('stage3', {
+    recordStageResult('Stage0', {
       ok: false,
-      metrics: null,
-      errorMessage: err?.message || String(err)
+      reasonCode: 'CREDENTIALS_ERROR'
     });
+    state.inFlight = false;
+    return { ok: false, stage: 'Stage0', reasonCode: 'CREDENTIALS_ERROR' };
   }
 
   try {
-    setStage('stage4');
-    if (!hasMk) {
-      recordStageResult('stage4', {
-        ok: false,
-        metrics: { skipped: true, reason: 'mk-missing' },
-        errorMessage: 'mk-missing'
+    setStage('Stage1');
+    const map = restoreContactSecrets();
+    const entries = map instanceof Map ? map.size : 0;
+    recordStageResult('Stage1', {
+      ok: true,
+      progress: { restoredEntries: entries }
+    });
+  } catch (err) {
+    recordStageResult('Stage1', {
+      ok: false,
+      reasonCode: 'LOCAL_RESTORE_FAILED'
+    });
+    state.inFlight = false;
+    return { ok: false, stage: 'Stage1', reasonCode: 'LOCAL_RESTORE_FAILED' };
+  }
+
+  setStage('Stage2');
+  recordStageResult('Stage2', {
+    ok: false,
+    reasonCode: 'STUBBED',
+    progress: { stubbed: true }
+  });
+
+  setStage('Stage3');
+  recordStageResult('Stage3', {
+    ok: false,
+    reasonCode: 'STUBBED',
+    progress: { stubbed: true }
+  });
+
+  try {
+    setStage('Stage4');
+    const conversationIds = collectConversationIds();
+    if (!conversationIds.length) {
+      recordStageResult('Stage4', {
+        ok: true,
+        reasonCode: 'SKIPPED_NO_CONVERSATIONS',
+        progress: { queuedConversations: 0, queuedJobs: 0 }
       });
+    } else if (!selfDeviceId) {
+      recordStageResult('Stage4', {
+        ok: false,
+        reasonCode: 'MISSING_DEVICE_ID'
+      });
+      state.inFlight = false;
+      return { ok: false, stage: 'Stage4', reasonCode: 'MISSING_DEVICE_ID' };
     } else {
-      const result = await syncOfflineDecryptNow({ source: 'restore_pipeline' });
-      const locked = Array.isArray(result?.lockedConversations) ? result.lockedConversations.length : 0;
-      recordStageResult('stage4', {
-        ok: Number(result?.failCount || 0) === 0,
-        metrics: {
-          plannedCount: result?.plannedCount ?? 0,
-          attemptedCount: result?.attemptedCount ?? 0,
-          successCount: result?.successCount ?? 0,
-          failCount: result?.failCount ?? 0,
-          lockedCount: locked
+      let localCounterUnknown = false;
+      let queuedJobs = 0;
+      let queuedConversations = 0;
+      for (const conversationId of conversationIds) {
+        const localProcessedCounterRaw = null;
+        let localProcessedCounter = Number.isFinite(localProcessedCounterRaw)
+          ? Number(localProcessedCounterRaw)
+          : null;
+        if (!Number.isFinite(localProcessedCounter)) {
+          localProcessedCounter = 0;
+          localCounterUnknown = true;
+        }
+        const { maxCounter } = await fetchSecureMaxCounter({
+          conversationId,
+          senderDeviceId: selfDeviceId
+        });
+        if (!Number.isFinite(maxCounter)) {
+          recordStageResult('Stage4', {
+            ok: false,
+            reasonCode: 'MAX_COUNTER_UNKNOWN'
+          });
+          state.inFlight = false;
+          return { ok: false, stage: 'Stage4', reasonCode: 'MAX_COUNTER_UNKNOWN' };
+        }
+        if (maxCounter > localProcessedCounter) {
+          const result = restoreGapQueue.enqueue({
+            conversationId,
+            targetCounter: maxCounter
+          });
+          if (result?.ok) {
+            queuedJobs += 1;
+            queuedConversations += 1;
+          }
+        }
+      }
+      const stats = typeof restoreGapQueue?.getStats === 'function'
+        ? restoreGapQueue.getStats()
+        : null;
+      recordStageResult('Stage4', {
+        ok: true,
+        reasonCode: localCounterUnknown ? 'LOCAL_COUNTER_UNKNOWN' : null,
+        progress: {
+          queuedConversations: stats?.queuedConversations ?? queuedConversations,
+          queuedJobs: stats?.queuedJobs ?? queuedJobs
         }
       });
     }
   } catch (err) {
-    recordStageResult('stage4', {
+    recordStageResult('Stage4', {
       ok: false,
-      metrics: null,
-      errorMessage: err?.message || String(err)
+      reasonCode: 'STAGE4_FAILED'
     });
+    state.inFlight = false;
+    return { ok: false, stage: 'Stage4', reasonCode: 'STAGE4_FAILED' };
   }
 
-  setStage('stage5');
+  setStage('Stage5');
+  recordStageResult('Stage5', { ok: true });
   state.inFlight = false;
-  recordStageResult('stage5', {
-    ok: true,
-    metrics: { done: true }
-  });
   logPipelineDone();
-  return buildSummary();
+  return { ok: true };
 }

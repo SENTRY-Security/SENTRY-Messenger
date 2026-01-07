@@ -306,7 +306,9 @@ const LOG_CAP_OVERRIDE = new Map([
   ['liveMvpDecryptTrace', 5],
   ['liveMvpPersistTrace', 5],
   ['liveMvpSummaryTrace', 5],
-  ['liveMvpResultTrace', 5]
+  ['liveMvpResultTrace', 5],
+  ['restorePipelineStageTrace', 5],
+  ['restorePipelineDoneTrace', 5]
 ]);
 const FORENSICS_LOG_COUNTS = new Map();
 
