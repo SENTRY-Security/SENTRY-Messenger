@@ -35,6 +35,7 @@ const REPLAY_DEBUG_KEYS = new Set([
   'liveMvpDecryptTrace',
   'liveMvpPersistTrace',
   'liveMvpSummaryTrace',
+  'liveMvpResultTrace',
   'gapFillQueueTrace',
   'replaySummary',
   'replaySkipSample',
@@ -157,6 +158,7 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'liveMvpDecryptTrace',
   'liveMvpPersistTrace',
   'liveMvpSummaryTrace',
+  'liveMvpResultTrace',
   'gapFillQueueTrace',
   'VAULT_PUT_ATTEMPT',
   'VAULT_PUT_RESULT',
@@ -271,7 +273,8 @@ const LOG_CAP_OVERRIDE = new Map([
   ['liveMvpSelectTrace', 5],
   ['liveMvpDecryptTrace', 5],
   ['liveMvpPersistTrace', 5],
-  ['liveMvpSummaryTrace', 5]
+  ['liveMvpSummaryTrace', 5],
+  ['liveMvpResultTrace', 5]
 ]);
 const FORENSICS_LOG_COUNTS = new Map();
 

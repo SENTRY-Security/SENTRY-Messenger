@@ -14,11 +14,19 @@ const LIVE_MVP_LOG_CAP = 5;
 const LIVE_MVP_FETCH_LIMIT = 20;
 const PREFIX_LEN = 8;
 const LIVE_MVP_REASONS = Object.freeze({
+  MISSING_PARAMS: 'MISSING_PARAMS',
+  ADAPTERS_UNAVAILABLE: 'ADAPTERS_UNAVAILABLE',
+  SECURE_PENDING: 'SECURE_PENDING',
+  SECURE_FAILED: 'SECURE_FAILED',
+  DR_STATE_UNAVAILABLE: 'DR_STATE_UNAVAILABLE',
   READY_FAILED: 'READY_FAILED',
   MISSING_MESSAGE_ID: 'MISSING_MESSAGE_ID',
   NOT_FOUND: 'NOT_FOUND',
   DECRYPT_FAIL: 'DECRYPT_FAIL',
   CONTROL_SKIP: 'CONTROL_SKIP',
+  MISSING_CIPHERTEXT: 'MISSING_CIPHERTEXT',
+  MISSING_MESSAGE_KEY: 'MISSING_MESSAGE_KEY',
+  MISSING_MESSAGE_FIELDS: 'MISSING_MESSAGE_FIELDS',
   VAULT_PUT_FAILED: 'VAULT_PUT_FAILED',
   APPEND_FAILED: 'APPEND_FAILED',
   OK: 'OK',
@@ -30,7 +38,9 @@ const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
   decryptFailCount: 0,
   decryptSkippedCount: 0,
   vaultPutOkCount: 0,
-  appendedCount: 0
+  vaultPutFailCount: 0,
+  appendedCount: 0,
+  fetchErrorsLength: 0
 });
 
 function slicePrefix(value, len = PREFIX_LEN) {
@@ -97,7 +107,7 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   let readyResult = { ok: false, reasonCode: LIVE_MVP_REASONS.READY_FAILED };
   let fetchResult = { items: [], errors: [], nextCursor: null };
   let decryptResult = { decryptedMessage: null, processedCount: 0, skippedCount: 0, okCount: 0, failCount: 0 };
-  let persistResult = { vaultPutOk: 0, appendOk: false, appendedCount: 0 };
+  let persistResult = { vaultPutOk: 0, vaultPutFail: 0, appendOk: false, appendedCount: 0 };
 
   try {
     readyResult = await stateAccess.ensureLiveReady({
@@ -115,23 +125,23 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   }
 
   const readyOk = !!readyResult?.ok;
+  const readyReasonCode = readyResult?.reasonCode || LIVE_MVP_REASONS.READY_FAILED;
   result.ready = readyOk;
 
   logger('liveMvpReadyTrace', {
     conversationIdPrefix8,
     ok: readyOk,
-    reasonCode: readyOk ? null : LIVE_MVP_REASONS.READY_FAILED
+    reasonCode: readyOk ? null : readyReasonCode
   }, LIVE_MVP_LOG_CAP);
 
   if (!readyOk) {
-    const reasonCode = LIVE_MVP_REASONS.READY_FAILED;
-    const finalResult = finalizeLiveMvpResult(result, startedAt, reasonCode);
+    const finalResult = finalizeLiveMvpResult(result, startedAt, readyReasonCode);
     logger('liveMvpSummaryTrace', {
       conversationIdPrefix8,
       sourceTag: sourceTag || null,
       tookMs: finalResult.tookMs,
       readyOk: false,
-      reasonCode,
+      reasonCode: finalResult.reasonCode,
       fetchedCount: 0,
       decryptOk: 0,
       decryptFail: 0,
@@ -148,17 +158,16 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
       targetMessageIdPrefix8,
       listItemsLength: 0,
       matched: false,
-      reasonCode: LIVE_MVP_REASONS.NOT_FOUND
+      reasonCode: LIVE_MVP_REASONS.MISSING_MESSAGE_ID
     }, LIVE_MVP_LOG_CAP);
 
-    const reasonCode = LIVE_MVP_REASONS.MISSING_MESSAGE_ID;
-    const finalResult = finalizeLiveMvpResult(result, startedAt, reasonCode);
+    const finalResult = finalizeLiveMvpResult(result, startedAt, LIVE_MVP_REASONS.MISSING_MESSAGE_ID);
     logger('liveMvpSummaryTrace', {
       conversationIdPrefix8,
       sourceTag: sourceTag || null,
       tookMs: finalResult.tookMs,
       readyOk: true,
-      reasonCode,
+      reasonCode: finalResult.reasonCode,
       fetchedCount: 0,
       decryptOk: 0,
       decryptFail: 0,
@@ -209,6 +218,10 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   selectionMatched = !!selectedItem;
   selectionReasonCode = selectionMatched ? LIVE_MVP_REASONS.MATCHED : LIVE_MVP_REASONS.NOT_FOUND;
 
+  result.metrics.fetchErrorsLength = Array.isArray(fetchErrors) ? fetchErrors.length : 0;
+  result.metrics.fetchedCount = listItemsLength;
+  result.fetched = selectionMatched;
+
   logger('liveMvpFetchTrace', {
     conversationIdPrefix8,
     itemsLength: listItemsLength,
@@ -225,15 +238,14 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   }, LIVE_MVP_LOG_CAP);
 
   if (!selectionMatched) {
-    const reasonCode = LIVE_MVP_REASONS.NOT_FOUND;
-    const finalResult = finalizeLiveMvpResult(result, startedAt, reasonCode);
+    const finalResult = finalizeLiveMvpResult(result, startedAt, LIVE_MVP_REASONS.NOT_FOUND);
     logger('liveMvpSummaryTrace', {
       conversationIdPrefix8,
       sourceTag: sourceTag || null,
       tookMs: finalResult.tookMs,
       readyOk: true,
-      reasonCode,
-      fetchedCount: 0,
+      reasonCode: finalResult.reasonCode,
+      fetchedCount: finalResult.metrics.fetchedCount,
       decryptOk: 0,
       decryptFail: 0,
       decryptSkipped: 0,
@@ -285,6 +297,7 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
   } catch (err) {
     persistResult = {
       vaultPutOk: 0,
+      vaultPutFail: 0,
       appendOk: false,
       appendedCount: 0,
       errorMessage: err?.message || String(err)
@@ -298,34 +311,37 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
     appendedCount: Number(persistResult?.appendedCount) || 0
   }, LIVE_MVP_LOG_CAP);
 
-  const fetchedCount = Array.isArray(fetchResult?.items) ? fetchResult.items.length : 0;
   const decryptOkCount = Number(decryptResult?.okCount) || 0;
   const decryptFailCount = Number(decryptResult?.failCount) || 0;
   const decryptSkippedCount = Number(decryptResult?.skippedCount) || 0;
   const vaultPutOkCount = Number(persistResult?.vaultPutOk) || 0;
+  const vaultPutFailCount = Number(persistResult?.vaultPutFail) || 0;
   const appendedCount = Number(persistResult?.appendedCount) || 0;
+  const appendOk = !!persistResult?.appendOk;
   const hasDecryptedMessage = !!decryptResult?.decryptedMessage;
 
-  result.fetched = fetchedCount > 0;
   result.decrypted = !!decryptResult?.ok;
   result.vaultPut = hasDecryptedMessage ? vaultPutOkCount > 0 : false;
-  result.appended = hasDecryptedMessage ? !!persistResult?.appendOk : false;
-  result.metrics.fetchedCount = fetchedCount;
+  result.appended = hasDecryptedMessage ? appendOk : false;
   result.metrics.decryptOkCount = decryptOkCount;
   result.metrics.decryptFailCount = decryptFailCount;
   result.metrics.decryptSkippedCount = decryptSkippedCount;
   result.metrics.vaultPutOkCount = vaultPutOkCount;
+  result.metrics.vaultPutFailCount = vaultPutFailCount;
   result.metrics.appendedCount = appendedCount;
 
+  const decryptReasonCode = decryptResult?.reasonCode || null;
   let reasonCode = LIVE_MVP_REASONS.OK;
-  if (!result.decrypted) {
-    reasonCode = decryptResult?.reasonCode === LIVE_MVP_REASONS.CONTROL_SKIP
-      ? LIVE_MVP_REASONS.CONTROL_SKIP
-      : LIVE_MVP_REASONS.DECRYPT_FAIL;
-  } else if (!result.vaultPut) {
+  if (decryptReasonCode) {
+    reasonCode = decryptReasonCode;
+  } else if (!result.decrypted) {
+    reasonCode = LIVE_MVP_REASONS.DECRYPT_FAIL;
+  } else if (hasDecryptedMessage && vaultPutOkCount === 0) {
     reasonCode = LIVE_MVP_REASONS.VAULT_PUT_FAILED;
-  } else if (!result.appended) {
+  } else if (hasDecryptedMessage && vaultPutOkCount > 0 && !appendOk) {
     reasonCode = LIVE_MVP_REASONS.APPEND_FAILED;
+  } else {
+    reasonCode = LIVE_MVP_REASONS.OK;
   }
 
   const finalResult = finalizeLiveMvpResult(result, startedAt, reasonCode);
@@ -335,7 +351,7 @@ export async function runLiveWsIncomingMvp(params = {}, deps = {}) {
     sourceTag: sourceTag || null,
     tookMs: finalResult.tookMs,
     readyOk: true,
-    reasonCode,
+    reasonCode: finalResult.reasonCode,
     fetchedCount: finalResult.metrics.fetchedCount,
     decryptOk: finalResult.metrics.decryptOkCount,
     decryptFail: finalResult.metrics.decryptFailCount,

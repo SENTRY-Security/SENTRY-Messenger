@@ -23,6 +23,16 @@ import { decideNextAction } from './messages-flow/reconcile/decision.js';
 const LEGACY_OPTION_LOG_CAP = 5;
 const LIVE_ROUTE_LOG_CAP = 5;
 const LIVE_MVP_RESULT_LOG_CAP = 5;
+const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
+  fetchedCount: 0,
+  decryptOkCount: 0,
+  decryptFailCount: 0,
+  decryptSkippedCount: 0,
+  vaultPutOkCount: 0,
+  vaultPutFailCount: 0,
+  appendedCount: 0,
+  fetchErrorsLength: 0
+});
 const DECISION_TRACE_LOG_CAP = 5;
 const USE_MESSAGES_FLOW_SCROLL_FETCH = false;
 const USE_MESSAGES_FLOW_LIVE = false;
@@ -55,6 +65,26 @@ function toMessageIdPrefix8(messageId) {
   const trimmed = String(messageId).trim();
   if (!trimmed) return null;
   return trimmed.slice(0, 8);
+}
+
+function summarizeLiveMvpMetrics(metrics) {
+  if (!metrics || typeof metrics !== 'object') {
+    return { ...LIVE_MVP_RESULT_METRICS_DEFAULTS };
+  }
+  const toNumber = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+  return {
+    fetchedCount: toNumber(metrics.fetchedCount),
+    decryptOkCount: toNumber(metrics.decryptOkCount),
+    decryptFailCount: toNumber(metrics.decryptFailCount),
+    decryptSkippedCount: toNumber(metrics.decryptSkippedCount),
+    vaultPutOkCount: toNumber(metrics.vaultPutOkCount),
+    vaultPutFailCount: toNumber(metrics.vaultPutFailCount),
+    appendedCount: toNumber(metrics.appendedCount),
+    fetchErrorsLength: toNumber(metrics.fetchErrorsLength)
+  };
 }
 
 function normalizeDigestOnly(value) {
@@ -305,25 +335,85 @@ function createLegacyFacadeAdapter() {
       }, DECISION_TRACE_LOG_CAP);
 
       const legacyResult = typeof handler === 'function' ? handler(event) : null;
+      const liveMvpMessageId = liveParams?.messageId || liveParams?.serverMessageId || null;
+      const liveMvpResultMeta = {
+        conversationIdPrefix8: toConversationIdPrefix8(liveParams?.conversationId),
+        messageIdPrefix8: toMessageIdPrefix8(liveMvpMessageId)
+      };
 
-      if (USE_MESSAGES_FLOW_LIVE && hasLiveParams) {
+      if (!USE_MESSAGES_FLOW_LIVE) {
+        logCapped('liveMvpResultTrace', {
+          planned: false,
+          ...liveMvpResultMeta,
+          ok: null,
+          reasonCode: null,
+          tookMs: 0,
+          metrics: summarizeLiveMvpMetrics(null)
+        }, LIVE_MVP_RESULT_LOG_CAP);
+      } else if (!hasLiveParams) {
+        logCapped('liveMvpResultTrace', {
+          planned: false,
+          ...liveMvpResultMeta,
+          ok: null,
+          reasonCode: 'MISSING_PARAMS',
+          tookMs: 0,
+          metrics: summarizeLiveMvpMetrics(null)
+        }, LIVE_MVP_RESULT_LOG_CAP);
+      } else {
         try {
           const livePromise = runLiveWsIncomingMvp(liveParams, { adapters: liveLegacyAdapters });
           if (livePromise && typeof livePromise.then === 'function') {
             livePromise
               .then((liveResult) => {
+                const resultConversationIdPrefix8 = toConversationIdPrefix8(liveResult?.conversationId)
+                  || liveMvpResultMeta.conversationIdPrefix8;
+                const resultMessageIdPrefix8 = toMessageIdPrefix8(liveResult?.messageId)
+                  || liveMvpResultMeta.messageIdPrefix8;
                 logCapped('liveMvpResultTrace', {
+                  planned: true,
                   ok: !!liveResult?.ok,
                   reasonCode: liveResult?.reasonCode || null,
-                  conversationIdPrefix8: toConversationIdPrefix8(liveResult?.conversationId),
-                  messageIdPrefix8: toMessageIdPrefix8(liveResult?.messageId)
+                  conversationIdPrefix8: resultConversationIdPrefix8,
+                  messageIdPrefix8: resultMessageIdPrefix8,
+                  tookMs: Number.isFinite(Number(liveResult?.tookMs)) ? Number(liveResult?.tookMs) : 0,
+                  metrics: summarizeLiveMvpMetrics(liveResult?.metrics)
                 }, LIVE_MVP_RESULT_LOG_CAP);
               })
-              .catch(() => {});
+              .catch((err) => {
+                logCapped('liveMvpResultTrace', {
+                  planned: true,
+                  ok: false,
+                  reasonCode: err?.reasonCode || null,
+                  conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
+                  messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
+                  tookMs: Number.isFinite(Number(err?.tookMs)) ? Number(err?.tookMs) : 0,
+                  metrics: summarizeLiveMvpMetrics(null),
+                }, LIVE_MVP_RESULT_LOG_CAP);
+              });
           } else if (livePromise && typeof livePromise.catch === 'function') {
-            livePromise.catch(() => {});
+            livePromise.catch((err) => {
+              logCapped('liveMvpResultTrace', {
+                planned: true,
+                ok: false,
+                reasonCode: err?.reasonCode || null,
+                conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
+                messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
+                tookMs: Number.isFinite(Number(err?.tookMs)) ? Number(err?.tookMs) : 0,
+                metrics: summarizeLiveMvpMetrics(null),
+              }, LIVE_MVP_RESULT_LOG_CAP);
+            });
           }
-        } catch {}
+        } catch (err) {
+          logCapped('liveMvpResultTrace', {
+            planned: true,
+            ok: false,
+            reasonCode: err?.reasonCode || null,
+            conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
+            messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
+            tookMs: 0,
+            metrics: summarizeLiveMvpMetrics(null),
+          }, LIVE_MVP_RESULT_LOG_CAP);
+        }
       }
 
       return legacyResult;

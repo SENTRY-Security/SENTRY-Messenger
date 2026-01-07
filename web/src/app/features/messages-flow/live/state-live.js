@@ -189,7 +189,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
 
   const base = {
     ok: false,
-    reasonCode: 'UNKNOWN',
+    reasonCode: null,
     decryptedMessage: null,
     processedCount: 0,
     skippedCount: 0,
