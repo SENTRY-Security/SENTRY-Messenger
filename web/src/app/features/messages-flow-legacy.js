@@ -18,9 +18,12 @@ import {
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
 import { runLiveWsIncomingMvp } from './messages-flow/live/coordinator.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
+import { decideNextAction } from './messages-flow/reconcile/decision.js';
 
 const LEGACY_OPTION_LOG_CAP = 5;
 const LIVE_ROUTE_LOG_CAP = 5;
+const LIVE_MVP_RESULT_LOG_CAP = 5;
+const DECISION_TRACE_LOG_CAP = 5;
 const USE_MESSAGES_FLOW_SCROLL_FETCH = false;
 const USE_MESSAGES_FLOW_LIVE = false;
 const LEGACY_LIST_SECURE_ALLOWLIST = new Set([
@@ -43,6 +46,13 @@ const liveLegacyAdapters = createLiveLegacyAdapters();
 function toConversationIdPrefix8(conversationId) {
   if (!conversationId) return null;
   const trimmed = String(conversationId).trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 8);
+}
+
+function toMessageIdPrefix8(messageId) {
+  if (!messageId) return null;
+  const trimmed = String(messageId).trim();
   if (!trimmed) return null;
   return trimmed.slice(0, 8);
 }
@@ -275,12 +285,42 @@ function createLegacyFacadeAdapter() {
         flagState: USE_MESSAGES_FLOW_LIVE
       }, LIVE_ROUTE_LOG_CAP);
 
+      const isOnline = typeof ctx?.isOnline === 'boolean'
+        ? ctx.isOnline
+        : (typeof payloadOrEvent?.isOnline === 'boolean' ? payloadOrEvent.isOnline : true);
+      const decisionContext = {
+        eventType: 'ws_incoming',
+        flags: {
+          hasLiveMvp: USE_MESSAGES_FLOW_LIVE,
+          isOnline
+        },
+        observedState: {}
+      };
+      const decisionResult = decideNextAction(decisionContext);
+      logCapped('decisionTrace', {
+        eventType: decisionContext.eventType,
+        action: decisionResult?.action || null,
+        reason: decisionResult?.reason || null,
+        conversationIdPrefix8: toConversationIdPrefix8(liveParams?.conversationId)
+      }, DECISION_TRACE_LOG_CAP);
+
       const legacyResult = typeof handler === 'function' ? handler(event) : null;
 
       if (USE_MESSAGES_FLOW_LIVE && hasLiveParams) {
         try {
           const livePromise = runLiveWsIncomingMvp(liveParams, { adapters: liveLegacyAdapters });
-          if (livePromise && typeof livePromise.catch === 'function') {
+          if (livePromise && typeof livePromise.then === 'function') {
+            livePromise
+              .then((liveResult) => {
+                logCapped('liveMvpResultTrace', {
+                  ok: !!liveResult?.ok,
+                  reasonCode: liveResult?.reasonCode || null,
+                  conversationIdPrefix8: toConversationIdPrefix8(liveResult?.conversationId),
+                  messageIdPrefix8: toMessageIdPrefix8(liveResult?.messageId)
+                }, LIVE_MVP_RESULT_LOG_CAP);
+              })
+              .catch(() => {});
+          } else if (livePromise && typeof livePromise.catch === 'function') {
             livePromise.catch(() => {});
           }
         } catch {}
