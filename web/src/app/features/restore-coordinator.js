@@ -7,6 +7,7 @@ import { hydrateContactSecretsFromBackup } from './contact-backup.js';
 import { createGapQueue } from './messages-flow/gap-queue.js';
 import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
+import { hydrateDrStatesFromContactSecrets } from './dr-session.js';
 
 const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5'];
 const restoreGapQueue = createGapQueue({
@@ -286,11 +287,46 @@ export async function startRestorePipeline({ source } = {}) {
   }
 
   setStage('Stage3');
-  recordStageResult('Stage3', {
-    ok: false,
-    reasonCode: 'STUBBED',
-    progress: { stubbed: true }
-  });
+  try {
+    const map = restoreContactSecrets();
+    const entries = map instanceof Map ? map.size : 0;
+    if (!entries) {
+      recordStageResult('Stage3', {
+        ok: true,
+        reasonCode: 'SKIPPED_NO_CONTACT_SECRETS',
+        progress: {
+          restoredCount: 0,
+          skippedCount: 0,
+          errorCount: 0,
+          source: 'contact_secrets',
+          entries
+        }
+      });
+    } else {
+      const summary = hydrateDrStatesFromContactSecrets({ source: 'restore_pipeline_stage3' }) || {};
+      const restoredCount = Number(summary.restoredCount || 0);
+      const skippedCount = Number(summary.skippedCount || 0);
+      const errorCount = Number(summary.errorCount || 0);
+      const ok = errorCount === 0;
+      recordStageResult('Stage3', {
+        ok,
+        reasonCode: ok ? null : 'DR_HYDRATE_FAILED',
+        progress: {
+          restoredCount,
+          skippedCount,
+          errorCount,
+          source: 'contact_secrets',
+          entries
+        }
+      });
+    }
+  } catch (err) {
+    recordStageResult('Stage3', {
+      ok: false,
+      reasonCode: 'DR_HYDRATE_FAILED',
+      progress: { source: 'contact_secrets' }
+    });
+  }
 
   try {
     setStage('Stage4');
