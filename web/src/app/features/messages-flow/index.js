@@ -84,3 +84,5 @@ export function createMessagesFlowFacade(deps = {}) {
 }
 
 export { createMessagesFlowScrollFetch } from '../messages-flow/scroll-fetch.js';
+
+export { createGapQueue } from '../messages-flow/gap-queue.js';
