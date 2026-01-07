@@ -455,14 +455,35 @@ function createLegacyFacadeAdapter() {
       triggerMaxCounterProbeForActiveConversations({
         source: normalizeSourceTag(source, 'pull_to_refresh')
       });
-      void loadInitialContacts;
-      void renderContacts;
-      void syncConversationThreadsFromContacts;
-      void refreshConversationPreviews;
-      void renderConversationList;
-      void onError;
-      void onFinally;
-      return { ok: false, reasonCode: 'LEGACY_DISABLED' };
+      return (async () => {
+        try {
+          const contacts = typeof loadInitialContacts === 'function'
+            ? await loadInitialContacts()
+            : null;
+          if (typeof renderContacts === 'function') {
+            await renderContacts(contacts);
+          }
+          if (typeof syncConversationThreadsFromContacts === 'function') {
+            await syncConversationThreadsFromContacts(contacts);
+          }
+          if (typeof refreshConversationPreviews === 'function') {
+            await refreshConversationPreviews();
+          }
+          if (typeof renderConversationList === 'function') {
+            await renderConversationList();
+          }
+          return { ok: true };
+        } catch (err) {
+          if (typeof onError === 'function') {
+            onError(err);
+          }
+          return { ok: false, errorMessage: err?.message || String(err) };
+        } finally {
+          if (typeof onFinally === 'function') {
+            onFinally();
+          }
+        }
+      })();
     },
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
@@ -473,10 +494,16 @@ function createLegacyFacadeAdapter() {
     } = {}) {
       void reconcileOutgoingStatus;
       void onOfflineDecryptError;
+      const restorePromise = startRestorePipeline({
+        source: normalizeSourceTag(source, 'visibility_resume')
+      });
+      if (restorePromise && typeof restorePromise.catch === 'function') {
+        restorePromise.catch(() => {});
+      }
       triggerMaxCounterProbeForActiveConversations({
         source: normalizeSourceTag(source, 'visibility_resume')
       });
-      return { ok: false, reasonCode: 'LEGACY_DISABLED' };
+      return { ok: true, reasonCode: null };
     },
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
@@ -506,43 +533,31 @@ function createLegacyFacadeAdapter() {
       const hasCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined;
       const allowReplay = mergedOptions.allowReplay === true;
       const isReplay = allowReplay && mergedOptions.mutateState === false;
-      const useMessagesFlow = USE_MESSAGES_FLOW_SCROLL_FETCH && isReplay;
       const reasonCode = USE_MESSAGES_FLOW_SCROLL_FETCH
         ? (isReplay ? 'OK' : (allowReplay ? 'MUTATE_STATE_NOT_REPLAY' : 'ALLOW_REPLAY_OFF'))
-        : 'LEGACY_DISABLED';
+        : 'FORCED_MESSAGES_FLOW';
       logCapped('scrollFetchRouteTrace', {
         conversationIdPrefix8: toConversationIdPrefix8(conversationId),
-        route: useMessagesFlow ? 'messages-flow' : 'disabled',
+        route: 'messages-flow',
         reasonCode,
         hasCursor,
         limit
       }, 5);
-      if (useMessagesFlow) {
-        const normalizedCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined
-          ? { ts: mergedOptions.cursorTs ?? null, id: mergedOptions.cursorId ?? null }
-          : null;
-        return messagesFlowScrollFetch({
-          conversationId,
-          cursor: normalizedCursor,
-          limit: mergedOptions.limit,
-          isReplay: true
-        }).then((result) => ({
-          items: Array.isArray(result?.items) ? result.items : [],
-          errors: Array.isArray(result?.errors) ? result.errors : [],
-          nextCursor: result?.nextCursor ?? null,
-          nextCursorTs: result?.nextCursor?.ts ?? null,
-          hasMoreAtCursor: !!result?.nextCursor
-        }));
-      }
-      return {
-        ok: false,
-        reasonCode,
-        items: [],
-        errors: reasonCode ? [{ reasonCode }] : [],
-        nextCursor: null,
-        nextCursorTs: null,
-        hasMoreAtCursor: false
-      };
+      const normalizedCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined
+        ? { ts: mergedOptions.cursorTs ?? null, id: mergedOptions.cursorId ?? null }
+        : null;
+      return messagesFlowScrollFetch({
+        conversationId,
+        cursor: normalizedCursor,
+        limit: mergedOptions.limit,
+        isReplay: true
+      }).then((result) => ({
+        items: Array.isArray(result?.items) ? result.items : [],
+        errors: Array.isArray(result?.errors) ? result.errors : [],
+        nextCursor: result?.nextCursor ?? null,
+        nextCursorTs: result?.nextCursor?.ts ?? null,
+        hasMoreAtCursor: !!result?.nextCursor
+      }));
     },
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
