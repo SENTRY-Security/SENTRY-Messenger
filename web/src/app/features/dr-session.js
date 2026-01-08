@@ -3615,6 +3615,11 @@ export async function ensureDrReceiverState(params = {}) {
   const context = conversationContextForPeer(peer) || {};
   const drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
   const guestBundle = drInit?.guest_bundle || null;
+  const bootstrapError = (message, code = 'DR_BOOTSTRAP_UNAVAILABLE') => {
+    const err = new Error(message);
+    err.code = code;
+    return err;
+  };
 
   const allowResponderBootstrap = (() => {
     // guest/initiator 端禁止 responder bootstrap；僅 owner/既有 responder 可啟動。
@@ -3772,9 +3777,9 @@ export async function ensureDrReceiverState(params = {}) {
       }
     }
     if (!guestBundle) {
-      throw new Error('guest 端缺少 initiator 重建資料，請重新同步好友');
+      throw bootstrapError('guest 端缺少 initiator 重建資料，請重新同步好友', 'MISSING_DR_INIT_BOOTSTRAP');
     }
-    throw new Error('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
+    throw bootstrapError('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
   }
   // guest/未知角色若發現 responder 或缺 initiator 鏈，直接 fail 或要求重建 initiator（無 fallback）。
   if (isGuestLike && (!holderHasRatchet || holderRole === 'responder')) {
@@ -3783,9 +3788,9 @@ export async function ensureDrReceiverState(params = {}) {
       { __drDebugTag: 'web/src/app/features/dr-session.js:2292:ensureResponderState:guest-clear-responder-fail' }
     );
     if (!guestBundle) {
-      throw new Error('guest 端缺少 initiator 重建資料，請重新同步好友');
+      throw bootstrapError('guest 端缺少 initiator 重建資料，請重新同步好友', 'MISSING_DR_INIT_BOOTSTRAP');
     }
-    throw new Error('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
+    throw bootstrapError('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
   }
   if (holderHasRatchet && holderHasReceiveChain) {
     return true;
@@ -3793,9 +3798,9 @@ export async function ensureDrReceiverState(params = {}) {
   // guest/未知角色若無 usable state 或被清空 responder，需使用 initiator 路徑；若缺 dr_init 則直接 fail（無 fallback）。
   if (isGuestLike) {
     if (!guestBundle) {
-      throw new Error('guest 端缺少 initiator 重建資料，請重新同步好友');
+      throw bootstrapError('guest 端缺少 initiator 重建資料，請重新同步好友', 'MISSING_DR_INIT_BOOTSTRAP');
     }
-    throw new Error('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
+    throw bootstrapError('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
   }
   if (holderHasRatchet && (relationshipRole === 'guest' || holderRole === 'initiator')) {
     return true;

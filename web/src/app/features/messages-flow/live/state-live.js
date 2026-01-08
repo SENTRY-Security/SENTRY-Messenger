@@ -170,7 +170,14 @@ async function ensureLiveReady(params = {}, adapters) {
   try {
     await adapters.ensureDrReceiverState(conversationId, peerAccountDigest, peerDeviceId);
   } catch (err) {
-    return { ok: false, reasonCode: 'DR_STATE_UNAVAILABLE', errorMessage: err?.message || String(err) };
+    const errorCode = err?.code === 'MISSING_DR_INIT_BOOTSTRAP' || err?.code === 'DR_BOOTSTRAP_UNAVAILABLE'
+      ? err.code
+      : null;
+    return {
+      ok: false,
+      reasonCode: errorCode || 'DR_STATE_UNAVAILABLE',
+      errorMessage: err?.message || String(err)
+    };
   }
   const readyPeerAccountDigest = peerAccountDigest;
   const readyPeerDeviceId = peerDeviceId;

@@ -1171,13 +1171,23 @@ export function setupShareController(options) {
       if (!conversationId || !conversationToken) {
         throw new Error('contact-init preflight missing conversation context');
       }
+      const drInitPayload = guestBundle
+        ? { guest_bundle: guestBundle, role: 'initiator' }
+        : null;
+      const conversationPayload = {
+        token_b64: conversationToken,
+        conversation_id: conversationId,
+        peerDeviceId: resolvedOwnerDeviceId,
+        ...(drInitPayload ? { dr_init: drInitPayload } : null)
+      };
       const conversationIndex = ensureConversationIndex();
       const prevConvEntry = conversationIndex.get(conversationId) || {};
       conversationIndex.set(conversationId, {
         ...prevConvEntry,
         token_b64: conversationToken,
         peerAccountDigest: resolvedOwnerDigest,
-        peerDeviceId: resolvedOwnerDeviceId
+        peerDeviceId: resolvedOwnerDeviceId,
+        dr_init: prevConvEntry.dr_init || drInitPayload || null
       });
       logCapped('inviteSessionIndexWriteTrace', {
         inviteId: parsed?.inviteId || null,
@@ -1197,6 +1207,14 @@ export function setupShareController(options) {
         if (!drHolder.baseKey.peerAccountDigest) drHolder.baseKey.peerAccountDigest = resolvedOwnerDigest;
         if (!drHolder.baseKey.peerDeviceId) drHolder.baseKey.peerDeviceId = resolvedOwnerDeviceId;
       }
+      storeContactSecretMapping({
+        peerAccountDigest: resolvedOwnerDigest,
+        peerDeviceId: resolvedOwnerDeviceId,
+        sessionKey: conversationToken,
+        conversation: conversationPayload,
+        drState: drHolder,
+        role: 'guest'
+      });
       logCapped('inviteSessionMaterialReady', {
         inviteId: parsed?.inviteId || null,
         conversationIdPrefix8: safePrefix(conversationId, 8),
