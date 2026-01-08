@@ -108,6 +108,24 @@ function collectActiveConversationIds() {
   return Array.from(ids);
 }
 
+function resolvePeerDeviceIdFromConversationId(conversationId) {
+  const convId = normalizeConversationIdValue(conversationId);
+  if (!convId) return null;
+  const convIndex = sessionStore?.conversationIndex;
+  if (convIndex && typeof convIndex.get === 'function') {
+    const entry = convIndex.get(convId);
+    const deviceId = entry?.peerDeviceId || entry?.peer_device_id || null;
+    if (deviceId) return deviceId;
+  }
+  const threads = sessionStore?.conversationThreads;
+  if (threads && typeof threads.get === 'function') {
+    const entry = threads.get(convId);
+    const deviceId = entry?.peerDeviceId || entry?.peer_device_id || null;
+    if (deviceId) return deviceId;
+  }
+  return null;
+}
+
 function triggerMaxCounterProbeForActiveConversations({ source } = {}) {
   const flags = getMessagesFlowFlags();
   if (!flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) return;
@@ -313,19 +331,32 @@ function createMessagesFlowFacade() {
           }, LIVE_MVP_RESULT_LOG_CAP);
         }
         if (missingMessageId) {
-          const senderDeviceId = storeGetDeviceId();
           const sourceTag = 'ws_missing_message_id';
+          const peerDeviceId = (hasExplicitCtx ? ctx?.peerDeviceId : null)
+            || liveJobCtx?.peerDeviceId
+            || liveJob?.peerDeviceId
+            || resolvePeerDeviceIdFromConversationId(summaryConversationId);
+          if (!peerDeviceId) {
+            logCapped('maxCounterProbeTrace', {
+              source: sourceTag,
+              conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
+              senderDeviceIdSuffix4: null,
+              ok: false,
+              reasonCode: 'MISSING_PEER_DEVICE_ID'
+            }, 5);
+            return { ok: false, reasonCode: 'MISSING_MESSAGE_ID_PEER_DEVICE_MISSING' };
+          }
           if (flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
             void maxCounterProbe({
               conversationId: summaryConversationId,
-              senderDeviceId,
+              senderDeviceId: peerDeviceId,
               source: sourceTag
             });
           } else {
             logCapped('maxCounterProbeTrace', {
               source: sourceTag,
               conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
-              senderDeviceIdSuffix4: toDeviceIdSuffix4(senderDeviceId),
+              senderDeviceIdSuffix4: toDeviceIdSuffix4(peerDeviceId),
               ok: false,
               reasonCode: 'SKIPPED_FLAG_OFF'
             }, 5);
