@@ -1506,6 +1506,8 @@ function buildPipelineItemFromRaw(raw, {
 }
 
 function enqueueDecryptPipelineItem(item) {
+  const normalizedMsgType = normalizeSemanticSubtype(item?.msgType || null);
+  if (normalizedMsgType === 'contact-share') return false;
   const convId = item?.conversationId || null;
   const senderDeviceId = item?.senderDeviceId || null;
   const counter = Number.isFinite(Number(item?.counter)) ? Number(item.counter) : null;
@@ -1644,12 +1646,6 @@ async function decryptPipelineItem(item, ctx = {}) {
   const counter = Number.isFinite(Number(item.counter)) ? Number(item.counter) : null;
   if (!conversationId || !senderDeviceId || !header || !ciphertextB64 || counter === null) {
     return { ok: false, error: new Error('pipeline item missing required fields') };
-  }
-  const normalizedMsgType = normalizeSemanticSubtype(item.msgType || null);
-  if (normalizedMsgType === 'contact-share') {
-    const err = new Error('CONTACT_SHARE_MOVED_TO_MESSAGES_FLOW');
-    err.code = 'CONTACT_SHARE_MOVED_TO_MESSAGES_FLOW';
-    return { ok: false, error: err };
   }
   const identity = storeNormalizePeerIdentity({ peerAccountDigest: senderAccountDigest, peerDeviceId: senderDeviceId });
   const peerDigest = identity?.accountDigest || senderAccountDigest || null;
