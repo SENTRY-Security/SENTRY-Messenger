@@ -258,13 +258,6 @@ function createLegacyFacadeAdapter() {
       const liveJob = liveJobResult?.job || null;
       const liveJobReason = liveJobResult?.reason || null;
       const liveJobMessageId = liveJob?.messageId || liveJob?.serverMessageId || null;
-      const legacyHandler = isPayloadObject ? payloadOrEvent?.handleIncomingSecureMessage : null;
-      const runLegacyHandler = () => {
-        if (typeof legacyHandler === 'function') {
-          return legacyHandler(event);
-        }
-        return { ok: true, reasonCode: 'SKIPPED_MISSING_PARAMS' };
-      };
 
       const isOnline = typeof ctx?.isOnline === 'boolean'
         ? ctx.isOnline
@@ -318,7 +311,7 @@ function createLegacyFacadeAdapter() {
           tookMs: 0,
           metrics: summarizeLiveMvpMetrics(null)
         }, LIVE_MVP_RESULT_LOG_CAP);
-        return runLegacyHandler();
+        return { ok: false, reasonCode: 'LIVE_DISABLED' };
       }
 
       if (!shouldTriggerLive) {
@@ -344,7 +337,7 @@ function createLegacyFacadeAdapter() {
           tookMs: 0,
           metrics: summarizeLiveMvpMetrics(null)
         }, LIVE_MVP_RESULT_LOG_CAP);
-        return runLegacyHandler();
+        return { ok: false, reasonCode: liveJobReason || 'MISSING_PARAMS' };
       }
 
       try {
