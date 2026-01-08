@@ -299,6 +299,7 @@ function createMessagesFlowFacade() {
       }, DECISION_TRACE_LOG_CAP);
 
       const shouldTriggerLive = decisionResult?.action === 'TRIGGER_LIVE_MVP';
+      const missingMessageId = liveJobReason === 'MISSING_MESSAGE_ID';
 
       if (!shouldTriggerLive) {
         if (flags.USE_MESSAGES_FLOW_LIVE) {
@@ -310,6 +311,26 @@ function createMessagesFlowFacade() {
             tookMs: 0,
             metrics: summarizeLiveMvpMetrics(null)
           }, LIVE_MVP_RESULT_LOG_CAP);
+        }
+        if (missingMessageId) {
+          const senderDeviceId = storeGetDeviceId();
+          const sourceTag = 'ws_missing_message_id';
+          if (flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
+            void maxCounterProbe({
+              conversationId: summaryConversationId,
+              senderDeviceId,
+              source: sourceTag
+            });
+          } else {
+            logCapped('maxCounterProbeTrace', {
+              source: sourceTag,
+              conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
+              senderDeviceIdSuffix4: toDeviceIdSuffix4(senderDeviceId),
+              ok: false,
+              reasonCode: 'SKIPPED_FLAG_OFF'
+            }, 5);
+          }
+          return { ok: false, reasonCode: flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE ? 'MISSING_MESSAGE_ID_ENQUEUE_REQUESTED' : 'MISSING_MESSAGE_ID_PROBE_DISABLED' };
         }
         return { ok: false, reasonCode: decisionResult?.reason || liveJobReason || 'NO_OP' };
       }
