@@ -117,11 +117,11 @@ const defaultDeps = {
 
 const deps = { ...defaultDeps };
 
-export function __setMessagesTestOverrides(overrides = {}) {
+function __setMessagesTestOverrides(overrides = {}) {
   Object.assign(deps, overrides);
 }
 
-export function __resetMessagesTestOverrides() {
+function __resetMessagesTestOverrides() {
   Object.assign(deps, defaultDeps);
 }
 
@@ -298,7 +298,7 @@ function clearDecryptedMessages(conversationId) {
   clearTimelineConversation(String(conversationId));
 }
 
-export function putDecryptedMessage(conversationId, messageObj, maxEntries = DECRYPTED_CACHE_MAX_PER_CONV) {
+function putDecryptedMessage(conversationId, messageObj, maxEntries = DECRYPTED_CACHE_MAX_PER_CONV) {
   if (!conversationId || !messageObj) return;
   const messageId = normalizeMessageId(messageObj);
   if (!messageId) return;
@@ -320,7 +320,7 @@ export function putDecryptedMessage(conversationId, messageObj, maxEntries = DEC
   }
 }
 
-export function getDecryptedMessages(conversationId) {
+function getDecryptedMessages(conversationId) {
   if (!conversationId) return [];
   const map = decryptedMessageStore.get(String(conversationId));
   if (!(map instanceof Map) || !map.size) return [];
@@ -329,7 +329,7 @@ export function getDecryptedMessages(conversationId) {
     .sort((a, b) => (Number(a?.ts) || 0) - (Number(b?.ts) || 0));
 }
 
-export function hasDecryptedMessage(conversationId, messageId) {
+function hasDecryptedMessage(conversationId, messageId) {
   if (!conversationId || !messageId) return false;
   const map = decryptedMessageStore.get(String(conversationId));
   return map instanceof Map && map.has(messageId);
@@ -349,7 +349,7 @@ export function markConversationTombstone(conversationId) {
   clearDecryptedMessages(key);
 }
 
-export function isConversationTombstoned(conversationId) {
+function isConversationTombstoned(conversationId) {
   if (!conversationId) return false;
   return tombstonedConversations.has(String(conversationId));
 }
@@ -4763,7 +4763,7 @@ function markMessageProcessed(conversationId, messageId, maxEntries = 200) {
   }
 }
 
-export function markMessagesProcessedForUi(conversationId, messageIds = [], maxEntries = 200) {
+function markMessagesProcessedForUi(conversationId, messageIds = [], maxEntries = 200) {
   if (!conversationId || !Array.isArray(messageIds)) return;
   for (const id of messageIds) {
     if (typeof id === 'string' && id.trim().length) {
@@ -4793,7 +4793,7 @@ export function resetReceiptStore() {
   vaultAckLoaded = false;
 }
 
-export function getMessageReceipt(conversationId, messageId) {
+function getMessageReceipt(conversationId, messageId) {
   if (!conversationId || !messageId) return null;
   ensureReceiptsLoaded();
   const map = receiptStore.get(conversationId);
@@ -4801,7 +4801,7 @@ export function getMessageReceipt(conversationId, messageId) {
   return null;
 }
 
-export function getMessageDelivery(conversationId, messageId) {
+function getMessageDelivery(conversationId, messageId) {
   return getDeliveredReceipt(conversationId, messageId);
 }
 
@@ -6181,10 +6181,10 @@ async function legacySyncOfflineDecryptNow({ source, reasonCode } = {}) {
   return { plannedCount, attemptedCount, successCount, failCount, results, lockedConversations };
 }
 
-export async function syncNow(params = {}) {
+async function syncNow(params = {}) {
   return syncOfflineDecryptNow(params);
 }
 
-export async function flushNow(params = {}) {
+async function flushNow(params = {}) {
   return syncOfflineDecryptNow(params);
 }
