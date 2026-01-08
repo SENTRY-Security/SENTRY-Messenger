@@ -153,6 +153,7 @@ const REPLAY_DEBUG_KEYS = new Set([
   'notifyRetryFinalTrace',
   'notificationTrace',
   'wsSyncTrace',
+  'messagesFlowEnableTrace',
 ]);
 const FORENSICS_DEBUG_KEYS = new Set([
   'WS_RECV',
@@ -310,7 +311,8 @@ const LOG_CAP_OVERRIDE = new Map([
   ['liveMvpResultTrace', 5],
   ['restorePipelineStageTrace', 5],
   ['restorePipelineDoneTrace', 5],
-  ['localCounterProviderTrace', 5]
+  ['localCounterProviderTrace', 5],
+  ['messagesFlowEnableTrace', 5]
 ]);
 const FORENSICS_LOG_COUNTS = new Map();
 
