@@ -4,6 +4,7 @@
 import { invitesCreate, invitesDeliver, invitesConsume, invitesStatus } from '../../api/invites.js';
 import { prekeysPublish } from '../../api/prekeys.js';
 import { devkeysStore } from '../../api/devkeys.js';
+import { createSecureMessage, fetchSecureMaxCounter } from '../../api/messages.js';
 import { encodeFriendInvite, decodeFriendInvite } from '../../lib/invite.js';
 import { generateQR } from '../../lib/qr.js';
 import QrScanner from '../../lib/vendor/qr-scanner.min.js';
@@ -29,7 +30,7 @@ import { flushPendingContactShares } from '../../features/contacts.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from './session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice } from './contact-core-store.js';
-import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, sendDrText } from '../../features/dr-session.js';
+import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState } from '../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../crypto/prekeys.js';
 import { logMsgEvent, logUiNoise } from '../../lib/logging.js';
@@ -1331,53 +1332,17 @@ export function setupShareController(options) {
     const reasonKey = typeof reason === 'string' ? reason.toLowerCase() : null;
     const shouldTracePreflight = shouldTraceProfilePreflight(reasonKey);
     const mkReady = !!getMkRaw();
-    const preflightState = drState({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId });
-    const hasRk = preflightState?.rk instanceof Uint8Array;
-    const preflightPayload = {
-      peerAccountDigest: targetDigest || null,
-      peerDeviceId: resolvedPeerDeviceId || null,
-      callsite: 'sendContactShare',
-      hasState: !!preflightState,
-      rkType: preflightState?.rk?.constructor?.name || typeof preflightState?.rk || null,
-      rkByteLength: preflightState?.rk instanceof Uint8Array ? preflightState.rk.byteLength : null,
-      hasRk
-    };
-    const preflightFailed = !hasRk;
-    if (preflightFailed) {
-      console.error('[contact-share:preflight-fail]', preflightPayload);
-      const availablePeerKeys = (() => {
-        if (!targetDigest || !(contactSecretMap instanceof Map)) return null;
-        const prefix = `${targetDigest}::`;
-        const keys = [];
-        for (const key of contactSecretMap.keys()) {
-          if (typeof key === 'string' && key.startsWith(prefix)) keys.push(key);
-        }
-        return keys.length ? keys : null;
-      })();
-      logCapped('contactSharePreflightTrace', {
-        reasonCode: 'PREFLIGHT_MISSING_LIVE_RK',
-        resolvedPeerKey,
-        availablePeerKeys,
-        liveStateHasRk: !!(preflightState?.rk instanceof Uint8Array),
-        sourceTag: 'sendContactShare'
-      }, 5);
-    } else {
-      console.log('[contact-share:preflight-ok]', preflightPayload);
-    }
     if (shouldTracePreflight) {
       logProfilePreflightTrace({
         operation: reasonKey,
-        needsRk: true,
-        hasRk,
+        needsRk: false,
+        hasRk: null,
         needsMk: false,
         mkReady,
         conversationId: conversationId || null,
         target: 'peer',
-        errorCode: preflightFailed ? 'missing-live-rk' : null
+        errorCode: null
       });
-    }
-    if (!hasRk) {
-      throw new Error('contact-share sender missing live DR rk');
     }
     const payload = await buildLocalContactPayload({ conversation, drInit, overrides });
     if (reason) {
@@ -1386,22 +1351,61 @@ export function setupShareController(options) {
     payload.reason = payload.reason || 'invite-consume';
     const contactPayload = { ...payload };
     const envelope = await encryptContactPayload(sessionKey || conversationToken, contactPayload);
-    const metaOverrides = {
-      msg_type: 'contact-share',
-      targetDeviceId: resolvedPeerDeviceId || null,
-      receiverDeviceId: resolvedPeerDeviceId || null,
-      peerDeviceId: resolvedPeerDeviceId || null
+    if (!envelope?.ct || !envelope?.iv) {
+      throw new Error('contact-share envelope missing fields');
+    }
+    let counter = 1;
+    try {
+      const { r, data } = await fetchSecureMaxCounter({ conversationId, senderDeviceId });
+      const maxCounterRaw = data?.maxCounter ?? data?.max_counter ?? null;
+      const maxCounter = Number.isFinite(Number(maxCounterRaw)) ? Number(maxCounterRaw) : null;
+      if (r?.ok && Number.isFinite(maxCounter)) {
+        counter = maxCounter + 1;
+      }
+    } catch {}
+    const nowSec = Math.floor(Date.now() / 1000);
+    const payloadTs = Number(contactPayload?.updatedAt || contactPayload?.addedAt || nowSec);
+    const ts = Number.isFinite(payloadTs) ? payloadTs : nowSec;
+    const header = {
+      v: 1,
+      ts,
+      iv_b64: envelope.iv,
+      device_id: senderDeviceId || undefined,
+      n: counter,
+      meta: {
+        msg_type: 'contact-share',
+        sender_digest: selfDigest || null,
+        senderDigest: selfDigest || null,
+        sender_device_id: senderDeviceId || null,
+        senderDeviceId: senderDeviceId || null,
+        targetAccountDigest: targetDigest || null,
+        target_account_digest: targetDigest || null,
+        receiverAccountDigest: targetDigest || null,
+        receiver_account_digest: targetDigest || null,
+        targetDeviceId: resolvedPeerDeviceId || null,
+        target_device_id: resolvedPeerDeviceId || null,
+        receiverDeviceId: resolvedPeerDeviceId || null,
+        receiver_device_id: resolvedPeerDeviceId || null
+      }
     };
     const messageId = crypto.randomUUID();
-    await sendDrText({
-      peerAccountDigest: targetDigest,
-      conversation,
-      convId: conversationId,
-      peerDeviceId: resolvedPeerDeviceId,
-      text: JSON.stringify({ type: 'contact-share', envelope }),
-      metaOverrides,
-      messageId
+    const { r, data } = await createSecureMessage({
+      conversationId,
+      header,
+      ciphertextB64: envelope.ct,
+      counter,
+      senderDeviceId,
+      receiverAccountDigest: targetDigest,
+      receiverDeviceId: resolvedPeerDeviceId,
+      id: messageId,
+      createdAt: ts
     });
+    if (!r?.ok) {
+      const msg = typeof data === 'string'
+        ? data
+        : (data?.error || data?.message || 'contact-share send failed');
+      throw new Error(msg);
+    }
   }
 
   async function buildLocalContactPayload({ conversation, drInit, overrides } = {}) {

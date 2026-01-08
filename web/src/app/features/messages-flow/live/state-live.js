@@ -4,6 +4,7 @@
 import { classifyDecryptedPayload, SEMANTIC_KIND } from '../../semantic.js';
 import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
+import { decryptContactPayload } from '../../contact-share.js';
 
 function hasUsableDrState(holder) {
   if (
@@ -141,10 +142,15 @@ async function ensureLiveReady(params = {}, adapters) {
   const tokenB64 = params?.tokenB64 || null;
   const peerAccountDigest = params?.peerAccountDigest || null;
   const peerDeviceId = params?.peerDeviceId || null;
+  const raw = params?.item || params?.raw || null;
+  const header = resolveHeader(raw);
+  const meta = raw?.meta || header?.meta || null;
+  const msgTypeHint = resolveMsgType(meta, header);
+  const skipDrCheck = msgTypeHint === 'contact-share';
   if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) {
     return { ok: false, reasonCode: 'MISSING_PARAMS' };
   }
-  if (!adapters?.ensureSecureConversationReady || !adapters?.ensureDrReceiverState || !adapters?.drState) {
+  if (!adapters?.ensureSecureConversationReady || (!skipDrCheck && (!adapters?.ensureDrReceiverState || !adapters?.drState))) {
     return { ok: false, reasonCode: 'ADAPTERS_UNAVAILABLE' };
   }
   let secureStatus = null;
@@ -165,6 +171,10 @@ async function ensureLiveReady(params = {}, adapters) {
       ? 'SECURE_FAILED'
       : 'SECURE_PENDING';
     return { ok: false, reasonCode };
+  }
+
+  if (skipDrCheck) {
+    return { ok: true };
   }
 
   try {
@@ -195,6 +205,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
   const conversationId = params?.conversationId || null;
   const peerAccountDigest = params?.peerAccountDigest || null;
   const peerDeviceId = params?.peerDeviceId || null;
+  const tokenB64 = params?.tokenB64 || null;
   const raw = params?.item || params?.raw || null;
   const targetMessageId = normalizeMessageIdValue(
     params?.targetMessageId || params?.messageId || params?.serverMessageId || null
@@ -217,19 +228,46 @@ async function decryptIncomingSingle(params = {}, adapters) {
       skippedCount: raw ? 1 : 0
     };
   }
-  if (!adapters?.drDecryptText || !adapters?.drState) {
-    return {
-      ...base,
-      reasonCode: 'ADAPTERS_UNAVAILABLE',
-      skippedCount: 1
-    };
-  }
   const header = resolveHeader(raw);
   const ciphertextB64 = resolveCiphertextB64(raw);
   if (!header || !ciphertextB64 || !header.iv_b64) {
     return {
       ...base,
       reasonCode: 'MISSING_CIPHERTEXT',
+      skippedCount: 1
+    };
+  }
+  const meta = raw?.meta || header?.meta || null;
+  const msgTypeHint = resolveMsgType(meta, header);
+  if (msgTypeHint === 'contact-share') {
+    if (!tokenB64) {
+      return {
+        ...base,
+        reasonCode: 'MISSING_SESSION_KEY',
+        skippedCount: 1
+      };
+    }
+    try {
+      await decryptContactPayload(tokenB64, { iv: header.iv_b64, ct: ciphertextB64 });
+    } catch {
+      return {
+        ...base,
+        reasonCode: 'DECRYPT_FAIL',
+        processedCount: 1,
+        failCount: 1
+      };
+    }
+    return {
+      ...base,
+      reasonCode: 'CONTROL_SKIP',
+      processedCount: 1,
+      skippedCount: 1
+    };
+  }
+  if (!adapters?.drDecryptText || !adapters?.drState) {
+    return {
+      ...base,
+      reasonCode: 'ADAPTERS_UNAVAILABLE',
       skippedCount: 1
     };
   }
@@ -262,8 +300,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
   } catch {}
 
   const counter = resolveCounter(raw, header);
-  const meta = raw?.meta || header?.meta || null;
-  const msgTypeHint = resolveMsgType(meta, header);
   const rawMessageId = normalizeMessageId(raw);
   const messageId = rawMessageId || targetMessageId;
   const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
@@ -347,6 +383,7 @@ async function commitIncomingSingle(params = {}, adapters) {
   const conversationId = params?.conversationId || null;
   const peerAccountDigest = params?.peerAccountDigest || null;
   const peerDeviceId = params?.peerDeviceId || null;
+  const tokenB64 = params?.tokenB64 || null;
   const raw = params?.item || params?.raw || null;
   const targetMessageId = normalizeMessageIdValue(
     params?.targetMessageId || params?.messageId || params?.serverMessageId || null
@@ -364,9 +401,6 @@ async function commitIncomingSingle(params = {}, adapters) {
   if (!conversationId || !peerAccountDigest || !peerDeviceId || !raw) {
     return { ...base, reasonCode: 'MISSING_PARAMS' };
   }
-  if (!adapters?.drDecryptText || !adapters?.drState || !adapters?.vaultPutIncomingKey) {
-    return { ...base, reasonCode: 'ADAPTERS_UNAVAILABLE' };
-  }
   const header = resolveHeader(raw);
   const ciphertextB64 = resolveCiphertextB64(raw);
   if (!header || !ciphertextB64 || !header.iv_b64) {
@@ -376,6 +410,53 @@ async function commitIncomingSingle(params = {}, adapters) {
   const senderDeviceId = resolveSenderDeviceId(raw, header);
   if (!senderDigest || !senderDeviceId) {
     return { ...base, reasonCode: 'MISSING_SENDER_IDENTITY' };
+  }
+  const counter = resolveCounter(raw, header);
+  const resolvedCounter = Number.isFinite(counter) ? counter : baseCounter;
+  const meta = raw?.meta || header?.meta || null;
+  const msgTypeHint = resolveMsgType(meta, header);
+  const rawMessageId = normalizeMessageId(raw);
+  const messageId = rawMessageId || targetMessageId;
+  if (msgTypeHint === 'contact-share') {
+    if (!tokenB64) {
+      return { ...base, reasonCode: 'MISSING_SESSION_KEY', counter: resolvedCounter, messageId };
+    }
+    const envelope = { iv: header.iv_b64, ct: ciphertextB64 };
+    try {
+      await decryptContactPayload(tokenB64, envelope);
+    } catch {
+      return { ...base, reasonCode: 'DECRYPT_FAIL', counter: resolvedCounter, messageId };
+    }
+    const plaintext = JSON.stringify({ type: 'contact-share', envelope });
+    const applyResult = await applyContactShareFromCommit({
+      peerAccountDigest: senderDigest,
+      peerDeviceId: senderDeviceId,
+      sessionKey: tokenB64,
+      plaintext,
+      messageId,
+      sourceTag: 'messages-flow:contact-share-commit'
+    });
+    if (!applyResult?.ok) {
+      return {
+        ...base,
+        reasonCode: applyResult?.reasonCode || 'CONTACT_SHARE_APPLY_FAILED',
+        counter: resolvedCounter,
+        messageId,
+        decryptOk: true,
+        vaultPutOk: true
+      };
+    }
+    return {
+      ok: true,
+      reasonCode: null,
+      counter: resolvedCounter,
+      messageId,
+      decryptOk: true,
+      vaultPutOk: true
+    };
+  }
+  if (!adapters?.drDecryptText || !adapters?.drState || !adapters?.vaultPutIncomingKey) {
+    return { ...base, reasonCode: 'ADAPTERS_UNAVAILABLE' };
   }
   const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
   if (!hasUsableDrState(state)) {
@@ -392,16 +473,11 @@ async function commitIncomingSingle(params = {}, adapters) {
     selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
   } catch {}
 
-  const counter = resolveCounter(raw, header);
-  const resolvedCounter = Number.isFinite(counter) ? counter : baseCounter;
-  const meta = raw?.meta || header?.meta || null;
-  const msgTypeHint = resolveMsgType(meta, header);
-  const rawMessageId = normalizeMessageId(raw);
-  const messageId = rawMessageId || targetMessageId;
   const packetKey = messageId || (Number.isFinite(resolvedCounter)
     ? `${conversationId}:${resolvedCounter}`
     : null);
   let messageKeyB64 = null;
+  let plaintext = null;
 
   try {
     plaintext = await adapters.drDecryptText(state, {

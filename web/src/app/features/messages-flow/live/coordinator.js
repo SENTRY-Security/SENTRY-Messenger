@@ -206,7 +206,8 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
       conversationId,
       tokenB64,
       peerAccountDigest,
-      peerDeviceId
+      peerDeviceId,
+      item: raw
     });
   } catch (err) {
     readyResult = {
@@ -256,6 +257,7 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
   try {
     commitResult = await stateAccess.commitIncomingSingle({
       conversationId,
+      tokenB64,
       peerAccountDigest,
       peerDeviceId,
       item: raw,
