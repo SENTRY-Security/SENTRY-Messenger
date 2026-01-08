@@ -203,7 +203,8 @@ export function buildDecryptError({
   direction,
   ts,
   msgType,
-  reason
+  reason,
+  reasonCode
 } = {}) {
   return {
     messageId: messageId || null,
@@ -213,7 +214,8 @@ export function buildDecryptError({
     msgType: msgType || null,
     kind: SEMANTIC_KIND.USER_MESSAGE,
     control: false,
-    reason: reason || 'decrypt_failed'
+    reason: reason || 'decrypt_failed',
+    reasonCode: reasonCode || reason || null
   };
 }
 

@@ -21,7 +21,8 @@ const initialState = () => ({
   startedAt: null,
   updatedAt: null,
   stages: {},
-  trace: []
+  trace: [],
+  replayHandoff: []
 });
 
 const state = initialState();
@@ -35,6 +36,14 @@ function clampTrace(list, max) {
   if (!Array.isArray(list)) return [];
   if (list.length <= cap) return list;
   return list.slice(list.length - cap);
+}
+
+function normalizeCounter(value, { allowZero = false } = {}) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  if (!Number.isInteger(num)) return null;
+  if (allowZero ? num < 0 : num <= 0) return null;
+  return num;
 }
 
 function emitStageEvent(stage, ok, reasonCode, progress) {
@@ -79,6 +88,20 @@ function recordStageResult(stage, { ok, reasonCode, progress } = {}) {
   logStageTrace(stage, ok, reasonCode, progress);
 }
 
+function recordReplayHandoff({ conversationId, counter, maxCounter, reasonCode, source } = {}) {
+  const entry = {
+    conversationId: normalizeConversationId(conversationId),
+    counter: normalizeCounter(counter),
+    maxCounter: normalizeCounter(maxCounter),
+    reasonCode: reasonCode || null,
+    source: typeof source === 'string' ? source : null,
+    tsMs: nowMs()
+  };
+  state.replayHandoff = clampTrace([...(state.replayHandoff || []), entry], RESTORE_PIPELINE_LOG_CAP);
+  state.updatedAt = nowMs();
+  return entry;
+}
+
 function setStage(stage) {
   state.stage = stage;
   state.stageIndex = STAGES.indexOf(stage);
@@ -93,7 +116,8 @@ function buildSummary() {
     stageIndex: state.stageIndex,
     inFlight: state.inFlight,
     stages: {},
-    trace: Array.isArray(state.trace) ? state.trace.slice() : []
+    trace: Array.isArray(state.trace) ? state.trace.slice() : [],
+    replayHandoff: Array.isArray(state.replayHandoff) ? state.replayHandoff.slice() : []
   };
   for (const stage of STAGES) {
     summary.stages[stage] = state.stages[stage] || null;
@@ -156,6 +180,43 @@ export function resetRestorePipelineState() {
   Object.keys(state).forEach((key) => {
     state[key] = reset[key];
   });
+}
+
+export function handoffReplayVaultMissing({
+  conversationId,
+  counter,
+  maxCounter,
+  reasonCode,
+  source
+} = {}) {
+  const normalizedConversationId = normalizeConversationId(conversationId);
+  const normalizedCounter = normalizeCounter(counter);
+  const normalizedMaxCounter = normalizeCounter(maxCounter);
+  const entry = recordReplayHandoff({
+    conversationId: normalizedConversationId,
+    counter: normalizedCounter,
+    maxCounter: normalizedMaxCounter,
+    reasonCode: reasonCode || 'vault_missing',
+    source
+  });
+  const targetCounter = normalizedCounter ?? normalizedMaxCounter ?? null;
+  if (!normalizedConversationId) {
+    return { ok: false, reasonCode: 'MISSING_CONVERSATION_ID', handoff: entry };
+  }
+  if (!Number.isFinite(targetCounter)) {
+    return { ok: false, reasonCode: 'INVALID_TARGET_COUNTER', handoff: entry };
+  }
+  const enqueueResult = restoreGapQueue.enqueue({
+    conversationId: normalizedConversationId,
+    targetCounter,
+    createdAtMs: entry.tsMs
+  });
+  return {
+    ok: enqueueResult?.ok === true,
+    reasonCode: enqueueResult?.reason || null,
+    targetCounter,
+    handoff: entry
+  };
 }
 
 export async function startRestorePipeline({ source } = {}) {
@@ -628,4 +689,3 @@ export async function waitForStage4Convergence(opts = {}) {
     lastProgress
   };
 }
-

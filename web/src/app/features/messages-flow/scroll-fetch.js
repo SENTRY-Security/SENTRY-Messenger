@@ -12,6 +12,7 @@ import {
 import { listSecureMessagesForReplay } from './server-api.js';
 import { decryptReplayBatch } from './vault-replay.js';
 import { normalizeReplayItems } from './normalize.js';
+import { handoffReplayVaultMissing } from '../restore-coordinator.js';
 
 function normalizeCursor(cursor) {
   if (cursor === null || cursor === undefined) return { cursorTs: null, cursorId: null };
@@ -22,6 +23,26 @@ function normalizeCursor(cursor) {
     };
   }
   return { cursorTs: cursor, cursorId: null };
+}
+
+function resolveReplayMissingKeyHandoff(errors) {
+  const list = Array.isArray(errors) ? errors : [];
+  let maxCounter = null;
+  let reasonCode = null;
+  for (const entry of list) {
+    const entryReason = entry?.reasonCode || entry?.reason || null;
+    if (entryReason !== 'vault_missing' && entryReason !== 'MISSING_MESSAGE_KEY') continue;
+    const counter = Number(entry?.counter);
+    if (Number.isFinite(counter)) {
+      maxCounter = maxCounter === null ? counter : Math.max(maxCounter, counter);
+    }
+    if (!reasonCode) reasonCode = entryReason;
+  }
+  return {
+    hasMissing: reasonCode !== null,
+    maxCounter,
+    reasonCode
+  };
 }
 
 export function createMessagesFlowScrollFetch(deps = {}) {
@@ -78,6 +99,15 @@ export function createMessagesFlowScrollFetch(deps = {}) {
       items: decryptedItems,
       errors
     });
+    const missingHandoff = resolveReplayMissingKeyHandoff(normalized.errors);
+    if (missingHandoff.hasMissing) {
+      handoffReplayVaultMissing({
+        conversationId,
+        maxCounter: missingHandoff.maxCounter,
+        reasonCode: missingHandoff.reasonCode || 'vault_missing',
+        source: 'scroll_fetch'
+      });
+    }
     return {
       items: normalized.items,
       errors: normalized.errors,
