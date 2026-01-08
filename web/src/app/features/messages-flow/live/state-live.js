@@ -249,7 +249,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
   const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
   let messageKeyB64 = null;
   let plaintext = null;
-  let plaintext = null;
 
   try {
     plaintext = await adapters.drDecryptText(state, {
