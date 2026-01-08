@@ -300,18 +300,6 @@ function createLegacyFacadeAdapter() {
 
       const shouldTriggerLive = decisionResult?.action === 'TRIGGER_LIVE_MVP';
 
-      if (!flags.USE_MESSAGES_FLOW_LIVE) {
-        logCapped('liveMvpResultTrace', {
-          planned: false,
-          ...liveJobSummary,
-          ok: null,
-          reasonCode: 'SKIPPED_FLAG_OFF',
-          tookMs: 0,
-          metrics: summarizeLiveMvpMetrics(null)
-        }, LIVE_MVP_RESULT_LOG_CAP);
-        return { ok: false, reasonCode: 'LIVE_DISABLED' };
-      }
-
       if (!shouldTriggerLive) {
         if (flags.USE_MESSAGES_FLOW_LIVE) {
           logCapped('liveMvpResultTrace', {
