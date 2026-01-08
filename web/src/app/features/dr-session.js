@@ -1017,6 +1017,16 @@ export function restoreDrStateFromSnapshot(params = {}) {
   return true;
 }
 
+function isPersistableSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  const required = ['rk_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64', 'theirRatchetPub_b64'];
+  for (const key of required) {
+    const value = snapshot[key];
+    if (typeof value !== 'string' || !value.trim()) return false;
+  }
+  return true;
+}
+
 export function persistDrSnapshot(params = {}) {
   const { state, snapshot } = params;
   const { digest: peer, deviceId: peerDeviceId } = ensurePeerIdentity({
@@ -1034,7 +1044,10 @@ export function persistDrSnapshot(params = {}) {
   assertU8('persistDrSnapshot:rk', holder.rk);
   if (holder.ckS) assertU8('persistDrSnapshot:ckS', holder.ckS);
   if (holder.ckR) assertU8('persistDrSnapshot:ckR', holder.ckR);
-  const snap = snapshot || snapshotDrState(holder);
+  let snap = snapshot || snapshotDrState(holder);
+  if (snap && !isPersistableSnapshot(snap)) {
+    snap = null;
+  }
   if (!snap) {
     try {
       drConsole.warn('[dr] persist snapshot skipped: missing snapshot', { peerAccountDigest: peer, peerDeviceId });

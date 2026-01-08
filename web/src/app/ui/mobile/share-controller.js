@@ -360,6 +360,15 @@ export function setupShareController(options) {
   }
 
   function storeContactSecretMapping({ peerAccountDigest, peerDeviceId, sessionKey, conversation, drState, role }) {
+    const hasPersistableSnapshot = (snapshot) => {
+      if (!snapshot || typeof snapshot !== 'object') return false;
+      const required = ['rk_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64', 'theirRatchetPub_b64'];
+      for (const key of required) {
+        const value = snapshot[key];
+        if (typeof value !== 'string' || !value.trim()) return false;
+      }
+      return true;
+    };
     const peerDeviceResolved = peerDeviceId ? peerDeviceId : null;
     const key = normalizePeerKey(peerAccountDigest, { peerDeviceId: peerDeviceResolved });
     const selfDeviceId = ensureDeviceId();
@@ -449,7 +458,7 @@ export function setupShareController(options) {
     if (chosenRole) update.role = chosenRole;
     if (drState) {
       const snapshot = snapshotDrState(drState);
-      if (snapshot) {
+      if (hasPersistableSnapshot(snapshot)) {
         update.dr = { state: snapshot };
       }
     }
