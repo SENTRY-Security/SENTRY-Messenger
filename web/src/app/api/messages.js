@@ -163,13 +163,39 @@ export async function createSecureMessage({
   if (!ciphertextB64) throw new Error('ciphertextB64 required');
   if (!Number.isFinite(counter)) throw new Error('counter required');
   if (!id) throw new Error('id (messageId) required');
-  const senderDevice = senderDeviceId || ensureDeviceId();
+  const headerPayload = { ...header };
+  const headerDeviceId = headerPayload?.device_id || headerPayload?.deviceId || null;
+  const metaSenderDeviceId = headerPayload?.meta?.sender_device_id
+    || headerPayload?.meta?.senderDeviceId
+    || null;
+  let selfDeviceId = null;
+  try {
+    selfDeviceId = ensureDeviceId();
+  } catch (err) {
+    if (!senderDeviceId && !headerDeviceId && !metaSenderDeviceId) throw err;
+  }
+  const senderDevice = headerDeviceId || metaSenderDeviceId || senderDeviceId || selfDeviceId;
   if (!senderDevice) throw new Error('senderDeviceId required');
+  if (headerDeviceId && senderDevice !== headerDeviceId) {
+    throw new Error('senderDeviceId/header.device_id mismatch');
+  }
+  if (selfDeviceId && senderDevice !== selfDeviceId) {
+    throw new Error('senderDeviceId/self device mismatch');
+  }
   if (!receiverDeviceId) throw new Error('receiverDeviceId required');
   if (!receiverAccountDigest) throw new Error('receiverAccountDigest required');
-  const headerPayload = { ...header };
   if (headerPayload.deviceId && !headerPayload.device_id) {
     headerPayload.device_id = headerPayload.deviceId;
+  }
+  if (headerPayload.device_id && !headerPayload.deviceId) {
+    headerPayload.deviceId = headerPayload.device_id;
+  }
+  if (headerPayload.meta && typeof headerPayload.meta === 'object') {
+    headerPayload.meta = {
+      ...headerPayload.meta,
+      sender_device_id: senderDevice,
+      senderDeviceId: senderDevice
+    };
   }
   const overrides = {
     conversation_id: conversationId,
