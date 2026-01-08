@@ -7,7 +7,7 @@ import { recordMessageRead, recordMessageDelivered } from '../../features/messag
 import { clearConversationTombstone } from '../../features/messages-support/conversation-tombstone-store.js';
 import { clearConversationHistory, getConversationClearAfter } from '../../features/messages-support/conversation-clear-store.js';
 import { getVaultAckCounter, recordVaultAckCounter } from '../../features/messages-support/vault-ack-store.js';
-import { legacyFacade } from '../../features/messages-flow-facade.js';
+import { messagesFlowFacade } from '../../features/messages-flow-facade.js';
 import {
   appendUserMessage as timelineAppendUserMessage,
   getTimeline as timelineGetTimeline,
@@ -2122,7 +2122,7 @@ export function initMessagesPane({
             messageId: null,
             serverMessageId: null
           });
-          const previewResult = await legacyFacade.onScrollFetchMore({
+          const previewResult = await messagesFlowFacade.onScrollFetchMore({
             conversationId: thread.conversationId,
             tokenB64: thread.conversationToken,
             peerAccountDigest: peerDigest,
@@ -4127,7 +4127,7 @@ function resolveRenderEntryCounter(entry) {
       });
       const allowReceipts = mutateState !== false;
       const onMessageDecrypted = (payload) => handleMessageDecrypted({ ...payload, allowReceipts });
-      const listResult = await legacyFacade.onScrollFetchMore({
+      const listResult = await messagesFlowFacade.onScrollFetchMore({
         conversationId: state.conversationId,
         tokenB64: state.conversationToken,
         peerAccountDigest: state.activePeerDigest,
@@ -4668,7 +4668,7 @@ function resolveRenderEntryCounter(entry) {
     state.conversationToken = conversation.token_b64;
     state.conversationId = conversation.conversation_id;
     resetProcessedMessages(state.conversationId);
-    legacyFacade.onEnterConversation({
+    messagesFlowFacade.onEnterConversation({
       conversationId: state.conversationId,
       peerKey: activePeerKey,
       peerAccountDigest: peerDigest,
@@ -4809,7 +4809,7 @@ function resolveRenderEntryCounter(entry) {
           }));
         } catch {}
       }
-      await legacyFacade.onEnterConversation({
+      await messagesFlowFacade.onEnterConversation({
         conversationId: state.conversationId,
         peerKey: activePeerKey,
         loadActiveConversationMessages,
@@ -5939,7 +5939,7 @@ function resolveRenderEntryCounter(entry) {
         messageId: null,
         serverMessageId: null
       });
-      const syncResult = await legacyFacade.onScrollFetchMore({
+      const syncResult = await messagesFlowFacade.onScrollFetchMore({
         conversationId: convId,
         tokenB64: tokenB64 || null,
         peerAccountDigest: peerDigest,
@@ -6398,7 +6398,7 @@ function resolveRenderEntryCounter(entry) {
       state.activePeerDigest = null;
       state.conversationId = conversationId;
       state.conversationToken = token;
-      legacyFacade.onEnterConversation({
+      messagesFlowFacade.onEnterConversation({
         conversationId,
         loadActiveConversationMessages,
         runCatchup: false
@@ -6716,7 +6716,7 @@ function resolveRenderEntryCounter(entry) {
       const state = getMessageState();
       if (state.activePeerDigest && state.conversationToken) {
         try {
-          await legacyFacade.onEnterConversation({
+          await messagesFlowFacade.onEnterConversation({
             conversationId: state.conversationId,
             peerKey: state.activePeerDigest,
             loadActiveConversationMessages,

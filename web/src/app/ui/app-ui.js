@@ -12,7 +12,7 @@ import {
   getAccountDigest
 } from '../core/store.js';
 import { encryptAndPut, signGet, downloadAndDecrypt } from '../features/media.js';
-import { legacyFacade } from '../features/messages-flow-facade.js';
+import { messagesFlowFacade } from '../features/messages-flow-facade.js';
 import { ensureDrSession, sendDrText } from '../features/dr-session.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
@@ -294,7 +294,7 @@ async function onLoadMessages() {
     if (!peerDeviceId) {
       throw new Error('peerDeviceId missing: UI 不應以手動輸入方式取得，請從既有會話資料提供');
     }
-    const { items, nextCursor, nextCursorTs, errors } = await legacyFacade.onScrollFetchMore({
+    const { items, nextCursor, nextCursorTs, errors } = await messagesFlowFacade.onScrollFetchMore({
       conversationId,
       tokenB64,
       peerAccountDigest: peerDigest,

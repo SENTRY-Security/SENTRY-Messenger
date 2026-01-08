@@ -583,5 +583,4 @@ function createLegacyFacadeAdapter() {
   };
 }
 
-export const legacyFacade = createLegacyFacadeAdapter();
-export const messagesFlowFacade = legacyFacade;
+export const messagesFlowFacade = createLegacyFacadeAdapter();
