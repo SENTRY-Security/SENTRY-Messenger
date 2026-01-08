@@ -172,7 +172,12 @@ async function ensureLiveReady(params = {}, adapters) {
   } catch (err) {
     return { ok: false, reasonCode: 'DR_STATE_UNAVAILABLE', errorMessage: err?.message || String(err) };
   }
-  const state = adapters.drState({ peerAccountDigest, peerDeviceId });
+  const readyPeerAccountDigest = peerAccountDigest;
+  const readyPeerDeviceId = peerDeviceId;
+  const state = adapters.drState({
+    peerAccountDigest: readyPeerAccountDigest,
+    peerDeviceId: readyPeerDeviceId
+  });
   if (!hasUsableDrState(state)) {
     return { ok: false, reasonCode: 'DR_STATE_UNAVAILABLE' };
   }
@@ -212,7 +217,25 @@ async function decryptIncomingSingle(params = {}, adapters) {
       skippedCount: 1
     };
   }
-  const state = adapters.drState({ peerAccountDigest, peerDeviceId });
+  const header = resolveHeader(raw);
+  const ciphertextB64 = resolveCiphertextB64(raw);
+  if (!header || !ciphertextB64 || !header.iv_b64) {
+    return {
+      ...base,
+      reasonCode: 'MISSING_CIPHERTEXT',
+      skippedCount: 1
+    };
+  }
+  const senderDigest = resolveSenderDigest(raw, header);
+  const senderDeviceId = resolveSenderDeviceId(raw, header);
+  if (!senderDigest || !senderDeviceId) {
+    return {
+      ...base,
+      reasonCode: 'MISSING_SENDER_IDENTITY',
+      skippedCount: 1
+    };
+  }
+  const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
   if (!hasUsableDrState(state)) {
     return {
       ...base,
@@ -223,23 +246,13 @@ async function decryptIncomingSingle(params = {}, adapters) {
 
   state.baseKey = state.baseKey || {};
   if (!state.baseKey.conversationId) state.baseKey.conversationId = conversationId;
-  if (!state.baseKey.peerDeviceId) state.baseKey.peerDeviceId = peerDeviceId;
-  if (!state.baseKey.peerAccountDigest) state.baseKey.peerAccountDigest = peerAccountDigest;
+  if (state.baseKey.peerDeviceId !== senderDeviceId) state.baseKey.peerDeviceId = senderDeviceId;
+  if (state.baseKey.peerAccountDigest !== senderDigest) state.baseKey.peerAccountDigest = senderDigest;
 
   let selfDeviceId = null;
   try {
     selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
   } catch {}
-
-  const header = resolveHeader(raw);
-  const ciphertextB64 = resolveCiphertextB64(raw);
-  if (!header || !ciphertextB64 || !header.iv_b64) {
-    return {
-      ...base,
-      reasonCode: 'MISSING_CIPHERTEXT',
-      skippedCount: 1
-    };
-  }
 
   const counter = resolveCounter(raw, header);
   const meta = raw?.meta || header?.meta || null;
@@ -289,9 +302,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
         result.reasonCode = 'MISSING_MESSAGE_FIELDS';
         result.skippedCount = 1;
       } else {
-        const senderDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId || null;
         const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
-        const senderDigest = resolveSenderDigest(raw, header);
         const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
 
         result.ok = true;
@@ -318,7 +329,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
 
   if (adapters?.persistDrSnapshot) {
     try {
-      adapters.persistDrSnapshot({ peerAccountDigest, peerDeviceId, state });
+      adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, state });
     } catch {}
   }
 
@@ -349,26 +360,30 @@ async function commitIncomingSingle(params = {}, adapters) {
   if (!adapters?.drDecryptText || !adapters?.drState || !adapters?.vaultPutIncomingKey) {
     return { ...base, reasonCode: 'ADAPTERS_UNAVAILABLE' };
   }
-  const state = adapters.drState({ peerAccountDigest, peerDeviceId });
+  const header = resolveHeader(raw);
+  const ciphertextB64 = resolveCiphertextB64(raw);
+  if (!header || !ciphertextB64 || !header.iv_b64) {
+    return { ...base, reasonCode: 'MISSING_CIPHERTEXT' };
+  }
+  const senderDigest = resolveSenderDigest(raw, header);
+  const senderDeviceId = resolveSenderDeviceId(raw, header);
+  if (!senderDigest || !senderDeviceId) {
+    return { ...base, reasonCode: 'MISSING_SENDER_IDENTITY' };
+  }
+  const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
   if (!hasUsableDrState(state)) {
     return { ...base, reasonCode: 'DR_STATE_UNAVAILABLE' };
   }
 
   state.baseKey = state.baseKey || {};
   if (!state.baseKey.conversationId) state.baseKey.conversationId = conversationId;
-  if (!state.baseKey.peerDeviceId) state.baseKey.peerDeviceId = peerDeviceId;
-  if (!state.baseKey.peerAccountDigest) state.baseKey.peerAccountDigest = peerAccountDigest;
+  if (state.baseKey.peerDeviceId !== senderDeviceId) state.baseKey.peerDeviceId = senderDeviceId;
+  if (state.baseKey.peerAccountDigest !== senderDigest) state.baseKey.peerAccountDigest = senderDigest;
 
   let selfDeviceId = null;
   try {
     selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
   } catch {}
-
-  const header = resolveHeader(raw);
-  const ciphertextB64 = resolveCiphertextB64(raw);
-  if (!header || !ciphertextB64 || !header.iv_b64) {
-    return { ...base, reasonCode: 'MISSING_CIPHERTEXT' };
-  }
 
   const counter = resolveCounter(raw, header);
   const resolvedCounter = Number.isFinite(counter) ? counter : baseCounter;
@@ -398,7 +413,7 @@ async function commitIncomingSingle(params = {}, adapters) {
 
   if (adapters?.persistDrSnapshot) {
     try {
-      adapters.persistDrSnapshot({ peerAccountDigest, peerDeviceId, state });
+      adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, state });
     } catch {}
   }
 
@@ -421,9 +436,9 @@ async function commitIncomingSingle(params = {}, adapters) {
     };
   }
 
-  const senderDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId || null;
+  const resolvedSenderDeviceId = senderDeviceId || peerDeviceId || null;
   const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
-  if (!senderDeviceId || !targetDeviceId) {
+  if (!resolvedSenderDeviceId || !targetDeviceId) {
     return {
       ...base,
       reasonCode: 'MISSING_MESSAGE_FIELDS',
@@ -437,7 +452,7 @@ async function commitIncomingSingle(params = {}, adapters) {
     await adapters.vaultPutIncomingKey({
       conversationId,
       messageId,
-      senderDeviceId,
+      senderDeviceId: resolvedSenderDeviceId,
       targetDeviceId,
       direction: 'incoming',
       msgType: msgTypeHint || 'text',
@@ -456,8 +471,8 @@ async function commitIncomingSingle(params = {}, adapters) {
 
   if (msgTypeHint === 'contact-share') {
     const applyResult = await applyContactShareFromCommit({
-      peerAccountDigest,
-      peerDeviceId,
+      peerAccountDigest: senderDigest,
+      peerDeviceId: senderDeviceId,
       sessionKey: tokenB64,
       plaintext,
       messageId,
