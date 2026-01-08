@@ -2072,6 +2072,11 @@ async function processDecryptPipelineForConversation({
 }
 
 export async function listSecureAndDecrypt(params = {}) {
+  logCapped('legacyPipelineCallTrace', { fn: 'listSecureAndDecrypt' }, 5);
+  throw new Error('LEGACY_PIPELINE_RETIRED');
+}
+
+async function legacyListSecureAndDecrypt(params = {}) {
   const {
     conversationId,
     tokenB64,
@@ -5729,6 +5734,16 @@ export async function triggerServerCatchup({
   peerAccountDigest,
   peerDeviceId
 } = {}) {
+  logCapped('legacyPipelineCallTrace', { fn: 'triggerServerCatchup' }, 5);
+  throw new Error('LEGACY_PIPELINE_RETIRED');
+}
+
+async function legacyTriggerServerCatchup({
+  source,
+  conversationId,
+  peerAccountDigest,
+  peerDeviceId
+} = {}) {
   const convId = conversationId || null;
   const deviceId = peerDeviceId || null;
   if (!convId || !deviceId) return { ok: false, reason: 'missing params' };
@@ -5806,6 +5821,11 @@ function runServerCatchupForTargets({ source } = {}) {
 }
 
 export function triggerServerCatchupForTargets({ source, debounceMs } = {}) {
+  logCapped('legacyPipelineCallTrace', { fn: 'triggerServerCatchupForTargets' }, 5);
+  throw new Error('LEGACY_PIPELINE_RETIRED');
+}
+
+function legacyTriggerServerCatchupForTargets({ source, debounceMs } = {}) {
   const delayRaw = Number.isFinite(Number(debounceMs)) ? Number(debounceMs) : 0;
   const delay = Math.max(0, Math.min(delayRaw, SERVER_CATCHUP_TRIGGER_COALESCE_MS));
   const sourceTag = normalizeCatchupSource(source);
@@ -5943,6 +5963,11 @@ function logCatchupTrace({
 }
 
 export async function syncOfflineDecryptNow({ source, reasonCode } = {}) {
+  logCapped('legacyPipelineCallTrace', { fn: 'syncOfflineDecryptNow' }, 5);
+  throw new Error('LEGACY_PIPELINE_RETIRED');
+}
+
+async function legacySyncOfflineDecryptNow({ source, reasonCode } = {}) {
   const sourceTag = normalizeOfflineSyncSource(source);
   const sourceLabel = normalizeBRouteSourceLabel(sourceTag);
   try {

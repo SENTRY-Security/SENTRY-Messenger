@@ -108,6 +108,7 @@ const REPLAY_DEBUG_KEYS = new Set([
   'vaultPutTrace',
   'vaultGetTrace',
   'offlineDecryptFlushTrace',
+  'legacyPipelineCallTrace',
   'offlineCatchupTargetsTrace',
   'offlineSyncTriggerTrace',
   'serverCatchupProbeTrace',
@@ -311,6 +312,7 @@ const LOG_CAP_OVERRIDE = new Map([
   ['restorePipelineStageTrace', 5],
   ['restorePipelineDoneTrace', 5],
   ['localCounterProviderTrace', 5],
+  ['legacyPipelineCallTrace', 5],
 ]);
 const FORENSICS_LOG_COUNTS = new Map();
 
