@@ -13,11 +13,7 @@ import { consumeLiveJob } from './messages-flow/live/coordinator.js';
 import { createLiveJobFromWsEvent } from './messages-flow/live/job.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 import { decideNextAction } from './messages-flow/reconcile/decision.js';
-import {
-  USE_MESSAGES_FLOW_SCROLL_FETCH,
-  USE_MESSAGES_FLOW_LIVE,
-  USE_MESSAGES_FLOW_MAX_COUNTER_PROBE
-} from './messages-flow/flags.js';
+import { getMessagesFlowFlags } from './messages-flow/flags.js';
 
 const LIVE_ROUTE_LOG_CAP = 5;
 const LIVE_MVP_RESULT_LOG_CAP = 5;
@@ -113,7 +109,8 @@ function collectActiveConversationIds() {
 }
 
 function triggerMaxCounterProbeForActiveConversations({ source } = {}) {
-  if (!USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) return;
+  const flags = getMessagesFlowFlags();
+  if (!flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) return;
   const senderDeviceId = storeGetDeviceId();
   const senderDeviceIdSuffix4 = toDeviceIdSuffix4(senderDeviceId);
   const sourceTag = normalizeSourceTag(source, null);
@@ -227,6 +224,7 @@ function createLegacyFacadeAdapter() {
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
     onWsIncomingMessageNew(payloadOrEvent = {}, ctx = null) {
+      const flags = getMessagesFlowFlags();
       const hasExplicitCtx = !!(ctx && typeof ctx === 'object');
       const isPayloadObject = !hasExplicitCtx && payloadOrEvent && typeof payloadOrEvent === 'object' && (
         Object.prototype.hasOwnProperty.call(payloadOrEvent, 'event')
@@ -265,7 +263,7 @@ function createLegacyFacadeAdapter() {
       const decisionContext = {
         eventType: 'ws_incoming',
         flags: {
-          liveEnabled: USE_MESSAGES_FLOW_LIVE,
+          liveEnabled: flags.USE_MESSAGES_FLOW_LIVE,
           hasLiveJob: !!liveJob,
           isOnline
         },
@@ -289,7 +287,7 @@ function createLegacyFacadeAdapter() {
         decision: decisionResult?.action || null,
         reasonCode: decisionResult?.reason || null,
         jobReason: liveJobReason || null,
-        flagState: USE_MESSAGES_FLOW_LIVE
+        flagState: flags.USE_MESSAGES_FLOW_LIVE
       }, LIVE_ROUTE_LOG_CAP);
 
       logCapped('decisionTrace', {
@@ -302,7 +300,7 @@ function createLegacyFacadeAdapter() {
 
       const shouldTriggerLive = decisionResult?.action === 'TRIGGER_LIVE_MVP';
 
-      if (!USE_MESSAGES_FLOW_LIVE) {
+      if (!flags.USE_MESSAGES_FLOW_LIVE) {
         logCapped('liveMvpResultTrace', {
           planned: false,
           ...liveJobSummary,
@@ -315,7 +313,7 @@ function createLegacyFacadeAdapter() {
       }
 
       if (!shouldTriggerLive) {
-        if (USE_MESSAGES_FLOW_LIVE) {
+        if (flags.USE_MESSAGES_FLOW_LIVE) {
           logCapped('liveMvpResultTrace', {
             planned: false,
             ...liveJobSummary,
@@ -418,7 +416,8 @@ function createLegacyFacadeAdapter() {
       void replay;
       void reason;
       void loadOptions;
-      if (USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
+      const flags = getMessagesFlowFlags();
+      if (flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
         const selfDeviceId = storeGetDeviceId();
         if (!selfDeviceId) {
           logCapped('maxCounterProbeTrace', {
@@ -442,7 +441,7 @@ function createLegacyFacadeAdapter() {
         if (reason !== undefined) mergedLoadOptions.reason = reason;
         loadActiveConversationMessages(mergedLoadOptions);
       }
-      return { ok: true, reasonCode: USE_MESSAGES_FLOW_MAX_COUNTER_PROBE ? null : 'SKIPPED_FLAG_OFF' };
+      return { ok: true, reasonCode: flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE ? null : 'SKIPPED_FLAG_OFF' };
     },
 
     // Event -> legacy pipeline only. Do not add new flow logic here.
@@ -533,11 +532,12 @@ function createLegacyFacadeAdapter() {
           mergedOptions.cursorTs = cursor;
         }
       }
+      const flags = getMessagesFlowFlags();
       const limit = Number.isFinite(Number(mergedOptions.limit)) ? Number(mergedOptions.limit) : null;
       const hasCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined;
       const allowReplay = mergedOptions.allowReplay === true;
       const isReplay = allowReplay && mergedOptions.mutateState === false;
-      const reasonCode = USE_MESSAGES_FLOW_SCROLL_FETCH
+      const reasonCode = flags.USE_MESSAGES_FLOW_SCROLL_FETCH
         ? (isReplay ? 'OK' : (allowReplay ? 'MUTATE_STATE_NOT_REPLAY' : 'ALLOW_REPLAY_OFF'))
         : 'FORCED_MESSAGES_FLOW';
       logCapped('scrollFetchRouteTrace', {

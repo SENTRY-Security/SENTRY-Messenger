@@ -7,7 +7,7 @@ import {
   GAP_QUEUE_RETRY_MAX,
   GAP_QUEUE_RETRY_INTERVAL_MS
 } from './policy.js';
-import { USE_MESSAGES_FLOW_B_ROUTE_COMMIT } from './flags.js';
+import { getMessagesFlowFlags } from './flags.js';
 import { commitBRouteCounter as liveCommitBRouteCounter } from './live/coordinator.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
 
@@ -103,6 +103,12 @@ function defaultSleep(ms) {
   });
 }
 
+function readFlagBySuffix(flags, suffix) {
+  if (!flags || typeof flags !== 'object') return null;
+  const key = Object.keys(flags).find((flagKey) => flagKey.endsWith(suffix));
+  return key ? flags[key] : null;
+}
+
 export function createGapQueue(deps = {}) {
   const logger = typeof deps.logCapped === 'function' ? deps.logCapped : logCapped;
   const fetchByCounter = typeof deps.getSecureMessageByCounter === 'function'
@@ -123,7 +129,9 @@ export function createGapQueue(deps = {}) {
   const resolveConversationContext = typeof deps.resolveConversationContext === 'function'
     ? deps.resolveConversationContext
     : resolveConversationContextFromStore;
-  const commitEnabled = USE_MESSAGES_FLOW_B_ROUTE_COMMIT
+  const flags = getMessagesFlowFlags();
+  const commitFlag = readFlagBySuffix(flags, 'B_ROUTE_COMMIT');
+  const commitEnabled = commitFlag === true
     && typeof commitBRouteCounter === 'function'
     && typeof resolveConversationContext === 'function';
 
