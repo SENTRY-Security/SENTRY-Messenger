@@ -102,6 +102,14 @@ function queuePendingContactShare({ peerDigest, peerDeviceId, envelope, item }) 
   return key;
 }
 
+function logContactShareDropTrace({ peerDigest, peerDeviceId, reasonCode } = {}) {
+  logCapped('contactShareDropTrace', {
+    peerDigestPrefix8: safePrefix(peerDigest, 8),
+    peerDeviceIdSuffix4: safeSuffix(peerDeviceId, 4),
+    reasonCode: reasonCode || null
+  }, CONTACT_SHARE_PENDING_LOG_CAP);
+}
+
 function extractConversationFromContact(contact) {
   if (!contact?.conversation?.token_b64 || !contact?.conversation?.conversation_id) return null;
   return {
@@ -216,12 +224,22 @@ export async function loadContacts() {
       const peerDigest = identityFromHeader.key || identityFromHeader.accountDigest || null;
       if (!peerDigest) {
         console.warn('[contacts]', { contactMissingDigest: item?.id || null });
+        logContactShareDropTrace({
+          peerDigest: header?.peerAccountDigest || header?.accountDigest || null,
+          peerDeviceId: header?.peerDeviceId || envelope?.peerDeviceId || item?.peer_device_id || null,
+          reasonCode: 'MISSING_PEER_DIGEST'
+        });
         continue;
       }
       const peerAccountDigest = peerDigest;
       const peerDeviceIdFromHeader = header?.peerDeviceId || envelope?.peerDeviceId || item?.peer_device_id || null;
       if (!peerDeviceIdFromHeader) {
         console.warn('[contacts]', { contactMissingPeerDevice: item?.id || null, peerAccountDigest });
+        logContactShareDropTrace({
+          peerDigest,
+          peerDeviceId: null,
+          reasonCode: 'MISSING_PEER_DEVICE_ID'
+        });
         diag.missingPeerDeviceCount += 1;
         continue; // 嚴禁 fallback：沒有對端裝置就不處理
       }
@@ -269,6 +287,11 @@ export async function loadContacts() {
         }
       } else {
         console.warn('[contacts] unsupported envelope format', { id: item?.id, envelope });
+        logContactShareDropTrace({
+          peerDigest,
+          peerDeviceId: peerDeviceIdFromHeader,
+          reasonCode: 'NOT_CONTACT_SHARE'
+        });
         continue;
       }
 
