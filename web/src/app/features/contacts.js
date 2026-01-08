@@ -25,6 +25,9 @@ const CONTACT_INFO_TAG = 'contact/v1';
 const missingSecretWarned = new Set();
 const CONTACT_SHARE_PENDING_LOG_CAP = 5;
 const pendingContactShares = new Map();
+const CONTACTS_CHANGED_EVENT = 'contacts:changed';
+const CONTACTS_CHANGED_THROTTLE_MS = 2000;
+const contactShareRefreshThrottle = new Map();
 let lastContactsHydrateSummary = null;
 function contactConvIds() {
   const ids = [];
@@ -49,6 +52,24 @@ function safeSuffix(value, len) {
   const trimmed = value.trim();
   if (!trimmed) return null;
   return trimmed.slice(-len);
+}
+
+function emitContactsChanged({ conversationId, peerKey, sourceTag }) {
+  if (!conversationId || typeof conversationId !== 'string') return;
+  if (typeof document === 'undefined') return;
+  const now = Date.now();
+  const last = contactShareRefreshThrottle.get(conversationId) || 0;
+  if (now - last < CONTACTS_CHANGED_THROTTLE_MS) return;
+  contactShareRefreshThrottle.set(conversationId, now);
+  const detail = {
+    reason: sourceTag || 'contact-share-commit',
+    conversationIdPrefix8: safePrefix(conversationId, 8),
+    peerKeyPrefix8: safePrefix(peerKey || '', 8),
+    tsMs: now
+  };
+  try {
+    document.dispatchEvent(new CustomEvent(CONTACTS_CHANGED_EVENT, { detail }));
+  } catch {}
 }
 
 function normalizePendingMessageId(value) {
@@ -268,6 +289,14 @@ export async function applyContactShareFromCommit({
     return { ok: false, reasonCode: 'CORE_UPSERT_FAILED' };
   }
   removePendingInvitesByPeer({ peerAccountDigest: digest, peerDeviceId: deviceId });
+  if (sourceTag === 'messages-flow:contact-share-commit') {
+    const peerKey = identity.key || (digest && deviceId ? `${digest}::${deviceId}` : null);
+    emitContactsChanged({
+      conversationId: conversation.conversation_id,
+      peerKey,
+      sourceTag
+    });
+  }
   return { ok: true };
 }
 

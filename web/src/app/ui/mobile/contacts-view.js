@@ -1250,6 +1250,19 @@ export function initContactsView(options) {
   document.addEventListener('contacts:refresh-after-consume', () => {
     refreshContactsAfterInviteConsume();
   });
+  document.addEventListener('contacts:changed', (event) => {
+    const detail = event?.detail || {};
+    if (detail?.reason !== 'contact-share-commit') return;
+    if (contactsRefreshing) return;
+    contactsRefreshing = true;
+    Promise.resolve()
+      .then(() => loadInitialContacts())
+      .then(() => renderContacts())
+      .catch((err) => log({ contactsRefreshError: err?.message || err, source: 'contacts:changed' }))
+      .finally(() => {
+        contactsRefreshing = false;
+      });
+  });
   document.addEventListener('contacts:show-delete', (event) => {
     const detail = event?.detail || {};
     const targetPeer = contactKey(detail.peerAccountDigest || detail.peer || detail.peerDigest);
