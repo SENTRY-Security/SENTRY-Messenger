@@ -5,9 +5,9 @@ import { logCapped } from '../../core/log.js';
 import { getSecureMessageByCounter as apiGetSecureMessageByCounter } from './server-api.js';
 import {
   GAP_QUEUE_RETRY_MAX,
-  GAP_QUEUE_RETRY_INTERVAL_MS,
-  USE_MESSAGES_FLOW_B_ROUTE_COMMIT
+  GAP_QUEUE_RETRY_INTERVAL_MS
 } from './policy.js';
+import { USE_MESSAGES_FLOW_B_ROUTE_COMMIT } from './flags.js';
 import { commitBRouteCounter as liveCommitBRouteCounter } from './live/coordinator.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
 

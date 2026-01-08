@@ -13,6 +13,11 @@ import { consumeLiveJob } from './messages-flow/live/coordinator.js';
 import { createLiveJobFromWsEvent } from './messages-flow/live/job.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 import { decideNextAction } from './messages-flow/reconcile/decision.js';
+import {
+  USE_MESSAGES_FLOW_SCROLL_FETCH,
+  USE_MESSAGES_FLOW_LIVE,
+  USE_MESSAGES_FLOW_MAX_COUNTER_PROBE
+} from './messages-flow/flags.js';
 
 const LIVE_ROUTE_LOG_CAP = 5;
 const LIVE_MVP_RESULT_LOG_CAP = 5;
@@ -27,9 +32,6 @@ const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
   fetchErrorsLength: 0
 });
 const DECISION_TRACE_LOG_CAP = 5;
-const USE_MESSAGES_FLOW_SCROLL_FETCH = false;
-const USE_MESSAGES_FLOW_LIVE = false;
-const USE_MESSAGES_FLOW_MAX_COUNTER_PROBE = false;
 const messagesFlowScrollFetch = createMessagesFlowScrollFetch();
 const maxCounterProbeQueue = createGapQueue();
 const maxCounterProbe = createMaxCounterProbe({ gapQueue: maxCounterProbeQueue });
