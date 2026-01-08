@@ -69,6 +69,8 @@ const REPLAY_DEBUG_KEYS = new Set([
   'contactShareStateChangeTrace',
   'contactSharePeerResolveTrace',
   'contactSharePendingLookupTrace',
+  'contactSharePendingTrace',
+  'contactSharePendingFlushTrace',
   'incomingTokenLookupTrace',
   'inviteSessionTokenMissingDropped',
   'inviteSessionIndexWriteTrace',
@@ -259,6 +261,8 @@ const FORENSICS_DEBUG_KEYS = new Set([
   'contactCorePeerDeviceMigrated',
   'contactSharePeerResolveTrace',
   'contactSharePendingLookupTrace',
+  'contactSharePendingTrace',
+  'contactSharePendingFlushTrace',
   'incomingTokenLookupTrace',
   'inviteSessionTokenMissingDropped',
   'inviteSessionIndexWriteTrace',
@@ -313,6 +317,8 @@ const LOG_CAP_OVERRIDE = new Map([
   ['restorePipelineDoneTrace', 5],
   ['localCounterProviderTrace', 5],
   ['legacyPipelineCallTrace', 5],
+  ['contactSharePendingTrace', 5],
+  ['contactSharePendingFlushTrace', 5],
 ]);
 const FORENSICS_LOG_COUNTS = new Map();
 

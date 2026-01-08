@@ -16,10 +16,14 @@ import {
 import { normalizeNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
+import { logCapped } from '../core/log.js';
+import { upsertContactCore } from '../ui/mobile/contact-core-store.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const CONTACT_INFO_TAG = 'contact/v1';
 const missingSecretWarned = new Set();
+const CONTACT_SHARE_PENDING_LOG_CAP = 5;
+const pendingContactShares = new Map();
 let lastContactsHydrateSummary = null;
 function contactConvIds() {
   const ids = [];
@@ -30,6 +34,131 @@ function contactConvIds() {
 
 function nowTs() {
   return Math.floor(Date.now() / 1000);
+}
+
+function safePrefix(value, len) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, len);
+}
+
+function safeSuffix(value, len) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(-len);
+}
+
+function normalizePendingMessageId(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function resolvePendingMessageId(item) {
+  const messageId = normalizePendingMessageId(
+    item?.id
+      || item?.messageId
+      || item?.message_id
+      || item?.serverMessageId
+      || item?.server_message_id
+      || null
+  );
+  if (messageId) return messageId;
+  return normalizePendingMessageId(item?.ts || null);
+}
+
+function buildPendingContactShareKey({ peerDigest, peerDeviceId, messageId }) {
+  const digest = typeof peerDigest === 'string' ? peerDigest.trim() : '';
+  const deviceId = typeof peerDeviceId === 'string' ? peerDeviceId.trim() : '';
+  const msgId = normalizePendingMessageId(messageId);
+  const parts = [digest, deviceId, msgId].filter(Boolean);
+  return parts.length ? parts.join('::') : null;
+}
+
+function queuePendingContactShare({ peerDigest, peerDeviceId, envelope, item }) {
+  if (!peerDigest || !peerDeviceId || !envelope) return null;
+  const messageId = resolvePendingMessageId(item);
+  const key = buildPendingContactShareKey({ peerDigest, peerDeviceId, messageId });
+  if (!key) return null;
+  pendingContactShares.set(key, {
+    key,
+    peerDigest,
+    peerDeviceId,
+    envelope,
+    item
+  });
+  logCapped('contactSharePendingTrace', {
+    peerDigestPrefix8: safePrefix(peerDigest, 8),
+    peerDeviceIdSuffix4: safeSuffix(peerDeviceId, 4),
+    reasonCode: 'MISSING_CONTACT_SECRET',
+    queued: true
+  }, CONTACT_SHARE_PENDING_LOG_CAP);
+  return key;
+}
+
+function extractConversationFromContact(contact) {
+  if (!contact?.conversation?.token_b64 || !contact?.conversation?.conversation_id) return null;
+  return {
+    token_b64: String(contact.conversation.token_b64),
+    conversation_id: String(contact.conversation.conversation_id),
+    ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
+  };
+}
+
+function buildPendingSecretUpdate(conversation) {
+  if (!conversation) return null;
+  const conversationUpdate = {};
+  if (conversation?.token_b64) conversationUpdate.token = conversation.token_b64;
+  if (conversation?.conversation_id) conversationUpdate.id = conversation.conversation_id;
+  if (conversation?.dr_init) conversationUpdate.drInit = conversation.dr_init;
+  if (!Object.keys(conversationUpdate).length) return null;
+  return {
+    conversation: conversationUpdate,
+    meta: { source: 'contacts:pending-secret' }
+  };
+}
+
+function buildContactEntry({ contact, item, peerAccountDigest, conversation }) {
+  const normalized = normalizeNickname(contact?.nickname || '') || '';
+  const resolvedConversation = conversation || extractConversationFromContact(contact);
+  return {
+    peerAccountDigest,
+    nickname: normalized,
+    avatar: contact?.avatar || null,
+    addedAt: Number(contact?.addedAt || item?.ts || nowTs()),
+    msgId: item?.id || null,
+    conversation: resolvedConversation
+  };
+}
+
+function buildContactCorePayload(entry, peerDeviceId) {
+  const conversationId = entry?.conversation?.conversation_id || null;
+  const conversationToken = entry?.conversation?.token_b64 || null;
+  if (!entry?.peerAccountDigest || !peerDeviceId || !conversationId || !conversationToken) return null;
+  const conversation = {
+    token_b64: conversationToken,
+    conversation_id: conversationId,
+    peerDeviceId,
+    ...(entry?.conversation?.dr_init ? { dr_init: entry.conversation.dr_init } : null)
+  };
+  return {
+    peerAccountDigest: entry.peerAccountDigest,
+    peerDeviceId,
+    nickname: entry.nickname ?? null,
+    avatar: entry.avatar ?? null,
+    addedAt: entry.addedAt ?? null,
+    msgId: entry.msgId ?? null,
+    conversationId,
+    conversationToken,
+    conversation,
+    contactSecret: conversationToken
+  };
 }
 
 export async function loadContacts() {
@@ -114,53 +243,40 @@ export async function loadContacts() {
             missingSecretWarned.add(warnKey);
             console.warn('[contacts] missing contact secret for', warnKey);
           }
-          continue;
-        }
-        try {
-          contact = await decryptContactPayload(sessionKey, envelope);
-        } catch (err) {
-          console.warn('[contacts] contact-share decrypt failed', err?.message || err);
-          continue;
-        }
-        if (DEBUG_CONTACTS_A1) {
+          queuePendingContactShare({
+            peerDigest,
+            peerDeviceId: peerDeviceIdFromHeader,
+            envelope,
+            item
+          });
+        } else {
           try {
-            console.log('[contacts] decrypted contact-share', peerDigest, JSON.stringify(contact));
-          } catch {
-            console.log('[contacts] decrypted contact-share', peerDigest, contact);
+            contact = await decryptContactPayload(sessionKey, envelope);
+          } catch (err) {
+            console.warn('[contacts] contact-share decrypt failed', err?.message || err);
+            continue;
           }
-        }
-        if (!contact) continue;
-        conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
-          ? {
-              token_b64: String(contact.conversation.token_b64),
-              conversation_id: String(contact.conversation.conversation_id),
-              ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
+          if (DEBUG_CONTACTS_A1) {
+            try {
+              console.log('[contacts] decrypted contact-share', peerDigest, JSON.stringify(contact));
+            } catch {
+              console.log('[contacts] decrypted contact-share', peerDigest, contact);
             }
-          : null;
-        const conversationUpdate = {};
-        if (conversation?.token_b64) conversationUpdate.token = conversation.token_b64;
-        if (conversation?.conversation_id) conversationUpdate.id = conversation.conversation_id;
-        if (conversation?.dr_init) conversationUpdate.drInit = conversation.dr_init;
-        if (Object.keys(conversationUpdate).length) {
-          pendingSecretUpdate = {
-            conversation: conversationUpdate,
-            meta: { source: 'contacts:pending-secret' }
-          };
+          }
+          if (!contact) continue;
+          conversation = extractConversationFromContact(contact);
+          pendingSecretUpdate = buildPendingSecretUpdate(conversation);
         }
       } else {
         console.warn('[contacts] unsupported envelope format', { id: item?.id, envelope });
         continue;
       }
 
+      if (!contact) continue;
+
       const normalized = normalizeNickname(contact?.nickname || '') || '';
       if (!conversation) {
-        conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
-          ? {
-              token_b64: String(contact.conversation.token_b64),
-              conversation_id: String(contact.conversation.conversation_id),
-              ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
-            }
-          : null;
+        conversation = extractConversationFromContact(contact);
       }
       if (conversation && !(conversation.token_b64 && conversation.conversation_id)) {
         diag.missingConvFieldsCount += 1;
@@ -235,6 +351,92 @@ export async function loadContacts() {
   }
   lastContactsHydrateSummary = { ...diag, ok: true, peerCount: out.length };
   return out;
+}
+
+export async function flushPendingContactShares({ mk } = {}) {
+  void mk;
+  const attempted = pendingContactShares.size;
+  let okCount = 0;
+  let skippedMissingSecretCount = 0;
+  let failCount = 0;
+  const failReasons = {};
+  const deviceId = ensureDeviceId();
+  const bumpFail = (code) => {
+    failCount += 1;
+    if (!code) return;
+    failReasons[code] = (failReasons[code] || 0) + 1;
+  };
+  for (const [key, pending] of Array.from(pendingContactShares.entries())) {
+    const peerDigest = pending?.peerDigest || null;
+    const peerDeviceId = pending?.peerDeviceId || null;
+    const envelope = pending?.envelope || null;
+    if (!peerDigest || !peerDeviceId || !envelope) {
+      bumpFail('MISSING_PENDING_FIELDS');
+      continue;
+    }
+    const secretInfo = getContactSecret(peerDigest, {
+      deviceId: peerDeviceId,
+      peerDeviceId
+    });
+    const sessionKey = secretInfo?.conversationToken || secretInfo?.conversation?.token || null;
+    if (!sessionKey) {
+      skippedMissingSecretCount += 1;
+      continue;
+    }
+    let contact = null;
+    try {
+      contact = await decryptContactPayload(sessionKey, envelope);
+    } catch (err) {
+      bumpFail('DECRYPT_FAILED');
+      continue;
+    }
+    if (!contact) {
+      bumpFail('EMPTY_CONTACT');
+      continue;
+    }
+    const conversation = extractConversationFromContact(contact);
+    const pendingSecretUpdate = buildPendingSecretUpdate(conversation);
+    if (pendingSecretUpdate && deviceId) {
+      setContactSecret({ peerAccountDigest: peerDigest }, {
+        ...pendingSecretUpdate,
+        deviceId,
+        peerDeviceId
+      });
+    }
+    const entry = buildContactEntry({
+      contact,
+      item: pending?.item,
+      peerAccountDigest: peerDigest,
+      conversation
+    });
+    const corePayload = buildContactCorePayload(entry, peerDeviceId);
+    if (!corePayload) {
+      bumpFail('MISSING_CONVERSATION');
+      continue;
+    }
+    try {
+      upsertContactCore(corePayload, 'contacts:pending-contact-share-flush');
+    } catch (err) {
+      bumpFail('CORE_UPSERT_ERROR');
+      continue;
+    }
+    pendingContactShares.delete(key);
+    okCount += 1;
+  }
+  logCapped('contactSharePendingFlushTrace', {
+    attempted,
+    okCount,
+    skippedMissingSecretCount,
+    failCount,
+    failReasons
+  }, CONTACT_SHARE_PENDING_LOG_CAP);
+  return {
+    attempted,
+    okCount,
+    skippedMissingSecretCount,
+    failCount,
+    failReasons
+  };
 }
 
 export function getLastContactsHydrateSummary() {

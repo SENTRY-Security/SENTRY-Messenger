@@ -8,6 +8,7 @@ import { createGapQueue } from './messages-flow/gap-queue.js';
 import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { hydrateDrStatesFromContactSecrets } from './dr-session.js';
+import { flushPendingContactShares } from './contacts.js';
 
 const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5'];
 const restoreGapQueue = createGapQueue({
@@ -388,6 +389,10 @@ export async function startRestorePipeline({ source } = {}) {
       progress: { source: 'contact_secrets' }
     });
   }
+
+  try {
+    await flushPendingContactShares({ mk: getMkRaw() });
+  } catch {}
 
   try {
     setStage('Stage4');

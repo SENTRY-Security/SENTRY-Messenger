@@ -25,6 +25,7 @@ import {
 import { normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../features/contact-share.js';
+import { flushPendingContactShares } from '../../features/contacts.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from './session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice } from './contact-core-store.js';
@@ -453,6 +454,10 @@ export function setupShareController(options) {
       }
     }
     setContactSecret(key, { ...update, deviceId: selfDeviceId });
+    const flushTask = flushPendingContactShares({ mk: getMkRaw() });
+    if (flushTask && typeof flushTask.catch === 'function') {
+      flushTask.catch(() => {});
+    }
     try {
       console.log('[share-controller]', {
         contactSecretStored: {
