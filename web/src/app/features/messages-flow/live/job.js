@@ -159,6 +159,11 @@ export function createLiveJobFromWsEvent(event = null, ctx = null) {
     sourceTag: resolveSourceTag(event, ctx),
     createdAt: resolveCreatedAt(event, ctx)
   };
+  const hasMessageId = !!normalizeMessageIdValue(job.messageId);
+  const hasServerMessageId = !!normalizeMessageIdValue(job.serverMessageId);
+  if (!hasMessageId && !hasServerMessageId) {
+    return { job: null, reason: 'MISSING_MESSAGE_ID', missing: ['messageId'] };
+  }
   const validation = validateLiveJob(job);
   if (!validation.ok) {
     return { job: null, reason: validation.reason, missing: validation.missing };

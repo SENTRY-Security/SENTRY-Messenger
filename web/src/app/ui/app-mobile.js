@@ -4016,6 +4016,94 @@ function buildWsForensicsSummary(msg = {}) {
   };
 }
 
+function normalizeWsToken(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function resolveWsIncomingPeerIdentity(msg = {}) {
+  return normalizePeerIdentity({
+    peerAccountDigest: msg?.senderAccountDigest
+      || msg?.peerAccountDigest
+      || msg?.fromAccountDigest
+      || msg?.sender_account_digest
+      || msg?.peer_account_digest
+      || null,
+    peerDeviceId: msg?.senderDeviceId
+      || msg?.peerDeviceId
+      || msg?.sender_device_id
+      || msg?.peer_device_id
+      || null
+  });
+}
+
+function resolveWsConversationToken({ conversationId, peerAccountDigest, peerDeviceId } = {}) {
+  const convId = typeof conversationId === 'string' ? conversationId.trim() : '';
+  let tokenB64 = null;
+  let resolvedPeerDigest = normalizeAccountDigest(peerAccountDigest || null);
+  let resolvedPeerDeviceId = normalizePeerDeviceId(peerDeviceId || null);
+  if (!convId) {
+    return { tokenB64: null, peerAccountDigest: resolvedPeerDigest || null, peerDeviceId: resolvedPeerDeviceId || null };
+  }
+  const convIndex = sessionStore.conversationIndex instanceof Map ? sessionStore.conversationIndex : null;
+  if (convIndex) {
+    const entry = convIndex.get(convId) || null;
+    const tokenCandidate = normalizeWsToken(entry?.token_b64 || entry?.tokenB64 || entry?.conversationToken || null);
+    if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
+    if (!resolvedPeerDigest) {
+      resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || entry?.peer_account_digest || null);
+    }
+    if (!resolvedPeerDeviceId) {
+      resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
+    }
+  }
+  const threads = sessionStore.conversationThreads instanceof Map ? sessionStore.conversationThreads : null;
+  if (!tokenB64 && threads) {
+    const entry = threads.get(convId) || null;
+    const tokenCandidate = normalizeWsToken(entry?.conversationToken || entry?.token_b64 || entry?.tokenB64 || null);
+    if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
+    if (!resolvedPeerDigest) {
+      resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || entry?.peer_account_digest || null);
+    }
+    if (!resolvedPeerDeviceId) {
+      resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
+    }
+  }
+  if (!tokenB64 && resolvedPeerDigest) {
+    const secret = getContactSecret(resolvedPeerDigest, { peerDeviceId: resolvedPeerDeviceId });
+    const tokenCandidate = normalizeWsToken(secret?.conversationToken || secret?.conversation?.token || null);
+    if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
+    if (!resolvedPeerDeviceId) {
+      resolvedPeerDeviceId = normalizePeerDeviceId(secret?.peerDeviceId || null);
+    }
+  }
+  return {
+    tokenB64: tokenB64 || null,
+    peerAccountDigest: resolvedPeerDigest || null,
+    peerDeviceId: resolvedPeerDeviceId || null
+  };
+}
+
+function buildWsLiveJobContext(msg = {}, convId = null) {
+  const conversationId = typeof convId === 'string' ? convId.trim() : '';
+  const peerIdentity = resolveWsIncomingPeerIdentity(msg);
+  const tokenInfo = resolveWsConversationToken({
+    conversationId,
+    peerAccountDigest: peerIdentity.accountDigest,
+    peerDeviceId: peerIdentity.deviceId
+  });
+  return {
+    conversationId: conversationId || null,
+    tokenB64: tokenInfo.tokenB64 || null,
+    peerAccountDigest: tokenInfo.peerAccountDigest || peerIdentity.accountDigest || null,
+    peerDeviceId: tokenInfo.peerDeviceId || peerIdentity.deviceId || null,
+    messageId: msg?.messageId || msg?.message_id || msg?.id || null,
+    serverMessageId: msg?.serverMessageId || msg?.server_message_id || msg?.serverMsgId || null,
+    sourceTag: 'ws_incoming'
+  };
+}
+
 function handleWebSocketMessage(msg) {
   const type = msg?.type;
   if (type === 'hello') return;
@@ -4107,10 +4195,11 @@ function handleWebSocketMessage(msg) {
       handleSettingsSecureMessage();
       return;
     }
+    const liveJobCtx = buildWsLiveJobContext(msg, convId);
     messagesFlowFacade.onWsIncomingMessageNew({
       event: msg,
       handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
-    });
+    }, liveJobCtx);
     return;
   }
   if (type === 'secure-message' || type === 'message-new') {
@@ -4145,10 +4234,11 @@ function handleWebSocketMessage(msg) {
         handler: 'messagesPane.handleIncomingSecureMessage'
       });
     } catch {}
+    const liveJobCtx = buildWsLiveJobContext(msg, convId);
     messagesFlowFacade.onWsIncomingMessageNew({
       event: msg,
       handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
-    });
+    }, liveJobCtx);
     return;
   }
 }
