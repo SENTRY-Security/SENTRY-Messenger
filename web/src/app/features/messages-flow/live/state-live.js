@@ -552,6 +552,30 @@ async function commitIncomingSingle(params = {}, adapters) {
     };
   }
 
+  if (adapters?.appendTimelineBatch) {
+    const semantic = classifyDecryptedPayload(plaintext, { meta, header });
+    if (semantic.kind === SEMANTIC_KIND.USER_MESSAGE && semantic.subtype === 'text') {
+      const ts = toMessageTimestamp(raw);
+      const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
+      const entries = [{
+        conversationId,
+        messageId,
+        direction: 'incoming',
+        msgType: 'text',
+        ts,
+        tsMs: resolveMessageTsMs(ts),
+        counter: Number.isFinite(resolvedCounter) ? Number(resolvedCounter) : null,
+        text,
+        senderDigest,
+        senderDeviceId: resolvedSenderDeviceId,
+        targetDeviceId
+      }];
+      try {
+        adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' });
+      } catch {}
+    }
+  }
+
   if (msgTypeHint === 'contact-share') {
     const applyResult = await applyContactShareFromCommit({
       peerAccountDigest: senderDigest,

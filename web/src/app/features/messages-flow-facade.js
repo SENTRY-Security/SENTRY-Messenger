@@ -346,22 +346,12 @@ function createMessagesFlowFacade() {
             }, 5);
             return { ok: false, reasonCode: 'MISSING_MESSAGE_ID_PEER_DEVICE_MISSING' };
           }
-          if (flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
-            void maxCounterProbe({
-              conversationId: summaryConversationId,
-              senderDeviceId: peerDeviceId,
-              source: sourceTag
-            });
-          } else {
-            logCapped('maxCounterProbeTrace', {
-              source: sourceTag,
-              conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
-              senderDeviceIdSuffix4: toDeviceIdSuffix4(peerDeviceId),
-              ok: false,
-              reasonCode: 'SKIPPED_FLAG_OFF'
-            }, 5);
-          }
-          return { ok: false, reasonCode: flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE ? 'MISSING_MESSAGE_ID_ENQUEUE_REQUESTED' : 'MISSING_MESSAGE_ID_PROBE_DISABLED' };
+          void maxCounterProbe({
+            conversationId: summaryConversationId,
+            senderDeviceId: peerDeviceId,
+            source: sourceTag
+          });
+          return { ok: false, reasonCode: 'MISSING_MESSAGE_ID_ENQUEUE_REQUESTED' };
         }
         return { ok: false, reasonCode: decisionResult?.reason || liveJobReason || 'NO_OP' };
       }
