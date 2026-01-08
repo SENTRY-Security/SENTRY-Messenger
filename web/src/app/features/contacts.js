@@ -60,8 +60,13 @@ function emitContactsChanged({ conversationId, peerKey, sourceTag }) {
   const last = contactShareRefreshThrottle.get(conversationId) || 0;
   if (now - last < CONTACTS_CHANGED_THROTTLE_MS) return;
   contactShareRefreshThrottle.set(conversationId, now);
+  const reason = sourceTag === 'messages-flow:contact-share-commit'
+    ? 'contact-share-commit'
+    : (sourceTag || 'contact-share-commit');
   const detail = {
-    reason: sourceTag || 'contact-share-commit',
+    reason,
+    conversationId,
+    peerKey: peerKey || null,
     conversationIdPrefix8: safePrefix(conversationId, 8),
     peerKeyPrefix8: safePrefix(peerKey || '', 8),
     tsMs: now
