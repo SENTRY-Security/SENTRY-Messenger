@@ -4,7 +4,7 @@
 import { classifyDecryptedPayload, SEMANTIC_KIND } from '../../semantic.js';
 import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
-import { decryptContactPayload } from '../../contact-share.js';
+import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
 
 function hasUsableDrState(holder) {
   if (
@@ -247,8 +247,9 @@ async function decryptIncomingSingle(params = {}, adapters) {
         skippedCount: 1
       };
     }
+    const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
     try {
-      await decryptContactPayload(tokenB64, { iv: header.iv_b64, ct: ciphertextB64 });
+      await decryptContactPayload(tokenB64, envelope);
     } catch {
       return {
         ...base,
@@ -421,7 +422,7 @@ async function commitIncomingSingle(params = {}, adapters) {
     if (!tokenB64) {
       return { ...base, reasonCode: 'MISSING_SESSION_KEY', counter: resolvedCounter, messageId };
     }
-    const envelope = { iv: header.iv_b64, ct: ciphertextB64 };
+    const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
     try {
       await decryptContactPayload(tokenB64, envelope);
     } catch {

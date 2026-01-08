@@ -1647,14 +1647,9 @@ async function decryptPipelineItem(item, ctx = {}) {
   }
   const normalizedMsgType = normalizeSemanticSubtype(item.msgType || null);
   if (normalizedMsgType === 'contact-share') {
-    // Contact-share is handled via sessionKey payloads, not DR decrypt pipeline.
-    return {
-      ok: true,
-      message: null,
-      state: null,
-      semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: normalizedMsgType },
-      vaultPutStatus: null
-    };
+    const err = new Error('CONTACT_SHARE_MOVED_TO_MESSAGES_FLOW');
+    err.code = 'CONTACT_SHARE_MOVED_TO_MESSAGES_FLOW';
+    return { ok: false, error: err };
   }
   const identity = storeNormalizePeerIdentity({ peerAccountDigest: senderAccountDigest, peerDeviceId: senderDeviceId });
   const peerDigest = identity?.accountDigest || senderAccountDigest || null;
@@ -3576,12 +3571,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
         ? meta.msg_type
         : (typeof meta?.msgType === 'string' ? meta.msgType : null);
       msgTypeForDecrypt = rawMsgType || (payloadMsgType ? String(payloadMsgType) : 'text');
-      if (normalizeSemanticSubtype(msgTypeForDecrypt) === 'contact-share') {
-        if (packetConversationId && messageId) {
-          markMessageProcessed(packetConversationId, messageId);
-        }
-        return;
-      }
       const isMediaMessage = !!(meta?.media);
 
       // Sender/target判斷：先看 direction，再套用目標驗證（避免把自己送出的封包誤判）。
