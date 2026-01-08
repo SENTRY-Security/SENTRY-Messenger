@@ -16,7 +16,7 @@ import {
   getSecureMessageByCounter as apiGetSecureMessageByCounter,
   fetchSecureMaxCounter as apiFetchSecureMaxCounter
 } from '../api/messages.js';
-import { drDecryptText as cryptoDrDecryptText, buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
+import * as drCrypto from '../crypto/dr.js';
 import {
   drState as storeDrState,
   getAccountDigest as storeGetAccountDigest,
@@ -96,8 +96,8 @@ const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
   getSecureMessageByCounter: apiGetSecureMessageByCounter,
   fetchSecureMaxCounter: apiFetchSecureMaxCounter,
-  drDecryptText: cryptoDrDecryptText,
-  buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
+  drDecryptText: drCrypto.drDecryptText,
+  buildDrAadFromHeader: drCrypto.buildDrAadFromHeader,
   drState: storeDrState,
   getAccountDigest: storeGetAccountDigest,
   persistDrSnapshot: sessionPersistDrSnapshot,
