@@ -18,6 +18,7 @@ import { decryptContactPayload, isContactShareEnvelope } from './contact-share.j
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
 import { logCapped } from '../core/log.js';
 import { upsertContactCore } from '../ui/mobile/contact-core-store.js';
+import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const CONTACT_INFO_TAG = 'contact/v1';
@@ -167,6 +168,107 @@ function buildContactCorePayload(entry, peerDeviceId) {
     conversation,
     contactSecret: conversationToken
   };
+}
+
+function removePendingInvitesByPeer({ peerAccountDigest, peerDeviceId } = {}) {
+  const identity = normalizePeerIdentity({ peerAccountDigest, peerDeviceId });
+  const digest = identity.accountDigest || null;
+  const deviceId = identity.deviceId || null;
+  if (!digest || !deviceId) return 0;
+  const store = restorePendingInvites();
+  if (!(store instanceof Map)) return 0;
+  const ids = [];
+  for (const [inviteId, entry] of store.entries()) {
+    if (entry?.ownerAccountDigest === digest && entry?.ownerDeviceId === deviceId) {
+      ids.push(inviteId);
+    }
+  }
+  if (!ids.length) return 0;
+  for (const inviteId of ids) {
+    store.delete(inviteId);
+  }
+  persistPendingInvites();
+  return ids.length;
+}
+
+export async function applyContactShareFromCommit({
+  peerAccountDigest,
+  peerDeviceId,
+  sessionKey,
+  plaintext,
+  messageId,
+  sourceTag = 'messages-flow:contact-share-commit'
+} = {}) {
+  const identity = normalizePeerIdentity({ peerAccountDigest, peerDeviceId });
+  const digest = identity.accountDigest || null;
+  const deviceId = identity.deviceId || null;
+  if (!digest || !deviceId || !sessionKey || !plaintext) {
+    return { ok: false, reasonCode: 'MISSING_PARAMS' };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(plaintext);
+  } catch {
+    return { ok: false, reasonCode: 'INVALID_PLAINTEXT' };
+  }
+  const type = typeof parsed?.type === 'string' ? parsed.type.trim().toLowerCase() : '';
+  if (type !== 'contact-share') {
+    return { ok: false, reasonCode: 'NOT_CONTACT_SHARE' };
+  }
+  const envelope = parsed?.envelope || null;
+  if (!isContactShareEnvelope(envelope)) {
+    return { ok: false, reasonCode: 'INVALID_ENVELOPE' };
+  }
+  let contact = null;
+  try {
+    contact = await decryptContactPayload(sessionKey, envelope);
+  } catch {
+    return { ok: false, reasonCode: 'DECRYPT_FAILED' };
+  }
+  if (!contact || typeof contact !== 'object') {
+    return { ok: false, reasonCode: 'EMPTY_CONTACT' };
+  }
+  const conversation = extractConversationFromContact(contact);
+  if (!conversation?.token_b64 || !conversation?.conversation_id) {
+    return { ok: false, reasonCode: 'MISSING_CONVERSATION' };
+  }
+  const conversationPeerDeviceId = normalizeDeviceId(conversation?.peerDeviceId || null);
+  if (conversationPeerDeviceId && conversationPeerDeviceId !== deviceId) {
+    return { ok: false, reasonCode: 'PEER_DEVICE_MISMATCH' };
+  }
+  const normalizedNickname = normalizeNickname(contact?.nickname || '') || '';
+  const entry = {
+    peerAccountDigest: digest,
+    nickname: normalizedNickname,
+    avatar: contact?.avatar || null,
+    addedAt: Number(contact?.addedAt || nowTs()),
+    msgId: messageId || null,
+    conversation
+  };
+  const corePayload = buildContactCorePayload(entry, deviceId);
+  if (!corePayload) {
+    return { ok: false, reasonCode: 'MISSING_CORE_FIELDS' };
+  }
+  const selfDeviceId = ensureDeviceId();
+  if (selfDeviceId) {
+    setContactSecret({ peerAccountDigest: digest }, {
+      conversation: {
+        token: conversation.token_b64,
+        id: conversation.conversation_id,
+        drInit: conversation.dr_init || null
+      },
+      deviceId: selfDeviceId,
+      peerDeviceId: deviceId,
+      meta: { source: sourceTag }
+    });
+  }
+  try {
+    upsertContactCore(corePayload, sourceTag);
+  } catch {
+    return { ok: false, reasonCode: 'CORE_UPSERT_FAILED' };
+  }
+  removePendingInvitesByPeer({ peerAccountDigest: digest, peerDeviceId: deviceId });
+  return { ok: true };
 }
 
 export async function loadContacts() {

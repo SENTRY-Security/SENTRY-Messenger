@@ -3,6 +3,7 @@
 
 import { classifyDecryptedPayload, SEMANTIC_KIND } from '../../semantic.js';
 import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js';
+import { applyContactShareFromCommit } from '../../contacts.js';
 
 function hasUsableDrState(holder) {
   if (
@@ -248,6 +249,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
   const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
   let messageKeyB64 = null;
   let plaintext = null;
+  let plaintext = null;
 
   try {
     plaintext = await adapters.drDecryptText(state, {
@@ -381,7 +383,7 @@ async function commitIncomingSingle(params = {}, adapters) {
   let messageKeyB64 = null;
 
   try {
-    await adapters.drDecryptText(state, {
+    plaintext = await adapters.drDecryptText(state, {
       aead: 'aes-256-gcm',
       header,
       iv_b64: header.iv_b64,
@@ -451,6 +453,27 @@ async function commitIncomingSingle(params = {}, adapters) {
       messageId,
       decryptOk: true
     };
+  }
+
+  if (msgTypeHint === 'contact-share') {
+    const applyResult = await applyContactShareFromCommit({
+      peerAccountDigest,
+      peerDeviceId,
+      sessionKey: tokenB64,
+      plaintext,
+      messageId,
+      sourceTag: 'messages-flow:contact-share-commit'
+    });
+    if (!applyResult?.ok) {
+      return {
+        ...base,
+        reasonCode: applyResult?.reasonCode || 'CONTACT_SHARE_APPLY_FAILED',
+        counter: resolvedCounter,
+        messageId,
+        decryptOk: true,
+        vaultPutOk: true
+      };
+    }
   }
 
   return {
