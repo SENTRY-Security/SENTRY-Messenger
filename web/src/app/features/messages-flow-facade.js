@@ -201,9 +201,9 @@ function reconcileOutgoingStatusForConversation({
   return null;
 }
 
-function createLegacyFacadeAdapter() {
+function createMessagesFlowFacade() {
   return {
-    // Event -> legacy pipeline only. Do not add new flow logic here.
+    // Event -> facade-only handler. Do not add new flow logic here.
     onLoginResume({
       source,
       runRestore = true,
@@ -222,7 +222,7 @@ function createLegacyFacadeAdapter() {
       return restorePromise || null;
     },
 
-    // Event -> legacy pipeline only. Do not add new flow logic here.
+    // Event -> facade-only handler. Do not add new flow logic here.
     onWsIncomingMessageNew(payloadOrEvent = {}, ctx = null) {
       const flags = getMessagesFlowFlags();
       const hasExplicitCtx = !!(ctx && typeof ctx === 'object');
@@ -385,7 +385,7 @@ function createLegacyFacadeAdapter() {
       }
     },
 
-    // Event -> legacy pipeline only. Do not add new flow logic here.
+    // Event -> facade-only handler. Do not add new flow logic here.
     onEnterConversation({
       conversationId,
       peerKey,
@@ -432,7 +432,7 @@ function createLegacyFacadeAdapter() {
       return { ok: true, reasonCode: flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE ? null : 'SKIPPED_FLAG_OFF' };
     },
 
-    // Event -> legacy pipeline only. Do not add new flow logic here.
+    // Event -> facade-only handler. Do not add new flow logic here.
     onPullToRefreshContacts({
       source,
       loadInitialContacts,
@@ -477,7 +477,7 @@ function createLegacyFacadeAdapter() {
       })();
     },
 
-    // Event -> legacy pipeline only. Do not add new flow logic here.
+    // Event -> facade-only handler. Do not add new flow logic here.
     onVisibilityResume({
       source,
       reconcileOutgoingStatus,
@@ -497,7 +497,7 @@ function createLegacyFacadeAdapter() {
       return { ok: true, reasonCode: null };
     },
 
-    // Event -> legacy pipeline only. Do not add new flow logic here.
+    // Event -> facade-only handler. Do not add new flow logic here.
     onScrollFetchMore({
       conversationId,
       cursor,
@@ -552,7 +552,7 @@ function createLegacyFacadeAdapter() {
       }));
     },
 
-    // Event -> legacy pipeline only. Do not add new flow logic here.
+    // Event -> facade-only handler. Do not add new flow logic here.
     reconcileOutgoingStatusNow({
       conversationId,
       peerKey,
@@ -571,4 +571,4 @@ function createLegacyFacadeAdapter() {
   };
 }
 
-export const messagesFlowFacade = createLegacyFacadeAdapter();
+export const messagesFlowFacade = createMessagesFlowFacade();
