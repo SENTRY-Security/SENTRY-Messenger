@@ -8,7 +8,7 @@ import { hydrateConversationsFromSecrets } from './session-store.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
-import { markConversationTombstone } from '../../features/messages-legacy/conversation-tombstone-store.js';
+import { markConversationTombstone } from '../../features/messages-support/conversation-tombstone-store.js';
 import { DEBUG } from './debug-flags.js';
 import {
   upsertContactCore,

@@ -2,11 +2,11 @@
 
 import { log, logCapped } from '../../core/log.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
-import { resetProcessedMessages } from '../../features/messages-legacy/processed-messages-store.js';
-import { recordMessageRead, recordMessageDelivered } from '../../features/messages-legacy/receipt-store.js';
-import { clearConversationTombstone } from '../../features/messages-legacy/conversation-tombstone-store.js';
-import { clearConversationHistory, getConversationClearAfter } from '../../features/messages-legacy/conversation-clear-store.js';
-import { getVaultAckCounter, recordVaultAckCounter } from '../../features/messages-legacy/vault-ack-store.js';
+import { resetProcessedMessages } from '../../features/messages-support/processed-messages-store.js';
+import { recordMessageRead, recordMessageDelivered } from '../../features/messages-support/receipt-store.js';
+import { clearConversationTombstone } from '../../features/messages-support/conversation-tombstone-store.js';
+import { clearConversationHistory, getConversationClearAfter } from '../../features/messages-support/conversation-clear-store.js';
+import { getVaultAckCounter, recordVaultAckCounter } from '../../features/messages-support/vault-ack-store.js';
 import { legacyFacade } from '../../features/messages-flow-facade.js';
 import {
   appendUserMessage as timelineAppendUserMessage,

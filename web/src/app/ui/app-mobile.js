@@ -8,7 +8,7 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
-import { setMessagesWsSender } from '../features/messages-legacy/ws-sender-adapter.js';
+import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
 import {
   getMkRaw,
   setMkRaw,
@@ -87,8 +87,8 @@ import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
-import { resetAllProcessedMessages } from '../features/messages-legacy/processed-messages-store.js';
-import { resetReceiptStore } from '../features/messages-legacy/receipt-store.js';
+import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
+import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
 import { legacyFacade } from '../features/messages-flow-facade.js';
 import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
