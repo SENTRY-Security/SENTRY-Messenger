@@ -20,11 +20,12 @@ function sliceSuffix(value, len = 4) {
   return str.slice(-len);
 }
 
-function normalizeCounter(value) {
+function normalizeCounter(value, { allowZero = false } = {}) {
   const num = Number(value);
   if (!Number.isFinite(num)) return null;
   if (!Number.isInteger(num)) return null;
-  if (num <= 0) return null;
+  if (num < 0) return null;
+  if (num === 0) return allowZero ? 0 : null;
   return num;
 }
 
@@ -94,7 +95,7 @@ export function createMaxCounterProbe(deps = {}) {
       return { ok: false, reason: 'fetch_failed', errorMessage };
     }
 
-    const targetCounter = normalizeCounter(serverMaxCounter);
+    const targetCounter = normalizeCounter(serverMaxCounter, { allowZero: true });
     if (!Number.isFinite(targetCounter)) {
       logger('maxCounterProbeTrace', {
         source: sourceTag,
@@ -105,6 +106,18 @@ export function createMaxCounterProbe(deps = {}) {
         serverMaxCounter: serverMaxCounter ?? null
       }, MAX_COUNTER_PROBE_LOG_CAP);
       return { ok: false, reason: 'invalid_max_counter', serverMaxCounter };
+    }
+
+    if (targetCounter === 0) {
+      logger('maxCounterProbeTrace', {
+        source: sourceTag,
+        conversationIdPrefix8,
+        senderDeviceIdSuffix4,
+        ok: true,
+        reasonCode: 'NO_MESSAGES_YET',
+        serverMaxCounter: 0
+      }, MAX_COUNTER_PROBE_LOG_CAP);
+      return { ok: true, serverMaxCounter: 0, enqueueResult: null, reason: 'no_messages_yet' };
     }
 
     logger('maxCounterProbeTrace', {
