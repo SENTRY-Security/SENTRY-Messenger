@@ -252,6 +252,9 @@ export async function applyContactShareFromCommit({
   if (!conversation?.token_b64 || !conversation?.conversation_id) {
     return { ok: false, reasonCode: 'MISSING_CONVERSATION' };
   }
+  if (!conversation?.dr_init) {
+    return { ok: false, reasonCode: 'MISSING_DR_INIT' };
+  }
   const conversationPeerDeviceId = normalizeDeviceId(conversation?.peerDeviceId || null);
   if (conversationPeerDeviceId && conversationPeerDeviceId !== deviceId) {
     return { ok: false, reasonCode: 'PEER_DEVICE_MISMATCH' };

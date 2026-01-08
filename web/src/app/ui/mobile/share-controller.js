@@ -1490,7 +1490,10 @@ export function setupShareController(options) {
           conversationInfo.peerDeviceId = peerDeviceId;
         }
         const drInitPayload = drInit || conversation.dr_init || conversation.drInit || null;
-        if (drInitPayload) conversationInfo.dr_init = drInitPayload;
+        if (!drInitPayload) {
+          throw new Error('contact-share missing dr_init');
+        }
+        conversationInfo.dr_init = drInitPayload;
       }
     }
     const overrideNickname = overrides?.nickname;
