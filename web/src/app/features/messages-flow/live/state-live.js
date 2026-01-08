@@ -576,27 +576,6 @@ async function commitIncomingSingle(params = {}, adapters) {
     }
   }
 
-  if (msgTypeHint === 'contact-share') {
-    const applyResult = await applyContactShareFromCommit({
-      peerAccountDigest: senderDigest,
-      peerDeviceId: senderDeviceId,
-      sessionKey: tokenB64,
-      plaintext,
-      messageId,
-      sourceTag: 'messages-flow:contact-share-commit'
-    });
-    if (!applyResult?.ok) {
-      return {
-        ...base,
-        reasonCode: applyResult?.reasonCode || 'CONTACT_SHARE_APPLY_FAILED',
-        counter: resolvedCounter,
-        messageId,
-        decryptOk: true,
-        vaultPutOk: true
-      };
-    }
-  }
-
   return {
     ok: true,
     reasonCode: null,

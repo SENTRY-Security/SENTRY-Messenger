@@ -2795,7 +2795,6 @@ if (typeof window !== 'undefined') {
 }
 
 const {
-  handleContactShareEvent,
   handleContactInitEvent,
   closeShareModal
 } = shareController;
@@ -4257,39 +4256,6 @@ function handleWebSocketMessage(msg) {
 })();
 
 if (typeof document !== 'undefined') {
-  // 透過 DR secure-message 傳遞的 contact-share（由 features/messages 解密後發出事件）
-  document.addEventListener('contact-share', (ev) => {
-    try {
-      const detail = ev?.detail || {};
-      const msg = detail.message || {};
-      const cs = msg?.contactShare || {};
-      const header = msg?.header || {};
-      const meta = msg?.meta || {};
-      let peerAccountDigest = detail?.peerAccountDigest || header?.peerAccountDigest || header?.accountDigest || meta?.peerAccountDigest || null;
-      let peerDeviceId = header?.peerDeviceId
-        || header?.meta?.peerDeviceId
-        || header?.meta?.targetDeviceId
-        || header?.meta?.receiverDeviceId
-        || meta?.peerDeviceId
-        || meta?.targetDeviceId
-        || meta?.receiverDeviceId
-        || msg?.peerDeviceId
-        || null;
-      const envelope = cs?.envelope || null;
-      if (!peerAccountDigest || !peerDeviceId || !envelope?.iv || !envelope?.ct) {
-        log({ contactShareMissingFields: true, peerAccountDigest, peerDeviceId, hasEnvelope: !!envelope });
-        return;
-      }
-      handleContactShareEvent({
-        peerAccountDigest,
-        peerDeviceId,
-        envelope
-      }).catch((err) => log({ contactShareError: err?.message || err }));
-    } catch (err) {
-      log({ contactShareHandlerError: err?.message || err });
-    }
-  });
-
   document.addEventListener('visibilitychange', () => {
     if (backgroundLogoutTimer) {
       clearTimeout(backgroundLogoutTimer);

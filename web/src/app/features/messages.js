@@ -142,7 +142,6 @@ const decryptPipelineContexts = new Map(); // conversationId -> context
 const tombstonedConversations = new Set(); // legacy; kept for compatibility
 const conversationClearAfter = new Map(); // conversationId -> unix ts to ignore older messages
 const processedMessageCache = new Map(); // conversationId -> Set(messageId)
-const processedContactShare = new Map(); // conversationId -> Set(stableKey)
 const PROCESSED_CACHE_MAX_PER_CONV = 500;
 const PROCESSED_CACHE_MAX_CONVS = 50;
 const drFailureCounter = new Map(); // `${conversationId}::${peerKey}` -> count
@@ -966,29 +965,6 @@ function parseMediaMessage({ plaintext, meta }) {
   return mediaInfo;
 }
 
-function parseContactShareMessage(plaintext) {
-  if (!plaintext) return null;
-  let parsed = null;
-  if (typeof plaintext === 'string') {
-    try {
-      parsed = JSON.parse(plaintext);
-    } catch {
-      parsed = null;
-    }
-  } else if (typeof plaintext === 'object') {
-    parsed = plaintext;
-  }
-  if (!parsed || typeof parsed !== 'object') return null;
-  if ((parsed.type && String(parsed.type).toLowerCase() !== 'contact-share')) return null;
-  const payload = parsed.payload || parsed.data || null;
-  const envelope = parsed.envelope || null;
-  return {
-    envelope: envelope && envelope.iv && envelope.ct ? envelope : null,
-    contactPayload: payload || null,
-    conversation: parsed.conversation || null
-  };
-}
-
 function normalizeMsgTypeValue(value) {
   if (!value || typeof value !== 'string') return null;
   return value.trim().toLowerCase();
@@ -1292,10 +1268,6 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
     base.type = CONTROL_MESSAGE_TYPES.DELIVERY_RECEIPT;
     base.text = '';
     if (targetMessageId) base.targetMessageId = targetMessageId;
-  } else if (msgType === 'contact-share') {
-    base.type = 'contact-share';
-    base.text = '';
-    base.contactShare = parseContactShareMessage(plaintext);
   } else {
     base.type = 'text';
     base.text = typeof base.text === 'string' ? base.text : '';
@@ -1430,18 +1402,6 @@ function isQueueEligibleSubtype(subtype) {
   return true;
 }
 
-function isPendingInviteConversationId(conversationId) {
-  if (!conversationId) return false;
-  const store = sessionStore?.pendingInvites;
-  if (!(store instanceof Map)) return false;
-  const convKey = String(conversationId);
-  for (const entry of store.values()) {
-    const entryConvId = typeof entry?.conversationId === 'string' ? entry.conversationId.trim() : '';
-    if (entryConvId && entryConvId === convKey) return true;
-  }
-  return false;
-}
-
 function resolveSenderDeviceId(raw, header) {
   return raw?.senderDeviceId
     || raw?.sender_device_id
@@ -1504,9 +1464,7 @@ function buildPipelineItemFromRaw(raw, {
   const counter = resolveEnvelopeCounter(raw, header);
   if (!Number.isFinite(counter)) return { item: null, reason: 'missing-counter' };
   const subtype = resolveMessageSubtypeFromHeader(header);
-  const isInviteContactShare = subtype === 'contact-share'
-    && isPendingInviteConversationId(packetConversationId);
-  if (!isQueueEligibleSubtype(subtype) && !isInviteContactShare) return { item: null, reason: 'control' };
+  if (!isQueueEligibleSubtype(subtype)) return { item: null, reason: 'control' };
   const senderDeviceId = resolveSenderDeviceId(raw, header);
   if (!senderDeviceId) return { item: null, reason: 'missing-sender-device' };
   const senderDigest = resolveSenderDigest(raw, header)
@@ -1687,6 +1645,17 @@ async function decryptPipelineItem(item, ctx = {}) {
   if (!conversationId || !senderDeviceId || !header || !ciphertextB64 || counter === null) {
     return { ok: false, error: new Error('pipeline item missing required fields') };
   }
+  const normalizedMsgType = normalizeSemanticSubtype(item.msgType || null);
+  if (normalizedMsgType === 'contact-share') {
+    // Contact-share is handled via sessionKey payloads, not DR decrypt pipeline.
+    return {
+      ok: true,
+      message: null,
+      state: null,
+      semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: normalizedMsgType },
+      vaultPutStatus: null
+    };
+  }
   const identity = storeNormalizePeerIdentity({ peerAccountDigest: senderAccountDigest, peerDeviceId: senderDeviceId });
   const peerDigest = identity?.accountDigest || senderAccountDigest || null;
   const peerDeviceId = identity?.deviceId || senderDeviceId || null;
@@ -1743,9 +1712,7 @@ async function decryptPipelineItem(item, ctx = {}) {
   const meta = item.meta || header?.meta || null;
   const payload = { meta: meta || null };
   const semantic = classifyDecryptedPayload(text, { meta, header });
-  const isContactShare = semantic.kind === SEMANTIC_KIND.CONTROL_STATE
-    && semantic.subtype === 'contact-share';
-  if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && !isContactShare) {
+  if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE) {
     return { ok: true, message: null, state, semantic, vaultPutStatus: null };
   }
   const tsPair = Number.isFinite(item?.tsMs) || Number.isFinite(item?.ts)
@@ -1762,9 +1729,6 @@ async function decryptPipelineItem(item, ctx = {}) {
     messageId: item.serverMessageId || null,
     messageKeyB64
   });
-  if (isContactShare) {
-    return { ok: true, message: messageObj, state, semantic, vaultPutStatus: null };
-  }
   let vaultPutStatus = null;
   try {
     await vaultPutMessageKey({
@@ -2030,32 +1994,6 @@ async function processDecryptPipelineForConversation({
         break;
       }
       clearPipelineFailure(streamKey, counter);
-      if (
-        result?.semantic?.kind === SEMANTIC_KIND.CONTROL_STATE
-        && result?.semantic?.subtype === 'contact-share'
-        && result?.message
-      ) {
-        const messageId = result.message.id || result.message.messageId || result.message.serverMessageId || null;
-        const alreadyHandled = conversationId && messageId
-          ? wasMessageProcessed(conversationId, messageId)
-          : false;
-        if (!alreadyHandled) {
-          try {
-            if (typeof document !== 'undefined' && document?.dispatchEvent) {
-              document.dispatchEvent(new CustomEvent('contact-share', {
-                detail: {
-                  message: result.message,
-                  conversationId,
-                  peerAccountDigest: peerAccountDigest || activeItem?.senderAccountDigest || null
-                }
-              }));
-            }
-          } catch {}
-          if (conversationId && messageId) {
-            markMessageProcessed(conversationId, messageId);
-          }
-        }
-      }
       if (result?.semantic?.kind === SEMANTIC_KIND.USER_MESSAGE && result?.message) {
         decrypted.push(result.message);
         decryptOk += 1;
@@ -2221,7 +2159,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
     skipped_targetDeviceMissing: 0,
     skipped_directionFilter: 0,
     skipped_duplicateCounter: 0,
-    skipped_processedContactShare: 0,
     skipped_nonReplayableSignal: 0,
     skipped_securePending: 0,
     decryptOk: 0,
@@ -3099,7 +3036,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
     let meta = null;
     let payload = null;
     let messageTs = null;
-    let stableContactShareKey = null;
     let ciphertextB64 = null;
     let packet = null;
     let senderDeviceId = null;
@@ -3116,7 +3052,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
       if (gate === 'targetDeviceMissing') replayCounters.skipped_targetDeviceMissing += 1;
       else if (gate === 'directionFilter') replayCounters.skipped_directionFilter += 1;
       else if (gate === 'duplicateCounter') replayCounters.skipped_duplicateCounter += 1;
-      else if (gate === 'processedContactShare') replayCounters.skipped_processedContactShare += 1;
       else if (gate === 'securePending') replayCounters.skipped_securePending += 1;
       if (gate === 'directionFilter' && directionFilterSampleCount < directionFilterSampleLimit) {
         directionFilterSampleCount += 1;
@@ -3298,14 +3233,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
           updateIncomingCounterState(state, headerCounter);
         }
         snapshotPersisted = !!deps.persistDrSnapshot({ peerAccountDigest: peerKey, state });
-        if (msgTypeForDecrypt === 'contact-share' && stableContactShareKey) {
-          let set = processedContactShare.get(convId);
-          if (!set) {
-            set = new Set();
-            processedContactShare.set(convId, set);
-          }
-          set.add(stableContactShareKey);
-        }
       }
       if (!computedIsHistoryReplay && trackState && direction === 'incoming' && snapshotPersisted) {
         const backupSourceTag = isGapFillJob ? 'messages:gap-fill' : 'messages:decrypt-ok';
@@ -3347,42 +3274,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
         }
         if (convId && messageId && wasMessageProcessed(convId, messageId)) {
           logDeliverySkip('processedControl', { msgType: semantic.subtype || null });
-          return;
-        }
-        if (semantic.subtype === 'contact-share') {
-          const messageObj = buildMessageObject({
-            plaintext: text,
-            payload,
-            header,
-            raw,
-            direction,
-            ts: messageTs,
-            messageId,
-            messageKeyB64
-          });
-          if (drDebug) {
-            logDrCore('inbox:contact-share', {
-              conversationId: convId,
-              peerAccountDigest: peerKey,
-              messageId
-            }, { level: 'log', force: true });
-          }
-          try {
-            if (typeof document !== 'undefined' && document?.dispatchEvent) {
-              document.dispatchEvent(new CustomEvent('contact-share', {
-                detail: { message: messageObj, conversationId: convId, peerAccountDigest: peerKey }
-              }));
-            }
-          } catch {}
-          if (convId && messageId) {
-            markMessageProcessed(convId, messageId);
-          }
-          logControlHandled(semantic.subtype);
-          logSemanticControlHandled({
-            conversationId: convId,
-            messageId,
-            subtype: semantic.subtype
-          });
           return;
         }
         if (
@@ -3685,6 +3576,12 @@ async function legacyListSecureAndDecrypt(params = {}) {
         ? meta.msg_type
         : (typeof meta?.msgType === 'string' ? meta.msgType : null);
       msgTypeForDecrypt = rawMsgType || (payloadMsgType ? String(payloadMsgType) : 'text');
+      if (normalizeSemanticSubtype(msgTypeForDecrypt) === 'contact-share') {
+        if (packetConversationId && messageId) {
+          markMessageProcessed(packetConversationId, messageId);
+        }
+        return;
+      }
       const isMediaMessage = !!(meta?.media);
 
       // Sender/target判斷：先看 direction，再套用目標驗證（避免把自己送出的封包誤判）。
@@ -3847,19 +3744,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
         if (cachedState && cachedState !== stateKey) {
           decryptFailMessageCache.delete(messageId);
         }
-      }
-      if (msgTypeForDecrypt === 'contact-share') {
-        stableContactShareKey = messageId;
-      }
-
-      if (msgTypeForDecrypt === 'contact-share' && !senderDeviceId) {
-        const availableDevices = {
-          headerDeviceId: header?.device_id || null,
-          metaSenderDeviceId: meta?.sender_device_id || meta?.senderDeviceId || null,
-          rawSenderDeviceId: raw?.senderDeviceId || raw?.sender_device_id || null,
-          targetDeviceId: targetDeviceId || null
-        };
-        throw new Error(`contact-share missing senderDeviceId (available=${JSON.stringify(availableDevices)})`);
       }
       const normalizedMsgType = typeof msgTypeForDecrypt === 'string' ? msgTypeForDecrypt.toLowerCase() : null;
       if (isHistoryReplay && normalizedMsgType && NON_REPLAYABLE_SIGNAL_TYPES.has(normalizedMsgType)) {
@@ -4100,14 +3984,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
       if (!ensuredConversations.has(`${peerKey}::${peerDeviceForMessage}`)) {
         await ensureConversationReadyForDevice(peerDeviceForMessage);
       }
-      if (msgTypeForDecrypt === 'contact-share' && stableContactShareKey) {
-        const processedSet = processedContactShare.get(convId) || new Set();
-        if (processedSet.has(stableContactShareKey)) {
-          logDeliverySkip('processedContactShare', { stableKey: stableContactShareKey });
-          return;
-        }
-      }
-
       // 單一路徑：若收到同一 ratchet 鏈上已消耗過的 counter，直接跳過，避免重放造成錯用 ckR。
       const currentNr = Number.isFinite(Number(state?.Nr)) ? Number(state.Nr) : 0;
       state.Nr = currentNr; // normalize to numeric to avoid string comparisons
@@ -4212,7 +4088,7 @@ async function legacyListSecureAndDecrypt(params = {}) {
       return;
     } catch (err) {
       replayCounters.decryptFail += 1;
-      // Restore the holder to the state before this decrypt attempt to align all message types (including contact-share)
+      // Restore the holder to the state before this decrypt attempt to align all message types
       // to the same receive-chain rollback behavior.
       if (preDecryptSnapshot) {
         try {
@@ -4339,25 +4215,6 @@ async function legacyListSecureAndDecrypt(params = {}) {
           ciphertext_b64: ciphertextB64,
           counter: job?.payloadEnvelope?.counter ?? job?.raw?.counter ?? job?.raw?.n ?? header?.n ?? null
         };
-        if (header && header?.meta?.msg_type === 'contact-share' && Number(header?.n) === 1) {
-          const ratchetPerformed = !!(state?.theirRatchetPub && header?.ek_pub_b64 && naclB64(state.theirRatchetPub) !== header.ek_pub_b64);
-          logDrCore('decrypt:fail-fingerprint', {
-            conversationId: convId,
-            messageId: failedMessageId,
-            headerEkPub: header?.ek_pub_b64 ? String(header.ek_pub_b64).slice(0, 12) : null,
-            headerN: Number(header?.n ?? null),
-            senderDeviceId,
-            stateTheirPub: state?.theirRatchetPub ? (deps.b64 ? deps.b64(state.theirRatchetPub).slice(0, 12) : null) : null,
-            Nr: state?.Nr ?? null,
-            Ns: state?.Ns ?? null,
-            PN: state?.PN ?? null,
-            hasCkR: !!(state?.ckR && state.ckR.length),
-            hasCkS: !!(state?.ckS && state.ckS.length),
-            ratchetPerformed,
-            nUsed: drMeta?.nUsed ?? null,
-            nrAfterRatchet: drMeta?.nrAfterRatchet ?? null
-          });
-        }
         logDrCore('decrypt:fail-state', {
           conversationId: convId,
           peerAccountDigest: peerKey,

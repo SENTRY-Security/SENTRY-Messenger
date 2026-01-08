@@ -3,7 +3,6 @@
 
 import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
-import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 import {
   getMkRaw,
   getAccountDigest,
@@ -377,9 +376,7 @@ export async function loadContacts() {
       let contact = null;
       let conversation = null;
       let pendingSecretUpdate = null;
-      if (envelope?.aead === 'aes-256-gcm') {
-        contact = await unwrapWithMK_JSON(envelope, mk);
-      } else if (isContactShareEnvelope(envelope) && peerDigest) {
+      if (isContactShareEnvelope(envelope) && peerDigest) {
         // contact-secret 必須用「對端裝置」索引，禁止 fallback 自己
         const secretInfo = getContactSecret(peerDigest, {
           deviceId: peerDeviceIdFromHeader,
