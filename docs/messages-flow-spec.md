@@ -145,6 +145,19 @@
 - 若某筆補齊重試失敗達上限：
   - placeholder 必須標記為「無法解密」（不可永久卡住）
 
+### 3.5 Commit-driven Side Effects
+
+- 定義（receiver side）：Commit = B route 成功 decrypt 後，至少完成：
+  - vaultPut incoming key 成功
+  - DR snapshot persist 成功
+- 規範：
+  1. Notifications / Unread / Sound MUST be commit-driven。
+     - MUST NOT 由 WS notify / fetch / probe / replay 直接觸發。
+  2. Placeholder reveal MUST be commit-driven。
+     - A route replay placeholder MUST NOT 觸發 reveal。
+  3. WS / fetch / probe MUST NOT 直接產生 user-visible side effects。
+     - 只能 enqueue jobs / update progress / log。
+
 ---
 
 ## 4. Counter Gap 自動補齊（B route 核心能力）

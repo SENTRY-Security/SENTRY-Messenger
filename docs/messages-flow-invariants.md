@@ -56,6 +56,11 @@
 - control message MUST NOT 產生 placeholder。
 - gap placeholder MUST 逐筆 reveal，MUST NOT 永久卡住。
 
+### Side Effects Invariants
+- Side effects（notification / unread / sound / placeholder reveal）MUST be commit-driven。
+- Side effects MUST NOT be WS / fetch / probe-driven。
+- Side effects MUST NOT be replay-driven。
+
 ### Restore / Catch-up
 - snapshot MUST NOT 保證可解所有舊訊。
 - restore 後 MUST 以 serverMaxCounter vs localProcessedCounter 做 catch-up。
