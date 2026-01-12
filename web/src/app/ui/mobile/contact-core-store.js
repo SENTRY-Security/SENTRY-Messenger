@@ -1,4 +1,4 @@
-import { normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
+import { normalizeAccountDigest, normalizePeerDeviceId, getMkRaw, normalizePeerIdentity } from '../../core/store.js';
 import { sessionStore } from './session-store.js';
 import { DEBUG } from './debug-flags.js';
 
@@ -80,12 +80,12 @@ function normalizeCoreInput(fields = {}) {
   const sourceTag = fields.sourceTag || 'unknown';
   const digest = normalizeAccountDigest(
     fields.peerAccountDigest
-      || fields.accountDigest
-      || (typeof fields.peerKey === 'string' && fields.peerKey.includes('::') ? fields.peerKey.split('::')[0] : null)
+    || fields.accountDigest
+    || (typeof fields.peerKey === 'string' && fields.peerKey.includes('::') ? fields.peerKey.split('::')[0] : null)
   );
   const peerDeviceId = normalizePeerDeviceId(
     fields.peerDeviceId
-      || (typeof fields.peerKey === 'string' && fields.peerKey.includes('::') ? fields.peerKey.split('::')[1] : null)
+    || (typeof fields.peerKey === 'string' && fields.peerKey.includes('::') ? fields.peerKey.split('::')[1] : null)
   );
   const conversation = fields.conversation || {};
   const conversationId = fields.conversationId
@@ -245,7 +245,7 @@ const summarizeCoreInputs = (fields = {}) => {
 
 export function clearContactCore() {
   coreMap.clear();
-  try { logJson('clear', {}); } catch {}
+  try { logJson('clear', {}); } catch { }
   ensureContactIndex().clear();
   ensureConversationIndex().clear();
   ensureConversationThreads().clear();
@@ -283,12 +283,12 @@ export function upsertContactCore(fields, sourceTag = 'unknown') {
   const mismatch = (
     (existing?.peerAccountDigest && existing.peerAccountDigest !== peerAccountDigest)
   ) || (
-    (existing?.peerDeviceId && existing.peerDeviceId !== peerDeviceId)
-  ) || (
-    existing?.conversationId && conversationIdIncoming && existing.conversationId !== conversationIdIncoming
-  ) || (
-    existing?.conversationToken && conversationTokenIncoming && existing.conversationToken !== conversationTokenIncoming
-  );
+      (existing?.peerDeviceId && existing.peerDeviceId !== peerDeviceId)
+    ) || (
+      existing?.conversationId && conversationIdIncoming && existing.conversationId !== conversationIdIncoming
+    ) || (
+      existing?.conversationToken && conversationTokenIncoming && existing.conversationToken !== conversationTokenIncoming
+    );
   if (mismatch) {
     logJson('reject', {
       peerKey,
@@ -530,4 +530,94 @@ export function listContactCoreEntries({ limit = 50 } = {}) {
     if (count >= limit) break;
   }
   return out;
+}
+
+export function normalizeDigestString(value) {
+  const identity = normalizePeerIdentity(value);
+  return identity.key || null;
+}
+
+export function normalizePeerKey(value) {
+  return normalizeDigestString(value?.peerAccountDigest ?? value);
+}
+
+export function splitPeerKey(value) {
+  const key = typeof value === 'string' ? value : normalizePeerKey(value);
+  if (!key || typeof key !== 'string' || !key.includes('::')) {
+    return { digest: normalizeAccountDigest(key || null), deviceId: null };
+  }
+  const [digestPart, devicePart] = key.split('::');
+  return {
+    digest: normalizeAccountDigest(digestPart),
+    deviceId: normalizePeerDeviceId(devicePart)
+  };
+}
+
+export function resolveContactCoreEntry(peerKeyValue, peerDeviceId) {
+  const normalizedKey = normalizePeerKey(peerKeyValue);
+  if (normalizedKey) {
+    return { peerKey: normalizedKey, entry: getContactCore(normalizedKey) };
+  }
+  const { digest } = splitPeerKey(peerKeyValue);
+  const normalizedDeviceId = normalizePeerDeviceId(peerDeviceId || null);
+  if (digest && normalizedDeviceId) {
+    const derivedKey = normalizePeerKey({ peerAccountDigest: digest, peerDeviceId: normalizedDeviceId });
+    if (derivedKey) {
+      return { peerKey: derivedKey, entry: getContactCore(derivedKey) };
+    }
+  }
+  if (!digest) return { peerKey: null, entry: null };
+  const matches = findContactCoreByAccountDigest(digest);
+  if (matches.length === 1) {
+    return { peerKey: matches[0].peerKey || null, entry: matches[0].entry || null };
+  }
+  return { peerKey: null, entry: null };
+}
+
+export function resolveReadyContactCoreEntry(peerKeyValue, peerDeviceId, conversationId) {
+  const resolved = resolveContactCoreEntry(peerKeyValue, peerDeviceId);
+  const baseEntry = resolved.entry;
+  const baseReady = !!(baseEntry?.isReady && baseEntry.conversationId && baseEntry.conversationToken);
+  if (baseReady) {
+    return { peerKey: resolved.peerKey, entry: baseEntry };
+  }
+  const convKey = conversationId ? String(conversationId) : null;
+  if (convKey) {
+    const readyList = Array.isArray(listReadyContacts()) ? listReadyContacts() : [];
+    for (const entry of readyList) {
+      const entryConvId = entry?.conversationId || entry?.conversation?.conversation_id || null;
+      const entryToken = entry?.conversationToken || entry?.conversation?.token_b64 || null;
+      if (!entry?.isReady || !entryConvId || !entryToken) continue;
+      if (String(entryConvId) === convKey) {
+        return { peerKey: entry.peerKey || resolved.peerKey, entry };
+      }
+    }
+  }
+  return { peerKey: resolved.peerKey, entry: baseEntry };
+}
+
+export function isCoreVaultReady(peerKeyValue, peerDeviceId, conversationId) {
+  if (!getMkRaw()) return false;
+  const info = resolveReadyContactCoreEntry(peerKeyValue, peerDeviceId, conversationId);
+  const entry = info.entry;
+  return !!(entry?.isReady && entry.conversationId && entry.conversationToken);
+}
+
+export function resolveContactAvatarUrl(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const candidates = [
+    entry.avatarUrl,
+    entry.avatar?.thumbDataUrl,
+    entry.avatar?.previewDataUrl,
+    entry.avatar?.url,
+    entry.avatar?.httpsUrl,
+    entry.profile?.avatarUrl,
+    entry.profile?.avatar?.thumbUrl
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
 }

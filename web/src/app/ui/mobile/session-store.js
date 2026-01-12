@@ -220,13 +220,13 @@ function hydrateConversationIndexFromPendingInvites(store, { source = 'restorePe
       : [];
     sessionStore.conversationIndex = new Map(entries);
   }
-  const nowSec = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   let restoredCount = 0;
   const sampleConversationIdsPrefix8 = [];
   if (store instanceof Map) {
     for (const entry of store.values()) {
       const expiresAt = Number(entry?.expiresAt || 0);
-      if (!Number.isFinite(expiresAt) || expiresAt <= nowSec) continue;
+      if (!Number.isFinite(expiresAt) || expiresAt <= now / 1000) continue;
       const conversationId = typeof entry?.conversationId === 'string' ? entry.conversationId.trim() : '';
       const conversationToken = typeof entry?.conversationToken === 'string' ? entry.conversationToken.trim() : '';
       if (!conversationId || !conversationToken) continue;
@@ -314,7 +314,7 @@ export function persistPendingInvites() {
     if (typeof sessionStorage !== 'undefined') {
       sessionStorage.setItem(PENDING_INVITES_STORAGE_KEY, JSON.stringify(payload));
     }
-  } catch {}
+  } catch { }
 }
 
 export function listPendingInvites() {
@@ -375,7 +375,7 @@ export function persistOfflineDecryptCursorStore() {
     if (typeof sessionStorage !== 'undefined') {
       sessionStorage.setItem(OFFLINE_DECRYPT_CURSOR_STORAGE_KEY, JSON.stringify(payload));
     }
-  } catch {}
+  } catch { }
 }
 
 function ensurePendingVaultPutQueue() {
@@ -409,7 +409,7 @@ export function persistPendingVaultPuts() {
     if (typeof sessionStorage !== 'undefined') {
       sessionStorage.setItem(PENDING_VAULT_PUT_STORAGE_KEY, JSON.stringify(queue));
     }
-  } catch {}
+  } catch { }
 }
 
 export async function hydrateConversationsFromSecrets() {

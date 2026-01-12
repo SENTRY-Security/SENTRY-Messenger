@@ -55,7 +55,8 @@ import { loadContacts, saveContact, getLastContactsHydrateSummary } from '../fea
 import { saveSettings, loadSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
-import { setupShareController } from './mobile/share-controller.js?v=0.1.10';
+import { SecureStatusController } from './mobile/controllers/secure-status-controller.js?v=0.1.10';
+import { setupShareController } from './mobile/controllers/share-controller.js?v=fix_qr_v1';
 import {
   loadLatestProfile as loadProfileControlState,
   persistProfileForAccount,
@@ -82,9 +83,10 @@ import { initProfileCard } from './mobile/profile-card.js';
 import { escapeHtml, b64u8 } from './mobile/ui-utils.js';
 import { initContactsView } from './mobile/contacts-view.js';
 import { createPresenceManager } from './mobile/presence-manager.js';
-import { createToastController } from './mobile/toast-controller.js';
+import { ConversationListController } from './mobile/controllers/conversation-list-controller.js?v=0.1.10';
+import { createToastController } from './mobile/controllers/toast-controller.js';
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
-import { initMessagesPane } from './mobile/messages-pane.js';
+import { initMessagesPane } from './mobile/messages-pane.js?v=debug_dom_v2';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
@@ -150,7 +152,7 @@ async function emitMkSetTrace(sourceTag, mkRaw) {
         deviceIdSuffix4: (getDeviceId() || '').slice(-4) || null
       }
     });
-  } catch {}
+  } catch { }
 }
 
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
@@ -160,7 +162,7 @@ const out = document.getElementById('out');
 setLogSink(out);
 try {
   log({ appVersion: window.APP_VERSION || 'unknown', buildAt: window.APP_BUILD_AT || document.lastModified || null });
-} catch {}
+} catch { }
 const BUILD_META = (() => {
   try {
     const version = String(window.APP_VERSION || 'dev');
@@ -216,7 +218,7 @@ const SIM_STORAGE_KEY = (() => {
 })();
 const SESSION_LOGIN_TS_KEY = 'session-login-ts';
 function getLoginSessionTs() {
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   try {
     if (typeof sessionStorage !== 'undefined') {
       const existing = Number(sessionStorage.getItem(SESSION_LOGIN_TS_KEY) || '');
@@ -227,7 +229,7 @@ function getLoginSessionTs() {
       sessionStorage.setItem(SESSION_LOGIN_TS_KEY, String(ts));
       return ts;
     }
-  } catch {}
+  } catch { }
   return now;
 }
 
@@ -337,7 +339,7 @@ function readContactSnapshot(storage, keys = []) {
     try {
       const value = storage.getItem(key);
       if (value) return { key, value };
-    } catch {}
+    } catch { }
   }
   return null;
 }
@@ -345,14 +347,14 @@ function readContactSnapshot(storage, keys = []) {
 function writeContactSnapshot(storage, keys = [], value) {
   if (!storage || !keys?.length || value == null) return;
   for (const key of keys) {
-    try { storage.setItem(key, value); } catch {}
+    try { storage.setItem(key, value); } catch { }
   }
 }
 
 function removeContactKeys(storage, keys = []) {
   if (!storage || !keys?.length) return;
   for (const key of keys) {
-    try { storage.removeItem(key); } catch {}
+    try { storage.removeItem(key); } catch { }
   }
 }
 
@@ -417,7 +419,7 @@ function isAutomationEnvironment() {
   try {
     const ua = navigator.userAgent || '';
     if (/Playwright|HeadlessChrome|puppeteer/i.test(ua)) return true;
-  } catch {}
+  } catch { }
   return false;
 }
 
@@ -432,8 +434,8 @@ function hasMediaPermissionFlag() {
 
 function markMediaPermissionGranted() {
   if (typeof sessionStorage === 'undefined') return;
-  try { sessionStorage.setItem(MEDIA_PERMISSION_KEY, 'granted'); } catch {}
-  try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch {}
+  try { sessionStorage.setItem(MEDIA_PERMISSION_KEY, 'granted'); } catch { }
+  try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch { }
 }
 
 function setMediaPermissionStatus(message = '', { success = false } = {}) {
@@ -472,7 +474,7 @@ function showMediaPermissionPrompt() {
 function stopStreamTracks(stream) {
   if (!stream?.getTracks) return;
   for (const track of stream.getTracks()) {
-    try { track.stop(); } catch {}
+    try { track.stop(); } catch { }
   }
 }
 
@@ -484,10 +486,10 @@ function isLiveMicrophoneStream(stream) {
 function cacheMicrophoneStream(stream) {
   if (!isLiveMicrophoneStream(stream)) return null;
   if (cachedMicrophoneStream && cachedMicrophoneStream !== stream) {
-    try { stopStreamTracks(cachedMicrophoneStream); } catch {}
+    try { stopStreamTracks(cachedMicrophoneStream); } catch { }
   }
   cachedMicrophoneStream = stream;
-  try { sessionStore.cachedMicrophoneStream = stream; } catch {}
+  try { sessionStore.cachedMicrophoneStream = stream; } catch { }
   return cachedMicrophoneStream;
 }
 
@@ -498,14 +500,14 @@ async function collectMicrophonePermissionSignals() {
   if (permissions?.query) {
     try {
       result.permState = (await permissions.query({ name: 'microphone' }))?.state || null;
-    } catch {}
+    } catch { }
   }
   if (mediaDevices?.enumerateDevices) {
     try {
       const devices = await mediaDevices.enumerateDevices();
       result.hasLabel = Array.isArray(devices)
         && devices.some((device) => device.kind === 'audioinput' && device.label && device.label.trim());
-    } catch {}
+    } catch { }
   }
   return result;
 }
@@ -594,29 +596,29 @@ function describeMediaPermissionError(err) {
 
 async function warmUpSilentAudioPlayback() {
   if (typeof window === 'undefined') return;
-  try { await resumeNotifyAudioContext()?.catch(() => {}); } catch {}
+  try { await resumeNotifyAudioContext()?.catch(() => { }); } catch { }
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (AudioCtx) {
       const ctx = new AudioCtx();
-      await ctx.resume().catch(() => {});
+      await ctx.resume().catch(() => { });
       const buffer = ctx.createBuffer(1, 1, 22050);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
       source.start?.(0);
-      await ctx.close().catch(() => {});
+      await ctx.close().catch(() => { });
     }
-  } catch {}
+  } catch { }
   try {
     if (typeof Audio !== 'undefined') {
       const audio = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
       audio.muted = true;
       audio.playsInline = true;
-      await audio.play().catch(() => {});
+      await audio.play().catch(() => { });
       audio.pause();
     }
-  } catch {}
+  } catch { }
 }
 
 function forceImmediateAudioPlayback() {
@@ -629,7 +631,7 @@ function forceImmediateAudioPlayback() {
     audio.play()
       ?.catch((err) => log({ mediaPermissionForcePlayError: err?.message || err }));
     setTimeout(() => {
-      try { audio.pause(); audio.src = ''; } catch {}
+      try { audio.pause(); audio.src = ''; } catch { }
     }, 1200);
   } catch (err) {
     log({ mediaPermissionForcePlayInitError: err?.message || err });
@@ -644,7 +646,7 @@ function playConnectChime({ volume = 0.3 } = {}) {
     audio.playsInline = true;
     audio.muted = false;
     const cleanup = () => {
-      try { audio.pause(); audio.src = ''; audio.load(); } catch {}
+      try { audio.pause(); audio.src = ''; audio.load(); } catch { }
     };
     audio.play()
       ?.then(() => setTimeout(cleanup, 4000))
@@ -767,7 +769,7 @@ async function handleMediaPermissionGrant() {
   forceImmediateAudioPlayback();
   playConnectChime({ volume: 0.3 });
   if (!mediaPermissionAwaitingConfirm) {
-    resumeNotifyAudioContext()?.catch(() => {});
+    resumeNotifyAudioContext()?.catch(() => { });
     audioManager.loadBuffer?.();
     log({ mediaPermission: 'triggered' });
     setMediaPermissionButtonState('confirm');
@@ -823,11 +825,11 @@ function initMediaPermissionPrompt() {
           try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             log({ mediaPermissionDebugStream: { tracks: stream?.getTracks?.().length || 0 } });
-        setMediaPermissionStatus('已確認授權並啟動麥克風，稍後會自動關閉提示。', { success: true });
-        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: null });
-        setTimeout(() => {
-          try { stream?.getTracks?.().forEach((track) => track.stop()); } catch {}
-        }, 500);
+            setMediaPermissionStatus('已確認授權並啟動麥克風，稍後會自動關閉提示。', { success: true });
+            await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: null });
+            setTimeout(() => {
+              try { stream?.getTracks?.().forEach((track) => track.stop()); } catch { }
+            }, 500);
           } catch (err) {
             log({ mediaPermissionDebugStreamError: err?.message || err });
           }
@@ -909,7 +911,7 @@ function clearSessionHandoff() {
   );
   const keys = [...baseKeys, ...contactKeys];
   for (const key of keys) {
-    try { sessionStorage.removeItem(key); } catch {}
+    try { sessionStorage.removeItem(key); } catch { }
   }
 }
 
@@ -954,7 +956,7 @@ function clearAllBrowserStorage(logoutMessage) {
   try { localStorage.clear?.(); } catch (err) { log({ secureLogoutLocalClearError: err?.message || err }); }
   try { sessionStorage.clear?.(); } catch (err) { log({ secureLogoutSessionClearError: err?.message || err }); }
 
-  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || '已登出'); } catch {}
+  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || '已登出'); } catch { }
 }
 
 function secureLogout(message = '已登出', { auto = false } = {}) {
@@ -1002,7 +1004,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
     }
   }
 
-  try { wsConn?.close(); } catch {}
+  try { wsConn?.close(); } catch { }
   wsConn = null;
   wsAuthTokenInfo = null;
   if (wsReconnectTimer) {
@@ -1012,7 +1014,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
   pendingWsMessages.length = 0;
   presenceManager?.clearPresenceState?.();
 
-  try { shareController?.closeShareModal?.(); } catch {}
+  try { shareController?.closeShareModal?.(); } catch { }
   resetShareState();
   resetDriveState();
   resetAllProcessedMessages();
@@ -1041,7 +1043,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
         const len = localStorage.getItem(key)?.length || 0;
         if (len > localBytes) localBytes = len;
       }
-    } catch {}
+    } catch { }
     try {
       if (typeof sessionStorage !== 'undefined') {
         for (const key of storageKeys) {
@@ -1049,8 +1051,8 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
           if (len > sessionBytesBefore) sessionBytesBefore = len;
         }
       }
-    } catch {}
-    try { console.log('[contact-secrets-handoff-check]', JSON.stringify({ localBytes, sessionBytesBefore })); } catch {}
+    } catch { }
+    try { console.log('[contact-secrets-handoff-check]', JSON.stringify({ localBytes, sessionBytesBefore })); } catch { }
     let contactSecretsSnapshot = null;
     let source = 'localStorage';
     const localRecord = readContactSnapshot(localStorage, storageKeys);
@@ -1071,9 +1073,9 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
       if (legacyRecord?.value) {
         contactSecretsSnapshot = legacyRecord.value;
         source = `legacy:${legacyRecord.key}`;
-        try { writeContactSnapshot(localStorage, storageKeys, contactSecretsSnapshot); } catch {}
-        try { if (typeof sessionStorage !== 'undefined') writeContactSnapshot(sessionStorage, storageKeys, contactSecretsSnapshot); } catch {}
-        try { writeContactSnapshot(localStorage, latestKeys, contactSecretsSnapshot); } catch {}
+        try { writeContactSnapshot(localStorage, storageKeys, contactSecretsSnapshot); } catch { }
+        try { if (typeof sessionStorage !== 'undefined') writeContactSnapshot(sessionStorage, storageKeys, contactSecretsSnapshot); } catch { }
+        try { writeContactSnapshot(localStorage, latestKeys, contactSecretsSnapshot); } catch { }
         removeContactKeys(localStorage, [...legacyStorageKeys, ...legacyLatestKeys, ...legacyMetaKeys, ...legacyChecksumKeys]);
         removeContactKeys(sessionStorage, [...legacyStorageKeys, ...legacyLatestKeys, ...legacyMetaKeys, ...legacyChecksumKeys]);
       }
@@ -1096,7 +1098,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
           storageKeys.forEach((key) => { window.__LOGIN_SEED_LOCALSTORAGE[key] = contactSecretsSnapshot; });
           latestKeys.forEach((key) => { window.__LOGIN_SEED_LOCALSTORAGE[key] = contactSecretsSnapshot; });
         }
-      } catch {}
+      } catch { }
       const meta = persistContactSecretMetadata({ snapshot: contactSecretsSnapshot, source, keyOptions });
       log({
         contactSecretsHandoffStored: contactSecretsSnapshot.length,
@@ -1111,7 +1113,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
           source,
           sessionBytes
         }));
-      } catch {}
+      } catch { }
     } else if (!contactSecretsSnapshot) {
       persistContactSecretMetadata({ snapshot: null, source: 'missing', keyOptions });
       log({ contactSecretsHandoffStored: 0, contactSecretsHandoffSource: 'missing' });
@@ -1124,11 +1126,11 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
 
   try { resetAll(); } catch (err) {
     log({ secureLogoutResetError: err?.message || err });
-    try { clearSecrets(); } catch {}
+    try { clearSecrets(); } catch { }
   }
 
   if (!auto) {
-    try { showToast?.(safeMessage); } catch {}
+    try { showToast?.(safeMessage); } catch { }
   }
 
   setTimeout(() => {
@@ -1184,7 +1186,7 @@ function showForcedLogoutModal(message = '帳號已在其他裝置登入') {
 }
 
 if (typeof window !== 'undefined') {
-  try { window.secureLogout = secureLogout; } catch {}
+  try { window.secureLogout = secureLogout; } catch { }
 }
 
 function isReloadNavigation() {
@@ -1309,7 +1311,7 @@ function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
   removeContactKeys(localStorage, [...legacyMetaKeys, ...legacyChecksumKeys]);
   try {
     window.__CONTACT_SECRETS_META__ = meta;
-  } catch {}
+  } catch { }
   log({ contactSecretsSnapshotSummary: meta });
   computeContactSecretsChecksum(snapshot)
     ?.then((checksum) => {
@@ -1324,7 +1326,7 @@ function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
       writeContactSnapshot(localStorage, checksumKeys, checksumJson);
       try {
         window.__CONTACT_SECRETS_CHECKSUM__ = detail;
-      } catch {}
+      } catch { }
       log({
         contactSecretsSnapshotChecksum: {
           checksum: detail.checksum,
@@ -1437,11 +1439,11 @@ function flushContactSecretsLocal(reason = 'manual') {
 
 
 // --- Hard-disable zoom gestures (reinforce meta viewport) ---
-(function disableZoom(){
+(function disableZoom() {
   try {
     // iOS Safari pinch gesture
     const stop = (e) => { e.preventDefault(); };
-    ['gesturestart','gesturechange','gestureend'].forEach(t => {
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach(t => {
       document.addEventListener(t, stop, { passive: false });
     });
     // Prevent double-tap zoom
@@ -1462,7 +1464,7 @@ function flushContactSecretsLocal(reason = 'manual') {
         e.preventDefault();
       }
     });
-  } catch {}
+  } catch { }
 })();
 
 // Restore MK/UID from sessionStorage handoff (login → app)
@@ -1509,7 +1511,7 @@ function flushContactSecretsLocal(reason = 'manual') {
 settingsInitPromise = bootLoadSettings()
   .catch((err) => {
     log({ settingsBootError: err?.message || err });
-    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
+    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
     if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
     return sessionStore.settingsState || fallback;
   });
@@ -1527,7 +1529,7 @@ settingsInitPromise = bootLoadSettings()
             restoredFromLocal = true;
             localStorage.removeItem('wrapped_dev_handoff');
           }
-        } catch {}
+        } catch { }
       }
       if (!serialized && typeof window !== 'undefined' && window.name) {
         try {
@@ -1535,8 +1537,8 @@ settingsInitPromise = bootLoadSettings()
           if (handoff && handoff.wrapped_dev) {
             serialized = JSON.stringify(handoff.wrapped_dev);
           }
-        } catch {}
-        try { window.name = ''; } catch {}
+        } catch { }
+        try { window.name = ''; } catch { }
       }
       if (!serialized) {
         let sessionKeys = null;
@@ -1545,7 +1547,7 @@ settingsInitPromise = bootLoadSettings()
           for (let i = 0; i < sessionStorage.length; i += 1) {
             sessionKeys.push(sessionStorage.key(i));
           }
-        } catch {}
+        } catch { }
         log({ devicePrivRestoreSkipped: 'session-missing', sessionKeys });
         return;
       }
@@ -1553,8 +1555,8 @@ settingsInitPromise = bootLoadSettings()
     } else {
       try {
         localStorage?.setItem?.('wrapped_dev_handoff', serialized);
-      } catch {}
-      try { window.name = ''; } catch {}
+      } catch { }
+      try { window.name = ''; } catch { }
     }
     sessionStorage.removeItem('wrapped_dev');
     const mk = getMkRaw();
@@ -1567,7 +1569,7 @@ settingsInitPromise = bootLoadSettings()
       .then((priv) => {
         if (priv) {
           setDevicePriv(priv);
-          try { localStorage?.removeItem?.('wrapped_dev_handoff'); } catch {}
+          try { localStorage?.removeItem?.('wrapped_dev_handoff'); } catch { }
           log({ devicePrivRestored: true });
         }
       })
@@ -1580,7 +1582,7 @@ settingsInitPromise = bootLoadSettings()
 })();
 
 // Guard: require MK
-(function ensureUnlockedOrRedirect(){
+(function ensureUnlockedOrRedirect() {
   if (!getMkRaw()) {
     log('Not unlocked: redirecting to /pages/logout.html …');
     secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
@@ -1588,9 +1590,9 @@ settingsInitPromise = bootLoadSettings()
 })();
 
 // Navigation
-const tabs = ['contacts','messages','drive','profile'];
+const tabs = ['contacts', 'messages', 'drive', 'profile'];
 let currentTab = 'drive';
-function switchTab(name, options = {}){
+function switchTab(name, options = {}) {
   currentTab = name;
   normalizeOverlayState();
   resetMainContentScroll({ smooth: false });
@@ -1711,7 +1713,7 @@ function normalizeSubscriptionLogs(logsRaw) {
 }
 
 function computeSubscriptionCountdown(expiresAt) {
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) return { expired: true, text: '已到期', seconds: 0 };
   const diff = expiresAt - now;
   if (diff <= 0) return { expired: true, text: '已到期', seconds: 0 };
@@ -1736,7 +1738,7 @@ async function refreshSubscriptionStatus({ silent = false } = {}) {
     if (data.found && Number.isFinite(Number(data.expires_at))) {
       state.found = true;
       state.expiresAt = Number(data.expires_at);
-      state.expired = !(state.expiresAt && state.expiresAt > Math.floor(Date.now() / 1000));
+      state.expired = !(state.expiresAt && state.expiresAt > Date.now());
     } else {
       state.found = false;
       state.expiresAt = null;
@@ -1755,7 +1757,7 @@ async function refreshSubscriptionStatus({ silent = false } = {}) {
     updateSubscriptionBadge(state.expired);
     try {
       document.dispatchEvent(new CustomEvent('subscription:state', { detail: { state: { ...state } } }));
-    } catch {}
+    } catch { }
   }
   return sessionStore.subscriptionState;
 }
@@ -1796,11 +1798,11 @@ document.addEventListener('subscription:gate', showSubscriptionGateModal);
 
 function stopSubscriptionScanner({ destroy = false } = {}) {
   if (subscriptionScanner && subscriptionScannerActive) {
-    try { subscriptionScanner.stop(); } catch {}
+    try { subscriptionScanner.stop(); } catch { }
   }
   subscriptionScannerActive = false;
   if (destroy && subscriptionScanner) {
-    try { subscriptionScanner.destroy?.(); } catch {}
+    try { subscriptionScanner.destroy?.(); } catch { }
     subscriptionScanner = null;
   }
 }
@@ -1818,7 +1820,7 @@ function startSubscriptionCountdown(expiresAt) {
     if (expired) updateSubscriptionBadge(true);
   };
   tick();
-  const interval = Math.max(30, Math.min(300, Math.floor(Math.max(expiresAt - Math.floor(Date.now() / 1000), 60) / 2)));
+  const interval = Math.max(30, Math.min(300, Math.floor(Math.max(expiresAt - Date.now(), 60) / 2)));
   subscriptionCountdownTimer = setInterval(tick, interval * 1000);
 }
 
@@ -1838,7 +1840,7 @@ async function handleRedeemToken(token, hooks = {}) {
     if (!r.ok || !data?.ok) throw new Error(typeof data === 'string' ? data : data?.message || 'redeem failed');
     sessionStore.subscriptionState.expiresAt = Number(data.expiresAt || data.expires_at || 0);
     sessionStore.subscriptionState.found = true;
-    sessionStore.subscriptionState.expired = !(sessionStore.subscriptionState.expiresAt > Math.floor(Date.now() / 1000));
+    sessionStore.subscriptionState.expired = !(sessionStore.subscriptionState.expiresAt > Date.now());
     updateSubscriptionBadge(sessionStore.subscriptionState.expired);
     const statusText = document.getElementById('subscriptionStatusText');
     if (statusText) statusText.textContent = '展期成功，正在更新狀態…';
@@ -2009,21 +2011,21 @@ async function openSubscriptionModal() {
     }).join('');
   }
 
-function renderStatusTab() {
-  const current = sessionStore.subscriptionState;
-  stopSubscriptionCountdown();
-  const statusText = document.getElementById('subscriptionStatusText');
-  const meta = document.getElementById('subscriptionMeta');
-  if (statusText) {
-    const { expired, text } = computeSubscriptionCountdown(current.expiresAt || 0);
-    statusText.textContent = current.found ? text : '尚未儲值';
-    statusText.className = expired ? 'sub-status error' : 'sub-status ok';
+  function renderStatusTab() {
+    const current = sessionStore.subscriptionState;
+    stopSubscriptionCountdown();
+    const statusText = document.getElementById('subscriptionStatusText');
+    const meta = document.getElementById('subscriptionMeta');
+    if (statusText) {
+      const { expired, text } = computeSubscriptionCountdown(current.expiresAt || 0);
+      statusText.textContent = current.found ? text : '尚未儲值';
+      statusText.className = expired ? 'sub-status error' : 'sub-status ok';
+    }
+    if (meta) {
+      meta.textContent = current.found ? '狀態自動同步' : '尚無訂閱紀錄';
+    }
+    renderTables(current.logs || []);
   }
-  if (meta) {
-    meta.textContent = current.found ? '狀態自動同步' : '尚無訂閱紀錄';
-  }
-  renderTables(current.logs || []);
-}
 
   function renderWizard() {
     const steps = Array.from(document.querySelectorAll('#subscriptionWizardSteps .sub-step'));
@@ -2153,8 +2155,8 @@ function renderStatusTab() {
         <div class="result-title">${wizard.result?.ok ? '儲值完成' : '儲值失敗'}</div>
         <div class="result-meta">
           ${wizard.result?.ok
-            ? `最新到期：${wizard.result?.expiresAt ? fmt(wizard.result.expiresAt) : '已更新'}`
-            : (wizard.result?.message || '請確認憑證是否有效或已使用')}
+        ? `最新到期：${wizard.result?.expiresAt ? fmt(wizard.result.expiresAt) : '已更新'}`
+        : (wizard.result?.message || '請確認憑證是否有效或已使用')}
         </div>
         <div class="result-actions">
           <button type="button" class="secondary" id="subscriptionWizardRetry">再儲值一次</button>
@@ -2311,7 +2313,7 @@ setTimeout(() => {
 
 const { setupSwipe, closeSwipe, closeOpenSwipe } = createSwipeManager();
 
-let removeContactLocalFn = () => {};
+let removeContactLocalFn = () => { };
 
 const messagesPane = initMessagesPane({
   navbarEl,
@@ -2376,7 +2378,7 @@ const drivePane = initDrivePane({
 });
 
 if (typeof window !== 'undefined') {
-  try { window.__messagesPane = messagesPane; } catch {}
+  try { window.__messagesPane = messagesPane; } catch { }
   window.addEventListener('resize', () => messagesPane.updateLayoutMode());
 }
 document.addEventListener('contacts:rendered', () => messagesPane.renderConversationList());
@@ -2457,7 +2459,7 @@ if (typeof window !== 'undefined') {
       }
     };
     window.__debugDumpPostLogin = () => logRestoreOverview({ reason: 'manual', force: true });
-  } catch {}
+  } catch { }
 }
 
 let contactSecretsRefreshInFlight = false;
@@ -2474,7 +2476,7 @@ document.addEventListener('contactSecrets:restored', async () => {
     refreshConversationPreviews: messagesPane.refreshConversationPreviews,
     onError: (err) => log({ contactsInitError: err?.message || err, source: 'contactSecrets:restored' }),
     onFinally: () => {
-      try { messagesPane.renderConversationList(); } catch {}
+      try { messagesPane.renderConversationList(); } catch { }
       contactSecretsRefreshInFlight = false;
     }
   });
@@ -2526,7 +2528,7 @@ function logContactCoreDiagnostics({ force = false, limit = 20 } = {}) {
         if (secret?.drState) hasDrSnapshot = true;
         if (Array.isArray(secret?.drHistory) && secret.drHistory.length > 0) hasDrSnapshot = true;
         if (secret?.drSeed) hasDrSnapshot = true;
-      } catch {}
+      } catch { }
       const corruptReason = corruptMap.get(entry?.peerKey) || corruptMap.get(entry?.peerAccountDigest || '') || null;
       const payload = {
         event: 'contact-core',
@@ -2547,7 +2549,7 @@ function logContactCoreDiagnostics({ force = false, limit = 20 } = {}) {
       console.info('[diag] ' + JSON.stringify(payload));
     }
   } catch (err) {
-    try { console.info('[diag] ' + JSON.stringify({ event: 'contact-core-log-error', error: err?.message || err })); } catch {}
+    try { console.info('[diag] ' + JSON.stringify({ event: 'contact-core-log-error', error: err?.message || err })); } catch { }
   }
 }
 
@@ -2557,9 +2559,9 @@ async function logRestoreOverview({ reason = 'post-login', force = false } = {})
   restoreOverviewLogged = true;
   try {
     if (profileInitPromise?.then) {
-      await profileInitPromise.catch(() => {});
+      await profileInitPromise.catch(() => { });
     }
-  } catch {}
+  } catch { }
   try {
     const counts = contactCoreCounts();
     const corruptCount = (sessionStore?.corruptContacts instanceof Map) ? sessionStore.corruptContacts.size : 0;
@@ -2617,7 +2619,7 @@ async function logRestoreOverview({ reason = 'post-login', force = false } = {})
     };
     console.info('[diag] ' + JSON.stringify(overview));
   } catch (err) {
-    try { console.info('[diag] ' + JSON.stringify({ event: 'restore-overview-error', error: err?.message || err })); } catch {}
+    try { console.info('[diag] ' + JSON.stringify({ event: 'restore-overview-error', error: err?.message || err })); } catch { }
   } finally {
     logContactCoreDiagnostics({ force });
   }
@@ -2641,7 +2643,7 @@ async function runPostLoginContactHydrate() {
   const hasLocalSecrets = secrets instanceof Map && secrets.size > 0;
   const willFetchRemote = !!mk;
   if (contactCoreVerbose) {
-    try { console.log('[contact-core] hydrate:start ' + JSON.stringify({ hasMk: !!mk, hasLocalSecrets, willFetchRemote })); } catch {}
+    try { console.log('[contact-core] hydrate:start ' + JSON.stringify({ hasMk: !!mk, hasLocalSecrets, willFetchRemote })); } catch { }
   }
   let remoteResult = { ok: false, status: null, entries: 0, corruptCount: 0 };
   if (willFetchRemote) {
@@ -2662,7 +2664,7 @@ async function runPostLoginContactHydrate() {
         entries: remoteResult?.entries ?? 0,
         corruptCount: remoteResult?.corruptCount ?? 0
       }));
-    } catch {}
+    } catch { }
   }
   try {
     await hydrateDrSnapshotsAfterBackup();
@@ -2682,11 +2684,11 @@ async function runPostLoginContactHydrate() {
   if (!readyCountLogged) {
     readyCountLogged = true;
     if (contactCoreVerbose) {
-      try { console.log('[contact-core] ready-count ' + JSON.stringify({ count: counts.ready, pendingCount: counts.pending, source: 'post-login-hydrate' })); } catch {}
+      try { console.log('[contact-core] ready-count ' + JSON.stringify({ count: counts.ready, pendingCount: counts.pending, source: 'post-login-hydrate' })); } catch { }
     }
   }
   if (contactCoreVerbose) {
-    try { console.log('[contact-core] hydrate:done ' + JSON.stringify({ readyCount: counts.ready, pendingCount: counts.pending })); } catch {}
+    try { console.log('[contact-core] hydrate:done ' + JSON.stringify({ readyCount: counts.ready, pendingCount: counts.pending })); } catch { }
   }
   if (loadError) throw loadError;
 }
@@ -2791,7 +2793,7 @@ shareController = setupShareController({
 });
 
 if (typeof window !== 'undefined') {
-  try { window.__shareController = shareController; } catch {}
+  try { window.__shareController = shareController; } catch { }
 }
 
 const {
@@ -2808,7 +2810,7 @@ profileInitPromise
       applyHeaderAvatar('/assets/images/avatar.png', false);
     }
   })
-  .catch(() => {});
+  .catch(() => { });
 
 function getEffectiveSettingsState() {
   return { ...DEFAULT_SETTINGS, ...(sessionStore.settingsState || {}) };
@@ -2831,7 +2833,7 @@ function sanitizeLogoutRedirectUrl(value) {
 function logSettingsBootStart({ digest, convId, mkReady }) {
   try {
     console.info('[settings] boot:load:start ' + JSON.stringify({ digest, convId, mkReady }));
-  } catch {}
+  } catch { }
 }
 
 async function bootLoadSettings() {
@@ -2848,7 +2850,7 @@ async function bootLoadSettings() {
         reason: 'mk/account missing',
         ts: null
       }));
-    } catch {}
+    } catch { }
     throw err;
   }
   try {
@@ -2863,15 +2865,15 @@ async function bootLoadSettings() {
         urlLen: info.urlLen || 0,
         ts: info.ts || null
       }));
-    } catch {}
-    const applied = settings || { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
+    } catch { }
+    const applied = settings || { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
     sessionStore.settingsState = applied;
     try {
       console.info('[settings] boot:apply ' + JSON.stringify({
         autoLogoutRedirectMode: applied.autoLogoutRedirectMode || null,
         hasCustomLogoutUrl: !!applied.autoLogoutCustomUrl
       }));
-    } catch {}
+    } catch { }
     return applied;
   } catch (err) {
     try {
@@ -2881,7 +2883,7 @@ async function bootLoadSettings() {
         reason: err?.message || String(err),
         ts: null
       }));
-    } catch {}
+    } catch { }
     throw err;
   }
 }
@@ -3547,7 +3549,7 @@ function resolveLocalProfileSnapshot(peerDigest) {
   };
   if (sessionStore.contactIndex instanceof Map) {
     for (const entry of sessionStore.contactIndex.values()) {
-    const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || null);
+      const acct = toProfileDigest(entry?.peerAccountDigest || entry?.accountDigest || null);
       if (acct && acct === digest) maybeSelect(entry);
     }
   }
@@ -3648,7 +3650,7 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
     if (typeof renderContacts === 'function') {
       try { renderContacts(); } catch (err) { log({ profileHydrateRenderError: err?.message || err }); }
     }
-    try { messagesPane.renderConversationList(); } catch {}
+    try { messagesPane.renderConversationList(); } catch { }
     for (const key of updatedKeys) {
       try {
         if (typeof messagesPane.handleContactEntryUpdated === 'function') {
@@ -3661,66 +3663,66 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
   }
 }
 
-  async function hydrateProfileSnapshotForDigest(peerDigest) {
-    const digest = toProfileDigest(peerDigest);
-    if (!digest) {
-      log({
-        peerProfilePullFailed: {
-          peerAccountDigest: peerDigest || null,
-          reasonCode: 'PeerProfileInvalidDigest',
-          message: 'profile digest invalid',
-          sourceTag: 'app-mobile:profile-hydrate'
-        }
-      });
-      return;
-    }
-    let profile = null;
-    try {
-      profile = await loadProfileControlState(digest);
-    } catch (err) {
-      log({
-        peerProfilePullFailed: {
-          peerAccountDigest: digest,
-          reasonCode: 'PeerProfileDecryptFailed',
-          message: err?.message || err,
-          sourceTag: 'app-mobile:profile-hydrate'
-        }
-      });
-      return;
-    }
-    if (!profile) {
-      log({
-        peerProfilePullFailed: {
-          peerAccountDigest: digest,
-          reasonCode: 'PeerProfileNotFound',
-          message: 'profile not found',
-          sourceTag: 'app-mobile:profile-hydrate'
-        }
-      });
-      return;
-    }
-    const normalizedNick = normalizeProfileNickname(profile?.nickname || '');
-    const hasProfile = !!normalizedNick || !!profile?.avatar;
-    if (!hasProfile) {
-      log({
-        peerProfilePullFailed: {
-          peerAccountDigest: digest,
-          reasonCode: 'PeerProfileEmpty',
-          message: 'profile missing nickname/avatar',
-          sourceTag: 'app-mobile:profile-hydrate'
-        }
-      });
-      return;
-    }
-    applyProfileSnapshotToStores(digest, profile);
+async function hydrateProfileSnapshotForDigest(peerDigest) {
+  const digest = toProfileDigest(peerDigest);
+  if (!digest) {
     log({
-      peerProfilePullSuccess: {
-        peerAccountDigest: digest,
-        hasNickname: !!normalizedNick,
-        hasAvatar: !!profile?.avatar,
+      peerProfilePullFailed: {
+        peerAccountDigest: peerDigest || null,
+        reasonCode: 'PeerProfileInvalidDigest',
+        message: 'profile digest invalid',
         sourceTag: 'app-mobile:profile-hydrate'
       }
     });
+    return;
+  }
+  let profile = null;
+  try {
+    profile = await loadProfileControlState(digest);
+  } catch (err) {
+    log({
+      peerProfilePullFailed: {
+        peerAccountDigest: digest,
+        reasonCode: 'PeerProfileDecryptFailed',
+        message: err?.message || err,
+        sourceTag: 'app-mobile:profile-hydrate'
+      }
+    });
+    return;
+  }
+  if (!profile) {
+    log({
+      peerProfilePullFailed: {
+        peerAccountDigest: digest,
+        reasonCode: 'PeerProfileNotFound',
+        message: 'profile not found',
+        sourceTag: 'app-mobile:profile-hydrate'
+      }
+    });
+    return;
+  }
+  const normalizedNick = normalizeProfileNickname(profile?.nickname || '');
+  const hasProfile = !!normalizedNick || !!profile?.avatar;
+  if (!hasProfile) {
+    log({
+      peerProfilePullFailed: {
+        peerAccountDigest: digest,
+        reasonCode: 'PeerProfileEmpty',
+        message: 'profile missing nickname/avatar',
+        sourceTag: 'app-mobile:profile-hydrate'
+      }
+    });
+    return;
+  }
+  applyProfileSnapshotToStores(digest, profile);
+  log({
+    peerProfilePullSuccess: {
+      peerAccountDigest: digest,
+      hasNickname: !!normalizedNick,
+      hasAvatar: !!profile?.avatar,
+      sourceTag: 'app-mobile:profile-hydrate'
+    }
+  });
 }
 
 async function hydrateProfileSnapshots() {
@@ -3752,7 +3754,7 @@ postLoginInitPromise
   .finally(() => {
     messagesPane.renderConversationList();
     messagesFlowFacade.onLoginResume({ source: 'login', runOfflineCatchup: false });
-    flushOutbox({ sourceTag: 'post_login' }).catch(() => {});
+    flushOutbox({ sourceTag: 'post_login' }).catch(() => { });
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
@@ -3812,7 +3814,7 @@ function scheduleWsReconnect(delay = 2000) {
 async function getWsAuthToken({ force = false } = {}) {
   const accountDigest = getAccountDigest();
   if (!accountDigest) throw new Error('缺少 accountDigest');
-  const nowSec = Math.floor(Date.now() / 1000);
+  const nowSec = Date.now();
   if (!force && wsAuthTokenInfo && wsAuthTokenInfo.token) {
     const exp = Number(wsAuthTokenInfo.expiresAt || 0);
     if (!exp || exp - nowSec > 30) {
@@ -3912,7 +3914,7 @@ async function connectWebSocket() {
     if (isForensicsWsSecureMessage(msgType)) {
       try {
         logForensicsEvent('WS_RECV', buildWsForensicsSummary(msg));
-      } catch {}
+      } catch { }
     }
     handleWebSocketMessage(msg);
   };
@@ -3941,7 +3943,7 @@ async function connectWebSocket() {
     }
     updateConnectionIndicator('offline');
     wsAuthTokenInfo = null;
-    try { ws.close(); } catch {}
+    try { ws.close(); } catch { }
   };
 }
 
@@ -4121,7 +4123,7 @@ function handleWebSocketMessage(msg) {
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
       });
-      flushOutbox({ sourceTag: 'ws_auth_ok' }).catch(() => {});
+      flushOutbox({ sourceTag: 'ws_auth_ok' }).catch(() => { });
     }
     return;
   }
@@ -4166,9 +4168,9 @@ function handleWebSocketMessage(msg) {
   if (type === 'presence') {
     const online = Array.isArray(msg?.onlineAccountDigests) ? msg.onlineAccountDigests
       : Array.isArray(msg?.onlineDigests) ? msg.onlineDigests
-      : Array.isArray(msg?.online_accounts) ? msg.online_accounts
-      : Array.isArray(msg?.online) ? msg.online
-      : [];
+        : Array.isArray(msg?.online_accounts) ? msg.online_accounts
+          : Array.isArray(msg?.online) ? msg.online
+            : [];
     presenceManager.applyPresenceSnapshot(online);
     return;
   }
@@ -4223,7 +4225,7 @@ function handleWebSocketMessage(msg) {
           targetAccountDigest: msg?.targetAccountDigest || null,
           peerAccountDigest: msg?.peerAccountDigest || null
         });
-      } catch {}
+      } catch { }
     }
     try {
       const summary = buildWsForensicsSummary(msg);
@@ -4232,7 +4234,7 @@ function handleWebSocketMessage(msg) {
         conversationId: convId || summary.conversationId || null,
         handler: 'messagesPane.handleIncomingSecureMessage'
       });
-    } catch {}
+    } catch { }
     const liveJobCtx = buildWsLiveJobContext(msg, convId);
     messagesFlowFacade.onWsIncomingMessageNew({
       event: msg,
@@ -4243,16 +4245,16 @@ function handleWebSocketMessage(msg) {
 }
 
 // Harden autofill: disable autocomplete/autocapitalize/spellcheck on all inputs
-(function hardenAutofill(){
+(function hardenAutofill() {
   try {
     const els = document.querySelectorAll('input, textarea');
     els.forEach(el => {
-      el.setAttribute('autocomplete','off');
-      el.setAttribute('autocapitalize','off');
-      el.setAttribute('autocorrect','off');
-      el.setAttribute('spellcheck','false');
+      el.setAttribute('autocomplete', 'off');
+      el.setAttribute('autocapitalize', 'off');
+      el.setAttribute('autocorrect', 'off');
+      el.setAttribute('spellcheck', 'false');
     });
-  } catch {}
+  } catch { }
 })();
 
 if (typeof document !== 'undefined') {

@@ -1,0 +1,220 @@
+/**
+ * MediaHandlingController
+ * Manages media preview interactions and modals.
+ */
+
+import { BaseController } from './base-controller.js';
+import { downloadAndDecrypt } from '../../../features/media.js';
+import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
+import { escapeHtml, fmtSize } from '../ui-utils.js';
+
+export class MediaHandlingController extends BaseController {
+    constructor(deps) {
+        super(deps);
+        this.loadingModalUpdateFn = null;
+    }
+
+    /**
+     * Show modal loading state.
+     */
+    _showModalLoading(text) {
+        const modalEl = document.getElementById('modal');
+        const title = document.getElementById('modalTitle');
+        const body = document.getElementById('modalBody');
+        if (!modalEl || !title || !body) return;
+
+        this.deps.showConfirmModal?.({
+            title: '處理中',
+            confirmText: '取消',
+            onConfirm: () => {
+                this.deps.closePreviewModal?.();
+            }
+        });
+
+        // Customizing the modal for loading
+        // Ideally we should use a proper modal API, but reusing existing DOM manipulation for now
+        // to match legacy behavior.
+        modalEl.classList.add('loading-modal');
+        title.textContent = text || '載入中…';
+        body.innerHTML = '<div class="spinner"></div><div class="progress-text"></div>';
+
+        this.loadingModalUpdateFn = ({ percent, text: statusText }) => {
+            const txt = body.querySelector('.progress-text');
+            if (txt) txt.textContent = statusText || '';
+        };
+    }
+
+    _updateLoadingModal(state) {
+        if (this.loadingModalUpdateFn) this.loadingModalUpdateFn(state);
+    }
+
+    /**
+     * Open media preview modal.
+     */
+    async openMediaPreview(media) {
+        if (!media) return;
+        try {
+            const displayName = media.name || '附件';
+            let result = null;
+
+            if (media.objectKey && media.envelope) {
+                this._showModalLoading('下載加密檔案中…');
+                result = await downloadAndDecrypt({
+                    key: media.objectKey,
+                    envelope: media.envelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                    onStatus: ({ stage, loaded, total }) => {
+                        if (!this.loadingModalUpdateFn) return;
+                        if (stage === 'sign') {
+                            this._updateLoadingModal({ percent: 5, text: '取得下載授權中…' });
+                        } else if (stage === 'download-start') {
+                            this._updateLoadingModal({ percent: 10, text: '下載加密檔案中…' });
+                        } else if (stage === 'download') {
+                            const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
+                            const percent = pct != null ? Math.min(95, Math.max(15, pct)) : 45;
+                            const text = pct != null
+                                ? `下載加密檔案中… ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
+                                : `下載加密檔案中… (${fmtSize(loaded)})`;
+                            this._updateLoadingModal({ percent, text });
+                        } else if (stage === 'decrypt') {
+                            this._updateLoadingModal({ percent: 98, text: '解密檔案中…' });
+                        }
+                    }
+                });
+            } else if (media.localUrl) {
+                this._showModalLoading(`準備 ${displayName}…`);
+                const response = await fetch(media.localUrl);
+                if (!response.ok) throw new Error('讀取本機預覽失敗');
+                const blob = await response.blob();
+                result = {
+                    blob,
+                    contentType: media.contentType || blob.type || 'application/octet-stream',
+                    name: displayName
+                };
+            } else {
+                throw new Error('無法預覽：無效的檔案來源');
+            }
+
+            await this.renderMediaPreviewModal({
+                blob: result.blob,
+                contentType: result.contentType || media.contentType || 'application/octet-stream',
+                name: result.name || displayName
+            });
+        } catch (err) {
+            console.error('Media preview error', err);
+            this.deps.closePreviewModal?.();
+            this.deps.showToast?.(`附件預覽失敗：${err?.message || err}`);
+        }
+    }
+
+    /**
+     * Render the actual preview modal content.
+     */
+    async renderMediaPreviewModal({ blob, contentType, name }) {
+        const modalEl = document.getElementById('modal');
+        const body = document.getElementById('modalBody');
+        const title = document.getElementById('modalTitle');
+
+        if (!modalEl || !body || !title) {
+            this.deps.closePreviewModal?.();
+            this.deps.showToast?.('無法顯示附件預覽');
+            return;
+        }
+
+        cleanupPdfViewer();
+
+        // Clear all modal classes
+        const classesToRemove = [
+            'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
+            'confirm-modal', 'nickname-modal', 'avatar-modal',
+            'avatar-preview-modal', 'settings-modal'
+        ];
+        modalEl.classList.remove(...classesToRemove);
+
+        body.innerHTML = '';
+        const resolvedName = name || '附件';
+        title.textContent = resolvedName;
+        title.setAttribute('title', resolvedName);
+
+        const url = URL.createObjectURL(blob);
+        // If we had a setModalObjectUrl dependency, use it. Otherwise ignore.
+        // this.deps.setModalObjectUrl?.(url);
+
+        const downloadBtn = document.getElementById('modalDownload');
+        if (downloadBtn) {
+            downloadBtn.style.display = 'none';
+            downloadBtn.onclick = null;
+        }
+
+        const container = document.createElement('div');
+        container.className = 'preview-wrap';
+        const wrap = document.createElement('div');
+        wrap.className = 'viewer';
+        container.appendChild(wrap);
+        body.appendChild(container);
+
+        const ct = (contentType || '').toLowerCase();
+
+        const openModal = () => this.deps.modalOptions?.openPreviewModal?.();
+        const closeModal = () => this.deps.closePreviewModal?.();
+        const showConfirm = this.deps.showConfirmModal;
+
+        if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
+            const handled = await renderPdfViewer({
+                url,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.modalOptions?.openPreviewModal?.();
+                return;
+            }
+
+            const msg = document.createElement('div');
+            msg.className = 'preview-message';
+            msg.innerHTML = `PDF 無法內嵌預覽，將直接下載。<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">下載檔案</a>`;
+            wrap.appendChild(msg);
+        } else if (ct.startsWith('image/')) {
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = resolvedName;
+            wrap.appendChild(img);
+        } else if (ct.startsWith('video/')) {
+            const video = document.createElement('video');
+            video.src = url;
+            video.controls = true;
+            video.playsInline = true;
+            wrap.appendChild(video);
+        } else if (ct.startsWith('audio/')) {
+            const audio = document.createElement('audio');
+            audio.src = url;
+            audio.controls = true;
+            wrap.appendChild(audio);
+        } else if (ct.startsWith('text/')) {
+            try {
+                const textContent = await blob.text();
+                const pre = document.createElement('pre');
+                pre.textContent = textContent;
+                wrap.appendChild(pre);
+            } catch {
+                const msg = document.createElement('div');
+                msg.className = 'preview-message';
+                msg.textContent = '無法顯示文字內容。';
+                wrap.appendChild(msg);
+            }
+        } else {
+            const message = document.createElement('div');
+            message.style.textAlign = 'center';
+            message.innerHTML = `無法預覽此類型（${escapeHtml(contentType || '未知')}）。<br/><br/>`;
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = resolvedName;
+            link.textContent = '下載檔案';
+            link.className = 'primary';
+            message.appendChild(link);
+            wrap.appendChild(message);
+        }
+
+        this.deps.modalOptions?.openPreviewModal?.();
+    }
+}
