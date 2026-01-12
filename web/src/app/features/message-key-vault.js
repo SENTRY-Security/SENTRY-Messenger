@@ -38,7 +38,7 @@ function buildLogContext(params = {}) {
   let accountDigest = null;
   try {
     accountDigest = getAccountDigest();
-  } catch {}
+  } catch { }
   return {
     accountDigestSuffix4: accountDigest ? String(accountDigest).slice(-4) : null,
     conversationId: params.conversationId || null,
@@ -73,7 +73,7 @@ function buildVaultForensicsContext(params = {}) {
   let accountDigest = null;
   try {
     accountDigest = getAccountDigest();
-  } catch {}
+  } catch { }
   return {
     accountDigestSuffix4: sliceForensicsSuffix(accountDigest, 4),
     convIdPrefix: sliceForensicsPrefix(params.conversationId),
@@ -125,7 +125,7 @@ function buildContext(params) {
     direction: params.direction || null,
     msgType: params.msgType || null,
     headerCounter: normalizeHeaderCounter(params.headerCounter),
-    createdAt: Math.floor(Date.now() / 1000)
+    createdAt: Date.now()
   };
 }
 

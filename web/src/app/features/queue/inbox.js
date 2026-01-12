@@ -23,7 +23,7 @@ const MAX_DEAD = 50;
 const convLocks = new Set();
 let debug = false;
 
-const nowSeconds = () => Math.floor(Date.now() / 1000);
+const nowMs = () => Date.now();
 
 function computeBackoff(retryCount = 0) {
   const delay = BASE_BACKOFF_MS * Math.pow(2, retryCount);
@@ -40,7 +40,7 @@ function normalizeJob(input = {}) {
   if (!messageId) throw new Error('messageId required for inbox job');
   const ts = Number.isFinite(Number(input.createdAt))
     ? Number(input.createdAt)
-    : nowSeconds();
+    : nowMs();
   const jobId = typeof input.jobId === 'string' && input.jobId.length
     ? input.jobId
     : `${conversationId}:${messageId}`;
@@ -127,7 +127,7 @@ async function markFailure(job, err) {
       deadJobs.sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
       const prune = deadJobs.slice(0, deadJobs.length - MAX_DEAD);
       for (const dj of prune) {
-        try { await deleteInboxRecord(dj.jobId); } catch {}
+        try { await deleteInboxRecord(dj.jobId); } catch { }
       }
     }
   }
@@ -179,7 +179,7 @@ export async function processInboxForConversation({ conversationId, handler, all
           computedIsHistoryReplay
         }
       });
-    } catch {}
+    } catch { }
   }
   const due = await fetchDueJobs(conversationId);
   const handlerWithCtx = (job) => handler(job, replayCtx);

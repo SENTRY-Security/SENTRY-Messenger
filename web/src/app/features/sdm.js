@@ -9,7 +9,6 @@ import {
   getSession, setSession,
   getHasMK, setHasMK,
   getWrappedMK, setWrappedMK,
-  getUidHex, setUidHex,
   getAccountToken, getAccountDigest
 } from '../core/store.js';
 
@@ -58,7 +57,7 @@ export async function exchangeFromURLIfPresent(url) {
     session: getSession(),
     hasMK: getHasMK(),
     wrapped: !!getWrappedMK(),
-    uidHex: getUidHex(),
+    uidHex: p.uidHex,
     accountToken: getAccountToken() || null,
     accountDigest: getAccountDigest() || null
   };

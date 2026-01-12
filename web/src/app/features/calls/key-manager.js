@@ -63,7 +63,7 @@ function logCallKeyDerive({ callId = null, peerKey = null, hasSecret = false } =
       peerKey: peerKey || null,
       hasSecret: !!hasSecret
     }));
-  } catch {}
+  } catch { }
 }
 
 function toRole(direction) {
@@ -74,9 +74,9 @@ function toRole(direction) {
 export function initCallKeyManager() {
   if (!hasWebCrypto()) {
     log({ callKeyManagerInitSkipped: 'webcrypto-unavailable' });
-    return () => {};
+    return () => { };
   }
-  if (subscriptions.length) return () => {};
+  if (subscriptions.length) return () => { };
   const offState = subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => handleCallStateEvent(session));
   const offSignal = subscribeCallEvent(CALL_EVENT.SIGNAL, () => maybeDeriveKeys('signal'));
   const offError = subscribeCallEvent(CALL_EVENT.ERROR, () => resetKeyContext('call-error'));
@@ -86,7 +86,7 @@ export function initCallKeyManager() {
   });
   return () => {
     for (const off of subscriptions) {
-      try { off?.(); } catch {}
+      try { off?.(); } catch { }
     }
     subscriptions = [];
   };
@@ -205,7 +205,7 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
       found: !!secretB64,
       recordKeys: secretRecord && typeof secretRecord === 'object' ? Object.keys(secretRecord) : []
     }));
-  } catch {}
+  } catch { }
   logCallKeyDerive({ callId, peerKey: identity.peerKey, hasSecret: !!secretB64 });
   if (!secretB64) throw new Error('缺少好友密鑰，請重新同步聯絡人');
   const baseSecret = b64UrlToBytes(secretB64);

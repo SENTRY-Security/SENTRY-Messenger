@@ -12,6 +12,7 @@ import {
   normalizeAccountDigest,
   normalizeDeviceId
 } from '../core/store.js';
+import { ensureDrSession } from './dr-session.js';
 import { normalizeNickname } from './profile.js';
 import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
@@ -36,7 +37,7 @@ function contactConvIds() {
 }
 
 function nowTs() {
-  return Math.floor(Date.now() / 1000);
+  return Date.now();
 }
 
 function safePrefix(value, len) {
@@ -73,7 +74,7 @@ function emitContactsChanged({ conversationId, peerKey, sourceTag }) {
   };
   try {
     document.dispatchEvent(new CustomEvent(CONTACTS_CHANGED_EVENT, { detail }));
-  } catch {}
+  } catch { }
 }
 
 function normalizePendingMessageId(value) {
@@ -89,11 +90,11 @@ function normalizePendingMessageId(value) {
 function resolvePendingMessageId(item) {
   const messageId = normalizePendingMessageId(
     item?.id
-      || item?.messageId
-      || item?.message_id
-      || item?.serverMessageId
-      || item?.server_message_id
-      || null
+    || item?.messageId
+    || item?.message_id
+    || item?.serverMessageId
+    || item?.server_message_id
+    || null
   );
   if (messageId) return messageId;
   return normalizePendingMessageId(item?.ts || null);
@@ -279,7 +280,7 @@ export async function applyContactShareFromCommit({
   }
   const selfDeviceId = ensureDeviceId();
   if (selfDeviceId) {
-    setContactSecret({ peerAccountDigest: digest }, {
+    setContactSecret(digest, {
       conversation: {
         token: conversation.token_b64,
         id: conversation.conversation_id,
@@ -304,6 +305,11 @@ export async function applyContactShareFromCommit({
       sourceTag
     });
   }
+
+  // Auto-init X3DH session (fire and forget) to pre-warm keys
+  ensureDrSession({ peerAccountDigest: digest, peerDeviceId: deviceId })
+    .catch(err => console.warn('[contacts] auto-init failed', err));
+
   return { ok: true };
 }
 
@@ -447,7 +453,7 @@ export async function loadContacts() {
         diag.decryptOkCount += 1;
       }
       if (pendingSecretUpdate) {
-        setContactSecret({ peerAccountDigest }, {
+        setContactSecret(peerAccountDigest, {
           ...pendingSecretUpdate,
           deviceId,
           peerDeviceId: peerDeviceIdFromHeader
@@ -476,7 +482,7 @@ export async function loadContacts() {
             nicknamePresent,
             avatarPresent
           });
-        } catch {}
+        } catch { }
       }
       const selfKeys = new Set([selfDigest].filter(Boolean));
       const isSelfContact = !!peerDigest && selfKeys.has(peerDigest);
@@ -556,7 +562,7 @@ export async function flushPendingContactShares({ mk } = {}) {
     const conversation = extractConversationFromContact(contact);
     const pendingSecretUpdate = buildPendingSecretUpdate(conversation);
     if (pendingSecretUpdate && deviceId) {
-      setContactSecret({ peerAccountDigest: peerDigest }, {
+      setContactSecret(peerDigest, {
         ...pendingSecretUpdate,
         deviceId,
         peerDeviceId
@@ -645,10 +651,10 @@ export async function saveContact(contact) {
 
   const conversation = contact?.conversation && contact.conversation.token_b64 && contact.conversation.conversation_id
     ? {
-        token_b64: String(contact.conversation.token_b64),
-        conversation_id: String(contact.conversation.conversation_id),
-        ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
-      }
+      token_b64: String(contact.conversation.token_b64),
+      conversation_id: String(contact.conversation.conversation_id),
+      ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
+    }
     : null;
   // conversation peer 裝置以解析出的 peerDeviceId 為唯一來源，不從其他欄位補或覆寫。
   if (conversation) {

@@ -58,7 +58,7 @@ function emitStageEvent(stage, ok, reasonCode, progress) {
         progress: progress || null
       }
     }));
-  } catch {}
+  } catch { }
 }
 
 function logStageTrace(stage, ok, reasonCode, progress) {
@@ -392,7 +392,7 @@ export async function startRestorePipeline({ source } = {}) {
 
   try {
     await flushPendingContactShares({ mk: getMkRaw() });
-  } catch {}
+  } catch { }
 
   try {
     setStage('Stage4');

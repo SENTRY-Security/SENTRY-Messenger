@@ -8,15 +8,45 @@ export const SEMANTIC_KIND = Object.freeze({
   IGNORABLE: 'IGNORABLE'
 });
 
-export const USER_MESSAGE_SUBTYPES = new Set(['text', 'media', 'call-log']);
-export const CONTROL_STATE_SUBTYPES = new Set([
-  'contact-share',
-  'profile-update',
-  'session-error',
-  'session-init',
-  'session-ack'
+export const MSG_SUBTYPE = Object.freeze({
+  // User Messages
+  TEXT: 'text',
+  MEDIA: 'media',
+  CALL_LOG: 'call-log',
+
+  // Control State
+  CONTACT_SHARE: 'contact-share',
+  PROFILE_UPDATE: 'profile-update',
+  SESSION_ERROR: 'session-error',
+  SESSION_INIT: 'session-init',
+  SESSION_ACK: 'session-ack',
+
+  // Transient Signals
+  READ_RECEIPT: 'read-receipt',
+  DELIVERY_RECEIPT: 'delivery-receipt',
+
+  // Internal
+  PLACEHOLDER: 'placeholder'
+});
+
+export const USER_MESSAGE_SUBTYPES = new Set([
+  MSG_SUBTYPE.TEXT,
+  MSG_SUBTYPE.MEDIA,
+  MSG_SUBTYPE.CALL_LOG
 ]);
-export const TRANSIENT_SIGNAL_SUBTYPES = new Set(['read-receipt', 'delivery-receipt']);
+
+export const CONTROL_STATE_SUBTYPES = new Set([
+  MSG_SUBTYPE.CONTACT_SHARE,
+  MSG_SUBTYPE.PROFILE_UPDATE,
+  MSG_SUBTYPE.SESSION_ERROR,
+  MSG_SUBTYPE.SESSION_INIT,
+  MSG_SUBTYPE.SESSION_ACK
+]);
+
+export const TRANSIENT_SIGNAL_SUBTYPES = new Set([
+  MSG_SUBTYPE.READ_RECEIPT,
+  MSG_SUBTYPE.DELIVERY_RECEIPT
+]);
 
 export function normalizeSemanticSubtype(value) {
   if (!value || typeof value !== 'string') return null;
@@ -42,24 +72,26 @@ function parsePlaintextType(plaintext) {
     parsed = plaintext;
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  return normalizeSemanticSubtype(parsed?.type || parsed?.msg_type || parsed?.msgType || null);
+  // Prioritize msgType; keep aliases for legacy compatibility during transition
+  const raw = parsed?.msgType || parsed?.type || parsed?.msg_type || parsed?.msg_cat || null;
+  return normalizeSemanticSubtype(raw);
 }
 
 function extractMetaType(meta, header) {
-  return normalizeSemanticSubtype(
+  // Prioritize msgType in meta and header
+  const raw = meta?.msgType ||
     meta?.msg_type ||
-      meta?.msgType ||
-      header?.meta?.msg_type ||
-      header?.meta?.msgType ||
-      null
-  );
+    header?.meta?.msgType ||
+    header?.meta?.msg_type ||
+    null;
+  return normalizeSemanticSubtype(raw);
 }
 
 export function classifyDecryptedPayload(plaintext, { meta = null, header = null } = {}) {
   const fromMeta = extractMetaType(meta, header);
   const fromPlaintext = parsePlaintextType(plaintext);
   const hasPlaintext = typeof plaintext === 'string' && plaintext.trim().length > 0;
-  const subtype = fromMeta || fromPlaintext || (hasPlaintext ? 'text' : null);
+  const subtype = fromMeta || fromPlaintext || (hasPlaintext ? MSG_SUBTYPE.TEXT : null);
 
   if (subtype && USER_MESSAGE_SUBTYPES.has(subtype)) {
     return { kind: SEMANTIC_KIND.USER_MESSAGE, subtype };

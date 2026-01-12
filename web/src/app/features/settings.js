@@ -80,16 +80,16 @@ export async function loadSettings({ returnMeta = false } = {}) {
     } catch {
       header = typeof it?.header === 'object' ? it.header : null;
     }
-    const msgType = it?.msg_type
-      || (it?.meta && typeof it.meta === 'object' ? it.meta.msg_type : null)
-      || (header?.meta && typeof header.meta === 'object' ? header.meta.msg_type : null)
-      || header?.msg_type
+    const msgType = it?.msgType || it?.msg_type
+      || (it?.meta && typeof it.meta === 'object' ? (it.meta.msgType || it.meta.msg_type) : null)
+      || (header?.meta && typeof header.meta === 'object' ? (header.meta.msgType || header.meta.msg_type) : null)
+      || header?.msgType || header?.msg_type
       || null;
     const isSettings = (header && header.settings === 1) || msgType === 'settings-update';
     if (!isSettings) {
       try {
         console.debug('[settings] skip non-settings message', { id: it?.id || null, msgType });
-      } catch {}
+      } catch { }
       continue;
     }
     candidates.push({ item: it, header, msgType, ts });
@@ -120,7 +120,7 @@ export async function loadSettings({ returnMeta = false } = {}) {
     const settings = await unwrapWithMK_JSON(normalizedEnvelope, mk);
     const normalized = {
       ...normalizeSettings(settings),
-      updatedAt: settings?.updatedAt || latest?.ts || Math.floor(Date.now() / 1000),
+      updatedAt: settings?.updatedAt || latest?.ts || Date.now(),
       msgId: latest?.item?.id || null,
       ts: latest?.ts || null
     };
@@ -135,7 +135,7 @@ export async function loadSettings({ returnMeta = false } = {}) {
     };
     try {
       console.info('[settings] hydrate ' + JSON.stringify(meta));
-    } catch {}
+    } catch { }
     return returnMeta ? { settings: normalized, meta } : normalized;
   } catch (err) {
     const meta = {
@@ -150,7 +150,7 @@ export async function loadSettings({ returnMeta = false } = {}) {
     };
     try {
       console.info('[settings] hydrate ' + JSON.stringify(meta));
-    } catch {}
+    } catch { }
     throw err;
   }
 }
@@ -165,7 +165,7 @@ export async function saveSettings(settings) {
     err.userMessage = '請輸入有效的 http/https 網址，或改選預設登出頁面。';
     throw err;
   }
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   const payload = { ...normalized, updatedAt: now };
   try {
     console.info('[settings] persist ' + JSON.stringify({
@@ -173,7 +173,7 @@ export async function saveSettings(settings) {
       hasUrl: !!payload.autoLogoutCustomUrl,
       urlLen: payload.autoLogoutCustomUrl ? String(payload.autoLogoutCustomUrl).length : 0
     }));
-  } catch {}
+  } catch { }
 
   const envelope = await wrapWithMK_JSON(payload, mk, SETTINGS_INFO_TAG);
   const normalizedEnvelope = assertEnvelopeStrict(envelope, { allowInfoTags: SETTINGS_ALLOWED_INFO_TAGS });
@@ -211,13 +211,13 @@ export async function ensureSettings() {
     return null;
   });
   if (existing && typeof existing === 'object') {
-    return { ...normalizeSettings(existing), updatedAt: existing.updatedAt || Math.floor(Date.now() / 1000) };
+    return { ...normalizeSettings(existing), updatedAt: existing.updatedAt || Date.now() };
   }
   try {
     const saved = await saveSettings(DEFAULT_SETTINGS);
     return saved;
   } catch (err) {
     console.warn('[settings] initialize failed', err);
-    return { ...DEFAULT_SETTINGS, updatedAt: Math.floor(Date.now() / 1000) };
+    return { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
   }
 }

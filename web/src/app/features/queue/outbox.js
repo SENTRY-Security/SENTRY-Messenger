@@ -39,7 +39,7 @@ let pendingSourceTag = null;
 let processing = false;
 let debug = false;
 
-const nowSeconds = () => Math.floor(Date.now() / 1000);
+const nowMs = () => Date.now();
 
 function logOutboxJobTrace({
   job,
@@ -148,7 +148,7 @@ function scheduleNextDue(runAtMs, reasonCode) {
   nextDueTimer = setTimeout(() => {
     nextDueTimer = null;
     nextDueAtMs = null;
-    flushOutbox({ sourceTag: 'next_due' }).catch(() => {});
+    flushOutbox({ sourceTag: 'next_due' }).catch(() => { });
   }, Math.max(0, nextAt - now));
   logOutboxScheduleTrace({ scheduled: true, runAtMs: nextDueAtMs, reasonCode: reasonCode || 'schedule' });
 }
@@ -173,7 +173,7 @@ function normalizeJob(input = {}) {
     : normalizeCounter(headerObj?.counter);
   const ts = Number.isFinite(Number(input.createdAt))
     ? Number(input.createdAt)
-    : nowSeconds();
+    : nowMs();
   const jobId = typeof input.jobId === 'string' && input.jobId.length
     ? input.jobId
     : `${jobType}:${conversationId}:${messageId}`;
@@ -218,7 +218,7 @@ export async function enqueueOutboxJob(input = {}) {
   if (isReceiptJob(input)) {
     const jobId = typeof input?.jobId === 'string' ? input.jobId : null;
     if (jobId) {
-      try { await deleteOutboxRecord(jobId); } catch {}
+      try { await deleteOutboxRecord(jobId); } catch { }
     }
     logCapped('outboxReceiptBlockedTrace', {
       conversationId: input?.conversationId || null,
@@ -236,7 +236,7 @@ export async function enqueueOutboxJob(input = {}) {
     ok: true,
     reasonCode: 'OUTBOX_ENQUEUE'
   });
-  flushOutbox({ sourceTag: 'enqueue' }).catch(() => {});
+  flushOutbox({ sourceTag: 'enqueue' }).catch(() => { });
   return job;
 }
 
@@ -437,14 +437,14 @@ async function attemptSend(job) {
           senderAccountDigest: meta?.senderDigest || meta?.sender_digest || null
         }
       });
-    } catch {}
+    } catch { }
   }
   const ackOk = r?.status === 202 && data && data.accepted === true && data.id;
   const failureMessage = ackOk
     ? null
     : (typeof data?.message === 'string' ? data.message
       : typeof data?.error === 'string' ? data.error
-      : `ack failed (status=${r?.status || 'unknown'})`);
+        : `ack failed (status=${r?.status || 'unknown'})`);
   logOutboxJobTrace({
     job,
     stage: ackOk ? 'ACK_OK' : 'ACK_FAIL',
@@ -467,7 +467,7 @@ async function attemptSend(job) {
       serverMessageId: data?.id || data?.serverMessageId || data?.server_message_id || null,
       status: r?.status || null
     });
-  } catch {}
+  } catch { }
   return { r, data };
 }
 
@@ -512,7 +512,7 @@ async function markFailure(job, err) {
   }
   if (next?.state === STATE_DEAD && hooks.onFailed.size) {
     for (const hook of hooks.onFailed) {
-      try { await hook(next, err); } catch {}
+      try { await hook(next, err); } catch { }
     }
   }
 }
@@ -532,7 +532,7 @@ async function markSent(job, response) {
   }
   if (hooks.onSent.size) {
     for (const hook of hooks.onSent) {
-      try { await hook(next, response); } catch {}
+      try { await hook(next, response); } catch { }
     }
   }
   return next;
@@ -549,7 +549,7 @@ async function processSingle(job) {
       reasonCode: 'RECEIPT_BLOCKED'
     });
     log({ outboxReceiptBlocked: { conversationId: job?.conversationId || null, messageId: job?.messageId || null, jobId: job?.jobId || null } });
-    try { await deleteOutboxRecord(job.jobId); } catch {}
+    try { await deleteOutboxRecord(job.jobId); } catch { }
     return false;
   }
   if (requiresCounter(job) && !Number.isFinite(getJobCounter(job))) {
@@ -803,7 +803,7 @@ export async function processOutboxJobNow(jobId) {
     try {
       const postState = await collectOutboxState();
       scheduleNextDue(postState.nextDueAtMs, 'process_now');
-    } catch {}
+    } catch { }
     return {
       ok: false,
       job: latest || job,
@@ -846,7 +846,7 @@ export async function processOutboxJobNow(jobId) {
     try {
       const postState = await collectOutboxState();
       scheduleNextDue(postState.nextDueAtMs, 'process_now');
-    } catch {}
+    } catch { }
   }
 }
 
@@ -897,7 +897,7 @@ export async function retryOutboxMessage({ conversationId, messageId } = {}) {
 }
 
 export function startOutboxProcessor() {
-  flushOutbox({ sourceTag: 'startup' }).catch(() => {});
+  flushOutbox({ sourceTag: 'startup' }).catch(() => { });
 }
 
 export function isConversationLocked(conversationId) {

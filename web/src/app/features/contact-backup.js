@@ -327,11 +327,11 @@ export async function hydrateContactSecretsFromBackup({ reason = 'post-login-hyd
       snapshotVersion,
       backupMeta: meta
         ? {
-            version: meta.version || null,
-            updatedAt: meta.updatedAt || null,
-            deviceId: meta.deviceId || null,
-            deviceLabel: meta.deviceLabel || null
-          }
+          version: meta.version || null,
+          updatedAt: meta.updatedAt || null,
+          deviceId: meta.deviceId || null,
+          deviceLabel: meta.deviceLabel || null
+        }
         : null,
       ts: Date.now()
     };
@@ -410,7 +410,7 @@ export async function hydrateContactSecretsFromBackup({ reason = 'post-login-hyd
         if (typeof document !== 'undefined') {
           document.dispatchEvent(new CustomEvent('contactSecrets:restored', { detail: { source: reason, summary } }));
         }
-      } catch {}
+      } catch { }
     }
     const corruptCount = Array.isArray(summary?.corruptEntries) ? summary.corruptEntries.length : 0;
     return recordResult({
@@ -506,7 +506,7 @@ async function performSync() {
         if (typeof document !== 'undefined') {
           document.dispatchEvent(new CustomEvent('contactSecrets:restored', { detail: { source: 'backup-sync', summary } }));
         }
-      } catch {}
+      } catch { }
     }
   } finally {
     syncInFlight = false;

@@ -112,8 +112,8 @@ function maybeTriggerBackupAfterSend({ sourceTag } = {}) {
     triggerContactSecretsBackup('send-batch', {
       force: false,
       sourceTag: sourceTag || 'dr-session:outbox-sent'
-    }).catch(() => {});
-  } catch {}
+    }).catch(() => { });
+  } catch { }
 }
 
 function suffix(value, len) {
@@ -143,7 +143,7 @@ function logDrHydrateFailedTrace(payload = {}) {
 
 const drConsole = DEBUG.drVerbose === true
   ? console
-  : { log() {}, warn() {}, error: (...args) => console.error(...args), info() {} };
+  : { log() { }, warn() { }, error: (...args) => console.error(...args), info() { } };
 
 const DR_STATE_DEBUG_ENABLED = (() => {
   try {
@@ -274,7 +274,7 @@ function cloneU8(src, keyName = 'unknown', callsiteTag = 'cloneU8') {
         byteLength: typeof src?.byteLength === 'number' ? src.byteLength : null,
         length: typeof src?.length === 'number' ? src.length : null
       });
-    } catch {}
+    } catch { }
     throw new Error(`dr state write rejected: ${keyName} not Uint8Array`);
   }
   return new Uint8Array(src);
@@ -305,7 +305,7 @@ function requireTransportCounter(state, { peerAccountDigest = null, peerDeviceId
         source: sourceTag,
         nsTotal: state?.NsTotal ?? null
       });
-    } catch {}
+    } catch { }
     throw new Error('transport counter missing (NsTotal)');
   }
   return nsTotal;
@@ -340,7 +340,7 @@ function reserveTransportCounter(state, {
           reserved
         }
       });
-    } catch {}
+    } catch { }
   }
   return reserved;
 }
@@ -398,7 +398,7 @@ async function seedTransportCounterFromServer({
           const headerCounter = Number(header?.n ?? header?.counter);
           if (Number.isFinite(headerCounter) && headerCounter > 0) candidates.push(headerCounter);
         }
-      } catch {}
+      } catch { }
       for (const c of candidates) {
         if (Number.isFinite(c) && c > maxCounter) maxCounter = c;
       }
@@ -519,7 +519,7 @@ function logDecodeInvalidKey({ keyName, raw, peerAccountDigest = null, peerDevic
       byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
       length: typeof raw?.length === 'number' ? raw.length : null
     });
-  } catch {}
+  } catch { }
 }
 
 function requireSnapshotKeyString(snapshot, keyName, fallbackKey, { required = false, allowNull = false, peerAccountDigest = null, peerDeviceId = null, sourceTag = null } = {}) {
@@ -589,7 +589,7 @@ function logKeyType(tag, value) {
       length: typeof value?.length === 'number' ? value.length : null
     } : { tag, value: null };
     drConsole.warn('[dr-log:key-type]', info);
-  } catch {}
+  } catch { }
 }
 
 function assertU8(tag, value) {
@@ -823,7 +823,7 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
         byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
         length: typeof raw?.length === 'number' ? raw.length : null
       });
-    } catch {}
+    } catch { }
   };
   const ensureKeyU8 = (value, keyName, required = false) => {
     if (value === undefined || value === null) {
@@ -872,7 +872,7 @@ export function snapshotDrState(state, { setDefaultUpdatedAt = true } = {}) {
       NsTotal: snap.NsTotal,
       NrTotal: snap.NrTotal
     }));
-  } catch {}
+  } catch { }
   return snap;
 }
 
@@ -885,6 +885,37 @@ export function snapshotDrStateForPeer(params = {}) {
   const holder = drState({ peerAccountDigest: digest, peerDeviceId: deviceId });
   if (!holder?.rk) return null;
   return snapshotDrState(holder);
+}
+
+export function consumeDrSendCounter(params = {}) {
+  const { peerAccountDigest, peerDeviceId, conversationId, counter } = params;
+  const targetDigest = normalizeAccountDigest(peerAccountDigest);
+  if (!targetDigest) return false;
+  const holder = drState({ peerAccountDigest: targetDigest, peerDeviceId, conversationId });
+  if (!holder || !holder.rk) return false;
+
+  const targetCounter = Number(counter);
+  if (!Number.isFinite(targetCounter)) return false;
+
+  // Only advance if it's actually ahead.
+  if (targetCounter > (holder.Ns || 0)) {
+    const prev = holder.Ns;
+    holder.Ns = targetCounter;
+    // NsTotal should increment by the gap
+    holder.NsTotal = (holder.NsTotal || 0) + (targetCounter - prev);
+    persistDrSnapshot({ peerAccountDigest: targetDigest, peerDeviceId, state: holder });
+    if (DEBUG.drCounter) {
+      console.warn('[dr-session:consume-counter]', {
+        peerAccountDigest: targetDigest,
+        peerDeviceId,
+        prev,
+        next: targetCounter,
+        conversationId
+      });
+    }
+    return true;
+  }
+  return false;
 }
 
 export function restoreDrStateFromSnapshot(params = {}) {
@@ -1012,7 +1043,7 @@ export function restoreDrStateFromSnapshot(params = {}) {
           sourceTag: 'hydrate'
         }
       });
-    } catch {}
+    } catch { }
   }
   return true;
 }
@@ -1038,7 +1069,7 @@ export function persistDrSnapshot(params = {}) {
   if (!holder?.rk) {
     try {
       drConsole.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId });
-    } catch {}
+    } catch { }
     return false;
   }
   assertU8('persistDrSnapshot:rk', holder.rk);
@@ -1051,7 +1082,7 @@ export function persistDrSnapshot(params = {}) {
   if (!snap) {
     try {
       drConsole.warn('[dr] persist snapshot skipped: missing snapshot', { peerAccountDigest: peer, peerDeviceId });
-    } catch {}
+    } catch { }
     return false;
   }
   // contact secret 以「本機裝置」為鍵，peerDeviceId 僅為對端識別；寫入使用 self deviceId。
@@ -1141,7 +1172,7 @@ export function persistDrSnapshot(params = {}) {
           secretRole: info?.role || null,
           holderRole: holderRole
         });
-      } catch {}
+      } catch { }
     }
     return true;
   } catch (err) {
@@ -1262,7 +1293,7 @@ export function copyDrState(target, source, { callsiteTag = 'copyDrState' } = {}
       NrTotal: target.NrTotal,
       source: callsiteTag || null
     }));
-  } catch {}
+  } catch { }
 }
 
 function cloneSkippedKeysStore(input) {
@@ -1307,7 +1338,7 @@ function createDrStateShell() {
       NrTotal: shell.NrTotal,
       reason: shell.__bornReason
     }));
-  } catch {}
+  } catch { }
   return shell;
 }
 
@@ -1416,25 +1447,45 @@ export async function ensureDrSession(params = {}) {
     conversationId: params?.conversationId ?? null
   });
 
-  const holder = drState({ peerAccountDigest: peer, peerDeviceId });
-  if (holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub) {
-    return { initialized: true, reused: true };
+  const lockKey = peerDeviceId ? `${peer}::${peerDeviceId}` : peer;
+  if (sessionLocks.has(lockKey)) {
+    return sessionLocks.get(lockKey);
   }
 
-  const priv = await ensureDevicePrivLoaded();
+  const promise = (async () => {
+    try {
+      const holder = drState({ peerAccountDigest: peer, peerDeviceId });
+      if (holder?.rk && holder?.myRatchetPriv && holder?.myRatchetPub) {
+        return { initialized: true, reused: true };
+      }
 
-  const { r: rb, data: bundle } = await prekeysBundle({ peer_accountDigest: peer });
-  if (!rb.ok) throw new Error('prekeys.bundle failed: ' + (typeof bundle === 'string' ? bundle : JSON.stringify(bundle)));
+      const priv = await ensureDevicePrivLoaded();
 
-  const peerBundle = normalizePeerBundleFromPrekeys(bundle);
-  const st = await x3dhInitiate(priv, peerBundle);
-  const targetHolder = holder || drState({ peerAccountDigest: peer, peerDeviceId });
-  if (!targetHolder) throw new Error('DR holder missing for peer device');
-  copyDrState(targetHolder, st, { callsiteTag: 'recoverDrState' });
-  targetHolder.baseKey = { role: 'initiator', initializedAt: Date.now(), peerDeviceId };
-  markHolderSnapshot(targetHolder, 'initiator', Date.now());
-  persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state: targetHolder });
-  return { initialized: true };
+      const { r: rb, data: bundle } = await prekeysBundle({ peer_accountDigest: peer });
+      if (!rb.ok) throw new Error('prekeys.bundle failed: ' + (typeof bundle === 'string' ? bundle : JSON.stringify(bundle)));
+
+      // Double-check: during network fetch, another thread might have finished.
+      const holderAgain = drState({ peerAccountDigest: peer, peerDeviceId });
+      if (holderAgain?.rk && holderAgain?.myRatchetPriv && holderAgain?.myRatchetPub) {
+        return { initialized: true, reused: true };
+      }
+
+      const peerBundle = normalizePeerBundleFromPrekeys(bundle);
+      const st = await x3dhInitiate(priv, peerBundle);
+      const targetHolder = holderAgain || holder || drState({ peerAccountDigest: peer, peerDeviceId });
+      if (!targetHolder) throw new Error('DR holder missing for peer device');
+      copyDrState(targetHolder, st, { callsiteTag: 'recoverDrState' });
+      targetHolder.baseKey = { role: 'initiator', initializedAt: Date.now(), peerDeviceId };
+      markHolderSnapshot(targetHolder, 'initiator', Date.now());
+      persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state: targetHolder });
+      return { initialized: true };
+    } finally {
+      sessionLocks.delete(lockKey);
+    }
+  })();
+
+  sessionLocks.set(lockKey, promise);
+  return promise;
 }
 
 function conversationContextForPeer(peerAccountDigest) {
@@ -1594,9 +1645,7 @@ async function sendDrPlaintext(params = {}) {
   if (!messageId) {
     throw new Error('messageId required for send');
   }
-  const msgType = typeof metaOverrides?.msg_type === 'string' && metaOverrides.msg_type.length
-    ? metaOverrides.msg_type
-    : 'text';
+  const msgType = metaOverrides?.msgType || metaOverrides?.msg_type || 'text';
 
   let finalConversationId = conversationId;
   if (!finalConversationId) finalConversationId = await conversationIdFromToken(tokenB64);
@@ -1631,7 +1680,7 @@ async function sendDrPlaintext(params = {}) {
     state.NsTotal = transportCounter;
   }
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
 
   const accountDigest = (getAccountDigest() || '').toUpperCase(); // self
@@ -1645,11 +1694,11 @@ async function sendDrPlaintext(params = {}) {
       senderDigest: accountDigest || null,
       sender_device_id: senderDeviceId || null,
       senderDeviceId: senderDeviceId || null,
-      msg_type: msgType
+      msgType: msgType
     };
     if (metaOverrides && typeof metaOverrides === 'object') {
       for (const [key, value] of Object.entries(metaOverrides)) {
-        if (key === 'msg_type' || key === 'ts' || key === 'sender_digest' || key === 'sender_device_id') continue;
+        if (key === 'msgType' || key === 'msg_type' || key === 'ts' || key === 'sender_digest' || key === 'sender_device_id') continue;
         if (value === undefined) continue;
         metaPayload[key] = value;
       }
@@ -1681,7 +1730,7 @@ async function sendDrPlaintext(params = {}) {
     postNr: postSnapshot?.Nr ?? null,
     postHasCkS: !!postSnapshot?.ckS_b64,
     transportCounter,
-    msgType: meta?.msg_type || null
+    msgType: meta?.msgType || null
   }, { level: 'log' });
 
   const headerPayload = {
@@ -1703,11 +1752,11 @@ async function sendDrPlaintext(params = {}) {
   try {
     drConsole.log('[msg] send:counter', JSON.stringify({
       messageId,
-      msgType: meta?.msg_type || null,
+      msgType: meta?.msgType || null,
       headerN,
       transportCounter
     }));
-  } catch {}
+  } catch { }
   logMsgEvent('send:start', {
     direction: 'outgoing',
     conversationId: finalConversationId,
@@ -1762,13 +1811,13 @@ async function sendDrPlaintext(params = {}) {
       createdAt: now,
       peerAccountDigest: peer,
       peerDeviceId: peerDeviceId || null,
-      meta: { msg_type: meta.msg_type },
+      meta: { msgType: meta.msgType },
       dr: preSnapshot
         ? {
-            snapshotBefore: preSnapshot,
-            snapshotAfter: postSnapshot,
-            messageKeyB64
-          }
+          snapshotBefore: preSnapshot,
+          snapshotAfter: postSnapshot,
+          messageKeyB64
+        }
         : null
     });
     logDrSendTrace({ messageId, stage: 'OUTBOX_ENQUEUE', jobId: job?.jobId || null });
@@ -1869,7 +1918,7 @@ async function sendDrPlaintext(params = {}) {
           state.NsTotal = repairTransportCounter;
         }
         const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
-        const repairNow = Math.floor(Date.now() / 1000);
+        const repairNow = Date.now();
         const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
         const repairMeta = buildOutgoingMeta(repairNow);
         const repairHeaderPayload = {
@@ -1887,11 +1936,11 @@ async function sendDrPlaintext(params = {}) {
         try {
           drConsole.log('[msg] send:counter', JSON.stringify({
             messageId: replacementMessageId,
-            msgType: repairMeta?.msg_type || null,
+            msgType: repairMeta?.msgType || null,
             headerN: repairHeaderN,
             transportCounter: repairTransportCounter
           }));
-        } catch {}
+        } catch { }
         logMsgEvent('send:start', {
           direction: 'outgoing',
           conversationId: finalConversationId,
@@ -1940,13 +1989,13 @@ async function sendDrPlaintext(params = {}) {
           createdAt: repairNow,
           peerAccountDigest: peer,
           peerDeviceId: peerDeviceId || null,
-          meta: { msg_type: repairMeta.msg_type },
+          meta: { msgType: repairMeta.msgType },
           dr: repairPreSnapshot
             ? {
-                snapshotBefore: repairPreSnapshot,
-                snapshotAfter: repairPostSnapshot,
-                messageKeyB64: repairMessageKeyB64
-              }
+              snapshotBefore: repairPreSnapshot,
+              snapshotAfter: repairPostSnapshot,
+              messageKeyB64: repairMessageKeyB64
+            }
             : null
         });
         logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_ENQUEUE', jobId: repairJob?.jobId || null });
@@ -2065,7 +2114,7 @@ async function sendDrPlaintext(params = {}) {
               targetDeviceId: receiverDeviceId
             }
           });
-        } catch {}
+        } catch { }
         repairMsg.counter = repairVaultCounter;
         return {
           msg: repairMsg,
@@ -2129,7 +2178,7 @@ async function sendDrPlaintext(params = {}) {
           targetDeviceId: receiverDeviceId
         }
       });
-    } catch {}
+    } catch { }
     msg.counter = vaultCounter;
     return { msg, convId: finalConversationId, secure: true };
   } catch (err) {
@@ -2262,7 +2311,7 @@ async function buildImagePreviewBlob(file) {
     return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
   } finally {
     if (url) {
-      try { URL.revokeObjectURL(url); } catch {}
+      try { URL.revokeObjectURL(url); } catch { }
     }
   }
 }
@@ -2271,9 +2320,9 @@ function waitForVideoEvent(video, event, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const timer = typeof timeoutMs === 'number' && timeoutMs > 0
       ? setTimeout(() => {
-          cleanup();
-          reject(new Error('video preview timeout'));
-        }, timeoutMs)
+        cleanup();
+        reject(new Error('video preview timeout'));
+      }, timeoutMs)
       : null;
     const onEvent = () => {
       cleanup();
@@ -2332,7 +2381,7 @@ async function buildVideoPreviewBlob(file) {
     return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
   } finally {
     if (url) {
-      try { URL.revokeObjectURL(url); } catch {}
+      try { URL.revokeObjectURL(url); } catch { }
     }
   }
 }
@@ -2367,7 +2416,7 @@ function blobToNamedFile(blob, nameHint) {
   }
   try {
     blob.name = safeName;
-  } catch {}
+  } catch { }
   return blob;
 }
 
@@ -2488,13 +2537,13 @@ export async function sendDrMedia(params = {}) {
     dir: metadata.dir,
     preview: metadata.preview
       ? {
-          objectKey: metadata.preview.objectKey,
-          size: metadata.preview.size,
-          contentType: metadata.preview.contentType,
-          envelope: metadata.preview.envelope,
-          width: metadata.preview.width,
-          height: metadata.preview.height
-        }
+        objectKey: metadata.preview.objectKey,
+        size: metadata.preview.size,
+        contentType: metadata.preview.contentType,
+        envelope: metadata.preview.envelope,
+        width: metadata.preview.width,
+        height: metadata.preview.height
+      }
       : undefined
   });
 
@@ -2517,7 +2566,7 @@ export async function sendDrMedia(params = {}) {
     state.NsTotal = transportCounter;
   }
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
 
   const receiverDeviceId = peerDeviceId;
@@ -2538,7 +2587,7 @@ export async function sendDrMedia(params = {}) {
       target_device_id: receiverDeviceId || null,
       receiverDeviceId: receiverDeviceId || null,
       receiver_device_id: receiverDeviceId || null,
-      msg_type: msgType,
+      msgType: msgType,
       media: {
         object_key: metadata.objectKey,
         size: metadata.size,
@@ -2565,11 +2614,11 @@ export async function sendDrMedia(params = {}) {
   try {
     drConsole.log('[msg] send:counter', JSON.stringify({
       messageId,
-      msgType: meta?.msg_type || null,
+      msgType: meta?.msgType || null,
       headerN,
       transportCounter
     }));
-  } catch {}
+  } catch { }
 
   const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
   const restoreSendFailure = (err) => {
@@ -2619,13 +2668,13 @@ export async function sendDrMedia(params = {}) {
     receiverAccountDigest: peer,
     receiverDeviceId: receiverDeviceId || null,
     createdAt: now,
-    meta: { msg_type: msgType, media: metadata },
+    meta: { msgType: msgType, media: metadata },
     peerAccountDigest: peer,
     dr: preSnapshot
       ? {
-          snapshotBefore: preSnapshot,
-          snapshotAfter: postSnapshot,
-          messageKeyB64
+        snapshotBefore: preSnapshot,
+        snapshotAfter: postSnapshot,
+        messageKeyB64
       }
       : null
   });
@@ -2748,7 +2797,7 @@ export async function sendDrMedia(params = {}) {
         state.NsTotal = repairTransportCounter;
       }
       const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
-      const repairNow = Math.floor(Date.now() / 1000);
+      const repairNow = Date.now();
       const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
       const repairMeta = buildMediaMeta(repairNow);
       const repairHeaderPayload = { ...repairPkt.header, iv_b64: repairPkt.iv_b64, meta: repairMeta };
@@ -2789,14 +2838,14 @@ export async function sendDrMedia(params = {}) {
         receiverAccountDigest: peer,
         receiverDeviceId: receiverDeviceId || null,
         createdAt: repairNow,
-        meta: { msg_type: msgType, media: metadata },
+        meta: { msgType: msgType, media: metadata },
         peerAccountDigest: peer,
         dr: repairPreSnapshot
           ? {
-              snapshotBefore: repairPreSnapshot,
-              snapshotAfter: repairPostSnapshot,
-              messageKeyB64: repairMessageKeyB64
-            }
+            snapshotBefore: repairPreSnapshot,
+            snapshotAfter: repairPostSnapshot,
+            messageKeyB64: repairMessageKeyB64
+          }
           : null
       });
       logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_ENQUEUE', jobId: repairJob?.jobId || null });
@@ -2919,7 +2968,7 @@ export async function sendDrMedia(params = {}) {
             targetDeviceId: receiverDeviceId
           }
         });
-      } catch {}
+      } catch { }
       return {
         msg: {
           id: finalRepairMessageId,
@@ -2987,7 +3036,7 @@ export async function sendDrMedia(params = {}) {
         targetDeviceId: receiverDeviceId
       }
     });
-  } catch {}
+  } catch { }
 
   return {
     msg: {
@@ -3063,7 +3112,7 @@ export async function sendDrCallLog(params = {}) {
     endedAt: endedAtSec
   };
   const metaOverrides = {
-    msg_type: 'call-log',
+    msgType: 'call-log',
     call_id: callId || null,
     call_outcome: outcome,
     call_duration: safeDuration,
@@ -3112,7 +3161,7 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
         byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
         length: typeof raw?.length === 'number' ? raw.length : null
       });
-    } catch {}
+    } catch { }
   };
   const ensureKeyU8 = (value, keyName, { required = true } = {}) => {
     if (value === undefined || value === null) {
@@ -3171,7 +3220,7 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
       hasCkR: freshHolder?.ckR instanceof Uint8Array,
       hasCkS: freshHolder?.ckS instanceof Uint8Array
     });
-  } catch {}
+  } catch { }
   if (!(freshHolder.rk instanceof Uint8Array)) {
     logInvalid('rk', freshHolder?.rk, 'post-copy-not-uint8array');
     throw new Error('dr bootstrap failed to materialize rk');
@@ -3278,7 +3327,7 @@ export async function ensureDrReceiverState(params = {}) {
       hasCkR: state?.ckR instanceof Uint8Array,
       hasCkS: state?.ckS instanceof Uint8Array
     });
-  } catch {}
+  } catch { }
   try {
     drConsole.warn('[dr-log:receiver-keys]', {
       stateKey,
@@ -3297,7 +3346,7 @@ export async function ensureDrReceiverState(params = {}) {
       holderNr: Number.isFinite(state?.Nr) ? Number(state.Nr) : null,
       callsite: callsiteTag
     });
-  } catch {}
+  } catch { }
 
   const secretHasChains =
     !!(snapshot?.ckR || snapshot?.ckR_b64 || snapshot?.ckS || snapshot?.ckS_b64 || snapshot?.rk || snapshot?.rk_b64) ||
@@ -3323,7 +3372,7 @@ export async function ensureDrReceiverState(params = {}) {
           callsite: callsiteTag,
           ...extra
         });
-      } catch {}
+      } catch { }
     };
     logHydrate('hydrate-attempt');
     if (stateKey !== secretKey) {
@@ -3437,7 +3486,7 @@ export async function ensureDrReceiverState(params = {}) {
         hasCkR: !!(state?.ckR && state.ckR.length),
         force
       });
-    } catch {}
+    } catch { }
   }
   if (guestLike && stateRole === 'responder') {
     try {
@@ -3449,7 +3498,7 @@ export async function ensureDrReceiverState(params = {}) {
         hasCkR: !!(state?.ckR && state.ckR.length),
         safeKeepSendState
       });
-    } catch {}
+    } catch { }
     if (!safeKeepSendState) {
       try {
         drConsole.warn('[dr-log:clear-drState-because-guest]', {
@@ -3459,7 +3508,7 @@ export async function ensureDrReceiverState(params = {}) {
           reason: 'guest-role',
           hasSnapshot: !!secretInfo?.drState
         });
-      } catch {}
+      } catch { }
       clearDrState(
         { peerAccountDigest: peer, peerDeviceId },
         { __drDebugTag: 'web/src/app/features/dr-session.js:1978:ensureDrReceiverState:guest-role-clear' }
@@ -3489,7 +3538,7 @@ export async function ensureDrReceiverState(params = {}) {
         stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
         reason: 'missing-role-has-snapshot'
       });
-    } catch {}
+    } catch { }
     restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: secretInfo.drState, force: true, sourceTag: 'missing-role-use-snapshot' });
     state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
@@ -3524,7 +3573,7 @@ export async function ensureDrReceiverState(params = {}) {
         Ns: Number(state?.Ns) || null,
         hasCkS: !!(state?.ckS && state.ckS.length)
       });
-    } catch {}
+    } catch { }
   }
   const resolvePreferredConversationId = () => {
     const secretConv = secretInfo?.conversationId || null;
@@ -3564,14 +3613,14 @@ export async function ensureDrReceiverState(params = {}) {
         hasCkS: !!(state?.ckS && state.ckS.length),
         Ns: Number.isFinite(state?.Ns) ? Number(state.Ns) : null
       });
-    } catch {}
+    } catch { }
     clearDrState(
       { peerAccountDigest: peer, peerDeviceId },
       { __drDebugTag: 'web/src/app/features/dr-session.js:2083:ensureDrReceiverState:conversation-mismatch' }
     );
     try {
       setContactSecret(peer, { deviceId: selfDeviceId, dr: null, conversation: null, meta: { source: 'dr-conv-mismatch-clear' } });
-    } catch {}
+    } catch { }
     state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
   const snapshotRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
@@ -3587,7 +3636,7 @@ export async function ensureDrReceiverState(params = {}) {
         conversationId,
         restored: !!state?.rk
       });
-    } catch {}
+    } catch { }
   } else if (guestLike && secretInfo?.drState) {
     try {
       drConsole.warn('[dr-log:skip-restore-because-guest]', {
@@ -3596,7 +3645,7 @@ export async function ensureDrReceiverState(params = {}) {
         snapshotRole,
         stateKey: `${peer}::${peerDeviceId || 'unknown'}`
       });
-    } catch {}
+    } catch { }
     if (snapshotRole !== 'initiator') {
       setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-skip-responder-snapshot' } });
     }
@@ -3618,7 +3667,7 @@ export async function ensureDrReceiverState(params = {}) {
         hasCkR: stateHasReceiveChain,
         Ns: Number(state?.Ns) || null
       });
-    } catch {}
+    } catch { }
     return true;
   }
   if (!force && stateHasRatchet && stateHasReceiveChain) {
@@ -3627,7 +3676,7 @@ export async function ensureDrReceiverState(params = {}) {
 
   const context = conversationContextForPeer(peer) || {};
   const drInit = context?.dr_init || secretInfo?.conversationDrInit || null;
-  const guestBundle = drInit?.guest_bundle || null;
+  const guestBundle = params?.guestBundle || context?.dr_init?.guest_bundle || secretInfo?.conversationDrInit?.guest_bundle || null;
   const bootstrapError = (message, code = 'DR_BOOTSTRAP_UNAVAILABLE') => {
     const err = new Error(message);
     err.code = code;
@@ -3635,6 +3684,7 @@ export async function ensureDrReceiverState(params = {}) {
   };
 
   const allowResponderBootstrap = (() => {
+    if (params?.guestBundle) return true;
     // guest/initiator 端禁止 responder bootstrap；僅 owner/既有 responder 可啟動。
     const currentRole = state?.baseKey?.role;
     if (relationshipRole === 'guest' || currentRole === 'initiator') return false;
@@ -3662,15 +3712,15 @@ export async function ensureDrReceiverState(params = {}) {
         drConsole.warn('[dr-log:bootstrap-responder-skip]', {
           reason: 'existing-responder-state',
           peerAccountDigest: peer,
-        peerDeviceId,
-        stateKey,
-        roleNow: roleNow || null,
-        hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
-        hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
+          peerDeviceId,
+          stateKey,
+          roleNow: roleNow || null,
+          hasCkS: !!(holderNow?.ckS && holderNow.ckS.length),
+          hasCkR: !!(holderNow?.ckR && holderNow.ckR.length),
           Ns: Number.isFinite(holderNow?.Ns) ? Number(holderNow.Ns) : null,
           Nr: Number.isFinite(holderNow?.Nr) ? Number(holderNow.Nr) : null
         });
-      } catch {}
+      } catch { }
       return true;
     }
     if (!hasReceiveChain && (secretHasChains || holderNow?.Ns > 0 || holderNow?.Nr > 0)) {
@@ -3714,7 +3764,7 @@ export async function ensureDrReceiverState(params = {}) {
         force: shouldForce,
         conversationId
       });
-    } catch {}
+    } catch { }
     await bootstrapDrFromGuestBundle({
       peerAccountDigest: peer,
       guestBundle: normalizedGuestBundle,
@@ -3736,7 +3786,7 @@ export async function ensureDrReceiverState(params = {}) {
         hasCkR: !!(refreshed?.ckR && refreshed.ckR.length),
         hasCkS: !!(refreshed?.ckS && refreshed.ckS.length)
       });
-    } catch {}
+    } catch { }
     const refreshedRole = typeof refreshed?.baseKey?.role === 'string' ? refreshed.baseKey.role.toLowerCase() : null;
     if (
       refreshed?.rk &&
@@ -3766,20 +3816,18 @@ export async function ensureDrReceiverState(params = {}) {
   // guest/未知角色若發現 responder 或缺 initiator 鏈，直接清空並要求重建 initiator（無 fallback）。
   if (isGuestLike && (!holderHasRatchet || holderRoleNow === 'responder')) {
     try {
-      drConsole.warn('[dr-log:guest-clear-responder]', {
+      drConsole.warn('[dr-log:guest-clear-responder] SKIPPED (preservation mode)', {
         peerAccountDigest: peer,
         peerDeviceId,
-        holderRole: holderRoleNow || null,
-        Ns: Number.isFinite(holder?.Ns) ? Number(holder.Ns) : null,
-        hasCkS: !!(holder?.ckS && holder.ckS.length),
-        hasCkR: !!(holder?.ckR && holder.ckR.length)
+        holderRole: holderRoleNow || null
       });
-    } catch {}
-    clearDrState(
-      { peerAccountDigest: peer, peerDeviceId },
-      { __drDebugTag: 'web/src/app/features/dr-session.js:2271:ensureResponderState:guest-clear-responder' }
-    );
-    setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-clear-responder' } });
+    } catch { }
+    // DO NOT clear state here blindly. It causes split-brain if we just need to heal.
+    // clearDrState(
+    //   { peerAccountDigest: peer, peerDeviceId },
+    //   { __drDebugTag: 'web/src/app/features/dr-session.js:2271:ensureResponderState:guest-clear-responder' }
+    // );
+    // setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-clear-responder' } });
     // 嘗試使用 contact-secret 中的 initiator 快照重建（僅限 role=initiator）。
     const snapRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
     if (snapRole === 'initiator') {
@@ -3908,7 +3956,7 @@ try {
           hasCkSBefore: !!dr?.snapshotBefore?.ckS_b64,
           hasCkSAfter: !!dr?.snapshotAfter?.ckS_b64
         }));
-      } catch {}
+      } catch { }
       if (peer && peerDeviceId && dr.snapshotBefore && Number.isFinite(messageTs)) {
         recordDrMessageHistory({
           peerAccountDigest: peer,
@@ -3928,7 +3976,7 @@ try {
             messageId: job?.messageId || null,
             hasSnapshotAfter: !!dr?.snapshotAfter
           }));
-        } catch {}
+        } catch { }
         const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: dr.snapshotAfter });
         try {
           drConsole.log('[dr-log:outbox-persist]', JSON.stringify({
@@ -3939,7 +3987,7 @@ try {
             NsAfter: nsAfter,
             persisted
           }));
-        } catch {}
+        } catch { }
         if (persisted) {
           maybeTriggerBackupAfterSend({ sourceTag: 'dr-session:outbox-sent' });
         }

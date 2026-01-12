@@ -5,7 +5,6 @@ import { listSecureMessages, createSecureMessage } from '../api/messages.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
 import {
   getMkRaw,
-  getUidHex,
   getAccountDigest,
   ensureDeviceId,
   allocateDeviceCounter,
@@ -149,10 +148,10 @@ export async function generateDeterministicNickname({ accountDigest, deviceId } 
 }
 
 function normalizeProfilePayload(profile, { fallbackNickname, allowAvatar = true } = {}) {
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   const nickname = normalizeNickname(profile?.nickname || '') || fallbackNickname || '';
   const payload = {
-    type: PROFILE_MESSAGE_TYPE,
+    msgType: PROFILE_MESSAGE_TYPE,
     nickname,
     updatedAt: Number.isFinite(profile?.updatedAt) ? Number(profile.updatedAt) : now,
     version: Number.isFinite(profile?.version) ? Number(profile.version) : 1
@@ -293,7 +292,7 @@ export async function seedProfileCounterOnce() {
             const headerCounter = Number(header?.n ?? header?.counter);
             if (Number.isFinite(headerCounter) && headerCounter > 0) counters.push(headerCounter);
           }
-        } catch {}
+        } catch { }
         for (const c of counters) {
           if (Number.isFinite(c) && c > maxCounter) maxCounter = c;
         }
@@ -390,7 +389,7 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
     iv_b64: normalizedEnvelope.iv_b64,
     device_id: deviceId || undefined,
     n: counter,
-    meta: { msg_type: PROFILE_MESSAGE_TYPE, subtype: PROFILE_MESSAGE_TYPE }
+    meta: { msgType: PROFILE_MESSAGE_TYPE, subtype: PROFILE_MESSAGE_TYPE }
   };
   const ciphertextB64 = normalizedEnvelope.ct_b64;
   if (!ciphertextB64) {
@@ -429,7 +428,7 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
     const msg = typeof data === 'string' ? data : data?.error || data?.message || 'profile save failed';
     throw new Error(msg);
   }
-  try { commit(); } catch {}
+  try { commit(); } catch { }
   return { ...obj, msgId: data?.id || null };
 }
 
@@ -545,7 +544,7 @@ export async function initProfileDefaultsOnce({ uidHex, evidence, sourceTag = PR
   const generated = await generateDeterministicNickname({ accountDigest: digest, deviceId });
   const normalized = normalizeNickname(generated);
   if (!normalized) throw new Error('nickname generation failed');
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   const savedNickname = await saveProfile({ nickname: normalized, updatedAt: now, sourceTag });
   if (savedNickname === false) throw new Error('profile nickname save failed');
   const avatarResult = await initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag: PROFILE_WRITE_SOURCE.AVATAR_INIT });
@@ -575,7 +574,7 @@ export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {
     dir: 'avatars',
     direction: 'drive'
   });
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   const env = {
     iv_b64: envelope.iv_b64,
     hkdf_salt_b64: envelope.hkdf_salt_b64,
@@ -609,8 +608,8 @@ export async function ensureDefaultAvatarFromSeed({ seed, force = false } = {}) 
 export async function initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag = PROFILE_WRITE_SOURCE.AVATAR_INIT } = {}) {
   const digest = normalizeAccountDigest(getAccountDigest());
   if (!digest) throw new Error('account digest missing');
-  const uid = uidHex || getUidHex();
-  if (!uid) throw new Error('uid missing');
+  const uid = uidHex;
+  if (!uid) throw new Error('uid missing (uidHex parameter required)');
   let existing = null;
   try {
     existing = await loadLatestProfile();
@@ -626,7 +625,7 @@ export async function initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag = P
   if (!rendered?.blob) throw new Error('identicon render failed');
   const file = new File([rendered.blob], `avatar-${digest.slice(-6)}.png`, { type: rendered.blob.type || 'image/png' });
   const avatarMeta = await uploadAvatar({ file, thumbDataUrl: rendered.dataUrl || null });
-  const now = Math.floor(Date.now() / 1000);
+  const now = Date.now();
   const saved = await saveProfile({ avatar: avatarMeta, updatedAt: now, sourceTag });
   return { ok: true, avatar: saved?.avatar || avatarMeta };
 }

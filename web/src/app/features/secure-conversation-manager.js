@@ -15,6 +15,7 @@ const STATUS_FAILED = 'failed';
 
 const listeners = new Set();
 const peerStates = new Map();
+const sessionLocks = new Map();
 
 function resolvePeerIdentity(value) {
   if (!value) return { key: null, deviceId: null };
@@ -144,7 +145,7 @@ function hasReceiverReady({ peerAccountDigest, peerDeviceId }) {
   const secretInfo = getContactSecret(key, { deviceId });
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   const holderRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
-  const isGuestLike = relationshipRole === 'guest' || holderRole === 'initiator';
+  const isGuestLike = relationshipRole === 'guest' || holderRole === 'guest';
   return !!(hasSendChain && isGuestLike);
 }
 

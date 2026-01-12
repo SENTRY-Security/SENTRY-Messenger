@@ -23,7 +23,7 @@ import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
 
 let sendSignal = null;
-let showToast = () => {};
+let showToast = () => { };
 let remoteAudioEl = null;
 let peerConnection = null;
 let localStream = null;
@@ -61,7 +61,7 @@ function requirePeerIdentitySnapshot() {
   if (!snapshot?.peerKey) {
     try {
       setCallPeerDeviceId(identity.deviceId, { callId: snapshot?.callId || null });
-    } catch {}
+    } catch { }
   }
   return identity;
 }
@@ -86,10 +86,10 @@ function failCall(reason, err = null) {
   let selfDeviceId = null;
   try {
     selfAccountDigest = getAccountDigest ? getAccountDigest() : null;
-  } catch {}
+  } catch { }
   try {
     selfDeviceId = ensureDeviceId();
-  } catch {}
+  } catch { }
   log(`callFail|callId=${snapshot.callId || null}|traceId=${snapshot.traceId || null}|selfAccountDigest=${selfAccountDigest || null}|selfDeviceId=${selfDeviceId || null}|peerAccountDigest=${snapshot.peerAccountDigest || null}|peerDeviceId=${snapshot.peerDeviceId || null}|peerKey=${snapshot.peerKey || activePeerKey || null}|reason=${message}`);
   failCallSession(message, {
     reason,
@@ -123,13 +123,13 @@ function cloneLiveAudioTracks(stream) {
 function getCachedMicrophoneStream() {
   const cached = sessionStore?.cachedMicrophoneStream || null;
   if (isLiveMicrophoneStream(cached)) return cached;
-  try { sessionStore.cachedMicrophoneStream = null; } catch {}
+  try { sessionStore.cachedMicrophoneStream = null; } catch { }
   return null;
 }
 
 function setCachedMicrophoneStream(stream) {
   if (!isLiveMicrophoneStream(stream)) return null;
-  try { sessionStore.cachedMicrophoneStream = stream; } catch {}
+  try { sessionStore.cachedMicrophoneStream = stream; } catch { }
   return stream;
 }
 
@@ -154,7 +154,7 @@ function normalizeCandidate(candidate) {
     try {
       const parsed = JSON.parse(candidate);
       if (parsed && typeof parsed === 'object') return parsed;
-    } catch {}
+    } catch { }
     if (candidate.startsWith('candidate:')) {
       return { candidate };
     }
@@ -196,7 +196,7 @@ function promoteSessionToInCall(source = 'media') {
 
 export function initCallMediaSession({ sendSignalFn, showToastFn }) {
   sendSignal = typeof sendSignalFn === 'function' ? sendSignalFn : null;
-  showToast = typeof showToastFn === 'function' ? showToastFn : () => {};
+  showToast = typeof showToastFn === 'function' ? showToastFn : () => { };
   ensureRemoteAudioElement();
   if (unsubscribers.length) return;
   unsubscribers = [
@@ -207,7 +207,7 @@ export function initCallMediaSession({ sendSignalFn, showToastFn }) {
 
 export function disposeCallMediaSession() {
   for (const off of unsubscribers.splice(0)) {
-    try { off?.(); } catch {}
+    try { off?.(); } catch { }
   }
   cleanupPeerConnection('dispose');
 }
@@ -396,19 +396,19 @@ async function buildRtcConfiguration() {
   }
   const baseServers = Array.isArray(config?.ice?.servers)
     ? config.ice.servers
-        .map((entry) => {
-          if (!entry || typeof entry !== 'object') return null;
-          const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
-          const normalizedUrls = urls
-            .map((url) => (typeof url === 'string' ? url.trim() : ''))
-            .filter((url) => url.length);
-          if (!normalizedUrls.length) return null;
-          const server = { urls: normalizedUrls };
-          if (entry.username) server.username = entry.username;
-          if (entry.credential) server.credential = entry.credential;
-          return server;
-        })
-        .filter(Boolean)
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return null;
+        const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+        const normalizedUrls = urls
+          .map((url) => (typeof url === 'string' ? url.trim() : ''))
+          .filter((url) => url.length);
+        if (!normalizedUrls.length) return null;
+        const server = { urls: normalizedUrls };
+        if (entry.username) server.username = entry.username;
+        if (entry.credential) server.credential = entry.credential;
+        return server;
+      })
+      .filter(Boolean)
     : [];
   const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
   const credentialServers = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
@@ -605,12 +605,12 @@ function handleSessionState(session) {
 
 function cleanupPeerConnection(reason) {
   if (peerConnection) {
-    try { peerConnection.onicecandidate = null; } catch {}
-    try { peerConnection.ontrack = null; } catch {}
-    try { peerConnection.close(); } catch {}
+    try { peerConnection.onicecandidate = null; } catch { }
+    try { peerConnection.ontrack = null; } catch { }
+    try { peerConnection.close(); } catch { }
   }
   if (localStream) {
-    try { localStream.getTracks().forEach((track) => track.stop()); } catch {}
+    try { localStream.getTracks().forEach((track) => track.stop()); } catch { }
   }
   peerConnection = null;
   localStream = null;
@@ -625,7 +625,7 @@ function cleanupPeerConnection(reason) {
     try {
       remoteAudioEl.srcObject = null;
       applyRemoteAudioElementStyles(remoteAudioEl);
-    } catch {}
+    } catch { }
   }
   resetControlStates();
   if (reason) {
@@ -759,7 +759,7 @@ function applyLocalAudioMuteState() {
       localStream.getAudioTracks().forEach((track) => {
         track.enabled = !localAudioMuted;
       });
-    } catch {}
+    } catch { }
   }
   updateCallMedia({
     controls: {
@@ -778,7 +778,7 @@ function applyRemoteAudioMuteState() {
         remoteAudioEl.removeAttribute('muted');
         attemptRemoteAudioPlayback();
       }
-    } catch {}
+    } catch { }
   }
   updateCallMedia({
     controls: {

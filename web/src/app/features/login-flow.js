@@ -16,7 +16,6 @@ import {
   getSession, setSession,
   getHasMK, setHasMK,
   getWrappedMK, setWrappedMK,
-  getUidHex, setUidHex,
   getMkRaw, setMkRaw,
   getDevicePriv, setDevicePriv,
   getAccountToken, setAccountToken,
@@ -44,7 +43,7 @@ function asMsg(e, fallback) {
   if (!e) return fallback || 'unknown error';
   if (typeof e === 'string') return e;
   const name = e.name ? String(e.name) : '';
-  const msg  = e.message ? String(e.message) : '';
+  const msg = e.message ? String(e.message) : '';
   if (msg) return msg;
   if (name) return name;
   try { return String(e); } catch { /* noop */ }
@@ -76,7 +75,7 @@ function peekWrappedDevHandoff() {
   try {
     return JSON.parse(raw);
   } catch (err) {
-    try { console.warn('[login-flow] wrapped_dev parse failed', err?.message || err); } catch {}
+    try { console.warn('[login-flow] wrapped_dev parse failed', err?.message || err); } catch { }
     return null;
   }
 }
@@ -106,7 +105,7 @@ async function emitMkSetTrace(sourceTag, mkRaw) {
         deviceIdSuffix4: (getDeviceId() || '').slice(-4) || null
       }
     });
-  } catch {}
+  } catch { }
 }
 
 let identityTraceCount = 0;
@@ -115,7 +114,7 @@ function emitIdentityTrace(payload) {
   identityTraceCount += 1;
   try {
     log({ identityTrace: payload });
-  } catch {}
+  } catch { }
 }
 
 function normalizeEvidencePayload(raw = {}) {
@@ -179,7 +178,7 @@ async function maybeRestoreDeviceIdFromEvidence(evidence) {
         }
       }
     });
-  } catch {}
+  } catch { }
   return candidate;
 }
 
@@ -200,7 +199,6 @@ export async function exchangeSDM(p) {
   const { r, data } = await sdmExchange({ uid: uidHex, sdmmac, sdmcounter, nonce });
   if (!r.ok) throw new Error(`sdm.exchange failed: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
 
-  setUidHex(uidHex);
   setSession(data.session || null);
   setHasMK(!!data.hasMK);
   setWrappedMK(data.wrapped_mk || null);
@@ -504,7 +502,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       report('devkeys-store', 'success');
     } catch (err) {
       report('devkeys-store', 'error', err?.message || err);
-      try { console.warn('[login-flow] devkeys fallback store failed', err?.message || err); } catch {}
+      try { console.warn('[login-flow] devkeys fallback store failed', err?.message || err); } catch { }
     }
   }
   if (hasExistingBackup) {
@@ -512,14 +510,14 @@ export async function unlockAndInit({ password, onProgress } = {}) {
   }
   if (!hasExistingBackup) {
     if (hadWrappedMK && !fallbackWrappedDev) {
-      try { console.warn('[login-flow] device backup missing; regenerating bundle'); } catch {}
+      try { console.warn('[login-flow] device backup missing; regenerating bundle'); } catch { }
     }
     // full init path: generate bundle (+100), publish, store backup
     try {
       report('generate-bundle', 'start');
       const deviceId = getDeviceId() || crypto.randomUUID();
       setDeviceId(deviceId);
-      try { console.log('[login-flow] deviceId:set:init', deviceId); } catch {}
+      try { console.log('[login-flow] deviceId:set:init', deviceId); } catch { }
       const { devicePriv, bundlePub } = await generateInitialBundle(1, 50);
       devicePriv.device_id = deviceId;
       devicePriv.deviceId = deviceId;
@@ -556,7 +554,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       devicePriv.device_id = deviceId;
       devicePriv.deviceId = deviceId;
       setDeviceId(deviceId);
-      try { console.log('[login-flow] deviceId:set:replenish', deviceId); } catch {}
+      try { console.log('[login-flow] deviceId:set:replenish', deviceId); } catch { }
       await runStep('prekeys-sync', () => publishBundle({
         ik_pub: devicePriv.ik_pub_b64,
         spk_pub: devicePriv.spk_pub_b64,

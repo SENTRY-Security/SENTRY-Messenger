@@ -146,7 +146,7 @@ function buildEnvelope({ ct, keyType, keyU8, infoTag, contentType, name }) {
 
 /** Persist envelope metadata for a given object key (local-only cache). */
 export function saveEnvelopeMeta(objectKey, meta) {
-  try { localStorage.setItem('env_v1:' + objectKey, JSON.stringify(meta)); } catch {}
+  try { localStorage.setItem('env_v1:' + objectKey, JSON.stringify(meta)); } catch { }
 }
 /** Load envelope metadata for a given object key; returns null if missing. */
 export function loadEnvelopeMeta(objectKey) {
@@ -160,13 +160,13 @@ export async function deleteEncryptedObjects({ keys, ids, convId }) {
   if (!convId) throw new Error('convId required for deletion');
   try {
     const { data } = await deleteMediaKeys({ keys: uniqKeys, ids: uniqIds, conversationId: convId });
-    try { uniqKeys.forEach((key) => localStorage.removeItem('env_v1:' + key)); } catch {}
+    try { uniqKeys.forEach((key) => localStorage.removeItem('env_v1:' + key)); } catch { }
     const deleted = data?.deleted || data?.results || [];
     return { deleted, failed: data?.failed || [] };
   } catch (err) {
     const msg = String(err?.message || err);
     if (msg.toLowerCase().includes('not found')) {
-      try { uniqKeys.forEach((key) => localStorage.removeItem('env_v1:' + key)); } catch {}
+      try { uniqKeys.forEach((key) => localStorage.removeItem('env_v1:' + key)); } catch { }
       return { deleted: [], failed: [] };
     }
     throw err;
@@ -339,7 +339,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
     const xhr = new XMLHttpRequest();
     if (abortSignal) {
       const onAbort = () => {
-        try { xhr.abort(); } catch {}
+        try { xhr.abort(); } catch { }
         reject(new DOMException('aborted', 'AbortError'));
       };
       if (abortSignal.aborted) {
@@ -353,7 +353,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
     xhr.setRequestHeader('Content-Type', ctForPut);
     xhr.upload.onprogress = (evt) => {
       if (!onProgress || !evt.lengthComputable) return;
-      onProgress({ loaded: evt.loaded, total: evt.total, percent: Math.round((evt.loaded/evt.total)*100) });
+      onProgress({ loaded: evt.loaded, total: evt.total, percent: Math.round((evt.loaded / evt.total) * 100) });
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve(null);
@@ -468,7 +468,7 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
 
     if (abortSignal) {
       const onAbort = () => {
-        try { xhr.abort(); } catch {}
+        try { xhr.abort(); } catch { }
         reject(new DOMException('aborted', 'AbortError'));
       };
       if (abortSignal.aborted) return onAbort();
