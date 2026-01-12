@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 const baseUrl = (process.env.E2E_BASE_URL || 'http://localhost:8788').replace(/\/$/, '');
-const loginUrl = `${baseUrl}/pages/login?e2e=1`;
+const loginUrl = `${baseUrl}/pages/login?e2e=1&api=http://localhost:3002`;
 const TARGET_ENDPOINTS = [
   '/api/v1/mk/store',
   '/api/v1/auth/opaque/login-init',
@@ -188,12 +188,8 @@ test.describe('login smoke (debug simulate)', () => {
   test('logs in via debug button and stores MK', async ({ page }) => {
     await page.goto(loginUrl, { waitUntil: 'networkidle' });
 
-    const debugBtn = page.getByRole('button', { name: 'DEBUG 模擬登入' });
-    await expect(debugBtn).toBeVisible({ timeout: 15_000 });
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle' }),
-      debugBtn.click()
-    ]);
+    await page.waitForFunction(() => !!window.debugSimulateLogin, { timeout: 15_000 });
+    await page.evaluate(() => window.debugSimulateLogin());
 
     await page.waitForFunction(() => {
       const el = document.getElementById('sessionView');

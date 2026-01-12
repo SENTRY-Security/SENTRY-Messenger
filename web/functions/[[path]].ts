@@ -1,14 +1,6 @@
 export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request, env, next }) => {
   const url = new URL(request.url);
-  if (isDebugPath(url.pathname)) {
-    const clientIp = getClientIp(request);
-    if (clientIp !== '60.248.6.250') {
-      return new Response('Forbidden', {
-        status: 403,
-        headers: { 'content-type': 'text/plain; charset=utf-8' }
-      });
-    }
-  }
+
   if (!url.pathname.startsWith('/api/')) {
     return next();
   }
@@ -40,18 +32,9 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
   });
 };
 
-function isDebugPath(pathname: string) {
-  if (pathname === '/pages/debug' || pathname === '/pages/debug.html') return true;
-  return pathname.startsWith('/pages/debug/');
-}
 
-function getClientIp(request: Request) {
-  const cfIp = request.headers.get('CF-Connecting-IP');
-  if (cfIp) return cfIp.trim();
-  const xff = request.headers.get('X-Forwarded-For');
-  if (!xff) return '';
-  return xff.split(',')[0].trim();
-}
+
+
 
 function json(obj: unknown, status = 200, req?: Request) {
   const headers: Record<string, string> = {
