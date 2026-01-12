@@ -10,7 +10,6 @@
 // - SESSION: one-time token from /auth/sdm/exchange (60s, single-use)
 // - HAS_MK: boolean (server has wrapped_mk)
 // - WRAPPED_MK: object | null (from exchange)
-// - UID_HEX: normalized 7-byte UID hex（僅 SDM/硬體模擬使用，其他流程已改 accountDigest-only）
 // - ACCOUNT_TOKEN: opaque token from /auth/sdm/exchange
 // - ACCOUNT_DIGEST: hex digest identifying the account (HMAC(uid))
 // - MK_RAW: Uint8Array | null (decrypted MK, memory-only)
@@ -24,7 +23,6 @@ import { logCapped } from './log.js';
 let _SESSION = null;
 let _HAS_MK = false;
 let _WRAPPED_MK = null;
-let _UID_HEX = null;
 let _ACCOUNT_TOKEN = null;
 let _ACCOUNT_DIGEST = null;
 let _DEVICE_ID = null;
@@ -89,7 +87,7 @@ export function logDrStateClear(tag, stateKey, holder) {
   };
   try {
     console.warn('[dr-debug:state-clear]', entry);
-  } catch {}
+  } catch { }
   logCapped('contactShareStateChangeTrace', {
     reasonCode: 'CLEAR_DR_STATE',
     fromKey: stateKey || null,
@@ -112,7 +110,7 @@ function logDrStateCreate(stateKey, holder) {
   };
   try {
     console.warn('[dr-debug:state-create]', entry);
-  } catch {}
+  } catch { }
 }
 
 function logAllDrStates(tag, predicate = null) {
@@ -214,10 +212,6 @@ export function setHasMK(v) { _HAS_MK = !!v; }
 export function getWrappedMK() { return _WRAPPED_MK; }
 export function setWrappedMK(obj) { _WRAPPED_MK = obj || null; }
 
-export function getUidHex() { return _UID_HEX; }
-export function setUidHex(v) {
-  _UID_HEX = (v || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase() || null;
-}
 
 export function getAccountToken() { return _ACCOUNT_TOKEN; }
 export function setAccountToken(v) { _ACCOUNT_TOKEN = v ? String(v) : null; }
@@ -225,7 +219,9 @@ export function setAccountToken(v) { _ACCOUNT_TOKEN = v ? String(v) : null; }
 export function getAccountDigest() { return _ACCOUNT_DIGEST; }
 export function normalizeAccountDigest(value) {
   if (!value) return null;
-  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  // Handle wrapped object if passed by mistake
+  const raw = (typeof value === 'object') ? (value.peerAccountDigest ?? value.accountDigest ?? value.digest ?? String(value)) : value;
+  const cleaned = String(raw).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return cleaned && cleaned.length === 64 ? cleaned : null;
 }
 export function normalizePeerUid(value) {
@@ -271,9 +267,19 @@ export function normalizePeerIdentity(peer) {
         : null
     );
   }
-  if (!digest || !deviceId) return { key: null, accountDigest: digest || null, deviceId: deviceId || null, uid: null };
+  if (!digest || !deviceId) {
+    return {
+      key: null,
+      accountDigest: digest || null,
+      deviceId: deviceId || null
+    };
+  }
   const key = `${digest}::${deviceId}`;
-  return { key, accountDigest: digest, deviceId, uid: null };
+  return {
+    key,
+    accountDigest: digest,
+    deviceId
+  };
 }
 function resolveDrKey(peerInput) {
   const identity = normalizePeerIdentity(peerInput);
@@ -292,7 +298,7 @@ export function setAccountDigest(v) {
         drStates: _DR_SESS.size,
         stackTop3: captureDrStackTop()
       });
-    } catch {}
+    } catch { }
   }
 }
 
@@ -485,7 +491,7 @@ export function drState(peerInput) {
         NrTotal: state?.NrTotal ?? null,
         reason: state?.__bornReason || 'state-birth'
       }));
-    } catch {}
+    } catch { }
     logDrStateCreate(key, state);
   }
   return state;
@@ -499,7 +505,7 @@ export function clearDrState(peerInput, opts = {}) {
     if (typeof _beforeClearDrStateHook === 'function') {
       try {
         _beforeClearDrStateHook({ peerAccountDigest: null, peerDeviceId: null, reason: debugTag });
-      } catch {}
+      } catch { }
     }
     logAllDrStates(debugTag);
     _DR_SESS.clear();
@@ -515,7 +521,7 @@ export function clearDrState(peerInput, opts = {}) {
         peerDeviceId: identity?.deviceId || null,
         reason: debugTag
       });
-    } catch {}
+    } catch { }
   }
   const holder = _DR_SESS.get(key) || null;
   logDrStateClear(debugTag, key, holder);
@@ -536,7 +542,7 @@ export function clearDrStatesByAccount(peerAccountDigest, opts = {}) {
   if (typeof _beforeClearDrStateHook === 'function') {
     try {
       _beforeClearDrStateHook({ peerAccountDigest: digest, peerDeviceId: null, reason: debugTag });
-    } catch {}
+    } catch { }
   }
   const toDelete = [];
   for (const key of _DR_SESS.keys()) {
@@ -576,7 +582,6 @@ export function resetAll() {
   _SESSION = null;
   _HAS_MK = false;
   _WRAPPED_MK = null;
-  _UID_HEX = null;
   _ACCOUNT_TOKEN = null;
   _ACCOUNT_DIGEST = null;
   _MK_RAW = null;
@@ -587,15 +592,13 @@ export function resetAll() {
 
 /**
  * Helper to build a payload including account credentials (accountToken/accountDigest).
- * UID hex is legacy and僅供 SDM/debug opt-in；預設僅回填 accountDigest/accountToken。
- * @param {{ includeUid?: boolean, overrides?: Record<string, any> }} [opts]
+ * @param {{ overrides?: Record<string, any> }} [opts]
  */
 export function buildAccountPayload(opts = {}) {
-  const { includeUid = false, overrides = {} } = opts;
+  const { overrides = {} } = opts;
   const payload = { ...overrides };
   if (_ACCOUNT_TOKEN && payload.accountToken == null) payload.accountToken = _ACCOUNT_TOKEN;
   if (_ACCOUNT_DIGEST && payload.accountDigest == null) payload.accountDigest = _ACCOUNT_DIGEST;
-  if (includeUid && _UID_HEX && payload.uidHex == null) payload.uidHex = _UID_HEX;
   return payload;
 }
 

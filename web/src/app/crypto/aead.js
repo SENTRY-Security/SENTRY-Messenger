@@ -82,8 +82,8 @@ async function hkdfDeriveAesKey(mkRawU8, saltU8, infoStr, usages) {
 export async function encryptWithMK(plainU8, mkRawU8, infoTag = 'media/v1') {
   const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
   const salt = crypto.getRandomValues(new Uint8Array(16));   // per-object salt
-  const iv   = crypto.getRandomValues(new Uint8Array(12));   // 96-bit IV
-  const key  = await hkdfDeriveAesKey(mkRawU8, salt, normalizedInfoTag, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));   // 96-bit IV
+  const key = await hkdfDeriveAesKey(mkRawU8, salt, normalizedInfoTag, ['encrypt']);
   const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plainU8);
   return { cipherBuf: new Uint8Array(ctBuf), iv, hkdfSalt: salt };
 }
@@ -106,8 +106,8 @@ export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
     aead: 'aes-256-gcm',
     info: normalizedInfoTag,
     salt_b64: b64(hkdfSalt),
-    iv_b64:   b64(iv),
-    ct_b64:   b64(cipherBuf)
+    iv_b64: b64(iv),
+    ct_b64: b64(cipherBuf)
   };
 }
 
@@ -115,8 +115,8 @@ export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
 export async function unwrapWithMK_JSON(envelope, mkRawU8) {
   const normalizedEnvelope = assertEnvelopeStrict(envelope);
   const salt = b64u8(normalizedEnvelope.salt_b64);
-  const iv   = b64u8(normalizedEnvelope.iv_b64);
-  const ct   = b64u8(normalizedEnvelope.ct_b64);
+  const iv = b64u8(normalizedEnvelope.iv_b64);
+  const ct = b64u8(normalizedEnvelope.ct_b64);
   const plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info);
   return JSON.parse(new TextDecoder().decode(plain));
 }

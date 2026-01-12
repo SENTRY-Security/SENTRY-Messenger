@@ -12,4 +12,5 @@
 //
 // No state persistence; this module does not expose window.nacl to callers.
 
+// Recommended: use ui-utils.js for Base64 instead.
 export * from '../../shared/crypto/nacl.js';

@@ -96,7 +96,7 @@ export async function sealInviteEnvelope({ ownerPublicKeyB64, payload, expiresAt
       iv_b64: bytesToB64(iv),
       ct_b64: bytesToB64(ciphertext)
     },
-    createdAt: Math.floor(Date.now() / 1000),
+    createdAt: Date.now(),
     expiresAt: expires
   };
 }

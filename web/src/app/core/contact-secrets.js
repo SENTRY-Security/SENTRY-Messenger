@@ -57,20 +57,26 @@ function logContactSecretWriteTrace(payload = {}) {
   log({ contactSecretWriteTrace: payload });
 }
 
-function normalizeContactRole(rawRole, { source = null, peerAccountDigest = null, peerDeviceId = null, logChange = false } = {}) {
+export function normalizeContactRole(rawRole, { source = null, identity = null, logChange = false } = {}) {
   const val = typeof rawRole === 'string' ? rawRole.toLowerCase() : null;
   if (!val) return null;
   let normalized = val;
-  if (val === 'responder') normalized = 'owner';
-  else if (val === 'initiator') normalized = 'guest';
+  if (val === 'responder') {
+    normalized = 'owner';
+    console.warn('[contact-secrets] legacy role conversion: responder -> owner', { source, peer: identity?.accountDigest });
+  } else if (val === 'initiator') {
+    normalized = 'guest';
+    console.warn('[contact-secrets] legacy role conversion: initiator -> guest', { source, peer: identity?.accountDigest });
+  }
+
   if (logChange && normalized !== val && roleNormalizeLogCount < ROLE_NORMALIZE_LOG_LIMIT) {
     roleNormalizeLogCount += 1;
     log({
       contactSecretsRoleNormalizeTrace: {
         fromRole: val,
         toRole: normalized,
-        peerAccountDigest: peerAccountDigest || null,
-        peerDeviceId: peerDeviceId || null,
+        peerAccountDigest: identity?.accountDigest || null,
+        peerDeviceId: identity?.deviceId || null,
         source: source || null
       }
     });
@@ -90,20 +96,18 @@ function ensureCorruptContactMap() {
 
 function recordCorruptContact({ peerKey = null, peerAccountDigest = null, peerDeviceId = null, reason = CORRUPT_REASON_DEFAULT, source = null } = {}) {
   const store = ensureCorruptContactMap();
-  const parsed = parsePeerKey(peerKey || '');
-  const digest = normalizeAccountDigest(peerAccountDigest || parsed.accountDigest || null);
-  const dev = normalizePeerDeviceId(peerDeviceId || parsed.deviceId || null);
-  const key = digest && dev ? `${digest}::${dev}` : (digest || peerKey || null);
+  const identity = normalizePeerIdentity(peerKey || { peerAccountDigest, peerDeviceId });
+  const key = identity.key;
   const entry = {
-    peerAccountDigest: digest || peerKey || null,
-    peerDeviceId: dev || null,
+    peerAccountDigest: identity.accountDigest,
+    peerDeviceId: identity.deviceId,
     reason: reason || CORRUPT_REASON_DEFAULT,
     source: source || null,
     ts: Date.now()
   };
   if (key) store.set(key, entry);
-  if (digest && dev && !store.has(digest)) {
-    store.set(digest, { ...entry });
+  if (identity.accountDigest && identity.deviceId && !store.has(identity.accountDigest)) {
+    store.set(identity.accountDigest, { ...entry });
   }
   return entry;
 }
@@ -114,12 +118,12 @@ function clearCorruptContact(peerKey = null) {
     store.clear();
     return;
   }
-  const digest = normalizeAccountDigest(peerKey.includes('::') ? peerKey.split('::')[0] : peerKey);
-  if (store.delete(peerKey)) return;
-  if (digest) {
-    store.delete(digest);
+  const identity = normalizePeerIdentity(peerKey);
+  if (identity.key && store.delete(identity.key)) return;
+  if (identity.accountDigest) {
+    store.delete(identity.accountDigest);
     for (const key of Array.from(store.keys())) {
-      if (typeof key === 'string' && key.startsWith(`${digest}::`)) {
+      if (typeof key === 'string' && key.startsWith(`${identity.accountDigest}::`)) {
         store.delete(key);
       }
     }
@@ -129,8 +133,7 @@ function clearCorruptContact(peerKey = null) {
 export function getCorruptContact(peer) {
   const store = ensureCorruptContactMap();
   const identity = normalizePeerIdentity(peer);
-  const key = identity.key || (identity.accountDigest && identity.deviceId ? `${identity.accountDigest}::${identity.deviceId}` : null);
-  if (key && store.has(key)) return store.get(key);
+  if (identity.key && store.has(identity.key)) return store.get(identity.key);
   if (identity.accountDigest && store.has(identity.accountDigest)) return store.get(identity.accountDigest);
   return null;
 }
@@ -155,14 +158,14 @@ export function recordPendingContact(peerAccountDigest, reason = PENDING_REASON_
   const { key, identity } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint: peerDeviceId });
   if (!key) return null;
   const entry = {
-    peerAccountDigest: identity?.accountDigest || key,
-    peerDeviceId: identity?.deviceId || null,
+    peerAccountDigest: identity.accountDigest,
+    peerDeviceId: identity.deviceId,
     reason: reason || PENDING_REASON_DEFAULT,
     source: source || null,
     ts: Date.now()
   };
   store.set(key, entry);
-  if (identity?.accountDigest && identity?.deviceId && !store.has(identity.accountDigest)) {
+  if (identity.accountDigest && identity.deviceId && !store.has(identity.accountDigest)) {
     store.set(identity.accountDigest, { ...entry });
   }
   return entry;
@@ -174,12 +177,12 @@ export function clearPendingContact(peerKey = null) {
     store.clear();
     return;
   }
-  const digest = normalizeAccountDigest(peerKey.includes('::') ? peerKey.split('::')[0] : peerKey);
-  if (store.delete(peerKey)) return;
-  if (digest) {
-    store.delete(digest);
+  const identity = normalizePeerIdentity(peerKey);
+  if (identity.key && store.delete(identity.key)) return;
+  if (identity.accountDigest) {
+    store.delete(identity.accountDigest);
     for (const key of Array.from(store.keys())) {
-      if (typeof key === 'string' && key.startsWith(`${digest}::`)) {
+      if (typeof key === 'string' && key.startsWith(`${identity.accountDigest}::`)) {
         store.delete(key);
       }
     }
@@ -206,11 +209,10 @@ export function quarantineCorruptContact(peerAccountDigest, reason = CORRUPT_REA
       dev.drHistoryCursorId = null;
     }
   }
-  const parsed = parsePeerKey(key);
   const entry = recordCorruptContact({
     peerKey: key,
-    peerAccountDigest: identity?.accountDigest || parsed.accountDigest || key,
-    peerDeviceId: identity?.deviceId || parsed.deviceId || record?.peerDeviceId || null,
+    peerAccountDigest: identity.accountDigest,
+    peerDeviceId: identity.deviceId,
     reason: reason || CORRUPT_REASON_DEFAULT,
     source: sourceTag
   });
@@ -223,7 +225,7 @@ export function quarantineCorruptContact(peerAccountDigest, reason = CORRUPT_REA
       sourceTag,
       source: sourceTag
     }));
-  } catch {}
+  } catch { }
   try {
     persistContactSecrets();
   } catch (err) {
@@ -243,7 +245,7 @@ function cloneImmutable(value, { path = '', sourceTag = 'contact-secrets:clone' 
         reason,
         sourceTag
       }));
-    } catch {}
+    } catch { }
   };
 
   if (value === null || typeof value !== 'object') return value;
@@ -255,7 +257,7 @@ function cloneImmutable(value, { path = '', sourceTag = 'contact-secrets:clone' 
   if (value instanceof ArrayBuffer) {
     try {
       return value.slice(0);
-    } catch {}
+    } catch { }
     const bufferCopy = new ArrayBuffer(value.byteLength);
     new Uint8Array(bufferCopy).set(new Uint8Array(value));
     return bufferCopy;
@@ -534,7 +536,7 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
 
   if (shouldPromote) {
     if (session && removeSessionIfCopied && (!local || wroteToLocal)) {
-      try { session.removeItem(sessionRecord.key); } catch {}
+      try { session.removeItem(sessionRecord.key); } catch { }
     }
     debugLog('session-promote', {
       reason,
@@ -587,7 +589,7 @@ try {
 if (CONTACT_DEBUG.enabled) {
   try {
     console.log('[contact-secrets] debug enabled');
-  } catch {}
+  } catch { }
 }
 
 function debugLog(event, payload) {
@@ -613,6 +615,7 @@ function trimString(value) {
 }
 
 function chooseString(value, fallback) {
+  if (value === undefined || value === null) return fallback;
   return trimString(value);
 }
 
@@ -674,7 +677,7 @@ function logPersistInvalidKey({ keyName, raw, peerKey = null, deviceId = null, s
       byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
       length: typeof raw?.length === 'number' ? raw.length : null
     });
-  } catch {}
+  } catch { }
 }
 
 function logImportInvalidSnapshotKey({ keyName, raw, peerKey = null, deviceId = null, source = null, reason = null }) {
@@ -691,7 +694,7 @@ function logImportInvalidSnapshotKey({ keyName, raw, peerKey = null, deviceId = 
       byteLength: typeof raw?.byteLength === 'number' ? raw.byteLength : null,
       length: typeof raw?.length === 'number' ? raw.length : null
     });
-  } catch {}
+  } catch { }
 }
 
 function requireSnapshotString(raw, { keyName, required = false, allowNull = false, peerKey = null, deviceId = null, source = null } = {}) {
@@ -786,17 +789,19 @@ function toTimestampOrNull(value) {
   return Math.floor(n);
 }
 
-function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'normalize', peerKey = null, deviceId = null, strictB64 = false } = {}) {
+export function normalizeDrSnapshot(input, { setDefaultUpdatedAt = false, source = 'normalize', peerKey = null, deviceId = null, strictB64 = false } = {}) {
   if (!input || typeof input !== 'object') {
     console.warn('[contact-secrets:invalid-dr-snapshot]', { reason: 'not-object', type: typeof input, source, peerKey, deviceId });
     throw new Error('contact-secrets invalid dr snapshot: not object');
   }
-  const hasRk = Object.prototype.hasOwnProperty.call(input, 'rk') || Object.prototype.hasOwnProperty.call(input, 'rk_b64');
-  const hasCkS = Object.prototype.hasOwnProperty.call(input, 'ckS') || Object.prototype.hasOwnProperty.call(input, 'ckS_b64');
-  const hasCkR = Object.prototype.hasOwnProperty.call(input, 'ckR') || Object.prototype.hasOwnProperty.call(input, 'ckR_b64');
-  const rk = normalizeDrKeyString(input.rk ?? input.rk_b64, { keyName: 'rk', peerKey, deviceId, source, required: true, hasKey: hasRk });
-  const ckS = normalizeDrKeyString(input.ckS ?? input.ckS_b64, { keyName: 'ckS', peerKey, deviceId, source, required: hasCkS, hasKey: hasCkS });
-  const ckR = normalizeDrKeyString(input.ckR ?? input.ckR_b64, { keyName: 'ckR', peerKey, deviceId, source, required: hasCkR, hasKey: hasCkR });
+  const hasRk = Object.prototype.hasOwnProperty.call(input, 'rk_b64') || Object.prototype.hasOwnProperty.call(input, 'rk');
+  const hasCkS = Object.prototype.hasOwnProperty.call(input, 'ckS_b64') || Object.prototype.hasOwnProperty.call(input, 'ckS');
+  const hasCkR = Object.prototype.hasOwnProperty.call(input, 'ckR_b64') || Object.prototype.hasOwnProperty.call(input, 'ckR');
+
+  // Prioritize _b64 suffix
+  const rk = normalizeDrKeyString(input.rk_b64 ?? input.rk, { keyName: 'rk_b64', peerKey, deviceId, source, required: true, hasKey: hasRk });
+  const ckS = normalizeDrKeyString(input.ckS_b64 ?? input.ckS, { keyName: 'ckS_b64', peerKey, deviceId, source, required: hasCkS, hasKey: hasCkS });
+  const ckR = normalizeDrKeyString(input.ckR_b64 ?? input.ckR, { keyName: 'ckR_b64', peerKey, deviceId, source, required: hasCkR, hasKey: hasCkR });
   const hasNsTotal = Object.prototype.hasOwnProperty.call(input, 'NsTotal') || Object.prototype.hasOwnProperty.call(input, 'Ns_total');
   const hasNrTotal = Object.prototype.hasOwnProperty.call(input, 'NrTotal') || Object.prototype.hasOwnProperty.call(input, 'Nr_total');
   if (!hasNsTotal) {
@@ -931,7 +936,7 @@ export function normalizePeerKeyForQuarantine({ peerAccountDigest = null, peerDe
         reason,
         sourceTag: tag
       }));
-    } catch {}
+    } catch { }
   };
   if (!digest) {
     logInvalid(peerAccountDigest ? 'invalid-digest' : 'missing-digest');
@@ -945,30 +950,24 @@ export function normalizePeerKeyForQuarantine({ peerAccountDigest = null, peerDe
 }
 
 function parsePeerKey(key) {
-  if (!key || typeof key !== 'string') return { accountDigest: null, deviceId: null };
-  const [digestPart, devicePart] = key.includes('::') ? key.split('::') : [key, null];
-  const accountDigest = normalizeAccountDigest(digestPart);
-  const deviceId = normalizePeerDeviceId(devicePart);
-  return { accountDigest, deviceId };
+  const identity = normalizePeerIdentity(key);
+  return {
+    accountDigest: identity.accountDigest,
+    deviceId: identity.deviceId
+  };
 }
 
 function resolvePeerKey(input, { peerDeviceIdHint = null, conversationId = null } = {}) {
   const identity = normalizePeerIdentity(input);
-  let key = identity.key;
-  const aliases = [];
-  if (!key && identity.accountDigest) {
+  if (!identity.key && identity.accountDigest) {
     const hintDeviceId = normalizePeerDeviceId(peerDeviceIdHint);
-    const deviceId = hintDeviceId || identity.deviceId || null;
-    if (deviceId) {
-      identity.deviceId = deviceId;
-      key = `${identity.accountDigest}::${deviceId}`;
+    if (hintDeviceId) {
+      identity.deviceId = hintDeviceId;
+      identity.key = `${identity.accountDigest}::${hintDeviceId}`;
     }
   }
-  if (key) {
-    const parsed = parsePeerKey(key);
-    if (!identity.accountDigest) identity.accountDigest = parsed.accountDigest;
-    if (!identity.deviceId) identity.deviceId = parsed.deviceId;
-  }
+  const { key } = identity;
+  const aliases = [];
   if (!key) return { key: null, aliases: [], identity };
   if (identity.accountDigest) aliases.push(identity.accountDigest);
   if (identity.deviceId) aliases.push(identity.deviceId);
@@ -1111,7 +1110,7 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
               corruptDevices: corruptDevices.length,
               source: reason
             });
-          } catch {}
+          } catch { }
         }
         map.set(peerKey, record);
         registerContactAliases(peerKey, aliases);
@@ -1270,7 +1269,7 @@ export function persistContactSecrets() {
     const metaKeys = getContactSecretsMetaKeys();
     const checksumKeys = getContactSecretsChecksumKeys();
     storageKeys.forEach((key) => {
-      try { storage.setItem(key, payload); } catch {}
+      try { storage.setItem(key, payload); } catch { }
     });
     let sessionBytes = null;
     const sessionStore = getSessionStorageSafe();
@@ -1279,7 +1278,7 @@ export function persistContactSecrets() {
         try {
           sessionStore.setItem(key, payload);
           sessionBytes = payload.length;
-        } catch {}
+        } catch { }
       });
     }
     if (typeof window !== 'undefined') {
@@ -1290,7 +1289,7 @@ export function persistContactSecrets() {
         storageKeys.forEach((key) => {
           window.__LOGIN_SEED_LOCALSTORAGE[key] = payload;
         });
-      } catch {}
+      } catch { }
     }
     const metaRecord = {
       version: summary.version,
@@ -1305,33 +1304,33 @@ export function persistContactSecrets() {
     };
     const metaJson = JSON.stringify(metaRecord);
     for (const key of metaKeys) {
-      try { storage.setItem(key, metaJson); } catch {}
+      try { storage.setItem(key, metaJson); } catch { }
     }
     if (sessionStore) {
       for (const key of metaKeys) {
-        try { sessionStore.setItem(key, metaJson); } catch {}
+        try { sessionStore.setItem(key, metaJson); } catch { }
       }
     }
     const localStore = getLocalStorageSafe();
     if (localStore) {
       for (const key of metaKeys) {
-        try { localStore.setItem(key, metaJson); } catch {}
+        try { localStore.setItem(key, metaJson); } catch { }
       }
     }
     if (checksum) {
       const checksumRecord = { checksum, algorithm: 'sum32', ts: summary.generatedAt };
       const checksumJson = JSON.stringify(checksumRecord);
       for (const key of checksumKeys) {
-        try { storage.setItem(key, checksumJson); } catch {}
+        try { storage.setItem(key, checksumJson); } catch { }
       }
       if (sessionStore) {
         for (const key of checksumKeys) {
-          try { sessionStore.setItem(key, checksumJson); } catch {}
+          try { sessionStore.setItem(key, checksumJson); } catch { }
         }
       }
       if (localStore) {
         for (const key of checksumKeys) {
-          try { localStore.setItem(key, checksumJson); } catch {}
+          try { localStore.setItem(key, checksumJson); } catch { }
         }
       }
     }
@@ -1910,7 +1909,7 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
     next.updatedAt = ts;
     deviceRecord.updatedAt = ts;
   } else {
-    const ts = Math.floor(Date.now() / 1000);
+    const ts = Date.now();
     next.updatedAt = ts;
     deviceRecord.updatedAt = ts;
   }

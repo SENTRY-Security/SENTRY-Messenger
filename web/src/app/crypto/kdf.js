@@ -53,7 +53,7 @@ export async function deriveKEKFromPassword(pwd, saltU8, params = { m: 64, t: 3,
 /** Wrap MK with password → argon2id KEK + AES-GCM */
 export async function wrapMKWithPasswordArgon2id(pwd, mkRawU8) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
   const { kek, params } = await deriveKEKFromPassword(pwd, salt);
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, mkRawU8);
   return {
@@ -71,8 +71,8 @@ export async function unwrapMKWithPasswordArgon2id(pwd, blob) {
   try {
     if (!blob || blob.kdf !== 'argon2id') return null;
     const salt = b64u8(blob.salt_b64);
-    const iv   = b64u8(blob.iv_b64);
-    const ct   = b64u8(blob.ct_b64);
+    const iv = b64u8(blob.iv_b64);
+    const ct = b64u8(blob.ct_b64);
     const { kek } = await deriveKEKFromPassword(pwd, salt, {
       m: blob.m ?? 64, t: blob.t ?? 3, p: blob.p ?? 1
     });
