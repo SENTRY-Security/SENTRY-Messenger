@@ -172,18 +172,18 @@ function resolveWsConversationId(event, ctx) {
 function resolveWsMessageId(event, ctx) {
   return normalizeMessageIdValue(
     event?.messageId
-      || event?.message_id
-      || event?.id
-      || event?.serverMessageId
-      || event?.server_message_id
-      || event?.serverMsgId
-      || ctx?.messageId
-      || ctx?.message_id
-      || ctx?.id
-      || ctx?.serverMessageId
-      || ctx?.server_message_id
-      || ctx?.serverMsgId
-      || null
+    || event?.message_id
+    || event?.id
+    || event?.serverMessageId
+    || event?.server_message_id
+    || event?.serverMsgId
+    || ctx?.messageId
+    || ctx?.message_id
+    || ctx?.id
+    || ctx?.serverMessageId
+    || ctx?.server_message_id
+    || ctx?.serverMsgId
+    || null
   );
 }
 
@@ -235,7 +235,7 @@ function createMessagesFlowFacade() {
       void runServerCatchup;
       const restorePromise = startRestorePipeline({ source });
       if (restorePromise && typeof restorePromise.catch === 'function') {
-        restorePromise.catch(() => {});
+        restorePromise.catch(() => { });
       }
       return restorePromise || null;
     },
@@ -531,7 +531,7 @@ function createMessagesFlowFacade() {
         source: normalizeSourceTag(source, 'visibility_resume')
       });
       if (restorePromise && typeof restorePromise.catch === 'function') {
-        restorePromise.catch(() => {});
+        restorePromise.catch(() => { });
       }
       triggerMaxCounterProbeForActiveConversations({
         source: normalizeSourceTag(source, 'visibility_resume')

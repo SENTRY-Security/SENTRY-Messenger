@@ -66,11 +66,12 @@ export function createLiveLegacyAdapters(deps = {}) {
       return ensureSecureConversationReady(params);
     },
 
-    ensureDrReceiverState(conversationId, peerAccountDigest, peerDeviceId) {
+    ensureDrReceiverState(conversationId, peerAccountDigest, peerDeviceId, guestBundle = null) {
       return ensureDrReceiverState({
         conversationId,
         peerAccountDigest,
-        peerDeviceId
+        peerDeviceId,
+        guestBundle
       });
     },
 

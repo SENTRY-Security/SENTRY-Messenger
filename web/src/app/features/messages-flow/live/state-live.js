@@ -3,6 +3,7 @@
 
 import { classifyDecryptedPayload, SEMANTIC_KIND } from '../../semantic.js';
 import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js';
+import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
 
@@ -130,10 +131,10 @@ function resolveCounter(raw, header) {
 
 function resolveMsgType(meta, header) {
   if (!meta && !header?.meta) return null;
-  return meta?.msg_type
-    || meta?.msgType
-    || header?.meta?.msg_type
+  return meta?.msgType
+    || meta?.msg_type
     || header?.meta?.msgType
+    || header?.meta?.msg_type
     || null;
 }
 
@@ -173,12 +174,36 @@ async function ensureLiveReady(params = {}, adapters) {
     return { ok: false, reasonCode };
   }
 
+  const { digest: readyPeerAccountDigest, deviceId: readyPeerDeviceId } = (typeof secureStatus?.peerAccountDigest === 'string' && secureStatus.peerAccountDigest.includes('::'))
+    ? {
+      digest: secureStatus.peerAccountDigest.split('::')[0],
+      deviceId: secureStatus.peerAccountDigest.split('::')[1]
+    }
+    : { digest: peerAccountDigest, deviceId: peerDeviceId };
+
   if (skipDrCheck) {
+    const guestBundle = header?.dr_init?.guest_bundle || null;
+    if (guestBundle && adapters?.ensureDrReceiverState) {
+      try {
+        await adapters.ensureDrReceiverState(conversationId, readyPeerAccountDigest, readyPeerDeviceId, guestBundle);
+        if (DEBUG.drVerbose) {
+          console.warn('[dr-live:bootstrap-ok]', { readyPeerAccountDigest, readyPeerDeviceId, conversationId });
+        }
+      } catch (err) {
+        console.warn('[dr-live:bootstrap-failed]', {
+          peerAccountDigest: readyPeerAccountDigest,
+          peerDeviceId: readyPeerDeviceId,
+          conversationId,
+          error: err?.message || String(err)
+        });
+      }
+    }
     return { ok: true };
   }
 
   try {
-    await adapters.ensureDrReceiverState(conversationId, peerAccountDigest, peerDeviceId);
+    const guestBundle = header?.dr_init?.guest_bundle || null;
+    await adapters.ensureDrReceiverState(conversationId, readyPeerAccountDigest, readyPeerDeviceId, guestBundle);
   } catch (err) {
     const errorCode = err?.code === 'MISSING_DR_INIT_BOOTSTRAP' || err?.code === 'DR_BOOTSTRAP_UNAVAILABLE'
       ? err.code
@@ -189,8 +214,6 @@ async function ensureLiveReady(params = {}, adapters) {
       errorMessage: err?.message || String(err)
     };
   }
-  const readyPeerAccountDigest = peerAccountDigest;
-  const readyPeerDeviceId = peerDeviceId;
   const state = adapters.drState({
     peerAccountDigest: readyPeerAccountDigest,
     peerDeviceId: readyPeerDeviceId
@@ -298,7 +321,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
   let selfDeviceId = null;
   try {
     selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
-  } catch {}
+  } catch { }
 
   const counter = resolveCounter(raw, header);
   const rawMessageId = normalizeMessageId(raw);
@@ -374,7 +397,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
   if (adapters?.persistDrSnapshot) {
     try {
       adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, state });
-    } catch {}
+    } catch { }
   }
 
   return result;
@@ -447,13 +470,24 @@ async function commitIncomingSingle(params = {}, adapters) {
         vaultPutOk: true
       };
     }
+    const ts = toMessageTimestamp(raw);
     return {
       ok: true,
       reasonCode: null,
       counter: resolvedCounter,
       messageId,
       decryptOk: true,
-      vaultPutOk: true
+      vaultPutOk: true,
+      decryptedMessage: {
+        id: messageId,
+        ts,
+        tsMs: resolveMessageTsMs(ts),
+        direction: 'incoming',
+        msgType: 'text',
+        text: '已建立安全對話',
+        senderDeviceId,
+        senderDigest
+      }
     };
   }
   if (!adapters?.drDecryptText || !adapters?.drState || !adapters?.vaultPutIncomingKey) {
@@ -472,7 +506,7 @@ async function commitIncomingSingle(params = {}, adapters) {
   let selfDeviceId = null;
   try {
     selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
-  } catch {}
+  } catch { }
 
   const packetKey = messageId || (Number.isFinite(resolvedCounter)
     ? `${conversationId}:${resolvedCounter}`
@@ -498,7 +532,7 @@ async function commitIncomingSingle(params = {}, adapters) {
   if (adapters?.persistDrSnapshot) {
     try {
       adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, state });
-    } catch {}
+    } catch { }
   }
 
   if (!messageKeyB64) {
@@ -573,7 +607,7 @@ async function commitIncomingSingle(params = {}, adapters) {
       }];
       try {
         adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' });
-      } catch {}
+      } catch { }
     }
   }
 

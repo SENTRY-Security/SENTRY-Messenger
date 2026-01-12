@@ -142,7 +142,7 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
     ? Math.floor(Number(tsMs))
     : resolveMessageTsMs(timestamp);
   const tsSeq = resolveMessageTsSeq(baseId);
-  const msgType = normalizeSemanticSubtype(meta?.msg_type || meta?.msgType || null);
+  const msgType = normalizeSemanticSubtype(meta?.msgType || meta?.msg_type || null);
   const base = {
     id: baseId,
     ts: timestamp,
@@ -153,14 +153,14 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
     direction,
     raw,
     counter,
-    type: 'text',
+    msgType: 'text',
     text: typeof plaintext === 'string' ? plaintext : '',
     messageKey_b64: messageKeyB64 || null
   };
 
   if (msgType === 'media') {
     const mediaInfo = parseMediaMessage({ plaintext, meta });
-    base.type = 'media';
+    base.msgType = 'media';
     base.media = mediaInfo || null;
     base.text = mediaInfo
       ? `[file] ${mediaInfo.name || 'Attachment'}`
@@ -171,12 +171,12 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
   } else if (msgType === 'call-log') {
     let parsed = null;
     if (typeof plaintext === 'string') {
-      try { parsed = JSON.parse(plaintext); } catch {}
+      try { parsed = JSON.parse(plaintext); } catch { }
     }
     const callLog = normalizeCallLogPayload(parsed || {}, meta || {});
     const viewerRole = resolveViewerRole(callLog.authorRole, direction);
     const { label, subLabel } = describeCallLogForViewer(callLog, viewerRole);
-    base.type = 'call-log';
+    base.msgType = 'call-log';
     base.callLog = {
       ...callLog,
       viewerRole,
@@ -186,7 +186,7 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
     base.text = label || 'Call';
     base.subLabel = subLabel || null;
   } else {
-    base.type = 'text';
+    base.msgType = 'text';
     base.text = typeof base.text === 'string' ? base.text : '';
   }
 

@@ -103,7 +103,7 @@ function resolveEnvelopeCounter(raw, header) {
 
 function resolveMessageSubtypeFromHeader(header) {
   const meta = header?.meta || null;
-  return normalizeSemanticSubtype(meta?.msg_type || meta?.msgType || null);
+  return normalizeSemanticSubtype(meta?.msgType || meta?.msg_type || null);
 }
 
 function isQueueEligibleSubtype(subtype) {
@@ -164,9 +164,9 @@ function sortMessagesByTimeline(items) {
     const id = toMessageId(item);
     let header = item?.header || null;
     if (!header && typeof item?.header_json === 'string') {
-      try { header = JSON.parse(item.header_json); } catch {}
+      try { header = JSON.parse(item.header_json); } catch { }
     } else if (!header && typeof item?.headerJson === 'string') {
-      try { header = JSON.parse(item.headerJson); } catch {}
+      try { header = JSON.parse(item.headerJson); } catch { }
     }
     if (!header && item?.header_json && typeof item.header_json === 'object') {
       header = item.header_json;

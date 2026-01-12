@@ -367,75 +367,6 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   let decryptResult = { decryptedMessage: null, processedCount: 0, skippedCount: 0, okCount: 0, failCount: 0 };
   let persistResult = { vaultPutOk: 0, vaultPutFail: 0, appendOk: false, appendedCount: 0 };
 
-  try {
-    readyResult = await stateAccess.ensureLiveReady({
-      conversationId,
-      tokenB64,
-      peerAccountDigest,
-      peerDeviceId
-    });
-  } catch (err) {
-    readyResult = {
-      ok: false,
-      reasonCode: LIVE_MVP_REASONS.READY_FAILED,
-      errorMessage: err?.message || String(err)
-    };
-  }
-
-  const readyOk = !!readyResult?.ok;
-  const readyReasonCode = readyResult?.reasonCode || LIVE_MVP_REASONS.READY_FAILED;
-  result.ready = readyOk;
-
-  logger('liveMvpReadyTrace', {
-    conversationIdPrefix8,
-    ok: readyOk,
-    reasonCode: readyOk ? null : readyReasonCode
-  }, LIVE_MVP_LOG_CAP);
-
-  if (!readyOk) {
-    const finalResult = finalizeLiveMvpResult(result, startedAt, readyReasonCode);
-    logger('liveMvpSummaryTrace', {
-      conversationIdPrefix8,
-      sourceTag: sourceTag || null,
-      tookMs: finalResult.tookMs,
-      readyOk: false,
-      reasonCode: finalResult.reasonCode,
-      fetchedCount: 0,
-      decryptOk: 0,
-      decryptFail: 0,
-      decryptSkipped: 0,
-      vaultPutOk: 0,
-      appendedCount: 0
-    }, LIVE_MVP_LOG_CAP);
-    return finalResult;
-  }
-
-  if (!targetMessageId) {
-    logger('liveMvpSelectTrace', {
-      conversationIdPrefix8,
-      targetMessageIdPrefix8,
-      listItemsLength: 0,
-      matched: false,
-      reasonCode: LIVE_MVP_REASONS.MISSING_MESSAGE_ID
-    }, LIVE_MVP_LOG_CAP);
-
-    const finalResult = finalizeLiveMvpResult(result, startedAt, LIVE_MVP_REASONS.MISSING_MESSAGE_ID);
-    logger('liveMvpSummaryTrace', {
-      conversationIdPrefix8,
-      sourceTag: sourceTag || null,
-      tookMs: finalResult.tookMs,
-      readyOk: true,
-      reasonCode: finalResult.reasonCode,
-      fetchedCount: 0,
-      decryptOk: 0,
-      decryptFail: 0,
-      decryptSkipped: 0,
-      vaultPutOk: 0,
-      appendedCount: 0
-    }, LIVE_MVP_LOG_CAP);
-    return finalResult;
-  }
-
   let selectedItem = null;
   let listItemsLength = 0;
   let selectionMatched = false;
@@ -487,23 +418,59 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     hasNextCursor: !!fetchNextCursor
   }, LIVE_MVP_LOG_CAP);
 
-  logger('liveMvpSelectTrace', {
-    conversationIdPrefix8,
-    targetMessageIdPrefix8,
-    listItemsLength,
-    matched: selectionMatched,
-    reasonCode: selectionReasonCode
-  }, LIVE_MVP_LOG_CAP);
-
   if (!selectionMatched) {
     const finalResult = finalizeLiveMvpResult(result, startedAt, LIVE_MVP_REASONS.NOT_FOUND);
     logger('liveMvpSummaryTrace', {
       conversationIdPrefix8,
       sourceTag: sourceTag || null,
       tookMs: finalResult.tookMs,
-      readyOk: true,
+      readyOk: false,
       reasonCode: finalResult.reasonCode,
       fetchedCount: finalResult.metrics.fetchedCount,
+      decryptOk: 0,
+      decryptFail: 0,
+      decryptSkipped: 0,
+      vaultPutOk: 0,
+      appendedCount: 0
+    }, LIVE_MVP_LOG_CAP);
+    return finalResult;
+  }
+
+  try {
+    readyResult = await stateAccess.ensureLiveReady({
+      conversationId,
+      tokenB64,
+      peerAccountDigest,
+      peerDeviceId,
+      item: selectedItem
+    });
+  } catch (err) {
+    readyResult = {
+      ok: false,
+      reasonCode: LIVE_MVP_REASONS.READY_FAILED,
+      errorMessage: err?.message || String(err)
+    };
+  }
+
+  const readyOk = !!readyResult?.ok;
+  const readyReasonCode = readyResult?.reasonCode || LIVE_MVP_REASONS.READY_FAILED;
+  result.ready = readyOk;
+
+  logger('liveMvpReadyTrace', {
+    conversationIdPrefix8,
+    ok: readyOk,
+    reasonCode: readyOk ? null : readyReasonCode
+  }, LIVE_MVP_LOG_CAP);
+
+  if (!readyOk) {
+    const finalResult = finalizeLiveMvpResult(result, startedAt, readyReasonCode);
+    logger('liveMvpSummaryTrace', {
+      conversationIdPrefix8,
+      sourceTag: sourceTag || null,
+      tookMs: finalResult.tookMs,
+      readyOk: false,
+      reasonCode: finalResult.reasonCode,
+      fetchedCount: listItemsLength,
       decryptOk: 0,
       decryptFail: 0,
       decryptSkipped: 0,

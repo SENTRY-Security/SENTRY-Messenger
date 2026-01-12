@@ -1,7 +1,13 @@
 // Client-only append-only timeline store for user messages.
 import { logCapped } from '../core/log.js';
+import { MSG_SUBTYPE } from './semantic.js';
 
-const USER_MESSAGE_TYPES = new Set(['text', 'media', 'call-log', 'placeholder']);
+const USER_MESSAGE_TYPES = new Set([
+  MSG_SUBTYPE.TEXT,
+  MSG_SUBTYPE.MEDIA,
+  MSG_SUBTYPE.CALL_LOG,
+  MSG_SUBTYPE.PLACEHOLDER
+]);
 const timelineMap = new Map(); // conversationId -> Map(messageId -> entry)
 const appendListeners = new Set();
 
@@ -28,13 +34,20 @@ function normalizeCounterValue(value) {
   return Number.isFinite(num) ? num : null;
 }
 
-function resolveEntryTsMs(entry) {
-  const tsMsRaw = Number(entry?.tsMs);
-  if (Number.isFinite(tsMsRaw)) return tsMsRaw;
-  const tsRaw = Number(entry?.ts);
-  if (!Number.isFinite(tsRaw)) return 0;
-  if (tsRaw > 10_000_000_000) return tsRaw;
-  return tsRaw * 1000;
+export function resolveEntryTsMs(entry) {
+  const tsMs = Number(entry?.tsMs);
+  if (Number.isFinite(tsMs)) return tsMs;
+
+  const ts = Number(entry?.ts);
+  if (Number.isFinite(ts)) {
+    // Heuristic: if < 10^11 (year 5138), assume seconds and convert
+    if (ts < 100000000000) {
+      // console.warn('[timeline-store] legacy ts conversion', { id: entry?.messageId });
+      return ts * 1000;
+    }
+    return ts;
+  }
+  return 0;
 }
 
 function resolveEntrySeq(entry) {
@@ -42,7 +55,7 @@ function resolveEntrySeq(entry) {
   return Number.isFinite(seqRaw) ? seqRaw : null;
 }
 
-function resolveEntryCounter(entry) {
+export function resolveEntryCounter(entry) {
   const direct = normalizeCounterValue(entry?.counter ?? entry?.headerCounter ?? entry?.header_counter);
   if (direct !== null) return direct;
   const header = entry?.header && typeof entry.header === 'object' ? entry.header : null;
@@ -302,7 +315,7 @@ export function clearConversation(conversationId) {
 }
 
 export function subscribeTimeline(listener) {
-  if (typeof listener !== 'function') return () => {};
+  if (typeof listener !== 'function') return () => { };
   appendListeners.add(listener);
   return () => appendListeners.delete(listener);
 }
