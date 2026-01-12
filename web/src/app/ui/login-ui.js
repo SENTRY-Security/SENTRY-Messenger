@@ -10,7 +10,6 @@ import {
   getSession, setSession,
   getHasMK, setHasMK,
   getWrappedMK, setWrappedMK,
-  getUidHex, setUidHex,
   getMkRaw, setMkRaw,
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
@@ -33,6 +32,7 @@ import {
 } from '../core/contact-secrets.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
 import { initProfileDefaultsOnce } from '../features/profile.js';
+import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -59,7 +59,7 @@ async function emitMkSetTrace(sourceTag, mkRaw) {
         deviceIdSuffix4: (ensureDeviceId?.() || '').slice(-4) || null
       }
     });
-  } catch {}
+  } catch { }
 }
 
 let identityTraceCount = 0;
@@ -69,7 +69,7 @@ async function emitIdentityTrace(sourceTag, extra = {}) {
   try {
     const { mkHash12 } = await summarizeMkForLog(getMkRaw());
     const accountDigest = getAccountDigest() || null;
-    const uidHex = getUidHex() || null;
+    const uidHex = null; // UID removed from store, using accountDigest instead
     let deviceId = null;
     try { deviceId = ensureDeviceId(); } catch { deviceId = null; }
     log({
@@ -82,7 +82,7 @@ async function emitIdentityTrace(sourceTag, extra = {}) {
         ...extra
       }
     });
-  } catch {}
+  } catch { }
 }
 
 // ---- UI elements ----
@@ -107,13 +107,13 @@ let pendingLogoutNotice = null;
 function isAutomationEnv() {
   try {
     if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
-  } catch {}
+  } catch { }
   return false;
 }
 (function captureLogoutNotice() {
   try {
     pendingLogoutNotice = sessionStorage.getItem('app:lastLogoutReason');
-  } catch {}
+  } catch { }
 })();
 
 (function clearStorageOnLogin() {
@@ -152,7 +152,7 @@ function isAutomationEnv() {
     try { localStorage.clear?.(); } catch (err) { log({ loginLocalClearError: err?.message || err }); }
     try { sessionStorage.clear?.(); } catch (err) { log({ loginSessionClearError: err?.message || err }); }
     if (logoutReason) {
-      try { sessionStorage.setItem('app:lastLogoutReason', logoutReason); } catch {}
+      try { sessionStorage.setItem('app:lastLogoutReason', logoutReason); } catch { }
     }
   })();
 })();
@@ -251,7 +251,7 @@ function readContactSnapshotFrom(storage, keys = []) {
     try {
       const value = storage.getItem(key);
       if (value) return { key, value };
-    } catch {}
+    } catch { }
   }
   return null;
 }
@@ -323,12 +323,12 @@ function purgeLoginStorage() {
       try {
         const checksumRaw = readContactSnapshotFrom(sessionStorage, legacyChecksumKeys)?.value || null;
         if (checksumRaw) handoffChecksum = JSON.parse(checksumRaw);
-      } catch {}
+      } catch { }
       if (handoffChecksum) {
         log({ contactSecretsHandoffChecksum: handoffChecksum });
       }
       [...legacyMetaKeys, ...legacyChecksumKeys, ...legacyStorageKeys, ...legacyLatestKeys].forEach((key) => {
-        try { sessionStorage.removeItem(key); } catch {}
+        try { sessionStorage.removeItem(key); } catch { }
       });
     }
     const best = candidates.reduce((prev, cand) => {
@@ -393,11 +393,11 @@ function purgeLoginStorage() {
       ...getLegacyContactSecretsChecksumKeys({})
     ]);
     keysToRemove.forEach((key) => {
-      try { sessionStorage.removeItem(key); } catch {}
+      try { sessionStorage.removeItem(key); } catch { }
     });
-  } catch {}
+  } catch { }
   if (typeof window !== 'undefined' && window.__LOGIN_SEED_LOCALSTORAGE) {
-    try { delete window.__LOGIN_SEED_LOCALSTORAGE; } catch {}
+    try { delete window.__LOGIN_SEED_LOCALSTORAGE; } catch { }
   }
   if (typeof window !== 'undefined' && window.caches?.keys) {
     caches.keys()
@@ -427,7 +427,7 @@ function purgeLoginStorage() {
 purgeLoginStorage();
 if (pendingLogoutNotice) {
   log(pendingLogoutNotice);
-  try { sessionStorage.removeItem('app:lastLogoutReason'); } catch {}
+  try { sessionStorage.removeItem('app:lastLogoutReason'); } catch { }
   pendingLogoutNotice = null;
 }
 
@@ -457,14 +457,14 @@ if (pwdEl) {
     pwdEl.name = `pw_${Date.now()}_${rand}`;
     pwdEl.setAttribute('autocomplete', 'off');
     pwdEl.setAttribute('data-keep-autocomplete-off', 'true');
-  } catch {}
+  } catch { }
 }
 if (pwdConfirmEl) {
   try {
     const rand = Math.random().toString(36).slice(2);
     pwdConfirmEl.name = `pw_c_${Date.now()}_${rand}`;
     pwdConfirmEl.setAttribute('autocomplete', 'off');
-  } catch {}
+  } catch { }
 }
 applyAccountMode();
 if (getSession() || getHasMK() || getWrappedMK()) {
@@ -676,7 +676,7 @@ let uidVerifying = false;
 
 const updateUidDisplay = () => {
   if (uidVerifying) return;
-  const uid = getUidHex() || '';
+  const uid = getAccountDigest() || '';
   if (uidEl) uidEl.value = uid;
   renderIdenticon(uid, { pending: !uid });
 };
@@ -688,7 +688,7 @@ function markVerifiedUI() {
     requestAnimationFrame(() => {
       try {
         pwdEl.focus({ preventScroll: true });
-      } catch {}
+      } catch { }
     });
   }
 }
@@ -810,6 +810,7 @@ async function onSdmExchange() {
   }
 })();
 
+
 // ---- Unlock / Reset ----
 if (unlockBtn) unlockBtn.onclick = onUnlock;
 if (pwdEl) {
@@ -834,7 +835,7 @@ if (btnResetMK) btnResetMK.onclick = () => {
     setMkRaw(null);
     emitMkSetTrace('login-ui:debug-reset', null);
     log('Local MK cleared.');
-  } catch {}
+  } catch { }
 };
 
 async function onUnlock() {
@@ -899,7 +900,7 @@ async function onUnlock() {
       updateBootstrapStep('nickname-init', 'start');
       updateBootstrapStep('avatar-init', 'start');
       try {
-        const result = await initProfileDefaultsOnce({ uidHex: getUidHex(), evidence: r?.evidence || null });
+        const result = await initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: r?.evidence || null });
         if (result?.skipped) {
           const reason = result.reason || '已存在暱稱/頭像';
           updateBootstrapStep('nickname-init', 'skip', reason);
@@ -965,19 +966,19 @@ async function onUnlock() {
       if (r?.wrapped_dev) {
         const serializedWrapped = JSON.stringify(r.wrapped_dev);
         sessionStorage.setItem('wrapped_dev', serializedWrapped);
-        try { localStorage.setItem('wrapped_dev_handoff', serializedWrapped); } catch {}
-        try { window.name = JSON.stringify({ wrapped_dev: r.wrapped_dev }); } catch {}
+        try { localStorage.setItem('wrapped_dev_handoff', serializedWrapped); } catch { }
+        try { window.name = JSON.stringify({ wrapped_dev: r.wrapped_dev }); } catch { }
         if (isAutomationEnv) {
           try {
             console.log('[login-handoff] wrapped_dev stored', serializedWrapped.length);
-          } catch {}
+          } catch { }
         }
       } else {
         sessionStorage.removeItem('wrapped_dev');
-        try { localStorage.removeItem('wrapped_dev_handoff'); } catch {}
-        try { window.name = ''; } catch {}
+        try { localStorage.removeItem('wrapped_dev_handoff'); } catch { }
+        try { window.name = ''; } catch { }
         if (isAutomationEnv) {
-          try { console.warn('[login-handoff] wrapped_dev missing'); } catch {}
+          try { console.warn('[login-handoff] wrapped_dev missing'); } catch { }
         }
       }
       try {
@@ -996,8 +997,8 @@ async function onUnlock() {
       } catch (err) {
         log({ contactSecretHandoffError: err?.message || err });
       }
-    } catch {}
-    setTimeout(() => location.replace('/pages/app.html'), 300);
+    } catch { }
+    setTimeout(() => location.replace(window.location.origin + '/pages/app.html'), 300);
   } catch (e) {
     hideLoading();
     loginInProgress = false;
@@ -1016,7 +1017,7 @@ function invalidateExchange() {
   try {
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
-  } catch {}
+  } catch { }
   newAccount = false;
   welcomeAcknowledged = false;
   applyAccountMode();
@@ -1217,28 +1218,28 @@ function closeModalMessage() {
 }
 
 // ---- small utils ----
-function safeJSON(text){ try{ return JSON.parse(text); }catch{ return text; } }
-function b64(u8){ let s=''; for(let i=0;i<u8.length;i++) s+=String.fromCharCode(u8[i]); return btoa(s); }
-function b64u8(b64s){ const bin=atob(b64s); const u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return u8; }
+function safeJSON(text) { try { return JSON.parse(text); } catch { return text; } }
+function b64(u8) { let s = ''; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return btoa(s); }
+function b64u8(b64s) { const bin = atob(b64s); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return u8; }
 
 // Harden: disable password storing/autofill on all inputs
-(function hardenInputs(){
+(function hardenInputs() {
   try {
     const els = document.querySelectorAll('input, textarea');
     els.forEach(el => {
-      el.setAttribute('autocomplete','off');
-      el.setAttribute('autocapitalize','off');
-      el.setAttribute('autocorrect','off');
-      el.setAttribute('spellcheck','false');
+      el.setAttribute('autocomplete', 'off');
+      el.setAttribute('autocapitalize', 'off');
+      el.setAttribute('autocorrect', 'off');
+      el.setAttribute('spellcheck', 'false');
       // for password fields specifically
       if (el.type === 'password') {
-        el.setAttribute('autocomplete','new-password');
-        el.setAttribute('data-1p-ignore','true');
-        el.setAttribute('data-lpignore','true');
-        if (!el.getAttribute('name')) el.setAttribute('name','__no_store_pwd__');
+        el.setAttribute('autocomplete', 'new-password');
+        el.setAttribute('data-1p-ignore', 'true');
+        el.setAttribute('data-lpignore', 'true');
+        if (!el.getAttribute('name')) el.setAttribute('name', '__no_store_pwd__');
       }
     });
-  } catch {}
+  } catch { }
 })();
 async function ensureAudioPermissionForLogin() {
   if (typeof window === 'undefined') return;
@@ -1250,14 +1251,14 @@ async function ensureAudioPermissionForLogin() {
   }
   try {
     const ctx = new AudioCtx();
-    await ctx.resume().catch(() => {});
+    await ctx.resume().catch(() => { });
     const buffer = ctx.createBuffer(1, 1, 22050);
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
-    try { source.start(0); } catch {}
+    try { source.start(0); } catch { }
     sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted');
-    try { await ctx.close(); } catch {}
+    try { await ctx.close(); } catch { }
     log({ audioPermission: 'granted' });
   } catch (err) {
     log({ audioPermissionError: err?.message || err });

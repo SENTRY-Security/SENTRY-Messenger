@@ -108,7 +108,7 @@ export function initContactsView(options) {
       : [];
     sessionStore.contactState = contacts;
     if (contactCoreVerbose) {
-      try { console.log('[contact-core] render:list ' + JSON.stringify({ readyCount: contacts.length })); } catch {}
+      try { console.log('[contact-core] render:list ' + JSON.stringify({ readyCount: contacts.length })); } catch { }
     }
 
     if (!contacts.length && !pendingInvites.length) {
@@ -119,7 +119,7 @@ export function initContactsView(options) {
       contactsListEl.appendChild(empty);
       updateStats?.();
       updateContactCount();
-      try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch {}
+      try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch { }
       return;
     }
     if (!contacts.length) {
@@ -127,10 +127,10 @@ export function initContactsView(options) {
     }
 
     if (pendingInvites.length) {
-      const nowSec = Math.floor(Date.now() / 1000);
+      const now = Date.now();
       pendingInvites.forEach((entry) => {
         const expiresAt = Number(entry?.expiresAt || 0);
-        const isExpired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowSec;
+        const isExpired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now / 1000;
         const titleText = isExpired ? '已過期' : '同步中，等待對方完成建立';
         const metaText = isExpired ? '已過期' : '同步中，等待對方完成建立';
         const li = document.createElement('li');
@@ -207,9 +207,9 @@ export function initContactsView(options) {
         const peerDeviceId = c?.peerDeviceId || (key.includes('::') ? key.split('::')[1] : null);
         const conversation = conversationToken && conversationId
           ? {
-              token_b64: conversationToken,
-              conversation_id: conversationId
-            }
+            token_b64: conversationToken,
+            conversation_id: conversationId
+          }
           : null;
         const detail = {
           peerAccountDigest: key,
@@ -219,9 +219,9 @@ export function initContactsView(options) {
           conversation
         };
         if (contactCoreVerbose) {
-          try { console.log('[contact-core] open ' + JSON.stringify({ peerKey: key, conversationId, hasToken: !!conversationToken, peerDeviceId })); } catch {}
+          try { console.log('[contact-core] open ' + JSON.stringify({ peerKey: key, conversationId, hasToken: !!conversationToken, peerDeviceId })); } catch { }
         }
-        try { console.log('[contacts-view]', { contactOpen: detail }); } catch {}
+        try { console.log('[contacts-view]', { contactOpen: detail }); } catch { }
         try {
           document.dispatchEvent(new CustomEvent('contacts:open-conversation', { detail }));
         } catch (err) {
@@ -235,7 +235,7 @@ export function initContactsView(options) {
     });
     updateStats?.();
     updateContactCount();
-    try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch {}
+    try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch { }
   }
 
   function markRecentlyRemoved(key) {
@@ -276,8 +276,8 @@ export function initContactsView(options) {
       try {
         resetSecureConversation(key, { reason: 'contact-removed', source: 'contacts-view' });
       } catch (err) {
-          log({ resetSecureConversationError: err?.message || err, peerAccountDigest: key });
-        }
+        log({ resetSecureConversationError: err?.message || err, peerAccountDigest: key });
+      }
       presenceManager.removePresenceForContact(key);
       renderContacts();
       updateStats?.();
@@ -556,7 +556,7 @@ export function initContactsView(options) {
           sampleConversationIds: sampleLookup.map((item) => item.conversationId),
           samplePeerDeviceIds: sampleLookup.map((item) => item.peerDeviceId)
         });
-      } catch {}
+      } catch { }
     }
     let fetched = [];
     try {
@@ -764,7 +764,7 @@ export function initContactsView(options) {
             peerDeviceId: peerDeviceId || null,
             hasLookupHit
           });
-        } catch {}
+        } catch { }
       }
       if (!digest || !peerDeviceId) return null;
       const resolvedPeerKey = peerKeyFromLookup || (peerDeviceId ? `${digest}::${peerDeviceId}` : null);
@@ -908,7 +908,7 @@ export function initContactsView(options) {
         }
       }
     }
-    try { await hydrateConversationsFromSecrets(); } catch {}
+    try { await hydrateConversationsFromSecrets(); } catch { }
     renderContacts();
     presenceManager.sendPresenceSubscribe();
     updateContactCount();
@@ -922,7 +922,7 @@ export function initContactsView(options) {
       : [];
     if (!pending.length) return;
     pendingInviteStatusInFlight = true;
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowSec = Date.now();
     let changed = false;
     let shouldReload = false;
     const store = restorePendingInvites();
@@ -963,7 +963,7 @@ export function initContactsView(options) {
     }
     if (changed) {
       persistPendingInvites();
-      try { document.dispatchEvent(new CustomEvent('contacts:pending-invites-updated')); } catch {}
+      try { document.dispatchEvent(new CustomEvent('contacts:pending-invites-updated')); } catch { }
     }
     if (shouldReload && !contactsRefreshing) {
       try {
@@ -1059,8 +1059,8 @@ export function initContactsView(options) {
       console.log('[contacts-view]', debugPayload);
       try {
         console.log('[contacts-view]', '[contactAddDebug]', JSON.stringify(debugPayload));
-      } catch {}
-    } catch {}
+      } catch { }
+    } catch { }
     const conversationPayload = {
       token_b64: conversationTokenRaw,
       conversation_id: conversationIdRaw,
@@ -1069,7 +1069,7 @@ export function initContactsView(options) {
       peerDeviceId: peerDeviceIdFromKey || null
     };
 
-    const now = Math.floor(Date.now() / 1000);
+    const now = Date.now();
     const isPlaceholderNickname = (name) => typeof name === 'string' && name.startsWith('好友 ');
     const incomingAddedAt = Number.isFinite(addedAt) ? Number(addedAt) : now;
     const incomingUpdatedAt = Number.isFinite(updatedAt) ? Number(updatedAt) : incomingAddedAt;
@@ -1115,7 +1115,7 @@ export function initContactsView(options) {
           prevUpdatedAt
         }
       });
-    } catch {}
+    } catch { }
     try {
       console.log('[contacts-view]', {
         contactAddPreSave: {
@@ -1165,7 +1165,7 @@ export function initContactsView(options) {
             hasToken: !!entry?.conversation?.token_b64
           });
         }
-      } catch {}
+      } catch { }
       const upserted = upsertContactCore({
         peerAccountDigest: digest,
         peerDeviceId: peerDeviceIdFromKey,

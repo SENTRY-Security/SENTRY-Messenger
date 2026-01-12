@@ -6,6 +6,11 @@ export function escapeHtml(input) {
     .replace(/"/g, '&quot;');
 }
 
+export function escapeSelector(value) {
+  if (!value) return '';
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+
 export function fmtSize(bytes) {
   if (!Number.isFinite(bytes)) return '-';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -81,4 +86,12 @@ export async function blobToDataURL(blob) {
     reader.onerror = (err) => reject(err);
     reader.readAsDataURL(blob);
   });
+}
+
+export function buildConversationSnippet(text) {
+  if (!text) return '';
+  const cleaned = String(text).replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+  const MAX_LEN = 42;
+  return cleaned.length > MAX_LEN ? `${cleaned.slice(0, MAX_LEN - 1)}…` : cleaned;
 }

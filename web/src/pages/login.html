@@ -441,7 +441,8 @@
     <div class="version-info-popup" id="versionInfoPopupLogin" role="dialog" aria-hidden="true"></div>
 
     <script>
-      window.API_ORIGIN = 'https://api.message.sentry.red';
+      const params = new URLSearchParams(location.search);
+      window.API_ORIGIN = params.get('api') || 'https://api.message.sentry.red';
       (function(){
         const overlay = document.getElementById('orientationOverlay');
         const docEl = document.documentElement;

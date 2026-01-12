@@ -43,7 +43,7 @@ export function initProfileCard(options) {
       log({ profileInitError: err?.message || err, stack: err?.stack || null });
       throw err;
     }
-    sessionStore.profileState = loaded || { nickname: '', updatedAt: Math.floor(Date.now() / 1000) };
+    sessionStore.profileState = loaded || { nickname: '', updatedAt: Date.now() };
     if (sessionStore.profileState?.nickname) {
       sessionStore.profileState.nickname = normalizeNickname(sessionStore.profileState.nickname) || sessionStore.profileState.nickname;
     }
@@ -60,7 +60,7 @@ export function initProfileCard(options) {
   async function updateProfileAvatarUI() {
     if (!profileAvatarImg) return;
     if (sessionStore.currentAvatarUrl) {
-      try { URL.revokeObjectURL(sessionStore.currentAvatarUrl); } catch {}
+      try { URL.revokeObjectURL(sessionStore.currentAvatarUrl); } catch { }
       sessionStore.currentAvatarUrl = null;
     }
     const result = await loadAvatarBlob(sessionStore.profileState).catch((err) => {
@@ -155,7 +155,7 @@ export function initProfileCard(options) {
       }
       try {
         setSubmitLoading(true);
-        const now = Math.floor(Date.now() / 1000);
+        const now = Date.now();
         const next = { nickname: normalized, updatedAt: now, sourceTag: PROFILE_WRITE_SOURCE.USER_NICKNAME };
         const saved = await saveProfile(next);
         sessionStore.profileState = { ...(sessionStore.profileState || {}), ...(saved || next) };
@@ -206,7 +206,7 @@ export function initProfileCard(options) {
     let previewUrl = null;
     const cleanup = () => {
       if (previewUrl) {
-        try { URL.revokeObjectURL(previewUrl); } catch {}
+        try { URL.revokeObjectURL(previewUrl); } catch { }
         previewUrl = null;
       }
       if (previewImg) delete previewImg.dataset.objectUrl;
@@ -274,7 +274,7 @@ export function initProfileCard(options) {
     let tempObjectURL = null;
     modalElement.__avatarCleanup = () => {
       if (cropper) {
-        try { cropper.destroy(); } catch {}
+        try { cropper.destroy(); } catch { }
         cropper = null;
       }
       cleanupTempURL();
@@ -286,7 +286,7 @@ export function initProfileCard(options) {
 
     const cleanupTempURL = () => {
       if (tempObjectURL) {
-        try { URL.revokeObjectURL(tempObjectURL); } catch {}
+        try { URL.revokeObjectURL(tempObjectURL); } catch { }
         tempObjectURL = null;
       }
     };
@@ -299,7 +299,7 @@ export function initProfileCard(options) {
     const setupCropper = async (src) => {
       if (!cropImg) return;
       if (cropper) {
-        try { cropper.destroy(); } catch {}
+        try { cropper.destroy(); } catch { }
         cropper = null;
       }
       await new Promise((resolve) => {
@@ -400,7 +400,7 @@ export function initProfileCard(options) {
           ...(sessionStore.profileState || {}),
           avatar: avatarMeta,
           nickname: sessionStore.profileState?.nickname || '',
-          updatedAt: Math.floor(Date.now() / 1000),
+          updatedAt: Date.now(),
           sourceTag: PROFILE_WRITE_SOURCE.EXPLICIT
         };
         const saved = await saveProfile(next);
@@ -464,14 +464,14 @@ export function initProfileCard(options) {
     const payload = {
       nickname: nickname || '',
       avatar,
-      addedAt: Math.floor(Date.now() / 1000)
+      addedAt: Date.now()
     };
     const convo = conversation && (conversation.tokenB64 || conversation.token_b64) && (conversation.conversationId || conversation.conversation_id)
       ? {
-          token_b64: conversation.tokenB64 || conversation.token_b64,
-          conversation_id: conversation.conversationId || conversation.conversation_id,
-          ...(conversation.dr_init ? { dr_init: conversation.dr_init } : null)
-        }
+        token_b64: conversation.tokenB64 || conversation.token_b64,
+        conversation_id: conversation.conversationId || conversation.conversation_id,
+        ...(conversation.dr_init ? { dr_init: conversation.dr_init } : null)
+      }
       : null;
     if (!convo && drInit && conversation && (conversation.tokenB64 || conversation.token_b64) && (conversation.conversationId || conversation.conversation_id)) {
       payload.conversation = {
