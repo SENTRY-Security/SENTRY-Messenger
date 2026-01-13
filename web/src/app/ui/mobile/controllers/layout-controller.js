@@ -135,9 +135,14 @@ export class LayoutController extends BaseController {
             }
         }
 
-        if (this.deps.getCurrentTab?.() === 'messages') {
+        const currentTab = this.deps.getCurrentTab?.();
+        console.log('[Layout] applyMessagesLayout tab check', { currentTab, match: currentTab === 'messages' });
+
+        if (currentTab === 'messages') {
             const detail = desktop || state.viewMode === 'detail';
             const topbarEl = document.querySelector('.topbar');
+            const navbarEl = this.deps.navbarEl;
+            console.log('[Layout] applying mobile layout', { detail, hasTopbar: !!topbarEl, hasNavbar: !!navbarEl });
 
             if (topbarEl) {
                 if (detail && !desktop) {
