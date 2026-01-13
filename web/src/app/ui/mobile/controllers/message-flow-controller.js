@@ -717,16 +717,6 @@ export class MessageFlowController extends BaseController {
         const anchorNeeded = preserveScroll || (!scrollToEnd && !this.isNearMessagesBottom());
         const anchor = anchorNeeded ? this.captureScrollAnchor() : null;
 
-        if (this.deps.uiNoiseEnabled?.()) {
-            try {
-                log({
-                    event: 'ui:render',
-                    conversationId: state.conversationId || null,
-                    itemCount: renderEntries.length
-                });
-            } catch { }
-        }
-
         const selfDigest = (() => {
             try { return normalizeAccountDigest(getAccountDigest()); } catch { return null; }
         })();
@@ -736,6 +726,25 @@ export class MessageFlowController extends BaseController {
             conversationId: state.conversationId || null,
             selfDigest
         });
+
+        // Check for stale DOM refs
+        if (this.messageRenderer) {
+            const currentListEl = this.elements.messagesList;
+            const rendererListEl = this.messageRenderer.listEl;
+
+            const isStale = rendererListEl !== currentListEl || (rendererListEl && !rendererListEl.isConnected);
+
+            if (isStale) {
+                console.warn('[MessageFlow] MessageRenderer has stale DOM ref. Updating...', {
+                    hasCurrent: !!currentListEl,
+                    currentConnected: currentListEl?.isConnected,
+                    rendererHas: !!rendererListEl,
+                    rendererConnected: rendererListEl?.isConnected
+                });
+                if (currentListEl) this.messageRenderer.listEl = currentListEl;
+                if (this.elements.messagesPlaceholders) this.messageRenderer.placeholdersEl = this.elements.messagesPlaceholders;
+            }
+        }
 
         // Render Main List
         if (this.messageRenderer) {

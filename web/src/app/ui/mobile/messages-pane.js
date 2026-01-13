@@ -350,9 +350,9 @@ export function initMessagesPane({
     createGroupBtn: dom.createGroupBtn ?? document.getElementById('btnCreateGroup'),
     groupDraftsEl: dom.groupDraftsEl ?? document.getElementById('groupDrafts'),
     messagesWsIndicator: dom.messagesWsIndicatorEl ?? document.querySelector('.messages-ws-indicator'),
-    messagesPlaceholders: dom.messagesPlaceholdersEl ?? document.querySelector('.messages-placeholders'),
-    messagesList: dom.messagesListEl ?? document.querySelector('.messages-list'),
-    messagesEmpty: dom.messagesEmptyEl ?? document.querySelector('.messages-empty'),
+    messagesPlaceholders: dom.messagesPlaceholdersEl ?? document.getElementById('messagePlaceholders'),
+    messagesList: dom.messagesListEl ?? document.getElementById('messagesList'),
+    messagesEmpty: dom.messagesEmptyEl ?? document.getElementById('messagesEmpty'),
     peerName: dom.messagesPeerNameEl ?? document.querySelector('.messages-header strong'),
     statusLabel: dom.messagesStatusEl ?? document.querySelector('.messages-header .status'),
     scrollEl: dom.messagesScrollEl ?? document.querySelector('.messages-scroll'),
@@ -442,7 +442,9 @@ export function initMessagesPane({
     getMessageRenderer: () => controllers.messageFlow.messageRenderer,
     scrollMessagesToBottomSoon: () => scrollToBottomSoon(elements.scrollEl),
     setMessagesStatus: (msg, isError) => controllers.composer.setMessagesStatus(msg, isError),
-    appendLocalOutgoingMessage: (args) => controllers.messageSending.appendLocalOutgoingMessage(args),
+    appendLocalOutgoingMessage: (args) => {
+      return controllers.messageSending.appendLocalOutgoingMessage(args);
+    },
     syncMessagesWsIndicator: () => syncMessagesWsIndicator(),
     updateMessagesScrollOverflow: () => updateMessagesScrollOverflow(),
     // Missing deps added:
@@ -1266,17 +1268,32 @@ export function initMessagesPane({
   // initKeyboardListeners removed (moved to LayoutController)
 
   function ensureSetup() {
-    if (!elements.pane) elements.pane = document.querySelector('.messages-pane');
+    const isStale = (el) => !el || !el.isConnected;
+
+    if (isStale(elements.pane)) elements.pane = document.querySelector('.messages-pane');
     if (elements.pane) elements.pane.style.overscrollBehavior = 'contain';
-    if (!elements.messagesWsIndicator) elements.messagesWsIndicator = document.getElementById('messagesWsIndicator');
-    if (!elements.messagesPlaceholders) elements.messagesPlaceholders = document.getElementById('messagePlaceholders');
-    if (!elements.messagesList) elements.messagesList = document.getElementById('messagesList');
-    if (!elements.messagesEmpty) elements.messagesEmpty = document.getElementById('messagesEmpty');
-    if (!elements.scrollEl) elements.scrollEl = document.getElementById('messagesScroll');
-    if (elements.scrollEl) elements.scrollEl.style.overscrollBehavior = 'contain';
-    if (!elements.loadMoreBtn) elements.loadMoreBtn = document.getElementById('messagesLoadMore');
-    if (!elements.loadMoreLabel) elements.loadMoreLabel = document.querySelector('#messagesLoadMore .label');
-    if (!elements.loadMoreSpinner) elements.loadMoreSpinner = document.querySelector('#messagesLoadMore .spinner');
+
+    if (isStale(elements.messagesWsIndicator)) elements.messagesWsIndicator = document.getElementById('messagesWsIndicator');
+    if (isStale(elements.messagesPlaceholders)) elements.messagesPlaceholders = document.getElementById('messagePlaceholders');
+
+    if (isStale(elements.messagesList)) {
+      console.log('[messages-pane] ensureSetup: refreshing messagesList DOM ref');
+      elements.messagesList = document.getElementById('messagesList');
+    }
+
+    if (isStale(elements.messagesEmpty)) elements.messagesEmpty = document.getElementById('messagesEmpty');
+
+    if (isStale(elements.scrollEl)) {
+      elements.scrollEl = document.getElementById('messagesScroll');
+      if (elements.scrollEl) elements.scrollEl.style.overscrollBehavior = 'contain';
+    }
+
+    if (isStale(elements.input)) elements.input = document.getElementById('composerInput'); // Ensure input is also refreshed
+    if (isStale(elements.sendBtn)) elements.sendBtn = document.getElementById('composerSendBtn');
+
+    if (isStale(elements.loadMoreBtn)) elements.loadMoreBtn = document.getElementById('messagesLoadMore');
+    if (isStale(elements.loadMoreLabel)) elements.loadMoreLabel = document.querySelector('#messagesLoadMore .label');
+    if (isStale(elements.loadMoreSpinner)) elements.loadMoreSpinner = document.querySelector('#messagesLoadMore .spinner');
     ensureMessagesWsIndicatorMirror();
   }
 

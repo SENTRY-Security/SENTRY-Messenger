@@ -28,7 +28,11 @@ export class MessageSendingController extends BaseController {
      */
     appendLocalOutgoingMessage({ text, ts, tsMs = null, id, type = 'text', media = null, msgType = null }) {
         const state = this.getMessageState();
-        if (!state.conversationId) return null;
+
+        if (!state.conversationId) {
+            console.warn('[MessageSending] appendLocalOutgoingMessage aborted: no conversationId');
+            return null;
+        }
 
         const timestamp = Number.isFinite(ts) ? ts : Date.now();
         const resolvedId = id || crypto.randomUUID();

@@ -86,6 +86,21 @@ export class BaseController {
     }
 
     /**
+     * Trigger UI update.
+     * @param {Object} args
+     */
+    updateMessagesUI(args) {
+        this.deps.updateMessagesUI?.(args);
+    }
+
+    /**
+     * Trigger status UI update.
+     */
+    updateMessagesStatusUI() {
+        this.deps.updateMessagesStatusUI?.();
+    }
+
+    /**
      * Initialize the controller. Override in subclasses.
      */
     init() {
@@ -152,6 +167,7 @@ export function createControllerDeps(context) {
         resolveSecureStatusForUi: context.resolveSecureStatusForUi,
         getCachedSecureStatus: context.getCachedSecureStatus,
         isSubscriptionActive: context.isSubscriptionActive,
-        requireSubscriptionActive: context.requireSubscriptionActive
+        requireSubscriptionActive: context.requireSubscriptionActive,
+        appendLocalOutgoingMessage: context.appendLocalOutgoingMessage
     };
 }

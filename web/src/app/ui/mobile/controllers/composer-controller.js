@@ -308,8 +308,7 @@ export class ComposerController extends BaseController {
         const ts = Date.now();
         const messageId = crypto.randomUUID();
 
-        this.suppressComposerBlurOnce();
-
+        // 2. Append to local timeline immediately
         const localMsg = this.deps.appendLocalOutgoingMessage?.({ text, ts, id: messageId });
 
         if (this.elements.input) {

@@ -26,27 +26,40 @@ export function formatTimestamp(ts) {
         const date = new Date(ts * 1000);
         const now = new Date();
 
-        const startOfWeek = (input) => {
-            const d = new Date(input);
-            const day = d.getDay();
-            const diff = (day + 6) % 7;
-            d.setHours(0, 0, 0, 0);
-            d.setDate(d.getDate() - diff);
-            return d.getTime();
+        const startOfDay = (d) => {
+            const copy = new Date(d);
+            copy.setHours(0, 0, 0, 0);
+            return copy;
         };
 
-        const sameWeek = startOfWeek(date) === startOfWeek(now);
+        const today = startOfDay(now);
+        const msgDate = startOfDay(date);
+
+        const diffTime = today - msgDate;
+        const diffDays = diffTime / (1000 * 60 * 60 * 24);
+
         const hours = String(date.getHours()).padStart(2, '0');
         const minutes = String(date.getMinutes()).padStart(2, '0');
 
-        if (sameWeek) {
+        // Within 1 day (today)
+        if (diffDays === 0) {
+            return `今天 ${hours}:${minutes}`;
+        }
+
+        // Within 2 days (yesterday)
+        if (diffDays === 1) {
+            return `昨天 ${hours}:${minutes}`;
+        }
+
+        // Within 7 days
+        if (diffDays < 7 && diffDays > 0) {
             const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
             return `週${weekdays[date.getDay()]} ${hours}:${minutes}`;
         }
 
         const month = date.getMonth() + 1;
         const dayOfMonth = date.getDate();
-        return `${month} 月 ${dayOfMonth} 號 ${hours}:${minutes}`;
+        return `${month}月${dayOfMonth}日 ${hours}:${minutes}`;
     } catch {
         return '';
     }
@@ -455,6 +468,7 @@ export class MessageRenderer {
         this.shimmerIds = shimmerIds || new Set();
 
         // Clear list
+        const prevCount = this.listEl.childElementCount;
         this.listEl.innerHTML = '';
 
         let prevTs = null;
@@ -463,14 +477,20 @@ export class MessageRenderer {
         for (let i = 0; i < entries.length; i += 1) {
             const msg = entries[i];
             const tsRaw = msg?.ts;
-            const tsVal = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
+            let tsVal = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
+
+            // Normalize to seconds if input appears to be milliseconds
+            if (tsVal && tsVal > 1e11) {
+                tsVal = tsVal / 1000;
+            }
+
             const hasTs = Number.isFinite(tsVal);
             const dateKey = hasTs ? new Date(tsVal * 1000).toDateString() : null;
 
             if (hasTs) {
                 const needSeparator = prevTs === null
                     || prevDateKey !== dateKey
-                    || (tsVal - prevTs) >= 300;
+                    || (tsVal - prevTs) >= 300; // 5 minutes in seconds
                 if (needSeparator) {
                     const sep = document.createElement('li');
                     sep.className = 'message-separator';

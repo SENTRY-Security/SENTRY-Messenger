@@ -86,14 +86,20 @@ export function appendUserMessage(conversationId, entry = {}) {
   const messageId = normalizeMessageId(entry.messageId || entry.id);
   const msgType = normalizeMsgType(entry.msgType || entry.type || entry.subtype);
   if (!convId || !messageId) return false;
-  if (msgType && !USER_MESSAGE_TYPES.has(msgType)) return false;
+  if (msgType && !USER_MESSAGE_TYPES.has(msgType)) {
+    console.warn('[timeline-store] appendUserMessage rejected: invalid type', { convId, messageId, msgType, allowed: Array.from(USER_MESSAGE_TYPES) });
+    return false;
+  }
 
   let convMap = timelineMap.get(convId);
   if (!convMap) {
     convMap = new Map();
     timelineMap.set(convId, convMap);
   }
-  if (convMap.has(messageId)) return false;
+  if (convMap.has(messageId)) {
+    // console.log('[timeline-store] appendUserMessage duplicate', { convId, messageId });
+    return false;
+  }
 
   const stored = (entry && typeof entry === 'object') ? entry : {};
   stored.conversationId = convId;
@@ -287,7 +293,9 @@ export function getTimeline(conversationId) {
   const convId = normalizeConversationId(conversationId);
   if (!convId) return [];
   const convMap = timelineMap.get(convId);
-  if (!(convMap instanceof Map) || !convMap.size) return [];
+  if (!convMap || convMap.size === 0) {
+    return [];
+  }
   const list = Array.from(convMap.values()).filter(Boolean);
   list.sort((a, b) => {
     // Defensive defaults only; schema drops should prevent missing ts/id from entering the store.
