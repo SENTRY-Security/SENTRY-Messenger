@@ -170,7 +170,7 @@ export class LayoutController extends BaseController {
                 this.elements.pane.style.height = '';
             }
 
-            const navbarEl = this.deps.navbarEl;
+            // navbarEl already defined above
             const mainContentEl = this.deps.mainContentEl;
 
             if (detail) {
