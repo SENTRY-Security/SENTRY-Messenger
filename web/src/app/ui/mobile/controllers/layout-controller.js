@@ -178,6 +178,11 @@ export class LayoutController extends BaseController {
                 navbarEl?.classList.add('hidden');
                 mainContentEl?.classList.add('fullscreen');
                 document.body.classList.add('messages-fullscreen');
+                console.log('[Layout] updated classes (detail)', {
+                    topbarClasses: topbarEl?.className,
+                    navbarClasses: navbarEl?.className,
+                    bodyClasses: document.body.className
+                });
                 document.body.style.overscrollBehavior = 'contain';
             } else {
                 topbarEl?.classList.remove('hidden');

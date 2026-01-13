@@ -2,7 +2,7 @@
 export const DEBUG = {
   replay: true,
   forensics: false,
-  drVerbose: false,
+  drVerbose: true,
   profileCounter: false,
   drCounter: false,
   contactsA1: false,
