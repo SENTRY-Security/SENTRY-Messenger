@@ -736,6 +736,7 @@ export class MessageFlowController extends BaseController {
             ...replayPlaceholderEntries,
             ...gapPlaceholderEntries
         ];
+        const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length;
 
         const sortedMessages = sortMessagesByTimelineLocal(mergedRaw);
 
