@@ -706,27 +706,6 @@ export class MessageFlowController extends BaseController {
             });
         }
 
-        const { entries: renderEntries, shimmerIds } = buildRenderEntries({
-            timelineMessages
-        });
-
-        const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
-        const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
-        const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length;
-
-        const anchorNeeded = preserveScroll || (!scrollToEnd && !this.isNearMessagesBottom());
-        const anchor = anchorNeeded ? this.captureScrollAnchor() : null;
-
-        const selfDigest = (() => {
-            try { return normalizeAccountDigest(getAccountDigest()); } catch { return null; }
-        })();
-
-        const { latestOutgoingId, latestOutgoingDelivered } = computeDoubleTickState({
-            timelineMessages,
-            conversationId: state.conversationId || null,
-            selfDigest
-        });
-
         // Check for stale DOM refs
         if (this.messageRenderer) {
             const currentListEl = this.elements.messagesList;
@@ -742,11 +721,44 @@ export class MessageFlowController extends BaseController {
                     rendererConnected: rendererListEl?.isConnected
                 });
                 if (currentListEl) this.messageRenderer.listEl = currentListEl;
-                if (this.elements.messagesPlaceholders) this.messageRenderer.placeholdersEl = this.elements.messagesPlaceholders;
+                // Placeholders are now inline, so we don't update placeholdersEl
             }
         }
 
-        // Render Main List
+        // Merge and Sort Entries
+        // 1. Timeline Messages
+        // 2. Replay Placeholders
+        // 3. Gap Placeholders
+        const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
+        const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
+        const mergedRaw = [
+            ...timelineMessages,
+            ...replayPlaceholderEntries,
+            ...gapPlaceholderEntries
+        ];
+
+        const sortedMessages = sortMessagesByTimelineLocal(mergedRaw);
+
+        const { entries: renderEntries, shimmerIds } = buildRenderEntries({
+            timelineMessages: sortedMessages
+        });
+
+        const anchorNeeded = preserveScroll || (!scrollToEnd && !this.isNearMessagesBottom());
+        const anchor = anchorNeeded ? this.captureScrollAnchor() : null;
+
+        const selfDigest = (() => {
+            try { return normalizeAccountDigest(getAccountDigest()); } catch { return null; }
+        })();
+
+        const { latestOutgoingId, latestOutgoingDelivered } = computeDoubleTickState({
+            timelineMessages, // Use original timeline for latest outgoing logic? Or sorted? 
+            // computeDoubleTickState filters for user timeline messages anyway.
+            // Passing sortedMessages is safer as it contains everything.
+            conversationId: state.conversationId || null,
+            selfDigest
+        });
+
+        // Render Main List (Unified)
         if (this.messageRenderer) {
             this.messageRenderer.render(renderEntries, {
                 state: { ...state, activePeerDigest: state.activePeerDigest, activePeerDeviceId: state.activePeerDeviceId, conversationId: state.conversationId },
@@ -757,18 +769,14 @@ export class MessageFlowController extends BaseController {
             });
         }
 
-        // Render Placeholders
+        // Placeholders container is no longer used
         if (this.elements.messagesPlaceholders) {
             this.elements.messagesPlaceholders.innerHTML = '';
-            if (replayPlaceholderEntries.length && this.messageRenderer) {
-                this.messageRenderer.appendPlaceholderRows(replayPlaceholderEntries);
-            }
+            this.elements.messagesPlaceholders.style.display = 'none';
         }
 
         // Update Empty State
         if (renderEntries.length) {
-            this.elements.messagesEmpty?.classList.add('hidden');
-        } else if (replayPlaceholderEntries.length) {
             this.elements.messagesEmpty?.classList.add('hidden');
         } else {
             this.elements.messagesEmpty?.classList.remove('hidden');

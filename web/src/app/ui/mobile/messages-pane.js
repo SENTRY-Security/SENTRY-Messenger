@@ -1274,7 +1274,6 @@ export function initMessagesPane({
     if (elements.pane) elements.pane.style.overscrollBehavior = 'contain';
 
     if (isStale(elements.messagesWsIndicator)) elements.messagesWsIndicator = document.getElementById('messagesWsIndicator');
-    if (isStale(elements.messagesPlaceholders)) elements.messagesPlaceholders = document.getElementById('messagePlaceholders');
 
     if (isStale(elements.messagesList)) {
       console.log('[messages-pane] ensureSetup: refreshing messagesList DOM ref');

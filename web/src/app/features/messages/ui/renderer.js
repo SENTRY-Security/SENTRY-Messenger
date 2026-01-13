@@ -287,9 +287,8 @@ export function buildRenderEntries({ timelineMessages = [] } = {}) {
 }
 
 export class MessageRenderer {
-    constructor({ messagesListEl, messagesPlaceholdersEl, callbacks = {} }) {
+    constructor({ messagesListEl, callbacks = {} }) {
         this.listEl = messagesListEl;
-        this.placeholdersEl = messagesPlaceholdersEl;
         this.callbacks = callbacks;
         this.shimmerIds = new Set();
     }
@@ -687,57 +686,6 @@ export class MessageRenderer {
             this.listEl.appendChild(li);
         }
     }
-
-    appendPlaceholderRows(entries = []) {
-        if (!this.placeholdersEl) return;
-        const list = Array.isArray(entries) ? entries : [];
-        const total = list.length;
-        if (!total) return;
-
-        const shimmerMax = Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0);
-        const shimmerStart = Math.max(0, total - shimmerMax);
-
-        for (let i = 0; i < total; i += 1) {
-            const entry = list[i];
-            const direction = entry?.direction;
-            const status = entry?.status === 'failed'
-                ? 'failed'
-                : (entry?.status === 'blocked' ? 'blocked' : 'pending');
-
-            const isFailed = status === 'failed';
-            const isBlocked = status === 'blocked';
-
-            const li = document.createElement('li');
-            li.className = 'message-placeholder-item';
-            const row = document.createElement('div');
-            row.className = 'message-row message-placeholder-row';
-
-            const isOutgoing = direction === 'outgoing';
-            const isIncoming = direction === 'incoming';
-            const isUnknown = !isOutgoing && !isIncoming;
-
-            if (isUnknown) row.style.justifyContent = 'center';
-            else if (isOutgoing) row.style.justifyContent = 'flex-end';
-
-            const bubble = document.createElement('div');
-            bubble.className = 'message-bubble message-placeholder';
-            if (isOutgoing) bubble.classList.add('placeholder-outgoing');
-            else if (isIncoming) bubble.classList.add('placeholder-incoming');
-            else bubble.classList.add('placeholder-unknown');
-
-            if (isFailed || isBlocked) {
-                bubble.classList.add('placeholder-failed');
-            } else if (shimmerMax > 0 && i >= shimmerStart) {
-                bubble.classList.add('placeholder-shimmer');
-            }
-
-            bubble.textContent = isFailed
-                ? PLACEHOLDER_FAILED_TEXT
-                : (isBlocked ? PLACEHOLDER_BLOCKED_TEXT : (PLACEHOLDER_TEXT || ''));
-
-            row.appendChild(bubble);
-            li.appendChild(row);
-            this.placeholdersEl.appendChild(li);
-        }
-    }
 }
+
+
