@@ -122,7 +122,7 @@ import { GroupBuilderController } from './controllers/group-builder-controller.j
 import { LayoutController } from './controllers/layout-controller.js?v=debug_layout_trace';
 import { ComposerController } from './controllers/composer-controller.js?v=fix_composer_5';
 import { MessageStatusController } from './controllers/message-status-controller.js?v=fix_msg_status';
-import { ActiveConversationController } from './controllers/active-conversation-controller.js?v=debug_deps';
+import { ActiveConversationController } from './controllers/active-conversation-controller.js?v=revert_click_fix_v2';
 import { MessageSendingController } from './controllers/message-sending-controller.js';
 import { MediaHandlingController } from './controllers/media-handling-controller.js';
 
@@ -474,6 +474,9 @@ export function initMessagesPane({
     },
     getMessageRenderer: {
       value: () => controllers.messageFlow.messageRenderer
+    },
+    applyMessagesLayout: {
+      value: () => controllers.layout.applyMessagesLayout()
     }
   });
 

@@ -139,7 +139,8 @@ function applyDerivedOutputs(entry) {
 
   contactIndex.set(peerKey, {
     ...prevContact,
-    peerAccountDigest: peerKey,
+    peerKey, // Ensure peerKey is stored
+    peerAccountDigest: entry.peerAccountDigest, // Use the actual digest
     accountDigest: entry.peerAccountDigest,
     peerDeviceId: entry.peerDeviceId,
     nickname,
@@ -162,7 +163,8 @@ function applyDerivedOutputs(entry) {
   const prevThread = threads.get(entry.conversationId) || {};
   threads.set(entry.conversationId, {
     ...prevThread,
-    peerAccountDigest: peerKey,
+    peerKey,
+    peerAccountDigest: entry.peerAccountDigest,
     peerDeviceId: entry.peerDeviceId,
     conversationId: entry.conversationId,
     conversationToken: entry.conversationToken,
@@ -172,11 +174,13 @@ function applyDerivedOutputs(entry) {
 
   // Keep contactState aligned with ready entries while preserving unreadCount if present.
   const state = Array.isArray(sessionStore.contactState) ? sessionStore.contactState : [];
-  const existingIdx = state.findIndex((c) => (c?.peerAccountDigest || c?.accountDigest || c) === peerKey);
+  // Lookup by peerKey (Primary Key)
+  const existingIdx = state.findIndex((c) => (c?.peerKey || c?.peerAccountDigest || c?.accountDigest || c) === peerKey);
   const stateEntry = {
     ...(existingIdx >= 0 ? state[existingIdx] : {}),
-    peerAccountDigest: peerKey,
-    accountDigest: entry.peerAccountDigest,
+    peerKey, // Explicitly store the Unique ID
+    peerAccountDigest: entry.peerAccountDigest, // Strictly the Digest
+    accountDigest: entry.peerAccountDigest, // Redundant alias
     peerDeviceId: entry.peerDeviceId,
     nickname,
     avatar,

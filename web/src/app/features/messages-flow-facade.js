@@ -259,19 +259,12 @@ function createMessagesFlowFacade() {
 
       // Handler for Vault Ack (Double Tick)
       if (event?.type === 'vault-ack') {
-
-        // The event IS 'vault-ack', which means it IS the acknowledgement FROM the server/peer.
-        // So we should call recordVaultAckCounter to UPDATE our local state (show double tick).
-
-        // Ah, I used recordVaultAckCounter in the dynamic import code.
-        // receipts.js does NOT export recordVaultAckCounter at top level of facade? 
-        // Let's check imports in facade.js again.
-
-        // Facade imports:
-        // import { maybeSendVaultAckWs } from './messages/receipts.js';
-
-        // I need recordVaultAckCounter.
-        // I should add it to the imports.
+        try {
+          console.log('[facade] recv vault-ack', { conv: event.conversationId, mid: event.messageId, ctr: event.counter, ts: event.ts });
+        } catch { }
+        recordVaultAckCounter(event.conversationId, event.counter, event.ts);
+        // We can return early as this is a control signal, not a content message
+        return;
       }
 
       const liveJobCtx = hasExplicitCtx
@@ -389,12 +382,29 @@ function createMessagesFlowFacade() {
 
       try {
         const liveMvpResultMeta = { ...liveJobSummary };
-        const livePromise = consumeLiveJob(liveJob, {
+        const liveCtx = {
           adapters: liveLegacyAdapters,
-          maybeSendVaultAckWs,
+          maybeSendVaultAckWs: (params) => {
+            // Inject deps.wsSend which is available in this closure (from facade deps)
+            // We need to ensure 'deps' (the facade's dependencies) is accessible here.
+            // 'deps' is passed to 'createMessagesFlowFacade(deps)'.
+            // Wait, this file exports 'createMessagesFlowFacade'. Let's verify scope.
+            // Yes, 'deps' is in scope if we are inside the facade factory.
+            // We'll pass { wsSend: deps.wsSend } as the second arg.
+            return maybeSendVaultAckWs(params, { wsSend: deps.wsSend });
+          },
           getAccountDigest: storeGetAccountDigest,
           getDeviceId: storeGetDeviceId
-        });
+        };
+        try {
+          console.log('[facade] consumeLiveJob deps', {
+            hasAck: typeof maybeSendVaultAckWs === 'function',
+            hasGetAccount: typeof storeGetAccountDigest === 'function',
+            hasGetDevice: typeof storeGetDeviceId === 'function'
+          });
+        } catch { }
+
+        const livePromise = consumeLiveJob(liveJob, liveCtx);
         if (livePromise && typeof livePromise.then === 'function') {
           livePromise
             .then((liveResult) => {

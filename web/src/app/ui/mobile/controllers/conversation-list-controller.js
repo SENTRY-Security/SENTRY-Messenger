@@ -173,19 +173,42 @@ export class ConversationListController extends BaseController {
         // Helper ensurePeerAccountDigest
         const ensurePeerAccountDigest = (source) => {
             if (!source || typeof source !== 'object') return null;
-            if (source.peerAccountDigest) {
-                source.peerAccountDigest = normalizePeerKey(source.peerAccountDigest);
-                return source.peerAccountDigest || null;
+            let raw = source.peerAccountDigest;
+            if (typeof raw === 'string') {
+                if (raw.includes('::')) {
+                    raw = raw.split('::')[0];
+                }
+                const digest = normalizeAccountDigest(raw);
+                if (digest) {
+                    source.peerAccountDigest = digest;
+                    return digest;
+                }
             }
             return null;
         };
+
+        if (contacts.length > 0) {
+            console.log('[ConvList] syncFromContacts', { count: contacts.length });
+        }
 
         for (const contact of contacts) {
             const peerDigest = ensurePeerAccountDigest(contact);
             const conversationId = contact?.conversation?.conversation_id;
             const tokenB64 = contact?.conversation?.token_b64;
             const peerDeviceId = contact?.conversation?.peerDeviceId || null;
-            if (!peerDigest || !conversationId || !tokenB64) continue;
+
+            if (!peerDigest || !conversationId || !tokenB64) {
+                if (this.deps.contactCoreVerbose || true) { // Force log for debug
+                    console.log('[ConvList] Skip contact', {
+                        nick: contact.nickname,
+                        hasDigest: !!peerDigest,
+                        hasConvId: !!conversationId,
+                        hasToken: !!tokenB64,
+                        rawDigest: contact.peerAccountDigest
+                    });
+                }
+                continue;
+            }
             seen.add(conversationId);
             this.upsertThread({
                 peerAccountDigest: peerDigest,
@@ -340,8 +363,15 @@ export class ConversationListController extends BaseController {
     /**
      * Get thread peer key.
      */
+    /**
+     * Get thread peer key.
+     */
     _threadPeer(thread) {
         if (!thread) return null;
+        if (thread.peerKey) return thread.peerKey;
+        if (thread.peerAccountDigest && thread.peerDeviceId) {
+            return `${thread.peerAccountDigest}::${thread.peerDeviceId}`;
+        }
         return normalizePeerKey(thread.peerAccountDigest ?? thread);
     }
 
@@ -584,7 +614,8 @@ export class ConversationListController extends BaseController {
             }
         }
 
-        this.deps.syncConversationThreadsFromContacts?.();
+        // Use local sync method which has robust Digest/Key handling
+        this.syncFromContacts();
         this.deps.refreshContactsUnreadBadges?.();
         this.elements.conversationList.innerHTML = '';
 
@@ -595,6 +626,12 @@ export class ConversationListController extends BaseController {
 
         const totalUnread = threadEntries.reduce((sum, thread) => sum + Number(thread.unreadCount || 0), 0);
         this.deps.updateNavBadge?.('messages', totalUnread > 0 ? totalUnread : null);
+
+        console.log('[ConvList] render', {
+            threadsSize: threads.size,
+            entriesCount: threadEntries.length,
+            html: this.elements.conversationList ? 'exists' : 'missing'
+        });
 
         if (!threadEntries.length) {
             const li = document.createElement('li');
@@ -662,11 +699,13 @@ export class ConversationListController extends BaseController {
                 });
                 if (e.target.closest('.item-delete')) return;
                 if (li.classList.contains('show-delete')) { this.deps.closeSwipe?.(li); return; }
-                this.deps.setActiveConversation?.(peerDigest);
+                const threadKey = this._threadPeer(thread) || peerDigest;
+                this.deps.setActiveConversation?.(threadKey);
             });
 
             li.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.deps.setActiveConversation?.(peerDigest); }
+                const threadKey = this._threadPeer(thread) || peerDigest;
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.deps.setActiveConversation?.(threadKey); }
                 if (e.key === 'Delete') {
                     e.preventDefault();
                     this.deps.handleConversationDelete?.({ conversationId: thread.conversationId, peerAccountDigest: peerDigest, element: li });

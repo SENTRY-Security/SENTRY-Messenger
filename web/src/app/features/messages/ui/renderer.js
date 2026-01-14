@@ -246,6 +246,16 @@ export function computeDoubleTickState({ timelineMessages, conversationId, selfD
     const latestOutgoingDelivered = Number.isFinite(latestOutgoingCounter)
         && Number.isFinite(ackCounter)
         && ackCounter >= latestOutgoingCounter;
+
+    console.log('[Renderer] DoubleTickState', {
+        convId: conversationId,
+        latestId: latestOutgoingId,
+        latestCounter: latestOutgoingCounter,
+        ackCounter,
+        isDelivered: latestOutgoingDelivered,
+        selfDigest
+    });
+
     return { latestOutgoingId, latestOutgoingDelivered, latestOutgoingCounter, ackCounter };
 }
 

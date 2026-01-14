@@ -11,6 +11,7 @@ import {
 import {
     CONTROL_MESSAGE_TYPES
 } from '../secure-conversation-signals.js';
+import { updateTimelineEntriesAsDelivered } from '../timeline-store.js';
 
 // Local State (Memory only, but synced to store maps)
 const sentReadReceipts = new Set();
@@ -64,6 +65,9 @@ export function getVaultAckCounter(conversationId) {
 export function recordVaultAckCounter(conversationId, counter, ts = null) {
     if (!conversationId || !Number.isFinite(counter)) return false;
     // ensureVaultAckLoaded removed
+    try {
+        console.log('[receipts] recordVaultAckCounter', { key: String(conversationId), counter, ts });
+    } catch { }
 
     const key = String(conversationId);
     const nextCounter = Number(counter);
@@ -73,7 +77,14 @@ export function recordVaultAckCounter(conversationId, counter, ts = null) {
     const tsRaw = Number(ts);
     const nextTs = Number.isFinite(tsRaw) ? tsRaw : (existing?.ts ?? null);
     vaultAckCounterStore.set(key, { counter: nextCounter, ts: nextTs });
-    // persistVaultAckCounters removed
+
+    // Update timeline status to 'delivered' for all messages <= counter
+    try {
+        updateTimelineEntriesAsDelivered(conversationId, nextCounter);
+    } catch (err) {
+        console.warn('[receipts] failed to update timeline status', err);
+    }
+
     return true;
 }
 

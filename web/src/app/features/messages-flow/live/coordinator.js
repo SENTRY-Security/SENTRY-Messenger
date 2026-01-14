@@ -539,7 +539,16 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     appendedCount: Number(persistResult?.appendedCount) || 0
   }, LIVE_MVP_LOG_CAP);
 
+  console.log('[coordinator] persistResult check', {
+    vaultPutOk: persistResult?.vaultPutOk,
+    hasFn: typeof maybeSendVaultAckWs === 'function'
+  });
+
   if (persistResult?.vaultPutOk > 0 && typeof maybeSendVaultAckWs === 'function') {
+    console.log('[coordinator] Ack check passed', {
+      vaultPutOk: persistResult.vaultPutOk,
+      hasFn: true
+    });
     try {
       const senderAccountDigest = peerAccountDigest; // Incoming: peer is sender
       const senderDeviceId = peerDeviceId;
@@ -549,6 +558,9 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
       const counter = Number.isFinite(c) ? c : null;
 
       if (senderAccountDigest && receiverAccountDigest && receiverDeviceId && counter !== null) {
+        try {
+          console.log('[coordinator] maybeSendVaultAckWs', { conv: conversationId, mid: targetMessageId, ctr: counter });
+        } catch { }
         maybeSendVaultAckWs({
           conversationId,
           messageId: targetMessageId,

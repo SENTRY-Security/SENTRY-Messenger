@@ -86,7 +86,8 @@ export function initContactsView(options) {
   let pendingInviteStatusInFlight = false;
 
   const contactKey = (entry) => {
-    // entry 可能是 digest、digest::deviceId 或物件
+    if (entry?.peerKey) return entry.peerKey;
+    // Fallback logic
     if (typeof entry === 'string' && entry.includes('::')) {
       const [digestPart, devicePart] = entry.split('::');
       const digest = normalizeAccountDigest(digestPart);
@@ -96,7 +97,6 @@ export function initContactsView(options) {
       return null;
     }
     const identity = normalizePeerIdentity(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
-    // 優先使用 digest+deviceId，若裝置 ID 缺失則退回僅 digest，避免整條流程直接早退
     return identity.key || identity.accountDigest || null;
   };
   function renderContacts() {

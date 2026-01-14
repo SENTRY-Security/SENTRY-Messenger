@@ -784,12 +784,23 @@ export class MessageFlowController extends BaseController {
             try { return normalizeAccountDigest(getAccountDigest()); } catch { return null; }
         })();
 
-        const { latestOutgoingId, latestOutgoingDelivered } = computeDoubleTickState({
-            timelineMessages, // Use original timeline for latest outgoing logic? Or sorted? 
-            // computeDoubleTickState filters for user timeline messages anyway.
-            // Passing sortedMessages is safer as it contains everything.
+        console.log('[MessageFlow] Debug DoubleTick Pre-Compute', {
+            conversationId: state.conversationId,
+            selfDigest,
+            msgCount: timelineMessages.length
+        });
+
+        const { latestOutgoingId, latestOutgoingDelivered, latestOutgoingCounter, ackCounter } = computeDoubleTickState({
+            timelineMessages,
             conversationId: state.conversationId || null,
             selfDigest
+        });
+
+        console.log('[MessageFlow] Debug DoubleTick Result', {
+            latestOutgoingId,
+            latestOutgoingDelivered,
+            latestOutgoingCounter,
+            ackCounter
         });
 
         // Render Main List (Unified)

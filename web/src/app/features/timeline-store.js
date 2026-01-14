@@ -279,15 +279,42 @@ export function updateTimelineEntryStatusByCounter(conversationId, counter, stat
   if (!convId || !Number.isFinite(counter)) return false;
   const convMap = timelineMap.get(convId);
   if (!(convMap instanceof Map)) return false;
+  let updatedCount = 0;
   for (const [key, entry] of convMap.entries()) {
     if (resolveEntryCounter(entry) !== counter) continue;
     const updated = { ...entry, status };
     if (reason) updated.error = reason;
     convMap.set(key, updated);
     emitAppend({ conversationId: convId, entry: updated, updated: true });
+    updatedCount++;
+    // Do not return early, in case multiple messages share counter (unlikely but safe) (Wait, counter should be unique per sender)
+    // Actually, return true after found is fine for single specific counter.
     return true;
   }
   return false;
+}
+
+export function updateTimelineEntriesAsDelivered(conversationId, maxCounter) {
+  const convId = normalizeConversationId(conversationId);
+  const limit = Number(maxCounter);
+  if (!convId || !Number.isFinite(limit)) return 0;
+  const convMap = timelineMap.get(convId);
+  if (!(convMap instanceof Map)) return 0;
+
+  let count = 0;
+  for (const [key, entry] of convMap.entries()) {
+    const c = resolveEntryCounter(entry);
+    if (c === null || c > limit) continue;
+    // Update if not already delivered/read (assuming read > delivered)
+    // Actually, 'read' implies delivered. So only update if status is 'sending' or 'sent' or 'pending'.
+    if (entry.status === 'read' || entry.status === 'delivered') continue;
+
+    const updated = { ...entry, status: 'delivered' };
+    convMap.set(key, updated);
+    emitAppend({ conversationId: convId, entry: updated, updated: true });
+    count++;
+  }
+  return count;
 }
 
 export function hasMessage(conversationId, messageId) {

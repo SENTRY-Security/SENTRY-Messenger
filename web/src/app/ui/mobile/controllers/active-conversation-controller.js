@@ -209,7 +209,21 @@ export class ActiveConversationController extends BaseController {
         }
 
         // Final UI sync
-        this.deps.applyMessagesLayout?.();
+        console.log('[ActiveConversationController] debug UI sync', {
+            viewMode: state.viewMode,
+            hasLayoutDep: !!this.deps.applyMessagesLayout,
+            layoutControllerExists: !!this.deps.controllers?.layout // Check if we can access this
+        });
+
+        try {
+            this.deps.applyMessagesLayout?.();
+            console.log('[ActiveConversationController] applyMessagesLayout called');
+            // Force UI update to trigger Double Tick logic
+            this.deps.updateMessagesUI?.({ forceFullRender: true });
+        } catch (e) {
+            console.error('[ActiveConversationController] applyMessagesLayout failed', e);
+        }
+
         this.deps.updateComposerAvailability?.();
         console.log('[ActiveConversationController] setActiveConversation: done');
     }
