@@ -350,6 +350,9 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   const listFetcher = deps?.listSecureMessagesLive || listSecureMessagesLive;
   const fetchById = deps?.fetchSecureMessageById || fetchSecureMessageById;
   const findById = deps?.findItemByMessageId || findItemByMessageId;
+  const maybeSendVaultAckWs = deps?.maybeSendVaultAckWs || null;
+  const getAccountDigest = deps?.getAccountDigest || null;
+  const getDeviceId = deps?.getDeviceId || null;
 
   const conversationId = job?.conversationId || null;
   const tokenB64 = job?.tokenB64 || null;
@@ -535,6 +538,34 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     appendOk: !!persistResult?.appendOk,
     appendedCount: Number(persistResult?.appendedCount) || 0
   }, LIVE_MVP_LOG_CAP);
+
+  if (persistResult?.vaultPutOk > 0 && typeof maybeSendVaultAckWs === 'function') {
+    try {
+      const senderAccountDigest = peerAccountDigest; // Incoming: peer is sender
+      const senderDeviceId = peerDeviceId;
+      const receiverAccountDigest = typeof getAccountDigest === 'function' ? getAccountDigest() : null;
+      const receiverDeviceId = typeof getDeviceId === 'function' ? getDeviceId() : null;
+      const c = Number(decryptResult?.counter);
+      const counter = Number.isFinite(c) ? c : null;
+
+      if (senderAccountDigest && receiverAccountDigest && receiverDeviceId && counter !== null) {
+        maybeSendVaultAckWs({
+          conversationId,
+          messageId: targetMessageId,
+          senderAccountDigest,
+          senderDeviceId,
+          receiverAccountDigest,
+          receiverDeviceId,
+          counter
+        });
+      }
+    } catch (err) {
+      logger('bRouteAckTrace', {
+        ok: false,
+        error: String(err)
+      }, LIVE_MVP_LOG_CAP);
+    }
+  }
 
   const decryptOkCount = Number(decryptResult?.okCount) || 0;
   const decryptFailCount = Number(decryptResult?.failCount) || 0;

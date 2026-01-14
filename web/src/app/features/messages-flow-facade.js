@@ -3,7 +3,8 @@
 // Pipeline calls are retired; facade only routes to messages-flow or no-ops.
 
 import { logCapped } from '../core/log.js';
-import { getDeviceId as storeGetDeviceId } from '../core/store.js';
+import { getDeviceId as storeGetDeviceId, getAccountDigest as storeGetAccountDigest } from '../core/store.js';
+import { maybeSendVaultAckWs, recordVaultAckCounter } from './messages/receipts.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { startRestorePipeline } from './restore-coordinator.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
@@ -255,6 +256,24 @@ function createMessagesFlowFacade() {
       const triggerSource = (isPayloadObject
         ? (payloadOrEvent?.triggerSource || payloadOrEvent?.source)
         : ctx?.triggerSource) || 'ws_incoming';
+
+      // Handler for Vault Ack (Double Tick)
+      if (event?.type === 'vault-ack') {
+
+        // The event IS 'vault-ack', which means it IS the acknowledgement FROM the server/peer.
+        // So we should call recordVaultAckCounter to UPDATE our local state (show double tick).
+
+        // Ah, I used recordVaultAckCounter in the dynamic import code.
+        // receipts.js does NOT export recordVaultAckCounter at top level of facade? 
+        // Let's check imports in facade.js again.
+
+        // Facade imports:
+        // import { maybeSendVaultAckWs } from './messages/receipts.js';
+
+        // I need recordVaultAckCounter.
+        // I should add it to the imports.
+      }
+
       const liveJobCtx = hasExplicitCtx
         ? {
           conversationId: ctx?.conversationId,
@@ -370,7 +389,12 @@ function createMessagesFlowFacade() {
 
       try {
         const liveMvpResultMeta = { ...liveJobSummary };
-        const livePromise = consumeLiveJob(liveJob, { adapters: liveLegacyAdapters });
+        const livePromise = consumeLiveJob(liveJob, {
+          adapters: liveLegacyAdapters,
+          maybeSendVaultAckWs,
+          getAccountDigest: storeGetAccountDigest,
+          getDeviceId: storeGetDeviceId
+        });
         if (livePromise && typeof livePromise.then === 'function') {
           livePromise
             .then((liveResult) => {

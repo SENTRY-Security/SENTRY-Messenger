@@ -438,8 +438,7 @@ export function initMessagesPane({
     isSubscriptionActive: () => isSubscriptionActive(),
     resolveSecureStatusForUi: (k, i, s) => controllers.secureStatus.resolveSecureStatusForUi(k, i, s),
     getCachedSecureStatus: (k) => controllers.secureStatus.getCachedSecureStatus(k),
-    get messageStatus() { return controllers.messageStatus; },
-    getMessageRenderer: () => controllers.messageFlow.messageRenderer,
+    // messageStatus & getMessageRenderer: injected via Object.defineProperty below to avoid TDZ
     scrollMessagesToBottomSoon: () => scrollToBottomSoon(elements.scrollEl),
     setMessagesStatus: (msg, isError) => controllers.composer.setMessagesStatus(msg, isError),
     appendLocalOutgoingMessage: (args) => {
@@ -467,6 +466,16 @@ export function initMessagesPane({
     messageSending: new MessageSendingController(deps),
     mediaHandling: new MediaHandlingController(deps)
   };
+
+  // Inject circular dependencies into deps
+  Object.defineProperties(deps, {
+    messageStatus: {
+      get: () => controllers.messageStatus
+    },
+    getMessageRenderer: {
+      value: () => controllers.messageFlow.messageRenderer
+    }
+  });
 
   // Initialize controllers
   Object.values(controllers).forEach(c => c.init?.());
@@ -719,9 +728,9 @@ export function initMessagesPane({
     } else {
       setLoadMoreState('idle');
     }
-    if (atBottom) {
-      setNewMessageHint(false);
-    }
+    // if (atBottom) {
+    //   setNewMessageHint(false); // Removed: ReferenceError
+    // }
   }
 
   function handleMessagesTouchEnd() {

@@ -395,6 +395,22 @@ async function decryptIncomingSingle(params = {}, adapters) {
         const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
         const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
 
+        let msgType = content.type || 'text';
+        let media = content.media || null;
+
+        // Polyfill media object if missing (backward compatibility for flattened payload)
+        if (msgType === 'media' && !media && content.objectKey) {
+          media = {
+            objectKey: content.objectKey,
+            name: content.name,
+            size: content.size,
+            contentType: content.contentType,
+            envelope: content.envelope,
+            dir: content.dir,
+            preview: content.preview
+          };
+        }
+
         // Merge parsed content for media fields, but enforce secure properties
         result.decryptedMessage = {
           ...content,
@@ -403,7 +419,8 @@ async function decryptIncomingSingle(params = {}, adapters) {
           ts,
           tsMs: resolveMessageTsMs(ts),
           direction: 'incoming',
-          msgType: semantic.subtype || 'text',
+          msgType,
+          media,
           text: content.text || text,
           messageKeyB64,
           counter,

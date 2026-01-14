@@ -43,6 +43,7 @@ import { listSecureMessages, fetchSendState } from '../api/messages.js';
 import { COUNTER_TOO_LOW_MODE } from './queue/send-policy.js';
 import { triggerContactSecretsBackup } from './contact-backup.js';
 import { REMOTE_BACKUP_TRIGGER_SEND_OK_BATCH } from './restore-policy.js';
+import { updateTimelineEntryStatusByCounter } from './timeline-store.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
@@ -2533,22 +2534,24 @@ export async function sendDrMedia(params = {}) {
 
   const payloadText = JSON.stringify({
     type: metadata.type,
-    objectKey: metadata.objectKey,
-    name: metadata.name,
-    size: metadata.size,
-    contentType: metadata.contentType,
-    envelope: metadata.envelope,
-    dir: metadata.dir,
-    preview: metadata.preview
-      ? {
-        objectKey: metadata.preview.objectKey,
-        size: metadata.preview.size,
-        contentType: metadata.preview.contentType,
-        envelope: metadata.preview.envelope,
-        width: metadata.preview.width,
-        height: metadata.preview.height
-      }
-      : undefined
+    media: {
+      objectKey: metadata.objectKey,
+      name: metadata.name,
+      size: metadata.size,
+      contentType: metadata.contentType,
+      envelope: metadata.envelope,
+      dir: metadata.dir,
+      preview: metadata.preview
+        ? {
+          objectKey: metadata.preview.objectKey,
+          size: metadata.preview.size,
+          contentType: metadata.preview.contentType,
+          envelope: metadata.preview.envelope,
+          width: metadata.preview.width,
+          height: metadata.preview.height
+        }
+        : undefined
+    }
   });
 
   const senderDeviceId = ensureDeviceId();
@@ -2590,8 +2593,9 @@ export async function sendDrMedia(params = {}) {
       targetDeviceId: receiverDeviceId || null,
       target_device_id: receiverDeviceId || null,
       receiverDeviceId: receiverDeviceId || null,
+      receiverDeviceId: receiverDeviceId || null,
       receiver_device_id: receiverDeviceId || null,
-      msgType: msgType,
+      type: 'media',
       media: {
         object_key: metadata.objectKey,
         size: metadata.size,
@@ -3997,6 +4001,14 @@ try {
         if (persisted) {
           maybeTriggerBackupAfterSend({ sourceTag: 'dr-session:outbox-sent' });
         }
+      }
+
+      // Fix for Media Pending Stuck:
+      // Media messages sent via outbox (processOutboxJobNow) might stay in 'pending' state in timeline-store
+      // because the UI controller only updates on immediate success, but queued jobs are async.
+      // We explicitly update the timeline status here when the job is confirmed sent.
+      if (job?.conversationId && Number.isFinite(job?.counter)) {
+        updateTimelineEntryStatusByCounter(job.conversationId, Number(job.counter), 'sent', { reason: 'OUTBOX_SENT_HOOK' });
       }
     }
   });
