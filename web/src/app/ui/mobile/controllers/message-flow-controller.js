@@ -221,7 +221,7 @@ export class MessageFlowController extends BaseController {
                 findMessageById: (id) => this._findMessageById(id)
             };
 
-            const { handleIncomingSecureMessage: processIncoming } = await import('../../../features/messages2/entry-incoming.js');
+            const { handleIncomingSecureMessage: processIncoming } = await import('../../../features/messages/entry-incoming.js');
             const result = await processIncoming(event, deps);
 
             if (result?.skipped) return;
@@ -436,51 +436,87 @@ export class MessageFlowController extends BaseController {
      * Handle timeline append event.
      */
     handleTimelineAppend({ conversationId, entry, entries, directionalOrder } = {}) {
-        const convId = String(conversationId || '').trim();
-        const batchEntries = Array.isArray(entries) && entries.length ? entries : (entry ? [entry] : []);
-        if (!convId || !batchEntries.length) return;
+        try {
+            const convId = String(conversationId || '').trim();
+            const batchEntries = Array.isArray(entries) && entries.length ? entries : (entry ? [entry] : []);
 
-        const replayEntries = batchEntries.filter((item) => item?.isHistoryReplay === true);
-        if (replayEntries.length) {
-            consumeReplayPlaceholderBatch(convId, replayEntries);
+            console.log('[MessageFlow] handleTimelineAppend:entry', {
+                conversationId: convId,
+                batchSize: batchEntries.length,
+                directionalOrder
+            });
+
+            if (!convId || !batchEntries.length) {
+                console.warn('[MessageFlow] handleTimelineAppend:dropped:empty', { convId, count: batchEntries.length });
+                return;
+            }
+
+            const replayEntries = batchEntries.filter((item) => item?.isHistoryReplay === true);
+            if (replayEntries.length) {
+                consumeReplayPlaceholderBatch(convId, replayEntries);
+            }
+            const hasLiveEntries = batchEntries.some((item) => item?.isHistoryReplay !== true);
+            if (hasLiveEntries) {
+                invalidateGapPlaceholderState(convId);
+            }
+
+            const state = this.getMessageState();
+            // Define active status early for fallback token usage
+            const isActiveConversationId = state.conversationId === convId;
+
+            const convIndex = this.deps.ensureConversationIndex?.();
+            const convEntry = convIndex?.get?.(convId) || null;
+            const threads = this.deps.getConversationThreads?.();
+            const existingThread = threads?.get?.(convId) || null;
+            const lastEntry = batchEntries[batchEntries.length - 1] || null;
+            const peerDigest = this.resolvePeerForConversation(convId, lastEntry?.peerAccountDigest || lastEntry?.senderDigest || null);
+
+            const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+            const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `好友 ${peerDigest.slice(-4)}` : '好友');
+            const avatar = contactEntry?.avatar || existingThread?.avatar || null;
+            const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || lastEntry?.peerDeviceId || lastEntry?.senderDeviceId || null;
+
+            // Use state.conversationToken as fallback if active
+            const validToken = convEntry?.token_b64 || existingThread?.conversationToken || (isActiveConversationId ? state.conversationToken : null) || null;
+            const tokenB64 = validToken;
+
+            const thread = this.deps.upsertConversationThread?.({
+                peerAccountDigest: peerDigest || existingThread?.peerAccountDigest || null,
+                peerDeviceId: peerDevice,
+                conversationId: convId,
+                tokenB64,
+                nickname,
+                avatar
+            }) || (threads && threads.get(convId));
+
+            if (!thread) {
+                if (isActiveConversationId) {
+                    console.warn('[MessageFlow] handleTimelineAppend:orphaned_active_message', { convId });
+                    // Create a transient thread object to allow rendering to proceed
+                    const dummyThread = {
+                        conversationId: convId,
+                        peerAccountDigest: peerDigest || state.activePeerDigest,
+                        nickname: nickname || '未知',
+                        unreadCount: 0
+                    };
+                    this._proceedWithAppend(batchEntries, dummyThread, state, isActiveConversationId, convId, peerDigest, directionalOrder);
+                    return;
+                }
+                console.error('[MessageFlow] handleTimelineAppend:dropped:no_thread', { convId });
+                return;
+            }
+
+            this._proceedWithAppend(batchEntries, thread, state, isActiveConversationId, convId, peerDigest, directionalOrder);
+        } catch (err) {
+            console.error('[MessageFlow] handleTimelineAppend CRITICAL ERROR', err);
+            log({ handleTimelineAppendError: err?.message || String(err) });
         }
-        const hasLiveEntries = batchEntries.some((item) => item?.isHistoryReplay !== true);
-        if (hasLiveEntries) {
-            invalidateGapPlaceholderState(convId);
-        }
+    }
 
-        const state = this.getMessageState();
-        const convIndex = this.deps.ensureConversationIndex?.();
-        const convEntry = convIndex?.get?.(convId) || null;
-        const threads = this.deps.getConversationThreads?.();
-        const existingThread = threads?.get?.(convId) || null;
-        const lastEntry = batchEntries[batchEntries.length - 1] || null;
-        const peerDigest = this.resolvePeerForConversation(convId, lastEntry?.peerAccountDigest || lastEntry?.senderDigest || null);
-
-        const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-        const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `好友 ${peerDigest.slice(-4)}` : '好友');
-        const avatar = contactEntry?.avatar || existingThread?.avatar || null;
-        const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || lastEntry?.peerDeviceId || lastEntry?.senderDeviceId || null;
-        const tokenB64 = convEntry?.token_b64 || existingThread?.conversationToken || null;
-
-        const thread = this.deps.upsertConversationThread?.({
-            peerAccountDigest: peerDigest || existingThread?.peerAccountDigest || null,
-            peerDeviceId: peerDevice,
-            conversationId: convId,
-            tokenB64,
-            nickname,
-            avatar
-        }) || (threads && threads.get(convId));
-
-        if (!thread) return;
-        if (peerDigest) {
-            // ensureThreadPeer equivalent logic
-            const key = this.deps.normalizePeerKey?.(peerDigest);
-            if (key) thread.peerAccountDigest = key;
-        }
-
+    _proceedWithAppend(batchEntries, thread, state, isActiveConversationId, convId, peerDigest, directionalOrder) {
         let incomingCount = 0;
         let playedSound = false;
+
         for (const item of batchEntries) {
             if (!isUserTimelineMessage(item)) continue;
             thread.lastMessageText = item.text || item.error || '';
@@ -490,30 +526,22 @@ export class MessageFlowController extends BaseController {
             if (item.direction === 'incoming') incomingCount += 1;
         }
 
-        // Check if this update belongs to the active conversation
-        // Relaxed check: Trust conversationId match primarily.
-        const isActiveConversationId = state.conversationId === convId;
         const isActivePeer = !peerDigest || state.activePeerDigest === peerDigest;
 
-        // Debug logging for specific rendering failures
-        if (isActiveConversationId) {
-            console.log('[MessageFlow] handleTimelineAppend active-check', {
-                convId,
-                stateConvId: state.conversationId,
-                peerDigest,
-                activePeerDigest: state.activePeerDigest,
-                isActivePeer,
-                batchSize: batchEntries.length,
-                sampleDir: batchEntries[0]?.direction
-            });
-        }
+        console.log('[MessageFlow] handleTimelineAppend:decision', {
+            convId,
+            stateConvId: state.conversationId,
+            peerDigest,
+            activePeerDigest: state.activePeerDigest,
+            isActivePeer,
+            isActiveConversationId,
+            batchSize: batchEntries.length,
+            incomingCount
+        });
 
-        // We consider it active if conversationId matches.
-        // The peer check is a secondary validation that we will bypass if ID matches,
-        // to prevent rendering failures for self-sent messages or imperfect peer resolution.
         const isActive = isActiveConversationId;
 
-        const shouldLogBatchRender = Array.isArray(entries);
+        const shouldLogBatchRender = true;
         const nowMs = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
             ? performance.now()
             : Date.now();
@@ -556,16 +584,21 @@ export class MessageFlowController extends BaseController {
                 if (shouldNotify) {
                     this.deps.playNotificationSound?.();
                     playedSound = true;
+
+                    const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+                    // Re-resolve nickname/avatar for toast if needed, or pass from caller?
+                    // Simplified for now, using thread data or defaults
+                    const nickname = thread.nickname || '新訊息';
                     const previewText = buildConversationSnippet(item.text || '') || item.text || '有新訊息';
-                    const avatarUrlToast = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
+                    const avatarUrlToast = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
                     const initialsToast = this.deps.controllers?.conversationList?.getInitials(nickname, peerDigest || '').slice(0, 2);
-                    const toastPeerDeviceId = thread?.peerDeviceId || peerDevice || null;
+                    const toastPeerDeviceId = thread?.peerDeviceId || null;
 
                     this.deps.showToast?.(`${nickname}：${previewText}`, {
                         onClick: () => this.deps.controllers?.activeConversation?.openConversationFromToast({
                             peerAccountDigest: peerDigest,
                             convId,
-                            tokenB64,
+                            tokenB64: thread.conversationToken || null, // fallback
                             peerDeviceId: toastPeerDeviceId
                         }),
                         avatarUrl: avatarUrlToast,

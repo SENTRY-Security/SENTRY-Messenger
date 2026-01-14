@@ -28,7 +28,12 @@ async function loadNaclScript() {
   try {
     await tryLoad('/libs/nacl-fast.min.js');
   } catch (err) {
-    throw new Error(`nacl load failed (local only): ${err?.message || err}`);
+    console.warn('Local nacl load failed, trying CDN:', err);
+    try {
+      await tryLoad('https://unpkg.com/tweetnacl@1.0.3/nacl-fast.min.js');
+    } catch (err2) {
+      throw new Error(`nacl load failed (local+cdn): ${err?.message} || ${err2?.message}`);
+    }
   }
   return window.nacl || null;
 }

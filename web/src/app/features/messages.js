@@ -6,7 +6,7 @@
  * only by gapFill items in the same pipeline.
  */
 
-// This file contains legacy message pipeline. New implementation will live under messages2/. Do not add new flow logic here.
+// This file contains the message pipeline logic.
 
 // /app/features/messages.js
 // Feature: list conversation messages and decrypt DR packets using secure conversation tokens.

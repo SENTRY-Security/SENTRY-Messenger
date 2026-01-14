@@ -488,8 +488,19 @@ export function initMessagesPane({
   let wsIndicatorObserver = null;
   const CONV_PULL_THRESHOLD = 60;
   const CONV_PULL_MAX = 140;
-  const contactSyncInFlight = new Set();
-  unsubscribeTimeline = subscribeTimeline((e) => controllers.messageFlow.handleTimelineAppend(e));
+  console.log('[messages-pane] calling subscribeTimeline');
+  unsubscribeTimeline = subscribeTimeline((e) => {
+    try {
+      if (!controllers?.messageFlow) {
+        console.error('[messages-pane] FATAL: controllers.messageFlow is missing during event', e);
+        return;
+      }
+      console.log('[messages-pane] dispatching to messageFlow', { hasHandler: typeof controllers.messageFlow.handleTimelineAppend === 'function' });
+      controllers.messageFlow.handleTimelineAppend(e);
+    } catch (err) {
+      console.error('[messages-pane] FATAL: error in timeline listener wrapper', err);
+    }
+  });
   if (!bRouteResultListenerInstalled && typeof document !== 'undefined') {
     bRouteResultListenerInstalled = true;
     document.addEventListener('b-route-result', (event) => {

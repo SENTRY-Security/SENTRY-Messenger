@@ -17,7 +17,7 @@ fi
 cd "$ROOT"
 
 echo "Executing wipe for DB=$DB_NAME using $WRANGLER_BIN with config $WRANGLER_CONFIG"
-"$WRANGLER_BIN" d1 execute "$DB_NAME" $REMOTE_FLAG --config "$WRANGLER_CONFIG" --file "$SQL_FILE"
+"$WRANGLER_BIN" d1 execute "$DB_NAME" $REMOTE_FLAG --yes --config "$WRANGLER_CONFIG" --file "$SQL_FILE"
 
 if [ "$SKIP_R2_WIPE" = "true" ]; then
   echo "Skipping R2 wipe (SKIP_R2_WIPE=true)"

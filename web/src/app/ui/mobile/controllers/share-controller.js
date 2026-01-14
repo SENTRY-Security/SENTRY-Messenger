@@ -1372,6 +1372,19 @@ export function setupShareController(options) {
         counter = maxCounter + 1;
       }
     } catch { }
+
+    // Advance DR counter optimistically to prevent race with subsequent text messages (e.g. user typing immediately)
+    // This ensures the local state moves to Ns=1 (or N) before any concurrent text message (Ns=N+1) writes its state.
+    try {
+      consumeDrSendCounter({
+        peerAccountDigest: targetDigest,
+        peerDeviceId: resolvedPeerDeviceId,
+        conversationId,
+        counter
+      });
+    } catch (err) {
+      console.warn('[share-controller] failed to advance DR counter before contact-share', err);
+    }
     const nowSec = Date.now();
     const payloadTs = Number(contactPayload?.updatedAt || contactPayload?.addedAt || nowSec);
     const ts = Number.isFinite(payloadTs) ? payloadTs : nowSec;
@@ -1415,17 +1428,7 @@ export function setupShareController(options) {
         : (data?.error || data?.message || 'contact-share send failed');
       throw new Error(msg);
     }
-    // Advance DR counter if a session exists, to avoid 409 with text messages
-    try {
-      consumeDrSendCounter({
-        peerAccountDigest: targetDigest,
-        peerDeviceId: resolvedPeerDeviceId,
-        conversationId,
-        counter
-      });
-    } catch (err) {
-      console.warn('[share-controller] failed to advance DR counter after contact-share', err);
-    }
+
   }
 
   async function buildLocalContactPayload({ conversation, drInit, overrides } = {}) {
@@ -2016,7 +2019,7 @@ export function setupShareController(options) {
     });
     if (responderHolder?.baseKey) {
       responderHolder.baseKey.conversationId = conversation.conversation_id;
-      persistDrSnapshot({ peerAccountDigest: peerDigest, peerDeviceId, state: responderHolder });
+      await persistDrSnapshot({ peerAccountDigest: peerDigest, peerDeviceId, state: responderHolder });
     }
     if (policy === 'A' && action === 'migrate' && existingMatch && existingPeerDeviceId) {
       const migrated = migrateContactCorePeerDevice({

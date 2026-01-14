@@ -111,6 +111,14 @@ export function appendUserMessage(conversationId, entry = {}) {
 }
 
 export function appendBatch(entries = [], opts = {}) {
+  try {
+    console.log('[timeline-store] appendBatch entry', {
+      count: entries?.length || 0,
+      listeners: appendListeners.size,
+      sampleId: entries?.[0]?.id || entries?.[0]?.messageId
+    });
+  } catch { }
+
   const list = Array.isArray(entries) ? entries : [];
   if (!list.length) {
     return { appendedCount: 0, skippedCount: 0, appendedEntries: [] };
@@ -224,6 +232,7 @@ export function upsertTimelineEntry(conversationId, entry = {}) {
   if (!convMap) {
     convMap = new Map();
     timelineMap.set(convId, convMap);
+    timelineMap.set(convId, convMap);
   }
   const existing = convMap.get(messageId) || null;
   const stored = (entry && typeof entry === 'object') ? entry : {};
@@ -324,6 +333,11 @@ export function clearConversation(conversationId) {
 
 export function subscribeTimeline(listener) {
   if (typeof listener !== 'function') return () => { };
+  try {
+    console.log('[timeline-store] subscribeTimeline registered', {
+      currentCount: appendListeners.size
+    });
+  } catch { }
   appendListeners.add(listener);
   return () => appendListeners.delete(listener);
 }
