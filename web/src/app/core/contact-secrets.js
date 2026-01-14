@@ -61,15 +61,11 @@ export function normalizeContactRole(rawRole, { source = null, identity = null, 
   const val = typeof rawRole === 'string' ? rawRole.toLowerCase() : null;
   if (!val) return null;
   let normalized = val;
-  if (val === 'responder') {
-    normalized = 'owner';
-    console.warn('[contact-secrets] legacy role conversion: responder -> owner', { source, peer: identity?.accountDigest });
-  } else if (val === 'initiator') {
-    normalized = 'guest';
-    console.warn('[contact-secrets] legacy role conversion: initiator -> guest', { source, peer: identity?.accountDigest });
-  }
-
-  if (logChange && normalized !== val && roleNormalizeLogCount < ROLE_NORMALIZE_LOG_LIMIT) {
+  // Legacy role conversion removed. Strict role preservation.
+  // if (val === 'responder') { normalized = 'owner'; ... }
+  // if (val === 'initiator') { normalized = 'guest'; ... }
+  if (logChange && normalized !== val) {
+    // Only log if normalization (lowercase) changed it, not value transformation
     roleNormalizeLogCount += 1;
     log({
       contactSecretsRoleNormalizeTrace: {
