@@ -53,3 +53,15 @@ export async function getMessageKeyVault(params = {}) {
   const r = await fetchWithTimeout('/api/v1/message-key-vault/get', jsonReq(payload), 10000);
   return parseJsonResponse(r);
 }
+export async function getVaultPutCount(params = {}) {
+  if (!params?.conversationId) throw new Error('conversationId required');
+  if (!params?.messageId) throw new Error('messageId required');
+  const payload = buildAccountPayload({
+    overrides: {
+      conversationId: params.conversationId,
+      messageId: params.messageId
+    }
+  });
+  const r = await fetchWithTimeout('/api/v1/message-key-vault/count', jsonReq(payload), 5000);
+  return parseJsonResponse(r);
+}

@@ -93,7 +93,7 @@ import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
 import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
-import { messagesFlowFacade } from '../features/messages-flow-facade.js';
+import { messagesFlowFacade, setMessagesFlowFacadeWsSend } from '../features/messages-flow-facade.js';
 import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
@@ -3969,6 +3969,7 @@ function wsSend(payload) {
 wsSend.isReady = () => !!(wsConn && wsConn.readyState === WebSocket.OPEN);
 messagesPane.setWsSend(wsSend);
 setMessagesWsSender(wsSend);
+setMessagesFlowFacadeWsSend(wsSend);
 shareController?.setWsSend?.(wsSend);
 setCallSignalSender(wsSend);
 if (!wsMonitorTimer) {

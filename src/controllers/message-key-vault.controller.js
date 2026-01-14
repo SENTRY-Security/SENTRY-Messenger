@@ -192,3 +192,59 @@ export const getMessageKeyVault = async (req, res) => {
     return res.status(status).json(payload);
   }
 };
+
+const GetCountSchema = z.object({
+  conversationId: z.string().min(8),
+  messageId: z.string().min(1),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
+});
+
+export const getVaultPutCount = async (req, res) => {
+  if (!ensureCallWorkerConfig(res)) return;
+
+  let input;
+  try {
+    input = GetCountSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err.errors?.[0]?.message || 'invalid payload' });
+  }
+
+  try {
+    // Just verify auth, we don't strictly need user info for counting but good practice
+    await resolveAccountAuth({
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err);
+  }
+
+  const payload = {
+    conversationId: input.conversationId,
+    messageId: input.messageId
+  };
+
+  try {
+    const data = await callWorkerRequest('/d1/message-key-vault/count', {
+      method: 'POST',
+      body: payload
+    });
+    return res.json(data || { ok: true, count: 0 });
+  } catch (err) {
+    logger.error({
+      event: 'messageKeyVault.count.failed',
+      status: err?.status,
+      error: err?.message || err
+    });
+    const status = err?.status || 502;
+    const payloadErr = err?.payload && typeof err.payload === 'object'
+      ? err.payload
+      : { error: 'WorkerError', message: err?.message || 'worker request failed' };
+    return res.status(status).json(payloadErr);
+  }
+};

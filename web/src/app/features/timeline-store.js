@@ -294,6 +294,30 @@ export function updateTimelineEntryStatusByCounter(conversationId, counter, stat
   return false;
 }
 
+export function updateMessageVaultCount(conversationId, messageId, count) {
+  const convId = normalizeConversationId(conversationId);
+  const mid = normalizeMessageId(messageId);
+  if (!convId || !mid || !Number.isFinite(count)) return false;
+  const convMap = timelineMap.get(convId);
+  if (!(convMap instanceof Map)) return false;
+
+  const existing = convMap.get(mid);
+  if (!existing) return false;
+
+  if (existing.vaultPutCount === count) return false;
+
+  const updated = { ...existing, vaultPutCount: count };
+  // Check if we can infer 'delivered' status
+  // If count >= 2 (Sender + Receiver), it is effectively delivered
+  if (count >= 2 && existing.status !== 'read' && existing.status !== 'delivered') {
+    updated.status = 'delivered';
+  }
+
+  convMap.set(mid, updated);
+  emitAppend({ conversationId: convId, entry: updated, updated: true });
+  return true;
+}
+
 export function updateTimelineEntriesAsDelivered(conversationId, maxCounter) {
   const convId = normalizeConversationId(conversationId);
   const limit = Number(maxCounter);

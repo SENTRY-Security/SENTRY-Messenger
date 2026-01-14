@@ -18,6 +18,7 @@ import { getMessagesFlowFlags } from './messages-flow/flags.js';
 
 const LIVE_ROUTE_LOG_CAP = 5;
 const LIVE_MVP_RESULT_LOG_CAP = 5;
+let facadeWsSend = null;
 const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
   fetchedCount: 0,
   decryptOkCount: 0,
@@ -262,7 +263,8 @@ function createMessagesFlowFacade() {
         try {
           console.log('[facade] recv vault-ack', { conv: event.conversationId, mid: event.messageId, ctr: event.counter, ts: event.ts });
         } catch { }
-        recordVaultAckCounter(event.conversationId, event.counter, event.ts);
+        // Pass messageId to trigger server count fetch
+        recordVaultAckCounter(event.conversationId, event.counter, event.ts, event.messageId);
         // We can return early as this is a control signal, not a content message
         return;
       }
@@ -385,13 +387,7 @@ function createMessagesFlowFacade() {
         const liveCtx = {
           adapters: liveLegacyAdapters,
           maybeSendVaultAckWs: (params) => {
-            // Inject deps.wsSend which is available in this closure (from facade deps)
-            // We need to ensure 'deps' (the facade's dependencies) is accessible here.
-            // 'deps' is passed to 'createMessagesFlowFacade(deps)'.
-            // Wait, this file exports 'createMessagesFlowFacade'. Let's verify scope.
-            // Yes, 'deps' is in scope if we are inside the facade factory.
-            // We'll pass { wsSend: deps.wsSend } as the second arg.
-            return maybeSendVaultAckWs(params, { wsSend: deps.wsSend });
+            return maybeSendVaultAckWs(params, { wsSend: facadeWsSend });
           },
           getAccountDigest: storeGetAccountDigest,
           getDeviceId: storeGetDeviceId
@@ -648,3 +644,7 @@ function createMessagesFlowFacade() {
 }
 
 export const messagesFlowFacade = createMessagesFlowFacade();
+
+export function setMessagesFlowFacadeWsSend(fn) {
+  facadeWsSend = typeof fn === 'function' ? fn : null;
+}

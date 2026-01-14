@@ -11,7 +11,8 @@ import {
 import {
     CONTROL_MESSAGE_TYPES
 } from '../secure-conversation-signals.js';
-import { updateTimelineEntriesAsDelivered } from '../timeline-store.js';
+import { updateTimelineEntriesAsDelivered, updateMessageVaultCount } from '../timeline-store.js';
+import { getVaultPutCount } from '../../api/message-key-vault.js';
 
 // Local State (Memory only, but synced to store maps)
 const sentReadReceipts = new Set();
@@ -62,27 +63,35 @@ export function getVaultAckCounter(conversationId) {
     return Number.isFinite(counter) ? counter : null;
 }
 
-export function recordVaultAckCounter(conversationId, counter, ts = null) {
-    if (!conversationId || !Number.isFinite(counter)) return false;
-    // ensureVaultAckLoaded removed
-    try {
-        console.log('[receipts] recordVaultAckCounter', { key: String(conversationId), counter, ts });
-    } catch { }
+export async function recordVaultAckCounter(conversationId, counter, ts = null, messageId = null) {
+    // Only proceed if we have at least conversationId
+    if (!conversationId) return false;
 
-    const key = String(conversationId);
-    const nextCounter = Number(counter);
-    const existing = vaultAckCounterStore.get(key);
-    const prevCounter = Number(existing?.counter);
-    if (Number.isFinite(prevCounter) && prevCounter >= nextCounter) return false;
-    const tsRaw = Number(ts);
-    const nextTs = Number.isFinite(tsRaw) ? tsRaw : (existing?.ts ?? null);
-    vaultAckCounterStore.set(key, { counter: nextCounter, ts: nextTs });
+    // Legacy logic: if counter is present, we still persist it for backward compatibility / debug
+    if (Number.isFinite(counter)) {
+        const key = String(conversationId);
+        const nextCounter = Number(counter);
+        const existing = vaultAckCounterStore.get(key);
+        const nextTs = Number.isFinite(Number(ts)) ? Number(ts) : (existing?.ts ?? null);
+        vaultAckCounterStore.set(key, { counter: nextCounter, ts: nextTs });
 
-    // Update timeline status to 'delivered' for all messages <= counter
-    try {
-        updateTimelineEntriesAsDelivered(conversationId, nextCounter);
-    } catch (err) {
-        console.warn('[receipts] failed to update timeline status', err);
+        // Use legacy logic as fallback for bulk updates
+        try {
+            updateTimelineEntriesAsDelivered(conversationId, nextCounter);
+        } catch { }
+    }
+
+    // New Logic: Fetch Authoritative Count
+    if (messageId) {
+        try {
+            const result = await getVaultPutCount({ conversationId, messageId });
+            if (result && result.ok && Number.isFinite(result.count)) {
+                updateMessageVaultCount(conversationId, messageId, result.count);
+                console.log('[receipts] updated vault count', { conversationId, messageId, count: result.count });
+            }
+        } catch (err) {
+            console.warn('[receipts] failed to fetch vault count', err);
+        }
     }
 
     return true;

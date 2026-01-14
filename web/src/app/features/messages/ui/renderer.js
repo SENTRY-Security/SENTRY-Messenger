@@ -241,19 +241,29 @@ export function resolveRenderEntryCounter(entry) {
 export function computeDoubleTickState({ timelineMessages, conversationId, selfDigest } = {}) {
     const latestOutgoing = resolveLatestOutgoingMessage(timelineMessages, selfDigest);
     const latestOutgoingId = latestOutgoing?.id || latestOutgoing?.messageId || latestOutgoing?.serverMessageId || null;
+
+    // Legacy Check
     const latestOutgoingCounter = resolveRenderEntryCounter(latestOutgoing);
     const ackCounter = conversationId ? getVaultAckCounter(conversationId) : null;
-    const latestOutgoingDelivered = Number.isFinite(latestOutgoingCounter)
+    const legacyDelivered = Number.isFinite(latestOutgoingCounter)
         && Number.isFinite(ackCounter)
         && ackCounter >= latestOutgoingCounter;
+
+    // New "Server-Side Count" Check
+    // If vaultPutCount >= 2 (Sender + Receiver), it is delivered.
+    const vaultCount = Number(latestOutgoing?.vaultPutCount);
+    const countDelivered = Number.isFinite(vaultCount) && vaultCount >= 2;
+
+    const latestOutgoingDelivered = countDelivered || legacyDelivered;
 
     console.log('[Renderer] DoubleTickState', {
         convId: conversationId,
         latestId: latestOutgoingId,
         latestCounter: latestOutgoingCounter,
         ackCounter,
+        vaultCount,
         isDelivered: latestOutgoingDelivered,
-        selfDigest
+        mode: countDelivered ? 'count' : 'legacy'
     });
 
     return { latestOutgoingId, latestOutgoingDelivered, latestOutgoingCounter, ackCounter };

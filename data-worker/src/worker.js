@@ -2824,6 +2824,35 @@ async function handleMessageKeyVaultRoutes(req, env) {
     });
   }
 
+  if (req.method === 'POST' && url.pathname === '/d1/message-key-vault/count') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const messageId = normalizeMessageId(body?.messageId || body?.message_id);
+
+    if (!conversationId || !messageId) {
+      return json({ error: 'BadRequest', message: 'conversationId, messageId required' }, { status: 400 });
+    }
+
+    try {
+      await ensureDataTables(env);
+    } catch (err) {
+      // similar error handling if needed, usually ensureDataTables handles log
+    }
+
+    const row = await env.DB.prepare(
+      `SELECT COUNT(*) as count FROM message_key_vault
+        WHERE conversation_id=?1 AND message_id=?2`
+    ).bind(conversationId, messageId).first();
+
+    const count = Number(row?.count || 0);
+    return json({ ok: true, count });
+  }
+
   return null;
 }
 

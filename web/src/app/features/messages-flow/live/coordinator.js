@@ -554,7 +554,7 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
       const senderDeviceId = peerDeviceId;
       const receiverAccountDigest = typeof getAccountDigest === 'function' ? getAccountDigest() : null;
       const receiverDeviceId = typeof getDeviceId === 'function' ? getDeviceId() : null;
-      const c = Number(decryptResult?.counter);
+      const c = Number(decryptResult?.counter ?? decryptResult?.decryptedMessage?.counter);
       const counter = Number.isFinite(c) ? c : null;
 
       if (senderAccountDigest && receiverAccountDigest && receiverDeviceId && counter !== null) {
