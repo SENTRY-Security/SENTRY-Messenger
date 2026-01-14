@@ -260,6 +260,12 @@ async function decryptIncomingSingle(params = {}, adapters) {
       skippedCount: 1
     };
   }
+  const rawMessageId = normalizeMessageId(raw);
+  const messageId = rawMessageId || targetMessageId;
+  const counter = resolveCounter(raw, header);
+  const senderDigest = resolveSenderDigest(raw, header);
+  const senderDeviceId = resolveSenderDeviceId(raw, header);
+
   const meta = raw?.meta || header?.meta || null;
   const msgTypeHint = resolveMsgType(meta, header);
   if (msgTypeHint === 'contact-share') {
@@ -271,9 +277,24 @@ async function decryptIncomingSingle(params = {}, adapters) {
       };
     }
     const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
+    let applyOk = false;
     try {
       await decryptContactPayload(tokenB64, envelope);
-    } catch {
+      const plaintext = JSON.stringify({ type: 'contact-share', envelope });
+      const applyResult = await applyContactShareFromCommit({
+        peerAccountDigest: senderDigest,
+        peerDeviceId: senderDeviceId,
+        sessionKey: tokenB64,
+        plaintext,
+        messageId,
+        sourceTag: 'messages-flow:contact-share-commit'
+      });
+      applyOk = !!applyResult?.ok;
+      if (!applyOk) {
+        console.error('[state-live] applyContactShareFromCommit failed', applyResult);
+      }
+    } catch (err) {
+      console.error('[state-live] contact-share processing failed', err);
       return {
         ...base,
         reasonCode: 'DECRYPT_FAIL',
@@ -295,8 +316,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
       skippedCount: 1
     };
   }
-  const senderDigest = resolveSenderDigest(raw, header);
-  const senderDeviceId = resolveSenderDeviceId(raw, header);
+
   if (!senderDigest || !senderDeviceId) {
     return {
       ...base,
@@ -323,9 +343,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
     selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
   } catch { }
 
-  const counter = resolveCounter(raw, header);
-  const rawMessageId = normalizeMessageId(raw);
-  const messageId = rawMessageId || targetMessageId;
   const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
   let messageKeyB64 = null;
   let plaintext = null;
@@ -360,10 +377,16 @@ async function decryptIncomingSingle(params = {}, adapters) {
     result.failCount = 1;
   } else {
     const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE || semantic.subtype !== 'text') {
+    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE) {
       result.reasonCode = 'CONTROL_SKIP';
       result.skippedCount = 1;
     } else {
+      let content = {};
+      try {
+        if (typeof plaintext === 'string' && (plaintext.trim().startsWith('{') || plaintext.trim().startsWith('['))) {
+          content = JSON.parse(plaintext);
+        }
+      } catch { }
       const ts = toMessageTimestamp(raw);
       if (!messageId || !Number.isFinite(ts)) {
         result.reasonCode = 'MISSING_MESSAGE_FIELDS';
@@ -372,16 +395,16 @@ async function decryptIncomingSingle(params = {}, adapters) {
         const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
         const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
 
-        result.ok = true;
-        result.reasonCode = null;
+        // Merge parsed content for media fields, but enforce secure properties
         result.decryptedMessage = {
+          ...content,
           id: messageId,
           messageId,
           ts,
           tsMs: resolveMessageTsMs(ts),
           direction: 'incoming',
-          msgType: 'text',
-          text,
+          msgType: semantic.subtype || 'text',
+          text: content.text || text,
           messageKeyB64,
           counter,
           headerCounter: counter,
@@ -430,8 +453,17 @@ async function commitIncomingSingle(params = {}, adapters) {
   if (!header || !ciphertextB64 || !header.iv_b64) {
     return { ...base, reasonCode: 'MISSING_CIPHERTEXT' };
   }
-  const senderDigest = resolveSenderDigest(raw, header);
-  const senderDeviceId = resolveSenderDeviceId(raw, header);
+  let senderDigest = null;
+  let senderDeviceId = null;
+
+  if (peerAccountDigest && peerDeviceId) {
+    senderDigest = peerAccountDigest;
+    senderDeviceId = peerDeviceId;
+  } else {
+    senderDigest = resolveSenderDigest(raw, header);
+    senderDeviceId = resolveSenderDeviceId(raw, header);
+  }
+
   if (!senderDigest || !senderDeviceId) {
     return { ...base, reasonCode: 'MISSING_SENDER_IDENTITY' };
   }
@@ -589,18 +621,27 @@ async function commitIncomingSingle(params = {}, adapters) {
 
   if (adapters?.appendTimelineBatch) {
     const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-    if (semantic.kind === SEMANTIC_KIND.USER_MESSAGE && semantic.subtype === 'text') {
+    if (semantic.kind === SEMANTIC_KIND.USER_MESSAGE) {
       const ts = toMessageTimestamp(raw);
       const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
+
+      let content = {};
+      try {
+        if (typeof plaintext === 'string' && (plaintext.trim().startsWith('{') || plaintext.trim().startsWith('['))) {
+          content = JSON.parse(plaintext);
+        }
+      } catch { }
+
       const entries = [{
+        ...content,
         conversationId,
         messageId,
         direction: 'incoming',
-        msgType: 'text',
+        msgType: semantic.subtype || 'text',
         ts,
         tsMs: resolveMessageTsMs(ts),
         counter: Number.isFinite(resolvedCounter) ? Number(resolvedCounter) : null,
-        text,
+        text: content.text || text,
         senderDigest,
         senderDeviceId: resolvedSenderDeviceId,
         targetDeviceId
@@ -673,6 +714,7 @@ async function persistAndAppendBatch(params = {}, adapters) {
   let appendedCount = 0;
   if (appendableMessages.length) {
     const entries = appendableMessages.map((message) => ({
+      ...message,
       conversationId,
       messageId: message?.messageId || message?.id || null,
       direction: message?.direction || 'incoming',

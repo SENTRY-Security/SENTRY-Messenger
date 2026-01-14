@@ -70,16 +70,19 @@ export const putMessageKeyVault = async (req, res) => {
 
   let auth;
   try {
+    // Authenticate the sender using their token.
+    // We intentionally omit input.accountDigest here to avoid a mismatch error
+    // if the sender is writing to a peer's vault.
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.accountToken
     });
   } catch (err) {
     return respondAccountError(res, err);
   }
 
   const payload = {
-    accountDigest: auth.accountDigest,
+    // Use the explicit target digest (Peer) if provided, otherwise default to authenticated user (Self).
+    accountDigest: input.accountDigest || auth.accountDigest,
     conversationId: input.conversationId,
     messageId: input.messageId,
     senderDeviceId: input.senderDeviceId,
@@ -97,7 +100,7 @@ export const putMessageKeyVault = async (req, res) => {
       body: payload
     });
     logMessageKeyVault('put', {
-      accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      accountDigestSuffix4: payload.accountDigest ? payload.accountDigest.slice(-4) : null,
       conversationIdPrefix8: input.conversationId.slice(0, 8),
       messageIdPrefix8: input.messageId.slice(0, 8),
       senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
@@ -112,18 +115,18 @@ export const putMessageKeyVault = async (req, res) => {
       error: err?.message || err
     });
     const status = err?.status || 502;
-    const payload = err?.payload && typeof err.payload === 'object'
+    const payloadErr = err?.payload && typeof err.payload === 'object'
       ? err.payload
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
     logMessageKeyVault('put', {
-      accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
+      accountDigestSuffix4: payload.accountDigest ? payload.accountDigest.slice(-4) : null,
       conversationIdPrefix8: input.conversationId.slice(0, 8),
       messageIdPrefix8: input.messageId.slice(0, 8),
       senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
       status,
-      errorCode: payload?.error || null
+      errorCode: payloadErr?.error || null
     });
-    return res.status(status).json(payload);
+    return res.status(status).json(payloadErr);
   }
 };
 

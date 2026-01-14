@@ -1440,6 +1440,8 @@ function normalizePeerBundleFromPrekeys(bundle) {
  * @param {{ peerAccountDigest?: string }} p
  * @returns {Promise<{ initialized: boolean }>} 
  */
+const sessionLocks = new Map();
+
 export async function ensureDrSession(params = {}) {
   const { digest: peer, deviceId: peerDeviceId } = ensurePeerIdentity({
     peerAccountDigest: params?.peerAccountDigest ?? params,
@@ -1787,7 +1789,8 @@ async function sendDrPlaintext(params = {}) {
         direction: 'outgoing',
         msgType,
         headerCounter: vaultCounter,
-        messageKeyB64
+        messageKeyB64,
+        accountDigest: receiverAccountDigest
       });
       logOutgoingSendTrace('vault_put_ok', messageId, null);
       logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });
@@ -1963,7 +1966,8 @@ async function sendDrPlaintext(params = {}) {
             direction: 'outgoing',
             msgType,
             headerCounter: repairVaultCounter,
-            messageKeyB64: repairMessageKeyB64
+            messageKeyB64: repairMessageKeyB64,
+            accountDigest: peer
           });
           logOutgoingSendTrace('vault_put_ok', replacementMessageId, null);
           logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_OK' });
@@ -2645,7 +2649,8 @@ export async function sendDrMedia(params = {}) {
       direction: 'outgoing',
       msgType,
       headerCounter: vaultCounter,
-      messageKeyB64
+      messageKeyB64,
+      accountDigest: receiverAccountDigest
     });
     logOutgoingSendTrace('vault_put_ok', messageId, null);
     logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });
@@ -2814,7 +2819,8 @@ export async function sendDrMedia(params = {}) {
           direction: 'outgoing',
           msgType,
           headerCounter: repairVaultCounter,
-          messageKeyB64: repairMessageKeyB64
+          messageKeyB64: repairMessageKeyB64,
+          accountDigest: peer
         });
         logOutgoingSendTrace('vault_put_ok', replacementMessageId, null);
         logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_OK' });

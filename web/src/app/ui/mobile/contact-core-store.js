@@ -154,7 +154,7 @@ function applyDerivedOutputs(entry) {
   conversationIndex.set(entry.conversationId, {
     ...prevConvIndex,
     token_b64: entry.conversationToken,
-    peerAccountDigest: peerKey,
+    peerAccountDigest: entry.peerAccountDigest,
     peerDeviceId: entry.peerDeviceId,
     dr_init: prevConvIndex.dr_init || entry.drInit || null
   });

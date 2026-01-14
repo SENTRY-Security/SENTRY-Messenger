@@ -37,73 +37,75 @@ function normalizeMessageIdValue(value) {
 function resolveConversationId(event, ctx) {
   return normalizeString(
     event?.conversationId
-      || event?.conversation_id
-      || ctx?.conversationId
-      || null
+    || event?.conversation_id
+    || ctx?.conversationId
+    || null
   );
 }
 
 function resolveTokenB64(event, ctx) {
   return normalizeString(
     ctx?.tokenB64
-      || event?.tokenB64
-      || event?.token_b64
-      || null
+    || event?.tokenB64
+    || event?.token_b64
+    || null
   );
 }
 
 function resolveMessageId(event, ctx) {
   return normalizeMessageIdValue(
     event?.messageId
-      || event?.message_id
-      || event?.id
-      || ctx?.messageId
-      || ctx?.message_id
-      || ctx?.id
-      || null
+    || event?.message_id
+    || event?.id
+    || ctx?.messageId
+    || ctx?.message_id
+    || ctx?.id
+    || null
   );
 }
 
 function resolveServerMessageId(event, ctx) {
   return normalizeMessageIdValue(
     event?.serverMessageId
-      || event?.server_message_id
-      || event?.serverMsgId
-      || ctx?.serverMessageId
-      || ctx?.server_message_id
-      || ctx?.serverMsgId
-      || null
+    || event?.server_message_id
+    || event?.serverMsgId
+    || ctx?.serverMessageId
+    || ctx?.server_message_id
+    || ctx?.serverMsgId
+    || null
   );
 }
 
 function resolvePeerAccountDigest(event, ctx) {
   return normalizeDigestOnly(
     ctx?.peerAccountDigest
-      || event?.peerAccountDigest
-      || event?.senderAccountDigest
-      || event?.sender_account_digest
-      || null
+    || event?.peerAccountDigest
+    || event?.senderAccountDigest
+    || event?.sender_account_digest
+    || event?.senderDigest
+    || event?.sender_digest
+    || null
   );
 }
 
 function resolvePeerDeviceId(event, ctx) {
   return normalizeString(
     ctx?.peerDeviceId
-      || event?.peerDeviceId
-      || event?.senderDeviceId
-      || event?.sender_device_id
-      || null
+    || event?.peerDeviceId
+    || event?.senderDeviceId
+    || event?.sender_device_id
+    || null
   );
 }
 
 function resolveSourceTag(event, ctx) {
   return normalizeString(
     ctx?.sourceTag
-      || ctx?.triggerSource
-      || ctx?.source
-      || event?.sourceTag
-      || event?.source
-      || null
+    || ctx?.triggerSource
+    || ctx?.source
+    || event?.sourceTag
+    || event?.source
+    || null
   );
 }
 

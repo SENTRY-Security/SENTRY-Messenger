@@ -151,6 +151,7 @@ export class MessageKeyVault {
     const msgType = params?.msgType || null;
     const messageKeyB64 = params?.messageKeyB64 || null;
     const headerCounter = normalizeHeaderCounter(params?.headerCounter);
+    const accountDigest = params?.accountDigest || null;
     const logContext = buildLogContext({
       conversationId,
       messageId,
@@ -240,6 +241,7 @@ export class MessageKeyVault {
     });
 
     const { r, data } = await apiPutMessageKeyVault({
+      accountDigest,
       conversationId,
       messageId,
       senderDeviceId,

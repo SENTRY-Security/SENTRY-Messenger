@@ -966,7 +966,9 @@ export function setupShareController(options) {
 
   function ensureActiveInvite() {
     if (shareState.currentInvite) {
-      if (isInviteExpired(shareState.currentInvite)) {
+      if (shareState.currentInvite.ownerAccountDigest !== currentOwnerDigest()) {
+        shareState.currentInvite = null;
+      } else if (isInviteExpired(shareState.currentInvite)) {
         markInviteExpired();
         return Promise.resolve();
       }
@@ -1260,6 +1262,7 @@ export function setupShareController(options) {
         conversationId,
         conversationToken
       });
+      try { document.dispatchEvent(new CustomEvent('contacts:pending-invites-updated')); } catch { }
 
       if (inviteScanStatus) inviteScanStatus.textContent = '投遞成功，等待對方取回';
       switchTab('contacts');

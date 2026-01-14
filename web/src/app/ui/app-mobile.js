@@ -5,6 +5,8 @@
 // app lifecycle only. Do not add message pipeline logic; call messages-flow-legacy facade.
 
 import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
+
+console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
@@ -4026,15 +4028,13 @@ function normalizeWsToken(value) {
 function resolveWsIncomingPeerIdentity(msg = {}) {
   return normalizePeerIdentity({
     peerAccountDigest: msg?.senderAccountDigest
-      || msg?.peerAccountDigest
       || msg?.fromAccountDigest
       || msg?.sender_account_digest
-      || msg?.peer_account_digest
+      || msg?.senderDigest
+      || msg?.sender_digest
       || null,
     peerDeviceId: msg?.senderDeviceId
-      || msg?.peerDeviceId
       || msg?.sender_device_id
-      || msg?.peer_device_id
       || null
   });
 }

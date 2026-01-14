@@ -94,6 +94,7 @@ export function enqueuePendingVaultPut(params = {}, err = null) {
     const msgType = params?.msgType || null;
     const messageKeyB64 = params?.messageKeyB64 || null;
     const headerCounter = normalizeHeaderCounter(params?.headerCounter);
+    const accountDigest = params?.accountDigest || null;
     if (!conversationId || !messageId || !senderDeviceId || !messageKeyB64) return false;
     if (direction !== 'incoming') return false;
     const queue = restorePendingVaultPuts();
@@ -109,6 +110,7 @@ export function enqueuePendingVaultPut(params = {}, err = null) {
         existing.direction = direction || existing.direction;
         existing.msgType = msgType || existing.msgType;
         existing.headerCounter = headerCounter ?? existing.headerCounter ?? null;
+        existing.accountDigest = accountDigest || existing.accountDigest || null;
         existing.lastError = err?.message || existing.lastError || null;
         existing.lastErrorCode = errorCode || existing.lastErrorCode || null;
         existing.lastStatus = Number.isFinite(Number(status)) ? Number(status) : existing.lastStatus ?? null;
@@ -141,6 +143,7 @@ export function enqueuePendingVaultPut(params = {}, err = null) {
         msgType,
         messageKeyB64,
         headerCounter,
+        accountDigest: accountDigest || null,
         attemptCount: 0,
         nextAttemptAt: now + PENDING_VAULT_PUT_RETRY_INTERVAL_MS,
         lastError: err?.message || (err ? String(err) : null),
@@ -220,6 +223,7 @@ export async function flushPendingVaultPutsNow() {
                 msgType: item.msgType || null,
                 messageKeyB64: item.messageKeyB64,
                 headerCounter: normalizeHeaderCounter(item.headerCounter),
+                accountDigest: item.accountDigest || null,
                 mkRaw
             });
             success += 1;

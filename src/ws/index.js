@@ -328,15 +328,15 @@ function addClient(accountDigest, ws, sessionTs) {
   if (latestReliable && ts < latestTs) {
     try {
       ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'stale_session' }));
-    } catch {}
-    try { ws.close(4409, 'stale_session'); } catch {}
+    } catch { }
+    try { ws.close(4409, 'stale_session'); } catch { }
     return false;
   }
   // 單一活躍連線策略：同一 accountDigest 只保留最新連線，先關閉舊連線。
   const existing = clients.get(key);
   if (existing && existing.size) {
     for (const other of existing) {
-      try { other.close(4409, 'replaced'); } catch {}
+      try { other.close(4409, 'replaced'); } catch { }
     }
     existing.clear();
   }
@@ -388,13 +388,13 @@ function handleClientMessage(ws, data) {
     const verification = verifyWsToken(token);
     if (!verification.ok) {
       ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'invalid_token' }));
-      try { ws.close(4401, 'invalid_token'); } catch {}
+      try { ws.close(4401, 'invalid_token'); } catch { }
       return;
     }
     const tokenDigest = canonicalAccountDigest(verification.payload.accountDigest);
     if (!tokenDigest) {
       ws.send(JSON.stringify({ type: 'auth', ok: false, reason: 'account_digest_required' }));
-      try { ws.close(4401, 'account_digest_missing'); } catch {}
+      try { ws.close(4401, 'account_digest_missing'); } catch { }
       return;
     }
     if (ws.__accountDigest) {
@@ -599,7 +599,7 @@ export function setupWebSocket(server) {
     let pathname = '/';
     try {
       pathname = new URL(req.url, 'http://localhost').pathname;
-    } catch {}
+    } catch { }
     logger.info({ pathname, headers: req.headers }, 'ws_upgrade_attempt');
     if (pathname !== '/ws' && pathname !== '/api/ws') {
       socket.destroy();
@@ -642,7 +642,7 @@ export function setupWebSocket(server) {
       if (!digest) return;
       broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    notifySecureMessage({ targetAccountDigest, conversationId, preview, ts = Date.now(), senderAccountDigest, senderDeviceId, targetDeviceId }) {
+    notifySecureMessage({ targetAccountDigest, conversationId, messageId, preview, ts = Date.now(), senderAccountDigest, senderDeviceId, targetDeviceId }) {
       const target = canonicalAccountDigest(targetAccountDigest);
       const senderDev = canonicalDeviceId(senderDeviceId);
       const targetDev = canonicalDeviceId(targetDeviceId);
@@ -652,6 +652,7 @@ export function setupWebSocket(server) {
           event: 'ws.notifySecureMessage.missing-device',
           targetAccountDigest: target,
           conversationId,
+          messageId: messageId || null,
           senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
           senderDeviceId: senderDev || null,
           targetDeviceId: targetDev || null
@@ -661,6 +662,7 @@ export function setupWebSocket(server) {
       broadcastByDigest(target, {
         type: 'secure-message',
         conversationId,
+        messageId: messageId || null,
         preview: preview || '',
         ts,
         count: 1,
@@ -742,7 +744,7 @@ export function setupWebSocket(server) {
       const set = clients.get(digest);
       if (set) {
         for (const ws of set) {
-          try { ws.close(4409, 'account_purged'); } catch {}
+          try { ws.close(4409, 'account_purged'); } catch { }
         }
       }
     }

@@ -59,7 +59,7 @@ function emitContactsChanged({ conversationId, peerKey, sourceTag }) {
   if (typeof document === 'undefined') return;
   const now = Date.now();
   const last = contactShareRefreshThrottle.get(conversationId) || 0;
-  if (now - last < CONTACTS_CHANGED_THROTTLE_MS) return;
+  if (now - last < CONTACTS_CHANGED_THROTTLE_MS && sourceTag !== 'messages-flow:contact-share-commit') return;
   contactShareRefreshThrottle.set(conversationId, now);
   const reason = sourceTag === 'messages-flow:contact-share-commit'
     ? 'contact-share-commit'
@@ -293,9 +293,10 @@ export async function applyContactShareFromCommit({
   }
   try {
     upsertContactCore(corePayload, sourceTag);
-  } catch {
-    return { ok: false, reasonCode: 'CORE_UPSERT_FAILED' };
+  } catch (err) {
+    return { ok: false, reasonCode: 'CORE_UPSERT_FAILED', error: err };
   }
+  console.log('[contacts] applyContactShareFromCommit: upsert success', { sourceTag });
   removePendingInvitesByPeer({ peerAccountDigest: digest, peerDeviceId: deviceId });
   if (sourceTag === 'messages-flow:contact-share-commit') {
     const peerKey = identity.key || (digest && deviceId ? `${digest}::${deviceId}` : null);

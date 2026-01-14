@@ -44,7 +44,7 @@ const SECURE_DEBUG_LOG = process.env.SECURE_MSG_DEBUG_LOG || '';
 function appendSecureDebug(entry) {
   if (!SECURE_DEBUG_LOG) return;
   const payload = { ts: Date.now(), ...entry };
-  fs.appendFile(SECURE_DEBUG_LOG, `${JSON.stringify(payload)}\n`).catch(() => {});
+  fs.appendFile(SECURE_DEBUG_LOG, `${JSON.stringify(payload)}\n`).catch(() => { });
 }
 
 const canonAccount = (v) => (typeof v === 'string' ? v.replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null);
@@ -491,6 +491,7 @@ export const createSecureMessage = async (req, res) => {
       mgr.notifySecureMessage({
         targetAccountDigest: receiver_account_digest,
         conversationId: auth.conversationId,
+        messageId: messageId,
         preview: '',
         ts: createdAt,
         senderAccountDigest: auth.accountDigest,
@@ -567,9 +568,9 @@ export const listMessages = async (req, res) => {
       const data = await r.json();
       const items = Array.isArray(data?.items)
         ? data.items.map((it) => ({
-            ...it,
-            ts: typeof it.ts === 'number' ? it.ts : (typeof it.created_at === 'number' ? it.created_at : null)
-          }))
+          ...it,
+          ts: typeof it.ts === 'number' ? it.ts : (typeof it.created_at === 'number' ? it.created_at : null)
+        }))
         : null;
       return res.json(items ? { ...data, items } : data);
     } catch (err) {

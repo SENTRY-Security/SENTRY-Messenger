@@ -23,6 +23,7 @@ export async function putMessageKeyVault(params = {}) {
     : (Number.isFinite(Number(headerCounterRaw)) ? Number(headerCounterRaw) : null);
   const payload = buildAccountPayload({
     overrides: {
+      accountDigest: params.accountDigest,
       conversationId: params.conversationId,
       messageId: params.messageId,
       senderDeviceId: params.senderDeviceId,
