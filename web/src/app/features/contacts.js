@@ -307,6 +307,16 @@ export async function applyContactShareFromCommit({
     const oldAvatar = resolveContactAvatarUrl(existingEntry);
     const newAvatar = resolveContactAvatarUrl({ avatar: contact?.avatar });
 
+    // [Debug] Log diff check
+    if (DEBUG.contactsA1 || true) {
+      console.log('[contacts] diff check', {
+        digest,
+        oldName, newName,
+        oldAvatar, newAvatar,
+        hasExisting: !!existingEntry
+      });
+    }
+
     if (typeof newName === 'string' && typeof oldName === 'string' && newName !== oldName) {
       diff = diff || {};
       diff.nickname = { from: oldName, to: newName };
@@ -315,6 +325,8 @@ export async function applyContactShareFromCommit({
       diff = diff || {};
       diff.avatar = { from: oldAvatar, to: newAvatar };
     }
+  } else {
+    if (DEBUG.contactsA1 || true) console.log('[contacts] diff check: no existing entry for', digest);
   }
 
   try {

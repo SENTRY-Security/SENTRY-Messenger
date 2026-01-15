@@ -197,11 +197,13 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
       log({ profileHydrateSkip: { msgId, createdAt, reason: 'non-profile-message' } });
       continue;
     }
-    if (!header?.envelope) {
+    const hasEnvelope = !!header?.envelope;
+    const hasCiphertext = !!(it?.ciphertext_b64 || it?.ciphertextB64);
+    if (!hasEnvelope && !hasCiphertext) {
       log({ profileHydrateSkip: { msgId, createdAt, reason: 'missing-envelope' } });
       continue;
     }
-    candidates.push({ item: it, header, envelope: header.envelope, createdAt });
+    candidates.push({ item: it, header, envelope: header?.envelope || null, createdAt });
   }
 
   if (!candidates.length) return null;
@@ -211,7 +213,41 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
     const msgId = entry?.item?.id || null;
     const createdAt = entry?.createdAt || null;
     try {
-      const normalizedEnvelope = assertEnvelopeStrict(entry.envelope, { allowInfoTags: PROFILE_ALLOWED_INFO_TAGS });
+      const header = entry?.header || {};
+      let rawEnvelope = entry.envelope;
+
+      // New: Reconstruct envelope from header + ciphertext
+      if (!rawEnvelope && (entry.item?.ciphertext_b64 || entry.item?.ciphertextB64)) {
+        const ctB64 = entry.item.ciphertext_b64 || entry.item.ciphertextB64;
+        rawEnvelope = {
+          v: header.v || 1,
+          aead: header.aead || 'aes-256-gcm',
+          iv_b64: header.iv_b64,
+          salt_b64: header.hkdf_salt_b64 || header.salt_b64,
+          info: header.info_tag || header.info || PROFILE_INFO_TAG,
+          ct_b64: ctB64
+        };
+      }
+
+      if (!rawEnvelope) {
+        // Skip if no envelope found
+        continue;
+      }
+
+      const normalizedEnvelope = assertEnvelopeStrict(rawEnvelope, { allowInfoTags: PROFILE_ALLOWED_INFO_TAGS });
+
+      // Calculate Checksum of CT for debugging corruption
+      let ctChecksum = 'null';
+      const ctB64 = normalizedEnvelope.ct_b64;
+      if (ctB64 && ctB64.length > 0) {
+        try {
+          const sample = ctB64.length > 200 ? (ctB64.slice(0, 100) + ':' + ctB64.slice(-100)) : ctB64;
+          const buf = new TextEncoder().encode(sample);
+          const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+          ctChecksum = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 8);
+        } catch { }
+      }
+
       log({
         profileHydrateEnvelope: {
           conversationId: convId,
@@ -222,6 +258,7 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
           saltB64Len: typeof normalizedEnvelope.salt_b64 === 'string' ? normalizedEnvelope.salt_b64.length : null,
           ivB64Len: typeof normalizedEnvelope.iv_b64 === 'string' ? normalizedEnvelope.iv_b64.length : null,
           ctB64Len: typeof normalizedEnvelope.ct_b64 === 'string' ? normalizedEnvelope.ct_b64.length : null,
+          ctChecksum,
           types: {
             info: typeof entry.envelope?.info,
             salt: typeof entry.envelope?.salt_b64,
@@ -405,8 +442,10 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
     profile: 1,
     v: 1,
     ts: obj.updatedAt,
-    envelope: normalizedEnvelope,
+    // Optimized: envelope removed to reduce header size; reconstructed on load
     iv_b64: normalizedEnvelope.iv_b64,
+    hkdf_salt_b64: normalizedEnvelope.salt_b64, // Map from internal 'salt_b64'
+    info_tag: normalizedEnvelope.info,          // Map from internal 'info'
     device_id: deviceId || undefined,
     n: counter,
     meta: { msgType: PROFILE_MESSAGE_TYPE, subtype: PROFILE_MESSAGE_TYPE }
