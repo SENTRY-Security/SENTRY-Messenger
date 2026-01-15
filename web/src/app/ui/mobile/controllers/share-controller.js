@@ -1514,9 +1514,16 @@ export function setupShareController(options) {
           token_b64: convToken,
           conversation_id: convId
         };
-        if (peerDeviceId) {
+        // Fix: Force peerDeviceId to be SELF (Sender) Device ID
+        // This ensures the recipient sees the correct device ID for the contact they are upserting/updating
+        const selfDeviceId = ensureDeviceId();
+        if (selfDeviceId) {
+          conversationInfo.peerDeviceId = selfDeviceId;
+        } else if (peerDeviceId) {
+          // Fallback (should typically be selfDeviceId if ensuring works)
           conversationInfo.peerDeviceId = peerDeviceId;
         }
+
         const drInitPayload = drInit || conversation.dr_init || conversation.drInit || null;
         if (!drInitPayload) {
           throw new Error('contact-share missing dr_init');
