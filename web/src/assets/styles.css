@@ -741,3 +741,23 @@ form {
   background: rgba(15, 23, 42, 0.25);
   border-radius: 999px;
 }
+
+/* Force Placeholder Shimmer Global Override */
+.message-bubble.message-placeholder.placeholder-shimmer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.8) 50%, rgba(255,255,255,0) 100%);
+  transform: translateX(-100%);
+  animation: msg-shimmer 1.5s linear infinite;
+  display: block;
+  z-index: 2;
+}
+@keyframes msg-shimmer { to { transform: translateX(100%); } }
+
+/* Force Shimmer even if reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .message-bubble.message-placeholder.placeholder-shimmer::before {
+    animation: msg-shimmer 1.5s linear infinite !important;
+  }
+}

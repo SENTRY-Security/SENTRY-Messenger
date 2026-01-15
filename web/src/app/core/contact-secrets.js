@@ -1204,26 +1204,8 @@ export function sanitizeContactSecretsForDevice({ map = null, deviceId = null, r
       removed += 1;
       continue;
     }
-    if (role === 'responder' && peerDeviceId !== selfDeviceId) {
-      logCapped('contactShareStateChangeTrace', {
-        reasonCode: 'SANITIZE_DROP',
-        fromKey: peerKey,
-        toKey: null,
-        hasRkBefore,
-        hasRkAfter: false,
-        sourceTag: `sanitize:${reason}`
-      }, 5);
-      logContactSecretsSanitizeDropTrace({
-        reason: 'responder-peer-mismatch',
-        peerKey,
-        peerDeviceId,
-        role,
-        deviceId: selfDeviceId
-      });
-      targetMap.delete(peerKey);
-      removed += 1;
-      continue;
-    }
+    // Removed incorrect responder check (peerDeviceId !== selfDeviceId).
+    // Responder role implies peer is Scanner, so IDs naturally differ.
     if (!selfDeviceRecord) {
       logCapped('contactShareStateChangeTrace', {
         reasonCode: 'SANITIZE_DROP',

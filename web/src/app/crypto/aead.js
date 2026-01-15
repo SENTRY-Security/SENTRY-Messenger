@@ -92,11 +92,14 @@ export async function encryptWithMK(plainU8, mkRawU8, infoTag = 'media/v1') {
 export async function decryptWithMK(cipherU8, mkRawU8, saltU8, ivU8, infoTag = 'media/v1') {
   const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
   const key = await hkdfDeriveAesKey(mkRawU8, saltU8, normalizedInfoTag, ['decrypt']);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivU8 }, key, cipherU8);
-  return new Uint8Array(pt);
+  try {
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivU8 }, key, cipherU8);
+    return new Uint8Array(pt);
+  } catch (err) {
+    throw new Error(`decryptWithMK failed: ${err?.message || err} (len=${cipherU8?.length})`);
+  }
 }
 
-/** 以 MK 包裝 JSON 物件（輸出 envelope） */
 export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
   const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
   const plain = new TextEncoder().encode(JSON.stringify(obj));
@@ -111,14 +114,22 @@ export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
   };
 }
 
-/** 以 MK 解開 envelope，還原 JSON 物件 */
 export async function unwrapWithMK_JSON(envelope, mkRawU8) {
   const normalizedEnvelope = assertEnvelopeStrict(envelope);
   const salt = b64u8(normalizedEnvelope.salt_b64);
   const iv = b64u8(normalizedEnvelope.iv_b64);
   const ct = b64u8(normalizedEnvelope.ct_b64);
-  const plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info);
-  return JSON.parse(new TextDecoder().decode(plain));
+  let plain;
+  try {
+    plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info);
+  } catch (err) {
+    throw new Error(`unwrapWithMK_JSON: decrypt failed - ${err.message}`);
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(plain));
+  } catch (err) {
+    throw new Error(`unwrapWithMK_JSON: parse failed - ${err.message} (len=${plain?.byteLength})`);
+  }
 }
 
 // --- small helpers ---

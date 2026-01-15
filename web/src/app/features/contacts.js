@@ -7,6 +7,7 @@ import { createMessage } from '../api/media.js';
 import {
   getMkRaw,
   getAccountDigest,
+  getAccountToken,
   buildAccountPayload,
   normalizePeerIdentity,
   ensureDeviceId,
@@ -136,12 +137,17 @@ function queuePendingContactShare({ peerDigest, peerDeviceId, envelope, item }) 
 
 function extractConversationFromContact(contact) {
   if (!contact?.conversation?.token_b64 || !contact?.conversation?.conversation_id) return null;
+  const rawPeerDeviceId = contact.conversation.peerDeviceId || contact.conversation.peer_device_id || null;
   return {
     token_b64: String(contact.conversation.token_b64),
     conversation_id: String(contact.conversation.conversation_id),
-    ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null)
+    ...(contact.conversation.dr_init ? { dr_init: contact.conversation.dr_init } : null),
+    ...(rawPeerDeviceId ? { peerDeviceId: rawPeerDeviceId } : null)
   };
 }
+
+
+
 
 function buildPendingSecretUpdate(conversation) {
   if (!conversation) return null;
@@ -258,10 +264,12 @@ export async function applyContactShareFromCommit({
   if (!conversation?.dr_init) {
     return { ok: false, reasonCode: 'MISSING_DR_INIT' };
   }
+
   const conversationPeerDeviceId = normalizeDeviceId(conversation?.peerDeviceId || null);
   if (conversationPeerDeviceId && conversationPeerDeviceId !== deviceId) {
     return { ok: false, reasonCode: 'PEER_DEVICE_MISMATCH' };
   }
+
   const normalizedNickname = normalizeNickname(contact?.nickname || '') || '';
   const entry = {
     peerAccountDigest: digest,
@@ -372,6 +380,7 @@ export async function loadContacts() {
           peerDeviceId: e.conversation.peerDeviceId || null
         });
       }
+
       const corePayload = buildContactCorePayload(e, e.conversation?.peerDeviceId || 'unknown');
       if (corePayload) upsertContactCore(corePayload, 'd1-restore');
     });
@@ -752,7 +761,10 @@ export async function downlinkContactsFromD1() {
 
   if (!r.ok) {
     if (r.status === 404) return []; // No snapshot yet? Or endpoint error.
-    throw new Error('downlink failed: ' + (data?.error || r.status));
+    if (r.status === 404) return []; // No snapshot yet? Or endpoint error.
+    const msg = data?.message || data?.error || r.statusText;
+    console.warn(`[contacts] D1 download failed status=${r.status}`, data);
+    throw new Error('downlink failed: ' + msg);
   }
 
   const contacts = data?.contacts || [];

@@ -15,7 +15,14 @@ import { createLiveJobFromWsEvent } from './messages-flow/live/job.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 import { decideNextAction } from './messages-flow/reconcile/decision.js';
 import { getMessagesFlowFlags } from './messages-flow/flags.js';
-
+import { decryptReplayBatch } from './messages-flow/vault-replay.js';
+import { normalizeReplayItems } from './messages-flow/normalize.js';
+import { handoffReplayVaultMissing } from './restore-coordinator.js';
+import { appendBatch } from './timeline-store.js';
+import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
+import { MessageKeyVault } from './message-key-vault.js';
+import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
+import { getMkRaw as storeGetMkRaw } from '../core/store.js';
 const LIVE_ROUTE_LOG_CAP = 5;
 const LIVE_MVP_RESULT_LOG_CAP = 5;
 let facadeWsSend = null;
@@ -639,6 +646,83 @@ function createMessagesFlowFacade() {
         source,
         reconcileOutgoingStatusNow
       });
+    },
+
+    // Facade method for Placeholder First strategy
+    async triggerBatchDecryption({ conversationId, messages = [] } = {}) {
+      if (!messages.length) return { ok: true, count: 0 };
+
+      try {
+        const selfDeviceId = storeGetDeviceId();
+        const selfDigest = storeGetAccountDigest();
+        const mkRaw = typeof storeGetMkRaw === 'function' ? storeGetMkRaw() : null;
+
+        if (!selfDeviceId || !mkRaw) {
+          console.error('[facade] triggerBatchDecryption missing keys');
+          return { ok: false, reason: 'MISSING_KEYS' };
+        }
+
+        // Execute Route A Decryption
+        const { items: decryptedItems, errors } = await decryptReplayBatch({
+          conversationId,
+          items: messages,
+          selfDeviceId,
+          selfDigest,
+          mk: mkRaw,
+          getMessageKey: MessageKeyVault.getMessageKey,
+          buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
+          b64u8: naclB64u8
+        });
+
+        // Normalize results
+        const normalized = normalizeReplayItems({
+          items: decryptedItems,
+          errors
+        });
+
+        // Commit successes to Store (Replaces Placeholders)
+        if (normalized.items.length > 0) {
+          appendBatch(normalized.items);
+        }
+
+        // Handle Failures (Route A -> Route B Fallback)
+        const missingHandoff = (() => {
+          // Inline logic similar to scroll-fetch generic handler
+          const list = Array.isArray(normalized.errors) ? normalized.errors : [];
+          let maxCounter = null;
+          let reasonCode = null;
+          for (const entry of list) {
+            const entryReason = entry?.reasonCode || entry?.reason || null;
+            if (entryReason !== 'vault_missing' && entryReason !== 'MISSING_MESSAGE_KEY' && entryReason !== 'DECRYPT_FAIL') continue;
+            const counter = Number(entry?.counter);
+            if (Number.isFinite(counter)) {
+              maxCounter = maxCounter === null ? counter : Math.max(maxCounter, counter);
+            }
+            if (!reasonCode) reasonCode = entryReason;
+          }
+          return { hasMissing: reasonCode !== null, maxCounter, reasonCode };
+        })();
+
+        if (missingHandoff.hasMissing) {
+          console.log('[facade] triggerBatchDecryption handoff', missingHandoff);
+          // Route B fallback
+          // We use handoffReplayVaultMissing for vault_missing/missing_keys
+          // We use handoffReplayDecryptionFailure for general failures
+          // Currently reusing vault missing handoff as it drives the gap queue.
+          handoffReplayVaultMissing({
+            conversationId,
+            maxCounter: missingHandoff.maxCounter,
+            reasonCode: missingHandoff.reasonCode || 'batch_decrypt_fail',
+            source: 'trigger_batch_decryption'
+          });
+        }
+
+        return { ok: true, count: normalized.items.length, errors: normalized.errors.length };
+
+      } catch (err) {
+        console.error('[facade] triggerBatchDecryption fatal', err);
+        return { ok: false, error: err };
+      }
     }
   };
 }

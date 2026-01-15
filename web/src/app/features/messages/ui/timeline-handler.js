@@ -11,34 +11,39 @@ import {
     extractMessageTimestampSeq
 } from '../parser.js';
 
+import { resolveRenderEntryCounter } from './renderer.js';
+
 /**
  * Sort messages by timeline order (ascending by timestamp, sequence, then ID).
  * @param {Array} items - Array of message items
  * @returns {Array} Sorted array
  */
 export function sortMessagesByTimelineLocal(items = []) {
-    if (!Array.isArray(items) || items.length <= 1) return Array.isArray(items) ? items : [];
-    const enriched = items.map((item) => ({
-        raw: item,
-        tsMs: extractMessageTimestampMs(item),
-        seq: extractMessageTimestampSeq(item),
-        id: normalizeRawMessageId(item)
-    }));
-    enriched.sort((a, b) => {
-        const aHasTs = Number.isFinite(a.tsMs);
-        const bHasTs = Number.isFinite(b.tsMs);
-        if (aHasTs && bHasTs && a.tsMs !== b.tsMs) return a.tsMs - b.tsMs;
-        if (aHasTs && !bHasTs) return 1;
-        if (!aHasTs && bHasTs) return -1;
-        const aHasSeq = Number.isFinite(a.seq);
-        const bHasSeq = Number.isFinite(b.seq);
-        if (aHasSeq && bHasSeq && a.seq !== b.seq) return a.seq - b.seq;
-        if (a.id && b.id && a.id !== b.id) return a.id.localeCompare(b.id);
-        if (a.id && !b.id) return 1;
-        if (!a.id && b.id) return -1;
-        return 0;
+    if (!Array.isArray(items)) return [];
+    // Use a shallow copy to prevent mutating the original array
+    return items.slice().sort((a, b) => {
+        // 1. Primary: Counter (if available) - this handles numeric sorting for reliable ordering
+        const cA = resolveRenderEntryCounter(a);
+        const cB = resolveRenderEntryCounter(b);
+        if (cA !== null && cB !== null) {
+            return cA - cB;
+        }
+
+        // 2. Secondary: Timestamp - critical for placeholders which only have createdAt from headers
+        const tA = extractMessageTimestampMs(a);
+        const tB = extractMessageTimestampMs(b);
+        if (tA !== tB) {
+            // Handle potentially missing timestamps by pushing them to the start/end as needed
+            if (tA === null) return -1;
+            if (tB === null) return 1;
+            return tA - tB;
+        }
+
+        // 3. Tertiary: ID fallback for stable sorting when timestamps match
+        const idA = a.id || '';
+        const idB = b.id || '';
+        return idA.localeCompare(idB);
     });
-    return enriched.map((entry) => entry.raw);
 }
 
 /**

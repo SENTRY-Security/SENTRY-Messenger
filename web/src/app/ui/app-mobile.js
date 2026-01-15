@@ -961,7 +961,7 @@ function clearAllBrowserStorage(logoutMessage) {
   try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || '已登出'); } catch { }
 }
 
-function secureLogout(message = '已登出', { auto = false } = {}) {
+async function secureLogout(message = '已登出', { auto = false } = {}) {
   if (logoutInProgress) return;
   logoutInProgress = true;
   _autoLoggedOut = true;
@@ -978,7 +978,7 @@ function secureLogout(message = '已登出', { auto = false } = {}) {
 
   try {
     disposeCallMediaSession();
-    flushDrSnapshotsBeforeLogout('secure-logout', {
+    await flushDrSnapshotsBeforeLogout('secure-logout', {
       forceRemote: true,
       keepalive: true,
       sourceTag: 'app-mobile:secure-logout'

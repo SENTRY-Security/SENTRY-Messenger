@@ -12,13 +12,16 @@ import {
     consumeReplayPlaceholderReveal,
     consumeGapPlaceholderReveal
 } from '../placeholder-store.js?v=fix_placeholder';
-import { PLACEHOLDER_REVEAL_MS, PLACEHOLDER_TEXT } from '../../../ui/mobile/messages-ui-policy.js';
+import {
+    PLACEHOLDER_REVEAL_MS,
+    PLACEHOLDER_TEXT,
+    PLACEHOLDER_SHIMMER_MAX_ACTIVE
+} from '../../../ui/mobile/messages-ui-policy.js';
 
 const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
 const PLACEHOLDER_FAILED_TEXT = '無法解密';
 const PLACEHOLDER_BLOCKED_TEXT = '暫時無法解密';
-const PLACEHOLDER_SHIMMER_MAX_ACTIVE = 3;
 
 export function formatTimestamp(ts) {
     if (!Number.isFinite(ts)) return '';
@@ -296,12 +299,18 @@ export function buildRenderEntries({ timelineMessages = [] } = {}) {
     const placeholders = list.filter((entry) => entry?.placeholder === true || entry?.msgType === 'placeholder');
     const pending = placeholders.filter((entry) => entry?.status !== 'failed' && entry?.status !== 'blocked');
     const shimmerMax = Math.max(0, Number(PLACEHOLDER_SHIMMER_MAX_ACTIVE) || 0);
-    if (shimmerMax > 0 && pending.length) {
-        const start = Math.max(0, pending.length - shimmerMax);
+    if (pending.length) {
+        // User requested to ignore performance/limit for shimmer
+        const start = 0; // Math.max(0, pending.length - shimmerMax);
         for (let i = start; i < pending.length; i += 1) {
             const id = pending[i]?.messageId || pending[i]?.id || null;
             if (id) shimmerIds.add(id);
         }
+        console.log('[Renderer] Shimmer Debug', {
+            pendingCount: pending.length,
+            shimmerCount: shimmerIds.size,
+            sampleId: pending[0]?.id
+        });
     }
     return { entries: list, shimmerIds };
 }
@@ -595,6 +604,15 @@ export class MessageRenderer {
 
                 chip.appendChild(textGroup);
                 li.appendChild(chip);
+                this.listEl.appendChild(li);
+                continue;
+            }
+
+
+
+            if (messageType === 'system') {
+                li.className = 'message-separator';
+                li.textContent = msg.text || msg.content?.text || '';
                 this.listEl.appendChild(li);
                 continue;
             }

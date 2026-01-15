@@ -1221,7 +1221,8 @@ export function hydrateDrStatesFromContactSecrets({ source = 'hydrateDrStatesFro
         peerAccountDigest,
         peerDeviceId,
         snapshot,
-        sourceTag: source || 'hydrateDrStatesFromContactSecrets'
+        sourceTag: source || 'hydrateDrStatesFromContactSecrets',
+        force: source === 'post-login-hydrate' || source === 'restore_pipeline_stage3'
       });
       if (ok) restoredCount += 1;
       else skippedCount += 1;

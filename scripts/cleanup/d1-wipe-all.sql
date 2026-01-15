@@ -6,6 +6,7 @@ DELETE FROM message_key_vault;
 DELETE FROM conversation_acl;
 DELETE FROM conversations;
 DELETE FROM contact_secret_backups;
+DELETE FROM contacts;
 DELETE FROM opaque_records;
 DELETE FROM invite_dropbox;
 -- Optional legacy snapshot tables (ignore if absent)

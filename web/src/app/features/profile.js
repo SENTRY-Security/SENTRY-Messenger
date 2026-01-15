@@ -235,7 +235,16 @@ async function loadProfileControlState(accountDigest = null, { limit = 1 } = {})
       console.log('[profile] loaded profile', wrapped);
       return wrapped;
     } catch (err) {
-      log({ profileHydrateSkip: { msgId, createdAt, reason: err?.message || 'profile decode failed' } });
+      log({
+        profileHydrateSkip: {
+          msgId,
+          createdAt,
+          reason: err?.message || 'profile decode failed',
+          envelopeInfo: entry?.envelope?.info,
+          ctLen: entry?.envelope?.ct_b64?.length
+        }
+      });
+      console.warn('[profile] hydration failed', { msgId, err });
     }
   }
   return null;
@@ -380,6 +389,17 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   }
   const envelope = await wrapWithMK_JSON(obj, mk, PROFILE_INFO_TAG);
   const normalizedEnvelope = assertEnvelopeStrict(envelope, { allowInfoTags: PROFILE_ALLOWED_INFO_TAGS });
+
+  // [Integrity Check] Verify encryption/encoding locally before upload
+  try {
+    if (DEBUG.contactsA1) console.log('[profile] performing integrity check for size:', normalizedEnvelope.ct_b64.length);
+    const check = await unwrapWithMK_JSON(normalizedEnvelope, mk);
+    if (!check) throw new Error('Decoded is null');
+  } catch (err) {
+    console.error('[profile] Integrity Check Failed - Encryption/Encoding is broken locally!', err);
+    throw new Error(`Profile Integrity Check Failed: ${err.message}`);
+  }
+
   const { counter, commit } = allocateDeviceCounter();
   const header = {
     profile: 1,

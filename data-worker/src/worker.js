@@ -1793,6 +1793,17 @@ async function handleFriendsRoutes(req, env) {
     const targetList = Array.from(targets.values());
     for (const entry of targetList) {
       const removed = await deleteContactByPeer(env, entry.convId, null, entry.targetAccountDigest);
+
+      if (ownerAccountDigest && entry.targetAccountDigest) {
+        try {
+          await env.DB.prepare(
+            `DELETE FROM contacts WHERE owner_account_digest=?1 AND peer_account_digest=?2`
+          ).bind(ownerAccountDigest, entry.targetAccountDigest).run();
+        } catch (err) {
+          console.warn('contact_row_delete_failed', err?.message || err);
+        }
+      }
+
       results.push({ convId: entry.convId, removed, target: entry.targetAccountDigest || null });
     }
 
@@ -3547,6 +3558,101 @@ async function handleDeviceRoutes(req, env) {
   return null;
 }
 
+
+
+async function handleContactsRoutes(req, env) {
+  const url = new URL(req.url);
+
+  // POST /d1/contacts/upsert
+  if (req.method === 'POST' && url.pathname === '/d1/contacts/upsert') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body.accountDigest || body.account_digest);
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    const contacts = Array.isArray(body.contacts) ? body.contacts : [];
+    if (!contacts.length) {
+      return json({ ok: true, count: 0 }); // nothing to do
+    }
+
+    let count = 0;
+    // Batch upsert? or loop. Parallel prepared statements is usually fine for D1.
+    // For large lists, strict batching might be needed, but for contact list sync (usually incremental or < 1000), sequential/parallel is okay.
+
+    // We'll use a transaction if possible, or just Promise.all
+    // D1 `batch` API is available on `env.DB`.
+
+    const stmts = [];
+    for (const item of contacts) {
+      const peerDigest = normalizeAccountDigest(item.peerDigest || item.peer_digest);
+      if (!peerDigest) continue;
+      const blob = typeof item.encryptedBlob === 'string' ? item.encryptedBlob : null;
+      const isBlocked = item.isBlocked === true || item.isBlocked === 1 ? 1 : 0;
+
+      stmts.push(env.DB.prepare(`
+        INSERT INTO contacts (owner_digest, peer_digest, encrypted_blob, is_blocked, updated_at)
+        VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
+        ON CONFLICT(owner_digest, peer_digest) DO UPDATE SET
+          encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
+          is_blocked = COALESCE(excluded.is_blocked, contacts.is_blocked),
+          updated_at = strftime('%s','now')
+      `).bind(accountDigest, peerDigest, blob, isBlocked));
+    }
+
+    if (stmts.length) {
+      try {
+        const results = await env.DB.batch(stmts);
+        count = results.length;
+      } catch (err) {
+        console.error('contacts_upsert_failed', err);
+        return json({ error: 'UpsertFailed', message: err?.message || 'db error' }, { status: 500 });
+      }
+    }
+    return json({ ok: true, count });
+  }
+
+  // GET /d1/contacts/snapshot
+  if (req.method === 'GET' && url.pathname === '/d1/contacts/snapshot') {
+    await ensureDataTables(env);
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest')
+      || url.searchParams.get('account_digest')
+      || req.headers.get('x-account-digest')
+    );
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required (checked QS and Headers)' }, { status: 400 });
+    }
+
+    try {
+      const rows = await env.DB.prepare(`
+        SELECT peer_digest, encrypted_blob, is_blocked, updated_at
+          FROM contacts
+         WHERE owner_digest = ?1
+      `).bind(accountDigest).all();
+
+      const contacts = (rows?.results || []).map(r => ({
+        peerDigest: r.peer_digest,
+        encryptedBlob: r.encrypted_blob || null,
+        isBlocked: r.is_blocked === 1,
+        updatedAt: Number(r.updated_at) || 0
+      }));
+
+      return json({ ok: true, contacts });
+    } catch (err) {
+      console.error('contacts_snapshot_failed', err);
+      return json({ error: 'SnapshotFailed', message: err?.message }, { status: 500 });
+    }
+  }
+
+  return null;
+}
+
 async function handleAccountsRoutes(req, env) {
   const url = new URL(req.url);
 
@@ -4024,6 +4130,9 @@ export default {
 
     const accountsResult = await handleAccountsRoutes(req, env);
     if (accountsResult) return accountsResult;
+
+    const contactsResult = await handleContactsRoutes(req, env);
+    if (contactsResult) return contactsResult;
 
     return json({ error: 'not_found' }, { status: 404 });
   }

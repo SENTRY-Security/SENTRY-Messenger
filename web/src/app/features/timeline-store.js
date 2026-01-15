@@ -6,7 +6,8 @@ const USER_MESSAGE_TYPES = new Set([
   MSG_SUBTYPE.TEXT,
   MSG_SUBTYPE.MEDIA,
   MSG_SUBTYPE.CALL_LOG,
-  MSG_SUBTYPE.PLACEHOLDER
+  MSG_SUBTYPE.PLACEHOLDER,
+  MSG_SUBTYPE.SYSTEM
 ]);
 const timelineMap = new Map(); // conversationId -> Map(messageId -> entry)
 const appendListeners = new Set();
@@ -97,8 +98,13 @@ export function appendUserMessage(conversationId, entry = {}) {
     timelineMap.set(convId, convMap);
   }
   if (convMap.has(messageId)) {
-    // console.log('[timeline-store] appendUserMessage duplicate', { convId, messageId });
-    return false;
+    const existing = convMap.get(messageId);
+    const isPlaceholder = existing?.msgType === MSG_SUBTYPE.PLACEHOLDER || existing?.isPlaceholder === true || existing?.kind === 'GAP_PLACEHOLDER';
+    if (!isPlaceholder) {
+      // console.log('[timeline-store] appendUserMessage duplicate', { convId, messageId });
+      return false;
+    }
+    // If it is a placeholder, we fall through to overwrite/set
   }
 
   const stored = (entry && typeof entry === 'object') ? entry : {};
@@ -130,6 +136,8 @@ export function appendBatch(entries = [], opts = {}) {
   let batchConversationId = null;
   const directionalOrder = opts && typeof opts === 'object' ? opts.directionalOrder : null;
 
+  // console.log('[timeline-store] appendBatch START', { count: list.length });
+
   for (const entry of list) {
     if (!entry || typeof entry !== 'object') {
       skippedCount += 1;
@@ -139,14 +147,17 @@ export function appendBatch(entries = [], opts = {}) {
     if (!batchConversationId && convId) batchConversationId = convId;
     const rawMessageId = entry.messageId || entry.id;
     const rawTs = entry.ts;
+
+    // Schema Validation Helpers
     const idRawType = rawMessageId === null ? 'null' : typeof rawMessageId;
     const tsRawType = rawTs === null ? 'null' : typeof rawTs;
     const hasId = rawMessageId !== null && rawMessageId !== undefined
       && (typeof rawMessageId !== 'string' || rawMessageId.trim().length > 0);
     const hasTs = rawTs !== null && rawTs !== undefined;
+
     const idValid = typeof rawMessageId === 'string' && rawMessageId.trim().length > 0;
-    const tsValid = typeof rawTs === 'number' && Number.isFinite(rawTs)
-      && Number.isInteger(rawTs) && rawTs > 0;
+    const tsValid = typeof rawTs === 'number' && Number.isFinite(rawTs) && Number.isInteger(rawTs) && rawTs > 0;
+
     let reasonCode = null;
     if (!idValid) {
       reasonCode = hasId ? 'INVALID_ID' : 'MISSING_ID';
@@ -186,8 +197,13 @@ export function appendBatch(entries = [], opts = {}) {
       timelineMap.set(convId, convMap);
     }
     if (convMap.has(messageId)) {
-      skippedCount += 1;
-      continue;
+      const existing = convMap.get(messageId);
+      const isPlaceholder = existing?.msgType === MSG_SUBTYPE.PLACEHOLDER || existing?.isPlaceholder === true || existing?.kind === 'GAP_PLACEHOLDER';
+      if (!isPlaceholder) {
+        skippedCount += 1;
+        continue;
+      }
+      // Overwrite placeholder allowed
     }
     const stored = entry && typeof entry === 'object' ? entry : {};
     stored.conversationId = convId;
@@ -200,6 +216,8 @@ export function appendBatch(entries = [], opts = {}) {
     group.push(stored);
     if (!grouped.has(convId)) grouped.set(convId, group);
   }
+
+  // console.log('[timeline-store] appendBatch DONE', { appended: appendedEntries.length });
 
   for (const [convId, groupEntries] of grouped.entries()) {
     const lastEntry = groupEntries[groupEntries.length - 1] || null;
