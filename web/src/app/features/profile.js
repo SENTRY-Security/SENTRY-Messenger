@@ -499,8 +499,15 @@ export async function loadLatestProfile(accountDigest = null) {
   return loadProfileControlState(accountDigest, { limit });
 }
 
-export async function saveProfile(profile) {
-  const saved = await persistProfileControlState(profile, { accountDigest: getAccountDigest() });
+export async function saveProfile(profile, { sourceTag = null, explicitAvatarWrite = null } = {}) {
+  const hasAvatar = Object.prototype.hasOwnProperty.call(profile || {}, 'avatar') && profile?.avatar !== null;
+  const shouldWriteAvatar = typeof explicitAvatarWrite === 'boolean' ? explicitAvatarWrite : hasAvatar;
+
+  const saved = await persistProfileControlState(profile, {
+    accountDigest: getAccountDigest(),
+    sourceTag,
+    explicitAvatarWrite: shouldWriteAvatar
+  });
   if (saved === false) return false;
   const overridesForContacts = {
     nickname: saved.nickname || null,

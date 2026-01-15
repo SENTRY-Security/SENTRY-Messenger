@@ -296,7 +296,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
           const diff = applyResult.diff;
           if (diff.nickname) {
             appendUserMessage(conversationId, {
-              id: crypto.randomUUID(),
+              id: `${messageId}-sys-nick`,
               msgType: 'system',
               text: `對方的暱稱已更改為 ${diff.nickname.to}`,
               ts: Date.now() / 1000,
@@ -306,7 +306,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
           }
           if (diff.avatar) {
             appendUserMessage(conversationId, {
-              id: crypto.randomUUID(),
+              id: `${messageId}-sys-avatar`,
               msgType: 'system',
               text: '對方已更改頭像',
               ts: Date.now() / 1000,

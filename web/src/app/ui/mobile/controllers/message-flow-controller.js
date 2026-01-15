@@ -764,20 +764,29 @@ export class MessageFlowController extends BaseController {
         });
 
         // Fix: Update DOM elements immediately to reflect profile changes
+        console.log('[MessageFlow] syncThreadFromActiveMessages:update_dom', {
+            nickname,
+            hasAvatar: !!avatar,
+            peerNameConnected: this.elements.peerName?.isConnected,
+            peerAvatarConnected: this.elements.peerAvatar?.isConnected
+        });
+
         if (this.elements.peerName) {
             this.elements.peerName.textContent = nickname;
         }
         if (this.elements.peerAvatar) {
+            const img = this.elements.peerAvatar.tagName === 'IMG'
+                ? this.elements.peerAvatar
+                : this.elements.peerAvatar.querySelector('img');
+
             const avatarUrl = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
-            if (avatarUrl) {
-                this.elements.peerAvatar.src = avatarUrl;
-            } else {
-                // Should we reset to default placeholder if no avatar?
-                // Assuming existing logic handles it or we leave it.
-                // Minimal change: ONLY update if URL exists, similar to init.
-                // Or better: relying on CSS default if src is cleared?
-                // Use a placeholder if null.
-                this.elements.peerAvatar.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; // Transparent placeholder
+            if (img) {
+                if (avatarUrl) {
+                    img.src = avatarUrl;
+                } else {
+                    // Transparent placeholder or default icon
+                    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+                }
             }
         }
 
@@ -965,20 +974,7 @@ export class MessageFlowController extends BaseController {
         }
     }
 
-    /**
-     * Handle timeline append event.
-     */
-    handleTimelineAppend(event) {
-        const entry = event?.entry || {};
-        const conversationId = entry.conversationId;
-        const state = this.getMessageState();
 
-        // Only update if it matches current conversation
-        if (conversationId && conversationId === state.conversationId) {
-            console.log('[MessageFlow] handleTimelineAppend triggered update', { msgId: entry.id || entry.messageId });
-            this.updateMessagesUI({ preserveScroll: true });
-        }
-    }
 
     /**
      * Initialize scroll event listeners.
