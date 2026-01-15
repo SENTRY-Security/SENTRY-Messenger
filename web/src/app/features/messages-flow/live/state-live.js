@@ -6,6 +6,7 @@ import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js
 import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
+import { appendUserMessage } from '../../timeline-store.js';
 
 function hasUsableDrState(holder) {
   if (
@@ -290,6 +291,33 @@ async function decryptIncomingSingle(params = {}, adapters) {
         sourceTag: 'messages-flow:contact-share-commit'
       });
       applyOk = !!applyResult?.ok;
+      if (applyResult?.diff && conversationId) {
+        try {
+          const diff = applyResult.diff;
+          if (diff.nickname) {
+            appendUserMessage(conversationId, {
+              id: crypto.randomUUID(),
+              msgType: 'system',
+              text: `對方的暱稱已更改為 ${diff.nickname.to}`,
+              ts: Date.now() / 1000,
+              direction: 'incoming',
+              status: 'sent'
+            });
+          }
+          if (diff.avatar) {
+            appendUserMessage(conversationId, {
+              id: crypto.randomUUID(),
+              msgType: 'system',
+              text: '對方已更改頭像',
+              ts: Date.now() / 1000,
+              direction: 'incoming',
+              status: 'sent'
+            });
+          }
+        } catch (err) {
+          console.warn('[state-live] system notify failed', err);
+        }
+      }
       if (!applyOk) {
         console.error('[state-live] applyContactShareFromCommit failed', applyResult);
       }

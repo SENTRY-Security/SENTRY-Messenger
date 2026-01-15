@@ -13,6 +13,7 @@ export const MSG_SUBTYPE = Object.freeze({
   TEXT: 'text',
   MEDIA: 'media',
   CALL_LOG: 'call-log',
+  SYSTEM: 'system',
 
   // Control State
   CONTACT_SHARE: 'contact-share',
@@ -32,7 +33,8 @@ export const MSG_SUBTYPE = Object.freeze({
 export const USER_MESSAGE_SUBTYPES = new Set([
   MSG_SUBTYPE.TEXT,
   MSG_SUBTYPE.MEDIA,
-  MSG_SUBTYPE.CALL_LOG
+  MSG_SUBTYPE.CALL_LOG,
+  MSG_SUBTYPE.SYSTEM
 ]);
 
 export const CONTROL_STATE_SUBTYPES = new Set([

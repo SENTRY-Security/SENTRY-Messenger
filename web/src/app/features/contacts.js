@@ -1,7 +1,8 @@
 // /app/features/contacts.js
 // Manage E2EE contacts list stored in contacts-<account_digest> conversation (UID fallback).
 
-import { listMessages } from '../api/messages.js';
+import { fetchJSON } from '../core/http.js';
+import { createSecureMessage } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import {
   getMkRaw,
@@ -10,14 +11,16 @@ import {
   normalizePeerIdentity,
   ensureDeviceId,
   normalizeAccountDigest,
-  normalizeDeviceId
+  normalizeDeviceId,
+  allocateDeviceCounter,
+  setDeviceCounter
 } from '../core/store.js';
 import { ensureDrSession } from './dr-session.js';
 import { normalizeNickname } from './profile.js';
-import { decryptContactPayload, isContactShareEnvelope } from './contact-share.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets } from '../core/contact-secrets.js';
-import { logCapped } from '../core/log.js';
-import { upsertContactCore } from '../ui/mobile/contact-core-store.js';
+import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } from './contact-share.js';
+import { getContactSecret, setContactSecret } from '../core/contact-secrets.js';
+import { log, logCapped } from '../core/log.js';
+import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
 import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
@@ -129,13 +132,7 @@ function queuePendingContactShare({ peerDigest, peerDeviceId, envelope, item }) 
   return key;
 }
 
-function logContactShareDropTrace({ peerDigest, peerDeviceId, reasonCode } = {}) {
-  logCapped('contactShareDropTrace', {
-    peerDigestPrefix8: safePrefix(peerDigest, 8),
-    peerDeviceIdSuffix4: safeSuffix(peerDeviceId, 4),
-    reasonCode: reasonCode || null
-  }, CONTACT_SHARE_PENDING_LOG_CAP);
-}
+
 
 function extractConversationFromContact(contact) {
   if (!contact?.conversation?.token_b64 || !contact?.conversation?.conversation_id) return null;
@@ -291,12 +288,33 @@ export async function applyContactShareFromCommit({
       meta: { source: sourceTag }
     });
   }
+  // Determine Diff BEFORE upsert
+  let diff = null;
+  const existingScan = findContactCoreByAccountDigest(digest);
+  const existingEntry = existingScan.find(m => m.entry?.conversationId === conversation.conversation_id)?.entry || existingScan[0]?.entry;
+
+  if (existingEntry) {
+    const oldName = existingEntry.nickname;
+    const newName = normalizedNickname;
+    const oldAvatar = resolveContactAvatarUrl(existingEntry);
+    const newAvatar = resolveContactAvatarUrl({ avatar: contact?.avatar });
+
+    if (typeof newName === 'string' && typeof oldName === 'string' && newName !== oldName) {
+      diff = diff || {};
+      diff.nickname = { from: oldName, to: newName };
+    }
+    if (newAvatar !== oldAvatar) {
+      diff = diff || {};
+      diff.avatar = { from: oldAvatar, to: newAvatar };
+    }
+  }
+
   try {
     upsertContactCore(corePayload, sourceTag);
   } catch (err) {
     return { ok: false, reasonCode: 'CORE_UPSERT_FAILED', error: err };
   }
-  console.log('[contacts] applyContactShareFromCommit: upsert success', { sourceTag });
+  console.log('[contacts] applyContactShareFromCommit: upsert success', { sourceTag, diff: !!diff });
   removePendingInvitesByPeer({ peerAccountDigest: digest, peerDeviceId: deviceId });
   if (sourceTag === 'messages-flow:contact-share-commit') {
     const peerKey = identity.key || (digest && deviceId ? `${digest}::${deviceId}` : null);
@@ -311,7 +329,13 @@ export async function applyContactShareFromCommit({
   ensureDrSession({ peerAccountDigest: digest, peerDeviceId: deviceId })
     .catch(err => console.warn('[contacts] auto-init failed', err));
 
-  return { ok: true };
+  // [Migration] Sync new state to D1 (Self-Healing)
+  // This ensures that if I come online and peer has changed Avatar/Nickname,
+  // we save this new state to D1 immediately.
+  const updatedEntry = { ...entry, conversation: contact?.conversation ? extractConversationFromContact(contact) : conversation };
+  uplinkContactToD1(updatedEntry).catch(err => console.warn('[contacts] uplink from share failed', err));
+
+  return { ok: true, diff };
 }
 
 export async function loadContacts() {
@@ -322,201 +346,44 @@ export async function loadContacts() {
   const deviceId = ensureDeviceId();
   const DEBUG_CONTACTS_A1 = DEBUG.contactsA1 === true;
 
-  restoreContactSecrets();
+  // [Store Only] D1/R2 Architecture
+  try {
+    const d1Contacts = await downlinkContactsFromD1();
+    // Strict Mode: Use D1 results directly (even if empty). No fallback.
+    const rawEntries = d1Contacts || [];
+    console.log('[contacts] D1 Restore:', rawEntries.length);
 
-  const aggregatedItems = [];
-  const diag = {
-    status: null,
-    itemCount: 0,
-    decryptOkCount: 0,
-    missingPeerDeviceCount: 0,
-    missingConvFieldsCount: 0
-  };
-  let debugContactsA1Logged = 0;
+    const entries = rawEntries.map(c => ({
+      ...c,
+      conversation: c.conversation,
+      msgId: 'restored-from-d1'
+    }));
 
-  for (const convId of convIds) {
-    const { r, data } = await listMessages({ convId, limit: 100 });
-    if (diag.status === null && r) diag.status = r.status ?? null;
-    if (r.status === 404) {
-      continue;
-    }
-    if (!r.ok) {
-      const msg = typeof data === 'string' ? data : data?.error || data?.message || 'load contacts failed';
-      lastContactsHydrateSummary = { ...diag, ok: false, error: msg, status: r.status ?? diag.status ?? null };
-      throw new Error(msg);
-    }
-    const items = Array.isArray(data?.items) ? data.items : [];
-    diag.itemCount += items.length;
-    if (items.length) {
-      aggregatedItems.push(...items);
-    }
-  }
+    // Re-inject conversation secrets and core store
+    entries.forEach(e => {
+      if (e.conversation?.token_b64) {
+        setContactSecret(e.peerAccountDigest, {
+          conversation: {
+            token: e.conversation.token_b64,
+            id: e.conversation.conversation_id,
+            drInit: e.conversation.dr_init
+          },
+          deviceId: deviceId,
+          peerDeviceId: e.conversation.peerDeviceId || null
+        });
+      }
+      const corePayload = buildContactCorePayload(e, e.conversation?.peerDeviceId || 'unknown');
+      if (corePayload) upsertContactCore(corePayload, 'd1-restore');
+    });
 
-  if (!aggregatedItems.length) {
-    lastContactsHydrateSummary = { ...diag, ok: true, peerCount: 0 };
+    lastContactsHydrateSummary = { ok: true, peerCount: entries.length, source: 'D1' };
+    return entries;
+
+  } catch (err) {
+    console.warn('[contacts] D1 download failed', err);
+    // Strict Mode: If D1 fails, return empty. Do not fall back to legacy message scan.
     return [];
   }
-
-  const peerMap = new Map();
-  for (const item of aggregatedItems) {
-    try {
-      const header = item?.header_json ? JSON.parse(item.header_json) : item?.header;
-      const envelope = header?.envelope;
-      if (!header?.contact || !envelope) continue;
-      const identityFromHeader = normalizePeerIdentity({
-        peerAccountDigest: header?.peerAccountDigest || header?.accountDigest || null
-      });
-      const peerDigest = identityFromHeader.key || identityFromHeader.accountDigest || null;
-      if (!peerDigest) {
-        console.warn('[contacts]', { contactMissingDigest: item?.id || null });
-        logContactShareDropTrace({
-          peerDigest: header?.peerAccountDigest || header?.accountDigest || null,
-          peerDeviceId: header?.peerDeviceId || envelope?.peerDeviceId || item?.peer_device_id || null,
-          reasonCode: 'MISSING_PEER_DIGEST'
-        });
-        continue;
-      }
-      const peerAccountDigest = peerDigest;
-      const peerDeviceIdFromHeader = header?.peerDeviceId || envelope?.peerDeviceId || item?.peer_device_id || null;
-      if (!peerDeviceIdFromHeader) {
-        console.warn('[contacts]', { contactMissingPeerDevice: item?.id || null, peerAccountDigest });
-        logContactShareDropTrace({
-          peerDigest,
-          peerDeviceId: null,
-          reasonCode: 'MISSING_PEER_DEVICE_ID'
-        });
-        diag.missingPeerDeviceCount += 1;
-        continue; // 嚴禁 fallback：沒有對端裝置就不處理
-      }
-      let contact = null;
-      let conversation = null;
-      let pendingSecretUpdate = null;
-      if (isContactShareEnvelope(envelope) && peerDigest) {
-        // contact-secret 必須用「對端裝置」索引，禁止 fallback 自己
-        const secretInfo = getContactSecret(peerDigest, {
-          deviceId: peerDeviceIdFromHeader,
-          peerDeviceId: peerDeviceIdFromHeader
-        });
-        const sessionKey = secretInfo?.conversationToken || secretInfo?.conversation?.token || null;
-        if (!sessionKey) {
-          const warnKey = peerDigest;
-          if (!missingSecretWarned.has(warnKey)) {
-            missingSecretWarned.add(warnKey);
-            console.warn('[contacts] missing contact secret for', warnKey);
-          }
-          queuePendingContactShare({
-            peerDigest,
-            peerDeviceId: peerDeviceIdFromHeader,
-            envelope,
-            item
-          });
-        } else {
-          try {
-            contact = await decryptContactPayload(sessionKey, envelope);
-          } catch (err) {
-            console.warn('[contacts] contact-share decrypt failed', err?.message || err);
-            continue;
-          }
-          if (DEBUG_CONTACTS_A1) {
-            try {
-              console.log('[contacts] decrypted contact-share', peerDigest, JSON.stringify(contact));
-            } catch {
-              console.log('[contacts] decrypted contact-share', peerDigest, contact);
-            }
-          }
-          if (!contact) continue;
-          conversation = extractConversationFromContact(contact);
-          pendingSecretUpdate = buildPendingSecretUpdate(conversation);
-        }
-      } else {
-        console.warn('[contacts] unsupported envelope format', { id: item?.id, envelope });
-        logContactShareDropTrace({
-          peerDigest,
-          peerDeviceId: peerDeviceIdFromHeader,
-          reasonCode: 'NOT_CONTACT_SHARE'
-        });
-        continue;
-      }
-
-      if (!contact) continue;
-
-      const normalized = normalizeNickname(contact?.nickname || '') || '';
-      if (!conversation) {
-        conversation = extractConversationFromContact(contact);
-      }
-      if (conversation && !(conversation.token_b64 && conversation.conversation_id)) {
-        diag.missingConvFieldsCount += 1;
-      }
-      if (!conversation) {
-        diag.missingConvFieldsCount += 1;
-      }
-      if (contact) {
-        diag.decryptOkCount += 1;
-      }
-      if (pendingSecretUpdate) {
-        setContactSecret(peerAccountDigest, {
-          ...pendingSecretUpdate,
-          deviceId,
-          peerDeviceId: peerDeviceIdFromHeader
-        });
-      }
-      const entry = {
-        peerAccountDigest,
-        nickname: normalized,
-        avatar: contact?.avatar || null,
-        addedAt: Number(contact?.addedAt || item?.ts || nowTs()),
-        msgId: item?.id || null,
-        conversation
-      };
-      if (DEBUG_CONTACTS_A1 && debugContactsA1Logged < 3) {
-        debugContactsA1Logged += 1;
-        const conversationId = entry?.conversation?.conversation_id || entry?.conversation?.id || null;
-        const conversationTokenPresent = !!entry?.conversation?.token_b64;
-        const nicknamePresent = entry?.nickname !== null && entry?.nickname !== undefined;
-        const avatarPresent = !!entry?.avatar;
-        try {
-          console.log('[contacts][A1]', {
-            loadContactsEntry: true,
-            peerAccountDigest: entry.peerAccountDigest,
-            conversationId,
-            conversationTokenPresent,
-            nicknamePresent,
-            avatarPresent
-          });
-        } catch { }
-      }
-      const selfKeys = new Set([selfDigest].filter(Boolean));
-      const isSelfContact = !!peerDigest && selfKeys.has(peerDigest);
-      if (isSelfContact) {
-        entry.isSelfContact = true;
-        entry.hidden = true;
-      }
-      const mapKey = entry.peerAccountDigest;
-      const existing = peerMap.get(mapKey);
-      if (existing && (existing.addedAt || 0) >= (entry.addedAt || 0)) {
-        continue;
-      }
-      peerMap.set(mapKey, entry);
-      if (DEBUG_CONTACTS_A1) {
-        console.log('[contacts]', {
-          contactsLoadEntry: {
-            peerAccountDigest: mapKey,
-            hasConversation: !!entry.conversation?.conversation_id,
-            msgId: entry.msgId || item?.id || null
-          }
-        });
-      }
-    } catch (err) {
-      console.error('[contacts] decode failed', err);
-    }
-  }
-  const out = Array.from(peerMap.values());
-  out.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
-  if (DEBUG_CONTACTS_A1) {
-    console.log('[contacts]', { contactsLoadDone: out.length });
-  }
-  lastContactsHydrateSummary = { ...diag, ok: true, peerCount: out.length };
-  return out;
 }
 
 export async function flushPendingContactShares({ mk } = {}) {
@@ -604,7 +471,6 @@ export async function flushPendingContactShares({ mk } = {}) {
     failReasons
   };
 }
-
 export function getLastContactsHydrateSummary() {
   if (!lastContactsHydrateSummary) return null;
   try {
@@ -614,13 +480,16 @@ export function getLastContactsHydrateSummary() {
   }
 }
 
+
 export async function saveContact(contact) {
   if (DEBUG.contactsA1) {
     console.log('[contacts]', {
       contactSaveStart: {
         peerAccountDigest: contact?.peerAccountDigest ?? contact?.peer_account_digest ?? null,
         hasConversation: !!(contact?.conversation?.conversation_id && contact?.conversation?.token_b64),
-        hasSecret: !!contact?.contactSecret
+        hasSecret: !!contact?.contactSecret,
+        nickname: contact?.nickname,
+        avatar: !!contact?.avatar
       }
     });
   }
@@ -690,7 +559,266 @@ export async function saveContact(contact) {
   };
   if (conversation) payload.conversation = conversation;
 
-  // 新路徑僅使用 contact-share / secure-message，同步保存本機 snapshot，不再寫入 contacts-* 對話。
-  console.warn('[contacts]', { contactSaveSkippedLegacyConv: true, peerAccountDigest, hasConversation: !!conversation });
-  return { ...payload, msgId: null };
+  // Ensure we have a session key for encryption
+  const sessionKey = contact.contactSecret || conversation?.token_b64 || getContactSecret(peerKey)?.conversationToken;
+  if (!sessionKey) {
+    console.warn('[contacts]', { contactSaveSkippedMissingKey: true, peerAccountDigest });
+    return { ...payload, msgId: null };
+  }
+
+  // DEBUG: Check for Self-Identity Corruption
+  try {
+    const selfDigest = (getAccountDigest() || '').toUpperCase();
+    // Logic: If I am saving a Peer, but the Nickname matches ME, log a warning.
+    // Since I don't know "My Nickname" easily here without importing Profile, I'll log everything.
+    console.log('[contacts] DEBUG_SAVE_CONTACT', {
+      peerAccountDigest,
+      nickname: normalizedNickname,
+      selfDigest,
+      isSelf: peerAccountDigest === selfDigest
+    });
+  } catch { }
+
+  try {
+    const envelope = await encryptContactPayload(sessionKey, payload);
+    const { counter, commit } = allocateDeviceCounter();
+    const header = {
+      contact: 1,
+      v: 1,
+      ts: payload.addedAt,
+      envelope,
+      device_id: deviceId,
+      n: counter,
+      peerAccountDigest,
+      peerDeviceId,
+      accountDigest: peerAccountDigest
+    };
+    const ciphertextB64 = envelope.ct_b64 || envelope.ct;
+    if (!ciphertextB64) throw new Error('contact ciphertext missing');
+
+    const messageId = crypto.randomUUID();
+    const { r, data } = await createSecureMessage({
+      conversationId: convIds[0],
+      header,
+      ciphertextB64,
+      counter,
+      senderDeviceId: deviceId,
+      receiverAccountDigest: (getAccountDigest() || '').toUpperCase(),
+      receiverDeviceId: deviceId, // Target myself
+      id: messageId,
+      createdAt: payload.addedAt
+    });
+
+    if (!r.ok) {
+      if (r.status === 409 && data?.error === 'CounterTooLow') {
+        const maxCounter = Number.isFinite(data?.maxCounter)
+          ? Number(data.maxCounter)
+          : Number.isFinite(data?.details?.maxCounter)
+            ? Number(data.details.maxCounter)
+            : null;
+        const seed = maxCounter === null ? 1 : maxCounter + 1;
+        setDeviceCounter(seed);
+        log({
+          contactSaveCounterTooLow: {
+            peerAccountDigest,
+            maxCounter,
+            seed
+          }
+        });
+        return false; // Caller should retry? saveContact doesn't retry automatically here, but simple return false is safer than throw loop.
+      }
+      const msg = typeof data === 'string' ? data : data?.error || data?.message || 'contact save failed';
+      throw new Error(msg);
+    }
+
+    try { commit(); } catch { }
+    console.log('[contacts]', { contactSaved: true, msgId: data?.id || messageId, peerAccountDigest });
+
+    // [Migration] Uplink to D1
+    uplinkContactToD1(payload).catch(err => console.warn('[contacts] uplink bg failed', err));
+
+    return { ...payload, msgId: data?.id || messageId };
+
+  } catch (err) {
+    console.error('[contacts] save failed', err);
+    throw err;
+  }
 }
+
+// ---- D1/R2 Storage Migration Logic ----
+
+async function deriveContactStorageKey(mkRaw) {
+  if (!mkRaw) return null;
+  // HKDF-SHA256: derive 32-byte storage key from MK
+  const keyMaterial = await crypto.subtle.importKey('raw', mkRaw, 'HKDF', false, ['deriveKey']);
+  return await crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      salt: new Uint8Array(0),
+      info: new TextEncoder().encode('contact-storage-v1'),
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptContactBlob(storageKey, data) {
+  if (!storageKey || !data) return null;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, storageKey, encoded);
+  // Format: iv_b64:ct_b64
+  return `${bytesToBase64Url(iv)}:${bytesToBase64Url(new Uint8Array(ct))}`;
+}
+
+async function decryptContactBlob(storageKey, blobStr) {
+  if (!storageKey || !blobStr) return null;
+  const parts = blobStr.split(':');
+  if (parts.length !== 2) return null;
+  const iv = b64ToU8(parts[0]);
+  const ct = b64ToU8(parts[1]);
+  if (!iv || !ct) return null;
+  try {
+    const dec = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, storageKey, ct);
+    return JSON.parse(new TextDecoder().decode(dec));
+  } catch {
+    return null;
+  }
+}
+
+// Helpers for base64 (duplicated from worker but needed in frontend context if not imported)
+function bytesToBase64Url(u8) {
+  let bin = '';
+  for (let i = 0; i < u8.length; i += 1) bin += String.fromCharCode(u8[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function b64ToU8(str) {
+  try {
+    const bin = atob((str || '').replace(/-/g, '+').replace(/_/g, '/'));
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+  } catch { return null; }
+}
+
+export async function uplinkContactToD1(contactEntry, { isBlocked = false } = {}) {
+  const mk = getMkRaw();
+  const accountToken = getAccountToken();
+  if (!mk || !accountToken) return;
+  const storageKey = await deriveContactStorageKey(mk);
+  if (!storageKey) return;
+
+  const peerDigest = contactEntry.peerAccountDigest;
+  if (!peerDigest) return;
+
+  // Prepare Blob Data
+  const data = {
+    nickname: contactEntry.nickname,
+    avatar: contactEntry.avatar, // Currently reusing URL/Base64. Future: R2 Ref.
+    note: contactEntry.note || null,
+    addedAt: contactEntry.addedAt,
+    conversation: contactEntry.conversation // CRITICAL: Include session keys
+  };
+
+  const encryptedBlob = await encryptContactBlob(storageKey, data);
+  if (!encryptedBlob) return;
+
+  try {
+    await fetchJSON('/api/v1/contacts/uplink', {
+      accountToken,
+      contacts: [{
+        peerDigest,
+        encryptedBlob,
+        isBlocked
+      }]
+    }, { 'X-Device-Id': ensureDeviceId() });
+  } catch (err) {
+    console.warn('[contacts] uplink failed', err);
+  }
+}
+
+export async function downlinkContactsFromD1() {
+  const mk = getMkRaw();
+  const accountToken = getAccountToken();
+  if (!mk || !accountToken) throw new Error('MK/Token required');
+  const storageKey = await deriveContactStorageKey(mk);
+
+  const { r, data } = await fetchJSON('/api/v1/contacts/downlink', {
+    accountToken
+  }, { 'X-Device-Id': ensureDeviceId() });
+
+  if (!r.ok) {
+    if (r.status === 404) return []; // No snapshot yet? Or endpoint error.
+    throw new Error('downlink failed: ' + (data?.error || r.status));
+  }
+
+  const contacts = data?.contacts || [];
+  const entries = [];
+
+  for (const row of contacts) {
+    try {
+      if (!row.encryptedBlob) continue;
+      const decrypted = await decryptContactBlob(storageKey, row.encryptedBlob);
+      if (!decrypted) continue;
+
+      // Reconstruct Entry
+      const entry = {
+        peerAccountDigest: row.peerDigest,
+        nickname: decrypted.nickname,
+        avatar: decrypted.avatar,
+        addedAt: decrypted.addedAt,
+        isBlocked: row.isBlocked,
+        conversation: decrypted.conversation || null
+      };
+      entries.push(entry);
+    } catch (err) {
+      console.warn('[contacts] decrypt row failed', err);
+    }
+  }
+  return entries;
+}
+
+export async function backupAllContactsToD1() {
+  const accountDigest = getAccountDigest();
+  const mk = getMkRaw();
+  if (!accountDigest || !mk) return; // Locked or not logged in
+
+  const entries = listContactCoreEntries();
+  if (!entries.length) return;
+
+  const storageKey = await deriveContactStorageKey(mk);
+
+  for (const entry of entries) {
+    if (!entry || !entry.peerAccountDigest) continue;
+
+    // Skip backing up my own entry logic if it exists (though listContactCoreEntries shouldn't return it)
+    if (entry.peerAccountDigest === accountDigest) continue;
+
+    const data = {
+      nickname: entry.nickname,
+      avatar: entry.avatar,
+      addedAt: entry.addedAt,
+      conversation: entry.conversation // Backup the keys too!
+    };
+    try {
+      const encryptedBlob = await encryptContactBlob(storageKey, data);
+      // We should really batch this or use uplinkContactToD1?
+      // uplinkContactToD1 expects "contactEntry" with fields.
+      // uplinkContactToD1 Logic:
+      // const data = { nickname: contactEntry.nickname, ... }
+      // const encryptedBlob = await encryptContactBlob(storageKey, data);
+      // await post('/d1/contacts/upsert', ...);
+
+      // Re-using uplinkContactToD1 is safer to avoid duplication.
+      await uplinkContactToD1(entry);
+    } catch (err) {
+      console.warn('[contacts] backup item failed', { peer: entry.peerAccountDigest, err });
+    }
+  }
+}
+
+
+

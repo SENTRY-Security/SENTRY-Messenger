@@ -3,12 +3,11 @@
  * Extracted from messages-pane.js to decouple UI from Protocol details.
  */
 
-import { normalizeSemanticSubtype, MSG_SUBTYPE } from '../semantic.js';
+import { normalizeSemanticSubtype, MSG_SUBTYPE, CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES } from '../semantic.js';
 import { normalizePeerIdentity, normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
 
 const PLACEHOLDER_TRACE_PREFIX_LEN = 8;
-const CONTROL_STATE_SUBTYPES = new Set(['control']); // Simplified mock, should import real one if needed
-const TRANSIENT_SIGNAL_SUBTYPES = new Set(['signal']); // Simplified mock
+// CONTROL_STATE_SUBTYPES and TRANSIENT_SIGNAL_SUBTYPES imported from semantic.js
 
 export function normalizeTimelineMessageId(msg) {
     if (!msg) return null;

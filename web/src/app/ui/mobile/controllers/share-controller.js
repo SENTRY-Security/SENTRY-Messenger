@@ -34,6 +34,8 @@ import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrS
 import { ensureDevicePrivAvailable } from '../../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../../crypto/prekeys.js';
 import { logMsgEvent, logUiNoise } from '../../../lib/logging.js';
+import { appendUserMessage } from '../../../features/timeline-store.js';
+import { resolveContactAvatarUrl } from '../contact-core-store.js';
 import { DEBUG } from '../debug-flags.js';
 
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
@@ -1797,6 +1799,17 @@ export function setupShareController(options) {
           });
         }
       } catch { }
+
+      // [Diff Check] Pre-fetch existing contact to compare for system nitifications
+      const existingScan = resolvedPeerDigest ? findContactCoreByAccountDigest(resolvedPeerDigest) : [];
+      const existingEntry = existingScan.find(m => m.entry?.conversationId === conversation.conversation_id)?.entry || existingScan[0]?.entry;
+
+      console.log('[share-controller] DEBUG: addContactEntry call', {
+        digest: resolvedPeerDigest,
+        nickname: payload.nickname,
+        avatar: !!payload.avatar
+      });
+
       const added = await addContactEntry({
         peerAccountDigest: resolvedPeerDigest,
         peerDeviceId,
@@ -1807,6 +1820,39 @@ export function setupShareController(options) {
         conversation,
         contactSecret: conversation.token_b64
       });
+
+      // [Diff Check] Insert System Message if profile changed
+      if (existingEntry && conversation.conversation_id) {
+        try {
+          const oldName = existingEntry.nickname;
+          const newName = payload.nickname;
+          const oldAvatar = resolveContactAvatarUrl(existingEntry);
+          const newAvatar = resolveContactAvatarUrl({ avatar: payload.avatar });
+
+          if (typeof newName === 'string' && typeof oldName === 'string' && newName !== oldName) {
+            appendUserMessage(conversation.conversation_id, {
+              id: crypto.randomUUID(),
+              msgType: 'system',
+              text: `對方的暱稱已更改為 ${newName}`,
+              ts: Date.now() / 1000,
+              direction: 'incoming',
+              status: 'sent'
+            });
+          }
+          if (newAvatar !== oldAvatar) {
+            appendUserMessage(conversation.conversation_id, {
+              id: crypto.randomUUID(),
+              msgType: 'system',
+              text: '對方已更改頭像',
+              ts: Date.now() / 1000,
+              direction: 'incoming',
+              status: 'sent'
+            });
+          }
+        } catch (err) {
+          console.warn('[share-controller] system notify failed', err);
+        }
+      }
       if (added) {
         removePendingInviteByPeer({ peerAccountDigest: resolvedPeerDigest, peerDeviceId });
       }
