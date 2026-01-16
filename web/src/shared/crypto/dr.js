@@ -647,7 +647,8 @@ export async function drDecryptText(st, packet, opts = {}) {
 
     const theirPub = b64u8(packet.header.ek_pub_b64);
     const pn = Number(packet?.header?.pn);
-    chainId = working.theirRatchetPub ? b64(working.theirRatchetPub) : null;
+    const prevChainId = working.theirRatchetPub ? b64(working.theirRatchetPub) : null;
+    chainId = prevChainId;
 
     if (!working.theirRatchetPub || b64(working.theirRatchetPub) !== packet.header.ek_pub_b64) {
       try {
