@@ -402,130 +402,25 @@ export class MessageFlowController extends BaseController {
         this.updateLoadMoreVisibility();
 
         try {
-            // [Route A] Placeholder First Strategy:
-            // 1. Fetch encrypted headers (message_secure)
-            // 2. Render placeholders immediately
-            // 3. Trigger background decryption
-
-            const fetchOptions = {
+            // [Hybrid] Smart Fetch Strategy via Facade
+            // This handles Gap Calculation, Sequential A/B Decryption, and Deduplication.
+            const result = await messagesFlowFacade.onScrollFetchMore({
                 conversationId: state.conversationId,
                 cursor: append ? state.nextCursor : null,
-                limit: 20
-            };
-
-            // Call Facade to generic fetch (Route A + B handling inside)
-            // Ideally we want explicit Route A fetch here.
-            // Assuming onScrollFetchMore handles this, or we call API directly.
-            // For now, retaining facade usage but expecting placeholders.
-
-            // Fetch Encrypted Headers (Route A)
-            // We use a specialized facade method if available, or fetch secure messages directly.
-            // For MVP, we'll assume onScrollFetchMore can be adapted, or we call API.
-            // Let's call API directly to guarantee Route A headers.
-
-            const { listSecureMessages } = await import('../../../api/messages.js');
-
-
-            const { r, data: secureResult } = await listSecureMessages({
-                conversationId: state.conversationId,
-                limit: 20
+                options: {
+                    limit: 20,
+                    sourceTag: 'load_active_conversation'
+                }
             });
 
-            console.log('[MessageFlow] listSecureMessages result', { ok: r?.ok, count: secureResult?.items?.length });
-
-            if (r?.ok && secureResult && Array.isArray(secureResult.items)) {
-                let myDigest = null;
-                try {
-                    const account = getAccountDigest();
-                    if (account) myDigest = normalizeAccountDigest(account);
-                } catch (e) {
-                    console.warn('[MessageFlow] Failed to get account digest for placeholder direction:', e);
-                }
-
-                const placeholders = [];
-                for (const item of secureResult.items) {
-                    // Debug keys to find undefined sender
-                    if (placeholders.length < 1) {
-                        console.log('[MessageFlow] DEBUG Item Keys', Object.keys(item));
-                        console.log('[MessageFlow] DEBUG Item Sample', { id: item.id, sender: item.sender, digest: item.sender_account_digest });
-                    }
-
-                    if (!item || !item.id) continue; // Only skip if ID is missing. Sender might be 'sender_account_digest'
-
-                    // Fix: Filter out control messages (e.g. contact-share) to prevent "Decrypting..." placeholder
-                    const subtype = resolvePlaceholderSubtype(item);
-                    if (subtype && (CONTROL_STATE_SUBTYPES.has(subtype) || TRANSIENT_SIGNAL_SUBTYPES.has(subtype))) {
-                        continue;
-                    }
-
-                    // Check if already decrypted exists in timeline
-                    const existing = this._findAnyMessageById(state.conversationId, item.id);
-                    // Skip if exists in timeline? (Already handled by timeline-store validation/overwrite logic)
-                    // But we want to ensure we populate correct direction.
-
-                    let isMe = false;
-                    const rawSender = item.sender || item.sender_account_digest || item.senderAccountDigest;
-                    try {
-                        const senderNorm = rawSender ? normalizeAccountDigest(rawSender) : null;
-                        isMe = myDigest && (rawSender === myDigest || senderNorm === myDigest);
-                    } catch (e) { console.warn('Alignment check failed', e); }
-
-                    if (placeholders.length < 3) {
-                        console.log('[MessageFlow] DEBUG Alignment', {
-                            itemId: item.id,
-                            rawSender,
-                            myDigest,
-                            isMe
-                        });
-                    }
-
-                    placeholders.push({
-                        id: item.id,
-                        conversationId: state.conversationId, // Keep conversationId for timeline management
-                        counter: item.counter,
-                        ts: item.createdAt ? Date.parse(item.createdAt) : Date.now(),
-                        sender: rawSender,
-                        senderDeviceId: item.senderDeviceId || item.sender_device_id,
-                        direction: isMe ? 'outgoing' : 'incoming',
-                        isPlaceholder: true,
-                        status: 'decrypting', // UI Label
-                        text: '解密中…'
-                    });
-                }
-
-                if (placeholders.length > 0) {
-                    appendBatch(placeholders); // Inject into Timeline
-                }
-
-                // Update Cursor
-                state.nextCursor = secureResult.nextCursor || null;
-                state.hasMore = !!secureResult.nextCursor;
-
-                // Trigger Background Decryption
-                // This initiates Route A pipeline for these items
-                if (placeholders.length > 0) {
-                    messagesFlowFacade.triggerBatchDecryption({
-                        conversationId: state.conversationId,
-                        messages: secureResult.items
-                    }).catch(err => log({ batchDecryptError: err }));
-
-                    // Explicitly trigger render to show placeholders immediately
-                    console.log('[MessageFlow] Placeholders appended. Triggering UI update.', { count: placeholders.length });
-                    this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
-                } else {
-                    console.log('[MessageFlow] listSecureMessages returned no items.', { ok: secureResult.ok, itemsLen: secureResult.items?.length });
-                }
-            } else {
-                // Fallback to old behavior if Route A fails or empty
-                const result = await messagesFlowFacade.onScrollFetchMore(fetchOptions);
-                if (result.items && result.items.length) {
-                    appendBatch(result.items);
-                }
-                state.nextCursor = result.nextCursor || null;
-                state.hasMore = result.hasMoreAtCursor || false;
+            if (result.items && result.items.length) {
+                appendBatch(result.items);
             }
 
-            this.updateMessagesUI({ preserveScroll: true });
+            state.nextCursor = result.nextCursor || null;
+            state.hasMore = result.hasMoreAtCursor || false;
+
+            this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
 
         } catch (err) {
             console.error('[MessageFlowController] load error', err);

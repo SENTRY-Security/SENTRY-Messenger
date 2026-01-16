@@ -1969,7 +1969,7 @@ async function sendDrPlaintext(params = {}) {
             msgType,
             headerCounter: repairVaultCounter,
             messageKeyB64: repairMessageKeyB64,
-            accountDigest: peer
+            accountDigest: accountDigest // self
           });
           logOutgoingSendTrace('vault_put_ok', replacementMessageId, null);
           logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_OK' });
@@ -2655,7 +2655,7 @@ export async function sendDrMedia(params = {}) {
       msgType,
       headerCounter: vaultCounter,
       messageKeyB64,
-      accountDigest: receiverAccountDigest
+      accountDigest: accountDigest // self
     });
     logOutgoingSendTrace('vault_put_ok', messageId, null);
     logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });

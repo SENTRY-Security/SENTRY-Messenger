@@ -2242,61 +2242,143 @@ async function handleMessagesRoutes(req, env) {
     return json({ ok: true, id: messageId, created_at: createdAt });
   }
 
-  // List secure messages (cursor)
+  // List secure messages (Smart Fetch / Visible Limit)
   if (req.method === 'GET' && url.pathname === '/d1/messages') {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
-    const cursorTs = Number(url.searchParams.get('cursorTs') || url.searchParams.get('cursor_ts') || 0);
-    const cursorCounter = Number(url.searchParams.get('cursorCounter') || url.searchParams.get('cursor_counter') || 0);
-    const cursorId = url.searchParams.get('cursorId') || url.searchParams.get('cursor_id') || '';
-    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 50), 1), 200);
+    let cursorTs = Number(url.searchParams.get('cursorTs') || url.searchParams.get('cursor_ts') || 0);
+    let cursorCounter = Number(url.searchParams.get('cursorCounter') || url.searchParams.get('cursor_counter') || 0);
+    let cursorId = url.searchParams.get('cursorId') || url.searchParams.get('cursor_id') || '';
+
+    // Treat 'limit' as 'visibleLimit' (default 20, max 200)
+    const visibleLimit = Math.min(Math.max(Number(url.searchParams.get('limit') || 20), 1), 200);
+
     const conversationId = normalizeConversationId(conversationIdRaw);
     if (!conversationId) {
       return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
     }
     await ensureDataTables(env);
-    const params = [conversationId];
-    let cursorClause = '';
-    if (Number.isFinite(cursorCounter) && cursorCounter > 0) {
-      params.push(cursorCounter, cursorId || '');
-      cursorClause = 'AND (counter < ?2 OR (counter = ?2 AND id < ?3))';
-    } else if (cursorTs) {
-      params.push(cursorTs, cursorId);
-      cursorClause = 'AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))';
+
+    const SEMANTIC_VISIBLE = new Set(['text', 'media', 'call-log', 'system']);
+    function isVisibleItem(row) {
+      if (!row || !row.header_json) return false;
+      try {
+        const header = JSON.parse(row.header_json);
+        let type = header?.meta?.msgType || header?.meta?.msg_type || null;
+        if (!type && row.ciphertext_b64) {
+          type = 'text';
+        }
+        return type && SEMANTIC_VISIBLE.has(type.toLowerCase());
+      } catch {
+        return false;
+      }
     }
-    params.push(limit + 1);
-    const stmt = env.DB.prepare(`
-      SELECT id, conversation_id, sender_account_digest, sender_device_id, receiver_account_digest, receiver_device_id,
-             header_json, ciphertext_b64, counter, created_at
-        FROM messages_secure
-       WHERE conversation_id=?1
-         ${cursorClause}
-       ORDER BY counter DESC, created_at DESC, id DESC
-       LIMIT ?${params.length}
-    `).bind(...params);
-    const { results } = await stmt.all();
-    const hasMore = results.length > limit;
-    const trimmed = results.slice(0, limit);
-    const items = trimmed.map((row) => ({
-      id: row.id,
-      conversation_id: row.conversation_id,
-      sender_account_digest: row.sender_account_digest,
-      sender_device_id: row.sender_device_id,
-      receiver_account_digest: row.receiver_account_digest,
-      receiver_device_id: row.receiver_device_id,
-      header_json: row.header_json,
-      ciphertext_b64: row.ciphertext_b64,
-      counter: row.counter,
-      created_at: row.created_at
-    }));
-    const last = trimmed.at(-1) || null;
+
+    const MAX_ITERATIONS = 5;
+    let iteration = 0;
+    let totalVisible = 0;
+    const allItems = [];
+    let hasMoreGlobal = false;
+
+    while (totalVisible < visibleLimit && iteration < MAX_ITERATIONS) {
+      iteration++;
+      const needed = visibleLimit - totalVisible;
+      const nextLimit = Math.min(Math.max(needed * 2, 50), 200);
+
+      const params = [conversationId];
+      let cursorClause = '';
+      if (Number.isFinite(cursorCounter) && cursorCounter > 0) {
+        params.push(cursorCounter, cursorId || '');
+        cursorClause = 'AND (counter < ?2 OR (counter = ?2 AND id < ?3))';
+      } else if (cursorTs) {
+        params.push(cursorTs, cursorId);
+        cursorClause = 'AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))';
+      }
+      params.push(nextLimit + 1);
+
+      const stmt = env.DB.prepare(`
+        SELECT id, conversation_id, sender_account_digest, sender_device_id, receiver_account_digest, receiver_device_id,
+               header_json, ciphertext_b64, counter, created_at
+          FROM messages_secure
+         WHERE conversation_id=?1
+           ${cursorClause}
+         ORDER BY counter DESC, created_at DESC, id DESC
+         LIMIT ?${params.length}
+      `).bind(...params);
+
+      const { results } = await stmt.all();
+      const rawCount = results.length;
+      const hasMoreLocal = rawCount > nextLimit;
+      const batch = hasMoreLocal ? results.slice(0, nextLimit) : results;
+
+      if (batch.length === 0) {
+        hasMoreGlobal = false;
+        break;
+      }
+
+      let lastItemInBatch = null;
+      for (const row of batch) {
+        if (totalVisible >= visibleLimit) {
+          hasMoreGlobal = true;
+          break;
+        }
+
+        const item = {
+          id: row.id,
+          conversation_id: row.conversation_id,
+          sender_account_digest: row.sender_account_digest,
+          sender_device_id: row.sender_device_id,
+          receiver_account_digest: row.receiver_account_digest,
+          receiver_device_id: row.receiver_device_id,
+          header_json: row.header_json,
+          ciphertext_b64: row.ciphertext_b64,
+          counter: row.counter,
+          created_at: row.created_at
+        };
+
+        if (isVisibleItem(row)) {
+          totalVisible++;
+        }
+        allItems.push(item);
+        lastItemInBatch = item;
+      }
+
+      if (lastItemInBatch) {
+        cursorCounter = lastItemInBatch.counter;
+        cursorTs = lastItemInBatch.created_at;
+        cursorId = lastItemInBatch.id;
+      }
+
+      if (totalVisible < visibleLimit) {
+        if (!hasMoreLocal) {
+          hasMoreGlobal = false;
+          break;
+        }
+        hasMoreGlobal = true;
+      } else {
+        if (!hasMoreLocal && batch.length === results.length && totalVisible === visibleLimit) {
+          // Check if there are more items after this exact point?
+          // Since we fetched `nextLimit + 1` and hasMoreLocal is false, we know DB is empty after this batch.
+          // If we consumed the WHOLE batch to hit the limit, then global hasMore is false (unless batch length < results length due to logical break?)
+          // Actually `results.length` vs `batch.length` handles the +1 query.
+          if (rawCount <= nextLimit) hasMoreGlobal = false;
+          else hasMoreGlobal = true;
+        } else {
+          hasMoreGlobal = true;
+        }
+        break;
+      }
+    }
+
+    const last = allItems.at(-1) || null;
     const nextCursor = last ? { ts: last.created_at, id: last.id, counter: last.counter } : null;
+
     return json({
       ok: true,
-      items,
+      items: allItems,
       nextCursor,
       nextCursorTs: nextCursor?.ts || null,
       nextCursorCounter: nextCursor?.counter ?? null,
-      hasMoreAtCursor: hasMore
+      hasMoreAtCursor: hasMoreGlobal
     });
   }
 

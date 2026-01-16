@@ -8,6 +8,7 @@ import { maybeSendVaultAckWs, recordVaultAckCounter } from './messages/receipts.
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { startRestorePipeline } from './restore-coordinator.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
+import { smartFetchMessages } from './messages-flow/hybrid-flow.js';
 import { createGapQueue } from './messages-flow/gap-queue.js';
 import { createMaxCounterProbe } from './messages-flow/probe.js';
 import { consumeLiveJob } from './messages-flow/live/coordinator.js';
@@ -617,11 +618,10 @@ function createMessagesFlowFacade() {
       const normalizedCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined
         ? { ts: mergedOptions.cursorTs ?? null, id: mergedOptions.cursorId ?? null }
         : null;
-      return messagesFlowScrollFetch({
+      return smartFetchMessages({
         conversationId,
         cursor: normalizedCursor,
-        limit: mergedOptions.limit,
-        isReplay: true
+        limit: mergedOptions.limit
       }).then((result) => ({
         items: Array.isArray(result?.items) ? result.items : [],
         errors: Array.isArray(result?.errors) ? result.errors : [],

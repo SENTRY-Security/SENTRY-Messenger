@@ -367,7 +367,8 @@ export async function decryptReplayBatch({
     }
     decrypted.push({
       conversationId: item.conversationId,
-      plaintext: text,
+      text: text,
+      decrypted: true,
       header: item.header,
       raw: item.raw,
       direction: item.direction || 'incoming',

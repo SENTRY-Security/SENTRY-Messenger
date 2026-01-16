@@ -606,7 +606,7 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   const appendOk = !!persistResult?.appendOk;
   const hasDecryptedMessage = !!decryptResult?.decryptedMessage;
 
-  result.decrypted = !!decryptResult?.ok;
+  result.decrypted = (decryptResult?.okCount > 0);
   result.vaultPut = hasDecryptedMessage ? vaultPutOkCount > 0 : false;
   result.appended = hasDecryptedMessage ? appendOk : false;
   result.metrics.decryptOkCount = decryptOkCount;
