@@ -698,7 +698,7 @@ export async function drDecryptText(st, packet, opts = {}) {
     }
     nrAfterRatchet = Number.isFinite(working?.Nr) ? Number(working.Nr) : null;
     postRatchetTheirPubPrefix = working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null;
-    const chainId = packet?.header?.ek_pub_b64 || null;
+    chainId = packet?.header?.ek_pub_b64 || null;
     let usedStoredKey = false;
     let mk = null;
     if (chainId && Number.isFinite(headerN)) {
