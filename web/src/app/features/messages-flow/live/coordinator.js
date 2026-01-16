@@ -11,6 +11,24 @@ import {
   findItemByMessageId,
   listSecureMessagesLive
 } from './server-api-live.js';
+import { triggerContactSecretsBackup } from '../../../features/contact-backup.js';
+import { REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH } from '../../../features/restore-policy.js';
+
+let decryptOkSinceBackup = 0;
+
+function maybeTriggerBackupAfterDecrypt({ sourceTag } = {}) {
+  const batch = Number(REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH);
+  if (!Number.isFinite(batch) || batch <= 0) return;
+  decryptOkSinceBackup += 1;
+  if (decryptOkSinceBackup < batch) return;
+  decryptOkSinceBackup = 0;
+  try {
+    triggerContactSecretsBackup('recv-batch', {
+      force: false,
+      sourceTag: sourceTag || 'coordinator:decrypt-ok'
+    }).catch(() => { });
+  } catch { }
+}
 
 const LIVE_MVP_LOG_CAP = 5;
 const LIVE_MVP_FETCH_LIMIT = 20;
@@ -596,7 +614,12 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   result.metrics.decryptSkippedCount = decryptSkippedCount;
   result.metrics.vaultPutOkCount = vaultPutOkCount;
   result.metrics.vaultPutFailCount = vaultPutFailCount;
+  result.metrics.vaultPutFailCount = vaultPutFailCount;
   result.metrics.appendedCount = appendedCount;
+
+  if (vaultPutOkCount > 0) {
+    maybeTriggerBackupAfterDecrypt({ sourceTag: 'coordinator:live-decrypt-ok' });
+  }
 
   const decryptReasonCode = decryptResult?.reasonCode || null;
   let reasonCode = LIVE_MVP_REASONS.OK;

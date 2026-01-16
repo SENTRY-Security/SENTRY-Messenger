@@ -1792,7 +1792,7 @@ async function sendDrPlaintext(params = {}) {
         msgType,
         headerCounter: vaultCounter,
         messageKeyB64,
-        accountDigest: receiverAccountDigest
+        accountDigest: accountDigest
       });
       logOutgoingSendTrace('vault_put_ok', messageId, null);
       logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });

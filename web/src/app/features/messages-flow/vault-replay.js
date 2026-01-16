@@ -331,7 +331,30 @@ export async function decryptReplayBatch({
         b64u8,
         buildDrAadFromHeader
       });
+
     } catch (err) {
+      // Extensive Diagnostics for Decryption Failure
+      const diagVersion = Number(item.header?.v ?? item.header?.version ?? 1);
+      const diagDeviceId = item.header?.device_id || item.header?.deviceId || null;
+      const diagCounter = Number(item.header?.n ?? item.header?.counter);
+      const diagAadStr = `v:${diagVersion};d:${diagDeviceId};c:${diagCounter}`;
+      console.error('[vault-replay] decrypt failed (Route A)', {
+        messageId,
+        reason: err?.message,
+        header: item.header,
+        diag: {
+          version: diagVersion,
+          deviceId: diagDeviceId,
+          counter: diagCounter,
+          aadString: diagAadStr,
+          ivLen: item.header?.iv_b64?.length,
+          ctLen: item.ciphertextB64?.length,
+          mkLen: vaultKeyResult.messageKeyB64?.length
+        }
+      });
+      // User requested NO self-healing (do not delete key).
+      // Fallthrough to error reporting (Route B / Gap Queue).
+
       errors.push(buildDecryptError({
         messageId,
         counter: item.counter,
@@ -343,6 +366,7 @@ export async function decryptReplayBatch({
       continue;
     }
     decrypted.push({
+      conversationId: item.conversationId,
       plaintext: text,
       header: item.header,
       raw: item.raw,

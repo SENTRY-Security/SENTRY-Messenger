@@ -710,8 +710,24 @@ export function initMessagesPane({
   function updateLoadMoreVisibility() {
     if (!elements.loadMoreBtn) return;
     const state = getMessageState();
-    const enabled = !!(state.conversationId && state.conversationToken && state.hasMore && !state.loading);
-    setLoadMoreState(enabled ? 'idle' : 'hidden');
+    if (!state.conversationId || !state.conversationToken) {
+      setLoadMoreState('hidden');
+      return;
+    }
+    if (state.loading) {
+      setLoadMoreState('loading');
+      return;
+    }
+    if (state.hasMore) {
+      // Preserve 'armed' state if currently set by scroll logic?
+      // Actually, if we are calling this, it's usually state change.
+      // Default to 'idle' -> handleMessagesScroll can upgrade to 'armed' if needed.
+      if (loadMoreState !== 'armed') {
+        setLoadMoreState('idle');
+      }
+      return;
+    }
+    setLoadMoreState('hidden');
   }
 
   function handleMessagesScroll() {

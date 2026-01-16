@@ -282,13 +282,15 @@ async function decryptIncomingSingle(params = {}, adapters) {
     try {
       await decryptContactPayload(tokenB64, envelope);
       const plaintext = JSON.stringify({ type: 'contact-share', envelope });
+      const messageTs = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
       const applyResult = await applyContactShareFromCommit({
         peerAccountDigest: senderDigest,
         peerDeviceId: senderDeviceId,
         sessionKey: tokenB64,
         plaintext,
         messageId,
-        sourceTag: 'messages-flow:contact-share-commit'
+        sourceTag: 'messages-flow:contact-share-commit',
+        profileUpdatedAt: messageTs
       });
       applyOk = !!applyResult?.ok;
       if (applyResult?.diff && conversationId) {

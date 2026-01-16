@@ -989,11 +989,13 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
 
   try {
     persistContactSecrets();
-    triggerContactSecretsBackup('secure-logout', {
+    const backupPromise = triggerContactSecretsBackup('secure-logout', {
       force: REMOTE_BACKUP_FORCE_ON_LOGOUT === true,
       keepalive: true,
       sourceTag: 'app-mobile:secureLogout'
-    }).catch((err) => {
+    });
+    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 5000));
+    await Promise.race([backupPromise, timeoutPromise]).catch((err) => {
       log({ contactSecretsBackupDuringLogoutError: err?.message || err });
     });
   } catch (err) {
@@ -3505,28 +3507,10 @@ function isFallbackProfileName(name, digest = null) {
 
 function collectProfileHydrateTargets() {
   const targets = new Set();
-  const add = (value) => {
-    const digest = toProfileDigest(value);
-    if (digest) targets.add(digest);
-  };
-  if (Array.isArray(sessionStore.contactState)) {
-    sessionStore.contactState.forEach((entry) => add(entry?.accountDigest || entry?.peerAccountDigest || entry));
-  }
-  if (sessionStore.contactIndex instanceof Map) {
-    for (const [key, entry] of sessionStore.contactIndex.entries()) {
-      add(entry?.peerAccountDigest || entry?.accountDigest || key);
-    }
-  }
-  if (sessionStore.conversationThreads instanceof Map) {
-    for (const thread of sessionStore.conversationThreads.values()) {
-      add(thread?.peerAccountDigest || thread?.peer_account_digest || thread?.peer);
-    }
-  }
-  if (sessionStore.conversationIndex instanceof Map) {
-    for (const entry of sessionStore.conversationIndex.values()) {
-      add(entry?.peerAccountDigest || entry?.peer_account_digest || entry?.peer);
-    }
-  }
+  // Fix: Only hydrate SELF profile from Vault/Control-State.
+  // Peer profiles are synced via Contact Metadata / Broadcasting, not by reading their private Vault entries.
+  const self = toProfileDigest(getAccountDigest());
+  if (self) targets.add(self);
   return targets;
 }
 

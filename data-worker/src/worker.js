@@ -2835,6 +2835,44 @@ async function handleMessageKeyVaultRoutes(req, env) {
     });
   }
 
+  if (req.method === 'POST' && url.pathname === '/d1/message-key-vault/delete') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const messageId = normalizeMessageId(body?.messageId || body?.message_id);
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+
+    if (!accountDigest || !conversationId || !messageId || !senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, messageId, senderDeviceId required' }, { status: 400 });
+    }
+
+    try {
+      await ensureDataTables(env);
+      const result = await env.DB.prepare(
+        `DELETE FROM message_key_vault
+          WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3 AND sender_device_id=?4`
+      ).bind(accountDigest, conversationId, messageId, senderDeviceId).run();
+
+      const deleted = result?.changes > 0;
+      logMessageKeyVault('delete', {
+        accountDigestSuffix4: accountDigest.slice(-4),
+        conversationIdPrefix8: conversationId.slice(0, 8),
+        messageIdPrefix8: messageId.slice(0, 8),
+        senderDeviceIdSuffix4: senderDeviceId.slice(-4),
+        deleted
+      });
+      return json({ ok: true, deleted });
+    } catch (err) {
+      console.warn('message_key_vault_delete_failed', err?.message || err);
+      return json({ error: 'DeleteFailed', message: err?.message || 'unable to delete message key' }, { status: 500 });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/d1/message-key-vault/count') {
     let body;
     try {

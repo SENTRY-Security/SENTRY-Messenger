@@ -226,7 +226,8 @@ export async function applyContactShareFromCommit({
   sessionKey,
   plaintext,
   messageId,
-  sourceTag = 'messages-flow:contact-share-commit'
+  sourceTag = 'messages-flow:contact-share-commit',
+  profileUpdatedAt = null
 } = {}) {
   const identity = normalizePeerIdentity({ peerAccountDigest, peerDeviceId });
   const digest = identity.accountDigest || null;
@@ -283,6 +284,9 @@ export async function applyContactShareFromCommit({
   if (!corePayload) {
     return { ok: false, reasonCode: 'MISSING_CORE_FIELDS' };
   }
+  if (profileUpdatedAt) {
+    corePayload.profileUpdatedAt = profileUpdatedAt;
+  }
   const selfDeviceId = ensureDeviceId();
   if (selfDeviceId) {
     setContactSecret(digest, {
@@ -302,6 +306,17 @@ export async function applyContactShareFromCommit({
   const existingEntry = existingScan.find(m => m.entry?.conversationId === conversation.conversation_id)?.entry || existingScan[0]?.entry;
 
   if (existingEntry) {
+    if (profileUpdatedAt && existingEntry.profileUpdatedAt && existingEntry.profileUpdatedAt > profileUpdatedAt) {
+      if (DEBUG.contactsA1 || true) {
+        console.log('[contacts] skipping stale update', {
+          digest,
+          existingTs: existingEntry.profileUpdatedAt,
+          incomingTs: profileUpdatedAt,
+          diff: (existingEntry.profileUpdatedAt - profileUpdatedAt) / 1000 + 's'
+        });
+      }
+      return { ok: true, reasonCode: 'STALE_SKIP', diff: null };
+    }
     const oldName = existingEntry.nickname;
     const newName = normalizedNickname;
     const oldAvatar = resolveContactAvatarUrl(existingEntry);

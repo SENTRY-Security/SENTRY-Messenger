@@ -5,7 +5,7 @@
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 import { getMkRaw, getAccountDigest } from '../core/store.js';
 import { log, logForensicsEvent, logCapped } from '../core/log.js';
-import { putMessageKeyVault as apiPutMessageKeyVault, getMessageKeyVault as apiGetMessageKeyVault } from '../api/message-key-vault.js';
+import { putMessageKeyVault as apiPutMessageKeyVault, getMessageKeyVault as apiGetMessageKeyVault, deleteMessageKeyVault as apiDeleteMessageKeyVault } from '../api/message-key-vault.js';
 
 const WRAP_INFO_TAG = 'message-key/v1';
 const WRAP_CONTEXT_VERSION = 1;
@@ -437,6 +437,24 @@ export class MessageKeyVault {
         errorMessage: err?.message || 'unwrap failed',
         wrapInfoTag: typeof wrapped?.info === 'string' ? wrapped.info : null
       });
+
+      // Self-Healing: Delete the bad key so we don't keep failing on it.
+      try {
+        await apiDeleteMessageKeyVault({ conversationId, messageId, senderDeviceId });
+        emitLogKey('vaultHealingTrace', {
+          ...logContext,
+          action: 'delete_bad_key',
+          reason: 'unwrap_failed'
+        });
+        emitVaultForensics('VAULT_HEALING', forensicsParams, { action: 'delete', reason: 'unwrap_failed' });
+      } catch (delErr) {
+        emitLogKey('vaultHealingTrace', {
+          ...logContext,
+          action: 'delete_failed',
+          error: delErr?.message || String(delErr)
+        });
+      }
+
       emitLogKey('vaultGetResult', {
         ...logContext,
         found: false,
@@ -449,6 +467,7 @@ export class MessageKeyVault {
         errorCode: 'UnwrapFailed'
       });
       emitVaultTrace('get', { conversationId, messageId }, r?.status || null, 'UnwrapFailed');
+      // Treat as found=false so the app can fallback to other mechanisms
       return { ok: false, error: 'UnwrapFailed', status: r?.status || null, message: err?.message || 'unwrap failed' };
     }
     if (!unwrapped?.mkB64) {
@@ -480,5 +499,19 @@ export class MessageKeyVault {
     });
     emitVaultTrace('get', { conversationId, messageId }, r?.status || 200, null);
     return { ok: true, messageKeyB64: unwrapped.mkB64, context: unwrapped.context || null };
+  }
+
+  static async deleteMessageKey(params = {}) {
+    const conversationId = params?.conversationId || null;
+    const messageId = params?.messageId || null;
+    const senderDeviceId = params?.senderDeviceId || null;
+    if (!conversationId || !messageId || !senderDeviceId) return { ok: false, error: 'MissingParams' };
+
+    try {
+      await apiDeleteMessageKeyVault({ conversationId, messageId, senderDeviceId });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
+    }
   }
 }

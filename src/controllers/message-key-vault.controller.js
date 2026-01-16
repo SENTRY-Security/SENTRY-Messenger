@@ -248,3 +248,81 @@ export const getVaultPutCount = async (req, res) => {
     return res.status(status).json(payloadErr);
   }
 };
+const DeleteSchema = z.object({
+  conversationId: z.string().min(8),
+  messageId: z.string().min(1),
+  senderDeviceId: z.string().min(1),
+  accountToken: z.string().min(8).optional(),
+  accountDigest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.accountToken && !value.accountDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  }
+});
+
+export const deleteMessageKeyVault = async (req, res) => {
+  if (!ensureCallWorkerConfig(res)) return;
+
+  let input;
+  try {
+    input = DeleteSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err.errors?.[0]?.message || 'invalid payload' });
+  }
+
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      accountToken: input.accountToken,
+      accountDigest: input.accountDigest
+    });
+  } catch (err) {
+    return respondAccountError(res, err);
+  }
+
+  // We only allow users to delete keys that belong to them (their own digest)
+  // or keys they wrote (if we tracked authorship, but simplest is partition by accountDigest)
+  // Since the vault is partitioned by accountDigest, the user can only delete from their own partition.
+  const payload = {
+    accountDigest: auth.accountDigest,
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    senderDeviceId: input.senderDeviceId
+  };
+
+  try {
+    const data = await callWorkerRequest('/d1/message-key-vault/delete', {
+      method: 'POST',
+      body: payload
+    });
+    logMessageKeyVault('put', { // Log as 'put' kind since it's a write op
+      accountDigestSuffix4: auth.accountDigest.slice(-4),
+      conversationIdPrefix8: input.conversationId.slice(0, 8),
+      messageIdPrefix8: input.messageId.slice(0, 8),
+      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      status: 200,
+      deleted: data?.deleted,
+      errorCode: null
+    });
+    return res.json(data || { ok: true, deleted: false });
+  } catch (err) {
+    logger.error({
+      event: 'messageKeyVault.delete.failed',
+      status: err?.status,
+      error: err?.message || err
+    });
+    const status = err?.status || 502;
+    const payloadErr = err?.payload && typeof err.payload === 'object'
+      ? err.payload
+      : { error: 'WorkerError', message: err?.message || 'worker request failed' };
+    logMessageKeyVault('put', {
+      accountDigestSuffix4: auth.accountDigest.slice(-4),
+      conversationIdPrefix8: input.conversationId.slice(0, 8),
+      messageIdPrefix8: input.messageId.slice(0, 8),
+      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      status,
+      errorCode: payloadErr?.error || null
+    });
+    return res.status(status).json(payloadErr);
+  }
+};

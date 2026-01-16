@@ -122,7 +122,7 @@ function parseMediaMessage({ plaintext, meta }) {
   return mediaInfo;
 }
 
-function buildMessageObject({ plaintext, payload, header, raw, direction, ts, tsMs, messageId, messageKeyB64 }) {
+function buildMessageObject({ plaintext, payload, header, raw, direction, ts, tsMs, messageId, messageKeyB64, conversationId }) {
   const meta = payload?.meta || null;
   const baseId = messageId || toMessageId(raw) || null;
   if (!baseId) {
@@ -144,6 +144,7 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
   const tsSeq = resolveMessageTsSeq(baseId);
   const msgType = normalizeSemanticSubtype(meta?.msgType || meta?.msg_type || null);
   const base = {
+    conversationId: conversationId || null,
     id: baseId,
     ts: timestamp,
     tsMs: resolvedTsMs,
@@ -239,7 +240,8 @@ export function normalizeReplayItems({ items, errors } = {}) {
         ts: entry?.ts ?? null,
         tsMs: entry?.tsMs ?? null,
         messageId: entry?.messageId,
-        messageKeyB64: entry?.messageKeyB64
+        messageKeyB64: entry?.messageKeyB64,
+        conversationId: entry?.conversationId
       });
       normalized.push(messageObj);
     } catch (err) {

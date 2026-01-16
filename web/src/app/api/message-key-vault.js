@@ -65,3 +65,18 @@ export async function getVaultPutCount(params = {}) {
   const r = await fetchWithTimeout('/api/v1/message-key-vault/count', jsonReq(payload), 5000);
   return parseJsonResponse(r);
 }
+
+export async function deleteMessageKeyVault(params = {}) {
+  if (!params?.conversationId) throw new Error('conversationId required');
+  if (!params?.messageId) throw new Error('messageId required');
+  if (!params?.senderDeviceId) throw new Error('senderDeviceId required');
+  const payload = buildAccountPayload({
+    overrides: {
+      conversationId: params.conversationId,
+      messageId: params.messageId,
+      senderDeviceId: params.senderDeviceId
+    }
+  });
+  const r = await fetchWithTimeout('/api/v1/message-key-vault/delete', jsonReq(payload), 5000);
+  return parseJsonResponse(r);
+}
