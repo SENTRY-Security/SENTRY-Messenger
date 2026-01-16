@@ -436,11 +436,17 @@ export async function drEncryptText(st, plaintext, opts = {}) {
 }
 
 export async function drDecryptText(st, packet, opts = {}) {
+  let headerN = null;
+  let currentNr = null; // Used in logs
+  let chainId = null; // Used in logs
+  let nUsed = null; // Used in ensureDrMeta
+  let nrAfterRatchet = null; // Used in ensureDrMeta
+
   try {
     const onMessageKey = typeof opts?.onMessageKey === 'function' ? opts.onMessageKey : null;
     const packetKey = typeof opts?.packetKey === 'string' && opts.packetKey ? String(opts.packetKey) : null;
     const msgType = typeof opts?.msgType === 'string' && opts.msgType ? String(opts.msgType) : null;
-    const headerN = Number(packet?.header?.n);
+    headerN = Number(packet?.header?.n);
     if (Number.isFinite(headerN) && headerN <= 0) {
       throw new Error('invalid message counter');
     }
@@ -564,8 +570,8 @@ export async function drDecryptText(st, packet, opts = {}) {
         });
       }
     } catch { }
-    let nUsed = null;
-    let nrAfterRatchet = null;
+    nUsed = headerN;
+    nrAfterRatchet = Number(st.Nr);
     let nrAtDerive = null;
     let postRatchetTheirPubPrefix = null;
     let dhOutHash = null;
@@ -581,7 +587,7 @@ export async function drDecryptText(st, packet, opts = {}) {
     let decAadHash = null;
     let encMkHash = null;
     let fingerprintBeforeDecrypt = null;
-    const currentNr = Number.isFinite(Number(st?.Nr)) ? Number(st.Nr) : 0;
+    currentNr = Number.isFinite(Number(st?.Nr)) ? Number(st.Nr) : 0;
     const working = {
       rk: cloneU8(st?.rk) || null,
       ckS: cloneU8(st?.ckS) || null,
@@ -641,7 +647,7 @@ export async function drDecryptText(st, packet, opts = {}) {
 
     const theirPub = b64u8(packet.header.ek_pub_b64);
     const pn = Number(packet?.header?.pn);
-    const prevChainId = working.theirRatchetPub ? b64(working.theirRatchetPub) : null;
+    chainId = working.theirRatchetPub ? b64(working.theirRatchetPub) : null;
 
     if (!working.theirRatchetPub || b64(working.theirRatchetPub) !== packet.header.ek_pub_b64) {
       try {
