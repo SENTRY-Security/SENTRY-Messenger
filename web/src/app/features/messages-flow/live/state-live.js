@@ -377,6 +377,41 @@ async function decryptIncomingSingle(params = {}, adapters) {
   let messageKeyB64 = null;
   let plaintext = null;
 
+  // X3DH PreKey Handling
+  // If the header contains identity key info, this is likely a PreKey Message (Type 3).
+  // We must bootstrap the session (Responder role) before attempting to decrypt.
+  // This implies we accept a session reset from the remote peer.
+  const headerIk = header?.ik || header?.ik_pub || header?.ik_pub_b64 || null;
+  if (headerIk) {
+    if (adapters.bootstrapDrFromGuestBundle) {
+      try {
+        await adapters.bootstrapDrFromGuestBundle({
+          guestBundle: {
+            ik_pub: headerIk,
+            ek_pub: header?.ek || header?.ek_pub || header?.ek_pub_b64 || null,
+            spk_pub: header?.spk || header?.spk_pub || header?.spk_pub_b64 || null,
+            spk_sig: header?.spk_sig || header?.spk_sig_b64 || null,
+            opk_id: header?.opk_id || header?.opkId || null
+          },
+          peerAccountDigest: senderDigest,
+          peerDeviceId: senderDeviceId,
+          conversationId,
+          force: true // Accept the reset
+        });
+        // Refresh state after bootstrap
+        const newState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+        if (hasUsableDrState(newState)) {
+          Object.assign(state, newState); // Mutate local reference to usage newer state
+        }
+      } catch (err) {
+        console.warn('[state-live] bootstrap-session failed', err);
+        // Fallthrough to attempt normal decryption (likely fails, but consistent)
+      }
+    } else {
+      console.warn('[state-live] bootstrapDrFromGuestBundle adapter missing');
+    }
+  }
+
   try {
     plaintext = await adapters.drDecryptText(state, {
       aead: 'aes-256-gcm',
@@ -388,7 +423,20 @@ async function decryptIncomingSingle(params = {}, adapters) {
       packetKey,
       msgType: msgTypeHint || 'text'
     });
-  } catch {
+  } catch (err) {
+    // Enhanced logging for OperationError (often subtle Key/AAD mismatch)
+    if (err.name === 'OperationError' || err.message === 'OperationError') {
+      try {
+        console.warn('[state-live] decryption fail details', {
+          reason: 'OperationError',
+          conv: conversationIdPrefix8,
+          hKeys: header ? Object.keys(header).sort() : [],
+          ik: !!headerIk,
+          hasState: !!state,
+          rs: state?.baseKey?.role || 'unknown'
+        });
+      } catch { }
+    }
     return {
       ...base,
       reasonCode: 'DECRYPT_FAIL',

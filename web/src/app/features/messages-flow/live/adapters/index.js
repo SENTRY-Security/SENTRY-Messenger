@@ -4,7 +4,8 @@
 import { logCapped } from '../../../../core/log.js';
 import {
   ensureDrReceiverState as legacyEnsureDrReceiverState,
-  persistDrSnapshot as legacyPersistDrSnapshot
+  persistDrSnapshot as legacyPersistDrSnapshot,
+  bootstrapDrFromGuestBundle as legacyBootstrapDrFromGuestBundle
 } from '../../../dr-session.js';
 import { MessageKeyVault } from '../../../message-key-vault.js';
 import { ensureSecureConversationReady as legacyEnsureSecureConversationReady } from '../../../secure-conversation-manager.js';
@@ -23,6 +24,7 @@ const LIVE_LEGACY_ADAPTER_METHODS = Object.freeze([
   'drState',
   'drDecryptText',
   'persistDrSnapshot',
+  'bootstrapDrFromGuestBundle',
   'vaultPutIncomingKey',
   'appendTimelineBatch',
   'getAccountDigest',
@@ -56,6 +58,7 @@ export function createLiveLegacyAdapters(deps = {}) {
   const drState = deps.drState || storeDrState;
   const drDecryptText = deps.drDecryptText || legacyDrDecryptText;
   const persistDrSnapshot = deps.persistDrSnapshot || legacyPersistDrSnapshot;
+  const bootstrapDrFromGuestBundle = deps.bootstrapDrFromGuestBundle || legacyBootstrapDrFromGuestBundle;
   const vaultPutIncomingKey = deps.vaultPutIncomingKey || MessageKeyVault.putMessageKey;
   const appendTimelineBatch = deps.appendTimelineBatch || timelineAppendBatch;
   const getAccountDigest = deps.getAccountDigest || storeGetAccountDigest;
@@ -85,6 +88,10 @@ export function createLiveLegacyAdapters(deps = {}) {
 
     persistDrSnapshot(params = {}) {
       return persistDrSnapshot(params);
+    },
+
+    bootstrapDrFromGuestBundle(params = {}) {
+      return bootstrapDrFromGuestBundle(params);
     },
 
     vaultPutIncomingKey(params = {}) {
