@@ -3,14 +3,8 @@
 // Uses core modules (http/log/store). Does not depend on window globals from app.js.
 
 import { log, setLogSink } from '../core/log.js';
-import {
-  getMkRaw,
-  setMkRaw,
-  setAccountToken, setAccountDigest,
-  setDevicePriv,
-  clearSecrets, resetAll,
-  getAccountDigest
-} from '../core/store.js';
+import { resetAll, getAccountDigest, getMkRaw, setDeviceId, clearSecrets } from '../core/store.js';
+import { triggerContactSecretsBackup } from '../features/contact-backup.js';
 import { encryptAndPut, signGet, downloadAndDecrypt } from '../features/media.js';
 import { messagesFlowFacade } from '../features/messages-flow-facade.js';
 import { ensureDrSession, sendDrText } from '../features/dr-session.js';
@@ -53,7 +47,7 @@ async function emitMkSetTrace(sourceTag, mkRaw) {
         deviceIdSuffix4: null
       }
     });
-  } catch {}
+  } catch { }
 }
 
 function isSimStorageKey(key) {
@@ -112,7 +106,7 @@ function isSimStorageKey(key) {
   }
 })();
 // If still not unlocked after restoration, redirect back to Login
-(function ensureUnlockedOrRedirect(){
+(function ensureUnlockedOrRedirect() {
   try {
     if (!getMkRaw()) {
       log('Not unlocked: redirecting to /pages/logout.html …');
@@ -179,14 +173,25 @@ if (btnHealth) btnHealth.onclick = async () => {
 // ---- Logout ----
 const btnLogout = $('#btnLogout');
 if (btnLogout) btnLogout.onclick = onLogout;
-function onLogout() {
+async function onLogout() {
+  try {
+    // Explicitly flush pending contact backups before we clear MK/Keys
+    if (getMkRaw()) {
+      const p = triggerContactSecretsBackup('secure-logout', { force: true });
+      // Race to avoid hanging logout if network is dead (max 2s)
+      const timeout = new Promise(r => setTimeout(r, 2000));
+      await Promise.race([p, timeout]);
+    }
+  } catch (err) {
+    log({ logoutBackupFlushError: err?.message || err });
+  }
   try {
     // clear ephemeral handoff storage
     sessionStorage.removeItem('mk_b64');
     sessionStorage.removeItem('account_token');
     sessionStorage.removeItem('account_digest');
     sessionStorage.removeItem('wrapped_dev');
-  } catch {}
+  } catch { }
   try {
     sessionStorage.clear?.();
   } catch (err) {
@@ -194,7 +199,7 @@ function onLogout() {
   }
   try {
     sessionStorage.setItem('app:lastLogoutReason', '已登出');
-  } catch {}
+  } catch { }
   try {
     // clear local envelope cache (env_v1:*), 保留模擬資料
     const del = [];
@@ -204,13 +209,13 @@ function onLogout() {
       if (k.startsWith('env_v1:')) del.push(k);
     }
     for (const k of del) {
-      try { localStorage.removeItem(k); } catch {}
+      try { localStorage.removeItem(k); } catch { }
     }
-  } catch {}
+  } catch { }
   try {
     // clear all in-memory state (MK, DR sessions, UID, etc.)
     resetAll();
-  } catch { try { clearSecrets(); } catch {} }
+  } catch { try { clearSecrets(); } catch { } }
   // navigate to logout page
   try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
 }
@@ -335,18 +340,18 @@ function renderMessages(items) {
 }
 
 // ---- helpers ----
-function safeJSON(text){ try{ return JSON.parse(text); }catch{ return text; } }
-async function safeParse(r){ const t=await r.text(); try{ return JSON.parse(t);}catch{return t;} }
-function hex(u8){ return Array.from(u8).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-function b64u8(b64s){ const bin=atob(String(b64s||'')); const u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return u8; }
+function safeJSON(text) { try { return JSON.parse(text); } catch { return text; } }
+async function safeParse(r) { const t = await r.text(); try { return JSON.parse(t); } catch { return t; } }
+function hex(u8) { return Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join(''); }
+function b64u8(b64s) { const bin = atob(String(b64s || '')); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return u8; }
 
 // ---- DR helpers (UI) ----
-function getPeerFromInput(){
+function getPeerFromInput() {
   const el = document.querySelector('#peerAccountDigest');
-  const v = (el?.value || '').replace(/[^0-9a-f]/gi,'').toUpperCase();
+  const v = (el?.value || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
   return v;
 }
-async function onInitDr(){
+async function onInitDr() {
   try {
     if (!getMkRaw()) return log('Not unlocked: MK not ready.');
     const peer = getPeerFromInput(); if (!peer) return log('請輸入對方帳號 digest');
@@ -356,7 +361,7 @@ async function onInitDr(){
     log({ drInitError: String(e?.message || e) });
   }
 }
-async function onSendText(){
+async function onSendText() {
   try {
     if (!getMkRaw()) return log('Not unlocked: MK not ready.');
     const peer = getPeerFromInput(); if (!peer) return log('請輸入對方帳號 digest');

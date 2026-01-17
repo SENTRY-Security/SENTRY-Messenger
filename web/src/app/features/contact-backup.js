@@ -160,6 +160,10 @@ export async function triggerContactSecretsBackup(
     allowWithoutDrState = false
   } = {}
 ) {
+  if (uploadTimer) {
+    clearTimeout(uploadTimer);
+    uploadTimer = null;
+  }
   const isForced = !!force || reason === 'secure-logout' || reason === 'force-logout';
   const summaryHint = latestPersistDetail?.summary || null;
   const hintEntries = Number.isFinite(Number(summaryHint?.entries)) ? Number(summaryHint.entries) : null;
