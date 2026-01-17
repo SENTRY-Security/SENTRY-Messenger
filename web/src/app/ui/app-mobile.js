@@ -2650,7 +2650,15 @@ async function runPostLoginContactHydrate() {
     try { console.log('[contact-core] hydrate:start ' + JSON.stringify({ hasMk: !!mk, hasLocalSecrets, willFetchRemote })); } catch { }
   }
   let remoteResult = { ok: false, status: null, entries: 0, corruptCount: 0 };
-  if (willFetchRemote) {
+  const restorePerformedInLogin = sessionStorage.getItem('contact_restore_performed') === '1';
+  if (restorePerformedInLogin) {
+    sessionStorage.removeItem('contact_restore_performed');
+    if (contactCoreVerbose) {
+      try { console.log('[contact-core] hydrate:skip (performed in login)'); } catch { }
+    }
+    // Fake a success result for logging consistency
+    remoteResult = { ok: true, status: 'skipped-login', entries: secrets.size, corruptCount: 0 };
+  } else if (willFetchRemote) {
     try {
       remoteResult = await hydrateContactSecretsFromBackup({ reason: 'post-login-hydrate' });
     } catch (err) {

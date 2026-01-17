@@ -30,6 +30,7 @@ import {
   getLegacyContactSecretsMetaKeys,
   getLegacyContactSecretsChecksumKeys
 } from '../core/contact-secrets.js';
+import { triggerContactSecretsBackup, hydrateContactSecretsFromBackup } from '../features/contact-backup.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
 import { initProfileDefaultsOnce } from '../features/profile.js';
 import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
@@ -484,7 +485,8 @@ const bootstrapStepDefs = [
   { key: 'wrap-device', label: '備份裝置金鑰' },
   { key: 'devkeys-store', label: '儲存裝置備份' },
   { key: 'nickname-init', label: '設定初始暱稱中' },
-  { key: 'avatar-init', label: '設定初始頭像中' }
+  { key: 'avatar-init', label: '設定初始頭像中' },
+  { key: 'contact-restore', label: '還原聯絡人及金鑰' }
 ];
 const bootstrapStepMap = new Map();
 let bootstrapInitialized = false;
@@ -519,7 +521,9 @@ function initBootstrapProgress() {
   bootstrapStepMap.clear();
   for (const def of bootstrapStepDefs) {
     if (newAccount && def.key === 'prekeys-sync') continue;
+    if (newAccount && def.key === 'contact-restore') continue;
     if (!newAccount && (def.key === 'nickname-init' || def.key === 'avatar-init')) continue;
+    if (!newAccount && (def.key === 'devkeys-fetch' || def.key === 'devkeys-store')) continue; // Login flow uses contact-restore instead of devkeys raw fetch
     const li = document.createElement('li');
     li.dataset.step = def.key;
     const row = document.createElement('div');
@@ -861,6 +865,7 @@ async function onUnlock() {
       initBootstrapProgress();
     } else {
       resetBootstrapProgress();
+      initBootstrapProgress(); // Enable UI for re-login flow (contact-restore)
     }
     loginInProgress = true;
     showLoading(newAccount ? '正在建立安全環境…' : '登入中，請稍候…');
@@ -928,6 +933,23 @@ async function onUnlock() {
       log({ deviceIdBeforeRedirectError: err?.message || err });
       throw err;
     }
+    if (!newAccount) {
+      updateBootstrapStep('contact-restore', 'start');
+      try {
+        const restoreRes = await hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' });
+        if (restoreRes.ok) {
+          updateBootstrapStep('contact-restore', 'success', `還原 ${restoreRes.entries} 筆資料`);
+        } else if (restoreRes.status === 404) {
+          updateBootstrapStep('contact-restore', 'info', '無備份資料');
+        } else {
+          updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+        }
+      } catch (err) {
+        log({ contactRestoreError: err?.message || err });
+        updateBootstrapStep('contact-restore', 'error', '還原失敗');
+        // Non-critical, continue
+      }
+    }
     updateUidDisplay();
     updateLoading('登入成功，正在導向…');
     // handoff MK/UID to next page (sessionStorage, same-tab only)
@@ -993,6 +1015,9 @@ async function onUnlock() {
           for (const key of storageKeys) {
             sessionStorage.removeItem(key);
           }
+        }
+        if (!newAccount) {
+          sessionStorage.setItem('contact_restore_performed', '1');
         }
       } catch (err) {
         log({ contactSecretHandoffError: err?.message || err });
