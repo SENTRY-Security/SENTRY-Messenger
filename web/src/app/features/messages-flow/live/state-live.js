@@ -693,6 +693,13 @@ async function commitIncomingSingle(params = {}, adapters) {
     };
   }
 
+  let drStateSnapshot = null;
+  if (adapters.snapshotAndEncryptDrState) {
+    try {
+      drStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
+    } catch { }
+  }
+
   try {
     await adapters.vaultPutIncomingKey({
       conversationId,
@@ -702,7 +709,8 @@ async function commitIncomingSingle(params = {}, adapters) {
       direction: 'incoming',
       msgType: msgTypeHint || 'text',
       messageKeyB64,
-      headerCounter: Number.isFinite(resolvedCounter) ? Number(resolvedCounter) : null
+      headerCounter: Number.isFinite(resolvedCounter) ? Number(resolvedCounter) : null,
+      drStateSnapshot
     });
   } catch {
     return {

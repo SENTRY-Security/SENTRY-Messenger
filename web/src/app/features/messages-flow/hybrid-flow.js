@@ -17,6 +17,8 @@ import {
 import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../../crypto/dr.js';
 import { b64u8 as naclB64u8 } from '../../crypto/nacl.js';
 import { logCapped } from '../../core/log.js';
+import { createLiveStateAccess } from './live/state-live.js';
+import { createLiveLegacyAdapters } from './live/adapters/index.js';
 
 const HYBRID_LOG_CAP = 5;
 const SMART_FETCH_BUFFER = 5;
@@ -218,6 +220,47 @@ export async function smartFetchMessages({
                     contentType: aItems[0].contentType
                 });
             } else {
+                // ... Route A fail ...
+            }
+
+            // [Shadow Advance]
+            // If Route A succeeded, we must still try to advance the DR state (Ratchet)
+            // so that subsequent messages falling back to Route B don't see a huge gap.
+            if (result && result.ok && !isOutgoing) {
+                try {
+                    // Construct Shadow Dependencies
+                    // We need to persist the DR State (Ratchet) but NOT the Timeline Entry (Duplicate).
+                    // So we use real adapters for everything EXCEPT `appendTimelineBatch`.
+                    const realAdapters = createLiveLegacyAdapters();
+                    const shadowAdapters = {
+                        ...realAdapters,
+                        // Mock appendTimelineBatch to be a No-Op
+                        appendTimelineBatch: async () => ({ ok: true, appended: 0 })
+                    };
+
+                    // Create State Access with Shadow Adapters
+                    // This allows `persistAndAppendSingle` to run fully, including `persistDrSnapshot`,
+                    // but `adapters.appendTimelineBatch` will do nothing.
+                    const shadowStateAccess = createLiveStateAccess({ adapters: shadowAdapters });
+
+                    console.warn(`[HybridVerify] Shadow Advance: Triggering for item ${item.id}`);
+                    // We await this to ensure sequential ordering (State must update before next iteration)
+                    await consumeLiveJob({
+                        type: 'WS_INCOMING',
+                        conversationId,
+                        messageId: item.id,
+                        serverMessageId: item.id,
+                        tokenB64: context.tokenB64,
+                        peerAccountDigest: context.peerAccountDigest,
+                        peerDeviceId: context.peerDeviceId,
+                        sourceTag: 'hybrid-shadow-advance'
+                    }, {
+                        fetchSecureMessageById: createNoOpFetcher(item),
+                        stateAccess: shadowStateAccess // Inject mocked state access
+                    }).catch(e => console.warn('[HybridVerify] Shadow Advance Fail:', e));
+                } catch (e) { console.warn('[HybridVerify] Shadow Advance Exception:', e); }
+            }
+            if (!result || !result.ok) {
                 // Route A failed (e.g. key missing).
                 const routeAFailReason = aErrors.length ? (aErrors[0]?.reasonCode || aErrors[0]?.reason || 'ROUTE_A_FAIL') : 'CONTROL_SKIP';
 
@@ -253,10 +296,17 @@ export async function smartFetchMessages({
                         });
 
                         if (bResult.ok && bResult.decrypted) {
+                            // Atomic Backup Check:
+                            if (!bResult.vaultPut) {
+                                console.warn(`[HybridVerify] Route B Success item ${item.id} BUT Vault Put Failed. STOPPING sequence.`);
+                                const reason = 'ROUTE_B_VAULT_PUT_FAIL';
+                                errors.push({ item, reason });
+                                break; // CRITICAL STOP
+                            }
+
                             console.warn(`[HybridVerify] Route B Success item ${item.id}. Retrying Route A to fetch content...`);
 
                             // Route B succeeded, so Key should be in Vault now.
-                            // Retry Route A to get the formatted item.
                             const { items: retryItems } = await decryptReplayBatch({
                                 conversationId,
                                 items: [item],
@@ -275,55 +325,70 @@ export async function smartFetchMessages({
                                     reason: 'RESTORED_VIA_ROUTE_B'
                                 });
                             } else {
-                                console.warn(`[HybridVerify] Route B Success BUT Route A Retry Failed for item ${item.id}.`);
-                                // This implies Vault Put failed or is lagging.
-                                // We strictly fail here to avoid returning broken items.
-                                result = { ok: false, reason: 'ROUTE_B_OK_BUT_VAULT_MISSING' };
+                                console.warn(`[HybridVerify] Route B Success BUT Route A Retry Failed for item ${item.id}. STOPPING sequence.`);
+                                const reason = 'ROUTE_B_OK_BUT_VAULT_MISSING';
+                                errors.push({ item, reason });
+                                break; // CRITICAL STOP
                             }
                         } else {
                             console.warn(`[HybridVerify] Route B Failed item ${item.id}:`, bResult.reasonCode);
                             result = { ok: false, reason: bResult.reasonCode || 'ROUTE_B_FAIL' };
+
+                            // If Gap Message (Newer than local), strict stop.
+                            if (counter > localMax) {
+                                console.warn(`[HybridVerify] Strict Sequential Stop at item ${item.id} (Gap Message Failed).`);
+                                errors.push({ item, reason: result.reason });
+                                break; // CRITICAL STOP
+                            }
                         }
                     } catch (err) {
                         console.warn(`[HybridVerify] Route B Exception item ${item.id}:`, err);
                         result = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
+
+                        // If Gap Message, strict stop.
+                        if (counter > localMax) {
+                            console.warn(`[HybridVerify] Strict Sequential Stop at item ${item.id} (Exception).`);
+                            errors.push({ item, reason: result.reason });
+                            break; // CRITICAL STOP
+                        }
                     }
                 }
             }
+        }
 
-            if (result.ok && result.item) {
-                decryptedItems.push(result.item);
-            } else {
-                const errorReason = result.reason || 'UNKNOWN_ERROR';
+        if (result && result.ok && result.item) {
+            decryptedItems.push(result.item);
+        } else {
+            const errorReason = result?.reason || 'UNKNOWN_ERROR';
 
-                // Filter out control messages that shouldn't be displayed
-                if (errorReason === 'CONTROL_SKIP' || errorReason === 'CORRUPT_SKIP') {
-                    // errors.push({ item, reason: errorReason }); // Optional: uncomment if debugging skips
-                    continue;
-                }
-
-                errors.push({ item, reason: errorReason });
-                logHybridTrace('hybridFlowItemFail', {
-                    conversationId,
-                    messageId: item.id,
-                    counter,
-                    route: counter < localMax ? 'A' : 'B',
-                    reason: errorReason
-                });
-                // Return placeholder so UI shows "Decryption Failed"
-                const ts = Number(item.ts || item.created_at || item.createdAt || Date.now() / 1000);
-                decryptedItems.push({
-                    ...item,
-                    decrypted: false,
-                    reason: errorReason,
-                    id: item.id || item.messageId,
-                    counter: counter,
-                    ts: ts,
-                    tsMs: ts * 1000
-                });
+            // Filter out control messages
+            if (errorReason === 'CONTROL_SKIP' || errorReason === 'CORRUPT_SKIP') {
+                continue;
             }
+
+            errors.push({ item, reason: errorReason });
+            logHybridTrace('hybridFlowItemFail', {
+                conversationId,
+                messageId: item.id,
+                counter,
+                route: counter < localMax ? 'A' : 'B',
+                reason: errorReason
+            });
+
+            // Return placeholder
+            const ts = Number(item.ts || item.created_at || item.createdAt || Date.now() / 1000);
+            decryptedItems.push({
+                ...item,
+                decrypted: false,
+                reason: errorReason,
+                id: item.id || item.messageId,
+                counter: counter,
+                ts: ts,
+                tsMs: ts * 1000
+            });
         }
     }
+
 
     // 5. Restore DESC order for Facade/UI
     decryptedItems.reverse();

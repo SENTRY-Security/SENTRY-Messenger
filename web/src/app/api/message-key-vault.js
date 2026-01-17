@@ -32,7 +32,8 @@ export async function putMessageKeyVault(params = {}) {
       msgType: params.msgType || null,
       headerCounter,
       wrapped_mk: params.wrapped_mk,
-      wrap_context: params.wrap_context
+      wrap_context: params.wrap_context,
+      dr_state: params.dr_state || null
     }
   });
   const r = await fetchWithTimeout('/api/v1/message-key-vault/put', jsonReq(payload), 10000);

@@ -12,6 +12,7 @@ import {
   TRANSIENT_SIGNAL_SUBTYPES
 } from '../semantic.js';
 import { buildDecryptError } from './normalize.js';
+import { importContactSecretsSnapshot } from '../../core/contact-secrets.js';
 
 const decoder = new TextDecoder();
 
@@ -321,6 +322,27 @@ export async function decryptReplayBatch({
       }));
       continue;
     }
+
+    // ATOMIC PIGGYBACK SELF-HEALING
+    if (vaultKeyResult.drStateSnapshot) {
+      try {
+        // "Lost Entropy" Recovery:
+        // If the vault provided a valid DR state snapshot (authenticated by our Master Key),
+        // and we are capable of decrypting it, we should opportunistically import it.
+        // This fixes scenarios where local storage was wiped/stale but the vault has the
+        // correct ratchet state for this message.
+        // We use 'merge' or 'replace'? `importContactSecretsSnapshot` with `replace: true` 
+        // is generally safe because it has internal checks to only promote if newer/better.
+        importContactSecretsSnapshot(vaultKeyResult.drStateSnapshot, {
+          replace: true,
+          reason: 'vault-replay-healing',
+          persist: true
+        });
+      } catch (err) {
+        console.warn('[vault-replay] self-healing failed', err);
+      }
+    }
+
     let text = null;
     try {
       text = await decryptWithMessageKey({

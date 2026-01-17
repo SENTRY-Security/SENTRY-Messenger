@@ -1,18 +1,22 @@
-import { encryptWithMK, decryptWithMK, b64, b64u8, assertEnvelopeStrict } from '../crypto/aead.js';
+import { b64 } from '../crypto/aead.js';
 import { getMkRaw, ensureDeviceId, getAccountDigest } from '../core/store.js';
 import { log, logCapped } from '../core/log.js';
 import { uploadContactSecretsBackup, fetchContactSecretsBackup } from '../api/contact-secrets.js';
 import {
   buildContactSecretsSnapshot,
   importContactSecretsSnapshot,
-  computeContactSecretsChecksum
+  computeContactSecretsChecksum,
+  encryptContactSecretPayload,
+  decryptContactSecretPayload
 } from '../core/contact-secrets.js';
+
 import { sessionStore } from '../ui/mobile/session-store.js';
 
-const SNAPSHOT_INFO_TAG = 'contact-secrets/backup/v1';
-const SNAPSHOT_ALLOWED_INFO_TAGS = new Set([SNAPSHOT_INFO_TAG]);
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+// Periodic backup retired in favor of Atomic Piggyback (Vault).
+// const SNAPSHOT_INFO_TAG = 'contact-secrets/backup/v1';
+// const SNAPSHOT_ALLOWED_INFO_TAGS = new Set([SNAPSHOT_INFO_TAG]);
+// const encoder = new TextEncoder();
+// const decoder = new TextDecoder();
 const CORRUPT_BACKUP_REASON_DEFAULT = 'corrupt-contact-backup';
 const corruptBackupSeen = new Set();
 
@@ -103,11 +107,13 @@ export function initContactSecretsBackup(options = {}) {
   if (initialized) return;
   initialized = true;
   deviceLabel = options.deviceLabel || detectDeviceLabel();
-  if (typeof window !== 'undefined') {
-    window.addEventListener('contactSecrets:persisted', handlePersistEvent);
-    window.addEventListener('online', () => scheduleBackup('online'));
-  }
-  // Attempt to sync soon after init
+  // Periodic backup retired.
+  // if (typeof window !== 'undefined') {
+  //   window.addEventListener('contactSecrets:persisted', handlePersistEvent);
+  //   window.addEventListener('online', () => scheduleBackup('online'));
+  // }
+  // Attempt to sync (hydrate) soon after init, mainly for restoration check?
+  // Actually hydrate calls fetchContactSecretsBackup.
   requestContactSecretsBackupSync();
 }
 
@@ -122,34 +128,9 @@ function scheduleBackup(reason) {
   }, reason === 'persist' ? 2500 : 5000);
 }
 
-async function encryptSnapshotPayload(payload, mkRaw) {
-  const plain = encoder.encode(payload);
-  const { cipherBuf, iv, hkdfSalt } = await encryptWithMK(plain, mkRaw, SNAPSHOT_INFO_TAG);
-  return {
-    v: 1,
-    aead: 'aes-256-gcm',
-    info: SNAPSHOT_INFO_TAG,
-    salt_b64: b64(hkdfSalt),
-    iv_b64: b64(iv),
-    ct_b64: b64(cipherBuf)
-  };
-}
-
-async function decryptSnapshotPayload(envelope, mkRaw) {
-  if (!envelope || envelope.aead !== 'aes-256-gcm') {
-    return { ok: false, corrupt: true, reason: 'invalid contact-secrets backup envelope' };
-  }
-  try {
-    const normalized = assertEnvelopeStrict(envelope, { allowInfoTags: SNAPSHOT_ALLOWED_INFO_TAGS });
-    const salt = b64u8(normalized.salt_b64);
-    const iv = b64u8(normalized.iv_b64);
-    const ct = b64u8(normalized.ct_b64);
-    const plain = await decryptWithMK(ct, mkRaw, salt, iv, normalized.info);
-    return { ok: true, snapshot: decoder.decode(plain) };
-  } catch (err) {
-    return { ok: false, corrupt: true, reason: err?.message || 'decrypt failed' };
-  }
-}
+// Encryption logic moved to contact-secrets.js
+// async function encryptSnapshotPayload...
+// async function decryptSnapshotPayload...
 
 export async function triggerContactSecretsBackup(
   reason = 'manual',
@@ -262,7 +243,7 @@ export async function triggerContactSecretsBackup(
     return false;
   }
   try {
-    const payloadEnvelope = await encryptSnapshotPayload(snapshot.payload, mk);
+    const payloadEnvelope = await encryptContactSecretPayload(snapshot.payload, mk);
     const fetchOptions = keepalive ? { keepalive: true } : {};
     const { r } = await uploadContactSecretsBackup({
       payload: payloadEnvelope,
@@ -377,7 +358,7 @@ export async function hydrateContactSecretsFromBackup({ reason = 'post-login-hyd
         snapshotVersion: backup.snapshotVersion || null
       });
     }
-    const decryptResult = await decryptSnapshotPayload(backup.payload, mk);
+    const decryptResult = await decryptContactSecretPayload(backup.payload, mk);
     if (!decryptResult.ok) {
       const recorded = decryptResult.corrupt ? recordCorruptBackup({ backup, reason: decryptResult.reason }) : null;
       syncCompleted = true;
@@ -482,7 +463,7 @@ async function performSync() {
       log({ contactSecretsBackupSkippedCorrupt: backupKey });
       return;
     }
-    const decryptResult = await decryptSnapshotPayload(backup.payload, mk);
+    const decryptResult = await decryptContactSecretPayload(backup.payload, mk);
     if (!decryptResult.ok) {
       if (decryptResult.corrupt) recordCorruptBackup({ backup, reason: decryptResult.reason });
       syncCompleted = true;

@@ -31,6 +31,10 @@ export function decideNextAction(context = {}) {
       return { action: ACTIONS.NO_OP, reason: REASONS.JOB_MISSING_OR_INVALID };
     }
 
+    if (flags.isGap) {
+      return { action: ACTIONS.NO_OP, reason: 'GAP_DETECTED' };
+    }
+
     return { action: ACTIONS.TRIGGER_LIVE_MVP, reason: REASONS.WS_INCOMING };
   }
 

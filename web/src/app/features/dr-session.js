@@ -19,8 +19,9 @@
 import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
-import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact } from '../core/contact-secrets.js';
+import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload } from '../core/contact-secrets.js';
+import { hydrateContactSecretsFromBackup } from './contact-backup.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   conversationIdFromToken
@@ -1474,6 +1475,20 @@ export async function ensureDrSession(params = {}) {
         return { initialized: true, reused: true };
       }
 
+      // [CRITICAL] Prevent Unnecessary X3DH Forking
+      // Before creating a NEW session, try to restore EXISTING session from server backup.
+      try {
+        await hydrateContactSecretsFromBackup({ reason: 'ensure-dr-session-missing' });
+        // Re-check after hydration
+        const holderRestored = drState({ peerAccountDigest: peer, peerDeviceId });
+        if (holderRestored?.rk && holderRestored?.myRatchetPriv && holderRestored?.myRatchetPub) {
+          drConsole.log('[ensureDrSession] Restored from server backup, skipping X3DH');
+          return { initialized: true, reused: true, restored: true };
+        }
+      } catch (err) {
+        drConsole.warn('[ensureDrSession] Backup hydration failed, proceeding to X3DH', err);
+      }
+
       const peerBundle = normalizePeerBundleFromPrekeys(bundle);
       const st = await x3dhInitiate(priv, peerBundle);
       const targetHolder = holderAgain || holder || drState({ peerAccountDigest: peer, peerDeviceId });
@@ -1782,27 +1797,59 @@ async function sendDrPlaintext(params = {}) {
 
   try {
     const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
+    let drStateSnapshot = null;
+    const mk = getMkRaw();
+    if (mk) {
+      try {
+        // [FIX] Ensure contact-secrets map has the LATEST snapshot (post-encrypt)
+        // so that the piggybacked payload includes valid ckS and pendingSendRatchet=false.
+        if (postSnapshot) {
+          try {
+            persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: postSnapshot });
+          } catch (e) {
+            drConsole.warn('[dr] pre-piggyback persist failed', e);
+          }
+        }
+        const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+        if (payloadJson) {
+          drStateSnapshot = await encryptContactSecretPayload(payloadJson, mk);
+        }
+      } catch (err) {
+        logDrSendTrace({ messageId, stage: 'SNAPSHOT_FAIL', error: err?.message });
+      }
+    }
+    const vaultParams = {
+      conversationId: finalConversationId,
+      messageId,
+      senderDeviceId,
+      targetDeviceId: receiverDeviceId,
+      direction: 'outgoing',
+      msgType,
+      headerCounter: vaultCounter,
+      messageKeyB64,
+      accountDigest: accountDigest
+    };
     try {
-      await MessageKeyVault.putMessageKey({
-        conversationId: finalConversationId,
-        messageId,
-        senderDeviceId,
-        targetDeviceId: receiverDeviceId,
-        direction: 'outgoing',
-        msgType,
-        headerCounter: vaultCounter,
-        messageKeyB64,
-        accountDigest: accountDigest
-      });
+      await MessageKeyVault.putMessageKey({ ...vaultParams, drStateSnapshot });
       logOutgoingSendTrace('vault_put_ok', messageId, null);
       logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });
     } catch (err) {
-      logOutgoingSendTrace('vault_put_fail', messageId, null);
-      logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: err?.message || String(err) });
-      err.stage = 'vault_put_fail';
-      err.code = err.code || 'VaultPutFailed';
-      throw err;
+      if (drStateSnapshot) {
+        try {
+          await MessageKeyVault.putMessageKey(vaultParams);
+          logOutgoingSendTrace('vault_put_ok_retry', messageId, null);
+          logDrSendTrace({ messageId, stage: 'VAULT_PUT_RETRY_OK', error: err?.message });
+        } catch (retryErr) {
+          logOutgoingSendTrace('vault_put_fail', messageId, null);
+          logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: retryErr?.message || err?.message });
+        }
+      } else {
+        logOutgoingSendTrace('vault_put_fail', messageId, null);
+        logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: err?.message });
+      }
     }
+
+
     const job = await enqueueOutboxJob({
       conversationId: finalConversationId,
       messageId,

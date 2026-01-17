@@ -6,6 +6,7 @@ import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 import { getMkRaw, getAccountDigest } from '../core/store.js';
 import { log, logForensicsEvent, logCapped } from '../core/log.js';
 import { putMessageKeyVault as apiPutMessageKeyVault, getMessageKeyVault as apiGetMessageKeyVault, deleteMessageKeyVault as apiDeleteMessageKeyVault } from '../api/message-key-vault.js';
+import { decryptContactSecretPayload } from '../core/contact-secrets.js';
 
 const WRAP_INFO_TAG = 'message-key/v1';
 const WRAP_CONTEXT_VERSION = 1;
@@ -112,7 +113,11 @@ function setCache(key, value) {
 }
 
 function getCache(key) {
-  return cache.get(key) || null;
+  const val = cache.get(key);
+  if (!val) return null;
+  // Support legacy string cache (if any remains) and new object cache
+  if (typeof val === 'string') return { messageKeyB64: val, drStateSnapshot: null };
+  return val; // { messageKeyB64, drStateSnapshot }
 }
 
 function buildContext(params) {
@@ -152,6 +157,7 @@ export class MessageKeyVault {
     const messageKeyB64 = params?.messageKeyB64 || null;
     const headerCounter = normalizeHeaderCounter(params?.headerCounter);
     const accountDigest = params?.accountDigest || null;
+    const drStateSnapshot = params?.drStateSnapshot || null;
     const logContext = buildLogContext({
       conversationId,
       messageId,
@@ -250,7 +256,8 @@ export class MessageKeyVault {
       msgType,
       headerCounter,
       wrapped_mk: wrapped,
-      wrap_context: context
+      wrap_context: context,
+      dr_state: drStateSnapshot
     });
 
     if (!r?.ok || (data && typeof data === 'object' && data.error)) {
@@ -281,7 +288,10 @@ export class MessageKeyVault {
       errorCode: null
     });
     emitVaultTrace('put', { conversationId, messageId }, r?.status || 200, null);
-    setCache(cacheKey({ conversationId, messageId, senderDeviceId }), messageKeyB64);
+    setCache(cacheKey({ conversationId, messageId, senderDeviceId }), {
+      messageKeyB64,
+      drStateSnapshot
+    });
     return { ok: true, duplicate: !!data?.duplicate };
   }
 
@@ -357,7 +367,12 @@ export class MessageKeyVault {
         errorCode: null
       });
       emitVaultTrace('get', { conversationId, messageId }, 200, null);
-      return { ok: true, messageKeyB64: cached, fromCache: true };
+      return {
+        ok: true,
+        messageKeyB64: cached.messageKeyB64,
+        drStateSnapshot: cached.drStateSnapshot || null,
+        fromCache: true
+      };
     }
 
     let res;
@@ -485,7 +500,33 @@ export class MessageKeyVault {
       emitVaultTrace('get', { conversationId, messageId }, r?.status || null, 'InvalidPayload');
       return { ok: false, error: 'InvalidPayload', status: r?.status || null, message: 'missing mk' };
     }
-    setCache(cacheK, unwrapped.mkB64);
+
+    // ATOMIC PIGGYBACK READ
+    let drStateSnapshot = null;
+    if (data.dr_state) {
+      try {
+        const decryptRes = await decryptContactSecretPayload(data.dr_state, mkRaw);
+        if (decryptRes.ok && decryptRes.snapshot) {
+          // Parse the JSON string into an object because callers expect an object/string?
+          // Actually `importContactSecretsSnapshot` expects an object. 
+          // `decryptContactSecretPayload` returns a string (JSON).
+          // Let's parse it here for convenience, or pass string?
+          // Contact Secrets `importContactSecretsSnapshot` takes an OBJECT (parsed).
+          drStateSnapshot = JSON.parse(decryptRes.snapshot);
+        }
+      } catch (err) {
+        emitLogKey('vaultDrStateDecryptFail', {
+          ...logContext,
+          error: err?.message || String(err)
+        });
+      }
+    }
+
+    setCache(cacheK, {
+      messageKeyB64: unwrapped.mkB64,
+      drStateSnapshot
+    });
+
     emitLogKey('vaultGetResult', {
       ...logContext,
       found: true,
@@ -498,7 +539,13 @@ export class MessageKeyVault {
       errorCode: null
     });
     emitVaultTrace('get', { conversationId, messageId }, r?.status || 200, null);
-    return { ok: true, messageKeyB64: unwrapped.mkB64, context: unwrapped.context || null };
+
+    return {
+      ok: true,
+      messageKeyB64: unwrapped.mkB64,
+      context: unwrapped.context || null,
+      drStateSnapshot
+    };
   }
 
   static async deleteMessageKey(params = {}) {

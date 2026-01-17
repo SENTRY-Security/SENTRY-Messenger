@@ -14,8 +14,13 @@ import { drDecryptText as legacyDrDecryptText } from '../../../../crypto/dr.js';
 import {
   drState as storeDrState,
   getAccountDigest as storeGetAccountDigest,
-  getDeviceId as storeGetDeviceId
+  getDeviceId as storeGetDeviceId,
+  getMkRaw as storeGetMkRaw
 } from '../../../../core/store.js';
+import {
+  buildPartialContactSecretsSnapshot,
+  encryptContactSecretPayload
+} from '../../../../core/contact-secrets.js';
 
 const LIVE_ADAPTERS_LOG_CAP = 5;
 const LIVE_LEGACY_ADAPTER_METHODS = Object.freeze([
@@ -28,7 +33,8 @@ const LIVE_LEGACY_ADAPTER_METHODS = Object.freeze([
   'vaultPutIncomingKey',
   'appendTimelineBatch',
   'getAccountDigest',
-  'getDeviceId'
+  'getDeviceId',
+  'snapshotAndEncryptDrState'
 ]);
 const LIVE_LEGACY_ADAPTER_METHOD_SET = new Set(LIVE_LEGACY_ADAPTER_METHODS);
 
@@ -62,7 +68,17 @@ export function createLiveLegacyAdapters(deps = {}) {
   const vaultPutIncomingKey = deps.vaultPutIncomingKey || MessageKeyVault.putMessageKey;
   const appendTimelineBatch = deps.appendTimelineBatch || timelineAppendBatch;
   const getAccountDigest = deps.getAccountDigest || storeGetAccountDigest;
+
   const getDeviceId = deps.getDeviceId || storeGetDeviceId;
+
+  // New atomic backup helper
+  const snapshotAndEncryptDrState = deps.snapshotAndEncryptDrState || (async (peerAccountDigest, peerDeviceId) => {
+    const mk = storeGetMkRaw();
+    if (!mk) return null;
+    const payload = buildPartialContactSecretsSnapshot(peerAccountDigest, { peerDeviceId });
+    if (!payload) return null;
+    return encryptContactSecretPayload(payload, mk);
+  });
 
   const adapters = {
     ensureSecureConversationReady(params = {}) {
@@ -108,6 +124,10 @@ export function createLiveLegacyAdapters(deps = {}) {
 
     getDeviceId() {
       return getDeviceId();
+    },
+
+    async snapshotAndEncryptDrState(peerAccountDigest, peerDeviceId) {
+      return snapshotAndEncryptDrState(peerAccountDigest, peerDeviceId);
     }
   };
 

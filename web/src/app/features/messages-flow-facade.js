@@ -24,6 +24,7 @@ import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
 import { MessageKeyVault } from './message-key-vault.js';
 import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
 import { getMkRaw as storeGetMkRaw } from '../core/store.js';
+import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 const LIVE_ROUTE_LOG_CAP = 5;
 const LIVE_MVP_RESULT_LOG_CAP = 5;
 let facadeWsSend = null;
@@ -296,137 +297,195 @@ function createMessagesFlowFacade() {
       const liveJob = liveJobResult?.job || null;
       const liveJobReason = liveJobResult?.reason || null;
       const liveJobMessageId = liveJob?.messageId || liveJob?.serverMessageId || null;
+      const liveJobCounter = Number.isFinite(Number(liveJob?.counter)) ? Number(liveJob?.counter) : null;
+      const liveJobConversationId = liveJob?.conversationId || resolveWsConversationId(event, hasExplicitCtx ? ctx : null);
 
       const isOnline = typeof ctx?.isOnline === 'boolean'
         ? ctx.isOnline
         : (typeof payloadOrEvent?.isOnline === 'boolean' ? payloadOrEvent.isOnline : true);
-      const decisionContext = {
-        eventType: 'ws_incoming',
-        flags: {
-          liveEnabled: flags.USE_MESSAGES_FLOW_LIVE,
-          hasLiveJob: !!liveJob,
-          isOnline
-        },
-        observedState: {
-          liveJobReason: liveJobReason || null
+
+      return (async () => {
+        let isGap = false;
+        if (liveJobCounter !== null && liveJobConversationId) {
+          try {
+            const localMax = await getLocalProcessedCounter({ conversationId: liveJobConversationId });
+            // Strict Sequential: If incoming > local + 1, it's a gap (unless localMax is 0 and incoming is 1?)
+            // Actually, if localMax is 0, we expect 1. If we receive 3, gap size is 2.
+            if (liveJobCounter > localMax + 1) {
+              isGap = true;
+              console.warn('[messages-flow] Gap Detected:', { conversationId: liveJobConversationId, incoming: liveJobCounter, localMax });
+            }
+          } catch (e) {
+            console.warn('[messages-flow] Local counter check failed', e);
+          }
         }
-      };
-      const decisionResult = decideNextAction(decisionContext);
-      const summaryConversationId = liveJob?.conversationId
-        || resolveWsConversationId(event, hasExplicitCtx ? ctx : null);
-      const summaryMessageId = liveJobMessageId
-        || resolveWsMessageId(event, hasExplicitCtx ? ctx : null);
-      const liveJobSummary = {
-        conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
-        messageIdPrefix8: toMessageIdPrefix8(summaryMessageId)
-      };
 
-      logCapped('liveMvpRouteTrace', {
-        sourceTag: triggerSource || null,
-        ...liveJobSummary,
-        decision: decisionResult?.action || null,
-        reasonCode: decisionResult?.reason || null,
-        jobReason: liveJobReason || null,
-        flagState: flags.USE_MESSAGES_FLOW_LIVE
-      }, LIVE_ROUTE_LOG_CAP);
+        const decisionContext = {
+          eventType: 'ws_incoming',
+          flags: {
+            liveEnabled: flags.USE_MESSAGES_FLOW_LIVE,
+            hasLiveJob: !!liveJob,
+            isOnline,
+            isGap
+          },
+          observedState: {
+            liveJobReason: liveJobReason || null
+          }
+        };
+        const decisionResult = decideNextAction(decisionContext);
+        const summaryConversationId = liveJob?.conversationId
+          || resolveWsConversationId(event, hasExplicitCtx ? ctx : null);
+        const summaryMessageId = liveJobMessageId
+          || resolveWsMessageId(event, hasExplicitCtx ? ctx : null);
+        const liveJobSummary = {
+          conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
+          messageIdPrefix8: toMessageIdPrefix8(summaryMessageId)
+        };
 
-      logCapped('decisionTrace', {
-        eventType: decisionContext.eventType,
-        action: decisionResult?.action || null,
-        reason: decisionResult?.reason || null,
-        ...liveJobSummary,
-        jobReason: liveJobReason || null
-      }, DECISION_TRACE_LOG_CAP);
+        logCapped('liveMvpRouteTrace', {
+          sourceTag: triggerSource || null,
+          ...liveJobSummary,
+          decision: decisionResult?.action || null,
+          reasonCode: decisionResult?.reason || null,
+          jobReason: liveJobReason || null,
+          flagState: flags.USE_MESSAGES_FLOW_LIVE
+        }, LIVE_ROUTE_LOG_CAP);
 
-      const shouldTriggerLive = decisionResult?.action === 'TRIGGER_LIVE_MVP';
-      const missingMessageId = liveJobReason === 'MISSING_MESSAGE_ID';
+        logCapped('decisionTrace', {
+          eventType: decisionContext.eventType,
+          action: decisionResult?.action || null,
+          reason: decisionResult?.reason || null,
+          ...liveJobSummary,
+          jobReason: liveJobReason || null
+        }, DECISION_TRACE_LOG_CAP);
 
-      if (!shouldTriggerLive) {
-        if (flags.USE_MESSAGES_FLOW_LIVE) {
+        const shouldTriggerLive = decisionResult?.action === 'TRIGGER_LIVE_MVP';
+        const missingMessageId = liveJobReason === 'MISSING_MESSAGE_ID';
+        const isGapDetected = decisionResult?.reason === 'GAP_DETECTED';
+
+        if (isGapDetected) {
           logCapped('liveMvpResultTrace', {
             planned: false,
             ...liveJobSummary,
             ok: null,
-            reasonCode: decisionResult?.reason || liveJobReason || null,
+            reasonCode: 'GAP_DETECTED',
             tookMs: 0,
             metrics: summarizeLiveMvpMetrics(null)
           }, LIVE_MVP_RESULT_LOG_CAP);
-        }
-        if (missingMessageId) {
-          const sourceTag = 'ws_missing_message_id';
-          const peerDeviceId = (hasExplicitCtx ? ctx?.peerDeviceId : null)
+
+          // Trigger GAP Fetch (Max Counter Probe)
+          const peerDeviceId = liveJob?.peerDeviceId
             || liveJobCtx?.peerDeviceId
-            || liveJob?.peerDeviceId
             || resolvePeerDeviceIdFromConversationId(summaryConversationId);
-          if (!peerDeviceId) {
-            logCapped('maxCounterProbeTrace', {
-              source: sourceTag,
-              conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
-              senderDeviceIdSuffix4: null,
-              ok: false,
-              reasonCode: 'MISSING_PEER_DEVICE_ID'
-            }, 5);
-            return { ok: false, reasonCode: 'MISSING_MESSAGE_ID_PEER_DEVICE_MISSING' };
+
+          if (peerDeviceId) {
+            void maxCounterProbe({
+              conversationId: summaryConversationId,
+              senderDeviceId: peerDeviceId,
+              source: 'gap_detected_ws'
+            });
           }
-          void maxCounterProbe({
-            conversationId: summaryConversationId,
-            senderDeviceId: peerDeviceId,
-            source: sourceTag
-          });
-          return { ok: false, reasonCode: 'MISSING_MESSAGE_ID_ENQUEUE_REQUESTED' };
+          return { ok: false, reasonCode: 'GAP_DETECTED' };
         }
-        return { ok: false, reasonCode: decisionResult?.reason || liveJobReason || 'NO_OP' };
-      }
 
-      if (!liveJob) {
-        logCapped('liveMvpResultTrace', {
-          planned: false,
-          ...liveJobSummary,
-          ok: null,
-          reasonCode: liveJobReason || 'MISSING_PARAMS',
-          tookMs: 0,
-          metrics: summarizeLiveMvpMetrics(null)
-        }, LIVE_MVP_RESULT_LOG_CAP);
-        return { ok: false, reasonCode: liveJobReason || 'MISSING_PARAMS' };
-      }
+        if (!shouldTriggerLive) {
+          if (flags.USE_MESSAGES_FLOW_LIVE) {
+            logCapped('liveMvpResultTrace', {
+              planned: false,
+              ...liveJobSummary,
+              ok: null,
+              reasonCode: decisionResult?.reason || liveJobReason || null,
+              tookMs: 0,
+              metrics: summarizeLiveMvpMetrics(null)
+            }, LIVE_MVP_RESULT_LOG_CAP);
+          }
+          if (missingMessageId) {
+            const sourceTag = 'ws_missing_message_id';
+            const peerDeviceId = (hasExplicitCtx ? ctx?.peerDeviceId : null)
+              || liveJobCtx?.peerDeviceId
+              || liveJob?.peerDeviceId
+              || resolvePeerDeviceIdFromConversationId(summaryConversationId);
+            if (!peerDeviceId) {
+              logCapped('maxCounterProbeTrace', {
+                source: sourceTag,
+                conversationIdPrefix8: toConversationIdPrefix8(summaryConversationId),
+                senderDeviceIdSuffix4: null,
+                ok: false,
+                reasonCode: 'MISSING_PEER_DEVICE_ID'
+              }, 5);
+              return { ok: false, reasonCode: 'MISSING_MESSAGE_ID_PEER_DEVICE_MISSING' };
+            }
+            void maxCounterProbe({
+              conversationId: summaryConversationId,
+              senderDeviceId: peerDeviceId,
+              source: sourceTag
+            });
+            return { ok: false, reasonCode: 'MISSING_MESSAGE_ID_ENQUEUE_REQUESTED' };
+          }
+          return { ok: false, reasonCode: decisionResult?.reason || liveJobReason || 'NO_OP' };
+        }
 
-      try {
-        const liveMvpResultMeta = { ...liveJobSummary };
-        const liveCtx = {
-          adapters: liveLegacyAdapters,
-          maybeSendVaultAckWs: (params) => {
-            return maybeSendVaultAckWs(params, { wsSend: facadeWsSend });
-          },
-          getAccountDigest: storeGetAccountDigest,
-          getDeviceId: storeGetDeviceId
-        };
+        if (!liveJob) {
+          logCapped('liveMvpResultTrace', {
+            planned: false,
+            ...liveJobSummary,
+            ok: null,
+            reasonCode: liveJobReason || 'MISSING_PARAMS',
+            tookMs: 0,
+            metrics: summarizeLiveMvpMetrics(null)
+          }, LIVE_MVP_RESULT_LOG_CAP);
+          return { ok: false, reasonCode: liveJobReason || 'MISSING_PARAMS' };
+        }
+
         try {
-          console.log('[facade] consumeLiveJob deps', {
-            hasAck: typeof maybeSendVaultAckWs === 'function',
-            hasGetAccount: typeof storeGetAccountDigest === 'function',
-            hasGetDevice: typeof storeGetDeviceId === 'function'
-          });
-        } catch { }
+          const liveMvpResultMeta = { ...liveJobSummary };
+          const liveCtx = {
+            adapters: liveLegacyAdapters,
+            maybeSendVaultAckWs: (params) => {
+              return maybeSendVaultAckWs(params, { wsSend: facadeWsSend });
+            },
+            getAccountDigest: storeGetAccountDigest,
+            getDeviceId: storeGetDeviceId
+          };
+          try {
+            console.log('[facade] consumeLiveJob deps', {
+              hasAck: typeof maybeSendVaultAckWs === 'function',
+              hasGetAccount: typeof storeGetAccountDigest === 'function',
+              hasGetDevice: typeof storeGetDeviceId === 'function'
+            });
+          } catch { }
 
-        const livePromise = consumeLiveJob(liveJob, liveCtx);
-        if (livePromise && typeof livePromise.then === 'function') {
-          livePromise
-            .then((liveResult) => {
-              const resultConversationIdPrefix8 = toConversationIdPrefix8(liveResult?.conversationId)
-                || liveMvpResultMeta.conversationIdPrefix8;
-              const resultMessageIdPrefix8 = toMessageIdPrefix8(liveResult?.messageId)
-                || liveMvpResultMeta.messageIdPrefix8;
-              logCapped('liveMvpResultTrace', {
-                planned: true,
-                ok: !!liveResult?.ok,
-                reasonCode: liveResult?.reasonCode || null,
-                conversationIdPrefix8: resultConversationIdPrefix8,
-                messageIdPrefix8: resultMessageIdPrefix8,
-                tookMs: Number.isFinite(Number(liveResult?.tookMs)) ? Number(liveResult?.tookMs) : 0,
-                metrics: summarizeLiveMvpMetrics(liveResult?.metrics)
-              }, LIVE_MVP_RESULT_LOG_CAP);
-            })
-            .catch((err) => {
+          const livePromise = consumeLiveJob(liveJob, liveCtx);
+          if (livePromise && typeof livePromise.then === 'function') {
+            livePromise
+              .then((liveResult) => {
+                const resultConversationIdPrefix8 = toConversationIdPrefix8(liveResult?.conversationId)
+                  || liveMvpResultMeta.conversationIdPrefix8;
+                const resultMessageIdPrefix8 = toMessageIdPrefix8(liveResult?.messageId)
+                  || liveMvpResultMeta.messageIdPrefix8;
+                logCapped('liveMvpResultTrace', {
+                  planned: true,
+                  ok: !!liveResult?.ok,
+                  reasonCode: liveResult?.reasonCode || null,
+                  conversationIdPrefix8: resultConversationIdPrefix8,
+                  messageIdPrefix8: resultMessageIdPrefix8,
+                  tookMs: Number.isFinite(Number(liveResult?.tookMs)) ? Number(liveResult?.tookMs) : 0,
+                  metrics: summarizeLiveMvpMetrics(liveResult?.metrics)
+                }, LIVE_MVP_RESULT_LOG_CAP);
+              })
+              .catch((err) => {
+                logCapped('liveMvpResultTrace', {
+                  planned: true,
+                  ok: false,
+                  reasonCode: err?.reasonCode || null,
+                  conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
+                  messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
+                  tookMs: Number.isFinite(Number(err?.tookMs)) ? Number(err?.tookMs) : 0,
+                  metrics: summarizeLiveMvpMetrics(null),
+                }, LIVE_MVP_RESULT_LOG_CAP);
+              });
+          } else if (livePromise && typeof livePromise.catch === 'function') {
+            livePromise.catch((err) => {
               logCapped('liveMvpResultTrace', {
                 planned: true,
                 ok: false,
@@ -437,32 +496,21 @@ function createMessagesFlowFacade() {
                 metrics: summarizeLiveMvpMetrics(null),
               }, LIVE_MVP_RESULT_LOG_CAP);
             });
-        } else if (livePromise && typeof livePromise.catch === 'function') {
-          livePromise.catch((err) => {
-            logCapped('liveMvpResultTrace', {
-              planned: true,
-              ok: false,
-              reasonCode: err?.reasonCode || null,
-              conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
-              messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8,
-              tookMs: Number.isFinite(Number(err?.tookMs)) ? Number(err?.tookMs) : 0,
-              metrics: summarizeLiveMvpMetrics(null),
-            }, LIVE_MVP_RESULT_LOG_CAP);
-          });
+          }
+          return livePromise || { ok: false, reasonCode: 'LIVE_JOB_NOT_STARTED' };
+        } catch (err) {
+          logCapped('liveMvpResultTrace', {
+            planned: true,
+            ok: false,
+            reasonCode: err?.reasonCode || null,
+            conversationIdPrefix8: liveJobSummary.conversationIdPrefix8,
+            messageIdPrefix8: liveJobSummary.messageIdPrefix8,
+            tookMs: 0,
+            metrics: summarizeLiveMvpMetrics(null),
+          }, LIVE_MVP_RESULT_LOG_CAP);
+          return { ok: false, reasonCode: err?.reasonCode || 'LIVE_JOB_FAILED' };
         }
-        return livePromise || { ok: false, reasonCode: 'LIVE_JOB_NOT_STARTED' };
-      } catch (err) {
-        logCapped('liveMvpResultTrace', {
-          planned: true,
-          ok: false,
-          reasonCode: err?.reasonCode || null,
-          conversationIdPrefix8: liveJobSummary.conversationIdPrefix8,
-          messageIdPrefix8: liveJobSummary.messageIdPrefix8,
-          tookMs: 0,
-          metrics: summarizeLiveMvpMetrics(null),
-        }, LIVE_MVP_RESULT_LOG_CAP);
-        return { ok: false, reasonCode: err?.reasonCode || 'LIVE_JOB_FAILED' };
-      }
+      })();
     },
 
     // Event -> facade-only handler. Do not add new flow logic here.

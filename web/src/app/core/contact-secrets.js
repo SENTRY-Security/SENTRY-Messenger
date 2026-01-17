@@ -11,6 +11,7 @@ import {
   normalizeAccountDigest,
   normalizePeerDeviceId
 } from './store.js';
+import { encryptWithMK, decryptWithMK, b64u8, assertEnvelopeStrict } from '../crypto/aead.js';
 
 const STORAGE_KEY_BASE = 'contactSecrets-v2';
 const LATEST_KEY_BASE = 'contactSecrets-v2-latest';
@@ -23,6 +24,10 @@ const LEGACY_META_KEY_BASE = 'contactSecrets-v1-meta';
 const LEGACY_CHECKSUM_KEY_BASE = 'contactSecrets-v1-checksum';
 let restored = false;
 let contactSecretsLocked = false;
+const SNAPSHOT_INFO_TAG = 'contact-secrets/backup/v1';
+const SNAPSHOT_ALLOWED_INFO_TAGS = new Set([SNAPSHOT_INFO_TAG]);
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 const TEXT_ENCODER = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 const contactAliasToPrimary = new Map(); // alias -> primary key (accountDigest::deviceId preferred)
 const contactPrimaryToAliases = new Map(); // primary -> Set(alias)
@@ -1523,6 +1528,51 @@ function serializeContactSecretsMap(map) {
 export function buildContactSecretsSnapshot() {
   const map = ensureMap();
   return serializeContactSecretsMap(map);
+}
+
+export function buildPartialContactSecretsSnapshot(peerAccountDigest, { peerDeviceId = null } = {}) {
+  const map = ensureMap();
+  const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint: peerDeviceId });
+  if (!key || !map.has(key)) return null;
+  const record = map.get(key);
+  const entry = buildStructuredEntry(key, record);
+  if (!entry) return null;
+
+  const payloadObj = {
+    v: CONTACT_SECRETS_VERSION,
+    generatedAt: Date.now(),
+    entries: [entry]
+  };
+  return JSON.stringify(payloadObj);
+}
+
+export async function encryptContactSecretPayload(payload, mkRaw) {
+  const plain = encoder.encode(payload);
+  const { cipherBuf, iv, hkdfSalt } = await encryptWithMK(plain, mkRaw, SNAPSHOT_INFO_TAG);
+  return {
+    v: 1,
+    aead: 'aes-256-gcm',
+    info: SNAPSHOT_INFO_TAG,
+    salt_b64: b64(hkdfSalt),
+    iv_b64: b64(iv),
+    ct_b64: b64(cipherBuf)
+  };
+}
+
+export async function decryptContactSecretPayload(envelope, mkRaw) {
+  if (!envelope || envelope.aead !== 'aes-256-gcm') {
+    return { ok: false, corrupt: true, reason: 'invalid contact-secrets backup envelope' };
+  }
+  try {
+    const normalized = assertEnvelopeStrict(envelope, { allowInfoTags: SNAPSHOT_ALLOWED_INFO_TAGS });
+    const salt = b64u8(normalized.salt_b64);
+    const iv = b64u8(normalized.iv_b64);
+    const ct = b64u8(normalized.ct_b64);
+    const plain = await decryptWithMK(ct, mkRaw, salt, iv, normalized.info);
+    return { ok: true, snapshot: decoder.decode(plain) };
+  } catch (err) {
+    return { ok: false, corrupt: true, reason: err?.message || 'decrypt failed' };
+  }
 }
 
 function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {

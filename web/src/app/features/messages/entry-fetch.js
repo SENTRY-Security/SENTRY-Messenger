@@ -4,6 +4,11 @@
  */
 
 import { log, logCapped } from '../../core/log.js';
+import { getMkRaw } from '../../core/store.js';
+import {
+    buildPartialContactSecretsSnapshot,
+    encryptContactSecretPayload
+} from '../../core/contact-secrets.js';
 import {
     SEMANTIC_KIND
 } from '../semantic.js';
@@ -193,6 +198,36 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         messageKeyB64
     });
 
+    updateIncomingCounterState(state, counter);
+    const snapshotPersisted = !!persistDrSnapshot({ peerAccountDigest: peerDigest, state });
+
+    // ATOMIC PIGGYBACK (Receiver Write)
+    // Capture the DR state (Receiver: My Priv, Their Pub) used for this message
+    // and piggyback it into the vault for atomic restoration logic.
+    let drStateSnapshot = null;
+    try {
+        const mk = getMkRaw();
+        if (mk) {
+            const snapshotJson = buildPartialContactSecretsSnapshot(peerDigest, { peerDeviceId });
+            if (snapshotJson) {
+                drStateSnapshot = await encryptContactSecretPayload(snapshotJson, mk);
+            }
+        }
+    } catch (err) {
+        // Suppress errors to avoid failing the pipeline, but log if needed
+        if (FETCH_LOG_ENABLED) log({ atomicPiggybackError: err?.message || err, conversationId, counter });
+    }
+
+    if (snapshotPersisted) {
+        // Optimized Backup Trigger:
+        // Since we are vaulting the state (Atomic Piggyback), we might NOT need to trigger 
+        // a cloud backup for every single message if the vault put succeeds.
+        // However, for safety/redundancy, we still permit the cloud backup trigger 
+        // but it could be throttled or deduped by the underlying logic.
+        const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
+        maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
+    }
+
     let vaultPutStatus = null;
     try {
         await vaultPutMessageKey({
@@ -203,7 +238,8 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
             direction: 'incoming',
             msgType: messageObj.type || item.msgType || null,
             messageKeyB64,
-            headerCounter: counter
+            headerCounter: counter,
+            drStateSnapshot // Pass the encrypted snapshot
         });
         vaultPutStatus = 'ok';
     } catch (err) {
@@ -217,16 +253,10 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                 direction: 'incoming',
                 msgType: messageObj.type || item.msgType || null,
                 messageKeyB64,
-                headerCounter: counter
+                headerCounter: counter,
+                drStateSnapshot // Queue it too
             }, err);
         }
-    }
-
-    updateIncomingCounterState(state, counter);
-    const snapshotPersisted = !!persistDrSnapshot({ peerAccountDigest: peerDigest, state });
-    if (snapshotPersisted) {
-        const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
-        maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
     }
 
     if (conversationId && messageObj?.id) {
