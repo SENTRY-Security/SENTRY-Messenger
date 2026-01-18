@@ -10,7 +10,10 @@ import {
     encryptContactSecretPayload
 } from '../../core/contact-secrets.js';
 import {
-    SEMANTIC_KIND
+    SEMANTIC_KIND,
+    CONTROL_STATE_SUBTYPES,
+    TRANSIENT_SIGNAL_SUBTYPES,
+    normalizeSemanticSubtype
 } from '../semantic.js';
 import {
     getPipelineQueue,
@@ -172,6 +175,24 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         text = res.text;
         messageKeyB64 = res.messageKeyB64;
     } catch (err) {
+        // [Fix Persistent Placeholder]
+        // If decryption fails (e.g. "replay or out-of-order") but we know from the header
+        // that this is a control message (like contact-share), we should classify it 
+        // as CONTROL_STATE and let the pipeline handle it (hide it), rather than treating
+        // it as a fatal error that leaves the placeholder stuck.
+        const headerType = header?.meta?.msgType || header?.msgType || null;
+        const isContactShare = headerType === 'contact-share' || (header?.contact === 1 || header?.contact === '1');
+
+        if (isContactShare) {
+            return {
+                ok: true,
+                message: null,
+                state,
+                semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share' },
+                vaultPutStatus: null
+            };
+        }
+
         return { ok: false, error: err };
     }
 
@@ -535,6 +556,20 @@ export async function processDecryptPipelineForConversation({
                 decrypted.push(result.message);
                 decryptOk += 1;
                 if (result?.vaultPutStatus === 'ok') vaultPutIncomingOk += 1;
+            } else if (
+                result?.semantic?.kind === SEMANTIC_KIND.CONTROL_STATE ||
+                result?.semantic?.kind === SEMANTIC_KIND.TRANSIENT_SIGNAL
+            ) {
+                // [Fix Persistent Placeholder] Control messages must be explicitly updated to 'hidden'
+                // to transition them out of 'pending' state in the timeline.
+                markPlaceholderStatus(conversationId, counter, 'hidden', 'control_message');
+            } else if (
+                result?.semantic?.kind === SEMANTIC_KIND.CONTROL_STATE ||
+                result?.semantic?.kind === SEMANTIC_KIND.TRANSIENT_SIGNAL
+            ) {
+                // [Fix Persistent Placeholder] Control messages must be explicitly hidden
+                // to transition them out of 'pending' state.
+                markPlaceholderStatus(conversationId, counter, 'hidden', 'control_message');
             }
             setLastProcessedCounterForStream(streamKey, counter, result?.state || null);
             cleanupPipelineQueue(streamKey, conversationId, counter);
@@ -720,21 +755,77 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
             // User feedback: MS timestamp is valid and preferred over forced Seconds
 
             for (const raw of sortedItems) {
-                // Skip control messages
-                const type = raw.msgType || raw.msg_type || raw.subtype || raw.sub_type || raw.type || 'text';
-                if (type === 'control') continue;
+                let h = raw.header;
+                // Temporary fallback until backend fix propagates (or if header is just missing)
+                if (!h && raw.header_json) {
+                    try { h = JSON.parse(raw.header_json); } catch { }
+                }
+                h = h || {};
 
-                // Quick peek at header
-                const h = raw.header || {};
+                // [DEBUG] Inspect raw item for control analysis
+                if (raw.header_json || raw.headerJson || h.contact) {
+                    console.log('[EntryFetch] Inspect Item:', {
+                        id: raw.id,
+                        counter: raw.counter,
+                        h_contact: h.contact,
+                        h_meta_type: h.meta?.msgType,
+                        raw_type: raw.msgType,
+                        header_json_type: typeof raw.header_json,
+                        header_obj: h,
+                        raw_header_json: raw.header_json
+                    });
+                }
+
+                // [Simple Render Condition]
+                // Correct logic: Identify Control Messages and SKIP placeholder generation.
+                // Control messages (contact-share, etc.) do not need a "Decrypting..." placeholder
+                // because they are system states, not user content.
+
+                // [Strict Filter] Aggressively identify Control Messages
+                // We MUST prevent them from generating a placeholder.
+
+                // 1. Resolve Type from multiple possible sources
+                const resolveType = (obj) => obj?.msgType || obj?.msg_type || obj?.type || null;
+                const typeCandidates = [
+                    resolveType(h),                 // header.msgType
+                    resolveType(h?.meta),           // header.meta.msgType
+                    resolveType(raw),               // raw.msgType
+                    raw?.type,                      // raw.type
+                ];
+
+                // 2. Resolve Contact Flag
+                const isContactFlag = (h.contact === 1 || h.contact === '1' || h.contact === true);
+
+                // 3. String Inspection Failsafe (if JSON parse failed or schema is weird)
+                const jsonString = raw.header_json || '';
+                const hasContactShareString = jsonString.includes('contact-share') || jsonString.includes('"contact":1');
+
+                const normalizedType = typeCandidates.reduce((acc, val) => acc || normalizeSemanticSubtype(val), null);
+
+                const isControl = isContactFlag || hasContactShareString || (normalizedType && (
+                    normalizedType === 'contact-share' ||
+                    normalizedType === 'control' ||
+                    CONTROL_STATE_SUBTYPES.has(normalizedType) ||
+                    TRANSIENT_SIGNAL_SUBTYPES.has(normalizedType)
+                ));
+
+                // [DEBUG] Log Control Decision if it's borderline
+                if (isControl || hasContactShareString) {
+                    // console.log('[EntryFetch] Skipping Placeholder:', { id: raw.id, isControl, normalizedType, isContactFlag, hasContactShareString });
+                }
+
+                if (isControl) continue;
+
                 const counter = Number(h.counter ?? h.n);
+
                 // Only for incoming messages that are not history replay (or even if replay, we want shimmer?)
                 // If history replay, we usually want correct order. placeholder might disrupt if not careful.
                 // But user issue is specific to "decrypting" state.
-                // Let's restrict to incoming.
-                // We don't have full direction resolution here easily without `buildPipelineItemFromRaw`.
-                // But we can check senderDigest vs selfDigest.
-
-                if (!Number.isFinite(counter)) continue;
+                const isIncoming = (
+                    raw.senderDeviceId && raw.senderDeviceId !== selfDeviceId
+                ) || (
+                        h.meta?.senderDeviceId && h.meta.senderDeviceId !== selfDeviceId
+                    ) || raw.direction === 'incoming'; // Fallback if computed externally)) continue;
 
                 // Direction check
                 // raw.senderDigest might be available
@@ -793,8 +884,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                 continue;
             }
 
-            if (!computedIsHistoryReplay) {
-                if (item.direction !== 'incoming') continue;
+            if (!computedIsHistoryReplay && item.direction === 'incoming') {
                 enqueueDecryptPipelineItem(item);
                 continue;
             }

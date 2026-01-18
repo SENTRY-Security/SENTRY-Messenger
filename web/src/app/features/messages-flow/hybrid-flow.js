@@ -9,6 +9,7 @@ import { getLocalProcessedCounter } from './local-counter.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
 import { normalizePeerIdentity } from '../../core/store.js';
 import { appendBatch as timelineAppendBatch, updateTimelineEntryStatusByCounter } from '../timeline-store.js';
+import { CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES, normalizeSemanticSubtype } from '../semantic.js';
 
 import {
     getAccountDigest as storeGetAccountDigest,
@@ -155,8 +156,40 @@ export async function smartFetchMessages({
             const counter = Number(raw.counter ?? raw.n ?? raw.header?.counter ?? raw.header?.n);
             if (!Number.isFinite(counter)) continue;
 
-            const type = raw.msgType || raw.msg_type || raw.subtype || raw.sub_type || raw.type || 'text';
-            if (type === 'control') continue;
+            // [Strict Filter] Aggressively identify Control Messages in Hybrid Flow
+            // 1. Resolve Header if missing
+            let h = raw.header;
+            if (!h && raw.header_json) {
+                try { h = JSON.parse(raw.header_json); } catch { }
+            }
+            h = h || {};
+
+            // 2. Resolve Contact Flag
+            const isContactFlag = (h.contact === 1 || h.contact === '1' || h.contact === true);
+
+            // 3. Resolve Type from all sources
+            const resolveType = (obj) => obj?.msgType || obj?.msg_type || obj?.type || obj?.subtype || obj?.sub_type || null;
+            const typeCandidates = [
+                resolveType(h),
+                resolveType(h?.meta),
+                resolveType(raw),
+                'text' // fallback for normalization check
+            ];
+
+            // 4. String Inspection Failsafe
+            const jsonString = raw.header_json || '';
+            const hasContactShareString = jsonString.includes('contact-share') || jsonString.includes('"contact":1');
+
+            const normalizedType = typeCandidates.reduce((acc, val) => acc || normalizeSemanticSubtype(val), null);
+
+            const isControl = isContactFlag || hasContactShareString || (normalizedType && (
+                normalizedType === 'contact-share' ||
+                normalizedType === 'control' ||
+                CONTROL_STATE_SUBTYPES.has(normalizedType) ||
+                TRANSIENT_SIGNAL_SUBTYPES.has(normalizedType)
+            ));
+
+            if (isControl) continue;
 
             let dir = 'incoming';
             // Quick direction check
@@ -410,14 +443,21 @@ export async function smartFetchMessages({
 
         if (result && result.ok && result.item) {
             // [Fix Stuck Placeholder]
-            // If the decrypted message turns out to be a CONTROL message (e.g. sender key distribution),
-            // we must explicitly HIDE the placeholder we created, because the UI/Timeline might
-            // ignore control messages during append, leaving the placeholder stuck in 'pending'.
-            const isControl = result.item.msgType === 'control' || result.item.type === 'control';
+            // If the decrypted message turns out to be a CONTROL message (e.g. sender key, contact-share),
+            // we must explicitly HIDE the placeholder.
+            const rawType = result.item.msgType || result.item.type;
+            const subtype = normalizeSemanticSubtype(rawType);
+
+            const isControl = subtype && (
+                subtype === 'control' ||
+                CONTROL_STATE_SUBTYPES.has(subtype) ||
+                TRANSIENT_SIGNAL_SUBTYPES.has(subtype)
+            );
+
             if (isControl) {
                 updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_MSG_DECRYPTED' });
-                // We still push it to decryptedItems in case upper layers need to process the signal
-                // but visually it is now handled.
+                // We still push it to decryptedItems so it can be processed by listeners,
+                // but visually it is hidden.
             }
             decryptedItems.push(result.item);
         } else {

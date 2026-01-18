@@ -1107,7 +1107,7 @@ async function ensureDataTables(env) {
     'messages_secure',
     'message_key_vault',
     'attachments',
-    'messages',
+    // 'messages', // Legacy table, optional
     'media_objects',
     'opaque_records',
     'device_backup',
@@ -2334,6 +2334,7 @@ async function handleMessagesRoutes(req, env) {
           sender_device_id: row.sender_device_id,
           receiver_account_digest: row.receiver_account_digest,
           receiver_device_id: row.receiver_device_id,
+          header: safeJSON(row.header_json), // Root Cause Fix: Return parsed header object
           header_json: row.header_json,
           ciphertext_b64: row.ciphertext_b64,
           counter: row.counter,
