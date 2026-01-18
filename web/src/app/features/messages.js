@@ -111,6 +111,29 @@ import {
   flushPendingVaultPutsNow as vaultFlushPendingVaultPutsNow
 } from './messages/vault.js';
 
+// Actually timeline-store.js is where they are defined. messages-pane.js imports them.
+// Let's import directly from timeline-store.js to avoid circular deps if messages-pane depends on messages.js (it does).
+import {
+  upsertTimelineEntry as storeUpsertTimelineEntry,
+  appendBatch as storeAppendBatch
+} from './timeline-store.js';
+import { normalizeMsgTypeValue } from './messages/parser.js';
+
+function ensurePlaceholderEntry({ conversationId, counter, senderDeviceId, direction = 'incoming', ts = null, tsMs = null }) {
+  if (!conversationId || !Number.isFinite(counter)) return false;
+  return storeUpsertTimelineEntry(conversationId, {
+    messageId: `${conversationId}:${counter}:placeholder`,
+    counter,
+    msgType: 'placeholder', // Key for Shimmer
+    placeholder: true,
+    status: 'pending',
+    senderDeviceId,
+    direction,
+    ts: ts || Date.now() / 1000,
+    tsMs: tsMs || Date.now()
+  });
+}
+
 const defaultDeps = {
   listSecureMessages: apiListSecureMessages,
   getSecureMessageByCounter: apiGetSecureMessageByCounter,
@@ -149,7 +172,11 @@ const defaultDeps = {
   maybeSendDeliveryReceipt,
   maybeSendVaultAckWs,
   enqueuePendingVaultPut: vaultEnqueuePendingVaultPut,
-  flushPendingVaultPutsNow: vaultFlushPendingVaultPutsNow
+  flushPendingVaultPutsNow: vaultFlushPendingVaultPutsNow,
+  // Injected for Shimmer Restoration
+  ensurePlaceholderEntry,
+  timelineAppendBatch: storeAppendBatch,
+  markPlaceholderStatus: (convId, counter, status, reason) => { /* simplified placeholder status update if needed later */ }
 };
 
 const deps = { ...defaultDeps };

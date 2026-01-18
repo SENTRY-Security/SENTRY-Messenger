@@ -39,6 +39,7 @@ import {
 import {
     buildCounterMessageId
 } from './counter.js';
+import { updateTimelineEntryStatusByCounter } from '../timeline-store.js';
 
 // Re-export constants if needed or just use them locally
 const FETCH_LOG_ENABLED = true; // Could be config
@@ -709,6 +710,69 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
             silent
         });
 
+
+
+        // [Placeholder Injection]
+        // Batch insert placeholders for incoming messages to trigger UI Shimmer
+        if (sortedItems.length > 0 && typeof timelineAppendBatch === 'function') {
+            const placeholders = [];
+            const now = Date.now();
+            // User feedback: MS timestamp is valid and preferred over forced Seconds
+
+            for (const raw of sortedItems) {
+                // Skip control messages
+                const type = raw.msgType || raw.msg_type || raw.subtype || raw.sub_type || raw.type || 'text';
+                if (type === 'control') continue;
+
+                // Quick peek at header
+                const h = raw.header || {};
+                const counter = Number(h.counter ?? h.n);
+                // Only for incoming messages that are not history replay (or even if replay, we want shimmer?)
+                // If history replay, we usually want correct order. placeholder might disrupt if not careful.
+                // But user issue is specific to "decrypting" state.
+                // Let's restrict to incoming.
+                // We don't have full direction resolution here easily without `buildPipelineItemFromRaw`.
+                // But we can check senderDigest vs selfDigest.
+
+                if (!Number.isFinite(counter)) continue;
+
+                // Direction check
+                // raw.senderDigest might be available
+                // If we can't determine direction easily, we might skip or assume incoming?
+                // Safe bet: if computedIsHistoryReplay is false, and it's from listSecureMessages, likely incoming.
+                // But listSecureMessages returns both outgoing and incoming.
+                // Let's do a quick direction check if possible.
+                let dir = 'incoming';
+                if (selfDigest && raw.senderDigest && String(raw.senderDigest).toUpperCase() === selfDigest) {
+                    dir = 'outgoing';
+                }
+
+                // If outgoing, we might not need shimmer if we already have the message? 
+                // But for a sync from server, we might don't have it locally.
+                // Let's show shimmer for all to be safe and consistent.
+
+                const realId = raw.id || raw.messageId || raw.serverMessageId;
+                const msgId = realId || `${conversationId}:${counter}:placeholder`;
+
+                placeholders.push({
+                    conversationId,
+                    messageId: msgId,
+                    counter: counter,
+                    msgType: 'placeholder',
+                    placeholder: true,
+                    status: 'pending',
+                    senderDeviceId: raw.senderDeviceId || raw.header?.device_id || null,
+                    direction: dir,
+                    ts: raw.created_at || raw.createdAt || raw.ts,
+                    tsMs: (raw.created_at || raw.createdAt || raw.ts) ? (raw.created_at || raw.createdAt || raw.ts) * 1000 : 0
+                });
+            }
+
+            if (placeholders.length > 0) {
+                timelineAppendBatch(placeholders);
+            }
+        }
+
         for (const raw of sortedItems) {
             const built = buildPipelineItemFromRaw(raw, {
                 conversationId,
@@ -720,7 +784,14 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
             });
 
             const item = built?.item || null;
-            if (!item) continue;
+            if (!item) {
+                // [Fix Stuck Placeholder] Filtered out by logic (e.g. Control Message)
+                const counter = Number(raw.counter ?? raw.n ?? raw.header?.counter ?? raw.header?.n);
+                if (Number.isFinite(counter)) {
+                    updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'ITEM_FILTERED' });
+                }
+                continue;
+            }
 
             if (!computedIsHistoryReplay) {
                 if (item.direction !== 'incoming') continue;
@@ -756,6 +827,11 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                     }
                 }
                 errs.push({ messageId, reason: 'vault_missing' }); // simplified
+                // [Fix Stuck Placeholder] Key missing means we can't show text.
+                // We should probably mark it failed or blocked?
+                // User requirement focused on "Control Message", but logical correctness implies failed.
+                // However, missing key might be repaired later. 'blocked' is better than 'pending'.
+                updateTimelineEntryStatusByCounter(conversationId, item.counter, 'blocked', { reason: 'VAULT_MISSING' });
                 continue;
             }
 
@@ -768,11 +844,19 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                     ciphertextB64: item.ciphertextB64,
                     header: item.header
                 });
-            } catch (e) { continue; }
+            } catch (e) {
+                // [Fix Stuck Placeholder] Decrypt failed
+                updateTimelineEntryStatusByCounter(conversationId, item.counter, 'failed', { reason: 'DECRYPT_FAIL' });
+                continue;
+            }
 
             const payload = { meta: item.meta };
             const semantic = classifyDecryptedPayload(text, { meta: item.meta, header: item.header });
-            if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE) continue;
+            if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE) {
+                // [Fix Stuck Placeholder] Control Message
+                updateTimelineEntryStatusByCounter(conversationId, item.counter, 'hidden', { reason: 'CONTROL_MSG' });
+                continue;
+            }
 
             const messageObj = buildMessageObject({
                 plaintext: text,

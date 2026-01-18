@@ -8,6 +8,7 @@ import { consumeLiveJob } from './live/coordinator.js';
 import { getLocalProcessedCounter } from './local-counter.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
 import { normalizePeerIdentity } from '../../core/store.js';
+import { appendBatch as timelineAppendBatch, updateTimelineEntryStatusByCounter } from '../timeline-store.js';
 
 import {
     getAccountDigest as storeGetAccountDigest,
@@ -135,6 +136,57 @@ export async function smartFetchMessages({
     const sortedItems = [...rawItems].sort((a, b) => {
         return Number(a.counter) - Number(b.counter);
     });
+
+    // [Placeholder Injection]
+    if (rawItems.length > 0) {
+        // Sort specifically for UI Placeholders (Time-based ASC)
+        // This ensures placeholders appear in correct time order, interleaved between senders.
+        const placeholderItems = [...rawItems].sort((a, b) => {
+            const tsA = Number(a.created_at || a.createdAt || a.ts || 0);
+            const tsB = Number(b.created_at || b.createdAt || b.ts || 0);
+            return tsA - tsB;
+        });
+
+        const placeholders = [];
+        const now = Date.now();
+
+        for (const raw of placeholderItems) {
+            // Fix: hybrid-flow items have counter at root, not necessarily in header object
+            const counter = Number(raw.counter ?? raw.n ?? raw.header?.counter ?? raw.header?.n);
+            if (!Number.isFinite(counter)) continue;
+
+            const type = raw.msgType || raw.msg_type || raw.subtype || raw.sub_type || raw.type || 'text';
+            if (type === 'control') continue;
+
+            let dir = 'incoming';
+            // Quick direction check
+            const rawSender = raw.sender || raw.sender_account_digest || raw.senderAccountDigest;
+            const sender = rawSender ? (rawSender.includes('::') ? rawSender.split('::')[0] : rawSender) : null;
+            const myDigest = selfDigest ? (selfDigest.includes('::') ? selfDigest.split('::')[0] : selfDigest) : null;
+            if (sender && myDigest && sender === myDigest) {
+                dir = 'outgoing';
+            }
+
+            const realId = raw.id || raw.messageId || raw.serverMessageId;
+            const msgId = realId || `${conversationId}:${counter}:placeholder`;
+
+            placeholders.push({
+                conversationId,
+                messageId: msgId,
+                counter: counter,
+                msgType: 'placeholder',
+                placeholder: true,
+                status: 'pending',
+                senderDeviceId: raw.senderDeviceId || raw.sender_device_id || raw.header?.device_id || null,
+                direction: dir,
+                ts: raw.created_at || raw.createdAt || raw.ts,
+                tsMs: (raw.created_at || raw.createdAt || raw.ts) ? (raw.created_at || raw.createdAt || raw.ts) * 1000 : 0
+            });
+        }
+        if (placeholders.length > 0) {
+            timelineAppendBatch(placeholders);
+        }
+    }
 
     const decryptedItems = [];
     const errors = [];
@@ -357,12 +409,23 @@ export async function smartFetchMessages({
         }
 
         if (result && result.ok && result.item) {
+            // [Fix Stuck Placeholder]
+            // If the decrypted message turns out to be a CONTROL message (e.g. sender key distribution),
+            // we must explicitly HIDE the placeholder we created, because the UI/Timeline might
+            // ignore control messages during append, leaving the placeholder stuck in 'pending'.
+            const isControl = result.item.msgType === 'control' || result.item.type === 'control';
+            if (isControl) {
+                updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_MSG_DECRYPTED' });
+                // We still push it to decryptedItems in case upper layers need to process the signal
+                // but visually it is now handled.
+            }
             decryptedItems.push(result.item);
         } else {
             const errorReason = result?.reason || 'UNKNOWN_ERROR';
 
             // Filter out control messages
             if (errorReason === 'CONTROL_SKIP' || errorReason === 'CORRUPT_SKIP') {
+                updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: errorReason });
                 continue;
             }
 
