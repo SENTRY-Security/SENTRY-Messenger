@@ -2006,6 +2006,27 @@ async function sendDrPlaintext(params = {}) {
         });
 
         const repairVaultCounter = Number.isFinite(repairTransportCounter) ? repairTransportCounter : repairHeaderN;
+
+        // [FIX] Encrypt DR State Snapshot for persistence (Repair Flow)
+        let repairDrStateSnapshot = null;
+        if (getMkRaw()) { // Check if MK is available
+          try {
+            if (repairPostSnapshot) {
+              try {
+                persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: repairPostSnapshot });
+              } catch (e) {
+                drConsole.warn('[dr] pre-piggyback persist failed (repair)', e);
+              }
+            }
+            const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+            if (payloadJson) {
+              repairDrStateSnapshot = await encryptContactSecretPayload(payloadJson, getMkRaw());
+            }
+          } catch (err) {
+            logDrSendTrace({ messageId: replacementMessageId, stage: 'SNAPSHOT_FAIL_REPAIR', error: err?.message });
+          }
+        }
+
         try {
           await MessageKeyVault.putMessageKey({
             conversationId: finalConversationId,
@@ -2016,7 +2037,8 @@ async function sendDrPlaintext(params = {}) {
             msgType,
             headerCounter: repairVaultCounter,
             messageKeyB64: repairMessageKeyB64,
-            accountDigest: accountDigest // self
+            accountDigest: accountDigest, // self
+            drStateSnapshot: repairDrStateSnapshot // Pass the encrypted snapshot
           });
           logOutgoingSendTrace('vault_put_ok', replacementMessageId, null);
           logDrSendTrace({ messageId: replacementMessageId, stage: 'VAULT_PUT_OK' });
@@ -2692,6 +2714,29 @@ export async function sendDrMedia(params = {}) {
     }
     throw err;
   };
+
+  // [FIX] Encrypt DR State Snapshot for persistence
+  // Mirroring logic from sendDrText to ensure atomic backup of new Ratchet State (Ns+1)
+  let drStateSnapshot = null;
+  const mk = getMkRaw();
+  if (mk) {
+    try {
+      if (postSnapshot) {
+        try {
+          persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: postSnapshot });
+        } catch (e) {
+          drConsole.warn('[dr] pre-piggyback persist failed (media)', e);
+        }
+      }
+      const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+      if (payloadJson) {
+        drStateSnapshot = await encryptContactSecretPayload(payloadJson, mk);
+      }
+    } catch (err) {
+      logDrSendTrace({ messageId, stage: 'SNAPSHOT_FAIL', error: err?.message });
+    }
+  }
+
   try {
     await MessageKeyVault.putMessageKey({
       conversationId,
@@ -2702,7 +2747,8 @@ export async function sendDrMedia(params = {}) {
       msgType,
       headerCounter: vaultCounter,
       messageKeyB64,
-      accountDigest: accountDigest // self
+      accountDigest: accountDigest, // self
+      drStateSnapshot // Pass the encrypted snapshot
     });
     logOutgoingSendTrace('vault_put_ok', messageId, null);
     logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });

@@ -1387,8 +1387,15 @@ export function setupShareController(options) {
         conversationId,
         counter
       });
+      // [FIX] Persist the new state (Ns=N+1) IMMEDIATELY to prevent "Ratchet Gap" on reload.
+      // Previously, we advanced the ratchet in memory but didn't save it to Vault/LocalStorage.
+      // If the user reloaded, state reverted to N, but the message used N+1.
+      const snapshot = snapshotDrState(drState({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId }));
+      if (snapshot) {
+        persistDrSnapshot({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId, snapshot });
+      }
     } catch (err) {
-      console.warn('[share-controller] failed to advance DR counter before contact-share', err);
+      console.warn('[share-controller] failed to advance/persist DR counter before contact-share', err);
     }
     const nowSec = Date.now();
     const payloadTs = Number(contactPayload?.updatedAt || contactPayload?.addedAt || nowSec);

@@ -383,10 +383,10 @@ export async function smartFetchMessages({
                         if (bResult.ok && bResult.decrypted) {
                             // Atomic Backup Check:
                             if (!bResult.vaultPut) {
-                                console.warn(`[HybridVerify] Route B Success item ${item.id} BUT Vault Put Failed. STOPPING sequence.`);
+                                console.warn(`[HybridVerify] Route B Success item ${item.id} BUT Vault Put Failed. Logging error and continuing...`);
                                 const reason = 'ROUTE_B_VAULT_PUT_FAIL';
                                 errors.push({ item, reason });
-                                break; // CRITICAL STOP
+                                // NON-BLOCKING: Continue to next item
                             }
 
                             console.warn(`[HybridVerify] Route B Success item ${item.id}. Retrying Route A to fetch content...`);
@@ -410,31 +410,31 @@ export async function smartFetchMessages({
                                     reason: 'RESTORED_VIA_ROUTE_B'
                                 });
                             } else {
-                                console.warn(`[HybridVerify] Route B Success BUT Route A Retry Failed for item ${item.id}. STOPPING sequence.`);
+                                console.warn(`[HybridVerify] Route B Success BUT Route A Retry Failed for item ${item.id}. Logging error and continuing...`);
                                 const reason = 'ROUTE_B_OK_BUT_VAULT_MISSING';
                                 errors.push({ item, reason });
-                                break; // CRITICAL STOP
+                                // NON-BLOCKING: Continue to next item
                             }
                         } else {
                             console.warn(`[HybridVerify] Route B Failed item ${item.id}:`, bResult.reasonCode);
                             result = { ok: false, reason: bResult.reasonCode || 'ROUTE_B_FAIL' };
 
-                            // If Gap Message (Newer than local), strict stop UNLESS it's a control skip
+                            // If Gap Message (Newer than local), log but DO NOT stop.
                             if (counter > localMax && result.reason !== 'CONTROL_SKIP') {
-                                console.warn(`[HybridVerify] Strict Sequential Stop at item ${item.id} (Gap Message Failed).`);
+                                console.warn(`[HybridVerify] Gap Message Failed at item ${item.id}. Logging error and continuing to sequence...`);
                                 errors.push({ item, reason: result.reason });
-                                break; // CRITICAL STOP
+                                // NON-BLOCKING: Continue to next item
                             }
                         }
                     } catch (err) {
                         console.warn(`[HybridVerify] Route B Exception item ${item.id}:`, err);
                         result = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
 
-                        // If Gap Message, strict stop.
+                        // If Gap Message, log but DO NOT stop.
                         if (counter > localMax) {
-                            console.warn(`[HybridVerify] Strict Sequential Stop at item ${item.id} (Exception).`);
+                            console.warn(`[HybridVerify] Gap Message Exception at item ${item.id}. Logging error and continuing to sequence...`);
                             errors.push({ item, reason: result.reason });
-                            break; // CRITICAL STOP
+                            // NON-BLOCKING: Continue to next item
                         }
                     }
                 }

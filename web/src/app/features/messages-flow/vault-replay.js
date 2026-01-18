@@ -110,8 +110,11 @@ function resolveMessageSubtypeFromHeader(header) {
 function isQueueEligibleSubtype(subtype) {
   if (!subtype) return true;
   if (isUserMessageSubtype(subtype)) return true;
-  if (CONTROL_STATE_SUBTYPES.has(subtype)) return false;
-  if (TRANSIENT_SIGNAL_SUBTYPES.has(subtype)) return false;
+  // [Fix] Allow Control/Transient messages to pass through Vault Replay.
+  // The presentation layer (hybrid-flow.js) will decide whether to hide or show them.
+  // Dropping them here causes them to be effectively lost (no side effects, no placeholder cleanup).
+  if (CONTROL_STATE_SUBTYPES.has(subtype)) return true;
+  if (TRANSIENT_SIGNAL_SUBTYPES.has(subtype)) return true;
   return true;
 }
 

@@ -323,6 +323,52 @@ async function decryptIncomingSingle(params = {}, adapters) {
       if (!applyOk) {
         console.error('[state-live] applyContactShareFromCommit failed', applyResult);
       }
+
+      // [FIX] Advance Ratchet State & Persist to Vault (Receiver Side)
+      // verify adapters availability
+      if (applyOk && adapters?.drState && adapters?.persistDrSnapshot && adapters?.snapshotAndEncryptDrState && adapters?.vaultPutIncomingKey) {
+        try {
+          const msgHeaderN = Number(header?.n);
+          const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+          // Check if we need to advance (N > Nr)
+          // Note: generic drState usually uses NsTotal/NrTotal or Ns/Nr
+          // We safely update NrTotal to reflect highest received counter.
+          const currentNr = Number(state?.NrTotal ?? state?.Nr ?? 0);
+
+          if (state && Number.isFinite(msgHeaderN) && msgHeaderN > currentNr) {
+            if (DEBUG.drVerbose) console.log('[state-live] advancing Contact-Share Ratchet', { from: currentNr, to: msgHeaderN });
+
+            // 1. Advance State (Manual)
+            state.NrTotal = msgHeaderN;
+            if ((state.Nr || 0) < msgHeaderN) state.Nr = msgHeaderN;
+
+            // 2. Persist Local
+            adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, snapshot: state });
+
+            // 3. Encrypt for Vault
+            const drStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
+
+            // 4. Persist to Vault
+            if (drStateSnapshot) {
+              await adapters.vaultPutIncomingKey({
+                conversationId,
+                messageId,
+                senderDeviceId,
+                targetDeviceId: adapters.getDeviceId(),
+                direction: 'incoming',
+                msgType: 'contact-share',
+                headerCounter: msgHeaderN,
+                messageKeyB64: null, // No MK for contact-share (Session Key used)
+                accountDigest: adapters.getAccountDigest(),
+                drStateSnapshot
+              });
+              if (DEBUG.drVerbose) console.log('[state-live] vaulted Contact-Share Snapshot');
+            }
+          }
+        } catch (err) {
+          console.warn('[state-live] failed to persist contact-share ratchet state', err);
+        }
+      }
     } catch (err) {
       console.error('[state-live] contact-share processing failed', err);
       return {

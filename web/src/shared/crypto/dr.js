@@ -320,12 +320,14 @@ export async function drRatchet(st, theirRatchetPubU8) {
   const myNew = await genX25519Keypair();
   st.rk = newRoot;
   st.ckR = chainSeed;
-  st.ckS = null;
-  st.PN = st.Ns;
-  st.Ns = 0;
+  // [DEBUG] Disable recurring ratchet: Keep existing sending chain alive.
+  // st.ckS = null;
+  // [DEBUG] Disable sending side updates entirely
+  // st.PN = st.Ns;
+  // st.Ns = 0;
   st.Nr = 0;
-  st.myRatchetPriv = myNew.secretKey;
-  st.myRatchetPub = myNew.publicKey;
+  // st.myRatchetPriv = myNew.secretKey;
+  // st.myRatchetPub = myNew.publicKey;
   st.theirRatchetPub = theirRatchetPubU8;
   st.pendingSendRatchet = false;
   try {

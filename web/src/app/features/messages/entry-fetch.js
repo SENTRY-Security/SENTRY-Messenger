@@ -42,7 +42,9 @@ import {
 import {
     buildCounterMessageId
 } from './counter.js';
-import { updateTimelineEntryStatusByCounter } from '../timeline-store.js';
+import { updateTimelineEntryStatusByCounter, appendUserMessage } from '../timeline-store.js';
+import { applyContactShareFromCommit } from '../contacts.js';
+import { decryptContactPayload, normalizeContactShareEnvelope } from '../contact-share.js';
 
 // Re-export constants if needed or just use them locally
 const FETCH_LOG_ENABLED = true; // Could be config
@@ -162,6 +164,77 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
     if (!state.baseKey.conversationId) state.baseKey.conversationId = conversationId;
     if (!state.baseKey.peerDeviceId) state.baseKey.peerDeviceId = peerDeviceId;
     if (!state.baseKey.peerAccountDigest) state.baseKey.peerAccountDigest = peerDigest;
+
+    // [FIX] Offline/History Contact Share Processing
+    // We must intercept contact-share BEFORE DR Decryption because it uses Session Key, not DR.
+    // Ensure side effects (Profile Update) are applied even for history messages.
+    const headerType = header?.meta?.msgType || header?.msgType || null;
+    const isContactShare = headerType === 'contact-share' || (header?.contact === 1 || header?.contact === '1');
+
+    if (isContactShare) {
+        if (!item.tokenB64) {
+            return { ok: true, message: null, state, semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share-missing-token' } };
+        }
+        try {
+            const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
+            await decryptContactPayload(item.tokenB64, envelope); // verify decryptability
+            const plaintext = JSON.stringify({ type: 'contact-share', envelope });
+            const messageTs = Number(item.ts || item.created_at || item.createdAt || Date.now());
+
+            const applyResult = await applyContactShareFromCommit({
+                peerAccountDigest: peerDigest,
+                peerDeviceId: peerDeviceId,
+                sessionKey: item.tokenB64,
+                plaintext,
+                messageId: item.serverMessageId || `${conversationId}:${counter}`,
+                sourceTag: 'entry-fetch:history-contact-share',
+                profileUpdatedAt: messageTs
+            });
+
+            if (applyResult?.diff && conversationId) {
+                try {
+                    const diff = applyResult.diff;
+                    if (diff.nickname) {
+                        appendUserMessage(conversationId, {
+                            id: `${item.serverMessageId || counter}-sys-nick`,
+                            msgType: 'system',
+                            text: `對方的暱稱已更改為 ${diff.nickname.to}`,
+                            ts: Date.now() / 1000,
+                            direction: 'incoming',
+                            status: 'sent'
+                        });
+                    }
+                    if (diff.avatar) {
+                        appendUserMessage(conversationId, {
+                            id: `${item.serverMessageId || counter}-sys-avatar`,
+                            msgType: 'system',
+                            text: '對方已更改頭像',
+                            ts: Date.now() / 1000,
+                            direction: 'incoming',
+                            status: 'sent'
+                        });
+                    }
+                } catch (e) { console.warn('[entry-fetch] sys notify fail', e); }
+            }
+            // Return success as Control State (Hidden)
+            return {
+                ok: true,
+                message: null,
+                state,
+                semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share' },
+                vaultPutStatus: 'ok' // Virtual success
+            };
+        } catch (err) {
+            console.warn('[entry-fetch] contact-share history process failed', err);
+            // Fallback to control state to clear placeholder, but log error
+            return {
+                ok: true,
+                message: null,
+                state,
+                semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share-failed' }
+            };
+        }
+    }
 
     let messageKeyB64 = null;
     let text = null;
