@@ -628,10 +628,25 @@ export async function drDecryptText(st, packet, opts = {}) {
       if (!chain.size) skippedNext.delete(chainId);
       return value;
     };
+    let mk = null;
+    let usedStoredKey = false;
     const sameReceiveChain = st?.theirRatchetPub && typeof packet?.header?.ek_pub_b64 === 'string'
       && b64(working.theirRatchetPub) === packet.header.ek_pub_b64;
+
+    // [FIX] Cache-First Replay Check: If message is "late" (counter < current), check if we saved a key for it.
     if (sameReceiveChain && Number.isFinite(headerN) && Number.isFinite(currentNr) && currentNr >= headerN) {
-      throw new Error('replay or out-of-order message counter');
+      // Attempt to rescue from skipped cache
+      const chainIdCandidate = packet.header.ek_pub_b64;
+      const cached = takeSkippedLocal(chainIdCandidate, headerN);
+      if (cached) {
+        mk = b64u8(cached);
+        usedStoredKey = true;
+        nrAtDerive = Number.isFinite(st?.Nr) ? Number(st.Nr) : null;
+        nUsed = Number.isFinite(headerN) ? headerN : (nrAtDerive !== null ? nrAtDerive : null);
+      } else {
+        // Only throw if we truly don't have the key
+        throw new Error('replay or out-of-order message counter');
+      }
     }
     let ratchetPerformed = false;
 
@@ -703,8 +718,13 @@ export async function drDecryptText(st, packet, opts = {}) {
     nrAfterRatchet = Number.isFinite(working?.Nr) ? Number(working.Nr) : null;
     postRatchetTheirPubPrefix = working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null;
     chainId = packet?.header?.ek_pub_b64 || null;
-    let usedStoredKey = false;
-    let mk = null;
+    let usedStoredKeyMatches = false; // dummy or reuse? Loop below logic handles it.
+    // Removed let declarations to avoid SyntaxError (hoisted above)
+    // let mk = null; 
+    // let usedStoredKey = false;
+    if (!mk && !usedStoredKey) { // Reset if not already found in early check
+      mk = null;
+    }
     if (chainId && Number.isFinite(headerN)) {
       const cached = takeSkippedLocal(chainId, headerN);
       if (cached) {
