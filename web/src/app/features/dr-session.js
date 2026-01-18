@@ -3546,6 +3546,22 @@ export async function ensureDrReceiverState(params = {}) {
       });
     } catch { }
   }
+
+  const tryHydrateAndRecheck = async (reason, validator) => {
+    try {
+      drConsole.warn(`[dr-log:rescue-start] reason=${reason}`, { peerAccountDigest: peer, peerDeviceId });
+      await hydrateContactSecretsFromBackup({ reason: `dr-rescue:${reason}` });
+      const newState = drState({ peerAccountDigest: peer, peerDeviceId });
+      if (validator(newState)) {
+        drConsole.log(`[dr-log:rescue-success] reason=${reason}`, { conversationId, peer });
+        return { ok: true, state: newState };
+      }
+    } catch (err) {
+      drConsole.warn(`[dr-log:rescue-failed] reason=${reason}`, err);
+    }
+    return { ok: false };
+  };
+
   if (guestLike && stateRole === 'responder') {
     try {
       drConsole.warn('[dr-log:clear-responder-guest]', {
@@ -3558,20 +3574,25 @@ export async function ensureDrReceiverState(params = {}) {
       });
     } catch { }
     if (!safeKeepSendState) {
-      try {
-        drConsole.warn('[dr-log:clear-drState-because-guest]', {
-          peerAccountDigest: peer,
-          peerDeviceId,
-          stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
-          reason: 'guest-role',
-          hasSnapshot: !!secretInfo?.drState
-        });
-      } catch { }
-      clearDrState(
-        { peerAccountDigest: peer, peerDeviceId },
-        { __drDebugTag: 'web/src/app/features/dr-session.js:1978:ensureDrReceiverState:guest-role-clear' }
-      );
-      state = drState({ peerAccountDigest: peer, peerDeviceId });
+      // 嘗試救援：若這是誤報 (例如備份其實是 Initiator)，重整後再檢查。
+      const rescue = await tryHydrateAndRecheck('guest-role-mismatch', (s) => {
+        const r = typeof s?.baseKey?.role === 'string' ? s.baseKey.role.toLowerCase() : null;
+        return r !== 'responder'; // 成功條件：角色不再是 responder
+      });
+
+      if (rescue.ok) {
+        state = rescue.state; // 救援成功，使用新狀態
+      } else {
+        // 救援失敗：嚴格策略，直接報錯，不自動清除。
+        try {
+          drConsole.warn('[dr-log:rescue-failed-abort]', {
+            peerAccountDigest: peer,
+            peerDeviceId,
+            reason: 'guest-role-mismatch'
+          });
+        } catch { }
+        throw new Error('DR state mismatch (guest-role) and backup rescue failed');
+      }
     }
   }
   // 若 contact-secrets 上存的快照屬於錯裝置或 guest 卻標示 responder，直接丟棄存檔避免再次載入。
@@ -3658,28 +3679,33 @@ export async function ensureDrReceiverState(params = {}) {
   if (conversationMismatch) {
     const hasSendChain = state?.ckS instanceof Uint8Array && state.ckS.length > 0;
     const sendCounter = Number.isFinite(state?.Ns) ? state.Ns : 0;
-    if (hasSendChain || sendCounter > 0) {
-      throw new Error('DR state conversation mismatch; please resync contact');
+
+    // 嘗試救援：若 Conversation ID 不符，重整後再檢查。
+    const rescue = await tryHydrateAndRecheck('conversation-mismatch', (s) => {
+      const newBaseConv = typeof s?.baseKey?.conversationId === 'string' ? s.baseKey.conversationId : null;
+      // 比較邏輯簡化：只要 baseKey 的 conv 符合 preferred 即可
+      return newBaseConv && newBaseConv === preferredConversationId;
+    });
+
+    if (rescue.ok) {
+      state = rescue.state;
+    } else {
+      if (hasSendChain || sendCounter > 0) {
+        throw new Error('DR state conversation mismatch; please resync contact');
+      }
+      try {
+        drConsole.warn('[dr-log:conv-mismatch-abort]', {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          conversationId: preferredConversationId,
+          baseConversationId,
+          secretConversationId,
+          hasCkS: !!(state?.ckS && state.ckS.length),
+          Ns: Number.isFinite(state?.Ns) ? Number(state.Ns) : null
+        });
+      } catch { }
+      throw new Error('DR state conversation mismatch and backup rescue failed');
     }
-    try {
-      drConsole.warn('[dr-log:conv-mismatch-clear]', {
-        peerAccountDigest: peer,
-        peerDeviceId,
-        conversationId: preferredConversationId,
-        baseConversationId,
-        secretConversationId,
-        hasCkS: !!(state?.ckS && state.ckS.length),
-        Ns: Number.isFinite(state?.Ns) ? Number(state.Ns) : null
-      });
-    } catch { }
-    clearDrState(
-      { peerAccountDigest: peer, peerDeviceId },
-      { __drDebugTag: 'web/src/app/features/dr-session.js:2083:ensureDrReceiverState:conversation-mismatch' }
-    );
-    try {
-      setContactSecret(peer, { deviceId: selfDeviceId, dr: null, conversation: null, meta: { source: 'dr-conv-mismatch-clear' } });
-    } catch { }
-    state = drState({ peerAccountDigest: peer, peerDeviceId });
   }
   const snapshotRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
   const canRestoreInitiator = guestLike && snapshotRole === 'initiator' && peerDeviceId && secretPeerDeviceId && secretPeerDeviceId === peerDeviceId;
@@ -3874,19 +3900,14 @@ export async function ensureDrReceiverState(params = {}) {
   // guest/未知角色若發現 responder 或缺 initiator 鏈，直接清空並要求重建 initiator（無 fallback）。
   if (isGuestLike && (!holderHasRatchet || holderRoleNow === 'responder')) {
     try {
-      drConsole.warn('[dr-log:guest-clear-responder] SKIPPED (preservation mode)', {
+      drConsole.warn('[dr-log:guest-clear-responder] preservation-check', {
         peerAccountDigest: peer,
         peerDeviceId,
         holderRole: holderRoleNow || null
       });
     } catch { }
-    // DO NOT clear state here blindly. It causes split-brain if we just need to heal.
-    // clearDrState(
-    //   { peerAccountDigest: peer, peerDeviceId },
-    //   { __drDebugTag: 'web/src/app/features/dr-session.js:2271:ensureResponderState:guest-clear-responder' }
-    // );
-    // setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-clear-responder' } });
-    // 嘗試使用 contact-secret 中的 initiator 快照重建（僅限 role=initiator）。
+
+    // 1. 嘗試使用 contact-secret 中的 initiator 快照重建（本地救援）
     const snapRole = typeof secretInfo?.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
     if (snapRole === 'initiator') {
       restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: secretInfo.drState, force: true, sourceTag: 'guest-recover-initiator' });
@@ -3895,21 +3916,20 @@ export async function ensureDrReceiverState(params = {}) {
         return true;
       }
     }
+
+    // 2. 嘗試從伺服器備份救援 (Network Rescue)
+    const rescue = await tryHydrateAndRecheck('guest-initiator-recovery', (s) => {
+      const r = typeof s?.baseKey?.role === 'string' ? s.baseKey.role.toLowerCase() : null;
+      const hasR = !!(s?.rk && s?.myRatchetPriv && s?.myRatchetPub);
+      return hasR && r === 'initiator';
+    });
+    if (rescue.ok) return true;
+
+    // 3. 救援失敗：嚴格策略，直接報錯。
     if (!guestBundle) {
-      throw bootstrapError('guest 端缺少 initiator 重建資料，請重新同步好友', 'MISSING_DR_INIT_BOOTSTRAP');
+      throw bootstrapError('guest 端缺少 initiator 重建資料，且備份還原無效', 'MISSING_DR_INIT_BOOTSTRAP');
     }
-    throw bootstrapError('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
-  }
-  // guest/未知角色若發現 responder 或缺 initiator 鏈，直接 fail 或要求重建 initiator（無 fallback）。
-  if (isGuestLike && (!holderHasRatchet || holderRole === 'responder')) {
-    clearDrState(
-      { peerAccountDigest: peer, peerDeviceId },
-      { __drDebugTag: 'web/src/app/features/dr-session.js:2292:ensureResponderState:guest-clear-responder-fail' }
-    );
-    if (!guestBundle) {
-      throw bootstrapError('guest 端缺少 initiator 重建資料，請重新同步好友', 'MISSING_DR_INIT_BOOTSTRAP');
-    }
-    throw bootstrapError('guest 端不得使用 responder 快照，請重新同步好友並重建 initiator');
+    throw bootstrapError('guest 端不得使用 responder 快照，且備份還原無效 (Need Initiator)');
   }
   if (holderHasRatchet && holderHasReceiveChain) {
     return true;
