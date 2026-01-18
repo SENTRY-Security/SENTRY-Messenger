@@ -419,8 +419,8 @@ export async function smartFetchMessages({
                             console.warn(`[HybridVerify] Route B Failed item ${item.id}:`, bResult.reasonCode);
                             result = { ok: false, reason: bResult.reasonCode || 'ROUTE_B_FAIL' };
 
-                            // If Gap Message (Newer than local), strict stop.
-                            if (counter > localMax) {
+                            // If Gap Message (Newer than local), strict stop UNLESS it's a control skip
+                            if (counter > localMax && result.reason !== 'CONTROL_SKIP') {
                                 console.warn(`[HybridVerify] Strict Sequential Stop at item ${item.id} (Gap Message Failed).`);
                                 errors.push({ item, reason: result.reason });
                                 break; // CRITICAL STOP
