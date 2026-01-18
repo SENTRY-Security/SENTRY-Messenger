@@ -1137,6 +1137,11 @@ async function ensureDataTables(env) {
     } catch {
       missingColumns.push('invite_dropbox.updated_at');
     }
+    try {
+      await env.DB.prepare(`SELECT dr_state_snapshot FROM message_key_vault LIMIT 0`).all();
+    } catch {
+      missingColumns.push('message_key_vault.dr_state_snapshot');
+    }
     if (missingTables.length || missingColumns.length) {
       const detail = [
         ...missingTables.map((name) => `table:${name}`),
@@ -2763,6 +2768,7 @@ async function handleMessageKeyVaultRoutes(req, env) {
       : (Number.isFinite(Number(headerCounterRaw)) ? Number(headerCounterRaw) : null);
     const wrapped = body?.wrapped_mk || body?.wrappedMk || null;
     const wrapContext = body?.wrap_context || body?.wrapContext || null;
+    const drStateSnapshot = body?.dr_state || body?.drState || null; // Atomic Piggyback State
 
     if (!accountDigest || !conversationId || !messageId || !senderDeviceId || !targetDeviceId || !direction || !wrapped || !wrapContext) {
       console.warn('messageKeyVault.put.badPayload', {
@@ -2812,8 +2818,8 @@ async function handleMessageKeyVaultRoutes(req, env) {
       const result = await env.DB.prepare(
         `INSERT INTO message_key_vault (
             account_digest, conversation_id, message_id, sender_device_id,
-            target_device_id, direction, msg_type, header_counter, wrapped_mk_json, wrap_context_json, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%s','now'))
+            target_device_id, direction, msg_type, header_counter, wrapped_mk_json, wrap_context_json, dr_state_snapshot, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%s','now'))
          ON CONFLICT(account_digest, conversation_id, message_id, sender_device_id)
          DO NOTHING`
       ).bind(
@@ -2826,7 +2832,8 @@ async function handleMessageKeyVaultRoutes(req, env) {
         msgType,
         headerCounter,
         JSON.stringify(wrapped),
-        JSON.stringify(wrapContext)
+        JSON.stringify(wrapContext),
+        drStateSnapshot || null
       ).run();
       if (result?.changes === 0) {
         logMessageKeyVault('put', {
@@ -2864,30 +2871,37 @@ async function handleMessageKeyVaultRoutes(req, env) {
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
     const messageId = normalizeMessageId(body?.messageId || body?.message_id);
     const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
-    if (!accountDigest || !conversationId || !messageId || !senderDeviceId) {
-      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, messageId, senderDeviceId required' }, { status: 400 });
+    const headerCounter = body?.headerCounter ?? body?.header_counter;
+    const headerCounterNum = Number.isFinite(Number(headerCounter)) ? Number(headerCounter) : null;
+
+    if (!accountDigest || !conversationId || !senderDeviceId || (!messageId && headerCounterNum === null)) {
+      return json({ error: 'BadRequest', message: 'accountDigest, conversationId, senderDeviceId, and (messageId or headerCounter) required' }, { status: 400 });
     }
     try {
       await ensureDataTables(env);
     } catch (err) {
-      const message = err?.message || String(err);
-      if (message.includes('message_key_vault')) {
-        if (!messageKeyVaultSchemaWarned) {
-          messageKeyVaultSchemaWarned = true;
-          console.error('message_key_vault_schema_missing', message);
-        }
-        return json({ error: 'SchemaMissing', message: 'message_key_vault table missing; apply migration' }, { status: 500 });
-      }
-      throw err;
+      return json({ error: 'SchemaMissing', message: 'database not ready' }, { status: 500 });
     }
 
-    const row = await env.DB.prepare(
-      `SELECT wrapped_mk_json, wrap_context_json, direction, msg_type, header_counter, target_device_id, created_at
-         FROM message_key_vault
-        WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3 AND sender_device_id=?4
-        ORDER BY created_at DESC
-        LIMIT 1`
-    ).bind(accountDigest, conversationId, messageId, senderDeviceId).first();
+    let row = null;
+    if (headerCounterNum !== null) {
+      row = await env.DB.prepare(
+        `SELECT wrapped_mk_json, wrap_context_json, direction, msg_type, header_counter, target_device_id, dr_state_snapshot, created_at
+           FROM message_key_vault
+          WHERE account_digest=?1 AND conversation_id=?2 AND sender_device_id=?3 AND header_counter=?4
+          ORDER BY created_at DESC
+          LIMIT 1`
+      ).bind(accountDigest, conversationId, senderDeviceId, headerCounterNum).first();
+    } else {
+      row = await env.DB.prepare(
+        `SELECT wrapped_mk_json, wrap_context_json, direction, msg_type, header_counter, target_device_id, dr_state_snapshot, created_at
+           FROM message_key_vault
+          WHERE account_digest=?1 AND conversation_id=?2 AND sender_device_id=?3 AND message_id=?4
+          ORDER BY created_at DESC
+          LIMIT 1`
+      ).bind(accountDigest, conversationId, senderDeviceId, messageId).first();
+    }
+
     if (!row) {
       logMessageKeyVault('get', {
         accountDigestSuffix4: accountDigest.slice(-4),
@@ -2909,11 +2923,109 @@ async function handleMessageKeyVaultRoutes(req, env) {
       ok: true,
       wrapped_mk: safeJSON(row.wrapped_mk_json),
       wrap_context: safeJSON(row.wrap_context_json),
+      dr_state: row.dr_state_snapshot || null,
       direction: row.direction || null,
       msgType: row.msg_type || null,
       headerCounter: Number(row.header_counter) || null,
       targetDeviceId: row.target_device_id || null,
       createdAt: Number(row.created_at) || null
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/d1/message-key-vault/latest-state') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+
+    if (!accountDigest || !conversationId) {
+      return json({ error: 'BadRequest', message: 'accountDigest and conversationId required' }, { status: 400 });
+    }
+    try {
+      await ensureDataTables(env);
+    } catch (err) {
+      return json({ error: 'SchemaMissing', message: 'database not ready' }, { status: 500 });
+    }
+
+    // Parallel fetch: Latest Outgoing (My Send) & Latest Incoming (My Receive)
+    // Note: 'sender_device_id' in Vault is the person who emitted the message.
+    // For Outgoing: sender_device_id should be one of MY devices (but we might check all my devices? or just the current one?)
+    // Actually, DR State is device-specific. So we only care about state relevant to THIS device?
+    // Wait. If I am restoring on specific device D1...
+    // I want the state that D1 pushed (Outgoing) OR the state D1 received (Incoming target=D1).
+    // The Vault stores:
+    // account_digest = ME
+    // sender_device_id = Sender
+    // target_device_id = Receiver
+
+    // Case 1: Latest Outgoing (I sent it)
+    // account_digest=ME, sender_device_id=MY_DEV_ID (if passed) OR any of my devices?
+    // Usually we want the specific device's chain.
+    // If strict device binding: sender_device_id = passed senderDeviceId.
+
+    // Case 2: Latest Incoming (I received it)
+    // account_digest=ME, target_device_id=MY_DEV_ID.
+    // AND sender_device_id=THE_PEER?
+    // If we want "Latest Incoming from ANY peer", that's broad.
+    // If we want "Latest state for this conversation", we usually mean "Between Me and Peer X".
+    // But Vault index is (account, conv, msg_id).
+    // It does NOT easily index "Latest by Conversation".
+    // We have index `account_digest, conversation_id, message_id`.
+    // We do NOT have an index on `created_at` or `header_counter` grouped by conversation!
+    // Searching `WHERE account_digest=? AND conversation_id=? ORDER BY header_counter DESC` might be slow without index.
+    // However, D1/SQLite might optimize if PK prefix matches.
+    // Let's try to fetch both directions.
+
+    // Optimization: If senderDeviceId is provided, we assume it's "Self Device ID" for outgoing matching.
+
+    const [outgoingRow, incomingRow] = await Promise.all([
+      // 1. Latest Outgoing (I sent)
+      env.DB.prepare(
+        `SELECT dr_state_snapshot, header_counter, created_at, sender_device_id
+           FROM message_key_vault
+          WHERE account_digest=?1 AND conversation_id=?2 AND direction='outgoing'
+            ${senderDeviceId ? 'AND sender_device_id=?3' : ''}
+          ORDER BY header_counter DESC
+          LIMIT 1`
+      ).bind(
+        accountDigest,
+        conversationId,
+        ...(senderDeviceId ? [senderDeviceId] : [])
+      ).first(),
+
+      // 2. Latest Incoming (I received)
+      // Note: We filter by direction='incoming'. we don't necessarily filter by sender_device_id unless we want specific peer.
+      // Usually we want "Latest from anyone in this convo" (e.g. group) or "Latest from Peer" (DM).
+      // Double Ratchet is 1:1. So Conversation = Peer in 1:1.
+      // So simple 'incoming' check is sufficient for DM.
+      env.DB.prepare(
+        `SELECT dr_state_snapshot, header_counter, created_at, sender_device_id
+           FROM message_key_vault
+          WHERE account_digest=?1 AND conversation_id=?2 AND direction='incoming'
+          ORDER BY header_counter DESC
+          LIMIT 1`
+      ).bind(accountDigest, conversationId).first()
+    ]);
+
+    return json({
+      ok: true,
+      outgoing: outgoingRow ? {
+        dr_state: outgoingRow.dr_state_snapshot || null,
+        headerCounter: Number(outgoingRow.header_counter) || 0,
+        createdAt: Number(outgoingRow.created_at) || 0,
+        senderDeviceId: outgoingRow.sender_device_id
+      } : null,
+      incoming: incomingRow ? {
+        dr_state: incomingRow.dr_state_snapshot || null,
+        headerCounter: Number(incomingRow.header_counter) || 0,
+        createdAt: Number(incomingRow.created_at) || 0,
+        senderDeviceId: incomingRow.sender_device_id
+      } : null
     });
   }
 

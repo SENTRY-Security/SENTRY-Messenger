@@ -106,7 +106,8 @@ export class ComposerController extends BaseController {
         const status = statusResolution.status;
 
         const conversationReady = !!(state.conversationToken && state.activePeerDigest);
-        const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
+        const isLoading = !!state.loading;
+        const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED || isLoading;
         const enabled = conversationReady && !blocked;
 
         this.elements.input.disabled = !conversationReady || blocked;
@@ -115,7 +116,9 @@ export class ComposerController extends BaseController {
         this.elements.sendBtn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
 
         let placeholder = '輸入訊息…';
-        if (!state.conversationToken || !state.activePeerDigest) {
+        if (isLoading) {
+            placeholder = '正在同步歷史訊息…';
+        } else if (!state.conversationToken || !state.activePeerDigest) {
             placeholder = '選擇好友開始聊天';
         } else if (!subscriptionOk) {
             placeholder = '帳號已到期，請儲值後再聊天';

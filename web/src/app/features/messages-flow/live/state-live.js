@@ -412,6 +412,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
     }
   }
 
+  const skippedKeysBuffer = [];
   try {
     plaintext = await adapters.drDecryptText(state, {
       aead: 'aes-256-gcm',
@@ -420,9 +421,32 @@ async function decryptIncomingSingle(params = {}, adapters) {
       ciphertext_b64: ciphertextB64
     }, {
       onMessageKey: (mk) => { messageKeyB64 = mk; },
+      onSkippedKeys: (keys) => {
+        if (Array.isArray(keys)) keys.forEach(k => skippedKeysBuffer.push(k));
+      },
       packetKey,
       msgType: msgTypeHint || 'text'
     });
+
+    if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
+      Promise.all(skippedKeysBuffer.map(k => {
+        const gapCounter = k.headerCounter;
+        const gapMessageId = `gap:v1:${gapCounter}`;
+        return adapters.vaultPutIncomingKey({
+          conversationId,
+          messageId: gapMessageId,
+          senderDeviceId,
+          targetDeviceId: selfDeviceId,
+          direction: 'incoming',
+          msgType: 'gap-fill',
+          messageKeyB64: k.messageKeyB64,
+          headerCounter: gapCounter,
+          drStateSnapshot: null
+        }).catch(e => console.warn('[state-live] skipped-key vault failed', e));
+      })).then(() => {
+        if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys', skippedKeysBuffer.length);
+      });
+    }
   } catch (err) {
     // Enhanced logging for OperationError (often subtle Key/AAD mismatch)
     if (err.name === 'OperationError' || err.message === 'OperationError') {
@@ -636,11 +660,12 @@ async function commitIncomingSingle(params = {}, adapters) {
   } catch { }
 
   const packetKey = messageId || (Number.isFinite(resolvedCounter)
-    ? `${conversationId}:${resolvedCounter}`
+    ? `${conversationId}:${resolvedCounter} `
     : null);
   let messageKeyB64 = null;
   let plaintext = null;
 
+  const skippedKeysBuffer = [];
   try {
     plaintext = await adapters.drDecryptText(state, {
       aead: 'aes-256-gcm',
@@ -649,9 +674,36 @@ async function commitIncomingSingle(params = {}, adapters) {
       ciphertext_b64: ciphertextB64
     }, {
       onMessageKey: (mk) => { messageKeyB64 = mk; },
+      onSkippedKeys: (keys) => {
+        if (Array.isArray(keys)) keys.forEach(k => skippedKeysBuffer.push(k));
+      },
       packetKey,
       msgType: msgTypeHint || 'text'
     });
+
+    if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
+      Promise.all(skippedKeysBuffer.map(k => {
+        const gapCounter = k.headerCounter;
+        const gapMessageId = `gap:v1:${gapCounter}`;
+        return adapters.vaultPutIncomingKey({
+          conversationId,
+          messageId: gapMessageId,
+          senderDeviceId,
+          targetDeviceId: selfDeviceId, // inferred or null? 
+          // Wait, selfDeviceId is local variable in commitIncomingSingle?
+          // I need to check if selfDeviceId is available.
+          // Line 657: `let selfDeviceId = null; ... selfDeviceId = adapters.getDeviceId ...`
+          // Yes it is available.
+          direction: 'incoming',
+          msgType: 'gap-fill',
+          messageKeyB64: k.messageKeyB64,
+          headerCounter: gapCounter,
+          drStateSnapshot: null
+        }).catch(e => console.warn('[state-live] skipped-key vault failed (commit)', e));
+      })).then(() => {
+        if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys (commit)', skippedKeysBuffer.length);
+      });
+    }
   } catch {
     return { ...base, reasonCode: 'DECRYPT_FAIL', counter: resolvedCounter, messageId };
   }

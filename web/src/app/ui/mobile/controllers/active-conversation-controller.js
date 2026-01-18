@@ -10,6 +10,8 @@
 import { BaseController } from './base-controller.js';
 import { normalizePeerKey, splitPeerKey } from '../contact-core-store.js';
 import { normalizePeerIdentity } from '../../../core/store.js';
+import { MessageKeyVault } from '../../../features/message-key-vault.js';
+import { importContactSecretsSnapshot } from '../../../core/contact-secrets.js';
 
 export class ActiveConversationController extends BaseController {
     constructor(deps) {
@@ -191,14 +193,48 @@ export class ActiveConversationController extends BaseController {
 
         // Load messages if conversation exists
         if (state.conversationId && state.conversationToken) {
-            try {
-                console.log('[ActiveConversationController] loading messages...');
-                await this.deps.loadActiveConversationMessages?.({ append: false });
-                console.log('[ActiveConversationController] messages loaded');
-            } catch (err) {
-                console.error('[ActiveConversationController] load messages error', err);
-                this.log({ loadMessagesError: err?.message || err, peerKey });
-            }
+            // [FAST PATH] Restore DR State immediately
+            console.log('[ActiveConversationController] fast-path state restore start');
+            MessageKeyVault.getLatestState({ conversationId: state.conversationId })
+                .then((data) => {
+                    const tasks = [];
+                    if (data?.outgoing?.dr_state) {
+                        tasks.push(importContactSecretsSnapshot(data.outgoing.dr_state, {
+                            replace: true,
+                            persist: true,
+                            reason: 'fast-path-out'
+                        }));
+                    }
+                    if (data?.incoming?.dr_state) {
+                        tasks.push(importContactSecretsSnapshot(data.incoming.dr_state, {
+                            replace: true,
+                            persist: true,
+                            reason: 'fast-path-in'
+                        }));
+                    }
+                    return Promise.all(tasks);
+                })
+                .then((results) => {
+                    if (results.length) console.log('[ActiveConversationController] fast-path state restored', results.length);
+                })
+                .catch((err) => {
+                    console.warn('[ActiveConversationController] fast-path failed (non-critical)', err);
+                });
+
+            console.log('[ActiveConversationController] loading messages (async)...');
+            // Non-blocking load to prevent UI freeze
+            this.deps.loadActiveConversationMessages?.({ append: false })
+                .then(() => {
+                    console.log('[ActiveConversationController] messages loaded');
+                })
+                .catch((err) => {
+                    console.error('[ActiveConversationController] load messages error', err);
+                    this.log({ loadMessagesError: err?.message || err, peerKey });
+                })
+                .finally(() => {
+                    // Unlock composer when loading finishes
+                    this.deps.updateComposerAvailability?.();
+                });
         } else {
             // New or pending contact, ensure empty state shows
             if (this.elements.messagesEmpty) {

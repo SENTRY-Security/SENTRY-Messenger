@@ -602,6 +602,7 @@ export async function drDecryptText(st, packet, opts = {}) {
       theirRatchetPub: cloneU8(st?.theirRatchetPub) || null,
       pendingSendRatchet: !!st?.pendingSendRatchet
     };
+    const newSkippedKeys = [];
     let skippedNext = cloneSkippedKeys(st?.skippedKeys);
     const rememberSkippedLocal = (chainId, index, keyB64, maxPerChain = SKIPPED_KEYS_PER_CHAIN_MAX) => {
       if (!chainId || !Number.isFinite(index)) return;
@@ -677,7 +678,7 @@ export async function drDecryptText(st, packet, opts = {}) {
         while (ckR && nr < pn) {
           const skippedOut = await kdfCK(ckR);
           const { a: skippedMk, b: skippedNext } = split64(skippedOut);
-          rememberSkippedLocal(prevChainId, nr + 1, b64(skippedMk));
+          newSkippedKeys.push({ chainId: prevChainId, headerCounter: nr + 1, messageKeyB64: b64(skippedMk) });
           ckR = skippedNext;
           nr += 1;
         }
@@ -719,7 +720,7 @@ export async function drDecryptText(st, packet, opts = {}) {
           const { a: skippedMk, b: skippedNext } = split64(skippedOut);
           working.ckR = skippedNext;
           working.Nr += 1;
-          rememberSkippedLocal(chainId, working.Nr, b64(skippedMk));
+          newSkippedKeys.push({ chainId, headerCounter: working.Nr, messageKeyB64: b64(skippedMk) });
         }
       }
       nrAtDerive = Number.isFinite(working?.Nr) ? Number(working.Nr) : null;
@@ -851,6 +852,10 @@ export async function drDecryptText(st, packet, opts = {}) {
     st.theirRatchetPub = working.theirRatchetPub;
     st.pendingSendRatchet = working.pendingSendRatchet;
     st.skippedKeys = cloneSkippedKeys(skippedNext);
+
+    if (newSkippedKeys.length && typeof opts?.onSkippedKeys === 'function') {
+      opts.onSkippedKeys(newSkippedKeys);
+    }
 
     return plaintext;
   } catch (err) {

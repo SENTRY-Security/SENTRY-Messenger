@@ -5,7 +5,7 @@
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../crypto/aead.js';
 import { getMkRaw, getAccountDigest } from '../core/store.js';
 import { log, logForensicsEvent, logCapped } from '../core/log.js';
-import { putMessageKeyVault as apiPutMessageKeyVault, getMessageKeyVault as apiGetMessageKeyVault, deleteMessageKeyVault as apiDeleteMessageKeyVault } from '../api/message-key-vault.js';
+import { putMessageKeyVault as apiPutMessageKeyVault, getMessageKeyVault as apiGetMessageKeyVault, deleteMessageKeyVault as apiDeleteMessageKeyVault, getLatestStateVault as apiGetLatestStateVault } from '../api/message-key-vault.js';
 import { decryptContactSecretPayload } from '../core/contact-secrets.js';
 
 const WRAP_INFO_TAG = 'message-key/v1';
@@ -560,5 +560,31 @@ export class MessageKeyVault {
     } catch (err) {
       return { ok: false, error: err?.message || String(err) };
     }
+  }
+  static async getLatestState(params = {}) {
+    const conversationId = params?.conversationId || null;
+    const senderDeviceId = params?.senderDeviceId || null;
+    if (!conversationId) throw new Error('conversationId required');
+
+    let result = null;
+    try {
+      const { r, data } = await apiGetLatestStateVault({ conversationId, senderDeviceId });
+      if (!r.ok) throw new Error(data?.message || r.statusText);
+      result = data;
+    } catch (err) {
+      log({ getLatestStateError: err?.message || err, conversationId });
+      throw err;
+    }
+
+    // Log success findings
+    if (result) {
+      log({
+        getLatestStateOk: true,
+        hasOutgoing: !!result.outgoing,
+        hasIncoming: !!result.incoming,
+        conversationId
+      });
+    }
+    return result;
   }
 }
