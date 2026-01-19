@@ -9,7 +9,8 @@ import {
   normalizeSemanticSubtype,
   isUserMessageSubtype,
   CONTROL_STATE_SUBTYPES,
-  TRANSIENT_SIGNAL_SUBTYPES
+  TRANSIENT_SIGNAL_SUBTYPES,
+  classifyDecryptedPayload
 } from '../semantic.js';
 import { buildDecryptError } from './normalize.js';
 import { importContactSecretsSnapshot } from '../../core/contact-secrets.js';
@@ -390,7 +391,7 @@ export async function decryptReplayBatch({
       }));
       continue;
     }
-    decrypted.push({
+    const decryptedItem = {
       conversationId: item.conversationId,
       text: text,
       decrypted: true,
@@ -404,7 +405,35 @@ export async function decryptReplayBatch({
       meta: item.meta || null,
       counter: item.counter,
       msgType: item.msgType || null
-    });
+    };
+
+    // [Phase 29] Fix Image Rehydration (Robust)
+    // 1. Re-classify subtype based on decrypted content (fixes missing header metadata)
+    try {
+      const cls = classifyDecryptedPayload(text, { header: item.header });
+      if (cls?.subtype) {
+        decryptedItem.msgType = cls.subtype;
+      }
+    } catch (e) { }
+
+    // 2. If identified as media, attempt to parse JSON and extract payload
+    if (decryptedItem.msgType === 'media' && typeof text === 'string' && text.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(text);
+        // Case A: Nested (screenshot format) {"type":"media", "media": {...}}
+        if (parsed.media && typeof parsed.media === 'object') {
+          decryptedItem.media = parsed.media;
+        }
+        // Case B: Flattened/Legacy
+        else {
+          decryptedItem.media = parsed;
+        }
+      } catch (e) {
+        console.warn('[vault-replay] failed to parse media json', e);
+      }
+    }
+
+    decrypted.push(decryptedItem);
   }
   return { items: decrypted, errors };
 }

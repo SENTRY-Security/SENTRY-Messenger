@@ -266,13 +266,14 @@ export async function listMessages({ convId, limit = 20, cursorTs } = {}) {
   return { r, data };
 }
 
-export async function listSecureMessages({ conversationId, limit = 20, cursorTs, cursorId } = {}) {
+export async function listSecureMessages({ conversationId, limit = 20, cursorTs, cursorId, includeKeys } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const qs = new URLSearchParams();
   qs.set('conversationId', conversationId);
   if (limit) qs.set('limit', String(limit));
   if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursorTs', String(cursorTs));
   if (cursorId !== undefined && cursorId !== null && cursorId !== '') qs.set('cursorId', String(cursorId));
+  if (includeKeys) qs.set('includeKeys', 'true');
   const url = `/api/v1/messages/secure?${qs.toString()}`;
   const headers = buildAccountHeaders();
   const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
@@ -287,7 +288,7 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
       ...summary,
       source: 'listSecureMessages'
     });
-  } catch {}
+  } catch { }
   return { r, data };
 }
 

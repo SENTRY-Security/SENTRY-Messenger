@@ -125,7 +125,7 @@ function cloneSkippedKeys(store) {
   return out;
 }
 
-function rememberSkippedKey(st, chainId, index, keyB64, maxPerChain = SKIPPED_KEYS_PER_CHAIN_MAX) {
+export function rememberSkippedKey(st, chainId, index, keyB64, maxPerChain = SKIPPED_KEYS_PER_CHAIN_MAX) {
   if (!chainId || !Number.isFinite(index)) return;
   const store = ensureSkipStore(st);
   if (!store) return;

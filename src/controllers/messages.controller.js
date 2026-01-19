@@ -620,6 +620,7 @@ export const listSecureMessages = async (req, res) => {
   if (req.query.cursorId) params.set('cursorId', String(req.query.cursorId));
   if (req.query.cursorCounter) params.set('cursorCounter', String(req.query.cursorCounter));
   if (req.query.limit) params.set('limit', String(req.query.limit));
+  if (req.query.includeKeys) params.set('includeKeys', 'true');
 
   const path = `/d1/messages?${params.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
@@ -656,7 +657,7 @@ export const listSecureMessages = async (req, res) => {
     const controller = new AbortController();
     const cleanupInflight = trackInflight({ key, controller });
     const r = await fetch(`${DATA_API}${path}`, {
-      headers: { 'x-auth': sig },
+      headers: { 'x-auth': sig, 'x-account-digest': auth.accountDigest },
       signal: controller.signal
     }).finally(() => cleanupInflight());
     const text = await r.text();

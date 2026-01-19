@@ -4,7 +4,9 @@
  */
 
 import { log, logCapped } from '../../core/log.js';
-import { getMkRaw } from '../../core/store.js';
+import { getMkRaw, drState } from '../../core/store.js';
+import { unwrapWithMK_JSON } from '../../crypto/aead.js';
+import { rememberSkippedKey } from '../../../shared/crypto/dr.js';
 import {
     buildPartialContactSecretsSnapshot,
     encryptContactSecretPayload
@@ -687,6 +689,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
         listReadyContacts,
         getConversationClearAfter,
         ensureDeviceId,
+        ensureDrReceiverState,
         getAccountDigest,
         toMessageId,
         resolveHeaderFromEnvelope,
@@ -772,7 +775,92 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
             nextCursor = prefetchedList?.nextCursor || null;
             hasMoreAtCursor = !!prefetchedList?.hasMoreAtCursor;
         } else {
-            const { r, data } = await listSecureMessages({ conversationId, limit, cursorTs, cursorId });
+            const { r, data } = await listSecureMessages({ conversationId, limit, cursorTs, cursorId, includeKeys: true });
+
+            // [Optimization] Batch Key Processing (Pre-fill Cache)
+            if (r.ok && data?.keys && typeof data.keys === 'object') {
+                try {
+                    const keysCount = Object.keys(data.keys).length;
+                    if (FETCH_LOG_ENABLED) console.log('[EntryFetch] Batch Keys Received:', keysCount);
+
+                    const mkRaw = getMkRaw();
+                    if (mkRaw) {
+                        const batchItems = Array.isArray(data.items) ? data.items : [];
+                        const tasks = [];
+                        const myDigest = getAccountDigest ? String(getAccountDigest()).toUpperCase() : null;
+
+                        let debugSuccess = 0;
+                        let debugFail = 0;
+
+                        for (const item of batchItems) {
+                            const keyData = data.keys[item.id];
+                            if (!keyData?.wrapped_mk_json) continue;
+
+                            tasks.push((async () => {
+                                try {
+                                    const unwrapped = await unwrapWithMK_JSON(keyData.wrapped_mk_json, mkRaw);
+                                    if (!unwrapped?.mkB64) {
+                                        debugFail++;
+                                        return;
+                                    }
+
+                                    let h = item.header;
+                                    if (!h && item.header_json) { try { h = JSON.parse(item.header_json); } catch { } }
+                                    if (!h || !h.ek_pub_b64 || !Number.isFinite(Number(h.n))) {
+                                        debugFail++;
+                                        return;
+                                    }
+
+                                    let peer = null;
+                                    let device = null;
+                                    const senderDigest = item.sender_account_digest || item.senderDigest;
+                                    const receiverDigest = item.receiver_account_digest || item.receiverDigest;
+
+                                    if (myDigest && senderDigest && String(senderDigest).toUpperCase() === myDigest) {
+                                        peer = receiverDigest || peerAccountDigest;
+                                        device = item.receiver_device_id || item.targetDeviceId;
+                                    } else {
+                                        peer = senderDigest || peerAccountDigest;
+                                        device = item.sender_device_id || item.senderDeviceId;
+                                    }
+
+                                    if (peer) {
+                                        if (ensureDrReceiverState) {
+                                            try {
+                                                await ensureDrReceiverState({ peerAccountDigest: peer, peerDeviceId: device, conversationId });
+                                            } catch (e) {
+                                                // ignore hydrate failure
+                                            }
+                                        }
+
+                                        const st = drState({ peerAccountDigest: peer, peerDeviceId: device });
+                                        if (st) {
+                                            rememberSkippedKey(st, h.ek_pub_b64, Number(h.n), unwrapped.mkB64);
+                                            debugSuccess++;
+                                        } else {
+                                            debugFail++;
+                                        }
+                                    } else {
+                                        debugFail++;
+                                    }
+                                } catch (e) {
+                                    debugFail++;
+                                    if (FETCH_LOG_ENABLED) console.warn('[BatchKeyOpt] Item Error:', e);
+                                }
+                            })());
+                        }
+                        if (tasks.length > 0) await Promise.all(tasks);
+                        if (FETCH_LOG_ENABLED) console.log(`[EntryFetch] Batch Processed: ${debugSuccess} success, ${debugFail} fail / ${tasks.length} total tasks`);
+                    } else {
+                        if (FETCH_LOG_ENABLED) console.warn('[EntryFetch] Batch Key Skip: No mkRaw');
+                    }
+                } catch (err) {
+                    if (FETCH_LOG_ENABLED) console.warn('[BatchKeyOpt] Failed', err);
+                }
+            } else {
+                if (r.ok && FETCH_LOG_ENABLED) console.log('[EntryFetch] No keys in response', { hasKeysField: !!data?.keys });
+            }
+
             if (!r.ok) {
                 if (r.status === 404 || r.status >= 500) {
                     errs.push(`訊息服務暫時無法使用（HTTP ${r.status}）`);
@@ -790,101 +878,29 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
             }
         }
 
-        // More fetch logic (continuous fetch if hasMoreAtCursor) can be added here.
-
-        if (lockToken.cancelled) return { items: [], errors: [], yielded: true };
-
-        const selfDeviceId = ensureDeviceId ? ensureDeviceId() : null;
-        const selfDigest = getAccountDigest ? String(getAccountDigest()).toUpperCase() : null;
-        const isLiveMode = requestPriority === 'live' && !computedIsHistoryReplay;
-
-        // Identity/Peer resolution logic omitted for brevity, verify against original if needed, 
-        // but simplified here assuming correct args.
-
-        const clearAfter = getConversationClearAfter ? getConversationClearAfter(conversationId) : null;
-        let filteredItems = sortMessagesByTimeline ? sortMessagesByTimeline(items) : items;
-        if (Number.isFinite(clearAfter)) {
-            filteredItems = filteredItems.filter(it => {
-                const ts = toMessageTimestamp ? toMessageTimestamp(it) : it.ts;
-                return !Number.isFinite(ts) || ts >= clearAfter;
-            });
-        }
-
-        const sortedItems = filteredItems;
-        updateDecryptPipelineContext(conversationId, {
-            onMessageDecrypted,
-            sendReadReceipt,
-            sourceTag,
-            silent
+        const placeholders = [];
+        const sortedItems = sortMessagesByTimeline(items, {
+            allowReplay: allowReplayRaw,
+            mutateState: mutateStateRaw
         });
 
-
-
-        // [Placeholder Injection]
-        // Batch insert placeholders for incoming messages to trigger UI Shimmer
-        if (sortedItems.length > 0 && typeof timelineAppendBatch === 'function') {
-            const placeholders = [];
-            const now = Date.now();
-            // User feedback: MS timestamp is valid and preferred over forced Seconds
-
+        // [New Feature] Shimmer for history
+        // Generate placeholder entries for incoming items that we are about to process.
+        // This gives immediate visual feedback.
+        if (mutateStateRaw) {
             for (const raw of sortedItems) {
+                const isControl = raw.msgType === 'control' || raw.header?.msgType === 'control';
+                if (Number(raw.counter) < 0) continue; // Invalid counter?
+
+                // Header check
                 let h = raw.header;
-                // Temporary fallback until backend fix propagates (or if header is just missing)
                 if (!h && raw.header_json) {
                     try { h = JSON.parse(raw.header_json); } catch { }
                 }
-                h = h || {};
-
-                // [DEBUG] Inspect raw item for control analysis
-                if (raw.header_json || raw.headerJson || h.contact) {
-                    console.log('[EntryFetch] Inspect Item:', {
-                        id: raw.id,
-                        counter: raw.counter,
-                        h_contact: h.contact,
-                        h_meta_type: h.meta?.msgType,
-                        raw_type: raw.msgType,
-                        header_json_type: typeof raw.header_json,
-                        header_obj: h,
-                        raw_header_json: raw.header_json
-                    });
-                }
-
-                // [Simple Render Condition]
-                // Correct logic: Identify Control Messages and SKIP placeholder generation.
-                // Control messages (contact-share, etc.) do not need a "Decrypting..." placeholder
-                // because they are system states, not user content.
-
-                // [Strict Filter] Aggressively identify Control Messages
-                // We MUST prevent them from generating a placeholder.
-
-                // 1. Resolve Type from multiple possible sources
-                const resolveType = (obj) => obj?.msgType || obj?.msg_type || obj?.type || null;
-                const typeCandidates = [
-                    resolveType(h),                 // header.msgType
-                    resolveType(h?.meta),           // header.meta.msgType
-                    resolveType(raw),               // raw.msgType
-                    raw?.type,                      // raw.type
-                ];
-
-                // 2. Resolve Contact Flag
-                const isContactFlag = (h.contact === 1 || h.contact === '1' || h.contact === true);
-
-                // 3. String Inspection Failsafe (if JSON parse failed or schema is weird)
-                const jsonString = raw.header_json || '';
-                const hasContactShareString = jsonString.includes('contact-share') || jsonString.includes('"contact":1');
-
-                const normalizedType = typeCandidates.reduce((acc, val) => acc || normalizeSemanticSubtype(val), null);
-
-                const isControl = isContactFlag || hasContactShareString || (normalizedType && (
-                    normalizedType === 'contact-share' ||
-                    normalizedType === 'control' ||
-                    CONTROL_STATE_SUBTYPES.has(normalizedType) ||
-                    TRANSIENT_SIGNAL_SUBTYPES.has(normalizedType)
-                ));
-
-                // [DEBUG] Log Control Decision if it's borderline
-                if (isControl || hasContactShareString) {
-                    // console.log('[EntryFetch] Skipping Placeholder:', { id: raw.id, isControl, normalizedType, isContactFlag, hasContactShareString });
+                if (h) {
+                    // Check if contact-share or known control type
+                    const type = h.meta?.msgType || h.msgType;
+                    if (type === 'contact-share' || type === 'control') continue;
                 }
 
                 if (isControl) continue;
@@ -1043,8 +1059,13 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                 msgType: messageObj.type,
                 ts: messageObj.ts,
                 text: messageObj.text,
-                // ...
+                media: messageObj.media || null,
+                callLog: messageObj.callLog || null,
+                senderDigest: senderAccountDigest || null,
+                senderDeviceId,
+                peerDeviceId
             };
+
             // Reuse batch append?
             // timelineAppendBatch ...
         }

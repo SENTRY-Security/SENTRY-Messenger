@@ -2378,9 +2378,44 @@ async function handleMessagesRoutes(req, env) {
     const last = allItems.at(-1) || null;
     const nextCursor = last ? { ts: last.created_at, id: last.id, counter: last.counter } : null;
 
+    const includeKeys = url.searchParams.get('includeKeys') === 'true' || url.searchParams.get('include_keys') === 'true';
+    let keysMap = null;
+
+    if (includeKeys && allItems.length > 0) {
+      const ids = allItems.map(it => it.id).filter(id => typeof id === 'string');
+      // Pass 'X-Account-Digest' from Controller to Worker to scope Vault Query
+      const accountDigest = req.headers.get('x-account-digest');
+
+      if (ids.length > 0 && accountDigest) {
+        try {
+          const placeholders = ids.map((_, i) => `?${i + 2}`).join(',');
+          const stmtKeys = env.DB.prepare(`
+            SELECT message_id, wrapped_mk_json, wrap_context_json, dr_state_snapshot
+              FROM message_key_vault
+             WHERE account_digest = ?1
+               AND message_id IN (${placeholders})
+          `).bind(accountDigest, ...ids);
+          const { results: keyRows } = await stmtKeys.all();
+          if (keyRows && keyRows.length > 0) {
+            keysMap = {};
+            for (const kRow of keyRows) {
+              keysMap[kRow.message_id] = {
+                wrapped_mk_json: safeJSON(kRow.wrapped_mk_json),
+                wrap_context_json: safeJSON(kRow.wrap_context_json),
+                dr_state_snapshot: safeJSON(kRow.dr_state_snapshot)
+              };
+            }
+          }
+        } catch (err) {
+          console.warn('d1_messages_include_keys_failed', err);
+        }
+      }
+    }
+
     return json({
       ok: true,
       items: allItems,
+      keys: keysMap,
       nextCursor,
       nextCursorTs: nextCursor?.ts || null,
       nextCursorCounter: nextCursor?.counter ?? null,
