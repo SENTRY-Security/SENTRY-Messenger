@@ -256,31 +256,11 @@ function logDecryptBannerEntries(conversationId, entries = []) {
   }
 }
 
-function makeCallLogPlaceholderKey(peerDigest, callId) {
-  if (!peerDigest || !callId) return null;
-  return `${peerDigest}:${callId}`;
-}
-
-function trackCallLogPlaceholder(peerDigest, callId, message) {
-  const key = makeCallLogPlaceholderKey(peerDigest, callId);
-  if (!key || !message) return;
-  callLogPlaceholders.set(key, message);
-}
-
-function resolveCallLogPlaceholder(peerDigest, callId) {
-  const key = makeCallLogPlaceholderKey(peerDigest, callId);
-  if (!key) return null;
-  return callLogPlaceholders.get(key) || null;
-}
-
-function releaseCallLogPlaceholder(peerDigest, callId) {
-  const key = makeCallLogPlaceholderKey(peerDigest, callId);
-  if (!key) return;
-  callLogPlaceholders.delete(key);
-}
+// clearCallLogPlaceholders shim for module scope access
+let _clearCallLogPlaceholdersShim = () => { /* no-op until init */ };
 
 function clearCallLogPlaceholders() {
-  callLogPlaceholders.clear();
+  _clearCallLogPlaceholdersShim();
 }
 
 // Placeholder builder functions imported from parser.js
@@ -482,6 +462,9 @@ export function initMessagesPane({
 
   // Initialize controllers
   Object.values(controllers).forEach(c => c.init?.());
+
+  // Hook module-scope shim to controller
+  _clearCallLogPlaceholdersShim = () => controllers.callLog.clearCallLogPlaceholders();
   let activeSecurityModalPeer = null;
 
   let wsSendFn = () => false;
