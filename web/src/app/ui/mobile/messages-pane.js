@@ -46,7 +46,7 @@ import {
 } from './contact-core-store.js';
 
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
-import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, toDigestOnly } from '../../api/messages.js';
+import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, toDigestOnly } from '../../api/messages.js?v=fix_delete_auth';
 
 import {
   normalizeTimelineMessageId,
@@ -1307,6 +1307,16 @@ export function initMessagesPane({
   }
 
   // initKeyboardListeners removed (moved to LayoutController)
+
+  function getConversationThreads() {
+    if (!(sessionStore.conversationThreads instanceof Map)) {
+      const entries = sessionStore.conversationThreads && typeof sessionStore.conversationThreads.entries === 'function'
+        ? Array.from(sessionStore.conversationThreads.entries())
+        : [];
+      sessionStore.conversationThreads = new Map(entries);
+    }
+    return sessionStore.conversationThreads;
+  }
 
   function ensureSetup() {
     const isStale = (el) => !el || !el.isConnected;
