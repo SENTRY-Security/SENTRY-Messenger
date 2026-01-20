@@ -74,8 +74,9 @@ import {
 
 import {
   getGapPlaceholderEntries,
-  markGapPlaceholderFailures
-} from '../../features/messages/placeholder-store.js?v=fix_placeholder';
+  markGapPlaceholderFailures,
+  resetPlaceholderState
+} from '../../features/messages/placeholder-store.js?v=fix_placeholder_2';
 
 import { logMsgEvent } from '../../lib/logging.js';
 import { PLACEHOLDER_SHIMMER_MAX_ACTIVE, PLACEHOLDER_REVEAL_MS, PLACEHOLDER_TEXT } from './messages-ui-policy.js';
