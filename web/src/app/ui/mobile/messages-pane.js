@@ -114,7 +114,7 @@ import {
 } from '../../features/calls/index.js';
 
 import { createControllerDeps } from './controllers/base-controller.js';
-import { ConversationListController } from './controllers/conversation-list-controller.js?v=debug_click_v1';
+import { ConversationListController } from './controllers/conversation-list-controller.js?v=phase44_fix';
 import { SecureStatusController } from './controllers/secure-status-controller.js';
 import { CallLogController } from './controllers/call-log-controller.js?v=fix_calllog_4';
 import { MessageFlowController } from './controllers/message-flow-controller.js?v=fix_empty_strict';
@@ -740,7 +740,8 @@ export function initMessagesPane({
     if (!state.hasMore || state.loading) return;
     if (autoLoadOlderInProgress) return;
     const top = elements.scrollEl.scrollTop;
-    if (top <= 0) {
+    // Relaxed threshold to 20px to catch near-top scrolls
+    if (top <= 20) {
       triggerAutoLoadOlder();
     } else if (top <= 40) {
       setLoadMoreState('armed');
@@ -757,7 +758,7 @@ export function initMessagesPane({
     if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !isNearMessagesBottom()) {
       elements.input.blur();
     }
-    if (elements.scrollEl.scrollTop <= 0) {
+    if (elements.scrollEl.scrollTop <= 20) {
       triggerAutoLoadOlder();
     }
   }
@@ -767,7 +768,7 @@ export function initMessagesPane({
     if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !isNearMessagesBottom()) {
       elements.input.blur();
     }
-    if (elements.scrollEl.scrollTop <= 0) {
+    if (elements.scrollEl.scrollTop <= 20) {
       triggerAutoLoadOlder();
     }
   }
@@ -777,6 +778,7 @@ export function initMessagesPane({
     if (!elements.scrollEl || !state.hasMore || state.loading || autoLoadOlderInProgress) return;
     autoLoadOlderInProgress = true;
     setLoadMoreState('loading');
+    log({ triggerAutoLoadOlder: { conversationId: state.conversationId, cursor: state.nextCursor } });
     controllers.messageFlow.loadActiveConversationMessages({ append: true, reason: 'scroll' })
       .catch((err) => log({ loadOlderError: err?.message || err }))
       .finally(() => {

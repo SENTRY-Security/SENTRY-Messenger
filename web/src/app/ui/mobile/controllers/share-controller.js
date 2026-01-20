@@ -26,7 +26,7 @@ import {
 import { normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } from '../../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../../features/contact-share.js';
-import { flushPendingContactShares } from '../../../features/contacts.js';
+import { flushPendingContactShares, uplinkContactToD1 } from '../../../features/contacts.js';
 import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from '../session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice } from '../contact-core-store.js';
@@ -1986,7 +1986,7 @@ export function setupShareController(options) {
     const conversation = {
       conversation_id: conversationContext.conversationId,
       token_b64: conversationContext.tokenB64,
-      peerDeviceId: targetDeviceId,
+      peerDeviceId: peerDeviceId,
       dr_init: { guest_bundle: normalizedBundle, role: 'initiator' }
     };
     const existingEntries = findContactCoreByAccountDigest(peerDigest);
@@ -2143,6 +2143,12 @@ export function setupShareController(options) {
     if (profileNickname) contactCorePayload.nickname = profileNickname;
     if (hasProfileAvatar) contactCorePayload.avatar = profileAvatar;
     upsertContactCore(contactCorePayload, 'share-controller:contact-init-received');
+
+    // [Phase 30] Host Contact Persistence
+    // Uplink to D1 so it survives re-login.
+    uplinkContactToD1(contactCorePayload).catch(err => {
+      console.warn('[share-controller] failed to uplink contact-init', err);
+    });
     try {
       const profilePayload = {
         updatedAt: profileUpdatedAt,

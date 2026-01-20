@@ -53,7 +53,7 @@ import {
 } from '../core/contact-secrets.js';
 import { friendsDeleteContact } from '../api/friends.js';
 import { mkUpdate } from '../api/auth.js';
-import { loadContacts, saveContact, getLastContactsHydrateSummary } from '../features/contacts.js';
+import { loadContacts, saveContact, getLastContactsHydrateSummary, uplinkContactToD1 } from '../features/contacts.js';
 import { saveSettings, loadSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
@@ -324,6 +324,12 @@ let pendingServerOps = 0;
 let waitOverlayTimer = null;
 let shareController = null;
 
+let unsubscribeSecureStatus = null;
+let unsubscribeTimeline = null;
+
+const { setupSwipe, closeSwipe, closeOpenSwipe } = createSwipeManager();
+
+// --- Controller System Integration ---
 const audioManager = createNotificationAudioManager({ permissionKey: AUDIO_PERMISSION_KEY });
 const resumeNotifyAudioContext = () => audioManager.resume();
 const playNotificationSound = () => audioManager.play();
@@ -2315,7 +2321,7 @@ setTimeout(() => {
   if (drivePane?.showSubscriptionGateIfExpired) drivePane.showSubscriptionGateIfExpired();
 }, 1200);
 
-const { setupSwipe, closeSwipe, closeOpenSwipe } = createSwipeManager();
+
 
 let removeContactLocalFn = () => { };
 
@@ -3597,12 +3603,13 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
     if (acct !== digest) continue;
     const patch = {};
     if (shouldOverwriteNickname(entry?.nickname)) patch.nickname = nickname;
-    if (avatar && !entry?.avatar) patch.avatar = avatar;
+    if (avatar && entry?.avatar !== avatar) patch.avatar = avatar;
     if (updatedAt) patch.profileUpdatedAt = updatedAt;
     if (Object.keys(patch).length) {
-      patchContactCore(entry?.peerKey || entry?.peerAccountDigest || acct, patch, 'app-mobile:profile-hydrate');
+      const patched = patchContactCore(entry?.peerKey || entry?.peerAccountDigest || acct, patch, 'app-mobile:profile-hydrate');
       updated = true;
       updatedKeys.add(entry?.peerKey || entry?.peerAccountDigest || acct);
+      uplinkContactToD1(patched).catch(err => logCapped(`[applyProfileSnapshot] uplink failed for ${acct.slice(0, 8)}`, err));
     }
   }
 
@@ -3612,7 +3619,7 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
       if (acct !== digest) continue;
       const peerDeviceId = thread?.peerDeviceId || null;
       if (thread?.conversationId && (thread?.conversationToken || thread?.conversation?.token_b64) && peerDeviceId) {
-        upsertContactCore({
+        const saved = upsertContactCore({
           peerAccountDigest: `${digest}::${peerDeviceId}`,
           peerDeviceId,
           conversationId: thread.conversationId,
@@ -3622,12 +3629,13 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
         }, 'app-mobile:profile-thread');
         updated = true;
         updatedKeys.add(`${digest}::${peerDeviceId}`);
+        uplinkContactToD1(saved).catch(err => logCapped(`[applyProfileSnapshot] thread uplink failed`, err));
       }
     }
   }
 
   if (!updated && threadForPeer && threadForPeer?.conversationId && (threadForPeer?.conversationToken || threadForPeer?.conversation?.token_b64) && threadForPeer?.peerDeviceId) {
-    upsertContactCore({
+    const saved = upsertContactCore({
       peerAccountDigest: `${digest}::${threadForPeer.peerDeviceId}`,
       peerDeviceId: threadForPeer.peerDeviceId,
       conversationId: threadForPeer.conversationId,
@@ -3638,6 +3646,7 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
     }, 'app-mobile:profile-thread-seed');
     updated = true;
     updatedKeys.add(`${digest}::${threadForPeer.peerDeviceId}`);
+    uplinkContactToD1(saved).catch(err => logCapped(`[applyProfileSnapshot] seed uplink failed`, err));
   }
 
   if (updated) {
@@ -4155,7 +4164,9 @@ function handleWebSocketMessage(msg) {
   }
   if (type === 'contacts-reload') {
     if (!isTargetingThisDevice(msg)) return;
-    loadInitialContacts().catch((err) => log({ contactsInitError: err?.message || err }));
+    loadInitialContacts()
+      .then(() => hydrateProfileSnapshots())
+      .catch((err) => log({ contactsInitError: err?.message || err }));
     return;
   }
   if (type === 'presence') {

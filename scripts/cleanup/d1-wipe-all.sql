@@ -1,7 +1,7 @@
 -- Clear messaging-related tables before reapplying migrations
 DELETE FROM attachments;
 DELETE FROM messages_secure;
-DELETE FROM messages;
+-- DELETE FROM messages;
 DELETE FROM message_key_vault;
 DELETE FROM conversation_acl;
 DELETE FROM conversations;

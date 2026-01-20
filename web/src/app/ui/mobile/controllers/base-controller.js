@@ -168,6 +168,10 @@ export function createControllerDeps(context) {
         getCachedSecureStatus: context.getCachedSecureStatus,
         isSubscriptionActive: context.isSubscriptionActive,
         requireSubscriptionActive: context.requireSubscriptionActive,
-        appendLocalOutgoingMessage: context.appendLocalOutgoingMessage
+        appendLocalOutgoingMessage: context.appendLocalOutgoingMessage,
+        // Swipe dependencies
+        setupSwipe: context.setupSwipe,
+        closeSwipe: context.closeSwipe,
+        closeOpenSwipe: context.closeOpenSwipe
     };
 }

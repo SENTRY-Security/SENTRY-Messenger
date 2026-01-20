@@ -13,35 +13,83 @@ export function createSwipeManager() {
   }
 
   function setupSwipe(li) {
+    console.log('[Swipe] setupSwipe called for item', li);
     const content = li.querySelector('.item-content');
     if (!content) return;
     const limit = -72;
     let startX = 0;
+    let startY = 0;
     let deltaX = 0;
+    let deltaY = 0;
     let dragging = false;
+    let isHorizontal = false;
+    let isVertical = false;
 
-    const start = (x, target) => {
+    // Debug logging helper
+    const logSwipe = (msg, data) => {
+      console.log(`[Swipe] ${msg}`, data);
+    };
+
+    const start = (x, y, target) => {
       if (target && target.closest && target.closest('.item-delete')) return false;
       startX = x;
+      startY = y;
       deltaX = 0;
+      deltaY = 0;
       dragging = true;
+      isHorizontal = false;
+      isVertical = false;
+      logSwipe('start', { x, y });
+
+      // Do not stop propagation here, let potential clicks bubble until we decide it's a swipe
       if (openSwipeItem && openSwipeItem !== li) closeSwipe(openSwipeItem);
       return true;
     };
 
-    const move = (x) => {
+    const move = (x, y, e) => {
       if (!dragging) return;
+      // Once vertical, stop checking
+      if (isVertical) return;
+
       deltaX = x - startX;
-      if (deltaX < 0) {
-        content.style.transform = `translateX(${Math.max(deltaX, limit)}px)`;
-      } else {
-        content.style.transform = `translateX(${Math.min(deltaX, 12)}px)`;
+      deltaY = y - startY;
+
+      // Determine direction if not yet decided
+      if (!isHorizontal && !isVertical) {
+        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
+          if (Math.abs(deltaX) > Math.abs(deltaY)) {
+            isHorizontal = true;
+          } else {
+            isVertical = true;
+            return; // Let browser handle vertical scroll
+          }
+        } else {
+          // Too small to decide yet
+          return;
+        }
+      }
+
+      if (isHorizontal) {
+        logSwipe('move:horizontal', { deltaX, cancelable: e?.cancelable, type: e?.type });
+        if (e && e.cancelable) e.preventDefault();
+        if (e && e.stopPropagation) {
+          logSwipe('move:horizontal:stopping_propagation', {});
+          e.stopPropagation(); // Stop bubbling to pull-to-refresh
+        }
+        if (deltaX < 0) {
+          content.style.transform = `translateX(${Math.max(deltaX, limit)}px)`;
+        } else {
+          content.style.transform = `translateX(${Math.min(deltaX, 12)}px)`;
+        }
       }
     };
 
     const end = () => {
       if (!dragging) return;
       dragging = false;
+      isHorizontal = false;
+      isVertical = false;
+
       if (deltaX < -40) {
         li.classList.add('show-delete');
         content.style.transform = `translateX(${limit}px)`;
@@ -54,13 +102,13 @@ export function createSwipeManager() {
 
     li.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1) return;
-      if (!start(e.touches[0].clientX, e.target)) return;
+      if (!start(e.touches[0].clientX, e.touches[0].clientY, e.target)) return;
     }, { passive: true });
 
     li.addEventListener('touchmove', (e) => {
       if (!dragging) return;
-      move(e.touches[0].clientX);
-    }, { passive: true });
+      move(e.touches[0].clientX, e.touches[0].clientY, e);
+    }, { passive: false });
 
     li.addEventListener('touchend', end, { passive: true });
     li.addEventListener('touchcancel', end, { passive: true });

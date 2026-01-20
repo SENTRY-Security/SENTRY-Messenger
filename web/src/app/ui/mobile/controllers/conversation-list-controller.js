@@ -538,6 +538,7 @@ export class ConversationListController extends BaseController {
     handleConversationPullMove(e) {
         if (!this.conversationPullTracking || this.conversationPullInvalid || this.conversationsRefreshing) return;
         if (e.touches?.length !== 1) return;
+        console.log('[ConvPull] move check', { y: e.touches[0].clientY, startY: this.conversationPullStartY, tracking: this.conversationPullTracking });
         const dy = e.touches[0].clientY - this.conversationPullStartY;
         const dx = Math.abs(e.touches[0].clientX - this.conversationPullStartX);
         if (!this.conversationPullDecided) {
@@ -647,6 +648,7 @@ export class ConversationListController extends BaseController {
 
             const li = document.createElement('li');
             li.className = 'conversation-item';
+            li.style.touchAction = 'pan-y'; // Force browser to handle vertical only, JS horizontal
             li.dataset.peer = peerDigest;
             li.dataset.conversationId = thread.conversationId;
             if (thread.peerDeviceId) li.dataset.peerDeviceId = thread.peerDeviceId;
@@ -677,9 +679,7 @@ export class ConversationListController extends BaseController {
             </div>
           </div>
         </div>
-        <div class="conversation-delete-row">
-          <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i></button>
-        </div>
+        <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i></button>
       `;
 
             const deleteBtn = li.querySelector('.item-delete');
@@ -690,6 +690,12 @@ export class ConversationListController extends BaseController {
             });
 
             li.addEventListener('click', (e) => {
+                if (li.classList.contains('show-delete')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.deps.closeSwipe?.(li);
+                    return;
+                }
                 const hasFn = !!this.deps.setActiveConversation;
                 console.log('[ConversationList] item clicked', {
                     peerDigest,
