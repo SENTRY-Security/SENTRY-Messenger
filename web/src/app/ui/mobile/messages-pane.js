@@ -295,7 +295,7 @@ function getMessageState() {
 
 
 function resetMessageStateWithPlaceholders() {
-  controllers.callLog.clearCallLogPlaceholders();
+  clearCallLogPlaceholders();
   resetPlaceholderState();
   resetMessageState();
   stopActivePoll();
@@ -1128,6 +1128,7 @@ export function initMessagesPane({
           getConversationThreads().delete(conversationId);
           sessionStore.conversationIndex?.delete?.(conversationId);
           removeContactCore(key, 'messages-pane:delete-conversation');
+          if (typeof window !== 'undefined') window.__refreshContacts?.();
           if (element) closeSwipe?.(element);
           const state = getMessageState();
           if (state.activePeerDigest === key) {
@@ -1146,12 +1147,12 @@ export function initMessagesPane({
             if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
             clearMessagesView();
             hideSecurityModal();
-            controllers.composer.updateComposerAvailability();
-            controllers.layout.applyMessagesLayout();
+            deps.updateComposerAvailability();
+            deps.applyMessagesLayout();
           }
-          controllers.conversationList.syncFromContacts();
-          controllers.conversationList.refreshUnreadBadges();
-          controllers.conversationList.renderConversationList();
+          deps.syncConversationThreadsFromContacts();
+          deps.refreshContactsUnreadBadges();
+          deps.renderConversationList();
           wsSendFn({
             type: 'conversation-deleted',
             targetAccountDigest: peerDigest,

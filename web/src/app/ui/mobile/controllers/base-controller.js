@@ -153,6 +153,11 @@ export function createControllerDeps(context) {
         handleVaultAckEvent: context.handleVaultAckEvent,
         handleMessageDecrypted: context.handleMessageDecrypted,
         // ActiveConversation facade deps
+        syncConversationThreadsFromContacts: context.syncConversationThreadsFromContacts,
+        refreshContactsUnreadBadges: context.refreshContactsUnreadBadges,
+        renderConversationList: context.renderConversationList,
+        updateComposerAvailability: context.updateComposerAvailability,
+        applyMessagesLayout: context.applyMessagesLayout,
         setActiveConversation: context.setActiveConversation,
         handleConversationDelete: context.handleConversationDelete,
         getCurrentTab: context.getCurrentTab,
