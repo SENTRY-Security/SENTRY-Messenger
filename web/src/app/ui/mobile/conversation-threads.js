@@ -159,6 +159,7 @@ export function createConversationThreadsManager(deps) {
             lastMessageText: typeof prev.lastMessageText === 'string' ? prev.lastMessageText : '',
             lastMessageTs: typeof prev.lastMessageTs === 'number' ? prev.lastMessageTs : null,
             lastMessageId: prev.lastMessageId || null,
+            lastMsgType: prev.lastMsgType || null,
             lastReadTs: typeof prev.lastReadTs === 'number' ? prev.lastReadTs : null,
             unreadCount: typeof prev.unreadCount === 'number' ? prev.unreadCount : 0,
             previewLoaded: !!prev.previewLoaded,
@@ -275,6 +276,7 @@ export function createConversationThreadsManager(deps) {
                         thread.lastMessageText = '';
                         thread.lastMessageTs = null;
                         thread.lastMessageId = null;
+                        thread.lastMsgType = null;
                         thread.previewLoaded = true;
                         thread.unreadCount = 0;
                         if (thread.lastReadTs === null) thread.lastReadTs = null;
@@ -286,6 +288,7 @@ export function createConversationThreadsManager(deps) {
                     thread.lastMessageTs = typeof latest.ts === 'number' ? latest.ts : null;
                     thread.lastMessageId = latest.id || latest.messageId || null;
                     thread.lastDirection = latest.direction || null;
+                    thread.lastMsgType = latest.msgType || latest.subtype || 'text'; // Capture type
                     thread.previewLoaded = true;
                     thread.needsRefresh = false;
                     if (thread.lastReadTs === null || thread.lastReadTs === undefined) {
@@ -318,6 +321,11 @@ export function createConversationThreadsManager(deps) {
     }
 
     function formatThreadPreview(thread) {
+        // [FIX] Handle Deleted Conversation Tombstone
+        if (thread.lastMsgType === 'conversation-deleted') {
+            return '尚無訊息';
+        }
+
         const raw = thread.lastMessageText || '';
         const maxLen = 50;
         let text = raw.trim();

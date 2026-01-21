@@ -101,7 +101,7 @@ export class ConversationListController extends BaseController {
     /**
      * Upsert a conversation thread entry.
      */
-    upsertThread({ peerAccountDigest, peerDeviceId = null, conversationId, tokenB64, nickname, avatar }) {
+    upsertThread({ peerAccountDigest, peerDeviceId = null, conversationId, tokenB64, nickname, avatar, lastMsgType = null }) {
         const key = normalizePeerKey(peerAccountDigest);
         const convId = String(conversationId || '').trim();
         if (!key || !convId) return null;
@@ -153,6 +153,7 @@ export class ConversationListController extends BaseController {
             lastMessageText: typeof prev.lastMessageText === 'string' ? prev.lastMessageText : '',
             lastMessageTs: typeof prev.lastMessageTs === 'number' ? prev.lastMessageTs : null,
             lastMessageId: prev.lastMessageId || null,
+            lastMsgType: lastMsgType || prev.lastMsgType || null,
             lastReadTs: typeof prev.lastReadTs === 'number' ? prev.lastReadTs : null,
             unreadCount: typeof prev.unreadCount === 'number' ? prev.unreadCount : 0,
             previewLoaded: !!prev.previewLoaded,
@@ -292,6 +293,8 @@ export class ConversationListController extends BaseController {
                         text = `[檔案] ${payload.filename || '附件'}`;
                     } else if (type === 'call_log') {
                         text = '[通話紀錄]';
+                    } else if (type === 'conversation-deleted' || type === 'conversation_deleted') {
+                        text = '尚無訊息';
                     } else {
                         text = '收到新訊息';
                     }
@@ -304,10 +307,13 @@ export class ConversationListController extends BaseController {
                     thread.lastMessageTs = ts;
                     thread.lastMessageId = normalizeTimelineMessageId(msg);
                     thread.lastDirection = direction;
+                    thread.lastMsgType = type;
                     thread.previewLoaded = true;
                     thread.needsRefresh = false;
                 } else {
                     thread.previewLoaded = true;
+                    thread.lastMessageText = '';
+                    thread.lastMsgType = null;
                 }
                 threadsMap.set(thread.conversationId, thread);
             } catch (err) {
@@ -328,14 +334,31 @@ export class ConversationListController extends BaseController {
 
         const lastMsg = timeline[timeline.length - 1];
         const text = lastMsg.text || (lastMsg.media ? `[檔案] ${lastMsg.media.name || '附件'}` : '...');
+        const msgType = lastMsg.msgType || lastMsg.subtype || 'text';
         const ts = lastMsg.ts || Date.now();
 
         this.upsertThread({
             peerAccountDigest: state.activePeerDigest,
             peerDeviceId: state.activePeerDeviceId,
             conversationId: state.conversationId,
-            tokenB64: state.conversationToken
+            tokenB64: state.conversationToken,
+            lastMsgType: msgType
         });
+
+        // Upsert thread helper above doesn't set text automatically from args (it copies prev), 
+        // so we must manually update it if we want to sync real-time content.
+        // Or we can modify upsertThread to accept text/ts.
+        // Actually, upsertThread defined above takes nick/avatar only.
+
+        const threads = this.getThreads();
+        const thread = threads.get(state.conversationId);
+        if (thread) {
+            thread.lastMessageText = msgType === 'conversation-deleted' ? '尚無訊息' : text;
+            thread.lastMessageTs = ts;
+            thread.lastMsgType = msgType;
+            thread.lastDirection = lastMsg.direction;
+            threads.set(state.conversationId, thread);
+        }
     }
 
     /**
@@ -434,6 +457,11 @@ export class ConversationListController extends BaseController {
      * Format thread preview text.
      */
     formatThreadPreview(thread) {
+        // [FIX] Explicit handling if type is present
+        if (thread.lastMsgType === 'conversation-deleted' || thread.lastMsgType === 'conversation_deleted') {
+            return '尚無訊息';
+        }
+
         const raw = thread.lastMessageText || '';
         const snippet = this._buildConversationSnippet(raw) || (thread.lastMessageTs ? '' : '尚無訊息');
         if (!snippet) return '';
