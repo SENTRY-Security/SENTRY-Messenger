@@ -284,11 +284,25 @@ export function createConversationThreadsManager(deps) {
                         return;
                     }
                     const latest = list[list.length - 1];
-                    thread.lastMessageText = typeof latest.text === 'string' && latest.text.trim() ? latest.text : (latest.error || '(無法解密)');
+                    let text = typeof latest.text === 'string' && latest.text.trim() ? latest.text : (latest.error || '(無法解密)');
+                    let type = latest.msgType || latest.subtype || 'text';
+
+                    // [Fix] Handle CONTROL_SKIP and hidden messages
+                    if (text === 'CONTROL_SKIP' || latest.error === 'CONTROL_SKIP') {
+                        if (type === 'conversation-deleted') {
+                            text = '尚無訊息';
+                        } else {
+                            text = '系統訊息';
+                        }
+                    } else if (type === 'conversation-deleted') {
+                        text = '尚無訊息';
+                    }
+
+                    thread.lastMessageText = text;
                     thread.lastMessageTs = typeof latest.ts === 'number' ? latest.ts : null;
                     thread.lastMessageId = latest.id || latest.messageId || null;
                     thread.lastDirection = latest.direction || null;
-                    thread.lastMsgType = latest.msgType || latest.subtype || 'text'; // Capture type
+                    thread.lastMsgType = type; // Capture type
                     thread.previewLoaded = true;
                     thread.needsRefresh = false;
                     if (thread.lastReadTs === null || thread.lastReadTs === undefined) {

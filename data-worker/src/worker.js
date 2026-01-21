@@ -2261,6 +2261,11 @@ async function handleMessagesRoutes(req, env) {
     if (!conversationId) {
       return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
     }
+    const requesterDigest = normalizeAccountDigest(req.headers.get('x-account-digest') || url.searchParams.get('requesterDigest'));
+    if (!requesterDigest) {
+      // Optional: if no digest, return all (or 403? standard practice: return all if system call, but strictly for user privacy we should require it)
+      // For now, if missing, default to -1 (show all).
+    }
     await ensureDataTables(env);
 
     const SEMANTIC_VISIBLE = new Set(['text', 'media', 'call-log', 'system']);
@@ -2306,9 +2311,13 @@ async function handleMessagesRoutes(req, env) {
           FROM messages_secure
          WHERE conversation_id=?1
            ${cursorClause}
+           AND counter > COALESCE((
+             SELECT min_counter FROM deletion_cursors 
+             WHERE conversation_id=?1 AND account_digest=?${params.length + 1}
+           ), -1)
          ORDER BY counter DESC, created_at DESC, id DESC
          LIMIT ?${params.length}
-      `).bind(...params);
+      `).bind(...params, requesterDigest);
 
       const { results } = await stmt.all();
       const rawCount = results.length;
@@ -2421,6 +2430,79 @@ async function handleMessagesRoutes(req, env) {
       nextCursorCounter: nextCursor?.counter ?? null,
       hasMoreAtCursor: hasMoreGlobal
     });
+  }
+
+  // Deletion Cursor API
+  if (req.method === 'POST' && url.pathname === '/d1/deletion/cursor') {
+    let body;
+    try { body = await req.json(); } catch { return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 }); }
+
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const targetDigest = normalizeAccountDigest(body?.targetDigest || body?.targetAccountDigest || body?.accountDigest);
+    const minCounter = Number(body?.minCounter || body?.min_counter);
+
+    // Security: Check if requester is allowed to mod this conversation? (Skip for now, internal trusted worker)
+    if (!conversationId || !targetDigest || !Number.isFinite(minCounter)) {
+      return json({ error: 'BadRequest', message: 'conversationId, targetDigest, minCounter required' }, { status: 400 });
+    }
+
+    await ensureDataTables(env);
+    await env.DB.prepare(`
+      INSERT INTO deletion_cursors (conversation_id, account_digest, min_counter, updated_at)
+      VALUES (?1, ?2, ?3, ?4)
+      ON CONFLICT(conversation_id, account_digest) DO UPDATE SET
+        min_counter = excluded.min_counter,
+        updated_at = excluded.updated_at
+      WHERE excluded.min_counter > deletion_cursors.min_counter
+    `).bind(conversationId, targetDigest, minCounter, Date.now()).run();
+
+    return json({ ok: true, minCounter });
+  }
+
+  // Deletion Log (Soft Delete)
+  if (req.method === 'POST' && url.pathname === '/d1/deletion/log') {
+    let body;
+    try { body = await req.json(); } catch { return json({ error: 'BadRequest' }, { status: 400 }); }
+
+    const { accountDigest, conversationId } = body;
+    const encryptedCheckpoint = body.encryptedCheckpoint || body.encrypted_checkpoint;
+
+    if (!accountDigest || !conversationId || !encryptedCheckpoint) {
+      return json({ error: 'BadRequest', message: 'Missing fields' }, { status: 400 });
+    }
+
+    try {
+      await env.DB.prepare(`
+        INSERT INTO conversation_deletion_log (owner_digest, conversation_id, encrypted_checkpoint)
+        VALUES (?1, ?2, ?3)
+      `).bind(accountDigest, conversationId, encryptedCheckpoint).run();
+      return json({ ok: true });
+    } catch (err) {
+      console.warn('deletion_log_insert_failed', err);
+      return json({ ok: false, error: err.message }, { status: 500 });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/d1/deletion/log') {
+    const accountDigest = url.searchParams.get('accountDigest') || url.searchParams.get('account_digest');
+    const conversationId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+
+    if (!accountDigest || !conversationId) {
+      return json({ error: 'BadRequest', message: 'Missing params' }, { status: 400 });
+    }
+
+    try {
+      const results = await env.DB.prepare(`
+        SELECT encrypted_checkpoint, created_at, id
+        FROM conversation_deletion_log
+        WHERE owner_digest = ?1 AND conversation_id = ?2
+        ORDER BY id ASC
+      `).bind(accountDigest, conversationId).all();
+      return json({ ok: true, entries: results.results || [] });
+    } catch (err) {
+      console.warn('deletion_log_fetch_failed', err);
+      return json({ ok: false, error: err.message }, { status: 500 });
+    }
   }
 
   // Delete secure conversation

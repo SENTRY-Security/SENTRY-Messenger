@@ -27,8 +27,10 @@ import {
 // Actually grep showed "conversationIdFromToken," in import.
 // I will replace the whole block.
 import { sessionStore, resetMessageState, restorePendingInvites } from './session-store.js';
-import { deleteContactSecret, getContactSecret, getCorruptContact } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret, getCorruptContact, hideContactSecret, unhideContactSecret } from '../../core/contact-secrets.js';
+import { setDeletionCursor, setPeerDeletionCursor } from '../../features/soft-deletion/deletion-store.js';
 import { clearDrState } from '../../core/store.js';
+import { sendDrPlaintext } from '../../features/dr-session.js';
 import { escapeHtml, fmtSize, shouldNotifyForMessage, escapeSelector } from './ui-utils.js';
 import {
   getContactCore,
@@ -1106,19 +1108,59 @@ export function initMessagesPane({
       onConfirm: async () => {
         try {
           if (!peerDeviceId) throw new Error('缺少對方 deviceId，請重新同步好友後再試');
-          const peerDigest = toDigestOnly(key);
-          await deleteSecureConversation({ conversationId, peerAccountDigest: peerDigest, targetDeviceId: peerDeviceId });
+
+          const state = getMessageState();
+          const lastMsg = state.messages && state.messages.length > 0 ? state.messages[state.messages.length - 1] : null;
+          const currentCounter = lastMsg ? (lastMsg.counter || 0) : 0;
+
+          // 1. Set Deletion Cursor (Server filters future fetches)
+          if (currentCounter > 0) {
+            // Update Self Cursor
+            await setDeletionCursor(conversationId, currentCounter);
+
+            // Update Peer Cursor (Bi-directional)
+            if (key) {
+              // Fire and forget peer update to avoid blocking UI? Or await?
+              // Await ensures consistency but might be slow.
+              // We will await.
+              try {
+                await setPeerDeletionCursor(conversationId, key, currentCounter);
+
+                // Send Signal (Control Message)
+                // This ensures the peer knows to refresh/clear their view immediately.
+                await sendDrPlaintext({
+                  text: 'conversation-deleted',
+                  // We must resolve peer info. 'key' is digest if normalized.
+                  peerAccountDigest: key,
+                  peerDeviceId: peerDeviceId, // Use cached peerDeviceId
+                  conversationId: conversationId,
+                  messageId: crypto.randomUUID(),
+                  metaOverrides: {
+                    msgType: CONTROL_MESSAGE_TYPES.CONVERSATION_DELETED
+                  }
+                });
+              } catch (err) {
+                console.warn('[messages-pane] bi-directional delete incomplete', err);
+                // Don't block local delete on peer failure
+              }
+            }
+          }
+
+          // 2. Clear Local View (Immediate UI Feedback)
           sessionStore.deletedConversations?.add?.(conversationId);
-          getConversationThreads().delete(conversationId);
-          sessionStore.conversationIndex?.delete?.(conversationId);
-          removeContactCore(key, 'messages-pane:delete-conversation');
+          // Don't delete thread metadata, just hide it? 
+          // User asked for "Hide" behavior previously.
+          // But here we are "Deleting".
+          // If we want "Delete for Me", we usually hide the contact too.
+          hideContactSecret(key);
+          if (typeof window !== 'undefined') window.__refreshContacts?.();
           if (typeof window !== 'undefined') window.__refreshContacts?.();
           if (element) closeSwipe?.(element);
-          const state = getMessageState();
-          if (state.activePeerDigest === key) {
+          const refetchedState = getMessageState();
+          if (refetchedState.activePeerDigest === key) {
             logConversationResetTrace({
               reason: 'DELETE_ACTIVE',
-              conversationId: state?.conversationId || conversationId || null,
+              conversationId: refetchedState?.conversationId || conversationId || null,
               peerKey: key || null,
               peerDigest: key || null,
               peerDeviceId,
@@ -1137,13 +1179,8 @@ export function initMessagesPane({
           deps.syncConversationThreadsFromContacts();
           deps.refreshContactsUnreadBadges();
           deps.renderConversationList();
-          wsSendFn({
-            type: 'conversation-deleted',
-            targetAccountDigest: peerDigest,
-            conversationId,
-            senderDeviceId: ensureDeviceId(),
-            targetDeviceId: peerDeviceId
-          });
+          // Removed legacy wsSendFn call (RefError peerDigest).
+          // We already sent the encrypted signal via sendDrPlaintext above.
         } catch (err) {
           log({ conversationDeleteError: err?.message || err });
           alert(err?.message || '刪除對話失敗，請稍後再試。');

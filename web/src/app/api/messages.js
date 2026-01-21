@@ -9,7 +9,7 @@ import { buildAccountPayload, ensureDeviceId, normalizeAccountDigest } from '../
 import { logCapped, logForensicsEvent } from '../core/log.js';
 export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrapper
 
-function buildAccountHeaders() {
+export function buildAccountHeaders() {
   const payload = buildAccountPayload();
   const headers = {};
   if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
@@ -30,7 +30,7 @@ function suffix(value, size) {
   return trimmed.slice(-size);
 }
 
-function logAuthHeaderTrace(endpoint, headers = {}) {
+export function logAuthHeaderTrace(endpoint, headers = {}) {
   if (!endpoint) return;
   const accountToken = headers['X-Account-Token'] || headers['x-account-token'] || null;
   const accountDigest = headers['X-Account-Digest'] || headers['x-account-digest'] || null;

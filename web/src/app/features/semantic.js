@@ -21,6 +21,7 @@ export const MSG_SUBTYPE = Object.freeze({
   SESSION_ERROR: 'session-error',
   SESSION_INIT: 'session-init',
   SESSION_ACK: 'session-ack',
+  CONVERSATION_DELETED: 'conversation-deleted',
 
   // Transient Signals
   READ_RECEIPT: 'read-receipt',
@@ -42,7 +43,8 @@ export const CONTROL_STATE_SUBTYPES = new Set([
   MSG_SUBTYPE.PROFILE_UPDATE,
   MSG_SUBTYPE.SESSION_ERROR,
   MSG_SUBTYPE.SESSION_INIT,
-  MSG_SUBTYPE.SESSION_ACK
+  MSG_SUBTYPE.SESSION_ACK,
+  MSG_SUBTYPE.CONVERSATION_DELETED
 ]);
 
 export const TRANSIENT_SIGNAL_SUBTYPES = new Set([

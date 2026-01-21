@@ -151,10 +151,40 @@ export async function smartFetchMessages({
         const placeholders = [];
         const now = Date.now();
 
+        // [Pre-Scan] Barrier Check
+        // If the batch contains a 'conversation-deleted' header, we must NOT inject placeholders
+        // for messages prior to it. This satisfies "Clean up before render".
+        let deletionBarrierCounter = -1;
+
+        for (const raw of placeholderItems) {
+            const h = raw.header || (raw.header_json ? JSON.parse(raw.header_json) : {});
+            // Helper to get type from header OR meta
+            // Fix: Include h.meta?.msgType as typically found in D1 header_json
+            const typeCandidates = [
+                h.msgType, h.msg_type, h.type, h.subtype,
+                h.meta?.msgType, h.meta?.msg_type, h.meta?.type,
+                raw.msgType, raw.subtype
+            ];
+            const type = typeCandidates.find(t => t);
+
+            if (normalizeSemanticSubtype(type) === 'conversation-deleted') {
+                const c = Number(raw.counter ?? raw.n ?? raw.header?.counter ?? raw.header?.n);
+                if (Number.isFinite(c) && c > deletionBarrierCounter) {
+                    deletionBarrierCounter = c;
+                }
+            }
+        }
+
         for (const raw of placeholderItems) {
             // Fix: hybrid-flow items have counter at root, not necessarily in header object
             const counter = Number(raw.counter ?? raw.n ?? raw.header?.counter ?? raw.header?.n);
             if (!Number.isFinite(counter)) continue;
+
+            // [Barrier Enforcement]
+            if (deletionBarrierCounter > 0 && counter <= deletionBarrierCounter) {
+                // Skip injection because it's historically deleted OR it is the deletion signal itself
+                continue;
+            }
 
             // [Strict Filter] Aggressively identify Control Messages in Hybrid Flow
             // 1. Resolve Header if missing
@@ -450,9 +480,16 @@ export async function smartFetchMessages({
 
             const isControl = subtype && (
                 subtype === 'control' ||
-                CONTROL_STATE_SUBTYPES.has(subtype) ||
+                (CONTROL_STATE_SUBTYPES.has(subtype) && subtype !== 'conversation-deleted') ||
                 TRANSIENT_SIGNAL_SUBTYPES.has(subtype)
             );
+
+            if (subtype === 'conversation-deleted') {
+                console.log('[Decrypted Tombstone Payload] (Hybrid Route A)', result.item);
+                // Ensure msgType is set so Controller keeps it
+                result.item.msgType = 'conversation-deleted';
+                // Retrospective cleanup removed as Pre-Render Barrier now handles it correctly.
+            }
 
             if (isControl) {
                 updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_MSG_DECRYPTED' });

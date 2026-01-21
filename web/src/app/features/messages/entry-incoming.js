@@ -15,7 +15,7 @@ import {
     upsertConversationThread
 } from '../conversation-updates.js';
 import {
-    deleteContactSecret
+    hideContactSecret
 } from '../../core/contact-secrets.js';
 import {
     clearDrState,
@@ -178,26 +178,34 @@ export async function handleIncomingSecureMessage(event, deps) {
         return { skipped: true, reason: 'cleared_history' };
     }
 
-    // Conversation Deleted
-    if (event?.type === 'conversation-deleted') {
-        const peerDigest = ensurePeerAccountDigest(event);
+    // Conversation Deleted (Soft Delete Signal)
+    if (event?.type === 'conversation-deleted' || normalizedControlType === CONTROL_MESSAGE_TYPES.CONVERSATION_DELETED) {
+        const peerDigest = ensurePeerAccountDigest(event) || event?.senderAccountDigest;
 
         // Updates
+        // Mark conversation as deleted in session store
         sessionStore.deletedConversations?.add?.(convId);
+
+        // Remove from UI threads list
         getConversationThreads().delete(convId);
         sessionStore.conversationIndex?.delete?.(convId);
 
         if (peerDigest) {
             removeContactCore(peerDigest, 'entry-incoming:conversation-deleted');
         }
-        if (convId) {
-            clearConversationHistory(convId, tsRaw);
-        }
-        clearDrState(
-            { peerAccountDigest: peerDigest, peerDeviceId: senderDeviceId || null },
-            { __drDebugTag: 'entry-incoming:conversation-deleted' }
-        );
-        deleteContactSecret(peerDigest, { deviceId: selfDeviceId });
+
+        // Clear local message history cache (does not delete from server, but server filter handles that)
+        // MOVED TO RENDERER: We now use "Tombstone/Barrier" rendering so we need to keep the history 
+        // in memory (at least the tombstone) to render the separator.
+        // The renderer will slice off older messages.
+        // if (convId) {
+        //    clearConversationHistory(convId, tsRaw);
+        // }
+
+        // IMPORTANT: Do NOT clear DR state (clearDrState) or delete contact secret (deleteContactSecret).
+        // We want to preserve the session so future messages can be decrypted.
+        // Just hide the contact.
+        hideContactSecret(peerDigest);
 
         const isActive = state.activePeerDigest === peerDigest || state.conversationId === convId;
 

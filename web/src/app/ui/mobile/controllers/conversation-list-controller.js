@@ -280,8 +280,11 @@ export class ConversationListController extends BaseController {
                     limit: 1
                 });
 
-                if (result?.messages && result.messages.length > 0) {
-                    const msg = result.messages[0];
+                // Fix: apiListSecureMessages returns { r, data }, and data has items
+                const messages = result?.data?.items || [];
+
+                if (messages.length > 0) {
+                    const msg = messages[0];
                     const meta = msg.meta || {};
                     const payload = msg.payload || {};
                     const type = normalizeMsgTypeValue(payload.type);
@@ -299,6 +302,17 @@ export class ConversationListController extends BaseController {
                         text = '收到新訊息';
                     }
 
+                    // [Fix] Handle CONTROL_SKIP error display
+                    // If the message list returns an error or placeholder text that is 'CONTROL_SKIP', hide it.
+                    if (text === 'CONTROL_SKIP' || (msg.error === 'CONTROL_SKIP')) {
+                        if (type === 'conversation-deleted' || type === 'conversation_deleted') {
+                            text = '尚無訊息';
+                        } else {
+                            // Default for other hidden control messages
+                            text = '系統訊息';
+                        }
+                    }
+
                     const ts = extractMessageTimestampMs(msg);
                     const sender = normalizePeerKey(meta.sender);
                     const direction = sender === this.deps.sessionStore.activePeerDigest ? 'incoming' : (deriveMessageDirectionFromEnvelopeMeta ? deriveMessageDirectionFromEnvelopeMeta(meta) : 'unknown');
@@ -312,7 +326,8 @@ export class ConversationListController extends BaseController {
                     thread.needsRefresh = false;
                 } else {
                     thread.previewLoaded = true;
-                    thread.lastMessageText = '';
+                    // Fix: Explicitly show '尚無訊息' for empty/deleted threads
+                    thread.lastMessageText = '尚無訊息';
                     thread.lastMsgType = null;
                 }
                 threadsMap.set(thread.conversationId, thread);

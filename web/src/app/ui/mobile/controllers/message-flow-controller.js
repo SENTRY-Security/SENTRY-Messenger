@@ -229,17 +229,10 @@ export class MessageFlowController extends BaseController {
 
             if (result?.action === 'conversation_deleted') {
                 if (result.isActive) {
-                    // Reset UI logic
-                    // This duplicates resetMessageStateWithPlaceholders somewhat but simplified
-                    const state = this.getMessageState();
-                    state.messages = [];
-                    // We need to trigger UI reset
-                    this.deps.elements.peerName.textContent = '選擇好友開始聊天'; // Direct DOM access via elements deps?
-                    // Or call a reset method. messages-pane.js had logic.
-                    // For now, minimal update.
-                    this.deps.clearMessagesView?.();
-                    this.deps.applyMessagesLayout?.();
-                    this.deps.updateComposerAvailability?.();
+                    // Do NOT clear messages. 
+                    // Let updateMessagesUI handled the hard-cutoff rendering.
+                    // Just force a UI update.
+                    this.updateMessagesUI({ forceFullRender: true });
                 }
                 this.deps.controllers?.conversationList?.syncFromContacts();
                 this.deps.refreshContactsUnreadBadges?.();
@@ -796,9 +789,67 @@ export class MessageFlowController extends BaseController {
             ...replayPlaceholderEntries,
             ...gapPlaceholderEntries
         ];
+
         const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length;
 
-        const sortedMessages = sortMessagesByTimelineLocal(mergedRaw);
+        // Sort first to ensure chronological order
+        let sortedMessages = sortMessagesByTimelineLocal(mergedRaw);
+
+        // Filter / Cutoff Logic for Deletion Tombstone
+        // Find the LATEST conversation-deleted message (if multiple, the latest one is the effective barrier)
+        let deletionTombstoneIndex = -1;
+        for (let i = sortedMessages.length - 1; i >= 0; i--) {
+            const msg = sortedMessages[i];
+            const type = msg.msgType || msg.subtype || 'text';
+            if (type === 'conversation-deleted') {
+                deletionTombstoneIndex = i;
+                break;
+            }
+        }
+
+        // Apply Hard Cutoff: Keep the tombstone and everything AFTER it.
+        if (deletionTombstoneIndex !== -1) {
+            // Check if there are messages BEFORE it (index < deletionTombstoneIndex)
+            // If so, slice!
+            // slice(startIndex) -> returns new array from Start to End.
+            // We want [Tombstone, ...NewerMessages]
+            sortedMessages = sortedMessages.slice(deletionTombstoneIndex);
+        }
+
+        // Normal filtering for other control messages
+        sortedMessages = sortedMessages.filter(entry => {
+            if (entry.status === 'hidden') return false;
+            // [Fix] Mask CONTROL_SKIP error strings
+            if (entry.text === 'CONTROL_SKIP' || entry.error === 'CONTROL_SKIP') return false;
+
+            const type = entry?.msgType || entry?.subtype || entry?.meta?.activeType || 'text';
+            // conversation-deleted is now ALLOWED (it's the barrier)
+            // But other control messages should still be hidden? 
+            // Semantic.js says CONTROL_STATE: contact-share, profile-update, session-error, session-init, session-ack
+            // We generally hide session-* but show contact-share.
+            // renderer.js 'isUserTimelineMessage' logic handles some, but here we are pre-filtering.
+            // If we just rely on `renderer.js` NOT rendering them (it defaults to text/bubble if unknown), we might get empty bubbles.
+            // Existing logic was strict filter.
+            // Let's keep strict filter but ALLOW contact-share and conversation-deleted.
+
+            if (type === 'conversation-deleted') return true;
+
+            // If implicit control type (from semantic.js classification), we might want to hide specific ones.
+            // For now, let's just NOT strict filter everything else out, to behave like before, 
+            // OR replicate `isUserTimelineMessage` logic? 
+            // Actually, `contact-share` usually renders as a card.
+            // If we filter `control`, we hide contact-share.
+            // `contact-share` type is 'contact-share'. 
+            // `session-ack` type is 'session-ack'.
+
+            if (type === 'control') return false;
+            // If we have specific types in `CONTROL_STATE_SUBTYPES`, we should check if they have a renderer.
+            // If `renderer.js` doesn't support them, they might look ugly.
+            // Safe bet: Filter out `session-*` explicitly.
+            if (type.startsWith('session-')) return false;
+
+            return true;
+        });
 
         const { entries: renderEntries, shimmerIds } = buildRenderEntries({
             timelineMessages: sortedMessages

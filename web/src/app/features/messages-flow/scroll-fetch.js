@@ -65,7 +65,7 @@ export function createMessagesFlowScrollFetch(deps = {}) {
     if (!conversationId) throw new Error('conversationId required');
     if (!isReplay) throw new Error('scroll fetch requires replay mode');
     let mkRaw = null;
-    try { mkRaw = typeof getMkRaw === 'function' ? getMkRaw() : null; } catch {}
+    try { mkRaw = typeof getMkRaw === 'function' ? getMkRaw() : null; } catch { }
     if (!mkRaw) {
       const err = new Error('MK missing');
       err.code = 'MKMissing';
@@ -73,8 +73,8 @@ export function createMessagesFlowScrollFetch(deps = {}) {
     }
     let selfDeviceId = null;
     let selfDigest = null;
-    try { selfDeviceId = typeof getDeviceId === 'function' ? getDeviceId() : null; } catch {}
-    try { selfDigest = typeof getAccountDigest === 'function' ? getAccountDigest() : null; } catch {}
+    try { selfDeviceId = typeof getDeviceId === 'function' ? getDeviceId() : null; } catch { }
+    try { selfDigest = typeof getAccountDigest === 'function' ? getAccountDigest() : null; } catch { }
     if (typeof selfDigest === 'string') selfDigest = selfDigest.toUpperCase();
 
     const { cursorTs, cursorId } = normalizeCursor(cursor);

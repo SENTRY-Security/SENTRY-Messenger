@@ -530,8 +530,43 @@ export class MessageRenderer {
             }
 
             const li = document.createElement('li');
-            const messageType = msg.msgType || (msg.media ? 'media' : 'text');
+            const messageType = msg.msgType || msg.subtype || (msg.media ? 'media' : 'text');
             if (!msg.msgType) msg.msgType = messageType;
+
+            if (messageType === 'conversation-deleted') {
+                const sep = document.createElement('li');
+                sep.className = 'message-separator';
+                sep.style.marginTop = '12px';
+                sep.style.marginBottom = '12px';
+
+                // Format: "XXXX 已於 YYYY-MM-DD HH:MM 清除上方對話紀錄"
+                // Need to resolve sender name. 
+                // We have 'msg.senderDigest' or 'msg.header.sender_digest'.
+                const senderDigest = normalizeAccountDigest(msg.senderDigest || msg.header?.sender_digest);
+                let senderName = '對方';
+                if (isOutgoingFromSelf(msg, state.activePeerDigest)) { // Actually selfDigest not available in state directly? 
+                    // Renderer doesn't know selfDigest easily without args.
+                    // But `isOutgoingFromSelf` is exported. We need `selfDigest`. 
+                    // It's not passed in render() options except maybe implicitly?
+                    // Wait, render() has `contacts`.
+                    // Let's use `msg.direction`.
+                    if (msg.direction === 'outgoing') senderName = '你';
+                    else {
+                        const contact = contacts?.get(senderDigest);
+                        if (contact?.nickname) senderName = contact.nickname;
+                    }
+                } else if (msg.direction === 'outgoing') {
+                    senderName = '你';
+                }
+
+                // Timestamp
+                const ts = msg.ts || msg.tsMs / 1000 || Date.now() / 1000;
+                const timeStr = new Date(ts * 1000).toLocaleString('zh-TW', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+                sep.textContent = `${senderName} 已於 ${timeStr} 清除上方對話紀錄`;
+                this.listEl.appendChild(sep);
+                continue;
+            }
 
             // Placeholder
             if (msg.placeholder === true || messageType === 'placeholder') {
@@ -571,6 +606,10 @@ export class MessageRenderer {
                 } catch { }
                 continue;
             }
+
+
+
+
 
             if (messageType === 'call-log' && msg.callLog) {
                 li.className = 'call-log-entry';

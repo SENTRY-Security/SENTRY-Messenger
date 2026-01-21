@@ -278,6 +278,7 @@ export function buildPlaceholderEntriesFromRaw({ items, selfDeviceId, selfDigest
         const isControlSubtype = subtype
             ? (CONTROL_STATE_SUBTYPES.has(subtype) || TRANSIENT_SIGNAL_SUBTYPES.has(subtype))
             : false;
+
         if (isControlSubtype) {
             excludedControlCount += 1;
             continue;

@@ -411,3 +411,19 @@ export function subscribeTimeline(listener) {
   appendListeners.add(listener);
   return () => appendListeners.delete(listener);
 }
+
+export function removeMessagesMatching(conversationId, predicate) {
+  const convId = normalizeConversationId(conversationId);
+  if (!convId || typeof predicate !== 'function') return 0;
+  const convMap = timelineMap.get(convId);
+  if (!convMap) return 0;
+
+  let count = 0;
+  for (const [key, entry] of convMap.entries()) {
+    if (predicate(entry)) {
+      convMap.delete(key);
+      count++;
+    }
+  }
+  return count;
+}

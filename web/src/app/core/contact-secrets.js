@@ -1355,6 +1355,7 @@ function createEmptyContactSecret() {
     conversationId: null,
     conversationDrInit: null,
     devices: {}, // deviceId -> { drState, drSeed, drHistory, drHistoryCursorTs, drHistoryCursorId, updatedAt }
+    isHidden: false,
     updatedAt: null
   };
 }
@@ -1385,6 +1386,7 @@ function cloneContactSecretRecord(existing) {
     conversationId: existing.conversationId || null,
     conversationDrInit: existing.conversationDrInit || null,
     devices,
+    isHidden: !!existing.isHidden,
     updatedAt: Number.isFinite(existing.updatedAt) ? existing.updatedAt : null
   };
 }
@@ -2163,4 +2165,34 @@ export function getLastContactSecretsRestoreSummary() {
 
 export function getLastContactSecretsRestoreError() {
   return lastRestoreError || null;
+}
+export async function hideContactSecret(key) {
+  const digest = typeof key === 'string' ? key : null;
+  if (!digest) return;
+  // Use setContactSecret to persist
+  // We need to support 'isHidden' in the update payload or manually setting it.
+  // Currently setContactSecret uses a structured builder.
+  // We can just get the record, modify it, and persist.
+  // Or extend setContactSecret support.
+  // Simplest: direct mod + persist (since setContactSecret is complex).
+
+  const record = getContactSecret(digest);
+  if (record) {
+    record.isHidden = true;
+    record.updatedAt = Date.now();
+    ensureMap().set(digest, cloneContactSecretRecord(record));
+    await persistContactSecrets();
+  }
+}
+
+export async function unhideContactSecret(key) {
+  const digest = typeof key === 'string' ? key : null;
+  if (!digest) return;
+  const record = getContactSecret(digest);
+  if (record) {
+    record.isHidden = false;
+    record.updatedAt = Date.now();
+    ensureMap().set(digest, cloneContactSecretRecord(record));
+    await persistContactSecrets();
+  }
 }

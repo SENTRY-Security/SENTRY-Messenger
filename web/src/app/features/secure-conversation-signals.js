@@ -4,7 +4,8 @@
 export const CONTROL_MESSAGE_TYPES = Object.freeze({
   SESSION_ERROR: 'session-error',
   DELIVERY_RECEIPT: 'delivery-receipt',
-  READ_RECEIPT: 'read-receipt'
+  READ_RECEIPT: 'read-receipt',
+  CONVERSATION_DELETED: 'conversation-deleted'
 });
 
 export function isControlMessageType(value) {
