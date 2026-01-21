@@ -1576,7 +1576,7 @@ function conversationContextForPeer(peerAccountDigest) {
   return null;
 }
 
-async function sendDrPlaintext(params = {}) {
+export async function sendDrPlaintext(params = {}) {
   const { text, conversation, convId, metaOverrides = {}, peerDeviceId: peerDeviceInput = null } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) throw new Error('peerAccountDigest required');
@@ -2279,6 +2279,10 @@ async function sendDrPlaintext(params = {}) {
     if (nextFail >= 3) {
       throw new Error('DR 送出連續失敗，請重新同步好友或重新建立邀請');
     }
+    /* [SECURITY FIX] DO NOT ROLLBACK DR STATE ON NETWORK FAILURE
+    // If we restore state here, we risk reusing the same Ratchet Counter (N) for a future message.
+    // If the failure was a Timeout (Server received it, but we timed out), reusing N causes a Replay / Duplicate N error on the receiver.
+    // It is safer to burn the counter (creating a gap) than to compromise the crypto chain integrity.
     const holder = drState({ peerAccountDigest: peer, peerDeviceId });
     const currentCounter = Number(holder?.NsTotal);
     const shouldRestore = failureSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= failureCounter);
@@ -2291,6 +2295,7 @@ async function sendDrPlaintext(params = {}) {
     } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < failureCounter)) {
       holder.NsTotal = failureCounter;
     }
+    */
     throw err;
   }
 }

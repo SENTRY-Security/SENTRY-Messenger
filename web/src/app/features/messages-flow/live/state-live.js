@@ -525,7 +525,10 @@ async function decryptIncomingSingle(params = {}, adapters) {
     result.failCount = 1;
   } else {
     const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE) {
+    // [Fix] Allow conversation-deleted to pass through Live Route B.
+    const isAllowedControl = semantic.subtype === 'conversation-deleted';
+
+    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && !isAllowedControl) {
       result.reasonCode = 'CONTROL_SKIP';
       result.skippedCount = 1;
     } else {
@@ -543,7 +546,11 @@ async function decryptIncomingSingle(params = {}, adapters) {
         const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
         const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
 
-        let msgType = content.type || 'text';
+        let msgType = content.type;
+        if (!msgType && semantic.subtype === 'conversation-deleted') {
+          msgType = 'conversation-deleted';
+        }
+        if (!msgType) msgType = 'text';
         let media = content.media || null;
 
         // Polyfill media object if missing (backward compatibility for flattened payload)
@@ -578,6 +585,11 @@ async function decryptIncomingSingle(params = {}, adapters) {
           senderDigest
         };
         result.okCount = 1;
+
+        // Debug Log for User Verification
+        if (msgType === 'conversation-deleted') {
+          console.log('[Decrypted Tombstone Payload] (Live Route B)', result.decryptedMessage);
+        }
       }
     }
   }
