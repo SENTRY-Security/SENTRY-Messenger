@@ -749,12 +749,17 @@ export class ConversationListController extends BaseController {
                 if (e.target.closest('.item-delete')) return;
                 if (li.classList.contains('show-delete')) { this.deps.closeSwipe?.(li); return; }
                 const threadKey = this._threadPeer(thread) || peerDigest;
-                this.deps.setActiveConversation?.(threadKey);
+                // [FIX] Pass conversationId and token to support direct opening without index lookup
+                this.deps.setActiveConversation?.(threadKey, thread.conversationId, thread.conversationToken);
             });
 
             li.addEventListener('keydown', (e) => {
                 const threadKey = this._threadPeer(thread) || peerDigest;
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.deps.setActiveConversation?.(threadKey); }
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    // [FIX] Pass conversationId and token
+                    this.deps.setActiveConversation?.(threadKey, thread.conversationId, thread.conversationToken);
+                }
                 if (e.key === 'Delete') {
                     e.preventDefault();
                     this.deps.handleConversationDelete?.({ conversationId: thread.conversationId, peerAccountDigest: peerDigest, element: li });

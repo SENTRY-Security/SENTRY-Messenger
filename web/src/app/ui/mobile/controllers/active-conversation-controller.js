@@ -12,6 +12,7 @@ import { normalizePeerKey, splitPeerKey } from '../contact-core-store.js';
 import { normalizePeerIdentity } from '../../../core/store.js';
 import { MessageKeyVault } from '../../../features/message-key-vault.js';
 import { importContactSecretsSnapshot } from '../../../core/contact-secrets.js';
+import { migrateTimelineConversation } from '../../../features/timeline-store.js';
 
 export class ActiveConversationController extends BaseController {
     constructor(deps) {
@@ -150,8 +151,8 @@ export class ActiveConversationController extends BaseController {
      * Set active conversation for a peer.
      * This updates the global message state and triggers UI transition.
      */
-    async setActiveConversation(peerAccountDigest) {
-        console.log('[ActiveConversationController] setActiveConversation: start', peerAccountDigest);
+    async setActiveConversation(peerAccountDigest, passedId = null, passedToken = null) {
+        console.log('[ActiveConversationController] setActiveConversation: start', { peerAccountDigest, passedId, hasPassedToken: !!passedToken });
         const peerKey = normalizePeerKey(peerAccountDigest);
         if (!peerKey) {
             console.error('[ActiveConversationController] setActiveConversation: invalid peerKey');
@@ -164,10 +165,20 @@ export class ActiveConversationController extends BaseController {
         const contactEntry = this.sessionStore.contactIndex?.get?.(peerKey) || null;
         const convEntry = contactEntry?.conversation || null;
 
+        // [RESOLVE ID] Prioritize passedId (from Toast) -> Contact Index -> null
+        let targetConvId = passedId || contactEntry?.conversation_id || null;
+
+        // [SPLIT-BRAIN CHECK]
+        if (passedId && contactEntry?.conversation_id && passedId !== contactEntry.conversation_id) {
+            console.warn('[ActiveConversationController] Split-Brain detected. Migrating:', { from: passedId, to: contactEntry.conversation_id });
+            migrateTimelineConversation(passedId, contactEntry.conversation_id);
+            targetConvId = contactEntry.conversation_id;
+        }
+
         // Update state
         state.activePeerDigest = peerKey;
-        state.conversationId = convEntry?.conversation_id || null;
-        state.conversationToken = convEntry?.token_b64 || null;
+        state.conversationId = targetConvId;
+        state.conversationToken = passedToken || convEntry?.token_b64 || null;
         state.activePeerDeviceId = convEntry?.peerDeviceId || null;
         state.viewMode = 'detail';
         state.loading = false;
@@ -287,7 +298,12 @@ export class ActiveConversationController extends BaseController {
             return;
         }
 
-        this.setActiveConversation(peerKey);
+        // [FIX] Extract conversationId and token from detail
+        const conversationId = detail?.conversationId || detail?.entry?.conversation?.conversation_id || null;
+        const tokenB64 = detail?.tokenB64 || detail?.entry?.conversation?.token_b64 || null;
+
+        console.log('[ActiveConversationController] routing to conversation', { peerKey, conversationId, hasToken: !!tokenB64 });
+        this.setActiveConversation(peerKey, conversationId, tokenB64);
     }
 
     /**

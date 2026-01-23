@@ -117,15 +117,15 @@ import {
 } from '../../features/calls/index.js';
 
 import { createControllerDeps } from './controllers/base-controller.js';
-import { ConversationListController } from './controllers/conversation-list-controller.js?v=phase44_fix';
+import { ConversationListController } from './controllers/conversation-list-controller.js?v=phase52_fix';
 import { SecureStatusController } from './controllers/secure-status-controller.js';
 import { CallLogController } from './controllers/call-log-controller.js?v=fix_calllog_4';
-import { MessageFlowController } from './controllers/message-flow-controller.js?v=fix_empty_strict';
+import { MessageFlowController } from './controllers/message-flow-controller.js?v=phase53_fix';
 import { GroupBuilderController } from './controllers/group-builder-controller.js?v=fix_groups';
 import { LayoutController } from './controllers/layout-controller.js?v=debug_layout_trace';
 import { ComposerController } from './controllers/composer-controller.js?v=fix_composer_5';
 import { MessageStatusController } from './controllers/message-status-controller.js?v=fix_msg_status';
-import { ActiveConversationController } from './controllers/active-conversation-controller.js?v=revert_click_fix_v2';
+import { ActiveConversationController } from './controllers/active-conversation-controller.js?v=phase52_fix';
 import { MessageSendingController } from './controllers/message-sending-controller.js';
 import { MediaHandlingController } from './controllers/media-handling-controller.js';
 
@@ -400,7 +400,8 @@ export function initMessagesPane({
     refreshContactsUnreadBadges: () => controllers.conversationList.refreshUnreadBadges(),
     isDesktopLayout: () => controllers.layout.isDesktopLayout(),
     get pendingSecureReadyPeer() { return controllers.secureStatus.pendingSecureReadyPeer; },
-    setActiveConversation: (digest) => controllers.activeConversation.setActiveConversation(digest), // Route via controller if poss, or keep local
+    // [FIX] Pass conversationId and token args
+    setActiveConversation: (...args) => controllers.activeConversation.setActiveConversation(...args), // Route via controller if poss, or keep local
     // MessageFlow facade deps:
     loadActiveConversationMessages: (args) => controllers.messageFlow.loadActiveConversationMessages(args),
     handleTimelineAppend: (args) => controllers.messageFlow.handleTimelineAppend(args),
@@ -1241,12 +1242,7 @@ export function initMessagesPane({
 
 
 
-    elements.conversationList?.addEventListener('click', (event) => {
-      const target = event.target.closest('.conversation-item');
-      if (!target || target.classList.contains('disabled')) return;
-      const peer = target.dataset.peer;
-      if (peer) controllers.activeConversation.setActiveConversation(peer);
-    });
+
 
     elements.composer?.addEventListener('submit', (event) => {
       controllers.composer.handleComposerSubmit(event);

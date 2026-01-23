@@ -490,7 +490,7 @@ export class MessageRenderer {
         this.renderUploadOverlay(wrapper, media, messageId);
     }
 
-    render(entries, { state, contacts, latestOutgoingId, latestOutgoingDelivered, shimmerIds }) {
+    render(entries, { state, contacts, latestOutgoingId, latestOutgoingDelivered, shimmerIds, forceFullRender }) {
         if (!this.listEl) return;
         const { activePeerDigest, activePeerDeviceId, conversationId } = state;
         this.shimmerIds = shimmerIds || new Set();

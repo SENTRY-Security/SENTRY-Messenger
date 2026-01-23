@@ -326,6 +326,8 @@ export class MessageFlowController extends BaseController {
             if (allowReceipts) {
                 this.deps.controllers?.messageStatus?.sendReadReceiptForMessage(message);
             }
+            // [FIX] Update UI to show decrypted content
+            this.updateMessagesUI({ preserveScroll: true });
         } else if (message.direction === 'outgoing') {
             if (this.deps.controllers?.messageStatus?.applyReceiptState(message)) {
                 this.receiptRenderPending = true;
@@ -394,6 +396,9 @@ export class MessageFlowController extends BaseController {
         state.loading = true;
         this.updateLoadMoreVisibility();
 
+        // [FIX] Notify composer to show "Syncing history..."
+        this.deps.updateComposerAvailability?.();
+
         try {
             // [Hybrid] Smart Fetch Strategy via Facade
             // This handles Gap Calculation, Sequential A/B Decryption, and Deduplication.
@@ -421,6 +426,8 @@ export class MessageFlowController extends BaseController {
         } finally {
             state.loading = false;
             this.updateLoadMoreVisibility();
+            // [FIX] Notify composer to revert placeholder
+            this.deps.updateComposerAvailability?.();
         }
     }
 
@@ -793,7 +800,16 @@ export class MessageFlowController extends BaseController {
         const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length;
 
         // Sort first to ensure chronological order
+        // Sort first to ensure chronological order
         let sortedMessages = sortMessagesByTimelineLocal(mergedRaw);
+
+        console.log('[MessageFlow] Debug Render: Pre-Filter', {
+            stateConvId: state.conversationId,
+            timelineCount: timelineMessages.length,
+            placeholderCount,
+            mergedCount: sortedMessages.length,
+            sample: sortedMessages.slice(-3).map(m => ({ id: m.id, type: m.msgType }))
+        });
 
         // Filter / Cutoff Logic for Deletion Tombstone
         // Find the LATEST conversation-deleted message (if multiple, the latest one is the effective barrier)
@@ -809,6 +825,7 @@ export class MessageFlowController extends BaseController {
 
         // Apply Hard Cutoff: Keep the tombstone and everything AFTER it.
         if (deletionTombstoneIndex !== -1) {
+            console.log('[MessageFlow] Debug Render: Tombstone Found', { index: deletionTombstoneIndex, total: sortedMessages.length });
             // Check if there are messages BEFORE it (index < deletionTombstoneIndex)
             // If so, slice!
             // slice(startIndex) -> returns new array from Start to End.
@@ -817,39 +834,7 @@ export class MessageFlowController extends BaseController {
         }
 
         // Normal filtering for other control messages
-        sortedMessages = sortedMessages.filter(entry => {
-            if (entry.status === 'hidden') return false;
-            // [Fix] Mask CONTROL_SKIP error strings
-            if (entry.text === 'CONTROL_SKIP' || entry.error === 'CONTROL_SKIP') return false;
 
-            const type = entry?.msgType || entry?.subtype || entry?.meta?.activeType || 'text';
-            // conversation-deleted is now ALLOWED (it's the barrier)
-            // But other control messages should still be hidden? 
-            // Semantic.js says CONTROL_STATE: contact-share, profile-update, session-error, session-init, session-ack
-            // We generally hide session-* but show contact-share.
-            // renderer.js 'isUserTimelineMessage' logic handles some, but here we are pre-filtering.
-            // If we just rely on `renderer.js` NOT rendering them (it defaults to text/bubble if unknown), we might get empty bubbles.
-            // Existing logic was strict filter.
-            // Let's keep strict filter but ALLOW contact-share and conversation-deleted.
-
-            if (type === 'conversation-deleted') return true;
-
-            // If implicit control type (from semantic.js classification), we might want to hide specific ones.
-            // For now, let's just NOT strict filter everything else out, to behave like before, 
-            // OR replicate `isUserTimelineMessage` logic? 
-            // Actually, `contact-share` usually renders as a card.
-            // If we filter `control`, we hide contact-share.
-            // `contact-share` type is 'contact-share'. 
-            // `session-ack` type is 'session-ack'.
-
-            if (type === 'control') return false;
-            // If we have specific types in `CONTROL_STATE_SUBTYPES`, we should check if they have a renderer.
-            // If `renderer.js` doesn't support them, they might look ugly.
-            // Safe bet: Filter out `session-*` explicitly.
-            if (type.startsWith('session-')) return false;
-
-            return true;
-        });
 
         const { entries: renderEntries, shimmerIds } = buildRenderEntries({
             timelineMessages: sortedMessages
@@ -888,7 +873,8 @@ export class MessageFlowController extends BaseController {
                 contacts: this.sessionStore.contactIndex,
                 latestOutgoingId,
                 latestOutgoingDelivered,
-                shimmerIds
+                shimmerIds,
+                forceFullRender // [FIX] Pass flag to renderer
             });
         }
 

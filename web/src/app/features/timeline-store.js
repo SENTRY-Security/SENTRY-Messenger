@@ -427,3 +427,31 @@ export function removeMessagesMatching(conversationId, predicate) {
   }
   return count;
 }
+
+export function migrateTimelineConversation(fromId, toId) {
+  const from = normalizeConversationId(fromId);
+  const to = normalizeConversationId(toId);
+  if (!from || !to || from === to) return false;
+
+  const sourceMap = timelineMap.get(from);
+  if (!sourceMap || sourceMap.size === 0) return false;
+
+  let targetMap = timelineMap.get(to);
+  if (!targetMap) {
+    targetMap = new Map();
+    timelineMap.set(to, targetMap);
+  }
+
+  console.log('[timeline-store] migrateTimelineConversation', { from, to, count: sourceMap.size });
+  let movedCount = 0;
+
+  for (const [msgId, entry] of sourceMap.entries()) {
+    const movedEntry = { ...entry, conversationId: to };
+    targetMap.set(msgId, movedEntry);
+    movedCount++;
+  }
+
+  timelineMap.delete(from);
+  console.log('[timeline-store] migration done', { movedCount });
+  return true;
+}

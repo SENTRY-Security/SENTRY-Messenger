@@ -543,7 +543,7 @@ function createMessagesFlowFacade() {
             ok: false,
             reasonCode: 'MISSING_SENDER_DEVICE_ID'
           }, 5);
-        } else {
+        } else if (conversationId) {
           void maxCounterProbe({
             conversationId,
             senderDeviceId: selfDeviceId,
