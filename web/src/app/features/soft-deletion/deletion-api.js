@@ -1,4 +1,4 @@
-import { getAccountToken } from '../../core/store.js';
+import { getAccountToken, getDeviceId } from '../../core/store.js';
 import { fetchWithTimeout, jsonReq } from '../../core/http.js';
 
 export async function setDeletionCursor(conversationId, counter) {
@@ -6,14 +6,22 @@ export async function setDeletionCursor(conversationId, counter) {
     const token = getAccountToken();
     if (!token) throw new Error('Not logged in');
 
+    // Ensure we send Device ID for authorization
+    const deviceId = getDeviceId();
+
     const payload = {
         conversation_id: conversationId,
         min_counter: counter
     };
 
-    const r = await fetchWithTimeout('/api/v1/deletion/cursor', jsonReq(payload, {
+    const headers = {
         'X-Account-Token': token
-    }), 10000);
+    };
+    if (deviceId) {
+        headers['X-Device-Id'] = deviceId;
+    }
+
+    const r = await fetchWithTimeout('/api/v1/deletion/cursor', jsonReq(payload, headers), 10000);
 
     if (!r.ok) {
         const text = await r.text();

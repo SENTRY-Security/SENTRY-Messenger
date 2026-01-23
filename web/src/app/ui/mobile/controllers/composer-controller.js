@@ -341,9 +341,16 @@ export class ComposerController extends BaseController {
             const convId = res?.convId || state.conversationId;
             if (res?.convId) state.conversationId = res.convId;
 
+            // [FIX] New Conversation: Retry local append if it failed initially (due to missing convId)
+            let effectiveLocalMsg = localMsg;
+            if (!effectiveLocalMsg && state.conversationId) {
+                effectiveLocalMsg = this.deps.appendLocalOutgoingMessage?.({ text, ts, id: messageId });
+                console.log('[Composer] Retroactive append for new conversation', { msgId: messageId, success: !!effectiveLocalMsg });
+            }
+
             let replacementMsg = null;
-            if (replacementInfo && localMsg) {
-                this.deps.messageStatus?.applyCounterTooLowReplaced(localMsg);
+            if (replacementInfo && effectiveLocalMsg) {
+                this.deps.messageStatus?.applyCounterTooLowReplaced(effectiveLocalMsg);
                 const replacementTs = res?.msg?.ts || ts;
                 replacementMsg = convId ? this._findTimelineMessageById(convId, replacementInfo.newMessageId) : null;
 
@@ -361,12 +368,12 @@ export class ComposerController extends BaseController {
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
             } else if (res?.queued) {
                 const queuedCounter = normalizeCounterValue(res?.msg?.counter ?? res?.counter ?? res?.headerCounter);
-                if (localMsg && queuedCounter !== null) {
-                    localMsg.counter = queuedCounter;
+                if (effectiveLocalMsg && queuedCounter !== null) {
+                    effectiveLocalMsg.counter = queuedCounter;
                 }
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
-            } else if (localMsg) {
-                this.deps.messageStatus?.applyOutgoingSent(localMsg, res, ts);
+            } else if (effectiveLocalMsg) {
+                this.deps.messageStatus?.applyOutgoingSent(effectiveLocalMsg, res, ts);
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
             }
             this.setMessagesStatus('');

@@ -1142,3 +1142,62 @@ export const deleteSecureConversation = async (req, res) => {
     });
   }
 };
+
+export const setDeletionCursor = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+
+  const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
+  const conversationIdRaw = rawBody.conversation_id || rawBody.conversationId;
+  const minCounter = Number(rawBody.min_counter || rawBody.minCounter);
+
+  if (!conversationIdRaw) {
+    return res.status(400).json({ error: 'BadRequest', message: 'conversation_id required' });
+  }
+  if (!Number.isFinite(minCounter)) {
+    return res.status(400).json({ error: 'BadRequest', message: 'min_counter required' });
+  }
+
+  const account = extractAccountFromRequest(req);
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'token required' });
+  }
+
+  let auth;
+  try {
+    auth = await authorizeAccountForConversation({
+      conversationId: conversationIdRaw,
+      accountToken: account.accountToken,
+      accountDigest: account.accountDigest,
+      deviceId: account.deviceId
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'conversation authorization failed');
+  }
+
+  const path = '/d1/deletion/cursor';
+  const payload = {
+    conversationId: auth.conversationId,
+    accountDigest: auth.accountDigest,
+    minCounter
+  };
+  const body = JSON.stringify(payload);
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  try {
+    const r = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+    if (!r.ok) {
+      return res.status(502).json({ error: 'D1WriteFailed', status: r.status, details: data });
+    }
+    return res.json(data);
+  } catch (err) {
+    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+};

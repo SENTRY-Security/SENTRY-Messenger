@@ -10,7 +10,8 @@ import {
   getSendState,
   listOutgoingStatus,
   deleteMessages,
-  deleteSecureConversation
+  deleteSecureConversation,
+  setDeletionCursor
 } from '../../controllers/messages.controller.js';
 
 const r = Router();
@@ -44,6 +45,9 @@ r.post('/messages/delete', asyncH(deleteMessages));
 
 // POST /api/v1/messages/secure/delete-conversation
 r.post('/messages/secure/delete-conversation', asyncH(deleteSecureConversation));
+
+// POST /api/v1/deletion/cursor
+r.post('/deletion/cursor', asyncH(setDeletionCursor));
 
 // 之後可加：GET /api/v1/conversations/:id/messages?cursor=...
 export default r;

@@ -229,7 +229,7 @@ export function normalizeReplayItems({ items, errors } = {}) {
       meta: entry?.meta,
       header: entry?.header
     });
-    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE) continue;
+    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && semantic.kind !== SEMANTIC_KIND.CONTROL_STATE) continue;
     try {
       const messageObj = buildMessageObject({
         plaintext: entry?.plaintext,

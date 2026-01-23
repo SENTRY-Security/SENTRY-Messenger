@@ -889,6 +889,16 @@ export class MessageFlowController extends BaseController {
             this.elements.messagesEmpty?.classList.add('hidden');
         } else {
             this.elements.messagesEmpty?.classList.remove('hidden');
+            if (this.elements.messagesEmpty) {
+                // [FIX] Dynamic Empty State Text
+                // If we have an active peer but no messages, it means "No messages yet".
+                // If we have no active peer, it means "No conversation selected".
+                if (state.activePeerDigest) {
+                    this.elements.messagesEmpty.textContent = '尚無訊息';
+                } else {
+                    this.elements.messagesEmpty.textContent = '尚未選擇任何對話';
+                }
+            }
         }
 
         this.renderedIds = renderEntries.map(m => normalizeTimelineMessageId(m));

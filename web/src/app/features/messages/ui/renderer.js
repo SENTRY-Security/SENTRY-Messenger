@@ -568,6 +568,16 @@ export class MessageRenderer {
                 continue;
             }
 
+            if (messageType === 'profile-update') {
+                const sep = document.createElement('li');
+                sep.className = 'message-separator';
+                sep.style.marginTop = '12px';
+                sep.style.marginBottom = '12px';
+                sep.textContent = msg.text || msg.content?.text || '更新了個人檔案';
+                this.listEl.appendChild(sep);
+                continue;
+            }
+
             // Placeholder
             if (msg.placeholder === true || messageType === 'placeholder') {
                 li.className = 'message-placeholder-item';

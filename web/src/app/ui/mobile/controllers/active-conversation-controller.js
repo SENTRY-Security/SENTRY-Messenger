@@ -249,7 +249,9 @@ export class ActiveConversationController extends BaseController {
         } else {
             // New or pending contact, ensure empty state shows
             if (this.elements.messagesEmpty) {
-                this.elements.messagesEmpty.style.display = '';
+                this.elements.messagesEmpty.classList.remove('hidden');
+                // Pre-set text for immediate feedback
+                this.elements.messagesEmpty.textContent = '尚無訊息';
             }
             this.deps.updateMessagesStatusUI?.();
             console.log('[ActiveConversationController] new/pending conversation UI set');
