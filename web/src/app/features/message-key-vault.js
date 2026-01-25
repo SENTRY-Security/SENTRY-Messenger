@@ -354,13 +354,6 @@ export class MessageKeyVault {
       errorCode: null
     });
     if (cached) {
-      emitLogKey('vaultGetResult', {
-        ...logContext,
-        found: true,
-        status: 200,
-        errorCode: null,
-        fromCache: true
-      });
       emitVaultForensics('VAULT_GET_RESULT', forensicsParams, {
         found: true,
         status: 200,

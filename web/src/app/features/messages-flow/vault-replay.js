@@ -65,6 +65,9 @@ function toMessageId(raw) {
   if (typeof raw?.id === 'string' && raw.id.length) return raw.id;
   if (typeof raw?.message_id === 'string' && raw.message_id.length) return raw.message_id;
   if (typeof raw?.messageId === 'string' && raw.messageId.length) return raw.messageId;
+  if (typeof raw?.serverMessageId === 'string' && raw.serverMessageId.length) return raw.serverMessageId;
+  if (typeof raw?.server_message_id === 'string' && raw.server_message_id.length) return raw.server_message_id;
+  if (typeof raw?.serverMsgId === 'string' && raw.serverMsgId.length) return raw.serverMsgId;
   return null;
 }
 
@@ -303,8 +306,8 @@ export async function decryptReplayBatch({
     });
     const item = built?.item || null;
     if (!item) continue;
-    const messageId = item.serverMessageId || buildCounterMessageId(item.counter);
-    if (!messageId) continue;
+    // 2. Retrieve Message Key
+    const messageId = toMessageId(item.raw) || `gap:v1:${item.counter}`; // normalized ID
     let vaultKeyResult = null;
     try {
       vaultKeyResult = await getMessageKey({
@@ -315,7 +318,7 @@ export async function decryptReplayBatch({
     } catch (err) {
       vaultKeyResult = { ok: false, error: err?.message || err };
     }
-    if (!vaultKeyResult?.ok || !vaultKeyResult.messageKeyB64) {
+    if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
       errors.push(buildDecryptError({
         messageId,
         counter: item.counter,

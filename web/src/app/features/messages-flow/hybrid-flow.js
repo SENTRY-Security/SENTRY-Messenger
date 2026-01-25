@@ -349,7 +349,7 @@ export async function smartFetchMessages({
                     const realAdapters = createLiveLegacyAdapters();
                     const shadowAdapters = {
                         ...realAdapters,
-                        // Mock appendTimelineBatch to be a No-Op
+                        // Mock appendTimelineBatch to be a No-Op (Don't duplicate timeline entry)
                         appendTimelineBatch: async () => ({ ok: true, appended: 0 })
                     };
 

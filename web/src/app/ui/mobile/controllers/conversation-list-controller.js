@@ -277,59 +277,79 @@ export class ConversationListController extends BaseController {
 
                 const result = await apiListSecureMessages({
                     conversationId: thread.conversationId,
-                    limit: 1
+                    limit: 10 // [FIX] Fetch more to find last valid content
                 });
 
-                // Fix: apiListSecureMessages returns { r, data }, and data has items
                 const messages = result?.data?.items || [];
+                let previewMsg = null;
+                let isDeleted = false;
 
-                if (messages.length > 0) {
-                    const msg = messages[0];
-                    const meta = msg.meta || {};
+                // [FIX] Find last meaningful message
+                for (const msg of messages) {
                     const payload = msg.payload || {};
                     const type = normalizeMsgTypeValue(payload.type);
 
-                    let text = '';
+                    if (type === 'conversation-deleted') {
+                        isDeleted = true;
+                        break;
+                    }
+
+                    // Skip control messages
+                    const meta = msg.meta || {};
+                    const isControl = type === 'sys' || type === 'system' || type === 'control' ||
+                        (type && ['profile-update', 'session-init', 'session-ack', 'contact-share'].includes(type));
+
+                    if (isControl) continue;
+
+                    // Ensure it's content
+                    if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log') {
+                        previewMsg = msg;
+                        break;
+                    }
+                }
+
+                let text = '尚無訊息';
+                let type = null;
+                let ts = null;
+                let direction = null;
+
+                if (isDeleted) {
+                    text = '尚無訊息';
+                    type = 'conversation-deleted';
+                    ts = messages[0] ? extractMessageTimestampMs(messages[0]) : Date.now();
+                } else if (previewMsg) {
+                    const payload = previewMsg.payload || {};
+                    const meta = previewMsg.meta || {};
+                    type = normalizeMsgTypeValue(payload.type);
+                    ts = extractMessageTimestampMs(previewMsg);
+
+                    const sender = normalizePeerKey(meta.sender);
+                    direction = sender === this.deps.sessionStore.activePeerDigest ? 'incoming' : (deriveMessageDirectionFromEnvelopeMeta ? deriveMessageDirectionFromEnvelopeMeta(meta) : 'unknown');
+
                     if (type === 'text') {
                         text = payload.text || '文字訊息';
                     } else if (type === 'media') {
-                        text = `[檔案] ${payload.filename || '附件'}`;
-                    } else if (type === 'call_log') {
-                        text = '[通話紀錄]';
-                    } else if (type === 'conversation-deleted' || type === 'conversation_deleted') {
-                        text = '尚無訊息';
-                    } else {
-                        text = '收到新訊息';
-                    }
-
-                    // [Fix] Handle CONTROL_SKIP error display
-                    // If the message list returns an error or placeholder text that is 'CONTROL_SKIP', hide it.
-                    if (text === 'CONTROL_SKIP' || (msg.error === 'CONTROL_SKIP')) {
-                        if (type === 'conversation-deleted' || type === 'conversation_deleted') {
-                            text = '尚無訊息';
+                        const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
+                        if (mime.startsWith('image/')) {
+                            text = '[圖片]';
+                        } else if (mime.startsWith('video/')) {
+                            text = '[影片]';
                         } else {
-                            // Default for other hidden control messages
-                            text = '系統訊息';
+                            text = `[檔案] ${payload.filename || payload.name || '附件'}`;
                         }
+                    } else if (type === 'call_log' || type === 'call-log') {
+                        text = '[通話紀錄]';
                     }
-
-                    const ts = extractMessageTimestampMs(msg);
-                    const sender = normalizePeerKey(meta.sender);
-                    const direction = sender === this.deps.sessionStore.activePeerDigest ? 'incoming' : (deriveMessageDirectionFromEnvelopeMeta ? deriveMessageDirectionFromEnvelopeMeta(meta) : 'unknown');
-
-                    thread.lastMessageText = text;
-                    thread.lastMessageTs = ts;
-                    thread.lastMessageId = normalizeTimelineMessageId(msg);
-                    thread.lastDirection = direction;
-                    thread.lastMsgType = type;
-                    thread.previewLoaded = true;
-                    thread.needsRefresh = false;
-                } else {
-                    thread.previewLoaded = true;
-                    // Fix: Explicitly show '尚無訊息' for empty/deleted threads
-                    thread.lastMessageText = '尚無訊息';
-                    thread.lastMsgType = null;
                 }
+
+                thread.lastMessageText = text;
+                thread.lastMessageTs = ts;
+                thread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
+                thread.lastDirection = direction;
+                thread.lastMsgType = type;
+                thread.previewLoaded = true;
+                thread.needsRefresh = false;
+
                 threadsMap.set(thread.conversationId, thread);
             } catch (err) {
                 console.error('Preview refresh failed', err);

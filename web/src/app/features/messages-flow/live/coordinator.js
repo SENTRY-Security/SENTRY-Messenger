@@ -535,18 +535,34 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     fail: Number(decryptResult?.failCount) || 0
   }, LIVE_MVP_LOG_CAP);
 
-  try {
-    persistResult = await stateAccess.persistAndAppendSingle({
-      conversationId,
-      decryptedMessage: decryptResult?.decryptedMessage || null
-    });
-  } catch (err) {
+  // [Shadow Advance Fix]
+  // If this is a Shadow Advance (State-Only) operation, we skip persistence (Vault/Timeline).
+  // The key is already in the Vault (Route A), and we just want to advance the Ratchet State.
+  const shouldPersist = sourceTag !== 'hybrid-shadow-advance';
+
+  if (shouldPersist) {
+    try {
+      persistResult = await stateAccess.persistAndAppendSingle({
+        conversationId,
+        decryptedMessage: decryptResult?.decryptedMessage || null
+      });
+    } catch (err) {
+      persistResult = {
+        vaultPutOk: 0,
+        vaultPutFail: 0,
+        appendOk: false,
+        appendedCount: 0,
+        errorMessage: err?.message || String(err)
+      };
+    }
+  } else {
+    // Skipped persistence
     persistResult = {
       vaultPutOk: 0,
       vaultPutFail: 0,
-      appendOk: false,
+      appendOk: true, // Treat as success for flow continuity
       appendedCount: 0,
-      errorMessage: err?.message || String(err)
+      skipped: true
     };
   }
 

@@ -149,17 +149,26 @@ async function ensureLiveReady(params = {}, adapters) {
   const meta = raw?.meta || header?.meta || null;
   const msgTypeHint = resolveMsgType(meta, header);
   const skipDrCheck = msgTypeHint === 'contact-share';
-  if (!conversationId || !tokenB64 || !peerAccountDigest || !peerDeviceId) {
+
+  if (!conversationId || !tokenB64) {
     return { ok: false, reasonCode: 'MISSING_PARAMS' };
   }
+
+  const resolvedPeerDigest = resolveSenderDigest(raw, header) || peerAccountDigest;
+  const resolvedPeerDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId;
+
+  if (!resolvedPeerDigest || !resolvedPeerDeviceId) {
+    return { ok: false, reasonCode: 'MISSING_PARAMS' };
+  }
+
   if (!adapters?.ensureSecureConversationReady || (!skipDrCheck && (!adapters?.ensureDrReceiverState || !adapters?.drState))) {
     return { ok: false, reasonCode: 'ADAPTERS_UNAVAILABLE' };
   }
   let secureStatus = null;
   try {
     secureStatus = await adapters.ensureSecureConversationReady({
-      peerAccountDigest,
-      peerDeviceId,
+      peerAccountDigest: resolvedPeerDigest,
+      peerDeviceId: resolvedPeerDeviceId,
       conversationId,
       reason: 'live_mvp',
       source: 'messages-flow/live:ensureLiveReady'
@@ -180,7 +189,7 @@ async function ensureLiveReady(params = {}, adapters) {
       digest: secureStatus.peerAccountDigest.split('::')[0],
       deviceId: secureStatus.peerAccountDigest.split('::')[1]
     }
-    : { digest: peerAccountDigest, deviceId: peerDeviceId };
+    : { digest: resolvedPeerDigest, deviceId: resolvedPeerDeviceId };
 
   if (skipDrCheck) {
     const guestBundle = header?.dr_init?.guest_bundle || null;
@@ -225,6 +234,7 @@ async function ensureLiveReady(params = {}, adapters) {
   return { ok: true };
 }
 
+
 async function decryptIncomingSingle(params = {}, adapters) {
   const conversationId = params?.conversationId || null;
   const peerAccountDigest = params?.peerAccountDigest || null;
@@ -264,8 +274,11 @@ async function decryptIncomingSingle(params = {}, adapters) {
   const rawMessageId = normalizeMessageId(raw);
   const messageId = rawMessageId || targetMessageId;
   const counter = resolveCounter(raw, header);
-  const senderDigest = resolveSenderDigest(raw, header);
-  const senderDeviceId = resolveSenderDeviceId(raw, header);
+  // [Fix] Prioritize raw/header sender identity over context params.
+  // This ensures that "Gap Fill" (Offline) messages are processed using their ORIGINAL Sender Device ID,
+  // not the current conversational context (which might be a newer device ID).
+  const senderDigest = resolveSenderDigest(raw, header) || peerAccountDigest;
+  const senderDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId;
 
   const meta = raw?.meta || header?.meta || null;
   const msgTypeHint = resolveMsgType(meta, header);
@@ -633,13 +646,12 @@ async function commitIncomingSingle(params = {}, adapters) {
   let senderDigest = null;
   let senderDeviceId = null;
 
-  if (peerAccountDigest && peerDeviceId) {
-    senderDigest = peerAccountDigest;
-    senderDeviceId = peerDeviceId;
-  } else {
-    senderDigest = resolveSenderDigest(raw, header);
-    senderDeviceId = resolveSenderDeviceId(raw, header);
-  }
+
+  // [Fix] Prioritize raw/header sender identity over context params.
+  // This ensures that "Gap Fill" (Offline) messages are processed using their ORIGINAL Sender Device ID,
+  // not the current conversational context (which might be a newer device ID).
+  senderDigest = resolveSenderDigest(raw, header) || peerAccountDigest;
+  senderDeviceId = resolveSenderDeviceId(raw, header) || peerDeviceId;
 
   if (!senderDigest || !senderDeviceId) {
     return { ...base, reasonCode: 'MISSING_SENDER_IDENTITY' };
@@ -904,6 +916,13 @@ async function persistAndAppendBatch(params = {}, adapters) {
       continue;
     }
     try {
+      let drStateSnapshot = null;
+      if (adapters.snapshotAndEncryptDrState && message.senderDigest && message.senderDeviceId) {
+        try {
+          drStateSnapshot = await adapters.snapshotAndEncryptDrState(message.senderDigest, message.senderDeviceId);
+        } catch { } // Best effort
+      }
+
       await adapters.vaultPutIncomingKey({
         conversationId,
         messageId,
@@ -914,7 +933,8 @@ async function persistAndAppendBatch(params = {}, adapters) {
         messageKeyB64: message?.messageKeyB64 || null,
         headerCounter: Number.isFinite(message?.headerCounter)
           ? Number(message.headerCounter)
-          : (Number.isFinite(message?.counter) ? Number(message.counter) : null)
+          : (Number.isFinite(message?.counter) ? Number(message.counter) : null),
+        drStateSnapshot
       });
       vaultPutOk += 1;
       appendableMessages.push(message);
