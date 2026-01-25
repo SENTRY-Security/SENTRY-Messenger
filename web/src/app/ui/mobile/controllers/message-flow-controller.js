@@ -418,7 +418,7 @@ export class MessageFlowController extends BaseController {
             state.nextCursor = result.nextCursor || null;
             state.hasMore = result.hasMoreAtCursor || false;
 
-            this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+
 
         } catch (err) {
             console.error('[MessageFlowController] load error', err);
@@ -426,6 +426,11 @@ export class MessageFlowController extends BaseController {
         } finally {
             state.loading = false;
             this.updateLoadMoreVisibility();
+
+            // [FIX] Always update UI to ensure empty state or partial content is shown
+            // even if the fetch failed (e.g. missing token or network error).
+            this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+
             // [FIX] Notify composer to revert placeholder
             this.deps.updateComposerAvailability?.();
         }
@@ -808,6 +813,8 @@ export class MessageFlowController extends BaseController {
             timelineCount: timelineMessages.length,
             placeholderCount,
             mergedCount: sortedMessages.length,
+            ids: sortedMessages.map(m => m.id),
+            types: sortedMessages.map(m => m.msgType),
             sample: sortedMessages.slice(-3).map(m => ({ id: m.id, type: m.msgType }))
         });
 

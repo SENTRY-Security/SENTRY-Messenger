@@ -182,7 +182,12 @@ export class ActiveConversationController extends BaseController {
         state.activePeerDeviceId = convEntry?.peerDeviceId || null;
         state.viewMode = 'detail';
         state.loading = false;
-        console.log('[ActiveConversationController] state updated', { activePeerDigest: state.activePeerDigest, conversationId: state.conversationId });
+        console.log('[ActiveConversationController] state updated', {
+            activePeerDigest: state.activePeerDigest,
+            conversationId: state.conversationId,
+            passedId,
+            contactEntryId: contactEntry?.conversation_id
+        });
 
         // UI Reset
         this.clearMessagesView();
@@ -202,8 +207,8 @@ export class ActiveConversationController extends BaseController {
         this.updatePeerAvatar(avatar);
         console.log('[ActiveConversationController] metadata refreshed', nickname);
 
-        // Load messages if conversation exists
-        if (state.conversationId && state.conversationToken) {
+        // Load messages if conversation exists (Token is optional for local load)
+        if (state.conversationId) {
             // [FAST PATH] Restore DR State immediately
             console.log('[ActiveConversationController] fast-path state restore start');
             MessageKeyVault.getLatestState({ conversationId: state.conversationId })
@@ -301,8 +306,19 @@ export class ActiveConversationController extends BaseController {
         }
 
         // [FIX] Extract conversationId and token from detail
-        const conversationId = detail?.conversationId || detail?.entry?.conversation?.conversation_id || null;
-        const tokenB64 = detail?.tokenB64 || detail?.entry?.conversation?.token_b64 || null;
+        // Support multiple structures:
+        // 1. detail.conversationId (Direct)
+        // 2. detail.entry.conversation.conversation_id (From Contact Entry)
+        // 3. detail.conversation.conversation_id (From Contacts View Event)
+        const conversationId = detail?.conversationId ||
+            detail?.entry?.conversation?.conversation_id ||
+            detail?.conversation?.conversation_id ||
+            null;
+
+        const tokenB64 = detail?.tokenB64 ||
+            detail?.entry?.conversation?.token_b64 ||
+            detail?.conversation?.token_b64 ||
+            null;
 
         console.log('[ActiveConversationController] routing to conversation', { peerKey, conversationId, hasToken: !!tokenB64 });
         this.setActiveConversation(peerKey, conversationId, tokenB64);
@@ -336,7 +352,7 @@ export class ActiveConversationController extends BaseController {
             });
         }
 
-        await this.setActiveConversation(key);
+        await this.setActiveConversation(key, convId, tokenB64);
     }
 
     /**
