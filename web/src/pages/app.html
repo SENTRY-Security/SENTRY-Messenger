@@ -1753,11 +1753,11 @@
     .modal-body {
       position: relative;
       padding: 16px;
-      flex: 1;
-      overflow: auto;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      /* flex: 1; <-- REMOVED: Let content determine height */
+      /* overflow: auto; <-- REMOVED: Let modal container handle scroll */
+      /* display: flex; <-- REMOVED: Block layout is desired */
+      /* align-items: center; <-- REMOVED: FIX USER ISSUE */
+      /* justify-content: center; <-- REMOVED: FIX USER ISSUE */
       background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
     }
 

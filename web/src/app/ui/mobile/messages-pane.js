@@ -29,7 +29,7 @@ import {
 import { sessionStore, resetMessageState, restorePendingInvites } from './session-store.js';
 import { deleteContactSecret, getContactSecret, getCorruptContact, hideContactSecret, unhideContactSecret } from '../../core/contact-secrets.js';
 import { setDeletionCursor, setPeerDeletionCursor } from '../../features/soft-deletion/deletion-store.js';
-import { clearDrState } from '../../core/store.js';
+import { clearDrState, drState } from '../../core/store.js';
 import { sendDrPlaintext } from '../../features/dr-session.js';
 import { escapeHtml, fmtSize, shouldNotifyForMessage, escapeSelector } from './ui-utils.js';
 import {
@@ -1228,9 +1228,23 @@ export function initMessagesPane({
       elements.scrollEl.addEventListener('wheel', handleMessagesWheel, { passive: true });
     }
 
+
     elements.messagesList?.addEventListener('click', (event) => {
       const target = event.target?.closest?.('.message-status.failed');
       if (!target) return;
+
+      const isRetry = target.dataset.retry === 'true';
+      const msgId = target.dataset.messageId;
+
+      if (isRetry && msgId) {
+        // Trigger manual retry
+        controllers.messageSending.retryMessage(msgId).catch(err => {
+          console.error('Retry failed', err);
+          showToast?.('重試失敗', { variant: 'error' });
+        });
+        return;
+      }
+
       showToast?.('訊息傳送失敗，請重新發送', { variant: 'warning' });
     });
 
@@ -1368,6 +1382,147 @@ export function initMessagesPane({
   registerOutboxHooks();
   ensureSetup();
   controllers.groupBuilder.renderGroupDrafts();
+
+
+  // [DEBUG-TOOL] Long Press for Debug Modal
+  const openModal = modalOptions.openModal || (typeof document !== 'undefined' ? (window.openModalShim || null) : null);
+
+  function showDebugModal(msgId) {
+    const state = getMessageState();
+    if (!state.conversationId || !msgId || !openModal) return;
+
+    // Find msg in current timeline or state messages
+    const timeline = timelineGetTimeline(state.conversationId) || [];
+    const msg = timeline.find(m => {
+      const mid = normalizeTimelineMessageId(m);
+      return mid === msgId;
+    });
+
+    if (!msg) return;
+
+    const dr = drState(state.activePeerDigest || state.activePeerDeviceId || null) || {};
+
+    // Group 1: Basic
+    const basics = [
+      ['Internal ID', msg.id || msg.messageId || 'N/A'],
+      ['Server ID', msg.serverMessageId || 'N/A'],
+      ['Type', msg.msgType || msg.subtype || 'N/A'],
+      ['Status', msg.status || '<span style="color:#10b981; font-weight:600;">Normal</span>'],
+      ['Timestamp', new Date((msg.ts || 0) * 1000).toLocaleString()]
+    ];
+
+    // Group 2: Counters
+    const counters = [
+      ['Internal Counter', msg.counter ?? 'N/A'],
+      ['Header Counter', msg.header?.n ?? msg.header?.counter ?? 'N/A']
+    ];
+
+    // Group 3: DR State
+    const drData = [
+      ['Ns / Nr', `${dr.Ns || 0} / ${dr.Nr || 0}`],
+      ['PN', dr.PN || 0]
+    ];
+
+    const modalTitle = document.getElementById('modalTitle');
+    if (modalTitle) modalTitle.textContent = 'Message Debug';
+
+    const renderRow = ([k, v]) => {
+      const isHtml = typeof v === 'string' && v.startsWith('<span style="color:#10b981;');
+      return `
+      <div class="version-row">
+        <span class="version-label">${escapeHtml(String(k))}</span>
+        <span class="version-value">${isHtml ? v : escapeHtml(String(v))}</span>
+      </div>`;
+    };
+
+    let headerSection = '';
+    if (msg.header) {
+      const headerJson = JSON.stringify(msg.header, null, 2);
+      headerSection = `
+        <div class="version-section-title">Header Payload</div>
+        <div style="margin-top:8px;">
+          <details style="border: 1px solid rgba(15, 23, 42, 0.1); border-radius: 10px; background: #f8fafc;">
+             <summary style="padding: 10px 12px; cursor:pointer; font-weight:700; font-size:13px; color:#0f172a;">檢視 Header JSON</summary>
+             <div style="padding: 0 12px 12px 12px;">
+               <pre style="margin:0; padding:10px; color:#334155; word-break:break-all; white-space:pre-wrap; font-family:monospace; font-size:12px; background:#f1f5f9; border-radius:8px; overflow-x: auto;">${escapeHtml(headerJson)}</pre>
+             </div>
+          </details>
+        </div>
+      `;
+    } else {
+      headerSection = `
+        <div class="version-section-title">Header Payload</div>
+        ${renderRow(['Header', 'N/A (Outgoing/Local)'])}
+       `;
+    }
+
+    const html = `
+      <div class="version-modal">
+        <div class="version-section-title">Message Details</div>
+        ${basics.map(renderRow).join('')}
+        ${counters.map(renderRow).join('')}
+        
+        <div style="margin: 16px 0; border-top: 1px dashed rgba(0,0,0,0.1);"></div>
+        
+        <div class="version-section-title">Session State (Global)</div>
+        <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">當前最新的加密會話狀態</div>
+        ${drData.map(renderRow).join('')}
+        
+        <div style="margin: 16px 0; border-top: 1px dashed rgba(0,0,0,0.1);"></div>
+
+
+        
+        ${headerSection}
+        
+      </div>
+    `;
+
+    const body = document.getElementById('modalBody');
+    if (body) {
+      body.innerHTML = html;
+      openModal();
+    }
+  }
+
+  let pressTimer = null;
+  const PRESS_DURATION = 600;
+
+  function cancelLongPress() {
+    if (pressTimer) {
+      clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+  }
+
+  if (elements.messagesList) {
+    elements.messagesList.addEventListener('touchstart', (e) => {
+      // Don't cancel immediately? Standard is restart.
+      cancelLongPress();
+      const bubble = e.target.closest('.message-bubble');
+      if (!bubble) return;
+      const msgId = bubble.dataset.messageId;
+      if (!msgId) return;
+
+      pressTimer = setTimeout(() => {
+        showDebugModal(msgId);
+        try { if (navigator.vibrate) navigator.vibrate(50); } catch { }
+      }, PRESS_DURATION);
+    }, { passive: true });
+
+    elements.messagesList.addEventListener('touchend', cancelLongPress, { passive: true });
+    // touchmove tolerance? For now just strict cancel on move to avoid scroll conflict
+    elements.messagesList.addEventListener('touchmove', cancelLongPress, { passive: true });
+    elements.messagesList.addEventListener('touchcancel', cancelLongPress, { passive: true });
+
+    // [FIX] Enable Debug Modal on Desktop via Right Click
+    elements.messagesList.addEventListener('contextmenu', (e) => {
+      const bubble = e.target.closest('.message-bubble');
+      if (bubble && bubble.dataset.messageId) {
+        e.preventDefault();
+        showDebugModal(bubble.dataset.messageId);
+      }
+    });
+  }
 
   return {
     attachDomEvents,

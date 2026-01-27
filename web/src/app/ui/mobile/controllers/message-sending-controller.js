@@ -5,7 +5,7 @@
 
 import { BaseController } from './base-controller.js';
 import { appendUserMessage, getTimeline } from '../../../features/timeline-store.js';
-import { sendDrMedia } from '../../../features/dr-session.js';
+import { sendDrMedia, sendDrText } from '../../../features/dr-session.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
 
@@ -335,6 +335,59 @@ export class MessageSendingController extends BaseController {
             this.deps.showToast?.('檔案處理失敗');
         } finally {
             if (input) input.value = '';
+        }
+    }
+
+    /**
+     * Retry sending a failed message used by Manual Retry UI.
+     * Deletes the old failed message and sends a new one (new ID).
+     */
+    async retryMessage(id) {
+        const state = this.getMessageState();
+        if (!state.conversationId) throw new Error('No active conversation');
+
+        const msg = this._findTimelineMessageById(state.conversationId, id);
+        if (!msg) throw new Error('Message not found');
+
+        // Only support text retry for now
+        if (msg.msgType !== 'text') {
+            throw new Error('目前僅支援文字訊息重試');
+        }
+
+        const text = msg.text;
+
+        // 1. Remove old message (Visual replacement)
+        this.removeLocalMessageById(id);
+
+        // 2. Resend as new message
+        const newId = crypto.randomUUID();
+        const newMsg = this.appendLocalOutgoingMessage({
+            text,
+            ts: Date.now(),
+            id: newId,
+            msgType: 'text'
+        });
+
+        try {
+            const res = await sendDrText({
+                peerAccountDigest: state.activePeerDigest,
+                text,
+                convId: state.conversationId,
+                messageId: newId
+            });
+
+            // 3. Update Status on Success
+            if (this.deps.messageStatus && res?.msg) {
+                this.deps.messageStatus.applyOutgoingSent(newMsg, res, Date.now());
+                this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+            }
+        } catch (err) {
+            // 4. Handle Failure (again)
+            if (this.deps.messageStatus) {
+                this.deps.messageStatus.applyOutgoingFailure(newMsg, err, '重試失敗');
+                this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+            }
+            throw err;
         }
     }
 }

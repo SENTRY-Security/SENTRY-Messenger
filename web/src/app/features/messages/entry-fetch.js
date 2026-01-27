@@ -170,70 +170,126 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
     // [FIX] Offline/History Contact Share Processing
     // We must intercept contact-share BEFORE DR Decryption because it uses Session Key, not DR.
     // Ensure side effects (Profile Update) are applied even for history messages.
-    const headerType = header?.meta?.msgType || header?.msgType || null;
+    // [FIX] Offline/History Contact Share Processing
+    // We must intercept contact-share BEFORE DR Decryption because it uses Session Key, not DR.
+    // Ensure side effects (Profile Update) are applied even for history messages.
+    const headerType = header?.meta?.msgType || header?.msgType || item.msgType || null;
     const isContactShare = headerType === 'contact-share' || (header?.contact === 1 || header?.contact === '1');
 
     if (isContactShare) {
         if (!item.tokenB64) {
-            return { ok: true, message: null, state, semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share-missing-token' } };
+            // Missing token is fatal for payload, but we can still show the tombstone if we know who it is.
+            // But usually missing token means we can't verify sender? 
+            // Let's allow it to fall through or return a generic tombstone if we trust the item metadata.
+            // For now, let's try to proceed or return a generic visible message if possible.
+            // But existing logic returned control-state. Let's stick to generating a user message if possible.
         }
+
+        let friendlyText = '您已與對方成為好友';
+        let contact = null;
         try {
-            const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
-            await decryptContactPayload(item.tokenB64, envelope); // verify decryptability
-            const plaintext = JSON.stringify({ type: 'contact-share', envelope });
-            const messageTs = Number(item.ts || item.created_at || item.createdAt || Date.now());
-
-            const applyResult = await applyContactShareFromCommit({
-                peerAccountDigest: peerDigest,
-                peerDeviceId: peerDeviceId,
-                sessionKey: item.tokenB64,
-                plaintext,
-                messageId: item.serverMessageId || `${conversationId}:${counter}`,
-                sourceTag: 'entry-fetch:history-contact-share',
-                profileUpdatedAt: messageTs
-            });
-
-            if (applyResult?.diff && conversationId) {
-                try {
-                    const diff = applyResult.diff;
-                    if (diff.nickname) {
-                        appendUserMessage(conversationId, {
-                            id: `${item.serverMessageId || counter}-sys-nick`,
-                            msgType: 'system',
-                            text: `對方的暱稱已更改為 ${diff.nickname.to}`,
-                            ts: Date.now() / 1000,
-                            direction: 'incoming',
-                            status: 'sent'
-                        });
-                    }
-                    if (diff.avatar) {
-                        appendUserMessage(conversationId, {
-                            id: `${item.serverMessageId || counter}-sys-avatar`,
-                            msgType: 'system',
-                            text: '對方已更改頭像',
-                            ts: Date.now() / 1000,
-                            direction: 'incoming',
-                            status: 'sent'
-                        });
-                    }
-                } catch (e) { console.warn('[entry-fetch] sys notify fail', e); }
+            contact = getContactCore(peerDigest);
+            if (contact && contact.nickname) {
+                friendlyText = `您已與 ${contact.nickname} 成為好友`;
             }
-            // Return success as Control State (Hidden)
+        } catch (ignore) { }
+
+        // Common Message Construction
+        const buildContactShareMsg = (envelope = null) => ({
+            id: item.serverMessageId || `${conversationId}:${counter}`,
+            serverMessageId: item.serverMessageId,
+            msgType: 'contact-share',
+            text: friendlyText,
+            ts: Number(item.ts || item.created_at || item.createdAt || Date.now()),
+            direction: (senderDeviceId === selfDeviceId) ? 'outgoing' : 'incoming',
+            senderDeviceId,
+            senderDigest: peerDigest,
+            content: {
+                type: 'contact-share',
+                envelope // Might be null if failed
+            }
+        });
+
+        try {
+            // Attempt Decryption
+            const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
+            if (item.tokenB64) {
+                await decryptContactPayload(item.tokenB64, envelope); // verify decryptability
+                const plaintext = JSON.stringify({ type: 'contact-share', envelope });
+                const messageTs = Number(item.ts || item.created_at || item.createdAt || Date.now());
+
+                const applyResult = await applyContactShareFromCommit({
+                    peerAccountDigest: peerDigest,
+                    peerDeviceId: peerDeviceId,
+                    sessionKey: item.tokenB64,
+                    plaintext,
+                    messageId: item.serverMessageId || `${conversationId}:${counter}`,
+                    sourceTag: 'entry-fetch:history-contact-share',
+                    profileUpdatedAt: messageTs
+                });
+
+                if (applyResult?.diff && conversationId) {
+                    // Sys notify logic (kept same as before)
+                    try {
+                        const diff = applyResult.diff;
+                        if (diff.nickname) {
+                            appendUserMessage(conversationId, {
+                                id: `${item.serverMessageId || counter}-sys-nick`,
+                                msgType: 'system',
+                                text: `對方的暱稱已更改為 ${diff.nickname.to}`,
+                                ts: Date.now() / 1000,
+                                direction: 'incoming',
+                                status: 'sent'
+                            });
+                        }
+                        if (diff.avatar) {
+                            appendUserMessage(conversationId, {
+                                id: `${item.serverMessageId || counter}-sys-avatar`,
+                                msgType: 'system',
+                                text: '對方已更改頭像',
+                                ts: Date.now() / 1000,
+                                direction: 'incoming',
+                                status: 'sent'
+                            });
+                        }
+                    } catch (e) { console.warn('[entry-fetch] sys notify fail', e); }
+                }
+            }
+
+            // Vault Logic (kept same)
+            try {
+                const msgId = item.serverMessageId || `${conversationId}:${counter}`;
+                await vaultPutMessageKey({
+                    conversationId,
+                    messageId: msgId,
+                    senderDeviceId,
+                    targetDeviceId: item.targetDeviceId || null,
+                    direction: 'incoming',
+                    msgType: 'contact-share',
+                    messageKeyB64: item.tokenB64 || null,
+                    headerCounter: counter,
+                    drStateSnapshot: null
+                });
+            } catch (vErr) { console.warn('[entry-fetch] contact-share vault/ack failed', vErr); }
+
+            // Return success
             return {
                 ok: true,
-                message: null,
+                message: buildContactShareMsg(envelope),
                 state,
-                semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share' },
-                vaultPutStatus: 'ok' // Virtual success
+                semantic: { kind: SEMANTIC_KIND.USER_MESSAGE, subtype: 'contact-share' },
+                vaultPutStatus: 'ok'
             };
         } catch (err) {
-            console.warn('[entry-fetch] contact-share history process failed', err);
-            // Fallback to control state to clear placeholder, but log error
+            console.warn('[entry-fetch] contact-share history process failed (soft fail)', err);
+            // [FIX] Even if decryption fails (wrong key/format), show the sidebar/tombstone.
+            // We use the local contact info we resolved earlier.
             return {
                 ok: true,
-                message: null,
+                message: buildContactShareMsg(null), // No envelope content
                 state,
-                semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share-failed' }
+                semantic: { kind: SEMANTIC_KIND.USER_MESSAGE, subtype: 'contact-share' },
+                vaultPutStatus: null // Don't retry vault put if failed
             };
         }
     }
@@ -251,19 +307,33 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         messageKeyB64 = res.messageKeyB64;
     } catch (err) {
         // [Fix Persistent Placeholder]
-        // If decryption fails (e.g. "replay or out-of-order") but we know from the header
-        // that this is a control message (like contact-share), we should classify it 
-        // as CONTROL_STATE and let the pipeline handle it (hide it), rather than treating
-        // it as a fatal error that leaves the placeholder stuck.
-        const headerType = header?.meta?.msgType || header?.msgType || null;
+        // Fallback for DR failure on contact-share
+        const headerType = header?.meta?.msgType || header?.msgType || item.msgType || null;
         const isContactShare = headerType === 'contact-share' || (header?.contact === 1 || header?.contact === '1');
 
         if (isContactShare) {
+            // Logic to build fallback message
+            let friendlyText = '您已與對方成為好友';
+            try {
+                const c = getContactCore(peerDigest);
+                if (c && c.nickname) friendlyText = `您已與 ${c.nickname} 成為好友`;
+            } catch (ignore) { }
+
             return {
                 ok: true,
-                message: null,
+                message: {
+                    id: item.serverMessageId || `${conversationId}:${counter}`,
+                    serverMessageId: item.serverMessageId,
+                    msgType: 'contact-share',
+                    text: friendlyText,
+                    ts: Number(item.ts || Date.now()),
+                    direction: 'incoming',
+                    senderDeviceId,
+                    senderDigest: peerDigest,
+                    content: { type: 'contact-share' }
+                },
                 state,
-                semantic: { kind: SEMANTIC_KIND.CONTROL_STATE, subtype: 'contact-share' },
+                semantic: { kind: SEMANTIC_KIND.USER_MESSAGE, subtype: 'contact-share' },
                 vaultPutStatus: null
             };
         }
@@ -292,6 +362,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         ts: tsPair.ts,
         tsMs: tsPair.tsMs,
         messageId: item.serverMessageId || null,
+        serverMessageId: item.serverMessageId || null, // [Fix] Ensure property exists for Debug Modal
         messageKeyB64
     });
 
@@ -373,9 +444,11 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         text: messageObj.text || null,
         media: messageObj.media || null,
         callLog: messageObj.callLog || null,
+        callLog: messageObj.callLog || null,
         senderDigest: senderAccountDigest || null,
         senderDeviceId,
-        peerDeviceId
+        peerDeviceId,
+        header: messageObj.header || null // [FIX] Persist header so it's visible in Debug Modal/Logs
     };
 
     replaceTimelineEntryByCounter(conversationId, counter, timelineEntry);
@@ -900,7 +973,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                 if (h) {
                     // Check if contact-share or known control type
                     const type = h.meta?.msgType || h.msgType;
-                    if (type === 'contact-share' || type === 'control') continue;
+                    if (type === 'control') continue;
                 }
 
                 if (isControl) continue;

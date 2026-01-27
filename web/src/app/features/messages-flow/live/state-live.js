@@ -584,6 +584,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
           ...content,
           id: messageId,
           messageId,
+          serverMessageId: messageId || raw.serverMessageId || null, // [Fix] Polyfill for Debug Modal
           ts,
           tsMs: resolveMessageTsMs(ts),
           direction: 'incoming',
@@ -595,7 +596,8 @@ async function decryptIncomingSingle(params = {}, adapters) {
           headerCounter: counter,
           senderDeviceId,
           targetDeviceId,
-          senderDigest
+          senderDigest,
+          header: header || null // [Fix] Persist header for Debug Modal
         };
         result.okCount = 1;
 

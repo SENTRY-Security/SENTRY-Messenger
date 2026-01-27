@@ -670,6 +670,12 @@ function createMessagesFlowFacade() {
         conversationId,
         cursor: normalizedCursor,
         limit: mergedOptions.limit
+      }, {
+        maybeSendVaultAckWs: (params) => {
+          return maybeSendVaultAckWs(params, { wsSend: facadeWsSend });
+        },
+        getAccountDigest: storeGetAccountDigest,
+        getDeviceId: storeGetDeviceId
       }).then((result) => ({
         items: Array.isArray(result?.items) ? result.items : [],
         errors: Array.isArray(result?.errors) ? result.errors : [],

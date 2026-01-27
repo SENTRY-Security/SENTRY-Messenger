@@ -59,7 +59,7 @@ export async function smartFetchMessages({
     conversationId,
     limit = DEFAULT_LIMIT,
     cursor = null
-} = {}) {
+} = {}, deps = {}) {
     if (!conversationId) throw new Error('conversationId required');
 
     const selfDeviceId = storeGetDeviceId();
@@ -407,7 +407,10 @@ export async function smartFetchMessages({
 
                     try {
                         const bResult = await consumeLiveJob(job, {
-                            fetchSecureMessageById: createNoOpFetcher(item)
+                            fetchSecureMessageById: createNoOpFetcher(item),
+                            maybeSendVaultAckWs: deps?.maybeSendVaultAckWs,
+                            getAccountDigest: deps?.getAccountDigest,
+                            getDeviceId: deps?.getDeviceId
                         });
 
                         if (bResult.ok && bResult.decrypted) {

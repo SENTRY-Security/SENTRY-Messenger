@@ -27,7 +27,7 @@ import { normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } fro
 import { deriveConversationContextFromSecret } from '../../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../../features/contact-share.js';
 import { flushPendingContactShares, uplinkContactToD1 } from '../../../features/contacts.js';
-import { restoreContactSecrets, setContactSecret, getContactSecret } from '../../../core/contact-secrets.js';
+import { setContactSecret, getContactSecret } from '../../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from '../session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice } from '../contact-core-store.js';
 import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, consumeDrSendCounter } from '../../../features/dr-session.js';
@@ -251,8 +251,6 @@ export function setupShareController(options) {
     persistPendingInvites();
     notifyPendingInvitesChanged();
   }
-
-  const contactSecretMap = restoreContactSecrets();
 
   const {
     inviteBtn,

@@ -296,13 +296,14 @@ export class ConversationListController extends BaseController {
 
                     // Skip control messages
                     const meta = msg.meta || {};
+                    // [FIX] Removed contact-share from filter to allow "Friend Added" preview
                     const isControl = type === 'sys' || type === 'system' || type === 'control' ||
-                        (type && ['profile-update', 'session-init', 'session-ack', 'contact-share'].includes(type));
+                        (type && ['profile-update', 'session-init', 'session-ack'].includes(type));
 
                     if (isControl) continue;
 
                     // Ensure it's content
-                    if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log') {
+                    if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log' || type === 'contact-share') {
                         previewMsg = msg;
                         break;
                     }
@@ -339,6 +340,8 @@ export class ConversationListController extends BaseController {
                         }
                     } else if (type === 'call_log' || type === 'call-log') {
                         text = '[通話紀錄]';
+                    } else if (type === 'contact-share') {
+                        text = '[系統] 您已與對方成為好友';
                     }
                 }
 

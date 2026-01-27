@@ -325,10 +325,10 @@ async function sanitizeOutboxRecords(all = []) {
   return sanitized;
 }
 
+
 function shouldRetryTransient({ errorCode, statusCode }) {
-  if (errorCode === COUNTER_TOO_LOW_CODE) return false;
-  if (Number.isFinite(statusCode)) return statusCode >= 500;
-  return true;
+  // [MANUAL RETRY ONLY] Disable auto-retry for network errors to prevent Ratchet Reset loops and allow user manual control.
+  return false;
 }
 
 function computeOutboxState(all = []) {

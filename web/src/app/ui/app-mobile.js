@@ -4339,3 +4339,17 @@ if (typeof window !== 'undefined') {
   });
 }
 import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
+
+// [DEBUG-NOTIFY] Listen for implicit DR resets
+if (typeof document !== 'undefined') {
+  document.addEventListener('dr:session-reset', (e) => {
+    try {
+      const reason = e.detail?.reason || 'unknown';
+      const peer = e.detail?.peerAccountDigest || 'unknown';
+      console.warn('[App] Implicit DR Session Reset Detected:', e.detail);
+      showToast?.(`[Warning] DR Session Reset: ${reason} (${peer.slice(0, 8)}...)`, { variant: 'error', duration: 5000 });
+    } catch (err) {
+      console.error('[App] Failed to handle dr:session-reset event', err);
+    }
+  });
+}

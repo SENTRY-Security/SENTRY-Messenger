@@ -44,7 +44,7 @@ import { listSecureMessages, fetchSendState } from '../api/messages.js';
 import { COUNTER_TOO_LOW_MODE } from './queue/send-policy.js';
 import { triggerContactSecretsBackup } from './contact-backup.js';
 import { REMOTE_BACKUP_TRIGGER_SEND_OK_BATCH } from './restore-policy.js';
-import { updateTimelineEntryStatusByCounter } from './timeline-store.js';
+import { updateTimelineEntryStatusByCounter, upsertTimelineEntry } from './timeline-store.js';
 
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
@@ -1443,7 +1443,24 @@ function normalizePeerBundleFromPrekeys(bundle) {
  * @param {{ peerAccountDigest?: string }} p
  * @returns {Promise<{ initialized: boolean }>} 
  */
+
 const sessionLocks = new Map();
+const sendQueue = new Map();
+
+function enqueueDrSend(key, operation) {
+  if (!key) return operation();
+  const prev = sendQueue.get(key) || Promise.resolve();
+  const next = prev.catch(() => { }).then(operation);
+  sendQueue.set(key, next);
+  // Clean up memory
+  next.finally(() => {
+    if (sendQueue.get(key) === next) {
+      sendQueue.delete(key);
+    }
+  });
+  return next;
+}
+
 
 export async function ensureDrSession(params = {}) {
   const { digest: peer, deviceId: peerDeviceId } = ensurePeerIdentity({
@@ -1490,6 +1507,22 @@ export async function ensureDrSession(params = {}) {
       }
 
       const peerBundle = normalizePeerBundleFromPrekeys(bundle);
+
+      // [DEBUG-NOTIFY] Implicit Reset Path
+      try {
+        if (typeof document !== 'undefined') {
+          const resetDetail = {
+            peerAccountDigest: peer,
+            peerDeviceId,
+            reason: 'implicit-reset-no-backup'
+          };
+          document.dispatchEvent(new CustomEvent('dr:session-reset', { detail: resetDetail }));
+          console.warn('[dr-session] Dispatching dr:session-reset', resetDetail);
+        }
+      } catch (e) {
+        console.error('Failed to dispatch reset event', e);
+      }
+
       const st = await x3dhInitiate(priv, peerBundle);
       const targetHolder = holderAgain || holder || drState({ peerAccountDigest: peer, peerDeviceId });
       if (!targetHolder) throw new Error('DR holder missing for peer device');
@@ -1577,6 +1610,17 @@ function conversationContextForPeer(peerAccountDigest) {
 }
 
 export async function sendDrPlaintext(params = {}) {
+  const { text, conversation, convId, metaOverrides = {}, peerDeviceId: peerDeviceInput = null } = params;
+  const peer = resolvePeerDigest(params);
+  if (!peer) throw new Error('peerAccountDigest required');
+
+  const recvDeviceId = peerDeviceInput || conversation?.peerDeviceId || null;
+  const queueKey = recvDeviceId ? `${peer}::${recvDeviceId}` : peer;
+
+  return enqueueDrSend(queueKey, () => sendDrPlaintextCore(params));
+}
+
+export async function sendDrPlaintextCore(params = {}) {
   const { text, conversation, convId, metaOverrides = {}, peerDeviceId: peerDeviceInput = null } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) throw new Error('peerAccountDigest required');
@@ -1842,37 +1886,78 @@ export async function sendDrPlaintext(params = {}) {
         } catch (retryErr) {
           logOutgoingSendTrace('vault_put_fail', messageId, null);
           logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: retryErr?.message || err?.message });
+          // [SECURITY FIX] Strict Vault Failure
+          const finalErr = retryErr || err;
+          finalErr.stage = 'vault_put_fail';
+          finalErr.code = finalErr.code || 'VaultPutFailed';
+          throw finalErr;
         }
       } else {
         logOutgoingSendTrace('vault_put_fail', messageId, null);
         logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: err?.message });
+        // [SECURITY FIX] Strict Vault Failure
+        err.stage = 'vault_put_fail';
+        err.code = err.code || 'VaultPutFailed';
+        throw err;
       }
     }
 
 
-    const job = await enqueueOutboxJob({
-      conversationId: finalConversationId,
-      messageId,
-      headerJson,
-      header: headerPayload,
-      ciphertextB64: ctB64,
-      counter: transportCounter,
-      senderDeviceId,
-      receiverAccountDigest: peer,
-      receiverDeviceId: receiverDeviceId || null,
-      createdAt: now,
-      peerAccountDigest: peer,
-      peerDeviceId: peerDeviceId || null,
-      meta: { msgType: meta.msgType },
-      dr: preSnapshot
-        ? {
-          snapshotBefore: preSnapshot,
-          snapshotAfter: postSnapshot,
-          messageKeyB64
+
+    let job;
+    try {
+      job = await enqueueOutboxJob({
+        conversationId: finalConversationId,
+        messageId,
+        headerJson,
+        header: headerPayload,
+        ciphertextB64: ctB64,
+        counter: transportCounter,
+        senderDeviceId,
+        receiverAccountDigest: peer,
+        receiverDeviceId: receiverDeviceId || null,
+        createdAt: now,
+        peerAccountDigest: peer,
+        peerDeviceId: peerDeviceId || null,
+        meta: { msgType: meta.msgType },
+        dr: preSnapshot
+          ? {
+            snapshotBefore: preSnapshot,
+            snapshotAfter: postSnapshot,
+            messageKeyB64
+          }
+          : null
+      });
+    } catch (enqueueErr) {
+      // [SECURITY SAFEGUARD]
+      // If Queue Fails (DB Error, Storage Full), the message NEVER LEFT the device.
+      // We MUST rollback the Ratchet State to prevent "Ghost Advances" (Counter Skipping).
+      // Ref: "Counter Gap Prevention"
+      if (preSnapshot) {
+        try {
+          // Explicit rollback to pre-encryption state.
+          copyDrState(state, preSnapshot, { callsiteTag: 'rollback-enqueue-fail' });
+          drConsole.warn('[dr-session] State Rolled Back due to Enqueue Failure', { messageId, counter: transportCounter });
+        } catch (rollbackErr) {
+          drConsole.error('[dr-session] CRITICAL: State Rollback Failed', rollbackErr);
         }
-        : null
-    });
+      }
+      throw enqueueErr;
+    }
     logDrSendTrace({ messageId, stage: 'OUTBOX_ENQUEUE', jobId: job?.jobId || null });
+
+    // [FIX] Update Timeline with the generated Header/Counter so Debug Modal works.
+    try {
+      upsertTimelineEntry(finalConversationId, {
+        id: messageId,
+        header: headerPayload,
+        counter: transportCounter,
+        msgType: meta.msgType,
+        sourceTag: 'dr-session:post-enqueue'
+      });
+    } catch (timelineErr) {
+      drConsole.warn('[dr-session] Failed to update timeline metadata', timelineErr);
+    }
     logCapped('outboxJobTrace', {
       conversationId: finalConversationId,
       messageId,
@@ -2074,6 +2159,19 @@ export async function sendDrPlaintext(params = {}) {
             : null
         });
         logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_ENQUEUE', jobId: repairJob?.jobId || null });
+
+        // [FIX] Update Timeline with the generated Header/Counter for REPLACEMENT message (Text).
+        try {
+          upsertTimelineEntry(finalConversationId, {
+            id: replacementMessageId,
+            header: repairHeaderPayload,
+            counter: repairTransportCounter,
+            msgType: repairMeta.msgType,
+            sourceTag: 'dr-session:repair-post-enqueue'
+          });
+        } catch (e) {
+          drConsole.warn('[dr-session] Failed to update timeline metadata (repair)', e);
+        }
         logCapped('outboxJobTrace', {
           conversationId: finalConversationId,
           messageId: replacementMessageId,
@@ -2507,6 +2605,21 @@ export async function sendDrMedia(params = {}) {
   if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
     throw new Error('file required');
   }
+
+  const recvDeviceId = peerDeviceInput || conversation?.peerDeviceId || null;
+  const queueKey = recvDeviceId ? `${peer}::${recvDeviceId}` : peer;
+
+  return enqueueDrSend(queueKey, () => sendDrMediaCore(params));
+}
+
+export async function sendDrMediaCore(params = {}) {
+  const { file, conversation, convId, dir, onProgress, abortSignal, peerDeviceId: peerDeviceInput = null } = params;
+  const peer = resolvePeerDigest(params);
+  if (!peer) throw new Error('peerAccountDigest required');
+  if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
+    throw new Error('file required');
+  }
+
   const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
     ? params.messageId.trim()
     : null;
@@ -2787,6 +2900,19 @@ export async function sendDrMedia(params = {}) {
       : null
   });
   logDrSendTrace({ messageId, stage: 'OUTBOX_ENQUEUE', jobId: job?.jobId || null });
+
+  // [FIX] Update Timeline with the generated Header/Counter so Debug Modal works.
+  try {
+    upsertTimelineEntry(conversationId, {
+      id: messageId,
+      header: headerPayload,
+      counter: transportCounter,
+      msgType: 'media',
+      sourceTag: 'dr-session:media-post-enqueue'
+    });
+  } catch (e) {
+    drConsole.warn('[dr-session] Failed to update timeline metadata (media)', e);
+  }
   if (isConversationLocked(conversationId)) {
     logDrSendTrace({ messageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: job?.jobId || null });
     if (postSnapshot && peer && peerDeviceId) {
@@ -2958,6 +3084,19 @@ export async function sendDrMedia(params = {}) {
           : null
       });
       logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_ENQUEUE', jobId: repairJob?.jobId || null });
+
+      // [FIX] Update Timeline with the generated Header/Counter for REPLACEMENT message.
+      try {
+        upsertTimelineEntry(conversationId, {
+          id: replacementMessageId,
+          header: repairHeaderPayload,
+          counter: repairTransportCounter,
+          msgType: 'media',
+          sourceTag: 'dr-session:media-repair-post-enqueue'
+        });
+      } catch (e) {
+        drConsole.warn('[dr-session] Failed to update timeline metadata (media-repair)', e);
+      }
       if (isConversationLocked(conversationId)) {
         logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: repairJob?.jobId || null });
         if (repairPostSnapshot && peer && peerDeviceId) {

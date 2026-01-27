@@ -1479,41 +1479,80 @@ function serializeContactSecretsMap(map) {
     entries: 0,
     withDrState: 0,
     withHistory: 0,
+    withoutDrState: 0,
     withSeed: 0,
-    maxHistory: 0
+    maxHistory: 0,
+    bytes: 0,
+    version: CONTACT_SECRETS_VERSION,
+    generatedAt: Date.now(),
+    corruptSkipped: 0
   };
-  if (map instanceof Map) {
-    for (const [peerKey, record] of map.entries()) {
+
+  for (const [peerKey, record] of map.entries()) {
+    try {
       if (!peerKey) continue;
       const entry = buildStructuredEntry(peerKey, record);
       if (!entry) continue;
+
+      // Validate DR state integrity before serialization
+      // This ensures we don't persist corrupted state that would block restoration
+      const devices = record.devices && typeof record.devices === 'object' ? Object.values(record.devices) : [];
+      for (const dev of devices) {
+        if (dev?.drState) {
+          // Will throw if critical keys (like rk) are missing
+          normalizeDrSnapshot(
+            dev.drState,
+            { setDefaultUpdatedAt: false, source: 'serialize', peerKey: entry.peerAccountDigest, deviceId: dev.peerDeviceId || record.peerDeviceId, strictB64: true }
+          );
+        }
+      }
+
       entries.push(entry);
       summary.entries += 1;
-      const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : {};
+
+      // Update stats based on the successfully serialized entry
       let hasDr = false;
       let hasHistory = false;
       let hasSeed = false;
-      for (const dev of Object.values(devices)) {
-        const rk = dev?.drState?.rk_b64 || dev?.drState?.rk;
-        if (!hasDr && typeof rk === 'string' && rk.length) {
-          hasDr = true;
+      const devList = record.devices && typeof record.devices === 'object' ? Object.values(record.devices) : [];
+
+      if (devList.length > 0) {
+        for (const dev of devList) {
+          if (!hasDr && (dev?.drState?.rk_b64 || dev?.drState?.rk)) {
+            hasDr = true;
+          }
+          const historyLen = Array.isArray(dev?.drHistory) ? dev.drHistory.length : 0;
+          if (historyLen > 0) {
+            hasHistory = true;
+            if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
+          }
+          if (!hasSeed && typeof dev?.drSeed === 'string' && dev.drSeed.length) {
+            hasSeed = true;
+          }
         }
-        const historyLen = Array.isArray(dev?.drHistory) ? dev.drHistory.length : 0;
-        if (historyLen > 0) {
-          hasHistory = true;
-          if (historyLen > summary.maxHistory) summary.maxHistory = historyLen;
-        }
-        if (!hasSeed && typeof dev?.drSeed === 'string' && dev.drSeed.length) {
-          hasSeed = true;
-        }
+        if (hasDr) summary.withDrState += 1;
+        if (hasHistory) summary.withHistory += 1;
+        if (hasSeed) summary.withSeed += 1;
       }
-      if (hasDr) summary.withDrState += 1;
-      if (hasHistory) summary.withHistory += 1;
-      if (hasSeed) summary.withSeed += 1;
+    } catch (err) {
+      summary.corruptSkipped += 1;
+      try {
+        console.warn('[contact-secrets] serialization skipped corrupt entry', {
+          peerKey,
+          reason: err?.message || err
+        });
+        // Optionally record as corrupt so it can be inspected
+        recordCorruptContact({
+          peerKey,
+          reason: `serialize-fail: ${err?.message || err}`,
+          source: 'serializeContactSecretsMap'
+        });
+      } catch { }
     }
   }
+
   summary.withoutDrState = Math.max(0, summary.entries - summary.withDrState);
-  const generatedAt = Date.now();
+  const generatedAt = summary.generatedAt;
   const payloadObj = {
     v: CONTACT_SECRETS_VERSION,
     generatedAt,

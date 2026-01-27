@@ -578,6 +578,23 @@ export class MessageRenderer {
                 continue;
             }
 
+            if (messageType === 'contact-share') {
+                const sep = document.createElement('li');
+                sep.className = 'message-separator';
+                sep.style.marginTop = '12px';
+                sep.style.marginBottom = '12px';
+
+                // Resolve Name
+                // Note: For contact-share, we assume it marks the friendship event.
+                // We use the current contact nickname for display.
+                const contact = typeof contacts?.get === 'function' ? contacts.get(activePeerDigest || '') : null;
+                const name = contact?.nickname || '對方';
+
+                sep.textContent = `您已與 ${escapeHtml(name)} 成為好友`;
+                this.listEl.appendChild(sep);
+                continue;
+            }
+
             // Placeholder
             if (msg.placeholder === true || messageType === 'placeholder') {
                 li.className = 'message-placeholder-item';
@@ -734,6 +751,9 @@ export class MessageRenderer {
             tsSpan.textContent = '';
             metaRow.appendChild(tsSpan);
 
+
+            const RETRY_ICON = '<svg viewBox="0 0 24 24" fill="none" class="w-4 h-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>';
+
             if (messageType !== 'call-log') {
                 const statusSpan = document.createElement('span');
                 const status = typeof msg?.status === 'string' ? msg.status : null;
@@ -746,20 +766,43 @@ export class MessageRenderer {
 
                 if (statusMessageId) statusSpan.dataset.messageId = statusMessageId;
 
+                // Helper to detect network errors
+                const isNetworkError = (msg) => {
+                    const code = msg?.failureCode || '';
+                    const status = msg?.failureStatus || msg?.status || 0;
+                    // Check for HTTP 5xx or specific network codes
+                    if (Number(code) >= 500 && Number(code) < 600) return true;
+                    if (String(code).startsWith('HTTP_5')) return true;
+                    if (String(code).includes('Timeout')) return true;
+                    if (String(code) === 'NetworkError') return true;
+                    if (String(code) === 'FetchError') return true;
+                    return false;
+                };
+
                 if (msg.direction === 'incoming') {
                     statusSpan.className = 'message-status peer';
                     statusSpan.textContent = '';
                 } else if (failed) {
-                    statusSpan.className = 'message-status failed';
-                    statusSpan.textContent = '!';
-                    const failureTip = msg?.failureReason || msg?.failureCode || '';
-                    if (failureTip) statusSpan.title = failureTip;
+                    const retryable = isNetworkError(msg);
+                    if (retryable) {
+                        statusSpan.className = 'message-status failed retryable';
+                        statusSpan.dataset.retry = 'true';
+                        statusSpan.innerHTML = RETRY_ICON; // Use SVG
+                        statusSpan.title = '網路傳送失敗，點擊重試';
+                    } else {
+                        statusSpan.className = 'message-status failed';
+                        statusSpan.textContent = '!';
+                        const failureTip = msg?.failureReason || msg?.failureCode || '';
+                        if (failureTip) statusSpan.title = failureTip;
+                    }
                 } else if (!isLatestOutgoing) {
                     statusSpan.className = 'message-status hidden';
                     statusSpan.textContent = '';
                 } else if (pending) {
                     statusSpan.className = 'message-status pending';
-                    statusSpan.textContent = '';
+
+                    statusSpan.innerHTML = '<span class="status-spinner"></span>';
+
                 } else if (delivered) {
                     statusSpan.className = 'message-status delivered';
                     statusSpan.textContent = '✓✓';
