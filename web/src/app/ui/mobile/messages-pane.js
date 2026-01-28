@@ -138,6 +138,14 @@ const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0 };
 let messageRenderer = null;
 let outboxHooksRegistered = false;
+
+// [FIX] Delegate pattern to avoid stale closures if messagesPane is re-initialized (e.g. navigation/HMR)
+let messagesPaneHooksDelegate = null;
+const messagesPaneHooksProxy = {
+  onSent: (job, response) => messagesPaneHooksDelegate?.onSent?.(job, response),
+  onFailed: (job, err) => messagesPaneHooksDelegate?.onFailed?.(job, err)
+};
+
 let pendingNewMessageHint = false;
 let bRouteResultListenerInstalled = false;
 const uiNoiseEnabled = DEBUG.uiNoise === true;
@@ -1282,18 +1290,25 @@ export function initMessagesPane({
   }
 
   function registerOutboxHooks() {
-    if (outboxHooksRegistered) return;
-    outboxHooksRegistered = true;
-    setOutboxHooks({
+    // 1. Always update the delegate to point to the current closure's logic
+    messagesPaneHooksDelegate = {
       onSent: async (job, response) => {
+        console.log('[messages-pane] onSent:hook triggered', { jobId: job?.jobId, messageId: job?.messageId });
         if (!job || job.type !== 'message') return;
         const convId = job?.conversationId || null;
         const messageId = job?.messageId || null;
         if (!convId || !messageId) return;
-        const message = findTimelineMessageById(convId, messageId);
+
+        let message = findTimelineMessageById(convId, messageId);
+        console.log('[messages-pane] onSent:message_found', {
+          found: !!message,
+          status: message?.status
+        });
+
         if (!message || message.direction !== 'outgoing') return;
         const status = typeof message.status === 'string' ? message.status : null;
         if (status === 'failed' || status === 'delivered' || status === 'read') return;
+
         const payload = response?.data || job?.lastResponse || null;
         const payloadWithJobId = payload && typeof payload === 'object'
           ? { ...payload, jobId: job?.jobId || null }
@@ -1301,13 +1316,28 @@ export function initMessagesPane({
         const fallbackTs = Number.isFinite(Number(job?.createdAt))
           ? Math.floor(Number(job.createdAt))
           : (Number.isFinite(Number(message.ts)) ? Number(message.ts) : Date.now());
+
         try {
           controllers.messageStatus.applyOutgoingSent(message, payloadWithJobId, fallbackTs, 'OUTBOX_SENT_HOOK');
+          console.log('[messages-pane] onSent:apply_done', {
+            newStatus: message.status,
+            serverId: message.serverMessageId
+          });
         } catch (err) {
+          console.error('[messages-pane] onSent:apply_error', err);
           controllers.messageStatus.applyOutgoingFailure(message, err, '傳送失敗', 'OUTBOX_SENT_HOOK_ERROR');
         }
+
         const state = getMessageState();
-        if (state.conversationId === convId) controllers.messageFlow.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+        if (state.conversationId === convId) {
+          console.log('[messages-pane] onSent:trigger_ui_update');
+          controllers.messageFlow.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+        } else {
+          console.log('[messages-pane] onSent:ui_update_skipped', {
+            stateConvId: state.conversationId,
+            jobConvId: convId
+          });
+        }
       },
       onFailed: async (job, err) => {
         if (!job || job.type !== 'message') return;
@@ -1335,7 +1365,12 @@ export function initMessagesPane({
         const state = getMessageState();
         if (state.conversationId === convId) controllers.messageFlow.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
       }
-    });
+    };
+
+    // 2. Register the PROXY once. It will call the delegate above.
+    if (outboxHooksRegistered) return;
+    outboxHooksRegistered = true;
+    setOutboxHooks(messagesPaneHooksProxy);
   }
 
   // initKeyboardListeners removed (moved to LayoutController)

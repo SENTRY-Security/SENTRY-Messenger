@@ -174,6 +174,12 @@ export class MessageStatusController extends BaseController {
      */
     applyOutgoingSent(message, res, fallbackTs, reasonCode = 'ACK_202') {
         if (!message) return;
+        console.log('[MessageStatus] applyOutgoingSent:entry', {
+            id: message.id || message.messageId,
+            status: message.status,
+            pending: message.pending
+        });
+
         const fromStatus = typeof message.status === 'string' ? message.status : null;
         if (fromStatus === 'failed' || fromStatus === 'delivered' || fromStatus === 'read') return;
         if (this.isCounterTooLowError(res)) return;
@@ -198,6 +204,13 @@ export class MessageStatusController extends BaseController {
 
         const ts = res?.msg?.ts || res?.created_at || res?.createdAt || fallbackTs;
         if (Number.isFinite(ts)) message.ts = ts;
+
+        console.log('[MessageStatus] applyOutgoingSent:check', {
+            id: message.id,
+            status: message.status,
+            pending: message.pending,
+            counter: message.counter
+        });
 
         this._logOutgoingUiStatusTrace({
             message,
