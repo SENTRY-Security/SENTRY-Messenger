@@ -2875,27 +2875,50 @@ export async function sendDrMediaCore(params = {}) {
     }
   }
 
+  // [ATOMIC-SEND] Prepare Vault Payload (Local Wrapping)
+  // STRICT MODE: If vault preparation fails, we MUST fail the send to ensure atomicity.
+  const vaultParams = {
+    conversationId: conversationId,
+    messageId: messageId,
+    senderDeviceId: senderDeviceId,
+    targetDeviceId: receiverDeviceId,
+    direction: 'outgoing',
+    msgType: msgType,
+    headerCounter: vaultCounter,
+    messageKeyB64: messageKeyB64,
+    accountDigest: accountDigest, // self
+    drStateSnapshot: drStateSnapshot // Pass the encrypted snapshot
+  };
+
+  let vaultAtomicPayload = null;
   try {
-    await MessageKeyVault.putMessageKey({
-      conversationId,
-      messageId,
-      senderDeviceId,
-      targetDeviceId: receiverDeviceId,
-      direction: 'outgoing',
-      msgType,
-      headerCounter: vaultCounter,
-      messageKeyB64,
-      accountDigest: accountDigest, // self
-      drStateSnapshot // Pass the encrypted snapshot
-    });
-    logOutgoingSendTrace('vault_put_ok', messageId, null);
-    logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });
+    const { wrapped, context } = await MessageKeyVault.preparePayload({ ...vaultParams, drStateSnapshot });
+    vaultAtomicPayload = {
+      ...vaultParams,
+      wrapped_mk: wrapped,
+      wrap_context: context,
+      dr_state: drStateSnapshot
+    };
+    logOutgoingSendTrace('vault_prep_ok', messageId, null);
   } catch (err) {
-    logOutgoingSendTrace('vault_put_fail', messageId, null);
-    logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: err?.message || String(err) });
-    err.stage = 'vault_put_fail';
-    err.code = err.code || 'VaultPutFailed';
+    logDrSendTrace({ messageId, stage: 'VAULT_PREP_FAIL', error: err?.message });
+    // [SECURITY FIX] Strict Vault Failure
+    err.stage = 'vault_prep_fail';
+    err.code = err.code || 'VaultPrepFailed';
     restoreSendFailure(err);
+  }
+
+  // [ATOMIC-SEND] Prepare Backup Payload (If needed)
+  let backupPayload = null;
+  if (mk) {
+    try {
+      backupPayload = await getContactSecretsBackupPayload({ reason: 'atomic-send-check-media' });
+      if (backupPayload) {
+        drConsole.log('[dr-send] Attaching backup to atomic send (media)', { version: backupPayload.snapshotVersion });
+      }
+    } catch (err) {
+      drConsole.warn('[dr-send] Failed to fetch backup payload (media)', err);
+    }
   }
 
   const job = await enqueueMediaMetaJob({
@@ -2917,7 +2940,9 @@ export async function sendDrMediaCore(params = {}) {
         snapshotAfter: postSnapshot,
         messageKeyB64
       }
-      : null
+      : null,
+    vault: vaultAtomicPayload,   // [ATOMIC-SEND]
+    backup: backupPayload        // [ATOMIC-SEND]
   });
   logDrSendTrace({ messageId, stage: 'OUTBOX_ENQUEUE', jobId: job?.jobId || null });
 

@@ -25,7 +25,9 @@ export async function enqueueMediaMetaJob({
   receiverAccountDigest,
   receiverDeviceId,
   createdAt,
-  meta
+  meta,
+  vault = null,   // [ATOMIC-SEND]
+  backup = null   // [ATOMIC-SEND]
 }) {
   if (!conversationId || !ciphertextB64 || !headerJson) throw new Error('conversationId, headerJson, ciphertextB64 required');
   if (!messageId) throw new Error('messageId required for media meta job');
@@ -41,6 +43,8 @@ export async function enqueueMediaMetaJob({
     receiverAccountDigest,
     receiverDeviceId,
     createdAt,
-    meta: { ...(meta || {}), kind: 'meta' }
+    meta,
+    vault,    // [ATOMIC-SEND]
+    backup    // [ATOMIC-SEND]
   });
 }
