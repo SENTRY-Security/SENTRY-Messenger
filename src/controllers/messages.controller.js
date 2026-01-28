@@ -594,7 +594,7 @@ export const atomicSend = async (req, res) => {
       return res.status(500).json({
         error: 'D1WriteFailed',
         status: r.status,
-        details: workerJson || null
+        details: workerJson || workerText || 'Empty Response'
       });
     }
 
