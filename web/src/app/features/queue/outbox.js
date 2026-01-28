@@ -7,6 +7,7 @@ import {
   listOutboxRecords,
   putOutboxRecord
 } from './db.js';
+import { getAccountDigest } from '../../core/store.js'; // [FIX] Import
 import { log, logCapped, logForensicsEvent } from '../../core/log.js';
 import { TRANSIENT_RETRY_MAX, TRANSIENT_RETRY_INTERVAL_MS } from './send-policy.js';
 
@@ -424,7 +425,7 @@ async function attemptSend(job) {
       message: {
         id: job.messageId,
         conversation_id: job.conversationId,
-        sender_account_digest: null, // inferred by API
+        sender_account_digest: getAccountDigest(), // [FIX] Required by Worker
         sender_device_id: job.senderDeviceId,
         receiver_account_digest: job.receiverAccountDigest,
         receiver_device_id: job.receiverDeviceId,
