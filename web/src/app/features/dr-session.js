@@ -1722,6 +1722,11 @@ export async function sendDrPlaintextCore(params = {}) {
   let finalConversationId = conversationId;
   if (!finalConversationId) finalConversationId = await conversationIdFromToken(tokenB64);
 
+  // [FIX] Fallback for Initial Handshake (Atomic Send requires valid ID)
+  if (!finalConversationId && peer) {
+    finalConversationId = `contacts-${peer.toUpperCase()}`;
+  }
+
   if (state?.baseKey?.snapshot === true) {
     await seedTransportCounterFromServer({
       conversationId: finalConversationId,

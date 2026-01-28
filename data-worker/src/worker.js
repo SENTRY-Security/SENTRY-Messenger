@@ -1983,8 +1983,13 @@ async function handleAtomicSendRoutes(req, env) {
 
     // 2. Prepare Message Insert
     const msgId = normalizeMessageId(messagePayload?.id);
-    const msgSenderDigest = normalizeAccountDigest(messagePayload?.sender_account_digest || messagePayload?.senderAccountDigest);
-    const msgSenderDevice = normalizeDeviceId(messagePayload?.sender_device_id || messagePayload?.senderDeviceId);
+    // [FIX] Infer sender digest/device from auth context if not explicitly provided (Client sends null)
+    const payloadSenderDigest = normalizeAccountDigest(messagePayload?.sender_account_digest || messagePayload?.senderAccountDigest);
+    const msgSenderDigest = payloadSenderDigest || accountDigest;
+
+    const payloadSenderDevice = normalizeDeviceId(messagePayload?.sender_device_id || messagePayload?.senderDeviceId);
+    const msgSenderDevice = payloadSenderDevice || senderDeviceId;
+
     const msgReceiverDigest = normalizeAccountDigest(messagePayload?.receiver_account_digest || messagePayload?.receiverAccountDigest);
     const msgReceiverDevice = normalizeDeviceId(messagePayload?.receiver_device_id || messagePayload?.receiverDeviceId); // nullable
     const msgHeaderJson = typeof messagePayload?.header_json === 'string' ? messagePayload.header_json : (messagePayload?.header ? JSON.stringify(messagePayload.header) : null);
@@ -1995,9 +2000,12 @@ async function handleAtomicSendRoutes(req, env) {
     if (!msgId || !msgSenderDigest || !msgSenderDevice || !msgReceiverDigest || !msgHeaderJson || !msgCiphertext || !Number.isFinite(msgCounter)) {
       return json({ error: 'BadRequest', message: 'invalid message payload' }, { status: 400 });
     }
-    // Consistency Check
-    if (msgSenderDigest !== accountDigest || msgSenderDevice !== senderDeviceId) {
-      return json({ error: 'BadRequest', message: 'message sender mismatch' }, { status: 400 });
+    // Consistency Check (Only if payload explicitly provided a different value)
+    if (payloadSenderDigest && payloadSenderDigest !== accountDigest) {
+      return json({ error: 'BadRequest', message: 'message sender digest mismatch' }, { status: 400 });
+    }
+    if (payloadSenderDevice && payloadSenderDevice !== senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'message sender device mismatch' }, { status: 400 });
     }
 
     // 3. Prepare Vault Insert
