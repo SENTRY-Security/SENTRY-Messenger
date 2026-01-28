@@ -2117,73 +2117,78 @@ async function handleAtomicSendRoutes(req, env) {
 
     // 5d. Backup Insert (if present)
     if (backupPayload) {
-      // Validate backup payload
-      const bkDigest = normalizeAccountDigest(backupPayload.accountDigest || backupPayload.account_digest);
-      if (bkDigest !== accountDigest) {
-        return json({ error: 'BadRequest', message: 'backup digest mismatch' }, { status: 400 });
-      }
-      const rawPayload = backupPayload.payload;
-      if (!rawPayload || typeof rawPayload !== 'object') {
-        return json({ error: 'BadRequest', message: 'backup payload invalid' }, { status: 400 });
-      }
+      try {
+        console.log('[atomic-send] processing backup', {
+          digest: backupPayload.accountDigest,
+          hasPayload: !!backupPayload.payload
+        });
+        // Validate backup payload
+        const bkDigest = normalizeAccountDigest(backupPayload.accountDigest || backupPayload.account_digest);
+        if (bkDigest !== accountDigest) {
+          return json({ error: 'BadRequest', message: 'backup digest mismatch' }, { status: 400 });
+        }
+        const rawPayload = backupPayload.payload;
+        if (!rawPayload || typeof rawPayload !== 'object') {
+          return json({ error: 'BadRequest', message: 'backup payload invalid' }, { status: 400 });
+        }
 
-      // Check version monotonicity need extra read?
-      // Constraint: We want this to be atomic. If we do a read now for version, and write in batch, it's fine.
-      // Or we can blindly insert if client ensures version is correct?
-      // The client usually knows the next version.
-      // But let's check basic version logic if supplied.
-      // Actually, to fully protect overwrite, we should rely on UNIQUE constraint on (account_digest, version) if it existed.
-      // But let's look at `contact_secret_backups` schema (inferred).
-      // If we assume client sends correct Monotonic Number, we can just Insert.
-      // If we want to auto-increment version on server, we can't easily do that in a Batch with arbitrary logic, unless we use specific SQL.
-      // EXISTING LOGIC: reads MAX(version), then increments.
-      // We can replicate that READ here before the batch. It breaks strict "Serializability" if concurrent requests happen,
-      // but for a single user/device, it's usually sequential.
-      // Let's do the read.
+        // Check version monotonicity need extra read?
+        // Constraint: We want this to be atomic. If we do a read now for version, and write in batch, it's fine.
+        // Or we can blindly insert if client ensures version is correct?
+        // The client usually knows the next version.
+        // But let's check basic version logic if supplied.
+        // Actually, to fully protect overwrite, we should rely on UNIQUE constraint on (account_digest, version) if it existed.
+        // But let's look at `contact_secret_backups` schema (inferred).
+        // If we assume client sends correct Monotonic Number, we can just Insert.
+        // If we want to auto-increment version on server, we can't easily do that in a Batch with arbitrary logic, unless we use specific SQL.
+        // EXISTING LOGIC: reads MAX(version), then increments.
+        // We can replicate that READ here before the batch. It breaks strict "Serializability" if concurrent requests happen,
+        // but for a single user/device, it's usually sequential.
+        // Let's do the read.
 
-      let bkVersion = Number.isFinite(Number(backupPayload.version)) && Number(backupPayload.version) > 0
-        ? Math.floor(Number(backupPayload.version))
-        : null;
+        let bkVersion = Number.isFinite(Number(backupPayload.version)) && Number(backupPayload.version) > 0
+          ? Math.floor(Number(backupPayload.version))
+          : null;
 
-      // Only if version not provided do we fetch. If provided, we respect it.
-      if (!bkVersion) {
-        const existingVersionRow = await env.DB.prepare(
-          `SELECT MAX(version) as max_version FROM contact_secret_backups WHERE account_digest=?1`
-        ).bind(accountDigest).all();
-        const nextVersion = Number(existingVersionRow?.results?.[0]?.max_version || 0);
-        bkVersion = nextVersion + 1;
-      }
+        // Only if version not provided do we fetch. If provided, we respect it.
+        if (!bkVersion) {
+          const existingVersionRow = await env.DB.prepare(
+            `SELECT MAX(version) as max_version FROM contact_secret_backups WHERE account_digest=?1`
+          ).bind(accountDigest).all();
+          const nextVersion = Number(existingVersionRow?.results?.[0]?.max_version || 0);
+          bkVersion = nextVersion + 1;
+        }
 
-      const bkSnapshotVersion = Number.isFinite(Number(backupPayload.snapshotVersion)) ? Number(backupPayload.snapshotVersion) : null;
-      const bkEntries = Number.isFinite(Number(backupPayload.entries)) ? Number(backupPayload.entries) : null;
-      const bkBytes = Number.isFinite(Number(backupPayload.bytes)) ? Number(backupPayload.bytes) : null;
-      const bkChecksum = typeof backupPayload.checksum === 'string' ? String(backupPayload.checksum).slice(0, 128) : null;
-      const bkDeviceLabel = typeof backupPayload.deviceLabel === 'string' ? String(backupPayload.deviceLabel).slice(0, 120) : null;
-      const bkDeviceId = typeof backupPayload.deviceId === 'string' ? String(backupPayload.deviceId).slice(0, 120) : null;
-      const bkUpdatedAt = normalizeTimestampMs(backupPayload.updatedAt || backupPayload.updated_at) || Date.now();
-      const bkWithDrState = Number.isFinite(Number(backupPayload.withDrState)) ? Number(backupPayload.withDrState) : null;
+        const bkSnapshotVersion = Number.isFinite(Number(backupPayload.snapshotVersion)) ? Number(backupPayload.snapshotVersion) : null;
+        const bkEntries = Number.isFinite(Number(backupPayload.entries)) ? Number(backupPayload.entries) : null;
+        const bkBytes = Number.isFinite(Number(backupPayload.bytes)) ? Number(backupPayload.bytes) : null;
+        const bkChecksum = typeof backupPayload.checksum === 'string' ? String(backupPayload.checksum).slice(0, 128) : null;
+        const bkDeviceLabel = typeof backupPayload.deviceLabel === 'string' ? String(backupPayload.deviceLabel).slice(0, 120) : null;
+        const bkDeviceId = typeof backupPayload.deviceId === 'string' ? String(backupPayload.deviceId).slice(0, 120) : null;
+        const bkUpdatedAt = normalizeTimestampMs(backupPayload.updatedAt || backupPayload.updated_at) || Date.now();
+        const bkWithDrState = Number.isFinite(Number(backupPayload.withDrState)) ? Number(backupPayload.withDrState) : null;
 
-      const payloadRecord = Number.isFinite(bkWithDrState)
-        ? { payload: rawPayload, meta: { withDrState: bkWithDrState } }
-        : rawPayload;
+        const payloadRecord = Number.isFinite(bkWithDrState)
+          ? { payload: rawPayload, meta: { withDrState: bkWithDrState } }
+          : rawPayload;
 
-      batch.push(env.DB.prepare(
-        `INSERT INTO contact_secret_backups (
+        batch.push(env.DB.prepare(
+          `INSERT INTO contact_secret_backups (
             account_digest, version, payload_json, snapshot_version, entries,
             checksum, bytes, updated_at, device_label, device_id, created_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%s','now'))`
-      ).bind(
-        accountDigest, bkVersion, JSON.stringify(payloadRecord),
-        bkSnapshotVersion, bkEntries, bkChecksum, bkBytes, bkUpdatedAt,
-        bkDeviceLabel, bkDeviceId
-      ));
+        ).bind(
+          accountDigest, bkVersion, JSON.stringify(payloadRecord),
+          bkSnapshotVersion, bkEntries, bkChecksum, bkBytes, bkUpdatedAt,
+          bkDeviceLabel, bkDeviceId
+        ));
 
-      // Trim (DELETE)
-      // "Delete all but last 5"
-      // We can use the same logic as trimContactSecretBackups but hardcoded params
-      const keep = 5;
-      batch.push(env.DB.prepare(
-        `DELETE FROM contact_secret_backups
+        // Trim (DELETE)
+        // "Delete all but last 5"
+        // We can use the same logic as trimContactSecretBackups but hardcoded params
+        const keep = 5;
+        batch.push(env.DB.prepare(
+          `DELETE FROM contact_secret_backups
            WHERE account_digest=?1
              AND id NOT IN (
                SELECT id FROM contact_secret_backups
@@ -2191,7 +2196,15 @@ async function handleAtomicSendRoutes(req, env) {
                 ORDER BY updated_at DESC, id DESC
                 LIMIT ?2
              )`
-      ).bind(accountDigest, keep));
+        ).bind(accountDigest, keep));
+      } catch (err) {
+        console.error('[atomic-send] backup processing crash', err);
+        return json({
+          error: 'WorkerCrash',
+          message: 'BackupLogicFailed: ' + (err?.message || String(err)),
+          stack: err?.stack
+        }, { status: 500 });
+      }
     }
 
     // 6. Execute Batch
