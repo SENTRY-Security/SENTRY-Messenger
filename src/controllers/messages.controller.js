@@ -581,7 +581,15 @@ export const atomicSend = async (req, res) => {
     });
 
     let workerJson = null;
-    try { workerJson = await r.json(); } catch { workerJson = null; }
+    let workerText = null;
+    try {
+      workerText = await r.text();
+      if (workerText) {
+        workerJson = JSON.parse(workerText);
+      }
+    } catch {
+      workerJson = null;
+    }
 
     if (r.status === 409 && typeof workerJson === 'object' && workerJson?.error === 'CounterTooLow') {
       return res.status(409).json({ error: 'CounterTooLow', details: workerJson });
@@ -589,7 +597,7 @@ export const atomicSend = async (req, res) => {
 
     if (!r.ok) {
       if (r.status >= 400 && r.status < 500) {
-        return res.status(r.status).json(workerJson || { error: 'WorkerError', status: r.status });
+        return res.status(r.status).json(workerJson || { error: 'WorkerError', status: r.status, details: workerText });
       }
       return res.status(500).json({
         error: 'D1WriteFailed',
