@@ -177,7 +177,8 @@ export async function getContactSecretsBackupPayload({ force = false, allowWitho
       deviceId: ensureDeviceId(),
       // Helpers for post-process
       _snapshot: snapshot,
-      _checksum: snapshot.checksum
+      _checksum: snapshot.checksum,
+      accountDigest: getAccountDigest()
     };
   } catch (err) {
     log({ contactSecretsBackupPayloadError: err?.message || err });

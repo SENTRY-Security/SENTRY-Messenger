@@ -540,17 +540,17 @@ export const atomicSend = async (req, res) => {
   // but client provides one. authorizeAccountForConversation handles "system owned" or checks ACL.
   // For simplicity and robustness, let's forward and let Worker handle deep logic,
   // but we MUST ensure the caller has valid account credentials.
-  
+
   // Resolve Auth
   let auth;
   try {
     const { accountDigest: resolvedDigest } = await resolveAccountAuth({
-       accountToken: account.accountToken,
-       accountDigest: account.accountDigest
+      accountToken: account.accountToken,
+      accountDigest: account.accountDigest
     });
     auth = { accountDigest: resolvedDigest };
   } catch (err) {
-     return respondAccountError(res, err, 'account authorization failed');
+    return respondAccountError(res, err, 'account authorization failed');
   }
 
   // Consistency Check
@@ -559,7 +559,7 @@ export const atomicSend = async (req, res) => {
 
   // Forward to Worker
   const path = '/d1/messages/atomic-send';
-  
+
   // Reconstruct payload to ensure clean JSON for HMAC and Worker validation
   const payload = {
     conversationId: rawBody.conversationId,
@@ -579,7 +579,7 @@ export const atomicSend = async (req, res) => {
       headers: { 'content-type': 'application/json', 'x-auth': sig },
       body
     });
-    
+
     let workerJson = null;
     try { workerJson = await r.json(); } catch { workerJson = null; }
 
@@ -588,6 +588,9 @@ export const atomicSend = async (req, res) => {
     }
 
     if (!r.ok) {
+      if (r.status >= 400 && r.status < 500) {
+        return res.status(r.status).json(workerJson || { error: 'WorkerError', status: r.status });
+      }
       return res.status(502).json({
         error: 'D1WriteFailed',
         status: r.status,
@@ -598,25 +601,25 @@ export const atomicSend = async (req, res) => {
     // WS Notify (Optional: if we want instant push, we can parse messagePayload and push here)
     // The previous createSecureMessage did this. We should probably replicate it.
     try {
-       const receiverDigest = messagePayload.receiver_account_digest || messagePayload.receiverAccountDigest;
-       const conversationId = messagePayload.conversation_id || messagePayload.conversationId;
-       const messageId = messagePayload.id;
-       const ts = messagePayload.created_at || messagePayload.ts;
-       if (receiverDigest && conversationId && messageId) {
-         const mgr = getWebSocketManager();
-         mgr.notifySecureMessage({
-           targetAccountDigest: receiverDigest,
-           conversationId: conversationId,
-           messageId: messageId,
-           preview: '',
-           ts: Number(ts) || Date.now(),
-           senderAccountDigest: auth.accountDigest,
-           senderDeviceId: senderDevice,
-           targetDeviceId: canonDevice(messagePayload.receiver_device_id || messagePayload.receiverDeviceId)
-         });
-       }
+      const receiverDigest = messagePayload.receiver_account_digest || messagePayload.receiverAccountDigest;
+      const conversationId = messagePayload.conversation_id || messagePayload.conversationId;
+      const messageId = messagePayload.id;
+      const ts = messagePayload.created_at || messagePayload.ts;
+      if (receiverDigest && conversationId && messageId) {
+        const mgr = getWebSocketManager();
+        mgr.notifySecureMessage({
+          targetAccountDigest: receiverDigest,
+          conversationId: conversationId,
+          messageId: messageId,
+          preview: '',
+          ts: Number(ts) || Date.now(),
+          senderAccountDigest: auth.accountDigest,
+          senderDeviceId: senderDevice,
+          targetDeviceId: canonDevice(messagePayload.receiver_device_id || messagePayload.receiverDeviceId)
+        });
+      }
     } catch (err) {
-       logger.warn({ ws_notify_error: err?.message || err }, 'ws_notify_atomic_send_failed');
+      logger.warn({ ws_notify_error: err?.message || err }, 'ws_notify_atomic_send_failed');
     }
 
     return res.status(202).json(workerJson);
