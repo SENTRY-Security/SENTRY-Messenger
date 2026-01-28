@@ -4718,61 +4718,75 @@ async function handleAccountsRoutes(req, env) {
 
 export default {
   async fetch(req, env) {
-    // 基本 HMAC 防護
-    if (!await verifyHMAC(req, env)) {
-      return new Response('unauthorized', { status: 401 });
+    try {
+      // 基本 HMAC 防護
+      if (!await verifyHMAC(req, env)) {
+        return new Response('unauthorized', { status: 401 });
+      }
+
+      // 先搬好的 Tags/OPAQUE/DevKeys
+      const tagResult = await handleTagsRoutes(req, env);
+      if (tagResult) return tagResult;
+
+      const inviteDropboxResult = await handleInviteDropboxRoutes(req, env);
+      if (inviteDropboxResult) return inviteDropboxResult;
+
+      // Friends / Invites
+      const friendsResult = await handleFriendsRoutes(req, env);
+      if (friendsResult) return friendsResult;
+
+      const prekeyResult = await handlePrekeysRoutes(req, env);
+      if (prekeyResult) return prekeyResult;
+
+      const atomicSendResult = await handleAtomicSendRoutes(req, env);
+      if (atomicSendResult) return atomicSendResult;
+
+      const messagesResult = await handleMessagesRoutes(req, env);
+      if (messagesResult) return messagesResult;
+
+      const contactSecretResult = await handleContactSecretsRoutes(req, env);
+      if (contactSecretResult) return contactSecretResult;
+
+      const messageKeyVaultResult = await handleMessageKeyVaultRoutes(req, env);
+      if (messageKeyVaultResult) return messageKeyVaultResult;
+
+      const groupsResult = await handleGroupsRoutes(req, env);
+      if (groupsResult) return groupsResult;
+
+      const mediaResult = await handleMediaRoutes(req, env);
+      if (mediaResult) return mediaResult;
+
+      const convResult = await handleConversationRoutes(req, env);
+      if (convResult) return convResult;
+
+      const subscriptionResult = await handleSubscriptionRoutes(req, env);
+      if (subscriptionResult) return subscriptionResult;
+
+      const devicesResult = await handleDeviceRoutes(req, env);
+      if (devicesResult) return devicesResult;
+
+      const callsResult = await handleCallsRoutes(req, env);
+      if (callsResult) return callsResult;
+
+      const accountsResult = await handleAccountsRoutes(req, env);
+      if (accountsResult) return accountsResult;
+
+      const contactsResult = await handleContactsRoutes(req, env);
+      if (contactsResult) return contactsResult;
+
+      return json({ error: 'not_found' }, { status: 404 });
+    } catch (err) {
+      console.error('[global-trap] worker exception', err);
+      try {
+        return json({
+          error: 'WorkerGlobalException',
+          message: err?.message || String(err),
+          stack: err?.stack,
+          name: err?.name
+        }, { status: 500 });
+      } catch {
+        return new Response(JSON.stringify({ error: 'CriticalFailure' }), { status: 500 });
+      }
     }
-
-    // 先搬好的 Tags/OPAQUE/DevKeys
-    const tagResult = await handleTagsRoutes(req, env);
-    if (tagResult) return tagResult;
-
-    const inviteDropboxResult = await handleInviteDropboxRoutes(req, env);
-    if (inviteDropboxResult) return inviteDropboxResult;
-
-    // Friends / Invites
-    const friendsResult = await handleFriendsRoutes(req, env);
-    if (friendsResult) return friendsResult;
-
-    const prekeyResult = await handlePrekeysRoutes(req, env);
-    if (prekeyResult) return prekeyResult;
-
-    const atomicSendResult = await handleAtomicSendRoutes(req, env);
-    if (atomicSendResult) return atomicSendResult;
-
-    const messagesResult = await handleMessagesRoutes(req, env);
-    if (messagesResult) return messagesResult;
-
-    const contactSecretResult = await handleContactSecretsRoutes(req, env);
-    if (contactSecretResult) return contactSecretResult;
-
-    const messageKeyVaultResult = await handleMessageKeyVaultRoutes(req, env);
-    if (messageKeyVaultResult) return messageKeyVaultResult;
-
-    const groupsResult = await handleGroupsRoutes(req, env);
-    if (groupsResult) return groupsResult;
-
-    const mediaResult = await handleMediaRoutes(req, env);
-    if (mediaResult) return mediaResult;
-
-    const convResult = await handleConversationRoutes(req, env);
-    if (convResult) return convResult;
-
-    const subscriptionResult = await handleSubscriptionRoutes(req, env);
-    if (subscriptionResult) return subscriptionResult;
-
-    const devicesResult = await handleDeviceRoutes(req, env);
-    if (devicesResult) return devicesResult;
-
-    const callsResult = await handleCallsRoutes(req, env);
-    if (callsResult) return callsResult;
-
-    const accountsResult = await handleAccountsRoutes(req, env);
-    if (accountsResult) return accountsResult;
-
-    const contactsResult = await handleContactsRoutes(req, env);
-    if (contactsResult) return contactsResult;
-
-    return json({ error: 'not_found' }, { status: 404 });
   }
 };
