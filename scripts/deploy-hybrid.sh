@@ -31,9 +31,11 @@ fi
 echo "🎨 Building and Deploying Frontend..."
 if [ -d "$WEB_DIR" ]; then
   cd "$WEB_DIR"
-  npm install
-  npm run build
-  npx wrangler pages deploy dist --project-name message-web
+  echo "   - Installing dependencies (optional)..."
+  npm install || true
+  
+  echo "   - Deploying ./src directly to Cloudflare Pages (Production)..."
+  npx wrangler pages deploy ./src --project-name message-web --branch=production --commit-dirty=true
   cd ..
 else
   echo "⚠️  Web directory not found: $WEB_DIR"
