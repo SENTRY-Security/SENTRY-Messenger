@@ -3,6 +3,7 @@ import { asyncH } from '../../middlewares/async.js';
 import {
   createMessage,
   createSecureMessage,
+  atomicSend, // [ATOMIC-SEND]
   listMessages,
   listSecureMessages,
   getSecureMaxCounter,
@@ -15,6 +16,9 @@ import {
 } from '../../controllers/messages.controller.js';
 
 const r = Router();
+
+// POST /api/v1/messages/atomic-send
+r.post('/messages/atomic-send', asyncH(atomicSend));
 
 // POST /api/v1/messages/secure
 r.post('/messages/secure', asyncH(createSecureMessage));
