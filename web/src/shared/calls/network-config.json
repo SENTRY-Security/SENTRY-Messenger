@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.sentry.mobi/calls/network-config-v1.json",
+  "version": 1,
+  "turnSecretsEndpoint": "/api/v1/calls/turn-credentials",
+  "turnTtlSeconds": 300,
+  "rtcpProbe": {
+    "timeoutMs": 1500,
+    "maxAttempts": 3,
+    "targetBitrateKbps": 2000
+  },
+  "bandwidthProfiles": [
+    { "name": "video-medium", "minBitrate": 900000, "maxBitrate": 1400000, "maxFrameRate": 30, "resolution": "540p" },
+    { "name": "video-low", "minBitrate": 300000, "maxBitrate": 600000, "maxFrameRate": 24, "resolution": "360p" },
+    { "name": "audio", "minBitrate": 32000, "maxBitrate": 64000, "maxFrameRate": null, "resolution": null }
+  ],
+  "ice": {
+    "iceTransportPolicy": "all",
+    "bundlePolicy": "balanced",
+    "continualGatheringPolicy": "gather_continually",
+    "servers": []
+  },
+  "fallback": {
+    "maxPeerConnectionRetries": 2,
+    "relayOnlyAfterAttempts": 2,
+    "showBlockedAfterSeconds": 20
+  }
+}

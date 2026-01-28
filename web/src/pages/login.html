@@ -1,0 +1,505 @@
+
+
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>SENTRY MESSENGER — Login</title>
+    <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <script>
+      // e2e: query ?e2e=1 以停用動畫
+      try {
+        const params = new URLSearchParams(location.search);
+        if (params.get('e2e') === '1') {
+          document.documentElement.classList.add('no-anim');
+        }
+      } catch {}
+      window.APP_VERSION = '0.1.10';
+      window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
+    </script>
+    <style>
+      :root { color-scheme: light; --bg:#0f172a; --fg:#111827; --muted:#64748b; --line:#e2e8f0; --card:#ffffff; --gradient: linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
+      html, body { height:100%; min-height:100%; }
+      html { background:var(--gradient); }
+      html, body { height:100%; min-height:100%; }
+      html { background:var(--gradient); }
+      /* 減少初始動畫干擾（e2e 用）：停用旋轉（僅當 html.no-anim） */
+      html.no-anim .loading-spinner,
+      html.no-anim button.loading .btn-spinner,
+      html.no-anim .spinner,
+      html.no-anim .icon.spin {
+        animation: none !important;
+      }
+      /* e2e: 關閉晶片掃描跑圈動畫 */
+      html.no-anim .chip-guard-overlay { display:none !important; }
+      html.no-anim .chip-guard-path { animation: none !important; }
+      html.no-anim .chip-guard-message { animation: none !important; }
+      * { box-sizing:border-box; }
+      body {
+        margin:0;
+        min-height:100vh;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, 'Noto Sans TC', sans-serif;
+        background:var(--gradient);
+        background-attachment:fixed;
+        display:flex;
+        justify-content:center;
+        align-items:center;
+        padding:calc(32px + env(safe-area-inset-top, 0px)) 18px calc(32px + env(safe-area-inset-bottom, 0px));
+        overscroll-behavior:contain;
+        position:relative;
+      }
+      body::before {
+        content:'';
+        position:fixed;
+        left:0;
+        right:0;
+        top:-120vh;
+        bottom:-120vh;
+        background:var(--gradient);
+        z-index:-1;
+        pointer-events:none;
+      }
+      .login-shell {
+        width:min(420px,100%);
+        background:var(--card);
+        border-radius:24px;
+        padding:32px 26px 36px;
+        box-shadow:0 26px 60px rgba(15,23,42,0.45);
+        position:relative;
+      }
+      .brand { position:relative; display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+      .brand img { height:30px; width:auto; }
+      .brand h1 { margin:0; font-size:22px; font-weight:700; letter-spacing:0.4px; color:var(--fg); }
+      .subtitle { margin:0 0 24px; color:var(--muted); font-size:13px; line-height:1.5; }
+      form { display:flex; flex-direction:column; gap:16px; }
+      .form-group { display:flex; flex-direction:column; gap:6px; }
+      .form-group.hidden { display:none; }
+      .hidden { display:none !important; }
+      .form-group label { font-size:13px; color:var(--muted); }
+      .input {
+        width:100%;
+        border:1px solid var(--line);
+        border-radius:14px;
+        padding:12px 14px;
+        font-size:15px;
+        background:#f8fafc;
+        transition:border-color .2s, box-shadow .2s;
+      }
+      .input.display {
+        background:#eef2ff;
+        border-style:dashed;
+        color:#1e293b;
+        min-height:48px;
+        display:flex;
+        align-items:center;
+      }
+      .input:focus {
+        outline:none;
+        border-color:#6366f1;
+        box-shadow:0 0 0 3px rgba(99,102,241,0.18);
+        background:#fff;
+      }
+      .uid-card {
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        flex-direction:column;
+        gap:12px;
+        padding:8px 0 12px;
+        margin:6px 0 0;
+        transition:transform .3s ease;
+      }
+      .uid-identicon {
+        width:72px;
+        height:72px;
+        border-radius:18px;
+        background:radial-gradient(circle at 30% 30%, #e0f2fe, #c084fc);
+        border:2px solid rgba(15,23,42,0.22);
+        box-shadow:0 12px 30px rgba(0,0,0,0.16), 0 5px 12px rgba(0,0,0,0.12);
+        position:relative;
+        overflow:hidden;
+        flex-shrink:0;
+      }
+      .uid-identicon.pending { animation: none; }
+      .uid-identicon.pending .mosaic {
+        width:100%;
+        height:100%;
+        display:grid;
+        grid-template-columns:repeat(5,1fr);
+        grid-template-rows:repeat(5,1fr);
+        gap:0;
+        padding:0;
+        box-sizing:border-box;
+      }
+      .uid-identicon.pending .mosaic div {
+        border-radius:0;
+        background: #dbeafe;
+        animation: mosaicPulse 0.9s ease-in-out infinite;
+      }
+      .uid-identicon svg { width:100%; height:100%; display:block; }
+      @keyframes mosaicPulse {
+        0% { opacity:0.78; }
+        50% { opacity:1; }
+        100% { opacity:0.78; }
+      }
+      .login-shell.login-verified .uid-card {
+        transform:translateY(-10px);
+      }
+      .password-area {
+        max-height:0;
+        opacity:0;
+        transform:translateY(10px);
+        overflow:hidden;
+        pointer-events:none;
+        transition:max-height .3s ease, opacity .3s ease, transform .3s ease;
+        margin:0;
+      }
+      .login-shell.login-verified .password-area {
+        max-height:520px;
+        opacity:1;
+        transform:translateY(0);
+        pointer-events:auto;
+        margin-top:8px;
+      }
+      .grid-two { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+      button {
+        border:none;
+        border-radius:16px;
+        padding:12px 16px;
+        font-size:15px;
+        font-weight:600;
+        cursor:pointer;
+        transition:transform .15s ease, box-shadow .15s ease;
+      }
+      button.primary {
+        background:linear-gradient(135deg,#0f172a,#1e293b);
+        color:#fff;
+        box-shadow:0 14px 32px rgba(15,23,42,0.35);
+      }
+      button.secondary { background:#f1f5f9; color:#0f172a; }
+      button:disabled { opacity:0.55; cursor:not-allowed; box-shadow:none; }
+      button:active { transform:translateY(1px); }
+      .actions { display:flex; flex-direction:column; gap:10px; margin-top:4px; }
+      .password-field { position:relative; display:flex; align-items:center; }
+      .password-field .input { padding-right:42px; }
+      .password-toggle {
+        position:absolute;
+        right:10px;
+        top:50%;
+        transform:translateY(-50%);
+        border:none;
+        background:transparent;
+        color:#475569;
+        font-size:18px;
+        cursor:pointer;
+        padding:4px;
+      }
+      .password-toggle i { font-size:20px; }
+      .password-toggle:focus { outline:none; }
+      .notice {
+        display:flex;
+        align-items:flex-start;
+        gap:10px;
+        font-size:12px;
+        color:#0f172a;
+        line-height:1.6;
+        background:rgba(56,189,248,0.12);
+        border:1px solid rgba(56,189,248,0.6);
+        border-radius:16px;
+        padding:12px 14px;
+      }
+      .notice-icon {
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        background:rgba(56,189,248,0.2);
+        color:#0284c7;
+        border-radius:999px;
+        width:28px;
+        height:28px;
+        font-size:15px;
+        flex-shrink:0;
+      }
+      .notice-text {
+        margin:0;
+        color:#0f172a;
+      }
+      .modal { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:50; padding:16px; box-sizing:border-box; }
+      .modal-backdrop { position:absolute; inset:0; background:rgba(15,23,42,0.55); backdrop-filter:blur(4px); }
+      .modal-panel { position:relative; z-index:1; width:min(360px,90vw); background:#0f172a; color:#f8fafc; border-radius:20px; padding:22px 20px; box-shadow:0 24px 60px rgba(2,6,23,0.55); display:flex; flex-direction:column; gap:12px; max-height:calc(100vh - 32px); overflow-y:auto; box-sizing:border-box; }
+      .modal-head { display:flex; justify-content:space-between; align-items:center; font-weight:600; font-size:15px; }
+      .modal-body { font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+      .modal-close { border:none; background:rgba(248,250,252,0.12); color:#f8fafc; border-radius:999px; width:30px; height:30px; cursor:pointer; }
+      .modal-close:active { transform:translateY(1px); }
+      .welcome-modal .modal-panel { background:#0b1220; }
+      .welcome-modal h2 { margin:0 0 8px; font-size:18px; letter-spacing:0.4px; }
+      .welcome-modal ul { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:8px; font-size:13px; line-height:1.6; }
+      .welcome-modal .modal-body { max-height:min(55vh, 320px); overflow-y:auto; user-select:none; -webkit-user-select:none; padding-right:4px; }
+      .welcome-actions { display:flex; justify-content:flex-end; }
+      .welcome-actions button { border-radius:12px; padding:8px 16px; background:#38bdf8; color:#0f172a; font-weight:600; border:none; cursor:pointer; }
+      .welcome-actions button:active { transform:translateY(1px); }
+      .dev-hidden { display:none !important; }
+      .loading-backdrop { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,0.85); backdrop-filter:blur(3px); z-index:100; }
+      .loading-card { display:flex; flex-direction:column; align-items:center; gap:14px; padding:26px 30px; border-radius:20px; background:#0b1220; color:#f8fafc; box-shadow:0 22px 48px rgba(2,6,23,0.45); min-width:220px; max-width:320px; }
+      .loading-spinner { width:48px; height:48px; border-radius:50%; border:4px solid rgba(148,163,184,0.25); border-top-color:#38bdf8; animation:login-spin .9s linear infinite; }
+      .loading-text { font-size:14px; line-height:1.6; text-align:center; letter-spacing:0.5px; }
+      .bootstrap-progress { width:100%; margin-top:8px; padding-top:12px; border-top:1px solid rgba(148,163,184,0.3); display:flex; flex-direction:column; gap:8px; max-height:240px; overflow:hidden; }
+      .bootstrap-progress.hidden { display:none !important; }
+      .bootstrap-progress .progress-note { font-size:12px; color:rgba(226,232,240,0.85); text-align:left; flex-shrink:0; }
+      .bootstrap-progress ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; max-height:176px; overflow-y:auto; padding-right:4px; }
+      .bootstrap-progress ul::-webkit-scrollbar { width:6px; }
+      .bootstrap-progress ul::-webkit-scrollbar-thumb { background:rgba(148,163,184,0.5); border-radius:999px; }
+      .bootstrap-progress ul::-webkit-scrollbar-track { background:rgba(15,23,42,0.2); }
+      .bootstrap-progress li { display:flex; flex-direction:column; gap:2px; padding:8px 10px; border-radius:12px; background:rgba(15,23,42,0.35); border:1px solid rgba(148,163,184,0.35); color:#e2e8f0; font-size:12px; transition:background 0.2s ease, border-color 0.2s ease, opacity 0.32s ease, transform 0.32s ease, max-height 0.32s ease, margin 0.32s ease, padding 0.32s ease, border-width 0.32s ease; max-height:200px; will-change:opacity, transform; }
+      .bootstrap-progress li .row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+      .bootstrap-progress li .label-text { font-weight:600; letter-spacing:0.2px; }
+      .bootstrap-progress li .status-text { font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.4px; }
+      .bootstrap-progress li .detail-text { font-size:11px; color:rgba(226,232,240,0.78); }
+      .bootstrap-progress li.in-progress { border-color:rgba(96,165,250,0.65); background:rgba(37,99,235,0.28); }
+      .bootstrap-progress li.success { border-color:rgba(52,211,153,0.7); background:rgba(16,185,129,0.28); }
+      .bootstrap-progress li.error { border-color:rgba(248,113,113,0.75); background:rgba(248,113,113,0.22); }
+      .bootstrap-progress li.skip { opacity:0.65; }
+      .bootstrap-progress li.info { border-color:rgba(96,165,250,0.55); background:rgba(59,130,246,0.22); }
+      .bootstrap-progress li.fading-out { opacity:0; max-height:0; margin:0; padding:0; border-width:0; transform:translateY(-6px); overflow:hidden; }
+      @keyframes login-spin { to { transform:rotate(360deg); } }
+      .orientation-overlay { position:fixed; inset:0; background:linear-gradient(160deg,rgba(15,23,42,0.98),rgba(15,23,42,0.92)); color:#f8fafc; display:none; align-items:center; justify-content:center; flex-direction:column; gap:12px; text-align:center; padding:32px; z-index:2000; font-size:18px; line-height:1.6; letter-spacing:0.4px; }
+      .orientation-overlay .icon { font-size:42px; display:block; }
+      html.orientation-block { height:100%; overflow:hidden; }
+      html.orientation-block body { overflow:hidden; height:100%; }
+      html.orientation-block .orientation-overlay { display:flex; }
+      .chip-guard-overlay { position:fixed; inset:0; pointer-events:none; z-index:1200; opacity:1; animation:chipGuardFadeOut .6s ease forwards; animation-delay:3.25s; }
+      .chip-guard-overlay svg { position:absolute; inset:0; width:100%; height:100%; display:block; }
+      .chip-guard-path {
+        fill:none;
+        stroke-width:1.68;
+        stroke-linecap:round;
+        stroke-linejoin:round;
+        stroke-dasharray:100;
+        stroke-dashoffset:100;
+        animation:chipGuardSweep 3s ease forwards;
+        filter:url(#chipGuardGlow) drop-shadow(0 0 26px rgba(74,222,128,0.65)) drop-shadow(0 0 52px rgba(16,185,129,0.45));
+      }
+      .chip-guard-message { position:absolute; top:28px; left:50%; transform:translateX(-50%); padding:6px 22px 7px; border-radius:999px; background:rgba(15,118,110,0.28); border:1px solid rgba(34,197,94,0.75); color:#ecfccb; font-size:13px; letter-spacing:0.45px; font-weight:600; text-shadow:0 0 14px rgba(52,211,153,0.9); box-shadow:0 16px 34px rgba(2,6,23,0.45), 0 0 24px rgba(74,222,128,0.45); animation:chipGuardMessagePulse 1.4s ease-in-out infinite alternate; pointer-events:none; backdrop-filter:blur(2px); }
+      @keyframes chipGuardSweep { 0% { stroke-dashoffset:100; opacity:0.65; } 10% { opacity:1; } 100% { stroke-dashoffset:0; opacity:1; } }
+      @keyframes chipGuardFadeOut { 0% { opacity:1; } 100% { opacity:0; } }
+      @keyframes chipGuardMessagePulse { 0% { opacity:0.8; box-shadow:0 12px 22px rgba(2,6,23,0.2); } 100% { opacity:1; box-shadow:0 18px 40px rgba(15,23,42,0.45); } }
+      @media (prefers-reduced-motion: reduce) { .chip-guard-overlay { display:none; } }
+    </style>
+  </head>
+  <body>
+    <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
+      <span class="icon" aria-hidden="true">📱</span>
+      <strong>請以直立模式使用</strong>
+      <span>為維持最佳使用體驗，請將裝置旋轉回直立方向。</span>
+    </div>
+    <div id="chipGuardOverlay" class="chip-guard-overlay" aria-hidden="true">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="presentation" aria-hidden="true">
+        <defs>
+          <linearGradient id="chipGuardGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#86efac" />
+            <stop offset="45%" stop-color="#22c55e" />
+            <stop offset="100%" stop-color="#4ade80" />
+          </linearGradient>
+          <filter id="chipGuardGlow" x="-70%" y="-70%" width="240%" height="240%" color-interpolation-filters="sRGB">
+            <feDropShadow dx="0" dy="0" stdDeviation="2.4" flood-color="#bbf7d0" flood-opacity="0.95"></feDropShadow>
+            <feDropShadow dx="0" dy="0" stdDeviation="5.5" flood-color="#4ade80" flood-opacity="0.8"></feDropShadow>
+            <feDropShadow dx="0" dy="0" stdDeviation="15" flood-color="#22c55e" flood-opacity="0.6"></feDropShadow>
+            <feDropShadow dx="0" dy="0" stdDeviation="24" flood-color="#16a34a" flood-opacity="0.35"></feDropShadow>
+          </filter>
+        </defs>
+        <path class="chip-guard-path" d="M50 0H100V100H0V0H50" stroke="url(#chipGuardGradient)" pathLength="100"></path>
+      </svg>
+      <div class="chip-guard-message" role="presentation">偵測晶片序號中...</div>
+    </div>
+    <main class="login-shell">
+      <div class="brand" id="loginBrand">
+        <img src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
+        <h1>SENTRY MESSENGER</h1>
+      </div>
+      <p class="subtitle">感應 SENTRY MESSENGER 晶片後輸入密碼即可登入。</p>
+
+      <form autocomplete="off" data-1p-ignore="true" data-lpignore="true">
+        <div class="uid-card" id="uidCard" aria-label="晶片識別圖">
+          <div class="uid-identicon pending" id="uidIdenticon" aria-hidden="true">
+            <div class="mosaic">
+              <div style="--i:0"></div><div style="--i:1"></div><div style="--i:2"></div><div style="--i:3"></div><div style="--i:4"></div>
+              <div style="--i:5"></div><div style="--i:6"></div><div style="--i:7"></div><div style="--i:8"></div><div style="--i:9"></div>
+              <div style="--i:10"></div><div style="--i:11"></div><div style="--i:12"></div><div style="--i:13"></div><div style="--i:14"></div>
+              <div style="--i:15"></div><div style="--i:16"></div><div style="--i:17"></div><div style="--i:18"></div><div style="--i:19"></div>
+              <div style="--i:20"></div><div style="--i:21"></div><div style="--i:22"></div><div style="--i:23"></div><div style="--i:24"></div>
+            </div>
+          </div>
+          <!-- UID 僅供 SDM 驗證顯示，不參與交棒或提交 -->
+        </div>
+
+        <div class="grid-two">
+          <div class="form-group hidden" id="macWrapper">
+            <label for="sdmMac">NTAG MAC（16 hex）</label>
+            <input id="sdmMac" class="input" type="text" placeholder="501EC4EF6E38555E" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+          </div>
+          <div class="form-group hidden" id="ctrWrapper">
+            <label for="sdmCtr">Counter</label>
+            <input id="sdmCtr" class="input" type="text" placeholder="50 或 000050" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+          </div>
+        </div>
+
+        <div class="form-group hidden" id="nonceWrapper">
+          <label for="nonce">Nonce（選填）</label>
+          <input id="nonce" class="input" type="text" placeholder="optional" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        </div>
+
+        <button id="btnSdmExchange" type="button" class="primary hidden" style="width:100%">驗證 NTAG（SDM Exchange）</button>
+
+        <div class="form-group hidden" id="sessionWrapper">
+          <label for="sessionView">一次性 Session</label>
+          <input id="sessionView" class="input" type="text" readonly placeholder="驗證後自動帶入" />
+        </div>
+
+        <div class="password-area" id="passwordArea">
+          <div class="form-group" id="passwordWrapper">
+            <label for="pwd">登入密碼</label>
+            <div class="password-field">
+              <input id="pwd" class="input" type="password" placeholder="至少六位數" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" name="__no_store_pwd__" />
+              <button type="button" class="password-toggle" data-target="pwd" aria-label="顯示密碼" tabindex="-1"><i class='bx bx-show'></i></button>
+            </div>
+          </div>
+
+          <div class="form-group hidden" id="confirmWrapper">
+            <label for="pwdConfirm">確認密碼</label>
+            <div class="password-field">
+              <input id="pwdConfirm" class="input" type="password" placeholder="再次輸入密碼" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" />
+              <button type="button" class="password-toggle" data-target="pwdConfirm" aria-label="顯示密碼" tabindex="-1"><i class='bx bx-show'></i></button>
+            </div>
+          </div>
+        </div>
+
+      <div class="actions">
+        <button id="btnUnlock" type="button" class="primary" disabled>登入</button>
+      </div>
+
+      <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text">SENTRY MESSENGER 採用 E2EE 端對端加密技術，所有加解密均於前端計算，伺服器端僅儲存加密過的資訊，所有敏感資訊僅保留於記憶體，並於畫面切換時即刻清除。</span></p>
+    </form>
+    <div id="loginModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="loginModalBackdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span>系統訊息</span>
+          <button id="loginModalClose" class="modal-close" type="button">×</button>
+        </div>
+        <div id="loginModalBody" class="modal-body"></div>
+      </div>
+    </div>
+    <div id="welcomeModal" class="modal welcome-modal hidden" aria-hidden="true">
+      <div class="modal-backdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <h2>迎接嶄新的隱私通訊！</h2>
+          <button type="button" class="modal-close" id="welcomeClose">×</button>
+        </div>
+        <div id="welcomeContent" class="modal-body">
+          <ul>
+            <li>零死角採用最先進的 E2EE 端對端加密技術。</li>
+            <li>我們無法得知你跟誰聊天、聊了什麼。</li>
+            <li>我們無法獲取你的暱稱、頭像、甚至好友資訊。</li>
+            <li>業界首創提供先進加密技術雲端空間，不只保護對話，資料也一併保障。</li>
+            <li>引入晶片即身分概念，任何人無法透過手機號碼或 E-mail 追蹤你的身分。</li>
+          </ul>
+        </div>
+        <div class="welcome-actions">
+          <button type="button" id="welcomeNext">開始設定密碼</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+    <div id="loginLoading" class="loading-backdrop hidden" role="presentation">
+      <div class="loading-card" role="status" aria-live="polite">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <div id="loginLoadingText" class="loading-text">登入中，請稍候…</div>
+        <div id="loginBootstrapProgress" class="bootstrap-progress hidden">
+          <div class="progress-note">首次登入需要初始化下列項目：</div>
+          <ul id="loginBootstrapSteps"></ul>
+        </div>
+      </div>
+    </div>
+
+    <section class="dev-hidden">
+      <button id="btnHealth" type="button" aria-hidden="true"></button>
+      <button id="btnClear" type="button" aria-hidden="true"></button>
+      <pre id="out" aria-hidden="true"></pre>
+      <button id="btnDevClearLocal" type="button" aria-hidden="true"></button>
+    </section>
+
+    <button class="version-info-btn" id="versionInfoBtnLogin" aria-label="顯示版本資訊">i</button>
+    <div class="version-info-popup" id="versionInfoPopupLogin" role="dialog" aria-hidden="true"></div>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      window.API_ORIGIN = params.get('api') || 'https://api.message.sentry.red';
+      (function(){
+        const overlay = document.getElementById('orientationOverlay');
+        const docEl = document.documentElement;
+        const mq = window.matchMedia('(orientation: portrait)');
+        const isMobileLike = () => {
+          const touch = navigator.maxTouchPoints || navigator.msMaxTouchPoints || 0;
+          const shortEdge = Math.min(window.innerWidth, window.innerHeight);
+          const ua = navigator.userAgent || '';
+          const looksMobileUA = /iPhone|iPad|Android|Mobile/i.test(ua);
+          return shortEdge <= 1024 && (touch > 0 || looksMobileUA);
+        };
+        function update(){
+          if (!isMobileLike()) {
+            docEl.classList.remove('orientation-block');
+            if (overlay) overlay.setAttribute('aria-hidden','true');
+            return;
+          }
+          const portrait = mq.matches || window.innerHeight >= window.innerWidth;
+          if (portrait) {
+            docEl.classList.remove('orientation-block');
+            if (overlay) overlay.setAttribute('aria-hidden','true');
+          } else {
+            docEl.classList.add('orientation-block');
+            if (overlay) overlay.setAttribute('aria-hidden','false');
+          }
+        }
+        if (mq.addEventListener) mq.addEventListener('change', update); else mq.addListener(update);
+        window.addEventListener('orientationchange', update);
+        window.addEventListener('resize', update);
+        update();
+        if (screen.orientation && screen.orientation.lock && isMobileLike()) {
+          screen.orientation.lock('portrait').catch(() => {});
+        }
+      })();
+      (function disablePinchZoom(){
+        const prevent = (evt) => evt.preventDefault();
+        document.addEventListener('gesturestart', prevent, { passive:false });
+        document.addEventListener('gesturechange', prevent, { passive:false });
+        document.addEventListener('gestureend', prevent, { passive:false });
+      })();
+    </script>
+    <script>
+      (function loadLoginModule(){
+        const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = `/app/ui/login-ui.js?v=${encodeURIComponent(stamp)}`;
+        script.onerror = () => {
+          if (script.dataset.retry) return;
+          script.dataset.retry = '1';
+          const fallback = document.createElement('script');
+          fallback.type = 'module';
+          fallback.src = `/app/ui/login-ui.js?v=${Date.now()}`;
+          document.body.appendChild(fallback);
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>

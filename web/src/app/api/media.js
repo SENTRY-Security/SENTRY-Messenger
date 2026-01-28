@@ -1,0 +1,136 @@
+
+
+// /app/api/media.js
+// Front-end API wrappers for media endpoints (sign-put, sign-get, create message index).
+// ESM only; depends on core/http. No UI logic here.
+
+import { fetchJSON } from '../core/http.js';
+import { getAccountToken, getAccountDigest, buildAccountPayload, ensureDeviceId, allocateDeviceCounter, setDeviceCounter } from '../core/store.js';
+
+/**
+ * Request a presigned PUT for uploading an encrypted object to R2.
+ * @param {{ convId: string, contentType: string, dir?: string }} p
+ * @returns {Promise<{ r: Response, data: any }>} data typically { upload:{url,key,fields?,headers?,method?}, objectPath, expiresIn }
+ */
+export async function signPut({ convId, contentType, dir, size, direction, accountToken, accountDigest } = {}) {
+  const resolvedConv = typeof convId === 'string' ? convId : '';
+  if (!resolvedConv) throw new Error('convId required');
+  const body = { convId: resolvedConv, contentType };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  if (dir) body.dir = dir;
+  if (typeof size === 'number') body.size = size;
+  if (direction) body.direction = direction;
+  const token = accountToken || getAccountToken();
+  if (token) body.accountToken = token;
+  const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
+  if (digest) body.accountDigest = digest;
+  return await fetchJSON('/api/v1/media/sign-put', body, headers);
+}
+
+/**
+ * Request a short-lived GET URL for downloading an object from R2.
+ * @param {{ key: string }} p
+ * @returns {Promise<{ r: Response, data: any }>} data: { download:{url,bucket,key}, expiresIn }
+ */
+export async function signGet({ key, accountToken, accountDigest } = {}) {
+  const resolvedKey = typeof key === 'string' ? key : '';
+  if (!resolvedKey) throw new Error('object key required');
+  const body = { key: resolvedKey };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  const token = accountToken || getAccountToken();
+  if (token) body.accountToken = token;
+  const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
+  if (digest) body.accountDigest = digest;
+  return await fetchJSON('/api/v1/media/sign-get', body, headers);
+}
+
+/**
+ * Create a message index (e.g., store envelope JSON for media or DR header for text).
+ * Caller prepares the body (validated server-side). This is a thin wrapper over POST /api/v1/messages.
+ * @param {any} body
+ * @returns {Promise<{ r: Response, data: any }>} data: backend response JSON
+ */
+export async function createMessage(body) {
+  const headers = { 'X-Client-Id': 'webdemo' };
+  let attempt = 0;
+  let lastRes = null;
+  while (attempt < 2) {
+    const { deviceId, counter, commit } = allocateDeviceCounter();
+    headers['X-Device-Id'] = deviceId;
+
+    const payload = { ...body };
+    const messageId = typeof payload.id === 'string' && payload.id.trim().length ? payload.id.trim() : null;
+    if (!messageId) throw new Error('id (messageId) required');
+    payload.id = messageId;
+    const accountDigest = (payload.accountDigest || getAccountDigest() || '').toUpperCase();
+    if (!accountDigest) throw new Error('accountDigest required');
+    payload.accountDigest = accountDigest;
+    payload.counter = counter;
+    const receiverDigest = (payload.receiverAccountDigest || accountDigest || '').toUpperCase();
+    if (!receiverDigest) throw new Error('receiverAccountDigest required');
+    payload.receiver_account_digest = receiverDigest;
+    const receiverDeviceId = payload.receiverDeviceId || deviceId;
+    if (!receiverDeviceId) throw new Error('receiverDeviceId required');
+    payload.receiver_device_id = receiverDeviceId;
+
+    if (payload.header && typeof payload.header === 'object') {
+      const headerObj = { ...payload.header };
+      headerObj.n = counter;
+      if (!headerObj.v) headerObj.v = 1;
+      if (deviceId) headerObj.device_id = headerObj.device_id || deviceId;
+      payload.header = headerObj;
+      payload.header_json = JSON.stringify(headerObj);
+    }
+    try {
+      console.log('[media.api] createMessage', { deviceId, convId: payload.convId || null, counter, attempt });
+    } catch {}
+    const res = await fetchJSON('/api/v1/messages', payload, headers);
+    lastRes = res;
+    if (res?.r?.ok) {
+      try { commit(); } catch {}
+      return res;
+    }
+    try {
+      console.warn('[media.api] createMessage failed', {
+        status: res?.r?.status,
+        convId: payload.convId || null,
+        error: res?.data || res
+      });
+    } catch {}
+    const detail = res?.data || res;
+    const errCode = detail?.error || detail?.code || null;
+    const maxCounter = detail?.details?.maxCounter;
+    if (res?.r?.status === 409 && errCode === 'CounterTooLow' && Number.isFinite(maxCounter)) {
+      // bump local counter and retry once
+      try { setDeviceCounter(Number(maxCounter)); } catch {}
+      attempt += 1;
+      continue;
+    }
+    return res;
+  }
+  return lastRes;
+}
+
+export async function deleteMediaKeys({ ids = [], keys = [], conversationId } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  const overrides = { conversationId, ids };
+  if (keys && keys.length) overrides.keys = keys;
+  const payload = buildAccountPayload({ overrides });
+  const headers = { 'X-Client-Id': 'webdemo' };
+  try {
+    const deviceId = ensureDeviceId();
+    if (deviceId) headers['X-Device-Id'] = deviceId;
+  } catch {
+    // keep headers without deviceId; backend will reject if missing
+  }
+  const { r, data } = await fetchJSON('/api/v1/messages/delete', payload, headers);
+  if (!r.ok) {
+    const msg = typeof data === 'string' ? data : data?.message || data?.error || 'delete failed';
+    throw new Error(msg);
+  }
+  return { r, data };
+}

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>SENTRY MESSENGER — Debug Tools</title>
+    <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <style>
+      :root {
+        color-scheme: light;
+        --debug-bg: radial-gradient(circle at top, #f8fafc, #e2e8f0 55%, #dbeafe 100%);
+      }
+      body {
+        background: var(--debug-bg);
+      }
+      main.debug-shell {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 36px 16px 64px;
+        display: grid;
+        gap: 18px;
+      }
+      header.debug-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      header.debug-header img {
+        width: 44px;
+        height: 44px;
+      }
+      header.debug-header h1 {
+        margin: 0;
+        font-size: 22px;
+      }
+      header.debug-header p {
+        margin: 4px 0 0;
+      }
+      .card h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+      .form-grid {
+        display: grid;
+        gap: 12px;
+      }
+      .form-row {
+        display: grid;
+        gap: 6px;
+      }
+      .action-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      #chipMeta div {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      #status {
+        padding: 8px 2px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      #status[data-tone="error"] {
+        color: #b91c1c;
+      }
+      #status[data-tone="success"] {
+        color: #0f766e;
+      }
+      .chip-select {
+        min-height: 44px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="debug-shell">
+      <header class="debug-header">
+        <img src="/assets/images/logo.svg" alt="Sentry Messenger" />
+        <div>
+          <h1>Debug Sim Login</h1>
+          <p class="muted">僅供內部除錯使用</p>
+        </div>
+      </header>
+
+      <section class="card">
+        <div class="list-header">
+          <h2>Sim Chips</h2>
+          <span class="muted" id="chipCount">0 chips</span>
+        </div>
+        <div id="chipEmpty" class="empty">尚無模擬晶片，請先新增。</div>
+        <select id="chipSelect" class="chip-select"></select>
+        <div id="chipMeta" class="grid"></div>
+      </section>
+
+      <section class="card">
+        <h2>新增模擬晶片</h2>
+        <form id="chipForm" class="form-grid">
+          <label class="form-row">
+            <span class="muted">Label</span>
+            <input id="chipLabel" type="text" placeholder="測試晶片" />
+          </label>
+          <label class="form-row">
+            <span class="muted">UID Hex（14 hex，可留空）</span>
+            <input id="chipUid" type="text" placeholder="04AABBCCDDEEFF" />
+          </label>
+          <label class="form-row">
+            <span class="muted">初始 Counter</span>
+            <input id="chipCounter" type="number" min="0" step="1" value="1" />
+          </label>
+          <div class="action-row">
+            <button type="submit" class="secondary">新增 chip</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>操作</h2>
+        <div class="action-row">
+          <button id="btnSimulate" type="button" class="primary">模擬登入（新分頁）</button>
+          <button id="btnResetCounter" type="button" class="secondary">重置 counter</button>
+          <button id="btnDeleteChip" type="button" class="secondary">刪除 chip</button>
+        </div>
+        <div id="status" data-tone="neutral"></div>
+      </section>
+    </main>
+
+    <script>
+      window.API_ORIGIN = 'https://api.message.sentry.red';
+      (function loadDebugModule(){
+        const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = `/app/ui/debug-page.js?v=${encodeURIComponent(stamp)}`;
+        script.onerror = () => {
+          if (script.dataset.retry) return;
+          script.dataset.retry = '1';
+          const fallback = document.createElement('script');
+          fallback.type = 'module';
+          fallback.src = `/app/ui/debug-page.js?v=${Date.now()}`;
+          document.body.appendChild(fallback);
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>

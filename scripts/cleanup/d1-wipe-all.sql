@@ -1,0 +1,30 @@
+-- Clear messaging-related tables before reapplying migrations
+DELETE FROM attachments;
+DELETE FROM messages_secure;
+-- DELETE FROM messages;
+DELETE FROM message_key_vault;
+DELETE FROM conversation_acl;
+DELETE FROM conversations;
+DELETE FROM contact_secret_backups;
+DELETE FROM contacts;
+DELETE FROM opaque_records;
+DELETE FROM invite_dropbox;
+-- Optional legacy snapshot tables (ignore if absent)
+-- DELETE FROM contact_snapshots;
+-- DELETE FROM contact_messages;
+DELETE FROM call_events;
+DELETE FROM call_sessions;
+DELETE FROM group_invites;
+DELETE FROM group_members;
+DELETE FROM groups;
+DELETE FROM subscriptions;
+DELETE FROM tokens;
+DELETE FROM extend_logs;
+DELETE FROM device_opks;
+DELETE FROM device_signed_prekeys;
+DELETE FROM devices;
+DELETE FROM prekey_users;
+DELETE FROM prekey_opk;
+DELETE FROM device_backup;
+DELETE FROM media_objects;
+DELETE FROM accounts;

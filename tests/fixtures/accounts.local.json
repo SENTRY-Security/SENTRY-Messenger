@@ -1,0 +1,16 @@
+{
+  "owner": {
+    "label": "owner",
+    "uidHex": "0477A1B2C3D4E5",
+    "counter": "10001",
+    "password": "owner-password",
+    "deviceId": "device-owner-1"
+  },
+  "guest": {
+    "label": "guest",
+    "uidHex": "0488D4E5F60789",
+    "counter": "10001",
+    "password": "guest-password",
+    "deviceId": "device-guest-1"
+  }
+}

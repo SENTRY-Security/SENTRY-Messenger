@@ -1,0 +1,10 @@
+{
+  "name": "message-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cp -r src dist",
+    "preview": "wrangler pages dev ./src"
+  },
+  "devDependencies": {}
+}

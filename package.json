@@ -1,0 +1,57 @@
+{
+  "name": "message-api",
+  "version": "0.1.9",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "scripts": {
+    "dev": "NODE_ENV=development node src/server.js",
+    "start": "NODE_ENV=production node src/server.js",
+    "test:login-flow": "node scripts/test-login-flow.mjs",
+    "test:prekeys-devkeys": "node scripts/test-prekeys-devkeys.mjs",
+    "test:messages-secure": "node scripts/test-messages-secure.mjs",
+    "test:front:login": "playwright test",
+    "test:friends-messages": "node scripts/test-friends-messages.mjs",
+    "test:calls-encryption": "node scripts/test-calls-encryption.mjs",
+    "test:front:call-audio": "npx playwright test tests/e2e/call-audio.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.890.0",
+    "@aws-sdk/s3-presigned-post": "^3.890.0",
+    "@aws-sdk/s3-request-presigner": "^3.890.0",
+    "@cloudflare/opaque-ts": "^0.7.5",
+    "@noble/curves": "^2.0.1",
+    "@noble/ed25519": "^3.0.0",
+    "@noble/hashes": "^2.0.1",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "ed2curve": "^0.3.0",
+    "elliptic": "^6.5.4",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "jimp": "^0.22.12",
+    "jsonwebtoken": "^9.0.2",
+    "jsqr": "^1.4.0",
+    "multer": "^2.0.2",
+    "nanoid": "^5.1.5",
+    "node-aes-cmac": "^0.1.1",
+    "pdfjs-dist": "^4.8.69",
+    "pino": "^9.4.0",
+    "pino-http": "^10.3.0",
+    "pm2": "^6.0.14",
+    "qrcode-reader": "^1.0.4",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.17.0",
+    "zod": "^3.25.76"
+  },
+  "overrides": {
+    "glob": "^10.5.0",
+    "js-yaml": "^4.1.1",
+    "systeminformation": "^5.27.14"
+  }
+}

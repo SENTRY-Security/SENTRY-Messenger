@@ -1,0 +1,11 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "DYAAM5G8JF.red.sentry.app.SENTRY-Messenger",
+        "paths": [ "*" ]
+      }
+    ]
+  }
+}

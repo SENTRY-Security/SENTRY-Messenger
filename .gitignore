@@ -1,0 +1,38 @@
+# Node & package managers
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Build / caches / coverage
+dist/
+build/
+.tmp/
+.temp/
+coverage/
+.wrangler/
+.venv/
+artifacts/
+
+# Test large assets (keep repo lean; remove if you want to track binaries)
+test/*.mp4
+test/*.jpg
+test/*.png
+test/*.mobileconfig
+
+# Logs / temp
+*.log
+scripts/cleanup/*.log
+
+# Internal-only notes
+docs/internal/tun-host.md

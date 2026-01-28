@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mic Permission Debug</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, 'Noto Sans TC', sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+      }
+      header {
+        padding: 16px 20px;
+        background: #0f172a;
+        color: #fff;
+      }
+      main {
+        flex: 1 1 auto;
+        padding: 24px;
+      }
+      pre#log {
+        background: #0f172a;
+        color: #d1fae5;
+        padding: 16px;
+        border-radius: 12px;
+        min-height: 200px;
+        max-height: 320px;
+        overflow-y: auto;
+        font-size: 13px;
+      }
+      .media-permission-overlay {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(15, 23, 42, 0.7);
+        padding: 16px;
+        z-index: 10;
+      }
+      .media-permission-card {
+        width: min(420px, 100%);
+        border-radius: 16px;
+        padding: 24px;
+        background: #fff;
+        box-shadow: 0 30px 60px rgba(15, 23, 42, 0.35);
+      }
+      .media-permission-actions {
+        display: flex;
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .media-permission-btn {
+        flex: 1;
+        border: none;
+        padding: 12px 16px;
+        border-radius: 999px;
+        font-size: 16px;
+        cursor: pointer;
+        background: #0f172a;
+        color: #fff;
+      }
+      .media-permission-btn.loading {
+        opacity: 0.7;
+        cursor: wait;
+      }
+      .media-permission-skip {
+        flex: 1;
+        border: 1px solid #cbd5f5;
+        padding: 12px 16px;
+        border-radius: 999px;
+        background: #fff;
+        color: #0f172a;
+        cursor: pointer;
+      }
+      .media-permission-status {
+        min-height: 20px;
+        margin-top: 10px;
+        font-size: 14px;
+        color: #dc2626;
+      }
+      .media-permission-status.success {
+        color: #059669;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Mic Permission Debug (WebKit)</h1>
+      <p>點擊下方「允許」按鈕觀察 getUserMedia + AudioContext 行為。</p>
+    </header>
+    <main>
+      <button id="openOverlayBtn" type="button">重新顯示授權提示</button>
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </main>
+
+    <div id="mediaPermissionOverlay" class="media-permission-overlay" aria-hidden="true">
+      <div class="media-permission-card" role="dialog" aria-modal="true" aria-labelledby="mediaPermissionTitle">
+        <h2 id="mediaPermissionTitle">允許麥克風</h2>
+        <p>模擬 App Overlay，按下同意後檢查 WebKit 行為。</p>
+        <div id="mediaPermissionStatus" class="media-permission-status" role="status" aria-live="polite"></div>
+        <div class="media-permission-actions">
+          <button id="mediaPermissionAllowBtn" type="button" class="media-permission-btn">允許麥克風</button>
+          <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip">關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/app/ui/media-permission-demo.js"></script>
+  </body>
+</html>

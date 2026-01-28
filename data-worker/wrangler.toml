@@ -1,0 +1,9 @@
+name = "message-data"
+main = "src/worker.js"
+compatibility_date = "2025-09-17"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "message_db"
+database_id = "99728586-d8a9-4525-a1af-e68e84594047"
