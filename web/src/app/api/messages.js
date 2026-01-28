@@ -246,6 +246,25 @@ export async function fetchOutgoingStatus({ conversationId, senderDeviceId, rece
   return { r, data };
 }
 
+export async function atomicSend({ conversationId, senderDeviceId, message, vault, backup } = {}) {
+  if (!conversationId) throw new Error('conversationId required');
+  const endpoint = '/api/v1/messages/atomic-send';
+  const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({ endpoint, deviceId: senderDeviceId });
+  const payload = buildAccountPayload({
+    overrides: {
+      conversationId,
+      senderDeviceId: resolvedDeviceId,
+      message,
+      vault,
+      backup
+    }
+  });
+  const r = await fetchWithTimeout(endpoint, jsonReq(payload, headers), 20000); // Higher timeout for transaction
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  return { r, data };
+}
+
 /**
  * List messages in a conversation (newest first by server implementation).
  * GET /api/v1/conversations/:convId/messages?limit=&cursorTs=

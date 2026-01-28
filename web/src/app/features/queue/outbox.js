@@ -1,6 +1,6 @@
 // Outbox queue for secure messages: per-conversation single-worker with transient retry (network/5xx only).
 
-import { createSecureMessage } from '../../api/messages.js';
+import { createSecureMessage, atomicSend } from '../../api/messages.js';
 import {
   deleteOutboxRecord,
   getOutboxRecord,
@@ -62,7 +62,9 @@ function logOutboxJobTrace({
     ok: typeof ok === 'boolean' ? ok : null,
     statusCode: Number.isFinite(Number(statusCode)) ? Number(statusCode) : null,
     error: error || null,
-    reasonCode: reasonCode || null
+    reasonCode: reasonCode || null,
+    hasVault: !!job.vault,
+    hasBackup: !!job.backup
   }, 5);
 }
 
@@ -201,6 +203,9 @@ function normalizeJob(input = {}) {
     lastError: input.lastError || null,
     meta: input.meta || null,
     dr: input.dr || null,
+    // Atomic Send Fields
+    vault: input.vault || null,
+    backup: input.backup || null,
     updatedAt: Date.now()
   };
 }
@@ -411,6 +416,78 @@ async function collectOutboxState() {
 }
 
 async function attemptSend(job) {
+  // If job has 'vault' or 'backup' payload, use Atomic Send API
+  if (job.vault) {
+    const payload = {
+      conversationId: job.conversationId,
+      senderDeviceId: job.senderDeviceId,
+      message: {
+        id: job.messageId,
+        conversation_id: job.conversationId,
+        sender_account_digest: null, // inferred by API
+        sender_device_id: job.senderDeviceId,
+        receiver_account_digest: job.receiverAccountDigest,
+        receiver_device_id: job.receiverDeviceId,
+        header_json: job.headerJson || (job.header ? JSON.stringify(job.header) : null),
+        ciphertext_b64: job.ciphertextB64,
+        counter: getJobCounter(job),
+        created_at: job.createdAt
+      },
+      vault: job.vault,
+      backup: job.backup || null
+    };
+
+    const { r, data } = await atomicSend(payload);
+
+    if (r?.status === 409 && typeof data === 'object' && data?.error === 'CounterTooLow') {
+      const meta = job.header?.meta || {};
+      try {
+        log({
+          outboxCounterTooLow: {
+            conversationId: job?.conversationId || null,
+            counterSent: job?.counter ?? null,
+            maxCounterFromServer: data?.maxCounter ?? null,
+            senderDeviceId: job?.senderDeviceId || null,
+            senderAccountDigest: meta?.senderDigest || meta?.sender_digest || null
+          }
+        });
+      } catch { }
+    }
+
+    const ackOk = (r?.status === 200 || r?.status === 202) && data && data.ok === true;
+    const failureMessage = ackOk
+      ? null
+      : (typeof data?.message === 'string' ? data.message
+        : typeof data?.error === 'string' ? data.error
+          : `atomic send failed (status=${r?.status || 'unknown'})`);
+
+    logOutboxJobTrace({
+      job,
+      stage: ackOk ? 'ATOMIC_ACK_OK' : 'ATOMIC_ACK_FAIL',
+      ok: ackOk,
+      statusCode: r?.status || null,
+      error: failureMessage,
+      reasonCode: ackOk ? 'OUTBOX_ATOMIC_OK' : 'OUTBOX_ATOMIC_FAIL'
+    });
+
+    if (!ackOk) {
+      const err = new Error(failureMessage);
+      err.status = r?.status;
+      err.details = data || null;
+      if (typeof data?.error === 'string') err.code = data.error;
+      throw err;
+    }
+    try {
+      logForensicsEvent('SEND_ACK_ATOMIC', {
+        conversationId: job?.conversationId || null,
+        messageId: job?.messageId || null,
+        serverMessageId: data?.id || null,
+        status: r?.status || null
+      });
+    } catch { }
+    return { r, data };
+  }
+
   const resolvedCounter = getJobCounter(job);
   const payload = {
     conversationId: job.conversationId,

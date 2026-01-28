@@ -21,7 +21,12 @@ import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
 import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload } from '../core/contact-secrets.js';
-import { hydrateContactSecretsFromBackup } from './contact-backup.js';
+import {
+  initContactSecretsBackup,
+  triggerContactSecretsBackup,
+  hydrateContactSecretsFromBackup,
+  getContactSecretsBackupPayload // [ATOMIC-SEND]
+} from './contact-backup.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   conversationIdFromToken
@@ -1877,32 +1882,36 @@ export async function sendDrPlaintextCore(params = {}) {
       messageKeyB64,
       accountDigest: accountDigest
     };
+
+    // [ATOMIC-SEND] Prepare Vault Payload (Local Wrapping)
+    let vaultAtomicPayload = null;
     try {
-      await MessageKeyVault.putMessageKey({ ...vaultParams, drStateSnapshot });
-      logOutgoingSendTrace('vault_put_ok', messageId, null);
-      logDrSendTrace({ messageId, stage: 'VAULT_PUT_OK' });
+      const { wrapped, context } = await MessageKeyVault.preparePayload({ ...vaultParams, drStateSnapshot });
+      vaultAtomicPayload = {
+        ...vaultParams,
+        wrapped_mk: wrapped,
+        wrap_context: context,
+        dr_state: drStateSnapshot
+      };
+      logOutgoingSendTrace('vault_prep_ok', messageId, null);
     } catch (err) {
-      if (drStateSnapshot) {
-        try {
-          await MessageKeyVault.putMessageKey(vaultParams);
-          logOutgoingSendTrace('vault_put_ok_retry', messageId, null);
-          logDrSendTrace({ messageId, stage: 'VAULT_PUT_RETRY_OK', error: err?.message });
-        } catch (retryErr) {
-          logOutgoingSendTrace('vault_put_fail', messageId, null);
-          logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: retryErr?.message || err?.message });
-          // [SECURITY FIX] Strict Vault Failure
-          const finalErr = retryErr || err;
-          finalErr.stage = 'vault_put_fail';
-          finalErr.code = finalErr.code || 'VaultPutFailed';
-          throw finalErr;
+      logDrSendTrace({ messageId, stage: 'VAULT_PREP_FAIL', error: err?.message });
+      // [SECURITY FIX] Strict Vault Failure
+      err.stage = 'vault_prep_fail';
+      err.code = err.code || 'VaultPrepFailed';
+      throw err;
+    }
+
+    // [ATOMIC-SEND] Prepare Backup Payload (If needed)
+    let backupPayload = null;
+    if (mk) {
+      try {
+        backupPayload = await getContactSecretsBackupPayload({ reason: 'atomic-send-check' });
+        if (backupPayload) {
+          drConsole.log('[dr-send] Attaching backup to atomic send', { version: backupPayload.snapshotVersion });
         }
-      } else {
-        logOutgoingSendTrace('vault_put_fail', messageId, null);
-        logDrSendTrace({ messageId, stage: 'VAULT_PUT_FAIL', error: err?.message });
-        // [SECURITY FIX] Strict Vault Failure
-        err.stage = 'vault_put_fail';
-        err.code = err.code || 'VaultPutFailed';
-        throw err;
+      } catch (err) {
+        drConsole.warn('[dr-send] Failed to fetch backup payload', err);
       }
     }
 
@@ -1930,7 +1939,9 @@ export async function sendDrPlaintextCore(params = {}) {
             snapshotAfter: postSnapshot,
             messageKeyB64
           }
-          : null
+          : null,
+        vault: vaultAtomicPayload,   // [ATOMIC-SEND]
+        backup: backupPayload        // [ATOMIC-SEND]
       });
     } catch (enqueueErr) {
       // [SECURITY SAFEGUARD]

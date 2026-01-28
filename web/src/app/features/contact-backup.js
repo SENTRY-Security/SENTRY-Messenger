@@ -132,6 +132,59 @@ function scheduleBackup(reason) {
 // async function encryptSnapshotPayload...
 // async function decryptSnapshotPayload...
 
+export async function getContactSecretsBackupPayload({ force = false, allowWithoutDrState = false, reason = 'manual' } = {}) {
+  const isForced = !!force || reason === 'secure-logout' || reason === 'force-logout';
+  if (backupDisabled && !isForced) return null;
+  const mk = getMkRaw();
+  if (!mk) return null;
+
+  let snapshot = latestPersistDetail || buildContactSecretsSnapshot();
+  let summary = snapshot?.summary || null;
+  let entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
+  let withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
+
+  if (!snapshot?.payload) return null;
+
+  let shouldSkipForNoDrState = entryCount > 0 && withDrState === 0 && !isForced && !allowWithoutDrState;
+  if (shouldSkipForNoDrState) {
+    const refreshed = buildContactSecretsSnapshot();
+    // If refreshed has state, use it.
+    if (refreshed?.summary?.withDrState > 0) {
+      snapshot = refreshed;
+      summary = refreshed.summary;
+      withDrState = summary.withDrState;
+      shouldSkipForNoDrState = false;
+    }
+  }
+  if (shouldSkipForNoDrState) return null;
+
+  // Dirty check
+  if (!isForced && snapshot.checksum && snapshot.checksum === lastUploadedChecksum) return null;
+
+  try {
+    const payloadEnvelope = await encryptContactSecretPayload(snapshot.payload, mk);
+    // Return structure for atomic API
+    // matches args for uploadContactSecretsBackup but returned as object
+    return {
+      payload: payloadEnvelope,
+      checksum: snapshot.checksum || null,
+      snapshotVersion: summary?.version || null,
+      entries: entryCount,
+      updatedAt: summary?.generatedAt || Date.now(),
+      bytes: summary?.bytes || null,
+      withDrState,
+      deviceLabel: deviceLabel || detectDeviceLabel() || null,
+      deviceId: ensureDeviceId(),
+      // Helpers for post-process
+      _snapshot: snapshot,
+      _checksum: snapshot.checksum
+    };
+  } catch (err) {
+    log({ contactSecretsBackupPayloadError: err?.message || err });
+    return null;
+  }
+}
+
 export async function triggerContactSecretsBackup(
   reason = 'manual',
   {

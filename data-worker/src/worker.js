@@ -1950,6 +1950,271 @@ async function handlePrekeysRoutes(req, env) {
   return null;
 }
 
+
+async function handleAtomicSendRoutes(req, env) {
+  const url = new URL(req.url);
+
+  if (req.method === 'POST' && url.pathname === '/d1/messages/atomic-send') {
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+
+    // 1. Common Validation
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest); // Sender
+    const senderDeviceId = normalizeDeviceId(body?.senderDeviceId || body?.sender_device_id);
+
+    if (!conversationId || !accountDigest || !senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'conversationId, accountDigest, senderDeviceId required' }, { status: 400 });
+    }
+
+    await ensureDataTables(env);
+
+    const messagePayload = body?.message;
+    const vaultPayload = body?.vault;
+    const backupPayload = body?.backup;
+
+    if (!messagePayload || !vaultPayload) {
+      return json({ error: 'BadRequest', message: 'message and vault payloads required' }, { status: 400 });
+    }
+
+    // 2. Prepare Message Insert
+    const msgId = normalizeMessageId(messagePayload?.id);
+    const msgSenderDigest = normalizeAccountDigest(messagePayload?.sender_account_digest || messagePayload?.senderAccountDigest);
+    const msgSenderDevice = normalizeDeviceId(messagePayload?.sender_device_id || messagePayload?.senderDeviceId);
+    const msgReceiverDigest = normalizeAccountDigest(messagePayload?.receiver_account_digest || messagePayload?.receiverAccountDigest);
+    const msgReceiverDevice = normalizeDeviceId(messagePayload?.receiver_device_id || messagePayload?.receiverDeviceId); // nullable
+    const msgHeaderJson = typeof messagePayload?.header_json === 'string' ? messagePayload.header_json : (messagePayload?.header ? JSON.stringify(messagePayload.header) : null);
+    const msgCiphertext = typeof messagePayload?.ciphertext_b64 === 'string' ? messagePayload.ciphertext_b64 : null;
+    const msgCounter = Number(messagePayload?.counter);
+    const msgCreatedAt = Number(messagePayload?.created_at || messagePayload?.ts || 0) || Math.floor(Date.now() / 1000);
+
+    if (!msgId || !msgSenderDigest || !msgSenderDevice || !msgReceiverDigest || !msgHeaderJson || !msgCiphertext || !Number.isFinite(msgCounter)) {
+      return json({ error: 'BadRequest', message: 'invalid message payload' }, { status: 400 });
+    }
+    // Consistency Check
+    if (msgSenderDigest !== accountDigest || msgSenderDevice !== senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'message sender mismatch' }, { status: 400 });
+    }
+
+    // 3. Prepare Vault Insert
+    const vaultConversationId = normalizeConversationId(vaultPayload?.conversationId || vaultPayload?.conversation_id);
+    const vaultMessageId = normalizeMessageId(vaultPayload?.messageId || vaultPayload?.message_id);
+    const vaultSenderDevice = normalizeDeviceId(vaultPayload?.senderDeviceId || vaultPayload?.sender_device_id);
+    const vaultTargetDevice = normalizeDeviceId(vaultPayload?.targetDeviceId || vaultPayload?.target_device_id);
+    const vaultDirection = typeof vaultPayload?.direction === 'string' ? vaultPayload.direction.trim() : '';
+    const vaultMsgType = typeof vaultPayload?.msgType === 'string' ? vaultPayload.msgType.trim() : (typeof vaultPayload?.msg_type === 'string' ? vaultPayload.msg_type.trim() : null);
+    const vaultHeaderCounter = Number.isFinite(Number(vaultPayload?.headerCounter ?? vaultPayload?.header_counter)) ? Number(vaultPayload?.headerCounter ?? vaultPayload?.header_counter) : null;
+    const vaultWrapped = vaultPayload?.wrapped_mk || vaultPayload?.wrappedMk || null;
+    const vaultContext = vaultPayload?.wrap_context || vaultPayload?.wrapContext || null;
+    const vaultDrState = vaultPayload?.dr_state || vaultPayload?.drState || null;
+
+    if (!vaultConversationId || !vaultMessageId || !vaultSenderDevice || !vaultTargetDevice || !vaultDirection || !vaultWrapped || !vaultContext) {
+      return json({ error: 'BadRequest', message: 'invalid vault payload' }, { status: 400 });
+    }
+    // Consistency Check
+    if (vaultConversationId !== conversationId || vaultMessageId !== msgId || vaultSenderDevice !== senderDeviceId) {
+      return json({ error: 'BadRequest', message: 'vault mismatch with context' }, { status: 400 });
+    }
+    if (!validateWrappedMessageKeyEnvelope(vaultWrapped)) {
+      return json({ error: 'InvalidWrappedPayload', message: 'wrapped envelope invalid' }, { status: 400 });
+    }
+    // Note: We skip deep context validation here or reuse validateWrapContext if needed,
+    // but we can trust the client providing consistent context if signature/hmac verifies request.
+    // However, basic consistency is good.
+    if (!validateWrapContext(vaultContext, {
+      conversationId: vaultConversationId,
+      messageId: vaultMessageId,
+      senderDeviceId: vaultSenderDevice,
+      targetDeviceId: vaultTargetDevice,
+      direction: vaultDirection,
+      msgType: vaultMsgType,
+      headerCounter: vaultHeaderCounter
+    })) {
+      return json({ error: 'InvalidWrapContext', message: 'wrap_context invalid' }, { status: 400 });
+    }
+
+
+    // 4. Validate Max Counter (Optimistic Concurrency)
+    // We should check max counter for the conversation to prevent overwrite or re-use (though D1 primary key handles unique id).
+    // The separate 'secure message insert' handler does this check. We should replicate it or rely on unique constraint on ID.
+    // But 'CounterTooLow' is a logic error we might want to catch.
+    const maxRow = await env.DB.prepare(`
+      SELECT MAX(counter) AS max_counter
+        FROM messages_secure
+       WHERE conversation_id=?1
+         AND sender_account_digest=?2
+         AND sender_device_id=?3
+    `).bind(conversationId, accountDigest, senderDeviceId).first();
+    const maxCounter = Number(maxRow?.max_counter ?? -1);
+    if (Number.isFinite(maxCounter) && maxCounter >= 0 && msgCounter <= maxCounter) {
+      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter }, { status: 409 });
+    }
+
+    // 5. Construct Batch
+    const batch = [];
+
+    // 5a. Conversations & ACL (ensure existence)
+    // These are upserts (ON CONFLICT DO NOTHING/UPDATE), safe to include in batch or run before.
+    // If run before, they are not atomic with message. Ideally everything in batch.
+    // However, D1 batch is just array of statements.
+    batch.push(env.DB.prepare(`
+      INSERT INTO conversations (id)
+      VALUES (?1)
+      ON CONFLICT(id) DO NOTHING
+    `).bind(conversationId));
+
+    batch.push(env.DB.prepare(`
+      INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
+      VALUES (?1, ?2, ?3, 'member')
+      ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
+    `).bind(conversationId, accountDigest, senderDeviceId));
+
+    // Receiver ACL
+    if (msgReceiverDigest) {
+      batch.push(env.DB.prepare(`
+         INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
+         VALUES (?1, ?2, ?3, 'member')
+         ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
+       `).bind(conversationId, msgReceiverDigest, msgReceiverDevice || null));
+    }
+
+    // 5b. Message Insert
+    batch.push(env.DB.prepare(`
+      INSERT INTO messages_secure (
+        id, conversation_id, sender_account_digest, sender_device_id,
+        receiver_account_digest, receiver_device_id, header_json, ciphertext_b64, counter, created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+    `).bind(
+      msgId, conversationId, accountDigest, senderDeviceId,
+      msgReceiverDigest, msgReceiverDevice || null, msgHeaderJson, msgCiphertext, msgCounter, msgCreatedAt
+    ));
+
+    // 5c. Vault Insert
+    batch.push(env.DB.prepare(`
+      INSERT INTO message_key_vault (
+          account_digest, conversation_id, message_id, sender_device_id,
+          target_device_id, direction, msg_type, header_counter, wrapped_mk_json, wrap_context_json, dr_state_snapshot, created_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%s','now'))
+       ON CONFLICT(account_digest, conversation_id, message_id, sender_device_id)
+       DO NOTHING
+    `).bind(
+      accountDigest, conversationId, msgId, senderDeviceId,
+      vaultTargetDevice, vaultDirection, vaultMsgType, vaultHeaderCounter,
+      JSON.stringify(vaultWrapped), JSON.stringify(vaultContext), vaultDrState || null
+    ));
+
+    // 5d. Backup Insert (if present)
+    if (backupPayload) {
+      // Validate backup payload
+      const bkDigest = normalizeAccountDigest(backupPayload.accountDigest || backupPayload.account_digest);
+      if (bkDigest !== accountDigest) {
+        return json({ error: 'BadRequest', message: 'backup digest mismatch' }, { status: 400 });
+      }
+      const rawPayload = backupPayload.payload;
+      if (!rawPayload || typeof rawPayload !== 'object') {
+        return json({ error: 'BadRequest', message: 'backup payload invalid' }, { status: 400 });
+      }
+
+      // Check version monotonicity need extra read?
+      // Constraint: We want this to be atomic. If we do a read now for version, and write in batch, it's fine.
+      // Or we can blindly insert if client ensures version is correct?
+      // The client usually knows the next version.
+      // But let's check basic version logic if supplied.
+      // Actually, to fully protect overwrite, we should rely on UNIQUE constraint on (account_digest, version) if it existed.
+      // But let's look at `contact_secret_backups` schema (inferred).
+      // If we assume client sends correct Monotonic Number, we can just Insert.
+      // If we want to auto-increment version on server, we can't easily do that in a Batch with arbitrary logic, unless we use specific SQL.
+      // EXISTING LOGIC: reads MAX(version), then increments.
+      // We can replicate that READ here before the batch. It breaks strict "Serializability" if concurrent requests happen,
+      // but for a single user/device, it's usually sequential.
+      // Let's do the read.
+
+      let bkVersion = Number.isFinite(Number(backupPayload.version)) && Number(backupPayload.version) > 0
+        ? Math.floor(Number(backupPayload.version))
+        : null;
+
+      // Only if version not provided do we fetch. If provided, we respect it.
+      if (!bkVersion) {
+        const existingVersionRow = await env.DB.prepare(
+          `SELECT MAX(version) as max_version FROM contact_secret_backups WHERE account_digest=?1`
+        ).bind(accountDigest).all();
+        const nextVersion = Number(existingVersionRow?.results?.[0]?.max_version || 0);
+        bkVersion = nextVersion + 1;
+      }
+
+      const bkSnapshotVersion = Number.isFinite(Number(backupPayload.snapshotVersion)) ? Number(backupPayload.snapshotVersion) : null;
+      const bkEntries = Number.isFinite(Number(backupPayload.entries)) ? Number(backupPayload.entries) : null;
+      const bkBytes = Number.isFinite(Number(backupPayload.bytes)) ? Number(backupPayload.bytes) : null;
+      const bkChecksum = typeof backupPayload.checksum === 'string' ? String(backupPayload.checksum).slice(0, 128) : null;
+      const bkDeviceLabel = typeof backupPayload.deviceLabel === 'string' ? String(backupPayload.deviceLabel).slice(0, 120) : null;
+      const bkDeviceId = typeof backupPayload.deviceId === 'string' ? String(backupPayload.deviceId).slice(0, 120) : null;
+      const bkUpdatedAt = normalizeTimestampMs(backupPayload.updatedAt || backupPayload.updated_at) || Date.now();
+      const bkWithDrState = Number.isFinite(Number(backupPayload.withDrState)) ? Number(backupPayload.withDrState) : null;
+
+      const payloadRecord = Number.isFinite(bkWithDrState)
+        ? { payload: rawPayload, meta: { withDrState: bkWithDrState } }
+        : rawPayload;
+
+      batch.push(env.DB.prepare(
+        `INSERT INTO contact_secret_backups (
+            account_digest, version, payload_json, snapshot_version, entries,
+            checksum, bytes, updated_at, device_label, device_id, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%s','now'))`
+      ).bind(
+        accountDigest, bkVersion, JSON.stringify(payloadRecord),
+        bkSnapshotVersion, bkEntries, bkChecksum, bkBytes, bkUpdatedAt,
+        bkDeviceLabel, bkDeviceId
+      ));
+
+      // Trim (DELETE)
+      // "Delete all but last 5"
+      // We can use the same logic as trimContactSecretBackups but hardcoded params
+      const keep = 5;
+      batch.push(env.DB.prepare(
+        `DELETE FROM contact_secret_backups
+           WHERE account_digest=?1
+             AND id NOT IN (
+               SELECT id FROM contact_secret_backups
+                WHERE account_digest=?1
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?2
+             )`
+      ).bind(accountDigest, keep));
+    }
+
+    // 6. Execute Batch
+    try {
+      await env.DB.batch(batch);
+    } catch (err) {
+      console.warn('atomic_send_failed', err?.message || err);
+      // Analyze error (duplicate message id? etc)
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('unique') || msg.includes('primary')) {
+        // If message ID conflict, it might be a retry.
+        // Consider returning OK if it looks like exact duplicate?
+        // For now, fail to let client know or handle idempotency carefully.
+        // But strict atomicity means we should probably return Error so client knows it failed.
+        return json({ error: 'Conflict', message: 'duplicate entry' }, { status: 409 });
+      }
+      return json({ error: 'AtomicSendFailed', message: 'transaction failed' }, { status: 500 });
+    }
+
+    return json({
+      ok: true,
+      id: msgId,
+      created_at: msgCreatedAt,
+      vault_saved: true,
+      backup_saved: !!backupPayload
+    });
+  }
+
+  return null;
+}
+
 async function handleMessagesRoutes(req, env) {
   const url = new URL(req.url);
 
@@ -4450,6 +4715,9 @@ export default {
 
     const prekeyResult = await handlePrekeysRoutes(req, env);
     if (prekeyResult) return prekeyResult;
+
+    const atomicSendResult = await handleAtomicSendRoutes(req, env);
+    if (atomicSendResult) return atomicSendResult;
 
     const messagesResult = await handleMessagesRoutes(req, env);
     if (messagesResult) return messagesResult;

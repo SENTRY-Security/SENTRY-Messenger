@@ -158,6 +158,10 @@ export class MessageKeyVault {
     const headerCounter = normalizeHeaderCounter(params?.headerCounter);
     const accountDigest = params?.accountDigest || null;
     const drStateSnapshot = params?.drStateSnapshot || null;
+
+    // Reuse preparePayload logic
+    const { wrapped, context } = await MessageKeyVault.preparePayload(params);
+
     const logContext = buildLogContext({
       conversationId,
       messageId,
@@ -168,74 +172,6 @@ export class MessageKeyVault {
       headerCounter
     });
     const forensicsParams = { conversationId, messageId, senderDeviceId };
-    if (!mkRaw) {
-      emitLogKey('mkHardblockTrace', {
-        sourceTag: 'message-key-vault:put',
-        reason: 'mk_missing',
-        ...logContext
-      });
-      emitLogKey('vaultPutResult', {
-        ...logContext,
-        status: null,
-        errorCode: 'MKMissing'
-      });
-      emitVaultForensics('VAULT_PUT_RESULT', forensicsParams, {
-        status: null,
-        errorCode: 'MKMissing'
-      });
-      emitVaultTrace('put', { conversationId, messageId }, null, 'MKMissing');
-      throw new Error('MKMissing');
-    }
-    if (!conversationId || !messageId || !senderDeviceId || !targetDeviceId || !direction || !messageKeyB64) {
-      emitLogKey('mkHardblockTrace', {
-        sourceTag: 'message-key-vault:put',
-        reason: 'missing_params',
-        ...logContext,
-        hasKey: !!messageKeyB64
-      });
-      emitLogKey('vaultPutResult', {
-        ...logContext,
-        status: null,
-        errorCode: 'MissingParams'
-      });
-      emitVaultForensics('VAULT_PUT_RESULT', forensicsParams, {
-        status: null,
-        errorCode: 'MissingParams'
-      });
-      emitVaultTrace('put', { conversationId, messageId }, null, 'MissingParams');
-      throw new Error('MessageKeyVaultMissingParams');
-    }
-    const context = buildContext({
-      conversationId,
-      messageId,
-      senderDeviceId,
-      targetDeviceId,
-      direction,
-      msgType,
-      headerCounter
-    });
-    let wrapped;
-    try {
-      wrapped = await wrapWithMK_JSON({ mk_b64: messageKeyB64, context }, mkRaw, WRAP_INFO_TAG);
-    } catch (err) {
-      emitLogKey('mkHardblockTrace', {
-        sourceTag: 'message-key-vault:put',
-        reason: 'wrap_failed',
-        ...logContext,
-        error: err?.message || 'wrap_failed'
-      });
-      emitLogKey('vaultPutResult', {
-        ...logContext,
-        status: null,
-        errorCode: 'WrapFailed'
-      });
-      emitVaultForensics('VAULT_PUT_RESULT', forensicsParams, {
-        status: null,
-        errorCode: 'WrapFailed'
-      });
-      emitVaultTrace('put', { conversationId, messageId }, null, 'WrapFailed');
-      throw new Error(err?.message || 'MessageKeyVaultWrapFailed');
-    }
 
     emitLogKey('vaultPutAttempt', {
       ...logContext,
@@ -294,6 +230,77 @@ export class MessageKeyVault {
     });
     return { ok: true, duplicate: !!data?.duplicate };
   }
+
+  static async preparePayload(params = {}) {
+    const mkRaw = Object.prototype.hasOwnProperty.call(params, 'mkRaw')
+      ? params.mkRaw
+      : getMkRaw();
+    const conversationId = params?.conversationId || null;
+    const messageId = params?.messageId || null;
+    const senderDeviceId = params?.senderDeviceId || null;
+    const targetDeviceId = params?.targetDeviceId || null;
+    const direction = params?.direction || null;
+    const msgType = params?.msgType || null;
+    const messageKeyB64 = params?.messageKeyB64 || null;
+    const headerCounter = normalizeHeaderCounter(params?.headerCounter);
+
+    const logContext = buildLogContext({
+      conversationId,
+      messageId,
+      senderDeviceId,
+      targetDeviceId,
+      direction,
+      msgType,
+      headerCounter
+    });
+    const forensicsParams = { conversationId, messageId, senderDeviceId };
+
+    if (!mkRaw) {
+      emitLogKey('mkHardblockTrace', {
+        sourceTag: 'message-key-vault:put',
+        reason: 'mk_missing',
+        ...logContext
+      });
+      emitLogKey('vaultPutResult', {
+        ...logContext,
+        status: null,
+        errorCode: 'MKMissing'
+      });
+      emitVaultForensics('VAULT_PUT_RESULT', forensicsParams, {
+        status: null,
+        errorCode: 'MKMissing'
+      });
+      emitVaultTrace('put', { conversationId, messageId }, null, 'MKMissing');
+      throw new Error('MKMissing');
+    }
+    if (!conversationId || !messageId || !senderDeviceId || !targetDeviceId || !direction || !messageKeyB64) {
+      emitLogKey('mkHardblockTrace', {
+        sourceTag: 'message-key-vault:put',
+        reason: 'missing_params',
+        ...logContext,
+        hasKey: !!messageKeyB64
+      });
+      emitLogKey('vaultPutResult', {
+        ...logContext,
+        status: null,
+        errorCode: 'MissingParams'
+      });
+      emitVaultForensics('VAULT_PUT_RESULT', forensicsParams, {
+        status: null,
+        errorCode: 'MissingParams'
+      });
+      emitVaultTrace('put', { conversationId, messageId }, null, 'MissingParams');
+      throw new Error('MessageKeyVaultMissingParams');
+    }
+    const context = buildContext({
+      conversationId,
+      messageId,
+      senderDeviceId,
+      targetDeviceId,
+      direction,
+      msgType,
+      headerCounter
+    });
 
   static async getMessageKey(params = {}) {
     const mkRaw = Object.prototype.hasOwnProperty.call(params, 'mkRaw')
