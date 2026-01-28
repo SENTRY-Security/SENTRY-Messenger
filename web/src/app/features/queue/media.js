@@ -1,6 +1,6 @@
 // Media job helper: separate media upload and metadata message jobs.
 
-import { enqueueOutboxJob } from './outbox.js';
+import { enqueueOutboxJob } from './outbox.js?v=atomic_update';
 
 export async function enqueueMediaUploadJob({ conversationId, messageId, payloadEnvelope, meta }) {
   if (!conversationId || !payloadEnvelope) throw new Error('conversationId and payloadEnvelope required');

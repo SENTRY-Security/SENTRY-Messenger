@@ -26,7 +26,7 @@ import {
   triggerContactSecretsBackup,
   hydrateContactSecretsFromBackup,
   getContactSecretsBackupPayload // [ATOMIC-SEND]
-} from './contact-backup.js';
+} from './contact-backup.js?v=atomic_update';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import {
   conversationIdFromToken
@@ -40,11 +40,11 @@ import {
   setOutboxHooks,
   startOutboxProcessor,
   isConversationLocked
-} from './queue/outbox.js';
+} from './queue/outbox.js?v=atomic_update';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log, logCapped } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
-import { MessageKeyVault } from './message-key-vault.js';
+import { MessageKeyVault } from './message-key-vault.js?v=atomic_update';
 import { listSecureMessages, fetchSendState } from '../api/messages.js';
 import { COUNTER_TOO_LOW_MODE } from './queue/send-policy.js';
 import { triggerContactSecretsBackup } from './contact-backup.js';
@@ -54,7 +54,7 @@ import { updateTimelineEntryStatusByCounter, upsertTimelineEntry } from './timel
 const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
 const COUNTER_TOO_LOW_CODE = 'CounterTooLow';
-import { enqueueMediaMetaJob } from './queue/media.js';
+import { enqueueMediaMetaJob } from './queue/media.js?v=atomic_update';
 const SEND_PREFLIGHT_TRACE_LIMIT = 3;
 let sendPreflightTraceCount = 0;
 const DR_SNAPSHOT_REJECT_LIMIT = 3;

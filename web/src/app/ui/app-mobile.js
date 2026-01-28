@@ -9,7 +9,7 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
-import { flushOutbox } from '../features/queue/outbox.js';
+import { flushOutbox } from '../features/queue/outbox.js?v=atomic_update';
 import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
 import {
   getMkRaw,
@@ -90,7 +90,7 @@ import { createToastController } from './mobile/controllers/toast-controller.js'
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js?v=phase46_fix';
 import { initDrivePane } from './mobile/drive-pane.js';
-import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
+import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js?v=atomic_update';
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
 import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
 import { messagesFlowFacade, setMessagesFlowFacadeWsSend } from '../features/messages-flow-facade.js';
