@@ -306,7 +306,7 @@ export class MessageKeyVault {
       mk_b64: messageKeyB64,
       mkB64: messageKeyB64,
       context
-    }, mkRaw, { info: WRAP_INFO_TAG });
+    }, mkRaw, WRAP_INFO_TAG);
 
     return { wrapped, context };
   }
