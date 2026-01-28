@@ -559,11 +559,18 @@ export const atomicSend = async (req, res) => {
 
   // Forward to Worker
   const path = '/d1/messages/atomic-send';
-  // We can just forward the body, but ensure accountDigest matches auth
-  // Actually, client body might contain "sender_account_digest".
-  // Let's rely on worker to check consistency, but we sign the request.
   
-  const body = JSON.stringify(rawBody);
+  // Reconstruct payload to ensure clean JSON for HMAC and Worker validation
+  const payload = {
+    conversationId: rawBody.conversationId,
+    senderDeviceId: rawBody.senderDeviceId,
+    accountDigest: auth.accountDigest, // Authenticated digest
+    message: rawBody.message,
+    vault: rawBody.vault,
+    backup: rawBody.backup || undefined
+  };
+
+  const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 
   try {
