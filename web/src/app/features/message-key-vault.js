@@ -302,6 +302,15 @@ export class MessageKeyVault {
       headerCounter
     });
 
+    const wrapped = await wrapWithMK_JSON({
+      mk_b64: messageKeyB64,
+      mkB64: messageKeyB64,
+      context
+    }, mkRaw, { info: WRAP_INFO_TAG });
+
+    return { wrapped, context };
+  }
+
   static async getMessageKey(params = {}) {
     const mkRaw = Object.prototype.hasOwnProperty.call(params, 'mkRaw')
       ? params.mkRaw

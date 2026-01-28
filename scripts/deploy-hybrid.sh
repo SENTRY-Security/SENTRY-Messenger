@@ -1,6 +1,14 @@
 #!/bin/bash
 set -e
 
+# Load environment variables from .env (Only CLOUDFLARE_*)
+if [ -f ".env" ]; then
+  echo "📄 Loading Cloudflare credentials from .env"
+  export $(grep '^CLOUDFLARE_' .env | xargs)
+else
+  echo "⚠️  .env file not found"
+fi
+
 # Configuration
 REMOTE_HOST="Message"
 REMOTE_DIR="service"
