@@ -2112,7 +2112,7 @@ async function handleAtomicSendRoutes(req, env) {
     `).bind(
       accountDigest, conversationId, msgId, senderDeviceId,
       vaultTargetDevice, vaultDirection, vaultMsgType, vaultHeaderCounter,
-      JSON.stringify(vaultWrapped), JSON.stringify(vaultContext), vaultDrState || null
+      JSON.stringify(vaultWrapped), JSON.stringify(vaultContext), vaultDrState ? JSON.stringify(vaultDrState) : null
     ));
 
     // 5d. Backup Insert (if present)
