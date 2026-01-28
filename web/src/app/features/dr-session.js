@@ -47,7 +47,7 @@ import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { MessageKeyVault } from './message-key-vault.js?v=atomic_update';
 import { listSecureMessages, fetchSendState } from '../api/messages.js';
 import { COUNTER_TOO_LOW_MODE } from './queue/send-policy.js';
-import { triggerContactSecretsBackup } from './contact-backup.js';
+// duplicate import removed
 import { REMOTE_BACKUP_TRIGGER_SEND_OK_BATCH } from './restore-policy.js';
 import { updateTimelineEntryStatusByCounter, upsertTimelineEntry } from './timeline-store.js';
 
