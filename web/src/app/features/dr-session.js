@@ -1630,6 +1630,7 @@ export async function sendDrPlaintext(params = {}) {
 }
 
 export async function sendDrPlaintextCore(params = {}) {
+  console.log('ATOMIC_SEND_DEBUG: dr-session loaded');
   const { text, conversation, convId, metaOverrides = {}, peerDeviceId: peerDeviceInput = null } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) throw new Error('peerAccountDigest required');
