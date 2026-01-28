@@ -1367,9 +1367,11 @@ export function initMessagesPane({
       }
     };
 
-    // 2. Register the PROXY once. It will call the delegate above.
-    if (outboxHooksRegistered) return;
+    // 2. Register the PROXY once (safe to call multiple times, Set deduplicates)
+    // Removed guard to ensure specific proxy object is always registered
+    // if (outboxHooksRegistered) return; 
     outboxHooksRegistered = true;
+    console.log('[messages-pane] Registering outbound hooks proxy');
     setOutboxHooks(messagesPaneHooksProxy);
   }
 

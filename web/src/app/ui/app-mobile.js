@@ -88,7 +88,7 @@ import { createPresenceManager } from './mobile/presence-manager.js';
 import { ConversationListController } from './mobile/controllers/conversation-list-controller.js?v=0.1.10';
 import { createToastController } from './mobile/controllers/toast-controller.js';
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
-import { initMessagesPane } from './mobile/messages-pane.js?v=phase46_fix';
+import { initMessagesPane } from './mobile/messages-pane.js?v=phase47_debug';
 import { initDrivePane } from './mobile/drive-pane.js';
 import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js?v=atomic_update';
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
