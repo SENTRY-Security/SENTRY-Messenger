@@ -591,7 +591,7 @@ export const atomicSend = async (req, res) => {
       if (r.status >= 400 && r.status < 500) {
         return res.status(r.status).json(workerJson || { error: 'WorkerError', status: r.status });
       }
-      return res.status(502).json({
+      return res.status(500).json({
         error: 'D1WriteFailed',
         status: r.status,
         details: workerJson || null
@@ -625,7 +625,7 @@ export const atomicSend = async (req, res) => {
     return res.status(202).json(workerJson);
 
   } catch (err) {
-    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+    return res.status(500).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
   }
 };
 
