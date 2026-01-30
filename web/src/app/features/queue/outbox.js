@@ -455,7 +455,7 @@ async function attemptSend(job) {
       } catch { }
     }
 
-    const ackOk = (r?.status === 200 || r?.status === 202) && data && data.ok === true;
+    const ackOk = (r?.status >= 200 && r?.status < 300) && data && data.ok === true;
     const failureMessage = ackOk
       ? null
       : (typeof data?.message === 'string' ? data.message
@@ -517,7 +517,7 @@ async function attemptSend(job) {
       });
     } catch { }
   }
-  const ackOk = r?.status === 202 && data && data.accepted === true && data.id;
+  const ackOk = (r?.status >= 200 && r?.status < 300) && data && data.accepted === true && data.id;
   const failureMessage = ackOk
     ? null
     : (typeof data?.message === 'string' ? data.message
