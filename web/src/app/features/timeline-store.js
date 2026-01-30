@@ -308,8 +308,10 @@ export function updateTimelineEntryStatusByCounter(conversationId, counter, stat
     updatedCount++;
     // Do not return early, in case multiple messages share counter (unlikely but safe) (Wait, counter should be unique per sender)
     // Actually, return true after found is fine for single specific counter.
+    console.log('[timeline-store] updateStatus success', { msgId: key, counter, status });
     return true;
   }
+  console.warn('[timeline-store] updateStatus failed: entry not found', { conversationId: convId, counter, mapSize: convMap.size });
   return false;
 }
 
