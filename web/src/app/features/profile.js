@@ -404,7 +404,9 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
     }
   }
   const fallbackNickname = '';
-  const allowAvatar = !targetIsSelf || allowSelfAvatarWrite;
+  // [FIX] Input is already sanitized by shouldStripAvatar and merge logic above.
+  // We must allow avatar in normalization to support preservation.
+  const allowAvatar = true;
   const obj = normalizeProfilePayload(normalizedInput, { fallbackNickname, allowAvatar });
   if (shouldLogAvatarWrite()) {
     const avatarObjKey = hasAvatarField && inputProfile?.avatar?.objKey ? String(inputProfile.avatar.objKey) : null;
