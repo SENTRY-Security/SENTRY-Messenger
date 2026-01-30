@@ -201,8 +201,12 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   try {
     console.log('[call] key:secret-lookup', JSON.stringify({
       peerKey: identity.peerKey,
+      peerDigest: identity.digest,
       lookupDeviceId: deviceId || null,
+      lookupPeerDeviceId: peerDeviceId || null,
       found: !!secretB64,
+      conversationToken: secretRecord?.conversationToken ? 'present' : 'missing',
+      conversationTokenLen: secretRecord?.conversationToken?.length || 0,
       recordKeys: secretRecord && typeof secretRecord === 'object' ? Object.keys(secretRecord) : []
     }));
   } catch { }
