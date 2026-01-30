@@ -4267,6 +4267,23 @@ export function recordDrMessageHistory(params = {}) {
 try {
   setOutboxHooks({
     onSent: async (job) => {
+      // [FIX] Priority Status Update: Ensure UI reflects 'sent' immediately.
+      // Doing this first prevents errors in history/snapshot persistence from blocking the UI update.
+      if (job?.conversationId && job?.messageId) {
+        try {
+          upsertTimelineEntry(job.conversationId, {
+            messageId: job.messageId,
+            status: 'sent',
+            pending: false,
+            counter: Number.isFinite(job?.counter) ? Number(job.counter) : undefined,
+            error: null
+          });
+          drConsole.log('[dr-session] onSent: UI updated (priority)', { messageId: job.messageId });
+        } catch (uiErr) {
+          drConsole.warn('[dr-session] onSent: UI update failed', uiErr);
+        }
+      }
+
       const peer = job?.peerAccountDigest || null;
       const peerDeviceId = job?.peerDeviceId || null;
       const dr = job?.dr || {};
@@ -4328,16 +4345,7 @@ try {
       // Media messages sent via outbox (processOutboxJobNow) might stay in 'pending' state in timeline-store
       // because the UI controller only updates on immediate success, but queued jobs are async.
       // We explicitly update the timeline status here when the job is confirmed sent.
-      // [FIX] Use ID-based upsert for robust status update (clears pending flag reliably)
-      if (job?.conversationId && job?.messageId) {
-        upsertTimelineEntry(job.conversationId, {
-          messageId: job.messageId,
-          status: 'sent',
-          pending: false,
-          counter: Number.isFinite(job?.counter) ? Number(job.counter) : undefined,
-          error: null
-        });
-      }
+
     }
   });
   startOutboxProcessor();
