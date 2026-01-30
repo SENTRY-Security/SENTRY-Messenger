@@ -293,7 +293,10 @@ export class ConversationListController extends BaseController {
                         limit: 20 // [FIX] Fetch more to find last valid content
                     });
 
-                    const messages = result?.data?.items || [];
+                    // [FIX] Reverse to process Newest -> Oldest (API is Ascending)
+                    messages.reverse();
+
+                    const messagesFiltered = messages; // Re-assignment for clarity if needed, but using messages directly is fine
                     let previewMsg = null;
                     let isDeleted = false;
 
@@ -358,15 +361,24 @@ export class ConversationListController extends BaseController {
                         }
                     }
 
-                    thread.lastMessageText = text;
-                    thread.lastMessageTs = ts;
-                    thread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
-                    thread.lastDirection = direction;
-                    thread.lastMsgType = type;
-                    thread.previewLoaded = true;
-                    thread.needsRefresh = false;
+                    // [FIX] Safe Merge: Only overwrite if fetched ts is newer than current
+                    // This prevents "Ghost Overwrite" by delayed API responses
+                    const currentThread = threadsMap.get(thread.conversationId);
+                    const currentTs = currentThread ? (currentThread.lastMessageTs || 0) : 0;
+                    const newTs = ts || 0;
 
-                    threadsMap.set(thread.conversationId, thread);
+                    if (newTs >= currentTs) {
+                        thread.lastMessageText = text;
+                        thread.lastMessageTs = ts;
+                        thread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
+                        thread.lastDirection = direction;
+                        thread.lastMsgType = type;
+                        thread.previewLoaded = true;
+                        thread.needsRefresh = false;
+                        threadsMap.set(thread.conversationId, thread);
+                    } else {
+                        // console.log('[ConvList] Safe Merge: Ignored stale preview update', { id: thread.conversationId, current: currentTs, new: newTs });
+                    }
                 } catch (err) {
                     console.error('Preview refresh failed', err);
                 }
