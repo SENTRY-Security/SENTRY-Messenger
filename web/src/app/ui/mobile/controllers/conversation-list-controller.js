@@ -293,6 +293,8 @@ export class ConversationListController extends BaseController {
                         limit: 20 // [FIX] Fetch more to find last valid content
                     });
 
+                    const messages = result?.data?.items || [];
+
                     // [FIX] Reverse to process Newest -> Oldest (API is Ascending)
                     messages.reverse();
 
