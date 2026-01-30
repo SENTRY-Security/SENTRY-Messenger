@@ -395,25 +395,32 @@ export class ConversationListController extends BaseController {
                     // [FIX] Safe Merge: Only overwrite if fetched ts is newer than current
                     // This prevents "Ghost Overwrite" by delayed API responses
                     const currentThread = threadsMap.get(thread.conversationId);
-                    const currentTs = currentThread ? (currentThread.lastMessageTs || 0) : 0;
+                    if (!currentThread) {
+                        // Thread removed during fetch, abort update
+                        return;
+                    }
+
+                    const currentTs = currentThread.lastMessageTs || 0;
                     const newTs = ts || 0;
 
+                    // [FIX] Race Condition: Always update the FRESH object from the map
                     if (newTs >= currentTs) {
-                        thread.lastMessageText = text;
-                        thread.lastMessageTs = ts;
-                        thread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
-                        thread.lastDirection = direction;
-                        thread.lastMsgType = type;
-                        thread.previewLoaded = true;
-                        thread.needsRefresh = false;
-                        threadsMap.set(thread.conversationId, thread);
+                        currentThread.lastMessageText = text;
+                        currentThread.lastMessageTs = ts;
+                        currentThread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
+                        currentThread.lastDirection = direction;
+                        currentThread.lastMsgType = type;
+                        currentThread.previewLoaded = true;
+                        currentThread.needsRefresh = false;
+
+                        // Set back the fresh object (though strictly unnecessary if it's the same ref, good for clarity/hooks)
+                        threadsMap.set(thread.conversationId, currentThread);
                     } else {
                         if (true) {
                             console.log('[ConvList] Safe Merge: Ignored stale preview update', {
                                 id: thread.conversationId,
                                 current: currentTs,
-                                new: newTs,
-                                newText: text
+                                new: newTs
                             });
                         }
                     }
