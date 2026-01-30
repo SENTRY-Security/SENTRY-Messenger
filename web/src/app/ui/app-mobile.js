@@ -2668,6 +2668,18 @@ async function runPostLoginContactHydrate() {
     // Fake a success result for logging consistency
     remoteResult = { ok: true, status: 'skipped-login', entries: secrets.size, corruptCount: 0 };
   } else if (willFetchRemote) {
+    // [FIX] Optimistic Local Hydration:
+    // Load local secrets into memory IMMEDIATELY before awaiting network.
+    // This prevents the "Hydration Gap" where _DR_SESS is empty during the network request.
+    if (hasLocalSecrets) {
+      try {
+        await hydrateDrSnapshotsAfterBackup();
+        if (contactCoreVerbose) console.log('[contact-core] hydrate:optimistic-local-done');
+      } catch (err) {
+        log({ drSnapshotHydrateError: err?.message || err, source: 'optimistic-local-hydrate' });
+      }
+    }
+
     try {
       remoteResult = await hydrateContactSecretsFromBackup({ reason: 'post-login-hydrate' });
     } catch (err) {
