@@ -361,14 +361,21 @@ export async function applyContactShareFromCommit({
   }
 
   // Auto-init X3DH session (fire and forget) to pre-warm keys
-  ensureDrSession({ peerAccountDigest: digest, peerDeviceId: deviceId })
-    .catch(err => console.warn('[contacts] auto-init failed', err));
+  // [Fix] Skip side effects (DR Init, D1 Uplink) if this is a history replay
+  const isHistoryReplay = sourceTag === 'entry-fetch:history-contact-share';
 
-  // [Migration] Sync new state to D1 (Self-Healing)
-  // This ensures that if I come online and peer has changed Avatar/Nickname,
-  // we save this new state to D1 immediately.
-  const updatedEntry = { ...entry, conversation: contact?.conversation ? extractConversationFromContact(contact) : conversation };
-  uplinkContactToD1(updatedEntry).catch(err => console.warn('[contacts] uplink from share failed', err));
+  if (!isHistoryReplay) {
+    ensureDrSession({ peerAccountDigest: digest, peerDeviceId: deviceId })
+      .catch(err => console.warn('[contacts] auto-init failed', err));
+
+    // [Migration] Sync new state to D1 (Self-Healing)
+    // This ensures that if I come online and peer has changed Avatar/Nickname,
+    // we save this new state to D1 immediately.
+    const updatedEntry = { ...entry, conversation: contact?.conversation ? extractConversationFromContact(contact) : conversation };
+    uplinkContactToD1(updatedEntry).catch(err => console.warn('[contacts] uplink from share failed', err));
+  } else {
+    if (DEBUG.contactsA1) console.log('[contacts] skipping side effects for history replay', { digest });
+  }
 
   return { ok: true, diff };
 }
