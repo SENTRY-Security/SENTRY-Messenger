@@ -298,9 +298,25 @@ export class ConversationListController extends BaseController {
                     // [FIX] Reverse to process Newest -> Oldest (API is Ascending)
                     messages.reverse();
 
-                    const messagesFiltered = messages; // Re-assignment for clarity if needed, but using messages directly is fine
+                    // [DEBUG] Deep inspection
+                    if (true) {
+                        try {
+                            const debugTypes = messages.map(m => {
+                                const t = normalizeMsgTypeValue(m.payload?.type);
+                                return t === 'text' ? 'text' : (t || 'unknown');
+                            });
+                            console.log('[ConvList] Process Messages:', {
+                                id: thread.conversationId,
+                                count: messages.length,
+                                reverseTypes: debugTypes.slice(0, 5) // Show top 5 newest
+                            });
+                        } catch (e) { }
+                    }
+
+                    const messagesFiltered = messages;
                     let previewMsg = null;
                     let isDeleted = false;
+                    let skippedCount = 0;
 
                     // [FIX] Find last meaningful message
                     for (const msg of messages) {
@@ -318,12 +334,17 @@ export class ConversationListController extends BaseController {
                         const isControl = type === 'sys' || type === 'system' || type === 'control' ||
                             (type && ['profile-update', 'session-init', 'session-ack'].includes(type));
 
-                        if (isControl) continue;
+                        if (isControl) {
+                            skippedCount++;
+                            continue;
+                        }
 
                         // Ensure it's content
                         if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log' || type === 'contact-share') {
                             previewMsg = msg;
                             break;
+                        } else {
+                            skippedCount++;
                         }
                     }
 
@@ -361,6 +382,14 @@ export class ConversationListController extends BaseController {
                         } else if (type === 'contact-share') {
                             text = '[系統] 您已與對方成為好友';
                         }
+                    } else {
+                        if (true) {
+                            console.log('[ConvList] No preview found after filter:', {
+                                id: thread.conversationId,
+                                total: messages.length,
+                                skipped: skippedCount
+                            });
+                        }
                     }
 
                     // [FIX] Safe Merge: Only overwrite if fetched ts is newer than current
@@ -379,7 +408,14 @@ export class ConversationListController extends BaseController {
                         thread.needsRefresh = false;
                         threadsMap.set(thread.conversationId, thread);
                     } else {
-                        // console.log('[ConvList] Safe Merge: Ignored stale preview update', { id: thread.conversationId, current: currentTs, new: newTs });
+                        if (true) {
+                            console.log('[ConvList] Safe Merge: Ignored stale preview update', {
+                                id: thread.conversationId,
+                                current: currentTs,
+                                new: newTs,
+                                newText: text
+                            });
+                        }
                     }
                 } catch (err) {
                     console.error('Preview refresh failed', err);
