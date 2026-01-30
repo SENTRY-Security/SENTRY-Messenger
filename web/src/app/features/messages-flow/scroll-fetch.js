@@ -78,11 +78,12 @@ export function createMessagesFlowScrollFetch(deps = {}) {
     if (typeof selfDigest === 'string') selfDigest = selfDigest.toUpperCase();
 
     const { cursorTs, cursorId } = normalizeCursor(cursor);
-    const { items: rawItems, nextCursor } = await listSecureMessagesForReplay({
+    const { items: rawItems, nextCursor, keys: serverKeys } = await listSecureMessagesForReplay({
       conversationId,
       limit,
       cursorTs,
       cursorId,
+      includeKeys: true,
       listSecureMessages
     });
     const { items: decryptedItems, errors } = await decryptReplayBatch({
@@ -91,6 +92,7 @@ export function createMessagesFlowScrollFetch(deps = {}) {
       selfDeviceId,
       selfDigest,
       mk: mkRaw,
+      serverKeys,
       getMessageKey,
       buildDrAadFromHeader,
       b64u8

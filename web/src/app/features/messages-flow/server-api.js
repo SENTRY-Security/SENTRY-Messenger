@@ -52,13 +52,15 @@ export async function listSecureMessagesForReplay({
   limit = 20,
   cursorTs,
   cursorId,
+  includeKeys = true,
   listSecureMessages = apiListSecureMessages
 } = {}) {
   const { r, data } = await listSecureMessages({
     conversationId,
     limit,
     cursorTs,
-    cursorId
+    cursorId,
+    includeKeys
   });
   if (!r?.ok) {
     throw new Error(resolveListSecureError(data));
@@ -66,7 +68,8 @@ export async function listSecureMessagesForReplay({
   return {
     items: Array.isArray(data?.items) ? data.items : [],
     errors: Array.isArray(data?.errors) ? data.errors : [],
-    nextCursor: resolveNextCursor(data)
+    nextCursor: resolveNextCursor(data),
+    keys: data?.keys || null
   };
 }
 

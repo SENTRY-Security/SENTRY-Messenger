@@ -290,6 +290,7 @@ export async function decryptReplayBatch({
   selfDeviceId,
   selfDigest,
   mk,
+  serverKeys = null,
   getMessageKey = MessageKeyVault.getMessageKey,
   buildDrAadFromHeader = cryptoBuildDrAadFromHeader,
   b64u8 = naclB64u8
@@ -308,16 +309,44 @@ export async function decryptReplayBatch({
     if (!item) continue;
     // 2. Retrieve Message Key
     const messageId = toMessageId(item.raw) || `gap:v1:${item.counter}`; // normalized ID
+    
+    // Priority 1: Use server-provided keys (from includeKeys response)
     let vaultKeyResult = null;
-    try {
-      vaultKeyResult = await getMessageKey({
-        conversationId,
-        messageId,
-        senderDeviceId: item.senderDeviceId
-      });
-    } catch (err) {
-      vaultKeyResult = { ok: false, error: err?.message || err };
+    const serverKeyEntry = serverKeys?.[messageId] || null;
+    if (serverKeyEntry?.wrapped_mk_json) {
+      try {
+        // Server provides wrapped key, need to unwrap with MK
+        const wrappedMk = serverKeyEntry.wrapped_mk_json;
+        const wrapContext = serverKeyEntry.wrap_context_json;
+        // Attempt to get unwrapped key via vault helper (handles decryption)
+        vaultKeyResult = await getMessageKey({
+          conversationId,
+          messageId,
+          senderDeviceId: item.senderDeviceId,
+          // Pass server-provided wrapped key to avoid local lookup
+          serverWrappedMk: wrappedMk,
+          serverWrapContext: wrapContext,
+          serverDrStateSnapshot: serverKeyEntry.dr_state_snapshot
+        });
+      } catch (err) {
+        // Fallback to local vault lookup
+        vaultKeyResult = null;
+      }
     }
+    
+    // Priority 2: Fallback to local vault lookup
+    if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
+      try {
+        vaultKeyResult = await getMessageKey({
+          conversationId,
+          messageId,
+          senderDeviceId: item.senderDeviceId
+        });
+      } catch (err) {
+        vaultKeyResult = { ok: false, error: err?.message || err };
+      }
+    }
+    
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
       errors.push(buildDecryptError({
         messageId,

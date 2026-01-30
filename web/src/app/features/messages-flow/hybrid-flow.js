@@ -119,14 +119,15 @@ export async function smartFetchMessages({
     });
     console.warn('[HybridVerify] Plan:', { conversationId, localMax, serverMax, gapSize, fetchLimit });
 
-    // 2. Fetch Items
-    const { items: rawItems, nextCursor } = await listSecureMessagesForReplay({
+    // 2. Fetch Items (with keys included)
+    const { items: rawItems, nextCursor, keys: serverKeys } = await listSecureMessagesForReplay({
         conversationId,
         limit: fetchLimit,
         cursorTs: cursor?.ts,
-        cursorId: cursor?.id
+        cursorId: cursor?.id,
+        includeKeys: true
     });
-    console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length);
+    console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', serverKeys ? Object.keys(serverKeys).length : 0);
 
     if (!rawItems.length) {
         return { items: [], errors: [], nextCursor };
@@ -320,6 +321,7 @@ export async function smartFetchMessages({
                 selfDeviceId,
                 selfDigest,
                 mk: mkRaw,
+                serverKeys,
                 getMessageKey: MessageKeyVault.getMessageKey,
                 buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
                 b64u8: naclB64u8

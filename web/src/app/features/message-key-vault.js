@@ -318,6 +318,10 @@ export class MessageKeyVault {
     const conversationId = params?.conversationId || null;
     const messageId = params?.messageId || null;
     const senderDeviceId = params?.senderDeviceId || null;
+    // Server-provided wrapped key (from includeKeys in listSecureMessages)
+    const serverWrappedMk = params?.serverWrappedMk || null;
+    const serverWrapContext = params?.serverWrapContext || null;
+    const serverDrStateSnapshot = params?.serverDrStateSnapshot || null;
     const logContext = buildLogContext({ conversationId, messageId, senderDeviceId });
     const forensicsParams = { conversationId, messageId, senderDeviceId };
     if (!mkRaw) {
@@ -384,6 +388,68 @@ export class MessageKeyVault {
       };
     }
 
+    // Priority 1: Use server-provided wrapped key (avoids API call)
+    if (serverWrappedMk) {
+      try {
+        const unwrapped = await unwrapMessageKey(serverWrappedMk, mkRaw);
+        if (unwrapped?.mkB64) {
+          // Decrypt DR state snapshot if provided
+          let drStateSnapshot = null;
+          if (serverDrStateSnapshot) {
+            try {
+              const decryptRes = await decryptContactSecretPayload(serverDrStateSnapshot, mkRaw);
+              if (decryptRes.ok && decryptRes.snapshot) {
+                drStateSnapshot = JSON.parse(decryptRes.snapshot);
+              }
+            } catch (err) {
+              emitLogKey('vaultDrStateDecryptFail', {
+                ...logContext,
+                error: err?.message || String(err),
+                source: 'server_provided'
+              });
+            }
+          }
+          
+          setCache(cacheK, {
+            messageKeyB64: unwrapped.mkB64,
+            drStateSnapshot
+          });
+          
+          emitLogKey('vaultGetResult', {
+            ...logContext,
+            found: true,
+            status: 200,
+            errorCode: null,
+            source: 'server_provided'
+          });
+          emitVaultForensics('VAULT_GET_RESULT', forensicsParams, {
+            found: true,
+            status: 200,
+            errorCode: null,
+            source: 'server_provided'
+          });
+          emitVaultTrace('get', { conversationId, messageId }, 200, null);
+          
+          return {
+            ok: true,
+            messageKeyB64: unwrapped.mkB64,
+            context: unwrapped.context || serverWrapContext || null,
+            drStateSnapshot,
+            fromServerKeys: true
+          };
+        }
+      } catch (err) {
+        emitLogKey('vaultUnwrapErrorTrace', {
+          ...logContext,
+          errorName: err?.name || err?.constructor?.name || 'Error',
+          errorMessage: err?.message || 'unwrap failed',
+          source: 'server_provided'
+        });
+        // Fall through to API call
+      }
+    }
+
+    // Priority 2: Fetch from API
     let res;
     try {
       res = await apiGetMessageKeyVault({ conversationId, messageId, senderDeviceId });
