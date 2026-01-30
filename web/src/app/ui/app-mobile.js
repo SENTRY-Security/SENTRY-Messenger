@@ -3709,6 +3709,48 @@ async function hydrateProfileSnapshotForDigest(peerDigest) {
   }
   const normalizedNick = normalizeProfileNickname(profile?.nickname || '');
   const hasProfile = !!normalizedNick || !!profile?.avatar;
+  // [FIX] Self-Profile Stale Read Protection & Sync
+  const selfDigest = toProfileDigest(getAccountDigest());
+  if (digest === selfDigest) {
+    const current = sessionStore.profileState;
+    const remoteTs = Number(profile?.updatedAt || profile?.ts || 0);
+    const localTs = Number(current?.updatedAt || 0);
+
+    // 1. Prevent Revert: If local is newer, ignore stale remote data
+    if (localTs > remoteTs) {
+      log({
+        profileHydrateSkip: {
+          reason: 'local-is-newer',
+          digest,
+          localTs,
+          remoteTs
+        }
+      });
+      return;
+    }
+
+    // 2. Cross-Device Sync: If remote is newer, update local state
+    if (remoteTs > localTs) {
+      log({
+        profileHydrateSync: {
+          reason: 'remote-is-newer',
+          digest,
+          localTs,
+          remoteTs
+        }
+      });
+      sessionStore.profileState = { ...profile, nickname: normalizedNick };
+
+      // Update UI for Self
+      if (typeof profileCard?.updateProfileNicknameUI === 'function') {
+        profileCard.updateProfileNicknameUI();
+      }
+      if (typeof profileCard?.updateProfileAvatarUI === 'function') {
+        profileCard.updateProfileAvatarUI();
+      }
+    }
+  }
+
   if (!hasProfile) {
     log({
       peerProfilePullFailed: {
