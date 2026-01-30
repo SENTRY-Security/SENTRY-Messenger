@@ -192,7 +192,9 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   if (!peerDeviceId) throw new Error('peerDeviceId required for call key');
   const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId });
   const deviceId = ensureDeviceId();
-  const secretRecord = getContactSecret(identity.digest, { deviceId, peerDeviceId });
+  // For calls, we need the conversationToken which is shared across all devices
+  // Don't filter by deviceId, just get the contact record
+  const secretRecord = getContactSecret(identity.digest, { peerDeviceId });
   const callId = envelope?.callId || session?.callId || null;
   const secretB64 = secretRecord?.secret
     || secretRecord?.conversationToken
@@ -202,7 +204,6 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
     console.log('[call] key:secret-lookup', JSON.stringify({
       peerKey: identity.peerKey,
       peerDigest: identity.digest,
-      lookupDeviceId: deviceId || null,
       lookupPeerDeviceId: peerDeviceId || null,
       found: !!secretB64,
       conversationToken: secretRecord?.conversationToken ? 'present' : 'missing',
