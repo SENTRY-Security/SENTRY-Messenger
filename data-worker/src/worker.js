@@ -2615,6 +2615,31 @@ async function handleMessagesRoutes(req, env) {
         break;
       }
 
+      // [FIX-START] Aggregate vault put access count for delivery status
+      // We need to know how many devices have this message key (Sender + Receiver(s))
+      // vaultPutCount >= 2 usually means delivered.
+      const batchIds = batch.map(r => r.id).filter(Boolean);
+      const vaultCounts = new Map();
+      if (batchIds.length > 0) {
+        try {
+          const placeholders = batchIds.map((_, i) => `?${i + 1}`).join(',');
+          const countStmt = env.DB.prepare(`
+            SELECT message_id, COUNT(*) as c
+              FROM message_key_vault
+             WHERE message_id IN (${placeholders})
+             GROUP BY message_id
+          `).bind(...batchIds);
+          const { results: countRows } = await countStmt.all();
+          for (const cr of countRows || []) {
+            if (cr.message_id) vaultCounts.set(cr.message_id, Number(cr.c));
+          }
+        } catch (err) {
+          console.warn('vault_count_agg_failed', err);
+        }
+      }
+      // [FIX-END]
+
+
       let lastItemInBatch = null;
       for (const row of batch) {
         if (totalVisible >= visibleLimit) {
@@ -2633,6 +2658,7 @@ async function handleMessagesRoutes(req, env) {
           header_json: row.header_json,
           ciphertext_b64: row.ciphertext_b64,
           counter: row.counter,
+          vaultPutCount: vaultCounts.get(row.id) || 0, // [FIX] Return aggregated count
           created_at: row.created_at
         };
 
