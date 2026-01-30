@@ -830,6 +830,13 @@ export class MessageRenderer {
                     statusSpan.className = 'message-status hidden';
                     statusSpan.textContent = '';
                 } else if (pending) {
+                    console.log('[Renderer] Render Pending:', {
+                        id: msg.id,
+                        status: msg.status,
+                        pendingProp: msg.pending,
+                        isPendingVar: pending,
+                        direction: msg.direction
+                    });
                     statusSpan.className = 'message-status pending';
 
                     statusSpan.innerHTML = '<span class="status-spinner"></span>';

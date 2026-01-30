@@ -260,6 +260,9 @@ export function upsertTimelineEntry(conversationId, entry = {}) {
   merged.messageId = messageId;
   merged.msgType = msgType || merged.msgType || merged.type || null;
   convMap.set(messageId, merged);
+  if (merged.status === 'sent' && merged.pending === false && existing?.pending === true) {
+    console.log('[timeline-store] upsertTimelineEntry: CLEARED PENDING', { msgId: messageId, counter: merged.counter });
+  }
   emitAppend({ conversationId: convId, entry: merged, updated: !!existing });
   return { ok: true, updated: !!existing, entry: merged };
 }

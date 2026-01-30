@@ -22,7 +22,7 @@ import { getAccountDigest, normalizePeerIdentity } from '../../../core/store.js'
 import { sendDrText } from '../../../features/dr-session.js';
 import { getReplacementInfo } from '../../../features/messages/ui/outbox-hooks.js';
 import { normalizeCounterValue, normalizeTimelineMessageId } from '../../../features/messages/parser.js';
-import { getTimeline as timelineGetTimeline } from '../../../features/timeline-store.js';
+import { getTimeline as timelineGetTimeline, upsertTimelineEntry } from '../../../features/timeline-store.js';
 
 export class ComposerController extends BaseController {
     constructor(deps) {
@@ -374,6 +374,15 @@ export class ComposerController extends BaseController {
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
             } else if (effectiveLocalMsg) {
                 this.deps.messageStatus?.applyOutgoingSent(effectiveLocalMsg, res, ts);
+
+                // [FIX] Double-ensure status update via direct store access
+                upsertTimelineEntry(state.conversationId, {
+                    messageId: effectiveLocalMsg.id,
+                    status: 'sent',
+                    pending: false,
+                    error: null
+                });
+
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
             }
             this.setMessagesStatus('');
