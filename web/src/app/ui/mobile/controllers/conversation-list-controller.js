@@ -277,12 +277,21 @@ export class ConversationListController extends BaseController {
 
                 const result = await apiListSecureMessages({
                     conversationId: thread.conversationId,
-                    limit: 10 // [FIX] Fetch more to find last valid content
+                    limit: 20 // [FIX] Fetch more to find last valid content (was 10)
                 });
 
                 const messages = result?.data?.items || [];
                 let previewMsg = null;
                 let isDeleted = false;
+
+                // [DEBUG] Inspect what we got
+                if (this.deps.contactCoreVerbose || true) {
+                    console.log('[ConvList] refreshPreviews result', {
+                        conversationId: thread.conversationId,
+                        count: messages.length,
+                        types: messages.map(m => m.payload?.type)
+                    });
+                }
 
                 // [FIX] Find last meaningful message
                 for (const msg of messages) {
@@ -300,7 +309,11 @@ export class ConversationListController extends BaseController {
                     const isControl = type === 'sys' || type === 'system' || type === 'control' ||
                         (type && ['profile-update', 'session-init', 'session-ack'].includes(type));
 
-                    if (isControl) continue;
+                    if (isControl) {
+                        // [DEBUG] Log skipped message
+                        // console.log('[ConvList] Skipping preview candidate', { id: msg.id, type });
+                        continue;
+                    }
 
                     // Ensure it's content
                     if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log' || type === 'contact-share') {
