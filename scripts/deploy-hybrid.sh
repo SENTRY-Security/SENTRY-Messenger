@@ -50,11 +50,9 @@ git add .
 git commit -m "Deploy: $(date)" || echo "   (No changes to commit)"
 git push origin main
 
-# Remote Update
-echo "   - Updating remote server..."
-ssh "$REMOTE_HOST" << EOF
-  set -e
-  cd "$REMOTE_DIR"
+# Check if running on the remote server itself (skip SSH)
+if [ "$SKIP_SSH" = "1" ] || [ "$(hostname)" = "localhost" ] || [ -f "/root/service/.is-server" ]; then
+  echo "   - Running locally on server, updating directly..."
   echo "     - Pulling latest code..."
   git fetch origin
   git reset --hard origin/main
@@ -64,6 +62,22 @@ ssh "$REMOTE_HOST" << EOF
   
   echo "     - Reloading PM2 services..."
   pm2 reload all
+else
+  # Remote Update via SSH
+  echo "   - Updating remote server..."
+  ssh "$REMOTE_HOST" << EOF
+    set -e
+    cd "$REMOTE_DIR"
+    echo "     - Pulling latest code..."
+    git fetch origin
+    git reset --hard origin/main
+    
+    echo "     - Installing dependencies..."
+    npm install --production
+    
+    echo "     - Reloading PM2 services..."
+    pm2 reload all
 EOF
+fi
 
 echo "✅ Hybrid Deployment Complete!"
