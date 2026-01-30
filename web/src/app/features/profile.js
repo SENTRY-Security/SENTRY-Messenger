@@ -388,11 +388,19 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
     normalizedInput = { ...inputProfile };
     delete normalizedInput.avatar;
   }
-  if (targetIsSelf && !hasNicknameField) {
+  if (targetIsSelf && (!hasNicknameField || !hasAvatarField)) {
     const existing = await loadLatestProfile().catch(() => null);
-    if (existing?.nickname) {
+
+    // Preserve Nickname if missing
+    if (!hasNicknameField && existing?.nickname) {
       if (normalizedInput === inputProfile) normalizedInput = { ...inputProfile };
       normalizedInput.nickname = existing.nickname;
+    }
+
+    // [FIX] Preserve Avatar if missing (and not explicitly set to null)
+    if (!hasAvatarField && existing?.avatar) {
+      if (normalizedInput === inputProfile) normalizedInput = { ...inputProfile };
+      normalizedInput.avatar = existing.avatar;
     }
   }
   const fallbackNickname = '';
