@@ -241,40 +241,63 @@ export function resolveRenderEntryCounter(entry) {
     return normalizeCounterValue(header?.n ?? header?.counter);
 }
 
-export function computeDoubleTickState({ timelineMessages, conversationId, selfDigest } = {}) {
-    const latestOutgoing = resolveLatestOutgoingMessage(timelineMessages, selfDigest);
-    const latestOutgoingId = latestOutgoing?.id || latestOutgoing?.messageId || latestOutgoing?.serverMessageId || null;
+export function computeStatusVisibility({ timelineMessages, conversationId, selfDigest } = {}) {
+    const visibleStatusSet = new Set();
+    const normalizedSelf = normalizeAccountDigest(selfDigest || null);
 
-    // Legacy Check
-    const latestOutgoingCounter = resolveRenderEntryCounter(latestOutgoing);
-    const ackCounter = conversationId ? getVaultAckCounter(conversationId) : null;
-    const legacyDelivered = Number.isFinite(latestOutgoingCounter)
-        && Number.isFinite(ackCounter)
-        && ackCounter >= latestOutgoingCounter;
+    if (!Array.isArray(timelineMessages) || !timelineMessages.length) {
+        return { visibleStatusSet };
+    }
 
-    // New "Server-Side Count" Check
-    // If vaultPutCount >= 2 (Sender + Receiver), it is delivered.
-    const vaultCount = Number(latestOutgoing?.vaultPutCount);
-    const countDelivered = Number.isFinite(vaultCount) && vaultCount >= 2;
+    let foundDeliveredAnchor = false;
 
-    const latestOutgoingDelivered = countDelivered || legacyDelivered;
+    // Traverse backwards from newest to oldest
+    for (let i = timelineMessages.length - 1; i >= 0; i -= 1) {
+        const msg = timelineMessages[i];
+        if (!isUserTimelineMessage(msg)) continue;
 
-    console.log('[Renderer] DoubleTickState', {
-        convId: conversationId,
-        latestId: latestOutgoingId,
-        latestCounter: latestOutgoingCounter,
-        ackCounter,
-        vaultCount,
-        isDelivered: latestOutgoingDelivered,
-        mode: countDelivered ? 'count' : 'legacy'
-    });
+        // Skip non-outgoing messages
+        if (!isOutgoingFromSelf(msg, normalizedSelf)) continue;
 
-    return { latestOutgoingId, latestOutgoingDelivered, latestOutgoingCounter, ackCounter };
+        const messageId = msg.id || msg.messageId || msg.serverMessageId;
+        if (!messageId) continue;
+
+        // Determine effective status (Sent vs Delivered)
+        // 1. Vault Count Check (Primary)
+        const vaultCount = Number(msg.vaultPutCount);
+        const countDelivered = Number.isFinite(vaultCount) && vaultCount >= 2;
+
+        // 2. Legacy Ack Counter Check (Secondary)
+        const msgCounter = resolveRenderEntryCounter(msg);
+        const ackCounter = conversationId ? getVaultAckCounter(conversationId) : null;
+        const legacyDelivered = Number.isFinite(msgCounter)
+            && Number.isFinite(ackCounter)
+            && ackCounter >= msgCounter;
+
+        const isDelivered = countDelivered || legacyDelivered || msg.status === 'delivered' || msg.status === 'read';
+
+        if (foundDeliveredAnchor) {
+            // We already found the anchor (latest delivered message).
+            // Any older message status is hidden.
+            continue;
+        }
+
+        // If we haven't found the anchor yet, this message status should be visible.
+        visibleStatusSet.add(messageId);
+
+        if (isDelivered) {
+            // This is the first "delivered" message we've seen going backwards.
+            // It becomes the anchor.
+            foundDeliveredAnchor = true;
+        }
+    }
+
+    return { visibleStatusSet };
 }
 
 export function computeDoubleTickMessageId(params = {}) {
-    const state = computeDoubleTickState(params);
-    return state.latestOutgoingDelivered ? state.latestOutgoingId || null : null;
+    // [DEPRECATED] Replaced by computeStatusVisibility
+    return null;
 }
 
 export function resolveLatestOutgoingMessageIdForConversation(conversationId) {
@@ -490,7 +513,7 @@ export class MessageRenderer {
         this.renderUploadOverlay(wrapper, media, messageId);
     }
 
-    render(entries, { state, contacts, latestOutgoingId, latestOutgoingDelivered, shimmerIds, forceFullRender }) {
+    render(entries, { state, contacts, visibleStatusSet, shimmerIds, forceFullRender }) {
         if (!this.listEl) return;
         const { activePeerDigest, activePeerDeviceId, conversationId } = state;
         this.shimmerIds = shimmerIds || new Set();
@@ -761,8 +784,16 @@ export class MessageRenderer {
                 const failed = status === 'failed';
                 const statusMessageId = msg?.id || msg?.messageId || msg?.localId || null;
                 const isOutgoing = msg.direction === 'outgoing';
-                const isLatestOutgoing = !!(isOutgoing && statusMessageId && latestOutgoingId && statusMessageId === latestOutgoingId);
-                const delivered = isLatestOutgoing ? latestOutgoingDelivered : false;
+                const showStatus = !!(statusMessageId && visibleStatusSet && visibleStatusSet.has(statusMessageId));
+
+                // Determine delivery status locally for rendering icon
+                const vaultCount = Number(msg.vaultPutCount);
+                const countDelivered = Number.isFinite(vaultCount) && vaultCount >= 2;
+                const msgCounter = resolveRenderEntryCounter(msg);
+                const ackCounter = (conversationId && typeof getVaultAckCounter === 'function') ? getVaultAckCounter(conversationId) : null;
+                const legacyDelivered = Number.isFinite(msgCounter) && Number.isFinite(ackCounter) && ackCounter >= msgCounter;
+
+                const delivered = countDelivered || legacyDelivered || msg.status === 'delivered' || msg.status === 'read';
 
                 if (statusMessageId) statusSpan.dataset.messageId = statusMessageId;
 
@@ -795,7 +826,7 @@ export class MessageRenderer {
                         const failureTip = msg?.failureReason || msg?.failureCode || '';
                         if (failureTip) statusSpan.title = failureTip;
                     }
-                } else if (!isLatestOutgoing) {
+                } else if (!showStatus) {
                     statusSpan.className = 'message-status hidden';
                     statusSpan.textContent = '';
                 } else if (pending) {

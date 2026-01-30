@@ -2374,6 +2374,15 @@ export async function sendDrPlaintextCore(params = {}) {
       });
     } catch { }
     msg.counter = vaultCounter;
+
+    // [FIX] Explicit Status Update for Robustness
+    // Ensure the UI reflects 'sent' immediately, even if the onSent hook races or fails.
+    // This fixes the issue where offline recipients cause messages to stay 'pending' forever.
+    const directUpdate = updateTimelineEntryStatusByCounter(finalConversationId, vaultCounter, 'sent', { reason: 'DIRECT_SEND_SUCCESS' });
+    if (!directUpdate) {
+      logDrSendTrace({ messageId, stage: 'DIRECT_STATUS_UPDATE_FAIL', jobId: job?.jobId, error: 'timeline entry not found for direct update' });
+    }
+
     return { msg, convId: finalConversationId, secure: true };
   } catch (err) {
     if (!err?.__drDeliveryLogged) {

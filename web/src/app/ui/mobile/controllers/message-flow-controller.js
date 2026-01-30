@@ -18,7 +18,8 @@ import {
 import {
     MessageRenderer,
     buildRenderEntries,
-    computeDoubleTickState
+    computeDoubleTickState, // Keep for potential legacy refs if any, or remove if unused. It is exported but deprecated.
+    computeStatusVisibility
 } from '../../../features/messages/ui/renderer.js';
 import {
     getReplayPlaceholderEntries,
@@ -860,17 +861,15 @@ export class MessageFlowController extends BaseController {
             msgCount: timelineMessages.length
         });
 
-        const { latestOutgoingId, latestOutgoingDelivered, latestOutgoingCounter, ackCounter } = computeDoubleTickState({
+        const { visibleStatusSet } = computeStatusVisibility({
             timelineMessages,
             conversationId: state.conversationId || null,
             selfDigest
         });
 
-        console.log('[MessageFlow] Debug DoubleTick Result', {
-            latestOutgoingId,
-            latestOutgoingDelivered,
-            latestOutgoingCounter,
-            ackCounter
+        console.log('[MessageFlow] Debug StatusVisibility', {
+            visibleCount: visibleStatusSet.size,
+            sample: Array.from(visibleStatusSet).slice(-3)
         });
 
         // Render Main List (Unified)
@@ -878,8 +877,7 @@ export class MessageFlowController extends BaseController {
             this.messageRenderer.render(renderEntries, {
                 state: { ...state, activePeerDigest: state.activePeerDigest, activePeerDeviceId: state.activePeerDeviceId, conversationId: state.conversationId },
                 contacts: this.sessionStore.contactIndex,
-                latestOutgoingId,
-                latestOutgoingDelivered,
+                visibleStatusSet,
                 shimmerIds,
                 forceFullRender // [FIX] Pass flag to renderer
             });
