@@ -2110,23 +2110,62 @@ export function getContactSecretSections(peerAccountDigest, opts = {}) {
 export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
   const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
   const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
+  const map = ensureMap();
+  
+  // Debug: log all keys in map to understand the structure
+  const mapKeys = Array.from(map.keys());
+  const matchingKeys = mapKeys.filter(k => k.includes(peerAccountDigest?.slice(0, 16) || ''));
+  
   if (!key) {
-    debugLog('call-token-lookup', { peerAccountDigest, found: false, reason: 'no-key' });
+    console.log('[call] token-lookup', JSON.stringify({ 
+      peerAccountDigest, 
+      peerDeviceIdHint,
+      found: false, 
+      reason: 'no-key',
+      mapSize: map.size,
+      matchingKeys: matchingKeys.slice(0, 3)
+    }));
     return null;
   }
-  const map = ensureMap();
+  
   const record = map.get(key);
   if (!record) {
-    debugLog('call-token-lookup', { peerAccountDigest, key, found: false, reason: 'no-record' });
+    // Try to find by digest only (without device id)
+    let fallbackRecord = null;
+    let fallbackKey = null;
+    for (const [k, v] of map.entries()) {
+      if (k.startsWith(peerAccountDigest + '::') || k === peerAccountDigest) {
+        fallbackRecord = v;
+        fallbackKey = k;
+        break;
+      }
+    }
+    
+    console.log('[call] token-lookup', JSON.stringify({ 
+      peerAccountDigest, 
+      key, 
+      found: false, 
+      reason: 'no-record',
+      mapSize: map.size,
+      matchingKeys: matchingKeys.slice(0, 3),
+      hasFallback: !!fallbackRecord,
+      fallbackKey,
+      fallbackHasToken: !!fallbackRecord?.conversationToken
+    }));
+    
+    // Return fallback if found
+    if (fallbackRecord?.conversationToken) {
+      return fallbackRecord.conversationToken;
+    }
     return null;
   }
   const token = record.conversationToken || null;
-  debugLog('call-token-lookup', { 
+  console.log('[call] token-lookup', JSON.stringify({ 
     peerAccountDigest, 
     key, 
     found: !!token, 
     hasConversationId: !!record.conversationId 
-  });
+  }));
   return token;
 }
 
