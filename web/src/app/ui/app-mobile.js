@@ -3716,11 +3716,13 @@ async function hydrateProfileSnapshotForDigest(peerDigest) {
     const remoteTs = Number(profile?.updatedAt || profile?.ts || 0);
     const localTs = Number(current?.updatedAt || 0);
 
-    // 1. Prevent Revert: If local is newer, ignore stale remote data
-    if (localTs > remoteTs) {
+    // 1. Prevent Revert: If local is newer OR EQUAL, ignore remote data.
+    // This prevents "reflected" updates (the save we just made) from re-triggering processing
+    // or overwriting optimistic state with potentially propagated/stale data.
+    if (localTs >= remoteTs) {
       log({
         profileHydrateSkip: {
-          reason: 'local-is-newer',
+          reason: 'local-is-newer-or-equal',
           digest,
           localTs,
           remoteTs
@@ -3729,7 +3731,7 @@ async function hydrateProfileSnapshotForDigest(peerDigest) {
       return;
     }
 
-    // 2. Cross-Device Sync: If remote is newer, update local state
+    // 2. Cross-Device Sync: If remote is strictly newer, update local state
     if (remoteTs > localTs) {
       log({
         profileHydrateSync: {
