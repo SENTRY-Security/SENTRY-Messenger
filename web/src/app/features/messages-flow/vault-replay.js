@@ -309,7 +309,7 @@ export async function decryptReplayBatch({
     if (!item) continue;
     // 2. Retrieve Message Key
     const messageId = toMessageId(item.raw) || `gap:v1:${item.counter}`; // normalized ID
-    
+
     // Priority 1: Use server-provided keys (from includeKeys response)
     let vaultKeyResult = null;
     const serverKeyEntry = serverKeys?.[messageId] || null;
@@ -333,7 +333,7 @@ export async function decryptReplayBatch({
         vaultKeyResult = null;
       }
     }
-    
+
     // Priority 2: Fallback to local vault lookup
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
       try {
@@ -346,7 +346,7 @@ export async function decryptReplayBatch({
         vaultKeyResult = { ok: false, error: err?.message || err };
       }
     }
-    
+
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
       errors.push(buildDecryptError({
         messageId,
@@ -436,7 +436,8 @@ export async function decryptReplayBatch({
       messageKeyB64: vaultKeyResult.messageKeyB64,
       meta: item.meta || null,
       counter: item.counter,
-      msgType: item.msgType || null
+      msgType: item.msgType || null,
+      vaultPutCount: Number(item.raw?.vaultPutCount || item.raw?.vault_put_count || item.vaultPutCount || 0) || null
     };
 
     // [Phase 29] Fix Image Rehydration (Robust)

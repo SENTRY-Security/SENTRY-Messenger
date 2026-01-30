@@ -448,7 +448,8 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         senderDigest: senderAccountDigest || null,
         senderDeviceId,
         peerDeviceId,
-        header: messageObj.header || null // [FIX] Persist header so it's visible in Debug Modal/Logs
+        header: messageObj.header || null, // [FIX] Persist header so it's visible in Debug Modal/Logs
+        vaultPutCount: Number(item?.vaultPutCount || item?.vault_put_count || item?.raw?.vault_put_count || item?.raw?.vaultPutCount) || null
     };
 
     replaceTimelineEntryByCounter(conversationId, counter, timelineEntry);
