@@ -108,7 +108,9 @@ import {
 
 import {
   enqueuePendingVaultPut as vaultEnqueuePendingVaultPut,
-  flushPendingVaultPutsNow as vaultFlushPendingVaultPutsNow
+  flushPendingVaultPutsNow as vaultFlushPendingVaultPutsNow,
+  getPendingVaultPutForMessage as vaultGetPendingVaultPutForMessage,
+  removePendingVaultPut as vaultRemovePendingVaultPut
 } from './messages/vault.js';
 
 // Actually timeline-store.js is where they are defined. messages-pane.js imports them.
@@ -173,6 +175,8 @@ const defaultDeps = {
   maybeSendVaultAckWs,
   enqueuePendingVaultPut: vaultEnqueuePendingVaultPut,
   flushPendingVaultPutsNow: vaultFlushPendingVaultPutsNow,
+  getPendingVaultPutForMessage: vaultGetPendingVaultPutForMessage,
+  removePendingVaultPut: vaultRemovePendingVaultPut,
   // Injected for Shimmer Restoration
   ensurePlaceholderEntry,
   timelineAppendBatch: storeAppendBatch,

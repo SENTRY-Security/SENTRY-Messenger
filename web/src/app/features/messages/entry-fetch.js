@@ -100,6 +100,8 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         buildMessageObject,
         vaultPutMessageKey,
         enqueuePendingVaultPut,
+        getPendingVaultPutForMessage,
+        removePendingVaultPut,
         updateIncomingCounterState,
         persistDrSnapshot,
         maybeTriggerBackupAfterDecrypt,
@@ -675,6 +677,59 @@ export async function processDecryptPipelineForConversation({
                 }
             }
 
+            // [FIX] Check if this message has a pending vault put
+            // If so, skip decryption (DR state already advanced) and just retry vault put
+            const pendingVaultEntry = typeof getPendingVaultPutForMessage === 'function'
+                ? getPendingVaultPutForMessage({
+                    conversationId,
+                    messageId: activeItem?.serverMessageId,
+                    senderDeviceId: activeItem?.senderDeviceId
+                })
+                : null;
+
+            if (pendingVaultEntry && pendingVaultEntry.messageKeyB64) {
+                // Message was already decrypted, just retry vault put
+                let vaultRetryOk = false;
+                try {
+                    await vaultPutMessageKey({
+                        conversationId,
+                        messageId: pendingVaultEntry.messageId,
+                        senderDeviceId: pendingVaultEntry.senderDeviceId,
+                        targetDeviceId: pendingVaultEntry.targetDeviceId || null,
+                        direction: 'incoming',
+                        msgType: pendingVaultEntry.msgType || null,
+                        messageKeyB64: pendingVaultEntry.messageKeyB64,
+                        headerCounter: pendingVaultEntry.headerCounter,
+                        drStateSnapshot: pendingVaultEntry.drStateSnapshot || null
+                    });
+                    vaultRetryOk = true;
+                    if (typeof removePendingVaultPut === 'function') {
+                        removePendingVaultPut({
+                            conversationId,
+                            messageId: pendingVaultEntry.messageId,
+                            senderDeviceId: pendingVaultEntry.senderDeviceId
+                        });
+                    }
+                    vaultPutIncomingOk += 1;
+                } catch (vaultErr) {
+                    // Still failed, don't advance counter
+                    const vaultFailureCount = incrementPipelineFailure(streamKey, counter);
+                    if (vaultFailureCount >= COUNTER_GAP_RETRY_MAX) {
+                        // Exhausted retries - advance anyway
+                        console.warn('[entry-fetch] pending vault retry exhausted', { conversationId, counter });
+                        vaultRetryOk = true;
+                    } else {
+                        break;
+                    }
+                }
+                if (vaultRetryOk) {
+                    clearPipelineFailure(streamKey, counter);
+                    setLastProcessedCounterForStream(streamKey, counter, null);
+                    cleanupPipelineQueue(streamKey, conversationId, counter);
+                }
+                continue;
+            }
+
             const result = await decryptPipelineItem(activeItem, {
                 onMessageDecrypted,
                 sendReadReceipt,
@@ -723,6 +778,15 @@ export async function processDecryptPipelineForConversation({
                 // to transition them out of 'pending' state.
                 markPlaceholderStatus(conversationId, counter, 'hidden', 'control_message');
             }
+
+            // [FIX] If vault put failed for USER_MESSAGE, do NOT advance counter
+            // The message is in pending queue, and getPendingVaultPutForMessage will catch it
+            // on next pipeline run to retry vault put without re-decryption
+            if (result?.semantic?.kind === SEMANTIC_KIND.USER_MESSAGE && result?.vaultPutStatus !== 'ok') {
+                // Don't advance counter - next run will detect pending vault put and retry
+                break;
+            }
+
             setLastProcessedCounterForStream(streamKey, counter, result?.state || null);
             cleanupPipelineQueue(streamKey, conversationId, counter);
         }

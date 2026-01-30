@@ -85,6 +85,33 @@ function buildRetryTracePayload(item, attemptCount, result, errorCode = null, st
     return payload;
 }
 
+/**
+ * Check if a message has a pending vault put entry.
+ * Used to detect if we should skip re-decryption and just retry vault put.
+ */
+export function getPendingVaultPutForMessage({ conversationId, messageId, senderDeviceId }) {
+    if (!conversationId || !messageId || !senderDeviceId) return null;
+    const queue = restorePendingVaultPuts();
+    if (!Array.isArray(queue)) return null;
+    const key = buildPendingVaultPutKey({ conversationId, messageId, senderDeviceId });
+    return queue.find((entry) => buildPendingVaultPutKey(entry) === key) || null;
+}
+
+/**
+ * Remove a pending vault put entry after successful vault put.
+ */
+export function removePendingVaultPut({ conversationId, messageId, senderDeviceId }) {
+    if (!conversationId || !messageId || !senderDeviceId) return false;
+    const queue = restorePendingVaultPuts();
+    if (!Array.isArray(queue)) return false;
+    const key = buildPendingVaultPutKey({ conversationId, messageId, senderDeviceId });
+    const idx = queue.findIndex((entry) => buildPendingVaultPutKey(entry) === key);
+    if (idx === -1) return false;
+    queue.splice(idx, 1);
+    persistPendingVaultPuts();
+    return true;
+}
+
 export function enqueuePendingVaultPut(params = {}, err = null) {
     const conversationId = params?.conversationId || null;
     const messageId = params?.messageId || null;
