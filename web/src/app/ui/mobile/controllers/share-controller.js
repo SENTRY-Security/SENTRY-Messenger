@@ -27,7 +27,7 @@ import { normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } fro
 import { deriveConversationContextFromSecret } from '../../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../../features/contact-share.js';
 import { flushPendingContactShares, uplinkContactToD1 } from '../../../features/contacts.js';
-import { setContactSecret, getContactSecret } from '../../../core/contact-secrets.js';
+import { setContactSecret, getContactSecret, restoreContactSecrets } from '../../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from '../session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice } from '../contact-core-store.js';
 import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, consumeDrSendCounter } from '../../../features/dr-session.js';
@@ -2452,7 +2452,7 @@ export function setupShareController(options) {
 
   async function broadcastContactUpdate({ reason = 'manual', targetPeers = null, overrides = null } = {}) {
     const reasonKey = typeof reason === 'string' ? reason.toLowerCase() : 'manual';
-    const map = contactSecretMap instanceof Map ? contactSecretMap : restoreContactSecrets();
+    const map = restoreContactSecrets();
     if (!(map instanceof Map)) return;
     const targetSet = Array.isArray(targetPeers) && targetPeers.length
       ? new Set(
