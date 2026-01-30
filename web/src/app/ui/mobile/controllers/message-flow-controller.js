@@ -18,7 +18,6 @@ import {
 import {
     MessageRenderer,
     buildRenderEntries,
-    computeDoubleTickState, // Keep for potential legacy refs if any, or remove if unused. It is exported but deprecated.
     computeStatusVisibility
 } from '../../../features/messages/ui/renderer.js';
 import {
