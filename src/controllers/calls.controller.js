@@ -7,13 +7,12 @@ import { appendCallEvent, callWorkerRequest, ensureCallWorkerConfig, touchDevice
 import { CallIdRegex } from '../utils/call-validators.js';
 
 const DEFAULT_SESSION_TTL = Number(process.env.CALL_SESSION_TTL_SECONDS || 90);
-const TURN_SHARED_SECRET = process.env.TURN_SHARED_SECRET || '';
 const TURN_TTL_SECONDS = Number(process.env.TURN_TTL_SECONDS || 300);
-const TURN_STUN_URIS = parseUriList(process.env.TURN_STUN_URIS || 'stun:turn1.sentry.mobi:3478,stun:turn2.sentry.mobi:3478');
-const TURN_RELAY_URIS = parseUriList(
-  process.env.TURN_RELAY_URIS
-  || 'turn:turn1.sentry.mobi:3478?transport=udp,turns:turn1.sentry.mobi:5349?transport=tcp,turn:turn2.sentry.mobi:3478?transport=udp,turns:turn2.sentry.mobi:5349?transport=tcp'
-);
+
+// Cloudflare TURN configuration
+const CF_TURN_TOKEN_ID = process.env.CLOUDFLARE_TURN_TOKEN_ID || '';
+const CF_TURN_TOKEN_KEY = process.env.CLOUDFLARE_TURN_TOKEN_KEY || '';
+
 const DEFAULT_TURN_ENDPOINT = '/api/v1/calls/turn-credentials';
 const RAW_CALL_NETWORK_CONFIG = baseCallNetworkConfig?.default ?? baseCallNetworkConfig ?? {};
 
@@ -137,9 +136,7 @@ function dedupeIceServers(list = []) {
 
 function buildEnvStunServers() {
   const entries = [];
-  if (TURN_STUN_URIS.length) {
-    entries.push({ urls: TURN_STUN_URIS });
-  }
+  // Only use extra STUN URIs from env if configured
   if (EXTRA_STUN_URIS.length) {
     entries.push({ urls: EXTRA_STUN_URIS });
   }
@@ -529,8 +526,9 @@ export async function getCallNetworkConfig(req, res) {
 }
 
 export async function issueTurnCredentials(req, res) {
-  if (!TURN_SHARED_SECRET) {
-    return res.status(500).json({ error: 'ConfigError', message: 'TURN_SHARED_SECRET missing' });
+  // Check Cloudflare TURN configuration
+  if (!CF_TURN_TOKEN_ID || !CF_TURN_TOKEN_KEY) {
+    return res.status(500).json({ error: 'ConfigError', message: 'Cloudflare TURN credentials not configured' });
   }
   const senderDeviceId = req.get('x-device-id') || null;
   if (!senderDeviceId) {
@@ -552,23 +550,58 @@ export async function issueTurnCredentials(req, res) {
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
   const ttlSeconds = clamp(input.ttlSeconds ?? TURN_TTL_SECONDS, 60, 600);
-  const expiresAt = Math.floor(Date.now() / 1000) + ttlSeconds;
-  const username = `${expiresAt}:${auth.accountDigest}`;
-  const credential = crypto.createHmac('sha1', TURN_SHARED_SECRET).update(username).digest('base64');
-  const iceServers = [];
-  if (TURN_STUN_URIS.length) {
-    iceServers.push({ urls: TURN_STUN_URIS });
-  }
-  if (TURN_RELAY_URIS.length) {
-    iceServers.push({
-      urls: TURN_RELAY_URIS,
-      username,
-      credential
+
+  // Request credentials from Cloudflare TURN API
+  try {
+    const cfResponse = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${CF_TURN_TOKEN_ID}/credentials/generate`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${CF_TURN_TOKEN_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ttl: ttlSeconds })
+      }
+    );
+
+    if (!cfResponse.ok) {
+      const errorText = await cfResponse.text();
+      console.error('[TURN] Cloudflare API error:', cfResponse.status, errorText);
+      return res.status(502).json({ 
+        error: 'TurnCredentialsFailed', 
+        message: `Cloudflare TURN API error: ${cfResponse.status}` 
+      });
+    }
+
+    const cfData = await cfResponse.json();
+    
+    // Cloudflare returns: { iceServers: { urls: [...], username, credential } }
+    const iceServers = [];
+    
+    if (cfData.iceServers) {
+      // Cloudflare returns a single iceServers object, wrap in array
+      const cfServer = cfData.iceServers;
+      if (cfServer.urls && cfServer.username && cfServer.credential) {
+        iceServers.push({
+          urls: Array.isArray(cfServer.urls) ? cfServer.urls : [cfServer.urls],
+          username: cfServer.username,
+          credential: cfServer.credential
+        });
+      }
+    }
+
+    return res.status(200).json({
+      ttl: ttlSeconds,
+      expiresAt: Math.floor(Date.now() / 1000) + ttlSeconds,
+      iceServers
+    });
+
+  } catch (err) {
+    console.error('[TURN] Cloudflare API request failed:', err);
+    return res.status(502).json({ 
+      error: 'TurnCredentialsFailed', 
+      message: err?.message || 'Cloudflare TURN API request failed' 
     });
   }
-  return res.status(200).json({
-    ttl: ttlSeconds,
-    expiresAt,
-    iceServers
-  });
 }
