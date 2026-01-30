@@ -258,120 +258,125 @@ export class ConversationListController extends BaseController {
         const threadsMap = this.getThreads();
         const threads = Array.from(threadsMap.values());
 
-        for (const thread of threads) {
-            const peerDigest = this._threadPeer(thread);
-            if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
-                if (!thread?.peerDeviceId) {
-                    try { this.deps.log?.({ previewSkipMissingPeerDevice: thread?.conversationId || null }); } catch { }
-                }
-                continue;
-            }
-            if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
-
-            try {
-                // Assuming apiListSecureMessages is available (need to verify import)
-                if (typeof apiListSecureMessages !== 'function') {
-                    console.warn('apiListSecureMessages not available');
-                    continue;
-                }
-
-                const result = await apiListSecureMessages({
-                    conversationId: thread.conversationId,
-                    limit: 20 // [FIX] Fetch more to find last valid content (was 10)
-                });
-
-                const messages = result?.data?.items || [];
-                let previewMsg = null;
-                let isDeleted = false;
-
-                // [DEBUG] Inspect what we got
-                if (this.deps.contactCoreVerbose || true) {
-                    console.log('[ConvList] refreshPreviews result', {
-                        conversationId: thread.conversationId,
-                        count: messages.length,
-                        types: messages.map(m => m.payload?.type)
-                    });
-                }
-
-                // [FIX] Find last meaningful message
-                for (const msg of messages) {
-                    const payload = msg.payload || {};
-                    const type = normalizeMsgTypeValue(payload.type);
-
-                    if (type === 'conversation-deleted') {
-                        isDeleted = true;
-                        break;
-                    }
-
-                    // Skip control messages
-                    const meta = msg.meta || {};
-                    // [FIX] Removed contact-share from filter to allow "Friend Added" preview
-                    const isControl = type === 'sys' || type === 'system' || type === 'control' ||
-                        (type && ['profile-update', 'session-init', 'session-ack'].includes(type));
-
-                    if (isControl) {
-                        // [DEBUG] Log skipped message
-                        // console.log('[ConvList] Skipping preview candidate', { id: msg.id, type });
-                        continue;
-                    }
-
-                    // Ensure it's content
-                    if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log' || type === 'contact-share') {
-                        previewMsg = msg;
-                        break;
-                    }
-                }
-
-                let text = '尚無訊息';
-                let type = null;
-                let ts = null;
-                let direction = null;
-
-                if (isDeleted) {
-                    text = '尚無訊息';
-                    type = 'conversation-deleted';
-                    ts = messages[0] ? extractMessageTimestampMs(messages[0]) : Date.now();
-                } else if (previewMsg) {
-                    const payload = previewMsg.payload || {};
-                    const meta = previewMsg.meta || {};
-                    type = normalizeMsgTypeValue(payload.type);
-                    ts = extractMessageTimestampMs(previewMsg);
-
-                    const sender = normalizePeerKey(meta.sender);
-                    direction = sender === this.deps.sessionStore.activePeerDigest ? 'incoming' : (deriveMessageDirectionFromEnvelopeMeta ? deriveMessageDirectionFromEnvelopeMeta(meta) : 'unknown');
-
-                    if (type === 'text') {
-                        text = payload.text || '文字訊息';
-                    } else if (type === 'media') {
-                        const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
-                        if (mime.startsWith('image/')) {
-                            text = '[圖片]';
-                        } else if (mime.startsWith('video/')) {
-                            text = '[影片]';
-                        } else {
-                            text = `[檔案] ${payload.filename || payload.name || '附件'}`;
-                        }
-                    } else if (type === 'call_log' || type === 'call-log') {
-                        text = '[通話紀錄]';
-                    } else if (type === 'contact-share') {
-                        text = '[系統] 您已與對方成為好友';
-                    }
-                }
-
-                thread.lastMessageText = text;
-                thread.lastMessageTs = ts;
-                thread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
-                thread.lastDirection = direction;
-                thread.lastMsgType = type;
-                thread.previewLoaded = true;
-                thread.needsRefresh = false;
-
-                threadsMap.set(thread.conversationId, thread);
-            } catch (err) {
-                console.error('Preview refresh failed', err);
-            }
+        // [FIX] Parallel Fetch Config (Batch size 5)
+        const CHUNK_SIZE = 5;
+        const threadChunks = [];
+        for (let i = 0; i < threads.length; i += CHUNK_SIZE) {
+            threadChunks.push(threads.slice(i, i + CHUNK_SIZE));
         }
-        this.renderConversationList();
+
+        if (this.deps.contactCoreVerbose) {
+            console.log(`[ConvList] refreshPreviews starting. Threads: ${threads.length}, Chunks: ${threadChunks.length}`);
+        }
+        console.time('[ConvList] refreshPreviews duration');
+
+        for (const [chunkIdx, chunk] of threadChunks.entries()) {
+            await Promise.all(chunk.map(async (thread) => {
+                const peerDigest = this._threadPeer(thread);
+                if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
+                    if (!thread?.peerDeviceId) {
+                        try { this.deps.log?.({ previewSkipMissingPeerDevice: thread?.conversationId || null }); } catch { }
+                    }
+                    return;
+                }
+                if (!force && thread.previewLoaded && !thread.needsRefresh) return;
+
+                try {
+                    // Assuming apiListSecureMessages is available (need to verify import)
+                    if (typeof apiListSecureMessages !== 'function') {
+                        console.warn('apiListSecureMessages not available');
+                        return;
+                    }
+
+                    const result = await apiListSecureMessages({
+                        conversationId: thread.conversationId,
+                        limit: 20 // [FIX] Fetch more to find last valid content
+                    });
+
+                    const messages = result?.data?.items || [];
+                    let previewMsg = null;
+                    let isDeleted = false;
+
+                    // [FIX] Find last meaningful message
+                    for (const msg of messages) {
+                        const payload = msg.payload || {};
+                        const type = normalizeMsgTypeValue(payload.type);
+
+                        if (type === 'conversation-deleted') {
+                            isDeleted = true;
+                            break;
+                        }
+
+                        // Skip control messages
+                        const meta = msg.meta || {};
+                        // [FIX] Removed contact-share from filter to allow "Friend Added" preview
+                        const isControl = type === 'sys' || type === 'system' || type === 'control' ||
+                            (type && ['profile-update', 'session-init', 'session-ack'].includes(type));
+
+                        if (isControl) continue;
+
+                        // Ensure it's content
+                        if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log' || type === 'contact-share') {
+                            previewMsg = msg;
+                            break;
+                        }
+                    }
+
+                    let text = '尚無訊息';
+                    let type = null;
+                    let ts = null;
+                    let direction = null;
+
+                    if (isDeleted) {
+                        text = '尚無訊息';
+                        type = 'conversation-deleted';
+                        ts = messages[0] ? extractMessageTimestampMs(messages[0]) : Date.now();
+                    } else if (previewMsg) {
+                        const payload = previewMsg.payload || {};
+                        const meta = previewMsg.meta || {};
+                        type = normalizeMsgTypeValue(payload.type);
+                        ts = extractMessageTimestampMs(previewMsg);
+
+                        const sender = normalizePeerKey(meta.sender);
+                        direction = sender === this.deps.sessionStore.activePeerDigest ? 'incoming' : (deriveMessageDirectionFromEnvelopeMeta ? deriveMessageDirectionFromEnvelopeMeta(meta) : 'unknown');
+
+                        if (type === 'text') {
+                            text = payload.text || '文字訊息';
+                        } else if (type === 'media') {
+                            const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
+                            if (mime.startsWith('image/')) {
+                                text = '[圖片]';
+                            } else if (mime.startsWith('video/')) {
+                                text = '[影片]';
+                            } else {
+                                text = `[檔案] ${payload.filename || payload.name || '附件'}`;
+                            }
+                        } else if (type === 'call_log' || type === 'call-log') {
+                            text = '[通話紀錄]';
+                        } else if (type === 'contact-share') {
+                            text = '[系統] 您已與對方成為好友';
+                        }
+                    }
+
+                    thread.lastMessageText = text;
+                    thread.lastMessageTs = ts;
+                    thread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
+                    thread.lastDirection = direction;
+                    thread.lastMsgType = type;
+                    thread.previewLoaded = true;
+                    thread.needsRefresh = false;
+
+                    threadsMap.set(thread.conversationId, thread);
+                } catch (err) {
+                    console.error('Preview refresh failed', err);
+                }
+            }));
+
+            // [FIX] Progressive Render: Update UI after each chunk so user sees progress
+            this.renderConversationList();
+        }
+
+        console.timeEnd('[ConvList] refreshPreviews duration');
     }
 
     /**
