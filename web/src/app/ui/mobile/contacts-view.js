@@ -744,8 +744,20 @@ export function initContactsView(options) {
           || secretRecord?.conversationDrInit
           || null;
       }
-      const nickname = entry?.nickname ?? cacheEntry?.nickname ?? null;
-      const avatar = entry?.avatar ?? cacheEntry?.avatar ?? null;
+      const entryTs = Number(entry?.profileUpdatedAt || 0);
+      const cacheTs = Number(cacheEntry?.profileUpdatedAt || 0);
+      // [Fix] Stale Read Protection: If Local Cache is newer or equal, prefer it over D1.
+      // preventing "toggle revert" where a slow D1 uplink overwrites a fresh local update.
+      const preferLocal = cacheTs > 0 && cacheTs >= entryTs;
+
+      const nickname = preferLocal
+        ? (cacheEntry?.nickname ?? entry?.nickname ?? null)
+        : (entry?.nickname ?? cacheEntry?.nickname ?? null);
+
+      const avatar = preferLocal
+        ? (cacheEntry?.avatar ?? entry?.avatar ?? null)
+        : (entry?.avatar ?? cacheEntry?.avatar ?? null);
+
       const contactSecretResolved = entry?.contactSecret
         || secretRecord?.conversationToken
         || secretRecord?.conversation?.token
