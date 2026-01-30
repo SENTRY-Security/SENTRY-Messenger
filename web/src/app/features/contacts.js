@@ -764,6 +764,7 @@ export async function uplinkContactToD1(contactEntry, { isBlocked = false } = {}
     avatar: contactEntry.avatar, // Currently reusing URL/Base64. Future: R2 Ref.
     note: contactEntry.note || null,
     addedAt: contactEntry.addedAt,
+    profileUpdatedAt: contactEntry.profileUpdatedAt, // [Fix] Persist profile timestamp
     conversation: contactEntry.conversation // CRITICAL: Include session keys
   };
 
@@ -817,6 +818,7 @@ export async function downlinkContactsFromD1() {
         nickname: decrypted.nickname,
         avatar: decrypted.avatar,
         addedAt: decrypted.addedAt,
+        profileUpdatedAt: decrypted.profileUpdatedAt, // [Fix] Restore profile timestamp
         isBlocked: row.isBlocked,
         conversation: decrypted.conversation || null
       };
@@ -848,6 +850,7 @@ export async function backupAllContactsToD1() {
       nickname: entry.nickname,
       avatar: entry.avatar,
       addedAt: entry.addedAt,
+      profileUpdatedAt: entry.profileUpdatedAt, // [Fix] Persist timestamp in backup
       conversation: entry.conversation // Backup the keys too!
     };
     try {
