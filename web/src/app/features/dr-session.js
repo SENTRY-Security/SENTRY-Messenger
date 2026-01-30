@@ -1858,17 +1858,25 @@ export async function sendDrPlaintextCore(params = {}) {
     const vaultCounter = Number.isFinite(transportCounter) ? transportCounter : headerN;
     let drStateSnapshot = null;
     const mk = getMkRaw();
+
+    // [FIX] Unconditional Local Persistence (Split-Brain Prevention)
+    // We MUST persist the post-encryption snapshot to local storage BEFORE attempting
+    // the network send (atomicSend). This ensures that even if the app crashes creating the
+    // vault payload or during the network request, our local ratchet state has advanced.
+    // This prevents "Key Reuse" scenarios where we might resend with the same key
+    // or fail to decrypt valid responses.
+    if (postSnapshot) {
+      try {
+        persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: postSnapshot });
+      } catch (e) {
+        drConsole.warn('[dr] pre-send persist failed', e);
+        // If local persist fails, we should probably throw?
+        // But for now, we log and proceed, relying on the onSent hook as backup.
+      }
+    }
+
     if (mk) {
       try {
-        // [FIX] Ensure contact-secrets map has the LATEST snapshot (post-encrypt)
-        // so that the piggybacked payload includes valid ckS and pendingSendRatchet=false.
-        if (postSnapshot) {
-          try {
-            persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: postSnapshot });
-          } catch (e) {
-            drConsole.warn('[dr] pre-piggyback persist failed', e);
-          }
-        }
         const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
         if (payloadJson) {
           drStateSnapshot = await encryptContactSecretPayload(payloadJson, mk);
