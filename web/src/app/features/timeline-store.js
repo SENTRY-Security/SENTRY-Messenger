@@ -302,6 +302,9 @@ export function updateTimelineEntryStatusByCounter(conversationId, counter, stat
   for (const [key, entry] of convMap.entries()) {
     if (resolveEntryCounter(entry) !== counter) continue;
     const updated = { ...entry, status };
+    if (status === 'sent' || status === 'delivered' || status === 'read') {
+      updated.pending = false;
+    }
     if (reason) updated.error = reason;
     convMap.set(key, updated);
     emitAppend({ conversationId: convId, entry: updated, updated: true });
