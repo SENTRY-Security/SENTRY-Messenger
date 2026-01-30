@@ -2377,10 +2377,18 @@ export async function sendDrPlaintextCore(params = {}) {
 
     // [FIX] Explicit Status Update for Robustness
     // Ensure the UI reflects 'sent' immediately, even if the onSent hook races or fails.
-    // This fixes the issue where offline recipients cause messages to stay 'pending' forever.
-    const directUpdate = updateTimelineEntryStatusByCounter(finalConversationId, vaultCounter, 'sent', { reason: 'DIRECT_SEND_SUCCESS' });
-    if (!directUpdate) {
-      logDrSendTrace({ messageId, stage: 'DIRECT_STATUS_UPDATE_FAIL', jobId: job?.jobId, error: 'timeline entry not found for direct update' });
+    // We use upsertTimelineEntry (ID-based) instead of ByCounter to avoid "missing counter" race conditions.
+    const directUpdate = upsertTimelineEntry(finalConversationId, {
+      messageId,
+      status: 'sent',
+      pending: false,
+      counter: vaultCounter,
+      error: null
+    });
+    if (!directUpdate?.ok) {
+      logDrSendTrace({ messageId, stage: 'DIRECT_STATUS_UPDATE_FAIL', jobId: job?.jobId, error: 'timeline entry upsert failed' });
+    } else {
+      logDrSendTrace({ messageId, stage: 'DIRECT_STATUS_UPDATE_OK' });
     }
 
     return { msg, convId: finalConversationId, secure: true };

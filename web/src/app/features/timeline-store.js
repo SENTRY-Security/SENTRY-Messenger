@@ -335,6 +335,7 @@ export function updateMessageVaultCount(conversationId, messageId, count) {
   // If count >= 2 (Sender + Receiver), it is effectively delivered
   if (count >= 2 && existing.status !== 'read' && existing.status !== 'delivered') {
     updated.status = 'delivered';
+    updated.pending = false;
   }
 
   convMap.set(mid, updated);
@@ -357,7 +358,7 @@ export function updateTimelineEntriesAsDelivered(conversationId, maxCounter) {
     // Actually, 'read' implies delivered. So only update if status is 'sending' or 'sent' or 'pending'.
     if (entry.status === 'read' || entry.status === 'delivered') continue;
 
-    const updated = { ...entry, status: 'delivered' };
+    const updated = { ...entry, status: 'delivered', pending: false };
     convMap.set(key, updated);
     emitAppend({ conversationId: convId, entry: updated, updated: true });
     count++;
