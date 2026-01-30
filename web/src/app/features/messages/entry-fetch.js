@@ -224,7 +224,10 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                     sessionKey: item.tokenB64,
                     plaintext,
                     messageId: item.serverMessageId || `${conversationId}:${counter}`,
-                    sourceTag: 'entry-fetch:history-contact-share',
+                    // [Fix] Use dynamic source tag to distinguish Live vs History
+                    // Live messages will have a different tag (e.g. 'messages:live' or 'messages:decrypt-pipeline')
+                    // causing isHistoryReplay to be false, thus ENABLING D1 uplink.
+                    sourceTag: ctx?.considerSource || 'entry-fetch:history-contact-share',
                     profileUpdatedAt: messageTs
                 });
 
