@@ -1,5 +1,5 @@
 import { log } from '../../core/log.js';
-import { getContactSecret } from '../../core/contact-secrets.js';
+import { getConversationTokenForCall } from '../../core/contact-secrets.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '../../core/store.js';
 import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/base64.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
@@ -192,23 +192,16 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   if (!peerDeviceId) throw new Error('peerDeviceId required for call key');
   const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId });
   const deviceId = ensureDeviceId();
-  // For calls, we need the conversationToken which is shared across all devices
-  // Don't filter by deviceId, just get the contact record
-  const secretRecord = getContactSecret(identity.digest, { peerDeviceId });
+  // For calls, we only need conversationToken which is shared across all devices
+  const secretB64 = getConversationTokenForCall(identity.digest, { peerDeviceId });
   const callId = envelope?.callId || session?.callId || null;
-  const secretB64 = secretRecord?.secret
-    || secretRecord?.conversationToken
-    || secretRecord?.conversation?.token
-    || null;
   try {
     console.log('[call] key:secret-lookup', JSON.stringify({
       peerKey: identity.peerKey,
       peerDigest: identity.digest,
       lookupPeerDeviceId: peerDeviceId || null,
       found: !!secretB64,
-      conversationToken: secretRecord?.conversationToken ? 'present' : 'missing',
-      conversationTokenLen: secretRecord?.conversationToken?.length || 0,
-      recordKeys: secretRecord && typeof secretRecord === 'object' ? Object.keys(secretRecord) : []
+      tokenLen: secretB64?.length || 0
     }));
   } catch { }
   logCallKeyDerive({ callId, peerKey: identity.peerKey, hasSecret: !!secretB64 });

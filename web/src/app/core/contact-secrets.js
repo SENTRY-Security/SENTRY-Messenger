@@ -2102,6 +2102,34 @@ export function getContactSecretSections(peerAccountDigest, opts = {}) {
   };
 }
 
+/**
+ * Get conversation token for call key derivation.
+ * Unlike getContactSecret, this does NOT filter by deviceId.
+ * For calls, we only need the shared conversationToken.
+ */
+export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
+  const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
+  const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
+  if (!key) {
+    debugLog('call-token-lookup', { peerAccountDigest, found: false, reason: 'no-key' });
+    return null;
+  }
+  const map = ensureMap();
+  const record = map.get(key);
+  if (!record) {
+    debugLog('call-token-lookup', { peerAccountDigest, key, found: false, reason: 'no-record' });
+    return null;
+  }
+  const token = record.conversationToken || null;
+  debugLog('call-token-lookup', { 
+    peerAccountDigest, 
+    key, 
+    found: !!token, 
+    hasConversationId: !!record.conversationId 
+  });
+  return token;
+}
+
 export function lockContactSecrets(reason = 'locked') {
   if (contactSecretsLocked) return false;
   contactSecretsLocked = true;
