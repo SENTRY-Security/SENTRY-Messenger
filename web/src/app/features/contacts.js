@@ -191,6 +191,7 @@ function buildContactCorePayload(entry, peerDeviceId) {
     nickname: entry.nickname ?? null,
     avatar: entry.avatar ?? null,
     addedAt: entry.addedAt ?? null,
+    profileUpdatedAt: entry.profileUpdatedAt ?? null,
     msgId: entry.msgId ?? null,
     conversationId,
     conversationToken,
