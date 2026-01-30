@@ -192,7 +192,7 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   if (!peerDeviceId) throw new Error('peerDeviceId required for call key');
   const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId });
   const deviceId = ensureDeviceId();
-  const secretRecord = getContactSecret(identity.peerKey, { deviceId, peerDeviceId });
+  const secretRecord = getContactSecret(identity.digest, { deviceId, peerDeviceId });
   const callId = envelope?.callId || session?.callId || null;
   const secretB64 = secretRecord?.secret
     || secretRecord?.conversationToken
