@@ -2401,6 +2401,9 @@ document.addEventListener('contacts:entry-updated', (event) => {
   if (typeof messagesPane.handleContactEntryUpdated === 'function') {
     messagesPane.handleContactEntryUpdated(detail);
   }
+  if (typeof messagesPane.renderConversationList === 'function') {
+    messagesPane.renderConversationList();
+  }
   updateProfileStats();
 });
 document.addEventListener('contacts:removed', () => {
