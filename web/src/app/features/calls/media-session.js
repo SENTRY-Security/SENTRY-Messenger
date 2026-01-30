@@ -391,7 +391,7 @@ async function buildRtcConfiguration() {
   if (!config) {
     config = await loadCallNetworkConfig();
   }
-  if (!config || !Array.isArray(config?.ice?.servers) || !config.ice.servers.length) {
+  if (!config) {
     failCall('call-network-config-missing');
   }
   const baseServers = Array.isArray(config?.ice?.servers)

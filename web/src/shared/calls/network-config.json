@@ -17,7 +17,9 @@
     "iceTransportPolicy": "all",
     "bundlePolicy": "balanced",
     "continualGatheringPolicy": "gather_continually",
-    "servers": []
+    "servers": [
+      { "urls": ["stun:stun.cloudflare.com:3478"] }
+    ]
   },
   "fallback": {
     "maxPeerConnectionRetries": 2,
