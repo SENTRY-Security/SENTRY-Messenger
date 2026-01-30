@@ -4328,8 +4328,15 @@ try {
       // Media messages sent via outbox (processOutboxJobNow) might stay in 'pending' state in timeline-store
       // because the UI controller only updates on immediate success, but queued jobs are async.
       // We explicitly update the timeline status here when the job is confirmed sent.
-      if (job?.conversationId && Number.isFinite(job?.counter)) {
-        updateTimelineEntryStatusByCounter(job.conversationId, Number(job.counter), 'sent', { reason: 'OUTBOX_SENT_HOOK' });
+      // [FIX] Use ID-based upsert for robust status update (clears pending flag reliably)
+      if (job?.conversationId && job?.messageId) {
+        upsertTimelineEntry(job.conversationId, {
+          messageId: job.messageId,
+          status: 'sent',
+          pending: false,
+          counter: Number.isFinite(job?.counter) ? Number(job.counter) : undefined,
+          error: null
+        });
       }
     }
   });
