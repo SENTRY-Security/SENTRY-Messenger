@@ -3879,49 +3879,10 @@
       }
     }
 
-    #inviteConsumeBtn {
-      display: none;
-      border: none;
-      border-radius: 999px;
-      padding: 6px 14px;
-      font-size: 12px;
-      background: #0f766e;
-      color: #fff;
-      box-shadow: 0 6px 16px rgba(15, 118, 110, 0.28);
-      cursor: pointer;
-      transition: transform .15s ease, box-shadow .15s ease;
+    /* inviteConsumeBtn styles removed - button no longer exists */
     }
 
-    #inviteConsumeBtn:active {
-      transform: translateY(1px);
-      box-shadow: 0 3px 10px rgba(15, 118, 110, 0.22);
-    }
-
-    #inviteConsumeBtn[disabled] {
-      opacity: 0.5;
-      cursor: wait;
-    }
-
-    #inviteRetryBtn {
-      display: none;
-      border: none;
-      border-radius: 999px;
-      padding: 6px 14px;
-      font-size: 12px;
-      background: #2563eb;
-      color: #fff;
-      box-shadow: 0 6px 16px rgba(37, 99, 235, 0.28);
-      cursor: pointer;
-      transition: transform .15s ease, box-shadow .15s ease;
-    }
-
-    #inviteRetryBtn:active {
-      transform: translateY(1px);
-      box-shadow: 0 3px 10px rgba(37, 99, 235, 0.25);
-    }
-
-    #inviteRetryBtn[disabled] {
-      opacity: 0.5;
+    /* inviteRetryBtn styles removed - button no longer exists */
       cursor: wait;
     }
 
@@ -5056,8 +5017,8 @@
               <button id="inviteRefreshBtn" class="invite-refresh-btn" type="button" aria-label="手動刷新交友邀請">
                 <i class='bx bx-refresh' aria-hidden="true"></i>
               </button>
-              <button id="inviteConsumeBtn" class="invite-consume-btn" type="button">取回邀請</button>
-              <button id="inviteRetryBtn" type="button">重新產生</button>
+              <!-- inviteConsumeBtn removed: WS auto-consume is sufficient -->
+              <!-- inviteRetryBtn removed: redundant with inviteRefreshBtn -->
             </div>
             <div id="inviteQrBox" class="share-qr-box"></div>
           </div>

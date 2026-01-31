@@ -305,24 +305,8 @@ export function setupShareController(options) {
       inviteRefreshBtn.disabled = false;
     });
   });
-  inviteRetryBtn?.addEventListener('click', () => {
-    if (inviteRetryBtn.disabled) return;
-    inviteRetryBtn.disabled = true;
-    onGenerateInvite().finally(() => {
-      inviteRetryBtn.disabled = false;
-    });
-  });
-  inviteConsumeBtn?.addEventListener('click', () => {
-    const inviteId = shareState.currentInvite?.inviteId || null;
-    if (!inviteId) {
-      setInviteStatus('沒有可取回的邀請。', { isError: true });
-      return;
-    }
-    consumeInviteDropbox(inviteId, { source: 'manual' })
-      .catch((err) => {
-        setInviteStatus(formatInviteConsumeError(err), { isError: true });
-      });
-  });
+  // inviteRetryBtn event listener removed - button no longer exists
+  // inviteConsumeBtn event listener removed - WS auto-consume is sufficient
 
   function lockBodyScroll() {
     document.body.classList.add('modal-open');
@@ -764,14 +748,8 @@ export function setupShareController(options) {
 
   function setInviteActionState({ hasInvite = false, expired = false, loading = false } = {}) {
     if (inviteRefreshBtn) inviteRefreshBtn.disabled = !!loading;
-    if (inviteRetryBtn) {
-      inviteRetryBtn.style.display = expired ? 'inline-flex' : 'none';
-      inviteRetryBtn.disabled = !!loading;
-    }
-    if (inviteConsumeBtn) {
-      inviteConsumeBtn.style.display = hasInvite ? 'inline-flex' : 'none';
-      inviteConsumeBtn.disabled = !hasInvite || expired || !!loading;
-    }
+    // inviteRetryBtn removed - no longer exists
+    // inviteConsumeBtn removed - WS auto-consume is sufficient
   }
 
   function renderInviteCountdown(remainingSec) {
