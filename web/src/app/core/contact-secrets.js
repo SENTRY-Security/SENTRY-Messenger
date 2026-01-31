@@ -1587,6 +1587,75 @@ export function buildPartialContactSecretsSnapshot(peerAccountDigest, { peerDevi
   return JSON.stringify(payloadObj);
 }
 
+/**
+ * Build contact-secrets snapshot directly from a drState snapshot object.
+ * This bypasses the contact-secrets map and uses the provided state directly.
+ * Used when we need to vault the current in-memory state before persistDrSnapshot may have updated the map.
+ */
+export function buildContactSecretsSnapshotFromDrState(peerAccountDigest, {
+  peerDeviceId = null,
+  drStateSnapshot = null,
+  role = null,
+  conversationToken = null,
+  conversationId = null
+} = {}) {
+  if (!peerAccountDigest || !peerDeviceId || !drStateSnapshot) return null;
+  
+  const normalizedDigest = normalizeAccountDigest(peerAccountDigest);
+  if (!normalizedDigest) return null;
+  
+  const normalizedPeerDeviceId = normalizePeerDeviceId(peerDeviceId);
+  if (!normalizedPeerDeviceId) return null;
+  
+  const selfDeviceId = ensureDeviceId();
+  if (!selfDeviceId) return null;
+  
+  // Normalize the drState snapshot
+  const normalizedState = normalizeDrSnapshot(drStateSnapshot, {
+    setDefaultUpdatedAt: true,
+    source: 'buildFromDrState',
+    peerKey: `${normalizedDigest}::${normalizedPeerDeviceId}`,
+    deviceId: selfDeviceId,
+    strictB64: true
+  });
+  
+  if (!normalizedState) return null;
+  
+  // Build the entry structure
+  const entry = {
+    peerAccountDigest: normalizedDigest,
+    peerDeviceId: normalizedPeerDeviceId,
+    role: role || normalizedState?.role || null,
+    conversation: {
+      token: conversationToken || null,
+      id: conversationId || null,
+      drInit: null,
+      peerDeviceId: normalizedPeerDeviceId
+    },
+    devices: {
+      [selfDeviceId]: {
+        drState: normalizedState,
+        drSeed: null,
+        drHistory: [],
+        drHistoryCursorTs: null,
+        drHistoryCursorId: null,
+        updatedAt: Date.now()
+      }
+    },
+    meta: {
+      updatedAt: Date.now()
+    }
+  };
+  
+  const payloadObj = {
+    v: CONTACT_SECRETS_VERSION,
+    generatedAt: Date.now(),
+    entries: [entry]
+  };
+  
+  return JSON.stringify(payloadObj);
+}
+
 export async function encryptContactSecretPayload(payload, mkRaw) {
   const plain = encoder.encode(payload);
   const { cipherBuf, iv, hkdfSalt } = await encryptWithMK(plain, mkRaw, SNAPSHOT_INFO_TAG);

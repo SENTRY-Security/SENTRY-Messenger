@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, buildContactSecretsSnapshotFromDrState, encryptContactSecretPayload } from '../core/contact-secrets.js';
 import {
   initContactSecretsBackup,
   triggerContactSecretsBackup,
@@ -1073,15 +1073,53 @@ export function persistDrSnapshot(params = {}) {
     conversationId: params?.conversationId ?? null
   });
   const holder = state || drState({ peerAccountDigest: peer, peerDeviceId });
-  if (!holder?.rk) {
+  const selfDeviceId = ensureDeviceId();
+  const info = getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId });
+  
+  // [FIX] If snapshot is provided directly, we can proceed even without holder.rk
+  // BUT only if snapshot counters are >= existing (strict non-downgrade check)
+  const hasDirectSnapshot = !!(snapshot && (snapshot.rk_b64 || snapshot.rk));
+  let directSnapshotAllowed = false;
+  
+  if (hasDirectSnapshot && !holder?.rk) {
+    // Strict check: direct snapshot must not be a downgrade
+    const existingSnap = info?.drState || null;
+    const existingTotal = Number(existingSnap?.NsTotal || 0) + Number(existingSnap?.Ns || 0);
+    const existingNrTotal = Number(existingSnap?.NrTotal || 0) + Number(existingSnap?.Nr || 0);
+    const snapTotal = Number(snapshot?.NsTotal || 0) + Number(snapshot?.Ns || 0);
+    const snapNrTotal = Number(snapshot?.NrTotal || 0) + Number(snapshot?.Nr || 0);
+    
+    // Only allow if snapshot is >= existing on both send and receive counters
+    if (snapTotal >= existingTotal && snapNrTotal >= existingNrTotal) {
+      directSnapshotAllowed = true;
+    } else {
+      try {
+        drConsole.warn('[dr] persist snapshot skipped: direct snapshot is downgrade', {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          existingTotal,
+          existingNrTotal,
+          snapTotal,
+          snapNrTotal
+        });
+      } catch { }
+    }
+  }
+  
+  if (!holder?.rk && !directSnapshotAllowed) {
     try {
-      drConsole.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId });
+      drConsole.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId, hasDirectSnapshot, directSnapshotAllowed });
     } catch { }
     return false;
   }
-  assertU8('persistDrSnapshot:rk', holder.rk);
-  if (holder.ckS) assertU8('persistDrSnapshot:ckS', holder.ckS);
-  if (holder.ckR) assertU8('persistDrSnapshot:ckR', holder.ckR);
+  
+  // Only assert holder keys if we're using holder (not direct snapshot)
+  if (holder?.rk) {
+    assertU8('persistDrSnapshot:rk', holder.rk);
+    if (holder.ckS) assertU8('persistDrSnapshot:ckS', holder.ckS);
+    if (holder.ckR) assertU8('persistDrSnapshot:ckR', holder.ckR);
+  }
+  
   let snap = snapshot || snapshotDrState(holder);
   if (snap && !isPersistableSnapshot(snap)) {
     snap = null;
@@ -1093,10 +1131,9 @@ export function persistDrSnapshot(params = {}) {
     return false;
   }
   // contact secret 以「本機裝置」為鍵，peerDeviceId 僅為對端識別；寫入使用 self deviceId。
-  const selfDeviceId = ensureDeviceId();
-  const info = getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId });
   try {
-    const holderRoleRaw = holder?.baseKey?.role || info?.role || null;
+    // [FIX] Also check snap.role as fallback
+    const holderRoleRaw = holder?.baseKey?.role || info?.role || snap?.role || null;
     const holderRole = typeof holderRoleRaw === 'string' ? holderRoleRaw : null;
     if (!holderRole) {
       drConsole.error('[dr] persist snapshot failed: missing role', {
@@ -1104,7 +1141,8 @@ export function persistDrSnapshot(params = {}) {
         peerDeviceId,
         deviceId: selfDeviceId,
         Ns: snap?.Ns ?? null,
-        Nr: snap?.Nr ?? null
+        Nr: snap?.Nr ?? null,
+        checkedSources: ['holder.baseKey.role', 'info.role', 'snap.role']
       });
       return false;
     }
@@ -1877,7 +1915,16 @@ export async function sendDrPlaintextCore(params = {}) {
 
     if (mk) {
       try {
-        const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+        // [FIX] Use postSnapshot directly instead of reading from map
+        // This ensures vault gets the current state even if persistDrSnapshot failed
+        const secretInfo = getContactSecret(peer, { deviceId: ensureDeviceId(), peerDeviceId: receiverDeviceId });
+        const payloadJson = buildContactSecretsSnapshotFromDrState(peer, {
+          peerDeviceId: receiverDeviceId,
+          drStateSnapshot: postSnapshot,
+          role: secretInfo?.role || postSnapshot?.role || null,
+          conversationToken: secretInfo?.conversationToken || null,
+          conversationId: finalConversationId
+        });
         if (payloadJson) {
           drStateSnapshot = await encryptContactSecretPayload(payloadJson, mk);
         }
@@ -2132,7 +2179,17 @@ export async function sendDrPlaintextCore(params = {}) {
                 drConsole.warn('[dr] pre-piggyback persist failed (repair)', e);
               }
             }
-            const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+            // [FIX] Use repairPostSnapshot directly instead of reading from map
+            const secretInfo = getContactSecret(peer, { deviceId: ensureDeviceId(), peerDeviceId: receiverDeviceId });
+            const payloadJson = repairPostSnapshot
+              ? buildContactSecretsSnapshotFromDrState(peer, {
+                  peerDeviceId: receiverDeviceId,
+                  drStateSnapshot: repairPostSnapshot,
+                  role: secretInfo?.role || repairPostSnapshot?.role || null,
+                  conversationToken: secretInfo?.conversationToken || null,
+                  conversationId: finalConversationId
+                })
+              : buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
             if (payloadJson) {
               repairDrStateSnapshot = await encryptContactSecretPayload(payloadJson, getMkRaw());
             }
@@ -2892,7 +2949,17 @@ export async function sendDrMediaCore(params = {}) {
           drConsole.warn('[dr] pre-piggyback persist failed (media)', e);
         }
       }
-      const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+      // [FIX] Use postSnapshot directly instead of reading from map
+      const secretInfo = getContactSecret(peer, { deviceId: ensureDeviceId(), peerDeviceId: receiverDeviceId });
+      const payloadJson = postSnapshot
+        ? buildContactSecretsSnapshotFromDrState(peer, {
+            peerDeviceId: receiverDeviceId,
+            drStateSnapshot: postSnapshot,
+            role: secretInfo?.role || postSnapshot?.role || null,
+            conversationToken: secretInfo?.conversationToken || null,
+            conversationId: conversationId
+          })
+        : buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
       if (payloadJson) {
         drStateSnapshot = await encryptContactSecretPayload(payloadJson, mk);
       }
@@ -3856,12 +3923,26 @@ export async function ensureDrReceiverState(params = {}) {
       }
     }
   }
-  // 若 contact-secrets 上存的快照屬於錯裝置或 guest 卻標示 responder，直接丟棄存檔避免再次載入。
+  // 若 contact-secrets 上存的快照屬於錯裝置或 guest 卻標示 responder，跳過但不清除。
+  // [FIX] 不主動清除 DR state，避免 rk 永久丟失。只記錄警告並跳過使用此 snapshot。
   if (secretInfo?.drState) {
     const snapRole = typeof secretInfo.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
     const snapSelf = typeof secretInfo.drState?.selfDeviceId === 'string' ? secretInfo.drState.selfDeviceId : null;
     if ((selfDeviceId && snapSelf && snapSelf !== selfDeviceId) || (guestLike && snapRole === 'responder')) {
-      setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-state-skip-invalid-device' } });
+      // [FIX] Don't clear DR state - just log and skip using this snapshot
+      try {
+        drConsole.warn('[dr-log:skip-invalid-snapshot]', {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          reason: (snapSelf && snapSelf !== selfDeviceId) ? 'device-mismatch' : 'guest-responder-mismatch',
+          snapSelf,
+          selfDeviceId,
+          snapRole,
+          guestLike,
+          action: 'skip-without-clear'
+        });
+      } catch { }
+      // Re-read state but DON'T clear the snapshot - it might be the only valid rk we have
       state = drState({ peerAccountDigest: peer, peerDeviceId });
     }
   }
@@ -3992,7 +4073,16 @@ export async function ensureDrReceiverState(params = {}) {
       });
     } catch { }
     if (snapshotRole !== 'initiator') {
-      setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-skip-responder-snapshot' } });
+      // [FIX] Don't clear DR state - just log and skip
+      // Clearing here could cause permanent rk loss
+      try {
+        drConsole.warn('[dr-log:guest-skip-non-initiator-snapshot]', {
+          peerAccountDigest: peer,
+          peerDeviceId,
+          snapshotRole,
+          action: 'skip-without-clear'
+        });
+      } catch { }
     }
   }
   if (preferredConversationId && (!state.baseKey || !state.baseKey.conversationId)) {

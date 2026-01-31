@@ -9,6 +9,7 @@ import { unwrapWithMK_JSON } from '../../crypto/aead.js';
 import { rememberSkippedKey } from '../../../shared/crypto/dr.js';
 import {
     buildPartialContactSecretsSnapshot,
+    buildContactSecretsSnapshotFromDrState,
     encryptContactSecretPayload
 } from '../../core/contact-secrets.js';
 import {
@@ -95,6 +96,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         ensureDrReceiverState,
         hasUsableDrState,
         drDecryptItem,
+        snapshotDrState,
         classifyDecryptedPayload,
         resolveServerTimestampPair,
         buildMessageObject,
@@ -372,34 +374,47 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
     });
 
     updateIncomingCounterState(state, counter);
-    const snapshotPersisted = !!persistDrSnapshot({ peerAccountDigest: peerDigest, state });
-
-    // ATOMIC PIGGYBACK (Receiver Write)
-    // Capture the DR state (Receiver: My Priv, Their Pub) used for this message
-    // and piggyback it into the vault for atomic restoration logic.
+    
+    // [FIX] Build DR state snapshot from CURRENT MEMORY STATE first,
+    // before persistDrSnapshot which might fail.
+    // This ensures vault gets the actual current state, not potentially stale map data.
     let drStateSnapshot = null;
+    let memoryDrSnapshot = null;
     try {
         const mk = getMkRaw();
-        if (mk) {
-            const snapshotJson = buildPartialContactSecretsSnapshot(peerDigest, { peerDeviceId });
-            if (snapshotJson) {
-                drStateSnapshot = await encryptContactSecretPayload(snapshotJson, mk);
+        if (mk && state && snapshotDrState) {
+            // Capture the current in-memory state
+            memoryDrSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: true });
+            if (memoryDrSnapshot) {
+                // Get additional context from the state for building the full snapshot
+                const role = state?.baseKey?.role || null;
+                const convToken = state?.baseKey?.conversationToken || null;
+                const convId = conversationId || state?.baseKey?.conversationId || null;
+                
+                const snapshotJson = buildContactSecretsSnapshotFromDrState(peerDigest, {
+                    peerDeviceId,
+                    drStateSnapshot: memoryDrSnapshot,
+                    role,
+                    conversationToken: convToken,
+                    conversationId: convId
+                });
+                if (snapshotJson) {
+                    drStateSnapshot = await encryptContactSecretPayload(snapshotJson, mk);
+                }
             }
         }
     } catch (err) {
         // Suppress errors to avoid failing the pipeline, but log if needed
         if (FETCH_LOG_ENABLED) log({ atomicPiggybackError: err?.message || err, conversationId, counter });
     }
+    
+    // Now attempt to persist to contact-secrets map
+    const snapshotPersisted = !!persistDrSnapshot({ peerAccountDigest: peerDigest, state });
 
-    if (snapshotPersisted) {
-        // Optimized Backup Trigger:
-        // Since we are vaulting the state (Atomic Piggyback), we might NOT need to trigger 
-        // a cloud backup for every single message if the vault put succeeds.
-        // However, for safety/redundancy, we still permit the cloud backup trigger 
-        // but it could be throttled or deduped by the underlying logic.
-        const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
-        maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
-    }
+    // Trigger backup regardless of persistDrSnapshot success
+    // Since we have the snapshot in vault, this is additional redundancy
+    const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
+    maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
 
     let vaultPutStatus = null;
     try {
@@ -412,7 +427,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
             msgType: messageObj.type || item.msgType || null,
             messageKeyB64,
             headerCounter: counter,
-            drStateSnapshot // Pass the encrypted snapshot
+            drStateSnapshot // Pass the encrypted snapshot (built from memory state)
         });
         vaultPutStatus = 'ok';
     } catch (err) {
