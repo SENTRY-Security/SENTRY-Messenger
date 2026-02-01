@@ -42,8 +42,27 @@ function resolveSecureMessageItem(data) {
 }
 
 function resolveNextCursor(data) {
+  // 1. Standard CamelCase
   if (data?.nextCursor) return data.nextCursor;
+
+  // 2. Snake Case (Common in Python/Ruby/Go backends)
+  if (data?.next_cursor) return data.next_cursor;
+
+  // 3. Generic Cursor
+  if (data?.cursor) return data.cursor;
+
+  // 4. Nested Pagination Object
+  if (data?.pagination) {
+    if (data.pagination.nextCursor) return data.pagination.nextCursor;
+    if (data.pagination.next_cursor) return data.pagination.next_cursor;
+    if (data.pagination.cursor) return data.pagination.cursor;
+  }
+
+  // 5. Explicit TS fields
   if (data?.nextCursorTs != null) return { ts: data.nextCursorTs, id: null };
+  if (data?.next_cursor_ts != null) return { ts: data.next_cursor_ts, id: null };
+  if (data?.cursorTs != null) return { ts: data.cursorTs, id: null };
+
   return null;
 }
 
