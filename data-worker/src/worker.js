@@ -1328,17 +1328,14 @@ async function handleTagsRoutes(req, env) {
       return json({ error: 'BadRequest', message: 'wrapped_dev required' }, { status: 400 });
     }
     await ensureDataTables(env);
-    const upd = await env.DB.prepare(
-      `UPDATE device_backup
-          SET wrapped_dev_json=?2, updated_at=strftime('%s','now')
-        WHERE account_digest=?1`
+    // Use upsert to avoid race condition
+    await env.DB.prepare(
+      `INSERT INTO device_backup (account_digest, wrapped_dev_json, created_at, updated_at)
+       VALUES (?1, ?2, strftime('%s','now'), strftime('%s','now'))
+       ON CONFLICT(account_digest) DO UPDATE SET
+         wrapped_dev_json=excluded.wrapped_dev_json,
+         updated_at=strftime('%s','now')`
     ).bind(account.account_digest, JSON.stringify(body.wrapped_dev)).run();
-    if (!upd || (upd.meta && upd.meta.changes === 0)) {
-      await env.DB.prepare(
-        `INSERT INTO device_backup (account_digest, wrapped_dev_json)
-         VALUES (?1, ?2)`
-      ).bind(account.account_digest, JSON.stringify(body.wrapped_dev)).run();
-    }
 
     return new Response(null, { status: 204 });
   }
