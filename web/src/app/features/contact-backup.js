@@ -155,7 +155,7 @@ export async function getContactSecretsBackupPayload({ force = false, allowWitho
   const mk = getMkRaw();
   if (!mk) return null;
 
-  let snapshot = latestPersistDetail || buildContactSecretsSnapshot();
+  let snapshot = buildContactSecretsSnapshot();
   let summary = snapshot?.summary || null;
   let entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
   let withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
@@ -255,7 +255,7 @@ export async function triggerContactSecretsBackup(
     }
     return false;
   }
-  let snapshot = latestPersistDetail || buildContactSecretsSnapshot();
+  let snapshot = buildContactSecretsSnapshot();
   let summary = snapshot?.summary || null;
   let entryCount = Number.isFinite(Number(summary?.entries)) ? Number(summary.entries) : null;
   let withDrState = Number.isFinite(Number(summary?.withDrState)) ? Number(summary.withDrState) : null;
