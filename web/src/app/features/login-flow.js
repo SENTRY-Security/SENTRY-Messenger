@@ -119,21 +119,21 @@ function emitIdentityTrace(payload) {
 
 function normalizeEvidencePayload(raw = {}) {
   const ev = raw?.evidence || {};
-  const backupDeviceId = typeof ev.backupDeviceId === 'string' && ev.backupDeviceId.trim()
-    ? ev.backupDeviceId.trim()
+  const backupDeviceId = typeof (ev.backup_device_id || ev.backupDeviceId) === 'string' && (ev.backup_device_id || ev.backupDeviceId).trim()
+    ? (ev.backup_device_id || ev.backupDeviceId).trim()
     : null;
-  const backupDeviceLabel = typeof ev.backupDeviceLabel === 'string' && ev.backupDeviceLabel.trim()
-    ? ev.backupDeviceLabel
+  const backupDeviceLabel = typeof (ev.backup_device_label || ev.backupDeviceLabel) === 'string' && (ev.backup_device_label || ev.backupDeviceLabel).trim()
+    ? (ev.backup_device_label || ev.backupDeviceLabel)
     : null;
   return {
-    backupExists: !!ev.backupExists,
-    vaultExists: !!ev.vaultExists,
-    messagesExists: !!ev.messagesExists,
+    backupExists: !!(ev.backup_exists || ev.backupExists),
+    vaultExists: !!(ev.vault_exists || ev.vaultExists),
+    messagesExists: !!(ev.messages_exists || ev.messagesExists),
     backupDeviceId,
     backupDeviceLabel,
-    backupUpdatedAt: Number(ev.backupUpdatedAt) || null,
-    registryDeviceId: typeof ev.registryDeviceId === 'string' && ev.registryDeviceId.trim() ? ev.registryDeviceId.trim() : null,
-    registryDeviceLabel: typeof ev.registryDeviceLabel === 'string' && ev.registryDeviceLabel.trim() ? ev.registryDeviceLabel : null
+    backupUpdatedAt: Number(ev.backup_updated_at || ev.backupUpdatedAt) || null,
+    registryDeviceId: typeof (ev.registry_device_id || ev.registryDeviceId) === 'string' && (ev.registry_device_id || ev.registryDeviceId).trim() ? (ev.registry_device_id || ev.registryDeviceId).trim() : null,
+    registryDeviceLabel: typeof (ev.registry_device_label || ev.registryDeviceLabel) === 'string' && (ev.registry_device_label || ev.registryDeviceLabel).trim() ? (ev.registry_device_label || ev.registryDeviceLabel) : null
   };
 }
 
@@ -200,7 +200,7 @@ export async function exchangeSDM(p) {
   if (!r.ok) throw new Error(`sdm.exchange failed: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
 
   setSession(data.session || null);
-  setHasMK(!!data.hasMK);
+  setHasMK(!!(data.hasMK || data.has_mk));
   setWrappedMK(data.wrapped_mk || null);
   if (data.accountToken) setAccountToken(data.accountToken);
   if (data.account_token) setAccountToken(data.account_token);
@@ -217,7 +217,7 @@ export async function exchangeSDM(p) {
     uidHexSuffix4: uidHex ? uidHex.slice(-4) : null,
     uidDigestSuffix4: data?.uidDigest ? String(data.uidDigest).slice(-4) : null,
     accountDigestSuffix4: (getAccountDigest() || data.accountDigest || data.account_digest || '').slice(-4) || null,
-    hasMK: !!data?.hasMK
+    hasMK: !!(data?.hasMK || data?.has_mk)
   });
 
   return {

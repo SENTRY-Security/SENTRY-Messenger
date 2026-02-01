@@ -618,26 +618,26 @@ async function fetchGroupWithMembers(env, groupId) {
       WHERE group_id=?1`
   ).bind(groupId).all();
   const members = (membersRes?.results || []).map((row) => ({
-    groupId: row.group_id,
-    accountDigest: row.account_digest,
+    group_id: row.group_id,
+    account_digest: row.account_digest,
     role: row.role || 'member',
     status: row.status || 'active',
-    inviterAccountDigest: row.inviter_account_digest || null,
-    joinedAt: Number(row.joined_at) || null,
-    mutedUntil: Number(row.muted_until) || null,
-    lastReadTs: Number(row.last_read_ts) || null,
-    createdAt: Number(row.created_at) || null,
-    updatedAt: Number(row.updated_at) || null
+    inviter_account_digest: row.inviter_account_digest || null,
+    joined_at: Number(row.joined_at) || null,
+    muted_until: Number(row.muted_until) || null,
+    last_read_ts: Number(row.last_read_ts) || null,
+    created_at: Number(row.created_at) || null,
+    updated_at: Number(row.updated_at) || null
   }));
   return {
     group: {
-      groupId: group.group_id,
-      conversationId: group.conversation_id,
-      creatorAccountDigest: group.creator_account_digest,
+      group_id: group.group_id,
+      conversation_id: group.conversation_id,
+      creator_account_digest: group.creator_account_digest,
       name: group.name || null,
       avatar: safeJSON(group.avatar_json) || null,
-      createdAt: Number(group.created_at) || null,
-      updatedAt: Number(group.updated_at) || null
+      created_at: Number(group.created_at) || null,
+      updated_at: Number(group.updated_at) || null
     },
     members
   };
@@ -879,14 +879,14 @@ async function insertCallEvent(env, payload = {}) {
   return {
     ok: true,
     event: {
-      eventId,
-      callId,
+      event_id: eventId,
+      call_id: callId,
       type,
       payload: eventPayload,
-      fromAccountDigest: fromAccountDigest || null,
-      toAccountDigest: toAccountDigest || null,
-      traceId: traceId || null,
-      createdAt
+      from_account_digest: fromAccountDigest || null,
+      to_account_digest: toAccountDigest || null,
+      trace_id: traceId || null,
+      created_at: createdAt
     }
   };
 }
@@ -894,21 +894,21 @@ async function insertCallEvent(env, payload = {}) {
 function serializeCallSessionRow(row) {
   if (!row) return null;
   return {
-    callId: row.call_id,
-    callerAccountDigest: row.caller_account_digest || null,
-    calleeAccountDigest: row.callee_account_digest || null,
+    call_id: row.call_id,
+    caller_account_digest: row.caller_account_digest || null,
+    callee_account_digest: row.callee_account_digest || null,
     status: row.status,
     mode: row.mode,
     capabilities: normalizePlainObject(safeJSON(row.capabilities_json)),
     metadata: normalizePlainObject(safeJSON(row.metadata_json)),
     metrics: normalizePlainObject(safeJSON(row.metrics_json)),
-    createdAt: Number(row.created_at) || null,
-    updatedAt: Number(row.updated_at) || null,
-    connectedAt: row.connected_at != null ? Number(row.connected_at) : null,
-    endedAt: row.ended_at != null ? Number(row.ended_at) : null,
-    endReason: row.end_reason || null,
-    expiresAt: Number(row.expires_at) || null,
-    lastEvent: row.last_event || null
+    created_at: Number(row.created_at) || null,
+    updated_at: Number(row.updated_at) || null,
+    connected_at: row.connected_at != null ? Number(row.connected_at) : null,
+    ended_at: row.ended_at != null ? Number(row.ended_at) : null,
+    end_reason: row.end_reason || null,
+    expires_at: Number(row.expires_at) || null,
+    last_event: row.last_event || null
   };
 }
 
@@ -1024,7 +1024,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       uid_digest: accountRow.uid_digest,
       last_ctr: Number(accountRow.last_ctr || 0),
       wrapped_mk_json: accountRow.wrapped_mk_json,
-      newlyCreated: false
+      newly_created: false
     };
   }
 
@@ -1067,7 +1067,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       uid_digest: acctUidDigest,
       last_ctr: 0,
       wrapped_mk_json: null,
-      newlyCreated: true
+      newly_created: true
     };
   } catch (err) {
     const msg = String(err?.message || '');
@@ -1085,7 +1085,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
           uid_digest: row.uid_digest,
           last_ctr: Number(row.last_ctr || 0),
           wrapped_mk_json: row.wrapped_mk_json,
-          newlyCreated: false
+          newly_created: false
         };
       }
     }
@@ -1221,7 +1221,7 @@ async function handleTagsRoutes(req, env) {
     }
 
     return json({
-      hasMK,
+      has_mk: hasMK,
       wrapped_mk: wrapped || undefined,
       account_token: account.account_token,
       account_digest: account.account_digest,
@@ -1477,12 +1477,12 @@ async function handleInviteDropboxRoutes(req, env) {
 
     return json({
       ok: true,
-      inviteId,
-      expiresAt,
-      ownerAccountDigest: account.account_digest,
-      ownerDeviceId,
-      ownerPublicKeyB64,
-      prekeyBundle
+      invite_id: inviteId,
+      expires_at: expiresAt,
+      owner_account_digest: account.account_digest,
+      owner_device_id: ownerDeviceId,
+      owner_public_key_b64: ownerPublicKeyB64,
+      prekey_bundle: prekeyBundle
     });
   }
 
@@ -1570,10 +1570,10 @@ async function handleInviteDropboxRoutes(req, env) {
 
     return json({
       ok: true,
-      inviteId,
-      ownerAccountDigest: row.owner_account_digest,
-      ownerDeviceId: row.owner_device_id,
-      deliveredAt: now
+      invite_id: inviteId,
+      owner_account_digest: row.owner_account_digest,
+      owner_device_id: row.owner_device_id,
+      delivered_at: now
     });
   }
 
@@ -1633,10 +1633,10 @@ async function handleInviteDropboxRoutes(req, env) {
       }
       return json({
         ok: true,
-        inviteId,
-        ownerDeviceId: row.owner_device_id,
-        expiresAt: row.expires_at,
-        ciphertextEnvelope: envelope
+        invite_id: inviteId,
+        owner_device_id: row.owner_device_id,
+        expires_at: row.expires_at,
+        ciphertext_envelope: envelope
       });
     }
     if (row.status !== 'DELIVERED') {
@@ -1666,10 +1666,10 @@ async function handleInviteDropboxRoutes(req, env) {
         }
         return json({
           ok: true,
-          inviteId,
-          ownerDeviceId: retry.owner_device_id,
-          expiresAt: retry.expires_at,
-          ciphertextEnvelope: retryEnvelope
+          invite_id: inviteId,
+          owner_device_id: retry.owner_device_id,
+          expires_at: retry.expires_at,
+          ciphertext_envelope: retryEnvelope
         });
       }
       return json({ error: 'NotFound' }, { status: 404 });
@@ -1677,10 +1677,10 @@ async function handleInviteDropboxRoutes(req, env) {
 
     return json({
       ok: true,
-      inviteId,
-      ownerDeviceId: row.owner_device_id,
-      expiresAt: row.expires_at,
-      ciphertextEnvelope: envelope
+      invite_id: inviteId,
+      owner_device_id: row.owner_device_id,
+      expires_at: row.expires_at,
+      ciphertext_envelope: envelope
     });
   }
 
@@ -1745,13 +1745,13 @@ async function handleInviteDropboxRoutes(req, env) {
       updatedAt = now;
     }
     return json({
-      inviteId: row.invite_id,
+      invite_id: row.invite_id,
       status,
-      expiresAt: row.expires_at,
-      createdAt: row.created_at || null,
-      updatedAt,
-      deliveredAt: row.delivered_at || null,
-      consumedAt: row.consumed_at || null
+      expires_at: row.expires_at,
+      created_at: row.created_at || null,
+      updated_at: updatedAt,
+      delivered_at: row.delivered_at || null,
+      consumed_at: row.consumed_at || null
     });
   }
 
@@ -1933,8 +1933,8 @@ async function handlePrekeysRoutes(req, env) {
     `).bind(peerAccountDigest, peerDeviceId, opkRow.opk_id).run();
     return json({
       ok: true,
-      deviceId: peerDeviceId,
-      signedPrekey: {
+      device_id: peerDeviceId,
+      signed_prekey: {
         id: spkRow.spk_id,
         pub: spkRow.spk_pub,
         sig: spkRow.spk_sig,
@@ -2266,10 +2266,10 @@ async function handleMessagesRoutes(req, env) {
     const expectedCounter = Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter + 1 : 1;
     return json({
       ok: true,
-      expectedCounter,
-      lastAcceptedCounter: Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter : null,
-      lastAcceptedMessageId: row?.id || null,
-      serverTime: Math.floor(Date.now() / 1000)
+      expected_counter: expectedCounter,
+      last_accepted_counter: Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter : null,
+      last_accepted_message_id: row?.id || null,
+      server_time: Math.floor(Date.now() / 1000)
     });
   }
 
@@ -2329,16 +2329,16 @@ async function handleMessagesRoutes(req, env) {
     const items = messageIds.map((messageId) => {
       const entry = counterByMessage.get(messageId) || { outgoingCount: 0, incomingCount: 0 };
       return {
-        messageId,
-        outgoingCount: entry.outgoingCount,
-        incomingCount: entry.incomingCount,
-        totalCount: entry.outgoingCount + entry.incomingCount
+        message_id: messageId,
+        outgoing_count: entry.outgoingCount,
+        incoming_count: entry.incomingCount,
+        total_count: entry.outgoingCount + entry.incomingCount
       };
     });
     return json({
       ok: true,
       items,
-      serverTime: Math.floor(Date.now() / 1000)
+      server_time: Math.floor(Date.now() / 1000)
     });
   }
 
@@ -2658,7 +2658,7 @@ async function handleMessagesRoutes(req, env) {
           header_json: row.header_json,
           ciphertext_b64: row.ciphertext_b64,
           counter: row.counter,
-          vaultPutCount: vaultCounts.get(row.id) || 0, // [FIX] Return aggregated count
+          vault_put_count: vaultCounts.get(row.id) || 0, // [FIX] Return aggregated count
           created_at: row.created_at
         };
 
@@ -2737,10 +2737,10 @@ async function handleMessagesRoutes(req, env) {
       ok: true,
       items: allItems,
       keys: keysMap,
-      nextCursor,
-      nextCursorTs: nextCursor?.ts || null,
-      nextCursorCounter: nextCursor?.counter ?? null,
-      hasMoreAtCursor: hasMoreGlobal
+      next_cursor: nextCursor,
+      next_cursor_ts: nextCursor?.ts || null,
+      next_cursor_counter: nextCursor?.counter ?? null,
+      has_more_at_cursor: hasMoreGlobal
     });
   }
 
@@ -3050,18 +3050,18 @@ async function handleContactSecretsRoutes(req, env) {
       const parsedWithDrState = Number.isFinite(parsed?.withDrState) ? Number(parsed.withDrState) : null;
       return {
         id: row.id,
-        accountDigest: row.account_digest,
+        account_digest: row.account_digest,
         version: row.version,
-        snapshotVersion: row.snapshot_version,
+        snapshot_version: row.snapshot_version,
         entries: row.entries,
         checksum: row.checksum,
         bytes: row.bytes,
-        updatedAt: Number(row.updated_at) || null,
-        deviceLabel: row.device_label || null,
-        deviceId: row.device_id || null,
-        createdAt: Number(row.created_at) || null,
+        updated_at: Number(row.updated_at) || null,
+        device_label: row.device_label || null,
+        device_id: row.device_id || null,
+        created_at: Number(row.created_at) || null,
         payload: parsed?.payload ?? null,
-        withDrState: parsedWithDrState
+        with_dr_state: parsedWithDrState
       };
     });
     return json({ ok: true, backups });
@@ -3355,10 +3355,10 @@ async function handleMessageKeyVaultRoutes(req, env) {
       wrap_context: safeJSON(row.wrap_context_json),
       dr_state: row.dr_state_snapshot || null,
       direction: row.direction || null,
-      msgType: row.msg_type || null,
-      headerCounter: Number(row.header_counter) || null,
-      targetDeviceId: row.target_device_id || null,
-      createdAt: Number(row.created_at) || null
+      msg_type: row.msg_type || null,
+      header_counter: Number(row.header_counter) || null,
+      target_device_id: row.target_device_id || null,
+      created_at: Number(row.created_at) || null
     });
   }
 
@@ -3446,15 +3446,15 @@ async function handleMessageKeyVaultRoutes(req, env) {
       ok: true,
       outgoing: outgoingRow ? {
         dr_state: outgoingRow.dr_state_snapshot || null,
-        headerCounter: Number(outgoingRow.header_counter) || 0,
-        createdAt: Number(outgoingRow.created_at) || 0,
-        senderDeviceId: outgoingRow.sender_device_id
+        header_counter: Number(outgoingRow.header_counter) || 0,
+        created_at: Number(outgoingRow.created_at) || 0,
+        sender_device_id: outgoingRow.sender_device_id
       } : null,
       incoming: incomingRow ? {
         dr_state: incomingRow.dr_state_snapshot || null,
-        headerCounter: Number(incomingRow.header_counter) || 0,
-        createdAt: Number(incomingRow.created_at) || 0,
-        senderDeviceId: incomingRow.sender_device_id
+        header_counter: Number(incomingRow.header_counter) || 0,
+        created_at: Number(incomingRow.created_at) || 0,
+        sender_device_id: incomingRow.sender_device_id
       } : null
     });
   }
@@ -4113,14 +4113,14 @@ async function handleCallsRoutes(req, env) {
         LIMIT ?2`
     ).bind(callId, limit).all();
     const events = (rows?.results || []).map((row) => ({
-      eventId: row.event_id,
-      callId: row.call_id,
+      event_id: row.event_id,
+      call_id: row.call_id,
       type: row.type,
       payload: safeJSON(row.payload_json),
-      fromAccountDigest: row.from_account_digest || null,
-      toAccountDigest: row.to_account_digest || null,
-      traceId: row.trace_id || null,
-      createdAt: Number(row.created_at) || null
+      from_account_digest: row.from_account_digest || null,
+      to_account_digest: row.to_account_digest || null,
+      trace_id: row.trace_id || null,
+      created_at: Number(row.created_at) || null
     }));
     return json({ ok: true, events });
   }
@@ -4181,8 +4181,8 @@ async function handleDeviceRoutes(req, env) {
       return json({
         ok: row.status === 'active',
         status: row.status || null,
-        lastSeenAt: Number(row.last_seen_at) || null,
-        createdAt: Number(row.created_at) || null
+        last_seen_at: Number(row.last_seen_at) || null,
+        created_at: Number(row.created_at) || null
       });
     } catch (err) {
       console.error('device_check_failed', err?.message || err);
@@ -4204,10 +4204,10 @@ async function handleDeviceRoutes(req, env) {
           ORDER BY (last_seen_at IS NOT NULL) DESC, last_seen_at DESC, created_at DESC`
       ).bind(accountDigest).all();
       const devices = (rows?.results || []).map((row) => ({
-        deviceId: row.device_id,
+        device_id: row.device_id,
         status: row.status,
-        lastSeenAt: row.last_seen_at != null ? Number(row.last_seen_at) : null,
-        createdAt: row.created_at != null ? Number(row.created_at) : null,
+        last_seen_at: row.last_seen_at != null ? Number(row.last_seen_at) : null,
+        created_at: row.created_at != null ? Number(row.created_at) : null,
         label: row.label || null
       }));
       return json({ devices });
@@ -4299,10 +4299,10 @@ async function handleContactsRoutes(req, env) {
       `).bind(accountDigest).all();
 
       const contacts = (rows?.results || []).map(r => ({
-        peerDigest: r.peer_digest,
-        encryptedBlob: r.encrypted_blob || null,
-        isBlocked: r.is_blocked === 1,
-        updatedAt: Number(r.updated_at) || 0
+        peer_digest: r.peer_digest,
+        encrypted_blob: r.encrypted_blob || null,
+        is_blocked: r.is_blocked === 1,
+        updated_at: Number(r.updated_at) || 0
       }));
 
       return json({ ok: true, contacts });
@@ -4333,14 +4333,14 @@ async function handleAccountsRoutes(req, env) {
       return json({ error: 'EnsureTablesFailed', message: err?.message || 'ensureDataTables failed' }, { status: 500 });
     }
     const evidence = {
-      backupExists: false,
-      vaultExists: false,
-      messagesExists: false,
-      backupDeviceId: null,
-      backupDeviceLabel: null,
-      backupUpdatedAt: null,
-      registryDeviceId: null,
-      registryDeviceLabel: null
+      backup_exists: false,
+      vault_exists: false,
+      messages_exists: false,
+      backup_device_id: null,
+      backup_device_label: null,
+      backup_updated_at: null,
+      registry_device_id: null,
+      registry_device_label: null
     };
     try {
       const row = await env.DB.prepare(
@@ -4351,10 +4351,10 @@ async function handleAccountsRoutes(req, env) {
           LIMIT 1`
       ).bind(accountDigest).first();
       if (row) {
-        evidence.backupExists = true;
-        evidence.backupDeviceId = row.device_id || null;
-        evidence.backupDeviceLabel = row.device_label || null;
-        evidence.backupUpdatedAt = row.updated_at != null ? Number(row.updated_at) : null;
+        evidence.backup_exists = true;
+        evidence.backup_device_id = row.device_id || null;
+        evidence.backup_device_label = row.device_label || null;
+        evidence.backup_updated_at = row.updated_at != null ? Number(row.updated_at) : null;
       }
     } catch (err) {
       return json({ error: 'BackupEvidenceFailed', message: err?.message || 'backup evidence query failed' }, { status: 500 });
@@ -4363,7 +4363,7 @@ async function handleAccountsRoutes(req, env) {
       const row = await env.DB.prepare(
         `SELECT 1 FROM message_key_vault WHERE account_digest=?1 LIMIT 1`
       ).bind(accountDigest).first();
-      evidence.vaultExists = !!row;
+      evidence.vault_exists = !!row;
     } catch (err) {
       return json({ error: 'VaultEvidenceFailed', message: err?.message || 'vault evidence query failed' }, { status: 500 });
     }
@@ -4373,7 +4373,7 @@ async function handleAccountsRoutes(req, env) {
            WHERE sender_account_digest=?1 OR receiver_account_digest=?1
            LIMIT 1`
       ).bind(accountDigest).first();
-      evidence.messagesExists = !!row;
+      evidence.messages_exists = !!row;
     } catch (err) {
       return json({ error: 'MessagesEvidenceFailed', message: err?.message || 'messages evidence query failed' }, { status: 500 });
     }
@@ -4386,13 +4386,13 @@ async function handleAccountsRoutes(req, env) {
           LIMIT 1`
       ).bind(accountDigest).first();
       if (row) {
-        evidence.registryDeviceId = row.device_id || null;
-        evidence.registryDeviceLabel = row.label || null;
+        evidence.registry_device_id = row.device_id || null;
+        evidence.registry_device_label = row.label || null;
       }
     } catch (err) {
       return json({ error: 'DeviceEvidenceFailed', message: err?.message || 'device evidence query failed' }, { status: 500 });
     }
-    return json({ ok: true, accountDigest, evidence });
+    return json({ ok: true, account_digest: accountDigest, evidence });
   }
 
   if (req.method === 'POST' && url.pathname === '/d1/accounts/verify') {

@@ -11,7 +11,16 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
   }
 
   const upstreamBase = new URL(originApi);
-  const targetUrl = new URL(url.pathname + url.search, upstreamBase);
+  
+  // Rewrite /api/v1/* to /d1/* for upstream Worker
+  let targetPath = url.pathname;
+  if (targetPath.startsWith('/api/v1/')) {
+    targetPath = '/d1/' + targetPath.slice('/api/v1/'.length);
+  } else if (targetPath.startsWith('/api/')) {
+    targetPath = '/d1/' + targetPath.slice('/api/'.length);
+  }
+  
+  const targetUrl = new URL(targetPath + url.search, upstreamBase);
 
   const upstreamRequest = new Request(targetUrl.toString(), request);
   const response = await fetch(upstreamRequest, { cf: { cacheTtl: 0 } });

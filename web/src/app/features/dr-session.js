@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, buildContactSecretsSnapshotFromDrState, encryptContactSecretPayload } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload } from '../core/contact-secrets.js';
 import {
   initContactSecretsBackup,
   triggerContactSecretsBackup,
@@ -1073,52 +1073,15 @@ export function persistDrSnapshot(params = {}) {
     conversationId: params?.conversationId ?? null
   });
   const holder = state || drState({ peerAccountDigest: peer, peerDeviceId });
-  const selfDeviceId = ensureDeviceId();
-  const info = getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId });
-  
-  // [FIX] If snapshot is provided directly, we can proceed even without holder.rk
-  // BUT only if snapshot counters are >= existing (strict non-downgrade check)
-  const hasDirectSnapshot = !!(snapshot && (snapshot.rk_b64 || snapshot.rk));
-  let directSnapshotAllowed = false;
-  
-  if (hasDirectSnapshot && !holder?.rk) {
-    // Strict check: direct snapshot must not be a downgrade
-    const existingSnap = info?.drState || null;
-    const existingTotal = Number(existingSnap?.NsTotal || 0) + Number(existingSnap?.Ns || 0);
-    const existingNrTotal = Number(existingSnap?.NrTotal || 0) + Number(existingSnap?.Nr || 0);
-    const snapTotal = Number(snapshot?.NsTotal || 0) + Number(snapshot?.Ns || 0);
-    const snapNrTotal = Number(snapshot?.NrTotal || 0) + Number(snapshot?.Nr || 0);
-    
-    // Only allow if snapshot is >= existing on both send and receive counters
-    if (snapTotal >= existingTotal && snapNrTotal >= existingNrTotal) {
-      directSnapshotAllowed = true;
-    } else {
-      try {
-        drConsole.warn('[dr] persist snapshot skipped: direct snapshot is downgrade', {
-          peerAccountDigest: peer,
-          peerDeviceId,
-          existingTotal,
-          existingNrTotal,
-          snapTotal,
-          snapNrTotal
-        });
-      } catch { }
-    }
-  }
-  
-  if (!holder?.rk && !directSnapshotAllowed) {
+  if (!holder?.rk) {
     try {
-      drConsole.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId, hasDirectSnapshot, directSnapshotAllowed });
+      drConsole.warn('[dr] persist snapshot skipped: missing holder rk', { peerAccountDigest: peer, peerDeviceId });
     } catch { }
     return false;
   }
-  
-  // Only assert holder keys if we're using holder (not direct snapshot)
-  if (holder?.rk) {
-    assertU8('persistDrSnapshot:rk', holder.rk);
-    if (holder.ckS) assertU8('persistDrSnapshot:ckS', holder.ckS);
-    if (holder.ckR) assertU8('persistDrSnapshot:ckR', holder.ckR);
-  }
+  assertU8('persistDrSnapshot:rk', holder.rk);
+  if (holder.ckS) assertU8('persistDrSnapshot:ckS', holder.ckS);
+  if (holder.ckR) assertU8('persistDrSnapshot:ckR', holder.ckR);
   
   let snap = snapshot || snapshotDrState(holder);
   if (snap && !isPersistableSnapshot(snap)) {
@@ -1131,9 +1094,10 @@ export function persistDrSnapshot(params = {}) {
     return false;
   }
   // contact secret 以「本機裝置」為鍵，peerDeviceId 僅為對端識別；寫入使用 self deviceId。
+  const selfDeviceId = ensureDeviceId();
+  const info = getContactSecret(peer, { deviceId: selfDeviceId, peerDeviceId });
   try {
-    // [FIX] Also check snap.role as fallback
-    const holderRoleRaw = holder?.baseKey?.role || info?.role || snap?.role || null;
+    const holderRoleRaw = holder?.baseKey?.role || info?.role || null;
     const holderRole = typeof holderRoleRaw === 'string' ? holderRoleRaw : null;
     if (!holderRole) {
       drConsole.error('[dr] persist snapshot failed: missing role', {
@@ -1141,8 +1105,7 @@ export function persistDrSnapshot(params = {}) {
         peerDeviceId,
         deviceId: selfDeviceId,
         Ns: snap?.Ns ?? null,
-        Nr: snap?.Nr ?? null,
-        checkedSources: ['holder.baseKey.role', 'info.role', 'snap.role']
+        Nr: snap?.Nr ?? null
       });
       return false;
     }
@@ -1903,28 +1866,11 @@ export async function sendDrPlaintextCore(params = {}) {
     // vault payload or during the network request, our local ratchet state has advanced.
     // This prevents "Key Reuse" scenarios where we might resend with the same key
     // or fail to decrypt valid responses.
-    if (postSnapshot) {
-      try {
-        persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: postSnapshot });
-      } catch (e) {
-        drConsole.warn('[dr] pre-send persist failed', e);
-        // If local persist fails, we should probably throw?
-        // But for now, we log and proceed, relying on the onSent hook as backup.
-      }
-    }
+    // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
 
     if (mk) {
       try {
-        // [FIX] Use postSnapshot directly instead of reading from map
-        // This ensures vault gets the current state even if persistDrSnapshot failed
-        const secretInfo = getContactSecret(peer, { deviceId: ensureDeviceId(), peerDeviceId: receiverDeviceId });
-        const payloadJson = buildContactSecretsSnapshotFromDrState(peer, {
-          peerDeviceId: receiverDeviceId,
-          drStateSnapshot: postSnapshot,
-          role: secretInfo?.role || postSnapshot?.role || null,
-          conversationToken: secretInfo?.conversationToken || null,
-          conversationId: finalConversationId
-        });
+        const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
         if (payloadJson) {
           drStateSnapshot = await encryptContactSecretPayload(payloadJson, mk);
         }
@@ -2046,18 +1992,7 @@ export async function sendDrPlaintextCore(params = {}) {
     }, 5);
     if (isConversationLocked(finalConversationId)) {
       logDrSendTrace({ messageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: job?.jobId || null });
-      if (postSnapshot && peer && peerDeviceId) {
-        const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: postSnapshot });
-        logDrCore('send:persist', {
-          peerAccountDigest: peer,
-          peerDeviceId,
-          messageId,
-          persisted,
-          Ns: postSnapshot?.Ns ?? null,
-          Nr: postSnapshot?.Nr ?? null,
-          hasCkS: !!postSnapshot?.ckS_b64
-        }, { level: 'log' });
-      }
+      // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
       return {
         queued: true,
         jobId: job?.jobId || null,
@@ -2172,24 +2107,8 @@ export async function sendDrPlaintextCore(params = {}) {
         let repairDrStateSnapshot = null;
         if (getMkRaw()) { // Check if MK is available
           try {
-            if (repairPostSnapshot) {
-              try {
-                persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: repairPostSnapshot });
-              } catch (e) {
-                drConsole.warn('[dr] pre-piggyback persist failed (repair)', e);
-              }
-            }
-            // [FIX] Use repairPostSnapshot directly instead of reading from map
-            const secretInfo = getContactSecret(peer, { deviceId: ensureDeviceId(), peerDeviceId: receiverDeviceId });
-            const payloadJson = repairPostSnapshot
-              ? buildContactSecretsSnapshotFromDrState(peer, {
-                  peerDeviceId: receiverDeviceId,
-                  drStateSnapshot: repairPostSnapshot,
-                  role: secretInfo?.role || repairPostSnapshot?.role || null,
-                  conversationToken: secretInfo?.conversationToken || null,
-                  conversationId: finalConversationId
-                })
-              : buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+            // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
+            const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
             if (payloadJson) {
               repairDrStateSnapshot = await encryptContactSecretPayload(payloadJson, getMkRaw());
             }
@@ -2269,18 +2188,7 @@ export async function sendDrPlaintextCore(params = {}) {
           reasonCode: 'DR_ENQUEUE_OUTBOX_REPAIR'
         }, 5);
         if (isConversationLocked(finalConversationId)) {
-          if (repairPostSnapshot && peer && peerDeviceId) {
-            const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: repairPostSnapshot });
-            logDrCore('send:persist', {
-              peerAccountDigest: peer,
-              peerDeviceId,
-              messageId: replacementMessageId,
-              persisted,
-              Ns: repairPostSnapshot?.Ns ?? null,
-              Nr: repairPostSnapshot?.Nr ?? null,
-              hasCkS: !!repairPostSnapshot?.ckS_b64
-            }, { level: 'log' });
-          }
+          // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
           return {
             queued: true,
             jobId: repairJob?.jobId || null,
@@ -2327,18 +2235,7 @@ export async function sendDrPlaintextCore(params = {}) {
           repairErr.replacement = replacementInfo;
           throw repairErr;
         }
-        if (repairPostSnapshot && peer && peerDeviceId) {
-          const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: repairPostSnapshot });
-          logDrCore('send:persist', {
-            peerAccountDigest: peer,
-            peerDeviceId,
-            messageId: replacementMessageId,
-            persisted,
-            Ns: repairPostSnapshot?.Ns ?? null,
-            Nr: repairPostSnapshot?.Nr ?? null,
-            hasCkS: !!repairPostSnapshot?.ckS_b64
-          }, { level: 'log' });
-        }
+        // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
         sendFailureCounter.delete(`${peer}::${receiverDeviceId || 'unknown'}`);
         logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: repairPostSnapshot });
         const repairMsg = repairResult.data && typeof repairResult.data === 'object' ? repairResult.data : {};
@@ -2391,18 +2288,7 @@ export async function sendDrPlaintextCore(params = {}) {
       sendErr.__drDeliveryLogged = true;
       throw sendErr;
     }
-    if (postSnapshot && peer && peerDeviceId) {
-      const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: postSnapshot });
-      logDrCore('send:persist', {
-        peerAccountDigest: peer,
-        peerDeviceId,
-        messageId,
-        persisted,
-        Ns: postSnapshot?.Ns ?? null,
-        Nr: postSnapshot?.Nr ?? null,
-        hasCkS: !!postSnapshot?.ckS_b64
-      }, { level: 'log' });
-    }
+    // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
     sendFailureCounter.delete(`${peer}::${receiverDeviceId || 'unknown'}`);
     logDrSend('encrypt-after', { peerAccountDigest: peer, snapshot: postSnapshot });
     const msg = result.data && typeof result.data === 'object' ? result.data : {};
@@ -2942,24 +2828,8 @@ export async function sendDrMediaCore(params = {}) {
   const mk = getMkRaw();
   if (mk) {
     try {
-      if (postSnapshot) {
-        try {
-          persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId: receiverDeviceId, snapshot: postSnapshot });
-        } catch (e) {
-          drConsole.warn('[dr] pre-piggyback persist failed (media)', e);
-        }
-      }
-      // [FIX] Use postSnapshot directly instead of reading from map
-      const secretInfo = getContactSecret(peer, { deviceId: ensureDeviceId(), peerDeviceId: receiverDeviceId });
-      const payloadJson = postSnapshot
-        ? buildContactSecretsSnapshotFromDrState(peer, {
-            peerDeviceId: receiverDeviceId,
-            drStateSnapshot: postSnapshot,
-            role: secretInfo?.role || postSnapshot?.role || null,
-            conversationToken: secretInfo?.conversationToken || null,
-            conversationId: conversationId
-          })
-        : buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
+      // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
+      const payloadJson = buildPartialContactSecretsSnapshot(peer, { peerDeviceId: receiverDeviceId });
       if (payloadJson) {
         drStateSnapshot = await encryptContactSecretPayload(payloadJson, mk);
       }
@@ -3053,18 +2923,7 @@ export async function sendDrMediaCore(params = {}) {
   }
   if (isConversationLocked(conversationId)) {
     logDrSendTrace({ messageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: job?.jobId || null });
-    if (postSnapshot && peer && peerDeviceId) {
-      const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: postSnapshot });
-      logDrCore('send:persist', {
-        peerAccountDigest: peer,
-        peerDeviceId,
-        messageId,
-        persisted,
-        Ns: postSnapshot?.Ns ?? null,
-        Nr: postSnapshot?.Nr ?? null,
-        hasCkS: !!postSnapshot?.ckS_b64
-      }, { level: 'log' });
-    }
+    // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
     return {
       queued: true,
       jobId: job?.jobId || null,
@@ -3237,18 +3096,7 @@ export async function sendDrMediaCore(params = {}) {
       }
       if (isConversationLocked(conversationId)) {
         logDrSendTrace({ messageId: replacementMessageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: repairJob?.jobId || null });
-        if (repairPostSnapshot && peer && peerDeviceId) {
-          const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: repairPostSnapshot });
-          logDrCore('send:persist', {
-            peerAccountDigest: peer,
-            peerDeviceId,
-            messageId: replacementMessageId,
-            persisted,
-            Ns: repairPostSnapshot?.Ns ?? null,
-            Nr: repairPostSnapshot?.Nr ?? null,
-            hasCkS: !!repairPostSnapshot?.ckS_b64
-          }, { level: 'log' });
-        }
+        // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
         return {
           queued: true,
           jobId: repairJob?.jobId || null,
@@ -3341,7 +3189,7 @@ export async function sendDrMediaCore(params = {}) {
           messageKeyB64: repairMessageKeyB64
         });
       }
-      persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
+      // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
       try {
         log({
           sendSuccessTrace: {
@@ -3409,7 +3257,7 @@ export async function sendDrMediaCore(params = {}) {
       messageKeyB64
     });
   }
-  persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
+  // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
   try {
     log({
       sendSuccessTrace: {
@@ -3923,26 +3771,12 @@ export async function ensureDrReceiverState(params = {}) {
       }
     }
   }
-  // 若 contact-secrets 上存的快照屬於錯裝置或 guest 卻標示 responder，跳過但不清除。
-  // [FIX] 不主動清除 DR state，避免 rk 永久丟失。只記錄警告並跳過使用此 snapshot。
+  // 若 contact-secrets 上存的快照屬於錯裝置或 guest 卻標示 responder，直接丟棄存檔避免再次載入。
   if (secretInfo?.drState) {
     const snapRole = typeof secretInfo.drState?.role === 'string' ? secretInfo.drState.role.toLowerCase() : null;
     const snapSelf = typeof secretInfo.drState?.selfDeviceId === 'string' ? secretInfo.drState.selfDeviceId : null;
     if ((selfDeviceId && snapSelf && snapSelf !== selfDeviceId) || (guestLike && snapRole === 'responder')) {
-      // [FIX] Don't clear DR state - just log and skip using this snapshot
-      try {
-        drConsole.warn('[dr-log:skip-invalid-snapshot]', {
-          peerAccountDigest: peer,
-          peerDeviceId,
-          reason: (snapSelf && snapSelf !== selfDeviceId) ? 'device-mismatch' : 'guest-responder-mismatch',
-          snapSelf,
-          selfDeviceId,
-          snapRole,
-          guestLike,
-          action: 'skip-without-clear'
-        });
-      } catch { }
-      // Re-read state but DON'T clear the snapshot - it might be the only valid rk we have
+      setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-state-skip-invalid-device' } });
       state = drState({ peerAccountDigest: peer, peerDeviceId });
     }
   }
@@ -4073,16 +3907,7 @@ export async function ensureDrReceiverState(params = {}) {
       });
     } catch { }
     if (snapshotRole !== 'initiator') {
-      // [FIX] Don't clear DR state - just log and skip
-      // Clearing here could cause permanent rk loss
-      try {
-        drConsole.warn('[dr-log:guest-skip-non-initiator-snapshot]', {
-          peerAccountDigest: peer,
-          peerDeviceId,
-          snapshotRole,
-          action: 'skip-without-clear'
-        });
-      } catch { }
+      setContactSecret(peer, { deviceId: selfDeviceId, dr: null, meta: { source: 'dr-guest-skip-responder-snapshot' } });
     }
   }
   if (preferredConversationId && (!state.baseKey || !state.baseKey.conversationId)) {
@@ -4423,21 +4248,10 @@ try {
             hasSnapshotAfter: !!dr?.snapshotAfter
           }));
         } catch { }
-        const persisted = persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: dr.snapshotAfter });
-        try {
-          drConsole.log('[dr-log:outbox-persist]', JSON.stringify({
-            peerAccountDigest: peer,
-            peerDeviceId,
-            messageId: job?.messageId || null,
-            NsBefore: nsBefore,
-            NsAfter: nsAfter,
-            persisted
-          }));
-        } catch { }
-        if (persisted) {
-          maybeTriggerBackupAfterSend({ sourceTag: 'dr-session:outbox-sent' });
-        }
+        // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
+        maybeTriggerBackupAfterSend({ sourceTag: 'dr-session:outbox-sent' });
       }
+    }
 
       // Fix for Media Pending Stuck:
       // Media messages sent via outbox (processOutboxJobNow) might stay in 'pending' state in timeline-store
