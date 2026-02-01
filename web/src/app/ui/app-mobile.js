@@ -3798,6 +3798,9 @@ async function hydrateProfileSnapshots() {
   }
 }
 
+// [FIX: Hydration Race] Flag to block WS until keys are loaded
+let hydrationComplete = false;
+
 const postLoginInitPromise = (async () => {
   try {
     await seedProfileCounterOnce();
@@ -3817,6 +3820,7 @@ postLoginInitPromise
     messagesPane.renderConversationList();
     messagesFlowFacade.onLoginResume({ source: 'login', runOfflineCatchup: false });
     flushOutbox({ sourceTag: 'post_login' }).catch(() => { });
+    hydrationComplete = true; // [FIX] Release the guard
     ensureWebSocket();
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
@@ -3841,6 +3845,11 @@ function ensureWebSocket() {
   const digest = getAccountDigest();
   if (!digest) {
     log({ wsSkip: 'missing_account_digest' });
+    return;
+  }
+  // [FIX] Block connection if keys aren't ready
+  if (!hydrationComplete) {
+    if (wsDebugEnabled) console.log('[ws-ensure] Skipped: Hydration pending');
     return;
   }
   log({ wsEnsure: true, state: wsConn?.readyState ?? 'none' });
