@@ -412,7 +412,7 @@ export class MessageFlowController extends BaseController {
             });
 
             if (result.items && result.items.length) {
-                appendBatch(result.items);
+                appendBatch(result.items, { directionalOrder: 'history' });
             }
 
             state.nextCursor = result.nextCursor || null;
@@ -556,7 +556,11 @@ export class MessageFlowController extends BaseController {
             thread.lastReadTs = thread.lastMessageTs || thread.lastReadTs || null;
             this.refreshTimelineState(convId);
             this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
-            this.updateMessagesUI({ scrollToEnd: true });
+
+            // [FIX] Respect history loading direction to prevent scroll jump
+            const preserveScroll = directionalOrder === 'history';
+            this.updateMessagesUI({ scrollToEnd: !preserveScroll, preserveScroll });
+
             this.syncThreadFromActiveMessages(); // Update header (peerName/avatar)
             this.deps.controllers?.conversationList?.syncThreadFromActiveMessages?.(); // Update list thread if needed
         } else if (incomingCount > 0) {
