@@ -191,9 +191,9 @@ export const createInviteDropbox = async (req, res) => {
     data = {};
   }
 
-  const ownerPublicKeyB64 = data?.ownerPublicKeyB64 || null;
-  const prekeyBundle = data?.prekeyBundle || null;
-  const expiresAt = data?.expiresAt || null;
+  const ownerPublicKeyB64 = data?.owner_public_key_b64 || data?.ownerPublicKeyB64 || null;
+  const prekeyBundle = data?.prekey_bundle || data?.prekeyBundle || null;
+  const expiresAt = data?.expires_at || data?.expiresAt || null;
   if (!ownerPublicKeyB64 || !prekeyBundle || !expiresAt) {
     return res.status(502).json({ error: 'InviteCreateFailed', message: 'worker response incomplete' });
   }
@@ -201,8 +201,8 @@ export const createInviteDropbox = async (req, res) => {
   return res.json({
     inviteId,
     expiresAt,
-    ownerAccountDigest: normalizeAccountDigest(data?.ownerAccountDigest || auth.accountDigest),
-    ownerDeviceId: data?.ownerDeviceId || senderDeviceId,
+    ownerAccountDigest: normalizeAccountDigest(data?.owner_account_digest || data?.ownerAccountDigest || auth.accountDigest),
+    ownerDeviceId: data?.owner_device_id || data?.ownerDeviceId || senderDeviceId,
     ownerPublicKeyB64,
     prekeyBundle
   });
@@ -295,11 +295,11 @@ export const deliverInviteDropbox = async (req, res) => {
 
   try {
     const manager = getWebSocketManager();
-    const targetDigest = normalizeAccountDigest(data?.ownerAccountDigest || null);
+    const targetDigest = normalizeAccountDigest(data?.owner_account_digest || data?.ownerAccountDigest || null);
     if (manager && targetDigest) {
       manager.sendInviteDelivered(null, {
         targetAccountDigest: targetDigest,
-        targetDeviceId: data?.ownerDeviceId || null,
+        targetDeviceId: data?.owner_device_id || data?.ownerDeviceId || null,
         inviteId: input.inviteId
       });
     }
@@ -390,16 +390,16 @@ export const consumeInviteDropbox = async (req, res) => {
     data = {};
   }
 
-  const envelope = data?.ciphertextEnvelope || null;
+  const envelope = data?.ciphertext_envelope || data?.ciphertextEnvelope || null;
   if (!envelope) {
     return res.status(502).json({ error: 'InviteConsumeFailed', message: 'worker response missing ciphertext' });
   }
 
   return res.json({
     ok: true,
-    inviteId: data?.inviteId || input.inviteId || null,
-    expiresAt: data?.expiresAt || null,
-    ownerDeviceId: data?.ownerDeviceId || null,
+    inviteId: data?.invite_id || data?.inviteId || input.inviteId || null,
+    expiresAt: data?.expires_at || data?.expiresAt || null,
+    ownerDeviceId: data?.owner_device_id || data?.ownerDeviceId || null,
     ciphertextEnvelope: envelope
   });
 };
