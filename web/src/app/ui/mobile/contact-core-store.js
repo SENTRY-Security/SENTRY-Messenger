@@ -1,6 +1,7 @@
 import { normalizeAccountDigest, normalizePeerDeviceId, getMkRaw, normalizePeerIdentity } from '../../core/store.js';
 import { sessionStore } from './session-store.js';
 import { DEBUG } from './debug-flags.js';
+import { updateContactProfile } from '../../core/contact-secrets.js';
 
 const coreMap = new Map();
 
@@ -392,6 +393,18 @@ export function patchContactCore(peerKey, patch = {}, sourceTag = 'unknown') {
   });
   if (Object.keys(changedFields).length > 0) {
     logJson('upsert', { peerKey: key, sourceTag, isReady: nextEntry.isReady, changedFields });
+    // Sync profile changes to contact-secrets for backup
+    if ('nickname' in changedFields || 'avatar' in changedFields) {
+      try {
+        updateContactProfile(existing.peerAccountDigest, {
+          nickname: nextEntry.nickname,
+          avatar: nextEntry.avatar,
+          peerDeviceId: existing.peerDeviceId
+        });
+      } catch (err) {
+        console.warn('[contact-core] updateContactProfile failed', err);
+      }
+    }
   }
   if (nextEntry.isReady) applyDerivedOutputs(nextEntry);
   return cloneEntry(nextEntry);

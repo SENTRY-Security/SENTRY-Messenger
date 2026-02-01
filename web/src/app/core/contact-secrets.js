@@ -1356,7 +1356,10 @@ function createEmptyContactSecret() {
     conversationDrInit: null,
     devices: {}, // deviceId -> { drState, drSeed, drHistory, drHistoryCursorTs, drHistoryCursorId, updatedAt }
     isHidden: false,
-    updatedAt: null
+    updatedAt: null,
+    // Profile fields (synced with contact-core-store)
+    nickname: null,
+    avatar: null
   };
 }
 
@@ -1467,6 +1470,9 @@ function buildStructuredEntry(peerAccountDigest, record) {
       peerDeviceId
     },
     devices: devicesObj,
+    // Profile fields
+    nickname: record.nickname || null,
+    avatar: record.avatar || null,
     meta: {
       updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : null
     }
@@ -1775,6 +1781,14 @@ function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
     record.updatedAt = Number.isFinite(updated) ? updated : null;
   }
 
+  // Profile fields
+  if (Object.prototype.hasOwnProperty.call(entry, 'nickname')) {
+    record.nickname = normalizeOptionalString(entry.nickname) || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, 'avatar')) {
+    record.avatar = normalizeOptionalString(entry.avatar) || null;
+  }
+
   const aliases = [];
   if (identity.accountDigest) aliases.push(identity.accountDigest);
   if (identity.deviceId) aliases.push(identity.deviceId);
@@ -1817,6 +1831,11 @@ function normalizeContactSecretUpdate(update = {}) {
     },
     meta: {
       updatedAt: { has: false, value: null }
+    },
+    // Profile fields
+    profile: {
+      nickname: { has: false, value: null },
+      avatar: { has: false, value: null }
     },
     debugSource: update?.__debugSource || update?.source || update?.meta?.source || null
   };
@@ -1935,6 +1954,14 @@ function normalizeContactSecretUpdate(update = {}) {
   if (Object.prototype.hasOwnProperty.call(update, 'deviceId')) applyDeviceId(update.deviceId);
   if (Object.prototype.hasOwnProperty.call(update, 'device_id')) applyDeviceId(update.device_id);
 
+  // Profile fields
+  if (Object.prototype.hasOwnProperty.call(update, 'nickname')) {
+    applyString(structured.profile, 'nickname', update.nickname);
+  }
+  if (Object.prototype.hasOwnProperty.call(update, 'avatar')) {
+    applyString(structured.profile, 'avatar', update.avatar);
+  }
+
   return structured;
 }
 
@@ -2042,6 +2069,10 @@ export function setContactSecret(peerAccountDigest, opts = {}) {
   if (structured.dr.cursorTs.has) deviceRecord.drHistoryCursorTs = structured.dr.cursorTs.value;
   if (structured.dr.cursorId.has) deviceRecord.drHistoryCursorId = structured.dr.cursorId.value;
 
+  // Profile fields
+  if (structured.profile.nickname.has) next.nickname = structured.profile.nickname.value;
+  if (structured.profile.avatar.has) next.avatar = structured.profile.avatar.value;
+
   if (structured.meta.updatedAt.has) {
     const ts = structured.meta.updatedAt.value ?? null;
     next.updatedAt = ts;
@@ -2111,6 +2142,33 @@ export function deleteContactSecret(peerAccountDigest) {
     clearContactAliases(key);
     persistContactSecrets();
   }
+}
+
+/**
+ * Update contact profile fields (nickname, avatar) only.
+ * This is a lightweight update that doesn't touch DR state.
+ */
+export function updateContactProfile(peerAccountDigest, { nickname, avatar, peerDeviceId } = {}) {
+  const peerDeviceIdHint = normalizePeerDeviceId(peerDeviceId || null);
+  const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
+  if (!key) return null;
+  const map = ensureMap();
+  const record = map.get(key);
+  if (!record) return null;
+  let changed = false;
+  if (nickname !== undefined && record.nickname !== nickname) {
+    record.nickname = nickname || null;
+    changed = true;
+  }
+  if (avatar !== undefined && record.avatar !== avatar) {
+    record.avatar = avatar || null;
+    changed = true;
+  }
+  if (changed) {
+    record.updatedAt = Date.now();
+    persistContactSecrets();
+  }
+  return { peerKey: key, nickname: record.nickname, avatar: record.avatar };
 }
 
 export function getContactSecret(peerAccountDigest, opts = {}) {
