@@ -472,7 +472,11 @@ export async function smartFetchMessages({
                             fetchSecureMessageById: createNoOpFetcher(item),
                             maybeSendVaultAckWs: deps?.maybeSendVaultAckWs,
                             getAccountDigest: deps?.getAccountDigest,
-                            getDeviceId: deps?.getDeviceId
+                            getDeviceId: deps?.getDeviceId,
+                            // [HYBRID SAFETY]
+                            // Disable Bootstrap for fallback replay.
+                            // If this is an old message, it must NOT reset the session.
+                            bootstrapDrFromGuestBundle: null
                         });
 
                         if (bResult.ok && bResult.decrypted) {
