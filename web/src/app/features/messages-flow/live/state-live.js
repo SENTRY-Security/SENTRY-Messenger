@@ -355,28 +355,27 @@ async function decryptIncomingSingle(params = {}, adapters) {
             state.NrTotal = msgHeaderN;
             if ((state.Nr || 0) < msgHeaderN) state.Nr = msgHeaderN;
 
-            // 2. Persist Local
-            adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, snapshot: state });
-
-            // 3. Encrypt for Vault
+            // 2. Encrypt for Vault (Before Local Persist!)
             const drStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
 
-            // 4. Persist to Vault
-            if (drStateSnapshot) {
-              await adapters.vaultPutIncomingKey({
-                conversationId,
-                messageId,
-                senderDeviceId,
-                targetDeviceId: adapters.getDeviceId(),
-                direction: 'incoming',
-                msgType: 'contact-share',
-                headerCounter: msgHeaderN,
-                messageKeyB64: null, // No MK for contact-share (Session Key used)
-                accountDigest: adapters.getAccountDigest(),
-                drStateSnapshot
-              });
-              if (DEBUG.drVerbose) console.log('[state-live] vaulted Contact-Share Snapshot');
-            }
+            // 3. Persist to Vault
+            await adapters.vaultPutIncomingKey({
+              conversationId,
+              messageId,
+              senderDeviceId,
+              targetDeviceId: adapters.getDeviceId(),
+              direction: 'incoming',
+              msgType: 'contact-share',
+              headerCounter: msgHeaderN,
+              messageKeyB64: null, // No MK for contact-share (Session Key used)
+              accountDigest: adapters.getAccountDigest(),
+              drStateSnapshot
+            });
+
+            // 4. Persist Local (Only after Vault Success)
+            adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, snapshot: state });
+
+            if (DEBUG.drVerbose) console.log('[state-live] vaulted & persisted Contact-Share Snapshot');
           }
         } catch (err) {
           console.warn('[state-live] failed to persist contact-share ratchet state', err);
@@ -622,11 +621,8 @@ async function decryptIncomingSingle(params = {}, adapters) {
     }
   }
 
-  if (adapters?.persistDrSnapshot) {
-    try {
-      adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, state });
-    } catch { }
-  }
+  // [FIX] Removed premature persistDrSnapshot. 
+  // State should only be persisted after successful Vault Put in `persistAndAppendBatch`.
 
   return result;
 }
@@ -801,11 +797,7 @@ async function commitIncomingSingle(params = {}, adapters) {
     return { ...base, reasonCode: 'DECRYPT_FAIL', counter: resolvedCounter, messageId };
   }
 
-  if (adapters?.persistDrSnapshot) {
-    try {
-      adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, state });
-    } catch { }
-  }
+  // [FIX] Removed premature persistDrSnapshot. Validated Vault Put first.
 
   if (!messageKeyB64) {
     return {
@@ -865,6 +857,15 @@ async function commitIncomingSingle(params = {}, adapters) {
       messageId,
       decryptOk: true
     };
+  }
+
+  // [FIX] Persist Local Only After Vault Success
+  if (adapters?.persistDrSnapshot) {
+    try {
+      // We need to re-fetch the state (it's the same in-memory object)
+      const stateAfter = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+      adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, snapshot: stateAfter });
+    } catch { }
   }
 
   if (adapters?.appendTimelineBatch) {
@@ -960,6 +961,17 @@ async function persistAndAppendBatch(params = {}, adapters) {
         drStateSnapshot
       });
       vaultPutOk += 1;
+
+      // [FIX] Persist Local Snapshot AFTER Vault Success
+      if (adapters.persistDrSnapshot && adapters.drState && message.senderDigest && message.senderDeviceId) {
+        try {
+          const state = adapters.drState({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId });
+          adapters.persistDrSnapshot({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId, snapshot: state });
+        } catch (e) {
+          console.warn('[state-live] failed to persist snapshot after vault put', e);
+        }
+      }
+
       appendableMessages.push(message);
     } catch {
       vaultPutFail += 1;
