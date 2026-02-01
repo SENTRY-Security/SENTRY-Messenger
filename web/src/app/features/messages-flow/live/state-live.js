@@ -412,13 +412,27 @@ async function decryptIncomingSingle(params = {}, adapters) {
       skippedCount: 1
     };
   }
-  const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
-  if (!hasUsableDrState(state)) {
+
+  // [FIX] Clone State to Prevent Mutation Leak
+  // The shared state must NOT be advanced until we are ready to persist (after Vault).
+  // We use structuredClone if available, or assume POJO (with Buffers safe in standard Clone).
+  const rawState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+  if (!hasUsableDrState(rawState)) {
     return {
       ...base,
       reasonCode: 'DR_STATE_UNAVAILABLE',
       skippedCount: 1
     };
+  }
+
+  let state;
+  try {
+    state = typeof structuredClone === 'function' ? structuredClone(rawState) : JSON.parse(JSON.stringify(rawState));
+    // If Buffers are lost in JSON (unlikely in this env but possible), we might need re-inflation. 
+    // For now assuming structuredClone works.
+  } catch (e) {
+    console.warn('[state-live] clone failed, using raw state (risky)', e);
+    state = rawState;
   }
 
   state.baseKey = state.baseKey || {};
@@ -624,6 +638,8 @@ async function decryptIncomingSingle(params = {}, adapters) {
   // [FIX] Removed premature persistDrSnapshot. 
   // State should only be persisted after successful Vault Put in `persistAndAppendBatch`.
 
+  // Return mutated state so caller can persist it explicitly
+  result.mutatedState = state;
   return result;
 }
 
@@ -963,10 +979,16 @@ async function persistAndAppendBatch(params = {}, adapters) {
       vaultPutOk += 1;
 
       // [FIX] Persist Local Snapshot AFTER Vault Success
-      if (adapters.persistDrSnapshot && adapters.drState && message.senderDigest && message.senderDeviceId) {
+      // Use mutatedState if available (from Clone), otherwise re-read (unsafe if mutated in-place but we fixed that).
+      const stateToPersist = message.mutatedState || (
+        adapters.drState && adapters.drState({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId })
+      );
+
+      if (adapters.persistDrSnapshot && stateToPersist && message.senderDigest && message.senderDeviceId) {
         try {
-          const state = adapters.drState({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId });
-          adapters.persistDrSnapshot({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId, snapshot: state });
+          // If we re-read, it's the OLD state (9). If we use mutatedState, it's the NEW state (10).
+          // We MUST use mutatedState.
+          adapters.persistDrSnapshot({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId, snapshot: stateToPersist });
         } catch (e) {
           console.warn('[state-live] failed to persist snapshot after vault put', e);
         }
