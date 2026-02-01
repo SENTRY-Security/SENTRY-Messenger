@@ -20,6 +20,23 @@ import { sessionStore } from '../ui/mobile/session-store.js';
 const CORRUPT_BACKUP_REASON_DEFAULT = 'corrupt-contact-backup';
 const corruptBackupSeen = new Set();
 
+/**
+ * Normalize backup object from API response (snake_case -> camelCase)
+ */
+function normalizeBackupResponse(backup) {
+  if (!backup) return backup;
+  return {
+    ...backup,
+    snapshotVersion: backup.snapshotVersion ?? backup.snapshot_version ?? null,
+    updatedAt: backup.updatedAt ?? backup.updated_at ?? null,
+    createdAt: backup.createdAt ?? backup.created_at ?? null,
+    deviceId: backup.deviceId ?? backup.device_id ?? null,
+    deviceLabel: backup.deviceLabel ?? backup.device_label ?? null,
+    withDrState: backup.withDrState ?? backup.with_dr_state ?? null,
+    accountDigest: backup.accountDigest ?? backup.account_digest ?? null,
+  };
+}
+
 function ensureCorruptBackupStore() {
   if (!(sessionStore.corruptContactBackups instanceof Map)) {
     const entries = sessionStore.corruptContactBackups && typeof sessionStore.corruptContactBackups.entries === 'function'
@@ -390,7 +407,7 @@ export async function hydrateContactSecretsFromBackup({ reason = 'post-login-hyd
       return recordResult({ ok: false, status, entries: 0, corruptCount: 0, noData: true });
     }
     if (!r?.ok) return recordResult({ ok: false, status, entries: 0, corruptCount: 0, noData: false });
-    const backup = Array.isArray(data?.backups) ? data.backups[0] : null;
+    const backup = normalizeBackupResponse(Array.isArray(data?.backups) ? data.backups[0] : null);
     if (!backup?.payload) {
       syncCompleted = true;
       return recordResult({ ok: false, status, entries: 0, corruptCount: 0, noData: true });
@@ -503,7 +520,7 @@ async function performSync() {
     if (!r.ok) {
       return;
     }
-    const backup = Array.isArray(data?.backups) ? data.backups[0] : null;
+    const backup = normalizeBackupResponse(Array.isArray(data?.backups) ? data.backups[0] : null);
     if (!backup?.payload) {
       syncCompleted = true;
       return;
