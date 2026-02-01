@@ -29,7 +29,7 @@ import { encryptContactPayload, decryptContactPayload } from '../../../features/
 import { flushPendingContactShares, uplinkContactToD1 } from '../../../features/contacts.js';
 import { setContactSecret, getContactSecret, restoreContactSecrets } from '../../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from '../session-store.js';
-import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice } from '../contact-core-store.js';
+import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice, removeContactCore } from '../contact-core-store.js';
 import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, consumeDrSendCounter } from '../../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../../crypto/prekeys.js';
@@ -49,6 +49,50 @@ const CONTACT_INIT_TYPE = 'contact-init';
 const ACCOUNT_DIGEST_REGEX = /^[0-9A-F]{64}$/;
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 const queueNoiseEnabled = DEBUG.queueNoise === true;
+
+/**
+ * Check if a contact has a complete DR state (can communicate).
+ */
+function isContactComplete(peerAccountDigest, peerDeviceId) {
+  if (!peerAccountDigest) return false;
+  const holder = drState({ peerAccountDigest, peerDeviceId });
+  return !!(holder?.rk instanceof Uint8Array);
+}
+
+/**
+ * Cleanup incomplete contact state for a given account digest (without pending invites).
+ * Used when retrying friend invite flow.
+ */
+function cleanupIncompleteContactCore(peerAccountDigest, { sourceTag = 'cleanup' } = {}) {
+  if (!peerAccountDigest) return;
+  const matches = findContactCoreByAccountDigest(peerAccountDigest);
+  for (const match of matches) {
+    const peerKey = match?.peerKey;
+    const peerDeviceId = match?.entry?.peerDeviceId || (peerKey?.includes('::') ? peerKey.split('::')[1] : null);
+    
+    // Only cleanup if NOT complete
+    if (!isContactComplete(peerAccountDigest, peerDeviceId)) {
+      // Remove from contact-core
+      if (peerKey) {
+        removeContactCore(peerKey, `${sourceTag}:incomplete`);
+      }
+      // Clear DR state
+      if (peerDeviceId) {
+        clearDrState({ peerAccountDigest, peerDeviceId }, { __drDebugTag: `${sourceTag}:cleanup-dr` });
+      }
+      // Clear contact-secrets
+      const selfDeviceId = ensureDeviceId();
+      if (selfDeviceId) {
+        setContactSecret(peerAccountDigest, { deviceId: selfDeviceId, peerDeviceId, dr: null, meta: { source: sourceTag } });
+      }
+      logCapped('cleanupIncompleteContact', {
+        peerAccountDigestSuffix4: peerAccountDigest?.slice?.(-4) || null,
+        peerDeviceIdSuffix4: peerDeviceId?.slice?.(-4) || null,
+        sourceTag
+      }, 5);
+    }
+  }
+}
 
 export function setupShareController(options) {
   const {
@@ -1115,6 +1159,46 @@ export function setupShareController(options) {
       const resolvedOwnerDeviceId = ownerDeviceId;
       if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
       if (!resolvedOwnerDeviceId) throw new Error('owner device 不完整，請重試');
+
+      // [FIX] Check for existing contact with this account digest
+      const existingContacts = findContactCoreByAccountDigest(resolvedOwnerDigest);
+      if (existingContacts.length > 0) {
+        const anyComplete = existingContacts.some(c => 
+          isContactComplete(resolvedOwnerDigest, c?.entry?.peerDeviceId || null)
+        );
+        if (anyComplete) {
+          // Already friends - show message and navigate to chat
+          const completeContact = existingContacts.find(c => 
+            isContactComplete(resolvedOwnerDigest, c?.entry?.peerDeviceId || null)
+          );
+          const convId = completeContact?.entry?.conversationId || null;
+          if (inviteScanStatus) inviteScanStatus.textContent = '你們已經是好友了';
+          logCapped('inviteScanAlreadyFriends', {
+            ownerDigestSuffix4: safeSuffix(resolvedOwnerDigest, 4),
+            conversationId: convId ? safePrefix(convId, 8) : null
+          }, 5);
+          setTimeout(() => {
+            if (shareState.open) closeShareModal();
+            if (convId && typeof switchTab === 'function') switchTab('messages');
+          }, 1200);
+          return;
+        } else {
+          // Incomplete contact - cleanup and retry
+          cleanupIncompleteContactCore(resolvedOwnerDigest, { sourceTag: 'invite-scan:retry' });
+          // Also cleanup pending invites
+          const pendingList = listPendingInvites();
+          for (const inv of pendingList) {
+            if (inv?.ownerAccountDigest === resolvedOwnerDigest) {
+              removePendingInvite(inv.inviteId);
+            }
+          }
+          logCapped('inviteScanCleanupRetry', {
+            ownerDigestSuffix4: safeSuffix(resolvedOwnerDigest, 4),
+            cleanedCount: existingContacts.length
+          }, 5);
+          if (inviteScanStatus) inviteScanStatus.textContent = '清除舊狀態，重新建立連線…';
+        }
+      }
 
       const devicePriv = await ensureDevicePrivLoaded();
       if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入後再試');
