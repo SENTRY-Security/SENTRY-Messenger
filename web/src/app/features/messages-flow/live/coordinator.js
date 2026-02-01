@@ -311,6 +311,12 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
 
             const gapItem = fetchRes?.data?.item || fetchRes?.data?.message || null;
             if (gapItem) {
+              // [GAP FILL SAFETY]
+              // We must DISABLE 'bootstrapDrFromGuestBundle' for gap messages.
+              // If a gap message is an old PreKey message (Type 3), it must NOT reset the current session.
+              // We create a restricted adapter set that forces bootstrap to fail/skip.
+              const safeGapAdapters = { ...deps, bootstrapDrFromGuestBundle: null };
+
               // Blocking Process: Decrypt & Advance State Sequentially
               await stateAccess.commitIncomingSingle({
                 conversationId,
@@ -319,7 +325,7 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
                 peerDeviceId,
                 item: gapItem,
                 counter: c
-              });
+              }, safeGapAdapters);
               logger('bRouteGapFilled', { c, ok: true }, B_ROUTE_COMMIT_LOG_CAP);
             } else {
               logger('bRouteGapFilled', { c, ok: false, reason: 'not_found' }, B_ROUTE_COMMIT_LOG_CAP);
