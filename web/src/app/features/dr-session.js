@@ -4252,13 +4252,6 @@ try {
         maybeTriggerBackupAfterSend({ sourceTag: 'dr-session:outbox-sent' });
       }
     }
-
-      // Fix for Media Pending Stuck:
-      // Media messages sent via outbox (processOutboxJobNow) might stay in 'pending' state in timeline-store
-      // because the UI controller only updates on immediate success, but queued jobs are async.
-      // We explicitly update the timeline status here when the job is confirmed sent.
-
-    }
   });
   startOutboxProcessor();
 } catch (err) {
