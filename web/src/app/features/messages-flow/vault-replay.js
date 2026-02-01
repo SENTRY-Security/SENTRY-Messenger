@@ -349,7 +349,32 @@ export async function decryptReplayBatch({
           senderDeviceId: item.senderDeviceId
         });
       } catch (err) {
-        vaultKeyResult = { ok: false, error: err?.message || err };
+        // Ignore error, try fallback
+        vaultKeyResult = null;
+      }
+
+      // [FIX] Gap Key Fallback
+      // If authentic message ID fails, check for "gap" key stored by Live Route B.
+      // Logic: Live B stores skipped keys as "gap:v1:{counter}" because it doesn't know the server ID yet.
+      if ((!vaultKeyResult || !vaultKeyResult.messageKeyB64) && Number.isFinite(item.counter)) {
+        const gapMessageId = `gap:v1:${item.counter}`;
+        try {
+          const gapResult = await getMessageKey({
+            conversationId,
+            messageId: gapMessageId,
+            senderDeviceId: item.senderDeviceId
+          });
+          if (gapResult?.messageKeyB64) {
+            console.log('[vault-replay] Recovered key from gap entry', { gapMessageId, realMessageId: messageId });
+            vaultKeyResult = gapResult;
+          }
+        } catch (e) {
+          // Ignore gap lookup failure
+        }
+      }
+
+      if (!vaultKeyResult) {
+        vaultKeyResult = { ok: false, error: 'vault_missing' };
       }
     }
 
