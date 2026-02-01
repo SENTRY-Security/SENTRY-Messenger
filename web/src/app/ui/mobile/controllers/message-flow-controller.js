@@ -929,7 +929,9 @@ export class MessageFlowController extends BaseController {
             scrollToBottomSoon(this.elements.scrollEl);
             this.setNewMessageHint(false);
         } else if (scrollToTop) {
-            if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 0;
+            // [FIX] Scroll to Top with 50px offset
+            // Threshold is 20px (messages-pane.js), so we must be > 20px to avoid infinite loop.
+            if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 50;
         }
     }
 
