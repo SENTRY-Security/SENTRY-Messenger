@@ -385,11 +385,9 @@ export function getTimeline(conversationId) {
     return [];
   }
   const list = Array.from(convMap.values()).filter(Boolean);
+  // [FIX] Sort by counter first (causal order) for same sender, then by timestamp
   list.sort((a, b) => {
-    // Defensive defaults only; schema drops should prevent missing ts/id from entering the store.
-    const tsA = resolveEntryTsMs(a);
-    const tsB = resolveEntryTsMs(b);
-    if (tsA !== tsB) return tsA - tsB;
+    // 1. Primary: Counter (causal order) for same sender
     const counterA = resolveEntryCounter(a);
     const counterB = resolveEntryCounter(b);
     const senderA = resolveEntrySenderDeviceId(a);
@@ -397,6 +395,11 @@ export function getTimeline(conversationId) {
     if (senderA && senderB && senderA === senderB && counterA !== null && counterB !== null && counterA !== counterB) {
       return counterA - counterB;
     }
+    // 2. Secondary: Timestamp
+    const tsA = resolveEntryTsMs(a);
+    const tsB = resolveEntryTsMs(b);
+    if (tsA !== tsB) return tsA - tsB;
+    // 3. Fallback: Message ID
     const idA = normalizeMessageId(a?.messageId || a?.id) || '';
     const idB = normalizeMessageId(b?.messageId || b?.id) || '';
     return idA.localeCompare(idB);

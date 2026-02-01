@@ -194,15 +194,21 @@ function sortMessagesByTimeline(items) {
       senderDeviceId
     };
   });
+  // [FIX] Sort by counter first (causal order) for same sender, then by timestamp
   enriched.sort((a, b) => {
+    // 1. Primary: Counter (causal order) for same sender
+    const sameSender = a.senderDeviceId && b.senderDeviceId && a.senderDeviceId === b.senderDeviceId;
+    const aHasCounter = Number.isFinite(a.counter);
+    const bHasCounter = Number.isFinite(b.counter);
+    if (sameSender && aHasCounter && bHasCounter && a.counter !== b.counter) {
+      return a.counter - b.counter;
+    }
+    // 2. Secondary: Timestamp
     const aHasTs = Number.isFinite(a.tsMs);
     const bHasTs = Number.isFinite(b.tsMs);
     if (aHasTs && bHasTs && a.tsMs !== b.tsMs) return a.tsMs - b.tsMs;
     if (aHasTs !== bHasTs) return aHasTs ? -1 : 1;
-    const aHasCounter = Number.isFinite(a.counter);
-    const bHasCounter = Number.isFinite(b.counter);
-    const sameSender = a.senderDeviceId && b.senderDeviceId && a.senderDeviceId === b.senderDeviceId;
-    if (sameSender && aHasCounter && bHasCounter && a.counter !== b.counter) return a.counter - b.counter;
+    // 3. Fallback: Message ID
     if (a.id && b.id && a.id !== b.id) return a.id.localeCompare(b.id);
     if (a.id && !b.id) return -1;
     if (!a.id && b.id) return 1;
