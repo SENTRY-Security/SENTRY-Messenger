@@ -808,18 +808,20 @@ export async function downlinkContactsFromD1() {
 
   for (const row of contacts) {
     try {
-      if (!row.encryptedBlob) continue;
-      const decrypted = await decryptContactBlob(storageKey, row.encryptedBlob);
+      // Support both snake_case (from Worker) and camelCase
+      const encryptedBlob = row.encryptedBlob || row.encrypted_blob;
+      if (!encryptedBlob) continue;
+      const decrypted = await decryptContactBlob(storageKey, encryptedBlob);
       if (!decrypted) continue;
 
       // Reconstruct Entry
       const entry = {
-        peerAccountDigest: row.peerDigest,
+        peerAccountDigest: row.peerDigest || row.peer_digest,
         nickname: decrypted.nickname,
         avatar: decrypted.avatar,
         addedAt: decrypted.addedAt,
         profileUpdatedAt: decrypted.profileUpdatedAt, // [Fix] Restore profile timestamp
-        isBlocked: row.isBlocked,
+        isBlocked: row.isBlocked ?? row.is_blocked ?? false,
         conversation: decrypted.conversation || null
       };
       entries.push(entry);
