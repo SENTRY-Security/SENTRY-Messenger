@@ -13,6 +13,8 @@ import {
 } from './server-api-live.js';
 import { triggerContactSecretsBackup } from '../../../features/contact-backup.js';
 import { REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH } from '../../../features/restore-policy.js';
+import { getLocalProcessedCounter } from '../local-counter.js';
+import { getSecureMessageByCounter } from '../../../api/messages.js';
 
 let decryptOkSinceBackup = 0;
 
@@ -269,6 +271,67 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
       ok: result.ok
     });
     return result;
+  }
+
+  // [STRICT SEQUENTIAL] Blocking Gap Fill
+  // Ensure we process messages in strict order (1->2->3) instead of skipping (1->4).
+  // This prevents "optimistic skipping" which creates gap keys that are hard to retrieve later.
+  if (Number.isFinite(counter) && counter > 0 && conversationId) {
+    try {
+      const depsLocalCounter = typeof deps?.getLocalProcessedCounter === 'function' ? deps.getLocalProcessedCounter : getLocalProcessedCounter;
+      const depsGetMsgByCounter = typeof deps?.getSecureMessageByCounter === 'function' ? deps.getSecureMessageByCounter : getSecureMessageByCounter;
+
+      // Check Check local max (Vault Truth)
+      // We assume simple sequential consistency.
+      const localMax = await depsLocalCounter({ conversationId }); // Blocking check
+
+      if (Number.isFinite(localMax) && counter > localMax + 1) {
+        const gapSize = counter - (localMax + 1);
+        logger('bRouteGapDetected', {
+          conversationIdPrefix8,
+          localMax,
+          incomingCounter: counter,
+          gapSize
+        }, B_ROUTE_COMMIT_LOG_CAP);
+
+        // Cap to prevent infinite hangs if gap is huge (sanity check)
+        const FILL_CAP = 50;
+        const start = localMax + 1;
+        const end = Math.min(start + gapSize - 1, start + FILL_CAP);
+
+        for (let c = start; c <= end; c++) {
+          try {
+            // Blocking Fetch: Get the missing data from server (Consistency Guarantee)
+            const fetchRes = await depsGetMsgByCounter({
+              conversationId,
+              counter: c,
+              senderDeviceId: peerDeviceId,
+              senderAccountDigest: peerAccountDigest
+            });
+
+            const gapItem = fetchRes?.data?.item || fetchRes?.data?.message || null;
+            if (gapItem) {
+              // Blocking Process: Decrypt & Advance State Sequentially
+              await stateAccess.commitIncomingSingle({
+                conversationId,
+                tokenB64,
+                peerAccountDigest,
+                peerDeviceId,
+                item: gapItem,
+                counter: c
+              });
+              logger('bRouteGapFilled', { c, ok: true }, B_ROUTE_COMMIT_LOG_CAP);
+            } else {
+              logger('bRouteGapFilled', { c, ok: false, reason: 'not_found' }, B_ROUTE_COMMIT_LOG_CAP);
+            }
+          } catch (err) {
+            logger('bRouteGapFillError', { c, error: err?.message }, B_ROUTE_COMMIT_LOG_CAP);
+          }
+        }
+      }
+    } catch (err) {
+      logger('bRouteGapCheckError', { error: err?.message }, B_ROUTE_COMMIT_LOG_CAP);
+    }
   }
 
   let commitResult = null;
