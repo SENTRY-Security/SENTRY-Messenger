@@ -455,85 +455,109 @@ export async function smartFetchMessages({
                 else if (!isOutgoing) {
                     console.warn(`[HybridVerify] Route A failed (${routeAFailReason}). Fallback to Route B for item ${item.id}...`);
 
-                    // --- Route B (Live / Ratchet) ---
-                    const job = {
-                        type: 'WS_INCOMING',
-                        conversationId,
-                        messageId: item.id,
-                        serverMessageId: item.id,
-                        tokenB64: context.tokenB64,
-                        peerAccountDigest: context.peerAccountDigest,
-                        peerDeviceId: context.peerDeviceId,
-                        sourceTag: 'hybrid-flow'
-                    };
 
-                    try {
-                        const bResult = await consumeLiveJob(job, {
-                            fetchSecureMessageById: createNoOpFetcher(item),
-                            maybeSendVaultAckWs: deps?.maybeSendVaultAckWs,
-                            getAccountDigest: deps?.getAccountDigest,
-                            getDeviceId: deps?.getDeviceId,
-                            // [HYBRID SAFETY]
-                            // Disable Bootstrap for fallback replay.
-                            // If this is an old message, it must NOT reset the session.
-                            bootstrapDrFromGuestBundle: null
-                        });
+                    // [Blocking Retry Strategy for Vault Put]
+                    // We must guarantee Vault persistence before moving to the next message.
+                    const MAX_RETRIES = 5;
+                    let retries = 0;
+                    let bResult = null;
 
-                        if (bResult.ok && bResult.decrypted) {
-                            // Atomic Backup Check:
-                            if (!bResult.vaultPut) {
-                                console.warn(`[HybridVerify] Route B Success item ${item.id} BUT Vault Put Failed. Logging error and continuing...`);
-                                const reason = 'ROUTE_B_VAULT_PUT_FAIL';
-                                errors.push({ item, reason });
-                                // NON-BLOCKING: Continue to next item
-                            }
-
-                            console.warn(`[HybridVerify] Route B Success item ${item.id}. Retrying Route A to fetch content...`);
-
-                            // Route B succeeded, so Key should be in Vault now.
-                            const { items: retryItems } = await decryptReplayBatch({
+                    while (retries <= MAX_RETRIES) {
+                        try {
+                            bResult = await consumeLiveJob({
+                                type: 'WS_INCOMING',
                                 conversationId,
-                                items: [item],
-                                selfDeviceId,
-                                selfDigest,
-                                mk: mkRaw,
-                                getMessageKey: MessageKeyVault.getMessageKey,
-                                buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
-                                b64u8: naclB64u8
+                                messageId: item.id,
+                                serverMessageId: item.id,
+                                tokenB64: context.tokenB64,
+                                peerAccountDigest: context.peerAccountDigest,
+                                peerDeviceId: context.peerDeviceId,
+                                sourceTag: 'hybrid-flow'
+                            }, {
+                                fetchSecureMessageById: createNoOpFetcher(item),
+                                maybeSendVaultAckWs: deps?.maybeSendVaultAckWs,
+                                getAccountDigest: deps?.getAccountDigest,
+                                getDeviceId: deps?.getDeviceId,
+                                bootstrapDrFromGuestBundle: null
                             });
 
-                            if (retryItems.length) {
-                                result = { ok: true, item: retryItems[0] };
-                                console.warn(`[HybridVerify] Route B -> Route A Retry Success item ${item.id}:`, {
-                                    decrypted: true,
-                                    reason: 'RESTORED_VIA_ROUTE_B'
-                                });
-                            } else {
-                                console.warn(`[HybridVerify] Route B Success BUT Route A Retry Failed for item ${item.id}. Logging error and continuing...`);
-                                const reason = 'ROUTE_B_OK_BUT_VAULT_MISSING';
-                                errors.push({ item, reason });
-                                // NON-BLOCKING: Continue to next item
+                            // Success Condition: Decrypted AND Vault Put OK
+                            if (bResult.ok && bResult.decrypted && bResult.vaultPut) {
+                                break; // Success!
                             }
-                        } else {
-                            console.warn(`[HybridVerify] Route B Failed item ${item.id}:`, bResult.reasonCode);
-                            result = { ok: false, reason: bResult.reasonCode || 'ROUTE_B_FAIL' };
 
-                            // If Gap Message (Newer than local), log but DO NOT stop.
-                            if (counter > localMax && result.reason !== 'CONTROL_SKIP') {
-                                console.warn(`[HybridVerify] Gap Message Failed at item ${item.id}. Logging error and continuing to sequence...`);
-                                errors.push({ item, reason: result.reason });
-                                // NON-BLOCKING: Continue to next item
+                            // If decryption failed, no need to retry vault put (it's a decrypt error)
+                            if (!bResult.ok || !bResult.decrypted) {
+                                break; // Decrypt failed, stop retrying
+                            }
+
+                            // If here: Decrypted OK but Vault Put Failed
+                            console.warn(`[HybridVerify] Route B Success item ${item.id} BUT Vault Put Failed (Attempt ${retries + 1}/${MAX_RETRIES}). Retrying...`);
+                            retries++;
+                            if (retries <= MAX_RETRIES) {
+                                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries))); // Exponential Backoff
+                            }
+                        } catch (err) {
+                            console.warn(`[HybridVerify] Route B Exception item ${item.id} (Attempt ${retries + 1}). Retrying...`, err);
+                            retries++;
+                            if (retries <= MAX_RETRIES) {
+                                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
+                            } else {
+                                bResult = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
                             }
                         }
-                    } catch (err) {
-                        console.warn(`[HybridVerify] Route B Exception item ${item.id}:`, err);
-                        result = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
+                    }
 
-                        // If Gap Message, log but DO NOT stop.
-                        if (counter > localMax) {
-                            console.warn(`[HybridVerify] Gap Message Exception at item ${item.id}. Logging error and continuing to sequence...`);
+                    if (bResult && bResult.ok && bResult.decrypted) {
+                        // Final Check: Did we succeed in Vault Put?
+                        if (!bResult.vaultPut) {
+                            // [CIRCUIT BREAKER]
+                            // We exhausted retries and STILL failed to persist to Vault.
+                            // We MUST ABORT the entire batch processing to prevent "Gap Keys".
+                            console.error(`[HybridVerify] CRITICAL: Route B Vault Put Persistently Failed for item ${item.id}. Aborting Batch!!!`);
+                            const reason = 'ROUTE_B_VAULT_PUT_FAIL_ABORT';
+                            errors.push({ item, reason });
+
+                            // ABORT BATCH
+                            break;
+                        }
+
+                        console.warn(`[HybridVerify] Route B Success item ${item.id}. Retrying Route A to fetch content...`);
+
+                        // Route B succeeded, so Key should be in Vault now.
+                        const { items: retryItems } = await decryptReplayBatch({
+                            conversationId,
+                            items: [item],
+                            selfDeviceId,
+                            selfDigest,
+                            mk: mkRaw,
+                            getMessageKey: MessageKeyVault.getMessageKey,
+                            buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
+                            b64u8: naclB64u8
+                        });
+
+                        if (retryItems.length) {
+                            result = { ok: true, item: retryItems[0] };
+                            console.warn(`[HybridVerify] Route B -> Route A Retry Success item ${item.id}:`, {
+                                decrypted: true,
+                                reason: 'RESTORED_VIA_ROUTE_B'
+                            });
+                        } else {
+                            // This is weird (Vault reported success but we can't read it back?), but we shouldn't abort batch here as state is safe.
+                            console.warn(`[HybridVerify] Route B Success BUT Route A Retry Failed for item ${item.id}. Logging error and continuing...`);
+                            const reason = 'ROUTE_B_OK_BUT_VAULT_MISSING';
+                            errors.push({ item, reason });
+                        }
+                    } else {
+                        // Decrypt failed (or skipped)
+                        console.warn(`[HybridVerify] Route B Failed item ${item.id}:`, bResult?.reasonCode);
+                        result = { ok: false, reason: bResult?.reasonCode || 'ROUTE_B_FAIL' };
+
+                        // If Gap Message (Newer than local), log but DO NOT stop. 
+                        // (Unless it's a Vault Put failure, which is caught above)
+                        if (counter > localMax && result.reason !== 'CONTROL_SKIP') {
+                            console.warn(`[HybridVerify] Gap Message Failed at item ${item.id}. Logging error and continuing to sequence...`);
                             errors.push({ item, reason: result.reason });
-                            // NON-BLOCKING: Continue to next item
                         }
                     }
                 }
