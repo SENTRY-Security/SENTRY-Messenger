@@ -260,7 +260,7 @@ r.post('/auth/sdm/exchange', async (req, res) => {
 
     return res.json({
       session,
-      hasMK: !!data.hasMK,
+      hasMK: !!(data.hasMK || data.has_mk),
       wrapped_mk: data.wrapped_mk || undefined,
       accountToken,
       accountDigest: accountDigest.toUpperCase(),
