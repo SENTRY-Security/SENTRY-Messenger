@@ -395,20 +395,20 @@ function getKeyVariants(base, opts = {}, { includeLegacyFallback = false, includ
   return uniqueKeys(keys);
 }
 
-export function getContactSecretsStorageKeys(opts = {}, { includeLegacy = false } = {}) {
-  return getKeyVariants(STORAGE_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
+export function getContactSecretsStorageKeys(opts = {}, { includeLegacy = false, includeBase = true } = {}) {
+  return getKeyVariants(STORAGE_KEY_BASE, opts, { includeLegacyFallback: includeLegacy, includeBase });
 }
 
-export function getContactSecretsLatestKeys(opts = {}, { includeLegacy = false } = {}) {
-  return getKeyVariants(LATEST_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
+export function getContactSecretsLatestKeys(opts = {}, { includeLegacy = false, includeBase = true } = {}) {
+  return getKeyVariants(LATEST_KEY_BASE, opts, { includeLegacyFallback: includeLegacy, includeBase });
 }
 
-export function getContactSecretsMetaKeys(opts = {}, { includeLegacy = false } = {}) {
-  return getKeyVariants(META_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
+export function getContactSecretsMetaKeys(opts = {}, { includeLegacy = false, includeBase = true } = {}) {
+  return getKeyVariants(META_KEY_BASE, opts, { includeLegacyFallback: includeLegacy, includeBase });
 }
 
-export function getContactSecretsChecksumKeys(opts = {}, { includeLegacy = false } = {}) {
-  return getKeyVariants(CHECKSUM_KEY_BASE, opts, { includeLegacyFallback: includeLegacy });
+export function getContactSecretsChecksumKeys(opts = {}, { includeLegacy = false, includeBase = true } = {}) {
+  return getKeyVariants(CHECKSUM_KEY_BASE, opts, { includeLegacyFallback: includeLegacy, includeBase });
 }
 
 export function getLegacyContactSecretsStorageKeys(opts = {}) {
@@ -1248,9 +1248,10 @@ export function persistContactSecrets() {
   if (!storage) return;
   try {
     const { payload, summary, checksum } = serializeContactSecretsMap(map);
-    const storageKeys = getContactSecretsStorageKeys();
-    const metaKeys = getContactSecretsMetaKeys();
-    const checksumKeys = getContactSecretsChecksumKeys();
+    // [STRICT SINGLE PATH] Do not write to global base key, only namespaced key.
+    const storageKeys = getContactSecretsStorageKeys({}, { includeBase: false });
+    const metaKeys = getContactSecretsMetaKeys({}, { includeBase: false });
+    const checksumKeys = getContactSecretsChecksumKeys({}, { includeBase: false });
     storageKeys.forEach((key) => {
       try { storage.setItem(key, payload); } catch { }
     });
@@ -1606,16 +1607,16 @@ export function buildContactSecretsSnapshotFromDrState(peerAccountDigest, {
   conversationId = null
 } = {}) {
   if (!peerAccountDigest || !peerDeviceId || !drStateSnapshot) return null;
-  
+
   const normalizedDigest = normalizeAccountDigest(peerAccountDigest);
   if (!normalizedDigest) return null;
-  
+
   const normalizedPeerDeviceId = normalizePeerDeviceId(peerDeviceId);
   if (!normalizedPeerDeviceId) return null;
-  
+
   const selfDeviceId = ensureDeviceId();
   if (!selfDeviceId) return null;
-  
+
   // Normalize the drState snapshot
   const normalizedState = normalizeDrSnapshot(drStateSnapshot, {
     setDefaultUpdatedAt: true,
@@ -1624,9 +1625,9 @@ export function buildContactSecretsSnapshotFromDrState(peerAccountDigest, {
     deviceId: selfDeviceId,
     strictB64: true
   });
-  
+
   if (!normalizedState) return null;
-  
+
   // Build the entry structure
   const entry = {
     peerAccountDigest: normalizedDigest,
@@ -1652,13 +1653,13 @@ export function buildContactSecretsSnapshotFromDrState(peerAccountDigest, {
       updatedAt: Date.now()
     }
   };
-  
+
   const payloadObj = {
     v: CONTACT_SECRETS_VERSION,
     generatedAt: Date.now(),
     entries: [entry]
   };
-  
+
   return JSON.stringify(payloadObj);
 }
 
@@ -2238,23 +2239,23 @@ export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
   const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
   const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
   const map = ensureMap();
-  
+
   // Debug: log all keys in map to understand the structure
   const mapKeys = Array.from(map.keys());
   const matchingKeys = mapKeys.filter(k => k.includes(peerAccountDigest?.slice(0, 16) || ''));
-  
+
   if (!key) {
-    console.log('[call] token-lookup', JSON.stringify({ 
-      peerAccountDigest, 
+    console.log('[call] token-lookup', JSON.stringify({
+      peerAccountDigest,
       peerDeviceIdHint,
-      found: false, 
+      found: false,
       reason: 'no-key',
       mapSize: map.size,
       matchingKeys: matchingKeys.slice(0, 3)
     }));
     return null;
   }
-  
+
   const record = map.get(key);
   if (!record) {
     // Try to find by digest only (without device id)
@@ -2267,11 +2268,11 @@ export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
         break;
       }
     }
-    
-    console.log('[call] token-lookup', JSON.stringify({ 
-      peerAccountDigest, 
-      key, 
-      found: false, 
+
+    console.log('[call] token-lookup', JSON.stringify({
+      peerAccountDigest,
+      key,
+      found: false,
       reason: 'no-record',
       mapSize: map.size,
       matchingKeys: matchingKeys.slice(0, 3),
@@ -2279,7 +2280,7 @@ export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
       fallbackKey,
       fallbackHasToken: !!fallbackRecord?.conversationToken
     }));
-    
+
     // Return fallback if found
     if (fallbackRecord?.conversationToken) {
       return fallbackRecord.conversationToken;
@@ -2287,11 +2288,11 @@ export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
     return null;
   }
   const token = record.conversationToken || null;
-  console.log('[call] token-lookup', JSON.stringify({ 
-    peerAccountDigest, 
-    key, 
-    found: !!token, 
-    hasConversationId: !!record.conversationId 
+  console.log('[call] token-lookup', JSON.stringify({
+    peerAccountDigest,
+    key,
+    found: !!token,
+    hasConversationId: !!record.conversationId
   }));
   return token;
 }
