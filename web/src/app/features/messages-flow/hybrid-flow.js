@@ -2,7 +2,7 @@
 // Hybrid pipeline: Smart Fetch + Sequential Route A/B Decrypt.
 
 import { MessageKeyVault } from '../message-key-vault.js';
-import { fetchSecureMaxCounter, listSecureMessagesForReplay } from './server-api.js';
+import { fetchSecureMaxCounter, listSecureMessagesForReplay, getSecureMessageByCounter } from './server-api.js';
 import { decryptReplayBatch } from './vault-replay.js';
 import { consumeLiveJob } from './live/coordinator.js';
 import { getLocalProcessedCounter } from './local-counter.js';
@@ -81,11 +81,7 @@ export async function smartFetchMessages({
     // Only perform smart gap check on initial load (no cursor)
     if (!cursor) {
         try {
-            // Get reliably processed local max
-            localMax = await getLocalProcessedCounter({ conversationId });
-            if (!Number.isFinite(localMax)) localMax = 0;
-
-            // Get server max
+            // Get server max FIRST so we can use it as a hint for localMax
             // CRITICAL: We need Peer's max counter (Incoming Chain).
             // Pass peerDeviceId if available. If not, we can't calculate gap reliably.
             let maxCounterVal = 0;
@@ -94,6 +90,10 @@ export async function smartFetchMessages({
                 maxCounterVal = maxCounter;
             }
             serverMax = Number.isFinite(maxCounterVal) ? maxCounterVal : 0;
+
+            // Get reliably processed local max
+            localMax = await getLocalProcessedCounter({ conversationId }, { serverMax });
+            if (!Number.isFinite(localMax)) localMax = 0;
 
             // Calculate Gap
             gapSize = serverMax - localMax;
@@ -129,7 +129,67 @@ export async function smartFetchMessages({
     });
     console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', serverKeys ? Object.keys(serverKeys).length : 0);
 
-    if (!rawItems.length) {
+    // --- GAP FILLING LOGIC ---
+    // If we tried to cover a gap (isGapFetch) but the time-based API returned non-contiguous counters,
+    // we must explicitly fetch the missing ones.
+    if (isGapFetch && rawItems.length > 0) {
+        try {
+            // 1. Find the lowest counter we fetched
+            let minFetched = Number.MAX_SAFE_INTEGER;
+            for (const item of rawItems) {
+                const c = Number(item.counter ?? item.n);
+                if (Number.isFinite(c) && c < minFetched) minFetched = c;
+            }
+
+            // 2. Determine missing range: (localMax, minFetched)
+            const missingStart = localMax + 1;
+            const missingEnd = minFetched - 1;
+
+            if (minFetched !== Number.MAX_SAFE_INTEGER && missingEnd >= missingStart) {
+                const missingCount = missingEnd - missingStart + 1;
+                console.warn(`[HybridVerify] Gap Detected! localMax=${localMax}, minFetched=${minFetched}. Missing ${missingCount} items (${missingStart}-${missingEnd}). Filling...`);
+
+                // Cap to avoid specific performance issues
+                const GAP_FILL_CAP = 50;
+                const end = Math.min(missingEnd, missingStart + GAP_FILL_CAP - 1);
+
+                const fetchPromises = [];
+                for (let c = missingStart; c <= end; c++) {
+                    fetchPromises.push(
+                        getSecureMessageByCounter({ conversationId, counter: c, senderDeviceId: context.peerDeviceId })
+                            .then(res => res.item)
+                            .catch(e => {
+                                console.warn(`[HybridVerify] Failed to fill gap counter ${c}:`, e);
+                                return null;
+                            })
+                    );
+                }
+
+                if (fetchPromises.length > 0) {
+                    const filledItems = await Promise.all(fetchPromises);
+                    const validFilled = filledItems.filter(Boolean);
+
+                    if (validFilled.length > 0) {
+                        console.warn(`[HybridVerify] Filled ${validFilled.length} missing items.`);
+
+                        // Merge and Dedupe
+                        const existingIds = new Set(rawItems.map(i => i.id || i.messageId));
+                        for (const item of validFilled) {
+                            const id = item.id || item.messageId;
+                            if (id && !existingIds.has(id)) {
+                                rawItems.push(item);
+                                existingIds.add(id);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('[HybridVerify] Gap Fill Error:', err);
+        }
+    }
+
+    if (!rawItems.length && !isGapFetch) {
         return { items: [], errors: [], nextCursor };
     }
 

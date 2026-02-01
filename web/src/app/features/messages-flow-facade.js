@@ -40,7 +40,9 @@ const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
 });
 const DECISION_TRACE_LOG_CAP = 5;
 const messagesFlowScrollFetch = createMessagesFlowScrollFetch();
-const maxCounterProbeQueue = createGapQueue();
+const maxCounterProbeQueue = createGapQueue({
+  getLocalProcessedCounter: (conversationId) => getLocalProcessedCounter({ conversationId })
+});
 const maxCounterProbe = createMaxCounterProbe({ gapQueue: maxCounterProbeQueue });
 const liveLegacyAdapters = createLiveLegacyAdapters();
 

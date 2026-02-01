@@ -1,6 +1,7 @@
 import { getDrSessMap, normalizePeerIdentity } from '../../core/store.js';
 import { logCapped } from '../../core/log.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
+import { MessageKeyVault } from '../message-key-vault.js';
 
 function slicePrefix8(value) {
   if (value === null || value === undefined) return null;
@@ -47,6 +48,14 @@ function resolvePeerIdentityFromStore(conversationId) {
   return normalizePeerIdentity({ peerAccountDigest, peerDeviceId });
 }
 
+/**
+ * Get the local processed counter for a conversation.
+ * This is the maximum incoming counter that has a key in the vault.
+ * 
+ * Priority:
+ * 1. Vault (server-side truth) - most reliable
+ * 2. DR state NrTotal (memory fallback) - may be stale
+ */
 export async function getLocalProcessedCounter({ conversationId } = {}, deps = {}) {
   const convId = normalizeConversationId(conversationId);
   if (!convId) {
@@ -61,11 +70,70 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     }, 5);
     return 0;
   }
+
   const onUnknown = typeof deps?.onUnknown === 'function' ? deps.onUnknown : null;
   const resolvePeer = typeof deps?.resolvePeerIdentity === 'function'
     ? deps.resolvePeerIdentity
     : resolvePeerIdentityFromStore;
   const identity = resolvePeer(convId);
+
+  // Try to get from vault first (most reliable source)
+  try {
+    const getLatestState = typeof deps?.getLatestState === 'function'
+      ? deps.getLatestState
+      : MessageKeyVault.getLatestState;
+    const getVaultKey = typeof deps?.getMessageKey === 'function'
+      ? deps.getMessageKey
+      : MessageKeyVault.getMessageKey;
+
+    // optimization: if we have a serverMax hint, check if we have that specific key in vault.
+    // If we do, that is our localMax (we are fully synced to server tip).
+    const serverMax = deps?.serverMax;
+    if (Number.isFinite(serverMax)) {
+      const { ok } = await getVaultKey({
+        conversationId: convId,
+        senderDeviceId: identity?.deviceId || null,
+        headerCounter: serverMax
+      });
+      if (ok) {
+        logCapped('localCounterProviderTrace', {
+          conversationIdPrefix8: slicePrefix8(convId),
+          peerKeyPrefix8: slicePrefix8(identity?.key),
+          ok: true,
+          source: 'vault_tip_check',
+          nrTotal: serverMax,
+          hasHolder: true
+        }, 5);
+        return serverMax;
+      }
+    }
+
+    const latestState = await getLatestState({
+      conversationId: convId,
+      senderDeviceId: identity?.deviceId || null
+    });
+
+    const vaultCounter = normalizeCounter(latestState?.incoming?.header_counter);
+    if (vaultCounter !== null) {
+      logCapped('localCounterProviderTrace', {
+        conversationIdPrefix8: slicePrefix8(convId),
+        peerKeyPrefix8: slicePrefix8(identity?.key),
+        ok: true,
+        source: 'vault',
+        nrTotal: vaultCounter,
+        hasHolder: true
+      }, 5);
+      return vaultCounter;
+    }
+  } catch (err) {
+    // Vault query failed, fallback to DR state
+    logCapped('localCounterVaultError', {
+      conversationIdPrefix8: slicePrefix8(convId),
+      error: err?.message || String(err)
+    }, 5);
+  }
+
+  // Fallback to DR state in memory
   if (!identity?.key) {
     logCapped('localCounterProviderTrace', {
       conversationIdPrefix8: slicePrefix8(convId),
@@ -86,6 +154,7 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     }
     return 0;
   }
+
   const drSessMap = typeof deps?.getDrSessMap === 'function'
     ? deps.getDrSessMap()
     : getDrSessMap();
@@ -93,6 +162,7 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     ? drSessMap.get(identity.key)
     : null;
   const counter = normalizeCounter(holder?.NrTotal);
+
   if (counter === null) {
     const hasHolder = !!holder;
     const nrTotalRaw = Number.isFinite(Number(holder?.NrTotal)) ? Number(holder?.NrTotal) : null;
@@ -100,7 +170,7 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
       conversationIdPrefix8: slicePrefix8(convId),
       peerKeyPrefix8: slicePrefix8(identity.key),
       ok: false,
-      source: 'unknown',
+      source: 'dr_state_fallback',
       nrTotal: null,
       nrTotalRaw,
       unknownReason: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE',
@@ -110,20 +180,21 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
       onUnknown({
         conversationId: convId,
         reasonCode: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE',
-        source: 'unknown',
+        source: 'dr_state_fallback',
         unknownReason: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE'
       });
     }
     return 0;
   }
+
   logCapped('localCounterProviderTrace', {
     conversationIdPrefix8: slicePrefix8(convId),
     peerKeyPrefix8: slicePrefix8(identity.key),
     ok: true,
-    source: 'drSessMap.NrTotal',
+    source: 'dr_state_fallback',
     nrTotal: counter,
-    unknownReason: null,
     hasHolder: true
   }, 5);
+
   return counter;
 }

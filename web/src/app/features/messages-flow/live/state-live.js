@@ -488,23 +488,36 @@ async function decryptIncomingSingle(params = {}, adapters) {
     });
 
     if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
-      Promise.all(skippedKeysBuffer.map(k => {
-        const gapCounter = k.headerCounter;
-        const gapMessageId = `gap:v1:${gapCounter}`;
-        return adapters.vaultPutIncomingKey({
-          conversationId,
-          messageId: gapMessageId,
-          senderDeviceId,
-          targetDeviceId: selfDeviceId,
-          direction: 'incoming',
-          msgType: 'gap-fill',
-          messageKeyB64: k.messageKeyB64,
-          headerCounter: gapCounter,
-          drStateSnapshot: null
-        }).catch(e => console.warn('[state-live] skipped-key vault failed', e));
-      })).then(() => {
+      // Get DR state snapshot for skipped keys (important for recovery)
+      let skippedDrStateSnapshot = null;
+      if (adapters.snapshotAndEncryptDrState) {
+        try {
+          skippedDrStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
+        } catch { }
+      }
+
+      // Await vault put for skipped keys to ensure they are persisted
+      try {
+        await Promise.all(skippedKeysBuffer.map(k => {
+          const gapCounter = k.headerCounter;
+          const gapMessageId = `gap:v1:${gapCounter}`;
+          return adapters.vaultPutIncomingKey({
+            conversationId,
+            messageId: gapMessageId,
+            senderDeviceId,
+            targetDeviceId: selfDeviceId,
+            direction: 'incoming',
+            msgType: 'gap-fill',
+            messageKeyB64: k.messageKeyB64,
+            headerCounter: gapCounter,
+            drStateSnapshot: skippedDrStateSnapshot
+          });
+        }));
         if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys', skippedKeysBuffer.length);
-      });
+      } catch (e) {
+        console.warn('[state-live] skipped-key vault failed', e);
+        // Continue processing - the main message key will still be stored
+      }
     }
   } catch (err) {
     // Enhanced logging for OperationError (often subtle Key/AAD mismatch)
@@ -754,27 +767,35 @@ async function commitIncomingSingle(params = {}, adapters) {
     });
 
     if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
-      Promise.all(skippedKeysBuffer.map(k => {
-        const gapCounter = k.headerCounter;
-        const gapMessageId = `gap:v1:${gapCounter}`;
-        return adapters.vaultPutIncomingKey({
-          conversationId,
-          messageId: gapMessageId,
-          senderDeviceId,
-          targetDeviceId: selfDeviceId, // inferred or null? 
-          // Wait, selfDeviceId is local variable in commitIncomingSingle?
-          // I need to check if selfDeviceId is available.
-          // Line 657: `let selfDeviceId = null; ... selfDeviceId = adapters.getDeviceId ...`
-          // Yes it is available.
-          direction: 'incoming',
-          msgType: 'gap-fill',
-          messageKeyB64: k.messageKeyB64,
-          headerCounter: gapCounter,
-          drStateSnapshot: null
-        }).catch(e => console.warn('[state-live] skipped-key vault failed (commit)', e));
-      })).then(() => {
+      // Get DR state snapshot for skipped keys (important for recovery)
+      let skippedDrStateSnapshot = null;
+      if (adapters.snapshotAndEncryptDrState) {
+        try {
+          skippedDrStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
+        } catch { }
+      }
+
+      // Await vault put for skipped keys to ensure they are persisted
+      try {
+        await Promise.all(skippedKeysBuffer.map(k => {
+          const gapCounter = k.headerCounter;
+          const gapMessageId = `gap:v1:${gapCounter}`;
+          return adapters.vaultPutIncomingKey({
+            conversationId,
+            messageId: gapMessageId,
+            senderDeviceId,
+            targetDeviceId: selfDeviceId,
+            direction: 'incoming',
+            msgType: 'gap-fill',
+            messageKeyB64: k.messageKeyB64,
+            headerCounter: gapCounter,
+            drStateSnapshot: skippedDrStateSnapshot
+          });
+        }));
         if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys (commit)', skippedKeysBuffer.length);
-      });
+      } catch (e) {
+        console.warn('[state-live] skipped-key vault failed (commit)', e);
+      }
     }
   } catch {
     return { ...base, reasonCode: 'DECRYPT_FAIL', counter: resolvedCounter, messageId };
