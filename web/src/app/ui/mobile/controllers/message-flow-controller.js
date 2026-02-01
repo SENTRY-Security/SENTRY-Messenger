@@ -557,9 +557,13 @@ export class MessageFlowController extends BaseController {
             this.refreshTimelineState(convId);
             this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
 
-            // [FIX] Respect history loading direction to prevent scroll jump
-            const preserveScroll = directionalOrder === 'history';
-            this.updateMessagesUI({ scrollToEnd: !preserveScroll, preserveScroll });
+            // [FIX] Scroll to Top for history loading (to show oldest of new batch)
+            const isHistory = directionalOrder === 'history';
+            this.updateMessagesUI({
+                scrollToEnd: !isHistory,
+                scrollToTop: isHistory,
+                preserveScroll: false
+            });
 
             this.syncThreadFromActiveMessages(); // Update header (peerName/avatar)
             this.deps.controllers?.conversationList?.syncThreadFromActiveMessages?.(); // Update list thread if needed
@@ -753,7 +757,10 @@ export class MessageFlowController extends BaseController {
     /**
      * Update messages UI (Main Rendering Logic).
      */
-    updateMessagesUI({ scrollToEnd = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
+    /**
+     * Update messages UI (Main Rendering Logic).
+     */
+    updateMessagesUI({ scrollToEnd = false, scrollToTop = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
         if (!this.elements.messagesList) return;
         const state = this.getMessageState();
         const timelineMessages = this.refreshTimelineState(state.conversationId);
@@ -916,15 +923,15 @@ export class MessageFlowController extends BaseController {
         this.updateLoadMoreVisibility();
         this.updateMessagesScrollOverflow();
 
-        if (!scrollToEnd && anchor) {
+        if (!scrollToEnd && !scrollToTop && anchor) {
             this.restoreScrollFromAnchor(anchor);
         } else if (scrollToEnd) {
             scrollToBottomSoon(this.elements.scrollEl);
             this.setNewMessageHint(false);
+        } else if (scrollToTop) {
+            if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 0;
         }
     }
-
-
 
     /**
      * Initialize scroll event listeners.
