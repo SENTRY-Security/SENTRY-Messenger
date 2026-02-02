@@ -986,9 +986,21 @@ async function persistAndAppendBatch(params = {}, adapters) {
 
       if (adapters.persistDrSnapshot && stateToPersist && message.senderDigest && message.senderDeviceId) {
         try {
-          // If we re-read, it's the OLD state (9). If we use mutatedState, it's the NEW state (10).
-          // We MUST use mutatedState.
-          adapters.persistDrSnapshot({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId, snapshot: stateToPersist });
+          // [FIX] State Regression Check
+          // If concurrent Live processing advanced the global state BEYOND this batch message,
+          // we MUST NOT overwrite it with our older state.
+          // The Live Message processing (advanced state) would have generated "Skipped Keys" for us.
+          const currentGlobalState = adapters.drState({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId });
+
+          const currentNr = Number.isFinite(Number(currentGlobalState?.NrTotal)) ? Number(currentGlobalState.NrTotal) : -1;
+          const proposedNr = Number.isFinite(Number(stateToPersist?.NrTotal)) ? Number(stateToPersist.NrTotal) : -1;
+
+          if (currentNr > proposedNr) {
+            if (DEBUG.drVerbose) console.log('[state-live] skipping stale state persist', { current: currentNr, proposed: proposedNr });
+            // Do NOT persist. We are stale.
+          } else {
+            adapters.persistDrSnapshot({ peerAccountDigest: message.senderDigest, peerDeviceId: message.senderDeviceId, snapshot: stateToPersist });
+          }
         } catch (e) {
           console.warn('[state-live] failed to persist snapshot after vault put', e);
         }
