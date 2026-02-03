@@ -585,6 +585,17 @@ async function decryptIncomingSingle(params = {}, adapters) {
         const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
         const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
 
+        let content = {};
+        try {
+          if (text.trim().startsWith('{')) {
+            content = JSON.parse(text);
+          } else {
+            content = { text };
+          }
+        } catch {
+          content = { text };
+        }
+
         let msgType = content.type;
         if (!msgType && semantic.subtype === 'conversation-deleted') {
           msgType = 'conversation-deleted';
