@@ -7,7 +7,7 @@ import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
-import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js?v=mutex';
+import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js';
 import { appendUserMessage } from '../../timeline-store.js';
 
 function hasUsableDrState(holder) {
