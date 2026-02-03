@@ -4341,18 +4341,18 @@ export async function persistContactShareSequence(params) {
   // If this fails (e.g. MissingParams, Network), we Log Warn but DO NOT revert local state.
   // This prioritizes Local Availability over Remote Consistency for this edge case.
   try {
-    const rawState = state; 
+    const rawState = state;
     const partialSnap = buildPartialContactSecretsSnapshot(rawState);
     const selfDeviceId = ensureDeviceId();
-    
+
     // Encrypt snapshot for Vault
     const drStateSnapshot = await encryptContactSecretPayload(
-        partialSnap, 
-        peerAccountDigest, 
-        { deviceId: selfDeviceId, peerDeviceId },
-        'contact-share'
+      partialSnap,
+      peerAccountDigest,
+      { deviceId: selfDeviceId, peerDeviceId },
+      'contact-share'
     );
-  
+
     // Persist to Vault
     await MessageKeyVault.putMessageKey({
       conversationId,

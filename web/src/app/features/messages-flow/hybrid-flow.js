@@ -333,148 +333,154 @@ export async function smartFetchMessages({
         selfDeviceId
     });
 
-    // 4. Sequential Hybrid Processing (Wrapped in Session Mutex)
-    // We lock the session for the ENTIRE batch to prevent interleaving of Live Messages.
-    // If we allowed interleaving, a Live Message might process in between two Offline Messages,
-    // potentially causing Gap Checks to fail or state regression if strict order isn't maintained.
-    // [MUTEX UPDATE] We use `enqueueDrIncomingOp` (Incoming Lock) instead of `enqueueDrSessionOp` (State Lock).
-    // This blocks Live Messages but ALLOWS Outgoing Messages (which use State Lock) to interleave safely.
-    // Each internal operation (consumeLiveJob) will acquire State Lock individually.
+    // 4. Sequential Hybrid Processing (Grouped by Device & Locked)
+    // [FIX] We must Group By Device ID to effectively lock correctly.
+    // If we lock using `context.peerDeviceId`, we might use a generic lock (Digest only) if context is incomplete.
+    // But Live Messages use strict `Digest::DeviceID`.
+    // This mismatch allows parallel execution, causing "State Overwrite" (History overwrites Live state, losing skipped keys).
 
-    const lockKey = (context.peerAccountDigest && context.peerDeviceId)
-        ? `${context.peerAccountDigest}::${context.peerDeviceId}`
-        : context.peerAccountDigest;
+    // Group items by sender unique ID (Digest::DeviceID)
+    const deviceGroups = new Map(); // Key: `${digest}::${deviceId}`, Value: { digest, deviceId, items: [] }
 
-    await enqueueDrIncomingOp(lockKey, async () => {
-        for (const item of sortedItems) {
-            const counter = Number(item.counter ?? item.n);
+    for (const item of sortedItems) {
+        const rawSender = item.sender || item.sender_account_digest || item.senderAccountDigest;
+        const sender = rawSender ? (rawSender.includes('::') ? rawSender.split('::')[0] : rawSender) : null;
 
-            // Check direction
-            const rawSender = item.sender || item.sender_account_digest || item.senderAccountDigest;
-            // Simple normalization
-            const sender = rawSender ? (rawSender.includes('::') ? rawSender.split('::')[0] : rawSender) : null;
-            const myDigest = selfDigest ? (selfDigest.includes('::') ? selfDigest.split('::')[0] : selfDigest) : null;
+        // Resolve Device ID from item
+        // Note: item might not have top-level senderDeviceId if normalized from API?
+        // API usually returns `sender_device_id`.
+        const itemDeviceId = item.senderDeviceId || item.sender_device_id || item.header?.device_id || context.peerDeviceId;
 
-            let result = null;
-            const isOutgoing = sender && myDigest && sender === myDigest;
-
-            // Skip counter validation for Outgoing messages (Vault doesn't need it)
-            if (!isOutgoing && !Number.isFinite(counter)) {
-                const reason = 'INVALID_INCOMING_COUNTER';
-                errors.push({ item, reason });
-                // Return placeholder instead of dropping
-                const ts = Number(item.ts || item.created_at || item.createdAt || Date.now() / 1000);
-                decryptedItems.push({
-                    ...item,
-                    decrypted: false,
-                    reason,
-                    id: item.id || item.messageId,
-                    counter: 0, // Fallback
-                    ts: ts,
-                    tsMs: ts * 1000
-                });
-                continue;
+        if (sender && itemDeviceId) {
+            const key = `${sender}::${itemDeviceId}`;
+            if (!deviceGroups.has(key)) {
+                deviceGroups.set(key, { digest: sender, deviceId: itemDeviceId, items: [] });
             }
+            deviceGroups.get(key).items.push(item);
+        } else {
+            // Fallback for items missing critical ID (unlikely in secure flow but possible for incomplete data)
+            const fallbackKey = `fallback::${context.peerAccountDigest || 'unknown'}`;
+            if (!deviceGroups.has(fallbackKey)) {
+                deviceGroups.set(fallbackKey, { digest: context.peerAccountDigest, deviceId: context.peerDeviceId, items: [] });
+            }
+            deviceGroups.get(fallbackKey).items.push(item);
+        }
+    }
 
-            // Determine Route (A vs B)
-            // Always prefer Route A (Vault) first. 
-            // If we are replaying history, the Vault likely has the keys (from other devices or previous sessions).
-            // If Route A fails (key missing), we will fall back to Route B.
-            // We do NOT use localMax to skip Route A, because localMax might be stale (e.g. after re-login).
-            let useRouteA = true;
+    if (DEBUG.drVerbose) console.warn(`[HybridVerify] Processing ${sortedItems.length} items in ${deviceGroups.size} device groups.`);
 
-            console.warn(`[HybridVerify] Item ${item.id} (Counter: ${counter}) -> Route ${useRouteA ? 'A' : 'B'} (Outgoing: ${isOutgoing}, LocalMax: ${localMax})`);
+    // Iterate Groups Sequentially
+    for (const group of deviceGroups.values()) {
+        const groupDigest = group.digest;
+        const groupDeviceId = group.deviceId;
+        const groupItems = group.items;
 
-            if (useRouteA) {
-                // --- Route A (Vault) ---
-                const { items: aItems, errors: aErrors } = await decryptReplayBatch({
-                    conversationId,
-                    items: [item],
-                    selfDeviceId,
-                    selfDigest,
-                    mk: mkRaw,
-                    serverKeys,
-                    getMessageKey: MessageKeyVault.getMessageKey,
-                    buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
-                    b64u8: naclB64u8
-                });
+        if (!groupItems.length) continue;
 
-                if (aItems.length) {
-                    result = { ok: true, item: aItems[0] };
-                    console.warn(`[HybridVerify] Route A Success item ${item.id}:`, {
-                        decrypted: aItems[0].decrypted,
-                        reason: aItems[0].reason,
-                        hasText: !!aItems[0].text,
-                        textLen: aItems[0].text?.length,
-                        contentType: aItems[0].contentType
+        // Construct STRICT Lock Key
+        // Must match Live Flow: `Digest::DeviceID`
+        const groupLockKey = (groupDigest && groupDeviceId)
+            ? `${groupDigest}::${groupDeviceId}`
+            : groupDigest; // Fallback only if deviceId truly missing (risky but necessary)
+
+        if (DEBUG.drVerbose) console.log(`[HybridVerify] Locking Group: ${groupLockKey} (${groupItems.length} items)`);
+
+        await enqueueDrIncomingOp(groupLockKey, async () => {
+            for (const item of groupItems) {
+                const counter = Number(item.counter ?? item.n);
+                const rawSender = item.sender || item.sender_account_digest || item.senderAccountDigest;
+                const sender = rawSender ? (rawSender.includes('::') ? rawSender.split('::')[0] : rawSender) : null;
+                const myDigest = selfDigest ? (selfDigest.includes('::') ? selfDigest.split('::')[0] : selfDigest) : null;
+                const isOutgoing = sender && myDigest && sender === myDigest;
+
+                // Skip counter validation for Outgoing messages (Vault doesn't need it)
+                if (!isOutgoing && !Number.isFinite(counter)) {
+                    const reason = 'INVALID_INCOMING_COUNTER';
+                    errors.push({ item, reason });
+                    // Return placeholder and log error but don't break batch
+                    const ts = Number(item.ts || item.created_at || item.createdAt || Date.now() / 1000);
+                    decryptedItems.push({
+                        ...item,
+                        decrypted: false,
+                        reason,
+                        id: item.id || item.messageId,
+                        counter: 0,
+                        ts: ts,
+                        tsMs: ts * 1000
                     });
+                    continue;
+                }
+
+                let result = null;
+                let useRouteA = true;
+                const aErrors = [];
+
+                if (useRouteA) {
+                    // --- Route A (Vault) ---
+                    const { items: aItems, errors: errs } = await decryptReplayBatch({
+                        conversationId,
+                        items: [item],
+                        selfDeviceId,
+                        selfDigest,
+                        mk: mkRaw,
+                        serverKeys,
+                        getMessageKey: MessageKeyVault.getMessageKey,
+                        buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
+                        b64u8: naclB64u8
+                    });
+
+                    if (errs) aErrors.push(...errs);
+
+                    if (aItems.length) {
+                        result = { ok: true, item: aItems[0] };
+                    }
+
+                    // [Shadow Advance REMOVED]
+                    // We removed the optimistic "Shadow Advance" logic here.
+                    // Reason: It causes race conditions with Live Message "Gap Filling".
+                    // Live Flow (coordinator.js) is responsible for detecting gaps and filling them sequentially.
+                    // Hybrid Flow should only decrypt what it has, without side-effects on the Ratchet State for future messages.
+                }
+
+                // If Route A (Vault) succeeded, save the result
+                if (result && result.ok && result.item) {
+                    // Check for Control messages to hide them
+                    const rawType = result.item.msgType || result.item.type;
+                    const subtype = normalizeSemanticSubtype(rawType);
+                    const isControl = subtype && (
+                        subtype === 'control' ||
+                        (CONTROL_STATE_SUBTYPES.has(subtype) && subtype !== 'conversation-deleted') ||
+                        TRANSIENT_SIGNAL_SUBTYPES.has(subtype)
+                    );
+
+                    if (subtype === 'conversation-deleted') {
+                        result.item.msgType = 'conversation-deleted';
+                    }
+
+                    if (isControl) {
+                        updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_MSG_DECRYPTED' });
+                    }
+                    decryptedItems.push(result.item);
                 } else {
-                    // ... Route A fail ...
-                }
-
-                // [Shadow Advance]
-                // If Route A succeeded, we must still try to advance the DR state (Ratchet)
-                // so that subsequent messages falling back to Route B don't see a huge gap.
-                if (result && result.ok && !isOutgoing) {
-                    try {
-                        // Construct Shadow Dependencies
-                        // We need to persist the DR State (Ratchet) but NOT the Timeline Entry (Duplicate).
-                        // So we use real adapters for everything EXCEPT `appendTimelineBatch`.
-                        const realAdapters = createLiveLegacyAdapters();
-                        const shadowAdapters = {
-                            ...realAdapters,
-                            // Mock appendTimelineBatch to be a No-Op (Don't duplicate timeline entry)
-                            appendTimelineBatch: async () => ({ ok: true, appended: 0 })
-                        };
-
-                        // Create State Access with Shadow Adapters
-                        // This allows `persistAndAppendSingle` to run fully, including `persistDrSnapshot`,
-                        // but `adapters.appendTimelineBatch` will do nothing.
-                        const shadowStateAccess = createLiveStateAccess({ adapters: shadowAdapters });
-
-                        console.warn(`[HybridVerify] Shadow Advance: Triggering for item ${item.id}`);
-                        // We await this to ensure sequential ordering (State must update before next iteration)
-                        await consumeLiveJob({
-                            type: 'WS_INCOMING',
-                            conversationId,
-                            messageId: item.id,
-                            serverMessageId: item.id,
-                            tokenB64: context.tokenB64,
-                            peerAccountDigest: context.peerAccountDigest,
-                            peerDeviceId: context.peerDeviceId,
-                            sourceTag: 'hybrid-shadow-advance',
-                            skipIncomingLock: true // [MUTEX] Already held by Outer Loop
-                        }, {
-                            fetchSecureMessageById: createNoOpFetcher(item),
-                            stateAccess: shadowStateAccess // Inject mocked state access
-                        }).catch(e => console.warn('[HybridVerify] Shadow Advance Fail:', e));
-                    } catch (e) { console.warn('[HybridVerify] Shadow Advance Exception:', e); }
-                }
-                if (!result || !result.ok) {
+                    // --- Route B (Live Fallback) ---
                     // Route A failed (e.g. key missing).
                     const routeAFailReason = aErrors.length ? (aErrors[0]?.reasonCode || aErrors[0]?.reason || 'ROUTE_A_FAIL') : 'CONTROL_SKIP';
-
-                    // Check if this is a "Gap Message" (Newer than local state).
-                    // If Route A skipped it (no content/errors), it's likely just missing from Vault.
-                    // We MUST fallback to Route B (Live) for these, otherwise they are lost.
                     const isGapMessage = counter > localMax;
                     const forceFallback = (routeAFailReason === 'CONTROL_SKIP' && isGapMessage && !isOutgoing);
 
-                    // If it was a control message skip (and NOT a forced fallback gap message), we are done.
+                    // Optimization: If Control Skip (irrelevant message) and NOT forced, skip Route B
                     if (routeAFailReason === 'CONTROL_SKIP' && !forceFallback) {
-                        result = { ok: false, reason: 'CONTROL_SKIP' };
-                    }
-                    // Fallback to Route B if eligible
-                    else if (!isOutgoing) {
-                        console.warn(`[HybridVerify] Route A failed (${routeAFailReason}). Fallback to Route B for item ${item.id}...`);
+                        // silently skip
+                        updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_SKIP' });
+                    } else if (!isOutgoing) {
+                        // Attempt Route B
+                        if (DEBUG.drVerbose) console.warn(`[HybridVerify] Route A failed (${routeAFailReason}). Fallback to Route B for item ${item.id}...`);
 
-
-                        // [Blocking Retry Strategy for Vault Put]
-                        // We must guarantee Vault persistence before moving to the next message.
                         const MAX_RETRIES = 5;
                         let retries = 0;
                         let bResult = null;
 
+                        // Blocking Retry Loop to ensure Vault persistence
                         while (retries <= MAX_RETRIES) {
                             try {
                                 bResult = await consumeLiveJob({
@@ -483,36 +489,30 @@ export async function smartFetchMessages({
                                     messageId: item.id,
                                     serverMessageId: item.id,
                                     tokenB64: context.tokenB64,
-                                    peerAccountDigest: context.peerAccountDigest,
-                                    peerDeviceId: context.peerDeviceId,
-                                    sourceTag: 'hybrid-flow',
-                                    skipIncomingLock: true // [MUTEX] Already held by Outer Loop
+                                    peerAccountDigest: groupDigest,
+                                    peerDeviceId: groupDeviceId,
+                                    sourceTag: 'hybrid-replay-fallback',
+                                    skipIncomingLock: true, // [MUTEX] Held
+                                    bootstrapDrFromGuestBundle: null // [FIX] Disable Reset
                                 }, {
                                     fetchSecureMessageById: createNoOpFetcher(item),
-                                    maybeSendVaultAckWs: deps?.maybeSendVaultAckWs,
-                                    getAccountDigest: deps?.getAccountDigest,
-                                    getDeviceId: deps?.getDeviceId,
-                                    bootstrapDrFromGuestBundle: null
+                                    stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })
                                 });
 
-                                // Success Condition: Decrypted AND Vault Put OK
+                                // Success if decrypted, regardless of vault put (though we prefer it)
+                                // Actually, we retry strictly for vault put to prevent gaps.
                                 if (bResult.ok && bResult.decrypted && bResult.vaultPut) {
-                                    break; // Success!
+                                    break;
                                 }
-
-                                // If decryption failed, no need to retry vault put (it's a decrypt error)
                                 if (!bResult.ok || !bResult.decrypted) {
-                                    break; // Decrypt failed, stop retrying
+                                    break;
                                 }
 
-                                // If here: Decrypted OK but Vault Put Failed
-                                console.warn(`[HybridVerify] Route B Success item ${item.id} BUT Vault Put Failed (Attempt ${retries + 1}/${MAX_RETRIES}). Retrying...`);
                                 retries++;
                                 if (retries <= MAX_RETRIES) {
-                                    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries))); // Exponential Backoff
+                                    await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
                                 }
-                            } catch (err) {
-                                console.warn(`[HybridVerify] Route B Exception item ${item.id} (Attempt ${retries + 1}). Retrying...`, err);
+                            } catch (e) {
                                 retries++;
                                 if (retries <= MAX_RETRIES) {
                                     await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
@@ -522,23 +522,23 @@ export async function smartFetchMessages({
                             }
                         }
 
+                        // Check B Result
                         if (bResult && bResult.ok && bResult.decrypted) {
-                            // Final Check: Did we succeed in Vault Put?
                             if (!bResult.vaultPut) {
-                                // [CIRCUIT BREAKER]
-                                // We exhausted retries and STILL failed to persist to Vault.
-                                // We MUST ABORT the entire batch processing to prevent "Gap Keys".
+                                // Circuit Breaker: If we can't persist to Vault, stop batch to avoid gaps
                                 console.error(`[HybridVerify] CRITICAL: Route B Vault Put Persistently Failed for item ${item.id}. Aborting Batch!!!`);
-                                const reason = 'ROUTE_B_VAULT_PUT_FAIL_ABORT';
-                                errors.push({ item, reason });
-
-                                // ABORT BATCH
+                                errors.push({ item, reason: 'ROUTE_B_VAULT_PUT_FAIL_ABORT' });
+                                // We really should break the inner loop here to stop processing this device group
+                                // because we might have a gap now.
+                                // But technically if we continue, we just create more gaps. Aborting is safer.
+                                // However, `break` inside `enqueueDrIncomingOp` breaks the `for` loop of items.
                                 break;
                             }
 
-                            console.warn(`[HybridVerify] Route B Success item ${item.id}. Retrying Route A to fetch content...`);
-
-                            // Route B succeeded, so Key should be in Vault now.
+                            // B Succeeded. Re-fetch via Route A logic (simulated) or just use B Items?
+                            // Route A decryptReplayBatch returns "items" which are formatted for UI.
+                            // bResult (consumeLiveJob) does persist but its return format is metrics/status.
+                            // We should re-run decryptReplayBatch to get the ITEM back from Vault.
                             const { items: retryItems } = await decryptReplayBatch({
                                 conversationId,
                                 items: [item],
@@ -551,92 +551,23 @@ export async function smartFetchMessages({
                             });
 
                             if (retryItems.length) {
-                                result = { ok: true, item: retryItems[0] };
-                                console.warn(`[HybridVerify] Route B -> Route A Retry Success item ${item.id}:`, {
-                                    decrypted: true,
-                                    reason: 'RESTORED_VIA_ROUTE_B'
-                                });
+                                decryptedItems.push(retryItems[0]);
                             } else {
-                                // This is weird (Vault reported success but we can't read it back?), but we shouldn't abort batch here as state is safe.
-                                console.warn(`[HybridVerify] Route B Success BUT Route A Retry Failed for item ${item.id}. Logging error and continuing...`);
-                                const reason = 'ROUTE_B_OK_BUT_VAULT_MISSING';
-                                errors.push({ item, reason });
+                                errors.push({ item, reason: 'ROUTE_B_OK_BUT_VAULT_MISSING' });
                             }
                         } else {
-                            // Decrypt failed (or skipped)
-                            console.warn(`[HybridVerify] Route B Failed item ${item.id}:`, bResult?.reasonCode);
-                            result = { ok: false, reason: bResult?.reasonCode || 'ROUTE_B_FAIL' };
-
-                            // If Gap Message (Newer than local), log but DO NOT stop. 
-                            // (Unless it's a Vault Put failure, which is caught above)
-                            if (counter > localMax && result.reason !== 'CONTROL_SKIP') {
-                                console.warn(`[HybridVerify] Gap Message Failed at item ${item.id}. Logging error and continuing to sequence...`);
-                                errors.push({ item, reason: result.reason });
-                            }
+                            errors.push({ item, reason: bResult?.reasonCode || 'ROUTE_B_FAIL' });
+                            logHybridTrace('hybridFlowItemFail', { conversationId, messageId: item.id, reason: bResult?.reasonCode });
                         }
+
+                    } else {
+                        // Outgoing failure or other control skip
+                        errors.push({ item, reason: routeAFailReason });
                     }
                 }
             }
-
-            if (result && result.ok && result.item) {
-                // [Fix Stuck Placeholder]
-                // If the decrypted message turns out to be a CONTROL message (e.g. sender key, contact-share),
-                // we must explicitly HIDE the placeholder.
-                const rawType = result.item.msgType || result.item.type;
-                const subtype = normalizeSemanticSubtype(rawType);
-
-                const isControl = subtype && (
-                    subtype === 'control' ||
-                    (CONTROL_STATE_SUBTYPES.has(subtype) && subtype !== 'conversation-deleted') ||
-                    TRANSIENT_SIGNAL_SUBTYPES.has(subtype)
-                );
-
-                if (subtype === 'conversation-deleted') {
-                    console.log('[Decrypted Tombstone Payload] (Hybrid Route A)', result.item);
-                    // Ensure msgType is set so Controller keeps it
-                    result.item.msgType = 'conversation-deleted';
-                    // Retrospective cleanup removed as Pre-Render Barrier now handles it correctly.
-                }
-
-                if (isControl) {
-                    updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_MSG_DECRYPTED' });
-                    // We still push it to decryptedItems so it can be processed by listeners,
-                    // but visually it is hidden.
-                }
-                decryptedItems.push(result.item);
-            } else {
-                const errorReason = result?.reason || 'UNKNOWN_ERROR';
-
-                // Filter out control messages
-                if (errorReason === 'CONTROL_SKIP' || errorReason === 'CORRUPT_SKIP') {
-                    updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: errorReason });
-                    continue;
-                }
-
-                errors.push({ item, reason: errorReason });
-                logHybridTrace('hybridFlowItemFail', {
-                    conversationId,
-                    messageId: item.id,
-                    counter,
-                    route: counter < localMax ? 'A' : 'B',
-                    reason: errorReason
-                });
-
-                // Return placeholder
-                const ts = Number(item.ts || item.created_at || item.createdAt || Date.now() / 1000);
-                decryptedItems.push({
-                    ...item,
-                    decrypted: false,
-                    reason: errorReason,
-                    id: item.id || item.messageId,
-                    counter: counter,
-                    ts: ts,
-                    tsMs: ts * 1000
-                });
-            }
-        }
-    }); // End Incoming Sequence Loop
-
+        });
+    }
 
     // 5. Restore DESC order for Facade/UI
     decryptedItems.reverse();
