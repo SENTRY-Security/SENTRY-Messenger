@@ -589,9 +589,27 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   if (selectedItem) {
     try {
       const depsLocalCounter = typeof deps?.getLocalProcessedCounter === 'function' ? deps.getLocalProcessedCounter : getLocalProcessedCounter;
-      // Resolve counter from item (support raw or normalized structure)
-      const rawN = selectedItem.counter ?? selectedItem.n ?? selectedItem.header?.n ?? selectedItem.header?.counter;
-      const counter = Number(rawN);
+
+      // [FIX] Strict Counter Resolution
+      // Prioritize `header.n` (Ratchet Counter) over `counter` (which might be Transport Key or DB ID).
+      let counter = null;
+
+      // Try resolving from header object or parsed JSON
+      let headerObj = selectedItem.header;
+      if (!headerObj && (selectedItem.header_json || selectedItem.headerJson)) {
+        try {
+          headerObj = JSON.parse(selectedItem.header_json || selectedItem.headerJson);
+        } catch { }
+      }
+
+      if (headerObj && (headerObj.n !== undefined || headerObj.counter !== undefined)) {
+        counter = Number(headerObj.n ?? headerObj.counter);
+      } else if (selectedItem.headerCounter !== undefined) {
+        counter = Number(selectedItem.headerCounter);
+      } else if (selectedItem.counter !== undefined) {
+        // Fallback to top-level counter (risky if it's transport counter)
+        counter = Number(selectedItem.counter);
+      }
 
       if (Number.isFinite(counter) && counter > 0 && conversationId) {
         // Blocking check against Vault/Local State
