@@ -511,6 +511,23 @@ async function decryptIncomingSingle(params = {}, adapters) {
         msgType: msgTypeHint || 'text'
       });
 
+      // [FIX] Persist the advanced state immediately inside the lock (Prevent State Regression)
+      // Since `state` is a clone, we must explicitly save it back to the store.
+      // If we don't, next message will read stale state and fail decryption (RK Loss).
+      if (adapters.persistDrSnapshot) {
+        try {
+          // Note: persistDrSnapshot logic handles downgrade checks internally.
+          await adapters.persistDrSnapshot({
+            state,
+            peerAccountDigest: senderDigest,
+            peerDeviceId: senderDeviceId
+          });
+        } catch (e) {
+          console.error('[state-live] persistDrSnapshot failed - State Regression Risk!', e);
+          // Proceeding allows showing THIS message, but next one might fail.
+        }
+      }
+
       if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
         // Get DR state snapshot for skipped keys (important for recovery)
         let skippedDrStateSnapshot = null;
