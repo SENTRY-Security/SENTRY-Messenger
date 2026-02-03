@@ -8,6 +8,7 @@
  */
 
 import { BaseController } from './base-controller.js';
+import { isDrSessionLocked } from '../../../features/dr-session.js';
 import {
     sortMessagesByTimelineLocal,
     latestKeyFromTimeline,
@@ -405,8 +406,7 @@ export class MessageFlowController extends BaseController {
         // Detailed check requires Device ID (which we might not have trivially here, but state has it)
         const peerDevice = state.activePeerDeviceId;
         const lockKey = peerDevice ? `${peerKey}::${peerDevice}` : peerKey;
-
-        const { isDrSessionLocked } = await import('../../../features/dr-session.js');
+        // const { isDrSessionLocked } = await import('../../../features/dr-session.js');
         if (isDrSessionLocked(lockKey)) {
             console.warn('[MessageFlow] Load aborted: Session Locked (Decryption in Progress)', lockKey);
             this.deps.showToast?.('尚有訊息解密中，請稍候', { type: 'info', duration: 2000 });
