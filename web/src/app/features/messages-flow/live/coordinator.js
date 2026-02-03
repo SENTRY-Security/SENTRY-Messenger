@@ -770,8 +770,6 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   }
 
   // [FIX] Expose Decrypted Message to Caller
-  // Essential for Hybrid Flow to avoid Read-After-Write re-fetch race conditions.
-  // If we decrypted it, return it.
   result.decryptedMessage = decryptResult?.decryptedMessage || null;
 
   const decryptReasonCode = decryptResult?.reasonCode || null;

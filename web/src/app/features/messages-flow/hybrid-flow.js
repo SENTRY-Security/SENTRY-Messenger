@@ -24,6 +24,7 @@ import { createLiveStateAccess } from './live/state-live.js';
 import { createLiveLegacyAdapters } from './live/adapters/index.js';
 
 const HYBRID_LOG_CAP = 5;
+const DEBUG = { drVerbose: true }; // [FIX] Define DEBUG to prevent ReferenceError
 const SMART_FETCH_BUFFER = 5;
 const DEFAULT_LIMIT = 20;
 
