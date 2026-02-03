@@ -421,13 +421,11 @@ async function decryptIncomingSingle(params = {}, adapters) {
       };
     }
 
-    let state;
-    try {
-      state = typeof structuredClone === 'function' ? structuredClone(rawState) : JSON.parse(JSON.stringify(rawState));
-    } catch (e) {
-      console.warn('[state-live] clone failed, using raw state (risky)', e);
-      state = rawState;
-    }
+    // [FIX] Use Direct Store Reference (No Clone)
+    // We MUST operate on the shared memory object to ensure that even if disk persistence fails (or lags),
+    // the in-memory session state is correctly advanced for subsequent messages.
+    // Previous use of `structuredClone` caused "Ghost State" where memory stayed at Counter 0 if persist failed.
+    const state = rawState;
 
     state.baseKey = state.baseKey || {};
     if (!state.baseKey.conversationId) state.baseKey.conversationId = conversationId;
