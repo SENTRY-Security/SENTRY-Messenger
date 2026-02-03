@@ -264,12 +264,27 @@ export class MessageFlowController extends BaseController {
             }
 
         } catch (err) {
-            if (err?.code === 'INVITE_SESSION_TOKEN_MISSING' || err?.message === 'INVITE_SESSION_TOKEN_MISSING') {
-                logCapped('inviteSessionTokenMissingDropped', { error: err.message }, 5);
+            const errMsg = err?.message || String(err);
+            if (err?.code === 'INVITE_SESSION_TOKEN_MISSING' || errMsg === 'INVITE_SESSION_TOKEN_MISSING') {
+                logCapped('inviteSessionTokenMissingDropped', { error: errMsg }, 5);
                 return;
             }
+
+            // [FIX] Gap Recovery Trigger
+            // If Live Flow aborted due to a detected gap (Fail-Close), we must trigger a fetch immediately
+            // to fill the gap/history, instead of waiting for the user to re-enter.
+            if (errMsg.includes('Gap detected')) {
+                console.warn('[MessageFlow] Gap detected in Live Flow. Triggering immediate history fetch/healing...');
+                log('gapDetectedTriggeringFetch', { convId: this.getMessageState().conversationId });
+
+                // Debounce/Throttle might be good here, but for now immediate recovery is prioritized.
+                // We restart the load cycle which uses Smart Fetch to heal the gap.
+                this.loadActiveConversationMessages({ append: false }).catch(e => console.error('[GapRecovery] Failed', e));
+                return;
+            }
+
             console.error('[secure-message] handler error', err);
-            log({ secureMessageHandlerError: { error: err?.message || String(err) } });
+            log({ secureMessageHandlerError: { error: errMsg } });
         }
     }
 
