@@ -37,7 +37,7 @@ if [ -d "$WEB_DIR" ]; then
   npm install || true
   
   echo "   - Deploying ./src directly to Cloudflare Pages (Production)..."
-  npx wrangler pages deploy ./src --project-name message-web-hybrid --branch=production --commit-dirty=true
+  npx wrangler pages deploy ./src --project-name message-web-hybrid --branch=main --commit-dirty=true
   cd ..
 else
   echo "⚠️  Web directory not found: $WEB_DIR"
