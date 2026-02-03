@@ -5,13 +5,13 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
     return next();
   }
 
-  const originApi = env.ORIGIN_API;
+  const originApi = env.ORIGIN_API || 'https://api.message.sentry.red';
   if (!originApi) {
     return json({ error: 'ConfigError', message: 'ORIGIN_API is not configured' }, 500, request);
   }
 
   const upstreamBase = new URL(originApi);
-  
+
   // Rewrite /api/v1/* to /d1/* for upstream Worker
   let targetPath = url.pathname;
   if (targetPath.startsWith('/api/v1/')) {
@@ -19,7 +19,7 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
   } else if (targetPath.startsWith('/api/')) {
     targetPath = '/d1/' + targetPath.slice('/api/'.length);
   }
-  
+
   const targetUrl = new URL(targetPath + url.search, upstreamBase);
 
   const upstreamRequest = new Request(targetUrl.toString(), request);
