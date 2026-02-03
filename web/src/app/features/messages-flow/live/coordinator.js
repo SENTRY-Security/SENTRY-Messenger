@@ -769,6 +769,11 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     maybeTriggerBackupAfterDecrypt({ sourceTag: 'coordinator:live-decrypt-ok' });
   }
 
+  // [FIX] Expose Decrypted Message to Caller
+  // Essential for Hybrid Flow to avoid Read-After-Write re-fetch race conditions.
+  // If we decrypted it, return it.
+  result.decryptedMessage = decryptResult?.decryptedMessage || null;
+
   const decryptReasonCode = decryptResult?.reasonCode || null;
   let reasonCode = LIVE_MVP_REASONS.OK;
   if (decryptReasonCode) {

@@ -536,25 +536,29 @@ export async function smartFetchMessages({
                                 break;
                             }
 
-                            // B Succeeded. Re-fetch via Route A logic (simulated) or just use B Items?
-                            // Route A decryptReplayBatch returns "items" which are formatted for UI.
-                            // bResult (consumeLiveJob) does persist but its return format is metrics/status.
-                            // We should re-run decryptReplayBatch to get the ITEM back from Vault.
-                            const { items: retryItems } = await decryptReplayBatch({
-                                conversationId,
-                                items: [item],
-                                selfDeviceId,
-                                selfDigest,
-                                mk: mkRaw,
-                                getMessageKey: MessageKeyVault.getMessageKey,
-                                buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
-                                b64u8: naclB64u8
-                            });
+                            // B Succeeded.
+                            const directDecrypted = bResult.decryptedMessage; // [FIX] Use direct result
 
-                            if (retryItems.length) {
-                                decryptedItems.push(retryItems[0]);
+                            if (directDecrypted) {
+                                decryptedItems.push(directDecrypted);
                             } else {
-                                errors.push({ item, reason: 'ROUTE_B_OK_BUT_VAULT_MISSING' });
+                                // Fallback: Re-fetch via Route A logic (Race Condition Prone)
+                                // Only do this if coordinator didn't return the payload for some reason
+                                const { items: retryItems } = await decryptReplayBatch({
+                                    conversationId,
+                                    items: [item],
+                                    selfDeviceId,
+                                    selfDigest,
+                                    mk: mkRaw,
+                                    getMessageKey: MessageKeyVault.getMessageKey,
+                                    buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
+                                    b64u8: naclB64u8
+                                });
+                                if (retryItems.length) {
+                                    decryptedItems.push(retryItems[0]);
+                                } else {
+                                    errors.push({ item, reason: 'ROUTE_B_OK_BUT_VAULT_MISSING' });
+                                }
                             }
                         } else {
                             errors.push({ item, reason: bResult?.reasonCode || 'ROUTE_B_FAIL' });
