@@ -6,7 +6,7 @@ import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js
 import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
-import { normalizeTimelineEntry } from '../../normalize.js';
+import { normalizeTimelineEntry } from '../normalize.js';
 import { enqueueDrSessionOp } from '../../dr-session.js?v=mutex';
 import { appendUserMessage } from '../../timeline-store.js';
 
