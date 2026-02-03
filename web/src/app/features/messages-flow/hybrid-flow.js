@@ -493,7 +493,8 @@ export async function smartFetchMessages({
                                     peerDeviceId: groupDeviceId,
                                     sourceTag: 'hybrid-replay-fallback',
                                     skipIncomingLock: true, // [MUTEX] Held
-                                    bootstrapDrFromGuestBundle: null // [FIX] Disable Reset
+                                    bootstrapDrFromGuestBundle: null, // [FIX] Disable Reset
+                                    skipGapCheck: true // [FIX] Hybrid Flow is sequential; skip blocking check
                                 }, {
                                     fetchSecureMessageById: createNoOpFetcher(item),
                                     stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })

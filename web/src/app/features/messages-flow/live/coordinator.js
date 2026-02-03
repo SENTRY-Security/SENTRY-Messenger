@@ -586,7 +586,8 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   // [FIX] Blocking Gap Check (Fail-Close)
   // Ensure we do not process out-of-order Live messages (Shadow Advance).
   // If a gap exists, we MUST throw to trigger retry, giving Hybrid Flow time to fill history.
-  if (selectedItem) {
+  // [EXCEPTION] Hybrid Flow (History Fill) passes `skipGapCheck: true` because it guarantees sequential processing.
+  if (selectedItem && !job?.skipGapCheck) {
     try {
       const depsLocalCounter = typeof deps?.getLocalProcessedCounter === 'function' ? deps.getLocalProcessedCounter : getLocalProcessedCounter;
 
