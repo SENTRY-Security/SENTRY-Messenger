@@ -1082,7 +1082,7 @@ export function persistDrSnapshot(params = {}) {
   assertU8('persistDrSnapshot:rk', holder.rk);
   if (holder.ckS) assertU8('persistDrSnapshot:ckS', holder.ckS);
   if (holder.ckR) assertU8('persistDrSnapshot:ckR', holder.ckR);
-  
+
   let snap = snapshot || snapshotDrState(holder);
   if (snap && !isPersistableSnapshot(snap)) {
     snap = null;
@@ -1453,7 +1453,12 @@ function normalizePeerBundleFromPrekeys(bundle) {
 const sessionLocks = new Map();
 const sendQueue = new Map();
 
-function enqueueDrSend(key, operation) {
+/**
+ * [SESSION MUTEX]
+ * Serializes operations (send/recv) for a specific peer session to prevent Race Conditions.
+ * Shared by `sendDrPlaintext` and `state-live.js:decryptIncomingSingle`.
+ */
+export function enqueueDrSessionOp(key, operation) {
   if (!key) return operation();
   const prev = sendQueue.get(key) || Promise.resolve();
   const next = prev.catch(() => { }).then(operation);
@@ -1465,6 +1470,10 @@ function enqueueDrSend(key, operation) {
     }
   });
   return next;
+}
+
+export function isDrSessionLocked(key) {
+  return sendQueue.has(key);
 }
 
 
@@ -1625,9 +1634,9 @@ export async function sendDrPlaintext(params = {}) {
   if (!peer) throw new Error('peerAccountDigest required');
 
   const recvDeviceId = peerDeviceInput || conversation?.peerDeviceId || null;
+  // [MUTEX] Use shared session lock
   const queueKey = recvDeviceId ? `${peer}::${recvDeviceId}` : peer;
-
-  return enqueueDrSend(queueKey, () => sendDrPlaintextCore(params));
+  return enqueueDrSessionOp(queueKey, () => sendDrPlaintextCore(params));
 }
 
 export async function sendDrPlaintextCore(params = {}) {

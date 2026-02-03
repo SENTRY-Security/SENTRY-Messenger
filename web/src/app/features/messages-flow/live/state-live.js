@@ -6,6 +6,8 @@ import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js
 import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
+import { normalizeTimelineEntry } from '../../normalize.js';
+import { enqueueDrSessionOp } from '../../dr-session.js?v=mutex';
 import { appendUserMessage } from '../../timeline-store.js';
 
 function hasUsableDrState(holder) {
@@ -413,173 +415,166 @@ async function decryptIncomingSingle(params = {}, adapters) {
     };
   }
 
-  // [FIX] Clone State to Prevent Mutation Leak
-  // The shared state must NOT be advanced until we are ready to persist (after Vault).
-  // We use structuredClone if available, or assume POJO (with Buffers safe in standard Clone).
-  const rawState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
-  if (!hasUsableDrState(rawState)) {
-    return {
-      ...base,
-      reasonCode: 'DR_STATE_UNAVAILABLE',
-      skippedCount: 1
-    };
-  }
+  // [MUTEX] Wrap in Session Lock
+  // We use the same lock key as Sending (peer::deviceId) to serialize critical DR operations.
+  // This prevents race conditions where Send/Recv interleave and corrupt shared state.
+  const lockKey = senderDeviceId ? `${senderDigest}::${senderDeviceId}` : senderDigest;
 
-  let state;
-  try {
-    state = typeof structuredClone === 'function' ? structuredClone(rawState) : JSON.parse(JSON.stringify(rawState));
-    // If Buffers are lost in JSON (unlikely in this env but possible), we might need re-inflation. 
-    // For now assuming structuredClone works.
-  } catch (e) {
-    console.warn('[state-live] clone failed, using raw state (risky)', e);
-    state = rawState;
-  }
-
-  state.baseKey = state.baseKey || {};
-  if (!state.baseKey.conversationId) state.baseKey.conversationId = conversationId;
-  if (state.baseKey.peerDeviceId !== senderDeviceId) state.baseKey.peerDeviceId = senderDeviceId;
-  if (state.baseKey.peerAccountDigest !== senderDigest) state.baseKey.peerAccountDigest = senderDigest;
-
-  let selfDeviceId = null;
-  try {
-    selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
-  } catch { }
-
-  const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
-  let messageKeyB64 = null;
-  let plaintext = null;
-
-  // X3DH PreKey Handling
-  // If the header contains identity key info, this is likely a PreKey Message (Type 3).
-  // We must bootstrap the session (Responder role) before attempting to decrypt.
-  // This implies we accept a session reset from the remote peer.
-  const headerIk = header?.ik || header?.ik_pub || header?.ik_pub_b64 || null;
-  if (headerIk) {
-    if (adapters.bootstrapDrFromGuestBundle) {
-      try {
-        await adapters.bootstrapDrFromGuestBundle({
-          guestBundle: {
-            ik_pub: headerIk,
-            ek_pub: header?.ek || header?.ek_pub || header?.ek_pub_b64 || null,
-            spk_pub: header?.spk || header?.spk_pub || header?.spk_pub_b64 || null,
-            spk_sig: header?.spk_sig || header?.spk_sig_b64 || null,
-            opk_id: header?.opk_id || header?.opkId || null
-          },
-          peerAccountDigest: senderDigest,
-          peerDeviceId: senderDeviceId,
-          conversationId,
-          force: true // Accept the reset
-        });
-        // Refresh state after bootstrap
-        const newState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
-        if (hasUsableDrState(newState)) {
-          Object.assign(state, newState); // Mutate local reference to usage newer state
-        }
-      } catch (err) {
-        console.warn('[state-live] bootstrap-session failed', err);
-        // Fallthrough to attempt normal decryption (likely fails, but consistent)
-      }
-    } else {
-      console.warn('[state-live] bootstrapDrFromGuestBundle adapter missing');
+  return enqueueDrSessionOp(lockKey, async () => {
+    // [FIX] Clone State to Prevent Mutation Leak
+    // The shared state must NOT be advanced until we are ready to persist (after Vault).
+    // We use structuredClone if available, or assume POJO (with Buffers safe in standard Clone).
+    const rawState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+    if (!hasUsableDrState(rawState)) {
+      return {
+        ...base,
+        reasonCode: 'DR_STATE_UNAVAILABLE',
+        skippedCount: 1
+      };
     }
-  }
 
-  const skippedKeysBuffer = [];
-  try {
-    plaintext = await adapters.drDecryptText(state, {
-      aead: 'aes-256-gcm',
-      header,
-      iv_b64: header.iv_b64,
-      ciphertext_b64: ciphertextB64
-    }, {
-      onMessageKey: (mk) => { messageKeyB64 = mk; },
-      onSkippedKeys: (keys) => {
-        if (Array.isArray(keys)) keys.forEach(k => skippedKeysBuffer.push(k));
-      },
-      packetKey,
-      msgType: msgTypeHint || 'text'
-    });
+    let state;
+    try {
+      state = typeof structuredClone === 'function' ? structuredClone(rawState) : JSON.parse(JSON.stringify(rawState));
+    } catch (e) {
+      console.warn('[state-live] clone failed, using raw state (risky)', e);
+      state = rawState;
+    }
 
-    if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
-      // Get DR state snapshot for skipped keys (important for recovery)
-      let skippedDrStateSnapshot = null;
-      if (adapters.snapshotAndEncryptDrState) {
+    state.baseKey = state.baseKey || {};
+    if (!state.baseKey.conversationId) state.baseKey.conversationId = conversationId;
+    if (state.baseKey.peerDeviceId !== senderDeviceId) state.baseKey.peerDeviceId = senderDeviceId;
+    if (state.baseKey.peerAccountDigest !== senderDigest) state.baseKey.peerAccountDigest = senderDigest;
+
+    let selfDeviceId = null;
+    try {
+      selfDeviceId = adapters.getDeviceId ? adapters.getDeviceId() : null;
+    } catch { }
+
+    const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
+    let messageKeyB64 = null;
+    let plaintext = null;
+
+    // X3DH PreKey Handling
+    // If the header contains identity key info, this is likely a PreKey Message (Type 3).
+    // We must bootstrap the session (Responder role) before attempting to decrypt.
+    // This implies we accept a session reset from the remote peer.
+    const headerIk = header?.ik || header?.ik_pub || header?.ik_pub_b64 || null;
+    if (headerIk) {
+      if (adapters.bootstrapDrFromGuestBundle) {
         try {
-          skippedDrStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
+          await adapters.bootstrapDrFromGuestBundle({
+            guestBundle: {
+              ik_pub: headerIk,
+              ek_pub: header?.ek || header?.ek_pub || header?.ek_pub_b64 || null,
+              spk_pub: header?.spk || header?.spk_pub || header?.spk_pub_b64 || null,
+              spk_sig: header?.spk_sig || header?.spk_sig_b64 || null,
+              opk_id: header?.opk_id || header?.opkId || null
+            },
+            peerAccountDigest: senderDigest,
+            peerDeviceId: senderDeviceId,
+            conversationId,
+            force: true // Accept the reset
+          });
+          // Refresh state after bootstrap
+          const newState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+          if (hasUsableDrState(newState)) {
+            Object.assign(state, newState); // Mutate local reference to usage newer state
+          }
+        } catch (err) {
+          console.warn('[state-live] bootstrap-session failed', err);
+          // Fallthrough to attempt normal decryption (likely fails, but consistent)
+        }
+      } else {
+        console.warn('[state-live] bootstrapDrFromGuestBundle adapter missing');
+      }
+    }
+
+    const skippedKeysBuffer = [];
+    try {
+      plaintext = await adapters.drDecryptText(state, {
+        aead: 'aes-256-gcm',
+        header,
+        iv_b64: header.iv_b64,
+        ciphertext_b64: ciphertextB64
+      }, {
+        onMessageKey: (mk) => { messageKeyB64 = mk; },
+        onSkippedKeys: (keys) => {
+          if (Array.isArray(keys)) keys.forEach(k => skippedKeysBuffer.push(k));
+        },
+        packetKey,
+        msgType: msgTypeHint || 'text'
+      });
+
+      if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
+        // Get DR state snapshot for skipped keys (important for recovery)
+        let skippedDrStateSnapshot = null;
+        if (adapters.snapshotAndEncryptDrState) {
+          try {
+            skippedDrStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
+          } catch { }
+        }
+
+        // Await vault put for skipped keys to ensure they are persisted
+        try {
+          await Promise.all(skippedKeysBuffer.map(k => {
+            const gapCounter = k.headerCounter;
+            const gapMessageId = `gap:v1:${gapCounter}`;
+            return adapters.vaultPutIncomingKey({
+              conversationId,
+              messageId: gapMessageId,
+              senderDeviceId,
+              targetDeviceId: selfDeviceId,
+              direction: 'incoming',
+              msgType: 'gap-fill',
+              messageKeyB64: k.messageKeyB64,
+              headerCounter: gapCounter,
+              drStateSnapshot: skippedDrStateSnapshot
+            });
+          }));
+          if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys', skippedKeysBuffer.length);
+        } catch (e) {
+          console.warn('[state-live] skipped-key vault failed', e);
+          // Continue processing - the main message key will still be stored
+        }
+      }
+    } catch (err) {
+      // Enhanced logging for OperationError (often subtle Key/AAD mismatch)
+      if (err.name === 'OperationError' || err.message === 'OperationError') {
+        try {
+          console.warn('[state-live] decryption fail details', {
+            reason: 'OperationError',
+            conv: conversationIdPrefix8,
+            hKeys: header ? Object.keys(header).sort() : [],
+            ik: !!headerIk,
+            hasState: !!state,
+            rs: state?.baseKey?.role || 'unknown'
+          });
         } catch { }
       }
+      return {
+        ...base,
+        reasonCode: 'DECRYPT_FAIL',
+        processedCount: 1,
+        failCount: 1
+      };
+    }
 
-      // Await vault put for skipped keys to ensure they are persisted
-      try {
-        await Promise.all(skippedKeysBuffer.map(k => {
-          const gapCounter = k.headerCounter;
-          const gapMessageId = `gap:v1:${gapCounter}`;
-          return adapters.vaultPutIncomingKey({
-            conversationId,
-            messageId: gapMessageId,
-            senderDeviceId,
-            targetDeviceId: selfDeviceId,
-            direction: 'incoming',
-            msgType: 'gap-fill',
-            messageKeyB64: k.messageKeyB64,
-            headerCounter: gapCounter,
-            drStateSnapshot: skippedDrStateSnapshot
-          });
-        }));
-        if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys', skippedKeysBuffer.length);
-      } catch (e) {
-        console.warn('[state-live] skipped-key vault failed', e);
-        // Continue processing - the main message key will still be stored
-      }
-    }
-  } catch (err) {
-    // Enhanced logging for OperationError (often subtle Key/AAD mismatch)
-    if (err.name === 'OperationError' || err.message === 'OperationError') {
-      try {
-        console.warn('[state-live] decryption fail details', {
-          reason: 'OperationError',
-          conv: conversationIdPrefix8,
-          hKeys: header ? Object.keys(header).sort() : [],
-          ik: !!headerIk,
-          hasState: !!state,
-          rs: state?.baseKey?.role || 'unknown'
-        });
-      } catch { }
-    }
-    return {
+    const result = {
       ...base,
-      reasonCode: 'DECRYPT_FAIL',
-      processedCount: 1,
-      failCount: 1
+      processedCount: 1
     };
-  }
 
-  const result = {
-    ...base,
-    processedCount: 1
-  };
-
-  if (!messageKeyB64) {
-    result.reasonCode = 'MISSING_MESSAGE_KEY';
-    result.failCount = 1;
-  } else {
-    const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-    // [Fix] Allow conversation-deleted to pass through Live Route B.
-    const isAllowedControl = semantic.subtype === 'conversation-deleted';
-
-    if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && !isAllowedControl) {
-      result.reasonCode = 'CONTROL_SKIP';
-      result.skippedCount = 1;
+    if (!messageKeyB64) {
+      result.reasonCode = 'MISSING_MESSAGE_KEY';
+      result.failCount = 1;
     } else {
-      let content = {};
-      try {
-        if (typeof plaintext === 'string' && (plaintext.trim().startsWith('{') || plaintext.trim().startsWith('['))) {
-          content = JSON.parse(plaintext);
-        }
-      } catch { }
-      const ts = toMessageTimestamp(raw);
-      if (!messageId || !Number.isFinite(ts)) {
-        result.reasonCode = 'MISSING_MESSAGE_FIELDS';
+      const semantic = classifyDecryptedPayload(plaintext, { meta, header });
+      // [Fix] Allow conversation-deleted to pass through Live Route B.
+      const isAllowedControl = semantic.subtype === 'conversation-deleted';
+
+      if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && !isAllowedControl) {
+        result.reasonCode = 'CONTROL_SKIP';
         result.skippedCount = 1;
       } else {
         const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
@@ -590,8 +585,8 @@ async function decryptIncomingSingle(params = {}, adapters) {
           msgType = 'conversation-deleted';
         }
         if (!msgType) msgType = 'text';
-        let media = content.media || null;
 
+        let media = content.media || null;
         // Polyfill media object if missing (backward compatibility for flattened payload)
         if (msgType === 'media' && !media && content.objectKey) {
           media = {
@@ -633,14 +628,11 @@ async function decryptIncomingSingle(params = {}, adapters) {
         }
       }
     }
-  }
 
-  // [FIX] Removed premature persistDrSnapshot. 
-  // State should only be persisted after successful Vault Put in `persistAndAppendBatch`.
-
-  // Return mutated state so caller can persist it explicitly
-  result.mutatedState = state;
-  return result;
+    // Return mutated state so caller can persist it explicitly
+    result.mutatedState = state;
+    return result;
+  }); // End enqueueDrSessionOp
 }
 
 async function commitIncomingSingle(params = {}, adapters) {

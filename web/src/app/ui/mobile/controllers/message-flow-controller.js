@@ -399,6 +399,28 @@ export class MessageFlowController extends BaseController {
         // [FIX] Notify composer to show "Syncing history..."
         this.deps.updateComposerAvailability?.();
 
+        // [MUTEX] Check if session is locked (Decryption/Encryption in progress)
+        // If locked, we prevent loading more history to avoid race conditions and UI jitter.
+        const peerKey = state.activePeerDigest; // Primary key is digest
+        // Detailed check requires Device ID (which we might not have trivially here, but state has it)
+        const peerDevice = state.activePeerDeviceId;
+        const lockKey = peerDevice ? `${peerKey}::${peerDevice}` : peerKey;
+
+        const { isDrSessionLocked } = await import('../../../features/dr-session.js');
+        if (isDrSessionLocked(lockKey)) {
+            console.warn('[MessageFlow] Load aborted: Session Locked (Decryption in Progress)', lockKey);
+            this.deps.showToast?.('尚有訊息解密中，請稍候', { type: 'info', duration: 2000 });
+
+            // Allow retry after short delay but abort current fetch
+            state.loading = false;
+            this.updateLoadMoreVisibility();
+            this.setLoadMoreState('hidden'); // Or show "Decrypting..."
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '解密中...';
+
+            this.deps.updateComposerAvailability?.();
+            return;
+        }
+
         try {
             // [Hybrid] Smart Fetch Strategy via Facade
             // This handles Gap Calculation, Sequential A/B Decryption, and Deduplication.
