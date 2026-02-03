@@ -336,13 +336,16 @@ export async function smartFetchMessages({
     // We lock the session for the ENTIRE batch to prevent interleaving of Live Messages.
     // If we allowed interleaving, a Live Message might process in between two Offline Messages,
     // potentially causing Gap Checks to fail or state regression if strict order isn't maintained.
-    const { enqueueDrSessionOp } = await import('../../dr-session.js');
+    // [MUTEX UPDATE] We use `enqueueDrIncomingOp` (Incoming Lock) instead of `enqueueDrSessionOp` (State Lock).
+    // This blocks Live Messages but ALLOWS Outgoing Messages (which use State Lock) to interleave safely.
+    // Each internal operation (consumeLiveJob) will acquire State Lock individually.
+    const { enqueueDrIncomingOp } = await import('../../dr-session.js');
 
     const lockKey = (context.peerAccountDigest && context.peerDeviceId)
         ? `${context.peerAccountDigest}::${context.peerDeviceId}`
         : context.peerAccountDigest;
 
-    await enqueueDrSessionOp(lockKey, async () => {
+    await enqueueDrIncomingOp(lockKey, async () => {
         for (const item of sortedItems) {
             const counter = Number(item.counter ?? item.n);
 
@@ -439,7 +442,8 @@ export async function smartFetchMessages({
                             tokenB64: context.tokenB64,
                             peerAccountDigest: context.peerAccountDigest,
                             peerDeviceId: context.peerDeviceId,
-                            sourceTag: 'hybrid-shadow-advance'
+                            sourceTag: 'hybrid-shadow-advance',
+                            skipIncomingLock: true // [MUTEX] Already held by Outer Loop
                         }, {
                             fetchSecureMessageById: createNoOpFetcher(item),
                             stateAccess: shadowStateAccess // Inject mocked state access
@@ -481,7 +485,8 @@ export async function smartFetchMessages({
                                     tokenB64: context.tokenB64,
                                     peerAccountDigest: context.peerAccountDigest,
                                     peerDeviceId: context.peerDeviceId,
-                                    sourceTag: 'hybrid-flow'
+                                    sourceTag: 'hybrid-flow',
+                                    skipIncomingLock: true // [MUTEX] Already held by Outer Loop
                                 }, {
                                     fetchSecureMessageById: createNoOpFetcher(item),
                                     maybeSendVaultAckWs: deps?.maybeSendVaultAckWs,
@@ -630,7 +635,7 @@ export async function smartFetchMessages({
                 });
             }
         }
-    }); // End Session Mutex Loop
+    }); // End Incoming Sequence Loop
 
 
     // 5. Restore DESC order for Facade/UI

@@ -583,7 +583,8 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
       peerAccountDigest,
       peerDeviceId,
       item: selectedItem,
-      targetMessageId
+      targetMessageId,
+      skipIncomingLock: !!job?.skipIncomingLock
     });
   } catch (err) {
     decryptResult = {

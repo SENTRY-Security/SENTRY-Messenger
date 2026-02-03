@@ -7,7 +7,7 @@ import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
-import { enqueueDrSessionOp } from '../../dr-session.js?v=mutex';
+import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js?v=mutex';
 import { appendUserMessage } from '../../timeline-store.js';
 
 function hasUsableDrState(holder) {
@@ -418,9 +418,14 @@ async function decryptIncomingSingle(params = {}, adapters) {
   // [MUTEX] Wrap in Session Lock
   // We use the same lock key as Sending (peer::deviceId) to serialize critical DR operations.
   // This prevents race conditions where Send/Recv interleave and corrupt shared state.
+  // [MUTEX] Two-Level Locking
+  // 1. Incoming Sequence Lock (enqueueDrIncomingOp): Serializes Live vs Offline Batch.
+  // 2. State Access Lock (enqueueDrSessionOp): Serializes DB/Memory access (vs Sending).
+  // Live Messages must wait for Incoming Lock (unless skipped by Batch).
+  // EVERYONE must wait for State Lock (to ensure DB consistency).
   const lockKey = senderDeviceId ? `${senderDigest}::${senderDeviceId}` : senderDigest;
 
-  return enqueueDrSessionOp(lockKey, async () => {
+  const stateOp = () => enqueueDrSessionOp(lockKey, async () => {
     // [FIX] Clone State to Prevent Mutation Leak
     // The shared state must NOT be advanced until we are ready to persist (after Vault).
     // We use structuredClone if available, or assume POJO (with Buffers safe in standard Clone).
@@ -630,9 +635,15 @@ async function decryptIncomingSingle(params = {}, adapters) {
     }
 
     // Return mutated state so caller can persist it explicitly
+    // Return mutated state so caller can persist it explicitly
     result.mutatedState = state;
     return result;
-  }); // End enqueueDrSessionOp
+  }); // End enqueueDrSessionOp (State Mutex)
+
+  if (params?.skipIncomingLock) {
+    return stateOp();
+  }
+  return enqueueDrIncomingOp(lockKey, stateOp);
 }
 
 async function commitIncomingSingle(params = {}, adapters) {

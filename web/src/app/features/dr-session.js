@@ -1451,29 +1451,58 @@ function normalizePeerBundleFromPrekeys(bundle) {
  */
 
 const sessionLocks = new Map();
-const sendQueue = new Map();
+const stateLockQueue = new Map();
+const incomingLockQueue = new Map();
 
 /**
- * [SESSION MUTEX]
- * Serializes operations (send/recv) for a specific peer session to prevent Race Conditions.
- * Shared by `sendDrPlaintext` and `state-live.js:decryptIncomingSingle`.
+ * [STATE MUTEX] (Low Level)
+ * Serializes ACCESS to `drState` (DB/Memory) for a peer.
+ * Used by:
+ * - Sending (drEncryptText)
+ * - Receiving Single Item (decryptIncomingSingle)
+ * - Offline Batch Item (hybrid-flow loop item)
+ * Ensures DB atomicity. Fast.
  */
 export function enqueueDrSessionOp(key, operation) {
   if (!key) return operation();
-  const prev = sendQueue.get(key) || Promise.resolve();
+  const prev = stateLockQueue.get(key) || Promise.resolve();
   const next = prev.catch(() => { }).then(operation);
-  sendQueue.set(key, next);
-  // Clean up memory
+  stateLockQueue.set(key, next);
   next.finally(() => {
-    if (sendQueue.get(key) === next) {
-      sendQueue.delete(key);
+    if (stateLockQueue.get(key) === next) {
+      stateLockQueue.delete(key);
     }
   });
   return next;
 }
 
+/**
+ * [INCOMING SEQUENCE MUTEX] (High Level)
+ * Serializes the INCOMING MESSAGE STREAM for a peer.
+ * Used by:
+ * - Offline Batch (Locks for SECONDS)
+ * - Live Incoming (Waits for Batch)
+ * - Sending DOES NOT use this (allows Interleaving).
+ */
+export function enqueueDrIncomingOp(key, operation) {
+  if (!key) return operation();
+  const prev = incomingLockQueue.get(key) || Promise.resolve();
+  const next = prev.catch(() => { }).then(operation);
+  incomingLockQueue.set(key, next);
+  next.finally(() => {
+    if (incomingLockQueue.get(key) === next) {
+      incomingLockQueue.delete(key);
+    }
+  });
+  return next;
+}
+
+/**
+ * Checks if the INCOMING STREAM is locked (e.g. Batch Decrypting).
+ * Used by UI to show "Decrypting..." status.
+ */
 export function isDrSessionLocked(key) {
-  return sendQueue.has(key);
+  return incomingLockQueue.has(key);
 }
 
 
