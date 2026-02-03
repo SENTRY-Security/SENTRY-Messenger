@@ -7,6 +7,7 @@ import { decryptReplayBatch } from './vault-replay.js';
 import { consumeLiveJob } from './live/coordinator.js';
 import { getLocalProcessedCounter } from './local-counter.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
+import { enqueueDrIncomingOp } from '../../dr-session.js';
 import { normalizePeerIdentity } from '../../core/store.js';
 import { appendBatch as timelineAppendBatch, updateTimelineEntryStatusByCounter } from '../timeline-store.js';
 import { CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES, normalizeSemanticSubtype } from '../semantic.js';
@@ -339,7 +340,6 @@ export async function smartFetchMessages({
     // [MUTEX UPDATE] We use `enqueueDrIncomingOp` (Incoming Lock) instead of `enqueueDrSessionOp` (State Lock).
     // This blocks Live Messages but ALLOWS Outgoing Messages (which use State Lock) to interleave safely.
     // Each internal operation (consumeLiveJob) will acquire State Lock individually.
-    const { enqueueDrIncomingOp } = await import('../../dr-session.js');
 
     const lockKey = (context.peerAccountDigest && context.peerDeviceId)
         ? `${context.peerAccountDigest}::${context.peerDeviceId}`
