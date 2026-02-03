@@ -328,15 +328,22 @@ export async function commitBRouteCounter(params = {}, deps = {}) {
               }, safeGapAdapters);
               logger('bRouteGapFilled', { c, ok: true }, B_ROUTE_COMMIT_LOG_CAP);
             } else {
+              // [FAIL CLOSE]
+              // If we cannot find the gap message, we must NOT proceed to process the live message.
+              // Proceeding would create a permanent gap in the ratchet state.
+              // Throwing error triggers retry, hoping for eventual consistency.
               logger('bRouteGapFilled', { c, ok: false, reason: 'not_found' }, B_ROUTE_COMMIT_LOG_CAP);
+              throw new Error(`Gap message ${c} not found. Aborting live process to preserve state sequence.`);
             }
           } catch (err) {
             logger('bRouteGapFillError', { c, error: err?.message }, B_ROUTE_COMMIT_LOG_CAP);
+            throw err; // [FAIL CLOSE] Rethrow to abort outer live connection
           }
         }
       }
     } catch (err) {
       logger('bRouteGapCheckError', { error: err?.message }, B_ROUTE_COMMIT_LOG_CAP);
+      throw err; // [FAIL CLOSE] Rethrow to trigger retry logic mechanism
     }
   }
 
