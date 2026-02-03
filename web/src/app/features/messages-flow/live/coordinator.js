@@ -604,12 +604,10 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
 
       if (headerObj && (headerObj.n !== undefined || headerObj.counter !== undefined)) {
         counter = Number(headerObj.n ?? headerObj.counter);
-      } else if (selectedItem.headerCounter !== undefined) {
-        counter = Number(selectedItem.headerCounter);
-      } else if (selectedItem.counter !== undefined) {
-        // Fallback to top-level counter (risky if it's transport counter)
-        counter = Number(selectedItem.counter);
       }
+      // [STRICT] No fallback to selectedItem.counter. 
+      // If header.n is missing, we cannot advance the Ratchet anyway (so no Shadow Advance risk).
+      // We must not block based on transport-layer counters to avoid false positives and manipulation.
 
       if (Number.isFinite(counter) && counter > 0 && conversationId) {
         // Blocking check against Vault/Local State
