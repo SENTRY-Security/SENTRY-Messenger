@@ -583,6 +583,44 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     nextCursor: fetchNextCursor
   };
 
+  // [FIX] Blocking Gap Check (Fail-Close)
+  // Ensure we do not process out-of-order Live messages (Shadow Advance).
+  // If a gap exists, we MUST throw to trigger retry, giving Hybrid Flow time to fill history.
+  if (selectedItem) {
+    try {
+      const depsLocalCounter = typeof deps?.getLocalProcessedCounter === 'function' ? deps.getLocalProcessedCounter : getLocalProcessedCounter;
+      // Resolve counter from item (support raw or normalized structure)
+      const rawN = selectedItem.counter ?? selectedItem.n ?? selectedItem.header?.n ?? selectedItem.header?.counter;
+      const counter = Number(rawN);
+
+      if (Number.isFinite(counter) && counter > 0 && conversationId) {
+        // Blocking check against Vault/Local State
+        const localMax = await depsLocalCounter({ conversationId });
+
+        // If localMax is 0 (unhydrated) or less than counter-1, we have a gap.
+        if (Number.isFinite(localMax) && counter > localMax + 1) {
+          const gapSize = counter - (localMax + 1);
+          logger('liveMvpGapDetected', {
+            conversationIdPrefix8,
+            localMax,
+            incomingCounter: counter,
+            gapSize,
+            action: 'abort_retry'
+          }, LIVE_MVP_LOG_CAP);
+
+          throw new Error(`Gap detected (Local: ${localMax}, Incoming: ${counter}). Aborting live process to wait for history fill.`);
+        }
+      }
+    } catch (err) {
+      // If check fails (e.g. DB error), we must also Abort (Fail Close)
+      logger('liveMvpGapCheckError', { error: err?.message }, LIVE_MVP_LOG_CAP);
+      const finalResult = finalizeLiveMvpResult(result, startedAt, 'GAP_CHECK_FAILED');
+      // We throw to trigger upper-level retry logic (if available) or simply fail this job.
+      // Throwing here ensures we don't proceed to decrypt.
+      throw err;
+    }
+  }
+
   try {
     decryptResult = await stateAccess.decryptIncomingSingle({
       conversationId,
