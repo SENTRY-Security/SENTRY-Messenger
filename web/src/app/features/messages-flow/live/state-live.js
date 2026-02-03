@@ -360,24 +360,40 @@ async function decryptIncomingSingle(params = {}, adapters) {
             // 2. Encrypt for Vault (Before Local Persist!)
             const drStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
 
-            // 3. Persist to Vault
-            await adapters.vaultPutIncomingKey({
-              conversationId,
-              messageId,
-              senderDeviceId,
-              targetDeviceId: adapters.getDeviceId(),
-              direction: 'incoming',
-              msgType: 'contact-share',
-              headerCounter: msgHeaderN,
-              messageKeyB64: null, // No MK for contact-share (Session Key used)
-              accountDigest: adapters.getAccountDigest(),
-              drStateSnapshot
-            });
+            // [FIX] Persist Local FIRST (Priority: Availability)
+            // We must update local state even if Vault backup fails (e.g. MissingParams).
+            // Failure here is fatal (stops flow), but failure in Vault is recoverable (missing backup).
+            try {
+              adapters.persistDrSnapshot({
+                peerAccountDigest: senderDigest,
+                peerDeviceId: senderDeviceId,
+                snapshot: state
+              });
+              if (DEBUG.drVerbose) console.log('[state-live] persisted Contact-Share Snapshot (Local)');
+            } catch (pErr) {
+              console.error('[state-live] persistDrSnapshot failed - State Regression Risk!', pErr);
+              throw pErr; // Fatal, as we can't advance without saving
+            }
 
-            // 4. Persist Local (Only after Vault Success)
-            adapters.persistDrSnapshot({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId, snapshot: state });
-
-            if (DEBUG.drVerbose) console.log('[state-live] vaulted & persisted Contact-Share Snapshot');
+            // 3. Persist to Vault (Remote Backup)
+            // Wrap in try-catch so it doesn't block local success
+            try {
+              await adapters.vaultPutIncomingKey({
+                conversationId,
+                messageId,
+                senderDeviceId,
+                targetDeviceId: adapters.getDeviceId(),
+                direction: 'incoming',
+                msgType: 'contact-share',
+                headerCounter: msgHeaderN,
+                messageKeyB64: null, // No MK for contact-share (Session Key used)
+                accountDigest: adapters.getAccountDigest(),
+                drStateSnapshot
+              });
+              if (DEBUG.drVerbose) console.log('[state-live] vaulted Contact-Share Snapshot');
+            } catch (vaultErr) {
+              console.warn('[state-live] vaultPutIncomingKey failed (Non-Fatal)', vaultErr);
+            }
           }
         } catch (err) {
           console.warn('[state-live] failed to persist contact-share ratchet state', err);
