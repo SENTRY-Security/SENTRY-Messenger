@@ -7,7 +7,7 @@ import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
-import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js';
+import { enqueueDrSessionOp, enqueueDrIncomingOp, persistContactShareSequence } from '../../dr-session.js';
 import { appendUserMessage } from '../../timeline-store.js';
 
 function hasUsableDrState(holder) {
@@ -341,62 +341,29 @@ async function decryptIncomingSingle(params = {}, adapters) {
 
       // [FIX] Advance Ratchet State & Persist to Vault (Receiver Side)
       // verify adapters availability
-      if (applyOk && adapters?.drState && adapters?.persistDrSnapshot && adapters?.snapshotAndEncryptDrState && adapters?.vaultPutIncomingKey) {
+      // [FIX] Advance Ratchet State & Persist to Vault (Receiver Side)
+      if (applyOk && adapters?.drState) {
         try {
           const msgHeaderN = Number(header?.n);
+          // Get reference to current state
           const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
-          // Check if we need to advance (N > Nr)
-          // Note: generic drState usually uses NsTotal/NrTotal or Ns/Nr
-          // We safely update NrTotal to reflect highest received counter.
           const currentNr = Number(state?.NrTotal ?? state?.Nr ?? 0);
 
           if (state && Number.isFinite(msgHeaderN) && msgHeaderN > currentNr) {
             if (DEBUG.drVerbose) console.log('[state-live] advancing Contact-Share Ratchet', { from: currentNr, to: msgHeaderN });
 
-            // 1. Advance State (Manual)
-            state.NrTotal = msgHeaderN;
-            if ((state.Nr || 0) < msgHeaderN) state.Nr = msgHeaderN;
-
-            // 2. Encrypt for Vault (Before Local Persist!)
-            const drStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
-
-            // [FIX] Persist Local FIRST (Priority: Availability)
-            // We must update local state even if Vault backup fails (e.g. MissingParams).
-            // Failure here is fatal (stops flow), but failure in Vault is recoverable (missing backup).
-            try {
-              adapters.persistDrSnapshot({
-                peerAccountDigest: senderDigest,
-                peerDeviceId: senderDeviceId,
-                snapshot: state
-              });
-              if (DEBUG.drVerbose) console.log('[state-live] persisted Contact-Share Snapshot (Local)');
-            } catch (pErr) {
-              console.error('[state-live] persistDrSnapshot failed - State Regression Risk!', pErr);
-              throw pErr; // Fatal, as we can't advance without saving
-            }
-
-            // 3. Persist to Vault (Remote Backup)
-            // Wrap in try-catch so it doesn't block local success
-            try {
-              await adapters.vaultPutIncomingKey({
-                conversationId,
-                messageId,
-                senderDeviceId,
-                targetDeviceId: adapters.getDeviceId(),
-                direction: 'incoming',
-                msgType: 'contact-share',
-                headerCounter: msgHeaderN,
-                messageKeyB64: null, // No MK for contact-share (Session Key used)
-                accountDigest: adapters.getAccountDigest(),
-                drStateSnapshot
-              });
-              if (DEBUG.drVerbose) console.log('[state-live] vaulted Contact-Share Snapshot');
-            } catch (vaultErr) {
-              console.warn('[state-live] vaultPutIncomingKey failed (Non-Fatal)', vaultErr);
-            }
+            // [REDACTOR] Use shared helper
+            await persistContactShareSequence({
+              peerAccountDigest: senderDigest,
+              peerDeviceId: senderDeviceId,
+              headerCounter: msgHeaderN,
+              conversationId,
+              messageId,
+              state
+            });
           }
         } catch (err) {
-          console.warn('[state-live] failed to persist contact-share ratchet state', err);
+          console.warn('[state-live] persistContactShareSequence failed', err);
         }
       }
     } catch (err) {
