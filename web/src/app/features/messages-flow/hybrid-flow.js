@@ -7,7 +7,7 @@ import { decryptReplayBatch } from './vault-replay.js';
 import { consumeLiveJob } from './live/coordinator.js';
 import { getLocalProcessedCounter } from './local-counter.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
-import { enqueueDrIncomingOp } from '../../dr-session.js';
+import { enqueueDrIncomingOp } from '../dr-session.js';
 import { normalizePeerIdentity } from '../../core/store.js';
 import { appendBatch as timelineAppendBatch, updateTimelineEntryStatusByCounter } from '../timeline-store.js';
 import { CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES, normalizeSemanticSubtype } from '../semantic.js';

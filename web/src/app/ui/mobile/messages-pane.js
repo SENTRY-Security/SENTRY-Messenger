@@ -48,7 +48,7 @@ import {
 } from './contact-core-store.js';
 
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from './viewers/pdf-viewer.js';
-import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, toDigestOnly } from '../../api/messages.js?v=fix_delete_auth';
+import { deleteSecureConversation, listSecureMessages as apiListSecureMessages, toDigestOnly } from '../../api/messages.js';
 
 import {
   normalizeTimelineMessageId,
