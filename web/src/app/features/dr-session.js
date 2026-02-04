@@ -392,9 +392,11 @@ async function seedTransportCounterFromServer({
     let maxCounter = 0;
     for (const entry of items) {
       const senderAccount = normalizeAccountDigest(entry?.sender_account_digest || entry?.senderAccountDigest || null);
-      if (senderAccount && senderAccount !== digest) continue;
+      // [FIX] Fail-Close: Strictly require senderAccount to match self.
+      if (!senderAccount || senderAccount !== digest) continue;
       const senderDevice = entry?.sender_device_id || entry?.senderDeviceId || null;
-      if (senderDevice && senderDevice !== deviceId) continue;
+      // [FIX] Fail-Close: Strictly require senderDevice to match self (counters are device-specific).
+      if (!senderDevice || senderDevice !== deviceId) continue;
       const candidates = [];
       const directCounter = Number(entry?.counter ?? entry?.n);
       if (Number.isFinite(directCounter) && directCounter > 0) candidates.push(directCounter);
