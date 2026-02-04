@@ -346,7 +346,8 @@ export async function decryptReplayBatch({
         vaultKeyResult = await getMessageKey({
           conversationId,
           messageId,
-          senderDeviceId: item.senderDeviceId
+          senderDeviceId: item.senderDeviceId,
+          targetDeviceId: selfDeviceId
         });
       } catch (err) {
         // Ignore error, try fallback
