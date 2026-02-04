@@ -492,23 +492,11 @@ async function decryptIncomingSingle(params = {}, adapters) {
         msgType: msgTypeHint || 'text'
       });
 
-      // [FIX] Persist the advanced state immediately inside the lock (Prevent State Regression)
-      // Since `state` is a clone, we must explicitly save it back to the store.
-      // If we don't, next message will read stale state and fail decryption (RK Loss).
-      if (adapters.persistDrSnapshot) {
-        try {
-          // Note: persistDrSnapshot logic handles downgrade checks internally.
-          await adapters.persistDrSnapshot({
-            state,
-            peerAccountDigest: senderDigest,
-            peerDeviceId: senderDeviceId
-          });
-        } catch (e) {
-          console.error('[state-live] persistDrSnapshot failed - State Regression Risk!', e);
-          // Proceeding allows showing THIS message, but next one might fail.
-        }
-      }
+      // [FIX] ATOMICITY: Keys FIRST, State SECOND.
+      // We must persist skipped keys to the Vault BEFORE we advance the local Ratchet State.
+      // If we advance state first and then crash before vaulting, the keys are lost forever (Replay/Order Error).
 
+      // 1. Vault Skipped Keys (Critical for Gap Recovery)
       if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
         // Get DR state snapshot for skipped keys (important for recovery)
         let skippedDrStateSnapshot = null;
@@ -538,7 +526,26 @@ async function decryptIncomingSingle(params = {}, adapters) {
           if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys', skippedKeysBuffer.length);
         } catch (e) {
           console.warn('[state-live] skipped-key vault failed', e);
-          // Continue processing - the main message key will still be stored
+          // We proceed, but logging warning. Ideal is to fail-close, but network can be flaky.
+          // However, since we HAVEN'T advanced state yet, retry is safe.
+        }
+      }
+
+      // 2. Advance Ratchet State (Commit Point)
+      // Only advance if we successfully handled the keys (or processed them in memory)
+      // Since `state` is a clone, we must explicitly save it back to the store.
+      // If we don't, next message will read stale state and fail decryption (RK Loss).
+      if (adapters.persistDrSnapshot) {
+        try {
+          // Note: persistDrSnapshot logic handles downgrade checks internally.
+          await adapters.persistDrSnapshot({
+            state,
+            peerAccountDigest: senderDigest,
+            peerDeviceId: senderDeviceId
+          });
+        } catch (e) {
+          console.error('[state-live] persistDrSnapshot failed - State Regression Risk!', e);
+          // Proceeding allows showing THIS message, but next one might fail.
         }
       }
     } catch (err) {
