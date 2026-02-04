@@ -15,7 +15,10 @@ import { triggerContactSecretsBackup } from '../../../features/contact-backup.js
 import { REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH } from '../../../features/restore-policy.js';
 import { getLocalProcessedCounter } from '../local-counter.js';
 import { getSecureMessageByCounter } from '../../../api/messages.js';
-import { updatePendingLivePlaceholderStatus } from '../../../features/messages/placeholder-store.js';
+import {
+  updatePendingLivePlaceholderStatus,
+  addPendingLivePlaceholder // [FIX] Import
+} from '../../../features/messages/placeholder-store.js';
 
 let decryptOkSinceBackup = 0;
 
@@ -662,6 +665,19 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
             gapSize,
             action: 'abort_retry'
           }, LIVE_MVP_LOG_CAP);
+
+          // [FIX] Ensure Placeholder Exists
+          // GapDetectedError aborts the flow, so we must manually ensure the placeholder IS created
+          // before we can update its status to 'blocked' and show it to the user.
+          try {
+            addPendingLivePlaceholder({
+              conversationId,
+              messageId: targetMessageId,
+              counter: counter,
+              ts: Date.now(), // Estimate
+              raw: selectedItem
+            });
+          } catch (e) { /* Ignore if already exists */ }
 
           updatePendingLivePlaceholderStatus(conversationId, {
             messageId: targetMessageId,

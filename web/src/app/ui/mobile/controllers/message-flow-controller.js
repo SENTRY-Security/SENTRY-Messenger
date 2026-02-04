@@ -475,12 +475,24 @@ export class MessageFlowController extends BaseController {
     async resolveGap(conversationId, localMax, incomingCounter) {
         if (!conversationId || !incomingCounter) return;
 
-        // Prevent concurrent gap fills for the same conversation
-        if (this.gapFillInProgress?.has(conversationId)) return;
+        // Initialize Dynamic Target Map
+        this.gapTargets = this.gapTargets || new Map();
+
+        // Always update the target to the highest seen counter
+        const existingTarget = this.gapTargets.get(conversationId) || 0;
+        const newTarget = Math.max(existingTarget, incomingCounter);
+        this.gapTargets.set(conversationId, newTarget);
+
+        // If already running, just let the existing loop pick up the new target
+        if (this.gapFillInProgress?.has(conversationId)) {
+            console.log(`[MessageFlow] Auto-Fill: Updated target to ${newTarget} (Job already running)`);
+            return;
+        }
+
         this.gapFillInProgress = this.gapFillInProgress || new Set();
         this.gapFillInProgress.add(conversationId);
 
-        console.log(`[MessageFlow] Auto-Resolving Gap: Local=${localMax} -> Incoming=${incomingCounter}`);
+        console.log(`[MessageFlow] Auto-Resolving Gap: Local=${localMax} -> Target=${newTarget}`);
         this.deps.showToast?.('正在補齊歷史訊息...', { type: 'loading', duration: 2000 });
 
         try {
@@ -491,14 +503,18 @@ export class MessageFlowController extends BaseController {
 
             while (attempt < MAX_RETRIES) {
                 attempt++;
-                // Calculate limit: (Incoming - LocalMax) + padding
-                const gapSize = currentIncoming - currentLocalMax;
+
+                // [FIX] Dynamic Target Reading
+                const dynamicTarget = this.gapTargets.get(conversationId) || 0;
+
+                // Calculate limit: (Target - LocalMax) + padding
+                const gapSize = dynamicTarget - currentLocalMax;
                 if (gapSize <= 0) {
                     console.log(`[MessageFlow] Auto-Fill: Gap resolved (Gap=${gapSize}).`);
                     break;
                 }
 
-                console.log(`[MessageFlow] Auto-Fill Attempt ${attempt}: Gap=${gapSize} (Local=${currentLocalMax} -> Incoming=${currentIncoming})`);
+                console.log(`[MessageFlow] Auto-Fill Attempt ${attempt}: Gap=${gapSize} (Local=${currentLocalMax} -> Target=${dynamicTarget})`);
                 const limit = Math.ceil(gapSize + 5);
 
                 const result = await messagesFlowFacade.onScrollFetchMore({
@@ -537,6 +553,7 @@ export class MessageFlowController extends BaseController {
             this.deps.showToast?.('歷史訊息同步失敗', { type: 'error', duration: 2000 });
         } finally {
             this.gapFillInProgress.delete(conversationId);
+            if (this.gapTargets) this.gapTargets.delete(conversationId);
         }
     }
 
@@ -576,6 +593,7 @@ export class MessageFlowController extends BaseController {
             console.warn('[MessageFlow] Gap Auto-Fill Failed', err);
         } finally {
             this.gapFillInProgress.delete(conversationId);
+            if (this.gapTargets) this.gapTargets.delete(conversationId);
         }
     }
 
