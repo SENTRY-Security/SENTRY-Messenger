@@ -165,6 +165,10 @@ export async function handleIncomingSecureMessage(event, deps) {
     const state = getMessageState ? getMessageState() : {};
     let existingConvEntry = null;
 
+    // [FIX] Hoist Control Type calculation to prevent TDZ (ReferenceError)
+    const rawMsgType = event?.meta?.msgType || event?.meta?.msg_type || event?.msgType || event?.msg_type || null;
+    const normalizedControlType = normalizeControlMessageType(rawMsgType);
+
     // Logging omitted for brevity, logic remains
 
     if (!convId) return { skipped: true };
@@ -341,8 +345,9 @@ export async function handleIncomingSecureMessage(event, deps) {
     const senderAcct = senderAcctRaw ? String(senderAcctRaw).replace(/[^0-9a-f]/gi, '').toUpperCase() : null;
     const isSelf = !!(myAcct && senderAcct && myAcct === senderAcct);
 
-    const rawMsgType = event?.meta?.msgType || event?.meta?.msg_type || event?.msgType || event?.msg_type || null;
-    const normalizedControlType = normalizeControlMessageType(rawMsgType);
+    // [FIX] Hoisted to top
+    // const rawMsgType = ...
+    // const normalizedControlType = ...
 
     if (normalizedControlType) {
         // Control Message
