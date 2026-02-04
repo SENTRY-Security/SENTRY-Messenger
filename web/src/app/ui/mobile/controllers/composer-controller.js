@@ -128,10 +128,9 @@ export class ComposerController extends BaseController {
             placeholder = '正在建立安全對話…';
         } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
             placeholder = statusInfo?.error ? `安全對話失敗：${statusInfo.error}` : '安全對話建立失敗，請稍後再試。';
-        } else if (isLoading) {
-            // Optional: Keep hint but don't block
-            placeholder = '輸入訊息… (同步中)';
         }
+        // [UX] Recursive Gap Fill cleans up the placeholder override.
+        // We no longer show "(同步中)" to keep the interface clean.
         this.elements.input.placeholder = placeholder;
 
         this.updateConversationActionsAvailability();

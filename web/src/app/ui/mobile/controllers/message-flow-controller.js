@@ -484,26 +484,51 @@ export class MessageFlowController extends BaseController {
         this.deps.showToast?.('正在補齊歷史訊息...', { type: 'loading', duration: 2000 });
 
         try {
-            // Calculate limit: (Incoming - LocalMax) + padding
-            const gapSize = incomingCounter - (localMax || 0);
-            const limit = Math.ceil(gapSize + 5);
+            let attempt = 0;
+            const MAX_RETRIES = 5;
+            let currentLocalMax = localMax || 0;
+            let currentIncoming = incomingCounter;
 
-            const result = await messagesFlowFacade.onScrollFetchMore({
-                conversationId,
-                // Facade fetch usually goes backwards from Latest or Cursor.
-                // To fill a gap at the "top" of history (newest), fetching latest is usually correct
-                // if the gap is small and recent.
-                options: {
-                    limit: Math.min(limit, 50),
-                    sourceTag: 'gap_autofill'
+            while (attempt < MAX_RETRIES) {
+                attempt++;
+                // Calculate limit: (Incoming - LocalMax) + padding
+                const gapSize = currentIncoming - currentLocalMax;
+                if (gapSize <= 0) {
+                    console.log(`[MessageFlow] Auto-Fill: Gap resolved (Gap=${gapSize}).`);
+                    break;
                 }
-            });
 
-            // [FIX] Process the fetched items!
-            // Without this, the data is fetched but never added to the store/UI.
-            if (result.items && result.items.length) {
-                appendBatch(result.items, { directionalOrder: 'history' });
-                console.log(`[MessageFlow] Auto-Fill: Appended ${result.items.length} items`);
+                console.log(`[MessageFlow] Auto-Fill Attempt ${attempt}: Gap=${gapSize} (Local=${currentLocalMax} -> Incoming=${currentIncoming})`);
+                const limit = Math.ceil(gapSize + 5);
+
+                const result = await messagesFlowFacade.onScrollFetchMore({
+                    conversationId,
+                    // Facade fetch usually goes backwards from Latest or Cursor.
+                    // To fill a gap at the "top" of history (newest), fetching latest is usually correct.
+                    options: {
+                        limit: Math.min(limit, 50),
+                        sourceTag: 'gap_autofill'
+                    }
+                });
+
+                // [FIX] Process the fetched items!
+                if (result.items && result.items.length) {
+                    appendBatch(result.items, { directionalOrder: 'history' });
+                    console.log(`[MessageFlow] Auto-Fill: Appended ${result.items.length} items`);
+
+                    // Update Local Max based on fetched items to see if gap persists
+                    // Note: This is an estimation. ideally we query the store, but relying on fetch result is faster for loop.
+                    const maxFetched = result.items.reduce((max, item) => Math.max(max, (item.counter || item.n || 0)), 0);
+                    if (maxFetched > currentLocalMax) {
+                        currentLocalMax = maxFetched;
+                    }
+                } else {
+                    console.warn('[MessageFlow] Auto-Fill: No items fetched, aborting loop.');
+                    break;
+                }
+
+                // Yield briefly to let UI/Storage settle
+                await new Promise(r => setTimeout(r, 100));
             }
 
             this.deps.showToast?.('歷史訊息同步完成', { type: 'success', duration: 1500 });
