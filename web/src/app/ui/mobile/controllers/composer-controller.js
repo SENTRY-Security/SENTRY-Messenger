@@ -107,7 +107,11 @@ export class ComposerController extends BaseController {
 
         const conversationReady = !!(state.conversationToken && state.activePeerDigest);
         const isLoading = !!state.loading;
-        const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED || isLoading;
+
+        // [OPTIMIZATION] Unblock input during history sync (isLoading).
+        // Sending (Ns) and Receiving (Nr) are independent chains. 
+        // Persistence is atomic (synchronous singleton state), so parallel operations are safe.
+        const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
         const enabled = conversationReady && !blocked;
 
         this.elements.input.disabled = !conversationReady || blocked;
@@ -116,9 +120,7 @@ export class ComposerController extends BaseController {
         this.elements.sendBtn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
 
         let placeholder = '輸入訊息…';
-        if (isLoading) {
-            placeholder = '正在同步歷史訊息…';
-        } else if (!state.conversationToken || !state.activePeerDigest) {
+        if (!state.conversationToken || !state.activePeerDigest) {
             placeholder = '選擇好友開始聊天';
         } else if (!subscriptionOk) {
             placeholder = '帳號已到期，請儲值後再聊天';
@@ -126,6 +128,9 @@ export class ComposerController extends BaseController {
             placeholder = '正在建立安全對話…';
         } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
             placeholder = statusInfo?.error ? `安全對話失敗：${statusInfo.error}` : '安全對話建立失敗，請稍後再試。';
+        } else if (isLoading) {
+            // Optional: Keep hint but don't block
+            placeholder = '輸入訊息… (同步中)';
         }
         this.elements.input.placeholder = placeholder;
 
