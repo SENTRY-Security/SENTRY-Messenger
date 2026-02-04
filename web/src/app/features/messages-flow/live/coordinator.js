@@ -20,6 +20,19 @@ import {
   addPendingLivePlaceholder // [FIX] Import
 } from '../../../features/messages/placeholder-store.js';
 
+export class GapDetectedError extends Error {
+  constructor(message, context = {}) {
+    super(message);
+    this.name = 'GapDetectedError';
+    this.context = context;
+    this.conversationId = context.conversationId;
+    this.localMax = context.localMax;
+    this.incomingCounter = context.incomingCounter;
+    this.gapSize = context.gapSize;
+  }
+}
+
+
 let decryptOkSinceBackup = 0;
 
 function maybeTriggerBackupAfterDecrypt({ sourceTag } = {}) {
