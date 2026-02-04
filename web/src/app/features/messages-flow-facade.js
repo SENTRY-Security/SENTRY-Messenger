@@ -480,15 +480,23 @@ function createMessagesFlowFacade() {
             getAccountDigest: storeGetAccountDigest,
             getDeviceId: storeGetDeviceId
           };
-          try {
-            console.log('[facade] consumeLiveJob deps', {
-              hasAck: typeof maybeSendVaultAckWs === 'function',
-              hasGetAccount: typeof storeGetAccountDigest === 'function',
-              hasGetDevice: typeof storeGetDeviceId === 'function'
-            });
-          } catch { }
 
-          const livePromise = consumeLiveJob(liveJob, liveCtx);
+          // Fix: Handle GapDetectedError to avoid Uncaught Promise in console
+          const livePromise = consumeLiveJob(liveJob, liveCtx)
+            .catch(err => {
+              if (err?.name === 'GapDetectedError') {
+                console.log('[facade] Gap detected in B-Route (Benign, failing over to Legacy/History)', err.message);
+                return {
+                  ok: false,
+                  reasonCode: 'GAP_DETECTED',
+                  conversationId: liveJob?.conversationId,
+                  messageId: liveJob?.messageId
+                };
+              }
+              // Re-throw critical errors if necessary, or just log
+              console.warn('[facade] consumeLiveJob error:', err);
+              return { ok: false, reasonCode: 'ERROR', error: err };
+            });
           if (livePromise && typeof livePromise.then === 'function') {
             livePromise
               .then((liveResult) => {

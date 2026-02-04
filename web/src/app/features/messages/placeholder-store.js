@@ -426,6 +426,9 @@ export function addPendingLivePlaceholder({ conversationId, messageId, counter, 
         isPendingLive: true,
         sourceTag: 'live-eager',
         createdAt: Date.now(),
+        placeholder: true,
+        msgType: 'placeholder',
+        text: 'Incoming...',
         raw
     };
     list.push(entry);
