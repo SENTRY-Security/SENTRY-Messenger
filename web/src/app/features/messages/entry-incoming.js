@@ -259,8 +259,13 @@ export async function handleIncomingSecureMessage(event, deps) {
     }
 
     const peerKey = normalizePeerKey({ peerAccountDigest: peerDigestForWrite, peerDeviceId: resolvedPeerDeviceId }) || peerDigestRaw;
-    const activePeerKey = normalizePeerKey(state.activePeerDigest);
-    const active = (state.conversationId === convId && activePeerKey === peerKey) || false;
+
+    // [FIX] Relaxed Active Check
+    // state.activePeerDigest is usually just the Account Digest (no device ID).
+    // peerKey has device ID. They will NOT match strictly.
+    // We should compare the underlying Account Digest.
+    const activeDigest = state.activePeerDigest ? splitPeerKey(state.activePeerDigest).digest : null;
+    const active = (state.conversationId === convId && activeDigest === peerDigestForWrite) || false;
 
     if (active) {
         try {
