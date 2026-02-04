@@ -25,7 +25,7 @@ import {
     getReplayPlaceholderEntries,
     getGapPlaceholderEntries,
     getPendingLivePlaceholderEntries
-} from '../../../features/messages/placeholder-store.js?v=fix_placeholder';
+} from '../../../features/messages/placeholder-store.js';
 import {
     normalizeTimelineMessageId,
     sliceConversationIdPrefix

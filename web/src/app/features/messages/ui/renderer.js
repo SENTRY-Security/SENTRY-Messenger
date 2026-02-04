@@ -11,7 +11,7 @@ import { logMsgEvent } from '../../../lib/logging.js';
 import {
     consumeReplayPlaceholderReveal,
     consumeGapPlaceholderReveal
-} from '../placeholder-store.js?v=fix_placeholder';
+} from '../placeholder-store.js';
 import {
     PLACEHOLDER_REVEAL_MS,
     PLACEHOLDER_TEXT,
