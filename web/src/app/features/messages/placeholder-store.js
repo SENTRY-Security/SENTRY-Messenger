@@ -401,6 +401,80 @@ export function updatePendingLivePlaceholderStatus(conversationId, { messageId, 
     return false;
 }
 
+export function getPendingLivePlaceholderEntries(conversationId) {
+    const key = normalizePlaceholderKey(conversationId);
+    if (!key) return [];
+    return placeholderPendingLiveStateByConv.get(key) || [];
+}
+
+export function addPendingLivePlaceholder({ conversationId, messageId, counter, ts, raw = null }) {
+    const key = normalizePlaceholderKey(conversationId);
+    if (!key) return;
+    let list = placeholderPendingLiveStateByConv.get(key);
+    if (!list) {
+        list = [];
+        placeholderPendingLiveStateByConv.set(key, list);
+    }
+    // Avoid duplicates
+    if (list.some(p => p.messageId === messageId)) return;
+
+    const entry = {
+        messageId,
+        counter,
+        ts,
+        status: 'pending',
+        isPendingLive: true,
+        sourceTag: 'live-eager',
+        createdAt: Date.now(),
+        raw
+    };
+    list.push(entry);
+    logCapped('placeholderPendingLiveTrace', {
+        action: 'add',
+        conversationId: key,
+        messageId
+    }, 5);
+}
+
+export function removePendingLivePlaceholder(conversationId, messageId) {
+    const key = normalizePlaceholderKey(conversationId);
+    if (!key || !messageId) return;
+    let list = placeholderPendingLiveStateByConv.get(key);
+    if (!list) return;
+    const initialLength = list.length;
+    list = list.filter(p => p.messageId !== messageId);
+    if (list.length !== initialLength) {
+        if (list.length === 0) {
+            placeholderPendingLiveStateByConv.delete(key);
+        } else {
+            placeholderPendingLiveStateByConv.set(key, list);
+        }
+    }
+}
+
+export function consumePendingLivePlaceholderBatch(conversationId, entries = []) {
+    const key = normalizePlaceholderKey(conversationId);
+    if (!key) return false;
+    let list = placeholderPendingLiveStateByConv.get(key);
+    if (!list || !list.length) return false;
+
+    const idsToRemove = new Set(entries.map(e => e.messageId || e.id).filter(Boolean));
+    const countersToRemove = new Set(entries.map(e => Number(e.counter)).filter(Number.isFinite));
+
+    const initialCount = list.length;
+    list = list.filter(p => !idsToRemove.has(p.messageId) && !countersToRemove.has(Number(p.counter)));
+
+    if (list.length !== initialCount) {
+        if (list.length === 0) {
+            placeholderPendingLiveStateByConv.delete(key);
+        } else {
+            placeholderPendingLiveStateByConv.set(key, list);
+        }
+        return true;
+    }
+    return false;
+}
+
 export function resetPlaceholderState() {
     placeholderReplayStateByConv.clear();
     placeholderReplayRevealByConv.clear();
