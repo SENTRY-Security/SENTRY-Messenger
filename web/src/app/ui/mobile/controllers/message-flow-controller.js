@@ -763,12 +763,13 @@ export class MessageFlowController extends BaseController {
             this.refreshTimelineState(convId);
             this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
 
-            // [FIX] Preserve scroll position for history loading
+            // [FIX] Scroll to Top for history loading (to show oldest of new batch)
+            // User requirement: Jump to Top + 50px to allow continuous fetching loop
             const isHistory = directionalOrder === 'history';
             this.updateMessagesUI({
-                scrollToEnd: !isHistory, // New messages -> scroll to bottom
-                scrollToTop: false,      // Never force scroll to top on append
-                preserveScroll: isHistory // Restore anchor for history
+                scrollToEnd: !isHistory,
+                scrollToTop: isHistory,
+                preserveScroll: false
             });
 
             this.syncThreadFromActiveMessages(); // Update header (peerName/avatar)
@@ -1158,7 +1159,13 @@ export class MessageFlowController extends BaseController {
         } else if (scrollToTop) {
             // [FIX] Scroll to Top with 50px offset
             // Threshold is 20px (messages-pane.js), so we must be > 20px to avoid infinite loop.
-            if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 50;
+            // [FIX] Scroll to Top with 50px offset
+            // Wrapped in rAF to ensure layout is updated after render
+            if (this.elements.scrollEl) {
+                requestAnimationFrame(() => {
+                    if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 50;
+                });
+            }
         }
     }
 
