@@ -6,7 +6,7 @@
 import { BaseController } from './base-controller.js';
 import { normalizePeerKey } from '../contact-core-store.js';
 import { escapeHtml } from '../ui-utils.js';
-import { createGroupProcess, LocalGroupStore } from '../../../features/groups.js?v=fix_groups';
+import { createGroupProcess, LocalGroupStore } from '../../../features/groups.js';
 
 export class GroupBuilderController extends BaseController {
     constructor(deps) {

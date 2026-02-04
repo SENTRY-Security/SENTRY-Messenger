@@ -55,7 +55,7 @@ import {
 
 import {
     flushPendingVaultPutsNow
-} from '../messages.js?v=20260111_fix_import_3'; // Imported from parent features directory
+} from '../messages.js'; // Imported from parent features directory
 
 // We will inject dependencies to avoid circular imports where possible.
 // listSecureAndDecrypt is the big one.

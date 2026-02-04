@@ -9,7 +9,7 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import { DEBUG } from './mobile/debug-flags.js';
-import { flushOutbox } from '../features/queue/outbox.js?v=atomic_update';
+import { flushOutbox } from '../features/queue/outbox.js';
 import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
 import {
   getMkRaw,
@@ -57,8 +57,8 @@ import { loadContacts, saveContact, getLastContactsHydrateSummary, uplinkContact
 import { saveSettings, loadSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
-import { SecureStatusController } from './mobile/controllers/secure-status-controller.js?v=0.1.10';
-import { setupShareController } from './mobile/controllers/share-controller.js?v=fix_qr_v1';
+import { SecureStatusController } from './mobile/controllers/secure-status-controller.js';
+import { setupShareController } from './mobile/controllers/share-controller.js';
 import {
   loadLatestProfile as loadProfileControlState,
   persistProfileForAccount,
@@ -85,12 +85,12 @@ import { initProfileCard } from './mobile/profile-card.js';
 import { escapeHtml, b64u8 } from './mobile/ui-utils.js';
 import { initContactsView } from './mobile/contacts-view.js';
 import { createPresenceManager } from './mobile/presence-manager.js';
-import { ConversationListController } from './mobile/controllers/conversation-list-controller.js?v=0.1.10';
+import { ConversationListController } from './mobile/controllers/conversation-list-controller.js';
 import { createToastController } from './mobile/controllers/toast-controller.js';
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
-import { initMessagesPane } from './mobile/messages-pane.js?v=phase47_debug';
+import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
-import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js?v=atomic_update';
+import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
 import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
 import { messagesFlowFacade, setMessagesFlowFacadeWsSend } from '../features/messages-flow-facade.js';

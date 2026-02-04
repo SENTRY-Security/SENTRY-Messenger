@@ -83,7 +83,7 @@ import {
 import { logMsgEvent } from '../../lib/logging.js';
 import { PLACEHOLDER_SHIMMER_MAX_ACTIVE, PLACEHOLDER_REVEAL_MS, PLACEHOLDER_TEXT } from './messages-ui-policy.js';
 import { DEBUG } from './debug-flags.js';
-import { isLatestOutgoingForStatus, resolveRenderEntryCounter } from '../../features/messages/ui/renderer.js?v=fix_getTimeline';
+import { isLatestOutgoingForStatus, resolveRenderEntryCounter } from '../../features/messages/ui/renderer.js';
 import {
   scrollToBottom,
   scrollToBottomSoon,
@@ -117,15 +117,15 @@ import {
 } from '../../features/calls/index.js';
 
 import { createControllerDeps } from './controllers/base-controller.js';
-import { ConversationListController } from './controllers/conversation-list-controller.js?v=phase52_fix';
+import { ConversationListController } from './controllers/conversation-list-controller.js';
 import { SecureStatusController } from './controllers/secure-status-controller.js';
-import { CallLogController } from './controllers/call-log-controller.js?v=fix_calllog_4';
-import { MessageFlowController } from './controllers/message-flow-controller.js?v=phase53_fix';
-import { GroupBuilderController } from './controllers/group-builder-controller.js?v=fix_groups';
-import { LayoutController } from './controllers/layout-controller.js?v=debug_layout_trace';
-import { ComposerController } from './controllers/composer-controller.js?v=fix_composer_5';
-import { MessageStatusController } from './controllers/message-status-controller.js?v=fix_msg_status';
-import { ActiveConversationController } from './controllers/active-conversation-controller.js?v=phase52_fix';
+import { CallLogController } from './controllers/call-log-controller.js';
+import { MessageFlowController } from './controllers/message-flow-controller.js';
+import { GroupBuilderController } from './controllers/group-builder-controller.js';
+import { LayoutController } from './controllers/layout-controller.js';
+import { ComposerController } from './controllers/composer-controller.js';
+import { MessageStatusController } from './controllers/message-status-controller.js';
+import { ActiveConversationController } from './controllers/active-conversation-controller.js';
 import { MessageSendingController } from './controllers/message-sending-controller.js';
 import { MediaHandlingController } from './controllers/media-handling-controller.js';
 
