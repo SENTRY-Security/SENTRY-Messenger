@@ -285,31 +285,40 @@ export async function handleIncomingSecureMessage(event, deps) {
     // Trigger sync (non-blocking usually, but here we wait or fire-and-forget?)
     // Logic called it async without await in some paths or mixed.
     // The original code called: syncContactConversation(...) (no await)
-    syncContactConversation({
-        convId,
-        peerDigest: peerDigestForWrite,
-        peerDeviceId: resolvedPeerDeviceId,
-        tokenB64,
-        reason: 'ws-incoming'
-    }, deps).catch(err => {
-        // [AUTO-FILL] Trigger Auto-Resolution for detected gaps
-        if (err?.name === 'GapDetectedError') {
-            try {
-                window.dispatchEvent(new CustomEvent('sentry:gap-detected', {
-                    detail: {
-                        conversationId: err.conversationId || convId,
-                        localMax: err.localMax,
-                        incomingCounter: err.incomingCounter
-                    }
-                }));
-            } catch (e) {
-                console.warn('Dispatch gap-detected failed', e);
+    // [FIX] Lock Contention Prevention
+    // If conversation is ACTIVE, we MUST NOT trigger background sync here.
+    // The MessageFlowController (Foreground) receives 'content_active' and triggers 'loadActiveConversationMessages'.
+    // If we trigger background sync here, it locks the DR Session.
+    // Then MessageFlowController's fetch ABORTS because "Session Locked".
+    // So ONLY trigger background sync if NOT active.
+    if (!active) {
+        syncContactConversation({
+            convId,
+            peerDigest: peerDigestForWrite,
+            peerDeviceId: resolvedPeerDeviceId,
+            tokenB64,
+            reason: 'ws-incoming'
+        }, deps).catch(err => {
+            // [AUTO-FILL] Trigger Auto-Resolution for detected gaps
+            if (err?.name === 'GapDetectedError') {
+
+                try {
+                    window.dispatchEvent(new CustomEvent('sentry:gap-detected', {
+                        detail: {
+                            conversationId: err.conversationId || convId,
+                            localMax: err.localMax,
+                            incomingCounter: err.incomingCounter
+                        }
+                    }));
+                } catch (e) {
+                    console.warn('Dispatch gap-detected failed', e);
+                }
+            } else {
+                // Log other errors but don't crash
+                console.warn('[entry-incoming] sync error', err);
             }
-        } else {
-            // Log other errors but don't crash
-            console.warn('[entry-incoming] sync error', err);
-        }
-    });
+        });
+    }
 
     // Thread update
     const contactEntry = getContactCore(peerKey) || getContactCore(peerDigestForWrite) || null;
