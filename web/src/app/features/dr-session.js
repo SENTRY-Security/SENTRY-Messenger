@@ -374,6 +374,9 @@ async function seedTransportCounterFromServer({
   if (transportCounterSeeded.has(seedKey)) return false;
   transportCounterSeeded.add(seedKey);
 
+  const candidates = []; // [FIX] Define candidates array to prevent ReferenceError
+
+
   try {
     const { r, data } = await listSecureMessages({ conversationId: convId, limit: 50 });
     if (!r?.ok) {

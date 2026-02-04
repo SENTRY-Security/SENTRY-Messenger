@@ -505,6 +505,43 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
   selectionMatched = !!selectedItem;
   selectionReasonCode = selectionMatched ? LIVE_MVP_REASONS.MATCHED : LIVE_MVP_REASONS.NOT_FOUND;
 
+  // [FIX] Self-Sent Message Guard (Fail-Close)
+  // We MUST NOT process our own outgoing messages as "Incoming Live" jobs.
+  // Doing so causes "Sender using Receiver Counter" corruption and false Gap Detection loops.
+  if (selectionMatched && selectedItem) {
+    try {
+      // Normalize IDs
+      const senderDeviceId = selectedItem.sender_device_id || selectedItem.senderDeviceId || null;
+      const senderDigest = selectedItem.sender_account_digest || selectedItem.senderAccountDigest || null;
+
+      const myDeviceId = getDeviceId ? getDeviceId() : null;
+      // Account digest check is secondary, Device ID is the primary cryptographic identity for specific chains.
+
+      if (myDeviceId && senderDeviceId === myDeviceId) {
+        const myDigest = getAccountDigest ? getAccountDigest() : null;
+        // If digest also matches (or is missing on item), it's definitely us.
+        // Logic Matches hybrid-flow.js fix.
+        const isOutgoing = (senderDigest && myDigest) ? (senderDigest === myDigest) : true;
+
+        if (isOutgoing) {
+          logger('liveMvpTrace', {
+            conversationIdPrefix8,
+            messageIdPrefix8: slicePrefix(targetMessageId, 8),
+            action: 'ignore_outgoing',
+            senderDeviceId: slicePrefix(senderDeviceId, 4),
+            reason: 'SELF_SENT_ECHO'
+          }, LIVE_MVP_LOG_CAP);
+
+          const finalResult = finalizeLiveMvpResult(result, startedAt, 'IGNORE_OUTGOING');
+          finalResult.ok = true; // Treated as "Success" (ignored safely)
+          return finalResult;
+        }
+      }
+    } catch (err) {
+      console.warn('[LiveMvp] Outgoing check warning', err);
+    }
+  }
+
   result.metrics.fetchErrorsLength = Array.isArray(fetchErrors) ? fetchErrors.length : 0;
   result.metrics.fetchedCount = listItemsLength;
   result.fetched = selectionMatched;
