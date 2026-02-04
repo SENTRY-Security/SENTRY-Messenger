@@ -277,7 +277,31 @@ function createMessagesFlowFacade() {
         // Pass messageId to trigger server count fetch
         recordVaultAckCounter(event.conversationId, event.counter, event.ts, event.messageId);
         // We can return early as this is a control signal, not a content message
+        // [FIX] Legacy Handler for Vault Ack?
+        // Usually vault-ack is handled by messagesPane separate listener... 
+        // messagesPane.handleVaultAckEvent is called by app-mobile directly.
+        // So we don't need to call handleIncomingSecureMessage here.
         return;
+      }
+
+      // [FIX] Legacy Handler Restoration
+      // The Facade was swallowing the legacy `handleIncomingSecureMessage` call.
+      // This prevented the UI Controller (MessageFlowController) from:
+      // 1. Showing Placeholders (addPendingLivePlaceholder)
+      // 2. Handling Control Messages (Receipts)
+      // 3. Triggering Auto-Sync (loadActiveConversationMessages)
+      // 4. Executing the "Tail Loop" logic
+      // We must call it here to ensure the UI stays in sync, even if B-Route (Live MVP) runs in parallel.
+      const legacyHandler = isPayloadObject ? payloadOrEvent.handleIncomingSecureMessage : null;
+      if (typeof legacyHandler === 'function') {
+        // We run this "Fire and Forget" or await? 
+        // app-mobile didn't await it. We shouldn't block B-Route decision on it.
+        // But we should catch errors.
+        try {
+          legacyHandler(event);
+        } catch (e) {
+          console.error('[facade] legacy handler failed', e);
+        }
       }
 
       const liveJobCtx = hasExplicitCtx
