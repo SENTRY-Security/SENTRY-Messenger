@@ -1917,7 +1917,7 @@ export async function sendDrPlaintextCore(params = {}) {
     // vault payload or during the network request, our local ratchet state has advanced.
     // This prevents "Key Reuse" scenarios where we might resend with the same key
     // or fail to decrypt valid responses.
-    // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
+    persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
 
     if (mk) {
       try {

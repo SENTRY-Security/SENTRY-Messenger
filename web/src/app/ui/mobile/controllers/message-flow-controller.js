@@ -48,6 +48,7 @@ import {
 import {
     consumeReplayPlaceholderBatch,
     consumePendingLivePlaceholderBatch,
+    addPendingLivePlaceholder,
     invalidateGapPlaceholderState,
     markGapPlaceholderFailures
 } from '../../../features/messages/placeholder-store.js';
@@ -258,6 +259,29 @@ export class MessageFlowController extends BaseController {
             }
 
             if (result?.action === 'content_active') {
+                // [FIX] Live Decrypt Placeholder
+                // Show a placeholder immediately while we fetch the real message.
+                // This ensures the user sees "Incoming..." even during history sync latency.
+                const convId = result.conversationId;
+                const messageId = String(event?.messageId || event?.message_id || '').trim();
+                const counter = normalizeCounterValue(event?.counter ?? event?.headerCounter ?? event?.header_counter);
+                let tsRaw = Number(event?.ts ?? event?.timestamp);
+                if (!Number.isFinite(tsRaw) || tsRaw <= 0) tsRaw = Date.now();
+
+                if (messageId) {
+                    addPendingLivePlaceholder({
+                        conversationId: convId,
+                        messageId,
+                        counter,
+                        ts: tsRaw,
+                        raw: event
+                    });
+                    // Trigger immediate render to show the placeholder
+                    if (this.getMessageState().conversationId === convId) {
+                        this.updateMessagesUI({ preserveScroll: true });
+                    }
+                }
+
                 const state = this.getMessageState();
                 if (!state.conversationId && result.conversationId) state.conversationId = result.conversationId;
                 if (!state.conversationToken && result.tokenB64) state.conversationToken = result.tokenB64;
