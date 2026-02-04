@@ -694,7 +694,7 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
 
           updatePendingLivePlaceholderStatus(conversationId, {
             messageId: targetMessageId,
-            status: 'blocked'
+            status: 'pending' // [FIX] Show "Decrypting..." as we have Auto-Fill
           });
 
           throw new GapDetectedError(
