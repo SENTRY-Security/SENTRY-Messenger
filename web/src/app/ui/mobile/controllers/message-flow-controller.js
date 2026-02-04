@@ -294,7 +294,17 @@ export class MessageFlowController extends BaseController {
                     this.loadActiveConversationMessages({ append: false })
                         .then(() => scrollToBottomSoon(this.elements.scrollEl))
                         .catch((err) => log({ wsMessageSyncError: err?.message || err }))
-                        .finally(() => { this.pendingWsRefresh = 0; });
+                        .finally(() => {
+                            // [FIX] Tail-Loop for WS Refresh
+                            // If new signals arrived while we were loading, we MUST reload again to capture them.
+                            if (this.pendingWsRefresh > 0) {
+                                console.log('[MessageFlow] Tail-Loop: Triggering reload for pending WS signals.', { count: this.pendingWsRefresh });
+                                this.pendingWsRefresh = 0;
+                                this.loadActiveConversationMessages({ append: false }).catch(console.error);
+                            } else {
+                                this.pendingWsRefresh = 0;
+                            }
+                        });
                 }
             }
 
