@@ -763,13 +763,38 @@ export class MessageFlowController extends BaseController {
             this.refreshTimelineState(convId);
             this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
 
-            // [FIX] Scroll to Top for history loading (to show oldest of new batch)
-            // User requirement: Jump to Top + 50px to allow continuous fetching loop
+            // [FIX] Smart Scroll Logic
+            // 1. History Fetch: Jump to Top (User Request)
+            // 2. new Message + Near Bottom: Scroll to End
+            // 3. New Message + Reading History: Stay Put (Preserve)
             const isHistory = directionalOrder === 'history';
+            const hasOutgoing = batchEntries.some(m => m.direction === 'outgoing');
+            const wasAtBottom = this.isNearMessagesBottom(100);
+
+            let scrollToEnd = false;
+            let scrollToTop = false;
+            let preserveScroll = false;
+
+            if (isHistory) {
+                scrollToTop = true;
+                preserveScroll = false;
+            } else {
+                // Live / Replay / Other
+                if (hasOutgoing || wasAtBottom) {
+                    scrollToEnd = true;
+                    preserveScroll = false;
+                } else {
+                    // Start of a new message while user is reading history
+                    scrollToEnd = false;
+                    scrollToTop = false;
+                    preserveScroll = true;
+                }
+            }
+
             this.updateMessagesUI({
-                scrollToEnd: !isHistory,
-                scrollToTop: isHistory,
-                preserveScroll: false
+                scrollToEnd,
+                scrollToTop,
+                preserveScroll
             });
 
             this.syncThreadFromActiveMessages(); // Update header (peerName/avatar)
