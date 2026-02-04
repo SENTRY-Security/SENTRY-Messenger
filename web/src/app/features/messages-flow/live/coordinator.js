@@ -631,7 +631,10 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
             status: 'blocked'
           });
 
-          throw new Error(`Gap detected (Local: ${localMax}, Incoming: ${counter}). Aborting live process to wait for history fill.`);
+          throw new GapDetectedError(
+            `Gap detected (Local: ${localMax}, Incoming: ${counter}). Aborting live process to wait for history fill.`,
+            { conversationId, localMax, incomingCounter: counter, gapSize }
+          );
         }
       }
     } catch (err) {

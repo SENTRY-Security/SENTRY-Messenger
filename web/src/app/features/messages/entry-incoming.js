@@ -279,7 +279,25 @@ export async function handleIncomingSecureMessage(event, deps) {
         peerDeviceId: resolvedPeerDeviceId,
         tokenB64,
         reason: 'ws-incoming'
-    }, deps);
+    }, deps).catch(err => {
+        // [AUTO-FILL] Trigger Auto-Resolution for detected gaps
+        if (err?.name === 'GapDetectedError') {
+            try {
+                window.dispatchEvent(new CustomEvent('sentry:gap-detected', {
+                    detail: {
+                        conversationId: err.conversationId || convId,
+                        localMax: err.localMax,
+                        incomingCounter: err.incomingCounter
+                    }
+                }));
+            } catch (e) {
+                console.warn('Dispatch gap-detected failed', e);
+            }
+        } else {
+            // Log other errors but don't crash
+            console.warn('[entry-incoming] sync error', err);
+        }
+    });
 
     // Thread update
     const contactEntry = getContactCore(peerKey) || getContactCore(peerDigestForWrite) || null;

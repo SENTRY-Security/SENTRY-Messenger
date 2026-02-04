@@ -66,6 +66,15 @@ export class MessageFlowController extends BaseController {
         super(deps);
         this.pendingWsRefresh = 0;
         this.receiptRenderPending = false;
+
+        // [AUTO-FILL] Bind Gap Detection Event
+        // Decoupled from entry-incoming.js via window event
+        this.handleBodyGapDetected = (e) => {
+            if (e && e.detail) {
+                this.resolveGap(e.detail.conversationId, e.detail.localMax, e.detail.incomingCounter);
+            }
+        };
+        window.addEventListener('sentry:gap-detected', this.handleBodyGapDetected);
     }
 
     /**
@@ -432,14 +441,12 @@ export class MessageFlowController extends BaseController {
             this.updateLoadMoreVisibility();
             this.setLoadMoreState('hidden'); // Or show "Decrypting..."
             if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '解密中...';
-
             this.deps.updateComposerAvailability?.();
             return;
         }
 
         try {
             // [Hybrid] Smart Fetch Strategy via Facade
-            // This handles Gap Calculation, Sequential A/B Decryption, and Deduplication.
             const result = await messagesFlowFacade.onScrollFetchMore({
                 conversationId: state.conversationId,
                 cursor: append ? state.nextCursor : null,
@@ -452,540 +459,628 @@ export class MessageFlowController extends BaseController {
             if (result.items && result.items.length) {
                 appendBatch(result.items, { directionalOrder: 'history' });
             }
-
-            state.nextCursor = result.nextCursor || null;
-            state.hasMore = result.hasMoreAtCursor || false;
-
-
-
-        } catch (err) {
-            console.error('[MessageFlowController] load error', err);
-            log({ loadMessagesError: err?.message || err });
+            // Additional Facade handling is implicit (state mutation option is true)
+        } catch (e) {
+            console.error('[MessageFlow] Load active conversation failed', e);
         } finally {
             state.loading = false;
             this.updateLoadMoreVisibility();
-
-            // [FIX] Always update UI to ensure empty state or partial content is shown
-            // even if the fetch failed (e.g. missing token or network error).
-            this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
-
-            // [FIX] Notify composer to revert placeholder
-            this.deps.updateComposerAvailability?.();
         }
     }
 
     /**
-     * Handle timeline append event.
+     * [AUTO-FILL] Resolve a detected gap by actively fetching the missing range.
+     * Triggered by GapDetectedError from coordinator via event.
      */
-    handleTimelineAppend({ conversationId, entry, entries, directionalOrder } = {}) {
+    async resolveGap(conversationId, localMax, incomingCounter) {
+        if (!conversationId || !incomingCounter) return;
+
+        // Prevent concurrent gap fills for the same conversation
+        if (this.gapFillInProgress?.has(conversationId)) return;
+        this.gapFillInProgress = this.gapFillInProgress || new Set();
+        this.gapFillInProgress.add(conversationId);
+
+        console.log(`[MessageFlow] Auto-Resolving Gap: Local=${localMax} -> Incoming=${incomingCounter}`);
+        this.deps.showToast?.('正在補齊歷史訊息...', { type: 'loading', duration: 2000 });
+
         try {
-            const convId = String(conversationId || '').trim();
-            const batchEntries = Array.isArray(entries) && entries.length ? entries : (entry ? [entry] : []);
+            // Calculate limit: (Incoming - LocalMax) + padding
+            const gapSize = incomingCounter - (localMax || 0);
+            const limit = Math.ceil(gapSize + 5);
 
-            console.log('[MessageFlow] handleTimelineAppend:entry', {
-                conversationId: convId,
-                batchSize: batchEntries.length,
-                directionalOrder
-            });
-
-            if (!convId || !batchEntries.length) {
-                console.warn('[MessageFlow] handleTimelineAppend:dropped:empty', { convId, count: batchEntries.length });
-                return;
-            }
-
-            const replayEntries = batchEntries.filter((item) => item?.isHistoryReplay === true);
-            if (replayEntries.length) {
-                consumeReplayPlaceholderBatch(convId, replayEntries);
-            }
-            const hasLiveEntries = batchEntries.some((item) => item?.isHistoryReplay !== true);
-            if (hasLiveEntries) {
-                consumePendingLivePlaceholderBatch(convId, batchEntries);
-                invalidateGapPlaceholderState(convId);
-            }
-
-            const state = this.getMessageState();
-            // Define active status early for fallback token usage
-            const isActiveConversationId = state.conversationId === convId;
-
-            const convIndex = this.deps.ensureConversationIndex?.();
-            const convEntry = convIndex?.get?.(convId) || null;
-            const threads = this.deps.getConversationThreads?.();
-            const existingThread = threads?.get?.(convId) || null;
-            const lastEntry = batchEntries[batchEntries.length - 1] || null;
-            const peerDigest = this.resolvePeerForConversation(convId, lastEntry?.peerAccountDigest || lastEntry?.senderDigest || null);
-
-            const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-            const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `好友 ${peerDigest.slice(-4)}` : '好友');
-            const avatar = contactEntry?.avatar || existingThread?.avatar || null;
-            const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || lastEntry?.peerDeviceId || lastEntry?.senderDeviceId || null;
-
-            // Use state.conversationToken as fallback if active
-            const validToken = convEntry?.token_b64 || existingThread?.conversationToken || (isActiveConversationId ? state.conversationToken : null) || null;
-            const tokenB64 = validToken;
-
-            const thread = this.deps.upsertConversationThread?.({
-                peerAccountDigest: peerDigest || existingThread?.peerAccountDigest || null,
-                peerDeviceId: peerDevice,
-                conversationId: convId,
-                tokenB64,
-                nickname,
-                avatar
-            }) || (threads && threads.get(convId));
-
-            if (!thread) {
-                if (isActiveConversationId) {
-                    console.warn('[MessageFlow] handleTimelineAppend:orphaned_active_message', { convId });
-                    // Create a transient thread object to allow rendering to proceed
-                    const dummyThread = {
-                        conversationId: convId,
-                        peerAccountDigest: peerDigest || state.activePeerDigest,
-                        nickname: nickname || '未知',
-                        unreadCount: 0
-                    };
-                    this._proceedWithAppend(batchEntries, dummyThread, state, isActiveConversationId, convId, peerDigest, directionalOrder);
-                    return;
+            await messagesFlowFacade.onScrollFetchMore({
+                conversationId,
+                // Facade fetch usually goes backwards from Latest or Cursor.
+                // To fill a gap at the "top" of history (newest), fetching latest is usually correct
+                // if the gap is small and recent.
+                options: {
+                    limit: Math.min(limit, 50),
+                    sourceTag: 'gap_autofill'
                 }
-                console.error('[MessageFlow] handleTimelineAppend:dropped:no_thread', { convId });
-                return;
-            }
-
-            this._proceedWithAppend(batchEntries, thread, state, isActiveConversationId, convId, peerDigest, directionalOrder);
+            });
+            console.log('[MessageFlow] Gap Auto-Fill Completed');
         } catch (err) {
-            console.error('[MessageFlow] handleTimelineAppend CRITICAL ERROR', err);
-            log({ handleTimelineAppendError: err?.message || String(err) });
+            console.warn('[MessageFlow] Gap Auto-Fill Failed', err);
+        } finally {
+            this.gapFillInProgress.delete(conversationId);
         }
     }
 
-    _proceedWithAppend(batchEntries, thread, state, isActiveConversationId, convId, peerDigest, directionalOrder) {
-        let incomingCount = 0;
-        let playedSound = false;
+    /**
+     * [AUTO-FILL] Resolve a detected gap by actively fetching the missing range.
+     * Triggered by GapDetectedError from coordinator.
+     */
+    async resolveGap(conversationId, localMax, incomingCounter) {
+        if (!conversationId || !incomingCounter) return;
 
-        for (const item of batchEntries) {
-            if (!isUserTimelineMessage(item)) continue;
-            thread.lastMessageText = item.text || item.error || '';
-            thread.lastMessageTs = typeof item.ts === 'number' ? item.ts : thread.lastMessageTs || null;
-            thread.lastMessageId = item.messageId || item.id || thread.lastMessageId || null;
-            thread.lastDirection = item.direction || thread.lastDirection || null;
-            if (item.direction === 'incoming') incomingCount += 1;
+        // Prevent concurrent gap fills for the same conversation
+        if (this.gapFillInProgress?.has(conversationId)) return;
+        this.gapFillInProgress = this.gapFillInProgress || new Set();
+        this.gapFillInProgress.add(conversationId);
+
+        console.log(`[MessageFlow] Auto-Resolving Gap: Local=${localMax} -> Incoming=${incomingCounter}`);
+        this.deps.showToast?.('正在補齊歷史訊息...', { type: 'loading', duration: 2000 });
+
+        try {
+            // Calculate limit: (Incoming - LocalMax) + padding
+            const gapSize = incomingCounter - (localMax || 0);
+            const limit = Math.ceil(gapSize + 5); // Fetch slightly more to be safe
+
+            await messagesFlowFacade.onScrollFetchMore({
+                conversationId,
+                // We don't have a cursor for specific range yet in this API, 
+                // but standard fetch goes backwards from Latest (or uses Time).
+                // If we are "Live", we usually want to fetch "Latest" to fill the top.
+                // Assuming standard fetch handles "filling holes" or "fetching latest" correctly.
+                options: {
+                    limit: Math.min(limit, 50), // Cap at 50
+                    sourceTag: 'gap_autofill'
+                }
+            });
+            console.log('[MessageFlow] Gap Auto-Fill Completed');
+        } catch (err) {
+            console.warn('[MessageFlow] Gap Auto-Fill Failed', err);
+        } finally {
+            this.gapFillInProgress.delete(conversationId);
         }
+    }
 
-        const isActivePeer = !peerDigest || state.activePeerDigest === peerDigest;
 
-        console.log('[MessageFlow] handleTimelineAppend:decision', {
-            convId,
-            stateConvId: state.conversationId,
-            peerDigest,
-            activePeerDigest: state.activePeerDigest,
-            isActivePeer,
-            isActiveConversationId,
+
+
+state.nextCursor = result.nextCursor || null;
+state.hasMore = result.hasMoreAtCursor || false;
+
+
+
+} catch (err) {
+    console.error('[MessageFlowController] load error', err);
+    log({ loadMessagesError: err?.message || err });
+} finally {
+    state.loading = false;
+    this.updateLoadMoreVisibility();
+
+    // [FIX] Always update UI to ensure empty state or partial content is shown
+    // even if the fetch failed (e.g. missing token or network error).
+    this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+
+    // [FIX] Notify composer to revert placeholder
+    this.deps.updateComposerAvailability?.();
+}
+    }
+
+/**
+ * Handle timeline append event.
+ */
+handleTimelineAppend({ conversationId, entry, entries, directionalOrder } = {}) {
+    try {
+        const convId = String(conversationId || '').trim();
+        const batchEntries = Array.isArray(entries) && entries.length ? entries : (entry ? [entry] : []);
+
+        console.log('[MessageFlow] handleTimelineAppend:entry', {
+            conversationId: convId,
             batchSize: batchEntries.length,
-            incomingCount
+            directionalOrder
         });
 
-        const isActive = isActiveConversationId;
-
-        const shouldLogBatchRender = true;
-        const nowMs = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
-            ? performance.now()
-            : Date.now();
-        const renderStart = shouldLogBatchRender ? nowMs() : null;
-
-        if (isActive) {
-            thread.unreadCount = 0;
-            thread.lastReadTs = thread.lastMessageTs || thread.lastReadTs || null;
-            this.refreshTimelineState(convId);
-            this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
-
-            // [FIX] Scroll to Top for history loading (to show oldest of new batch)
-            const isHistory = directionalOrder === 'history';
-            this.updateMessagesUI({
-                scrollToEnd: !isHistory,
-                scrollToTop: isHistory,
-                preserveScroll: false
-            });
-
-            this.syncThreadFromActiveMessages(); // Update header (peerName/avatar)
-            this.deps.controllers?.conversationList?.syncThreadFromActiveMessages?.(); // Update list thread if needed
-        } else if (incomingCount > 0) {
-            thread.unreadCount = Math.max(0, Number(thread.unreadCount) || 0) + incomingCount;
-        }
-        this.deps.refreshContactsUnreadBadges?.();
-        this.deps.renderConversationList?.();
-
-        const renderReason = directionalOrder
-            ? `timeline-batch-append:${directionalOrder}`
-            : 'timeline-batch-append';
-
-        if (shouldLogBatchRender && renderStart !== null) {
-            const renderTookMs = Math.max(0, Math.round(nowMs() - renderStart));
-            logCapped('batchRenderTrace', {
-                conversationId: convId || null,
-                reason: renderReason,
-                tookMs: renderTookMs
-            }, 5);
+        if (!convId || !batchEntries.length) {
+            console.warn('[MessageFlow] handleTimelineAppend:dropped:empty', { convId, count: batchEntries.length });
+            return;
         }
 
-        if (!isActive) {
-            for (const item of batchEntries) {
-                if (!isUserTimelineMessage(item)) continue;
-                if (item.direction !== 'incoming') continue;
-                const shouldNotify = shouldNotifyForMessage({
-                    computedIsHistoryReplay: !!item?.isHistoryReplay,
-                    silent: !!item?.silent
-                });
-                if (shouldNotify) {
-                    this.deps.playNotificationSound?.();
-                    playedSound = true;
-
-                    const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-                    // Re-resolve nickname/avatar for toast if needed, or pass from caller?
-                    // Simplified for now, using thread data or defaults
-                    const nickname = thread.nickname || '新訊息';
-                    const previewText = buildConversationSnippet(item.text || '') || item.text || '有新訊息';
-                    const avatarUrlToast = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
-                    const initialsToast = this.deps.controllers?.conversationList?.getInitials(nickname, peerDigest || '').slice(0, 2);
-                    const toastPeerDeviceId = thread?.peerDeviceId || null;
-
-                    this.deps.showToast?.(`${nickname}：${previewText}`, {
-                        onClick: () => this.deps.controllers?.activeConversation?.openConversationFromToast({
-                            peerAccountDigest: peerDigest,
-                            convId,
-                            tokenB64: thread.conversationToken || null, // fallback
-                            peerDeviceId: toastPeerDeviceId
-                        }),
-                        avatarUrl: avatarUrlToast,
-                        avatarInitials: initialsToast,
-                        subtitle: item.ts ? formatTimestamp(item.ts) : ''
-                    });
-                }
-            }
+        const replayEntries = batchEntries.filter((item) => item?.isHistoryReplay === true);
+        if (replayEntries.length) {
+            consumeReplayPlaceholderBatch(convId, replayEntries);
         }
-        logCapped('notificationTrace', {
-            conversationIdPrefix8: sliceConversationIdPrefix(convId),
-            isActiveConversation: isActive,
-            playedSound,
-            unreadDelta: isActive ? 0 : incomingCount
-        }, 5);
-    }
-
-    /**
-     * Handle wheel on messages - trigger auto load if at top.
-     */
-    handleMessagesWheel() {
-        this.triggerAutoLoadOlder();
-    }
-
-    /**
-     * Trigger auto load of older messages if at top of scroll.
-     */
-    triggerAutoLoadOlder() {
-        const scrollEl = this.elements.scrollEl;
-        if (!scrollEl) return;
-        if (scrollEl.scrollTop > 50) return;
+        const hasLiveEntries = batchEntries.some((item) => item?.isHistoryReplay !== true);
+        if (hasLiveEntries) {
+            consumePendingLivePlaceholderBatch(convId, batchEntries);
+            invalidateGapPlaceholderState(convId);
+        }
 
         const state = this.getMessageState();
-        if (!state.hasMore || !state.nextCursor || state.loading) return;
+        // Define active status early for fallback token usage
+        const isActiveConversationId = state.conversationId === convId;
 
-        this.deps.loadActiveConversationMessages?.({ append: true });
-    }
+        const convIndex = this.deps.ensureConversationIndex?.();
+        const convEntry = convIndex?.get?.(convId) || null;
+        const threads = this.deps.getConversationThreads?.();
+        const existingThread = threads?.get?.(convId) || null;
+        const lastEntry = batchEntries[batchEntries.length - 1] || null;
+        const peerDigest = this.resolvePeerForConversation(convId, lastEntry?.peerAccountDigest || lastEntry?.senderDigest || null);
 
-    /**
-     * Sync thread from active messages.
-     */
-    syncThreadFromActiveMessages() {
-        const state = this.getMessageState();
-        if (!state.conversationId || !state.activePeerDigest) return;
+        const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+        const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `好友 ${peerDigest.slice(-4)}` : '好友');
+        const avatar = contactEntry?.avatar || existingThread?.avatar || null;
+        const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || lastEntry?.peerDeviceId || lastEntry?.senderDeviceId || null;
 
-        const timelineMessages = this.deps.refreshTimelineState?.(state.conversationId);
-        const contactEntry = this.sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
-        const nickname = contactEntry?.nickname || `好友 ${state.activePeerDigest.slice(-4)}`;
-        const avatar = contactEntry?.avatar || null;
-        const tokenB64 = state.conversationToken || contactEntry?.conversation?.token_b64 || null;
+        // Use state.conversationToken as fallback if active
+        const validToken = convEntry?.token_b64 || existingThread?.conversationToken || (isActiveConversationId ? state.conversationToken : null) || null;
+        const tokenB64 = validToken;
 
         const thread = this.deps.upsertConversationThread?.({
-            peerAccountDigest: state.activePeerDigest,
-            conversationId: state.conversationId,
+            peerAccountDigest: peerDigest || existingThread?.peerAccountDigest || null,
+            peerDeviceId: peerDevice,
+            conversationId: convId,
             tokenB64,
             nickname,
             avatar
-        });
+        }) || (threads && threads.get(convId));
 
-        // Fix: Update DOM elements immediately to reflect profile changes
-        console.log('[MessageFlow] syncThreadFromActiveMessages:update_dom', {
-            nickname,
-            hasAvatar: !!avatar,
-            peerNameConnected: this.elements.peerName?.isConnected,
-            peerAvatarConnected: this.elements.peerAvatar?.isConnected
-        });
-
-        if (this.elements.peerName) {
-            this.elements.peerName.textContent = nickname;
-        }
-        if (this.elements.peerAvatar) {
-            const img = this.elements.peerAvatar.tagName === 'IMG'
-                ? this.elements.peerAvatar
-                : this.elements.peerAvatar.querySelector('img');
-
-            const avatarUrl = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
-            if (img) {
-                if (avatarUrl) {
-                    img.src = avatarUrl;
-                } else {
-                    // Transparent placeholder or default icon
-                    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-                }
+        if (!thread) {
+            if (isActiveConversationId) {
+                console.warn('[MessageFlow] handleTimelineAppend:orphaned_active_message', { convId });
+                // Create a transient thread object to allow rendering to proceed
+                const dummyThread = {
+                    conversationId: convId,
+                    peerAccountDigest: peerDigest || state.activePeerDigest,
+                    nickname: nickname || '未知',
+                    unreadCount: 0
+                };
+                this._proceedWithAppend(batchEntries, dummyThread, state, isActiveConversationId, convId, peerDigest, directionalOrder);
+                return;
             }
+            console.error('[MessageFlow] handleTimelineAppend:dropped:no_thread', { convId });
+            return;
         }
 
-        if (!thread) return;
-        thread.previewLoaded = true;
+        this._proceedWithAppend(batchEntries, thread, state, isActiveConversationId, convId, peerDigest, directionalOrder);
+    } catch (err) {
+        console.error('[MessageFlow] handleTimelineAppend CRITICAL ERROR', err);
+        log({ handleTimelineAppendError: err?.message || String(err) });
+    }
+}
 
-        if (Array.isArray(timelineMessages) && timelineMessages.length) {
-            const sortedMsgs = sortMessagesByTimelineLocal(timelineMessages);
-            const lastUserMsg = [...sortedMsgs].reverse().find((m) =>
-                m?.direction === 'outgoing' || m?.direction === 'incoming'
-            );
-            if (lastUserMsg) {
-                thread.lastMessageText = lastUserMsg.text || '';
-                thread.lastMessageTs = lastUserMsg.ts || null;
-                thread.lastDirection = lastUserMsg.direction || null;
-                thread.lastMessageId = lastUserMsg.id || lastUserMsg.messageId || null;
-            }
-        }
+_proceedWithAppend(batchEntries, thread, state, isActiveConversationId, convId, peerDigest, directionalOrder) {
+    let incomingCount = 0;
+    let playedSound = false;
 
+    for (const item of batchEntries) {
+        if (!isUserTimelineMessage(item)) continue;
+        thread.lastMessageText = item.text || item.error || '';
+        thread.lastMessageTs = typeof item.ts === 'number' ? item.ts : thread.lastMessageTs || null;
+        thread.lastMessageId = item.messageId || item.id || thread.lastMessageId || null;
+        thread.lastDirection = item.direction || thread.lastDirection || null;
+        if (item.direction === 'incoming') incomingCount += 1;
+    }
+
+    const isActivePeer = !peerDigest || state.activePeerDigest === peerDigest;
+
+    console.log('[MessageFlow] handleTimelineAppend:decision', {
+        convId,
+        stateConvId: state.conversationId,
+        peerDigest,
+        activePeerDigest: state.activePeerDigest,
+        isActivePeer,
+        isActiveConversationId,
+        batchSize: batchEntries.length,
+        incomingCount
+    });
+
+    const isActive = isActiveConversationId;
+
+    const shouldLogBatchRender = true;
+    const nowMs = () => (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now()
+        : Date.now();
+    const renderStart = shouldLogBatchRender ? nowMs() : null;
+
+    if (isActive) {
         thread.unreadCount = 0;
-        thread.lastReadTs = thread.lastMessageTs || null;
+        thread.lastReadTs = thread.lastMessageTs || thread.lastReadTs || null;
+        this.refreshTimelineState(convId);
+        this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
+
+        // [FIX] Scroll to Top for history loading (to show oldest of new batch)
+        const isHistory = directionalOrder === 'history';
+        this.updateMessagesUI({
+            scrollToEnd: !isHistory,
+            scrollToTop: isHistory,
+            preserveScroll: false
+        });
+
+        this.syncThreadFromActiveMessages(); // Update header (peerName/avatar)
+        this.deps.controllers?.conversationList?.syncThreadFromActiveMessages?.(); // Update list thread if needed
+    } else if (incomingCount > 0) {
+        thread.unreadCount = Math.max(0, Number(thread.unreadCount) || 0) + incomingCount;
+    }
+    this.deps.refreshContactsUnreadBadges?.();
+    this.deps.renderConversationList?.();
+
+    const renderReason = directionalOrder
+        ? `timeline-batch-append:${directionalOrder}`
+        : 'timeline-batch-append';
+
+    if (shouldLogBatchRender && renderStart !== null) {
+        const renderTookMs = Math.max(0, Math.round(nowMs() - renderStart));
+        logCapped('batchRenderTrace', {
+            conversationId: convId || null,
+            reason: renderReason,
+            tookMs: renderTookMs
+        }, 5);
     }
 
-    /**
-     * Refresh timeline state for conversation.
-     */
-    refreshTimelineState(conversationId = null) {
-        const state = this.getMessageState();
-        const convId = conversationId || state.conversationId || null;
-        if (!convId) {
-            state.messages = [];
-            return state.messages;
+    if (!isActive) {
+        for (const item of batchEntries) {
+            if (!isUserTimelineMessage(item)) continue;
+            if (item.direction !== 'incoming') continue;
+            const shouldNotify = shouldNotifyForMessage({
+                computedIsHistoryReplay: !!item?.isHistoryReplay,
+                silent: !!item?.silent
+            });
+            if (shouldNotify) {
+                this.deps.playNotificationSound?.();
+                playedSound = true;
+
+                const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
+                // Re-resolve nickname/avatar for toast if needed, or pass from caller?
+                // Simplified for now, using thread data or defaults
+                const nickname = thread.nickname || '新訊息';
+                const previewText = buildConversationSnippet(item.text || '') || item.text || '有新訊息';
+                const avatarUrlToast = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
+                const initialsToast = this.deps.controllers?.conversationList?.getInitials(nickname, peerDigest || '').slice(0, 2);
+                const toastPeerDeviceId = thread?.peerDeviceId || null;
+
+                this.deps.showToast?.(`${nickname}：${previewText}`, {
+                    onClick: () => this.deps.controllers?.activeConversation?.openConversationFromToast({
+                        peerAccountDigest: peerDigest,
+                        convId,
+                        tokenB64: thread.conversationToken || null, // fallback
+                        peerDeviceId: toastPeerDeviceId
+                    }),
+                    avatarUrl: avatarUrlToast,
+                    avatarInitials: initialsToast,
+                    subtitle: item.ts ? formatTimestamp(item.ts) : ''
+                });
+            }
         }
-        const timeline = timelineGetTimeline(convId);
-        state.messages = timeline;
-        return timeline;
+    }
+    logCapped('notificationTrace', {
+        conversationIdPrefix8: sliceConversationIdPrefix(convId),
+        isActiveConversation: isActive,
+        playedSound,
+        unreadDelta: isActive ? 0 : incomingCount
+    }, 5);
+}
+
+/**
+ * Handle wheel on messages - trigger auto load if at top.
+ */
+handleMessagesWheel() {
+    this.triggerAutoLoadOlder();
+}
+
+/**
+ * Trigger auto load of older messages if at top of scroll.
+ */
+triggerAutoLoadOlder() {
+    const scrollEl = this.elements.scrollEl;
+    if (!scrollEl) return;
+    if (scrollEl.scrollTop > 50) return;
+
+    const state = this.getMessageState();
+    if (!state.hasMore || !state.nextCursor || state.loading) return;
+
+    this.deps.loadActiveConversationMessages?.({ append: true });
+}
+
+/**
+ * Sync thread from active messages.
+ */
+syncThreadFromActiveMessages() {
+    const state = this.getMessageState();
+    if (!state.conversationId || !state.activePeerDigest) return;
+
+    const timelineMessages = this.deps.refreshTimelineState?.(state.conversationId);
+    const contactEntry = this.sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
+    const nickname = contactEntry?.nickname || `好友 ${state.activePeerDigest.slice(-4)}`;
+    const avatar = contactEntry?.avatar || null;
+    const tokenB64 = state.conversationToken || contactEntry?.conversation?.token_b64 || null;
+
+    const thread = this.deps.upsertConversationThread?.({
+        peerAccountDigest: state.activePeerDigest,
+        conversationId: state.conversationId,
+        tokenB64,
+        nickname,
+        avatar
+    });
+
+    // Fix: Update DOM elements immediately to reflect profile changes
+    console.log('[MessageFlow] syncThreadFromActiveMessages:update_dom', {
+        nickname,
+        hasAvatar: !!avatar,
+        peerNameConnected: this.elements.peerName?.isConnected,
+        peerAvatarConnected: this.elements.peerAvatar?.isConnected
+    });
+
+    if (this.elements.peerName) {
+        this.elements.peerName.textContent = nickname;
+    }
+    if (this.elements.peerAvatar) {
+        const img = this.elements.peerAvatar.tagName === 'IMG'
+            ? this.elements.peerAvatar
+            : this.elements.peerAvatar.querySelector('img');
+
+        const avatarUrl = avatar?.thumbDataUrl || avatar?.previewDataUrl || avatar?.url || null;
+        if (img) {
+            if (avatarUrl) {
+                img.src = avatarUrl;
+            } else {
+                // Transparent placeholder or default icon
+                img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+            }
+        }
     }
 
-    /**
-     * Capture scroll anchor.
-     */
-    captureScrollAnchor() {
-        return captureScrollAnchor(this.elements.scrollEl);
+    if (!thread) return;
+    thread.previewLoaded = true;
+
+    if (Array.isArray(timelineMessages) && timelineMessages.length) {
+        const sortedMsgs = sortMessagesByTimelineLocal(timelineMessages);
+        const lastUserMsg = [...sortedMsgs].reverse().find((m) =>
+            m?.direction === 'outgoing' || m?.direction === 'incoming'
+        );
+        if (lastUserMsg) {
+            thread.lastMessageText = lastUserMsg.text || '';
+            thread.lastMessageTs = lastUserMsg.ts || null;
+            thread.lastDirection = lastUserMsg.direction || null;
+            thread.lastMessageId = lastUserMsg.id || lastUserMsg.messageId || null;
+        }
     }
 
-    /**
-     * Restore scroll from anchor.
-     */
-    restoreScrollFromAnchor(anchor) {
-        return restoreScrollFromAnchor(this.elements.scrollEl, anchor);
+    thread.unreadCount = 0;
+    thread.lastReadTs = thread.lastMessageTs || null;
+}
+
+/**
+ * Refresh timeline state for conversation.
+ */
+refreshTimelineState(conversationId = null) {
+    const state = this.getMessageState();
+    const convId = conversationId || state.conversationId || null;
+    if (!convId) {
+        state.messages = [];
+        return state.messages;
     }
+    const timeline = timelineGetTimeline(convId);
+    state.messages = timeline;
+    return timeline;
+}
 
-    /**
-     * Update scroll overflow.
-     */
-    updateMessagesScrollOverflow() {
-        updateScrollOverflow(this.elements.scrollEl);
-    }
+/**
+ * Capture scroll anchor.
+ */
+captureScrollAnchor() {
+    return captureScrollAnchor(this.elements.scrollEl);
+}
 
-    /**
-     * Update messages UI (Main Rendering Logic).
-     */
-    /**
-     * Update messages UI (Main Rendering Logic).
-     */
-    updateMessagesUI({ scrollToEnd = false, scrollToTop = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
-        if (!this.elements.messagesList) return;
-        const state = this.getMessageState();
-        const timelineMessages = this.refreshTimelineState(state.conversationId);
+/**
+ * Restore scroll from anchor.
+ */
+restoreScrollFromAnchor(anchor) {
+    return restoreScrollFromAnchor(this.elements.scrollEl, anchor);
+}
 
-        // Initialize Renderer if needed
-        if (!this.messageRenderer && this.elements.messagesList) {
-            this.messageRenderer = new MessageRenderer({
-                messagesListEl: this.elements.messagesList,
-                messagesPlaceholdersEl: this.elements.messagesPlaceholders,
-                callbacks: {
-                    onPreviewMedia: (m) => this.deps.controllers?.mediaHandling?.openMediaPreview(m),
-                    onCancelUpload: (msgId, overlay) => {
-                        if (msgId) {
-                            // abort logic if needed, usually handled by store/controller
-                            this.deps.controllers?.messageSending?.removeLocalMessageById(msgId);
-                        }
+/**
+ * Update scroll overflow.
+ */
+updateMessagesScrollOverflow() {
+    updateScrollOverflow(this.elements.scrollEl);
+}
+
+/**
+ * Update messages UI (Main Rendering Logic).
+ */
+/**
+ * Update messages UI (Main Rendering Logic).
+ */
+updateMessagesUI({ scrollToEnd = false, scrollToTop = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
+    if (!this.elements.messagesList) return;
+    const state = this.getMessageState();
+    const timelineMessages = this.refreshTimelineState(state.conversationId);
+
+    // Initialize Renderer if needed
+    if (!this.messageRenderer && this.elements.messagesList) {
+        this.messageRenderer = new MessageRenderer({
+            messagesListEl: this.elements.messagesList,
+            messagesPlaceholdersEl: this.elements.messagesPlaceholders,
+            callbacks: {
+                onPreviewMedia: (m) => this.deps.controllers?.mediaHandling?.openMediaPreview(m),
+                onCancelUpload: (msgId, overlay) => {
+                    if (msgId) {
+                        // abort logic if needed, usually handled by store/controller
+                        this.deps.controllers?.messageSending?.removeLocalMessageById(msgId);
                     }
                 }
+            }
+        });
+    }
+
+    // Check for stale DOM refs
+    if (this.messageRenderer) {
+        const currentListEl = this.elements.messagesList;
+        const rendererListEl = this.messageRenderer.listEl;
+
+        const isStale = rendererListEl !== currentListEl || (rendererListEl && !rendererListEl.isConnected);
+
+        if (isStale) {
+            console.warn('[MessageFlow] MessageRenderer has stale DOM ref. Updating...', {
+                hasCurrent: !!currentListEl,
+                currentConnected: currentListEl?.isConnected,
+                rendererHas: !!rendererListEl,
+                rendererConnected: rendererListEl?.isConnected
             });
-        }
-
-        // Check for stale DOM refs
-        if (this.messageRenderer) {
-            const currentListEl = this.elements.messagesList;
-            const rendererListEl = this.messageRenderer.listEl;
-
-            const isStale = rendererListEl !== currentListEl || (rendererListEl && !rendererListEl.isConnected);
-
-            if (isStale) {
-                console.warn('[MessageFlow] MessageRenderer has stale DOM ref. Updating...', {
-                    hasCurrent: !!currentListEl,
-                    currentConnected: currentListEl?.isConnected,
-                    rendererHas: !!rendererListEl,
-                    rendererConnected: rendererListEl?.isConnected
-                });
-                if (currentListEl) this.messageRenderer.listEl = currentListEl;
-                // Placeholders are now inline, so we don't update placeholdersEl
-            }
-        }
-
-        // Merge and Sort Entries
-        // 1. Timeline Messages
-        // 2. Replay Placeholders
-        // 3. Gap Placeholders
-        const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
-        const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
-        const pendingLiveEntries = getPendingLivePlaceholderEntries(state.conversationId);
-        const mergedRaw = [
-            ...timelineMessages,
-            ...replayPlaceholderEntries,
-            ...gapPlaceholderEntries,
-            ...pendingLiveEntries
-        ];
-
-        const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length + pendingLiveEntries.length;
-
-        // Sort first to ensure chronological order
-        // Sort first to ensure chronological order
-        let sortedMessages = sortMessagesByTimelineLocal(mergedRaw);
-
-        console.log('[MessageFlow] Debug Render: Pre-Filter', {
-            stateConvId: state.conversationId,
-            timelineCount: timelineMessages.length,
-            placeholderCount,
-            mergedCount: sortedMessages.length,
-            ids: sortedMessages.map(m => m.id),
-            types: sortedMessages.map(m => m.msgType),
-            sample: sortedMessages.slice(-3).map(m => ({ id: m.id, type: m.msgType }))
-        });
-
-        // Filter / Cutoff Logic for Deletion Tombstone
-        // Find the LATEST conversation-deleted message (if multiple, the latest one is the effective barrier)
-        let deletionTombstoneIndex = -1;
-        for (let i = sortedMessages.length - 1; i >= 0; i--) {
-            const msg = sortedMessages[i];
-            const type = msg.msgType || msg.subtype || 'text';
-            if (type === 'conversation-deleted') {
-                deletionTombstoneIndex = i;
-                break;
-            }
-        }
-
-        // Apply Hard Cutoff: Keep the tombstone and everything AFTER it.
-        if (deletionTombstoneIndex !== -1) {
-            console.log('[MessageFlow] Debug Render: Tombstone Found', { index: deletionTombstoneIndex, total: sortedMessages.length });
-            // Check if there are messages BEFORE it (index < deletionTombstoneIndex)
-            // If so, slice!
-            // slice(startIndex) -> returns new array from Start to End.
-            // We want [Tombstone, ...NewerMessages]
-            sortedMessages = sortedMessages.slice(deletionTombstoneIndex);
-        }
-
-        // Normal filtering for other control messages
-
-
-        const { entries: renderEntries, shimmerIds } = buildRenderEntries({
-            timelineMessages: sortedMessages
-        });
-
-        const anchorNeeded = preserveScroll || (!scrollToEnd && !this.isNearMessagesBottom());
-        const anchor = anchorNeeded ? this.captureScrollAnchor() : null;
-
-        const selfDigest = (() => {
-            try { return normalizeAccountDigest(getAccountDigest()); } catch { return null; }
-        })();
-
-        console.log('[MessageFlow] Debug DoubleTick Pre-Compute', {
-            conversationId: state.conversationId,
-            selfDigest,
-            msgCount: timelineMessages.length
-        });
-
-        const { visibleStatusSet } = computeStatusVisibility({
-            timelineMessages,
-            conversationId: state.conversationId || null,
-            selfDigest
-        });
-
-        console.log('[MessageFlow] Debug StatusVisibility', {
-            visibleCount: visibleStatusSet.size,
-            sample: Array.from(visibleStatusSet).slice(-3)
-        });
-
-        // Render Main List (Unified)
-        if (this.messageRenderer) {
-            this.messageRenderer.render(renderEntries, {
-                state: { ...state, activePeerDigest: state.activePeerDigest, activePeerDeviceId: state.activePeerDeviceId, conversationId: state.conversationId },
-                contacts: this.sessionStore.contactIndex,
-                visibleStatusSet,
-                shimmerIds,
-                forceFullRender // [FIX] Pass flag to renderer
-            });
-        }
-
-        // Placeholders container is no longer used
-        if (this.elements.messagesPlaceholders) {
-            this.elements.messagesPlaceholders.innerHTML = '';
-            this.elements.messagesPlaceholders.style.display = 'none';
-        }
-
-        // Update Empty State
-        if (renderEntries.length) {
-            this.elements.messagesEmpty?.classList.add('hidden');
-        } else {
-            this.elements.messagesEmpty?.classList.remove('hidden');
-            if (this.elements.messagesEmpty) {
-                // [FIX] Dynamic Empty State Text
-                // If we have an active peer but no messages, it means "No messages yet".
-                // If we have no active peer, it means "No conversation selected".
-                if (state.activePeerDigest) {
-                    this.elements.messagesEmpty.textContent = '尚無訊息';
-                } else {
-                    this.elements.messagesEmpty.textContent = '尚未選擇任何對話';
-                }
-            }
-        }
-
-        this.renderedIds = renderEntries.map(m => normalizeTimelineMessageId(m));
-        this.renderConversationId = state.conversationId || null;
-        this.renderPlaceholderCount = placeholderCount;
-
-        this.updateLoadMoreVisibility();
-        this.updateMessagesScrollOverflow();
-
-        if (!scrollToEnd && !scrollToTop && anchor) {
-            this.restoreScrollFromAnchor(anchor);
-        } else if (scrollToEnd) {
-            scrollToBottomSoon(this.elements.scrollEl);
-            this.setNewMessageHint(false);
-        } else if (scrollToTop) {
-            // [FIX] Scroll to Top with 50px offset
-            // Threshold is 20px (messages-pane.js), so we must be > 20px to avoid infinite loop.
-            if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 50;
+            if (currentListEl) this.messageRenderer.listEl = currentListEl;
+            // Placeholders are now inline, so we don't update placeholdersEl
         }
     }
 
-    /**
-     * Initialize scroll event listeners.
-     */
-    init() {
-        super.init();
+    // Merge and Sort Entries
+    // 1. Timeline Messages
+    // 2. Replay Placeholders
+    // 3. Gap Placeholders
+    const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
+    const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
+    const pendingLiveEntries = getPendingLivePlaceholderEntries(state.conversationId);
+    const mergedRaw = [
+        ...timelineMessages,
+        ...replayPlaceholderEntries,
+        ...gapPlaceholderEntries,
+        ...pendingLiveEntries
+    ];
 
-        if (this.elements.scrollEl) {
-            this.elements.scrollEl.addEventListener('scroll', () => this.handleMessagesScroll());
-            this.elements.scrollEl.addEventListener('touchend', () => this.handleMessagesTouchEnd());
-            this.elements.scrollEl.addEventListener('wheel', () => this.handleMessagesWheel(), { passive: true });
+    const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length + pendingLiveEntries.length;
+
+    // Sort first to ensure chronological order
+    // Sort first to ensure chronological order
+    let sortedMessages = sortMessagesByTimelineLocal(mergedRaw);
+
+    console.log('[MessageFlow] Debug Render: Pre-Filter', {
+        stateConvId: state.conversationId,
+        timelineCount: timelineMessages.length,
+        placeholderCount,
+        mergedCount: sortedMessages.length,
+        ids: sortedMessages.map(m => m.id),
+        types: sortedMessages.map(m => m.msgType),
+        sample: sortedMessages.slice(-3).map(m => ({ id: m.id, type: m.msgType }))
+    });
+
+    // Filter / Cutoff Logic for Deletion Tombstone
+    // Find the LATEST conversation-deleted message (if multiple, the latest one is the effective barrier)
+    let deletionTombstoneIndex = -1;
+    for (let i = sortedMessages.length - 1; i >= 0; i--) {
+        const msg = sortedMessages[i];
+        const type = msg.msgType || msg.subtype || 'text';
+        if (type === 'conversation-deleted') {
+            deletionTombstoneIndex = i;
+            break;
         }
     }
+
+    // Apply Hard Cutoff: Keep the tombstone and everything AFTER it.
+    if (deletionTombstoneIndex !== -1) {
+        console.log('[MessageFlow] Debug Render: Tombstone Found', { index: deletionTombstoneIndex, total: sortedMessages.length });
+        // Check if there are messages BEFORE it (index < deletionTombstoneIndex)
+        // If so, slice!
+        // slice(startIndex) -> returns new array from Start to End.
+        // We want [Tombstone, ...NewerMessages]
+        sortedMessages = sortedMessages.slice(deletionTombstoneIndex);
+    }
+
+    // Normal filtering for other control messages
+
+
+    const { entries: renderEntries, shimmerIds } = buildRenderEntries({
+        timelineMessages: sortedMessages
+    });
+
+    const anchorNeeded = preserveScroll || (!scrollToEnd && !this.isNearMessagesBottom());
+    const anchor = anchorNeeded ? this.captureScrollAnchor() : null;
+
+    const selfDigest = (() => {
+        try { return normalizeAccountDigest(getAccountDigest()); } catch { return null; }
+    })();
+
+    console.log('[MessageFlow] Debug DoubleTick Pre-Compute', {
+        conversationId: state.conversationId,
+        selfDigest,
+        msgCount: timelineMessages.length
+    });
+
+    const { visibleStatusSet } = computeStatusVisibility({
+        timelineMessages,
+        conversationId: state.conversationId || null,
+        selfDigest
+    });
+
+    console.log('[MessageFlow] Debug StatusVisibility', {
+        visibleCount: visibleStatusSet.size,
+        sample: Array.from(visibleStatusSet).slice(-3)
+    });
+
+    // Render Main List (Unified)
+    if (this.messageRenderer) {
+        this.messageRenderer.render(renderEntries, {
+            state: { ...state, activePeerDigest: state.activePeerDigest, activePeerDeviceId: state.activePeerDeviceId, conversationId: state.conversationId },
+            contacts: this.sessionStore.contactIndex,
+            visibleStatusSet,
+            shimmerIds,
+            forceFullRender // [FIX] Pass flag to renderer
+        });
+    }
+
+    // Placeholders container is no longer used
+    if (this.elements.messagesPlaceholders) {
+        this.elements.messagesPlaceholders.innerHTML = '';
+        this.elements.messagesPlaceholders.style.display = 'none';
+    }
+
+    // Update Empty State
+    if (renderEntries.length) {
+        this.elements.messagesEmpty?.classList.add('hidden');
+    } else {
+        this.elements.messagesEmpty?.classList.remove('hidden');
+        if (this.elements.messagesEmpty) {
+            // [FIX] Dynamic Empty State Text
+            // If we have an active peer but no messages, it means "No messages yet".
+            // If we have no active peer, it means "No conversation selected".
+            if (state.activePeerDigest) {
+                this.elements.messagesEmpty.textContent = '尚無訊息';
+            } else {
+                this.elements.messagesEmpty.textContent = '尚未選擇任何對話';
+            }
+        }
+    }
+
+    this.renderedIds = renderEntries.map(m => normalizeTimelineMessageId(m));
+    this.renderConversationId = state.conversationId || null;
+    this.renderPlaceholderCount = placeholderCount;
+
+    this.updateLoadMoreVisibility();
+    this.updateMessagesScrollOverflow();
+
+    if (!scrollToEnd && !scrollToTop && anchor) {
+        this.restoreScrollFromAnchor(anchor);
+    } else if (scrollToEnd) {
+        scrollToBottomSoon(this.elements.scrollEl);
+        this.setNewMessageHint(false);
+    } else if (scrollToTop) {
+        // [FIX] Scroll to Top with 50px offset
+        // Threshold is 20px (messages-pane.js), so we must be > 20px to avoid infinite loop.
+        if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 50;
+    }
+}
+
+/**
+ * Initialize scroll event listeners.
+ */
+init() {
+    super.init();
+
+    if (this.elements.scrollEl) {
+        this.elements.scrollEl.addEventListener('scroll', () => this.handleMessagesScroll());
+        this.elements.scrollEl.addEventListener('touchend', () => this.handleMessagesTouchEnd());
+        this.elements.scrollEl.addEventListener('wheel', () => this.handleMessagesWheel(), { passive: true });
+    }
+}
 }
