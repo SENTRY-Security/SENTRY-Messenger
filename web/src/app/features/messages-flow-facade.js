@@ -257,7 +257,12 @@ function createMessagesFlowFacade() {
     onWsIncomingMessageNew(payloadOrEvent = {}, ctx = null) {
       const flags = getMessagesFlowFlags();
       const hasExplicitCtx = !!(ctx && typeof ctx === 'object');
-      const isPayloadObject = !hasExplicitCtx && payloadOrEvent && typeof payloadOrEvent === 'object' && (
+      // [FIX] Wrapper Object Detection
+      // We must detect if payloadOrEvent is a wrapper (containing event/handleIncomingSecureMessage)
+      // even if `ctx` is also passed (as done in app-mobile.js).
+      // Previous logic `!hasExplicitCtx && ...` incorrectly assumed that if ctx exists, 
+      // payloadOrEvent MUST be the raw event.
+      const isPayloadObject = payloadOrEvent && typeof payloadOrEvent === 'object' && (
         Object.prototype.hasOwnProperty.call(payloadOrEvent, 'event')
         || Object.prototype.hasOwnProperty.call(payloadOrEvent, 'msg')
         || typeof payloadOrEvent.handleIncomingSecureMessage === 'function'
