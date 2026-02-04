@@ -763,12 +763,12 @@ export class MessageFlowController extends BaseController {
             this.refreshTimelineState(convId);
             this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
 
-            // [FIX] Scroll to Top for history loading (to show oldest of new batch)
+            // [FIX] Preserve scroll position for history loading
             const isHistory = directionalOrder === 'history';
             this.updateMessagesUI({
-                scrollToEnd: !isHistory,
-                scrollToTop: isHistory,
-                preserveScroll: false
+                scrollToEnd: !isHistory, // New messages -> scroll to bottom
+                scrollToTop: false,      // Never force scroll to top on append
+                preserveScroll: isHistory // Restore anchor for history
             });
 
             this.syncThreadFromActiveMessages(); // Update header (peerName/avatar)
