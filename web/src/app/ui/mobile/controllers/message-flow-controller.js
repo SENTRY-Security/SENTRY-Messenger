@@ -1061,6 +1061,25 @@ export class MessageFlowController extends BaseController {
 
         // Normal filtering for other control messages
 
+        // [FIX] Update Next Cursor for History Scroll
+        // We must identify the oldest PERSISTED message to serve as the cursor for "Load More".
+        // sortedMessages is ordered Old -> New.
+        if (sortedMessages.length > 0) {
+            const oldestPersistent = sortedMessages.find(m =>
+                !m.placeholder &&
+                m.msgType !== 'placeholder' &&
+                m.msgType !== 'gap_placeholder' &&
+                !m.isHistoryReplay
+            );
+            if (oldestPersistent) {
+                state.nextCursor = {
+                    ts: oldestPersistent.ts || oldestPersistent.timestamp,
+                    id: oldestPersistent.messageId || oldestPersistent.id
+                };
+                // console.log('[MessageFlow] Cursor Updated:', state.nextCursor);
+            }
+        }
+
 
         const { entries: renderEntries, shimmerIds } = buildRenderEntries({
             timelineMessages: sortedMessages
