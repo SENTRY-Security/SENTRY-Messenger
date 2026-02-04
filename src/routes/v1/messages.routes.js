@@ -29,6 +29,9 @@ r.post('/messages', asyncH(createMessage));
 // GET /api/v1/conversations/:convId/messages
 r.get('/conversations/:convId/messages', asyncH(listMessages));
 
+// PROBE
+r.get('/messages/probe', (req, res) => { res.json({ probe: 'ok' }); });
+
 // GET /api/v1/messages/secure?conversationId=
 r.get('/messages/secure', asyncH(listSecureMessages));
 

@@ -2584,7 +2584,18 @@ async function handleMessagesRoutes(req, env) {
         cursorClause = 'AND (counter < ?2 OR (counter = ?2 AND id < ?3))';
       } else if (cursorTs) {
         params.push(cursorTs, cursorId);
-        cursorClause = 'AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))';
+        // [FIX] Handle Mixed Units: Normalize DB created_at to Seconds
+        // If created_at > 1e11 (MS), divide by 1000. Else use as is.
+        // We compare normalized DB time against cursorTs (which is presumed Seconds).
+        cursorClause = `
+          AND (
+            (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END) < ?2
+            OR (
+              (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END) = ?2
+              AND id < ?3
+            )
+          )
+        `;
       }
       params.push(nextLimit + 1);
 
@@ -2598,7 +2609,10 @@ async function handleMessagesRoutes(req, env) {
              SELECT min_counter FROM deletion_cursors 
              WHERE conversation_id=?1 AND account_digest=?${params.length + 1}
            ), -1)
-         ORDER BY counter DESC, created_at DESC, id DESC
+         ORDER BY 
+           counter DESC,
+           (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END) DESC,
+           id DESC
          LIMIT ?${params.length}
       `).bind(...params, requesterDigest);
 
