@@ -23,7 +23,8 @@ import {
 } from '../../../features/messages/ui/renderer.js';
 import {
     getReplayPlaceholderEntries,
-    getGapPlaceholderEntries
+    getGapPlaceholderEntries,
+    getPendingLivePlaceholderEntries
 } from '../../../features/messages/placeholder-store.js?v=fix_placeholder';
 import {
     normalizeTimelineMessageId,
@@ -46,6 +47,7 @@ import {
 } from '../../../features/messages/ui/renderer.js';
 import {
     consumeReplayPlaceholderBatch,
+    consumePendingLivePlaceholderBatch,
     invalidateGapPlaceholderState,
     markGapPlaceholderFailures
 } from '../../../features/messages/placeholder-store.js';
@@ -497,6 +499,7 @@ export class MessageFlowController extends BaseController {
             }
             const hasLiveEntries = batchEntries.some((item) => item?.isHistoryReplay !== true);
             if (hasLiveEntries) {
+                consumePendingLivePlaceholderBatch(convId, batchEntries);
                 invalidateGapPlaceholderState(convId);
             }
 
@@ -843,13 +846,15 @@ export class MessageFlowController extends BaseController {
         // 3. Gap Placeholders
         const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
         const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
+        const pendingLiveEntries = getPendingLivePlaceholderEntries(state.conversationId);
         const mergedRaw = [
             ...timelineMessages,
             ...replayPlaceholderEntries,
-            ...gapPlaceholderEntries
+            ...gapPlaceholderEntries,
+            ...pendingLiveEntries
         ];
 
-        const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length;
+        const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length + pendingLiveEntries.length;
 
         // Sort first to ensure chronological order
         // Sort first to ensure chronological order

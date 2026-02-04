@@ -24,6 +24,7 @@ const placeholderReplayStateByConv = new Map();
 const placeholderReplayRevealByConv = new Map();
 const placeholderGapStateByConv = new Map();
 const placeholderGapRevealByConv = new Map();
+const placeholderPendingLiveStateByConv = new Map();
 
 export function resolvePlaceholderMode({ replayMode, reason } = {}) {
     if (replayMode) return 'replay';
@@ -85,7 +86,8 @@ export function invalidateGapPlaceholderState(conversationId) {
 export function getPlaceholderCount(conversationId) {
     const replayEntries = getReplayPlaceholderEntries(conversationId);
     const gapEntries = getGapPlaceholderEntries(conversationId);
-    const count = replayEntries.length + gapEntries.length;
+    const pendingLiveEntries = getPendingLivePlaceholderEntries(conversationId);
+    const count = replayEntries.length + gapEntries.length + pendingLiveEntries.length;
     return count > 0 ? count : 0;
 }
 
@@ -385,9 +387,24 @@ export function consumeReplayPlaceholderBatch(conversationId, entries = []) {
     return true;
 }
 
+export function updatePendingLivePlaceholderStatus(conversationId, { messageId, status }) {
+    const key = normalizePlaceholderKey(conversationId);
+    if (!key || !messageId || !status) return false;
+    const list = placeholderPendingLiveStateByConv.get(key);
+    if (!Array.isArray(list)) return false;
+
+    const entry = list.find(p => p.messageId === messageId);
+    if (entry && entry.status !== status) {
+        entry.status = status;
+        return true;
+    }
+    return false;
+}
+
 export function resetPlaceholderState() {
     placeholderReplayStateByConv.clear();
     placeholderReplayRevealByConv.clear();
     placeholderGapStateByConv.clear();
     placeholderGapRevealByConv.clear();
+    placeholderPendingLiveStateByConv.clear();
 }

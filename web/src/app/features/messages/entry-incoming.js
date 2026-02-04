@@ -30,6 +30,9 @@ import {
     removeContactCore
 } from '../../ui/mobile/contact-core-store.js';
 import {
+    addPendingLivePlaceholder
+} from './placeholder-store.js';
+import {
     splitPeerKey,
     normalizePeerKey
 } from '../conversation.js';
@@ -242,6 +245,22 @@ export async function handleIncomingSecureMessage(event, deps) {
     const peerKey = normalizePeerKey({ peerAccountDigest: peerDigestForWrite, peerDeviceId: resolvedPeerDeviceId }) || peerDigestRaw;
     const activePeerKey = normalizePeerKey(state.activePeerDigest);
     const active = (state.conversationId === convId && activePeerKey === peerKey) || false;
+
+    if (active) {
+        try {
+            const header = event?.header || {};
+            const counter = header?.n ?? header?.counter ?? event?.counter;
+            addPendingLivePlaceholder({
+                conversationId: convId,
+                messageId: event?.messageId || event?.id,
+                counter: counter,
+                ts: tsRaw,
+                raw: event
+            });
+        } catch (err) {
+            // Safe fallthrough
+        }
+    }
 
     // Upsert stores
     upsertContactCore({

@@ -15,6 +15,7 @@ import { triggerContactSecretsBackup } from '../../../features/contact-backup.js
 import { REMOTE_BACKUP_TRIGGER_DECRYPT_OK_BATCH } from '../../../features/restore-policy.js';
 import { getLocalProcessedCounter } from '../local-counter.js';
 import { getSecureMessageByCounter } from '../../../api/messages.js';
+import { updatePendingLivePlaceholderStatus } from '../../../features/messages/placeholder-store.js';
 
 let decryptOkSinceBackup = 0;
 
@@ -624,6 +625,11 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
             gapSize,
             action: 'abort_retry'
           }, LIVE_MVP_LOG_CAP);
+
+          updatePendingLivePlaceholderStatus(conversationId, {
+            messageId: targetMessageId,
+            status: 'blocked'
+          });
 
           throw new Error(`Gap detected (Local: ${localMax}, Incoming: ${counter}). Aborting live process to wait for history fill.`);
         }
