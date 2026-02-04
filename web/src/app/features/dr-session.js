@@ -393,11 +393,16 @@ async function seedTransportCounterFromServer({
     for (const entry of items) {
       const senderAccount = normalizeAccountDigest(entry?.sender_account_digest || entry?.senderAccountDigest || null);
       // [FIX] Fail-Close: Strictly require senderAccount to match self.
-      if (!senderAccount || senderAccount !== digest) continue;
+      // if (!senderAccount || senderAccount !== digest) continue;
+
       const senderDevice = entry?.sender_device_id || entry?.senderDeviceId || null;
       // [FIX] Fail-Close: Strictly require senderDevice to match self (counters are device-specific).
+      // This is the primary proof of ownership.
       if (!senderDevice || senderDevice !== deviceId) continue;
-      const candidates = [];
+
+      // [FIX] Relaxed Account Check:
+      // If account is present, it MUST match. If missing, trust the strict Device ID.
+      if (senderAccount && senderAccount !== digest) continue;
       const directCounter = Number(entry?.counter ?? entry?.n);
       if (Number.isFinite(directCounter) && directCounter > 0) candidates.push(directCounter);
       try {
@@ -1231,7 +1236,10 @@ export function hydrateDrStatesFromContactSecrets({ source = 'hydrateDrStatesFro
         peerDeviceId,
         snapshot,
         sourceTag: source || 'hydrateDrStatesFromContactSecrets',
-        force: source === 'post-login-hydrate' || source === 'restore_pipeline_stage3'
+        sourceTag: source || 'hydrateDrStatesFromContactSecrets',
+        // [FIX] PREVENT OVERWRITE: Do not force overwrite if local state is newer.
+        // source === 'post-login-hydrate' should respect downgrade protection.
+        force: source === 'restore_pipeline_stage3'
       });
       if (ok) restoredCount += 1;
       else skippedCount += 1;
