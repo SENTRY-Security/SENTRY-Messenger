@@ -389,10 +389,23 @@ export async function smartFetchMessages({
         await enqueueDrIncomingOp(groupLockKey, async () => {
             for (const item of groupItems) {
                 const counter = Number(item.counter ?? item.n);
+
+                // [FIX] Robust Outgoing Detection
+                // Explicitly check Device ID first. If it matches Self, it IS outgoing.
+                // This prevents "Route B" (Live Fallback) from processing self-messages as incoming
+                // which would corrupt the Receiver Chain (Nr) with Sender Counter (Ns) values.
+                const itemDeviceId = item.senderDeviceId || item.sender_device_id || item.header?.device_id;
+
                 const rawSender = item.sender || item.sender_account_digest || item.senderAccountDigest;
                 const sender = rawSender ? (rawSender.includes('::') ? rawSender.split('::')[0] : rawSender) : null;
                 const myDigest = selfDigest ? (selfDigest.includes('::') ? selfDigest.split('::')[0] : selfDigest) : null;
-                const isOutgoing = sender && myDigest && sender === myDigest;
+
+                let isOutgoing = false;
+                if (selfDeviceId && itemDeviceId && selfDeviceId === itemDeviceId) {
+                    isOutgoing = true;
+                } else if (sender && myDigest && sender === myDigest) {
+                    isOutgoing = true;
+                }
 
                 // Skip counter validation for Outgoing messages (Vault doesn't need it)
                 if (!isOutgoing && !Number.isFinite(counter)) {
