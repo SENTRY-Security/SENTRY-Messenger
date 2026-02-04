@@ -291,6 +291,7 @@ export async function handleIncomingSecureMessage(event, deps) {
     // If we trigger background sync here, it locks the DR Session.
     // Then MessageFlowController's fetch ABORTS because "Session Locked".
     // So ONLY trigger background sync if NOT active.
+    console.log('[entry-incoming] active check', { active, convId });
     if (!active) {
         syncContactConversation({
             convId,

@@ -259,6 +259,7 @@ export class MessageFlowController extends BaseController {
             }
 
             if (result?.action === 'content_active') {
+                console.log('[MessageFlowController] content_active', { mid: event?.messageId, stateId: this.getMessageState().conversationId });
                 // [FIX] Live Decrypt Placeholder
                 // Show a placeholder immediately while we fetch the real message.
                 // This ensures the user sees "Incoming..." even during history sync latency.

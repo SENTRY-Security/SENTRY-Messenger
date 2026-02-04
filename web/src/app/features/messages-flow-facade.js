@@ -298,7 +298,9 @@ function createMessagesFlowFacade() {
         // app-mobile didn't await it. We shouldn't block B-Route decision on it.
         // But we should catch errors.
         try {
-          legacyHandler(event);
+          console.log('[facade] Calling legacy legacyHandler', { mid: event?.messageId || event?.id });
+          const res = legacyHandler(event);
+          console.log('[facade] legacyHandler result:', res);
         } catch (e) {
           console.error('[facade] legacy handler failed', e);
         }
