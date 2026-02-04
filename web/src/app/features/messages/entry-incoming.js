@@ -67,51 +67,63 @@ export async function syncContactConversation({ convId, peerDigest, peerDeviceId
     // messages-pane had a module-level `contactSyncInFlight`.
     // We will maintain it here.
     if (contactSyncInFlight.has(key)) {
+        // [FIX] Race Condition: If sync is in flight, mark as pending to retry after current sync finishes.
+        // This ensures rapid messages (e.g. 12ms apart) are not dropped.
+        contactSyncPending.add(key);
         return;
     }
     contactSyncInFlight.add(key);
 
     try {
-        logDebugWs('[contact-sync:start]', { convId, peerDigest, peerDeviceId, reason });
+        do {
+            // Clear pending flag at start of iteration
+            contactSyncPending.delete(key);
 
-        const normIdentity = { deviceId: peerDeviceId }; // Simplified, or use util
-        const resolvedPeerDeviceId = normIdentity.deviceId || peerDeviceId || null;
+            logDebugWs('[contact-sync:start]', { convId, peerDigest, peerDeviceId, reason });
 
-        // Call facade
-        const syncResult = await messagesFlowFacade.onScrollFetchMore({
-            conversationId: convId,
-            tokenB64: tokenB64 || null,
-            peerAccountDigest: peerDigest,
-            peerDeviceId: resolvedPeerDeviceId,
-            options: {
-                mutateState: true,
-                allowReplay: false,
-                sendReadReceipt: false,
-                onMessageDecrypted: () => { },
-                silent: false,
-                sourceTag: reason ? `entry-incoming:sync:${reason}` : 'entry-incoming:sync'
+            const normIdentity = { deviceId: peerDeviceId }; // Simplified, or use util
+            const resolvedPeerDeviceId = normIdentity.deviceId || peerDeviceId || null;
+
+            // Call facade
+            const syncResult = await messagesFlowFacade.onScrollFetchMore({
+                conversationId: convId,
+                tokenB64: tokenB64 || null,
+                peerAccountDigest: peerDigest,
+                peerDeviceId: resolvedPeerDeviceId,
+                options: {
+                    mutateState: true,
+                    allowReplay: false,
+                    sendReadReceipt: false,
+                    onMessageDecrypted: () => { },
+                    silent: false,
+                    sourceTag: reason ? `entry-incoming:sync:${reason}` : 'entry-incoming:sync'
+                }
+            });
+
+            // Reporting results (logging) - simplified
+            // ...
+
+            // Return info about failures to let UI decide/update
+            const syncErrors = Array.isArray(syncResult?.errors) ? syncResult.errors : [];
+            const syncDeadLetters = Array.isArray(syncResult?.deadLetters) ? syncResult.deadLetters : [];
+
+            if (syncErrors.length || syncDeadLetters.length) {
+                // logic for gap placeholders...
+                // Only log for now
+                console.warn('[entry-incoming] sync errors/deadLetters', { syncErrors, syncDeadLetters });
             }
-        });
 
-        // Reporting results (logging) - simplified
-        // ...
-
-        // Return info about failures to let UI decide/update
-        const syncErrors = Array.isArray(syncResult?.errors) ? syncResult.errors : [];
-        const syncDeadLetters = Array.isArray(syncResult?.deadLetters) ? syncResult.deadLetters : [];
-
-        if (syncErrors.length || syncDeadLetters.length) {
-            // logic for gap placeholders...
-            // For now detailed placeholder logic is skipped or needs migration.
-            // We will signal the caller.
-        }
+            // Loop if a new request came in while we were syncing
+        } while (contactSyncPending.has(key));
 
     } finally {
         contactSyncInFlight.delete(key);
+        contactSyncPending.delete(key); // Cleanup
     }
 }
 
 const contactSyncInFlight = new Set();
+const contactSyncPending = new Set();
 
 // Re-export for backward compatibility with cached messages.js
 export { buildCounterMessageId } from './counter.js';
