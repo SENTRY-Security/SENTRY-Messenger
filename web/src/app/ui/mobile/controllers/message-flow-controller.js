@@ -495,6 +495,10 @@ export class MessageFlowController extends BaseController {
         console.log(`[MessageFlow] Auto-Resolving Gap: Local=${localMax} -> Target=${newTarget}`);
         this.deps.showToast?.('正在補齊歷史訊息...', { type: 'loading', duration: 2000 });
 
+        // [FIX] Force UI Update to show "Pending Live Placeholder" immediately
+        // The placeholder was added to the store by coordinator, but UI doesn't know until we tell it.
+        this.updateMessagesUI?.({ preserveScroll: true });
+
         try {
             let attempt = 0;
             const MAX_RETRIES = 5;
