@@ -1094,7 +1094,8 @@ const ERROR_PATTERNS = [
   { pattern: /opaque login.*failed/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /opaque.*password/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /OpaqueLoginFinishFailed/i, message: PASSWORD_ERROR_MESSAGE },
-  { pattern: /EnvelopeRecoveryError/i, message: PASSWORD_ERROR_MESSAGE }
+  { pattern: /EnvelopeRecoveryError/i, message: PASSWORD_ERROR_MESSAGE },
+  { pattern: /MK_UNWRAP_FAILED_HARDBLOCK/i, message: PASSWORD_ERROR_MESSAGE }
 ];
 
 function parseLinePayload(line) {
