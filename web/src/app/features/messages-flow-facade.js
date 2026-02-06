@@ -681,7 +681,31 @@ function createMessagesFlowFacade() {
       void peerKey;
       void tokenB64;
       void peerAccountDigest;
-      // ... same ...
+      void peerDeviceId;
+      const mergedOptions = { ...(options || {}) };
+      if (cursor && (mergedOptions.cursorTs === undefined && mergedOptions.cursorId === undefined)) {
+        if (typeof cursor === 'object' && cursor !== null) {
+          mergedOptions.cursorTs = cursor.ts ?? cursor.cursorTs ?? null;
+          mergedOptions.cursorId = cursor.id ?? cursor.cursorId ?? null;
+        } else {
+          mergedOptions.cursorTs = cursor;
+        }
+      }
+      const flags = getMessagesFlowFlags();
+      const limit = Number.isFinite(Number(mergedOptions.limit)) ? Number(mergedOptions.limit) : null;
+      const hasCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined;
+      const allowReplay = mergedOptions.allowReplay === true;
+      const isReplay = allowReplay && mergedOptions.mutateState === false;
+      const reasonCode = flags.USE_MESSAGES_FLOW_SCROLL_FETCH
+        ? (isReplay ? 'OK' : (allowReplay ? 'MUTATE_STATE_NOT_REPLAY' : 'ALLOW_REPLAY_OFF'))
+        : 'FORCED_MESSAGES_FLOW';
+      logCapped('scrollFetchRouteTrace', {
+        conversationIdPrefix8: toConversationIdPrefix8(conversationId),
+        route: 'messages-flow',
+        reasonCode,
+        hasCursor,
+        limit
+      }, 5);
       const normalizedCursor = mergedOptions.cursorTs !== undefined || mergedOptions.cursorId !== undefined
         ? { ts: mergedOptions.cursorTs ?? null, id: mergedOptions.cursorId ?? null }
         : null;
