@@ -187,14 +187,14 @@ export async function createSecureMessage({
   if (headerPayload.deviceId && !headerPayload.device_id) {
     headerPayload.device_id = headerPayload.deviceId;
   }
-  if (headerPayload.device_id && !headerPayload.deviceId) {
-    headerPayload.deviceId = headerPayload.device_id;
+  if (headerPayload.deviceId && !headerPayload.device_id) {
+    headerPayload.device_id = headerPayload.deviceId;
   }
+  // [CLEANUP] Do not auto-inject camelCase 'deviceId'. Adhere to snake_case 'device_id'.
   if (headerPayload.meta && typeof headerPayload.meta === 'object') {
     headerPayload.meta = {
       ...headerPayload.meta,
-      sender_device_id: senderDevice,
-      senderDeviceId: senderDevice
+      sender_device_id: senderDevice
     };
   }
   const overrides = {
