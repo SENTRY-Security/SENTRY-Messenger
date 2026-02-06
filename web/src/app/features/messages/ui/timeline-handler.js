@@ -89,15 +89,27 @@ export function sortMessagesByTimelineLocal(items = []) {
     for (const k of keys) cursors.set(k, 0);
 
     const total = items.length;
+    const addedIds = new Set(); // [FIX] Deduplication Tracker
+
     while (result.length < total) {
         let candidateKey = null;
         let minTs = Infinity;
-        let minCounter = Infinity; // Tie breaker? No, TS is primary for inter-stream.
+
+        // Check if we are done with all streams (since we skip duplicates, result.length might not reach total)
+        let activeStreams = 0;
 
         for (const k of keys) {
             const list = streams.get(k);
-            const idx = cursors.get(k);
+            let idx = cursors.get(k);
+
+            // [FIX] Skip already added IDs (Lookahead)
+            // If the head of the stream is already in result (via another stream? unlikely given disjoint key logic, 
+            // BUT placeholders in 'system' or mislabeled items might clash).
+            // Actually, streams are disjoint by definition (OUT vs IN:Digest:Device).
+            // Only 'SYS' vs 'Stream' might collision? Or duplicated placeholders in input array.
+            // Let's just check current head.
             if (idx >= list.length) continue;
+            activeStreams++;
 
             const msg = list[idx];
             const ts = extractMessageTimestampMs(msg) ?? 0;
@@ -107,9 +119,8 @@ export function sortMessagesByTimelineLocal(items = []) {
                 minTs = ts;
                 candidateKey = k;
             } else if (ts === minTs) {
-                // Tie breaker for same timestamp?
-                // Prefer Outgoing? or ID?
-                // Let's rely on ID for stability
+                // Tie breaker for same timestamp
+                // Rely on ID for stability
                 const currentMsg = streams.get(candidateKey)[cursors.get(candidateKey)];
                 if ((msg.id || '') < (currentMsg.id || '')) {
                     candidateKey = k;
@@ -117,15 +128,56 @@ export function sortMessagesByTimelineLocal(items = []) {
             }
         }
 
-        if (candidateKey) {
-            const list = streams.get(candidateKey);
-            const idx = cursors.get(candidateKey);
-            result.push(list[idx]);
-            cursors.set(candidateKey, idx + 1);
+        if (!candidateKey || activeStreams === 0) break;
+
+        const list = streams.get(candidateKey);
+        const idx = cursors.get(candidateKey);
+        const item = list[idx];
+
+        // [FIX] Deduplication Check
+        const id = item.id || item.messageId;
+        // Note: Placeholders might have same ID as real message.
+        // If we already added this ID, we need to decide whether to replace or skip.
+        // Result is sorted Old -> New.
+        // If we encounter a duplicate, it means we have two messages with approx same Timestamp (since we merge by TS).
+
+        if (id && addedIds.has(id)) {
+            // Already present. Usually we skip the second occurrence in a sorted merge.
+            // However, we want the "Better" version.
+            // Implementing "Replace" in `result` is expensive (O(N)).
+            // Instead, we trust the Input `items` (which contains timeline + placeholders).
+            // Usually Timeline Messages (Real) are preferred.
+            // If `sortMessagesByTimelineLocal` is called with [Timeline, Placeholders], 
+            // and they sort to similar TS.
+            // We should pick the one that is NOT a placeholder.
+
+            // Optimization: Find existing index in `result` (Scan backwards as TS is close)
+            let existingIdx = -1;
+            for (let i = result.length - 1; i >= 0; i--) {
+                const existing = result[i];
+                if ((existing.id || existing.messageId) === id) {
+                    existingIdx = i;
+                    break;
+                }
+            }
+
+            if (existingIdx !== -1) {
+                const existing = result[existingIdx];
+                const isExistingPlaceholder = existing.placeholder || existing.msgType === 'placeholder' || existing.msgType === 'gap_placeholder';
+                const isNewPlaceholder = item.placeholder || item.msgType === 'placeholder' || item.msgType === 'gap_placeholder';
+
+                // If existing is placeholder and new is NOT, replace existing.
+                if (isExistingPlaceholder && !isNewPlaceholder) {
+                    result[existingIdx] = item;
+                }
+                // Else: keep existing (prefer first encountered or already valid).
+            }
         } else {
-            // Should not happen unless logic error
-            break;
+            result.push(item);
+            if (id) addedIds.add(id);
         }
+
+        cursors.set(candidateKey, idx + 1);
     }
 
     return result;
