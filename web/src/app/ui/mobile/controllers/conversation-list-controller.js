@@ -327,7 +327,10 @@ export class ConversationListController extends BaseController {
 
                     // See above loop change.
                     // Access pre-fetched count:
+                    // See above loop change.
+                    // Access pre-fetched count:
                     const backendCount = (unreadCountsMap && unreadCountsMap[thread.conversationId]) || 0;
+                    const currentThreadVal = threadsMap.get(thread.conversationId);
                     if (currentThreadVal) {
                         currentThreadVal.unreadCount = backendCount;
                         // Clear offline count as it is subsumed by the main count or not applicable
