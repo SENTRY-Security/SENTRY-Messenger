@@ -488,6 +488,16 @@ export class MessageFlowController extends BaseController {
                 options: {
                     limit: 20,
                     sourceTag: 'load_active_conversation'
+                },
+                // [NEW] Streaming Update Handler for Background Route B
+                // This allows the UI to update "Placeholder" -> "Real Message" asynchronously
+                onStreamingUpdate: (items) => {
+                    if (items && items.length) {
+                        // We use 'history' order which is compatible with overwriting
+                        // appendBatch handles duplication/overwrite of placeholders automatically
+                        appendBatch(items, { directionalOrder: 'history' });
+                        // console.log('[MessageFlow] Streamed update:', items.length);
+                    }
                 }
             });
 
