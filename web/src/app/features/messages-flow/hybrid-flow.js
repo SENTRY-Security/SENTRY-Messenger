@@ -469,43 +469,36 @@ export async function smartFetchMessages({
                     continue;
                 }
 
-                // [FIX] Split Strategy: Route A vs Route B
-                // "Has Key" -> Route A (Batch)
-                // "No Key" -> Route B (Live Retry)
+                // [FIX] ID Mismatch Regression Revert
+                // The logical split (A vs B) relies on matching `serverKeys` by ID.
+                // However, `getCanonicalId` above is fragile compared to `vault-replay.js` robust `toMessageId`.
+                // This caused valid keys to be missed, sending History messages to Route B (Live), where they fail.
+                // 
+                // We revert to: Always Try Route A (Vault).
+                // Protection against 404s is already handled inside `vault-replay.js` via `networkFallback: !serverKeys`.
+                // If Route A fails (locally), we fallback to Route B (Repair).
 
-                const itemCanonicalId = getCanonicalId(item);
-                const hasKey = serverKeys && itemCanonicalId && serverKeys[itemCanonicalId];
+                let result = null;
+                const aErrors = [];
 
-                // If outgoing, we always assume we can decrypt via Vault (sender key) or it's self-generated.
-                // Outgoing items treated as Route A candidate generally, unless we want strict check.
-                // Actually outgoing message keys are stored in vault too.
+                // --- Route A (Vault) ---
+                // Always attempt. If `serverKeys` says no key, `vault-replay` will fail fast without network.
+                const { items: aItems, errors: errs } = await decryptReplayBatch({
+                    conversationId,
+                    items: [item],
+                    selfDeviceId,
+                    selfDigest,
+                    mk: mkRaw,
+                    serverKeys,
+                    getMessageKey: MessageKeyVault.getMessageKey,
+                    buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
+                    b64u8: naclB64u8
+                });
 
-                let useRouteA = isOutgoing || hasKey;
+                if (errs) aErrors.push(...errs);
 
-                // Checking for forced fallback (e.g. from previous errors logic) not needed if we trust the Split.
-
-                if (useRouteA) {
-                    // --- Route A (Vault) ---
-                    const { items: aItems, errors: errs } = await decryptReplayBatch({
-                        conversationId,
-                        items: [item],
-                        selfDeviceId,
-                        selfDigest,
-                        mk: mkRaw,
-                        serverKeys,
-                        getMessageKey: MessageKeyVault.getMessageKey,
-                        buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
-                        b64u8: naclB64u8
-                    });
-
-                    if (errs) aErrors.push(...errs);
-
-                    if (aItems.length) {
-                        result = { ok: true, item: aItems[0] };
-                    }
-                } else {
-                    // Mark as Route A skipped to trigger Route B below
-                    if (DEBUG.drVerbose) console.warn(`[HybridVerify] No Key for ${itemCanonicalId || item.id}. Skipping Route A, directing to Route B.`);
+                if (aItems.length) {
+                    result = { ok: true, item: aItems[0] };
                 }
 
                 // If Route A (Vault) succeeded, save the result
@@ -533,7 +526,7 @@ export async function smartFetchMessages({
                     // 1. !useRouteA (No Key)
                     // 2. useRouteA but Failed (Key Invalid / Decrypt Error)
 
-                    const routeAFailReason = aErrors.length ? (aErrors[0]?.reasonCode || aErrors[0]?.reason || 'ROUTE_A_FAIL') : (useRouteA ? 'UNKNOWN_FAIL' : 'NO_KEY_ROUTING');
+                    const routeAFailReason = aErrors.length ? (aErrors[0]?.reasonCode || aErrors[0]?.reason || 'ROUTE_A_FAIL') : 'ROUTE_A_NO_RESULT';
 
                     // Optimization: Control Skip Check
                     // If we skipped Route A because of "No Key", we assume it might be a Gap Message relevant for display (or control).
