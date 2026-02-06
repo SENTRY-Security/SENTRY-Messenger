@@ -2374,6 +2374,49 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
+  // [GAP-COUNT] Precise Offline Unread Counting
+  if (req.method === 'GET' && url.pathname === '/d1/messages/secure/gap-count') {
+    const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    const minCounterRaw = url.searchParams.get('minCounter') || url.searchParams.get('min_counter');
+    const maxCounterRaw = url.searchParams.get('maxCounter') || url.searchParams.get('max_counter');
+    const excludeSenderDigest = normalizeAccountDigest(url.searchParams.get('excludeSenderAccountDigest') || url.searchParams.get('exclude_sender_account_digest'));
+
+    const conversationId = normalizeConversationId(conversationIdRaw);
+    const minCounter = Number(minCounterRaw);
+    const maxCounter = Number(maxCounterRaw);
+
+    if (!conversationId || !Number.isFinite(minCounter) || !Number.isFinite(maxCounter)) {
+      return json({ error: 'BadRequest', message: 'conversationId, minCounter, maxCounter required' }, { status: 400 });
+    }
+
+    await ensureDataTables(env);
+
+    // Count messages in range (min < counter <= max)
+    // Optionally exclude messages sent by "me" (excludeSenderDigest)
+    const where = ['conversation_id=?1', 'counter > ?2', 'counter <= ?3'];
+    const params = [conversationId, minCounter, maxCounter];
+
+    if (excludeSenderDigest) {
+      where.push(`sender_account_digest != ?${params.length + 1}`);
+      params.push(excludeSenderDigest);
+    }
+
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) as count
+        FROM messages_secure
+       WHERE ${where.join(' AND ')}
+    `).bind(...params).first();
+
+    const count = Number(row?.count) || 0;
+
+    return json({
+      ok: true,
+      conversationId,
+      count,
+      server_time: Math.floor(Date.now() / 1000)
+    });
+  }
+
   if (req.method === 'GET' && url.pathname === '/d1/messages/by-counter') {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     const counterRaw = url.searchParams.get('counter');

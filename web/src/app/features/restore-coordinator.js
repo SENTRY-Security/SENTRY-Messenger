@@ -540,24 +540,50 @@ export async function startRestorePipeline({ source } = {}) {
             }
           } else {
             // [LAZY-DECRYPT] Offline Gap Detected
-            const gapSize = maxCounter - localProcessedCounter;
+            // [GAP-COUNT] Precise Calculation (Backend)
+            // Use the efficient API to count "Incoming + No Key" messages.
+            let gapCount = 0;
+            try {
+              const sessionParams = sessionStore.getParams() || {};
+              const selfDigest = sessionParams.accountDigest;
+
+              const countRes = await getSecureGapCount({
+                conversationId,
+                minCounter: localProcessedCounter,
+                maxCounter: maxCounter,
+                excludeSenderAccountDigest: selfDigest // Exclude my own sent messages
+              });
+              gapCount = countRes.count || 0;
+            } catch (e) {
+              // Fallback to estimation if API fails
+              gapCount = Math.max(0, maxCounter - localProcessedCounter);
+              console.warn('[Restore] Gap Count API failed, resizing to estimate:', e);
+            }
+
             const threads = sessionStore.conversationThreads;
             if (threads && typeof threads.get === 'function') {
               const thread = threads.get(conversationId);
               if (thread) {
-                // Store offline count. 
-                // Note: We might want to sum this with existing unread or store separate.
-                // Plan said: store as 'offlineUnreadCount'
-                thread.offlineUnreadCount = gapSize;
-                // Re-set to force map update if needed (shallow ref change?)
+                // Store precise offline count.
+                thread.offlineUnreadCount = gapCount;
                 threads.set(conversationId, { ...thread });
+
+                // Notify UI
+                try {
+                  const appState = require('../../ui/mobile/app-mobile').appState;
+                  if (appState?.conversationListController) {
+                    appState.conversationListController.debounceRender();
+                  }
+                } catch (uiErr) {
+                  // Ignore UI notify error
+                }
               }
             }
             recordStageResult('Stage4', {
               ok: true,
               reasonCode: 'LAZY_OFFLINE_DEFERRED',
               conversationId,
-              gapSize
+              gapSize: gapCount
             });
           }
         }

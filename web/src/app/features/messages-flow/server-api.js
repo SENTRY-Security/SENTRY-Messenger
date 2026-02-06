@@ -123,6 +123,33 @@ export async function getSecureMessageByCounter({
   return { item };
 }
 
+// [GAP-COUNT] Precise Offline Unread Counting
+export async function getSecureGapCount({
+  conversationId,
+  minCounter,
+  maxCounter,
+  excludeSenderAccountDigest,
+  getSecureGapCount: fetchGapCount = apiGetSecureGapCount
+} = {}) {
+  const { r, data } = await fetchGapCount({ conversationId, minCounter, maxCounter, excludeSenderAccountDigest });
+  if (!r?.ok) {
+    throw new Error(data?.message || 'fetch gap count failed');
+  }
+  return { count: data?.count || 0 };
+}
+
+async function apiGetSecureGapCount({ conversationId, minCounter, maxCounter, excludeSenderAccountDigest }) {
+  if (!conversationId) return { r: { ok: false }, data: { message: 'missing conversationId' } };
+  const query = new URLSearchParams({
+    conversationId,
+    minCounter: String(minCounter),
+    maxCounter: String(maxCounter)
+  });
+  if (excludeSenderAccountDigest) query.set('excludeSenderAccountDigest', excludeSenderAccountDigest);
+
+  return apiClient.get(`/d1/messages/secure/gap-count?${query.toString()}`);
+}
+
 export function createMessageServerApi(deps = {}) {
   void deps;
   return {
