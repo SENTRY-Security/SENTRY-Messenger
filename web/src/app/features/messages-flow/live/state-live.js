@@ -285,7 +285,14 @@ async function decryptIncomingSingle(params = {}, adapters) {
   const meta = raw?.meta || header?.meta || null;
   const msgTypeHint = resolveMsgType(meta, header);
   if (msgTypeHint === 'contact-share') {
+    console.log('[state-live] contact-share detected', {
+      hasToken: !!tokenB64,
+      senderDigest,
+      senderDeviceId
+    });
+
     if (!tokenB64) {
+      console.warn('[state-live] contact-share MISSING_SESSION_KEY');
       return {
         ...base,
         reasonCode: 'MISSING_SESSION_KEY',
@@ -295,7 +302,10 @@ async function decryptIncomingSingle(params = {}, adapters) {
     const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
     let applyOk = false;
     try {
+      console.log('[state-live] contact-share decrypting...');
       await decryptContactPayload(tokenB64, envelope);
+      console.log('[state-live] contact-share decrypted OK');
+
       const plaintext = JSON.stringify({ type: 'contact-share', envelope });
       const messageTs = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
       const applyResult = await applyContactShareFromCommit({
@@ -307,6 +317,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
         sourceTag: 'messages-flow:contact-share-commit',
         profileUpdatedAt: messageTs
       });
+      console.log('[state-live] contact-share applyResult', applyResult);
       applyOk = !!applyResult?.ok;
       if (applyResult?.diff && conversationId) {
         try {
