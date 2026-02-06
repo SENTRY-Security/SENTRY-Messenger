@@ -107,14 +107,16 @@ function normalizeServerItem(item) {
 
   // [STRICT SERIALIZATION] Enforce canonical 'messageId' (camelCase).
   // Downstream consumers (Vault, UI) expect 'messageId'.
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isUuid = (val) => typeof val === 'string' && val.length === 36 && UUID_REGEX.test(val);
+
   if (!item.messageId) {
-    // 1. server_message_id (Standard API)
-    // 2. message_id (Legacy API)
-    // 3. id (D1/Row ID, if UUID)
-    const mid = item.server_message_id || item.message_id || item.id;
-    if (mid && typeof mid === 'string') {
-      item.messageId = mid;
-    }
+    // 1. server_message_id (Standard API) -> UUID
+    // 2. message_id (Legacy API) -> UUID
+    // 3. id (D1/Row ID, if UUID) -> UUID ONLY
+    if (isUuid(item.server_message_id)) item.messageId = item.server_message_id;
+    else if (isUuid(item.message_id)) item.messageId = item.message_id;
+    else if (isUuid(item.id)) item.messageId = item.id;
   }
 
   return item;

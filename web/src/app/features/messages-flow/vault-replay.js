@@ -27,13 +27,26 @@ function normalizeCounterValue(value) {
 
 // [REF_CLEANUP] Duplicate timestamp logic removed. Uses parser.js Strict Mode.
 
+// [STRICT_ID] UUID Regex for validation
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(val) {
+  return typeof val === 'string' && val.length === 36 && UUID_REGEX.test(val);
+}
+
 function toMessageId(raw) {
-  if (typeof raw?.id === 'string' && raw.id.length) return raw.id;
-  if (typeof raw?.message_id === 'string' && raw.message_id.length) return raw.message_id;
-  if (typeof raw?.messageId === 'string' && raw.messageId.length) return raw.messageId;
-  if (typeof raw?.serverMessageId === 'string' && raw.serverMessageId.length) return raw.serverMessageId;
-  if (typeof raw?.server_message_id === 'string' && raw.server_message_id.length) return raw.server_message_id;
-  if (typeof raw?.serverMsgId === 'string' && raw.serverMsgId.length) return raw.serverMsgId;
+  // [STRICT AUTHORITY] Only accept UUIDs. No Row IDs, no numeric strings.
+  // Priority 1: serverMessageId (Canonical)
+  if (isUuid(raw?.serverMessageId)) return raw.serverMessageId;
+  if (isUuid(raw?.server_message_id)) return raw.server_message_id;
+
+  // Priority 2: messageId (CamelCase Canonical)
+  if (isUuid(raw?.messageId)) return raw.messageId;
+  if (isUuid(raw?.message_id)) return raw.message_id;
+
+  // Priority 3: id (Only if UUID)
+  if (isUuid(raw?.id)) return raw.id;
+
   return null;
 }
 
@@ -309,28 +322,31 @@ export async function decryptReplayBatch({
 
     // Priority 2: Fallback to local vault lookup
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
-      try {
-        // [FIX] Optimization: Authoritative Batch Keys
-        // If serverKeys is provided (not null/undefined), it means we have the full list of keys for this batch.
-        // If the key wasn't in serverKeys, and passed the cache check, it definitely doesn't exist on the server.
-        // Using !serverKeys catches cases where it might be an empty object {} or valid map.
-        // Only if serverKeys is strictly null/undefined do we allow fallback.
-        const networkFallback = !serverKeys;
 
-        vaultKeyResult = await getMessageKey({
-          conversationId,
-          messageId,
-          senderDeviceId: item.senderDeviceId,
-          targetDeviceId: selfDeviceId
-        }, { networkFallback }); // Pass optimization flag
-      } catch (err) {
-        // Ignore error, try fallback
-        vaultKeyResult = null;
+      // [STRICT AUTHORITY] No Fallback.
+      // If serverKeys is present (even if empty), it is the Single Source of Truth for this batch.
+      // If the key is not in serverKeys, IT DOES NOT EXIST.
+      // We do NOT call the API to "guess" or "check again".
+      const isAuthoritativeBatch = !!serverKeys;
+
+      if (!isAuthoritativeBatch) {
+        try {
+          vaultKeyResult = await getMessageKey({
+            conversationId,
+            messageId,
+            senderDeviceId: item.senderDeviceId,
+            targetDeviceId: selfDeviceId
+          });
+        } catch (err) {
+          vaultKeyResult = null;
+        }
+      } else {
+        // Log for debugging but do NOT fallback
+        // console.warn('[vault-replay] msg ID not in authoritative serverKeys', messageId);
       }
 
-      // [FIX] Gap Key Fallback
+      // [FIX] Gap Key Fallback (Allowed because it's local in-memory recovery, not network)
       // If authentic message ID fails, check for "gap" key stored by Live Route B.
-      // Logic: Live B stores skipped keys as "gap:v1:{counter}" because it doesn't know the server ID yet.
       if ((!vaultKeyResult || !vaultKeyResult.messageKeyB64) && Number.isFinite(item.counter)) {
         const gapMessageId = `gap:v1:${item.counter}`;
         try {

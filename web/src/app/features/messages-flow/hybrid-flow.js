@@ -389,23 +389,25 @@ export async function smartFetchMessages({
 
 
     // [FIX] Helper to converge ID lookup
+    // [FIX] Helper to converge ID lookup
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = (val) => typeof val === 'string' && val.length === 36 && UUID_REGEX.test(val);
+
     const getCanonicalId = (item) => {
         // Priority 1: Normalized camelCase UUID
-        if (item.serverMessageId) return item.serverMessageId;
-        if (item.messageId) return item.messageId;
+        if (isUuid(item.serverMessageId)) return item.serverMessageId;
+        if (isUuid(item.messageId)) return item.messageId;
 
         // Priority 2: Raw snake_case UUID (Common in API responses)
-        if (item.message_id) return item.message_id;
-        if (item.server_message_id) return item.server_message_id;
+        if (isUuid(item.message_id)) return item.message_id;
+        if (isUuid(item.server_message_id)) return item.server_message_id;
 
         // Priority 3: 'id' field if it looks like a UUID (string, long)
         // Some endpoints map UUID to 'id'
-        if (item.id && typeof item.id === 'string' && item.id.length > 20) {
-            return item.id;
-        }
+        if (isUuid(item.id)) return item.id;
 
         // Fallback: D1 Numeric ID (stringify) - Only if nothing else matches
-        if (item.id) return String(item.id);
+        // [STRICT] Do not fallback to numeric ID for authority lookup
         return null;
     };
 
