@@ -4400,8 +4400,7 @@ export async function persistContactShareSequence(params) {
   // If this fails (e.g. MissingParams, Network), we Log Warn but DO NOT revert local state.
   // This prioritizes Local Availability over Remote Consistency for this edge case.
   try {
-    const rawState = state;
-    const partialSnap = buildPartialContactSecretsSnapshot(rawState);
+    const partialSnap = buildPartialContactSecretsSnapshot(peerAccountDigest, { peerDeviceId });
     if (!partialSnap) {
       if (DEBUG.drVerbose) console.warn('[dr-session] persistContactShareSequence: snapshot build failed');
       return;

@@ -104,6 +104,19 @@ function normalizeServerItem(item) {
   if (Number.isFinite(num) && num > 0) {
     item.ts = num; // Canonicalize
   }
+
+  // [STRICT SERIALIZATION] Enforce canonical 'messageId' (camelCase).
+  // Downstream consumers (Vault, UI) expect 'messageId'.
+  if (!item.messageId) {
+    // 1. server_message_id (Standard API)
+    // 2. message_id (Legacy API)
+    // 3. id (D1/Row ID, if UUID)
+    const mid = item.server_message_id || item.message_id || item.id;
+    if (mid && typeof mid === 'string') {
+      item.messageId = mid;
+    }
+  }
+
   return item;
 };
 
