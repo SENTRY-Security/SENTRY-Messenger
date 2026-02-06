@@ -2,7 +2,10 @@
 // Event-driven max-counter probe (data-flow only).
 
 import { logCapped } from '../../core/log.js';
-import { fetchSecureMaxCounter as apiFetchSecureMaxCounter } from './server-api.js';
+import { fetchSecureMaxCounter as apiFetchSecureMaxCounter, getSecureMessageByCounter } from './server-api.js';
+import { MessageKeyVault } from '../message-key-vault.js';
+import { sessionStore } from '../../ui/mobile/session-store.js';
+import { getLocalProcessedCounter } from './local-counter.js';
 
 const MAX_COUNTER_PROBE_LOG_CAP = 5;
 
@@ -40,7 +43,7 @@ export function createMaxCounterProbe(deps = {}) {
     : (gapQueue && typeof gapQueue.enqueue === 'function' ? gapQueue.enqueue : null);
   const nowMs = typeof deps.nowMs === 'function' ? deps.nowMs : Date.now;
 
-  return async function probeMaxCounter({ conversationId, senderDeviceId, source } = {}) {
+  return async function probeMaxCounter({ conversationId, senderDeviceId, source, lazy = false } = {}) {
     const convId = typeof conversationId === 'string' ? conversationId : null;
     const deviceId = typeof senderDeviceId === 'string' ? senderDeviceId : null;
     const sourceTag = typeof source === 'string' ? source : null;
@@ -118,6 +121,59 @@ export function createMaxCounterProbe(deps = {}) {
         serverMaxCounter: 0
       }, MAX_COUNTER_PROBE_LOG_CAP);
       return { ok: true, serverMaxCounter: 0, enqueueResult: null, reason: 'no_messages_yet' };
+    }
+
+    // [LAZY-DECRYPT] Check Logic
+    if (lazy) {
+      let hasKey = false;
+      try {
+        const latestMsg = await getSecureMessageByCounter({
+          conversationId: convId,
+          counter: targetCounter
+        });
+        if (latestMsg) {
+          const mid = latestMsg.id || latestMsg.messageId || latestMsg.message_id || null;
+          const sender = latestMsg.sender || latestMsg.senderDeviceId || null;
+          let sDevId = null;
+          if (sender && sender.includes('::')) sDevId = sender.split('::')[1];
+          else if (latestMsg.sender_device_id) sDevId = latestMsg.sender_device_id;
+
+          if (mid && sDevId) {
+            const vaultRes = await MessageKeyVault.getMessageKey({
+              conversationId: convId,
+              messageId: mid,
+              senderDeviceId: sDevId
+            });
+            if (vaultRes.ok) hasKey = true;
+          }
+        }
+      } catch (e) {
+        hasKey = true; // Fallback to eager on error
+      }
+
+      if (!hasKey) {
+        // Calculate Gap and Update Session
+        const localMax = await getLocalProcessedCounter({ conversationId: convId });
+        const gapSize = targetCounter - (localMax || 0);
+        if (gapSize > 0) {
+          const threads = sessionStore.conversationThreads;
+          const thread = threads?.get?.(convId);
+          if (thread) {
+            thread.offlineUnreadCount = gapSize;
+            threads.set(convId, { ...thread });
+          }
+        }
+        logger('maxCounterProbeTrace', {
+          source: sourceTag,
+          conversationIdPrefix8,
+          senderDeviceIdSuffix4,
+          ok: true,
+          reasonCode: 'LAZY_OFFLINE_DEFERRED',
+          serverMaxCounter: targetCounter,
+          gapSize
+        }, MAX_COUNTER_PROBE_LOG_CAP);
+        return { ok: true, serverMaxCounter: targetCounter, skippedLazy: true };
+      }
     }
 
     logger('maxCounterProbeTrace', {

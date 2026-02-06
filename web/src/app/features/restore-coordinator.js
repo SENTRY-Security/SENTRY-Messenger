@@ -14,6 +14,8 @@ const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5'];
 const restoreGapQueue = createGapQueue({
   getLocalProcessedCounter: (conversationId) => getLocalProcessedCounter({ conversationId })
 });
+import { getSecureMessageByCounter } from './messages-flow/server-api.js';
+import { MessageKeyVault } from './message-key-vault.js';
 
 const initialState = () => ({
   stage: null,
@@ -488,13 +490,75 @@ export async function startRestorePipeline({ source } = {}) {
           ? serverMaxCounter
           : Math.max(serverMaxCounterMax, serverMaxCounter);
         if (maxCounter > localProcessedCounter) {
-          const result = restoreGapQueue.enqueue({
-            conversationId,
-            targetCounter: maxCounter
-          });
-          if (result?.ok) {
-            queuedJobs += 1;
-            queuedConversations += 1;
+          // [LAZY-DECRYPT] Check if we have the key for the LATEST message (maxCounter)
+          // If we have the key, it's "History" -> Enqueue for decryption (Preview).
+          // If we DO NOT have the key, it's "Offline" -> Calculate Gap, Show Bubble, Do NOT Enqueue.
+          let hasKey = false;
+          try {
+            // 1. Fetch the actual message metadata to get senderDeviceId/messageId for Vault Query
+            const latestMsg = await getSecureMessageByCounter({
+              conversationId,
+              counter: maxCounter
+            });
+            if (latestMsg) {
+              const mid = latestMsg.id || latestMsg.messageId || latestMsg.message_id || null;
+              const sender = latestMsg.sender || latestMsg.senderDeviceId || null; // API might return sender: "digest::device"
+              let sDevId = null;
+              if (sender && sender.includes('::')) sDevId = sender.split('::')[1];
+              else if (latestMsg.sender_device_id) sDevId = latestMsg.sender_device_id;
+
+              if (mid && sDevId) {
+                // 2. Check Vault
+                const vaultRes = await MessageKeyVault.getMessageKey({
+                  conversationId,
+                  messageId: mid,
+                  senderDeviceId: sDevId,
+                  // Optimization: Check cache/server-keys ONLY? No, we must check if we *can* get it.
+                  // But apiGetMessageKeyVault ensures we hit the server if not in cache.
+                  // If it returns 200, we have the key.
+                  // If it returns 404, we don't.
+                });
+                if (vaultRes.ok) {
+                  hasKey = true;
+                }
+              }
+            }
+          } catch (err) {
+            // If fetch failed, assume we might need to repair? Or safe fallback to enqueue?
+            // Fallback: Enqueue and let pipeline handle it.
+            hasKey = true;
+          }
+
+          if (hasKey) {
+            const result = restoreGapQueue.enqueue({
+              conversationId,
+              targetCounter: maxCounter
+            });
+            if (result?.ok) {
+              queuedJobs += 1;
+              queuedConversations += 1;
+            }
+          } else {
+            // [LAZY-DECRYPT] Offline Gap Detected
+            const gapSize = maxCounter - localProcessedCounter;
+            const threads = sessionStore.conversationThreads;
+            if (threads && typeof threads.get === 'function') {
+              const thread = threads.get(conversationId);
+              if (thread) {
+                // Store offline count. 
+                // Note: We might want to sum this with existing unread or store separate.
+                // Plan said: store as 'offlineUnreadCount'
+                thread.offlineUnreadCount = gapSize;
+                // Re-set to force map update if needed (shallow ref change?)
+                threads.set(conversationId, { ...thread });
+              }
+            }
+            recordStageResult('Stage4', {
+              ok: true,
+              reasonCode: 'LAZY_OFFLINE_DEFERRED',
+              conversationId,
+              gapSize
+            });
           }
         }
       }

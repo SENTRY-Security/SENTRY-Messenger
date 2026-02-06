@@ -415,7 +415,8 @@ function createMessagesFlowFacade() {
             void maxCounterProbe({
               conversationId: summaryConversationId,
               senderDeviceId: peerDeviceId,
-              source: 'gap_detected_ws'
+              source: 'gap_detected_ws',
+              lazy: true
             });
           }
           return { ok: false, reasonCode: 'GAP_DETECTED' };
@@ -573,8 +574,13 @@ function createMessagesFlowFacade() {
       void replay;
       void reason;
       void loadOptions;
+      void loadOptions;
       const flags = getMessagesFlowFlags();
-      if (flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) {
+      // [FIX] Force probe if we have a known offline gap (Lazy Decryption)
+      const thread = sessionStore.conversationThreads?.get(conversationId);
+      const hasOfflineGap = (thread?.offlineUnreadCount || 0) > 0;
+
+      if (flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE || hasOfflineGap) {
         const selfDeviceId = storeGetDeviceId();
         if (!selfDeviceId) {
           logCapped('maxCounterProbeTrace', {
@@ -588,7 +594,8 @@ function createMessagesFlowFacade() {
           void maxCounterProbe({
             conversationId,
             senderDeviceId: selfDeviceId,
-            source: 'enter_conversation'
+            source: 'enter_conversation',
+            lazy: false
           });
         }
       }

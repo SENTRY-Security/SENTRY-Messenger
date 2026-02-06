@@ -766,7 +766,7 @@ export class ConversationListController extends BaseController {
             .filter((thread) => thread?.conversationId && this._threadPeer(thread))
             .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
 
-        const totalUnread = threadEntries.reduce((sum, thread) => sum + Number(thread.unreadCount || 0), 0);
+        const totalUnread = threadEntries.reduce((sum, thread) => sum + Number(thread.unreadCount || 0) + Number(thread.offlineUnreadCount || 0), 0);
         this.deps.updateNavBadge?.('messages', totalUnread > 0 ? totalUnread : null);
 
         console.log('[ConvList] render', {
@@ -804,7 +804,8 @@ export class ConversationListController extends BaseController {
             const avatarSrc = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
             const timeLabel = this._formatConversationPreviewTime(thread.lastMessageTs);
             const snippet = this.formatThreadPreview(thread);
-            const unread = Number.isFinite(thread.unreadCount) ? thread.unreadCount : 0;
+            const offlineUnread = Number.isFinite(thread.offlineUnreadCount) ? thread.offlineUnreadCount : 0;
+            const unread = (Number.isFinite(thread.unreadCount) ? thread.unreadCount : 0) + offlineUnread;
 
             li.innerHTML = `
         <div class="item-content conversation-item-content">
@@ -816,7 +817,7 @@ export class ConversationListController extends BaseController {
             </div>
             <div class="conversation-row conversation-row-bottom">
               <span class="conversation-snippet">${escapeHtml(snippet || '尚無訊息')}</span>
-              ${unread > 0 ? `<span class="conversation-badge conversation-badge-small">${escapeHtml(unread > 99 ? '99+' : String(unread))}</span>` : ''}
+              ${unread > 0 ? `<span class="conversation-badge conversation-badge-small ${offlineUnread > 0 ? 'badge-offline-gap' : ''}">${escapeHtml(unread > 99 ? '99+' : String(unread))}</span>` : ''}
             </div>
           </div>
         </div>
