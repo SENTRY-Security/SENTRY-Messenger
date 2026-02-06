@@ -657,7 +657,7 @@ function sanitizeSnapshotInput(snapshot, { sourceTag = 'snapshot', peerAccountDi
   return out;
 }
 
-function detectSnapshotCorruption(snapshot) {
+const detectSnapshotCorruption = (snapshot) => {
   if (!snapshot || typeof snapshot !== 'object') {
     return { badField: 'snapshot', reason: 'not-object', type: typeof snapshot };
   }
@@ -665,16 +665,29 @@ function detectSnapshotCorruption(snapshot) {
     const raw = snapshot[key];
     const present = Object.prototype.hasOwnProperty.call(snapshot, key) || raw !== undefined;
     if (!present) return required ? { badField: key, reason: 'missing', type: 'undefined' } : null;
-    if (raw === null) return { badField: key, reason: 'null', type: 'object' };
+    if (raw === null) return required ? { badField: key, reason: 'null', type: 'object' } : null;
     if (typeof raw !== 'string') return { badField: key, reason: 'not-string', type: typeof raw };
     if (!raw.trim()) return { badField: key, reason: 'empty-string', type: 'string' };
     return null;
   };
-  const requiredFields = ['rk_b64', 'theirRatchetPub_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64'];
+
+  // Base required fields for ALL roles
+  const requiredFields = ['rk_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64'];
   for (const field of requiredFields) {
     const invalid = checkField(field, { required: true });
     if (invalid) return invalid;
   }
+
+  // Conditional checks based on role
+  const role = typeof snapshot.role === 'string' ? snapshot.role.toLowerCase().trim() : null;
+  const isInitiator = role === 'initiator';
+
+  // theirRatchetPub_b64 is REQUIRED for responders (or unknown roles), but OPTIONAL for initiators.
+  if (!isInitiator) {
+    const invalid = checkField('theirRatchetPub_b64', { required: true });
+    if (invalid) return invalid;
+  }
+
   const optionalFields = ['ckR_b64', 'ckS_b64'];
   for (const field of optionalFields) {
     const invalid = checkField(field, { required: false });
@@ -686,7 +699,7 @@ function detectSnapshotCorruption(snapshot) {
     if (invalid) return invalid;
   }
   return null;
-}
+};
 
 function prevalidateSnapshotOrQuarantine(snapshot, { peerAccountDigest = null, peerDeviceId = null, peerKey = null, sourceTag = null } = {}) {
   const normalizedPeerKey = peerKey || normalizePeerKeyForQuarantine({
