@@ -125,6 +125,10 @@ export class MessageFlowController extends BaseController {
         } else if (next === 'armed') {
             this.elements.loadMoreBtn.classList.remove('loading');
             if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '載入更多';
+        } else if (next === 'reached_top') {
+            this.elements.loadMoreBtn.classList.remove('hidden');
+            this.elements.loadMoreBtn.classList.remove('loading');
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '已到達對話頂端';
         }
     }
 
@@ -404,6 +408,8 @@ export class MessageFlowController extends BaseController {
         const state = this.getMessageState();
         if (state.hasMore && state.nextCursor) {
             this.setLoadMoreState('armed');
+        } else if (state.messages && state.messages.length > 0) {
+            this.setLoadMoreState('reached_top');
         } else {
             this.setLoadMoreState('hidden');
         }
@@ -500,6 +506,12 @@ export class MessageFlowController extends BaseController {
                     }
                 }
             });
+
+            // [FIX] Update hasMore state from facade result
+            // This ensures we detect "End of History" correctly
+            if (result && typeof result.hasMoreAtCursor === 'boolean') {
+                state.hasMore = result.hasMoreAtCursor;
+            }
 
             if (result.items && result.items.length) {
                 appendBatch(result.items, { directionalOrder: 'history' });

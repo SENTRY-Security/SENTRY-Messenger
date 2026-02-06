@@ -182,6 +182,10 @@ export class ActiveConversationController extends BaseController {
         state.activePeerDeviceId = convEntry?.peerDeviceId || null;
         state.viewMode = 'detail';
         state.loading = false;
+        // [FIX] Reset Cursor State
+        state.hasMore = true;
+        state.nextCursor = null;
+        state.nextCursorTs = null;
         console.log('[ActiveConversationController] state updated', {
             activePeerDigest: state.activePeerDigest,
             conversationId: state.conversationId,

@@ -2409,47 +2409,71 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
-  // [GAP-COUNT] Precise Offline Unread Counting
-  if (req.method === 'GET' && url.pathname === '/d1/messages/secure/gap-count') {
-    const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
-    const minCounterRaw = url.searchParams.get('minCounter') || url.searchParams.get('min_counter');
-    const maxCounterRaw = url.searchParams.get('maxCounter') || url.searchParams.get('max_counter');
-    const excludeSenderDigest = normalizeAccountDigest(url.searchParams.get('excludeSenderAccountDigest') || url.searchParams.get('exclude_sender_account_digest'));
 
-    const conversationId = normalizeConversationId(conversationIdRaw);
-    const minCounter = Number(minCounterRaw);
-    const maxCounter = Number(maxCounterRaw);
+  // Secure Gap Count (Precise)
+  if (req.method === 'GET' && (url.pathname === '/d1/messages/secure/gap-count' || url.pathname === '/api/v1/messages/secure/gap-count')) {
+    const conversationId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    const minCounter = Number(url.searchParams.get('minCounter') || url.searchParams.get('min_counter') || -1);
+    const maxCounter = Number(url.searchParams.get('maxCounter') || url.searchParams.get('max_counter') || -1);
+    const excludeSenderAccountDigest = url.searchParams.get('excludeSenderAccountDigest') || null;
 
-    if (!conversationId || !Number.isFinite(minCounter) || !Number.isFinite(maxCounter)) {
-      return json({ error: 'BadRequest', message: 'conversationId, minCounter, maxCounter required' }, { status: 400 });
+    if (!conversationId) return json({ error: 'MissingParams', message: 'conversationId required' }, { status: 400 });
+
+    try {
+      let query = `SELECT count(*) as count FROM messages_secure WHERE conversation_id = ?1 AND counter > ?2 AND counter <= ?3`;
+      const params = [conversationId, minCounter, maxCounter];
+
+      if (excludeSenderAccountDigest) {
+        query += ` AND sender_account_digest != ?4`;
+        params.push(excludeSenderAccountDigest);
+      }
+
+      const row = await env.DB.prepare(query).bind(...params).first();
+      return json({ count: row?.count || 0 });
+    } catch (err) {
+      console.warn('gap-count failed', err);
+      return json({ count: 0 }); // Fail safe
+    }
+  }
+
+  // [NEW] Unread Messages Count (Offline/Missing Keys)
+  if (req.method === 'POST' && (url.pathname === '/d1/messages/unread-count' || url.pathname === '/api/v1/messages/unread-count')) {
+    let body = {};
+    try { body = await req.json(); } catch { }
+    const conversationIds = Array.isArray(body?.conversationIds) ? body.conversationIds : [];
+    const selfAccountDigest = body?.selfAccountDigest || null;
+
+    if (!selfAccountDigest) {
+      return json({ error: 'MissingParams', message: 'selfAccountDigest required' }, { status: 400 });
     }
 
-    await ensureDataTables(env);
-
-    // Count messages in range (min < counter <= max)
-    // Optionally exclude messages sent by "me" (excludeSenderDigest)
-    const where = ['conversation_id=?1', 'counter > ?2', 'counter <= ?3'];
-    const params = [conversationId, minCounter, maxCounter];
-
-    if (excludeSenderDigest) {
-      where.push(`sender_account_digest != ?${params.length + 1}`);
-      params.push(excludeSenderDigest);
+    const result = {};
+    for (const conversationId of conversationIds) {
+      try {
+        const query = `
+          SELECT count(*) as count
+          FROM messages_secure m
+          LEFT JOIN message_key_vault v ON m.id = v.message_id
+          WHERE m.conversation_id = ?1
+            AND m.sender_account_digest != ?2
+            AND v.message_id IS NULL
+            AND (
+              json_extract(m.header_json, '$.meta.msgType') IS NULL
+              OR json_extract(m.header_json, '$.meta.msgType') NOT IN (
+                'read-receipt', 'delivery-receipt',
+                'session-init', 'session-ack', 'session-error',
+                'conversation-deleted', 'profile-update'
+              )
+            )
+        `;
+        const row = await env.DB.prepare(query).bind(conversationId, selfAccountDigest).first();
+        result[conversationId] = row?.count || 0;
+      } catch (err) {
+        console.warn(`unread-count failed for ${conversationId}`, err);
+        result[conversationId] = 0;
+      }
     }
-
-    const row = await env.DB.prepare(`
-      SELECT COUNT(*) as count
-        FROM messages_secure
-       WHERE ${where.join(' AND ')}
-    `).bind(...params).first();
-
-    const count = Number(row?.count) || 0;
-
-    return json({
-      ok: true,
-      conversationId,
-      count,
-      server_time: Math.floor(Date.now() / 1000)
-    });
+    return json({ counts: result });
   }
 
   if (req.method === 'GET' && url.pathname === '/d1/messages/by-counter') {
