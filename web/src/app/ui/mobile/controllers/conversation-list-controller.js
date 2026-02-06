@@ -3,14 +3,12 @@
  * Manages conversation list rendering, pull-to-refresh, and interaction.
  */
 
-import { BaseController } from './base-controller.js';
-
 import { normalizePeerKey, splitPeerKey, resolveReadyContactCoreEntry, isCoreVaultReady, listReadyContacts, upsertContactCore } from '../contact-core-store.js';
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/store.js';
 import { restorePendingInvites } from '../session-store.js';
 import { escapeHtml } from '../ui-utils.js';
-import { extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta, normalizeTimelineMessageId } from '../../../features/messages/parser.js';
-import { getLocalProcessedCounter } from '../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
+import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, normalizePeerKey, deriveMessageDirectionFromEnvelopeMeta } from '../../../core/utils.js';
+import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
 
 const CONV_PULL_THRESHOLD = 60;
