@@ -1301,6 +1301,20 @@ export function setupShareController(options) {
         // 'guest' is a UI concept, not a cryptographic role.
         role: 'initiator'
       });
+
+      // [FIX] Optimistically promote to Contact Core (Ready)
+      // Scanning a QR code implies explicit trust. We shouldn't wait for the handshake reply
+      // to show the contact in the list. This replaces the "Pending Placeholder" with a real contact.
+      upsertContactCore({
+        peerAccountDigest: resolvedOwnerDigest,
+        peerDeviceId: resolvedOwnerDeviceId,
+        conversationId,
+        conversationToken,
+        nickname: ownerNickname || null,
+        avatar: ownerAvatar || null,
+        drInit: 1 // Initiator
+      }, 'share-controller:invite-scan');
+
       logCapped('inviteSessionMaterialReady', {
         inviteId: parsed?.inviteId || null,
         conversationIdPrefix8: safePrefix(conversationId, 8),
