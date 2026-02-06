@@ -381,7 +381,17 @@ async function decryptIncomingSingle(params = {}, adapters) {
       // [FIX] Return VISIBLE System Message (Tombstone)
       // Instead of CONTROL_SKIP, we return a decrypted message so it is persisted and displayed.
       const targetNickname = applyResult?.diff?.nickname?.to || senderDigest?.slice(0, 8) || '對方';
-      const ts = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
+
+      // [FIX] Ensure valid timestamp (Fundamental Fix)
+      // raw.ts might be undefined or string. Force to Number or Date.now().
+      // Use 13-digit MS timestamp for internal consistency, convert to S for display if needed.
+      // TimelineStore expects `ts` (seconds) or `tsMs` (ms).
+      let safeTs = Number(raw?.ts || raw?.created_at || raw?.timestamp);
+      if (!Number.isFinite(safeTs)) safeTs = Date.now();
+
+      // If it looks like MS ( > 1e11), normalize to Seconds for `ts` field, keep MS for `tsMs`
+      const tsSeconds = safeTs > 1e11 ? safeTs / 1000 : safeTs;
+      const tsMs = safeTs > 1e11 ? safeTs : safeTs * 1000;
 
       return {
         ...base,
@@ -389,9 +399,10 @@ async function decryptIncomingSingle(params = {}, adapters) {
         processedCount: 1,
         okCount: 1,
         decryptedMessage: {
+          ...base.decryptedMessage, // Preserve other props
           id: messageId,
-          ts,
-          tsMs: resolveMessageTsMs(ts),
+          ts: tsSeconds,
+          tsMs: tsMs,
           direction: 'incoming',
           msgType: 'system', // Triggers Tombstone UI
           text: `你已經與 ${targetNickname} 建立安全連線 🔐`,

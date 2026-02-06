@@ -472,6 +472,15 @@ export async function smartFetchMessages({
         for (const item of groupItems) {
             // Check if key exists in serverKeys
             const id = getCanonicalId(item);
+
+            // [FIX] Guard against Invalid ID (Fundamental Fix)
+            // If item has no identifiable ID, we MUST NOT attempt Vault operations.
+            // This prevents 'missing_params' trace in MessageKeyVault.
+            if (!id || id === 'null') {
+                if (DEBUG.drVerbose) console.warn('[HybridVerify] Skipping item with invalid ID:', item);
+                continue;
+            }
+
             if (id && serverKeys && serverKeys[id]) {
                 priorityItems.push(item);
             } else {
