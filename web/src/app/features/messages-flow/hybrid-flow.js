@@ -93,48 +93,68 @@ export async function smartFetchMessages({
         cursorId: cursor?.id,
         includeKeys: true
     });
-    // [FIX] Ensure serverKeys is authoritative object to enable Fail-Fast in vault-replay
-    // If null, vault-replay assumes "unknown" and falls back to API.
-    const serverKeys = fetchedKeys || {};
+    // [FIX] Allow serverKeys to be null.
+    // If null, vault-replay will enable networkFallback (individual fetches).
+    // If {}, vault-replay assumes authoritative empty list and fails fast.
+    const serverKeys = fetchedKeys;
 
     console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', Object.keys(serverKeys).length);
 
     // --- GAP FILLING LOGIC ---
     // Detect gap based on what we ACTUALLY fetched vs what we have locally.
-    // If the lowest counter fetched is still higher than localMax + 1, we have a gap.
+    // If we have holes (either at the start OR inside the batch), fill them.
     if (rawItems.length > 0) {
         try {
-            // 1. Find the lowest counter we fetched
+            // 1. Analyze fetched counters
+            const fetchedCounters = new Set();
             let minFetched = Number.MAX_SAFE_INTEGER;
+            let maxFetched = -1;
+
             for (const item of rawItems) {
                 const c = Number(item.counter ?? item.n);
-                if (Number.isFinite(c) && c < minFetched) minFetched = c;
+                if (Number.isFinite(c)) {
+                    fetchedCounters.add(c);
+                    if (c < minFetched) minFetched = c;
+                    if (c > maxFetched) maxFetched = c;
+                }
             }
 
-            // 2. Determine missing range: (localMax, minFetched)
-            const missingStart = localMax + 1;
-            const missingEnd = minFetched - 1;
+            // 2. Identify missing counters
+            const missingCounters = [];
 
-            if (minFetched !== Number.MAX_SAFE_INTEGER && missingEnd >= missingStart) {
-                const missingCount = missingEnd - missingStart + 1;
-                console.warn(`[HybridVerify] Gap Detected! localMax=${localMax}, minFetched=${minFetched}. Missing ${missingCount} items (${missingStart}-${missingEnd}). Filling...`);
-
-                // Cap to avoid specific performance issues
-                const GAP_FILL_CAP = 50;
-                const end = Math.min(missingEnd, missingStart + GAP_FILL_CAP - 1);
-
-                const fetchPromises = [];
-                for (let c = missingStart; c <= end; c++) {
-                    fetchPromises.push(
-                        // [FIX] Request and Merge Keys for Gap Items
-                        getSecureMessageByCounter({ conversationId, counter: c, senderDeviceId: context.peerDeviceId, includeKeys: true })
-                            .then(res => ({ item: res.item, keys: res.keys }))
-                            .catch(e => {
-                                console.warn(`[HybridVerify] Failed to fill gap counter ${c}:`, e);
-                                return null;
-                            })
-                    );
+            // A. Head Gap: (localMax, minFetched)
+            const headStart = localMax + 1;
+            if (minFetched !== Number.MAX_SAFE_INTEGER && minFetched > headStart) {
+                for (let c = headStart; c < minFetched; c++) {
+                    missingCounters.push(c);
                 }
+            }
+
+            // B. Internal Gaps: Holes between minFetched and maxFetched
+            if (maxFetched > minFetched) {
+                for (let c = minFetched + 1; c < maxFetched; c++) {
+                    if (!fetchedCounters.has(c)) {
+                        missingCounters.push(c);
+                    }
+                }
+            }
+
+            if (missingCounters.length > 0) {
+                const missingCount = missingCounters.length;
+                console.warn(`[HybridVerify] Gap Detected! localMax=${localMax}, Fetched=[${minFetched}..${maxFetched}]. Missing ${missingCount} items. Filling...`);
+
+                // Cap gap fill to avoid storms
+                const GAP_FILL_CAP = 50;
+                const countersToFill = missingCounters.slice(0, GAP_FILL_CAP);
+
+                const fetchPromises = countersToFill.map(c =>
+                    getSecureMessageByCounter({ conversationId, counter: c, senderDeviceId: context.peerDeviceId, includeKeys: true })
+                        .then(res => ({ item: res.item, keys: res.keys }))
+                        .catch(e => {
+                            console.warn(`[HybridVerify] Failed to fill gap counter ${c}:`, e);
+                            return null;
+                        })
+                );
 
                 if (fetchPromises.length > 0) {
                     const filledResults = await Promise.all(fetchPromises);
