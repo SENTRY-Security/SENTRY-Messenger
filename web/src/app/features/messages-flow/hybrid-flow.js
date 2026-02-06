@@ -368,10 +368,29 @@ export async function smartFetchMessages({
         }
     }
 
+
     if (DEBUG.drVerbose) console.warn(`[HybridVerify] Processing ${sortedItems.length} items in ${deviceGroups.size} device groups.`);
 
-    // Iterate Groups Sequentially
-    for (const group of deviceGroups.values()) {
+    // [FIX] History First Strategy: Prioritize groups with Keys
+    // We want to process "History" (Old, Has Key) before "Offline" (New, No Key).
+    const sortedGroups = Array.from(deviceGroups.values()).sort((a, b) => {
+        // Check if group has any key in serverKeys
+        const hasKeyA = a.items.some(item => {
+            const id = item.id || item.messageId || item.serverMessageId;
+            return serverKeys && id && serverKeys[id];
+        });
+        const hasKeyB = b.items.some(item => {
+            const id = item.id || item.messageId || item.serverMessageId;
+            return serverKeys && id && serverKeys[id];
+        });
+
+        if (hasKeyA && !hasKeyB) return -1; // A first
+        if (!hasKeyA && hasKeyB) return 1;  // B first
+        return 0; // Maintain existing order (Time based)
+    });
+
+    // Iterate Sorted Groups Sequentially
+    for (const group of sortedGroups) {
         const groupDigest = group.digest;
         const groupDeviceId = group.deviceId;
         const groupItems = group.items;

@@ -344,10 +344,11 @@ export async function decryptReplayBatch({
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
       try {
         // [FIX] Optimization: Authoritative Batch Keys
-        // If serverKeys is provided (not null), it means we have the full list of keys for this batch.
-        // If the key wasn't in serverKeys, and passed the cache check inside getMessageKey,
-        // it definitely doesn't exist on the server (404). So we disable network fallback.
-        const networkFallback = (serverKeys === null); // Only use fallback if we don't have an authoritative list
+        // If serverKeys is provided (not null/undefined), it means we have the full list of keys for this batch.
+        // If the key wasn't in serverKeys, and passed the cache check, it definitely doesn't exist on the server.
+        // Using !serverKeys catches cases where it might be an empty object {} or valid map.
+        // Only if serverKeys is strictly null/undefined do we allow fallback.
+        const networkFallback = !serverKeys;
 
         vaultKeyResult = await getMessageKey({
           conversationId,
