@@ -424,13 +424,17 @@ export async function smartFetchMessages({
         return 0; // Maintain existing order (Time based)
     });
 
-    // Iterate Sorted Groups Sequentially
-    for (const group of sortedGroups) {
+    // Iterate Sorted Groups in Parallel
+    // [OPTIMIZATION] Parallelize Independent Device Chains
+    // Since each group locks on a unique `groupLockKey` (Digest::DeviceID), they are cryptographically independent.
+    // Parallelizing this prevents a "Slow Group" (Route B churning) from blocking a "Fast Group" (Route A Ready).
+
+    await Promise.all(sortedGroups.map(async (group) => {
         const groupDigest = group.digest;
         const groupDeviceId = group.deviceId;
         const groupItems = group.items;
 
-        if (!groupItems.length) continue;
+        if (!groupItems.length) return;
 
         // Construct STRICT Lock Key
         // Must match Live Flow: `Digest::DeviceID`
@@ -647,7 +651,7 @@ export async function smartFetchMessages({
                 }
             }
         });
-    }
+    }));
 
     // 5. Restore DESC order for Facade/UI
     decryptedItems.reverse();
