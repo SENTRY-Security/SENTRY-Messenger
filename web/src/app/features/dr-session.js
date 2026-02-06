@@ -1080,11 +1080,23 @@ export function restoreDrStateFromSnapshot(params = {}) {
 
 function isPersistableSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return false;
-  const required = ['rk_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64', 'theirRatchetPub_b64'];
+
+  // Base required fields
+  const required = ['rk_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64'];
   for (const key of required) {
     const value = snapshot[key];
     if (typeof value !== 'string' || !value.trim()) return false;
   }
+
+  // Conditional check for theirRatchetPub_b64
+  const role = typeof snapshot.role === 'string' ? snapshot.role.toLowerCase().trim() : null;
+  const isInitiator = role === 'initiator';
+
+  if (!isInitiator) {
+    const pub = snapshot.theirRatchetPub_b64;
+    if (typeof pub !== 'string' || !pub.trim()) return false;
+  }
+
   return true;
 }
 
