@@ -11,6 +11,7 @@ import { escapeHtml } from '../ui-utils.js';
 import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../features/messages/parser.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
+import { getMessagesUnreadCount } from '../../../features/messages-flow/server-api.js'; // [FIX] Backend Unread API
 
 const CONV_PULL_THRESHOLD = 60;
 const CONV_PULL_MAX = 100;
@@ -272,6 +273,19 @@ export class ConversationListController extends BaseController {
         console.time('[ConvList] refreshPreviews duration');
 
         for (const [chunkIdx, chunk] of threadChunks.entries()) {
+            // [FIX] Batch Fetch Unread Counts from Backend
+            let unreadCountsMap = {};
+            try {
+                const chunkIds = chunk.map(t => t.conversationId).filter(Boolean);
+                const selfDigest = this.deps.sessionStore?.accountDigest;
+                if (chunkIds.length > 0 && selfDigest) {
+                    const res = await getMessagesUnreadCount({ conversationIds: chunkIds, selfAccountDigest: selfDigest });
+                    unreadCountsMap = res.counts || {};
+                }
+            } catch (err) {
+                console.warn('[ConvList] Batch unread fetch failed', err);
+            }
+
             await Promise.all(chunk.map(async (thread) => {
                 const peerDigest = this._threadPeer(thread);
                 if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
@@ -297,39 +311,27 @@ export class ConversationListController extends BaseController {
                     const messages = result?.data?.items || [];
                     if (!messages.length) return;
 
-                    // [FIX] Calculate Unread Count (Online Only)
-                    // We must NOT count "Offline" messages (counter > localRead) because they are handled by offlineUnreadCount.
-                    // We only count messages that are:
-                    // 1. Decrypted/Available (counter <= localRead)
-                    // 2. Newer than last read time (ts > lastReadTs)
-                    try {
-                        const localRead = await getLocalProcessedCounter({ conversationId: thread.conversationId });
+                    // [FIX] Backend Unread Count (The "Vault Missing" Logic)
+                    // We now use the backend API to count messages that are:
+                    // 1. Incoming (Not me)
+                    // 2. Control/Hidden types excluded
+                    // 3. NO Key in Vault (Offline/Unread)
+                    // This accurately reflects the "Red Dot" count requested by user.
+                    // We assume the backend count is the "Total Unread".
 
-                        // Use current thread state for read marker
-                        const currentThreadVal = threadsMap.get(thread.conversationId);
-                        const lastReadTs = currentThreadVal?.lastReadTs || 0;
+                    // Note: We fetch this per chunk/batch in parallel with listSecureMessages?
+                    // Ideally we should batch it. But here we are inside the per-thread map.
+                    // For now, to keep structure simple, we update it if we have the data.
+                    // Wait, we can't call this API 20 times in parallel efficienty.
+                    // Better approach: Fetch counts for the WHOLE CHUNK before this map loop.
 
-                        if (localRead > 0) {
-                            // Count visible unread items in this batch
-                            let onlineUnread = 0;
-                            for (const msg of messages) {
-                                const c = Number(msg.counter || msg.n);
-                                const ts = extractMessageTimestampMs(msg);
-                                // If message is available (processed) AND newer than read marker
-                                if (c <= localRead && ts > lastReadTs && msg.direction === 'incoming') {
-                                    onlineUnread++;
-                                }
-                            }
-                            // Update unread count
-                            // Note: This is a lower bound based on fetched limit. 
-                            // Ideal: unread = localRead - lastReadCounter (if we tracked counters).
-                            // For now, based on preview fetch, this is accurate for recent items.
-                            if (currentThreadVal) {
-                                currentThreadVal.unreadCount = onlineUnread;
-                            }
-                        }
-                    } catch (err) {
-                        console.warn('[ConvList] Unread calc failed', err);
+                    // See above loop change.
+                    // Access pre-fetched count:
+                    const backendCount = (unreadCountsMap && unreadCountsMap[thread.conversationId]) || 0;
+                    if (currentThreadVal) {
+                        currentThreadVal.unreadCount = backendCount;
+                        // Clear offline count as it is subsumed by the main count or not applicable
+                        currentThreadVal.offlineUnreadCount = 0;
                     }
 
                     // [FIX] Preview Logic: Iterate Newest -> Oldest (Standard behavior)

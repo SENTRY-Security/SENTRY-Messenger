@@ -150,6 +150,27 @@ async function apiGetSecureGapCount({ conversationId, minCounter, maxCounter, ex
   return apiClient.get(`/d1/messages/secure/gap-count?${query.toString()}`);
 }
 
+// [UNREAD-COUNT] Server-Side Unread Calculation
+export async function getMessagesUnreadCount({
+  conversationIds,
+  selfAccountDigest,
+  getMessagesUnreadCount: fetchUnread = apiGetMessagesUnreadCount
+} = {}) {
+  const { r, data } = await fetchUnread({ conversationIds, selfAccountDigest });
+  if (!r?.ok) {
+    throw new Error(data?.message || 'fetch unread count failed');
+  }
+  return { counts: data?.counts || {} };
+}
+
+async function apiGetMessagesUnreadCount({ conversationIds, selfAccountDigest }) {
+  if (!selfAccountDigest) return { r: { ok: false }, data: { message: 'missing selfAccountDigest' } };
+  return apiClient.post('/d1/messages/unread-count', {
+    conversationIds,
+    selfAccountDigest
+  });
+}
+
 export function createMessageServerApi(deps = {}) {
   void deps;
   return {
