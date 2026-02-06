@@ -125,11 +125,29 @@ export async function smartFetchMessages({
             const missingCounters = [];
 
             // A. Head Gap: (localMax, minFetched)
+            // [STRICT SYNC] User requires 100% gap filling before decryption to ensure DR chain integrity.
+            // We must fetch ALL missing messages between LocalMax and CurrentBatch.
             const headStart = localMax + 1;
+
             if (minFetched !== Number.MAX_SAFE_INTEGER && minFetched > headStart) {
-                // [FIX] Counters start at 1. If headStart is 0 or negative, clamp to 1.
-                const start = Math.max(1, headStart);
-                for (let c = start; c < minFetched; c++) {
+                const totalGapSize = minFetched - headStart;
+                console.warn(`[HybridVerify] Deep Sync Triggered: Local=${localMax}, FetchedMin=${minFetched}, Gap=${totalGapSize}`);
+
+                // [SAFETY] Cap to prevent infinite loops (e.g. 500)
+                const MAX_SYNC_LIMIT = 500;
+
+                let currentStart = headStart;
+                const end = minFetched;
+
+                // Check safety limit
+                if (totalGapSize > MAX_SYNC_LIMIT) {
+                    console.warn('[HybridVerify] Max Sync Limit Reached. Capping sync size.');
+                }
+
+                // Fill up to the safety limit or the actual end
+                const actualEnd = Math.min(end, headStart + MAX_SYNC_LIMIT);
+
+                for (let c = headStart; c < actualEnd; c++) {
                     missingCounters.push(c);
                 }
             }
@@ -148,7 +166,7 @@ export async function smartFetchMessages({
                 console.warn(`[HybridVerify] Gap Detected! localMax=${localMax}, Fetched=[${minFetched}..${maxFetched}]. Missing ${missingCount} items. Filling...`);
 
                 // Cap gap fill to avoid storms
-                const GAP_FILL_CAP = 50;
+                const GAP_FILL_CAP = 500; // [FIX] Increased for Deep Sync
                 const countersToFill = missingCounters.slice(0, GAP_FILL_CAP);
 
                 const fetchPromises = countersToFill.map(c =>
