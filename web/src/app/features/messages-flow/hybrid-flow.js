@@ -469,9 +469,20 @@ export async function smartFetchMessages({
                     continue;
                 }
 
-                let result = null;
-                let useRouteA = true;
-                const aErrors = [];
+                // [FIX] Split Strategy: Route A vs Route B
+                // "Has Key" -> Route A (Batch)
+                // "No Key" -> Route B (Live Retry)
+
+                const itemCanonicalId = getCanonicalId(item);
+                const hasKey = serverKeys && itemCanonicalId && serverKeys[itemCanonicalId];
+
+                // If outgoing, we always assume we can decrypt via Vault (sender key) or it's self-generated.
+                // Outgoing items treated as Route A candidate generally, unless we want strict check.
+                // Actually outgoing message keys are stored in vault too.
+
+                let useRouteA = isOutgoing || hasKey;
+
+                // Checking for forced fallback (e.g. from previous errors logic) not needed if we trust the Split.
 
                 if (useRouteA) {
                     // --- Route A (Vault) ---
@@ -492,17 +503,14 @@ export async function smartFetchMessages({
                     if (aItems.length) {
                         result = { ok: true, item: aItems[0] };
                     }
-
-                    // [Shadow Advance REMOVED]
-                    // We removed the optimistic "Shadow Advance" logic here.
-                    // Reason: It causes race conditions with Live Message "Gap Filling".
-                    // Live Flow (coordinator.js) is responsible for detecting gaps and filling them sequentially.
-                    // Hybrid Flow should only decrypt what it has, without side-effects on the Ratchet State for future messages.
+                } else {
+                    // Mark as Route A skipped to trigger Route B below
+                    if (DEBUG.drVerbose) console.warn(`[HybridVerify] No Key for ${itemCanonicalId || item.id}. Skipping Route A, directing to Route B.`);
                 }
 
                 // If Route A (Vault) succeeded, save the result
                 if (result && result.ok && result.item) {
-                    // Check for Control messages to hide them
+                    // ... success handling ...
                     const rawType = result.item.msgType || result.item.type;
                     const subtype = normalizeSemanticSubtype(rawType);
                     const isControl = subtype && (
@@ -521,25 +529,25 @@ export async function smartFetchMessages({
                     decryptedItems.push(result.item);
                 } else {
                     // --- Route B (Live Fallback) ---
-                    // Route A failed (e.g. key missing).
-                    const routeAFailReason = aErrors.length ? (aErrors[0]?.reasonCode || aErrors[0]?.reason || 'ROUTE_A_FAIL') : 'CONTROL_SKIP';
+                    // Executed if:
+                    // 1. !useRouteA (No Key)
+                    // 2. useRouteA but Failed (Key Invalid / Decrypt Error)
+
+                    const routeAFailReason = aErrors.length ? (aErrors[0]?.reasonCode || aErrors[0]?.reason || 'ROUTE_A_FAIL') : (useRouteA ? 'UNKNOWN_FAIL' : 'NO_KEY_ROUTING');
+
+                    // Optimization: Control Skip Check
+                    // If we skipped Route A because of "No Key", we assume it might be a Gap Message relevant for display (or control).
+                    // We rely on Route B's internal checks for control messages.
+
                     const isGapMessage = counter > localMax;
                     const forceFallback = (routeAFailReason === 'CONTROL_SKIP' && isGapMessage && !isOutgoing);
 
-                    // [FIX] Optimization: If we have authoritative keys (serverKeys) and Vault failed,
-                    // do NOT retry via Route B (which would just hit the API and 404).
-                    const isAuthoritativeMiss = (routeAFailReason === 'vault_missing' && serverKeys);
-
                     // Optimization: If Control Skip (irrelevant message) and NOT forced, skip Route B
                     if (routeAFailReason === 'CONTROL_SKIP' && !forceFallback) {
-                        // silently skip
                         updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_SKIP' });
-                    } else if (isAuthoritativeMiss) {
-                        if (DEBUG.drVerbose) console.warn(`[HybridVerify] Authoritative Key Miss for ${getCanonicalId(item) || item.id}. Skipping Route B (404 Prevention).`);
-                        updateTimelineEntryStatusByCounter(conversationId, counter, 'undecryptable', { reason: 'NO_KEY_ON_SERVER' });
                     } else if (!isOutgoing) {
                         // Attempt Route B
-                        if (DEBUG.drVerbose) console.warn(`[HybridVerify] Route A failed (${routeAFailReason}). Fallback to Route B for item ${item.id}...`);
+                        if (DEBUG.drVerbose) console.warn(`[HybridVerify] Route B Activation (Reason: ${routeAFailReason}) for item ${item.id}...`);
 
                         const MAX_RETRIES = 5;
                         let retries = 0;
@@ -547,6 +555,8 @@ export async function smartFetchMessages({
 
                         // Blocking Retry Loop to ensure Vault persistence
                         while (retries <= MAX_RETRIES) {
+                            // ... existing retry loop ...
+
                             try {
                                 bResult = await consumeLiveJob({
                                     type: 'WS_INCOMING',
