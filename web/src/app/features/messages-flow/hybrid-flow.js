@@ -122,14 +122,18 @@ export async function smartFetchMessages({
     console.warn('[HybridVerify] Plan:', { conversationId, localMax, serverMax, gapSize, fetchLimit });
 
     // 2. Fetch Items (with keys included)
-    const { items: rawItems, nextCursor, keys: serverKeys } = await listSecureMessagesForReplay({
+    const { items: rawItems, nextCursor, keys: fetchedKeys } = await listSecureMessagesForReplay({
         conversationId,
         limit: fetchLimit,
         cursorTs: cursor?.ts,
         cursorId: cursor?.id,
         includeKeys: true
     });
-    console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', serverKeys ? Object.keys(serverKeys).length : 0);
+    // [FIX] Ensure serverKeys is authoritative object to enable Fail-Fast in vault-replay
+    // If null, vault-replay assumes "unknown" and falls back to API.
+    const serverKeys = fetchedKeys || {};
+
+    console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', Object.keys(serverKeys).length);
 
     // --- GAP FILLING LOGIC ---
     // If we tried to cover a gap (isGapFetch) but the time-based API returned non-contiguous counters,
@@ -158,8 +162,9 @@ export async function smartFetchMessages({
                 const fetchPromises = [];
                 for (let c = missingStart; c <= end; c++) {
                     fetchPromises.push(
-                        getSecureMessageByCounter({ conversationId, counter: c, senderDeviceId: context.peerDeviceId })
-                            .then(res => res.item)
+                        // [FIX] Request and Merge Keys for Gap Items
+                        getSecureMessageByCounter({ conversationId, counter: c, senderDeviceId: context.peerDeviceId, includeKeys: true })
+                            .then(res => ({ item: res.item, keys: res.keys }))
                             .catch(e => {
                                 console.warn(`[HybridVerify] Failed to fill gap counter ${c}:`, e);
                                 return null;
@@ -168,15 +173,23 @@ export async function smartFetchMessages({
                 }
 
                 if (fetchPromises.length > 0) {
-                    const filledItems = await Promise.all(fetchPromises);
-                    const validFilled = filledItems.filter(Boolean);
+                    const filledResults = await Promise.all(fetchPromises);
+                    const validResults = filledResults.filter(Boolean);
 
-                    if (validFilled.length > 0) {
-                        console.warn(`[HybridVerify] Filled ${validFilled.length} missing items.`);
+                    if (validResults.length > 0) {
+                        console.warn(`[HybridVerify] Filled ${validResults.length} missing items.`);
 
                         // Merge and Dedupe
                         const existingIds = new Set(rawItems.map(i => i.id || i.messageId));
-                        for (const item of validFilled) {
+                        for (const res of validResults) {
+                            const item = res.item;
+                            if (!item) continue;
+
+                            // Merge keys if present
+                            if (res.keys) {
+                                Object.assign(serverKeys, res.keys);
+                            }
+
                             const id = item.id || item.messageId;
                             if (id && !existingIds.has(id)) {
                                 rawItems.push(item);
