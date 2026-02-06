@@ -279,6 +279,8 @@ export class ActiveConversationController extends BaseController {
         }
 
         this.deps.updateComposerAvailability?.();
+        // [UX] Auto-focus input when entering conversation
+        this.deps.focusComposerInput?.();
         console.log('[ActiveConversationController] setActiveConversation: done');
     }
 

@@ -76,6 +76,21 @@ export class ComposerController extends BaseController {
     }
 
     /**
+     * Focus the input field.
+     */
+    focusInput() {
+        if (this.elements.input) {
+            // [UX] Force focus
+            // Use setTimeout to ensure we bypass any immediate blur events from UI transitions
+            setTimeout(() => {
+                this.elements.input.focus();
+            }, 0);
+            // Also try immediate in case we are in a valid stack
+            this.elements.input.focus();
+        }
+    }
+
+    /**
      * Update call/video button availability.
      */
     updateConversationActionsAvailability() {

@@ -440,6 +440,7 @@ export function initMessagesPane({
     updateMessagesScrollOverflow: () => updateMessagesScrollOverflow(),
     // Missing deps added:
     updateComposerAvailability: () => controllers.composer.updateComposerAvailability(),
+    focusComposerInput: () => controllers.composer.focusInput(),
     applyMessagesLayout: () => controllers.layout.applyMessagesLayout(),
     navbarEl,
     mainContentEl
