@@ -1821,30 +1821,23 @@ export async function sendDrPlaintextCore(params = {}) {
     const metaPayload = {
       ts: tsValue,
       sender_digest: accountDigest || null,
-      senderDigest: accountDigest || null,
       sender_device_id: senderDeviceId || null,
-      senderDeviceId: senderDeviceId || null,
-      msgType: msgType
+      msg_type: msgType
     };
     if (metaOverrides && typeof metaOverrides === 'object') {
       for (const [key, value] of Object.entries(metaOverrides)) {
-        if (key === 'msgType' || key === 'msg_type' || key === 'ts' || key === 'sender_digest' || key === 'sender_device_id') continue;
+        // Filter out redundant keys if passed in overrides
+        if (key === 'msgType' || key === 'senderDigest' || key === 'senderDeviceId') continue;
         if (value === undefined) continue;
         metaPayload[key] = value;
       }
     }
+    // Enforce consistency (snake_case only)
     metaPayload.sender_digest = accountDigest || null;
-    metaPayload.senderDigest = accountDigest || null;
     metaPayload.sender_device_id = senderDeviceId || null;
-    metaPayload.senderDeviceId = senderDeviceId || null;
-    // 強制標記訊息目標：鎖定對端 digest/device，不允許 fallback。
-    metaPayload.targetAccountDigest = receiverAccountDigest;
-    metaPayload.target_account_digest = receiverAccountDigest;
-    metaPayload.receiverAccountDigest = receiverAccountDigest;
+
+    // Target/Receiver Info
     metaPayload.receiver_account_digest = receiverAccountDigest;
-    metaPayload.targetDeviceId = receiverDeviceId;
-    metaPayload.target_device_id = receiverDeviceId;
-    metaPayload.receiverDeviceId = receiverDeviceId;
     metaPayload.receiver_device_id = receiverDeviceId;
     return metaPayload;
   };

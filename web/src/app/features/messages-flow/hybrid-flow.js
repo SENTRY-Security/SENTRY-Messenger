@@ -369,18 +369,43 @@ export async function smartFetchMessages({
     }
 
 
-    if (DEBUG.drVerbose) console.warn(`[HybridVerify] Processing ${sortedItems.length} items in ${deviceGroups.size} device groups.`);
+    // [FIX] Helper to converge ID lookup
+    const getCanonicalId = (item) => {
+        // Priority: Server UUID (usually what maps to serverKeys)
+        if (item.serverMessageId) return item.serverMessageId;
+        if (item.messageId) return item.messageId;
+        // Fallback: D1 Numeric ID (stringify)
+        if (item.id) return String(item.id);
+        return null;
+    };
+
+    if (DEBUG.drVerbose) {
+        console.warn(`[HybridVerify] Processing ${sortedItems.length} items in ${deviceGroups.size} device groups.`);
+        // Debug ID Mismatch
+        if (sortedItems.length > 0) {
+            const sample = sortedItems[0];
+            const sampleId = getCanonicalId(sample);
+            const serverKeyList = serverKeys ? Object.keys(serverKeys) : [];
+            console.warn('[HybridVerify] ID Debug:', {
+                sampleCanonical: sampleId,
+                sampleRaw: { id: sample.id, mid: sample.messageId, smid: sample.serverMessageId },
+                serverKeysCount: serverKeyList.length,
+                serverKeysSample: serverKeyList.slice(0, 3),
+                matchFound: serverKeys && sampleId && !!serverKeys[sampleId]
+            });
+        }
+    }
 
     // [FIX] History First Strategy: Prioritize groups with Keys
     // We want to process "History" (Old, Has Key) before "Offline" (New, No Key).
     const sortedGroups = Array.from(deviceGroups.values()).sort((a, b) => {
-        // Check if group has any key in serverKeys
+        // Check if group has any key in serverKeys using Canonical ID
         const hasKeyA = a.items.some(item => {
-            const id = item.id || item.messageId || item.serverMessageId;
+            const id = getCanonicalId(item);
             return serverKeys && id && serverKeys[id];
         });
         const hasKeyB = b.items.some(item => {
-            const id = item.id || item.messageId || item.serverMessageId;
+            const id = getCanonicalId(item);
             return serverKeys && id && serverKeys[id];
         });
 
