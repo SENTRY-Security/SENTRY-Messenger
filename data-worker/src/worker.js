@@ -2384,6 +2384,31 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
+  // [CALLS] Network Config Endpoint (Mock/Stub for WebRTC)
+  if (req.method === 'GET' && (url.pathname === '/d1/calls/network-config' || url.pathname === '/api/v1/calls/network-config')) {
+    return json({
+      config: {
+        version: 1,
+        turnSecretsEndpoint: '/api/v1/calls/turn-secrets', // Stub endpoint
+        ice: {
+          iceTransportPolicy: 'all',
+          bundlePolicy: 'balanced',
+          continualGatheringPolicy: 'gather_continually',
+          servers: [
+            {
+              urls: ['stun:stun.l.google.com:19302'] // Default public STUN
+            }
+          ]
+        },
+        fallback: {
+          maxPeerConnectionRetries: 2,
+          relayOnlyAfterAttempts: 2,
+          showBlockedAfterSeconds: 20
+        }
+      }
+    });
+  }
+
   // [GAP-COUNT] Precise Offline Unread Counting
   if (req.method === 'GET' && url.pathname === '/d1/messages/secure/gap-count') {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
