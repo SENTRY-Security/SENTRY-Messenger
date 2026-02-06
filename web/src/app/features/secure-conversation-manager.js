@@ -147,9 +147,23 @@ function hasReceiverReady({ peerAccountDigest, peerDeviceId }) {
   const holderRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
   const isGuestLike = relationshipRole === 'guest' || holderRole === 'guest';
   const isInitiator = relationshipRole === 'initiator' || holderRole === 'initiator';
+
+  // [DEBUG] Trace Ready Check
+  if (!hasSendChain || (!isGuestLike && !isInitiator && !hasReceiveChain)) {
+    console.log('[secure-manager] hasReceiverReady FAIL', {
+      peer: peerAccountDigest?.slice(0, 8),
+      hasState: !!state,
+      hasSendChain,
+      hasReceiveChain,
+      role: relationshipRole || holderRole,
+      isInitiator,
+      isGuestLike
+    });
+  }
+
   // [FIX] Initiators have send chain (ckS) but no receive chain (ckR) until first reply. 
   // They are valid "ready" states for receiving the first response.
-  return !!(hasSendChain && (isGuestLike || isInitiator));
+  return !!(hasSendChain && (isGuestLike || isInitiator)) || (hasSendChain && hasReceiveChain);
 }
 
 export function subscribeSecureConversation(listener) {
