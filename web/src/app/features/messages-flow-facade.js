@@ -139,7 +139,7 @@ function resolvePeerDeviceIdFromConversationId(conversationId) {
   return null;
 }
 
-function triggerMaxCounterProbeForActiveConversations({ source } = {}) {
+function triggerMaxCounterProbeForActiveConversations({ source, lazy = false } = {}) {
   const flags = getMessagesFlowFlags();
   if (!flags.USE_MESSAGES_FLOW_MAX_COUNTER_PROBE) return;
   const senderDeviceId = storeGetDeviceId();
@@ -170,7 +170,8 @@ function triggerMaxCounterProbeForActiveConversations({ source } = {}) {
     void maxCounterProbe({
       conversationId,
       senderDeviceId,
-      source: sourceTag
+      source: sourceTag,
+      lazy
     });
   }
 }
@@ -620,7 +621,8 @@ function createMessagesFlowFacade() {
       onFinally
     } = {}) {
       triggerMaxCounterProbeForActiveConversations({
-        source: normalizeSourceTag(source, 'pull_to_refresh')
+        source: normalizeSourceTag(source, 'pull_to_refresh'),
+        lazy: false
       });
       return (async () => {
         try {
@@ -668,7 +670,8 @@ function createMessagesFlowFacade() {
         restorePromise.catch(() => { });
       }
       triggerMaxCounterProbeForActiveConversations({
-        source: normalizeSourceTag(source, 'visibility_resume')
+        source: normalizeSourceTag(source, 'visibility_resume'),
+        lazy: true
       });
       return { ok: true, reasonCode: null };
     },
