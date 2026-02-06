@@ -1750,8 +1750,36 @@ export async function sendDrPlaintextCore(params = {}) {
     state = drState({ peerAccountDigest: peer, peerDeviceId });
     hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
     if (!hasDrState) {
+      // [JIT-INIT] Attempt auto-recovery for missing sessions (e.g. failed persistence after add-friend)
+      try {
+        drConsole.warn('[dr-session] JIT Session Repair Triggered', { peerAccountDigest: peer, peerDeviceId });
+        await ensureDrSession({
+          peerAccountDigest: peer,
+          peerDeviceId,
+          conversationId: params?.conversationId || null
+        });
+        // Re-fetch state after repair
+        const recoveredState = drState({ peerAccountDigest: peer, peerDeviceId });
+        if (recoveredState && recoveredState.rk) {
+          drConsole.log('[dr-session] JIT Repair Successful');
+          // Resume flow with recovered state
+          // Note: The loop or subsequent logic must be able to use the new state.
+          // Since `sendDrPlaintext` implementation might rely on `const state` variable if it was captured,
+          // we should ensure we are using the fresh state getter or recursive retry.
+          // Given current function structure, recursive retry is safest for ensuring all variables are fresh.
+          return sendDrPlaintext(params, options);
+        }
+      } catch (jitErr) {
+        drConsole.error('[dr-session] JIT Repair Failed', jitErr);
+      }
+
+      // Fallback to error if JIT failed
       const err = new Error('contact-secrets persist blocked: missing rk');
       err.code = 'MISSING_RK';
+      err.details = {
+        peerAccountDigest: peer,
+        peerDeviceId
+      };
       throw err;
     }
   }
@@ -4309,6 +4337,13 @@ export async function persistContactShareSequence(params) {
     messageId,
     state // mutable state object
   } = params;
+
+  // [GUARD] If state is incomplete (e.g. guest role without RK), skip persistence.
+  // This prevents 'FATAL: persistDrSnapshot' errors when no session actually exists.
+  if (state && !state.rk) {
+    if (DEBUG.drVerbose) console.warn('[dr-session] persistContactShareSequence: skipped (no RK)', { peerAccountDigest });
+    return;
+  }
 
   // 1. Advance State (Manual)
   // This logic mirrors the manual ratchet advance previously in state-live.js

@@ -69,7 +69,7 @@ function cleanupIncompleteContactCore(peerAccountDigest, { sourceTag = 'cleanup'
   for (const match of matches) {
     const peerKey = match?.peerKey;
     const peerDeviceId = match?.entry?.peerDeviceId || (peerKey?.includes('::') ? peerKey.split('::')[1] : null);
-    
+
     // Only cleanup if NOT complete
     if (!isContactComplete(peerAccountDigest, peerDeviceId)) {
       // Remove from contact-core
@@ -391,7 +391,8 @@ export function setupShareController(options) {
   function storeContactSecretMapping({ peerAccountDigest, peerDeviceId, sessionKey, conversation, drState, role }) {
     const hasPersistableSnapshot = (snapshot) => {
       if (!snapshot || typeof snapshot !== 'object') return false;
-      const required = ['rk_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64', 'theirRatchetPub_b64'];
+      // [FIX] theirRatchetPub_b64 is NULL for fresh Initiator (x3dh-initiate)
+      const required = ['rk_b64', 'myRatchetPriv_b64', 'myRatchetPub_b64'];
       for (const key of required) {
         const value = snapshot[key];
         if (typeof value !== 'string' || !value.trim()) return false;
@@ -1163,12 +1164,12 @@ export function setupShareController(options) {
       // [FIX] Check for existing contact with this account digest
       const existingContacts = findContactCoreByAccountDigest(resolvedOwnerDigest);
       if (existingContacts.length > 0) {
-        const anyComplete = existingContacts.some(c => 
+        const anyComplete = existingContacts.some(c =>
           isContactComplete(resolvedOwnerDigest, c?.entry?.peerDeviceId || null)
         );
         if (anyComplete) {
           // Already friends - show message and navigate to chat
-          const completeContact = existingContacts.find(c => 
+          const completeContact = existingContacts.find(c =>
             isContactComplete(resolvedOwnerDigest, c?.entry?.peerDeviceId || null)
           );
           const convId = completeContact?.entry?.conversationId || null;
