@@ -584,11 +584,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
       const isAllowedControl = semantic.subtype === 'conversation-deleted';
 
       if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && !isAllowedControl) {
-        console.warn('[state-live] CONTROL_SKIP triggered', {
-          kind: semantic.kind,
-          subtype: semantic.subtype,
-          plaintext: typeof plaintext === 'string' ? plaintext.slice(0, 50) : 'not-string'
-        });
         result.reasonCode = 'CONTROL_SKIP';
         result.skippedCount = 1;
       } else {

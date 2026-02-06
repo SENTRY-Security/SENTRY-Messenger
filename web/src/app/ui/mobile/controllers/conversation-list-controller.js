@@ -297,18 +297,36 @@ export class ConversationListController extends BaseController {
                     const messages = result?.data?.items || [];
                     if (!messages.length) return;
 
-                    // [FIX] Calculate Unread Count (Server Max - Local Read)
+                    // [FIX] Calculate Unread Count (Online Only)
+                    // We must NOT count "Offline" messages (counter > localRead) because they are handled by offlineUnreadCount.
+                    // We only count messages that are:
+                    // 1. Decrypted/Available (counter <= localRead)
+                    // 2. Newer than last read time (ts > lastReadTs)
                     try {
-                        // API returns DESC (Newest First). messages[0] is the latest.
-                        const serverMax = messages[0]?.counter || 0;
                         const localRead = await getLocalProcessedCounter({ conversationId: thread.conversationId });
-                        const unread = Math.max(0, serverMax - localRead);
 
-                        // Update unread count immediately
-                        const t = threadsMap.get(thread.conversationId);
-                        if (t) {
-                            t.unreadCount = unread;
-                            // threadsMap.set(thread.conversationId, t); // Ref update
+                        // Use current thread state for read marker
+                        const currentThreadVal = threadsMap.get(thread.conversationId);
+                        const lastReadTs = currentThreadVal?.lastReadTs || 0;
+
+                        if (localRead > 0) {
+                            // Count visible unread items in this batch
+                            let onlineUnread = 0;
+                            for (const msg of messages) {
+                                const c = Number(msg.counter || msg.n);
+                                const ts = extractMessageTimestampMs(msg);
+                                // If message is available (processed) AND newer than read marker
+                                if (c <= localRead && ts > lastReadTs && msg.direction === 'incoming') {
+                                    onlineUnread++;
+                                }
+                            }
+                            // Update unread count
+                            // Note: This is a lower bound based on fetched limit. 
+                            // Ideal: unread = localRead - lastReadCounter (if we tracked counters).
+                            // For now, based on preview fetch, this is accurate for recent items.
+                            if (currentThreadVal) {
+                                currentThreadVal.unreadCount = onlineUnread;
+                            }
                         }
                     } catch (err) {
                         console.warn('[ConvList] Unread calc failed', err);
