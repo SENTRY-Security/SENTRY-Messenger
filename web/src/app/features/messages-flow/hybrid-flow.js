@@ -370,10 +370,21 @@ export async function smartFetchMessages({
 
     // [FIX] Helper to converge ID lookup
     const getCanonicalId = (item) => {
-        // Priority: Server UUID (usually what maps to serverKeys)
+        // Priority 1: Normalized camelCase UUID
         if (item.serverMessageId) return item.serverMessageId;
         if (item.messageId) return item.messageId;
-        // Fallback: D1 Numeric ID (stringify)
+
+        // Priority 2: Raw snake_case UUID (Common in API responses)
+        if (item.message_id) return item.message_id;
+        if (item.server_message_id) return item.server_message_id;
+
+        // Priority 3: 'id' field if it looks like a UUID (string, long)
+        // Some endpoints map UUID to 'id'
+        if (item.id && typeof item.id === 'string' && item.id.length > 20) {
+            return item.id;
+        }
+
+        // Fallback: D1 Numeric ID (stringify) - Only if nothing else matches
         if (item.id) return String(item.id);
         return null;
     };
