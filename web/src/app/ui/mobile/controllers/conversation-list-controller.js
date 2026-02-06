@@ -156,6 +156,7 @@ export class ConversationListController extends BaseController {
             lastMsgType: lastMsgType || prev.lastMsgType || null,
             lastReadTs: typeof prev.lastReadTs === 'number' ? prev.lastReadTs : null,
             unreadCount: typeof prev.unreadCount === 'number' ? prev.unreadCount : 0,
+            offlineUnreadCount: typeof prev.offlineUnreadCount === 'number' ? prev.offlineUnreadCount : 0,
             previewLoaded: !!prev.previewLoaded,
             needsRefresh: !!prev.needsRefresh
         };

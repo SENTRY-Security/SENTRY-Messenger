@@ -75,51 +75,15 @@ export async function smartFetchMessages({
 
     // 1. Calculate Limits (Smart Fetch)
     let fetchLimit = limit;
-    let gapSize = 0;
     let localMax = -1;
-    let serverMax = -1;
-    let isGapFetch = false;
 
-    // Only perform smart gap check on initial load (no cursor)
+    // Initialize localMax if not provided (needed for gap detection)
     if (!cursor) {
         try {
-            // Get server max FIRST so we can use it as a hint for localMax
-            // CRITICAL: We need Peer's max counter (Incoming Chain).
-            // Pass peerDeviceId if available. If not, we can't calculate gap reliably.
-            let maxCounterVal = 0;
-            if (context.peerDeviceId) {
-                const { maxCounter } = await fetchSecureMaxCounter({ conversationId, senderDeviceId: context.peerDeviceId });
-                maxCounterVal = maxCounter;
-            }
-            serverMax = Number.isFinite(maxCounterVal) ? maxCounterVal : 0;
-
-            // Get reliably processed local max
-            localMax = await getLocalProcessedCounter({ conversationId }, { serverMax });
+            localMax = await getLocalProcessedCounter({ conversationId }, { serverMax: 0 }); // serverMax 0 as hint not available yet
             if (!Number.isFinite(localMax)) localMax = 0;
-
-            // Calculate Gap
-            gapSize = serverMax - localMax;
-
-            // If gap is positive, we must fetch enough to cover it
-            if (gapSize > 0) {
-                fetchLimit = Math.max(limit, gapSize + SMART_FETCH_BUFFER);
-                isGapFetch = true;
-            }
-        } catch (err) {
-            logHybridTrace('smartFetchCalcError', { conversationId, error: err.message });
-        }
+        } catch { localMax = 0; }
     }
-
-    logHybridTrace('smartFetchPlan', {
-        conversationId,
-        cursor,
-        localMax,
-        serverMax,
-        gapSize,
-        fetchLimit,
-        isGapFetch
-    });
-    console.warn('[HybridVerify] Plan:', { conversationId, localMax, serverMax, gapSize, fetchLimit });
 
     // 2. Fetch Items (with keys included)
     const { items: rawItems, nextCursor, keys: fetchedKeys } = await listSecureMessagesForReplay({
@@ -136,9 +100,9 @@ export async function smartFetchMessages({
     console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', Object.keys(serverKeys).length);
 
     // --- GAP FILLING LOGIC ---
-    // If we tried to cover a gap (isGapFetch) but the time-based API returned non-contiguous counters,
-    // we must explicitly fetch the missing ones.
-    if (isGapFetch && rawItems.length > 0) {
+    // Detect gap based on what we ACTUALLY fetched vs what we have locally.
+    // If the lowest counter fetched is still higher than localMax + 1, we have a gap.
+    if (rawItems.length > 0) {
         try {
             // 1. Find the lowest counter we fetched
             let minFetched = Number.MAX_SAFE_INTEGER;

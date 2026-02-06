@@ -513,12 +513,8 @@ export async function startRestorePipeline({ source } = {}) {
                   conversationId,
                   messageId: mid,
                   senderDeviceId: sDevId,
-                  // Optimization: Check cache/server-keys ONLY? No, we must check if we *can* get it.
-                  // But apiGetMessageKeyVault ensures we hit the server if not in cache.
-                  // If it returns 200, we have the key.
-                  // If it returns 404, we don't.
                 });
-                if (vaultRes.ok) {
+                if (vaultRes?.r?.ok) {
                   hasKey = true;
                 }
               }
