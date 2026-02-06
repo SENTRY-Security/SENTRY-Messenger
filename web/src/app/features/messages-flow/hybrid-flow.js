@@ -627,7 +627,19 @@ export async function smartFetchMessages({
                                     errors.push({ item, reason: 'ROUTE_B_OK_BUT_VAULT_MISSING' });
                                 }
                             }
-                        } else {
+                            // Create explicit placeholder for failure
+                            const failedItem = {
+                                ...item,
+                                msgType: 'placeholder',
+                                status: 'failed',
+                                error: bResult?.reasonCode || 'ROUTE_B_FAIL',
+                                decrypted: false,
+                                id: item.id || item.messageId,
+                                counter: Number.isFinite(counter) ? counter : 0,
+                                tsMs: item.tsMs || (Number(item.ts) * 1000) || Date.now()
+                            };
+                            decryptedItems.push(failedItem);
+
                             errors.push({ item, reason: bResult?.reasonCode || 'ROUTE_B_FAIL' });
                             logHybridTrace('hybridFlowItemFail', { conversationId, messageId: item.id, reason: bResult?.reasonCode });
                         }
@@ -635,6 +647,21 @@ export async function smartFetchMessages({
                     } else {
                         // Outgoing failure or other control skip
                         errors.push({ item, reason: routeAFailReason });
+
+                        // [FIX] Also push placeholder for severe failures if not control skip
+                        if (routeAFailReason !== 'CONTROL_SKIP') {
+                            const failedItem = {
+                                ...item,
+                                msgType: 'placeholder',
+                                status: 'failed',
+                                error: routeAFailReason,
+                                decrypted: false,
+                                id: item.id || item.messageId,
+                                counter: Number.isFinite(counter) ? counter : 0,
+                                tsMs: item.tsMs || (Number(item.ts) * 1000) || Date.now()
+                            };
+                            decryptedItems.push(failedItem);
+                        }
                     }
                 }
             }
