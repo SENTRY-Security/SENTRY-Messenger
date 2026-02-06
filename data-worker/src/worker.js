@@ -2574,7 +2574,7 @@ async function handleMessagesRoutes(req, env) {
   }
 
   // List secure messages (Smart Fetch / Visible Limit)
-  if (req.method === 'GET' && url.pathname === '/d1/messages') {
+  if (req.method === 'GET' && (url.pathname === '/d1/messages' || url.pathname === '/d1/messages/secure')) {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     let cursorTs = Number(url.searchParams.get('cursorTs') || url.searchParams.get('cursor_ts') || 0);
     let cursorCounter = Number(url.searchParams.get('cursorCounter') || url.searchParams.get('cursor_counter') || 0);
@@ -2648,10 +2648,12 @@ async function handleMessagesRoutes(req, env) {
           FROM messages_secure
          WHERE conversation_id=?1
            ${cursorClause}
+           /*
            AND counter > COALESCE((
              SELECT min_counter FROM deletion_cursors 
              WHERE conversation_id=?1 AND account_digest=?${params.length + 1}
            ), -1)
+           */
          ORDER BY 
            counter DESC,
            (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END) DESC,

@@ -45,7 +45,7 @@ function dispatchFetchEvent(name, detail) {
       evt.detail = detail;
       target.dispatchEvent(evt);
     }
-  } catch {}
+  } catch { }
 }
 
 /**
@@ -75,16 +75,18 @@ export async function fetchWithTimeout(resource, options = {}, timeout = 15000) 
       signal: controller.signal
     };
     const res = await fetch(target, fetchOptions);
-    if (FETCH_LOG_ENABLED) {
+    if (FETCH_LOG_ENABLED && !options?.silent) {
       log({ fetchDone: fmtResource(resource), status: res?.status });
     }
     return res;
   } catch (err) {
-    log({
-      fetchFail: fmtResource(target),
-      status: err?.status ?? null,
-      error: err?.message || err
-    });
+    if (!options?.silent) {
+      log({
+        fetchFail: fmtResource(target),
+        status: err?.status ?? null,
+        error: err?.message || err
+      });
+    }
     throw err;
   } finally {
     clearTimeout(id);
@@ -101,18 +103,19 @@ export async function fetchWithTimeout(resource, options = {}, timeout = 15000) 
  * @param {Record<string,string>} [extraHeaders]
  * @param {number} [timeout=15000]
  */
-export async function fetchJSON(url, bodyObj, extraHeaders = {}, timeout = 15000) {
+export async function fetchJSON(url, bodyObj, extraHeaders = {}, timeout = 15000, { silent = false } = {}) {
   const r = await fetchWithTimeout(
     url,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...extraHeaders },
-      body: JSON.stringify(bodyObj)
+      body: JSON.stringify(bodyObj),
+      silent // Pass silent flag down
     },
     timeout
   );
   const data = await safeParseJSON(r);
-  if (FETCH_LOG_ENABLED) {
+  if (FETCH_LOG_ENABLED && !silent) {
     log({ fetchJSONDone: fmtResource(url), status: r.status, dataPreview: previewData(data) });
   }
   return { r, data };
