@@ -180,10 +180,14 @@ async function ensureLiveReady(params = {}, adapters) {
   }
   const status = secureStatus?.status || null;
   if (status !== SECURE_CONVERSATION_STATUS.READY) {
-    const reasonCode = status === SECURE_CONVERSATION_STATUS.FAILED
-      ? 'SECURE_FAILED'
-      : 'SECURE_PENDING';
-    return { ok: false, reasonCode };
+    // [FIX] Allow contact-share to proceed even if status is PENDING/FAILED.
+    // This message is what transitions the state to READY.
+    if (!skipDrCheck) {
+      const reasonCode = status === SECURE_CONVERSATION_STATUS.FAILED
+        ? 'SECURE_FAILED'
+        : 'SECURE_PENDING';
+      return { ok: false, reasonCode };
+    }
   }
 
   const { digest: readyPeerAccountDigest, deviceId: readyPeerDeviceId } = (typeof secureStatus?.peerAccountDigest === 'string' && secureStatus.peerAccountDigest.includes('::'))
@@ -351,19 +355,15 @@ async function decryptIncomingSingle(params = {}, adapters) {
       }
 
       // [FIX] Advance Ratchet State & Persist to Vault (Receiver Side)
-      // verify adapters availability
-      // [FIX] Advance Ratchet State & Persist to Vault (Receiver Side)
       if (applyOk && adapters?.drState) {
         try {
           const msgHeaderN = Number(header?.n);
-          // Get reference to current state
           const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
           const currentNr = Number(state?.NrTotal ?? state?.Nr ?? 0);
 
           if (state && Number.isFinite(msgHeaderN) && msgHeaderN > currentNr) {
             if (DEBUG.drVerbose) console.log('[state-live] advancing Contact-Share Ratchet', { from: currentNr, to: msgHeaderN });
 
-            // [REDACTOR] Use shared helper
             await persistContactShareSequence({
               peerAccountDigest: senderDigest,
               peerDeviceId: senderDeviceId,
@@ -377,6 +377,30 @@ async function decryptIncomingSingle(params = {}, adapters) {
           console.warn('[state-live] persistContactShareSequence failed', err);
         }
       }
+
+      // [FIX] Return VISIBLE System Message (Tombstone)
+      // Instead of CONTROL_SKIP, we return a decrypted message so it is persisted and displayed.
+      const targetNickname = applyResult?.diff?.nickname?.to || senderDigest?.slice(0, 8) || '對方';
+      const ts = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
+
+      return {
+        ...base,
+        reasonCode: null, // process as success
+        processedCount: 1,
+        okCount: 1,
+        decryptedMessage: {
+          id: messageId,
+          ts,
+          tsMs: resolveMessageTsMs(ts),
+          direction: 'incoming',
+          msgType: 'system', // Triggers Tombstone UI
+          text: `你已經與 ${targetNickname} 建立安全連線 🔐`,
+          senderDeviceId,
+          senderDigest,
+          header: header || null
+        }
+      };
+
     } catch (err) {
       console.error('[state-live] contact-share processing failed', err);
       return {
@@ -386,12 +410,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
         failCount: 1
       };
     }
-    return {
-      ...base,
-      reasonCode: 'CONTROL_SKIP',
-      processedCount: 1,
-      skippedCount: 1
-    };
   }
   if (!adapters?.drDecryptText || !adapters?.drState) {
     return {
@@ -750,6 +768,7 @@ async function commitIncomingSingle(params = {}, adapters) {
       };
     }
     const ts = toMessageTimestamp(raw);
+    const targetNickname = applyResult?.diff?.nickname?.to || senderDigest?.slice(0, 8) || '對方';
     return {
       ok: true,
       reasonCode: null,
@@ -762,10 +781,11 @@ async function commitIncomingSingle(params = {}, adapters) {
         ts,
         tsMs: resolveMessageTsMs(ts),
         direction: 'incoming',
-        msgType: 'text',
-        text: '已建立安全對話',
+        msgType: 'system',
+        text: `你已經與 ${targetNickname} 建立安全連線 🔐`,
         senderDeviceId,
-        senderDigest
+        senderDigest,
+        header: header || null
       }
     };
   }
