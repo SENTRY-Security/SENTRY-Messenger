@@ -998,7 +998,35 @@ export function restoreDrStateFromSnapshot(params = {}) {
   const hasExistingSend = holder?.ckS instanceof Uint8Array && holder.ckS.length > 0 && Number.isFinite(holder?.Ns) && Number(holder.Ns) > 0;
   const incomingHasSend = !!data.ckS_b64 && typeof data.ckS_b64 === 'string';
   const incomingNs = Number.isFinite(data.Ns) ? Number(data.Ns) : null;
-  const downgrade = hasExistingSend && (!incomingHasSend || (incomingNs !== null && incomingNs < Number(holder.Ns || 0)));
+
+  // [FIX] Detect Chain Rotation (Root Key Change)
+  // We need to compare specific key bytes to determine if this is a New Chain (Reset).
+  // If rk matches, we MUST enforce downgrade protection (Ns must increase).
+  // If rk mismatch, we assume it's a NEW CHAIN (Session Reset), so Ns reset is allowed.
+
+  // 1. Capture existing RK (if any)
+  const existingRk = holder?.rk || null;
+
+  // 2. Decode new RK (temporarily) just for comparison
+  const tempNewRk = decodeKeyString(data.rk_b64, { keyName: 'rk', peerAccountDigest: peer, peerDeviceId, sourceTag });
+
+  // 3. Compare RKs
+  let isRkEqual = false;
+  if (existingRk && tempNewRk && existingRk.length === tempNewRk.length) {
+    isRkEqual = true;
+    for (let i = 0; i < existingRk.length; i++) {
+      if (existingRk[i] !== tempNewRk[i]) {
+        isRkEqual = false;
+        break;
+      }
+    }
+  }
+
+  // 4. Determine Downgrade Status
+  // Downgrade = Same Chain (RK Equal) AND Sequence Number Decrease/Same.
+  // If RK Changed (!isRkEqual) -> Allow (Downgrade = false).
+  const downgrade = isRkEqual && hasExistingSend && (!incomingHasSend || (incomingNs !== null && incomingNs < Number(holder.Ns || 0)));
+
   if (!force && downgrade) {
     if (isAutomationEnv()) {
       drConsole.warn('[dr-restore-skip-downgrade]', JSON.stringify({
@@ -1007,23 +1035,30 @@ export function restoreDrStateFromSnapshot(params = {}) {
         existingNs: Number(holder.Ns) || null,
         incomingNs,
         incomingHasSend,
-        sourceTag
+        sourceTag,
+        isRkEqual // Debug info
       }));
     }
     logReject('ROLE_GATING_REJECT');
     return false;
   }
-  if (!targetState && !force && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
+
+  // 5. Restore check for Snapshot Timestamp (Only if RK is Same)
+  // If RK changed, we trust the chain structure over timestamp.
+  if (!targetState && !force && isRkEqual && holder?.rk && holder.snapshotTs && data.updatedAt && holder.snapshotTs >= data.updatedAt) {
     logReject('ROLE_GATING_REJECT');
     return false;
   }
-  holder.rk = decodeKeyString(data.rk_b64, { keyName: 'rk', peerAccountDigest: peer, peerDeviceId, sourceTag });
+
+  // 6. Proceed to apply state
+  holder.rk = tempNewRk; // Use the already decoded one
   holder.ckS = data.ckS_b64 ? decodeKeyString(data.ckS_b64, { keyName: 'ckS', peerAccountDigest: peer, peerDeviceId, sourceTag }) : null;
   holder.ckR = data.ckR_b64 ? decodeKeyString(data.ckR_b64, { keyName: 'ckR', peerAccountDigest: peer, peerDeviceId, sourceTag }) : null;
   ensureHolderId(holder);
   assertU8('restoreDrStateFromSnapshot:rk', holder.rk);
   if (holder.ckS) assertU8('restoreDrStateFromSnapshot:ckS', holder.ckS);
   if (holder.ckR) assertU8('restoreDrStateFromSnapshot:ckR', holder.ckR);
+
   const nsTotal = Number(data.NsTotal);
   if (!Number.isFinite(nsTotal)) {
     throw new Error('dr snapshot missing NsTotal');
