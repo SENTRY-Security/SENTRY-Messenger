@@ -1507,16 +1507,26 @@ export function setupShareController(options) {
 
     // [FIX] Explicitly append tombstone for Initiator (Scanner)
     try {
+      // Use 'system' type because 'contact-share' is not in USER_MESSAGE_TYPES filtering.
+      // Matches the logic in state-live.js for the receiver.
+      const nickname = overrides?.nickname || '對方'; // We don't have peer nickname easily here, use default or from verify
+      // For scanner, we know who we scanned.
+      // But 'targetDigest' is just hash.
+      // We can rely on renderer looking up contact by senderDigest?
+      // No, for outgoing system message, renderer might use text directly.
+
       appendUserMessage(conversationId, {
         id: messageId,
-        messageId, // ensure consistency
+        messageId,
         conversationId,
-        ts, // milliseconds
-        msgType: 'contact-share',
+        ts,
+        tsMs: ts,
+        msgType: 'system', // CRITICAL: Must be 'system' to show in timeline
         direction: 'outgoing',
+        text: `你已經與 ${overrides?.nickname || '對方'} 建立安全連線 🔐`,
         senderDigest: selfDigest,
         senderDeviceId: senderDeviceId,
-        status: 'pending', // Optimistic
+        status: 'pending',
         vaultPutCount: 1
       });
     } catch (e) {
