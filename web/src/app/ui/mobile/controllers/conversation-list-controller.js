@@ -3,6 +3,7 @@
  * Manages conversation list rendering, pull-to-refresh, and interaction.
  */
 
+import { BaseController } from './base-controller.js';
 import { normalizePeerKey, splitPeerKey, resolveReadyContactCoreEntry, isCoreVaultReady, listReadyContacts, upsertContactCore } from '../contact-core-store.js';
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/store.js';
 import { restorePendingInvites } from '../session-store.js';
