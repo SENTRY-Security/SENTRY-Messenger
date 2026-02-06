@@ -2228,7 +2228,10 @@ export function setupShareController(options) {
       peerDeviceId, // 這裡代表對端（guest）的裝置
       sessionKey: conversation.token_b64,
       conversation,
-      drState: null,
+      // [FIX] Pass the bootstrapped DR state!
+      // Previously 'null' wiped the session from disk (if setContactSecret strictly replaced).
+      // Even with merge, passing 'responderHolder' ensures the 'responder' role is persisted.
+      drState: responderHolder,
       role: 'owner'
     });
     try {

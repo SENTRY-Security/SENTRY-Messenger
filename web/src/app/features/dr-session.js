@@ -3509,6 +3509,11 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   st.myRatchetPriv = ensureKeyU8(st?.myRatchetPriv, 'myRatchetPriv', { required: true });
   st.myRatchetPub = ensureKeyU8(st?.myRatchetPub, 'myRatchetPub', { required: true });
   st.theirRatchetPub = ensureKeyU8(st?.theirRatchetPub, 'theirRatchetPub', { required: false });
+  // [FIX] Explicitly set Role for Guest Bootstrap
+  // This ensures persistDrSnapshot has a valid role reference ('responder') to check against.
+  if (!st.baseKey) st.baseKey = {};
+  st.baseKey.role = 'responder';
+
   drConsole.log('[dr-bootstrap:ready]', {
     peerAccountDigest: peer,
     peerDeviceId,
