@@ -11,6 +11,7 @@ import { enqueueDrIncomingOp } from '../dr-session.js';
 import { normalizePeerIdentity } from '../../core/store.js';
 import { appendBatch as timelineAppendBatch, updateTimelineEntryStatusByCounter } from '../timeline-store.js';
 import { CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES, normalizeSemanticSubtype } from '../semantic.js';
+import { resolvePlaceholderSubtype } from '../messages/parser.js';
 
 import {
     getAccountDigest as storeGetAccountDigest,
@@ -543,7 +544,6 @@ export async function smartFetchMessages({
                     isOutgoing = true;
                 }
 
-                // Validation
                 if (!isOutgoing && !Number.isFinite(counter)) {
                     const reason = 'INVALID_INCOMING_COUNTER';
                     errors.push({ item, reason });
@@ -551,23 +551,31 @@ export async function smartFetchMessages({
                     continue;
                 }
 
-                // Create Placeholder
-                const ts = Number(item.ts || item.created_at || item.createdAt || Date.now() / 1000);
-                const placeholder = {
-                    ...item,
-                    decrypted: false,
-                    reason: 'PENDING_ROUTE_B',
-                    id: item.id || item.messageId,
-                    counter: Number.isFinite(counter) ? counter : 0,
-                    msgType: 'placeholder',
-                    status: 'decrypting', // Special status for "working on it"
-                    error: null,
-                    ts: ts,
-                    tsMs: ts * 1000,
-                    isPlaceholder: true // Explicit flag
-                };
+                // [FIX] Hide Placeholders for Control/Transient messages
+                // We identify them from header metadata (best effort).
+                // If identified, we do NOT show a "Decrypting..." bubble (skip decryptedItems),
+                // but we MUST still process them in background (add to backgroundQueue).
+                const subtype = resolvePlaceholderSubtype(item);
+                const isControl = subtype && (CONTROL_STATE_SUBTYPES.has(subtype) || TRANSIENT_SIGNAL_SUBTYPES.has(subtype));
 
-                decryptedItems.push(placeholder);
+                if (!isControl) {
+                    // Create Placeholder (Only for Visible Messages)
+                    const ts = Number(item.ts || item.created_at || item.createdAt || Date.now() / 1000);
+                    const placeholder = {
+                        ...item,
+                        decrypted: false,
+                        reason: 'PENDING_ROUTE_B',
+                        id: item.id || item.messageId,
+                        counter: Number.isFinite(counter) ? counter : 0,
+                        msgType: 'placeholder',
+                        status: 'decrypting', // Special status for "working on it"
+                        error: null,
+                        ts: ts,
+                        tsMs: ts * 1000,
+                        isPlaceholder: true // Explicit flag
+                    };
+                    decryptedItems.push(placeholder);
+                }
 
                 // Add to background queue if incoming
                 if (!isOutgoing) {
