@@ -526,10 +526,17 @@ export async function smartFetchMessages({
                     const isGapMessage = counter > localMax;
                     const forceFallback = (routeAFailReason === 'CONTROL_SKIP' && isGapMessage && !isOutgoing);
 
+                    // [FIX] Optimization: If we have authoritative keys (serverKeys) and Vault failed,
+                    // do NOT retry via Route B (which would just hit the API and 404).
+                    const isAuthoritativeMiss = (routeAFailReason === 'vault_missing' && serverKeys);
+
                     // Optimization: If Control Skip (irrelevant message) and NOT forced, skip Route B
                     if (routeAFailReason === 'CONTROL_SKIP' && !forceFallback) {
                         // silently skip
                         updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_SKIP' });
+                    } else if (isAuthoritativeMiss) {
+                        if (DEBUG.drVerbose) console.warn(`[HybridVerify] Authoritative Key Miss for ${getCanonicalId(item) || item.id}. Skipping Route B (404 Prevention).`);
+                        updateTimelineEntryStatusByCounter(conversationId, counter, 'undecryptable', { reason: 'NO_KEY_ON_SERVER' });
                     } else if (!isOutgoing) {
                         // Attempt Route B
                         if (DEBUG.drVerbose) console.warn(`[HybridVerify] Route A failed (${routeAFailReason}). Fallback to Route B for item ${item.id}...`);
