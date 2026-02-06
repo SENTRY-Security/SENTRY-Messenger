@@ -7,7 +7,7 @@ import { normalizePeerKey, splitPeerKey, resolveReadyContactCoreEntry, isCoreVau
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/store.js';
 import { restorePendingInvites } from '../session-store.js';
 import { escapeHtml } from '../ui-utils.js';
-import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, normalizePeerKey, deriveMessageDirectionFromEnvelopeMeta } from '../../../core/utils.js';
+import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../core/utils.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
 
