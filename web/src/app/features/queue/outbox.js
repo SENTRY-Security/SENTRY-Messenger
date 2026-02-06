@@ -333,7 +333,11 @@ async function sanitizeOutboxRecords(all = []) {
 
 
 function shouldRetryTransient({ errorCode, statusCode }) {
-  // [MANUAL RETRY ONLY] Disable auto-retry for network errors to prevent Ratchet Reset loops and allow user manual control.
+  // [FIX] Enabled transient retry on network errors or 5xx.
+  // User requested explicit handling for "Network Interruption".
+  if (!statusCode || statusCode === 0) return true; // Fetch failure (network)
+  if (statusCode >= 500 && statusCode < 600) return true; // Server error
+  if (errorCode === 'fetch_failed' || errorCode === 'network_error') return true;
   return false;
 }
 
@@ -585,8 +589,22 @@ async function markFailure(job, err) {
     lastErrorCode: errorCode,
     lastStatus: statusCode
   });
+
   if (debug) {
     console.warn('[outbox]', { event: 'failed', jobId: job?.jobId, conv: job?.conversationId, status: next?.lastStatus || null, error: errorMessage });
+  }
+
+  // [FIX] Fatal Modal Trigger
+  // If we exhausted retries (implied here because we are in the DEAD block),
+  // and it was a transient-capable error (network/5xx), trigger the fatal UI.
+  if (shouldRetryTransient({ errorCode, statusCode })) {
+    try {
+      // Dispatch global event for UI (app.js / layout handler)
+      const event = new CustomEvent('sentry:outbox-fatal', {
+        detail: { error: errorMessage }
+      });
+      window.dispatchEvent(event);
+    } catch (e) { console.error('Failed to dispatch fatal event', e); }
   }
   if (next?.state === STATE_DEAD && hooks.onFailed.size) {
     for (const hook of hooks.onFailed) {

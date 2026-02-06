@@ -4408,16 +4408,105 @@ if (typeof window !== 'undefined') {
 }
 import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
 
-// [DEBUG-NOTIFY] Listen for implicit DR resets
+// [FATAL] Listen for Outbox Fatal Failure (Retry Exhausted)
 if (typeof document !== 'undefined') {
-  document.addEventListener('dr:session-reset', (e) => {
+  document.addEventListener('sentry:outbox-fatal', (e) => {
     try {
-      const reason = e.detail?.reason || 'unknown';
-      const peer = e.detail?.peerAccountDigest || 'unknown';
-      console.warn('[App] Implicit DR Session Reset Detected:', e.detail);
-      showToast?.(`[Warning] DR Session Reset: ${reason} (${peer.slice(0, 8)}...)`, { variant: 'error', duration: 5000 });
+      const errorMsg = e.detail?.error || '連線發生嚴重錯誤';
+      console.error('[App] Outbox Fatal Error:', errorMsg);
+      showFatalErrorModal(errorMsg);
     } catch (err) {
-      console.error('[App] Failed to handle dr:session-reset event', err);
+      console.error('[App] Failed to handle outbox-fatal event', err);
     }
   });
+}
+
+/**
+ * Show a non-closable modal for fatal errors (e.g., persistent network failure).
+ * User must re-login to restore consistency.
+ */
+function showFatalErrorModal(message = '連線發生錯誤') {
+  try {
+    // Reuse or replace existing overlay
+    if (forcedLogoutOverlay && forcedLogoutOverlay.parentElement) {
+      forcedLogoutOverlay.parentElement.removeChild(forcedLogoutOverlay);
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'fatal-error-overlay';
+    Object.assign(wrap.style, {
+      position: 'fixed',
+      inset: '0',
+      background: 'rgba(15,23,42,0.85)', // Darker backdrop
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: '9999', // Highest priority
+      padding: '16px',
+      backdropFilter: 'blur(4px)'
+    });
+
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+      background: '#fff',
+      color: '#0f172a',
+      padding: '24px',
+      borderRadius: '16px',
+      width: 'min(360px, 90vw)',
+      boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
+      textAlign: 'center',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '16px'
+    });
+
+    // Icon
+    const icon = document.createElement('div');
+    icon.innerHTML = `<i class='bx bx-error-circle' style='font-size: 48px; color: #ef4444;'></i>`;
+
+    // Title
+    const title = document.createElement('div');
+    Object.assign(title.style, { fontSize: '18px', fontWeight: '800', color: '#b91c1c' });
+    title.textContent = '無法傳送訊息';
+
+    // Body
+    const msg = document.createElement('div');
+    Object.assign(msg.style, { fontSize: '15px', lineHeight: '1.5', color: '#334155' });
+    msg.textContent = `偵測到持續性的連線或加密錯誤，為確保安全，請重新登入以修復連線。\n\n錯誤詳情: ${message}`;
+
+    // Action Button
+    const btn = document.createElement('button');
+    btn.textContent = '重新登入';
+    Object.assign(btn.style, {
+      padding: '12px',
+      borderRadius: '12px',
+      border: 'none',
+      background: '#ef4444',
+      color: '#fff',
+      fontSize: '16px',
+      fontWeight: '700',
+      cursor: 'pointer',
+      width: '100%',
+      marginTop: '8px'
+    });
+
+    // Force logout on click
+    btn.onclick = () => {
+      btn.disabled = true;
+      btn.textContent = '正在登出...';
+      secureLogout('Fatal Error Reset', { auto: false });
+    };
+
+    panel.appendChild(icon);
+    panel.appendChild(title);
+    panel.appendChild(msg);
+    panel.appendChild(btn);
+    wrap.appendChild(panel);
+
+    document.body.appendChild(wrap);
+    forcedLogoutOverlay = wrap; // Track it so we don't stack multiple
+  } catch (err) {
+    console.error('Failed to show fatal modal:', err);
+    // Fallback if UI fails: force immediate logout
+    secureLogout('Fatal Error Fallback', { auto: true });
+  }
 }
