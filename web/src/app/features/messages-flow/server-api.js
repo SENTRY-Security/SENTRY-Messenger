@@ -85,12 +85,27 @@ export async function listSecureMessagesForReplay({
     throw new Error(resolveListSecureError(data));
   }
   return {
-    items: Array.isArray(data?.items) ? data.items : [],
+    items: Array.isArray(data?.items) ? data.items.map(normalizeServerItem) : [],
     errors: Array.isArray(data?.errors) ? data.errors : [],
     nextCursor: resolveNextCursor(data),
     keys: data?.keys || null
   };
 }
+
+function normalizeServerItem(item) {
+  if (!item) return item;
+  // [STRICT SERIALIZATION] Enforce canonical 'ts' field at Edge.
+  // 1. D1/Server Standard: snake_case 'created_at' (seconds or ms?) usually seconds from D1.
+  // 2. Legacy/Internal: 'ts' (usually seconds).
+  // 3. Header Fallback: 'header.ts' (client-generated).
+  let val = item.created_at ?? item.createdAt ?? item.ts ?? item.timestamp ?? item.header?.ts ?? item.header?.created_at;
+
+  const num = Number(val);
+  if (Number.isFinite(num) && num > 0) {
+    item.ts = num; // Canonicalize
+  }
+  return item;
+};
 
 export async function fetchSecureMaxCounter({
   conversationId,

@@ -47,11 +47,14 @@ export function deriveMessageOffsetMs(messageId) {
 
 export function extractMessageTimestamp(raw) {
     if (!raw) return null;
-    const candidates = [raw.created_at, raw.createdAt, raw.ts, raw.timestamp, raw.meta?.ts];
-    for (const val of candidates) {
-        const n = Number(val);
-        if (Number.isFinite(n) && n > 0) return Math.floor(n);
-    }
+    // [STRICT SERIALIZATION] Single Source of Truth via Edge Normalization (server-api.js)
+    // We expect 'ts' to be present and valid.
+    // We retain 'created_at' / 'createdAt' support for non-normalized sources (e.g. websocket events before normalization),
+    // but remove deep "guessing" like meta.ts or header.ts.
+    // If strict mode fails, we do NOT fallback to 0. (User Requirement)
+    const val = raw.ts ?? raw.created_at ?? raw.createdAt;
+    const n = Number(val);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
     return null;
 }
 

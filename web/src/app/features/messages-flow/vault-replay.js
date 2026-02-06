@@ -17,49 +17,15 @@ import { importContactSecretsSnapshot } from '../../core/contact-secrets.js';
 
 const decoder = new TextDecoder();
 
+import { extractMessageTimestamp, extractMessageTimestampMs } from '../messages/parser.js';
+
 function normalizeCounterValue(value) {
   if (value === null || value === undefined || value === '') return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
 }
 
-function toMessageTimestamp(raw) {
-  const candidates = [
-    raw?.created_at,
-    raw?.createdAt,
-    raw?.ts,
-    raw?.timestamp,
-    raw?.meta?.ts
-  ];
-  for (const value of candidates) {
-    const n = Number(value);
-    if (Number.isFinite(n) && n > 0) {
-      if (n > 10_000_000_000) return Math.floor(n / 1000);
-      return Math.floor(n);
-    }
-  }
-  return null;
-}
-
-function resolveServerTimestampPair(raw) {
-  const candidates = [
-    raw?.created_at,
-    raw?.createdAt,
-    raw?.ts,
-    raw?.timestamp,
-    raw?.meta?.ts
-  ];
-  for (const value of candidates) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n <= 0) continue;
-    if (n > 10_000_000_000) {
-      return { ts: Math.floor(n / 1000), tsMs: Math.floor(n) };
-    }
-    const ts = Math.floor(n);
-    return { ts, tsMs: ts * 1000 };
-  }
-  return { ts: null, tsMs: null };
-}
+// [REF_CLEANUP] Duplicate timestamp logic removed. Uses parser.js Strict Mode.
 
 function toMessageId(raw) {
   if (typeof raw?.id === 'string' && raw.id.length) return raw.id;
@@ -189,7 +155,7 @@ function sortMessagesByTimeline(items) {
     return {
       raw: item,
       id,
-      tsMs: resolveMessageTsMs(toMessageTimestamp(item)),
+      tsMs: extractMessageTimestampMs(item),
       counter,
       senderDeviceId
     };
@@ -245,7 +211,8 @@ function buildReplayItemFromRaw(raw, {
     selfDigest
   });
   const serverMessageId = toMessageId(raw) || raw?.id || raw?.messageId || null;
-  const tsPair = resolveServerTimestampPair(raw);
+  const ts = extractMessageTimestamp(raw);
+  const tsMs = extractMessageTimestampMs(raw);
   return {
     item: {
       conversationId: packetConversationId,
@@ -260,8 +227,8 @@ function buildReplayItemFromRaw(raw, {
       meta: header?.meta || null,
       msgType: subtype,
       direction,
-      ts: tsPair.ts,
-      tsMs: tsPair.tsMs
+      ts: ts,
+      tsMs: tsMs
     }
   };
 }
