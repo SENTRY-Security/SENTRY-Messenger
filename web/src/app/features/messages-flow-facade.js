@@ -105,19 +105,10 @@ function collectActiveConversationIds() {
     const normalized = normalizeConversationIdValue(value);
     if (normalized) ids.add(normalized);
   };
+  // [FIX] Only return the currently OPEN conversation.
+  // Do NOT scan all threads/index, as that triggers aggressive background decryption (GapProbe).
   addId(sessionStore?.messageState?.conversationId || null);
-  const convIndex = sessionStore?.conversationIndex;
-  if (convIndex && typeof convIndex.keys === 'function') {
-    for (const key of convIndex.keys()) {
-      addId(key);
-    }
-  }
-  const threads = sessionStore?.conversationThreads;
-  if (threads && typeof threads.keys === 'function') {
-    for (const key of threads.keys()) {
-      addId(key);
-    }
-  }
+
   return Array.from(ids);
 }
 
