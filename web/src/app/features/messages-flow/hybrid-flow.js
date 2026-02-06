@@ -63,6 +63,7 @@ export async function smartFetchMessages({
     limit = DEFAULT_LIMIT,
     cursor = null
 } = {}, deps = {}) {
+    const { onStreamingUpdate } = deps;
     if (!conversationId) throw new Error('conversationId required');
 
     const selfDeviceId = storeGetDeviceId();
