@@ -125,7 +125,9 @@ export async function smartFetchMessages({
             // A. Head Gap: (localMax, minFetched)
             const headStart = localMax + 1;
             if (minFetched !== Number.MAX_SAFE_INTEGER && minFetched > headStart) {
-                for (let c = headStart; c < minFetched; c++) {
+                // [FIX] Counters start at 1. If headStart is 0 or negative, clamp to 1.
+                const start = Math.max(1, headStart);
+                for (let c = start; c < minFetched; c++) {
                     missingCounters.push(c);
                 }
             }
