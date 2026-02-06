@@ -13,9 +13,7 @@ DELETE FROM call_sessions;
 DELETE FROM contact_secret_backups;
 DELETE FROM contacts;
 DELETE FROM conversation_acl;
-DELETE FROM conversation_deletion_log;
 DELETE FROM conversations;
-DELETE FROM deletion_cursors;
 DELETE FROM device_backup;
 DELETE FROM device_opks;
 DELETE FROM device_signed_prekeys;
@@ -29,8 +27,6 @@ DELETE FROM media_objects;
 DELETE FROM message_key_vault;
 DELETE FROM messages_secure;
 DELETE FROM opaque_records;
-DELETE FROM prekey_opk;
-DELETE FROM prekey_users;
 DELETE FROM subscriptions;
 DELETE FROM tokens;
 "

@@ -1100,8 +1100,8 @@ async function ensureDataTables(env) {
     'devices',
     'device_signed_prekeys',
     'device_opks',
-    'prekey_users',
-    'prekey_opk',
+    // 'prekey_users', // Legacy
+    // 'prekey_opk',   // Legacy
     'conversations',
     'conversation_acl',
     'messages_secure',
