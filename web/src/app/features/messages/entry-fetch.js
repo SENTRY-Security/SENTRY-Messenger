@@ -207,7 +207,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
             ts: Number(item.ts || item.created_at || item.createdAt || Date.now()),
             direction: (senderDeviceId === selfDeviceId) ? 'outgoing' : 'incoming',
             senderDeviceId,
-            senderDigest: peerDigest,
+            senderDigest: (senderDeviceId === selfDeviceId) ? getAccountDigest() : peerDigest,
             content: {
                 type: 'contact-share',
                 envelope // Might be null if failed
@@ -336,7 +336,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                     ts: Number(item.ts || Date.now()),
                     direction: 'incoming',
                     senderDeviceId,
-                    senderDigest: peerDigest,
+                    senderDigest: (senderDeviceId === selfDeviceId) ? getAccountDigest() : peerDigest,
                     content: { type: 'contact-share' }
                 },
                 state,
@@ -374,7 +374,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
     });
 
     updateIncomingCounterState(state, counter);
-    
+
     // [FIX] Build DR state snapshot from CURRENT MEMORY STATE first,
     // before persistDrSnapshot which might fail.
     // This ensures vault gets the actual current state, not potentially stale map data.
@@ -390,7 +390,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                 const role = state?.baseKey?.role || null;
                 const convToken = state?.baseKey?.conversationToken || null;
                 const convId = conversationId || state?.baseKey?.conversationId || null;
-                
+
                 const snapshotJson = buildContactSecretsSnapshotFromDrState(peerDigest, {
                     peerDeviceId,
                     drStateSnapshot: memoryDrSnapshot,
@@ -407,7 +407,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         // Suppress errors to avoid failing the pipeline, but log if needed
         if (FETCH_LOG_ENABLED) log({ atomicPiggybackError: err?.message || err, conversationId, counter });
     }
-    
+
     // Now attempt to persist to contact-secrets map
     const snapshotPersisted = !!persistDrSnapshot({ peerAccountDigest: peerDigest, state });
 

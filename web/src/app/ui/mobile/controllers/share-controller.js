@@ -1522,7 +1522,7 @@ export function setupShareController(options) {
         conversationId,
         ts,
         tsMs: ts,
-        msgType: 'system', // CRITICAL: Must be 'system' to show in timeline
+        msgType: 'contact-share', // [Revert] Now supported by timeline-store validation
         direction: 'outgoing',
         text: `你已經與 ${overrides?.nickname || '對方'} 建立安全連線 🔐`,
         senderDigest: selfDigest,

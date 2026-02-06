@@ -8,7 +8,8 @@ const USER_MESSAGE_TYPES = new Set([
   MSG_SUBTYPE.CALL_LOG,
   MSG_SUBTYPE.PLACEHOLDER,
   MSG_SUBTYPE.SYSTEM,
-  MSG_SUBTYPE.CONVERSATION_DELETED
+  MSG_SUBTYPE.CONVERSATION_DELETED,
+  MSG_SUBTYPE.CONTACT_SHARE // [FIX] Allow contact-share in timeline (tombstones)
 ]);
 const timelineMap = new Map(); // conversationId -> Map(messageId -> entry)
 const appendListeners = new Set();
