@@ -613,7 +613,8 @@ export class MessageRenderer {
                 const contact = typeof contacts?.get === 'function' ? contacts.get(activePeerDigest || '') : null;
                 const name = contact?.nickname || '對方';
 
-                sep.textContent = `您已與 ${escapeHtml(name)} 成為好友`;
+                // [FIX] Update text to match System Message format
+                sep.textContent = `你已經與 ${escapeHtml(name)} 建立安全連線 🔐`;
                 this.listEl.appendChild(sep);
                 continue;
             }

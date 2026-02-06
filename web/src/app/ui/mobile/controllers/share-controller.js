@@ -1505,6 +1505,24 @@ export function setupShareController(options) {
       throw new Error(msg);
     }
 
+    // [FIX] Explicitly append tombstone for Initiator (Scanner)
+    try {
+      appendUserMessage(conversationId, {
+        id: messageId,
+        messageId, // ensure consistency
+        conversationId,
+        ts, // milliseconds
+        msgType: 'contact-share',
+        direction: 'outgoing',
+        senderDigest: selfDigest,
+        senderDeviceId: senderDeviceId,
+        status: 'pending', // Optimistic
+        vaultPutCount: 1
+      });
+    } catch (e) {
+      console.warn('[share-controller] failed to append contact-share tombstone', e);
+    }
+
   }
 
   async function buildLocalContactPayload({ conversation, drInit, overrides } = {}) {

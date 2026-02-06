@@ -442,7 +442,20 @@ async function decryptIncomingSingle(params = {}, adapters) {
     // The shared state must NOT be advanced until we are ready to persist (after Vault).
     // We use structuredClone if available, or assume POJO (with Buffers safe in standard Clone).
     const rawState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+
+    // [DEBUG-TRACE]
+    if (DEBUG.drVerbose) {
+      console.log('[state-live] live-text check state', {
+        peer: senderDigest ? senderDigest.slice(0, 8) : null,
+        hasState: !!rawState,
+        hasRk: !!rawState?.rk,
+        ns: rawState?.Ns,
+        nr: rawState?.Nr
+      });
+    }
+
     if (!hasUsableDrState(rawState)) {
+      console.warn('[state-live] DR state missing for text message', { senderDigest, senderDeviceId });
       return {
         ...base,
         reasonCode: 'DR_STATE_UNAVAILABLE',

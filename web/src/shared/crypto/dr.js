@@ -452,6 +452,18 @@ export async function drDecryptText(st, packet, opts = {}) {
     if (Number.isFinite(headerN) && headerN <= 0) {
       throw new Error('invalid message counter');
     }
+    // [DEBUG-TRACE]
+    console.log('[drDecryptText] Start', {
+      headerN,
+      pn: packet?.header?.pn,
+      ek: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 8) : null,
+      role: typeof st?.baseKey?.role === 'string' ? st.baseKey.role : 'unknown',
+      stateNs: st?.Ns,
+      stateNr: st?.Nr,
+      hasRk: !!(st?.rk && st.rk.length),
+      hasCkR: !!(st?.ckR && st.ckR.length),
+      hasTheirPub: !!(st?.theirRatchetPub && st.theirRatchetPub.length)
+    });
     const resolveStateKey = () => {
       const base = st?.baseKey || {};
       if (base.stateKey) return base.stateKey;
@@ -715,6 +727,13 @@ export async function drDecryptText(st, packet, opts = {}) {
     } else {
       working.theirRatchetPub = theirPub;
     }
+    // [DEBUG-TRACE]
+    if (ratchetPerformed) {
+      console.log('[drDecryptText] Ratchet Performed', {
+        newNr: working.Nr,
+        hasCkR: !!(working.ckR && working.ckR.length)
+      });
+    }
     nrAfterRatchet = Number.isFinite(working?.Nr) ? Number(working.Nr) : null;
     postRatchetTheirPubPrefix = working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null;
     chainId = packet?.header?.ek_pub_b64 || null;
@@ -879,8 +898,16 @@ export async function drDecryptText(st, packet, opts = {}) {
       opts.onSkippedKeys(newSkippedKeys);
     }
 
+    // [DEBUG-TRACE]
+    console.log('[drDecryptText] Decrypt Success', { n: headerN });
     return plaintext;
   } catch (err) {
+    // [DEBUG-TRACE]
+    console.error('[drDecryptText] Failed', err, {
+      headerN,
+      chainId,
+      currentNr
+    });
     if (drDebugLogsEnabled) {
       try {
         console.warn('[dr-error:decrypt-fail]', {
