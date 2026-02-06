@@ -2374,6 +2374,16 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
+  // [WS-AUTH] Token Endpoint (Mock/Stub or DO Entry)
+  if (req.method === 'POST' && (url.pathname === '/d1/ws/token' || url.pathname === '/api/v1/ws/token')) {
+    // Return a mock token for now to satisfy the client and allow connection logic to proceed (or fail gracefully at WS level)
+    return json({
+      ok: true,
+      token: 'mock-ws-token-' + Date.now(),
+      ttl: 3600
+    });
+  }
+
   // [GAP-COUNT] Precise Offline Unread Counting
   if (req.method === 'GET' && url.pathname === '/d1/messages/secure/gap-count') {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
@@ -2574,7 +2584,7 @@ async function handleMessagesRoutes(req, env) {
   }
 
   // List secure messages (Smart Fetch / Visible Limit)
-  if (req.method === 'GET' && (url.pathname === '/d1/messages' || url.pathname === '/d1/messages/secure')) {
+  if (req.method === 'GET' && (url.pathname === '/d1/messages' || url.pathname === '/d1/messages/secure' || url.pathname === '/api/v1/messages/secure')) {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     let cursorTs = Number(url.searchParams.get('cursorTs') || url.searchParams.get('cursor_ts') || 0);
     let cursorCounter = Number(url.searchParams.get('cursorCounter') || url.searchParams.get('cursor_counter') || 0);
@@ -3416,7 +3426,7 @@ async function handleMessageKeyVaultRoutes(req, env) {
     });
   }
 
-  if (req.method === 'POST' && url.pathname === '/d1/message-key-vault/latest-state') {
+  if (req.method === 'POST' && (url.pathname === '/d1/message-key-vault/latest-state' || url.pathname === '/api/v1/message-key-vault/latest-state')) {
     let body;
     try {
       body = await req.json();
