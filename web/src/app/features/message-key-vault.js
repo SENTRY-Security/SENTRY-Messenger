@@ -273,7 +273,8 @@ export class MessageKeyVault {
       emitVaultTrace('put', { conversationId, messageId }, null, 'MKMissing');
       throw new Error('MKMissing');
     }
-    if (!conversationId || !messageId || !senderDeviceId || !targetDeviceId || !direction || !messageKeyB64) {
+    const isContactShare = msgType === 'contact-share' || msgType === 'system';
+    if (!conversationId || !messageId || !senderDeviceId || !targetDeviceId || !direction || (!messageKeyB64 && !isContactShare)) {
       emitLogKey('mkHardblockTrace', {
         sourceTag: 'message-key-vault:put',
         reason: 'missing_params',

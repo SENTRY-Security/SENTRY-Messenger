@@ -1297,7 +1297,9 @@ export function setupShareController(options) {
         sessionKey: conversationToken,
         conversation: conversationPayload,
         drState: drHolder,
-        role: 'guest'
+        // [FIX] Role must be 'initiator' (or 'responder') for DR logic to work.
+        // 'guest' is a UI concept, not a cryptographic role.
+        role: 'initiator'
       });
       logCapped('inviteSessionMaterialReady', {
         inviteId: parsed?.inviteId || null,
