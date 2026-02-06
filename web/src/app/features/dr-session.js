@@ -2804,17 +2804,8 @@ export async function sendDrMediaCore(params = {}) {
     const metaPayload = {
       ts: tsValue,
       sender_digest: accountDigest || null,
-      senderDigest: accountDigest || null,
       sender_device_id: senderDeviceId || null,
-      senderDeviceId: senderDeviceId || null,
-      targetAccountDigest: receiverAccountDigest || null,
-      target_account_digest: receiverAccountDigest || null,
-      receiverAccountDigest: receiverAccountDigest || null,
       receiver_account_digest: receiverAccountDigest || null,
-      targetDeviceId: receiverDeviceId || null,
-      target_device_id: receiverDeviceId || null,
-      receiverDeviceId: receiverDeviceId || null,
-      receiverDeviceId: receiverDeviceId || null,
       receiver_device_id: receiverDeviceId || null,
       type: 'media',
       media: {

@@ -190,12 +190,22 @@ export async function createSecureMessage({
   if (headerPayload.deviceId && !headerPayload.device_id) {
     headerPayload.device_id = headerPayload.deviceId;
   }
-  // [CLEANUP] Do not auto-inject camelCase 'deviceId'. Adhere to snake_case 'device_id'.
+  // [CLEANUP] Enforce snake_case in meta. Actively strip camelCase aliases.
   if (headerPayload.meta && typeof headerPayload.meta === 'object') {
     headerPayload.meta = {
       ...headerPayload.meta,
       sender_device_id: senderDevice
     };
+    // Strip forbidden camelCase keys
+    const FORBIDDEN_META_KEYS = [
+      'senderDeviceId', 'senderDigest',
+      'receiverDeviceId', 'receiverAccountDigest',
+      'targetDeviceId', 'targetAccountDigest',
+      'target_device_id', 'target_account_digest' // Legacy aliases
+    ];
+    for (const key of FORBIDDEN_META_KEYS) {
+      delete headerPayload.meta[key];
+    }
   }
   const overrides = {
     conversation_id: conversationId,
