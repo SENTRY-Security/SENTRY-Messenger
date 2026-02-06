@@ -343,12 +343,18 @@ export async function decryptReplayBatch({
     // Priority 2: Fallback to local vault lookup
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
       try {
+        // [FIX] Optimization: Authoritative Batch Keys
+        // If serverKeys is provided (not null), it means we have the full list of keys for this batch.
+        // If the key wasn't in serverKeys, and passed the cache check inside getMessageKey,
+        // it definitely doesn't exist on the server (404). So we disable network fallback.
+        const networkFallback = (serverKeys === null); // Only use fallback if we don't have an authoritative list
+
         vaultKeyResult = await getMessageKey({
           conversationId,
           messageId,
           senderDeviceId: item.senderDeviceId,
           targetDeviceId: selfDeviceId
-        });
+        }, { networkFallback }); // Pass optimization flag
       } catch (err) {
         // Ignore error, try fallback
         vaultKeyResult = null;

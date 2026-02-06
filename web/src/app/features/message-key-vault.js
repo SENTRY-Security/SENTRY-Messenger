@@ -311,7 +311,12 @@ export class MessageKeyVault {
     return { wrapped, context };
   }
 
-  static async getMessageKey(params = {}) {
+  static async getMessageKey(params = {}, options = {}) {
+    // [FIX] Optimization: Allow disabling network fallback
+    // If we know the key is missing from the authoritative batch list (serverKeys),
+    // and it's not in our local cache, we should NOT call the API (which guarantees 404).
+    const { networkFallback = true } = options;
+
     const mkRaw = Object.prototype.hasOwnProperty.call(params, 'mkRaw')
       ? params.mkRaw
       : getMkRaw();
@@ -409,12 +414,12 @@ export class MessageKeyVault {
               });
             }
           }
-          
+
           setCache(cacheK, {
             messageKeyB64: unwrapped.mkB64,
             drStateSnapshot
           });
-          
+
           emitLogKey('vaultGetResult', {
             ...logContext,
             found: true,
@@ -429,7 +434,7 @@ export class MessageKeyVault {
             source: 'server_provided'
           });
           emitVaultTrace('get', { conversationId, messageId }, 200, null);
-          
+
           return {
             ok: true,
             messageKeyB64: unwrapped.mkB64,
@@ -445,8 +450,14 @@ export class MessageKeyVault {
           errorMessage: err?.message || 'unwrap failed',
           source: 'server_provided'
         });
-        // Fall through to API call
+        // Fall through to API call (unless disabled)
       }
+    }
+
+    // [FIX] Optimization Check
+    if (networkFallback === false) {
+      // Caller asserts that we should not hit the network if cache/serverKeys failed.
+      return { ok: false, error: 'NetworkFallbackDisabled', fromCache: false };
     }
 
     // Priority 2: Fetch from API
