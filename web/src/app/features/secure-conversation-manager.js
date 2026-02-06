@@ -146,7 +146,10 @@ function hasReceiverReady({ peerAccountDigest, peerDeviceId }) {
   const relationshipRole = typeof secretInfo?.role === 'string' ? secretInfo.role.toLowerCase() : null;
   const holderRole = typeof holder?.baseKey?.role === 'string' ? holder.baseKey.role.toLowerCase() : null;
   const isGuestLike = relationshipRole === 'guest' || holderRole === 'guest';
-  return !!(hasSendChain && isGuestLike);
+  const isInitiator = relationshipRole === 'initiator' || holderRole === 'initiator';
+  // [FIX] Initiators have send chain (ckS) but no receive chain (ckR) until first reply. 
+  // They are valid "ready" states for receiving the first response.
+  return !!(hasSendChain && (isGuestLike || isInitiator));
 }
 
 export function subscribeSecureConversation(listener) {
@@ -241,4 +244,16 @@ export function listSecureConversationStatuses() {
     out.push(cloneStatus(key, entry));
   }
   return out;
+}
+
+export function updateSecureConversationStatus(peerAccountDigest, status, { reason = 'manual', source = 'manual' } = {}) {
+  const key = toPeerKey({ peerAccountDigest });
+  if (!key) return null;
+  const entry = ensureEntry(key);
+  if (!entry) return null;
+
+  if (Object.values(SECURE_CONVERSATION_STATUS).includes(status)) {
+    return setStatus(key, status, { reason, source });
+  }
+  return null;
 }

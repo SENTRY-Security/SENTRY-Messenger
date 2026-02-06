@@ -35,6 +35,7 @@ import { ensureDevicePrivAvailable } from '../../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../../crypto/prekeys.js';
 import { logMsgEvent, logUiNoise } from '../../../lib/logging.js';
 import { appendUserMessage } from '../../../features/timeline-store.js';
+import { updateSecureConversationStatus, SECURE_CONVERSATION_STATUS } from '../../../features/secure-conversation-manager.js';
 import { resolveContactAvatarUrl } from '../contact-core-store.js';
 import { DEBUG } from '../debug-flags.js';
 
@@ -1531,6 +1532,19 @@ export function setupShareController(options) {
       });
     } catch (e) {
       console.warn('[share-controller] failed to append contact-share tombstone', e);
+    }
+
+    // [FIX] Force Secure Conversation Status to READY
+    // Because we just initiated the session successfully (sent N=1), we are ready to receive.
+    // If we don't do this, 'ensureSecureConversationReady' checks might fail (return PENDING) on incoming messages.
+    try {
+      updateSecureConversationStatus(targetDigest, SECURE_CONVERSATION_STATUS.READY, {
+        reason: 'initiator-contact-share-success',
+        source: 'share-controller'
+      });
+      console.log('[share-controller] forced secure status to READY', { targetDigest });
+    } catch (err) {
+      console.warn('[share-controller] failed to update secure status', err);
     }
 
   }
