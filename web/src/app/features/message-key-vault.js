@@ -454,10 +454,14 @@ export class MessageKeyVault {
       }
     }
 
-    // [FIX] Optimization Check
+    // Priority 2: Local Vault Lookup (API)
+    // [FIX] Optimization: Skip API if explicitly requested (e.g. from vault-replay known miss)
     if (networkFallback === false) {
-      // Caller asserts that we should not hit the network if cache/serverKeys failed.
-      return { ok: false, error: 'NetworkFallbackDisabled', fromCache: false };
+      emitLogKey('vaultGetSkip', {
+        ...logContext,
+        reason: 'network_fallback_disabled'
+      });
+      return { ok: false, error: 'network_fallback_disabled' };
     }
 
     // Priority 2: Fetch from API
