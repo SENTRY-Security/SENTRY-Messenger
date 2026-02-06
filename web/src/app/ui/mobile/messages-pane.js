@@ -442,6 +442,8 @@ export function initMessagesPane({
     updateComposerAvailability: () => controllers.composer.updateComposerAvailability(),
     focusComposerInput: () => controllers.composer.focusInput(),
     applyMessagesLayout: () => controllers.layout.applyMessagesLayout(),
+    // [FIX] Pass wsSend for Receipts
+    wsSend: (data) => wsSendFn(data),
     navbarEl,
     mainContentEl
   });

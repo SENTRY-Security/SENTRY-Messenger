@@ -54,7 +54,7 @@ import {
 } from '../../../features/messages/placeholder-store.js';
 import { buildConversationSnippet, shouldNotifyForMessage, escapeHtml } from '../ui-utils.js';
 import { messagesFlowFacade } from '../../../features/messages-flow-facade.js';
-import { recordMessageRead, recordMessageDelivered } from '../../../features/messages-support/receipt-store.js';
+import { recordMessageRead, recordMessageDelivered, maybeSendDeliveryReceipt } from '../../../features/messages-support/receipt-store.js';
 import { handleSecureConversationControlMessage } from '../../../features/secure-conversation-manager.js';
 import { recordVaultAckCounter } from '../../../features/messages-support/vault-ack-store.js';
 import { normalizePeerIdentity } from '../../../core/store.js';
@@ -796,6 +796,30 @@ export class MessageFlowController extends BaseController {
             let scrollToEnd = false;
             let scrollToTop = false;
             let preserveScroll = false;
+
+            // [FIX] Trigger Delivery Receipts for Incoming Messages
+            // When loading offline messages (scroll/app-open), the pipeline might have been bypassed (vault-replay).
+            // We ensure delivery receipts are sent here.
+            try {
+                const receiptDeps = {
+                    wsSend: this.deps.wsSend,
+                    getAccountDigest
+                };
+                for (const item of batchEntries) {
+                    if (item.direction === 'incoming') {
+                        maybeSendDeliveryReceipt({
+                            conversationId: convId,
+                            peerAccountDigest: item.senderAccountDigest || peerDigest,
+                            messageId: item.messageId || item.id,
+                            tokenB64,
+                            peerDeviceId: item.senderDeviceId,
+                            vaultPutStatus: 'ok' // Assumed OK since we are rendering it
+                        }, receiptDeps);
+                    }
+                }
+            } catch (e) {
+                // Ignore receipt errors to prevent blocking render
+            }
 
             if (isHistory) {
                 scrollToTop = true;
