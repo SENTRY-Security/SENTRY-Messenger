@@ -98,7 +98,7 @@ export async function smartFetchMessages({
     // If {}, vault-replay assumes authoritative empty list and fails fast.
     const serverKeys = fetchedKeys;
 
-    console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', Object.keys(serverKeys).length);
+    console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', Object.keys(serverKeys || {}).length);
 
     // --- GAP FILLING LOGIC ---
     // Detect gap based on what we ACTUALLY fetched vs what we have locally.
