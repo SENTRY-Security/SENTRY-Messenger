@@ -546,195 +546,107 @@ export async function smartFetchMessages({
                     continue;
                 }
 
-                serverKeys,
-                    getMessageKey: MessageKeyVault.getMessageKey,
-                        buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
-                            b64u8: naclB64u8
-            });
+                // Prepare Logic for Route B
 
-        if (errs) aErrors.push(...errs);
+                const routeAFailReason = 'ROUTE_A_SKIPPED_OR_FAILED'; // We assume fail or skip since we are here
 
-        if (aItems.length) {
-            result = { ok: true, item: aItems[0] };
-        }
+                const forceFallback = (!isOutgoing);
 
-        // If Route A (Vault) succeeded, save the result
-        if (result && result.ok && result.item) {
-            // ... success handling ...
-            const rawType = result.item.msgType || result.item.type;
-            const subtype = normalizeSemanticSubtype(rawType);
-            const isControl = subtype && (
-                subtype === 'control' ||
-                (CONTROL_STATE_SUBTYPES.has(subtype) && subtype !== 'conversation-deleted') ||
-                TRANSIENT_SIGNAL_SUBTYPES.has(subtype)
-            );
+                if (forceFallback) {
+                    // Attempt Route B
+                    const MAX_RETRIES = 5;
+                    let retries = 0;
+                    let bResult = null;
 
-            if (subtype === 'conversation-deleted') {
-                result.item.msgType = 'conversation-deleted';
-            }
+                    while (retries <= MAX_RETRIES) {
+                        try {
+                            bResult = await consumeLiveJob({
+                                type: 'WS_INCOMING',
+                                conversationId,
+                                messageId: item.id,
+                                serverMessageId: item.id,
+                                tokenB64: context.tokenB64,
+                                peerAccountDigest: groupDigest,
+                                peerDeviceId: groupDeviceId,
+                                sourceTag: 'hybrid-replay-fallback-seq',
+                                skipIncomingLock: true, // [MUTEX] Held
+                                bootstrapDrFromGuestBundle: null,
+                                skipGapCheck: true // Sequential
+                            }, {
+                                fetchSecureMessageById: createNoOpFetcher(item),
+                                stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })
+                            });
 
-            if (isControl) {
-                updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_MSG_DECRYPTED' });
-            }
-            decryptedItems.push(result.item);
-        } else {
-            // --- Route B (Live Fallback) ---
-            // Executed if:
-            // 1. !useRouteA (No Key)
-            // 2. useRouteA but Failed (Key Invalid / Decrypt Error)
+                            if (bResult.ok && bResult.decrypted && bResult.vaultPut) {
+                                break;
+                            }
+                            if (!bResult.ok || !bResult.decrypted) {
+                                break;
+                            }
 
-            const routeAFailReason = aErrors.length ? (aErrors[0]?.reasonCode || aErrors[0]?.reason || 'ROUTE_A_FAIL') : 'ROUTE_A_NO_RESULT';
-
-            // Optimization: Control Skip Check
-            // If we skipped Route A because of "No Key", we assume it might be a Gap Message relevant for display (or control).
-            // We rely on Route B's internal checks for control messages.
-
-            const isGapMessage = counter > localMax;
-            const forceFallback = (routeAFailReason === 'CONTROL_SKIP' && isGapMessage && !isOutgoing);
-
-            // Optimization: If Control Skip (irrelevant message) and NOT forced, skip Route B
-            if (routeAFailReason === 'CONTROL_SKIP' && !forceFallback) {
-                updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_SKIP' });
-            } else if (!isOutgoing) {
-                // Attempt Route B
-                if (DEBUG.drVerbose) console.warn(`[HybridVerify] Route B Activation (Reason: ${routeAFailReason}) for item ${item.id}...`);
-
-                const MAX_RETRIES = 5;
-                let retries = 0;
-                let bResult = null;
-
-                // Blocking Retry Loop to ensure Vault persistence
-                while (retries <= MAX_RETRIES) {
-                    // ... existing retry loop ...
-
-                    try {
-                        bResult = await consumeLiveJob({
-                            type: 'WS_INCOMING',
-                            conversationId,
-                            messageId: item.id,
-                            serverMessageId: item.id,
-                            tokenB64: context.tokenB64,
-                            peerAccountDigest: groupDigest,
-                            peerDeviceId: groupDeviceId,
-                            sourceTag: 'hybrid-replay-fallback',
-                            skipIncomingLock: true, // [MUTEX] Held
-                            bootstrapDrFromGuestBundle: null, // [FIX] Disable Reset
-                            skipGapCheck: true // [FIX] Hybrid Flow is sequential; skip blocking check
-                        }, {
-                            fetchSecureMessageById: createNoOpFetcher(item),
-                            stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })
-                        });
-
-                        // Success if decrypted, regardless of vault put (though we prefer it)
-                        // Actually, we retry strictly for vault put to prevent gaps.
-                        if (bResult.ok && bResult.decrypted && bResult.vaultPut) {
-                            break;
+                            retries++;
+                            if (retries <= MAX_RETRIES) {
+                                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
+                            }
+                        } catch (e) {
+                            retries++;
+                            if (retries <= MAX_RETRIES) {
+                                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
+                            } else {
+                                bResult = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
+                            }
                         }
-                        if (!bResult.ok || !bResult.decrypted) {
+                    }
+
+                    if (bResult && bResult.ok && bResult.decrypted) {
+                        if (!bResult.vaultPut) {
+                            console.error(`[HybridVerify] CRITICAL: Route B Vault Put Persistently Failed for item ${item.id}. Aborting Batch!!!`);
+                            errors.push({ item, reason: 'ROUTE_B_VAULT_PUT_FAIL_ABORT' });
                             break;
                         }
 
-                        retries++;
-                        if (retries <= MAX_RETRIES) {
-                            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
-                        }
-                    } catch (e) {
-                        retries++;
-                        if (retries <= MAX_RETRIES) {
-                            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
+                        const directDecrypted = bResult.decryptedMessage;
+                        if (directDecrypted) {
+                            decryptedItems.push(directDecrypted);
                         } else {
-                            bResult = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
+                            errors.push({ item, reason: 'ROUTE_B_OK_BUT_MISSING_PAYLOAD' });
                         }
-                    }
-                }
-
-                // Check B Result
-                if (bResult && bResult.ok && bResult.decrypted) {
-                    if (!bResult.vaultPut) {
-                        // Circuit Breaker: If we can't persist to Vault, stop batch to avoid gaps
-                        console.error(`[HybridVerify] CRITICAL: Route B Vault Put Persistently Failed for item ${item.id}. Aborting Batch!!!`);
-                        errors.push({ item, reason: 'ROUTE_B_VAULT_PUT_FAIL_ABORT' });
-                        // We really should break the inner loop here to stop processing this device group
-                        // because we might have a gap now.
-                        // But technically if we continue, we just create more gaps. Aborting is safer.
-                        // However, `break` inside `enqueueDrIncomingOp` breaks the `for` loop of items.
-                        break;
-                    }
-
-                    // B Succeeded.
-                    const directDecrypted = bResult.decryptedMessage; // [FIX] Use direct result
-
-                    if (directDecrypted) {
-                        decryptedItems.push(directDecrypted);
                     } else {
-                        // Fallback: Re-fetch via Route A logic (Race Condition Prone)
-                        // Only do this if coordinator didn't return the payload for some reason
-                        const { items: retryItems } = await decryptReplayBatch({
-                            conversationId,
-                            items: [item],
-                            selfDeviceId,
-                            selfDigest,
-                            mk: mkRaw,
-                            getMessageKey: MessageKeyVault.getMessageKey,
-                            buildDrAadFromHeader: cryptoBuildDrAadFromHeader,
-                            b64u8: naclB64u8
-                        });
-                        if (retryItems.length) {
-                            decryptedItems.push(retryItems[0]);
-                        } else {
-                            errors.push({ item, reason: 'ROUTE_B_OK_BUT_VAULT_MISSING' });
-                        }
+                        // Route B Failed
+                        errors.push({ item, reason: bResult?.reasonCode || 'ROUTE_B_FAIL' });
+                        logHybridTrace('hybridFlowItemFail', { conversationId, messageId: item.id, reason: bResult?.reasonCode });
+
+                        // [FIX] Explicit Placeholder for Failure
+                        const failedItem = {
+                            ...item,
+                            msgType: 'placeholder',
+                            status: 'failed',
+                            error: bResult?.reasonCode || 'ROUTE_B_FAIL',
+                            decrypted: false,
+                            id: item.id || item.messageId,
+                            counter: Number.isFinite(counter) ? counter : 0,
+                            tsMs: item.tsMs || (Number(item.ts) * 1000) || Date.now()
+                        };
+                        decryptedItems.push(failedItem);
                     }
-                    // Create explicit placeholder for failure
-                    const failedItem = {
-                        ...item,
-                        msgType: 'placeholder',
-                        status: 'failed',
-                        error: bResult?.reasonCode || 'ROUTE_B_FAIL',
-                        decrypted: false,
-                        id: item.id || item.messageId,
-                        counter: Number.isFinite(counter) ? counter : 0,
-                        tsMs: item.tsMs || (Number(item.ts) * 1000) || Date.now()
-                    };
-                    decryptedItems.push(failedItem);
 
-                    errors.push({ item, reason: bResult?.reasonCode || 'ROUTE_B_FAIL' });
-                    logHybridTrace('hybridFlowItemFail', { conversationId, messageId: item.id, reason: bResult?.reasonCode });
-                }
-
-            } else {
-                // Outgoing failure or other control skip
-                errors.push({ item, reason: routeAFailReason });
-
-                // [FIX] Also push placeholder for severe failures if not control skip
-                if (routeAFailReason !== 'CONTROL_SKIP') {
-                    const failedItem = {
-                        ...item,
-                        msgType: 'placeholder',
-                        status: 'failed',
-                        error: routeAFailReason,
-                        decrypted: false,
-                        id: item.id || item.messageId,
-                        counter: Number.isFinite(counter) ? counter : 0,
-                        tsMs: item.tsMs || (Number(item.ts) * 1000) || Date.now()
-                    };
-                    decryptedItems.push(failedItem);
+                } else {
+                    // Outgoing or Skipped
+                    errors.push({ item, reason: 'OUTGOING_OR_SKIP_IN_SEQ' });
                 }
             }
-        }
-    }
-});
+        });
     }
 
-// 5. Restore DESC order for Facade/UI
-decryptedItems.reverse();
+    // 5. Restore DESC order for Facade/UI
+    decryptedItems.reverse();
 
-logHybridTrace('smartFetchDone', {
-    conversationId,
-    decrypted: decryptedItems.length,
-    errors: errors.length
-});
-console.warn('[HybridVerify] Done. Total Decrypted:', decryptedItems.length);
+    logHybridTrace('smartFetchDone', {
+        conversationId,
+        decrypted: decryptedItems.length,
+        errors: errors.length
+    });
+    console.warn('[HybridVerify] Done. Total Decrypted:', decryptedItems.length);
 
-return { items: decryptedItems, errors, nextCursor };
+    return { items: decryptedItems, errors, nextCursor };
 }
