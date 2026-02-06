@@ -101,11 +101,14 @@ export function appendUserMessage(conversationId, entry = {}) {
   if (convMap.has(messageId)) {
     const existing = convMap.get(messageId);
     const isPlaceholder = existing?.msgType === MSG_SUBTYPE.PLACEHOLDER || existing?.isPlaceholder === true || existing?.kind === 'GAP_PLACEHOLDER';
-    if (!isPlaceholder) {
+    // [FIX] Allow overwriting if existing entry failed decryption
+    const isFailedOrEncrypted = existing?.decrypted === false || existing?.error || existing?.status === 'failed';
+
+    if (!isPlaceholder && !isFailedOrEncrypted) {
       // console.log('[timeline-store] appendUserMessage duplicate', { convId, messageId });
       return false;
     }
-    // If it is a placeholder, we fall through to overwrite/set
+    // If it is a placeholder or failed, we fall through to overwrite/set
   }
 
   const stored = (entry && typeof entry === 'object') ? entry : {};
@@ -200,11 +203,14 @@ export function appendBatch(entries = [], opts = {}) {
     if (convMap.has(messageId)) {
       const existing = convMap.get(messageId);
       const isPlaceholder = existing?.msgType === MSG_SUBTYPE.PLACEHOLDER || existing?.isPlaceholder === true || existing?.kind === 'GAP_PLACEHOLDER';
-      if (!isPlaceholder) {
+      // [FIX] Allow overwriting if existing entry failed decryption or is explicitly marked as not decrypted
+      const isFailedOrEncrypted = existing?.decrypted === false || existing?.error || existing?.status === 'failed';
+
+      if (!isPlaceholder && !isFailedOrEncrypted) {
         skippedCount += 1;
         continue;
       }
-      // Overwrite placeholder allowed
+      // Overwrite allowed
     }
     const stored = entry && typeof entry === 'object' ? entry : {};
     stored.conversationId = convId;
