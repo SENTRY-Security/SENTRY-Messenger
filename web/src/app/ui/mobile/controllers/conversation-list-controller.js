@@ -10,6 +10,7 @@ import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/sto
 import { restorePendingInvites } from '../session-store.js';
 import { escapeHtml } from '../ui-utils.js';
 import { extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta, normalizeTimelineMessageId } from '../../../features/messages/parser.js';
+import { getLocalProcessedCounter } from '../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
 
 const CONV_PULL_THRESHOLD = 60;
@@ -295,34 +296,44 @@ export class ConversationListController extends BaseController {
                     });
 
                     const messages = result?.data?.items || [];
+                    if (!messages.length) return;
 
-                    // [FIX] Reverse to process Newest -> Oldest (API is Ascending)
-                    messages.reverse();
+                    // [FIX] Calculate Unread Count (Server Max - Local Read)
+                    try {
+                        // API returns DESC (Newest First). messages[0] is the latest.
+                        const serverMax = messages[0]?.counter || 0;
+                        const localRead = await getLocalProcessedCounter({ conversationId: thread.conversationId });
+                        const unread = Math.max(0, serverMax - localRead);
 
-                    // [DEBUG] Deep inspection
-                    if (true) {
-                        try {
-                            const debugTypes = messages.map(m => {
-                                const t = normalizeMsgTypeValue(m.payload?.type);
-                                return t === 'text' ? 'text' : (t || 'unknown');
-                            });
-                            console.log('[ConvList] Process Messages:', {
-                                id: thread.conversationId,
-                                count: messages.length,
-                                reverseTypes: debugTypes.slice(0, 5) // Show top 5 newest
-                            });
-                        } catch (e) { }
+                        // Update unread count immediately
+                        const t = threadsMap.get(thread.conversationId);
+                        if (t) {
+                            t.unreadCount = unread;
+                            // threadsMap.set(thread.conversationId, t); // Ref update
+                        }
+                    } catch (err) {
+                        console.warn('[ConvList] Unread calc failed', err);
                     }
 
-                    const messagesFiltered = messages;
+                    // [FIX] Preview Logic: Iterate Newest -> Oldest (Standard behavior)
+                    // Do NOT reverse. API provides DESC. We want the first valid Match.
+
                     let previewMsg = null;
                     let isDeleted = false;
                     let skippedCount = 0;
 
-                    // [FIX] Find last meaningful message
                     for (const msg of messages) {
                         const payload = msg.payload || {};
-                        const type = normalizeMsgTypeValue(payload.type);
+                        // [FIX] Fallback for encrypted messages (payload missing)
+                        let type = normalizeMsgTypeValue(payload.type);
+                        if (!type && msg.header) {
+                            // Try parsing header if string
+                            let header = msg.header;
+                            if (typeof header === 'string') {
+                                try { header = JSON.parse(header); } catch { }
+                            }
+                            type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
+                        }
 
                         if (type === 'conversation-deleted') {
                             isDeleted = true;
@@ -330,8 +341,6 @@ export class ConversationListController extends BaseController {
                         }
 
                         // Skip control messages
-                        const meta = msg.meta || {};
-                        // [FIX] Removed contact-share from filter to allow "Friend Added" preview
                         const isControl = type === 'sys' || type === 'system' || type === 'control' ||
                             (type && ['profile-update', 'session-init', 'session-ack'].includes(type));
 
@@ -341,10 +350,15 @@ export class ConversationListController extends BaseController {
                         }
 
                         // Ensure it's content
-                        if (type === 'text' || type === 'media' || type === 'call-log' || type === 'call_log' || type === 'contact-share') {
+                        if (type && ['text', 'media', 'call-log', 'call_log', 'contact-share'].includes(type)) {
                             previewMsg = msg;
-                            break;
+                            break; // Found newest valid content
                         } else {
+                            // If type is unknown/encrypted but has ciphertext, treat as text/encrypted preview
+                            if (!type && msg.ciphertext_b64) {
+                                previewMsg = msg; // Treat as encrypted content
+                                break;
+                            }
                             skippedCount++;
                         }
                     }
@@ -357,18 +371,32 @@ export class ConversationListController extends BaseController {
                     if (isDeleted) {
                         text = '尚無訊息';
                         type = 'conversation-deleted';
-                        ts = messages[0] ? extractMessageTimestampMs(messages[0]) : Date.now();
+                        ts = extractMessageTimestampMs(messages[0] || {});
                     } else if (previewMsg) {
                         const payload = previewMsg.payload || {};
-                        const meta = previewMsg.meta || {};
-                        type = normalizeMsgTypeValue(payload.type);
+                        const meta = previewMsg.meta || {}; // Note: Valid even if encrypted if we parse header... wait meta is from PayloadWrapper usually.
+                        // If encrypted, we construct meta from header
+                        let header = previewMsg.header;
+                        if (typeof header === 'string') { try { header = JSON.parse(header); } catch { } }
+
+                        const effectiveMeta = meta.sender ? meta : (header?.meta || {});
+
+                        // Resolve type again
+                        type = normalizeMsgTypeValue(payload.type || effectiveMeta.msgType || effectiveMeta.msg_type || 'text'); // Default to text if encrypted
                         ts = extractMessageTimestampMs(previewMsg);
 
-                        const sender = normalizePeerKey(meta.sender);
-                        direction = sender === this.deps.sessionStore.activePeerDigest ? 'incoming' : (deriveMessageDirectionFromEnvelopeMeta ? deriveMessageDirectionFromEnvelopeMeta(meta) : 'unknown');
+                        const sender = normalizePeerKey(effectiveMeta.sender || previewMsg.sender_device_id); // Fallback to device ID if sender missing? No, sender_account_digest usually available in row.
+                        // Actually row has sender_account_digest.
+                        const senderDigest = previewMsg.sender_account_digest;
+
+                        direction = senderDigest === this.deps.sessionStore.activePeerDigest ? 'incoming' : 'outgoing';
+                        // Wait, activePeerDigest is the OTHER person.
+                        // sending to me -> Incoming.
+                        // senderDigest == activePeerDigest -> Incoming.
+                        // senderDigest == MY_DIGEST -> Outgoing.
 
                         if (type === 'text') {
-                            text = payload.text || '文字訊息';
+                            text = payload.text || (previewMsg.ciphertext_b64 ? '🔒 加密訊息' : '文字訊息');
                         } else if (type === 'media') {
                             const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
                             if (mime.startsWith('image/')) {
@@ -382,30 +410,21 @@ export class ConversationListController extends BaseController {
                             text = '[通話紀錄]';
                         } else if (type === 'contact-share') {
                             text = '[系統] 您已與對方成為好友';
+                        } else {
+                            text = previewMsg.ciphertext_b64 ? '🔒 加密訊息' : '新訊息';
                         }
                     } else {
-                        if (true) {
-                            console.log('[ConvList] No preview found after filter:', {
-                                id: thread.conversationId,
-                                total: messages.length,
-                                skipped: skippedCount
-                            });
-                        }
+                        // Fallback logging
                     }
 
-                    // [FIX] Safe Merge: Only overwrite if fetched ts is newer than current
-                    // This prevents "Ghost Overwrite" by delayed API responses
                     const currentThread = threadsMap.get(thread.conversationId);
-                    if (!currentThread) {
-                        // Thread removed during fetch, abort update
-                        return;
-                    }
+                    if (!currentThread) return;
 
                     const currentTs = currentThread.lastMessageTs || 0;
                     const newTs = ts || 0;
 
-                    // [FIX] Race Condition: Always update the FRESH object from the map
-                    if (newTs >= currentTs) {
+                    // Update if newer OR if we never had a preview
+                    if (newTs >= currentTs || !currentThread.previewLoaded) {
                         currentThread.lastMessageText = text;
                         currentThread.lastMessageTs = ts;
                         currentThread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
@@ -414,16 +433,8 @@ export class ConversationListController extends BaseController {
                         currentThread.previewLoaded = true;
                         currentThread.needsRefresh = false;
 
-                        // Set back the fresh object (though strictly unnecessary if it's the same ref, good for clarity/hooks)
-                        threadsMap.set(thread.conversationId, currentThread);
-                    } else {
-                        if (true) {
-                            console.log('[ConvList] Safe Merge: Ignored stale preview update', {
-                                id: thread.conversationId,
-                                current: currentTs,
-                                new: newTs
-                            });
-                        }
+                        // Force re-render of this item? 
+                        // The loop calls renderConversationList() at the end.
                     }
                 } catch (err) {
                     console.error('Preview refresh failed', err);
