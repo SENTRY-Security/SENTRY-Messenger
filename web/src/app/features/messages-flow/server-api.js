@@ -4,8 +4,7 @@
 import {
   listSecureMessages as apiListSecureMessages,
   getSecureMessageByCounter as apiGetSecureMessageByCounter,
-  fetchSecureMaxCounter as apiFetchSecureMaxCounter,
-  fetchSecureMessageById as apiFetchSecureMessageById
+  fetchSecureMaxCounter as apiFetchSecureMaxCounter
 } from '../../api/messages.js';
 
 function resolveListSecureError(data) {
@@ -200,30 +199,6 @@ async function apiGetMessagesUnreadCount({ conversationIds, selfAccountDigest })
     conversationIds,
     selfAccountDigest
   });
-}
-
-// [FETCH-BY-ID] Helper for Debug/Manual Decrypt
-export async function fetchSecureMessageById({
-  conversationId,
-  messageId,
-  includeKeys = true,
-  fetchSecureMessageById = apiFetchSecureMessageById
-} = {}) {
-  const { r, data } = await fetchSecureMessageById({
-    conversationId,
-    messageId,
-    includeKeys
-  });
-
-  if (!r?.ok) {
-    const errMsg = data?.message || data?.error || 'fetchSecureMessageById failed';
-    return { item: null, error: errMsg };
-  }
-
-  return {
-    item: normalizeServerItem(resolveSecureMessageItem(data)),
-    error: null
-  };
 }
 
 export function createMessageServerApi(deps = {}) {

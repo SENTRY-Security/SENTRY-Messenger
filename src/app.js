@@ -81,7 +81,6 @@ if (enableRateLimit) {
 
 // 路由
 app.use('/api', routes);
-app.use('/d1', routes); // Support upstream rewrite from /api/v1 -> /d1
 
 // 404 & 錯誤處理
 app.use(notFound);

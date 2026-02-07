@@ -366,27 +366,3 @@ export async function deleteSecureConversation({ conversationId, peerAccountDige
   let data; try { data = JSON.parse(text); } catch { data = text; }
   return { r, data };
 }
-
-export async function fetchSecureMessageById({ conversationId, messageId, senderDeviceId, includeKeys = true } = {}) {
-  if (!conversationId) throw new Error('conversationId required');
-  if (!messageId) throw new Error('messageId required');
-
-  const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({
-    endpoint: `/api/v1/messages/fetch-secure/${messageId}`,
-    deviceId: senderDeviceId
-  });
-
-  const url = new URL(`/api/v1/messages/fetch-secure/${messageId}`, window.location.origin);
-  url.searchParams.set('conversationId', conversationId);
-  url.searchParams.set('senderDeviceId', resolvedDeviceId);
-  if (includeKeys) url.searchParams.set('include_keys', 'true');
-
-  const r = await fetchWithTimeout(url.toString(), {
-    method: 'GET',
-    headers
-  }, 10000);
-
-  const text = await r.text();
-  let data; try { data = JSON.parse(text); } catch { data = text; }
-  return { r, data };
-}

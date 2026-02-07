@@ -597,39 +597,6 @@ export class MessageRenderer {
                 sep.style.marginTop = '12px';
                 sep.style.marginBottom = '12px';
                 sep.textContent = msg.text || msg.content?.text || '更新了個人檔案';
-
-                // Debugging: Add message ID and manual decrypt button
-                const debugId = document.createElement('div');
-                debugId.className = 'message-debug-id';
-                debugId.style.fontSize = '10px';
-                debugId.style.color = '#999';
-                debugId.style.marginTop = '4px';
-                debugId.style.userSelect = 'text';
-                debugId.style.textAlign = 'center'; // Center the debug info
-
-                // Manual Decrypt Button
-                const decryptBtn = document.createElement('span');
-                decryptBtn.textContent = ' [手工解密]';
-                decryptBtn.style.cursor = 'pointer';
-                decryptBtn.style.color = '#3b82f6';
-                decryptBtn.style.marginLeft = '8px';
-                decryptBtn.style.textDecoration = 'underline';
-                decryptBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    console.log('[Debug] Manual Decrypt Clicked', msg.id);
-                    if (window.debugManualDecrypt) {
-                        window.debugManualDecrypt(msg.id || msg.messageId);
-                    } else {
-                        alert('Debug function not found');
-                    }
-                };
-
-                debugId.textContent = `ID: ${msg.id || msg.messageId || '?'}`;
-                debugId.appendChild(decryptBtn);
-
-                // Append the debug info to the separator
-                sep.appendChild(debugId);
-
                 this.listEl.appendChild(sep);
                 continue;
             }

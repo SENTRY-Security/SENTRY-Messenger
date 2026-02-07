@@ -12,17 +12,10 @@ import {
   listOutgoingStatus,
   deleteMessages,
   deleteSecureConversation,
-  setDeletionCursor,
-  getSecureMessageById
+  setDeletionCursor
 } from '../../controllers/messages.controller.js';
 
 const r = Router();
-
-// DEBUG PROBE
-r.get('/messages/debug-probe', (req, res) => res.json({ probe: 'ok', time: Date.now() }));
-// Renamed to avoid prefix conflict, but keeping legacy alias for cached clients
-r.get('/messages/fetch-secure/:messageId', asyncH(getSecureMessageById));
-r.get('/messages/secure/:messageId', asyncH(getSecureMessageById));
 
 // POST /api/v1/messages/atomic-send
 r.post('/messages/atomic-send', asyncH(atomicSend));
@@ -62,8 +55,6 @@ r.post('/messages/secure/delete-conversation', asyncH(deleteSecureConversation))
 
 // POST /api/v1/deletion/cursor
 r.post('/deletion/cursor', asyncH(setDeletionCursor));
-
-
 
 // 之後可加：GET /api/v1/conversations/:id/messages?cursor=...
 export default r;
