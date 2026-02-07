@@ -1445,6 +1445,7 @@ export function initMessagesPane({
     // Group 1: Basic
     const basics = [
       ['Internal ID', msg.id || msg.messageId || 'N/A'],
+      ['Action', `<button onclick="window.debugManualDecrypt('${msg.id || msg.messageId}')" style="background:#3b82f6;color:white;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;">手動解密</button>`],
       ['Server ID', msg.serverMessageId || 'N/A'],
       ['Type', msg.msgType || msg.subtype || 'N/A'],
       ['Status', msg.status || '<span style="color:#10b981; font-weight:600;">Normal</span>'],
