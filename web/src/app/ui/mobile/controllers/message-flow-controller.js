@@ -103,7 +103,10 @@ export class MessageFlowController extends BaseController {
                 const decryptRes = await stateAccess.decryptIncomingSingle({
                     conversationId: state.conversationId,
                     item: res.item,
-                    targetMessageId: messageId
+                    targetMessageId: messageId,
+                    // [Fix] Extract identity from D1 item for Manual Decrypt
+                    peerAccountDigest: res.item.sender_account_digest || res.item.sender_digest || res.item.senderAccountDigest,
+                    peerDeviceId: res.item.sender_device_id || res.item.senderDeviceId
                 });
 
                 if (!decryptRes.decryptedMessage) {
