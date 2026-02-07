@@ -2649,7 +2649,7 @@ async function handleMessagesRoutes(req, env) {
     // Ideally we check conversation membership here.
 
     const item = await env.DB.prepare(
-      `SELECT * FROM secure_messages WHERE conversation_id = ?1 AND (id = ?2 OR server_message_id = ?2) LIMIT 1`
+      `SELECT * FROM messages_secure WHERE conversation_id = ?1 AND id = ?2 LIMIT 1`
     ).bind(conversationId, messageId).first();
 
     if (!item) return json({ error: 'NotFound', message: 'Message not found' }, { status: 404 });
