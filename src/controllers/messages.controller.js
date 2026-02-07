@@ -1326,6 +1326,7 @@ export const setDeletionCursor = async (req, res) => {
 };
 
 export const getSecureMessageById = async (req, res) => {
+  console.log('[DEBUG] getSecureMessageById hit:', req.originalUrl, req.params);
   if (!DATA_API || !HMAC_SECRET) {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }

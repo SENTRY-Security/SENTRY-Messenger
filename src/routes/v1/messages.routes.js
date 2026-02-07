@@ -16,7 +16,8 @@ import {
   getSecureMessageById
 } from '../../controllers/messages.controller.js';
 
-const r = Router();
+// DEBUG PROBE
+r.get('/messages/debug-probe', (req, res) => res.json({ probe: 'ok', time: Date.now() }));
 
 // GET /api/v1/messages/fetch-secure/:messageId
 // Renamed to avoid prefix conflict, but keeping legacy alias for cached clients
