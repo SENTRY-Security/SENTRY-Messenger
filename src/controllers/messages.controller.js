@@ -1355,7 +1355,8 @@ export const getSecureMessageById = async (req, res) => {
     // This function throws if access is denied
     await authorizeAccountForConversation({
       conversationId,
-      accountDigest: resolvedDigest
+      accountDigest: resolvedDigest,
+      deviceId: account.deviceId
     });
 
     auth = { accountDigest: resolvedDigest };
