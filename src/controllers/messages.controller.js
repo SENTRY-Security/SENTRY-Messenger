@@ -1395,6 +1395,11 @@ export const getSecureMessageById = async (req, res) => {
     }
     return res.json(data);
   } catch (err) {
-    return res.status(502).json({ error: 'FetchError', message: err?.message || 'worker fetch failed' });
+    console.error('[DEBUG] Fetch failed:', err);
+    return res.status(502).json({
+      error: 'FetchError',
+      message: err?.message || 'worker fetch failed',
+      stack: err?.stack
+    });
   }
 };
