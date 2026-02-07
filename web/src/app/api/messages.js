@@ -372,11 +372,11 @@ export async function fetchSecureMessageById({ conversationId, messageId, sender
   if (!messageId) throw new Error('messageId required');
 
   const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({
-    endpoint: `/api/v1/messages/secure/${messageId}`,
+    endpoint: `/api/v1/messages/fetch-secure/${messageId}`,
     deviceId: senderDeviceId
   });
 
-  const url = new URL(`/api/v1/messages/secure/${messageId}`, window.location.origin);
+  const url = new URL(`/api/v1/messages/fetch-secure/${messageId}`, window.location.origin);
   url.searchParams.set('conversationId', conversationId);
   url.searchParams.set('senderDeviceId', resolvedDeviceId);
   if (includeKeys) url.searchParams.set('include_keys', 'true');

@@ -18,9 +18,9 @@ import {
 
 const r = Router();
 
-// GET /api/v1/messages/secure/:messageId?conversationId=
-// Moved to top to avoid shadowing
-r.get('/messages/secure/:messageId', asyncH(getSecureMessageById));
+// GET /api/v1/messages/fetch-secure/:messageId?conversationId=
+// Renamed to avoid prefix conflict with /messages/secure
+r.get('/messages/fetch-secure/:messageId', asyncH(getSecureMessageById));
 
 // POST /api/v1/messages/atomic-send
 r.post('/messages/atomic-send', asyncH(atomicSend));
