@@ -78,6 +78,7 @@ export class MessageFlowController extends BaseController {
         window.addEventListener('sentry:gap-detected', this.handleBodyGapDetected);
 
         // [DEBUG] Manual Decrypt Handler
+        // [DEBUG] Manual Decrypt Handler (Offline/Vault Path)
         window.debugManualDecrypt = async (messageId) => {
             console.log('[Debug] Manual Decrypt Start:', messageId);
             if (!messageId) return alert('No Message ID');
@@ -96,32 +97,59 @@ export class MessageFlowController extends BaseController {
 
                 if (!res.item) return alert('Message not found in Vault');
 
-                // 2. Decrypt
-                const { createLiveStateAccess } = await import('../../../features/messages-flow/live/state-live.js');
-                const stateAccess = createLiveStateAccess();
+                // 2. Decrypt using Offline Replay Flow (decryptReplayBatch)
+                // This path handles wrapped_keys from the server and local MK unwrapping.
+                const { decryptReplayBatch } = await import('../../../features/messages-flow/vault-replay.js');
+                const { getDeviceId, getMkRaw, getAccountDigest } = await import('../../../core/store.js');
 
-                const decryptRes = await stateAccess.decryptIncomingSingle({
-                    conversationId: state.conversationId,
-                    item: res.item,
-                    targetMessageId: messageId,
-                    // [Fix] Extract identity from D1 item for Manual Decrypt
-                    peerAccountDigest: res.item.sender_account_digest || res.item.sender_digest || res.item.senderAccountDigest,
-                    peerDeviceId: res.item.sender_device_id || res.item.senderDeviceId
-                });
+                // Construct synthetic serverKeys map from the fetched item
+                const serverKeys = {};
+                // Normalize ID for lookup
+                const canonicalId = res.item.messageId || res.item.serverMessageId || res.item.id;
 
-                if (!decryptRes.decryptedMessage) {
-                    console.error('Decrypt Failed:', decryptRes);
-                    return alert('Decrypt Failed: ' + (decryptRes.errorMessage || 'Unknown'));
+                if (res.item.message_key || res.item.messageKeyB64) {
+                    serverKeys[canonicalId] = {
+                        wrapped_mk_json: res.item.message_key || res.item.messageKeyB64,
+                        // If header has wrap context, mapping might be needed here, 
+                        // but current Worker D1 schema mostly puts everything in message_key or separate columns
+                        // Assuming simple wrapped key for now.
+                    };
                 }
 
-                // 3. Persist & Render
-                const persistRes = await stateAccess.persistAndAppendSingle({
+                console.log('[Debug] Decrypting with Replay Batch...', { canonicalId, hasKey: !!serverKeys[canonicalId] });
+
+                const { items, errors } = await decryptReplayBatch({
                     conversationId: state.conversationId,
-                    decryptedMessage: decryptRes.decryptedMessage
+                    items: [res.item],
+                    selfDeviceId: getDeviceId(),
+                    selfDigest: getAccountDigest(),
+                    mk: getMkRaw(), // Required for unwrapping
+                    serverKeys: serverKeys
                 });
 
-                console.log('Manual Decrypt Success:', persistRes);
-                alert('Decrypted! UI updating...');
+                if (errors && errors.length > 0) {
+                    console.error('[Debug] Batch Decrypt Errors:', errors);
+                }
+
+                const decryptedHook = items[0];
+                if (!decryptedHook) {
+                    return alert('Decrypt Failed (Refusal): ' + (errors[0]?.reason || 'Unknown'));
+                }
+
+                if (!decryptedHook.decrypted) {
+                    // It might be a placeholder or failed item
+                    return alert('Decrypt Failed (Not Decrypted): ' + (decryptedHook.error || 'Unknown'));
+                }
+
+                console.log('Manual Decrypt Success:', decryptedHook);
+
+                // 3. Persist & Render (Append to Timeline)
+                // interactive: true ensures it triggers UI updates/scroll
+                const { appendBatch } = await import('../../../features/timeline-store.js');
+                appendBatch([decryptedHook], { interactive: true });
+
+                alert(`Decrypted!\nID: ${decryptedHook.id}\nText: ${decryptedHook.text?.slice(0, 50)}...`);
+                // Force UI refresh if needed (appendBatch usually handles it via listeners)
                 this.updateMessagesUI({ preserveScroll: true });
 
             } catch (e) {
