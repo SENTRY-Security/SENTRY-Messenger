@@ -18,9 +18,10 @@ import {
 
 const r = Router();
 
-// GET /api/v1/messages/fetch-secure/:messageId?conversationId=
-// Renamed to avoid prefix conflict with /messages/secure
+// GET /api/v1/messages/fetch-secure/:messageId
+// Renamed to avoid prefix conflict, but keeping legacy alias for cached clients
 r.get('/messages/fetch-secure/:messageId', asyncH(getSecureMessageById));
+r.get('/messages/secure/:messageId', asyncH(getSecureMessageById));
 
 // POST /api/v1/messages/atomic-send
 r.post('/messages/atomic-send', asyncH(atomicSend));
