@@ -1468,7 +1468,7 @@ export function initMessagesPane({
     if (modalTitle) modalTitle.textContent = 'Message Debug';
 
     const renderRow = ([k, v]) => {
-      const isHtml = typeof v === 'string' && v.startsWith('<span style="color:#10b981;');
+      const isHtml = typeof v === 'string' && (v.startsWith('<span') || v.startsWith('<button'));
       return `
       <div class="version-row">
         <span class="version-label">${escapeHtml(String(k))}</span>
