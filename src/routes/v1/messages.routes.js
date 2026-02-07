@@ -12,7 +12,8 @@ import {
   listOutgoingStatus,
   deleteMessages,
   deleteSecureConversation,
-  setDeletionCursor
+  setDeletionCursor,
+  getSecureMessageById
 } from '../../controllers/messages.controller.js';
 
 const r = Router();
@@ -55,6 +56,9 @@ r.post('/messages/secure/delete-conversation', asyncH(deleteSecureConversation))
 
 // POST /api/v1/deletion/cursor
 r.post('/deletion/cursor', asyncH(setDeletionCursor));
+
+// GET /api/v1/messages/secure/:messageId?conversationId=
+r.get('/messages/secure/:messageId', asyncH(getSecureMessageById));
 
 // 之後可加：GET /api/v1/conversations/:id/messages?cursor=...
 export default r;

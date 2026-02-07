@@ -1320,7 +1320,72 @@ export const setDeletionCursor = async (req, res) => {
       return res.status(502).json({ error: 'D1WriteFailed', status: r.status, details: data });
     }
     return res.json(data);
-  } catch (err) {
     return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+};
+
+export const getSecureMessageById = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+  const { messageId } = req.params;
+  const conversationId = req.query.conversationId || req.query.conversation_id;
+  if (!messageId || !conversationId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'conversationId and messageId required' });
+  }
+
+  const account = extractAccountFromRequest(req);
+  if (!account.accountToken && !account.accountDigest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'Auth required' });
+  }
+
+  // Resolve Auth
+  let auth;
+  try {
+    const { accountDigest: resolvedDigest } = await resolveAccountAuth({
+      accountToken: account.accountToken,
+      accountDigest: account.accountDigest
+    });
+    // Check conversation access
+    const { allowed, role } = await authorizeAccountForConversation(resolvedDigest, conversationId);
+    if (!allowed) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Conversation access denied' });
+    }
+    auth = { accountDigest: resolvedDigest };
+  } catch (err) {
+    return respondAccountError(res, err, 'account authorization failed');
+  }
+
+  // Forward to Worker
+  const path = `/d1/messages/secure/${messageId}`;
+  const includeKeys = req.query.include_keys === 'true'; // Propagate key request
+
+  // We sign a GET request URL? Usually HMAC signs body.
+  // For GET, we sign the path + query.
+  // Worker expects path match.
+  // Let's construct the full path with query params for the worker.
+  const workerQuery = new URLSearchParams();
+  workerQuery.set('conversationId', conversationId);
+  workerQuery.set('senderDeviceId', account.deviceId); // Used for logging/context
+  if (includeKeys) workerQuery.set('include_keys', 'true');
+
+  const fullPath = `${path}?${workerQuery.toString()}`;
+  const sig = signHmac(fullPath, '', HMAC_SECRET); // Empty body for GET
+
+  try {
+    const r = await fetch(`${DATA_API}${fullPath}`, {
+      method: 'GET',
+      headers: { 'x-auth': sig }
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = text; }
+
+    if (!r.ok) {
+      if (r.status === 404) return res.status(404).json({ error: 'NotFound', message: 'Message not found in vault' });
+      return res.status(502).json({ error: 'WorkerError', status: r.status, details: data });
+    }
+    return res.json(data);
+  } catch (err) {
+    return res.status(502).json({ error: 'FetchError', message: err?.message || 'worker fetch failed' });
   }
 };
