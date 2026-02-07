@@ -1320,6 +1320,7 @@ export const setDeletionCursor = async (req, res) => {
       return res.status(502).json({ error: 'D1WriteFailed', status: r.status, details: data });
     }
     return res.json(data);
+  } catch (err) {
     return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
   }
 };
