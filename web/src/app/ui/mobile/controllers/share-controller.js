@@ -1436,6 +1436,16 @@ export function setupShareController(options) {
     let counter = 1;
     try {
       const { r, data } = await fetchSecureMaxCounter({ conversationId, senderDeviceId });
+
+      // [FIX] Strict Sender Counter Policy:
+      // Verify the backend returned a counter for OUR device ID. 
+      // If the backend accidentally returned the Peer's counter, Ns would be corrupted (jump to Peer's Nr).
+      const returnedSender = data?.senderDeviceId || data?.sender_device_id;
+      const localDevice = ensureDeviceId();
+      if (returnedSender && localDevice && returnedSender !== localDevice) {
+        throw new Error(`Critical: max-counter returned peer device counter (${returnedSender}). Aborting.`);
+      }
+
       const maxCounterRaw = data?.maxCounter ?? data?.max_counter ?? null;
       const maxCounter = Number.isFinite(Number(maxCounterRaw)) ? Number(maxCounterRaw) : null;
       if (r?.ok && Number.isFinite(maxCounter)) {

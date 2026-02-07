@@ -127,7 +127,7 @@ export async function smartFetchMessages({
             // A. Head Gap: (localMax, minFetched)
             // [STRICT SYNC] User requires 100% gap filling before decryption to ensure DR chain integrity.
             // We must fetch ALL missing messages between LocalMax and CurrentBatch.
-            const headStart = localMax + 1;
+            const headStart = Math.max(1, localMax + 1);
 
             if (minFetched !== Number.MAX_SAFE_INTEGER && minFetched > headStart) {
                 const totalGapSize = minFetched - headStart;

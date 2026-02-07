@@ -76,6 +76,56 @@ export class MessageFlowController extends BaseController {
             }
         };
         window.addEventListener('sentry:gap-detected', this.handleBodyGapDetected);
+
+        // [DEBUG] Manual Decrypt Handler
+        window.debugManualDecrypt = async (messageId) => {
+            console.log('[Debug] Manual Decrypt Start:', messageId);
+            if (!messageId) return alert('No Message ID');
+
+            try {
+                // 1. Fetch Item (Force Vault)
+                const state = this.getMessageState();
+                if (!state.conversationId) return alert('No Conversation ID');
+
+                const { fetchSecureMessageById } = await import('../../../features/messages-flow/server-api.js');
+                const res = await fetchSecureMessageById({
+                    conversationId: state.conversationId,
+                    messageId,
+                    includeKeys: true
+                });
+
+                if (!res.item) return alert('Message not found in Vault');
+
+                // 2. Decrypt
+                const { createLiveStateAccess } = await import('../../../features/messages-flow/live/state-live.js');
+                const stateAccess = createLiveStateAccess();
+
+                const decryptRes = await stateAccess.decryptIncomingSingle({
+                    conversationId: state.conversationId,
+                    item: res.item,
+                    targetMessageId: messageId
+                });
+
+                if (!decryptRes.decryptedMessage) {
+                    console.error('Decrypt Failed:', decryptRes);
+                    return alert('Decrypt Failed: ' + (decryptRes.errorMessage || 'Unknown'));
+                }
+
+                // 3. Persist & Render
+                const persistRes = await stateAccess.persistAndAppendSingle({
+                    conversationId: state.conversationId,
+                    decryptedMessage: decryptRes.decryptedMessage
+                });
+
+                console.log('Manual Decrypt Success:', persistRes);
+                alert('Decrypted! UI updating...');
+                this.updateMessagesUI({ preserveScroll: true });
+
+            } catch (e) {
+                console.error('Manual Decrypt Error:', e);
+                alert('Error: ' + e.message);
+            }
+        };
     }
 
     /**
