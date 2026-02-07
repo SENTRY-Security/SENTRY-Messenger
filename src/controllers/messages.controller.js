@@ -1351,21 +1351,17 @@ export const getSecureMessageById = async (req, res) => {
       accountDigest: account.accountDigest
     });
     // Check conversation access
-    const { allowed, role } = await authorizeAccountForConversation(resolvedDigest, conversationId);
-    if (!allowed) {
-      return res.status(403).json({ error: 'Forbidden', message: 'Conversation access denied' });
-    }
+    // Check conversation access
+    // This function throws if access is denied
+    await authorizeAccountForConversation({
+      conversationId,
+      accountDigest: resolvedDigest
+    });
+
     auth = { accountDigest: resolvedDigest };
   } catch (err) {
     console.error('[DEBUG] Auth failed:', err);
-    // TEMPORARY DEBUG: Return error details to client
-    return res.status(400).json({
-      error: 'AuthFailed',
-      message: err?.message || 'account authorization failed',
-      details: err?.details || null,
-      stack: err?.stack || null
-    });
-    // return respondAccountError(res, err, 'account authorization failed');
+    return respondAccountError(res, err, 'account authorization failed');
   }
 
   // Forward to Worker
