@@ -25,9 +25,9 @@ const allowList = (env.CORS_ORIGIN ?? '')
   .filter(Boolean);
 const corsOrigin = allowList.length
   ? (origin, cb) => {
-      if (!origin) return cb(null, true); // non-browser or same-origin
-      cb(null, allowList.includes(origin));
-    }
+    if (!origin) return cb(null, true); // non-browser or same-origin
+    cb(null, allowList.includes(origin));
+  }
   : false;
 app.use(cors({ origin: corsOrigin, credentials: false }));
 
@@ -81,6 +81,7 @@ if (enableRateLimit) {
 
 // 路由
 app.use('/api', routes);
+app.use('/d1', routes); // Support upstream rewrite from /api/v1 -> /d1
 
 // 404 & 錯誤處理
 app.use(notFound);

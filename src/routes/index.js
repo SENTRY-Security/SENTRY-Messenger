@@ -26,6 +26,8 @@ r.get('/status', getStatus);
 
 // v1 routes
 r.use('/v1', v1msg);
+r.use('/', v1msg); // Support /d1/messages direct mapping (rewrite drops v1)
+
 r.use('/v1', v1media);
 r.use('/v1', v1calls);
 r.use('/v1', v1contactSecrets);
