@@ -49,13 +49,7 @@ function appendSecureDebug(entry) {
 
 const canonAccount = (v) => (typeof v === 'string' ? v.replace(/[^0-9A-Fa-f]/g, '').toUpperCase() : null);
 
-function extractAccountFromRequest(req) {
-  return {
-    accountToken: req.headers['x-account-token'],
-    accountDigest: canonAccount(req.headers['x-account-digest']),
-    deviceId: req.headers['x-device-id']
-  };
-}
+
 const canonDevice = (v) => {
   if (typeof v !== 'string') return null;
   const trimmed = v.trim();
