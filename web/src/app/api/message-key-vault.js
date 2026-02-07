@@ -36,7 +36,7 @@ export async function putMessageKeyVault(params = {}) {
       dr_state: params.dr_state || null
     }
   });
-  const r = await fetchWithTimeout('/api/v1/message-key-vault/put', jsonReq(payload), 10000);
+  const r = await fetchWithTimeout('/d1/message-key-vault/put', jsonReq(payload), 10000);
   return parseJsonResponse(r);
 }
 
@@ -54,7 +54,7 @@ export async function getMessageKeyVault(params = {}) {
       senderDeviceId: params.senderDeviceId
     }
   });
-  const r = await fetchWithTimeout('/api/v1/message-key-vault/get', jsonReq(payload), 10000);
+  const r = await fetchWithTimeout('/d1/message-key-vault/get', jsonReq(payload), 10000);
   return parseJsonResponse(r);
 }
 export async function getVaultPutCount(params = {}) {
@@ -66,7 +66,7 @@ export async function getVaultPutCount(params = {}) {
       messageId: params.messageId
     }
   });
-  const r = await fetchWithTimeout('/api/v1/message-key-vault/count', jsonReq(payload), 5000);
+  const r = await fetchWithTimeout('/d1/message-key-vault/count', jsonReq(payload), 5000);
   return parseJsonResponse(r);
 }
 
@@ -81,7 +81,7 @@ export async function deleteMessageKeyVault(params = {}) {
       senderDeviceId: params.senderDeviceId
     }
   });
-  const r = await fetchWithTimeout('/api/v1/message-key-vault/delete', jsonReq(payload), 5000);
+  const r = await fetchWithTimeout('/d1/message-key-vault/delete', jsonReq(payload), 5000);
   return parseJsonResponse(r);
 }
 
@@ -93,6 +93,7 @@ export async function getLatestStateVault(params = {}) {
       senderDeviceId: params.senderDeviceId // Optional optimization
     }
   });
-  const r = await fetchWithTimeout('/api/v1/message-key-vault/latest-state', jsonReq(payload), 8000); // Higher timeout for SQL query
+  const r = await fetchWithTimeout('/d1/message-key-vault/latest-state', jsonReq(payload), 8000); // Higher timeout for SQL query
   return parseJsonResponse(r);
+
 }
