@@ -2633,8 +2633,8 @@ async function handleMessagesRoutes(req, env) {
   }
 
   // [FETCH-BY-ID]
-  if (req.method === 'GET' && (url.pathname.match(/^\/d1\/messages\/secure\/([0-9a-f-]+)$/) || url.pathname.match(/^\/api\/v1\/messages\/secure\/([0-9a-f-]+)$/))) {
-    const match = url.pathname.match(/\/([0-9a-f-]{36})$/);
+  if (req.method === 'GET' && (url.pathname.match(/^\/d1\/messages\/secure\/([0-9a-fA-F-]+)$/) || url.pathname.match(/^\/api\/v1\/messages\/secure\/([0-9a-fA-F-]+)$/))) {
+    const match = url.pathname.match(/\/([0-9a-fA-F-]{36})$/);
     const messageId = match ? match[1] : null;
     if (!messageId) return json({ error: 'BadRequest', message: 'Invalid Message ID' }, { status: 400 });
 
