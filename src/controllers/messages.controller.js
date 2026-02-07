@@ -1357,7 +1357,15 @@ export const getSecureMessageById = async (req, res) => {
     }
     auth = { accountDigest: resolvedDigest };
   } catch (err) {
-    return respondAccountError(res, err, 'account authorization failed');
+    console.error('[DEBUG] Auth failed:', err);
+    // TEMPORARY DEBUG: Return error details to client
+    return res.status(400).json({
+      error: 'AuthFailed',
+      message: err?.message || 'account authorization failed',
+      details: err?.details || null,
+      stack: err?.stack || null
+    });
+    // return respondAccountError(res, err, 'account authorization failed');
   }
 
   // Forward to Worker
