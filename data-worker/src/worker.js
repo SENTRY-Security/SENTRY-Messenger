@@ -2516,6 +2516,16 @@ async function handleMessagesRoutes(req, env) {
 
     if (includeKeys) {
       const accountDigest = normalizeAccountDigest(req.headers.get('x-account-digest') || url.searchParams.get('requesterDigest') || url.searchParams.get('account_digest'));
+
+      // [DEBUG] Log params for diagnosis
+      console.warn('d1_by_counter_debug', {
+        includeKeys,
+        targetId: row.id,
+        accountDigest: accountDigest || 'MISSING',
+        headersDigest: req.headers.get('x-account-digest'),
+        qsDigest: url.searchParams.get('requesterDigest')
+      });
+
       if (accountDigest && row.id) {
         try {
           const stmtKey = env.DB.prepare(`
@@ -2524,6 +2534,7 @@ async function handleMessagesRoutes(req, env) {
              WHERE account_digest = ?1 AND message_id = ?2
           `).bind(accountDigest, row.id);
           const keyRow = await stmtKey.first();
+
           if (keyRow) {
             keysMap = {
               [keyRow.message_id]: {
@@ -2532,6 +2543,8 @@ async function handleMessagesRoutes(req, env) {
                 dr_state_snapshot: safeJSON(keyRow.dr_state_snapshot)
               }
             };
+          } else {
+            console.warn('d1_by_counter_key_not_found', { digest: accountDigest, msgId: row.id });
           }
         } catch (err) {
           console.warn('d1_by_counter_include_keys_failed', err);
