@@ -2513,18 +2513,18 @@ async function handleMessagesRoutes(req, env) {
 
     const includeKeys = url.searchParams.get('includeKeys') === 'true' || url.searchParams.get('include_keys') === 'true';
     let keysMap = null;
+    let debugInfo = {};
 
     if (includeKeys) {
       const accountDigest = normalizeAccountDigest(req.headers.get('x-account-digest') || url.searchParams.get('requesterDigest') || url.searchParams.get('account_digest'));
 
-      // [DEBUG] Log params for diagnosis
-      console.warn('d1_by_counter_debug', {
+      debugInfo = {
         includeKeys,
         targetId: row.id,
         accountDigest: accountDigest || 'MISSING',
         headersDigest: req.headers.get('x-account-digest'),
         qsDigest: url.searchParams.get('requesterDigest')
-      });
+      };
 
       if (accountDigest && row.id) {
         try {
@@ -2543,12 +2543,16 @@ async function handleMessagesRoutes(req, env) {
                 dr_state_snapshot: safeJSON(keyRow.dr_state_snapshot)
               }
             };
+            debugInfo.found = true;
           } else {
-            console.warn('d1_by_counter_key_not_found', { digest: accountDigest, msgId: row.id });
+            debugInfo.found = false;
+            debugInfo.error = 'Key row not found in vault';
           }
         } catch (err) {
-          console.warn('d1_by_counter_include_keys_failed', err);
+          debugInfo.error = err.message;
         }
+      } else {
+        debugInfo.error = 'Missing accountDigest or row.id';
       }
     }
 
@@ -2567,7 +2571,8 @@ async function handleMessagesRoutes(req, env) {
         counter: row.counter,
         created_at: row.created_at
       },
-      keys: keysMap // [FIX] Return keys if requested
+      keys: keysMap, // [FIX] Return keys if requested
+      _debug: debugInfo // [DEBUG] Return debug info to client
     });
   }
 
