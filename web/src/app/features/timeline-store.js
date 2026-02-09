@@ -240,8 +240,10 @@ export function appendBatch(entries = [], opts = {}) {
   logCapped('timelineBatchAssertTrace', {
     conversationId: batchConversationId || null,
     batchSize: list.length,
+    appendedCount: appendedEntries.length,
+    skippedCount,
     droppedCount: schemaDroppedCount,
-    reasonCode: schemaDroppedCount > 0 ? 'SCHEMA_DROP' : 'SCHEMA_OK',
+    reasonCode: schemaDroppedCount > 0 ? 'SCHEMA_DROP' : (skippedCount > 0 ? 'DUPLICATE_SKIP' : 'SCHEMA_OK'),
     stage: 'APPEND_BATCH'
   }, 5);
 

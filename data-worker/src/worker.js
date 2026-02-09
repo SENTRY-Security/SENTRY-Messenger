@@ -2689,6 +2689,9 @@ async function handleMessagesRoutes(req, env) {
   if (req.method === 'GET' && (url.pathname === '/d1/messages' || url.pathname === '/d1/messages/secure' || url.pathname === '/api/v1/messages/secure')) {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     let cursorTs = Number(url.searchParams.get('cursorTs') || url.searchParams.get('cursor_ts') || 0);
+    // [FIX] Normalize cursorTs to seconds — the SQL CASE WHEN normalizes created_at to seconds,
+    // so cursorTs must also be in seconds for the comparison to work correctly.
+    if (cursorTs > 100000000000) cursorTs = cursorTs / 1000.0;
     let cursorCounter = Number(url.searchParams.get('cursorCounter') || url.searchParams.get('cursor_counter') || 0);
     let cursorId = url.searchParams.get('cursorId') || url.searchParams.get('cursor_id') || '';
 
@@ -2838,6 +2841,8 @@ async function handleMessagesRoutes(req, env) {
       if (lastItemInBatch) {
         cursorCounter = lastItemInBatch.counter;
         cursorTs = lastItemInBatch.created_at;
+        // [FIX] Normalize loop cursor to seconds (matching CASE WHEN in SQL)
+        if (cursorTs > 100000000000) cursorTs = cursorTs / 1000.0;
         cursorId = lastItemInBatch.id;
       }
 
@@ -2863,7 +2868,9 @@ async function handleMessagesRoutes(req, env) {
     }
 
     const last = allItems.at(-1) || null;
-    const nextCursor = last ? { ts: last.created_at, id: last.id, counter: last.counter } : null;
+    // [FIX] Normalize nextCursor.ts to seconds for client consistency
+    const lastTs = last ? (last.created_at > 100000000000 ? last.created_at / 1000.0 : last.created_at) : null;
+    const nextCursor = last ? { ts: lastTs, id: last.id, counter: last.counter } : null;
 
     const includeKeys = url.searchParams.get('includeKeys') === 'true' || url.searchParams.get('include_keys') === 'true';
     let keysMap = null;
