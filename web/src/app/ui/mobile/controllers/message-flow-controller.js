@@ -128,7 +128,7 @@ export class MessageFlowController extends BaseController {
         } else if (next === 'reached_top') {
             this.elements.loadMoreBtn.classList.remove('hidden');
             this.elements.loadMoreBtn.classList.remove('loading');
-            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '已到達對話頂端';
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '沒有更多訊息了';
         }
     }
 
