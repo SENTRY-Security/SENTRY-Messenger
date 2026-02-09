@@ -27,6 +27,7 @@ import { normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } fro
 import { deriveConversationContextFromSecret } from '../../../features/conversation.js';
 import { encryptContactPayload, decryptContactPayload } from '../../../features/contact-share.js';
 import { flushPendingContactShares, uplinkContactToD1 } from '../../../features/contacts.js';
+import { triggerContactSecretsBackup } from '../../../features/contact-backup.js';
 import { setContactSecret, getContactSecret, restoreContactSecrets } from '../../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from '../session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice, removeContactCore } from '../contact-core-store.js';
@@ -1303,6 +1304,16 @@ export function setupShareController(options) {
         role: 'initiator'
       });
 
+      // [FIX] Persist scanner-side contact to D1 so it survives storage clear + restore
+      uplinkContactToD1({
+        peerAccountDigest: resolvedOwnerDigest,
+        conversation: conversationPayload
+      }).catch(err => console.warn('[share-controller] scanner uplink failed', err));
+
+      // [FIX] Backup contact-secrets (incl. DR state) to server immediately
+      triggerContactSecretsBackup('invite-scan', { force: true, allowWithoutDrState: true })
+        .catch(err => console.warn('[share-controller] scanner backup failed', err));
+
       logCapped('inviteSessionMaterialReady', {
         inviteId: parsed?.inviteId || null,
         conversationIdPrefix8: safePrefix(conversationId, 8),
@@ -2301,6 +2312,12 @@ export function setupShareController(options) {
     } catch (err) {
       log({ contactInitShareError: err?.message || err, peerAccountDigest: peerDigest });
     }
+
+    // [FIX] Backup contact-secrets (incl. DR state) to server immediately
+    // Without this, closing before any message exchange loses the DR session on restore
+    triggerContactSecretsBackup('invite-consume', { force: true })
+      .catch(err => console.warn('[share-controller] owner backup failed', err));
+
     return {
       inviteId,
       peerDigest,
