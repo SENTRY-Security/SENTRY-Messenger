@@ -4,7 +4,7 @@
  */
 
 import { log, logCapped } from '../../core/log.js';
-import { normalizeAccountDigest, normalizePeerDeviceId } from '../../core/store.js';
+import { normalizeAccountDigest, normalizePeerDeviceId, getAccountDigest as storeGetAccountDigest, getDeviceId as storeGetDeviceId } from '../../core/store.js';
 import {
     normalizePeerKey,
     splitPeerKey,
@@ -16,6 +16,10 @@ import { restorePendingInvites } from './session-store.js';
 import { timelineGetTimeline } from '../../features/timeline-store.js';
 import { messagesFlowFacade } from '../../features/messages-flow-facade.js';
 import { escapeHtml } from './ui-utils.js';
+import { listSecureMessages } from '../../api/messages.js';
+import { buildDrAadFromHeader } from '../../crypto/dr.js';
+import { b64u8 } from '../../crypto/nacl.js';
+import { toU8Strict } from '/shared/utils/u8-strict.js';
 
 /**
  * Create conversation threads manager.
@@ -214,9 +218,46 @@ export function createConversationThreadsManager(deps) {
         return threads;
     }
 
+    /**
+     * Decrypt a single message using a server-provided vault key.
+     * Mirrors the logic in vault-replay.js decryptWithMessageKey.
+     */
+    async function _decryptPreviewMessage(messageKeyB64, ivB64, ciphertextB64, header) {
+        if (!messageKeyB64 || !ivB64 || !ciphertextB64) return null;
+        const keyU8 = toU8Strict(b64u8(messageKeyB64), 'conversation-threads:preview-decrypt');
+        const ivU8 = b64u8(ivB64);
+        const ctU8 = b64u8(ciphertextB64);
+        const key = await crypto.subtle.importKey('raw', keyU8, 'AES-GCM', false, ['decrypt']);
+        const aad = header && typeof buildDrAadFromHeader === 'function'
+            ? buildDrAadFromHeader(header)
+            : null;
+        const params = aad
+            ? { name: 'AES-GCM', iv: ivU8, additionalData: aad }
+            : { name: 'AES-GCM', iv: ivU8 };
+        const ptBuf = await crypto.subtle.decrypt(params, key, ctU8);
+        return new TextDecoder().decode(ptBuf);
+    }
+
+    /**
+     * Resolve direction of a message relative to self.
+     */
+    function _resolvePreviewDirection(item, header, selfDeviceId, selfDigest) {
+        const senderDeviceId = item?.sender_device_id || item?.senderDeviceId || header?.device_id || header?.meta?.sender_device_id || null;
+        const targetDeviceId = item?.receiver_device_id || item?.receiverDeviceId || header?.meta?.receiver_device_id || null;
+        const senderDigestRaw = item?.sender_account_digest || item?.senderAccountDigest || header?.meta?.sender_digest || null;
+        const senderDigest = senderDigestRaw ? String(senderDigestRaw).toUpperCase() : null;
+
+        if (targetDeviceId && selfDeviceId && targetDeviceId === selfDeviceId) return 'incoming';
+        if (senderDeviceId && selfDeviceId && senderDeviceId === selfDeviceId) return 'outgoing';
+        if (senderDigest && selfDigest && senderDigest === selfDigest) return 'outgoing';
+        return 'incoming';
+    }
+
     async function refreshConversationPreviews({ force = false, renderCallback } = {}) {
         const threadsMap = getConversationThreads();
         const threads = Array.from(threadsMap.values());
+        const selfDeviceId = storeGetDeviceId();
+        const selfDigest = storeGetAccountDigest();
         const tasks = [];
         for (const thread of threads) {
             const peerDigest = threadPeer(thread);
@@ -229,90 +270,90 @@ export function createConversationThreadsManager(deps) {
             if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
             tasks.push((async () => {
                 try {
-                    logReplayCallsite?.('refreshConversationPreviews', {
+                    // Lightweight fetch: only 1 message with vault keys
+                    const { r, data } = await listSecureMessages({
                         conversationId: thread.conversationId,
-                        replay: false,
-                        allowReplay: false,
-                        mutateState: false,
-                        silent: true,
-                        limit: 20,
-                        cursorTs: null,
-                        cursorId: null
+                        limit: 1,
+                        includeKeys: true
                     });
-                    logReplayGateTrace?.('conversation-threads:refreshConversationPreviews', {
-                        conversationId: thread.conversationId,
-                        allowReplay: false,
-                        mutateState: false,
-                        replay: false,
-                        silent: true,
-                        messageId: null,
-                        serverMessageId: null
-                    });
-                    const previewResult = await messagesFlowFacade.onScrollFetchMore({
-                        conversationId: thread.conversationId,
-                        tokenB64: thread.conversationToken,
-                        peerAccountDigest: peerDigest,
-                        peerDeviceId: thread.peerDeviceId,
-                        options: {
-                            limit: 20,
-                            mutateState: false,
-                            sendReadReceipt: false,
-                            onMessageDecrypted: null,
-                            silent: true,
-                            sourceTag: 'conversation-threads:refreshConversationPreviews'
-                        }
-                    });
-                    logReplayFetchResult?.({
-                        conversationId: thread.conversationId,
-                        itemsLength: Array.isArray(previewResult?.items) ? previewResult.items.length : null,
-                        serverItemCount: previewResult?.serverItemCount ?? null,
-                        nextCursorTs: previewResult?.nextCursor?.ts ?? previewResult?.nextCursorTs ?? null,
-                        nextCursorId: previewResult?.nextCursor?.id ?? null,
-                        errorsLength: Array.isArray(previewResult?.errors) ? previewResult.errors.length : null
-                    });
-                    const timeline = timelineGetTimeline(thread.conversationId);
-                    const list = Array.isArray(timeline) ? timeline : [];
-                    if (!list.length) {
+                    if (!r?.ok) {
+                        thread.previewLoaded = true;
+                        thread.lastMessageText = '(載入失敗)';
+                        thread.needsRefresh = false;
+                        return;
+                    }
+                    const items = Array.isArray(data?.items) ? data.items : [];
+                    if (!items.length) {
                         thread.lastMessageText = '';
                         thread.lastMessageTs = null;
                         thread.lastMessageId = null;
                         thread.lastMsgType = null;
+                        thread.lastDirection = null;
                         thread.previewLoaded = true;
                         thread.unreadCount = 0;
-                        if (thread.lastReadTs === null) thread.lastReadTs = null;
                         thread.needsRefresh = false;
                         return;
                     }
-                    const latest = list[list.length - 1];
-                    let text = typeof latest.text === 'string' && latest.text.trim() ? latest.text : (latest.error || '(無法解密)');
-                    let type = latest.msgType || latest.subtype || 'text';
+                    const latest = items[0];
+                    const serverKeys = data?.keys || null;
+                    const messageId = latest.id || latest.messageId || latest.message_id || null;
 
-                    // [Fix] Handle CONTROL_SKIP and hidden messages
-                    if (text === 'CONTROL_SKIP' || latest.error === 'CONTROL_SKIP') {
-                        if (type === 'conversation-deleted') {
+                    // Parse header
+                    let header = latest.header || null;
+                    if (!header && typeof latest.header_json === 'string') {
+                        try { header = JSON.parse(latest.header_json); } catch { }
+                    }
+
+                    // Resolve direction
+                    const direction = _resolvePreviewDirection(latest, header, selfDeviceId, selfDigest);
+
+                    // Resolve message type from header
+                    const msgType = header?.meta?.msg_type || header?.meta?.msgType || 'text';
+
+                    // Resolve timestamp
+                    const tsRaw = latest.created_at ?? latest.createdAt ?? latest.ts ?? null;
+                    const ts = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
+
+                    // Try to find vault key for this message
+                    const vaultEntry = messageId && serverKeys ? serverKeys[messageId] : null;
+                    const messageKeyB64 = vaultEntry?.message_key_b64 || vaultEntry?.messageKeyB64 || null;
+                    const ciphertextB64 = latest.ciphertext_b64 || latest.ciphertextB64 || null;
+                    const ivB64 = header?.iv_b64 || null;
+
+                    let text = null;
+                    if (messageKeyB64 && ciphertextB64 && ivB64) {
+                        // Has key → attempt decrypt
+                        try {
+                            text = await _decryptPreviewMessage(messageKeyB64, ivB64, ciphertextB64, header);
+                        } catch (err) {
+                            log({ previewDecryptFailed: err?.message, conversationId: thread.conversationId });
+                            text = null;
+                        }
+                    }
+
+                    // Format preview text
+                    if (text && typeof text === 'string' && text.trim()) {
+                        // Handle conversation-deleted or control messages
+                        if (msgType === 'conversation-deleted') {
                             text = '尚無訊息';
-                        } else {
+                        } else if (text === 'CONTROL_SKIP') {
                             text = '系統訊息';
                         }
-                    } else if (type === 'conversation-deleted') {
-                        text = '尚無訊息';
+                    } else {
+                        // No key or decrypt failed
+                        text = '訊息尚未解密🔐';
                     }
 
                     thread.lastMessageText = text;
-                    thread.lastMessageTs = typeof latest.ts === 'number' ? latest.ts : null;
-                    thread.lastMessageId = latest.id || latest.messageId || null;
-                    thread.lastDirection = latest.direction || null;
-                    thread.lastMsgType = type; // Capture type
+                    thread.lastMessageTs = ts;
+                    thread.lastMessageId = messageId;
+                    thread.lastDirection = direction;
+                    thread.lastMsgType = msgType;
                     thread.previewLoaded = true;
                     thread.needsRefresh = false;
+
                     if (thread.lastReadTs === null || thread.lastReadTs === undefined) {
-                        thread.lastReadTs = thread.lastMessageTs ?? null;
-                        thread.unreadCount = 0;
-                    } else if (typeof thread.lastReadTs === 'number') {
-                        const unread = list.filter((item) => typeof item?.ts === 'number' && item.ts > thread.lastReadTs && item.direction === 'incoming').length;
-                        thread.unreadCount = unread;
-                    } else {
-                        thread.lastReadTs = thread.lastMessageTs ?? null;
+                        thread.lastReadTs = ts;
                         thread.unreadCount = 0;
                     }
                 } catch (err) {
