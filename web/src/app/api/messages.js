@@ -321,7 +321,7 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
   return { r, data };
 }
 
-export async function getSecureMessageByCounter({ conversationId, counter, senderDeviceId, senderAccountDigest } = {}) {
+export async function getSecureMessageByCounter({ conversationId, counter, senderDeviceId, senderAccountDigest, includeKeys } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   if (!Number.isFinite(Number(counter))) throw new Error('counter required');
   const qs = new URLSearchParams();
@@ -330,6 +330,7 @@ export async function getSecureMessageByCounter({ conversationId, counter, sende
   if (senderDeviceId) qs.set('senderDeviceId', String(senderDeviceId));
   const senderDigest = senderAccountDigest ? normalizeAccountDigest(senderAccountDigest) : null;
   if (senderDigest) qs.set('senderAccountDigest', senderDigest);
+  if (includeKeys) qs.set('includeKeys', 'true');
   const url = `/api/v1/messages/by-counter?${qs.toString()}`;
   const headers = buildAccountHeaders();
   const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);

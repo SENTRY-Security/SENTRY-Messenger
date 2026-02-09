@@ -2510,6 +2510,35 @@ async function handleMessagesRoutes(req, env) {
     if (!row) {
       return json({ error: 'NotFound', message: 'message not found' }, { status: 404 });
     }
+
+    const includeKeys = url.searchParams.get('includeKeys') === 'true' || url.searchParams.get('include_keys') === 'true';
+    let keysMap = null;
+
+    if (includeKeys) {
+      const accountDigest = normalizeAccountDigest(req.headers.get('x-account-digest') || url.searchParams.get('requesterDigest') || url.searchParams.get('account_digest'));
+      if (accountDigest && row.id) {
+        try {
+          const stmtKey = env.DB.prepare(`
+            SELECT message_id, wrapped_mk_json, wrap_context_json, dr_state_snapshot
+              FROM message_key_vault
+             WHERE account_digest = ?1 AND message_id = ?2
+          `).bind(accountDigest, row.id);
+          const keyRow = await stmtKey.first();
+          if (keyRow) {
+            keysMap = {
+              [keyRow.message_id]: {
+                wrapped_mk_json: safeJSON(keyRow.wrapped_mk_json),
+                wrap_context_json: safeJSON(keyRow.wrap_context_json),
+                dr_state_snapshot: safeJSON(keyRow.dr_state_snapshot)
+              }
+            };
+          }
+        } catch (err) {
+          console.warn('d1_by_counter_include_keys_failed', err);
+        }
+      }
+    }
+
     return json({
       ok: true,
       item: {
@@ -2519,11 +2548,13 @@ async function handleMessagesRoutes(req, env) {
         sender_device_id: row.sender_device_id,
         receiver_account_digest: row.receiver_account_digest,
         receiver_device_id: row.receiver_device_id,
+        header: safeJSON(row.header_json),
         header_json: row.header_json,
         ciphertext_b64: row.ciphertext_b64,
         counter: row.counter,
         created_at: row.created_at
-      }
+      },
+      keys: keysMap // [FIX] Return keys if requested
     });
   }
 
