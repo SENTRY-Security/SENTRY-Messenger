@@ -276,8 +276,8 @@ export class ActiveConversationController extends BaseController {
         try {
             this.deps.applyMessagesLayout?.();
             console.log('[ActiveConversationController] applyMessagesLayout called');
-            // Force UI update to trigger Double Tick logic
-            this.deps.updateMessagesUI?.({ forceFullRender: true });
+            // Force UI update to trigger Double Tick logic + scroll to bottom on enter
+            this.deps.updateMessagesUI?.({ scrollToEnd: true, forceFullRender: true });
         } catch (e) {
             console.error('[ActiveConversationController] applyMessagesLayout failed', e);
         }
