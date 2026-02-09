@@ -321,6 +321,7 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
   return { r, data };
 }
 
+// [FORCE-UPDATE] Ensure includeKeys logic is deployed
 export async function getSecureMessageByCounter({ conversationId, counter, senderDeviceId, senderAccountDigest, includeKeys } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   if (!Number.isFinite(Number(counter))) throw new Error('counter required');
