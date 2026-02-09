@@ -54,9 +54,12 @@ echo "🔄 Deploying Node.js Backend..."
 
 # Git Push
 echo "   - Pushing changes to git..."
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo "   - Current Branch: $CURRENT_BRANCH"
+
 git add .
 git commit -m "Deploy: $(date)" || echo "   (No changes to commit)"
-git push origin main
+git push origin "$CURRENT_BRANCH"
 
 # Helper function to reload or start PM2
 reload_pm2() {
@@ -74,9 +77,9 @@ reload_pm2() {
 # Check if running on the remote server itself (skip SSH)
 if [ "$SKIP_SSH" = "1" ] || [ "$(hostname)" = "localhost" ] || [ -f "/root/service/.is-server" ]; then
   echo "   - Running locally on server, updating directly..."
-  echo "     - Pulling latest code..."
+  echo "     - Pulling latest code ($CURRENT_BRANCH)..."
   git fetch origin
-  git reset --hard origin/main
+  git reset --hard "origin/$CURRENT_BRANCH"
   
   echo "     - Installing dependencies..."
   npm install --production
@@ -88,9 +91,10 @@ else
   ssh "$REMOTE_HOST" << EOF
     set -e
     cd "$REMOTE_DIR"
-    echo "     - Pulling latest code..."
+    echo "     - Pulling latest code ($CURRENT_BRANCH)..."
     git fetch origin
-    git reset --hard origin/main
+    git checkout "$CURRENT_BRANCH" || git checkout -b "$CURRENT_BRANCH"
+    git reset --hard "origin/$CURRENT_BRANCH"
     
     echo "     - Installing dependencies..."
     npm install --production
