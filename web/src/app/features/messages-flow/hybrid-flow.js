@@ -418,13 +418,14 @@ export async function smartFetchMessages({
             const sample = sortedItems[0];
             const sampleId = getCanonicalId(sample);
             const serverKeyList = serverKeys ? Object.keys(serverKeys) : [];
-            console.warn('[HybridVerify] ID Debug:', {
+            // [DEBUG] Stringify to avoid console collapsing
+            console.warn('[HybridVerify] ID Debug:', JSON.stringify({
                 sampleCanonical: sampleId,
                 sampleRaw: { id: sample.id, mid: sample.messageId, smid: sample.serverMessageId },
                 serverKeysCount: serverKeyList.length,
                 serverKeysSample: serverKeyList.slice(0, 5), // Show first 5 keys
                 matchFound: serverKeys && sampleId && !!serverKeys[sampleId]
-            });
+            }, null, 2));
         }
     }
 
