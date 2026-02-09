@@ -2476,7 +2476,7 @@ async function handleMessagesRoutes(req, env) {
     return json({ counts: result });
   }
 
-  if (req.method === 'GET' && url.pathname === '/d1/messages/by-counter') {
+  if (req.method === 'GET' && (url.pathname === '/d1/messages/by-counter' || url.pathname === '/api/v1/messages/by-counter')) {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     const counterRaw = url.searchParams.get('counter');
     const senderDeviceRaw = url.searchParams.get('senderDeviceId') || url.searchParams.get('sender_device_id');
@@ -2516,7 +2516,8 @@ async function handleMessagesRoutes(req, env) {
     let debugInfo = {};
 
     if (includeKeys) {
-      const accountDigest = normalizeAccountDigest(req.headers.get('x-account-digest') || url.searchParams.get('requesterDigest') || url.searchParams.get('account_digest'));
+      // [FIX] Strict Header Check (Align with listSecureMessages)
+      const accountDigest = normalizeAccountDigest(req.headers.get('x-account-digest'));
 
       debugInfo = {
         includeKeys,
