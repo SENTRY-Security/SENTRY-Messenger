@@ -37,6 +37,12 @@ if [ -d "$WEB_DIR" ]; then
   npm install || true
   
   echo "   - Deploying ./src directly to Cloudflare Pages (Production)..."
+  # [FIX] Ensure functions are included in the deployment source (./src)
+  if [ -d "functions" ]; then
+    echo "   - Copying functions to src/functions..."
+    mkdir -p src/functions
+    cp -r functions/* src/functions/
+  fi
   npx wrangler pages deploy ./src --project-name message-web-hybrid --branch=main --commit-dirty=true
   cd ..
 else

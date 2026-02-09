@@ -21,6 +21,7 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
   }
 
   const targetUrl = new URL(targetPath + url.search, upstreamBase);
+  console.log('[Proxy] Forwarding', { original: request.url, search: url.search, target: targetUrl.toString() });
 
   const upstreamRequest = new Request(targetUrl.toString(), request);
   const response = await fetch(upstreamRequest, { cf: { cacheTtl: 0 } });
