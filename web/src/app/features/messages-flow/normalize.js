@@ -4,6 +4,7 @@
 import {
   classifyDecryptedPayload,
   SEMANTIC_KIND,
+  CONTROL_STATE_SUBTYPES,
   normalizeSemanticSubtype
 } from '../semantic.js';
 import { describeCallLogForViewer, normalizeCallLogPayload, resolveViewerRole } from '../calls/call-log.js';
@@ -142,7 +143,11 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
     ? Math.floor(Number(tsMs))
     : resolveMessageTsMs(timestamp);
   const tsSeq = resolveMessageTsSeq(baseId);
-  const msgType = normalizeSemanticSubtype(meta?.msgType || meta?.msg_type || null);
+  const msgType = normalizeSemanticSubtype(
+    meta?.msgType || meta?.msg_type
+    || header?.meta?.msgType || header?.meta?.msg_type
+    || null
+  );
   const base = {
     conversationId: conversationId || null,
     id: baseId,
@@ -186,6 +191,10 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
     };
     base.text = label || 'Call';
     base.subLabel = subLabel || null;
+  } else if (msgType && CONTROL_STATE_SUBTYPES.has(msgType)) {
+    // Preserve control subtypes (contact-share, profile-update, conversation-deleted, etc.)
+    // so the renderer can display them as tombstones / system messages.
+    base.msgType = msgType;
   } else {
     base.msgType = 'text';
     base.text = typeof base.text === 'string' ? base.text : '';
