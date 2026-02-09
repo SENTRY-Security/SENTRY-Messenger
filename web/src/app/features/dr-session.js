@@ -2730,7 +2730,7 @@ export async function sendDrMedia(params = {}) {
   const recvDeviceId = peerDeviceInput || conversation?.peerDeviceId || null;
   const queueKey = recvDeviceId ? `${peer}::${recvDeviceId}` : peer;
 
-  return enqueueDrSend(queueKey, () => sendDrMediaCore(params));
+  return enqueueDrSessionOp(queueKey, () => sendDrMediaCore(params));
 }
 
 export async function sendDrMediaCore(params = {}) {
