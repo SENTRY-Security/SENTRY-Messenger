@@ -332,7 +332,8 @@ export async function getSecureMessageByCounter({ conversationId, counter, sende
   const senderDigest = senderAccountDigest ? normalizeAccountDigest(senderAccountDigest) : null;
   if (senderDigest) qs.set('senderAccountDigest', senderDigest);
   if (includeKeys) qs.set('includeKeys', 'true');
-  const url = `/api/v1/messages/by-counter?${qs.toString()}`;
+  console.log('[API] getSecureMessageByCounter', { counter, includeKeys, url: qs.toString() });
+  const url = `/api/v1/messages/by-counter?v=${Date.now()}&${qs.toString()}`;
   const headers = buildAccountHeaders();
   const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
   const text = await r.text();
