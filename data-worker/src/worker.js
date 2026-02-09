@@ -2513,7 +2513,10 @@ async function handleMessagesRoutes(req, env) {
 
     const includeKeys = url.searchParams.get('includeKeys') === 'true' || url.searchParams.get('include_keys') === 'true';
     let keysMap = null;
-    let debugInfo = {};
+    let debugInfo = {
+      url: url.href,
+      includeKeys: includeKeys
+    };
 
     if (includeKeys) {
       // [FIX] Strict Header Check (Align with listSecureMessages)
