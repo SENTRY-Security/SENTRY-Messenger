@@ -295,9 +295,13 @@ export class MessageFlowController extends BaseController {
 
                 this.pendingWsRefresh = (this.pendingWsRefresh || 0) + 1;
                 if (!state.loading) {
+                    // Capture scroll position BEFORE load — only scroll to bottom if user was at bottom
+                    const shouldScrollToBottom = this.isNearMessagesBottom(100);
                     this.pendingWsRefresh = 0;
                     this.loadActiveConversationMessages({ append: false })
-                        .then(() => scrollToBottomSoon(this.elements.scrollEl))
+                        .then(() => {
+                            if (shouldScrollToBottom) scrollToBottomSoon(this.elements.scrollEl);
+                        })
                         .catch((err) => log({ wsMessageSyncError: err?.message || err }))
                         .finally(() => {
                             // [FIX] Tail-Loop for WS Refresh
@@ -499,10 +503,8 @@ export class MessageFlowController extends BaseController {
                 // This allows the UI to update "Placeholder" -> "Real Message" asynchronously
                 onStreamingUpdate: (items) => {
                     if (items && items.length) {
-                        // We use 'history' order which is compatible with overwriting
-                        // appendBatch handles duplication/overwrite of placeholders automatically
-                        appendBatch(items, { directionalOrder: 'history' });
-                        // console.log('[MessageFlow] Streamed update:', items.length);
+                        // Streaming updates should never move scroll — just replace placeholder in-place
+                        appendBatch(items, { directionalOrder: 'streaming-update' });
                     }
                 }
             });
@@ -514,7 +516,9 @@ export class MessageFlowController extends BaseController {
             }
 
             if (result.items && result.items.length) {
-                appendBatch(result.items, { directionalOrder: 'history' });
+                // 'initial' = first load (scroll to bottom), 'older' = pull-to-load (preserve position)
+                const order = append ? 'older' : 'initial';
+                appendBatch(result.items, { directionalOrder: order });
             }
             // Additional Facade handling is implicit (state mutation option is true)
         } catch (e) {
@@ -590,7 +594,7 @@ export class MessageFlowController extends BaseController {
 
                 // [FIX] Process the fetched items!
                 if (result.items && result.items.length) {
-                    appendBatch(result.items, { directionalOrder: 'history' });
+                    appendBatch(result.items, { directionalOrder: 'older' });
                     console.log(`[MessageFlow] Auto-Fill: Appended ${result.items.length} items`);
 
                     // Update Local Max based on fetched items to see if gap persists
@@ -785,21 +789,14 @@ export class MessageFlowController extends BaseController {
             this.refreshTimelineState(convId);
             this.deps.messageStatus?.applyReceiptsToMessages(state.messages);
 
-            // [FIX] Smart Scroll Logic
-            // 1. History Fetch: Jump to Top (User Request)
-            // 2. new Message + Near Bottom: Scroll to End
-            // 3. New Message + Reading History: Stay Put (Preserve)
-            const isHistory = directionalOrder === 'history';
+            // Scroll Decision Logic — match standard messaging app behavior
             const hasOutgoing = batchEntries.some(m => m.direction === 'outgoing');
             const wasAtBottom = this.isNearMessagesBottom(100);
 
             let scrollToEnd = false;
-            let scrollToTop = false;
             let preserveScroll = false;
 
-            // [FIX] Trigger Delivery Receipts for Incoming Messages
-            // When loading offline messages (scroll/app-open), the pipeline might have been bypassed (vault-replay).
-            // We ensure delivery receipts are sent here.
+            // Trigger Delivery Receipts for Incoming Messages
             try {
                 const receiptDeps = {
                     wsSend: this.deps.wsSend,
@@ -813,7 +810,7 @@ export class MessageFlowController extends BaseController {
                             messageId: item.messageId || item.id,
                             tokenB64,
                             peerDeviceId: item.senderDeviceId,
-                            vaultPutStatus: 'ok' // Assumed OK since we are rendering it
+                            vaultPutStatus: 'ok'
                         }, receiptDeps);
                     }
                 }
@@ -821,25 +818,27 @@ export class MessageFlowController extends BaseController {
                 // Ignore receipt errors to prevent blocking render
             }
 
-            if (isHistory) {
-                scrollToTop = true;
-                preserveScroll = false;
+            if (directionalOrder === 'initial') {
+                // Enter conversation → scroll to bottom (show latest messages)
+                scrollToEnd = true;
+            } else if (directionalOrder === 'older') {
+                // Pull-to-load history → keep user where they are, older msgs appear above
+                preserveScroll = true;
+            } else if (directionalOrder === 'streaming-update') {
+                // Route B placeholder → real message → don't move
+                preserveScroll = true;
             } else {
-                // Live / Replay / Other
+                // Live message / WebSocket push
                 if (hasOutgoing || wasAtBottom) {
                     scrollToEnd = true;
-                    preserveScroll = false;
                 } else {
-                    // Start of a new message while user is reading history
-                    scrollToEnd = false;
-                    scrollToTop = false;
+                    // New incoming while reading history → don't disturb
                     preserveScroll = true;
                 }
             }
 
             this.updateMessagesUI({
                 scrollToEnd,
-                scrollToTop,
                 preserveScroll
             });
 
@@ -1038,7 +1037,7 @@ export class MessageFlowController extends BaseController {
     /**
      * Update messages UI (Main Rendering Logic).
      */
-    updateMessagesUI({ scrollToEnd = false, scrollToTop = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
+    updateMessagesUI({ scrollToEnd = false, preserveScroll = false, newMessageIds = null, forceFullRender = false } = {}) {
         if (!this.elements.messagesList) return;
         const state = this.getMessageState();
         const timelineMessages = this.refreshTimelineState(state.conversationId);
@@ -1222,21 +1221,11 @@ export class MessageFlowController extends BaseController {
         this.updateLoadMoreVisibility();
         this.updateMessagesScrollOverflow();
 
-        if (!scrollToEnd && !scrollToTop && anchor) {
-            this.restoreScrollFromAnchor(anchor);
-        } else if (scrollToEnd) {
+        if (scrollToEnd) {
             scrollToBottomSoon(this.elements.scrollEl);
             this.setNewMessageHint(false);
-        } else if (scrollToTop) {
-            // [FIX] Scroll to Top with 50px offset
-            // Threshold is 20px (messages-pane.js), so we must be > 20px to avoid infinite loop.
-            // [FIX] Scroll to Top with 50px offset
-            // Wrapped in rAF to ensure layout is updated after render
-            if (this.elements.scrollEl) {
-                requestAnimationFrame(() => {
-                    if (this.elements.scrollEl) this.elements.scrollEl.scrollTop = 50;
-                });
-            }
+        } else if (anchor) {
+            this.restoreScrollFromAnchor(anchor);
         }
     }
 
