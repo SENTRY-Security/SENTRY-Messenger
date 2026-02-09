@@ -152,9 +152,10 @@ export async function getSecureMessageByCounter({
   conversationId,
   counter,
   senderDeviceId,
+  includeKeys = false, // [FIX] Support keys
   getSecureMessageByCounter: fetchByCounter = apiGetSecureMessageByCounter
 } = {}) {
-  const { r, data } = await fetchByCounter({ conversationId, counter, senderDeviceId });
+  const { r, data } = await fetchByCounter({ conversationId, counter, senderDeviceId, includeKeys });
   if (!r?.ok) {
     throw new Error(resolveByCounterError(data));
   }
@@ -162,7 +163,9 @@ export async function getSecureMessageByCounter({
   if (!item) {
     throw new Error('getSecureMessageByCounter missing item');
   }
-  return { item };
+  // [FIX] Return keys if requested (critical for gap filling)
+  const keys = data?.keys || null;
+  return { item, keys };
 }
 
 // [GAP-COUNT] Precise Offline Unread Counting
