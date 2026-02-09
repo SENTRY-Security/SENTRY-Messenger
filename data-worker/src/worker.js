@@ -2712,8 +2712,8 @@ async function handleMessagesRoutes(req, env) {
              WHERE conversation_id=?1 AND account_digest=?${params.length + 1}
            ), -1)
          ORDER BY 
-           counter DESC,
            (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END) DESC,
+           counter DESC,
            id DESC
          LIMIT ?${params.length}
       `).bind(...params, requesterDigest);
