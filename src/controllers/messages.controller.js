@@ -960,12 +960,13 @@ export const getSecureMessageByCounter = async (req, res) => {
   if (senderDeviceId) params.set('senderDeviceId', senderDeviceId);
   const senderAccountDigest = canonAccount(req.query.senderAccountDigest || req.query.sender_account_digest || null);
   if (senderAccountDigest) params.set('senderAccountDigest', senderAccountDigest);
+  if (req.query.includeKeys) params.set('includeKeys', 'true');
 
   const path = `/d1/messages/by-counter?${params.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
   try {
     const r = await fetch(`${DATA_API}${path}`, {
-      headers: { 'x-auth': sig }
+      headers: { 'x-auth': sig, 'x-account-digest': auth.accountDigest }
     });
     const text = await r.text();
     let data; try { data = JSON.parse(text); } catch { data = text; }
