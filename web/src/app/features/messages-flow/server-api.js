@@ -88,8 +88,20 @@ export async function listSecureMessagesForReplay({
     items: Array.isArray(data?.items) ? data.items.map(normalizeServerItem) : [],
     errors: Array.isArray(data?.errors) ? data.errors : [],
     nextCursor: resolveNextCursor(data),
-    keys: data?.keys || null
+    keys: normalizeServerKeys(data?.keys)
   };
+}
+
+function normalizeServerKeys(keys) {
+  if (!keys || typeof keys !== 'object') return null;
+  const normalized = {};
+  for (const [k, v] of Object.entries(keys)) {
+    // [FIX] Ensure key is UUID (if possible) for lookup consistency
+    // Valid for both 'message_id' (snake) and 'messageId' (camel)
+    if (k && k.length === 36) normalized[k] = v;
+    else normalized[k] = v; // Keep original if not UUID-like (fallback)
+  }
+  return normalized;
 }
 
 function normalizeServerItem(item) {

@@ -422,7 +422,7 @@ export async function smartFetchMessages({
                 sampleCanonical: sampleId,
                 sampleRaw: { id: sample.id, mid: sample.messageId, smid: sample.serverMessageId },
                 serverKeysCount: serverKeyList.length,
-                serverKeysSample: serverKeyList.slice(0, 3),
+                serverKeysSample: serverKeyList.slice(0, 5), // Show first 5 keys
                 matchFound: serverKeys && sampleId && !!serverKeys[sampleId]
             });
         }
