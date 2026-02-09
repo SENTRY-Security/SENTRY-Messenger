@@ -464,6 +464,9 @@ export function initMessagesPane({
 
   // Inject circular dependencies into deps
   Object.defineProperties(deps, {
+    controllers: {
+      get: () => controllers
+    },
     messageStatus: {
       get: () => controllers.messageStatus
     },
