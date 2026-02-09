@@ -2,10 +2,9 @@
 // Hybrid pipeline: Smart Fetch + Sequential Route A/B Decrypt.
 
 import { MessageKeyVault } from '../message-key-vault.js';
-import { fetchSecureMaxCounter, listSecureMessagesForReplay, getSecureMessageByCounter } from './server-api.js';
+import { listSecureMessagesForReplay } from './server-api.js';
 import { decryptReplayBatch } from './vault-replay.js';
 import { consumeLiveJob } from './live/coordinator.js';
-import { getLocalProcessedCounter } from './local-counter.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
 import { enqueueDrIncomingOp } from '../dr-session.js';
 import { normalizePeerIdentity } from '../../core/store.js';
@@ -26,7 +25,6 @@ import { createLiveLegacyAdapters } from './live/adapters/index.js';
 
 const HYBRID_LOG_CAP = 5;
 const DEBUG = { drVerbose: true }; // [FIX] Define DEBUG to prevent ReferenceError
-const SMART_FETCH_BUFFER = 5;
 const DEFAULT_LIMIT = 20;
 
 function logHybridTrace(key, payload) {
@@ -75,142 +73,17 @@ export async function smartFetchMessages({
 
     if (!mkRaw) throw new Error('MK missing');
 
-    // 1. Calculate Limits (Smart Fetch)
-    let fetchLimit = limit;
-    let localMax = -1;
-
-    // Initialize localMax if not provided (needed for gap detection)
-    if (!cursor) {
-        try {
-            localMax = await getLocalProcessedCounter({ conversationId }, { serverMax: 0 }); // serverMax 0 as hint not available yet
-            if (!Number.isFinite(localMax)) localMax = 0;
-        } catch { localMax = 0; }
-    }
-
-    // 2. Fetch Items (with keys included)
+    // 1. Fetch Items (with keys included)
     const { items: rawItems, nextCursor, keys: fetchedKeys } = await listSecureMessagesForReplay({
         conversationId,
-        limit: fetchLimit,
+        limit,
         cursorTs: cursor?.ts,
         cursorId: cursor?.id,
         includeKeys: true
     });
-    // [FIX] Allow serverKeys to be null.
-    // If null, vault-replay will enable networkFallback (individual fetches).
-    // If {}, vault-replay assumes authoritative empty list and fails fast.
     const serverKeys = fetchedKeys;
 
-    console.warn('[HybridVerify] Raw Items Fetched:', rawItems.length, 'Keys:', Object.keys(serverKeys || {}).length);
-
-    // --- GAP FILLING LOGIC ---
-    // Detect gap based on what we ACTUALLY fetched vs what we have locally.
-    // If we have holes (either at the start OR inside the batch), fill them.
-    if (rawItems.length > 0) {
-        try {
-            // 1. Analyze fetched counters
-            const fetchedCounters = new Set();
-            let minFetched = Number.MAX_SAFE_INTEGER;
-            let maxFetched = -1;
-
-            for (const item of rawItems) {
-                const c = Number(item.counter ?? item.n);
-                if (Number.isFinite(c)) {
-                    fetchedCounters.add(c);
-                    if (c < minFetched) minFetched = c;
-                    if (c > maxFetched) maxFetched = c;
-                }
-            }
-
-            // 2. Identify missing counters
-            const missingCounters = [];
-
-            // A. Head Gap: (localMax, minFetched)
-            // [STRICT SYNC] User requires 100% gap filling before decryption to ensure DR chain integrity.
-            // We must fetch ALL missing messages between LocalMax and CurrentBatch.
-            const headStart = Math.max(1, localMax + 1);
-
-            if (minFetched !== Number.MAX_SAFE_INTEGER && minFetched > headStart) {
-                const totalGapSize = minFetched - headStart;
-                console.warn(`[HybridVerify] Deep Sync Triggered: Local=${localMax}, FetchedMin=${minFetched}, Gap=${totalGapSize}`);
-
-                // [SAFETY] Cap to prevent infinite loops (e.g. 500)
-                const MAX_SYNC_LIMIT = 500;
-
-                let currentStart = headStart;
-                const end = minFetched;
-
-                // Check safety limit
-                if (totalGapSize > MAX_SYNC_LIMIT) {
-                    console.warn('[HybridVerify] Max Sync Limit Reached. Capping sync size.');
-                }
-
-                // Fill up to the safety limit or the actual end
-                const actualEnd = Math.min(end, headStart + MAX_SYNC_LIMIT);
-
-                for (let c = headStart; c < actualEnd; c++) {
-                    missingCounters.push(c);
-                }
-            }
-
-            // B. Internal Gaps: Holes between minFetched and maxFetched
-            if (maxFetched > minFetched) {
-                for (let c = minFetched + 1; c < maxFetched; c++) {
-                    if (!fetchedCounters.has(c)) {
-                        missingCounters.push(c);
-                    }
-                }
-            }
-
-            if (missingCounters.length > 0) {
-                const missingCount = missingCounters.length;
-                console.warn(`[HybridVerify] Gap Detected! localMax=${localMax}, Fetched=[${minFetched}..${maxFetched}]. Missing ${missingCount} items. Filling...`);
-
-                // Cap gap fill to avoid storms
-                const GAP_FILL_CAP = 500; // [FIX] Increased for Deep Sync
-                const countersToFill = missingCounters.slice(0, GAP_FILL_CAP);
-
-                const fetchPromises = countersToFill.map(c =>
-                    getSecureMessageByCounter({ conversationId, counter: c, senderDeviceId: context.peerDeviceId, includeKeys: true })
-                        .then(res => ({ item: res.item, keys: res.keys }))
-                        .catch(e => {
-                            console.warn(`[HybridVerify] Failed to fill gap counter ${c}:`, e);
-                            return null;
-                        })
-                );
-
-                if (fetchPromises.length > 0) {
-                    const filledResults = await Promise.all(fetchPromises);
-                    const validResults = filledResults.filter(Boolean);
-
-                    if (validResults.length > 0) {
-                        console.warn(`[HybridVerify] Filled ${validResults.length} missing items.`);
-
-                        // Merge and Dedupe
-                        const existingIds = new Set(rawItems.map(i => i.id || i.messageId));
-                        for (const res of validResults) {
-                            const item = res.item;
-                            if (!item) continue;
-
-                            // Merge keys if present
-                            if (res.keys) {
-                                Object.assign(serverKeys, res.keys);
-                            }
-
-                            const id = item.id || item.messageId;
-                            if (id && !existingIds.has(id)) {
-                                rawItems.push(item);
-                                existingIds.add(id);
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (err) {
-            console.warn('[HybridVerify] Gap Fill Error:', err);
-        }
-    }
-
-    if (!rawItems.length && !isGapFetch) {
+    if (!rawItems.length) {
         return { items: [], errors: [], nextCursor };
     }
 
