@@ -370,6 +370,28 @@ export async function decryptReplayBatch({
     }
 
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
+      // [FIX] contact-share messages are not DR-encrypted (no vault key).
+      // Generate a tombstone directly from the header metadata so they survive reload.
+      const headerMsgType = item.header?.meta?.msgType || item.header?.meta?.msg_type || null;
+      if (headerMsgType === 'contact-share') {
+        decrypted.push({
+          conversationId: item.conversationId,
+          text: '',
+          decrypted: true,
+          header: item.header,
+          raw: item.raw,
+          direction: item.direction || 'incoming',
+          ts: item.ts ?? null,
+          tsMs: item.tsMs ?? null,
+          messageId,
+          messageKeyB64: null,
+          meta: item.meta || null,
+          counter: item.counter,
+          msgType: 'contact-share'
+        });
+        continue;
+      }
+
       errors.push(buildDecryptError({
         messageId,
         counter: item.counter,
