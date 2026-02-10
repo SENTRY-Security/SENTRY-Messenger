@@ -527,6 +527,12 @@ async function decryptIncomingSingle(params = {}, adapters) {
         if (!msgType && semantic.subtype === 'contact-share') {
           msgType = 'contact-share';
         }
+        if (!msgType && semantic.subtype === 'call-log') {
+          msgType = 'call-log';
+        }
+        if (!msgType && semantic.subtype === 'system') {
+          msgType = 'system';
+        }
         if (!msgType) msgType = 'text';
 
         // [contact-share] Process contact payload from DR-decrypted plaintext
@@ -612,7 +618,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
         result.okCount = 1;
 
         // Debug Log for Tombstone Verification
-        if (msgType === 'conversation-deleted' || msgType === 'contact-share') {
+        if (msgType === 'conversation-deleted' || msgType === 'contact-share' || msgType === 'call-log' || msgType === 'system') {
           console.log('[Decrypted Tombstone Payload] (Live Route B)', result.decryptedMessage);
         }
       }

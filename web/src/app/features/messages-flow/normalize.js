@@ -191,6 +191,8 @@ function buildMessageObject({ plaintext, payload, header, raw, direction, ts, ts
     };
     base.text = label || 'Call';
     base.subLabel = subLabel || null;
+  } else if (msgType === 'system') {
+    base.msgType = 'system';
   } else if (msgType && CONTROL_STATE_SUBTYPES.has(msgType)) {
     // Preserve control subtypes (contact-share, profile-update, conversation-deleted, etc.)
     // so the renderer can display them as tombstones / system messages.
