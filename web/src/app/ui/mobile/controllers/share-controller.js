@@ -4,7 +4,6 @@
 import { invitesCreate, invitesDeliver, invitesConsume, invitesStatus } from '../../../api/invites.js';
 import { prekeysPublish } from '../../../api/prekeys.js';
 import { devkeysStore } from '../../../api/devkeys.js';
-import { createSecureMessage, fetchSecureMaxCounter } from '../../../api/messages.js';
 import { encodeFriendInvite, decodeFriendInvite } from '../../../lib/invite.js';
 import { generateQR } from '../../../lib/qr.js';
 import QrScanner from '../../../lib/vendor/qr-scanner.min.js';
@@ -25,13 +24,13 @@ import {
 } from '../../../core/store.js';
 import { normalizeNickname, persistProfileForAccount, PROFILE_WRITE_SOURCE } from '../../../features/profile.js';
 import { deriveConversationContextFromSecret } from '../../../features/conversation.js';
-import { encryptContactPayload, decryptContactPayload } from '../../../features/contact-share.js';
+import { decryptContactPayload } from '../../../features/contact-share.js';
 import { flushPendingContactShares, uplinkContactToD1 } from '../../../features/contacts.js';
 import { triggerContactSecretsBackup } from '../../../features/contact-backup.js';
 import { setContactSecret, getContactSecret, restoreContactSecrets } from '../../../core/contact-secrets.js';
 import { sessionStore, restorePendingInvites, persistPendingInvites } from '../session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice, removeContactCore } from '../contact-core-store.js';
-import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, consumeDrSendCounter } from '../../../features/dr-session.js';
+import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, sendDrPlaintext } from '../../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../../features/device-priv.js';
 import { generateOpksFrom, wrapDevicePrivWithMK } from '../../../crypto/prekeys.js';
 import { logMsgEvent, logUiNoise } from '../../../lib/logging.js';
@@ -1396,8 +1395,7 @@ export function setupShareController(options) {
     }
     const conversationToken = conversation?.token_b64 || conversation?.tokenB64 || sessionKey || null;
     const conversationId = conversation?.conversation_id || conversation?.conversationId || null;
-    const resolvedPeerDeviceId = peerDeviceId || null; // 嚴格要求顯式指定對方裝置
-    const resolvedPeerKey = targetDigest && resolvedPeerDeviceId ? `${targetDigest}::${resolvedPeerDeviceId}` : null;
+    const resolvedPeerDeviceId = peerDeviceId || null;
     if (senderDeviceId && resolvedPeerDeviceId && String(resolvedPeerDeviceId) === String(senderDeviceId)) {
       throw new Error('contact-share target device resolves to self');
     }
@@ -1439,111 +1437,35 @@ export function setupShareController(options) {
       payload.reason = reason;
     }
     payload.reason = payload.reason || 'invite-consume';
-    const contactPayload = { ...payload };
-    const envelope = await encryptContactPayload(sessionKey || conversationToken, contactPayload);
-    if (!envelope?.ct || !envelope?.iv) {
-      throw new Error('contact-share envelope missing fields');
-    }
-    let counter = 1;
-    try {
-      const { r, data } = await fetchSecureMaxCounter({ conversationId, senderDeviceId });
 
-      // [FIX] Strict Sender Counter Policy:
-      // Verify the backend returned a counter for OUR device ID. 
-      // If the backend accidentally returned the Peer's counter, Ns would be corrupted (jump to Peer's Nr).
-      const returnedSender = data?.senderDeviceId || data?.sender_device_id;
-      const localDevice = ensureDeviceId();
-      if (returnedSender && localDevice && returnedSender !== localDevice) {
-        throw new Error(`Critical: max-counter returned peer device counter (${returnedSender}). Aborting.`);
-      }
-
-      const maxCounterRaw = data?.maxCounter ?? data?.max_counter ?? null;
-      const maxCounter = Number.isFinite(Number(maxCounterRaw)) ? Number(maxCounterRaw) : null;
-      if (r?.ok && Number.isFinite(maxCounter)) {
-        counter = maxCounter + 1;
-      }
-    } catch { }
-
-    // Advance DR counter optimistically to prevent race with subsequent text messages (e.g. user typing immediately)
-    // This ensures the local state moves to Ns=1 (or N) before any concurrent text message (Ns=N+1) writes its state.
-    try {
-      consumeDrSendCounter({
-        peerAccountDigest: targetDigest,
-        peerDeviceId: resolvedPeerDeviceId,
-        conversationId,
-        counter
-      });
-      // [FIX] Persist the new state (Ns=N+1) IMMEDIATELY to prevent "Ratchet Gap" on reload.
-      // Previously, we advanced the ratchet in memory but didn't save it to Vault/LocalStorage.
-      // If the user reloaded, state reverted to N, but the message used N+1.
-      const snapshot = snapshotDrState(drState({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId }));
-      if (snapshot) {
-        persistDrSnapshot({ peerAccountDigest: targetDigest, peerDeviceId: resolvedPeerDeviceId, snapshot });
-      }
-    } catch (err) {
-      console.warn('[share-controller] failed to advance/persist DR counter before contact-share', err);
-    }
-    const nowSec = Date.now();
-    const payloadTs = Number(contactPayload?.updatedAt || contactPayload?.addedAt || nowSec);
-    const ts = Number.isFinite(payloadTs) ? payloadTs : nowSec;
-    const header = {
-      v: 1,
-      ts,
-      iv_b64: envelope.iv,
-      device_id: senderDeviceId || undefined,
-      n: counter,
-      meta: {
-        msgType: 'contact-share',
-        sender_digest: selfDigest || null,
-        senderDigest: selfDigest || null,
-        sender_device_id: senderDeviceId || null,
-        senderDeviceId: senderDeviceId || null,
-        targetAccountDigest: targetDigest || null,
-        target_account_digest: targetDigest || null,
-        receiverAccountDigest: targetDigest || null,
-        receiver_account_digest: targetDigest || null,
-        targetDeviceId: resolvedPeerDeviceId || null,
-        target_device_id: resolvedPeerDeviceId || null,
-        receiverDeviceId: resolvedPeerDeviceId || null,
-        receiver_device_id: resolvedPeerDeviceId || null
-      }
-    };
+    // [REFACTOR] Send via DR encryption instead of conversation-token encryption.
+    // This ensures a vault key is stored, so the tombstone survives page reload / history replay.
     const messageId = crypto.randomUUID();
-    const { r, data } = await createSecureMessage({
+    const contactPayload = { ...payload, type: 'contact-share' };
+    await sendDrPlaintext({
+      text: JSON.stringify(contactPayload),
+      peerAccountDigest: targetDigest,
+      peerDeviceId: resolvedPeerDeviceId,
       conversationId,
-      header,
-      ciphertextB64: envelope.ct,
-      counter,
-      senderDeviceId,
-      receiverAccountDigest: targetDigest,
-      receiverDeviceId: resolvedPeerDeviceId,
-      id: messageId,
-      createdAt: ts
+      messageId,
+      metaOverrides: {
+        msgType: 'contact-share'
+      }
     });
-    if (!r?.ok) {
-      const msg = typeof data === 'string'
-        ? data
-        : (data?.error || data?.message || 'contact-share send failed');
-      throw new Error(msg);
-    }
 
-    // [FIX] Explicitly append tombstone for Initiator (Scanner)
+    const nowSec = Date.now();
+    const payloadTs = Number(payload?.updatedAt || payload?.addedAt || nowSec);
+    const ts = Number.isFinite(payloadTs) ? payloadTs : nowSec;
+
+    // Append local tombstone for sender side
     try {
-      // Use 'system' type because 'contact-share' is not in USER_MESSAGE_TYPES filtering.
-      // Matches the logic in state-live.js for the receiver.
-      const nickname = overrides?.nickname || '對方'; // We don't have peer nickname easily here, use default or from verify
-      // For scanner, we know who we scanned.
-      // But 'targetDigest' is just hash.
-      // We can rely on renderer looking up contact by senderDigest?
-      // No, for outgoing system message, renderer might use text directly.
-
       appendUserMessage(conversationId, {
         id: messageId,
         messageId,
         conversationId,
         ts,
         tsMs: ts,
-        msgType: 'contact-share', // [Revert] Now supported by timeline-store validation
+        msgType: 'contact-share',
         direction: 'outgoing',
         text: `你已經與 ${overrides?.nickname || '對方'} 建立安全連線 🔐`,
         senderDigest: selfDigest,
@@ -1555,9 +1477,7 @@ export function setupShareController(options) {
       console.warn('[share-controller] failed to append contact-share tombstone', e);
     }
 
-    // [FIX] Force Secure Conversation Status to READY
-    // Because we just initiated the session successfully (sent N=1), we are ready to receive.
-    // If we don't do this, 'ensureSecureConversationReady' checks might fail (return PENDING) on incoming messages.
+    // Force Secure Conversation Status to READY
     try {
       updateSecureConversationStatus(targetDigest, SECURE_CONVERSATION_STATUS.READY, {
         reason: 'initiator-contact-share-success',

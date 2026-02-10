@@ -5,9 +5,8 @@ import { classifyDecryptedPayload, SEMANTIC_KIND } from '../../semantic.js';
 import { SECURE_CONVERSATION_STATUS } from '../../secure-conversation-manager.js';
 import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
-import { decryptContactPayload, normalizeContactShareEnvelope } from '../../contact-share.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
-import { enqueueDrSessionOp, enqueueDrIncomingOp, persistContactShareSequence } from '../../dr-session.js';
+import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js';
 import { appendUserMessage } from '../../timeline-store.js';
 
 function hasUsableDrState(holder) {
@@ -288,140 +287,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
 
   const meta = raw?.meta || header?.meta || null;
   const msgTypeHint = resolveMsgType(meta, header);
-  if (msgTypeHint === 'contact-share') {
-    console.log('[state-live] contact-share detected', {
-      hasToken: !!tokenB64,
-      senderDigest,
-      senderDeviceId
-    });
-
-    if (!tokenB64) {
-      console.warn('[state-live] contact-share MISSING_SESSION_KEY');
-      return {
-        ...base,
-        reasonCode: 'MISSING_SESSION_KEY',
-        skippedCount: 1
-      };
-    }
-    const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
-    let applyOk = false;
-    try {
-      console.log('[state-live] contact-share decrypting...');
-      await decryptContactPayload(tokenB64, envelope);
-      console.log('[state-live] contact-share decrypted OK');
-
-      const plaintext = JSON.stringify({ type: 'contact-share', envelope });
-      const messageTs = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
-      const applyResult = await applyContactShareFromCommit({
-        peerAccountDigest: senderDigest,
-        peerDeviceId: senderDeviceId,
-        sessionKey: tokenB64,
-        plaintext,
-        messageId,
-        sourceTag: 'messages-flow:contact-share-commit',
-        profileUpdatedAt: messageTs
-      });
-      console.log('[state-live] contact-share applyResult', applyResult);
-      applyOk = !!applyResult?.ok;
-      if (applyResult?.diff && conversationId) {
-        try {
-          const diff = applyResult.diff;
-          if (diff.nickname) {
-            appendUserMessage(conversationId, {
-              id: `${messageId}-sys-nick`,
-              msgType: 'system',
-              text: `對方的暱稱已更改為 ${diff.nickname.to}`,
-              ts: Date.now() / 1000,
-              direction: 'incoming',
-              status: 'sent'
-            });
-          }
-          if (diff.avatar) {
-            appendUserMessage(conversationId, {
-              id: `${messageId}-sys-avatar`,
-              msgType: 'system',
-              text: '對方已更改頭像',
-              ts: Date.now() / 1000,
-              direction: 'incoming',
-              status: 'sent'
-            });
-          }
-        } catch (err) {
-          console.warn('[state-live] system notify failed', err);
-        }
-      }
-      if (!applyOk) {
-        console.error('[state-live] applyContactShareFromCommit failed', applyResult);
-      }
-
-      // [FIX] Advance Ratchet State & Persist to Vault (Receiver Side)
-      if (applyOk && adapters?.drState) {
-        try {
-          const msgHeaderN = Number(header?.n);
-          const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
-          const currentNr = Number(state?.NrTotal ?? state?.Nr ?? 0);
-
-          if (state && Number.isFinite(msgHeaderN) && msgHeaderN > currentNr) {
-            if (DEBUG.drVerbose) console.log('[state-live] advancing Contact-Share Ratchet', { from: currentNr, to: msgHeaderN });
-
-            await persistContactShareSequence({
-              peerAccountDigest: senderDigest,
-              peerDeviceId: senderDeviceId,
-              headerCounter: msgHeaderN,
-              conversationId,
-              messageId,
-              state
-            });
-          }
-        } catch (err) {
-          console.warn('[state-live] persistContactShareSequence failed', err);
-        }
-      }
-
-      // [FIX] Return VISIBLE System Message (Tombstone)
-      // Instead of CONTROL_SKIP, we return a decrypted message so it is persisted and displayed.
-      const targetNickname = applyResult?.diff?.nickname?.to || senderDigest?.slice(0, 8) || '對方';
-
-      // [FIX] Ensure valid timestamp (Fundamental Fix)
-      // raw.ts might be undefined or string. Force to Number or Date.now().
-      // Use 13-digit MS timestamp for internal consistency, convert to S for display if needed.
-      // TimelineStore expects `ts` (seconds) or `tsMs` (ms).
-      let safeTs = Number(raw?.ts || raw?.created_at || raw?.timestamp);
-      if (!Number.isFinite(safeTs)) safeTs = Date.now();
-
-      // If it looks like MS ( > 1e11), normalize to Seconds for `ts` field, keep MS for `tsMs`
-      const tsSeconds = safeTs > 1e11 ? safeTs / 1000 : safeTs;
-      const tsMs = safeTs > 1e11 ? safeTs : safeTs * 1000;
-
-      return {
-        ...base,
-        reasonCode: null, // process as success
-        processedCount: 1,
-        okCount: 1,
-        decryptedMessage: {
-          ...base.decryptedMessage, // Preserve other props
-          id: messageId,
-          ts: tsSeconds,
-          tsMs: tsMs,
-          direction: 'incoming',
-          msgType: 'system', // Triggers Tombstone UI
-          text: `你已經與 ${targetNickname} 建立安全連線 🔐`,
-          senderDeviceId,
-          senderDigest,
-          header: header || null
-        }
-      };
-
-    } catch (err) {
-      console.error('[state-live] contact-share processing failed', err);
-      return {
-        ...base,
-        reasonCode: 'DECRYPT_FAIL',
-        processedCount: 1,
-        failCount: 1
-      };
-    }
-  }
   if (!adapters?.drDecryptText || !adapters?.drState) {
     return {
       ...base,
@@ -633,8 +498,8 @@ async function decryptIncomingSingle(params = {}, adapters) {
       result.failCount = 1;
     } else {
       const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-      // [Fix] Allow conversation-deleted to pass through Live Route B.
-      const isAllowedControl = semantic.subtype === 'conversation-deleted';
+      // Allow conversation-deleted and contact-share to pass through Live Route B.
+      const isAllowedControl = semantic.subtype === 'conversation-deleted' || semantic.subtype === 'contact-share';
 
       if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && !isAllowedControl) {
         result.reasonCode = 'CONTROL_SKIP';
@@ -659,7 +524,56 @@ async function decryptIncomingSingle(params = {}, adapters) {
         if (!msgType && semantic.subtype === 'conversation-deleted') {
           msgType = 'conversation-deleted';
         }
+        if (!msgType && semantic.subtype === 'contact-share') {
+          msgType = 'contact-share';
+        }
         if (!msgType) msgType = 'text';
+
+        // [contact-share] Process contact payload from DR-decrypted plaintext
+        if (msgType === 'contact-share') {
+          try {
+            const messageTs = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
+            const applyResult = await applyContactShareFromCommit({
+              peerAccountDigest: senderDigest,
+              peerDeviceId: senderDeviceId,
+              sessionKey: tokenB64,
+              plaintext: text,
+              messageId,
+              sourceTag: 'messages-flow:contact-share-commit',
+              profileUpdatedAt: messageTs
+            });
+            console.log('[state-live] contact-share applyResult', applyResult);
+            if (applyResult?.diff && conversationId) {
+              try {
+                const diff = applyResult.diff;
+                if (diff.nickname) {
+                  appendUserMessage(conversationId, {
+                    id: `${messageId}-sys-nick`,
+                    msgType: 'system',
+                    text: `對方的暱稱已更改為 ${diff.nickname.to}`,
+                    ts: Date.now() / 1000,
+                    direction: 'incoming',
+                    status: 'sent'
+                  });
+                }
+                if (diff.avatar) {
+                  appendUserMessage(conversationId, {
+                    id: `${messageId}-sys-avatar`,
+                    msgType: 'system',
+                    text: '對方已更改頭像',
+                    ts: Date.now() / 1000,
+                    direction: 'incoming',
+                    status: 'sent'
+                  });
+                }
+              } catch (err) {
+                console.warn('[state-live] system notify failed', err);
+              }
+            }
+          } catch (err) {
+            console.warn('[state-live] contact-share apply failed', err);
+          }
+        }
 
         let media = content.media || null;
         // Polyfill media object if missing (backward compatibility for flattened payload)
@@ -680,7 +594,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
           ...content,
           id: messageId,
           messageId,
-          serverMessageId: messageId || raw.serverMessageId || null, // [Fix] Polyfill for Debug Modal
+          serverMessageId: messageId || raw.serverMessageId || null,
           ts,
           tsMs: resolveMessageTsMs(ts),
           direction: 'incoming',
@@ -693,12 +607,12 @@ async function decryptIncomingSingle(params = {}, adapters) {
           senderDeviceId,
           targetDeviceId,
           senderDigest,
-          header: header || null // [Fix] Persist header for Debug Modal
+          header: header || null
         };
         result.okCount = 1;
 
-        // Debug Log for User Verification
-        if (msgType === 'conversation-deleted') {
+        // Debug Log for Tombstone Verification
+        if (msgType === 'conversation-deleted' || msgType === 'contact-share') {
           console.log('[Decrypted Tombstone Payload] (Live Route B)', result.decryptedMessage);
         }
       }
@@ -762,57 +676,6 @@ async function commitIncomingSingle(params = {}, adapters) {
   const msgTypeHint = resolveMsgType(meta, header);
   const rawMessageId = normalizeMessageId(raw);
   const messageId = rawMessageId || targetMessageId;
-  if (msgTypeHint === 'contact-share') {
-    if (!tokenB64) {
-      return { ...base, reasonCode: 'MISSING_SESSION_KEY', counter: resolvedCounter, messageId };
-    }
-    const envelope = normalizeContactShareEnvelope({ header, ciphertextB64 });
-    try {
-      await decryptContactPayload(tokenB64, envelope);
-    } catch {
-      return { ...base, reasonCode: 'DECRYPT_FAIL', counter: resolvedCounter, messageId };
-    }
-    const plaintext = JSON.stringify({ type: 'contact-share', envelope });
-    const applyResult = await applyContactShareFromCommit({
-      peerAccountDigest: senderDigest,
-      peerDeviceId: senderDeviceId,
-      sessionKey: tokenB64,
-      plaintext,
-      messageId,
-      sourceTag: 'messages-flow:contact-share-commit'
-    });
-    if (!applyResult?.ok) {
-      return {
-        ...base,
-        reasonCode: applyResult?.reasonCode || 'CONTACT_SHARE_APPLY_FAILED',
-        counter: resolvedCounter,
-        messageId,
-        decryptOk: true,
-        vaultPutOk: true
-      };
-    }
-    const ts = toMessageTimestamp(raw);
-    const targetNickname = applyResult?.diff?.nickname?.to || senderDigest?.slice(0, 8) || '對方';
-    return {
-      ok: true,
-      reasonCode: null,
-      counter: resolvedCounter,
-      messageId,
-      decryptOk: true,
-      vaultPutOk: true,
-      decryptedMessage: {
-        id: messageId,
-        ts,
-        tsMs: resolveMessageTsMs(ts),
-        direction: 'incoming',
-        msgType: 'system',
-        text: `你已經與 ${targetNickname} 建立安全連線 🔐`,
-        senderDeviceId,
-        senderDigest,
-        header: header || null
-      }
-    };
-  }
   if (!adapters?.drDecryptText || !adapters?.drState || !adapters?.vaultPutIncomingKey) {
     return { ...base, reasonCode: 'ADAPTERS_UNAVAILABLE' };
   }
@@ -961,7 +824,8 @@ async function commitIncomingSingle(params = {}, adapters) {
 
   if (adapters?.appendTimelineBatch) {
     const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-    if (semantic.kind === SEMANTIC_KIND.USER_MESSAGE) {
+    const isAllowedControl = semantic.subtype === 'conversation-deleted' || semantic.subtype === 'contact-share';
+    if (semantic.kind === SEMANTIC_KIND.USER_MESSAGE || isAllowedControl) {
       const ts = toMessageTimestamp(raw);
       const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
 
@@ -972,12 +836,34 @@ async function commitIncomingSingle(params = {}, adapters) {
         }
       } catch { }
 
+      // Process contact-share payload (apply contact data)
+      if (semantic.subtype === 'contact-share') {
+        try {
+          await applyContactShareFromCommit({
+            peerAccountDigest: senderDigest,
+            peerDeviceId: senderDeviceId,
+            sessionKey: tokenB64,
+            plaintext: text,
+            messageId,
+            sourceTag: 'messages-flow:contact-share-commit-batch'
+          });
+        } catch (err) {
+          console.warn('[state-live] contact-share apply failed (batch)', err);
+        }
+      }
+
+      let msgType = content.type || semantic.subtype || 'text';
+      if (!msgType || msgType === 'text') {
+        if (semantic.subtype === 'conversation-deleted') msgType = 'conversation-deleted';
+        if (semantic.subtype === 'contact-share') msgType = 'contact-share';
+      }
+
       const entries = [{
         ...content,
         conversationId,
         messageId,
         direction: 'incoming',
-        msgType: semantic.subtype || 'text',
+        msgType,
         ts,
         tsMs: resolveMessageTsMs(ts),
         counter: Number.isFinite(resolvedCounter) ? Number(resolvedCounter) : null,

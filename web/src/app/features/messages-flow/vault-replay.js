@@ -370,8 +370,8 @@ export async function decryptReplayBatch({
     }
 
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
-      // [FIX] contact-share messages are not DR-encrypted (no vault key).
-      // Generate a tombstone directly from the header metadata so they survive reload.
+      // [COMPAT] Legacy contact-share messages (pre-DR) used token encryption with no vault key.
+      // Generate a tombstone directly from header metadata so they still display.
       const headerMsgType = item.header?.meta?.msgType || item.header?.meta?.msg_type || null;
       if (headerMsgType === 'contact-share') {
         decrypted.push({
