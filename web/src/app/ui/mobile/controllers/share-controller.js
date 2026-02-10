@@ -1458,6 +1458,7 @@ export function setupShareController(options) {
     const ts = Number.isFinite(payloadTs) ? payloadTs : nowSec;
 
     // Append local tombstone for sender side
+    // Store JSON payload as text so the renderer can parse reason/nickname fields
     try {
       appendUserMessage(conversationId, {
         id: messageId,
@@ -1467,7 +1468,8 @@ export function setupShareController(options) {
         tsMs: ts,
         msgType: 'contact-share',
         direction: 'outgoing',
-        text: `你已經與 ${overrides?.nickname || '對方'} 建立安全連線 🔐`,
+        text: JSON.stringify(contactPayload),
+        reason: contactPayload.reason || 'invite-consume',
         senderDigest: selfDigest,
         senderDeviceId: senderDeviceId,
         status: 'pending',

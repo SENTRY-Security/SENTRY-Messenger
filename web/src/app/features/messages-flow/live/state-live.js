@@ -7,7 +7,6 @@ import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
 import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js';
-import { appendUserMessage } from '../../timeline-store.js';
 
 function hasUsableDrState(holder) {
   if (
@@ -536,6 +535,9 @@ async function decryptIncomingSingle(params = {}, adapters) {
         if (!msgType) msgType = 'text';
 
         // [contact-share] Process contact payload from DR-decrypted plaintext
+        // The contact-share tombstone itself now displays reason-aware text
+        // (e.g., "已更新暱稱", "已更新頭像") via the renderer, so separate
+        // system tombstones are no longer needed.
         if (msgType === 'contact-share') {
           try {
             const messageTs = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
@@ -549,33 +551,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
               profileUpdatedAt: messageTs
             });
             console.log('[state-live] contact-share applyResult', applyResult);
-            if (applyResult?.diff && conversationId) {
-              try {
-                const diff = applyResult.diff;
-                if (diff.nickname) {
-                  appendUserMessage(conversationId, {
-                    id: `${messageId}-sys-nick`,
-                    msgType: 'system',
-                    text: `對方的暱稱已更改為 ${diff.nickname.to}`,
-                    ts: Date.now() / 1000,
-                    direction: 'incoming',
-                    status: 'sent'
-                  });
-                }
-                if (diff.avatar) {
-                  appendUserMessage(conversationId, {
-                    id: `${messageId}-sys-avatar`,
-                    msgType: 'system',
-                    text: '對方已更改頭像',
-                    ts: Date.now() / 1000,
-                    direction: 'incoming',
-                    status: 'sent'
-                  });
-                }
-              } catch (err) {
-                console.warn('[state-live] system notify failed', err);
-              }
-            }
           } catch (err) {
             console.warn('[state-live] contact-share apply failed', err);
           }

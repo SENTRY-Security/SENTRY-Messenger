@@ -607,14 +607,29 @@ export class MessageRenderer {
                 sep.style.marginTop = '12px';
                 sep.style.marginBottom = '12px';
 
-                // Resolve Name
-                // Note: For contact-share, we assume it marks the friendship event.
-                // We use the current contact nickname for display.
-                const contact = typeof contacts?.get === 'function' ? contacts.get(activePeerDigest || '') : null;
-                const name = contact?.nickname || '對方';
+                // Parse contact-share payload to determine reason
+                let csPayload = null;
+                try {
+                  const rawText = msg?.text || '';
+                  if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
+                    csPayload = JSON.parse(rawText);
+                  }
+                } catch {}
 
-                // [FIX] Update text to match System Message format
-                sep.textContent = `你已經與 ${escapeHtml(name)} 建立安全連線 🔐`;
+                const csReason = csPayload?.reason || msg?.reason || 'invite-consume';
+                const contact = typeof contacts?.get === 'function' ? contacts.get(activePeerDigest || '') : null;
+                const name = escapeHtml(contact?.nickname || csPayload?.nickname || '對方');
+                const isOutgoing = msg?.direction === 'outgoing';
+
+                if (csReason === 'invite-consume' || csReason === 'invite-create') {
+                  sep.textContent = `你已經與 ${name} 建立安全連線 🔐`;
+                } else if (csReason === 'nickname') {
+                  sep.textContent = isOutgoing ? '你已更新暱稱' : `${name} 已更新暱稱`;
+                } else if (csReason === 'avatar') {
+                  sep.textContent = isOutgoing ? '你已更新頭像' : `${name} 已更新頭像`;
+                } else {
+                  sep.textContent = isOutgoing ? '你已更新個人資料' : `${name} 已更新個人資料`;
+                }
                 this.listEl.appendChild(sep);
                 continue;
             }
