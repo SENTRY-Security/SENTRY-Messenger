@@ -247,24 +247,8 @@ export async function applyContactShareFromCommit({
     return { ok: false, reasonCode: 'NOT_CONTACT_SHARE' };
   }
 
-  // Support two formats:
-  // 1. DR-encrypted (new): plaintext contains contact data directly (nickname, avatar, conversation, etc.)
-  // 2. Token-encrypted (legacy): plaintext contains {type, envelope} where envelope needs decryption
-  let contact = null;
-  const envelope = parsed?.envelope || null;
-  if (isContactShareEnvelope(envelope)) {
-    // Legacy: decrypt envelope with session key
-    try {
-      contact = await decryptContactPayload(sessionKey, envelope);
-    } catch {
-      return { ok: false, reasonCode: 'DECRYPT_FAILED' };
-    }
-  } else if (parsed?.conversation || parsed?.nickname !== undefined) {
-    // New DR format: contact data is directly in the parsed payload
-    contact = parsed;
-  } else {
-    return { ok: false, reasonCode: 'INVALID_PAYLOAD' };
-  }
+  // DR-encrypted: plaintext contains contact data directly (nickname, avatar, conversation, etc.)
+  const contact = parsed;
   if (!contact || typeof contact !== 'object') {
     return { ok: false, reasonCode: 'EMPTY_CONTACT' };
   }

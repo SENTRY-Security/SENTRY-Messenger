@@ -370,28 +370,6 @@ export async function decryptReplayBatch({
     }
 
     if (!vaultKeyResult || !vaultKeyResult.messageKeyB64) {
-      // [COMPAT] Legacy contact-share messages (pre-DR) used token encryption with no vault key.
-      // Generate a tombstone directly from header metadata so they still display.
-      const headerMsgType = item.header?.meta?.msgType || item.header?.meta?.msg_type || null;
-      if (headerMsgType === 'contact-share') {
-        decrypted.push({
-          conversationId: item.conversationId,
-          text: '',
-          decrypted: true,
-          header: item.header,
-          raw: item.raw,
-          direction: item.direction || 'incoming',
-          ts: item.ts ?? null,
-          tsMs: item.tsMs ?? null,
-          messageId,
-          messageKeyB64: null,
-          meta: item.meta || null,
-          counter: item.counter,
-          msgType: 'contact-share'
-        });
-        continue;
-      }
-
       errors.push(buildDecryptError({
         messageId,
         counter: item.counter,
