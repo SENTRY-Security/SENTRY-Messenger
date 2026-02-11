@@ -119,7 +119,6 @@ import {
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
 import { showVersionModal } from './version-info.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
-import { isIosWebKitLikeBrowser, isAutomationEnvironment, getMicrophoneConstraintProfiles, isConstraintUnsatisfiedError, supportsMediaConstraint } from './mobile/browser-detection.js';
 import { disableZoom } from './mobile/zoom-disabler.js';
 import { createMediaPermissionManager } from './mobile/media-permission-manager.js';
 import { createConnectionIndicator } from './mobile/connection-indicator.js';
@@ -1265,17 +1264,6 @@ const mediaPermissionMgr = createMediaPermissionManager({
   deps: { log, showToast, sessionStore, resumeNotifyAudioContext, audioManager }
 });
 const initMediaPermissionPrompt = () => mediaPermissionMgr.init();
-const hideMediaPermissionPrompt = () => mediaPermissionMgr.hide();
-const hasMediaPermissionFlag = () => mediaPermissionMgr.hasFlag();
-const markMediaPermissionGranted = () => mediaPermissionMgr.markGranted();
-const warmUpAudioPlayback = () => mediaPermissionMgr.warmUpAudio();
-const stopStreamTracks = (s) => mediaPermissionMgr.stopStreamTracks(s);
-const isLiveMicrophoneStream = (s) => mediaPermissionMgr.isLiveStream(s);
-const cacheMicrophoneStream = (s) => mediaPermissionMgr.cacheStream(s);
-let cachedMicrophoneStream = null;
-Object.defineProperty(globalThis, '_cachedMicrophoneStream', {
-  get: () => mediaPermissionMgr.getCachedStream(),
-});
 
 const connIndicator = createConnectionIndicator(connectionIndicator);
 const updateConnectionIndicator = (state) => connIndicator.update(state);
@@ -1319,15 +1307,11 @@ const settingsMod = createSettingsModule({
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
-const sanitizeLogoutRedirectUrl = (v) => settingsMod.sanitizeUrl(v);
 const bootLoadSettings = () => settingsMod.bootLoad();
 const isSettingsConversationId = (convId) => settingsMod.isSettingsConvId(convId);
 const handleSettingsSecureMessage = () => settingsMod.handleSecureMessage();
-const persistSettingsPatch = (partial) => settingsMod.persistPatch(partial);
 const getLogoutRedirectInfo = (settings) => settingsMod.getRedirectInfo(settings);
-const getLogoutRedirectTarget = (settings) => settingsMod.getRedirectTarget(settings);
 const openSystemSettingsModal = () => settingsMod.open();
-const openCustomLogoutUrlModal = (opts) => settingsMod.openCustomLogoutModal(opts);
 
 const subscriptionMod = createSubscriptionModule({
   deps: {
@@ -1338,9 +1322,9 @@ const subscriptionMod = createSubscriptionModule({
 });
 const openSubscriptionModal = () => subscriptionMod.open();
 const refreshSubscriptionStatus = (opts) => subscriptionMod.refreshStatus(opts);
-const updateSubscriptionBadge = (expired) => subscriptionMod.updateBadge(expired);
 const showSubscriptionGateModal = () => subscriptionMod.showGateModal();
-const computeSubscriptionCountdown = (expiresAt) => subscriptionMod.computeCountdown(expiresAt);
+
+document.addEventListener('subscription:gate', showSubscriptionGateModal);
 
 disableZoom();
 
