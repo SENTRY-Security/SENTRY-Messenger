@@ -612,6 +612,14 @@ function cleanupPeerConnection(reason) {
   if (localStream) {
     try { localStream.getTracks().forEach((track) => track.stop()); } catch { }
   }
+  // Release cached microphone stream to avoid holding the mic open after call ends
+  try {
+    const cached = sessionStore?.cachedMicrophoneStream;
+    if (cached && typeof cached.getTracks === 'function') {
+      cached.getTracks().forEach((track) => { try { track.stop(); } catch { } });
+    }
+    if (sessionStore) sessionStore.cachedMicrophoneStream = null;
+  } catch { }
   peerConnection = null;
   localStream = null;
   remoteStream = null;

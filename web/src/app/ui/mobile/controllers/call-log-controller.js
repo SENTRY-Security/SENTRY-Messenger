@@ -214,12 +214,14 @@ export class CallLogController extends BaseController {
             return CALL_SESSION_DIRECTION.OUTGOING;
         })();
 
-        const durationSeconds = session.durationSeconds || 0;
+        const durationSeconds = (session.connectedAt && endedAtMs)
+            ? Math.max(0, Math.floor((endedAtMs - session.connectedAt) / 1000))
+            : 0;
         const rawReason = detail.reason || session.lastError || '';
         const normalizedReason = typeof rawReason === 'string' ? rawReason : '';
 
         let outcome = CALL_LOG_OUTCOME.MISSED;
-        if (durationSeconds > 0 && status === CALL_SESSION_STATUS.ENDED) {
+        if (session.connectedAt && status === CALL_SESSION_STATUS.ENDED) {
             outcome = CALL_LOG_OUTCOME.SUCCESS;
         } else if (/cancel/i.test(normalizedReason)) {
             outcome = CALL_LOG_OUTCOME.CANCELLED;

@@ -896,6 +896,12 @@ export function initCallOverlay({ showToast }) {
     });
     stopTimer();
     audio.dispose();
+    ui.acceptBtn?.removeEventListener('click', handleAccept);
+    ui.rejectBtn?.removeEventListener('click', handleReject);
+    ui.cancelBtn?.removeEventListener('click', handleCancel);
+    ui.hangupBtn?.removeEventListener('click', handleHangup);
+    ui.muteBtn?.removeEventListener('click', handleMuteToggle);
+    ui.speakerBtn?.removeEventListener('click', handleSpeakerToggle);
     ui.minifyBtn?.removeEventListener('click', minimizeOverlay);
     ui.bubble?.removeEventListener('pointerdown', handleBubblePointerDown);
     ui.bubble?.removeEventListener('pointermove', handleBubblePointerMove);
