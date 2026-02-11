@@ -1442,10 +1442,16 @@ export function setupShareController(options) {
     // This ensures a vault key is stored, so the tombstone survives page reload / history replay.
     const messageId = crypto.randomUUID();
     const contactPayload = { ...payload, type: 'contact-share' };
+    // [FIX] Pass the `conversation` object directly so sendDrPlaintextCore can use it
+    // without re-deriving from contact-secrets (avoids lookup failures on fresh invites).
+    const drConversation = (conversationToken && conversationId)
+      ? { token_b64: conversationToken, conversation_id: conversationId }
+      : (conversation || null);
     await sendDrPlaintext({
       text: JSON.stringify(contactPayload),
       peerAccountDigest: targetDigest,
       peerDeviceId: resolvedPeerDeviceId,
+      conversation: drConversation,
       conversationId,
       messageId,
       metaOverrides: {

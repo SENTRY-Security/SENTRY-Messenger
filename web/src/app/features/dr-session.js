@@ -1743,7 +1743,7 @@ export async function sendDrPlaintext(params = {}) {
 
 export async function sendDrPlaintextCore(params = {}) {
   console.log('ATOMIC_SEND_DEBUG: dr-session loaded');
-  const { text, conversation, convId, metaOverrides = {}, peerDeviceId: peerDeviceInput = null } = params;
+  const { text, conversation, convId, conversationId: callerConvId, metaOverrides = {}, peerDeviceId: peerDeviceInput = null } = params;
   const peer = resolvePeerDigest(params);
   if (!peer) throw new Error('peerAccountDigest required');
 
@@ -1765,7 +1765,8 @@ export async function sendDrPlaintextCore(params = {}) {
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
-  let conversationId = convContext?.conversation_id || convContext?.conversationId || null;
+  // [FIX] Accept conversationId from caller (not just convId), falling back to convContext.
+  let conversationId = callerConvId || convId || convContext?.conversation_id || convContext?.conversationId || null;
   let state = drState({ peerAccountDigest: peer, peerDeviceId });
   let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
   const hasDrInit = !!(convContext?.dr_init?.guest_bundle);
