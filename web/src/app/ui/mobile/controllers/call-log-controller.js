@@ -227,6 +227,8 @@ export class CallLogController extends BaseController {
             outcome = CALL_LOG_OUTCOME.CANCELLED;
         } else if (/reject/i.test(normalizedReason)) {
             outcome = CALL_LOG_OUTCOME.FAILED;
+        } else if (/busy/i.test(normalizedReason)) {
+            outcome = CALL_LOG_OUTCOME.FAILED;
         } else if (status === CALL_SESSION_STATUS.FAILED && normalizedReason) {
             outcome = CALL_LOG_OUTCOME.FAILED;
         } else {

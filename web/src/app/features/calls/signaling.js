@@ -157,6 +157,16 @@ function handleIncomingInvite(msg) {
   });
   if (!result?.ok) {
     log({ callIncomingInviteIgnored: true, reason: result?.error || 'state-conflict' });
+    // Notify the caller that we are busy so they see "對方忙線" instead of endless ringing
+    if (result?.error === 'CALL_ALREADY_IN_PROGRESS' && fromAccountDigest && fromDeviceId) {
+      emitSignal({
+        type: 'call-busy',
+        callId: msg.callId,
+        targetAccountDigest: fromAccountDigest,
+        senderDeviceId: ensureDeviceId(),
+        targetDeviceId: fromDeviceId
+      });
+    }
   }
 }
 
