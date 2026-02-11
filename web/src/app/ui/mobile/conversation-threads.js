@@ -338,10 +338,41 @@ export function createConversationThreadsManager(deps) {
                             text = '尚無訊息';
                         } else if (text === 'CONTROL_SKIP') {
                             text = '系統訊息';
+                        } else if (text.startsWith('{') || text.startsWith('[')) {
+                            // Detect raw JSON payloads (e.g. contact-share, media)
+                            try {
+                                const parsed = JSON.parse(text);
+                                const innerType = parsed?.type || parsed?.msgType || null;
+                                if (innerType === 'contact-share' || innerType === 'contact_share') text = '已建立安全連線';
+                                else if (innerType === 'media') text = '傳送了媒體';
+                                else text = '有新訊息';
+                            } catch { /* not JSON, keep original text */ }
                         }
                     } else {
                         // No key or decrypt failed
                         text = '訊息尚未解密🔐';
+                    }
+
+                    // Guard: don't overwrite a good Live Flow preview with a degraded one.
+                    // If the thread already has the same message decrypted correctly,
+                    // or already has a newer message, skip this update.
+                    const existingTs = Number(thread.lastMessageTs) || 0;
+                    const newTs = Number(ts) || 0;
+                    if (thread.previewLoaded && existingTs > 0) {
+                        if (newTs < existingTs) {
+                            // Server has older message — keep newer Live Flow preview
+                            thread.needsRefresh = false;
+                            return;
+                        }
+                        if (thread.lastMessageId === messageId
+                            && thread.lastMessageText
+                            && thread.lastMessageText !== '訊息尚未解密🔐'
+                            && thread.lastMessageText !== '(載入失敗)'
+                            && text === '訊息尚未解密🔐') {
+                            // Same message already decrypted — don't overwrite with failed decrypt
+                            thread.needsRefresh = false;
+                            return;
+                        }
                     }
 
                     thread.lastMessageText = text;

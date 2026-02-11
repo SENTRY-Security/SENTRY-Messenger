@@ -805,6 +805,9 @@ export class MessageFlowController extends BaseController {
             thread.lastMsgType = item.msgType || item.type || item.subtype || thread.lastMsgType || null;
             if (item.direction === 'incoming') incomingCount += 1;
         }
+        // Mark as loaded so async preview refresh doesn't overwrite with stale data
+        thread.previewLoaded = true;
+        thread.needsRefresh = false;
 
         const isActivePeer = !peerDigest || state.activePeerDigest === peerDigest;
 
