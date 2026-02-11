@@ -362,9 +362,10 @@ export class ConversationListController extends BaseController {
                             break;
                         }
 
-                        // Skip control messages
+                        // Skip control / transient / internal messages
                         const isControl = type === 'sys' || type === 'system' || type === 'control' ||
-                            (type && ['profile-update', 'session-init', 'session-ack'].includes(type));
+                            (type && ['profile-update', 'session-init', 'session-ack',
+                                'session-error', 'read-receipt', 'delivery-receipt', 'placeholder'].includes(type));
 
                         if (isControl) {
                             skippedCount++;
@@ -480,8 +481,26 @@ export class ConversationListController extends BaseController {
         if (!timeline.length) return;
 
         const lastMsg = timeline[timeline.length - 1];
-        const text = lastMsg.text || (lastMsg.media ? `[檔案] ${lastMsg.media.name || '附件'}` : '...');
         const msgType = lastMsg.msgType || lastMsg.subtype || 'text';
+        let text;
+        if (lastMsg.text) {
+            text = lastMsg.text;
+        } else if (lastMsg.media) {
+            const mime = (lastMsg.media.contentType || lastMsg.media.mimeType || '').toLowerCase();
+            if (mime.startsWith('image/')) {
+                text = '[圖片]';
+            } else if (mime.startsWith('video/')) {
+                text = '[影片]';
+            } else {
+                text = `[檔案] ${lastMsg.media.name || '附件'}`;
+            }
+        } else if (msgType === 'call-log' || msgType === 'call_log') {
+            text = '[通話紀錄]';
+        } else if (msgType === 'contact-share') {
+            text = '[系統] 您已與對方成為好友';
+        } else {
+            text = '...';
+        }
         const ts = lastMsg.ts || Date.now();
 
         this.upsertThread({
@@ -596,8 +615,9 @@ export class ConversationListController extends BaseController {
      */
     _buildConversationSnippet(text) {
         if (!text || typeof text !== 'string') return '';
-        const cleaned = text.replace(/\n+/g, ' ').trim();
-        return cleaned.length > 50 ? cleaned.slice(0, 50) + '…' : cleaned;
+        const cleaned = text.replace(/\s+/g, ' ').trim();
+        const MAX_LEN = 42;
+        return cleaned.length > MAX_LEN ? cleaned.slice(0, MAX_LEN - 1) + '…' : cleaned;
     }
 
     /**
