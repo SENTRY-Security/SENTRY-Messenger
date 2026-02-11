@@ -146,12 +146,6 @@
 }
 
 
-/* inviteConsumeBtn styles removed - button no longer exists */
-}
-
-/* inviteRetryBtn styles removed - button no longer exists */
-  cursor: wait;
-}
 .share-face.share-back .share-countdown {
   display: none;
 }
