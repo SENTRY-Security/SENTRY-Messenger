@@ -206,10 +206,10 @@ const mediaPermissionAllowLabel = document.getElementById('mediaPermissionAllowL
 const mediaPermissionSkipBtn = document.getElementById('mediaPermissionSkipBtn');
 const mediaPermissionDebugBtn = document.getElementById('mediaPermissionDebugBtn');
 const mediaPermissionStatus = document.getElementById('mediaPermissionStatus');
-let mediaPermissionAwaitingConfirm = false;
 let mediaPermissionSystemGranted = false;
 let mediaPermissionActivePrompt = null;
 let mediaPermissionPollingTimer = null;
+let mediaPermissionOnChangeCleanup = null;
 let cachedMicrophoneStream = null;
 let backgroundLogoutTimer = null;
 const SIM_STORAGE_PREFIX = (() => {
@@ -461,6 +461,10 @@ function hideMediaPermissionPrompt() {
     clearInterval(mediaPermissionPollingTimer);
     mediaPermissionPollingTimer = null;
   }
+  if (mediaPermissionOnChangeCleanup) {
+    mediaPermissionOnChangeCleanup();
+    mediaPermissionOnChangeCleanup = null;
+  }
   mediaPermissionOverlay.style.display = 'none';
   mediaPermissionOverlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('media-permission-open');
@@ -520,14 +524,40 @@ async function collectMicrophonePermissionSignals() {
   return result;
 }
 
-function startMediaPermissionPolling() {
+function startMediaPermissionWatcher() {
+  if (mediaPermissionPollingTimer || mediaPermissionOnChangeCleanup) return;
+  // Prefer Permissions API onchange (event-driven, no polling)
+  if (navigator.permissions?.query) {
+    navigator.permissions.query({ name: 'microphone' })
+      .then((status) => {
+        if (status.state === 'granted') {
+          onMediaPermissionDetected();
+          return;
+        }
+        const handler = () => {
+          if (status.state === 'granted') onMediaPermissionDetected();
+        };
+        status.addEventListener('change', handler);
+        mediaPermissionOnChangeCleanup = () => {
+          try { status.removeEventListener('change', handler); } catch { }
+        };
+      })
+      .catch(() => {
+        // Permissions API not supported (e.g. older Safari) — fall back to polling
+        startMediaPermissionPollingFallback();
+      });
+  } else {
+    startMediaPermissionPollingFallback();
+  }
+}
+
+function startMediaPermissionPollingFallback() {
   if (mediaPermissionPollingTimer) return;
   mediaPermissionPollingTimer = setInterval(async () => {
     try {
       const { permState, hasLabel } = await collectMicrophonePermissionSignals();
       if (permState === 'granted' || hasLabel) {
-        hideMediaPermissionPrompt();
-        setMediaPermissionStatus('');
+        onMediaPermissionDetected();
       }
     } catch (err) {
       log({ mediaPermissionPollError: err?.message || err });
@@ -535,11 +565,10 @@ function startMediaPermissionPolling() {
   }, 500);
 }
 
-async function detectUnlockedMicrophonePermission() {
-  const { permState, hasLabel } = await collectMicrophonePermissionSignals();
-  if (permState === 'granted') return true;
-  if (hasLabel) return true;
-  return false;
+async function onMediaPermissionDetected() {
+  await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1200,
+    statusMessage: '已確認授權，稍後會自動關閉提示。' });
+  log({ mediaPermission: 'detected-by-watcher' });
 }
 
 async function requestUserMediaAccess({ timeoutMs = 5000 } = {}) {
@@ -602,48 +631,22 @@ function describeMediaPermissionError(err) {
   return err?.message || '授權失敗，請稍後再試或檢查系統權限設定。';
 }
 
-async function warmUpSilentAudioPlayback() {
+async function warmUpAudioPlayback() {
   if (typeof window === 'undefined') return;
-  try { await resumeNotifyAudioContext()?.catch(() => { }); } catch { }
-  try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (AudioCtx) {
-      const ctx = new AudioCtx();
-      await ctx.resume().catch(() => { });
-      const buffer = ctx.createBuffer(1, 1, 22050);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-      source.start?.(0);
-      await ctx.close().catch(() => { });
-    }
-  } catch { }
+  // 1. Resume the persistent notification AudioContext (used for incoming-call sounds)
+  try { await resumeNotifyAudioContext(); } catch { }
+  // 2. Pre-load notification sound buffer
+  try { await audioManager.loadBuffer?.(); } catch { }
+  // 3. Play silent audio to unlock Safari autoplay policy
   try {
     if (typeof Audio !== 'undefined') {
       const audio = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
-      audio.muted = true;
       audio.playsInline = true;
       await audio.play().catch(() => { });
       audio.pause();
+      try { audio.src = ''; } catch { }
     }
   } catch { }
-}
-
-function forceImmediateAudioPlayback() {
-  if (typeof Audio === 'undefined') return;
-  try {
-    const audio = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
-    audio.muted = true;
-    audio.playsInline = true;
-    audio.loop = false;
-    audio.play()
-      ?.catch((err) => log({ mediaPermissionForcePlayError: err?.message || err }));
-    setTimeout(() => {
-      try { audio.pause(); audio.src = ''; } catch { }
-    }, 1200);
-  } catch (err) {
-    log({ mediaPermissionForcePlayInitError: err?.message || err });
-  }
 }
 
 function playConnectChime({ volume = 0.3 } = {}) {
@@ -668,7 +671,7 @@ function playConnectChime({ volume = 0.3 } = {}) {
 }
 
 async function finalizeMediaPermission({ warning = false, autoCloseDelayMs = 600, statusMessage } = {}) {
-  await warmUpSilentAudioPlayback();
+  await warmUpAudioPlayback();
   markMediaPermissionGranted();
   const message = statusMessage !== undefined
     ? statusMessage
@@ -681,7 +684,7 @@ async function finalizeMediaPermission({ warning = false, autoCloseDelayMs = 600
   if (mediaPermissionAllowBtn) {
     mediaPermissionAllowBtn.disabled = false;
   }
-  setMediaPermissionButtonState('initial');
+  setMediaPermissionButtonState();
   mediaPermissionSystemGranted = false;
   showToast?.(
     warning
@@ -692,30 +695,25 @@ async function finalizeMediaPermission({ warning = false, autoCloseDelayMs = 600
   setTimeout(() => hideMediaPermissionPrompt(), Math.max(0, Number(autoCloseDelayMs) || 0));
 }
 
-function setMediaPermissionButtonState(state = 'initial') {
+function setMediaPermissionButtonState() {
   if (!mediaPermissionAllowBtn || !mediaPermissionAllowLabel) return;
-  if (state === 'confirm') {
-    mediaPermissionAllowBtn.classList.add('state-confirm');
-    mediaPermissionAllowLabel.textContent = '我已按下同意';
-    mediaPermissionAwaitingConfirm = true;
-  } else {
-    mediaPermissionAllowBtn.classList.remove('state-confirm');
-    mediaPermissionAllowLabel.textContent = '允許麥克風';
-    mediaPermissionAwaitingConfirm = false;
-  }
+  mediaPermissionAllowBtn.classList.remove('state-confirm');
+  mediaPermissionAllowBtn.disabled = false;
+  mediaPermissionAllowLabel.textContent = '允許麥克風';
 }
 
 async function startMediaPermissionPrompt() {
   if (mediaPermissionActivePrompt) return;
   mediaPermissionSystemGranted = false;
-  setMediaPermissionStatus('請在系統視窗中按下「允許」，完成後再點「我已按下同意」。');
+  setMediaPermissionStatus('請在系統視窗中按下「允許」。');
   log({ mediaPermission: 'requestUserMedia:start' });
-  mediaPermissionActivePrompt = requestUserMediaAccess({ timeoutMs: 5000 })
+  mediaPermissionActivePrompt = requestUserMediaAccess({ timeoutMs: 8000 })
     .then(async () => {
       mediaPermissionSystemGranted = true;
       try {
-        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: '已確認授權並啟動麥克風，稍後會自動關閉提示。' });
-        log({ mediaPermission: 'prompt-detected' });
+        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1200,
+          statusMessage: '麥克風已啟用，稍後會自動關閉提示。' });
+        log({ mediaPermission: 'prompt-granted' });
       } catch (err) {
         log({ mediaPermissionPromptFinalizeError: err?.message || err });
       }
@@ -725,95 +723,53 @@ async function startMediaPermissionPrompt() {
       mediaPermissionSystemGranted = false;
       setMediaPermissionStatus(describeMediaPermissionError(err));
       showToast?.('授權失敗，請再試一次', { variant: 'warning' });
-      setMediaPermissionButtonState('initial');
+      if (mediaPermissionAllowBtn) mediaPermissionAllowBtn.disabled = false;
     })
     .finally(() => {
       mediaPermissionActivePrompt = null;
     });
 }
 
-async function verifyMediaPermissionAfterConfirm() {
-  try {
-    const { permState, hasLabel } = await collectMicrophonePermissionSignals();
-    try {
-      const toastMessage = permState === 'granted'
-        ? '已授權麥克風權限'
-        : `權限狀態：${permState || 'unknown'} / Label: ${hasLabel ? '有' : '無'}`;
-      showToast?.(toastMessage, { variant: permState === 'granted' || hasLabel ? 'success' : 'warning' });
-      log({ mediaPermissionConfirmCheck: { perm: permState, label: hasLabel, toast: toastMessage } });
-    } catch (err) {
-      log({ mediaPermissionConfirmToastError: err?.message || err });
-    }
-    const grantedByQuery = permState === 'granted' || hasLabel;
-    const fallbackUnlocked = grantedByQuery
-      ? false
-      : await detectUnlockedMicrophonePermission().catch(() => false);
-    const unlocked = mediaPermissionSystemGranted || grantedByQuery || fallbackUnlocked;
-    if (unlocked) {
-      mediaPermissionSystemGranted = false;
-      if (grantedByQuery) {
-        hideMediaPermissionPrompt();
-        setMediaPermissionStatus('');
-      }
-      await finalizeMediaPermission({ warning: false, statusMessage: grantedByQuery ? null : undefined });
-      log({ mediaPermission: 'confirmed-by-user' });
-      setMediaPermissionButtonState('initial');
-      return true;
-    }
-    setMediaPermissionStatus('尚未偵測到授權，請再次確認或稍後到 Safari 設定允許。');
-    showToast?.('尚未允許麥克風', { variant: 'warning' });
-    setMediaPermissionButtonState('initial');
-    return false;
-  } catch (err) {
-    log({ mediaPermissionVerifyError: err?.message || err });
-    showToast?.('檢查授權時發生錯誤，請再試一次', { variant: 'warning' });
-    setMediaPermissionButtonState('initial');
-    return false;
-  }
-}
-
 async function handleMediaPermissionGrant() {
   if (!mediaPermissionOverlay || !mediaPermissionAllowBtn) return;
-  forceImmediateAudioPlayback();
+  if (mediaPermissionActivePrompt) return; // Prevent double-click while prompt is active
+  // Unlock audio playback within user-gesture context
+  warmUpAudioPlayback();
   playConnectChime({ volume: 0.3 });
-  if (!mediaPermissionAwaitingConfirm) {
-    resumeNotifyAudioContext()?.catch(() => { });
-    audioManager.loadBuffer?.();
-    log({ mediaPermission: 'triggered' });
-    setMediaPermissionButtonState('confirm');
-    startMediaPermissionPolling();
-    await startMediaPermissionPrompt();
-    return;
-  }
-  log({ mediaPermission: 'confirm-button-clicked' });
-  await verifyMediaPermissionAfterConfirm();
+  mediaPermissionAllowBtn.disabled = true;
+  log({ mediaPermission: 'triggered' });
+  // Start watching for permission change (event-driven or polling fallback)
+  startMediaPermissionWatcher();
+  // Request mic permission — auto-finalizes on success
+  await startMediaPermissionPrompt();
 }
 
 function initMediaPermissionPrompt() {
   if (!mediaPermissionOverlay) return;
   if (mediaPermissionOverlay.dataset.init === '1') return;
   mediaPermissionOverlay.dataset.init = '1';
-  setMediaPermissionButtonState('initial');
+  setMediaPermissionButtonState();
   if (isAutomationEnvironment()) {
     markMediaPermissionGranted();
     hideMediaPermissionPrompt();
-    warmUpSilentAudioPlayback();
+    warmUpAudioPlayback();
     return;
   }
   if (hasMediaPermissionFlag()) {
     hideMediaPermissionPrompt();
-    warmUpSilentAudioPlayback();
+    warmUpAudioPlayback();
     return;
   }
   showMediaPermissionPrompt();
   mediaPermissionAllowBtn?.addEventListener('click', handleMediaPermissionGrant);
   mediaPermissionSkipBtn?.addEventListener('click', () => {
-    forceImmediateAudioPlayback();
+    // Unlock audio playback within this user-gesture context (for incoming-call sounds)
+    warmUpAudioPlayback();
+    try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch { }
     hideMediaPermissionPrompt();
     setMediaPermissionStatus('');
     mediaPermissionSystemGranted = false;
-    setMediaPermissionButtonState('initial');
-    warmUpSilentAudioPlayback();
+    setMediaPermissionButtonState();
     showToast?.('未啟用麥克風，通話可能無法使用', { variant: 'warning' });
   });
   if (mediaPermissionDebugBtn && !mediaPermissionDebugBtn.dataset.init) {
