@@ -52,7 +52,7 @@ import {
     invalidateGapPlaceholderState,
     markGapPlaceholderFailures
 } from '../../../features/messages/placeholder-store.js';
-import { buildConversationSnippet, shouldNotifyForMessage, escapeHtml } from '../ui-utils.js';
+import { buildConversationSnippet, resolveMessagePreview, shouldNotifyForMessage, escapeHtml } from '../ui-utils.js';
 import { messagesFlowFacade } from '../../../features/messages-flow-facade.js';
 import { recordMessageRead, recordMessageDelivered, maybeSendDeliveryReceipt } from '../../../features/messages-support/receipt-store.js';
 import { handleSecureConversationControlMessage } from '../../../features/secure-conversation-manager.js';
@@ -802,6 +802,7 @@ export class MessageFlowController extends BaseController {
             thread.lastMessageTs = typeof item.ts === 'number' ? item.ts : thread.lastMessageTs || null;
             thread.lastMessageId = item.messageId || item.id || thread.lastMessageId || null;
             thread.lastDirection = item.direction || thread.lastDirection || null;
+            thread.lastMsgType = item.msgType || item.type || item.subtype || thread.lastMsgType || null;
             if (item.direction === 'incoming') incomingCount += 1;
         }
 
@@ -922,7 +923,7 @@ export class MessageFlowController extends BaseController {
                     // Re-resolve nickname/avatar for toast if needed, or pass from caller?
                     // Simplified for now, using thread data or defaults
                     const nickname = thread.nickname || '新訊息';
-                    const previewText = buildConversationSnippet(item.text || '') || item.text || '有新訊息';
+                    const previewText = resolveMessagePreview(item);
                     const avatarUrlToast = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
                     const initialsToast = this.deps.controllers?.conversationList?.getInitials(nickname, peerDigest || '').slice(0, 2);
                     const toastPeerDeviceId = thread?.peerDeviceId || null;

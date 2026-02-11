@@ -7,7 +7,7 @@ import { BaseController } from './base-controller.js';
 import { normalizePeerKey, splitPeerKey, resolveReadyContactCoreEntry, isCoreVaultReady, listReadyContacts, upsertContactCore } from '../contact-core-store.js';
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/store.js';
 import { restorePendingInvites } from '../session-store.js';
-import { escapeHtml } from '../ui-utils.js';
+import { escapeHtml, resolveMessagePreview } from '../ui-utils.js';
 import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../features/messages/parser.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
@@ -631,13 +631,18 @@ export class ConversationListController extends BaseController {
             return '尚無訊息';
         }
 
-        const raw = thread.lastMessageText || '';
-        const snippet = this._buildConversationSnippet(raw) || (thread.lastMessageTs ? '' : '尚無訊息');
-        if (!snippet) return '';
-        if (thread.lastDirection === 'outgoing') {
-            return `你：${snippet}`;
+        const preview = resolveMessagePreview({
+            text: thread.lastMessageText || '',
+            msgType: thread.lastMsgType || null
+        });
+        if (!preview || preview === '有新訊息') {
+            // No meaningful preview — show placeholder
+            return thread.lastMessageTs ? '' : '尚無訊息';
         }
-        return snippet;
+        if (thread.lastDirection === 'outgoing') {
+            return `你：${preview}`;
+        }
+        return preview;
     }
 
     /**

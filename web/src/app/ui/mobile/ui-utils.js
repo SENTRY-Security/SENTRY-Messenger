@@ -95,3 +95,39 @@ export function buildConversationSnippet(text) {
   const MAX_LEN = 42;
   return cleaned.length > MAX_LEN ? `${cleaned.slice(0, MAX_LEN - 1)}…` : cleaned;
 }
+
+const MSG_TYPE_LABELS = {
+  'contact-share': '已建立安全連線',
+  'contact_share': '已建立安全連線',
+  'media': '傳送了媒體',
+  'call-log': '通話紀錄',
+  'call_log': '通話紀錄',
+  'conversation-deleted': '',
+  'conversation_deleted': '',
+  'session-init': '安全連線已建立',
+  'session_init': '安全連線已建立',
+  'session-ack': '安全連線已建立',
+  'session_ack': '安全連線已建立',
+  'system': '系統訊息'
+};
+
+export function resolveMessagePreview(item) {
+  if (!item) return '有新訊息';
+  const msgType = item.msgType || item.type || item.subtype || null;
+  if (msgType && MSG_TYPE_LABELS[msgType] !== undefined) {
+    return MSG_TYPE_LABELS[msgType] || '';
+  }
+  const text = typeof item.text === 'string' ? item.text : '';
+  // Detect raw JSON payloads that shouldn't be shown verbatim
+  if (text.startsWith('{') || text.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(text);
+      const innerType = parsed?.type || parsed?.msgType || null;
+      if (innerType && MSG_TYPE_LABELS[innerType] !== undefined) {
+        return MSG_TYPE_LABELS[innerType];
+      }
+      return '有新訊息';
+    } catch { /* not JSON, fall through */ }
+  }
+  return buildConversationSnippet(text) || '有新訊息';
+}
