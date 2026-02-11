@@ -1,0 +1,375 @@
+.drive-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f8fafc, #eef2ff);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  margin: 0 0 12px;
+}
+
+.drive-usage-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.drive-usage-label {
+  font-size: 12px;
+  color: #64748b;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.drive-usage-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.2px;
+}
+
+.drive-usage-total {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.drive-usage-bar {
+  position: relative;
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.24);
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.drive-usage-bar-fill {
+  position: absolute;
+  inset: 0;
+  width: 0%;
+  background: linear-gradient(90deg, #2563eb, #0ea5e9);
+  transition: width .28s ease;
+}
+
+.drive-usage-bar-fill.alert {
+  background: linear-gradient(90deg, #f97316, #ef4444);
+}
+
+.drive-usage-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #475569;
+  letter-spacing: 0.2px;
+}
+
+.drive-usage-percent {
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.drive-usage-note {
+  color: #6b7280;
+}
+
+.list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#driveList {
+  padding-bottom: calc(var(--navbar-height) + 16px);
+}
+
+.file-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
+  transition: transform .15s ease, box-shadow .15s ease;
+  cursor: pointer;
+  outline: none;
+  overflow: hidden;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.file-item * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.file-item.folder {
+  background: #f8fafc;
+}
+
+.file-item:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.file-item:focus-visible {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+  transform: none;
+}
+
+.file-item .item-content {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  width: 100%;
+  transition: transform .18s ease;
+}
+
+.file-item .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.file-item .meta .name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 15px;
+  color: #0f172a;
+  min-width: 0;
+}
+
+.file-item .meta .name .label {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-item .meta .name i {
+  font-size: 20px;
+  color: #2563eb;
+}
+
+.file-item.folder .meta .name i {
+  color: #f59e0b;
+}
+
+.file-item .sub {
+  color: #6b7280;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+
+.file-item .item-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 72px;
+  border: none;
+  background: #ef4444;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  cursor: pointer;
+  pointer-events: none;
+  transition: opacity .18s ease;
+  opacity: 0;
+}
+
+.file-item .item-delete i {
+  pointer-events: none;
+}
+
+.file-item.show-delete .item-content {
+  transform: translateX(-72px);
+}
+
+.file-item.show-delete .item-delete {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.file-item .item-delete:active {
+  transform: translateY(1px);
+}
+
+.empty {
+  color: #6b7280;
+  padding: 24px 6px;
+  text-align: center;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+}
+
+pre#out {
+  white-space: pre-wrap;
+  background: #f9fafb;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 120px;
+  font-size: 12px;
+}
+.modal.folder-modal .modal-panel {
+  width: min(360px, 92vw);
+  max-height: none;
+}
+
+.modal.folder-modal .modal-body {
+  background: #f8fafc;
+  padding: 22px 24px;
+}
+
+.modal.folder-modal .modal-close {
+  display: none;
+}
+
+.folder-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+.folder-form label {
+  font-size: 13px;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.folder-form input {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 14px;
+  background: #fff;
+}
+
+.folder-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.folder-error {
+  margin: 0;
+  font-size: 12px;
+  color: #b91c1c;
+  min-height: 16px;
+}
+
+.folder-actions {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.folder-actions button {
+  min-width: 88px;
+}
+
+.modal.upload-modal .modal-panel {
+  width: min(420px, 92vw);
+  max-height: none;
+}
+
+.modal.upload-modal .modal-body {
+  background: #f8fafc;
+  padding: 22px 24px;
+}
+
+.upload-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.upload-field {
+  position: relative;
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.upload-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.upload-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 22px 18px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.upload-callout i {
+  font-size: 28px;
+  color: #2563eb;
+}
+
+.upload-name {
+  font-size: 13px;
+  color: #64748b;
+  letter-spacing: 0.3px;
+  margin-top: 6px;
+}
+
+.upload-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.upload-error {
+  margin: 0;
+  font-size: 12px;
+  color: #b91c1c;
+  min-height: 16px;
+}
+
+.upload-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.upload-actions button {
+  min-width: 92px;
+}

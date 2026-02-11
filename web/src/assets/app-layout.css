@@ -1,0 +1,450 @@
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px;
+  border-bottom: none;
+  background: #fff;
+  backdrop-filter: saturate(180%) blur(6px);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
+}
+
+.topbar .title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.topbar .actions {
+  display: flex;
+  align-items: center;
+}
+
+.topbar .title img.brand {
+  height: 20px;
+  width: auto;
+  display: block;
+}
+
+.connection-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.connection-indicator .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.08);
+  transition: background .2s ease, box-shadow .2s ease;
+}
+
+.connection-indicator.online .dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.4);
+}
+
+.connection-indicator.connecting .dot {
+  background: #f97316;
+  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.35);
+}
+
+.messages-ws-indicator {
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.messages-ws-indicator .dot {
+  width: 8px;
+  height: 8px;
+}
+
+.user-menu {
+  position: relative;
+}
+
+.user-avatar-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #f8fafc;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  cursor: pointer;
+  transition: transform .16s ease, box-shadow .16s ease;
+}
+
+.user-avatar-btn:active {
+  transform: scale(0.97);
+}
+
+.user-avatar-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.user-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  min-width: 168px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fff;
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+  padding: 8px 0;
+  display: none;
+}
+
+.user-menu-dropdown.open {
+  display: block;
+}
+
+.user-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  text-align: left;
+  font-size: 14px;
+  color: #0f172a;
+  cursor: pointer;
+  letter-spacing: 0.2px;
+}
+
+.user-menu-item:hover,
+.user-menu-item:focus {
+  background: #f1f5f9;
+  outline: none;
+}
+
+.user-menu-item.logout {
+  color: #b91c1c;
+}
+
+.menu-item-badge {
+  margin-left: auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  line-height: 16px;
+  box-shadow: 0 4px 10px rgba(239, 68, 68, 0.35);
+}
+
+.user-menu-divider {
+  height: 1px;
+  background: rgba(148, 163, 184, 0.35);
+  margin: 6px 0;
+}
+
+.user-avatar-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.user-menu-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  display: none;
+  box-shadow: 0 4px 10px rgba(239, 68, 68, 0.35);
+}
+
+.user-avatar-wrap.has-alert .user-menu-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: calc(var(--app-height) - var(--topbar-offset) - var(--navbar-height));
+  min-height: calc(var(--app-height) - var(--topbar-offset) - var(--navbar-height));
+  overflow: hidden;
+}
+
+.content.fullscreen {
+  padding: 12px;
+  height: calc(var(--app-height) - var(--topbar-offset));
+  min-height: calc(var(--app-height) - var(--topbar-offset));
+  overflow: hidden;
+}
+
+.content>.tab {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow: visible;
+  padding-bottom: calc(var(--navbar-height) + 8px);
+}
+
+body.messages-fullscreen {
+  overflow: hidden;
+}
+
+body.messages-fullscreen main.content.fullscreen {
+  height: calc(var(--app-height) - var(--topbar-offset));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+body.messages-fullscreen .messages-pane {
+  flex: 1 1 auto;
+}
+
+body.messages-fullscreen .messages-thread {
+  flex: 1 1 auto;
+}
+
+body.messages-fullscreen .messages-scroll {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.messages-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #fff;
+}
+
+.messages-peer-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: #64748b;
+  flex: 0 0 36px;
+}
+
+.messages-peer-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.navbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--line);
+  background: #fff;
+  display: flex;
+  justify-content: space-around;
+  padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.06);
+  backdrop-filter: saturate(180%) blur(8px);
+}
+
+.navbtn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  background: none;
+  padding: 8px 10px;
+  color: #6b7280;
+  font-size: 11px;
+  min-width: 72px;
+}
+
+.nav-badge {
+  position: absolute;
+  top: 2px;
+  right: 12px;
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  display: none;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+}
+
+.navbtn.has-badge .nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.navbtn.active,
+.navbtn:focus {
+  color: #111827;
+}
+
+.navbtn i {
+  color: currentColor;
+}
+
+.navbtn.active i {
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.nav-icon-stack {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-icon-stack i {
+  position: absolute;
+  color: currentColor;
+  line-height: 1;
+}
+
+.nav-icon-stack .nav-icon-base {
+  font-size: 22px;
+}
+
+.nav-icon-stack .nav-icon-lock {
+  font-size: 13px;
+  bottom: -3px;
+  right: -6px;
+  color: #0ea5e9;
+  text-shadow: 0 0 0 transparent;
+}
+
+.navbtn.active .nav-icon-stack .nav-icon-base {
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.navbtn.active .nav-icon-stack .nav-icon-lock {
+  color: #2563eb;
+}
+
+.navbtn {
+  touch-action: manipulation;
+}
+
+.orientation-overlay {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(160deg, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.92));
+  color: #f8fafc;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+  padding: 32px;
+  z-index: 2000;
+  font-size: 18px;
+  line-height: 1.6;
+  letter-spacing: 0.4px;
+}
+
+.orientation-overlay .icon {
+  font-size: 42px;
+  display: block;
+}
+
+html.orientation-block {
+  height: 100%;
+  overflow: hidden;
+}
+
+html.orientation-block body {
+  overflow: hidden;
+  height: 100%;
+}
+
+html.orientation-block .orientation-overlay {
+  display: flex;
+}
+/* Keyboard overlay mode */
+body.keyboard-open .topbar {
+  display: none;
+}
+
+body.keyboard-open .navbar {
+  display: none;
+}
+
+body.keyboard-open #tab-messages {
+  inset: 0;
+  z-index: 100;
+}
+
+body.keyboard-open .messages-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 101;
+}
+
+body.keyboard-open .messages-scroll {
+  padding-top: 72px;
+}
+
+body.keyboard-open .messages-composer {
+  bottom: 0;
+  z-index: 102;
+}

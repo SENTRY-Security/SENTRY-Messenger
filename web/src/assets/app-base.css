@@ -1,0 +1,130 @@
+:root {
+  color-scheme: light;
+  --bg: #fff;
+  --fg: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --brand: #111827;
+  --topbar-height: 64px;
+  --topbar-offset: calc(var(--topbar-height) + env(safe-area-inset-top, 0px));
+  --navbar-height: calc(78px + env(safe-area-inset-bottom, 0px));
+  --app-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans TC', sans-serif;
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  padding-top: var(--topbar-offset);
+  padding-bottom: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  position: fixed;
+  inset: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-bubble.message-placeholder.placeholder-shimmer::before {
+    animation: none;
+  }
+
+  .message-bubble.message-reveal {
+    animation: none;
+  }
+
+  .message-bubble.message-reveal::after {
+    animation: none;
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes msg-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes msg-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes msg-reveal-scan {
+  to {
+    transform: translateX(120%);
+  }
+}
+@keyframes msg-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes hintPulse {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 6px) scale(0.95);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -4px) scale(1);
+  }
+}
+@keyframes share-spinner {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes modal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
