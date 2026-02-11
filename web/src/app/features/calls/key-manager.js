@@ -105,7 +105,8 @@ export function supportsInsertableStreams() {
   const senderProto = typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.prototype : null;
   if (!senderProto) return false;
   return typeof senderProto.createEncodedStreams === 'function'
-    || typeof senderProto.createEncodedAudioStreams === 'function';
+    || typeof senderProto.createEncodedAudioStreams === 'function'
+    || typeof senderProto.createEncodedVideoStreams === 'function';
 }
 
 export async function prepareCallKeyEnvelope({

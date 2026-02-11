@@ -10,14 +10,16 @@ import {
   getCallSessionSnapshot,
   updateCallSessionStatus,
   failCallSession,
-  setCallPeerDeviceId
+  setCallPeerDeviceId,
+  CALL_SESSION_STATUS,
+  CALL_REQUEST_KIND,
+  hydrateCallCapability
 } from './state.js';
 import {
   getCallKeyContext,
   supportsInsertableStreams
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
-import { CALL_SESSION_STATUS, CALL_REQUEST_KIND } from './state.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccountDigest } from '../../core/store.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
@@ -322,7 +324,10 @@ export async function toggleLocalVideo(enabled) {
         const sender = peerConnection.addTrack(newTrack, localStream);
         setupInsertableStreamsForSender(sender, newTrack);
       }
-      localStream.getVideoTracks().forEach((t) => { try { t.stop(); } catch {} });
+      localStream.getVideoTracks().forEach((t) => {
+        try { t.stop(); } catch {}
+        localStream.removeTrack(t);
+      });
       localStream.addTrack(newTrack);
       localVideoMuted = false;
       if (localVideoEl) {
@@ -529,7 +534,9 @@ async function attachLocalMedia() {
         }
       } catch {}
     }
-    updateCallMedia({ controls: { videoEnabled: localStream.getVideoTracks().length > 0 } });
+    const hasVideo = localStream.getVideoTracks().length > 0;
+    updateCallMedia({ controls: { videoEnabled: hasVideo } });
+    hydrateCallCapability({ video: hasVideo });
   } catch (err) {
     showToast?.('無法存取麥克風：' + (err?.message || err), { variant: 'error' });
     log({ callMediaMicError: err?.message || err });
