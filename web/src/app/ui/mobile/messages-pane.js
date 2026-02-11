@@ -28,7 +28,7 @@ import {
 // Actually grep showed "conversationIdFromToken," in import.
 // I will replace the whole block.
 import { sessionStore, resetMessageState, restorePendingInvites } from './session-store.js';
-import { deleteContactSecret, getContactSecret, getCorruptContact, hideContactSecret, unhideContactSecret } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret, getCorruptContact, unhideContactSecret } from '../../core/contact-secrets.js';
 import { setDeletionCursor, setPeerDeletionCursor } from '../../features/soft-deletion/deletion-store.js';
 import { clearDrState, drState } from '../../core/store.js';
 import { sendDrPlaintext } from '../../features/dr-session.js';
@@ -1191,10 +1191,16 @@ export function initMessagesPane({
               peerAccountDigest: key
             });
           } catch {}
-          sessionStore.deletedConversations?.add?.(conversationId);
-          sessionStore.conversationThreads?.delete?.(conversationId);
-          sessionStore.conversationIndex?.delete?.(conversationId);
-          hideContactSecret(key);
+          // Mark thread as deleted (hidden from list) instead of removing.
+          // Contact and index remain so new messages can restore visibility.
+          const thread = sessionStore.conversationThreads?.get?.(conversationId);
+          if (thread) {
+            thread.lastMsgType = 'conversation-deleted';
+            thread.lastMessageText = '';
+            thread.lastMessageTs = Math.floor(nowMs / 1000);
+            thread.previewLoaded = true;
+            thread.needsRefresh = false;
+          }
           if (typeof window !== 'undefined') window.__refreshContacts?.();
           if (element) closeSwipe?.(element);
           const refetchedState = getMessageState();

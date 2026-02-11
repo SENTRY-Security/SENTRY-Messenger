@@ -287,7 +287,10 @@ export function createConversationThreadsManager(deps) {
                         thread.lastMessageText = '';
                         thread.lastMessageTs = null;
                         thread.lastMessageId = null;
-                        thread.lastMsgType = null;
+                        // Preserve 'conversation-deleted' so the thread stays hidden
+                        if (thread.lastMsgType !== 'conversation-deleted') {
+                            thread.lastMsgType = null;
+                        }
                         thread.lastDirection = null;
                         thread.previewLoaded = true;
                         thread.unreadCount = 0;
@@ -426,7 +429,8 @@ export function createConversationThreadsManager(deps) {
 
     function getThreadsForRender() {
         return Array.from(getConversationThreads().values())
-            .filter((thread) => thread?.conversationId && threadPeer(thread))
+            .filter((thread) => thread?.conversationId && threadPeer(thread)
+                && thread.lastMsgType !== 'conversation-deleted')
             .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
     }
 

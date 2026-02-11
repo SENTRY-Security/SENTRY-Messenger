@@ -6,8 +6,6 @@ import { logCapped } from '../core/log.js';
 import { getDeviceId as storeGetDeviceId, getAccountDigest as storeGetAccountDigest } from '../core/store.js';
 import { maybeSendVaultAckWs, recordVaultAckCounter } from './messages/receipts.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
-import { removeContactCore } from '../ui/mobile/contact-core-store.js';
-import { hideContactSecret } from '../core/contact-secrets.js';
 import { appendUserMessage } from './timeline-store.js';
 import { startRestorePipeline } from './restore-coordinator.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
@@ -314,15 +312,18 @@ function createMessagesFlowFacade() {
               peerAccountDigest: peerDigest
             });
           } catch {}
+          // Mark thread as deleted (hidden from list) instead of removing it.
+          // Contact and conversation index remain so new messages can restore visibility.
           try {
-            sessionStore.deletedConversations?.add?.(convId);
-            sessionStore.conversationThreads?.delete?.(convId);
-            sessionStore.conversationIndex?.delete?.(convId);
-            if (peerDigest) {
-              removeContactCore(peerDigest, 'facade:conversation-deleted');
-              hideContactSecret(peerDigest);
+            const thread = sessionStore.conversationThreads?.get?.(convId);
+            if (thread) {
+              thread.lastMsgType = 'conversation-deleted';
+              thread.lastMessageText = '';
+              thread.lastMessageTs = tsSeconds;
+              thread.previewLoaded = true;
+              thread.needsRefresh = false;
             }
-          } catch (e) { console.error('[facade] conversation-deleted store update failed', e); }
+          } catch (e) { console.error('[facade] conversation-deleted thread update failed', e); }
           try {
             document.dispatchEvent(new CustomEvent('sentry:conversation-deleted', {
               detail: { conversationId: convId, peerDigest }
