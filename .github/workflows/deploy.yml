@@ -1,0 +1,98 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Deployment target'
+        required: true
+        type: choice
+        options:
+          - all
+          - worker
+          - pages
+          - vps
+      apply_migrations:
+        description: 'Apply D1 migrations (Worker only)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  deploy-worker:
+    name: Deploy Data Worker
+    runs-on: ubuntu-latest
+    if: ${{ inputs.target == 'all' || inputs.target == 'worker' }}
+    defaults:
+      run:
+        working-directory: data-worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Deploy Worker
+        run: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Apply D1 migrations
+        if: ${{ inputs.apply_migrations }}
+        run: wrangler d1 migrations apply message_db --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  deploy-pages:
+    name: Deploy Frontend (Pages)
+    runs-on: ubuntu-latest
+    if: ${{ inputs.target == 'all' || inputs.target == 'pages' }}
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Deploy to Cloudflare Pages
+        run: wrangler pages deploy ./src --project-name=${{ vars.PAGES_PROJECT_NAME || 'message-web' }} --branch=production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  deploy-vps:
+    name: Deploy Node API (VPS)
+    runs-on: ubuntu-latest
+    if: ${{ inputs.target == 'all' || inputs.target == 'vps' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd ${{ vars.VPS_APP_DIR || 'service' }}
+            git fetch origin
+            git checkout ${{ github.ref_name }}
+            git reset --hard origin/${{ github.ref_name }}
+            npm install --production
+            if pm2 describe message-api > /dev/null 2>&1; then
+              pm2 reload message-api --update-env
+            else
+              NODE_ENV=production pm2 start src/server.js --name message-api
+              pm2 save
+            fi
