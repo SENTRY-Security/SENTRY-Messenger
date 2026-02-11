@@ -61,6 +61,8 @@ import { normalizePeerIdentity } from '../../../core/store.js';
 import { normalizeCounterValue, resolvePlaceholderSubtype } from '../../../features/messages/parser.js';
 import { CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES } from '../../../features/semantic.js';
 import { DEBUG } from '../debug-flags.js';
+import { upsertContactCore } from '../contact-core-store.js';
+import { USE_MESSAGES_FLOW_UNIFIED } from '../../../features/messages-flow/flags.js';
 
 export class MessageFlowController extends BaseController {
     constructor(deps) {
@@ -76,6 +78,34 @@ export class MessageFlowController extends BaseController {
             }
         };
         window.addEventListener('sentry:gap-detected', this.handleBodyGapDetected);
+
+        // [UNIFIED] Listen for control events dispatched by facade
+        this._onConversationDeleted = (e) => {
+            const { conversationId, peerDigest } = e.detail || {};
+            if (!conversationId) return;
+            const state = this.getMessageState();
+            const isActive = state.activePeerDigest === peerDigest || state.conversationId === conversationId;
+            if (isActive) this.updateMessagesUI({ forceFullRender: true });
+            this.deps.controllers?.conversationList?.syncFromContacts();
+            this.deps.refreshContactsUnreadBadges?.();
+            this.deps.renderConversationList?.();
+        };
+        this._onReceipt = (e) => {
+            const { conversationId, targetMessageId, msgType, ts } = e.detail || {};
+            const state = this.getMessageState();
+            if (!targetMessageId || state.conversationId !== conversationId) return;
+            if (msgType === 'read_receipt') {
+                recordMessageRead(conversationId, targetMessageId, ts);
+            } else if (msgType === 'delivery_receipt') {
+                recordMessageDelivered(conversationId, targetMessageId, ts);
+            }
+            const msg = this._findMessageById(targetMessageId);
+            if (msg && this.deps.controllers?.messageStatus?.applyReceiptState(msg)) {
+                this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
+            }
+        };
+        document.addEventListener('sentry:conversation-deleted', this._onConversationDeleted);
+        document.addEventListener('sentry:receipt', this._onReceipt);
     }
 
     /**
@@ -724,6 +754,19 @@ export class MessageFlowController extends BaseController {
                 nickname,
                 avatar
             }) || (threads && threads.get(convId));
+
+            // [UNIFIED] Ensure contact-core store is up to date when Live Flow
+            // appends new messages (replaces upsertContactCore from Legacy handler).
+            if (USE_MESSAGES_FLOW_UNIFIED && hasLiveEntries && peerDigest && peerDevice && convId) {
+                try {
+                    upsertContactCore({
+                        peerAccountDigest: peerDigest,
+                        peerDeviceId: peerDevice,
+                        conversationId: convId,
+                        conversationToken: tokenB64
+                    }, 'timeline-append:live');
+                } catch { /* safe fallthrough */ }
+            }
 
             if (!thread) {
                 if (isActiveConversationId) {

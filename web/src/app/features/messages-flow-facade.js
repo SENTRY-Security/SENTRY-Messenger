@@ -6,6 +6,8 @@ import { logCapped } from '../core/log.js';
 import { getDeviceId as storeGetDeviceId, getAccountDigest as storeGetAccountDigest } from '../core/store.js';
 import { maybeSendVaultAckWs, recordVaultAckCounter } from './messages/receipts.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
+import { removeContactCore } from '../ui/mobile/contact-core-store.js';
+import { hideContactSecret } from '../core/contact-secrets.js';
 import { startRestorePipeline } from './restore-coordinator.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
 import { smartFetchMessages } from './messages-flow/hybrid-flow.js';
@@ -281,26 +283,49 @@ function createMessagesFlowFacade() {
         return;
       }
 
-      // [FIX] Legacy Handler Restoration
-      // The Facade was swallowing the legacy `handleIncomingSecureMessage` call.
-      // This prevented the UI Controller (MessageFlowController) from:
-      // 1. Showing Placeholders (addPendingLivePlaceholder)
-      // 2. Handling Control Messages (Receipts)
-      // 3. Triggering Auto-Sync (loadActiveConversationMessages)
-      // 4. Executing the "Tail Loop" logic
-      // We must call it here to ensure the UI stays in sync, even if B-Route (Live MVP) runs in parallel.
-      const legacyHandler = isPayloadObject ? payloadOrEvent.handleIncomingSecureMessage : null;
-      if (typeof legacyHandler === 'function') {
-        // We run this "Fire and Forget" or await? 
-        // app-mobile didn't await it. We shouldn't block B-Route decision on it.
-        // But we should catch errors.
-        try {
-          console.log('[facade] Calling legacy legacyHandler', { mid: event?.messageId || event?.id });
-          const res = legacyHandler(event);
-          console.log('[facade] legacyHandler result:', res);
-        } catch (e) {
-          console.error('[facade] legacy handler failed', e);
+      // [UNIFIED] Single-path: handle control events directly, content via Live Flow.
+      // No Legacy Handler involved at all.
+      const rawMsgType = event?.meta?.msgType || event?.meta?.msg_type
+        || event?.msgType || event?.msg_type || null;
+      const normalizedMsgType = typeof rawMsgType === 'string'
+        ? rawMsgType.replace(/-/g, '_').toLowerCase().trim() : null;
+
+      // Conversation-deleted signal — handle store updates + notify UI
+      if (event?.type === 'conversation-deleted' || normalizedMsgType === 'conversation_deleted') {
+        const convId = String(event?.conversationId || event?.conversation_id || '').trim();
+        const peerDigest = event?.senderAccountDigest || null;
+        if (convId) {
+          try {
+            sessionStore.deletedConversations?.add?.(convId);
+            sessionStore.conversationThreads?.delete?.(convId);
+            sessionStore.conversationIndex?.delete?.(convId);
+            if (peerDigest) {
+              removeContactCore(peerDigest, 'facade:conversation-deleted');
+              hideContactSecret(peerDigest);
+            }
+          } catch (e) { console.error('[facade] conversation-deleted store update failed', e); }
+          try {
+            document.dispatchEvent(new CustomEvent('sentry:conversation-deleted', {
+              detail: { conversationId: convId, peerDigest }
+            }));
+          } catch {}
         }
+        return;
+      }
+
+      // Receipt signals — dispatch to controller for UI update
+      if (normalizedMsgType === 'read_receipt' || normalizedMsgType === 'delivery_receipt') {
+        try {
+          document.dispatchEvent(new CustomEvent('sentry:receipt', {
+            detail: {
+              conversationId: String(event?.conversationId || event?.conversation_id || '').trim(),
+              targetMessageId: event?.meta?.targetMessageId || event?.targetMessageId || null,
+              msgType: normalizedMsgType,
+              ts: Number(event?.ts ?? event?.timestamp) || Date.now()
+            }
+          }));
+        } catch {}
+        return;
       }
 
       const liveJobCtx = hasExplicitCtx
