@@ -119,6 +119,13 @@ import {
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
 import { showVersionModal } from './version-info.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
+import { isIosWebKitLikeBrowser, isAutomationEnvironment, getMicrophoneConstraintProfiles, isConstraintUnsatisfiedError, supportsMediaConstraint } from './mobile/browser-detection.js';
+import { disableZoom } from './mobile/zoom-disabler.js';
+import { createMediaPermissionManager } from './mobile/media-permission-manager.js';
+import { createConnectionIndicator } from './mobile/connection-indicator.js';
+import { createSubscriptionModule } from './mobile/modals/subscription-modal.js';
+import { createSettingsModule } from './mobile/modals/settings-modal.js';
+import { createPasswordModal } from './mobile/modals/password-modal.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -200,17 +207,6 @@ const mainContentEl = document.querySelector('main.content');
 const navBadges = typeof document !== 'undefined' ? Array.from(document.querySelectorAll('.nav-badge')) : [];
 const logoutRedirectCover = document.getElementById('logoutRedirectCover');
 let forcedLogoutOverlay = null;
-const mediaPermissionOverlay = document.getElementById('mediaPermissionOverlay');
-const mediaPermissionAllowBtn = document.getElementById('mediaPermissionAllowBtn');
-const mediaPermissionAllowLabel = document.getElementById('mediaPermissionAllowLabel');
-const mediaPermissionSkipBtn = document.getElementById('mediaPermissionSkipBtn');
-const mediaPermissionDebugBtn = document.getElementById('mediaPermissionDebugBtn');
-const mediaPermissionStatus = document.getElementById('mediaPermissionStatus');
-let mediaPermissionSystemGranted = false;
-let mediaPermissionActivePrompt = null;
-let mediaPermissionPollingTimer = null;
-let mediaPermissionOnChangeCleanup = null;
-let cachedMicrophoneStream = null;
 let backgroundLogoutTimer = null;
 const SIM_STORAGE_PREFIX = (() => {
   try { return getSimStoragePrefix(); } catch { return 'ntag424-sim:'; }
@@ -246,15 +242,6 @@ let reloadNavigationMemo = null;
 let reloadNavigationReason = null;
 let reloadLogoutTriggered = false;
 
-const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
-const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
-const LOGOUT_REDIRECT_SUGGESTIONS = Object.freeze([
-  'https://sentry.red',
-  'https://apple.com',
-  'https://www.cloudflare.com',
-  'https://www.mozilla.org',
-  'https://www.wikipedia.org'
-]);
 const LOGOUT_MESSAGE_KEY = 'app:lastLogoutReason';
 let logoutInProgress = false;
 let _autoLoggedOut = false;
@@ -265,21 +252,7 @@ const pendingWsMessages = [];
 let presenceManager = null;
 let wsMonitorTimer = null;
 
-let customLogoutModalContext = null;
-let customLogoutInvoker = null;
-let customLogoutHandlersBound = false;
 
-function getCustomLogoutElements() {
-  return {
-    modal: document.getElementById('customLogoutModal'),
-    backdrop: document.getElementById('customLogoutBackdrop'),
-    closeBtn: document.getElementById('customLogoutClose'),
-    input: document.getElementById('customLogoutInput'),
-    saveBtn: document.getElementById('customLogoutSave'),
-    cancelBtn: document.getElementById('customLogoutCancel'),
-    errorEl: document.getElementById('customLogoutError')
-  };
-}
 initContactSecretsBackup();
 observeTopbarHeight();
 
@@ -378,433 +351,7 @@ function mergeUniqueKeyLists(...lists) {
   return result;
 }
 
-function isIosWebKitLikeBrowser() {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  const platform = navigator.platform || '';
-  const maxTouchPoints = Number(navigator.maxTouchPoints) || 0;
-  const isTouchMac = platform === 'MacIntel' && maxTouchPoints > 1;
-  const uaHintsPlatform = navigator.userAgentData?.platform || '';
-  const isiOSUA = /iPad|iPhone|iPod/i.test(ua);
-  const isiOSPlatformHint = /iOS/i.test(uaHintsPlatform || '');
-  const isStandalone = typeof navigator.standalone === 'boolean' ? navigator.standalone : false;
-  return isiOSUA || isTouchMac || isiOSPlatformHint || isStandalone;
-}
 
-function supportsMediaConstraint(key) {
-  if (typeof navigator === 'undefined') return false;
-  const supported = navigator.mediaDevices?.getSupportedConstraints?.();
-  if (!supported || typeof supported !== 'object') return false;
-  return Boolean(supported[key]);
-}
-
-function isConstraintUnsatisfiedError(err) {
-  if (!err) return false;
-  const code = (err.name || err.code || '').toLowerCase();
-  return code === 'overconstrainederror' || code === 'constraintnotsatisfiederror';
-}
-
-function getMicrophoneConstraintProfiles() {
-  const supportsEchoCancellation = supportsMediaConstraint('echoCancellation');
-  const supportsNoiseSuppression = supportsMediaConstraint('noiseSuppression') && !isIosWebKitLikeBrowser();
-  const profiles = [];
-  if (supportsNoiseSuppression) {
-    const advanced = {};
-    if (supportsEchoCancellation) advanced.echoCancellation = true;
-    advanced.noiseSuppression = true;
-    profiles.push({ audio: advanced, video: false });
-  }
-  if (supportsEchoCancellation) {
-    profiles.push({ audio: { echoCancellation: true }, video: false });
-  }
-  profiles.push({ audio: true, video: false });
-  return profiles;
-}
-
-function isAutomationEnvironment() {
-  if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
-  if (typeof window !== 'undefined' && (window.Cypress || window.Playwright)) return true;
-  try {
-    const ua = navigator.userAgent || '';
-    if (/Playwright|HeadlessChrome|puppeteer/i.test(ua)) return true;
-  } catch { }
-  return false;
-}
-
-function hasMediaPermissionFlag() {
-  if (typeof sessionStorage === 'undefined') return false;
-  try {
-    return sessionStorage.getItem(MEDIA_PERMISSION_KEY) === 'granted';
-  } catch {
-    return false;
-  }
-}
-
-function markMediaPermissionGranted() {
-  if (typeof sessionStorage === 'undefined') return;
-  try { sessionStorage.setItem(MEDIA_PERMISSION_KEY, 'granted'); } catch { }
-  try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch { }
-}
-
-function setMediaPermissionStatus(message = '', { success = false } = {}) {
-  if (!mediaPermissionStatus) return;
-  mediaPermissionStatus.textContent = message || '';
-  mediaPermissionStatus.classList.toggle('success', !!message && success);
-  if (!success) {
-    mediaPermissionStatus.classList.remove('success');
-  }
-}
-
-function hideMediaPermissionPrompt() {
-  if (!mediaPermissionOverlay) return;
-  if (mediaPermissionPollingTimer) {
-    clearInterval(mediaPermissionPollingTimer);
-    mediaPermissionPollingTimer = null;
-  }
-  if (mediaPermissionOnChangeCleanup) {
-    mediaPermissionOnChangeCleanup();
-    mediaPermissionOnChangeCleanup = null;
-  }
-  mediaPermissionOverlay.style.display = 'none';
-  mediaPermissionOverlay.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('media-permission-open');
-  if (mediaPermissionAllowBtn) {
-    mediaPermissionAllowBtn.disabled = false;
-  }
-  setMediaPermissionStatus('');
-}
-
-function showMediaPermissionPrompt() {
-  if (!mediaPermissionOverlay) return;
-  mediaPermissionOverlay.style.display = 'flex';
-  mediaPermissionOverlay.setAttribute('aria-hidden', 'false');
-  document.body.classList.add('media-permission-open');
-  setMediaPermissionStatus('');
-  mediaPermissionAllowBtn?.focus?.();
-}
-
-function stopStreamTracks(stream) {
-  if (!stream?.getTracks) return;
-  for (const track of stream.getTracks()) {
-    try { track.stop(); } catch { }
-  }
-}
-
-function isLiveMicrophoneStream(stream) {
-  if (!stream?.getAudioTracks) return false;
-  return stream.getAudioTracks().some((track) => track?.readyState === 'live');
-}
-
-function cacheMicrophoneStream(stream) {
-  if (!isLiveMicrophoneStream(stream)) return null;
-  if (cachedMicrophoneStream && cachedMicrophoneStream !== stream) {
-    try { stopStreamTracks(cachedMicrophoneStream); } catch { }
-  }
-  cachedMicrophoneStream = stream;
-  try { sessionStore.cachedMicrophoneStream = stream; } catch { }
-  return cachedMicrophoneStream;
-}
-
-async function collectMicrophonePermissionSignals() {
-  const result = { permState: null, hasLabel: false };
-  if (typeof navigator === 'undefined') return result;
-  const { permissions, mediaDevices } = navigator;
-  if (permissions?.query) {
-    try {
-      result.permState = (await permissions.query({ name: 'microphone' }))?.state || null;
-    } catch { }
-  }
-  if (mediaDevices?.enumerateDevices) {
-    try {
-      const devices = await mediaDevices.enumerateDevices();
-      result.hasLabel = Array.isArray(devices)
-        && devices.some((device) => device.kind === 'audioinput' && device.label && device.label.trim());
-    } catch { }
-  }
-  return result;
-}
-
-function startMediaPermissionWatcher() {
-  if (mediaPermissionPollingTimer || mediaPermissionOnChangeCleanup) return;
-  // Prefer Permissions API onchange (event-driven, no polling)
-  if (navigator.permissions?.query) {
-    navigator.permissions.query({ name: 'microphone' })
-      .then((status) => {
-        if (status.state === 'granted') {
-          onMediaPermissionDetected();
-          return;
-        }
-        const handler = () => {
-          if (status.state === 'granted') onMediaPermissionDetected();
-        };
-        status.addEventListener('change', handler);
-        mediaPermissionOnChangeCleanup = () => {
-          try { status.removeEventListener('change', handler); } catch { }
-        };
-      })
-      .catch(() => {
-        // Permissions API not supported (e.g. older Safari) — fall back to polling
-        startMediaPermissionPollingFallback();
-      });
-  } else {
-    startMediaPermissionPollingFallback();
-  }
-}
-
-function startMediaPermissionPollingFallback() {
-  if (mediaPermissionPollingTimer) return;
-  mediaPermissionPollingTimer = setInterval(async () => {
-    try {
-      const { permState, hasLabel } = await collectMicrophonePermissionSignals();
-      if (permState === 'granted' || hasLabel) {
-        onMediaPermissionDetected();
-      }
-    } catch (err) {
-      log({ mediaPermissionPollError: err?.message || err });
-    }
-  }, 500);
-}
-
-async function onMediaPermissionDetected() {
-  await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1200,
-    statusMessage: '已確認授權，稍後會自動關閉提示。' });
-  log({ mediaPermission: 'detected-by-watcher' });
-}
-
-async function requestUserMediaAccess({ timeoutMs = 5000 } = {}) {
-  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-    throw new Error('瀏覽器不支援麥克風授權，請改用最新版 Safari / Chrome。');
-  }
-  const withTimeout = (promise, label) => Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(`${label || 'media'} timeout`)), timeoutMs);
-    })
-  ]);
-  const constraintProfiles = getMicrophoneConstraintProfiles();
-  let lastError = null;
-  for (let attempt = 0; attempt < constraintProfiles.length; attempt += 1) {
-    const constraints = constraintProfiles[attempt];
-    try {
-      const audioStream = await withTimeout(
-        navigator.mediaDevices.getUserMedia(constraints),
-        'audio'
-      );
-      stopStreamTracks(audioStream);
-      return { audioGranted: true, videoGranted: false };
-    } catch (err) {
-      lastError = err;
-      if (!isConstraintUnsatisfiedError(err)) {
-        throw err || new Error('需要授權麥克風才能繼續使用語音通話');
-      }
-      log({
-        mediaPermissionConstraintRetry: {
-          name: err?.name,
-          message: err?.message,
-          nextProfile: attempt < constraintProfiles.length - 1
-        }
-      });
-    }
-  }
-  throw lastError || new Error('需要授權麥克風才能繼續使用語音通話');
-}
-
-function describeMediaPermissionError(err) {
-  if (!err) return '授權失敗，請在瀏覽器或系統設定中允許麥克風。';
-  const message = String(err?.message || '').toLowerCase();
-  const name = (err.name || err.code || '').toLowerCase();
-  if (name === 'overconstrainederror' || name === 'constraintnotsatisfiederror') {
-    return '麥克風已允許，但此裝置不支援進階音訊設定，請改用預設麥克風或稍後再試。';
-  }
-  if (name === 'notallowederror' || name === 'securityerror') {
-    return '你已拒絕麥克風，請到瀏覽器或系統設定重新允許後再試。';
-  }
-  if (name === 'notfounderror' || name === 'devicesnotfounderror') {
-    return '找不到可用的麥克風，請確認裝置已啟用。';
-  }
-  if (name === 'notreadableerror' || name === 'trackstarterror') {
-    return '無法啟動麥克風，可能已被其他應用程式使用。';
-  }
-  if (message.includes('timeout')) {
-    return '等待授權逾時，請確認瀏覽器有顯示「允許麥克風」提示或稍後再試。';
-  }
-  return err?.message || '授權失敗，請稍後再試或檢查系統權限設定。';
-}
-
-async function warmUpAudioPlayback() {
-  if (typeof window === 'undefined') return;
-  // 1. Resume the persistent notification AudioContext (used for incoming-call sounds)
-  try { await resumeNotifyAudioContext(); } catch { }
-  // 2. Pre-load notification sound buffer
-  try { await audioManager.loadBuffer?.(); } catch { }
-  // 3. Play silent audio to unlock Safari autoplay policy
-  try {
-    if (typeof Audio !== 'undefined') {
-      const audio = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
-      audio.playsInline = true;
-      await audio.play().catch(() => { });
-      audio.pause();
-      try { audio.src = ''; } catch { }
-    }
-  } catch { }
-}
-
-function playConnectChime({ volume = 0.3 } = {}) {
-  if (typeof Audio === 'undefined') return;
-  try {
-    const audio = new Audio('/assets/audio/click.mp3');
-    audio.volume = Math.min(Math.max(volume, 0), 1);
-    audio.playsInline = true;
-    audio.muted = false;
-    const cleanup = () => {
-      try { audio.pause(); audio.src = ''; audio.load(); } catch { }
-    };
-    audio.play()
-      ?.then(() => setTimeout(cleanup, 4000))
-      .catch((err) => {
-        log({ mediaPermissionChimeError: err?.message || err });
-        cleanup();
-      });
-  } catch (err) {
-    log({ mediaPermissionChimeInitError: err?.message || err });
-  }
-}
-
-async function finalizeMediaPermission({ warning = false, autoCloseDelayMs = 600, statusMessage } = {}) {
-  await warmUpAudioPlayback();
-  markMediaPermissionGranted();
-  const message = statusMessage !== undefined
-    ? statusMessage
-    : warning
-      ? '麥克風授權已允許，若仍無法通話請在設定中重新測試。'
-      : '麥克風已啟用，可立即使用語音通話。';
-  if (message !== null) {
-    setMediaPermissionStatus(message, { success: true });
-  }
-  if (mediaPermissionAllowBtn) {
-    mediaPermissionAllowBtn.disabled = false;
-  }
-  setMediaPermissionButtonState();
-  mediaPermissionSystemGranted = false;
-  showToast?.(
-    warning
-      ? '麥克風已允許，但裝置暫時無法啟動；稍後可再嘗試通話。'
-      : '已啟用麥克風，可使用語音通話',
-    { variant: warning ? 'warning' : 'success' }
-  );
-  setTimeout(() => hideMediaPermissionPrompt(), Math.max(0, Number(autoCloseDelayMs) || 0));
-}
-
-function setMediaPermissionButtonState() {
-  if (!mediaPermissionAllowBtn || !mediaPermissionAllowLabel) return;
-  mediaPermissionAllowBtn.classList.remove('state-confirm');
-  mediaPermissionAllowBtn.disabled = false;
-  mediaPermissionAllowLabel.textContent = '允許麥克風';
-}
-
-async function startMediaPermissionPrompt() {
-  if (mediaPermissionActivePrompt) return;
-  mediaPermissionSystemGranted = false;
-  setMediaPermissionStatus('請在系統視窗中按下「允許」。');
-  log({ mediaPermission: 'requestUserMedia:start' });
-  mediaPermissionActivePrompt = requestUserMediaAccess({ timeoutMs: 8000 })
-    .then(async () => {
-      mediaPermissionSystemGranted = true;
-      try {
-        await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1200,
-          statusMessage: '麥克風已啟用，稍後會自動關閉提示。' });
-        log({ mediaPermission: 'prompt-granted' });
-      } catch (err) {
-        log({ mediaPermissionPromptFinalizeError: err?.message || err });
-      }
-    })
-    .catch((err) => {
-      log({ mediaPermissionError: err?.message || err });
-      mediaPermissionSystemGranted = false;
-      setMediaPermissionStatus(describeMediaPermissionError(err));
-      showToast?.('授權失敗，請再試一次', { variant: 'warning' });
-      if (mediaPermissionAllowBtn) mediaPermissionAllowBtn.disabled = false;
-    })
-    .finally(() => {
-      mediaPermissionActivePrompt = null;
-    });
-}
-
-async function handleMediaPermissionGrant() {
-  if (!mediaPermissionOverlay || !mediaPermissionAllowBtn) return;
-  if (mediaPermissionActivePrompt) return; // Prevent double-click while prompt is active
-  // Unlock audio playback within user-gesture context
-  warmUpAudioPlayback();
-  playConnectChime({ volume: 0.3 });
-  mediaPermissionAllowBtn.disabled = true;
-  log({ mediaPermission: 'triggered' });
-  // Start watching for permission change (event-driven or polling fallback)
-  startMediaPermissionWatcher();
-  // Request mic permission — auto-finalizes on success
-  await startMediaPermissionPrompt();
-}
-
-function initMediaPermissionPrompt() {
-  if (!mediaPermissionOverlay) return;
-  if (mediaPermissionOverlay.dataset.init === '1') return;
-  mediaPermissionOverlay.dataset.init = '1';
-  setMediaPermissionButtonState();
-  if (isAutomationEnvironment()) {
-    markMediaPermissionGranted();
-    hideMediaPermissionPrompt();
-    warmUpAudioPlayback();
-    return;
-  }
-  if (hasMediaPermissionFlag()) {
-    hideMediaPermissionPrompt();
-    warmUpAudioPlayback();
-    return;
-  }
-  showMediaPermissionPrompt();
-  mediaPermissionAllowBtn?.addEventListener('click', handleMediaPermissionGrant);
-  mediaPermissionSkipBtn?.addEventListener('click', () => {
-    // Unlock audio playback within this user-gesture context (for incoming-call sounds)
-    warmUpAudioPlayback();
-    try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch { }
-    hideMediaPermissionPrompt();
-    setMediaPermissionStatus('');
-    mediaPermissionSystemGranted = false;
-    setMediaPermissionButtonState();
-    showToast?.('未啟用麥克風，通話可能無法使用', { variant: 'warning' });
-  });
-  if (mediaPermissionDebugBtn && !mediaPermissionDebugBtn.dataset.init) {
-    mediaPermissionDebugBtn.dataset.init = '1';
-    mediaPermissionDebugBtn.addEventListener('click', async (event) => {
-      event.preventDefault();
-      try {
-        const perm = await navigator.permissions?.query?.({ name: 'microphone' }).catch(() => null);
-        const devices = await navigator.mediaDevices?.enumerateDevices?.().catch(() => []);
-        const hasLabel = Array.isArray(devices) && devices.some((d) => d.kind === 'audioinput' && d.label);
-        const toastMessage = perm?.state === 'granted'
-          ? '已授權麥克風權限'
-          : `權限狀態：${perm?.state || 'unknown'} / Label: ${hasLabel ? '有' : '無'}`;
-        showToast?.(toastMessage, { variant: perm?.state === 'granted' || hasLabel ? 'success' : 'warning' });
-        log({ mediaPermissionDebugCheck: { perm: perm?.state, label: hasLabel, devicesLength: devices?.length || 0, toast: toastMessage } });
-        if (perm?.state === 'granted' || hasLabel) {
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            log({ mediaPermissionDebugStream: { tracks: stream?.getTracks?.().length || 0 } });
-            setMediaPermissionStatus('已確認授權並啟動麥克風，稍後會自動關閉提示。', { success: true });
-            await finalizeMediaPermission({ warning: false, autoCloseDelayMs: 1500, statusMessage: null });
-            setTimeout(() => {
-              try { stream?.getTracks?.().forEach((track) => track.stop()); } catch { }
-            }, 500);
-          } catch (err) {
-            log({ mediaPermissionDebugStreamError: err?.message || err });
-          }
-        }
-      } catch (err) {
-        showToast?.('無法取得權限狀態', { variant: 'warning' });
-        log({ mediaPermissionDebugError: err?.message || err });
-      }
-    });
-  }
-}
 
 function resetMainContentScroll({ smooth = false } = {}) {
   if (!mainContentEl) return;
@@ -1404,34 +951,6 @@ function flushContactSecretsLocal(reason = 'manual') {
 }
 
 
-// --- Hard-disable zoom gestures (reinforce meta viewport) ---
-(function disableZoom() {
-  try {
-    // iOS Safari pinch gesture
-    const stop = (e) => { e.preventDefault(); };
-    ['gesturestart', 'gesturechange', 'gestureend'].forEach(t => {
-      document.addEventListener(t, stop, { passive: false });
-    });
-    // Prevent double-tap zoom
-    let lastTouch = 0;
-    document.addEventListener('touchend', (e) => {
-      const now = Date.now();
-      if (now - lastTouch < 350) { e.preventDefault(); }
-      lastTouch = now;
-    }, { passive: false });
-    // Ctrl/Meta + wheel zoom (desktop browsers)
-    window.addEventListener('wheel', (e) => {
-      if (e.ctrlKey || e.metaKey) e.preventDefault();
-    }, { passive: false });
-    // Ctrl/Cmd + +/-/0
-    window.addEventListener('keydown', (e) => {
-      const k = e.key;
-      if ((e.ctrlKey || e.metaKey) && (k === '+' || k === '-' || k === '=' || k === '0')) {
-        e.preventDefault();
-      }
-    });
-  } catch { }
-})();
 
 // Restore MK/UID from sessionStorage handoff (login → app)
 (function restoreMkAndUidFromSession() {
@@ -1473,14 +992,6 @@ function flushContactSecretsLocal(reason = 'manual') {
     sessionStorage.removeItem('wrapped_mk');
   } catch (e) { log({ restoreError: String(e?.message || e) }); }
 })();
-
-settingsInitPromise = bootLoadSettings()
-  .catch((err) => {
-    log({ settingsBootError: err?.message || err });
-    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
-    if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
-    return sessionStore.settingsState || fallback;
-  });
 
 (function hydrateDevicePrivFromSession() {
   try {
@@ -1615,9 +1126,6 @@ const userMenuVersionModalBtn = document.getElementById('userMenuVersionBtn');
 const userMenuLogoutBtn = userMenuDropdown?.querySelector('[data-action="logout"]') || null;
 const userMenuBadge = document.getElementById('userMenuBadge');
 const userAvatarWrap = document.getElementById('userAvatarWrap');
-let subscriptionCountdownTimer = null;
-let subscriptionScanner = null;
-let subscriptionScannerActive = false;
 
 let userMenuOpen = false;
 function setUserMenuOpen(next) {
@@ -1651,518 +1159,6 @@ userMenuSubscriptionBtn?.addEventListener('click', (event) => {
   openSubscriptionModal();
 });
 
-function updateSubscriptionBadge(expired) {
-  if (!userAvatarWrap || !userMenuBadge) return;
-  const show = !!expired;
-  userAvatarWrap.classList.toggle('has-alert', show);
-  userMenuBadge.style.display = show ? 'inline-flex' : 'none';
-  if (userMenuSubscriptionBadge) {
-    userMenuSubscriptionBadge.style.display = show ? 'inline-flex' : 'none';
-  }
-}
-
-function normalizeSubscriptionLogs(logsRaw) {
-  if (!Array.isArray(logsRaw)) return [];
-  return logsRaw.map((log, idx) => {
-    const extendDays = Number(log?.extend_days ?? log?.extendDays ?? log?.duration_days ?? log?.durationDays ?? 0) || 0;
-    const expiresAfter = Number(log?.expires_at_after ?? log?.expiresAtAfter ?? log?.expires_at ?? log?.expiresAt ?? 0) || null;
-    const usedAt = Number(log?.used_at ?? log?.usedAt ?? log?.updated_at ?? log?.redeemed_at ?? 0) || null;
-    const issuedAt = Number(log?.issued_at ?? log?.issuedAt ?? 0) || null;
-    const status = typeof log?.status === 'string' ? log.status : (extendDays ? 'used' : 'active');
-    const tokenId = log?.token_id || log?.tokenId || log?.voucher_id || log?.jti || `token-${idx + 1}`;
-    let channel = log?.channel || log?.gateway || null;
-    if (!channel && (log?.key_id || log?.keyId)) channel = `憑證 ${log?.key_id || log?.keyId}`;
-    if (!channel) channel = 'QR 憑證';
-    const type = extendDays > 0 ? 'extend' : 'activate';
-    return { tokenId, extendDays, expiresAfter, usedAt, issuedAt, status, channel, type };
-  });
-}
-
-function computeSubscriptionCountdown(expiresAt) {
-  const now = Date.now();
-  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return { expired: true, text: '已到期', seconds: 0 };
-  const diff = expiresAt - now;
-  if (diff <= 0) return { expired: true, text: '已到期', seconds: 0 };
-  const days = Math.floor(diff / 86400);
-  const hours = Math.floor((diff % 86400) / 3600);
-  const mins = Math.floor((diff % 3600) / 60);
-  if (days > 0) return { expired: false, text: `剩餘 ${days} 天`, seconds: diff };
-  if (hours > 0) return { expired: false, text: `剩餘 ${hours} 小時`, seconds: diff };
-  return { expired: false, text: `剩餘 ${Math.max(mins, 1)} 分鐘`, seconds: diff };
-}
-
-async function refreshSubscriptionStatus({ silent = false } = {}) {
-  const state = sessionStore.subscriptionState;
-  state.loading = true;
-  state.logs = [];
-  try {
-    const { r, data } = await subscriptionStatus();
-    if (!r.ok || !data?.ok) throw new Error(typeof data === 'string' ? data : data?.message || 'status failed');
-    state.lastChecked = Date.now();
-    state.logs = normalizeSubscriptionLogs(data?.logs);
-    state.accountCreatedAt = Number(data?.account_created_at ?? data?.accountCreatedAt ?? 0) || null;
-    if (data.found && Number.isFinite(Number(data.expires_at))) {
-      state.found = true;
-      state.expiresAt = Number(data.expires_at);
-      state.expired = !(state.expiresAt && state.expiresAt > Date.now());
-    } else {
-      state.found = false;
-      state.expiresAt = null;
-      state.expired = true;
-      if (!state.logs.length) state.accountCreatedAt = state.accountCreatedAt || null;
-    }
-  } catch (err) {
-    if (!silent) showToast?.(`查詢訂閱失敗：${err?.message || err}`, { variant: 'error' });
-    state.found = false;
-    state.expiresAt = null;
-    state.expired = true;
-    state.logs = [];
-    state.accountCreatedAt = state.accountCreatedAt || null;
-  } finally {
-    state.loading = false;
-    updateSubscriptionBadge(state.expired);
-    try {
-      document.dispatchEvent(new CustomEvent('subscription:state', { detail: { state: { ...state } } }));
-    } catch { }
-  }
-  return sessionStore.subscriptionState;
-}
-
-function stopSubscriptionCountdown() {
-  if (subscriptionCountdownTimer) {
-    clearInterval(subscriptionCountdownTimer);
-    subscriptionCountdownTimer = null;
-  }
-}
-
-function showSubscriptionGateModal() {
-  const modal = document.getElementById('modal');
-  const body = document.getElementById('modalBody');
-  const title = document.getElementById('modalTitle');
-  if (!modal || !body) return;
-  stopSubscriptionScanner({ destroy: true });
-  stopSubscriptionCountdown();
-  resetModalVariants(modal);
-  modal.classList.add('confirm-modal', 'subscription-modal-shell');
-  if (title) title.textContent = '帳號已到期';
-  body.innerHTML = `
-    <div class="confirm-message">帳號已到期，請進行儲值。</div>
-    <div class="confirm-actions">
-      <button type="button" class="secondary" id="subscriptionGateClose">關閉</button>
-      <button type="button" class="primary" id="subscriptionGateOpen">點我儲值</button>
-    </div>
-  `;
-  openModal();
-  document.getElementById('subscriptionGateClose')?.addEventListener('click', () => closeModal());
-  document.getElementById('subscriptionGateOpen')?.addEventListener('click', () => {
-    closeModal();
-    openSubscriptionModal();
-  });
-}
-
-document.addEventListener('subscription:gate', showSubscriptionGateModal);
-
-function stopSubscriptionScanner({ destroy = false } = {}) {
-  if (subscriptionScanner && subscriptionScannerActive) {
-    try { subscriptionScanner.stop(); } catch { }
-  }
-  subscriptionScannerActive = false;
-  if (destroy && subscriptionScanner) {
-    try { subscriptionScanner.destroy?.(); } catch { }
-    subscriptionScanner = null;
-  }
-}
-
-function startSubscriptionCountdown(expiresAt) {
-  stopSubscriptionCountdown();
-  const statusText = document.getElementById('subscriptionStatusText');
-  const countdownHint = document.getElementById('subscriptionCountdownHint');
-  if (!statusText) return;
-  const tick = () => {
-    const { expired, text } = computeSubscriptionCountdown(expiresAt);
-    statusText.textContent = expired ? '已到期' : text;
-    statusText.className = expired ? 'sub-status error' : 'sub-status ok';
-    if (countdownHint) countdownHint.textContent = expired ? '請儲值以延長使用' : '狀態會自動同步，無需手動刷新';
-    if (expired) updateSubscriptionBadge(true);
-  };
-  tick();
-  const interval = Math.max(30, Math.min(300, Math.floor(Math.max(expiresAt - Date.now(), 60) / 2)));
-  subscriptionCountdownTimer = setInterval(tick, interval * 1000);
-}
-
-async function handleRedeemToken(token, hooks = {}) {
-  if (!token) {
-    showToast?.('請輸入或掃描憑證', { variant: 'warning' });
-    const err = new Error('token missing');
-    hooks.onError?.(err);
-    return { ok: false, error: err };
-  }
-  const { onStart, onSuccess, onError } = hooks;
-  const redeemBtn = document.getElementById('subscriptionRedeemBtn');
-  if (redeemBtn) redeemBtn.disabled = true;
-  onStart?.();
-  try {
-    const { r, data } = await redeemSubscription({ token });
-    if (!r.ok || !data?.ok) throw new Error(typeof data === 'string' ? data : data?.message || 'redeem failed');
-    sessionStore.subscriptionState.expiresAt = Number(data.expiresAt || data.expires_at || 0);
-    sessionStore.subscriptionState.found = true;
-    sessionStore.subscriptionState.expired = !(sessionStore.subscriptionState.expiresAt > Date.now());
-    updateSubscriptionBadge(sessionStore.subscriptionState.expired);
-    const statusText = document.getElementById('subscriptionStatusText');
-    if (statusText) statusText.textContent = '展期成功，正在更新狀態…';
-    await refreshSubscriptionStatus({ silent: true });
-    const msg = typeof data?.message === 'string' ? data.message : '展期成功';
-    showToast?.(msg, { variant: 'success' });
-    onSuccess?.(data);
-    return { ok: true, data };
-  } catch (err) {
-    const detail = err?.message || err;
-    const msg = typeof detail === 'string' ? detail : '展期失敗，請稍後再試';
-    showToast?.(msg, { variant: 'error' });
-    onError?.(err);
-    return { ok: false, error: err };
-  } finally {
-    if (redeemBtn) redeemBtn.disabled = false;
-  }
-}
-
-async function handleSubscriptionFile(files, hooks = {}) {
-  const list = files && typeof files.length === 'number' ? files : [];
-  const file = list[0] || null;
-  if (!file) return { ok: false, error: new Error('file missing') };
-  try {
-    hooks.onStart?.();
-    const { r, data } = await uploadSubscriptionQr({ file });
-    if (!r.ok || !data?.ok) {
-      const msg = typeof data === 'object' && data?.message ? data.message : '展期失敗，請稍後再試';
-      throw new Error(msg);
-    }
-    return { ok: true, data };
-  } catch (err) {
-    if (hooks?.onError) hooks.onError(err);
-    else showToast?.(`檔案解析失敗：${err?.message || err}`, { variant: 'error' });
-    return { ok: false, error: err };
-  }
-}
-
-async function openSubscriptionModal() {
-  const modal = document.getElementById('modal');
-  const body = document.getElementById('modalBody');
-  const title = document.getElementById('modalTitle');
-  if (!modal || !body) return;
-  stopSubscriptionScanner({ destroy: true });
-  stopSubscriptionCountdown();
-  resetModalVariants(modal);
-  modal.classList.add('settings-modal', 'subscription-modal-shell');
-  if (title) title.textContent = '訂閱 / 儲值';
-  body.innerHTML = `
-    <div class="subscription-modal">
-      <div class="sub-tabs" role="tablist">
-        <button type="button" class="sub-tab active" data-tab="status" aria-selected="true" role="tab">訂閱狀態</button>
-        <button type="button" class="sub-tab" data-tab="topup" aria-selected="false" role="tab">儲值 / 展期</button>
-      </div>
-      <div class="sub-tabpanel" data-tabpanel="status" role="tabpanel">
-        <div class="subscription-hero">
-          <div class="hero-text">
-            <div class="hero-label">目前狀態</div>
-            <div id="subscriptionStatusText" class="sub-status">查詢中…</div>
-            <div class="sub-meta" id="subscriptionMeta"></div>
-          </div>
-        </div>
-        <div class="sub-table-block">
-          <div class="sub-table-head">
-            <div class="sub-table-title">開通 / 儲值紀錄</div>
-            <button type="button" class="ghost-btn" id="subscriptionRefreshBtn"><i class='bx bx-sync'></i> 重新整理</button>
-          </div>
-          <div class="sub-table" id="subscriptionCombinedTable"></div>
-        </div>
-      </div>
-      <div class="sub-tabpanel" data-tabpanel="topup" role="tabpanel" hidden>
-        <div class="sub-steps" id="subscriptionWizardSteps">
-          <div class="sub-step" data-step="1"><span class="step-number">1</span><small>選擇管道</small></div>
-          <div class="sub-step" data-step="2"><span class="step-number">2</span><small>掃描 / 上傳</small></div>
-          <div class="sub-step" data-step="3"><span class="step-number">3</span><small>結果</small></div>
-        </div>
-        <div id="subscriptionWizardContent" class="sub-wizard-content"></div>
-      </div>
-    </div>
-  `;
-  modal.__subscriptionCleanup = () => {
-    stopSubscriptionCountdown();
-    stopSubscriptionScanner({ destroy: true });
-  };
-  openModal();
-  const wizard = { step: 1, channel: null, result: null, busy: false };
-
-  const tabButtons = Array.from(body.querySelectorAll('.sub-tab'));
-  const tabPanels = Array.from(body.querySelectorAll('.sub-tabpanel'));
-  const wizardContent = document.getElementById('subscriptionWizardContent');
-
-  function subscriptionSwitchTab(target) {
-    tabButtons.forEach((btn) => {
-      const active = btn.dataset.tab === target;
-      btn.classList.toggle('active', active);
-      btn.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-    tabPanels.forEach((panel) => {
-      const active = panel.dataset.tabpanel === target;
-      panel.hidden = !active;
-    });
-    if (target !== 'topup') stopSubscriptionScanner({ destroy: true });
-    if (target === 'topup') renderWizard();
-  }
-
-  function fmt(ts) {
-    if (!Number.isFinite(ts) || ts <= 0) return '—';
-    return new Date(ts * 1000).toLocaleString();
-  }
-
-  function renderTables(logs = []) {
-    const table = document.getElementById('subscriptionCombinedTable');
-    if (!table) return;
-    const activationTs = Number(sessionStore?.subscriptionState?.accountCreatedAt
-      ?? sessionStore?.profileState?.createdAt
-      ?? sessionStore?.profileState?.created_at
-      ?? sessionStore?.profileState?.created
-      ?? 0);
-    const baseRows = [];
-    if (Number.isFinite(activationTs) && activationTs > 0) {
-      baseRows.push({
-        usedAt: activationTs,
-        issuedAt: activationTs,
-        type: 'account',
-        status: 'active',
-        channel: '帳號建立',
-        tokenId: '—',
-        extendDays: 0
-      });
-    }
-    const sorted = [...baseRows, ...(Array.isArray(logs) ? logs : [])].sort((a, b) => {
-      const ta = Number(a.usedAt || a.issuedAt || 0);
-      const tb = Number(b.usedAt || b.issuedAt || 0);
-      return tb - ta;
-    });
-    if (!sorted.length) {
-      table.innerHTML = `<div class="sub-empty">尚無開通/儲值紀錄</div>`;
-      return;
-    }
-    table.innerHTML = sorted.map((log) => {
-      const statusLabel = (() => {
-        if (log.status === 'used' || log.status === 'active') return '成功';
-        if (log.status === 'invalid') return '無效';
-        if (log.status === 'expired') return '已過期';
-        return log.status || '未知';
-      })();
-      const actionLabel = log.type === 'account'
-        ? '帳號啟用'
-        : (log.type === 'activate' ? '開通' : `展期 ${log.extendDays ? `+${log.extendDays} 天` : ''}`.trim());
-      const channel = log.channel || (log.type === 'account' ? '帳號建立' : 'QR 憑證');
-      const expiresAfter = log.expiresAfter ? fmt(log.expiresAfter) : null;
-      const ts = Number(log.usedAt || log.issuedAt || 0) * 1000;
-      const dt = Number.isFinite(ts) && ts > 0 ? new Date(ts) : null;
-      const dateStr = dt ? dt.toLocaleDateString() : '—';
-      const timeStr = dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-      return `
-        <div class="sub-table-row">
-          <div class="cell primary">
-            <div class="cell-title">${dateStr}${timeStr ? `<span class="sub-time"> ${timeStr}</span>` : ''}</div>
-            <div class="cell-sub"></div>
-          </div>
-          <div class="cell">
-            <div class="cell-title">${actionLabel}${statusLabel ? ` ｜ ${statusLabel}` : ''}</div>
-            <div class="cell-sub"></div>
-          </div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  function renderStatusTab() {
-    const current = sessionStore.subscriptionState;
-    stopSubscriptionCountdown();
-    const statusText = document.getElementById('subscriptionStatusText');
-    const meta = document.getElementById('subscriptionMeta');
-    if (statusText) {
-      const { expired, text } = computeSubscriptionCountdown(current.expiresAt || 0);
-      statusText.textContent = current.found ? text : '尚未儲值';
-      statusText.className = expired ? 'sub-status error' : 'sub-status ok';
-    }
-    if (meta) {
-      meta.textContent = current.found ? '狀態自動同步' : '尚無訂閱紀錄';
-    }
-    renderTables(current.logs || []);
-  }
-
-  function renderWizard() {
-    const steps = Array.from(document.querySelectorAll('#subscriptionWizardSteps .sub-step'));
-    steps.forEach((stepEl) => {
-      const n = Number(stepEl.dataset.step || 0);
-      stepEl.classList.toggle('active', wizard.step === n);
-      stepEl.classList.toggle('done', wizard.step > n);
-    });
-    if (!wizardContent) return;
-    if (wizard.step === 1) {
-      wizardContent.innerHTML = `
-        <div class="channel-grid">
-          <button type="button" class="channel-card" data-channel="qr">
-            <div class="channel-icon"><i class='bx bx-qr-scan'></i></div>
-            <div class="channel-body">
-              <div class="channel-title">QRCode 儲值</div>
-              <div class="channel-sub">使用憑證 QR 展期，支援掃描與圖檔上傳。</div>
-            </div>
-          </button>
-          <div class="channel-card disabled" data-channel="ecpay">
-            <div class="channel-icon"><i class='bx bx-credit-card'></i></div>
-            <div class="channel-body">
-              <div class="channel-title">綠界金流</div>
-              <div class="channel-sub">即將開放，敬請期待。</div>
-            </div>
-            <span class="channel-badge">即將開放</span>
-          </div>
-        </div>
-      `;
-      wizardContent.querySelector('[data-channel="qr"]')?.addEventListener('click', () => {
-        wizard.channel = 'qr';
-        wizard.step = 2;
-        wizard.result = null;
-        renderWizard();
-      });
-      wizardContent.querySelector('[data-channel="ecpay"]')?.addEventListener('click', () => {
-        showToast?.('綠界管道即將開放，請先使用 QR 憑證儲值', { variant: 'info' });
-      });
-      stopSubscriptionScanner({ destroy: true });
-      return;
-    }
-
-    if (wizard.step === 2) {
-      wizardContent.innerHTML = `
-        <div class="scan-pane">
-          <div class="scan-video-wrap">
-            <video id="subscriptionScanVideo" class="scan-video" muted playsinline></video>
-            <div class="scan-overlay">請將 QR 憑證置中</div>
-          </div>
-          <div class="scan-actions">
-            <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
-            <button id="subscriptionUploadBtn" type="button" class="wide-btn" ${wizard.busy ? 'disabled' : ''}>
-              <i class='bx bx-upload'></i> 點擊上傳 QRCode 圖像
-            </button>
-            <div id="subscriptionScanStatus" class="sub-meta">正在啟動相機…</div>
-          </div>
-        </div>
-      `;
-      const fileInput = document.getElementById('subscriptionFileInput');
-      const uploadBtn = document.getElementById('subscriptionUploadBtn');
-      const scanStatus = document.getElementById('subscriptionScanStatus');
-      uploadBtn?.addEventListener('click', () => fileInput?.click());
-      fileInput?.addEventListener('change', async (e) => {
-        const file = e.target.files?.[0];
-        if (!file || wizard.busy) return;
-        wizard.busy = true;
-        stopSubscriptionScanner({ destroy: true });
-        uploadBtn.disabled = true;
-        if (scanStatus) scanStatus.textContent = '上傳並解析中…';
-        const tokenRes = await handleSubscriptionFile([file], {
-          onError: (err) => {
-            wizard.result = { ok: false, message: `解析失敗：${err?.message || err}` };
-            wizard.step = 3;
-            renderWizard();
-          }
-        });
-        wizard.busy = false;
-        uploadBtn.disabled = false;
-        if (tokenRes?.ok) {
-          wizard.step = 3;
-          wizard.result = { ok: true, expiresAt: sessionStore.subscriptionState.expiresAt };
-          renderWizard();
-          renderStatusTab();
-        } else if (!wizard.result) {
-          wizard.step = 3;
-          wizard.result = { ok: false, message: tokenRes?.error?.message || '儲值失敗，請重試' };
-          renderWizard();
-        }
-      });
-      const scanVideo = document.getElementById('subscriptionScanVideo');
-      if (scanStatus) scanStatus.textContent = '正在啟動相機…';
-      if (scanVideo) {
-        QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
-        stopSubscriptionScanner({ destroy: true });
-        try {
-          subscriptionScanner = new QrScanner(scanVideo, async (res) => {
-            const text = typeof res === 'string' ? res : res?.data || '';
-            if (!text || wizard.busy) return;
-            wizard.busy = true;
-            if (scanStatus) scanStatus.textContent = '辨識到憑證，驗證中…';
-            stopSubscriptionScanner();
-            const result = await handleRedeemToken(text);
-            wizard.busy = false;
-            wizard.result = result?.ok
-              ? { ok: true, expiresAt: sessionStore.subscriptionState.expiresAt }
-              : { ok: false, message: result?.error?.message || '儲值失敗' };
-            wizard.step = 3;
-            renderWizard();
-            if (result?.ok) renderStatusTab();
-          });
-          subscriptionScanner.start().then(() => {
-            subscriptionScannerActive = true;
-            if (scanStatus) scanStatus.textContent = '請將憑證 QR 對準框線，或上傳圖檔';
-          }).catch((err) => {
-            if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
-          });
-        } catch (err) {
-          if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`;
-        }
-      }
-      return;
-    }
-
-    wizardContent.innerHTML = `
-      <div class="result-card ${wizard.result?.ok ? 'success' : 'error'}">
-        <div class="result-icon">${wizard.result?.ok ? '✅' : '⚠️'}</div>
-        <div class="result-title">${wizard.result?.ok ? '儲值完成' : '儲值失敗'}</div>
-        <div class="result-meta">
-          ${wizard.result?.ok
-        ? `最新到期：${wizard.result?.expiresAt ? fmt(wizard.result.expiresAt) : '已更新'}`
-        : (wizard.result?.message || '請確認憑證是否有效或已使用')}
-        </div>
-        <div class="result-actions">
-          <button type="button" class="secondary" id="subscriptionWizardRetry">再儲值一次</button>
-          <button type="button" class="primary" id="subscriptionWizardViewStatus">查看訂閱狀態</button>
-        </div>
-      </div>
-    `;
-    document.getElementById('subscriptionWizardRetry')?.addEventListener('click', () => {
-      wizard.step = 1;
-      wizard.result = null;
-      wizard.channel = null;
-      stopSubscriptionScanner({ destroy: true });
-      renderWizard();
-    });
-    document.getElementById('subscriptionWizardViewStatus')?.addEventListener('click', () => {
-      subscriptionSwitchTab('status');
-      renderStatusTab();
-    });
-    stopSubscriptionScanner({ destroy: true });
-  }
-
-  tabButtons.forEach((btn) => {
-    btn.addEventListener('click', () => subscriptionSwitchTab(btn.dataset.tab));
-  });
-
-  document.getElementById('subscriptionRefreshBtn')?.addEventListener('click', async (event) => {
-    const btn = event.currentTarget;
-    btn.disabled = true;
-    btn.classList.add('loading');
-    await refreshSubscriptionStatus();
-    renderStatusTab();
-    btn.disabled = false;
-    btn.classList.remove('loading');
-  });
-
-  renderWizard();
-  refreshSubscriptionStatus({ silent: true }).then(() => {
-    renderStatusTab();
-  });
-}
 
 userMenuDropdown?.addEventListener('click', (event) => {
   event.stopPropagation();
@@ -2255,6 +1251,107 @@ const {
   setModalObjectUrl,
   showSecurityModal
 } = modalController;
+
+// --- Extracted modules: Phase 1 ---
+const mediaPermissionMgr = createMediaPermissionManager({
+  overlay: document.getElementById('mediaPermissionOverlay'),
+  allowBtn: document.getElementById('mediaPermissionAllowBtn'),
+  allowLabel: document.getElementById('mediaPermissionAllowLabel'),
+  skipBtn: document.getElementById('mediaPermissionSkipBtn'),
+  debugBtn: document.getElementById('mediaPermissionDebugBtn'),
+  statusEl: document.getElementById('mediaPermissionStatus'),
+  mediaPermissionKey: MEDIA_PERMISSION_KEY,
+  audioPermissionKey: AUDIO_PERMISSION_KEY,
+  deps: { log, showToast, sessionStore, resumeNotifyAudioContext, audioManager }
+});
+const initMediaPermissionPrompt = () => mediaPermissionMgr.init();
+const hideMediaPermissionPrompt = () => mediaPermissionMgr.hide();
+const hasMediaPermissionFlag = () => mediaPermissionMgr.hasFlag();
+const markMediaPermissionGranted = () => mediaPermissionMgr.markGranted();
+const warmUpAudioPlayback = () => mediaPermissionMgr.warmUpAudio();
+const stopStreamTracks = (s) => mediaPermissionMgr.stopStreamTracks(s);
+const isLiveMicrophoneStream = (s) => mediaPermissionMgr.isLiveStream(s);
+const cacheMicrophoneStream = (s) => mediaPermissionMgr.cacheStream(s);
+let cachedMicrophoneStream = null;
+Object.defineProperty(globalThis, '_cachedMicrophoneStream', {
+  get: () => mediaPermissionMgr.getCachedStream(),
+});
+
+const connIndicator = createConnectionIndicator(connectionIndicator);
+const updateConnectionIndicator = (state) => connIndicator.update(state);
+
+function resetModalVariants(modalElement) {
+  modalElement.classList.remove(...MODAL_VARIANTS);
+}
+
+function showLogoutRedirectCover() {
+  if (!logoutRedirectCover) return;
+  logoutRedirectCover.classList.add('show');
+  logoutRedirectCover.setAttribute('aria-hidden', 'false');
+}
+
+function hideLogoutRedirectCover() {
+  if (!logoutRedirectCover) return;
+  logoutRedirectCover.classList.remove('show');
+  logoutRedirectCover.setAttribute('aria-hidden', 'true');
+}
+
+hideLogoutRedirectCover();
+
+// --- Extracted modules: Phase 2 ---
+const passwordModal = createPasswordModal({
+  deps: {
+    log, openModal, closeModal, resetModalVariants, emitMkSetTrace,
+    getWrappedMK, setWrappedMK, setMkRaw,
+    unwrapMKWithPasswordArgon2id, wrapMKWithPasswordArgon2id,
+    getAccountToken, getAccountDigest, getOpaqueServerId,
+    mkUpdate, opaqueRegister
+  }
+});
+const openChangePasswordModal = () => passwordModal.open();
+
+const settingsMod = createSettingsModule({
+  deps: {
+    log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
+    DEFAULT_SETTINGS, saveSettings, loadSettings,
+    getMkRaw, getAccountDigest,
+    openChangePasswordModal
+  }
+});
+const getEffectiveSettingsState = () => settingsMod.getEffective();
+const sanitizeLogoutRedirectUrl = (v) => settingsMod.sanitizeUrl(v);
+const bootLoadSettings = () => settingsMod.bootLoad();
+const isSettingsConversationId = (convId) => settingsMod.isSettingsConvId(convId);
+const handleSettingsSecureMessage = () => settingsMod.handleSecureMessage();
+const persistSettingsPatch = (partial) => settingsMod.persistPatch(partial);
+const getLogoutRedirectInfo = (settings) => settingsMod.getRedirectInfo(settings);
+const getLogoutRedirectTarget = (settings) => settingsMod.getRedirectTarget(settings);
+const openSystemSettingsModal = () => settingsMod.open();
+const openCustomLogoutUrlModal = (opts) => settingsMod.openCustomLogoutModal(opts);
+
+const subscriptionMod = createSubscriptionModule({
+  deps: {
+    showToast, log, sessionStore, openModal, closeModal, resetModalVariants,
+    subscriptionStatus, redeemSubscription, uploadSubscriptionQr, QrScanner,
+    userAvatarWrap, userMenuBadge, userMenuSubscriptionBadge
+  }
+});
+const openSubscriptionModal = () => subscriptionMod.open();
+const refreshSubscriptionStatus = (opts) => subscriptionMod.refreshStatus(opts);
+const updateSubscriptionBadge = (expired) => subscriptionMod.updateBadge(expired);
+const showSubscriptionGateModal = () => subscriptionMod.showGateModal();
+const computeSubscriptionCountdown = (expiresAt) => subscriptionMod.computeCountdown(expiresAt);
+
+disableZoom();
+
+settingsInitPromise = bootLoadSettings()
+  .catch((err) => {
+    log({ settingsBootError: err?.message || err });
+    const fallback = { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
+    if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
+    return sessionStore.settingsState || fallback;
+  });
+settingsMod.initPromise = settingsInitPromise;
 
 initVersionInfoButton({
   buttonId: 'userMenuVersionBtn',
@@ -2801,650 +1898,8 @@ profileInitPromise
   })
   .catch(() => { });
 
-function getEffectiveSettingsState() {
-  return { ...DEFAULT_SETTINGS, ...(sessionStore.settingsState || {}) };
-}
 
-function sanitizeLogoutRedirectUrl(value) {
-  if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
-    if (!parsed.hostname) return '';
-    return parsed.toString();
-  } catch {
-    return '';
-  }
-}
 
-function logSettingsBootStart({ digest, convId, mkReady }) {
-  try {
-    console.info('[settings] boot:load:start ' + JSON.stringify({ digest, convId, mkReady }));
-  } catch { }
-}
-
-async function bootLoadSettings() {
-  const digest = getAccountDigest();
-  const convId = digest ? `settings-${String(digest).toUpperCase()}` : null;
-  const mkReady = !!getMkRaw();
-  logSettingsBootStart({ digest: digest || null, convId, mkReady });
-  if (!mkReady || !convId) {
-    const err = new Error('settings boot prerequisites missing');
-    try {
-      console.info('[settings] boot:load:done ' + JSON.stringify({
-        ok: false,
-        hasEnvelope: false,
-        reason: 'mk/account missing',
-        ts: null
-      }));
-    } catch { }
-    throw err;
-  }
-  try {
-    const { settings, meta } = await loadSettings({ returnMeta: true });
-    const info = meta || {};
-    try {
-      console.info('[settings] boot:load:done ' + JSON.stringify({
-        ok: info.ok !== false,
-        hasEnvelope: !!info.hasEnvelope,
-        urlMode: info.urlMode || null,
-        hasUrl: !!info.hasUrl,
-        urlLen: info.urlLen || 0,
-        ts: info.ts || null
-      }));
-    } catch { }
-    const applied = settings || { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
-    sessionStore.settingsState = applied;
-    try {
-      console.info('[settings] boot:apply ' + JSON.stringify({
-        autoLogoutRedirectMode: applied.autoLogoutRedirectMode || null,
-        hasCustomLogoutUrl: !!applied.autoLogoutCustomUrl
-      }));
-    } catch { }
-    return applied;
-  } catch (err) {
-    try {
-      console.info('[settings] boot:load:done ' + JSON.stringify({
-        ok: false,
-        hasEnvelope: true,
-        reason: err?.message || String(err),
-        ts: null
-      }));
-    } catch { }
-    throw err;
-  }
-}
-
-function isSettingsConversationId(convId) {
-  return typeof convId === 'string' && convId.startsWith('settings-');
-}
-
-async function handleSettingsSecureMessage() {
-  try {
-    const refreshed = await loadSettings();
-    if (refreshed && typeof refreshed === 'object') {
-      sessionStore.settingsState = refreshed;
-    }
-  } catch (err) {
-    log({ settingsHydrateError: err?.message || err });
-  }
-}
-
-function openCustomLogoutUrlModal({ initialValue = '', onSubmit, onCancel, invoker } = {}) {
-  const {
-    modal,
-    input,
-    saveBtn,
-    errorEl
-  } = getCustomLogoutElements();
-  if (!modal || !input || !saveBtn) return;
-  bindCustomLogoutHandlers();
-  customLogoutModalContext = { onSubmit, onCancel };
-  customLogoutInvoker = invoker || null;
-  input.value = initialValue || '';
-  input.placeholder = LOGOUT_REDIRECT_PLACEHOLDER;
-  if (errorEl) errorEl.textContent = '';
-  saveBtn.disabled = false;
-  saveBtn.textContent = '儲存';
-  modal.style.display = 'flex';
-  modal.setAttribute('aria-hidden', 'false');
-  setTimeout(() => {
-    try { customLogoutInput.focus({ preventScroll: true }); } catch { customLogoutInput.focus(); }
-  }, 30);
-}
-
-function closeCustomLogoutUrlModal() {
-  const { modal } = getCustomLogoutElements();
-  if (!modal) return;
-  modal.style.display = 'none';
-  modal.setAttribute('aria-hidden', 'true');
-  customLogoutModalContext = null;
-  const focusTarget = customLogoutInvoker;
-  customLogoutInvoker = null;
-  if (focusTarget && typeof focusTarget.focus === 'function') {
-    try { focusTarget.focus({ preventScroll: true }); } catch { focusTarget.focus(); }
-  }
-}
-
-function handleCustomLogoutCancel() {
-  const handler = customLogoutModalContext?.onCancel;
-  closeCustomLogoutUrlModal();
-  if (typeof handler === 'function') {
-    try { handler(); } catch (err) { log({ customLogoutCancelError: err?.message || err }); }
-  }
-}
-
-async function handleCustomLogoutSave() {
-  if (!customLogoutModalContext || typeof customLogoutModalContext.onSubmit !== 'function') return;
-  const { input, saveBtn, errorEl } = getCustomLogoutElements();
-  if (!input || !saveBtn) return;
-  const sanitized = sanitizeLogoutRedirectUrl(input.value || '');
-  if (!sanitized) {
-    if (errorEl) errorEl.textContent = '請輸入有效的 http/https 網址，例如 https://example.com。';
-    input.focus();
-    return;
-  }
-  if (errorEl) errorEl.textContent = '';
-  const originalLabel = saveBtn.textContent;
-  saveBtn.disabled = true;
-  saveBtn.textContent = '儲存中…';
-  try {
-    await customLogoutModalContext.onSubmit(sanitized);
-    closeCustomLogoutUrlModal();
-  } catch (err) {
-    log({ customLogoutSaveError: err?.message || err });
-    const message = err?.userMessage || err?.message || '儲存設定失敗，請稍後再試。';
-    if (errorEl) errorEl.textContent = message;
-  } finally {
-    saveBtn.disabled = false;
-    saveBtn.textContent = originalLabel;
-  }
-}
-
-function bindCustomLogoutHandlers() {
-  if (customLogoutHandlersBound) return;
-  const { cancelBtn, closeBtn, backdrop, saveBtn, input, errorEl } = getCustomLogoutElements();
-  if (!cancelBtn && !closeBtn && !backdrop && !saveBtn && !input) return;
-  cancelBtn?.addEventListener('click', (event) => {
-    event.preventDefault();
-    handleCustomLogoutCancel();
-  });
-  closeBtn?.addEventListener('click', (event) => {
-    event.preventDefault();
-    handleCustomLogoutCancel();
-  });
-  backdrop?.addEventListener('click', (event) => {
-    event.preventDefault();
-    handleCustomLogoutCancel();
-  });
-  saveBtn?.addEventListener('click', (event) => {
-    event.preventDefault();
-    handleCustomLogoutSave();
-  });
-  input?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      handleCustomLogoutSave();
-    }
-  });
-  input?.addEventListener('input', () => {
-    if (errorEl) errorEl.textContent = '';
-  });
-  customLogoutHandlersBound = true;
-}
-
-function getLogoutRedirectInfo(settings = getEffectiveSettingsState()) {
-  const state = settings || getEffectiveSettingsState();
-  const sanitized = sanitizeLogoutRedirectUrl(state.autoLogoutCustomUrl);
-  const isCustom = state.autoLogoutRedirectMode === 'custom' && !!sanitized;
-  return {
-    url: isCustom ? sanitized : LOGOUT_REDIRECT_DEFAULT_URL,
-    isCustom
-  };
-}
-
-function getLogoutRedirectTarget(settings) {
-  return getLogoutRedirectInfo(settings).url;
-}
-
-function showLogoutRedirectCover() {
-  if (!logoutRedirectCover) return;
-  logoutRedirectCover.classList.add('show');
-  logoutRedirectCover.setAttribute('aria-hidden', 'false');
-}
-
-function hideLogoutRedirectCover() {
-  if (!logoutRedirectCover) return;
-  logoutRedirectCover.classList.remove('show');
-  logoutRedirectCover.setAttribute('aria-hidden', 'true');
-}
-
-hideLogoutRedirectCover();
-
-function resetModalVariants(modalElement) {
-  modalElement.classList.remove(...MODAL_VARIANTS);
-}
-
-async function persistSettingsPatch(partial) {
-  const previous = getEffectiveSettingsState();
-  const next = { ...previous, ...partial };
-  const trackedKeys = ['showOnlineStatus', 'autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl'];
-  const noChange = trackedKeys.every((key) => previous[key] === next[key]);
-  if (noChange) return previous;
-  sessionStore.settingsState = next;
-  try {
-    const saved = await saveSettings(next);
-    sessionStore.settingsState = saved;
-    log({
-      settingsSaved: {
-        showOnlineStatus: saved.showOnlineStatus,
-        autoLogoutOnBackground: saved.autoLogoutOnBackground,
-        autoLogoutRedirectMode: saved.autoLogoutRedirectMode,
-        hasCustomLogoutUrl: !!sanitizeLogoutRedirectUrl(saved.autoLogoutCustomUrl)
-      }
-    });
-    return saved;
-  } catch (err) {
-    sessionStore.settingsState = previous;
-    throw err;
-  }
-}
-
-async function openSystemSettingsModal() {
-  let settings = sessionStore.settingsState;
-  if (!settings) {
-    try {
-      settings = await settingsInitPromise;
-    } catch (err) {
-      log({ settingsLoadError: err?.message || err });
-    }
-  }
-  const current = { ...DEFAULT_SETTINGS, ...(settings || {}) };
-
-  const modalElement = document.getElementById('modal');
-  const body = document.getElementById('modalBody');
-  const title = document.getElementById('modalTitle');
-  if (!modalElement || !body) return;
-
-  resetModalVariants(modalElement);
-  modalElement.classList.add('settings-modal');
-  if (title) title.textContent = '系統設定';
-
-  const customSummaryValue = sanitizeLogoutRedirectUrl(current.autoLogoutCustomUrl) || '尚未設定安全網址';
-  const autoLogoutDetailsVisible = !!current.autoLogoutOnBackground;
-
-  body.innerHTML = `
-    <div id="systemSettings" class="settings-form">
-      <div class="settings-item">
-        <div class="settings-text">
-          <strong>顯示我的上線狀態</strong>
-          <p>好友可以看到你目前是否在線上。</p>
-        </div>
-        <label class="settings-switch">
-          <input type="checkbox" id="settingsShowOnline" ${current.showOnlineStatus ? 'checked' : ''} />
-          <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-        </label>
-      </div>
-      <div class="settings-item">
-        <div class="settings-text">
-          <strong>當畫面不在前台時自動登出</strong>
-          <p>離開或縮小瀏覽器時自動清除登入狀態。</p>
-        </div>
-        <label class="settings-switch">
-          <input type="checkbox" id="settingsAutoLogout" ${current.autoLogoutOnBackground ? 'checked' : ''} />
-          <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-        </label>
-      </div>
-      <div id="settingsAutoLogoutOptions" class="settings-nested ${autoLogoutDetailsVisible ? '' : 'hidden'}" aria-hidden="${autoLogoutDetailsVisible ? 'false' : 'true'}">
-        <label class="settings-option">
-          <input type="radio" name="autoLogoutRedirect" id="settingsLogoutDefault" value="default" ${current.autoLogoutRedirectMode !== 'custom' ? 'checked' : ''} />
-        <div class="option-body">
-          <strong>預設登出頁面</strong>
-          <p>使用系統提供的安全登出頁面。</p>
-        </div>
-      </label>
-      <div class="settings-option custom-option">
-        <input type="radio" name="autoLogoutRedirect" id="settingsLogoutCustom" value="custom" ${current.autoLogoutRedirectMode === 'custom' ? 'checked' : ''} />
-        <div class="option-body">
-          <strong>客製化登出頁面</strong>
-          <p>導向指定的 HTTPS 網址，僅限受信任的頁面。</p>
-          <div class="custom-summary" id="settingsLogoutSummary">${escapeHtml(customSummaryValue)}</div>
-          <button type="button" class="settings-link subtle" id="settingsLogoutManage">設定網址</button>
-        </div>
-      </div>
-      </div>
-      <div class="settings-item">
-        <div class="settings-text">
-          <strong>變更密碼</strong>
-          <p>更新登入密碼，需輸入目前密碼與新密碼。</p>
-        </div>
-        <button type="button" class="settings-link" id="settingsChangePassword">變更</button>
-      </div>
-      <div class="settings-actions">
-        <button type="button" class="secondary" id="settingsClose">關閉</button>
-      </div>
-    </div>`;
-
-  openModal();
-
-  const closeBtn = body.querySelector('#settingsClose');
-  const showOnlineInput = body.querySelector('#settingsShowOnline');
-  const autoLogoutInput = body.querySelector('#settingsAutoLogout');
-  const autoLogoutOptionsSection = body.querySelector('#settingsAutoLogoutOptions');
-  const logoutDefaultRadio = body.querySelector('#settingsLogoutDefault');
-  const logoutCustomRadio = body.querySelector('#settingsLogoutCustom');
-  const logoutSummaryEl = body.querySelector('#settingsLogoutSummary');
-  const logoutManageBtn = body.querySelector('#settingsLogoutManage');
-  const changePasswordBtn = body.querySelector('#settingsChangePassword');
-  closeBtn?.addEventListener('click', () => {
-    closeModal();
-  }, { once: true });
-
-  changePasswordBtn?.addEventListener('click', (event) => {
-    event.preventDefault();
-    openChangePasswordModal().catch((err) => {
-      log({ changePasswordModalError: err?.message || err });
-      alert('目前無法開啟變更密碼視窗，請稍後再試。');
-    });
-  });
-
-  const setAutoLogoutOptionsVisibility = (visible) => {
-    if (!autoLogoutOptionsSection) return;
-    autoLogoutOptionsSection.classList.toggle('hidden', !visible);
-    autoLogoutOptionsSection.setAttribute('aria-hidden', visible ? 'false' : 'true');
-  };
-
-  const syncLogoutRadios = () => {
-    const state = getEffectiveSettingsState();
-    if (logoutDefaultRadio) logoutDefaultRadio.checked = state.autoLogoutRedirectMode !== 'custom';
-    if (logoutCustomRadio) logoutCustomRadio.checked = state.autoLogoutRedirectMode === 'custom';
-  };
-
-  const syncLogoutSaveButton = () => {
-    const { saveBtn } = getCustomLogoutElements();
-    if (!saveBtn) return;
-    const state = getEffectiveSettingsState();
-    const url = sanitizeLogoutRedirectUrl(state.autoLogoutCustomUrl);
-    const enabled = !!url && state.autoLogoutRedirectMode === 'custom';
-    saveBtn.disabled = !enabled;
-  };
-
-  const refreshLogoutSummary = () => {
-    if (!logoutSummaryEl) return;
-    const saved = sanitizeLogoutRedirectUrl(getEffectiveSettingsState().autoLogoutCustomUrl);
-    logoutSummaryEl.textContent = saved || '尚未設定安全網址';
-  };
-
-  const launchCustomLogoutModal = (invoker) => {
-    openCustomLogoutUrlModal({
-      initialValue: sanitizeLogoutRedirectUrl(getEffectiveSettingsState().autoLogoutCustomUrl) || LOGOUT_REDIRECT_SUGGESTIONS[0] || '',
-      invoker,
-      onSubmit: async (url) => {
-        await persistSettingsPatch({ autoLogoutCustomUrl: url, autoLogoutRedirectMode: 'custom' });
-        refreshLogoutSummary();
-        syncLogoutRadios();
-      },
-      onCancel: () => {
-        refreshLogoutSummary();
-        syncLogoutRadios();
-      }
-    });
-  };
-
-  setAutoLogoutOptionsVisibility(autoLogoutDetailsVisible);
-  syncLogoutRadios();
-  refreshLogoutSummary();
-
-  logoutManageBtn?.addEventListener('click', (event) => {
-    event.preventDefault();
-    if (logoutCustomRadio) logoutCustomRadio.checked = true;
-    launchCustomLogoutModal(event.currentTarget);
-  });
-
-  logoutDefaultRadio?.addEventListener('change', async () => {
-    if (!logoutDefaultRadio.checked) return;
-    logoutDefaultRadio.disabled = true;
-    logoutCustomRadio && (logoutCustomRadio.disabled = true);
-    try {
-      await persistSettingsPatch({ autoLogoutRedirectMode: 'default', autoLogoutCustomUrl: null });
-      refreshLogoutSummary();
-    } catch (err) {
-      log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' });
-      alert('儲存設定失敗，請稍後再試。');
-    } finally {
-      logoutDefaultRadio.disabled = false;
-      if (logoutCustomRadio) logoutCustomRadio.disabled = false;
-      syncLogoutRadios();
-    }
-  });
-
-  logoutCustomRadio?.addEventListener('change', (event) => {
-    if (!logoutCustomRadio.checked) return;
-    if (event && event.isTrusted === false) return;
-    launchCustomLogoutModal(event.currentTarget);
-  });
-
-  const registerToggle = (input, key) => {
-    if (!input) return;
-    input.addEventListener('change', async () => {
-      const previous = getEffectiveSettingsState();
-      const nextValue = !!input.checked;
-      if (previous[key] === nextValue) return;
-      input.disabled = true;
-      try {
-        await persistSettingsPatch({ [key]: nextValue });
-        if (key === 'autoLogoutOnBackground') {
-          _autoLoggedOut = false;
-        }
-      } catch (err) {
-        log({ settingsAutoSaveError: err?.message || err });
-        alert('儲存設定失敗，請稍後再試。');
-        input.checked = !!previous[key];
-      } finally {
-        input.disabled = false;
-      }
-    });
-  };
-
-  registerToggle(showOnlineInput, 'showOnlineStatus');
-  if (autoLogoutInput) {
-    autoLogoutInput.addEventListener('change', async () => {
-      const previous = getEffectiveSettingsState();
-      const prevValue = !!previous.autoLogoutOnBackground;
-      const nextValue = !!autoLogoutInput.checked;
-      if (prevValue === nextValue) {
-        setAutoLogoutOptionsVisibility(nextValue);
-        return;
-      }
-      autoLogoutInput.disabled = true;
-      setAutoLogoutOptionsVisibility(nextValue);
-      try {
-        await persistSettingsPatch({ autoLogoutOnBackground: nextValue });
-        _autoLoggedOut = false;
-      } catch (err) {
-        log({ settingsAutoSaveError: err?.message || err });
-        alert('儲存設定失敗，請稍後再試。');
-        autoLogoutInput.checked = prevValue;
-      } finally {
-        autoLogoutInput.disabled = false;
-        const state = getEffectiveSettingsState();
-        setAutoLogoutOptionsVisibility(!!state.autoLogoutOnBackground);
-        syncLogoutRadios();
-        syncLogoutSaveButton();
-      }
-    });
-  }
-}
-
-async function openChangePasswordModal() {
-  const modalElement = document.getElementById('modal');
-  const body = document.getElementById('modalBody');
-  const title = document.getElementById('modalTitle');
-  if (!modalElement || !body) return;
-
-  resetModalVariants(modalElement);
-  modalElement.classList.add('change-password-modal');
-  if (title) title.textContent = '變更密碼';
-
-  body.innerHTML = `
-    <form id="changePasswordForm" class="change-password-form">
-      <label for="currentPassword">
-        目前密碼
-        <input id="currentPassword" type="password" autocomplete="current-password" required />
-      </label>
-      <label for="newPassword">
-        新密碼
-        <input id="newPassword" type="password" autocomplete="new-password" minlength="6" required />
-      </label>
-      <label for="confirmPassword">
-        確認新密碼
-        <input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" required />
-      </label>
-      <div id="changePasswordStatus" class="change-password-status" role="status" aria-live="polite"></div>
-      <div class="change-password-actions">
-        <button type="button" class="secondary" id="changePasswordCancel">取消</button>
-        <button type="submit" class="primary" id="changePasswordSubmit">更新密碼</button>
-      </div>
-    </form>
-  `;
-
-  openModal();
-
-  const form = body.querySelector('#changePasswordForm');
-  const currentInput = body.querySelector('#currentPassword');
-  const newInput = body.querySelector('#newPassword');
-  const confirmInput = body.querySelector('#confirmPassword');
-  const statusEl = body.querySelector('#changePasswordStatus');
-  const cancelBtn = body.querySelector('#changePasswordCancel');
-  const submitBtn = body.querySelector('#changePasswordSubmit');
-
-  const setStatus = (text, { success = false } = {}) => {
-    if (!statusEl) return;
-    statusEl.textContent = text || '';
-    statusEl.classList.toggle('success', !!text && success);
-  };
-
-  const setSubmitting = (next) => {
-    const disabled = !!next;
-    [currentInput, newInput, confirmInput].forEach((input) => {
-      if (input) input.disabled = disabled;
-    });
-    if (cancelBtn) cancelBtn.disabled = disabled;
-    if (submitBtn) {
-      submitBtn.disabled = disabled;
-      if (disabled) {
-        submitBtn.dataset.prevText = submitBtn.textContent || '更新密碼';
-        submitBtn.textContent = '更新中...';
-      } else if (submitBtn.dataset.prevText) {
-        submitBtn.textContent = submitBtn.dataset.prevText;
-        delete submitBtn.dataset.prevText;
-      }
-    }
-  };
-
-  form?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const currentPassword = currentInput?.value || '';
-    const newPassword = newInput?.value || '';
-    const confirmPassword = confirmInput?.value || '';
-    setStatus('');
-
-    if (!currentPassword) {
-      setStatus('請輸入目前密碼。');
-      currentInput?.focus();
-      return;
-    }
-    if (!newPassword || newPassword.length < 6) {
-      setStatus('新密碼至少需 6 個字元。');
-      newInput?.focus();
-      return;
-    }
-    if (newPassword === currentPassword) {
-      setStatus('新密碼需與目前密碼不同。');
-      newInput?.focus();
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setStatus('兩次輸入的密碼不一致。');
-      confirmInput?.focus();
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      await changeAccountPassword(currentPassword, newPassword);
-      setStatus('密碼已更新，下次登入請使用新密碼。', { success: true });
-      form?.reset();
-      setTimeout(() => {
-        closeModal();
-      }, 1800);
-    } catch (err) {
-      const message = err?.userMessage || err?.message || '更新密碼失敗，請稍後再試。';
-      setStatus(message);
-    } finally {
-      setSubmitting(false);
-    }
-  });
-
-  cancelBtn?.addEventListener('click', (event) => {
-    event.preventDefault();
-    closeModal();
-  }, { once: true });
-}
-
-async function changeAccountPassword(currentPassword, newPassword) {
-  const wrapped = getWrappedMK();
-  if (!wrapped) {
-    const err = new Error('目前無法取得主金鑰，請重新登入後再試。');
-    err.userMessage = err.message;
-    throw err;
-  }
-  const mk = await unwrapMKWithPasswordArgon2id(currentPassword, wrapped);
-  if (!mk) {
-    const err = new Error('目前的密碼不正確，請重新輸入。');
-    err.userMessage = err.message;
-    throw err;
-  }
-  const newWrapped = await wrapMKWithPasswordArgon2id(newPassword, mk);
-  const accountToken = getAccountToken();
-  const accountDigest = getAccountDigest();
-  const serverId = getOpaqueServerId();
-  if (!accountToken || !accountDigest) {
-    const err = new Error('帳號資訊不足，請重新登入後再試。');
-    err.userMessage = err.message;
-    throw err;
-  }
-  const { r, data } = await mkUpdate({ accountToken, accountDigest, wrapped_mk: newWrapped });
-  if (r.status !== 204) {
-    const userMessage = typeof data === 'object' && data?.message
-      ? data.message
-      : '更新密碼失敗，請稍後再試。';
-    const err = new Error(userMessage);
-    err.userMessage = userMessage;
-    throw err;
-  }
-  try {
-    await opaqueRegister({
-      password: newPassword,
-      accountDigest,
-      serverId
-    });
-    log({ changePasswordOpaqueRegister: { ok: true, serverId: !!serverId } });
-  } catch (err) {
-    const message = err?.message || '更新登入驗證資料失敗，請稍後再試。';
-    const error = new Error(message);
-    error.userMessage = message;
-    throw error;
-  }
-  log({ changePasswordUpdateStatus: r.status });
-  setWrappedMK(newWrapped);
-  setMkRaw(mk);
-  emitMkSetTrace('app-mobile:change-password', mk);
-  log({ passwordChangedAt: Date.now() });
-  return true;
-}
 
 function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出') {
   if (logoutInProgress || _autoLoggedOut) {
@@ -4006,21 +2461,6 @@ if (!wsMonitorTimer) {
   }, 5000);
 }
 
-function updateConnectionIndicator(state) {
-  if (!connectionIndicator) return;
-  connectionIndicator.classList.remove('online', 'connecting');
-  if (state === 'online') {
-    connectionIndicator.classList.add('online');
-    connectionIndicator.innerHTML = `<span class="dot" aria-hidden="true"></span>在線`;
-    return;
-  }
-  if (state === 'connecting') {
-    connectionIndicator.classList.add('connecting');
-    connectionIndicator.innerHTML = `<span class="dot" aria-hidden="true"></span>連線中…`;
-    return;
-  }
-  connectionIndicator.innerHTML = `<span class="dot" aria-hidden="true"></span>離線`;
-}
 
 function isForensicsWsSecureMessage(type) {
   return type === 'secure-message' || type === 'message-new';
