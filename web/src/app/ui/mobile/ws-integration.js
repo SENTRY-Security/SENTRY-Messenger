@@ -35,18 +35,32 @@ export function createWsIntegration({ deps }) {
     isHydrationComplete
   } = deps;
 
+  // --- Tuning constants ---
+  const RECONNECT_BASE_DELAY = 2000;
+  const RECONNECT_MAX_DELAY  = 30000;
+  const HEARTBEAT_INTERVAL   = 30000;   // send ping every 30s
+  const HEARTBEAT_TIMEOUT    = 45000;   // no pong within 45s → dead
+  const CONNECT_TIMEOUT      = 15000;   // CONNECTING state max age
+  const PENDING_QUEUE_LIMIT  = 200;
+
+  // --- Connection state ---
   let wsConn = null;
   let wsReconnectTimer = null;
   let wsAuthTokenInfo = null;
   const pendingMessages = [];
   let monitorTimer = null;
+  let reconnectAttempts = 0;
+  let connectStartedAt = 0;
+  let lastPongAt = 0;
+  let heartbeatTimer = null;
+  let connecting = false;
 
   // --- Auth ---
 
   async function getAuthToken({ force = false } = {}) {
     const accountDigest = getAccountDigest();
     if (!accountDigest) throw new Error('缺少 accountDigest');
-    const nowSec = Date.now();
+    const nowSec = Math.floor(Date.now() / 1000);
     if (!force && wsAuthTokenInfo && wsAuthTokenInfo.token) {
       const exp = Number(wsAuthTokenInfo.expiresAt || 0);
       if (!exp || exp - nowSec > 30) {
@@ -70,13 +84,19 @@ export function createWsIntegration({ deps }) {
 
   // --- Reconnect ---
 
-  function scheduleReconnect(delay = 2000) {
+  function scheduleReconnect(baseDelay = RECONNECT_BASE_DELAY) {
     if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    const backoff = Math.min(baseDelay * Math.pow(2, reconnectAttempts), RECONNECT_MAX_DELAY);
+    const jitter = Math.floor(Math.random() * backoff * 0.3);
+    const delay = backoff + jitter;
+    reconnectAttempts++;
+    log({ wsScheduleReconnect: true, attempt: reconnectAttempts, delay });
     wsReconnectTimer = setTimeout(() => {
       wsReconnectTimer = null;
+      connecting = true;
       connect().catch((err) => {
         log({ wsReconnectError: err?.message || err });
-      });
+      }).finally(() => { connecting = false; });
     }, delay);
   }
 
@@ -125,6 +145,7 @@ export function createWsIntegration({ deps }) {
     if (wsDebugEnabled) {
       log({ wsConnectUrl: wsUrl });
     }
+    connectStartedAt = Date.now();
     const ws = new WebSocket(wsUrl);
     wsConn = ws;
     updateConnectionIndicator('connecting');
@@ -134,6 +155,9 @@ export function createWsIntegration({ deps }) {
         log({ wsState: 'open' });
       }
       wsReconnectTimer = null;
+      connecting = false;
+      reconnectAttempts = 0;
+      startHeartbeat();
       try {
         ws.send(JSON.stringify({ type: 'auth', accountDigest, token: tokenInfo.token }));
       } catch (err) {
@@ -197,6 +221,10 @@ export function createWsIntegration({ deps }) {
 
   function send(payload) {
     if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+      if (pendingMessages.length >= PENDING_QUEUE_LIMIT) {
+        pendingMessages.shift();
+        log({ wsPendingQueueOverflow: true, limit: PENDING_QUEUE_LIMIT });
+      }
       pendingMessages.push(payload);
       ensure();
       return false;
@@ -217,7 +245,7 @@ export function createWsIntegration({ deps }) {
   // --- Ensure / Monitor ---
 
   function ensure() {
-    if (wsConn || wsReconnectTimer) return;
+    if (wsConn || wsReconnectTimer || connecting) return;
     const digest = getAccountDigest();
     if (!digest) {
       log({ wsSkip: 'missing_account_digest' });
@@ -228,19 +256,54 @@ export function createWsIntegration({ deps }) {
       return;
     }
     log({ wsEnsure: true, state: wsConn?.readyState ?? 'none' });
+    connecting = true;
     connect().catch((err) => {
       log({ wsConnectError: err?.message || err });
-    });
+    }).finally(() => { connecting = false; });
   }
 
   function startMonitor(intervalMs = 5000) {
     if (monitorTimer) return;
     monitorTimer = setInterval(() => {
+      // Detect hung CONNECTING state
+      if (wsConn && wsConn.readyState === WebSocket.CONNECTING) {
+        if (connectStartedAt && Date.now() - connectStartedAt > CONNECT_TIMEOUT) {
+          log({ wsConnectTimeout: true, elapsed: Date.now() - connectStartedAt });
+          try { wsConn.close(); } catch { }
+          wsConn = null;
+          connecting = false;
+          scheduleReconnect();
+        }
+        return;
+      }
       if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
         log({ wsMonitorReconnect: true, readyState: wsConn?.readyState ?? null });
         ensure();
       }
     }, intervalMs);
+  }
+
+  // --- Heartbeat (application-level ping/pong) ---
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    lastPongAt = Date.now();
+    heartbeatTimer = setInterval(() => {
+      if (!wsConn || wsConn.readyState !== WebSocket.OPEN) return;
+      if (lastPongAt && Date.now() - lastPongAt > HEARTBEAT_TIMEOUT) {
+        log({ wsHeartbeatTimeout: true, elapsed: Date.now() - lastPongAt });
+        try { wsConn.close(); } catch { }
+        return;  // onclose will trigger reconnect
+      }
+      try { wsConn.send(JSON.stringify({ type: 'ping' })); } catch { }
+    }, HEARTBEAT_INTERVAL);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
   }
 
   // --- Close / Cleanup (for secureLogout) ---
@@ -249,6 +312,9 @@ export function createWsIntegration({ deps }) {
     try { wsConn?.close(); } catch { }
     wsConn = null;
     wsAuthTokenInfo = null;
+    connecting = false;
+    reconnectAttempts = 0;
+    connectStartedAt = 0;
     if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
@@ -257,6 +323,7 @@ export function createWsIntegration({ deps }) {
       clearInterval(monitorTimer);
       monitorTimer = null;
     }
+    stopHeartbeat();
     pendingMessages.length = 0;
   }
 
@@ -386,6 +453,10 @@ export function createWsIntegration({ deps }) {
   function handleMessage(msg) {
     const type = msg?.type;
     if (type === 'hello') return;
+    if (type === 'pong') {
+      lastPongAt = Date.now();
+      return;
+    }
     if (type === 'auth') {
       if (msg?.ok) updateConnectionIndicator('online');
       else updateConnectionIndicator('offline');

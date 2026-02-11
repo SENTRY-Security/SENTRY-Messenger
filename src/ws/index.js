@@ -420,6 +420,10 @@ function handleClientMessage(ws, data) {
     ws.send(JSON.stringify({ type: 'auth', ok: true, exp: verification.payload.exp }));
     return;
   }
+  if (msg.type === 'ping') {
+    try { ws.send(JSON.stringify({ type: 'pong', ts: Date.now() })); } catch { }
+    return;
+  }
   if (isCallSignalType(msg.type)) {
     return handleCallSignal(ws, msg);
   }
