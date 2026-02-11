@@ -52,5 +52,12 @@ export {
   isLocalAudioMuted,
   setLocalAudioMuted,
   isRemoteAudioMuted,
-  setRemoteAudioMuted
+  setRemoteAudioMuted,
+  isLocalVideoMuted,
+  setLocalVideoMuted,
+  getLocalStream,
+  setRemoteVideoElement,
+  setLocalVideoElement,
+  toggleLocalVideo,
+  switchCamera
 } from './media-session.js';

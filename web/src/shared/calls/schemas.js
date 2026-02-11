@@ -47,7 +47,9 @@ const DEFAULT_MEDIA_DESCRIPTOR = Object.freeze({
 
 const DEFAULT_MEDIA_CONTROLS = Object.freeze({
   audioMuted: false,
-  remoteMuted: false
+  remoteMuted: false,
+  videoMuted: false,
+  videoEnabled: false
 });
 
 export const DEFAULT_CALL_MEDIA_CAPABILITY = Object.freeze({

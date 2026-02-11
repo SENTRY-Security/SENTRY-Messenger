@@ -430,7 +430,8 @@ export class ConversationListController extends BaseController {
                                 text = `[檔案] ${payload.filename || payload.name || '附件'}`;
                             }
                         } else if (type === 'call_log' || type === 'call-log') {
-                            text = '[通話紀錄]';
+                            const clKind = payload?.kind || previewMsg?.callLog?.kind || '';
+                            text = clKind === 'video' ? '[視訊通話]' : '[語音通話]';
                         } else if (type === 'contact-share') {
                             text = '[系統] 您已與對方成為好友';
                         } else {
@@ -495,7 +496,8 @@ export class ConversationListController extends BaseController {
                 text = `[檔案] ${lastMsg.media.name || '附件'}`;
             }
         } else if (msgType === 'call-log' || msgType === 'call_log') {
-            text = '[通話紀錄]';
+            const clKind = lastMsg?.callLog?.kind || lastMsg?.kind || '';
+            text = clKind === 'video' ? '[視訊通話]' : '[語音通話]';
         } else if (msgType === 'contact-share') {
             text = '[系統] 您已與對方成為好友';
         } else {

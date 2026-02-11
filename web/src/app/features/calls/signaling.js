@@ -3,6 +3,7 @@ import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '.
 import { emitCallEvent, CALL_EVENT } from './events.js';
 import {
   CALL_SESSION_STATUS,
+  CALL_REQUEST_KIND,
   markIncomingCall,
   getCallSessionSnapshot,
   setCallPeerDeviceId,
@@ -146,6 +147,7 @@ function handleIncomingInvite(msg) {
       || metadata.name
       || null
   });
+  const inviteMode = String(msg.mode || payload.mode || '').toLowerCase();
   const result = markIncomingCall({
     callId: msg.callId,
     peerAccountDigest: fromAccountDigest,
@@ -153,7 +155,8 @@ function handleIncomingInvite(msg) {
     peerDisplayName: peerProfile.nickname || peerProfile.placeholderName || null,
     peerAvatarUrl: peerProfile.avatarUrl || null,
     envelope,
-    traceId: msg.traceId
+    traceId: msg.traceId,
+    kind: inviteMode === 'video' ? CALL_REQUEST_KIND.VIDEO : CALL_REQUEST_KIND.VOICE
   });
   if (!result?.ok) {
     log({ callIncomingInviteIgnored: true, reason: result?.error || 'state-conflict' });

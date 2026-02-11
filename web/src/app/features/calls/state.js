@@ -506,7 +506,8 @@ export function markIncomingCall({
   peerAvatarUrl,
   peerDeviceId = null,
   envelope,
-  traceId
+  traceId,
+  kind = CALL_REQUEST_KIND.VOICE
 } = {}) {
   const digest = normalizeAccountDigest(peerAccountDigest);
   const deviceId = normalizePeerDeviceId(peerDeviceId);
@@ -532,6 +533,7 @@ export function markIncomingCall({
   setSessionPeerIdentity({ peerAccountDigest: digest, peerDeviceId: deviceId, callId: activeSession.callId || callId || null });
   activeSession.remoteDisplayName = profile.placeholderName || resolvedName;
   activeSession.remoteAvatarUrl = resolvedAvatar;
+  activeSession.kind = normalizeKind(kind);
   activeSession.traceId = traceId || createTraceId();
   activeSession.requestedAt = Date.now();
   resetMediaState();

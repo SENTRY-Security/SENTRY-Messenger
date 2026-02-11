@@ -99,7 +99,8 @@ export class CallLogController extends BaseController {
             outcome: entry.outcome,
             durationSeconds: entry.durationSeconds,
             authorRole: entry.direction || CALL_SESSION_DIRECTION.OUTGOING,
-            reason: entry.reason || null
+            reason: entry.reason || null,
+            kind: entry.kind || 'voice'
         };
         const viewerRole = resolveViewerRole(callLog.authorRole, messageDirection);
         const { label, subLabel } = describeCallLogForViewer(callLog, viewerRole);
@@ -246,6 +247,7 @@ export class CallLogController extends BaseController {
             durationSeconds,
             outcome,
             reason: normalizedReason || null,
+            kind: session.kind || 'voice',
             startedAt,
             endedAt
         };
@@ -312,6 +314,7 @@ export class CallLogController extends BaseController {
                 durationSeconds,
                 direction: entry.direction,
                 reason: reason || null,
+                kind: entry.kind || 'voice',
                 ts: entry.ts,
                 startedAt,
                 endedAt,

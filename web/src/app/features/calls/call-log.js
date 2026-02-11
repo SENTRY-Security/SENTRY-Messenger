@@ -38,12 +38,14 @@ export function normalizeCallLogPayload(payload = {}, meta = {}) {
   const outcomeSource = safe.outcome || fallback('call_outcome');
   const directionSource = safe.direction || fallback('call_direction');
   const roleSource = safe.authorRole || fallback('call_role');
+  const kindSource = safe.kind || fallback('call_kind') || 'voice';
   return {
     callId: safe.callId || fallback('call_id') || null,
     outcome: outcomeSource || CALL_LOG_OUTCOME.FAILED,
     durationSeconds: Number.isFinite(Number(durationSource)) ? Number(durationSource) : 0,
     authorRole: normalizeRole(roleSource || directionSource || CALL_SESSION_DIRECTION.OUTGOING),
-    reason: safe.reason || fallback('call_reason') || null
+    reason: safe.reason || fallback('call_reason') || null,
+    kind: kindSource === 'video' ? 'video' : 'voice'
   };
 }
 
@@ -59,12 +61,13 @@ export function describeCallLogForViewer(callLog, viewerRole) {
   const outcome = callLog?.outcome || CALL_LOG_OUTCOME.FAILED;
   const durationSeconds = Number(callLog?.durationSeconds) || 0;
   const reason = callLog?.reason || null;
-  let label = '語音通話';
+  const callTypeLabel = callLog?.kind === 'video' ? '視訊通話' : '語音通話';
+  let label = callTypeLabel;
   let subLabel = null;
   switch (outcome) {
     case CALL_LOG_OUTCOME.SUCCESS: {
       const durationText = formatCallLogDuration(durationSeconds);
-      label = `語音通話 ${durationText}`;
+      label = `${callTypeLabel} ${durationText}`;
       subLabel = role === CALL_SESSION_DIRECTION.OUTGOING ? '我方撥出' : '對方撥出';
       break;
     }

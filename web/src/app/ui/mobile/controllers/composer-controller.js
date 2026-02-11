@@ -165,7 +165,7 @@ export class ComposerController extends BaseController {
             return;
         }
 
-        const actionType = type === 'video' ? 'voice' : type; // Video temporarily disabled
+        const actionType = type;
         const contactEntry = this.sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
         const fallbackName = `好友 ${state.activePeerDigest.slice(-4)}`;
         const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;

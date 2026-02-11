@@ -17,7 +17,7 @@ import {
   supportsInsertableStreams
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
-import { CALL_SESSION_STATUS } from './state.js';
+import { CALL_SESSION_STATUS, CALL_REQUEST_KIND } from './state.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccountDigest } from '../../core/store.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
@@ -37,7 +37,16 @@ let unsubscribers = [];
 let awaitingOfferAfterAccept = false;
 let localAudioMuted = false;
 let remoteAudioMuted = false;
+let localVideoMuted = false;
+let remoteVideoEl = null;
+let localVideoEl = null;
+let cameraFacing = 'user';
 let pendingRemoteCandidates = [];
+
+function isVideoCall() {
+  const session = getCallSessionSnapshot();
+  return session?.kind === CALL_REQUEST_KIND.VIDEO;
+}
 
 function requireLocalDeviceId() {
   const id = ensureDeviceId();
@@ -258,6 +267,118 @@ export function setRemoteAudioMuted(muted = false) {
   applyRemoteAudioMuteState();
 }
 
+export function isLocalVideoMuted() {
+  return localVideoMuted;
+}
+
+export function setLocalVideoMuted(muted = false) {
+  localVideoMuted = !!muted;
+  applyLocalVideoMuteState();
+}
+
+export function getLocalStream() {
+  return localStream;
+}
+
+export function setRemoteVideoElement(el) {
+  remoteVideoEl = el || null;
+  if (remoteVideoEl && remoteStream) {
+    try {
+      remoteVideoEl.srcObject = remoteStream;
+      const maybePlay = remoteVideoEl.play();
+      if (maybePlay && typeof maybePlay.catch === 'function') {
+        maybePlay.catch(() => {});
+      }
+    } catch {}
+  }
+}
+
+export function setLocalVideoElement(el) {
+  localVideoEl = el || null;
+  if (localVideoEl && localStream) {
+    try {
+      localVideoEl.srcObject = localStream;
+      localVideoEl.muted = true;
+      const maybePlay = localVideoEl.play();
+      if (maybePlay && typeof maybePlay.catch === 'function') {
+        maybePlay.catch(() => {});
+      }
+    } catch {}
+  }
+}
+
+export async function toggleLocalVideo(enabled) {
+  if (!peerConnection || !localStream) return;
+  const videoSender = peerConnection.getSenders().find((s) => s.track?.kind === 'video' || (!s.track && s._wasVideo));
+  if (enabled) {
+    try {
+      const constraints = { facingMode: cameraFacing, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } };
+      const camStream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+      const newTrack = camStream.getVideoTracks()[0];
+      if (!newTrack) return;
+      if (videoSender) {
+        await videoSender.replaceTrack(newTrack);
+      } else {
+        const sender = peerConnection.addTrack(newTrack, localStream);
+        setupInsertableStreamsForSender(sender, newTrack);
+      }
+      localStream.getVideoTracks().forEach((t) => { try { t.stop(); } catch {} });
+      localStream.addTrack(newTrack);
+      localVideoMuted = false;
+      if (localVideoEl) {
+        localVideoEl.srcObject = localStream;
+        try { localVideoEl.play(); } catch {}
+      }
+      updateCallMedia({ controls: { videoEnabled: true, videoMuted: false } });
+    } catch (err) {
+      log({ callToggleVideoError: err?.message || err });
+      showToast?.('無法啟動攝影機', { variant: 'error' });
+    }
+  } else {
+    localStream.getVideoTracks().forEach((track) => {
+      track.stop();
+      localStream.removeTrack(track);
+    });
+    if (videoSender) {
+      try {
+        await videoSender.replaceTrack(null);
+        videoSender._wasVideo = true;
+      } catch {}
+    }
+    localVideoMuted = true;
+    updateCallMedia({ controls: { videoEnabled: false, videoMuted: true } });
+  }
+}
+
+export async function switchCamera() {
+  if (!peerConnection || !localStream) return;
+  const nextFacing = cameraFacing === 'user' ? 'environment' : 'user';
+  try {
+    const constraints = { facingMode: nextFacing, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } };
+    const camStream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+    const newTrack = camStream.getVideoTracks()[0];
+    if (!newTrack) return;
+    const videoSender = peerConnection.getSenders().find((s) => s.track?.kind === 'video');
+    if (videoSender) {
+      await videoSender.replaceTrack(newTrack);
+      setupInsertableStreamsForSender(videoSender, newTrack);
+    }
+    localStream.getVideoTracks().forEach((t) => {
+      try { t.stop(); } catch {}
+      localStream.removeTrack(t);
+    });
+    localStream.addTrack(newTrack);
+    cameraFacing = nextFacing;
+    if (localVideoEl) {
+      localVideoEl.srcObject = localStream;
+      try { localVideoEl.play(); } catch {}
+    }
+  } catch (err) {
+    log({ callSwitchCameraError: err?.message || err });
+    showToast?.('無法切換攝影機', { variant: 'error' });
+  }
+}
+
 function ensureRemoteAudioElement() {
   if (typeof document === 'undefined') return null;
   remoteAudioEl = document.getElementById('callRemoteAudio');
@@ -369,16 +490,46 @@ async function attachLocalMedia() {
       }
     }
     if (!localStream) {
-      const freshStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const wantVideo = isVideoCall();
+      const videoConstraints = wantVideo
+        ? { facingMode: cameraFacing, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
+        : false;
+      let freshStream;
+      try {
+        freshStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: videoConstraints });
+      } catch (mediaErr) {
+        if (wantVideo) {
+          log({ callMediaCameraFallback: mediaErr?.message || mediaErr });
+          showToast?.('無法存取攝影機，改為語音通話', { variant: 'warning' });
+          freshStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } else {
+          throw mediaErr;
+        }
+      }
       setCachedMicrophoneStream(freshStream);
-      const tracks = cloneLiveAudioTracks(freshStream);
-      localStream = tracks.length ? new MediaStream(tracks) : freshStream;
+      if (wantVideo) {
+        localStream = freshStream;
+      } else {
+        const tracks = cloneLiveAudioTracks(freshStream);
+        localStream = tracks.length ? new MediaStream(tracks) : freshStream;
+      }
     }
     localStream.getTracks().forEach((track) => {
       const sender = peerConnection.addTrack(track, localStream);
       setupInsertableStreamsForSender(sender, track);
     });
     applyLocalAudioMuteState();
+    if (localVideoEl && localStream.getVideoTracks().length) {
+      try {
+        localVideoEl.srcObject = localStream;
+        localVideoEl.muted = true;
+        const maybePlay = localVideoEl.play();
+        if (maybePlay && typeof maybePlay.catch === 'function') {
+          maybePlay.catch(() => {});
+        }
+      } catch {}
+    }
+    updateCallMedia({ controls: { videoEnabled: localStream.getVideoTracks().length > 0 } });
   } catch (err) {
     showToast?.('無法存取麥克風：' + (err?.message || err), { variant: 'error' });
     log({ callMediaMicError: err?.message || err });
@@ -425,7 +576,8 @@ async function buildRtcConfiguration() {
 async function createAndSendOffer() {
   if (!peerConnection) return;
   try {
-    const offer = await peerConnection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
+    const wantVideo = isVideoCall();
+    const offer = await peerConnection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: wantVideo });
     await peerConnection.setLocalDescription(offer);
     awaitingAnswer = true;
     if (!sendSignal) {
@@ -635,6 +787,12 @@ function cleanupPeerConnection(reason) {
       applyRemoteAudioElementStyles(remoteAudioEl);
     } catch { }
   }
+  if (remoteVideoEl) {
+    try { remoteVideoEl.srcObject = null; } catch { }
+  }
+  if (localVideoEl) {
+    try { localVideoEl.srcObject = null; } catch { }
+  }
   resetControlStates();
   if (reason) {
     log({ callMediaCleanup: reason });
@@ -650,6 +808,17 @@ function attachRemoteStream(stream) {
     attemptRemoteAudioPlayback();
   } catch (err) {
     log({ callMediaAttachError: err?.message || err });
+  }
+  if (remoteVideoEl && stream) {
+    try {
+      remoteVideoEl.srcObject = stream;
+      const maybePlay = remoteVideoEl.play();
+      if (maybePlay && typeof maybePlay.catch === 'function') {
+        maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
+      }
+    } catch (err) {
+      log({ callMediaVideoAttachError: err?.message || err });
+    }
   }
 }
 
@@ -731,6 +900,11 @@ function applyTransformStream(target, transformStream) {
       readable.pipeThrough(transformStream).pipeTo(writable).catch((err) => {
         log({ callMediaPipeError: err?.message || err });
       });
+    } else if (typeof target.createEncodedVideoStreams === 'function') {
+      const { readable, writable } = target.createEncodedVideoStreams();
+      readable.pipeThrough(transformStream).pipeTo(writable).catch((err) => {
+        log({ callMediaPipeError: err?.message || err });
+      });
     } else if (typeof target.createEncodedAudioStreams === 'function') {
       const { readable, writable } = target.createEncodedAudioStreams();
       readable.pipeThrough(transformStream).pipeTo(writable).catch((err) => {
@@ -776,6 +950,21 @@ function applyLocalAudioMuteState() {
   });
 }
 
+function applyLocalVideoMuteState() {
+  if (localStream) {
+    try {
+      localStream.getVideoTracks().forEach((track) => {
+        track.enabled = !localVideoMuted;
+      });
+    } catch {}
+  }
+  updateCallMedia({
+    controls: {
+      videoMuted: localVideoMuted
+    }
+  });
+}
+
 function applyRemoteAudioMuteState() {
   if (remoteAudioEl) {
     try {
@@ -798,12 +987,18 @@ function applyRemoteAudioMuteState() {
 function resetControlStates() {
   const hadLocalMute = localAudioMuted;
   const hadRemoteMute = remoteAudioMuted;
+  const hadVideoMute = localVideoMuted;
   localAudioMuted = false;
   remoteAudioMuted = false;
+  localVideoMuted = false;
+  cameraFacing = 'user';
   if (hadLocalMute) {
     applyLocalAudioMuteState();
   }
   if (hadRemoteMute) {
     applyRemoteAudioMuteState();
+  }
+  if (hadVideoMute) {
+    applyLocalVideoMuteState();
   }
 }

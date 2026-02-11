@@ -3,6 +3,7 @@ import { cancelCall, acknowledgeCall } from '../../api/calls.js';
 import {
   CALL_EVENT,
   CALL_SESSION_STATUS,
+  CALL_REQUEST_KIND,
   subscribeCallEvent,
   getCallSessionSnapshot,
   sendCallSignal,
@@ -14,6 +15,13 @@ import {
   isLocalAudioMuted,
   setRemoteAudioMuted,
   isRemoteAudioMuted,
+  isLocalVideoMuted,
+  setLocalVideoMuted,
+  setRemoteVideoElement,
+  setLocalVideoElement,
+  getLocalStream,
+  toggleLocalVideo,
+  switchCamera,
   resolveCallPeerProfile
 } from '../../features/calls/index.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
@@ -281,6 +289,127 @@ function ensureStyles() {
       transform: scale(1);
       pointer-events: auto;
     }
+
+    /* ── Video mode ── */
+    .call-overlay .call-card.video-mode {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      max-width: 100%;
+      border-radius: 0;
+      padding: 0;
+      background: #000;
+      display: flex;
+      flex-direction: column;
+    }
+    .call-overlay .call-remote-video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #111;
+    }
+    .call-overlay .call-local-pip {
+      position: absolute;
+      bottom: 110px;
+      right: 16px;
+      width: 110px;
+      height: 150px;
+      border-radius: 12px;
+      border: 2px solid rgba(255,255,255,0.25);
+      overflow: hidden;
+      background: #1e293b;
+      z-index: 2;
+    }
+    .call-overlay .call-local-pip video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    .call-overlay .call-video-top-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 16px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.6), transparent);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 2;
+    }
+    .call-overlay .call-video-top-bar .call-avatar {
+      width: 36px;
+      height: 36px;
+      font-size: 14px;
+    }
+    .call-overlay .call-video-top-bar .vt-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: #f8fafc;
+    }
+    .call-overlay .call-video-top-bar .vt-status {
+      font-size: 13px;
+      color: rgba(248,250,252,0.7);
+    }
+    .call-overlay .call-card.video-mode .call-minify-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 3;
+    }
+    .call-overlay .call-card.video-mode .call-controls {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 24px 16px;
+      padding-bottom: max(24px, env(safe-area-inset-bottom));
+      background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+      margin-top: 0;
+      z-index: 2;
+    }
+    .call-overlay .call-card.video-mode .call-actions {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 24px 16px;
+      padding-bottom: max(24px, env(safe-area-inset-bottom));
+      background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+      margin-top: 0;
+      z-index: 2;
+    }
+    .call-overlay .call-card.video-mode .call-peer,
+    .call-overlay .call-card.video-mode .call-security {
+      display: none;
+    }
+    .call-overlay .call-video-waiting {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      z-index: 1;
+    }
+    .call-overlay .call-video-waiting .call-avatar {
+      width: 80px;
+      height: 80px;
+      font-size: 28px;
+    }
+    .call-overlay .call-video-waiting .vw-name {
+      font-size: 20px;
+      font-weight: 600;
+      color: #f8fafc;
+    }
+    .call-overlay .call-video-waiting .vw-status {
+      font-size: 14px;
+      color: rgba(248,250,252,0.7);
+    }
   `;
   document.head.appendChild(style);
 }
@@ -327,6 +456,12 @@ function ensureOverlayElements() {
         <button type="button" class="call-btn cancel" data-call-action="cancel"><i class='bx bx-phone-off'></i>取消</button>
       </div>
       <div class="call-controls hidden" aria-label="通話控制">
+        <button type="button" class="call-btn toggle" data-call-action="camera" aria-pressed="false" style="display:none">
+          <i class='bx bx-video'></i><span>鏡頭</span>
+        </button>
+        <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
+          <i class='bx bx-refresh'></i><span>翻轉</span>
+        </button>
         <button type="button" class="call-btn toggle" data-call-action="mute" aria-pressed="false">
           <i class='bx bx-microphone-off'></i><span>靜音</span>
         </button>
@@ -338,6 +473,22 @@ function ensureOverlayElements() {
         </button>
       </div>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
+      <video class="call-remote-video" autoplay playsinline style="display:none"></video>
+      <div class="call-video-waiting" style="display:none">
+        <div class="call-avatar" aria-hidden="true"></div>
+        <div class="vw-name">好友</div>
+        <div class="vw-status">撥號中…</div>
+      </div>
+      <div class="call-video-top-bar" style="display:none">
+        <div class="call-avatar" aria-hidden="true"></div>
+        <div>
+          <div class="vt-name">好友</div>
+          <div class="vt-status">通話中</div>
+        </div>
+      </div>
+      <div class="call-local-pip" style="display:none">
+        <video autoplay playsinline muted></video>
+      </div>
     </div>
     <div class="call-mini-bubble" role="button" aria-label="回到通話視窗" tabindex="0">
       <div class="call-mini-avatar" aria-hidden="true"></div>
@@ -360,9 +511,22 @@ function ensureOverlayElements() {
     muteBtn: root.querySelector('[data-call-action="mute"]'),
     speakerBtn: root.querySelector('[data-call-action="speaker"]'),
       hangupBtn: root.querySelector('[data-call-action="hangup"]'),
+      cameraBtn: root.querySelector('[data-call-action="camera"]'),
+      flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
-      bubbleAvatar: root.querySelector('.call-mini-avatar')
+      bubbleAvatar: root.querySelector('.call-mini-avatar'),
+      remoteVideo: root.querySelector('.call-remote-video'),
+      localPip: root.querySelector('.call-local-pip'),
+      localPipVideo: root.querySelector('.call-local-pip video'),
+      videoWaiting: root.querySelector('.call-video-waiting'),
+      videoWaitingAvatar: root.querySelector('.call-video-waiting .call-avatar'),
+      videoWaitingName: root.querySelector('.call-video-waiting .vw-name'),
+      videoWaitingStatus: root.querySelector('.call-video-waiting .vw-status'),
+      videoTopBar: root.querySelector('.call-video-top-bar'),
+      videoTopBarAvatar: root.querySelector('.call-video-top-bar .call-avatar'),
+      videoTopBarName: root.querySelector('.call-video-top-bar .vt-name'),
+      videoTopBarStatus: root.querySelector('.call-video-top-bar .vt-status')
     };
   }
 
@@ -653,6 +817,8 @@ export function initCallOverlay({ showToast }) {
     const remoteMuted = controls.remoteMuted ?? isRemoteAudioMuted();
     setToggleState(ui.muteBtn, !!localMuted);
     setToggleState(ui.speakerBtn, !!remoteMuted);
+    const videoEnabled = controls.videoEnabled ?? !isLocalVideoMuted();
+    setToggleState(ui.cameraBtn, !!videoEnabled);
   }
 
   function updateBubbleDetails(profile) {
@@ -721,6 +887,76 @@ export function initCallOverlay({ showToast }) {
     [ui.muteBtn, ui.speakerBtn].forEach((btn) => {
       if (btn) btn.disabled = togglesDisabled;
     });
+
+    // ── Video mode rendering ──
+    const isVideo = session.kind === CALL_REQUEST_KIND.VIDEO;
+    ui.card?.classList.toggle('video-mode', isVideo);
+    const inCall = session.status === CALL_SESSION_STATUS.IN_CALL;
+    const connecting = session.status === CALL_SESSION_STATUS.CONNECTING;
+
+    // Camera / flip buttons visibility
+    if (ui.cameraBtn) ui.cameraBtn.style.display = isVideo && showControlsRow ? 'flex' : 'none';
+    if (ui.flipCameraBtn) ui.flipCameraBtn.style.display = isVideo && showControlsRow ? 'flex' : 'none';
+    if (ui.cameraBtn) ui.cameraBtn.disabled = togglesDisabled;
+    if (ui.flipCameraBtn) ui.flipCameraBtn.disabled = togglesDisabled;
+
+    // Video elements
+    if (isVideo) {
+      const hasRemoteVideo = inCall || connecting;
+      if (ui.remoteVideo) ui.remoteVideo.style.display = hasRemoteVideo ? 'block' : 'none';
+      if (ui.localPip) ui.localPip.style.display = (inCall || connecting) ? 'block' : 'none';
+
+      // Waiting screen (before connected)
+      const showWaiting = incoming || outgoing;
+      if (ui.videoWaiting) {
+        ui.videoWaiting.style.display = showWaiting ? 'flex' : 'none';
+        if (showWaiting) {
+          renderAvatarContent(ui.videoWaitingAvatar, profile);
+          if (ui.videoWaitingName) ui.videoWaitingName.textContent = profile.name || '好友';
+          if (ui.videoWaitingStatus) {
+            const videoStatusText = incoming ? '視訊來電' : '視訊撥號中…';
+            ui.videoWaitingStatus.textContent = videoStatusText;
+          }
+        }
+      }
+
+      // Top bar (during call)
+      if (ui.videoTopBar) {
+        ui.videoTopBar.style.display = (inCall || connecting) ? 'flex' : 'none';
+        if (inCall || connecting) {
+          renderAvatarContent(ui.videoTopBarAvatar, profile);
+          if (ui.videoTopBarName) ui.videoTopBarName.textContent = profile.name || '好友';
+          if (ui.videoTopBarStatus) ui.videoTopBarStatus.textContent = describeSecureStatus(session);
+        }
+      }
+
+      // Re-attach localPip srcObject if we have a local stream with video tracks
+      if (ui.localPipVideo && (inCall || connecting)) {
+        const ls = getLocalStream();
+        if (ls && ls.getVideoTracks().length && ui.localPipVideo.srcObject !== ls) {
+          ui.localPipVideo.srcObject = ls;
+          ui.localPipVideo.muted = true;
+          try { ui.localPipVideo.play(); } catch {}
+        }
+      }
+
+      // Incoming video call: change accept button text
+      if (ui.acceptBtn && incoming) {
+        ui.acceptBtn.innerHTML = "<i class='bx bx-video'></i>接聽視訊";
+      }
+    } else {
+      // Reset video elements when not video
+      if (ui.remoteVideo) ui.remoteVideo.style.display = 'none';
+      if (ui.localPip) ui.localPip.style.display = 'none';
+      if (ui.videoWaiting) ui.videoWaiting.style.display = 'none';
+      if (ui.videoTopBar) ui.videoTopBar.style.display = 'none';
+      if (ui.cameraBtn) ui.cameraBtn.style.display = 'none';
+      if (ui.flipCameraBtn) ui.flipCameraBtn.style.display = 'none';
+      // Reset accept button for voice
+      if (ui.acceptBtn && incoming) {
+        ui.acceptBtn.innerHTML = "<i class='bx bx-phone'></i>接聽";
+      }
+    }
   }
 
   async function handleAccept() {
@@ -839,13 +1075,31 @@ export function initCallOverlay({ showToast }) {
     setRemoteAudioMuted(next);
   }
 
+  async function handleCameraToggle() {
+    const session = getCallSessionSnapshot();
+    if (!session) return;
+    const controls = session.mediaState?.controls || {};
+    const currentlyEnabled = controls.videoEnabled ?? !isLocalVideoMuted();
+    await toggleLocalVideo(!currentlyEnabled);
+  }
+
+  async function handleFlipCamera() {
+    await switchCamera();
+  }
+
   ui.acceptBtn?.addEventListener('click', handleAccept);
   ui.rejectBtn?.addEventListener('click', handleReject);
   ui.cancelBtn?.addEventListener('click', handleCancel);
   ui.hangupBtn?.addEventListener('click', handleHangup);
   ui.muteBtn?.addEventListener('click', handleMuteToggle);
   ui.speakerBtn?.addEventListener('click', handleSpeakerToggle);
+  ui.cameraBtn?.addEventListener('click', handleCameraToggle);
+  ui.flipCameraBtn?.addEventListener('click', handleFlipCamera);
   ui.minifyBtn?.addEventListener('click', minimizeOverlay);
+  // Wire video elements to media-session
+  if (ui.remoteVideo) setRemoteVideoElement(ui.remoteVideo);
+  if (ui.localPipVideo) setLocalVideoElement(ui.localPipVideo);
+
   ui.bubble?.addEventListener('pointerdown', handleBubblePointerDown);
   ui.bubble?.addEventListener('pointermove', handleBubblePointerMove);
   ui.bubble?.addEventListener('pointerup', handleBubblePointerUp);
@@ -902,7 +1156,11 @@ export function initCallOverlay({ showToast }) {
     ui.hangupBtn?.removeEventListener('click', handleHangup);
     ui.muteBtn?.removeEventListener('click', handleMuteToggle);
     ui.speakerBtn?.removeEventListener('click', handleSpeakerToggle);
+    ui.cameraBtn?.removeEventListener('click', handleCameraToggle);
+    ui.flipCameraBtn?.removeEventListener('click', handleFlipCamera);
     ui.minifyBtn?.removeEventListener('click', minimizeOverlay);
+    setRemoteVideoElement(null);
+    setLocalVideoElement(null);
     ui.bubble?.removeEventListener('pointerdown', handleBubblePointerDown);
     ui.bubble?.removeEventListener('pointermove', handleBubblePointerMove);
     ui.bubble?.removeEventListener('pointerup', handleBubblePointerUp);
