@@ -127,6 +127,9 @@ import { createSettingsModule } from './mobile/modals/settings-modal.js';
 import { createPasswordModal } from './mobile/modals/password-modal.js';
 import { createWsIntegration } from './mobile/ws-integration.js';
 
+// --- Loading Modal: report JS modules loaded ---
+window.__updateLoadingProgress?.('scripts');
+
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
   if (!(mkRaw instanceof Uint8Array) || typeof crypto === 'undefined' || !crypto.subtle?.digest) return Promise.resolve(summary);
@@ -2219,16 +2222,19 @@ async function hydrateProfileSnapshots() {
 let hydrationComplete = false;
 
 const postLoginInitPromise = (async () => {
+  window.__updateLoadingProgress?.('account');
   try {
     await seedProfileCounterOnce();
   } catch (err) {
     log({ profileCounterSeedError: err?.message || err });
   }
+  window.__updateLoadingProgress?.('contacts');
   return runPostLoginContactHydrate();
 })();
 
 postLoginInitPromise
   .then(() => {
+    window.__updateLoadingProgress?.('conversations');
     messagesPane.syncConversationThreadsFromContacts();
     return messagesPane.refreshConversationPreviews({ force: true });
   })
@@ -2242,6 +2248,9 @@ postLoginInitPromise
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
     messagesFlowFacade.onLoginResume({ source: 'login', runRestore: false, runOfflineDecrypt: false });
+    // --- Loading Modal: hydration done → dismiss ---
+    window.__updateLoadingProgress?.('ready');
+    setTimeout(() => window.__hideLoadingModal?.(), 350);
   });
 
 function updateProfileStats() {
