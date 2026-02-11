@@ -8,7 +8,8 @@ import { clearConversationHistory, getConversationClearAfter } from '../../featu
 import { messagesFlowFacade } from '../../features/messages-flow-facade.js';
 import {
   getTimeline as timelineGetTimeline,
-  subscribeTimeline
+  subscribeTimeline,
+  appendUserMessage
 } from '../../features/timeline-store.js';
 
 import { setOutboxHooks } from '../../features/queue/outbox.js';
@@ -1175,13 +1176,25 @@ export function initMessagesPane({
           }
 
           // 2. Clear Local View (Immediate UI Feedback)
+          // Create tombstone so renderer applies hard cutoff on old messages
+          const nowMs = Date.now();
+          try {
+            appendUserMessage(conversationId, {
+              messageId: `tombstone-deleted-${conversationId}`,
+              msgType: 'conversation-deleted',
+              subtype: 'conversation-deleted',
+              text: '',
+              direction: 'outgoing',
+              ts: Math.floor(nowMs / 1000),
+              tsMs: nowMs,
+              conversationId,
+              peerAccountDigest: key
+            });
+          } catch {}
           sessionStore.deletedConversations?.add?.(conversationId);
-          // Don't delete thread metadata, just hide it? 
-          // User asked for "Hide" behavior previously.
-          // But here we are "Deleting".
-          // If we want "Delete for Me", we usually hide the contact too.
+          sessionStore.conversationThreads?.delete?.(conversationId);
+          sessionStore.conversationIndex?.delete?.(conversationId);
           hideContactSecret(key);
-          if (typeof window !== 'undefined') window.__refreshContacts?.();
           if (typeof window !== 'undefined') window.__refreshContacts?.();
           if (element) closeSwipe?.(element);
           const refetchedState = getMessageState();

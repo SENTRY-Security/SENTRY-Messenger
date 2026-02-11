@@ -8,6 +8,7 @@ import { maybeSendVaultAckWs, recordVaultAckCounter } from './messages/receipts.
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { removeContactCore } from '../ui/mobile/contact-core-store.js';
 import { hideContactSecret } from '../core/contact-secrets.js';
+import { appendUserMessage } from './timeline-store.js';
 import { startRestorePipeline } from './restore-coordinator.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
 import { smartFetchMessages } from './messages-flow/hybrid-flow.js';
@@ -290,11 +291,29 @@ function createMessagesFlowFacade() {
       const normalizedMsgType = typeof rawMsgType === 'string'
         ? rawMsgType.replace(/-/g, '_').toLowerCase().trim() : null;
 
-      // Conversation-deleted signal — handle store updates + notify UI
+      // Conversation-deleted signal — create tombstone + store cleanup + notify UI
       if (event?.type === 'conversation-deleted' || normalizedMsgType === 'conversation_deleted') {
         const convId = String(event?.conversationId || event?.conversation_id || '').trim();
         const peerDigest = event?.senderAccountDigest || null;
         if (convId) {
+          // Create tombstone BEFORE store cleanup so timeline has the barrier entry.
+          // Normalize timestamp: server sends Date.now() (ms), timeline ts expects seconds.
+          const tsRaw = Number(event?.ts ?? event?.timestamp) || Date.now();
+          const tsSeconds = tsRaw > 10_000_000_000 ? Math.floor(tsRaw / 1000) : Math.floor(tsRaw);
+          const tsMs = tsRaw > 10_000_000_000 ? tsRaw : tsRaw * 1000;
+          try {
+            appendUserMessage(convId, {
+              messageId: `tombstone-deleted-${convId}`,
+              msgType: 'conversation-deleted',
+              subtype: 'conversation-deleted',
+              text: '',
+              direction: 'incoming',
+              ts: tsSeconds,
+              tsMs,
+              conversationId: convId,
+              peerAccountDigest: peerDigest
+            });
+          } catch {}
           try {
             sessionStore.deletedConversations?.add?.(convId);
             sessionStore.conversationThreads?.delete?.(convId);
