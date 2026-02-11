@@ -24,6 +24,7 @@ export function createMediaPermissionManager({
   let pollingTimer = null;
   let onChangeCleanup = null;
   let cachedMicStream = null;
+  let finalized = false;
 
   // --- Internal helpers ---
 
@@ -47,6 +48,7 @@ export function createMediaPermissionManager({
 
   function show() {
     if (!overlay) return;
+    finalized = false;
     overlay.style.display = 'flex';
     overlay.setAttribute('aria-hidden', 'false');
     document.body.classList.add('media-permission-open');
@@ -186,8 +188,11 @@ export function createMediaPermissionManager({
     }
   }
 
-  async function finalize({ warning = false, autoCloseDelayMs = 600, statusMessage } = {}) {
-    await warmUpAudio();
+  async function finalize({ warning = false, autoCloseDelayMs = 400, statusMessage } = {}) {
+    if (finalized) return;
+    finalized = true;
+    // Audio warm-up in background — don't block UI (notify.wav fetch can take seconds)
+    warmUpAudio().catch(() => {});
     markGranted();
     const msg = statusMessage !== undefined ? statusMessage
       : warning ? '麥克風授權已允許，若仍無法通話請在設定中重新測試。'
@@ -216,7 +221,7 @@ export function createMediaPermissionManager({
   }
 
   async function onDetected() {
-    await finalize({ warning: false, autoCloseDelayMs: 1200, statusMessage: '已確認授權，稍後會自動關閉提示。' });
+    await finalize({ warning: false, autoCloseDelayMs: 600, statusMessage: '已確認授權，稍後會自動關閉提示。' });
     log({ mediaPermission: 'detected-by-watcher' });
   }
 
@@ -247,7 +252,7 @@ export function createMediaPermissionManager({
       .then(async () => {
         systemGranted = true;
         try {
-          await finalize({ warning: false, autoCloseDelayMs: 1200, statusMessage: '麥克風已啟用，稍後會自動關閉提示。' });
+          await finalize({ warning: false, autoCloseDelayMs: 600, statusMessage: '麥克風已啟用，稍後會自動關閉提示。' });
           log({ mediaPermission: 'prompt-granted' });
         } catch (err) { log({ mediaPermissionPromptFinalizeError: err?.message || err }); }
       })
