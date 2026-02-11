@@ -113,6 +113,7 @@ import {
 import {
   loadCallNetworkConfig,
   subscribeCallEvent,
+  canStartCall,
   CALL_EVENT
 } from '../../features/calls/index.js';
 
@@ -608,7 +609,19 @@ export function initMessagesPane({
   if (typeof unsubscribeCallState === 'function') {
     unsubscribeCallState();
   }
-  unsubscribeCallState = subscribeCallEvent(CALL_EVENT.STATE, (e) => controllers.callLog.handleCallStateEvent(e));
+  unsubscribeCallState = subscribeCallEvent(CALL_EVENT.STATE, (e) => {
+    controllers.callLog.handleCallStateEvent(e);
+    // Disable call/video buttons while a call is in progress
+    const available = canStartCall();
+    if (elements.callBtn) elements.callBtn.disabled = !available;
+    if (elements.videoBtn) elements.videoBtn.disabled = !available;
+  });
+  // Sync call button state on init (user may open a chat while already in a call)
+  {
+    const available = canStartCall();
+    if (elements.callBtn) elements.callBtn.disabled = !available;
+    if (elements.videoBtn) elements.videoBtn.disabled = !available;
+  }
 
   for (const info of listSecureConversationStatuses()) {
     const key = normalizePeerKey(info?.peerAccountDigest);
