@@ -125,6 +125,7 @@ import { createConnectionIndicator } from './mobile/connection-indicator.js';
 import { createSubscriptionModule } from './mobile/modals/subscription-modal.js';
 import { createSettingsModule } from './mobile/modals/settings-modal.js';
 import { createPasswordModal } from './mobile/modals/password-modal.js';
+import { createWsIntegration } from './mobile/ws-integration.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -244,12 +245,7 @@ let reloadLogoutTriggered = false;
 const LOGOUT_MESSAGE_KEY = 'app:lastLogoutReason';
 let logoutInProgress = false;
 let _autoLoggedOut = false;
-let wsConn = null;
-let wsReconnectTimer = null;
-let wsAuthTokenInfo = null;
-const pendingWsMessages = [];
 let presenceManager = null;
-let wsMonitorTimer = null;
 
 
 initContactSecretsBackup();
@@ -516,14 +512,7 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
     }
   }
 
-  try { wsConn?.close(); } catch { }
-  wsConn = null;
-  wsAuthTokenInfo = null;
-  if (wsReconnectTimer) {
-    clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = null;
-  }
-  pendingWsMessages.length = 0;
+  wsIntegration.close();
   presenceManager?.clearPresenceState?.();
 
   try { shareController?.closeShareModal?.(); } catch { }
@@ -1481,7 +1470,7 @@ tabs.forEach((t) => {
 switchTab('drive');
 presenceManager = createPresenceManager({
   contactsListEl,
-  wsSend
+  wsSend: (payload) => wsIntegration.send(payload)
 });
 
 const contactsView = initContactsView({
@@ -1871,6 +1860,39 @@ const {
   closeShareModal
 } = shareController;
 
+// --- WebSocket integration ---
+const wsIntegration = createWsIntegration({
+  deps: {
+    log, logForensicsEvent, wsDebugEnabled,
+    getAccountDigest, getAccountToken, getLoginSessionTs,
+    normalizePeerIdentity, normalizeAccountDigest, normalizePeerDeviceId,
+    getDeviceId, ensureDeviceId, getContactSecret,
+    sessionStore, requestWsToken, flushOutbox,
+    handleCallSignalMessage, handleCallAuxMessage,
+    messagesFlowFacade,
+    updateConnectionIndicator,
+    isSettingsConversationId,
+    handleSettingsSecureMessage,
+    connectionIndicatorEl: connectionIndicator,
+    getPresenceManager: () => presenceManager,
+    getMessagesPane: () => messagesPane,
+    getShareController: () => shareController,
+    showForcedLogoutModal,
+    secureLogout,
+    loadInitialContacts,
+    hydrateProfileSnapshots: () => hydrateProfileSnapshots(),
+    isHydrationComplete: () => hydrationComplete
+  }
+});
+const wsSend = wsIntegration.send;
+const ensureWebSocket = () => wsIntegration.ensure();
+messagesPane.setWsSend(wsSend);
+setMessagesWsSender(wsSend);
+setMessagesFlowFacadeWsSend(wsSend);
+shareController?.setWsSend?.(wsSend);
+setCallSignalSender(wsSend);
+wsIntegration.startMonitor();
+
 profileInitPromise
   .then(() => {
     const state = sessionStore.profileState;
@@ -2235,468 +2257,6 @@ function updateProfileStats() {
   if (contactsCountEl) contactsCountEl.textContent = String(count);
 }
 
-function ensureWebSocket() {
-  if (wsConn || wsReconnectTimer) return;
-  const digest = getAccountDigest();
-  if (!digest) {
-    log({ wsSkip: 'missing_account_digest' });
-    return;
-  }
-  // [FIX] Block connection if keys aren't ready
-  if (!hydrationComplete) {
-    if (wsDebugEnabled) console.log('[ws-ensure] Skipped: Hydration pending');
-    return;
-  }
-  log({ wsEnsure: true, state: wsConn?.readyState ?? 'none' });
-  connectWebSocket().catch((err) => {
-    log({ wsConnectError: err?.message || err });
-  });
-}
-
-function resolveWsPeer(msg = {}) {
-  return normalizePeerIdentity({
-    peerAccountDigest: msg.peerAccountDigest || msg.fromAccountDigest || null
-  });
-}
-
-function isTargetingThisDevice(msg = {}) {
-  const targetDeviceId = msg.targetDeviceId || null;
-  if (!targetDeviceId) return true;
-  const selfDeviceId = typeof getDeviceId === 'function' ? (getDeviceId() || ensureDeviceId()) : null;
-  if (!selfDeviceId) return false;
-  return String(targetDeviceId).trim() === String(selfDeviceId).trim();
-}
-
-function scheduleWsReconnect(delay = 2000) {
-  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-  wsReconnectTimer = setTimeout(() => {
-    wsReconnectTimer = null;
-    connectWebSocket().catch((err) => {
-      log({ wsReconnectError: err?.message || err });
-    });
-  }, delay);
-}
-
-async function getWsAuthToken({ force = false } = {}) {
-  const accountDigest = getAccountDigest();
-  if (!accountDigest) throw new Error('缺少 accountDigest');
-  const nowSec = Date.now();
-  if (!force && wsAuthTokenInfo && wsAuthTokenInfo.token) {
-    const exp = Number(wsAuthTokenInfo.expiresAt || 0);
-    if (!exp || exp - nowSec > 30) {
-      return wsAuthTokenInfo;
-    }
-  }
-  const accountToken = getAccountToken();
-  const sessionTs = getLoginSessionTs();
-  const { r, data } = await requestWsToken({ accountToken, accountDigest, sessionTs });
-  if (!r.ok || !data?.token) {
-    const message = typeof data === 'string' ? data : data?.message || data?.error || 'ws token failed';
-    const err = new Error(message);
-    err.status = r.status;
-    err.code = typeof data === 'object' ? (data?.error || null) : null;
-    throw err;
-  }
-  const expiresAt = Number(data.expiresAt || data.exp || 0) || null;
-  wsAuthTokenInfo = { token: data.token, expiresAt };
-  return wsAuthTokenInfo;
-}
-
-async function connectWebSocket() {
-  const accountDigest = getAccountDigest();
-  if (!accountDigest) return;
-  if (wsDebugEnabled) {
-    log({ wsConnectStart: true, accountDigest });
-  }
-  let tokenInfo;
-  try {
-    tokenInfo = await getWsAuthToken();
-  } catch (err) {
-    log({ wsTokenError: err?.message || err, status: err?.status, code: err?.code });
-    if (err?.status === 409 || err?.code === 'StaleSession') {
-      showForcedLogoutModal('帳號已在其他裝置登入');
-      secureLogout('帳號已在其他裝置登入', { auto: true });
-      return;
-    }
-    scheduleWsReconnect(4000);
-    return;
-  }
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  let baseHost = connectionIndicator?.dataset?.wsHost || '';
-  let path = connectionIndicator?.dataset?.wsPath || '/api/ws';
-  const apiOriginRaw = typeof globalThis !== 'undefined' && typeof globalThis.API_ORIGIN === 'string'
-    ? globalThis.API_ORIGIN.trim()
-    : '';
-  if (apiOriginRaw) {
-    try {
-      const originUrl = new URL(apiOriginRaw);
-      baseHost = originUrl.host || baseHost;
-      const prefix = originUrl.pathname && originUrl.pathname !== '/' ? originUrl.pathname.replace(/\/$/, '') : '';
-      if (prefix) {
-        path = path.startsWith('/') ? `${prefix}${path}` : `${prefix}/${path}`;
-      }
-    } catch (err) {
-      log({ apiOriginParseError: err?.message || err });
-    }
-  }
-  if (!baseHost) baseHost = location.host;
-  if (!path.startsWith('/')) path = `/${path}`;
-  const wsUrl = `${proto}//${baseHost}${path}`;
-  if (wsDebugEnabled) {
-    log({ wsConnectUrl: wsUrl });
-  }
-  const ws = new WebSocket(wsUrl);
-  wsConn = ws;
-  updateConnectionIndicator('connecting');
-  ws.onopen = () => {
-    if (ws !== wsConn) return; // stale socket
-    if (wsDebugEnabled) {
-      log({ wsState: 'open' });
-    }
-    wsReconnectTimer = null;
-    try {
-      ws.send(JSON.stringify({ type: 'auth', accountDigest, token: tokenInfo.token }));
-    } catch (err) {
-      log({ wsAuthSendError: err?.message || err });
-    }
-    if (pendingWsMessages.length) {
-      for (const msg of pendingWsMessages.splice(0)) {
-        try {
-          ws.send(JSON.stringify(msg));
-        } catch (err) {
-          log({ wsSendError: err?.message || err });
-        }
-      }
-    }
-  };
-  ws.onmessage = (event) => {
-    if (ws !== wsConn) return; // stale socket
-    if (wsDebugEnabled) {
-      log({ wsMessageRaw: event.data });
-    }
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
-    const msgType = msg?.type || null;
-    if (isForensicsWsSecureMessage(msgType)) {
-      try {
-        logForensicsEvent('WS_RECV', buildWsForensicsSummary(msg));
-      } catch { }
-    }
-    handleWebSocketMessage(msg);
-  };
-  ws.onclose = (evt) => {
-    if (ws !== wsConn) return; // stale socket (likely replaced)
-    if (wsDebugEnabled) {
-      log({ wsClose: { code: evt.code, reason: evt.reason } });
-    }
-    wsConn = null;
-    updateConnectionIndicator('offline');
-    presenceManager.clearPresenceState();
-    if (evt.code === 4409) {
-      showForcedLogoutModal('帳號已在其他裝置登入');
-      secureLogout('帳號已在其他裝置登入', { auto: true });
-      return;
-    }
-    if (evt.code === 4401) {
-      wsAuthTokenInfo = null;
-    }
-    scheduleWsReconnect();
-  };
-  ws.onerror = () => {
-    if (ws !== wsConn) return; // stale socket
-    if (wsDebugEnabled) {
-      log({ wsError: true });
-    }
-    updateConnectionIndicator('offline');
-    wsAuthTokenInfo = null;
-    try { ws.close(); } catch { }
-  };
-}
-
-function wsSend(payload) {
-  if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
-    pendingWsMessages.push(payload);
-    ensureWebSocket();
-    return false;
-  }
-  try {
-    wsConn.send(JSON.stringify(payload));
-    return true;
-  } catch (err) {
-    log({ wsSendError: err?.message || err });
-    pendingWsMessages.push(payload);
-    ensureWebSocket();
-    return false;
-  }
-}
-
-wsSend.isReady = () => !!(wsConn && wsConn.readyState === WebSocket.OPEN);
-messagesPane.setWsSend(wsSend);
-setMessagesWsSender(wsSend);
-setMessagesFlowFacadeWsSend(wsSend);
-shareController?.setWsSend?.(wsSend);
-setCallSignalSender(wsSend);
-if (!wsMonitorTimer) {
-  wsMonitorTimer = setInterval(() => {
-    if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
-      log({ wsMonitorReconnect: true, readyState: wsConn?.readyState ?? null });
-      ensureWebSocket();
-    }
-  }, 5000);
-}
-
-
-function isForensicsWsSecureMessage(type) {
-  return type === 'secure-message' || type === 'message-new';
-}
-
-function buildWsForensicsSummary(msg = {}) {
-  const conversationId = String(msg?.conversationId || msg?.conversation_id || '').trim() || null;
-  const messageId = msg?.messageId || msg?.message_id || msg?.id || null;
-  const serverMessageId = msg?.serverMessageId || msg?.server_message_id || null;
-  const senderDeviceId = msg?.senderDeviceId || msg?.sender_device_id || null;
-  const targetDeviceId = msg?.targetDeviceId || msg?.target_device_id || null;
-  const msgType = msg?.msgType || msg?.msg_type || msg?.type || null;
-  const ts = msg?.ts ?? msg?.timestamp ?? msg?.createdAt ?? msg?.created_at ?? null;
-  return {
-    conversationId,
-    messageId,
-    serverMessageId,
-    senderDeviceId,
-    targetDeviceId,
-    msgType,
-    ts
-  };
-}
-
-function normalizeWsToken(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function resolveWsIncomingPeerIdentity(msg = {}) {
-  return normalizePeerIdentity({
-    peerAccountDigest: msg?.senderAccountDigest
-      || msg?.fromAccountDigest
-      || msg?.sender_account_digest
-      || msg?.senderDigest
-      || msg?.sender_digest
-      || null,
-    peerDeviceId: msg?.senderDeviceId
-      || msg?.sender_device_id
-      || null
-  });
-}
-
-function resolveWsConversationToken({ conversationId, peerAccountDigest, peerDeviceId } = {}) {
-  const convId = typeof conversationId === 'string' ? conversationId.trim() : '';
-  let tokenB64 = null;
-  let resolvedPeerDigest = normalizeAccountDigest(peerAccountDigest || null);
-  let resolvedPeerDeviceId = normalizePeerDeviceId(peerDeviceId || null);
-  if (!convId) {
-    return { tokenB64: null, peerAccountDigest: resolvedPeerDigest || null, peerDeviceId: resolvedPeerDeviceId || null };
-  }
-  const convIndex = sessionStore.conversationIndex instanceof Map ? sessionStore.conversationIndex : null;
-  if (convIndex) {
-    const entry = convIndex.get(convId) || null;
-    const tokenCandidate = normalizeWsToken(entry?.token_b64 || entry?.tokenB64 || entry?.conversationToken || null);
-    if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
-    if (!resolvedPeerDigest) {
-      resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || entry?.peer_account_digest || null);
-    }
-    if (!resolvedPeerDeviceId) {
-      resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
-    }
-  }
-  const threads = sessionStore.conversationThreads instanceof Map ? sessionStore.conversationThreads : null;
-  if (!tokenB64 && threads) {
-    const entry = threads.get(convId) || null;
-    const tokenCandidate = normalizeWsToken(entry?.conversationToken || entry?.token_b64 || entry?.tokenB64 || null);
-    if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
-    if (!resolvedPeerDigest) {
-      resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || entry?.peer_account_digest || null);
-    }
-    if (!resolvedPeerDeviceId) {
-      resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
-    }
-  }
-  if (!tokenB64 && resolvedPeerDigest) {
-    const secret = getContactSecret(resolvedPeerDigest, { peerDeviceId: resolvedPeerDeviceId });
-    const tokenCandidate = normalizeWsToken(secret?.conversationToken || secret?.conversation?.token || null);
-    if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
-    if (!resolvedPeerDeviceId) {
-      resolvedPeerDeviceId = normalizePeerDeviceId(secret?.peerDeviceId || null);
-    }
-  }
-  return {
-    tokenB64: tokenB64 || null,
-    peerAccountDigest: resolvedPeerDigest || null,
-    peerDeviceId: resolvedPeerDeviceId || null
-  };
-}
-
-function buildWsLiveJobContext(msg = {}, convId = null) {
-  const conversationId = typeof convId === 'string' ? convId.trim() : '';
-  const peerIdentity = resolveWsIncomingPeerIdentity(msg);
-  const tokenInfo = resolveWsConversationToken({
-    conversationId,
-    peerAccountDigest: peerIdentity.accountDigest,
-    peerDeviceId: peerIdentity.deviceId
-  });
-  return {
-    conversationId: conversationId || null,
-    tokenB64: tokenInfo.tokenB64 || null,
-    peerAccountDigest: tokenInfo.peerAccountDigest || peerIdentity.accountDigest || null,
-    peerDeviceId: tokenInfo.peerDeviceId || peerIdentity.deviceId || null,
-    messageId: msg?.messageId || msg?.message_id || msg?.id || null,
-    serverMessageId: msg?.serverMessageId || msg?.server_message_id || msg?.serverMsgId || null,
-    sourceTag: 'ws_incoming'
-  };
-}
-
-function handleWebSocketMessage(msg) {
-  const type = msg?.type;
-  if (type === 'hello') return;
-  if (type === 'auth') {
-    if (msg?.ok) updateConnectionIndicator('online');
-    else updateConnectionIndicator('offline');
-    if (msg?.ok) {
-      presenceManager.sendPresenceSubscribe();
-      messagesPane.refreshAfterReconnect?.();
-      messagesFlowFacade.onLoginResume({
-        source: 'ws_reconnect',
-        runRestore: false,
-        onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'ws_reconnect' }),
-        reconcileOutgoingStatus: (params) => messagesFlowFacade.reconcileOutgoingStatusNow({
-          ...params,
-          reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
-        })
-      });
-      flushOutbox({ sourceTag: 'ws_auth_ok' }).catch(() => { });
-    }
-    return;
-  }
-  if (type === 'force-logout') {
-    const reason = msg?.reason || '帳號已被清除';
-    showForcedLogoutModal(reason);
-    secureLogout(reason, { auto: true });
-    return;
-  }
-  if (handleCallSignalMessage(msg) || handleCallAuxMessage(msg)) {
-    return;
-  }
-  if (type === 'contact-removed') {
-    if (!isTargetingThisDevice(msg)) return;
-    const identity = resolveWsPeer(msg);
-    const peerAccountDigest = identity.key;
-    if (peerAccountDigest) {
-      try {
-        document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerAccountDigest, notifyPeer: false } }));
-      } catch (err) {
-        log({ contactRemovedEventError: err?.message || err, peerAccountDigest });
-      }
-    }
-    return;
-  }
-  if (type === 'invite-delivered') {
-    if (!isTargetingThisDevice(msg)) return;
-    const inviteId = msg?.inviteId || null;
-    if (!inviteId) {
-      log({ inviteDeliveredMissingId: true });
-      return;
-    }
-    shareController?.consumeInviteDropbox?.(inviteId, { source: 'ws' })
-      .catch((err) => log({ inviteConsumeError: err?.message || err, inviteId }));
-    return;
-  }
-  if (type === 'contacts-reload') {
-    if (!isTargetingThisDevice(msg)) return;
-    loadInitialContacts()
-      .then(() => hydrateProfileSnapshots())
-      .catch((err) => log({ contactsInitError: err?.message || err }));
-    return;
-  }
-  if (type === 'presence') {
-    const online = Array.isArray(msg?.onlineAccountDigests) ? msg.onlineAccountDigests
-      : Array.isArray(msg?.onlineDigests) ? msg.onlineDigests
-        : Array.isArray(msg?.online_accounts) ? msg.online_accounts
-          : Array.isArray(msg?.online) ? msg.online
-            : [];
-    presenceManager.applyPresenceSnapshot(online);
-    return;
-  }
-  if (type === 'presence-update') {
-    const identity = resolveWsPeer(msg);
-    if (!identity.key) return;
-    presenceManager.setContactPresence(identity, !!msg?.online);
-    return;
-  }
-  if (type === 'vault-ack') {
-    if (!isTargetingThisDevice(msg)) return;
-    messagesPane.handleVaultAckEvent?.(msg);
-    return;
-  }
-  if (type === 'conversation-deleted') {
-    if (!isTargetingThisDevice(msg)) return;
-    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
-      log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
-      return;
-    }
-    const convId = String(msg?.conversationId || msg?.conversation_id || '').trim();
-    if (isSettingsConversationId(convId)) {
-      handleSettingsSecureMessage();
-      return;
-    }
-    const liveJobCtx = buildWsLiveJobContext(msg, convId);
-    messagesFlowFacade.onWsIncomingMessageNew({
-      event: msg,
-      handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
-    }, liveJobCtx);
-    return;
-  }
-  if (type === 'secure-message' || type === 'message-new') {
-    if (!isTargetingThisDevice(msg)) return;
-    if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
-      log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
-      return;
-    }
-    const convId = String(msg?.conversationId || msg?.conversation_id || '').trim();
-    if (isSettingsConversationId(convId)) {
-      handleSettingsSecureMessage();
-      return;
-    }
-    if (wsDebugEnabled) {
-      try {
-        console.log('[ws-dispatch]', {
-          type,
-          conversationId: convId || null,
-          senderAccountDigest: msg?.senderAccountDigest || null,
-          senderDeviceId: msg?.senderDeviceId || null,
-          targetDeviceId: msg?.targetDeviceId || null,
-          targetAccountDigest: msg?.targetAccountDigest || null,
-          peerAccountDigest: msg?.peerAccountDigest || null
-        });
-      } catch { }
-    }
-    try {
-      const summary = buildWsForensicsSummary(msg);
-      logForensicsEvent('WS_DISPATCH', {
-        ...summary,
-        conversationId: convId || summary.conversationId || null,
-        handler: 'messagesPane.handleIncomingSecureMessage'
-      });
-    } catch { }
-    const liveJobCtx = buildWsLiveJobContext(msg, convId);
-    messagesFlowFacade.onWsIncomingMessageNew({
-      event: msg,
-      handleIncomingSecureMessage: messagesPane.handleIncomingSecureMessage
-    }, liveJobCtx);
-    return;
-  }
-}
-
-// Harden autofill: disable autocomplete/autocapitalize/spellcheck on all inputs
 (function hardenAutofill() {
   try {
     const els = document.querySelectorAll('input, textarea');
