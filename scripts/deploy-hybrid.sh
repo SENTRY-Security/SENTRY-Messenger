@@ -35,15 +35,18 @@ if [ -d "$WEB_DIR" ]; then
   cd "$WEB_DIR"
   echo "   - Installing dependencies (optional)..."
   npm install || true
-  
-  echo "   - Deploying ./src directly to Cloudflare Pages (Production)..."
-  # [FIX] Ensure functions are included in the deployment source (./src)
+
+  echo "   - Building frontend bundle..."
+  npm run build
+
+  echo "   - Deploying ./dist to Cloudflare Pages (Production)..."
+  # Ensure functions are included in the deployment output (./dist)
   if [ -d "functions" ]; then
-    echo "   - Copying functions to src/functions..."
-    mkdir -p src/functions
-    cp -r functions/* src/functions/
+    echo "   - Copying functions to dist/functions..."
+    mkdir -p dist/functions
+    cp -r functions/* dist/functions/
   fi
-  npx wrangler pages deploy ./src --project-name message-web-hybrid --branch=main --commit-dirty=true
+  npx wrangler pages deploy ./dist --project-name message-web-hybrid --branch=main --commit-dirty=true
   cd ..
 else
   echo "⚠️  Web directory not found: $WEB_DIR"
