@@ -11,7 +11,6 @@ import {
   getSendState,
   listOutgoingStatus,
   deleteMessages,
-  deleteSecureConversation,
   setDeletionCursor
 } from '../../controllers/messages.controller.js';
 
@@ -49,9 +48,6 @@ r.post('/messages/outgoing-status', asyncH(listOutgoingStatus));
 
 // POST /api/v1/messages/delete
 r.post('/messages/delete', asyncH(deleteMessages));
-
-// POST /api/v1/messages/secure/delete-conversation
-r.post('/messages/secure/delete-conversation', asyncH(deleteSecureConversation));
 
 // POST /api/v1/deletion/cursor
 r.post('/deletion/cursor', asyncH(setDeletionCursor));

@@ -677,32 +677,6 @@ export function setupWebSocket(server) {
         targetAccountDigest: target
       });
     },
-    notifyConversationDeleted({ targetAccountDigest, conversationId, senderAccountDigest, senderDeviceId, targetDeviceId }) {
-      const target = canonicalAccountDigest(targetAccountDigest);
-      const senderDev = canonicalDeviceId(senderDeviceId);
-      const targetDev = canonicalDeviceId(targetDeviceId);
-      if (!target || !conversationId) return;
-      if (!senderDev || !targetDev) {
-        logger.warn({
-          event: 'ws.notifyConversationDeleted.missing-device',
-          targetAccountDigest: target,
-          conversationId,
-          senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
-          senderDeviceId: senderDev || null,
-          targetDeviceId: targetDev || null
-        }, 'drop notifyConversationDeleted due to missing deviceId');
-        return;
-      }
-      broadcastByDigest(target, {
-        type: 'conversation-deleted',
-        conversationId,
-        senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
-        peerAccountDigest: canonicalAccountDigest(senderAccountDigest),
-        senderDeviceId: senderDev,
-        targetDeviceId: targetDev,
-        ts: Date.now()
-      });
-    },
     sendInviteDelivered(_unused, { targetAccountDigest, targetDeviceId = null, inviteId }) {
       const digest = canonicalAccountDigest(targetAccountDigest);
       if (!digest || !inviteId) return;

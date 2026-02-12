@@ -356,16 +356,4 @@ export async function fetchSecureMaxCounter({ conversationId, senderDeviceId } =
   return { r, data };
 }
 
-export async function deleteSecureConversation({ conversationId, peerAccountDigest, targetDeviceId } = {}) {
-  if (!conversationId) throw new Error('conversationId required');
-  if (!peerAccountDigest) throw new Error('peerAccountDigest required');
-  if (!targetDeviceId) throw new Error('targetDeviceId required');
-  if (!targetDeviceId) throw new Error('targetDeviceId required');
-  const overrides = { conversationId, peerAccountDigest, targetDeviceId };
-  const payload = buildAccountPayload({ overrides });
-  const headers = buildAccountHeaders();
-  const r = await fetchWithTimeout('/api/v1/messages/secure/delete-conversation', jsonReq(payload, headers), 15000);
-  const text = await r.text();
-  let data; try { data = JSON.parse(text); } catch { data = text; }
-  return { r, data };
-}
+

@@ -86,17 +86,7 @@ const DeleteMessagesSchema = z.object({
   }
 });
 
-const DeleteSecureConversationSchema = z.object({
-  conversationId: z.string().min(8),
-  peerAccountDigest: z.string().regex(AccountDigestRegex),
-  targetDeviceId: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
-}).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
-  }
-});
+
 
 const SendStateSchema = z.object({
   conversationId: z.string().min(8),
@@ -1183,88 +1173,6 @@ export const deleteMessages = async (req, res) => {
   }
 
   return res.json({ ok: true, worker: workerJson?.results || [] });
-};
-
-export const deleteSecureConversation = async (req, res) => {
-  if (!DATA_API || !HMAC_SECRET) {
-    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
-  }
-
-  let input;
-  try {
-    input = DeleteSecureConversationSchema.parse(req.body || {});
-  } catch (err) {
-    return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
-  }
-
-  const account = extractAccountFromRequest(req);
-  let auth;
-  try {
-    auth = await authorizeAccountForConversation({
-      conversationId: input.conversationId,
-      accountToken: input.accountToken || account.accountToken,
-      accountDigest: input.accountDigest || account.accountDigest,
-      deviceId: account.deviceId || null,
-      requireDeviceId: true
-    });
-  } catch (err) {
-    return respondAccountError(res, err, 'conversation authorization failed');
-  }
-
-  const payload = {
-    conversationId: auth.conversationId,
-    accountDigest: auth.accountDigest
-  };
-  if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
-  const peerAccountDigest = input.peerAccountDigest ? input.peerAccountDigest.toUpperCase() : null;
-  if (!peerAccountDigest) {
-    return res.status(400).json({ error: 'BadRequest', message: 'peerAccountDigest required' });
-  }
-  const senderDeviceId = account.deviceId || null;
-  const targetDeviceId = canonDevice(input.targetDeviceId || null);
-  if (!targetDeviceId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'targetDeviceId required' });
-  }
-
-  const path = '/d1/messages/secure/delete-conversation';
-  const body = JSON.stringify(payload);
-  const sig = signHmac(path, body, HMAC_SECRET);
-
-  try {
-    const upstream = await fetchWithTimeout(`${DATA_API}${path}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-auth': sig },
-      body
-    });
-    const text = await upstream.text();
-    let data; try { data = JSON.parse(text); } catch { data = text; }
-    if (upstream.status === 404) {
-      return res.json({ ok: true, deleted_secure: 0, deleted_general: 0, conversation_id: payload.conversationId, skipped: true });
-    }
-    if (!upstream.ok) {
-      return res.status(upstream.status).json({ error: 'DeleteConversationFailed', details: data });
-    }
-    try {
-      const manager = getWebSocketManager();
-      if (manager && peerAccountDigest) {
-        manager.notifyConversationDeleted({
-          targetAccountDigest: peerAccountDigest,
-          conversationId: payload.conversationId,
-          senderAccountDigest: auth.accountDigest,
-          senderDeviceId,
-          targetDeviceId
-        });
-      }
-    } catch (err) {
-      logger.warn({ err: err?.message || err }, 'ws_notify_conversation_deleted_failed');
-    }
-    return res.json(data);
-  } catch (err) {
-    return res.status(504).json({
-      error: 'DeleteConversationTimeout',
-      message: err?.message || 'fetch aborted'
-    });
-  }
 };
 
 export const setDeletionCursor = async (req, res) => {

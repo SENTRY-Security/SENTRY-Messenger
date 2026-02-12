@@ -538,24 +538,6 @@ export function createWsIntegration({ deps }) {
       getMessagesPane()?.handleVaultAckEvent?.(msg);
       return;
     }
-    if (type === 'conversation-deleted') {
-      if (!isTargetingThisDevice(msg)) return;
-      if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
-        log({ secureMessageMissingDeviceId: true, type, hasSender: !!msg?.senderDeviceId, hasTarget: !!msg?.targetDeviceId });
-        return;
-      }
-      const convId = String(msg?.conversationId || msg?.conversation_id || '').trim();
-      if (isSettingsConversationId(convId)) {
-        handleSettingsSecureMessage();
-        return;
-      }
-      const liveJobCtx = buildLiveJobContext(msg, convId);
-      messagesFlowFacade.onWsIncomingMessageNew({
-        event: msg,
-        handleIncomingSecureMessage: getMessagesPane()?.handleIncomingSecureMessage
-      }, liveJobCtx);
-      return;
-    }
     if (type === 'secure-message' || type === 'message-new') {
       if (!isTargetingThisDevice(msg)) return;
       if (!msg?.senderDeviceId || !msg?.targetDeviceId) {

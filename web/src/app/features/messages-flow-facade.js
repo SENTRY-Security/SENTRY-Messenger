@@ -6,7 +6,7 @@ import { logCapped } from '../core/log.js';
 import { getDeviceId as storeGetDeviceId, getAccountDigest as storeGetAccountDigest } from '../core/store.js';
 import { maybeSendVaultAckWs, recordVaultAckCounter } from './messages/receipts.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
-import { appendUserMessage } from './timeline-store.js';
+
 import { startRestorePipeline } from './restore-coordinator.js';
 import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
 import { smartFetchMessages } from './messages-flow/hybrid-flow.js';
@@ -289,49 +289,7 @@ function createMessagesFlowFacade() {
       const normalizedMsgType = typeof rawMsgType === 'string'
         ? rawMsgType.replace(/-/g, '_').toLowerCase().trim() : null;
 
-      // Conversation-deleted signal — create tombstone + store cleanup + notify UI
-      if (event?.type === 'conversation-deleted' || normalizedMsgType === 'conversation_deleted') {
-        const convId = String(event?.conversationId || event?.conversation_id || '').trim();
-        const peerDigest = event?.senderAccountDigest || null;
-        if (convId) {
-          // Create tombstone BEFORE store cleanup so timeline has the barrier entry.
-          // Normalize timestamp: server sends Date.now() (ms), timeline ts expects seconds.
-          const tsRaw = Number(event?.ts ?? event?.timestamp) || Date.now();
-          const tsSeconds = tsRaw > 10_000_000_000 ? Math.floor(tsRaw / 1000) : Math.floor(tsRaw);
-          const tsMs = tsRaw > 10_000_000_000 ? tsRaw : tsRaw * 1000;
-          try {
-            appendUserMessage(convId, {
-              messageId: `tombstone-deleted-${convId}`,
-              msgType: 'conversation-deleted',
-              subtype: 'conversation-deleted',
-              text: '',
-              direction: 'incoming',
-              ts: tsSeconds,
-              tsMs,
-              conversationId: convId,
-              peerAccountDigest: peerDigest
-            });
-          } catch {}
-          // Mark thread as deleted (hidden from list) instead of removing it.
-          // Contact and conversation index remain so new messages can restore visibility.
-          try {
-            const thread = sessionStore.conversationThreads?.get?.(convId);
-            if (thread) {
-              thread.lastMsgType = 'conversation-deleted';
-              thread.lastMessageText = '';
-              thread.lastMessageTs = tsSeconds;
-              thread.previewLoaded = true;
-              thread.needsRefresh = false;
-            }
-          } catch (e) { console.error('[facade] conversation-deleted thread update failed', e); }
-          try {
-            document.dispatchEvent(new CustomEvent('sentry:conversation-deleted', {
-              detail: { conversationId: convId, peerDigest }
-            }));
-          } catch {}
-        }
-        return;
-      }
+
 
       // Receipt signals — dispatch to controller for UI update
       if (normalizedMsgType === 'read_receipt' || normalizedMsgType === 'delivery_receipt') {
