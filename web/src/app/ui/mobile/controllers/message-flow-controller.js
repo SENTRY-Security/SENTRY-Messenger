@@ -61,8 +61,11 @@ import { normalizePeerIdentity } from '../../../core/store.js';
 import { normalizeCounterValue, resolvePlaceholderSubtype } from '../../../features/messages/parser.js';
 import { CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES } from '../../../features/semantic.js';
 import { DEBUG } from '../debug-flags.js';
-import { upsertContactCore } from '../contact-core-store.js';
+import { upsertContactCore, removeContactCore } from '../contact-core-store.js';
 import { USE_MESSAGES_FLOW_UNIFIED } from '../../../features/messages-flow/flags.js';
+import { hideContactSecret } from '../../../core/contact-secrets.js';
+import { getConversationThreads } from '../../../features/conversation-updates.js';
+import { sessionStore as globalSessionStore } from '../session-store.js';
 
 export class MessageFlowController extends BaseController {
     constructor(deps) {
@@ -81,10 +84,21 @@ export class MessageFlowController extends BaseController {
 
         // [UNIFIED] Listen for control events dispatched by facade
         this._onConversationDeleted = (e) => {
-            const { conversationId, peerDigest } = e.detail || {};
+            const { conversationId, peerDigest, senderDigest } = e.detail || {};
             if (!conversationId) return;
+
+            // Data cleanup: mirror entry-incoming.js conversation-deleted handling
+            const resolvedPeerDigest = senderDigest || peerDigest;
+            globalSessionStore.deletedConversations?.add?.(conversationId);
+            getConversationThreads().delete(conversationId);
+            globalSessionStore.conversationIndex?.delete?.(conversationId);
+            if (resolvedPeerDigest) {
+                removeContactCore(resolvedPeerDigest, 'message-flow-controller:conversation-deleted');
+                hideContactSecret(resolvedPeerDigest);
+            }
+
             const state = this.getMessageState();
-            const isActive = state.activePeerDigest === peerDigest || state.conversationId === conversationId;
+            const isActive = state.activePeerDigest === resolvedPeerDigest || state.conversationId === conversationId;
             if (isActive) this.updateMessagesUI({ forceFullRender: true });
             this.deps.controllers?.conversationList?.syncFromContacts();
             this.deps.refreshContactsUnreadBadges?.();

@@ -1158,7 +1158,7 @@ export function initMessagesPane({
                 // Send Signal (Control Message)
                 // This ensures the peer knows to refresh/clear their view immediately.
                 await sendDrPlaintext({
-                  text: 'conversation-deleted',
+                  text: JSON.stringify({ type: 'conversation-deleted', clearCounter: currentCounter }),
                   // We must resolve peer info. 'key' is digest if normalized.
                   peerAccountDigest: key,
                   peerDeviceId: peerDeviceId, // Use cached peerDeviceId

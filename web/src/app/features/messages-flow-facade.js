@@ -26,6 +26,8 @@ import { MessageKeyVault } from './message-key-vault.js';
 import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
 import { getMkRaw as storeGetMkRaw } from '../core/store.js';
 import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
+import { setDeletionCursor } from './soft-deletion/deletion-api.js';
+import { clearConversationHistory } from './messages/cache.js';
 const LIVE_ROUTE_LOG_CAP = 5;
 const LIVE_MVP_RESULT_LOG_CAP = 5;
 let facadeWsSend = null;
@@ -40,6 +42,60 @@ const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
   fetchErrorsLength: 0
 });
 const DECISION_TRACE_LOG_CAP = 5;
+
+/**
+ * Handle conversation-deleted post-processing after live decrypt.
+ * Sets the peer's own deletion cursor on the server to match the initiator's cursor.
+ */
+function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
+  if (!conversationId || !decryptedMessage) return;
+  const msgType = decryptedMessage.msgType || decryptedMessage.type || '';
+  if (msgType !== 'conversation-deleted') return;
+
+  // Parse clearCounter from decrypted text payload
+  let clearCounter = null;
+  const rawText = decryptedMessage.text || '';
+  try {
+    if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
+      const parsed = JSON.parse(rawText);
+      if (Number.isFinite(parsed?.clearCounter)) {
+        clearCounter = parsed.clearCounter;
+      }
+    }
+  } catch {}
+
+  // Fallback: use the message's own counter (the tombstone counter itself)
+  if (clearCounter === null) {
+    const c = Number(decryptedMessage.counter ?? decryptedMessage.headerCounter);
+    if (Number.isFinite(c) && c > 0) {
+      // Use counter - 1 since the tombstone itself should remain visible
+      clearCounter = c > 1 ? c - 1 : c;
+    }
+  }
+
+  if (clearCounter !== null && clearCounter > 0) {
+    // Set server-side deletion cursor for our own account
+    setDeletionCursor(conversationId, clearCounter).catch(err => {
+      console.warn('[facade] setDeletionCursor for conversation-deleted failed', err?.message || err);
+    });
+
+    // Set local in-memory clear-after filter
+    const nowMs = Date.now();
+    clearConversationHistory(conversationId, nowMs);
+  }
+
+  // Dispatch DOM event for UI cleanup (thread removal, contact hiding)
+  try {
+    document.dispatchEvent(new CustomEvent('sentry:conversation-deleted', {
+      detail: {
+        conversationId,
+        clearCounter,
+        senderDigest: decryptedMessage.senderDigest || null
+      }
+    }));
+  } catch {}
+}
+
 const messagesFlowScrollFetch = createMessagesFlowScrollFetch();
 const maxCounterProbeQueue = createGapQueue({
   getLocalProcessedCounter: (conversationId) => getLocalProcessedCounter({ conversationId })
@@ -509,6 +565,13 @@ function createMessagesFlowFacade() {
                   tookMs: Number.isFinite(Number(liveResult?.tookMs)) ? Number(liveResult?.tookMs) : 0,
                   metrics: summarizeLiveMvpMetrics(liveResult?.metrics)
                 }, LIVE_MVP_RESULT_LOG_CAP);
+
+                // Post-process: handle conversation-deleted control messages
+                // Sets the peer's own deletion cursor to match the initiator's
+                if (liveResult?.ok && liveResult?.decryptedMessage) {
+                  const resolvedConvId = liveResult.conversationId || liveJobConversationId;
+                  handleConversationDeletedFromLive(resolvedConvId, liveResult.decryptedMessage);
+                }
               })
               .catch((err) => {
                 logCapped('liveMvpResultTrace', {

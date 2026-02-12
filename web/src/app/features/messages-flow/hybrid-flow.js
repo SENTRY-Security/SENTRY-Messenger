@@ -22,6 +22,8 @@ import { b64u8 as naclB64u8 } from '../../crypto/nacl.js';
 import { logCapped } from '../../core/log.js';
 import { createLiveStateAccess } from './live/state-live.js';
 import { createLiveLegacyAdapters } from './live/adapters/index.js';
+import { setDeletionCursor } from '../soft-deletion/deletion-api.js';
+import { clearConversationHistory } from '../messages/cache.js';
 
 const HYBRID_LOG_CAP = 5;
 const DEBUG = { drVerbose: true }; // [FIX] Define DEBUG to prevent ReferenceError
@@ -393,6 +395,30 @@ export async function smartFetchMessages({
 
                 if (subtype === 'conversation-deleted') {
                     item.msgType = 'conversation-deleted';
+                    // Set deletion cursor for peer's own account when encountering
+                    // a conversation-deleted tombstone during history fetch (offline scenario)
+                    let clearCounter = null;
+                    try {
+                        const rawText = item.text || '';
+                        if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
+                            const parsed = JSON.parse(rawText);
+                            if (Number.isFinite(parsed?.clearCounter)) {
+                                clearCounter = parsed.clearCounter;
+                            }
+                        }
+                    } catch {}
+                    if (clearCounter === null) {
+                        const itemCounter = Number(item.counter ?? item.n);
+                        if (Number.isFinite(itemCounter) && itemCounter > 1) {
+                            clearCounter = itemCounter - 1;
+                        }
+                    }
+                    if (conversationId && clearCounter !== null && clearCounter > 0) {
+                        setDeletionCursor(conversationId, clearCounter).catch(err => {
+                            console.warn('[hybrid-flow] setDeletionCursor for conversation-deleted failed', err?.message || err);
+                        });
+                        clearConversationHistory(conversationId, Date.now());
+                    }
                 }
 
                 const counter = Number(item.counter ?? item.n);

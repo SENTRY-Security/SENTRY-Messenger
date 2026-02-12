@@ -8,6 +8,7 @@ import {
     getConversationClearAfter,
     clearConversationHistory
 } from '../messages-support/conversation-clear-store.js';
+import { setDeletionCursor } from '../soft-deletion/deletion-api.js';
 import {
     ensurePeerAccountDigest,
     ensureConversationIndex,
@@ -201,6 +202,32 @@ export async function handleIncomingSecureMessage(event, deps) {
     if (event?.type === 'conversation-deleted' || normalizedControlType === CONTROL_MESSAGE_TYPES.CONVERSATION_DELETED) {
         const peerDigest = ensurePeerAccountDigest(event) || event?.senderAccountDigest;
 
+        // Parse clearCounter from control message payload (sent by initiator)
+        let clearCounter = null;
+        try {
+            const rawText = event?.text || event?.content?.text || event?.plaintext || '';
+            if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
+                const parsed = JSON.parse(rawText);
+                if (Number.isFinite(parsed?.clearCounter)) {
+                    clearCounter = parsed.clearCounter;
+                }
+            }
+        } catch {}
+        // Fallback: use event counter if clearCounter not in payload
+        if (clearCounter === null) {
+            const evtCounter = Number(event?.counter ?? event?.header?.counter ?? event?.header?.n);
+            if (Number.isFinite(evtCounter) && evtCounter > 0) {
+                clearCounter = evtCounter;
+            }
+        }
+
+        // Set server-side deletion cursor for our own account (mirroring the initiator's cursor)
+        if (convId && clearCounter !== null && clearCounter > 0) {
+            setDeletionCursor(convId, clearCounter).catch(err => {
+                console.warn('[entry-incoming] setDeletionCursor failed', err?.message || err);
+            });
+        }
+
         // Updates
         // Mark conversation as deleted in session store
         sessionStore.deletedConversations?.add?.(convId);
@@ -213,13 +240,10 @@ export async function handleIncomingSecureMessage(event, deps) {
             removeContactCore(peerDigest, 'entry-incoming:conversation-deleted');
         }
 
-        // Clear local message history cache (does not delete from server, but server filter handles that)
-        // MOVED TO RENDERER: We now use "Tombstone/Barrier" rendering so we need to keep the history 
-        // in memory (at least the tombstone) to render the separator.
-        // The renderer will slice off older messages.
-        // if (convId) {
-        //    clearConversationHistory(convId, tsRaw);
-        // }
+        // Set local clear-after filter so in-memory messages are also filtered
+        if (convId) {
+            clearConversationHistory(convId, tsRaw);
+        }
 
         // IMPORTANT: Do NOT clear DR state (clearDrState) or delete contact secret (deleteContactSecret).
         // We want to preserve the session so future messages can be decrypted.
