@@ -1142,6 +1142,17 @@ async function ensureDataTables(env) {
     } catch {
       missingColumns.push('message_key_vault.dr_state_snapshot');
     }
+    // Auto-add min_ts column to deletion_cursors (timestamp-based filtering)
+    try {
+      await env.DB.prepare(`SELECT min_ts FROM deletion_cursors LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE deletion_cursors ADD COLUMN min_ts REAL NOT NULL DEFAULT 0`).run();
+        console.log('ensureDataTables: added min_ts column to deletion_cursors');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: min_ts column add failed (may already exist)', alterErr?.message);
+      }
+    }
     if (missingTables.length || missingColumns.length) {
       const detail = [
         ...missingTables.map((name) => `table:${name}`),
@@ -2763,10 +2774,15 @@ async function handleMessagesRoutes(req, env) {
           FROM messages_secure
          WHERE conversation_id=?1
            ${cursorClause}
-           AND counter > COALESCE((
-             SELECT min_counter FROM deletion_cursors 
-             WHERE conversation_id=?1 AND account_digest=?${params.length + 1}
-           ), -1)
+           AND (
+             CASE
+               WHEN COALESCE((SELECT min_ts FROM deletion_cursors WHERE conversation_id=?1 AND account_digest=?${params.length + 1}), 0) > 0 THEN
+                 (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END)
+                   > (SELECT min_ts FROM deletion_cursors WHERE conversation_id=?1 AND account_digest=?${params.length + 1})
+               ELSE
+                 counter > COALESCE((SELECT min_counter FROM deletion_cursors WHERE conversation_id=?1 AND account_digest=?${params.length + 1}), -1)
+             END
+           )
          ORDER BY 
            (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END) DESC,
            counter DESC,
@@ -2925,6 +2941,8 @@ async function handleMessagesRoutes(req, env) {
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
     const targetDigest = normalizeAccountDigest(body?.targetDigest || body?.targetAccountDigest || body?.accountDigest);
     const minCounter = Number(body?.minCounter || body?.min_counter);
+    const minTsRaw = Number(body?.minTs || body?.min_ts || 0);
+    const minTs = Number.isFinite(minTsRaw) && minTsRaw > 0 ? minTsRaw : 0;
 
     // Security: Check if requester is allowed to mod this conversation? (Skip for now, internal trusted worker)
     if (!conversationId || !targetDigest || !Number.isFinite(minCounter)) {
@@ -2933,15 +2951,17 @@ async function handleMessagesRoutes(req, env) {
 
     await ensureDataTables(env);
     await env.DB.prepare(`
-      INSERT INTO deletion_cursors (conversation_id, account_digest, min_counter, updated_at)
-      VALUES (?1, ?2, ?3, ?4)
+      INSERT INTO deletion_cursors (conversation_id, account_digest, min_counter, min_ts, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5)
       ON CONFLICT(conversation_id, account_digest) DO UPDATE SET
-        min_counter = excluded.min_counter,
+        min_counter = MAX(deletion_cursors.min_counter, excluded.min_counter),
+        min_ts = MAX(deletion_cursors.min_ts, excluded.min_ts),
         updated_at = excluded.updated_at
       WHERE excluded.min_counter > deletion_cursors.min_counter
-    `).bind(conversationId, targetDigest, minCounter, Date.now()).run();
+         OR excluded.min_ts > deletion_cursors.min_ts
+    `).bind(conversationId, targetDigest, minCounter, minTs, Date.now()).run();
 
-    return json({ ok: true, minCounter });
+    return json({ ok: true, minCounter, minTs });
   }
 
   // Batch delete messages/attachments by id

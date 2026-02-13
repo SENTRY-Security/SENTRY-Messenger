@@ -202,14 +202,18 @@ export async function handleIncomingSecureMessage(event, deps) {
     if (event?.type === 'conversation-deleted' || normalizedControlType === CONTROL_MESSAGE_TYPES.CONVERSATION_DELETED) {
         const peerDigest = ensurePeerAccountDigest(event) || event?.senderAccountDigest;
 
-        // Parse clearCounter from control message payload (sent by initiator)
+        // Parse clearCounter and clearTimestamp from control message payload (sent by initiator)
         let clearCounter = null;
+        let clearTimestamp = 0;
         try {
             const rawText = event?.text || event?.content?.text || event?.plaintext || '';
             if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
                 const parsed = JSON.parse(rawText);
                 if (Number.isFinite(parsed?.clearCounter)) {
                     clearCounter = parsed.clearCounter;
+                }
+                if (Number.isFinite(parsed?.clearTimestamp) && parsed.clearTimestamp > 0) {
+                    clearTimestamp = parsed.clearTimestamp;
                 }
             }
         } catch {}
@@ -220,10 +224,15 @@ export async function handleIncomingSecureMessage(event, deps) {
                 clearCounter = evtCounter;
             }
         }
+        // Fallback for clearTimestamp: use the event's own timestamp
+        if (!clearTimestamp) {
+            const ts = Number(event?.ts ?? event?.timestamp ?? event?.created_at ?? 0);
+            if (ts > 0) clearTimestamp = ts > 100000000000 ? Math.floor(ts / 1000) : ts;
+        }
 
         // Set server-side deletion cursor for our own account (mirroring the initiator's cursor)
-        if (convId && clearCounter !== null && clearCounter > 0) {
-            setDeletionCursor(convId, clearCounter).catch(err => {
+        if (convId && ((clearCounter !== null && clearCounter > 0) || clearTimestamp > 0)) {
+            setDeletionCursor(convId, clearCounter || 0, { minTs: clearTimestamp }).catch(err => {
                 console.warn('[entry-incoming] setDeletionCursor failed', err?.message || err);
             });
         }

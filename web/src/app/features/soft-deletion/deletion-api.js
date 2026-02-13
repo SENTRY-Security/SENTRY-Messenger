@@ -1,7 +1,7 @@
 import { getAccountToken, getDeviceId } from '../../core/store.js';
 import { fetchWithTimeout, jsonReq } from '../../core/http.js';
 
-export async function setDeletionCursor(conversationId, counter) {
+export async function setDeletionCursor(conversationId, counter, { minTs = 0 } = {}) {
     if (!conversationId) throw new Error('conversationId required');
     const token = getAccountToken();
     if (!token) throw new Error('Not logged in');
@@ -11,7 +11,8 @@ export async function setDeletionCursor(conversationId, counter) {
 
     const payload = {
         conversation_id: conversationId,
-        min_counter: counter
+        min_counter: counter,
+        min_ts: Number.isFinite(minTs) && minTs > 0 ? minTs : 0
     };
 
     const headers = {

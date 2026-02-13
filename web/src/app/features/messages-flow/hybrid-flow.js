@@ -396,14 +396,19 @@ export async function smartFetchMessages({
                 if (subtype === 'conversation-deleted') {
                     item.msgType = 'conversation-deleted';
                     // Set deletion cursor for peer's own account when encountering
-                    // a conversation-deleted tombstone during history fetch (offline scenario)
+                    // a conversation-deleted tombstone during history fetch (offline scenario).
+                    // Uses timestamp-based filtering for correct cross-sender deletion.
                     let clearCounter = null;
+                    let clearTimestamp = 0;
                     try {
                         const rawText = item.text || '';
                         if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
                             const parsed = JSON.parse(rawText);
                             if (Number.isFinite(parsed?.clearCounter)) {
                                 clearCounter = parsed.clearCounter;
+                            }
+                            if (Number.isFinite(parsed?.clearTimestamp) && parsed.clearTimestamp > 0) {
+                                clearTimestamp = parsed.clearTimestamp;
                             }
                         }
                     } catch {}
@@ -413,8 +418,13 @@ export async function smartFetchMessages({
                             clearCounter = itemCounter - 1;
                         }
                     }
-                    if (conversationId && clearCounter !== null && clearCounter > 0) {
-                        setDeletionCursor(conversationId, clearCounter).catch(err => {
+                    // Fallback for clearTimestamp: use the item's own timestamp
+                    if (!clearTimestamp) {
+                        const ts = Number(item.ts ?? item.timestamp ?? item.created_at ?? 0);
+                        if (ts > 0) clearTimestamp = ts > 100000000000 ? Math.floor(ts / 1000) : ts;
+                    }
+                    if (conversationId && ((clearCounter !== null && clearCounter > 0) || clearTimestamp > 0)) {
+                        setDeletionCursor(conversationId, clearCounter || 0, { minTs: clearTimestamp }).catch(err => {
                             console.warn('[hybrid-flow] setDeletionCursor for conversation-deleted failed', err?.message || err);
                         });
                         clearConversationHistory(conversationId, Date.now());

@@ -46,20 +46,26 @@ const DECISION_TRACE_LOG_CAP = 5;
 /**
  * Handle conversation-deleted post-processing after live decrypt.
  * Sets the peer's own deletion cursor on the server to match the initiator's cursor.
+ * Uses timestamp-based filtering (clearTimestamp) for correct cross-sender deletion,
+ * with counter-based fallback for backward compatibility.
  */
 function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
   if (!conversationId || !decryptedMessage) return;
   const msgType = decryptedMessage.msgType || decryptedMessage.type || '';
   if (msgType !== 'conversation-deleted') return;
 
-  // Parse clearCounter from decrypted text payload
+  // Parse clearCounter and clearTimestamp from decrypted text payload
   let clearCounter = null;
+  let clearTimestamp = 0;
   const rawText = decryptedMessage.text || '';
   try {
     if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
       const parsed = JSON.parse(rawText);
       if (Number.isFinite(parsed?.clearCounter)) {
         clearCounter = parsed.clearCounter;
+      }
+      if (Number.isFinite(parsed?.clearTimestamp) && parsed.clearTimestamp > 0) {
+        clearTimestamp = parsed.clearTimestamp;
       }
     }
   } catch {}
@@ -73,9 +79,15 @@ function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
     }
   }
 
-  if (clearCounter !== null && clearCounter > 0) {
-    // Set server-side deletion cursor for our own account
-    setDeletionCursor(conversationId, clearCounter).catch(err => {
+  // Fallback for clearTimestamp: use the message's own timestamp
+  if (!clearTimestamp) {
+    const ts = Number(decryptedMessage.ts ?? decryptedMessage.timestamp ?? 0);
+    if (ts > 0) clearTimestamp = ts > 100000000000 ? Math.floor(ts / 1000) : ts;
+  }
+
+  if ((clearCounter !== null && clearCounter > 0) || clearTimestamp > 0) {
+    // Set server-side deletion cursor for our own account (with timestamp)
+    setDeletionCursor(conversationId, clearCounter || 0, { minTs: clearTimestamp }).catch(err => {
       console.warn('[facade] setDeletionCursor for conversation-deleted failed', err?.message || err);
     });
 
@@ -90,6 +102,7 @@ function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
       detail: {
         conversationId,
         clearCounter,
+        clearTimestamp,
         senderDigest: decryptedMessage.senderDigest || null
       }
     }));

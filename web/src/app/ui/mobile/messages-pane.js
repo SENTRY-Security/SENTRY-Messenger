@@ -1140,28 +1140,36 @@ export function initMessagesPane({
 
           const state = getMessageState();
           const lastMsg = state.messages && state.messages.length > 0 ? state.messages[state.messages.length - 1] : null;
-          const currentCounter = lastMsg ? (lastMsg.counter || 0) : 0;
+          // Compute max counter across ALL messages (counter is per-sender, so we need the global max)
+          let maxCounter = 0;
+          for (const msg of (state.messages || [])) {
+            const c = Number(msg.counter || 0);
+            if (c > maxCounter) maxCounter = c;
+          }
+          const currentCounter = maxCounter || (lastMsg ? (lastMsg.counter || 0) : 0);
+          // Compute deletion timestamp: use last message's timestamp (seconds) for cross-sender filtering
+          const lastMsgTs = lastMsg
+            ? (Number(lastMsg.ts) || Math.floor(Number(lastMsg.tsMs || 0) / 1000) || 0)
+            : 0;
+          const clearTimestamp = lastMsgTs > 0 ? lastMsgTs : Math.floor(Date.now() / 1000);
 
           // 1. Set Deletion Cursor (Server filters future fetches)
-          if (currentCounter > 0) {
-            // Update Self Cursor
-            await setDeletionCursor(conversationId, currentCounter);
+          if (currentCounter > 0 || clearTimestamp > 0) {
+            // Update Self Cursor (with timestamp for correct cross-sender filtering)
+            await setDeletionCursor(conversationId, currentCounter, { minTs: clearTimestamp });
 
             // Update Peer Cursor (Bi-directional)
             if (key) {
-              // Fire and forget peer update to avoid blocking UI? Or await?
-              // Await ensures consistency but might be slow.
-              // We will await.
               try {
                 await setPeerDeletionCursor(conversationId, key, currentCounter);
 
                 // Send Signal (Control Message)
                 // This ensures the peer knows to refresh/clear their view immediately.
+                // Include clearTimestamp so the peer uses timestamp-based filtering too.
                 await sendDrPlaintext({
-                  text: JSON.stringify({ type: 'conversation-deleted', clearCounter: currentCounter }),
-                  // We must resolve peer info. 'key' is digest if normalized.
+                  text: JSON.stringify({ type: 'conversation-deleted', clearCounter: currentCounter, clearTimestamp }),
                   peerAccountDigest: key,
-                  peerDeviceId: peerDeviceId, // Use cached peerDeviceId
+                  peerDeviceId: peerDeviceId,
                   conversationId: conversationId,
                   messageId: crypto.randomUUID(),
                   metaOverrides: {
