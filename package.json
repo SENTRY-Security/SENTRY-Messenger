@@ -16,7 +16,8 @@
     "test:front:call-audio": "npx playwright test tests/e2e/call-audio.spec.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.56.0"
+    "@playwright/test": "^1.56.0",
+    "wrangler": "^4.65.0"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.890.0",
