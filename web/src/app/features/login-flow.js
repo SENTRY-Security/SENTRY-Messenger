@@ -235,7 +235,7 @@ export async function exchangeSDM(p) {
  * @param {{password:string}} p
  * @returns {Promise<{unlocked:boolean, initialized:boolean, replenished:boolean, next_opk_id?:number}>}
  */
-export async function unlockAndInit({ password, onProgress, onMkReady } = {}) {
+export async function unlockAndInit({ password, onProgress, onMkReady, preBundle, onDeviceReady } = {}) {
   const pwd = String(password || '');
   if (!pwd) throw new Error('password required');
   const initialSession = getSession();
@@ -521,18 +521,28 @@ export async function unlockAndInit({ password, onProgress, onMkReady } = {}) {
     if (hadWrappedMK && !fallbackWrappedDev) {
       try { console.warn('[login-flow] device backup missing; regenerating bundle'); } catch { }
     }
-    // full init path: generate bundle (+100), publish, store backup
+    // full init path: generate bundle, publish, store backup
     try {
       report('generate-bundle', 'start');
       const deviceId = getDeviceId() || crypto.randomUUID();
       setDeviceId(deviceId);
       try { console.log('[login-flow] deviceId:set:init', deviceId); } catch { }
-      const { devicePriv, bundlePub } = await generateInitialBundle(1, 50);
+      // Use pre-generated bundle if available (generated during idle time)
+      let devicePriv, bundlePub;
+      const preBundleResult = preBundle ? await preBundle : null;
+      if (preBundleResult?.devicePriv && preBundleResult?.bundlePub) {
+        ({ devicePriv, bundlePub } = preBundleResult);
+        report('generate-bundle', 'success', { opkCount: bundlePub?.opks?.length || 0, preGenerated: true });
+      } else {
+        ({ devicePriv, bundlePub } = await generateInitialBundle(1, 50));
+        report('generate-bundle', 'success', { opkCount: bundlePub?.opks?.length || 0 });
+      }
       devicePriv.device_id = deviceId;
       devicePriv.deviceId = deviceId;
-      report('generate-bundle', 'success', { opkCount: bundlePub?.opks?.length || 0 });
       setDevicePriv(devicePriv);
       await runStep('prekeys-publish', () => publishBundle(bundlePub, { devicePriv, deviceId }));
+      // Fire onDeviceReady: profile init can start in parallel with wrap + store
+      if (typeof onDeviceReady === 'function') { try { onDeviceReady({ evidence }); } catch { } }
       const wrapped_dev = await runStep('wrap-device', () => wrapDevicePrivWithMK(devicePriv, getMkRaw()));
       await runStep('devkeys-store', () => storeDevkeys(initialSession, wrapped_dev));
       initialized = true;

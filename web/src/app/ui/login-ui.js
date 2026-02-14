@@ -34,6 +34,7 @@ import { triggerContactSecretsBackup, hydrateContactSecretsFromBackup } from '..
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
 import { initProfileDefaultsOnce } from '../features/profile.js';
 import { loadArgon2 } from '../crypto/kdf.js';
+import { generateInitialBundle } from '../crypto/prekeys.js';
 import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
 
 function summarizeMkForLog(mkRaw) {
@@ -667,6 +668,8 @@ function prefetchAppResources() {
   }
 }
 
+let preBundlePromise = null;
+
 function markVerifiedUI() {
   setPasswordAreaVisible(true);
   if (pwdEl) {
@@ -680,6 +683,10 @@ function markVerifiedUI() {
   loadArgon2().catch(() => {});
   // Prefetch app.html resources during password-typing idle time
   prefetchAppResources();
+  // Pre-generate keypair bundle for new accounts during idle time
+  if (!getHasMK() && !preBundlePromise) {
+    preBundlePromise = generateInitialBundle(1, 50).catch(() => null);
+  }
 }
 
 function setUidVerifyingState(active) {
@@ -852,8 +859,12 @@ async function onUnlock() {
     loginInProgress = true;
     showLoading(newAccount ? '正在建立安全環境…' : '登入中，請稍候…');
     let contactRestorePromise = null;
+    let profileInitPromise = null;
+    const currentPreBundle = newAccount ? preBundlePromise : undefined;
+    preBundlePromise = null; // consumed; re-generated on next exchange if needed
     const r = await unlockAndInit({
       password: pwd,
+      preBundle: currentPreBundle,
       onProgress: (step, status, detail) => {
         updateBootstrapStep(step, status, detail);
       },
@@ -876,6 +887,35 @@ async function onUnlock() {
               log({ contactRestoreError: err?.message || err });
               updateBootstrapStep('contact-restore', 'error', '還原失敗');
               return { ok: false };
+            });
+        }
+      },
+      onDeviceReady: (info) => {
+        // Start profile init early — runs in parallel with wrapDevice + storeDevkeys
+        if (newAccount) {
+          updateBootstrapStep('nickname-init', 'start');
+          updateBootstrapStep('avatar-init', 'start');
+          profileInitPromise = initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: info?.evidence || null })
+            .then((result) => {
+              if (result?.skipped) {
+                const reason = result.reason || '已存在暱稱/頭像';
+                updateBootstrapStep('nickname-init', 'skip', reason);
+                updateBootstrapStep('avatar-init', 'skip', reason);
+              } else {
+                updateBootstrapStep('nickname-init', 'success');
+                if (result?.avatarWritten) {
+                  updateBootstrapStep('avatar-init', 'success');
+                } else {
+                  updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+                }
+              }
+              return result;
+            })
+            .catch((err) => {
+              const msg = err?.message || err;
+              updateBootstrapStep('nickname-init', 'error', msg);
+              updateBootstrapStep('avatar-init', 'error', msg);
+              return { _profileError: err };
             });
         }
       }
@@ -906,28 +946,35 @@ async function onUnlock() {
     } catch (err) {
       log({ deviceIdStorageError: err?.message || err });
     }
+    // Await profile init started in onDeviceReady (parallel with wrapDevice + storeDevkeys)
     if (newAccount) {
-      updateBootstrapStep('nickname-init', 'start');
-      updateBootstrapStep('avatar-init', 'start');
-      try {
-        const result = await initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: r?.evidence || null });
-        if (result?.skipped) {
-          const reason = result.reason || '已存在暱稱/頭像';
-          updateBootstrapStep('nickname-init', 'skip', reason);
-          updateBootstrapStep('avatar-init', 'skip', reason);
-        } else {
-          updateBootstrapStep('nickname-init', 'success');
-          if (result?.avatarWritten) {
-            updateBootstrapStep('avatar-init', 'success');
+      if (profileInitPromise) {
+        const result = await profileInitPromise;
+        if (result?._profileError) throw result._profileError;
+      } else {
+        // Fallback: onDeviceReady was not called (e.g. existing backup path)
+        updateBootstrapStep('nickname-init', 'start');
+        updateBootstrapStep('avatar-init', 'start');
+        try {
+          const result = await initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: r?.evidence || null });
+          if (result?.skipped) {
+            const reason = result.reason || '已存在暱稱/頭像';
+            updateBootstrapStep('nickname-init', 'skip', reason);
+            updateBootstrapStep('avatar-init', 'skip', reason);
           } else {
-            updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+            updateBootstrapStep('nickname-init', 'success');
+            if (result?.avatarWritten) {
+              updateBootstrapStep('avatar-init', 'success');
+            } else {
+              updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+            }
           }
+        } catch (err) {
+          const msg = err?.message || err;
+          updateBootstrapStep('nickname-init', 'error', msg);
+          updateBootstrapStep('avatar-init', 'error', msg);
+          throw err;
         }
-      } catch (err) {
-        const msg = err?.message || err;
-        updateBootstrapStep('nickname-init', 'error', msg);
-        updateBootstrapStep('avatar-init', 'error', msg);
-        throw err;
       }
     }
     await emitIdentityTrace('login-ui:post-unlock');
