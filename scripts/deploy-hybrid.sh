@@ -19,10 +19,12 @@ PM2_ENTRY="src/server.js"
 
 echo "🚀 Starting Hybrid Deployment..."
 
-# 1. Cloudflare Workers (Data API) - Local Deploy
+# 1. Cloudflare Workers (Data API) - Migrate & Deploy
 echo "⚡️ Deploying Data Worker..."
 if [ -d "$WORKER_DIR" ]; then
   cd "$WORKER_DIR"
+  echo "   - Applying D1 migrations (remote)..."
+  npx wrangler d1 migrations apply message_db --remote
   npx wrangler deploy
   cd ..
 else
