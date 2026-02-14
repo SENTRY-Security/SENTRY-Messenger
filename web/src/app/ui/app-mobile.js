@@ -2239,7 +2239,7 @@ postLoginInitPromise
     return messagesPane.refreshConversationPreviews({ force: true });
   })
   .catch((err) => log({ contactsInitError: err?.message || err }))
-  .finally(() => {
+  .finally(async () => {
     messagesPane.renderConversationList();
     messagesFlowFacade.onLoginResume({ source: 'login', runOfflineCatchup: false });
     flushOutbox({ sourceTag: 'post_login' }).catch(() => { });
@@ -2248,6 +2248,8 @@ postLoginInitPromise
     hydrateProfileSnapshots().catch((err) => log({ profileHydrateStartError: err?.message || err }));
     logRestoreOverview({ reason: 'post-login' });
     messagesFlowFacade.onLoginResume({ source: 'login', runRestore: false, runOfflineDecrypt: false });
+    // Ensure profile (identicon/avatar) is loaded before dismissing modal
+    await profileInitPromise.catch(() => { });
     // --- Loading Modal: hydration done → dismiss ---
     window.__updateLoadingProgress?.('ready');
     setTimeout(() => window.__hideLoadingModal?.(), 350);
