@@ -434,20 +434,28 @@ const transitionBar = document.getElementById('loginTransitionBar');
 const transitionLabel = document.getElementById('loginTransitionLabel');
 
 // --- Unified white loading modal (progress bar + label) ---
-// Step-to-progress mapping: login phase covers 0% → 5%, then app.html continues from 5%.
+// Login phase covers 0%→70%, app.html continues from 70%→100%.
+// New-account path: opaque → wrap-mk → mk-store → generate-bundle → prekeys-publish
+//   → wrap-device → devkeys-store → nickname-init → avatar-init
+// Existing-account path: opaque → wrap-mk → mk-store → devkeys-fetch → prekeys-sync
+//   → contact-restore
+// Both paths span 0%→70% since flow-specific steps occupy non-overlapping ranges.
 const STEP_PROGRESS = {
-  'opaque':          { start: 0.5, done: 1,   label: '驗證帳戶中…' },
-  'wrap-mk':         { start: 1,   done: 1.5, label: '保護主金鑰…' },
-  'mk-store':        { start: 1.5, done: 2,   label: '儲存主金鑰…' },
-  'devkeys-fetch':   { start: 2,   done: 2.5, label: '讀取裝置備份…' },
-  'prekeys-sync':    { start: 2.5, done: 3.5, label: '同步加密金鑰…' },
-  'generate-bundle': { start: 2,   done: 2.5, label: '產生加密金鑰…' },
-  'prekeys-publish': { start: 2.5, done: 3,   label: '上傳加密金鑰…' },
-  'wrap-device':     { start: 3,   done: 3.5, label: '備份裝置金鑰…' },
-  'devkeys-store':   { start: 3.5, done: 4,   label: '儲存裝置備份…' },
-  'nickname-init':   { start: 4,   done: 4.5, label: '設定暱稱…' },
-  'avatar-init':     { start: 4.5, done: 5,   label: '設定頭像…' },
-  'contact-restore': { start: 3.5, done: 5,   label: '還原聯絡人…' },
+  // Shared steps (0% → 20%)
+  'opaque':          { start: 2,  done: 10, label: '驗證帳戶中…' },
+  'wrap-mk':         { start: 10, done: 16, label: '保護主金鑰…' },
+  'mk-store':        { start: 16, done: 20, label: '儲存主金鑰…' },
+  // New-account only (20% → 70%)
+  'generate-bundle': { start: 20, done: 30, label: '產生加密金鑰…' },
+  'prekeys-publish': { start: 30, done: 40, label: '上傳加密金鑰…' },
+  'wrap-device':     { start: 40, done: 48, label: '備份裝置金鑰…' },
+  'devkeys-store':   { start: 48, done: 54, label: '儲存裝置備份…' },
+  'nickname-init':   { start: 54, done: 62, label: '設定暱稱…' },
+  'avatar-init':     { start: 62, done: 70, label: '設定頭像…' },
+  // Existing-account only (20% → 70%)
+  'devkeys-fetch':   { start: 20, done: 32, label: '讀取裝置備份…' },
+  'prekeys-sync':    { start: 32, done: 50, label: '同步加密金鑰…' },
+  'contact-restore': { start: 50, done: 70, label: '還原聯絡人…' },
 };
 let currentProgress = 0;
 
@@ -919,8 +927,8 @@ async function onUnlock() {
       }
     }
     updateUidDisplay();
-    // Set progress to 5% (matches app.html initial bar-fill) for seamless visual handoff
-    setTransitionProgress(5, '載入中…');
+    // Set progress to 70% (matches app.html initial bar-fill) for seamless visual handoff
+    setTransitionProgress(70, '載入中…');
     // handoff MK/UID to next page (sessionStorage, same-tab only)
     try {
       const mk = getMkRaw();
