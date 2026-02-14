@@ -496,18 +496,41 @@ function setTransitionProgress(pct, label) {
   if (transitionLabel && label) transitionLabel.textContent = label;
 }
 
+// Step sequences for looking up the next step after 'success'
+const STEP_SEQUENCES = [
+  ['opaque','wrap-mk','mk-store','generate-bundle','prekeys-publish','wrap-device','devkeys-store','nickname-init','avatar-init'],
+  ['opaque','wrap-mk','mk-store','devkeys-fetch','prekeys-sync','contact-restore']
+];
+
+function getNextStepTarget(currentStep) {
+  for (const seq of STEP_SEQUENCES) {
+    const idx = seq.indexOf(currentStep);
+    if (idx >= 0 && idx < seq.length - 1) {
+      return STEP_PROGRESS[seq[idx + 1]]?.done;
+    }
+  }
+  return null;
+}
+
 function updateBootstrapStep(step, status) {
   const def = STEP_PROGRESS[step];
   if (!def) return;
   if (status === 'start') {
     // Snap to start value, update label, then slowly fill toward done
+    stopSlowFill();
     if (def.start > currentProgress) currentProgress = def.start;
     setBarWidth(currentProgress);
     if (transitionLabel) transitionLabel.textContent = def.label;
     startSlowFill(def.done);
   } else if (status === 'success' || status === 'skip' || status === 'info') {
-    // Snap to done value immediately
-    setTransitionProgress(def.done, null);
+    // Snap to done value, then bridge-fill toward next step's target
+    stopSlowFill();
+    if (def.done > currentProgress) currentProgress = def.done;
+    setBarWidth(currentProgress);
+    const nextTarget = getNextStepTarget(step);
+    if (nextTarget && currentProgress < nextTarget) {
+      startSlowFill(nextTarget);
+    }
   }
   // error status: keep current progress/label — hideLoading will dismiss modal
 }
