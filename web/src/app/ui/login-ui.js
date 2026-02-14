@@ -432,6 +432,9 @@ if (getSession() || getHasMK() || getWrappedMK()) {
 const loadingBackdrop = document.getElementById('loginLoading'); const loadingTextEl = document.getElementById('loginLoadingText');
 const bootstrapProgressEl = document.getElementById('loginBootstrapProgress');
 const bootstrapStepsListEl = document.getElementById('loginBootstrapSteps');
+const transitionModal = document.getElementById('loginTransitionModal');
+const transitionBar = document.getElementById('loginTransitionBar');
+const transitionLabel = document.getElementById('loginTransitionLabel');
 const bootstrapStepDefs = [
   { key: 'opaque', label: '驗證帳戶（OPAQUE）' },
   { key: 'wrap-mk', label: '保護主金鑰' },
@@ -573,6 +576,11 @@ function updateLoading(message) {
 function hideLoading() {
   if (loadingBackdrop) loadingBackdrop.classList.add('hidden');
   if (unlockBtn) unlockBtn.disabled = false;
+}
+
+function showTransitionModal() {
+  if (transitionModal) transitionModal.classList.remove('hidden');
+  if (loadingBackdrop) loadingBackdrop.classList.add('hidden');
 }
 
 function showWelcomeModal() {
@@ -1004,7 +1012,8 @@ async function onUnlock() {
       }
     }
     updateUidDisplay();
-    updateLoading('登入成功，正在導向…');
+    // Seamless transition: show white loading modal identical to app.html before redirect
+    showTransitionModal();
     // handoff MK/UID to next page (sessionStorage, same-tab only)
     try {
       const mk = getMkRaw();
@@ -1076,8 +1085,10 @@ async function onUnlock() {
         log({ contactSecretHandoffError: err?.message || err });
       }
     } catch { }
-    setTimeout(() => location.replace(window.location.origin + '/pages/app.html'), 300);
+    // sessionStorage is synchronous — redirect immediately for seamless transition
+    location.replace(window.location.origin + '/pages/app.html');
   } catch (e) {
+    if (transitionModal) transitionModal.classList.add('hidden');
     hideLoading();
     loginInProgress = false;
     log({ unlockError: String(e?.message || e) });
