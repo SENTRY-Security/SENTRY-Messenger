@@ -138,6 +138,11 @@ body.iv-open {
 /* Fabric.js canvas wrapper override */
 .iv-canvas-stage .canvas-container {
   margin: auto !important;
+  touch-action: none;
+}
+
+.iv-canvas-stage .canvas-container canvas {
+  touch-action: none;
 }
 
 .iv-crop-img {

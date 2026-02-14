@@ -16,10 +16,12 @@ let fabricLibPromise = null;
 
 async function getFabric() {
   if (fabricLibPromise) return fabricLibPromise;
-  fabricLibPromise = import('https://cdn.jsdelivr.net/npm/fabric@6/+esm')
+  fabricLibPromise = import('https://cdn.jsdelivr.net/npm/fabric@6/dist/index.min.mjs')
     .then(mod => {
-      // Handle different module structures (ESM default export vs namespace)
-      const ns = mod.default || mod.fabric || mod;
+      // Fabric.js v6 ESM uses named exports: { Canvas, PencilBrush, FabricImage, ... }
+      // The +esm wrapper may wrap them under mod.default; fall back to mod itself.
+      const ns = mod.default || mod;
+      if (!ns.Canvas) throw new Error('Fabric.js module missing Canvas export');
       return ns;
     })
     .catch(err => { fabricLibPromise = null; throw err; });
@@ -312,7 +314,7 @@ export async function openImageViewer(opts) {
       currentBrushColor = color;
       colorRow.querySelectorAll('.iv-color-dot').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      if (fabricCanvas) {
+      if (fabricCanvas?.freeDrawingBrush) {
         fabricCanvas.freeDrawingBrush.color = color;
       }
     });
@@ -329,7 +331,7 @@ export async function openImageViewer(opts) {
       currentBrushSize = size;
       sizeRow.querySelectorAll('.iv-size-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      if (fabricCanvas) {
+      if (fabricCanvas?.freeDrawingBrush) {
         fabricCanvas.freeDrawingBrush.width = size;
       }
     });
@@ -381,6 +383,7 @@ export async function openImageViewer(opts) {
       if (!editorOpen) return; // Aborted during CDN load
       const FabricCanvas = fabric.Canvas;
       const FabricImage = fabric.FabricImage || fabric.Image;
+      const FabricPencilBrush = fabric.PencilBrush;
 
       // Wait for image to load fully
       await new Promise((resolve) => {
@@ -438,20 +441,34 @@ export async function openImageViewer(opts) {
       fabricCanvas.backgroundImage = fabricImg;
       fabricCanvas.renderAll();
 
-      // Ensure touch-action: none on Fabric.js upper canvas for mobile drawing
-      const upperCanvas = fabricCanvas.upperCanvasEl || fabricCanvas.wrapperEl?.querySelector('.upper-canvas');
-      if (upperCanvas) upperCanvas.style.touchAction = 'none';
-      const wrapperEl = fabricCanvas.wrapperEl || canvas.parentElement;
-      if (wrapperEl) wrapperEl.style.touchAction = 'none';
+      // Ensure touch-action: none on ALL Fabric.js canvas elements for mobile drawing.
+      // Fabric.js v6 wraps the original canvas in .canvas-container and creates an
+      // upper-canvas for interaction. Without touch-action: none the browser intercepts
+      // touch-move events for scrolling before Fabric.js can use them for drawing.
+      const wrapper = fabricCanvas.wrapperEl || canvas.parentElement;
+      if (wrapper) {
+        wrapper.style.touchAction = 'none';
+        for (const child of wrapper.querySelectorAll('canvas')) {
+          child.style.touchAction = 'none';
+        }
+      }
 
-      // Set up brush (lazy-init: Fabric.js v6 only creates freeDrawingBrush when isDrawingMode=true)
-      if (!fabricCanvas.freeDrawingBrush) {
+      // Explicitly create PencilBrush — Fabric.js v6 does NOT reliably auto-create
+      // freeDrawingBrush when isDrawingMode is toggled. The recommended v6 approach
+      // is to construct PencilBrush manually and assign it.
+      if (FabricPencilBrush) {
+        const brush = new FabricPencilBrush(fabricCanvas);
+        brush.color = currentBrushColor;
+        brush.width = currentBrushSize;
+        fabricCanvas.freeDrawingBrush = brush;
+      } else {
+        // Fallback: force lazy creation
         fabricCanvas.isDrawingMode = true;
         fabricCanvas.isDrawingMode = false;
-      }
-      if (fabricCanvas.freeDrawingBrush) {
-        fabricCanvas.freeDrawingBrush.color = currentBrushColor;
-        fabricCanvas.freeDrawingBrush.width = currentBrushSize;
+        if (fabricCanvas.freeDrawingBrush) {
+          fabricCanvas.freeDrawingBrush.color = currentBrushColor;
+          fabricCanvas.freeDrawingBrush.width = currentBrushSize;
+        }
       }
 
       // Save initial state
@@ -585,8 +602,10 @@ export async function openImageViewer(opts) {
     brushBar.style.display = '';
     if (fabricCanvas) {
       fabricCanvas.isDrawingMode = true;
-      fabricCanvas.freeDrawingBrush.color = currentBrushColor;
-      fabricCanvas.freeDrawingBrush.width = currentBrushSize;
+      if (fabricCanvas.freeDrawingBrush) {
+        fabricCanvas.freeDrawingBrush.color = currentBrushColor;
+        fabricCanvas.freeDrawingBrush.width = currentBrushSize;
+      }
     }
   };
 
