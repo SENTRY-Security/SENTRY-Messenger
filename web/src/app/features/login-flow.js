@@ -235,7 +235,7 @@ export async function exchangeSDM(p) {
  * @param {{password:string}} p
  * @returns {Promise<{unlocked:boolean, initialized:boolean, replenished:boolean, next_opk_id?:number}>}
  */
-export async function unlockAndInit({ password, onProgress } = {}) {
+export async function unlockAndInit({ password, onProgress, onMkReady } = {}) {
   const pwd = String(password || '');
   if (!pwd) throw new Error('password required');
   const initialSession = getSession();
@@ -341,6 +341,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       setMkRaw(mk);
       emitMkSetTrace('login:unwrap-existing', mk);
       unlocked = true;
+      if (typeof onMkReady === 'function') { try { onMkReady(); } catch { } }
     } catch (e) {
       const mkSummary = await summarizeMkForLog(getMkRaw());
       log({
@@ -407,6 +408,7 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       report('mk-store', 'success');
       setSession(null); setHasMK(true); setWrappedMK(wrapped_mk);
       unlocked = true; initialized = true;
+      if (typeof onMkReady === 'function') { try { onMkReady(); } catch { } }
     } catch (e) {
       if (!initialized) {
         const message = asMsg(e);

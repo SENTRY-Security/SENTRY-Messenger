@@ -823,10 +823,33 @@ async function onUnlock() {
     }
     loginInProgress = true;
     showLoading(newAccount ? '正在建立安全環境…' : '登入中，請稍候…');
+    let contactRestorePromise = null;
     const r = await unlockAndInit({
       password: pwd,
       onProgress: (step, status, detail) => {
         updateBootstrapStep(step, status, detail);
+      },
+      onMkReady: () => {
+        // Start contact restore early — runs in parallel with prekey operations
+        if (!newAccount) {
+          updateBootstrapStep('contact-restore', 'start');
+          contactRestorePromise = hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' })
+            .then((res) => {
+              if (res.ok) {
+                updateBootstrapStep('contact-restore', 'success', `還原 ${res.entries} 筆資料`);
+              } else if (res.status === 404) {
+                updateBootstrapStep('contact-restore', 'info', '無備份資料');
+              } else {
+                updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+              }
+              return res;
+            })
+            .catch((err) => {
+              log({ contactRestoreError: err?.message || err });
+              updateBootstrapStep('contact-restore', 'error', '還原失敗');
+              return { ok: false };
+            });
+        }
       }
     });
     log({ unlocked: r.unlocked, initialized: r.initialized, replenished: r.replenished, next_opk_id: r.next_opk_id });
@@ -888,20 +911,25 @@ async function onUnlock() {
       throw err;
     }
     if (!newAccount) {
-      updateBootstrapStep('contact-restore', 'start');
-      try {
-        const restoreRes = await hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' });
-        if (restoreRes.ok) {
-          updateBootstrapStep('contact-restore', 'success', `還原 ${restoreRes.entries} 筆資料`);
-        } else if (restoreRes.status === 404) {
-          updateBootstrapStep('contact-restore', 'info', '無備份資料');
-        } else {
-          updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+      // Await contact restore started in onMkReady (parallel with prekeys)
+      if (contactRestorePromise) {
+        await contactRestorePromise;
+      } else {
+        // Fallback: onMkReady was not called (should not happen)
+        updateBootstrapStep('contact-restore', 'start');
+        try {
+          const restoreRes = await hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' });
+          if (restoreRes.ok) {
+            updateBootstrapStep('contact-restore', 'success', `還原 ${restoreRes.entries} 筆資料`);
+          } else if (restoreRes.status === 404) {
+            updateBootstrapStep('contact-restore', 'info', '無備份資料');
+          } else {
+            updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+          }
+        } catch (err) {
+          log({ contactRestoreError: err?.message || err });
+          updateBootstrapStep('contact-restore', 'error', '還原失敗');
         }
-      } catch (err) {
-        log({ contactRestoreError: err?.message || err });
-        updateBootstrapStep('contact-restore', 'error', '還原失敗');
-        // Non-critical, continue
       }
     }
     updateUidDisplay();

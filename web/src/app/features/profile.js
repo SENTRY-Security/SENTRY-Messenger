@@ -621,9 +621,13 @@ export async function initProfileDefaultsOnce({ uidHex, evidence, sourceTag = PR
   const normalized = normalizeNickname(generated);
   if (!normalized) throw new Error('nickname generation failed');
   const now = Date.now();
+  // Start identicon render in parallel with nickname save
+  const identiconPromise = buildIdenticonImage(uidHex, { size: 512, format: 'image/png', quality: 0.92 });
+  identiconPromise.catch(() => {}); // prevent unhandled rejection if nickname save fails
   const savedNickname = await saveProfile({ nickname: normalized, updatedAt: now, sourceTag });
   if (savedNickname === false) throw new Error('profile nickname save failed');
-  const avatarResult = await initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag: PROFILE_WRITE_SOURCE.AVATAR_INIT });
+  const preRendered = await identiconPromise;
+  const avatarResult = await initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag: PROFILE_WRITE_SOURCE.AVATAR_INIT, preRendered, skipExistingCheck: true });
   return {
     ok: true,
     skipped: false,
@@ -681,23 +685,25 @@ export async function ensureDefaultAvatarFromSeed({ seed, force = false } = {}) 
   return { ok: true, skipped: true, reason: 'auto-avatar-disabled' };
 }
 
-export async function initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag = PROFILE_WRITE_SOURCE.AVATAR_INIT } = {}) {
+export async function initProfileAvatarFromIdenticonOnce({ uidHex, sourceTag = PROFILE_WRITE_SOURCE.AVATAR_INIT, preRendered = null, skipExistingCheck = false } = {}) {
   const digest = normalizeAccountDigest(getAccountDigest());
   if (!digest) throw new Error('account digest missing');
   const uid = uidHex;
   if (!uid) throw new Error('uid missing (uidHex parameter required)');
-  let existing = null;
-  try {
-    existing = await loadLatestProfile();
-  } catch (err) {
-    const wrapped = new Error(err?.message || 'profile lookup failed');
-    wrapped.code = 'ProfileLookupFailed';
-    throw wrapped;
+  if (!skipExistingCheck) {
+    let existing = null;
+    try {
+      existing = await loadLatestProfile();
+    } catch (err) {
+      const wrapped = new Error(err?.message || 'profile lookup failed');
+      wrapped.code = 'ProfileLookupFailed';
+      throw wrapped;
+    }
+    if (existing?.avatar) {
+      return { ok: true, skipped: true, reason: 'avatar-exists' };
+    }
   }
-  if (existing?.avatar) {
-    return { ok: true, skipped: true, reason: 'avatar-exists' };
-  }
-  const rendered = await buildIdenticonImage(uid, { size: 512, format: 'image/png', quality: 0.92 });
+  const rendered = preRendered || await buildIdenticonImage(uid, { size: 512, format: 'image/png', quality: 0.92 });
   if (!rendered?.blob) throw new Error('identicon render failed');
   const file = new File([rendered.blob], `avatar-${digest.slice(-6)}.png`, { type: rendered.blob.type || 'image/png' });
   const avatarMeta = await uploadAvatar({ file, thumbDataUrl: rendered.dataUrl || null });
