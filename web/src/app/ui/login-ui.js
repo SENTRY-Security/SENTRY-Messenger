@@ -633,7 +633,6 @@ const updateUidDisplay = () => {
   renderIdenticon(uid, { pending: !uid });
 };
 updateUidDisplay();
-if (typeof window.__hideLoginSplash === 'function') window.__hideLoginSplash();
 
 let appPrefetched = false;
 function prefetchAppResources() {
@@ -786,6 +785,10 @@ async function onSdmExchange() {
     log({ exchangeError: String(e?.message || e) });
   } finally {
     setUidVerifyingState(false);
+    // Ensure identicon is fully rendered before dismissing splash
+    const uid = getAccountDigest() || '';
+    if (uid) await renderIdenticon(uid);
+    if (typeof window.__hideLoginSplash === 'function') window.__hideLoginSplash();
   }
 })();
 
