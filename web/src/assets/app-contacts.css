@@ -147,7 +147,7 @@ html.no-anim .cover-spinner {
   pointer-events: none;
 }
 
-.contacts-search {
+.contacts-search-wrap > input.contacts-search {
   width: 100%;
   padding: 10px 12px 10px 36px;
   border: 1px solid var(--line);
