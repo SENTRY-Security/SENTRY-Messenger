@@ -48,7 +48,7 @@ if [ -d "$WEB_DIR" ]; then
     mkdir -p dist/functions
     cp -r functions/* dist/functions/
   fi
-  npx wrangler pages deploy ./dist --project-name message-web-hybrid --branch=main --commit-dirty=true
+  npx wrangler pages deploy ./dist --project-name message-web-hybrid --branch=main --commit-dirty=true --commit-message="Hybrid Deploy $(date)"
   cd ..
 else
   echo "⚠️  Web directory not found: $WEB_DIR"
