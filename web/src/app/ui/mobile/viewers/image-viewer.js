@@ -438,9 +438,15 @@ export async function openImageViewer(opts) {
       fabricCanvas.backgroundImage = fabricImg;
       fabricCanvas.renderAll();
 
-      // Set up brush
-      fabricCanvas.freeDrawingBrush.color = currentBrushColor;
-      fabricCanvas.freeDrawingBrush.width = currentBrushSize;
+      // Set up brush (lazy-init: Fabric.js v6 only creates freeDrawingBrush when isDrawingMode=true)
+      if (!fabricCanvas.freeDrawingBrush) {
+        fabricCanvas.isDrawingMode = true;
+        fabricCanvas.isDrawingMode = false;
+      }
+      if (fabricCanvas.freeDrawingBrush) {
+        fabricCanvas.freeDrawingBrush.color = currentBrushColor;
+        fabricCanvas.freeDrawingBrush.width = currentBrushSize;
+      }
 
       // Save initial state
       historyStack = [fabricCanvas.toJSON()];
