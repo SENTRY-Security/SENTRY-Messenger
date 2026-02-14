@@ -659,7 +659,10 @@ export function initDrivePane({
         node.addEventListener('click', (e) => {
           e.preventDefault();
           driveState.cwd = p.path ? p.path.split('/') : [];
-          refreshDriveList().catch(() => {});
+          refreshDriveList().catch((err) => {
+            log({ driveCrumbError: err?.message || err });
+            showBlockingModal('無法載入資料夾，請稍後再試。', { title: '載入失敗' });
+          });
         });
       }
       crumbEl.appendChild(node);
@@ -723,10 +726,11 @@ export function initDrivePane({
     try {
       await refreshDriveList();
       updateLoadingModal?.({ percent: 90, text: '完成' });
+      setTimeout(() => closeModal?.(), 120);
     } catch (err) {
       log({ driveNavigateError: err?.message || err, cwd: driveState.cwd });
-    } finally {
-      setTimeout(() => closeModal?.(), 120);
+      closeModal?.();
+      showBlockingModal('無法載入資料夾，請稍後再試。', { title: '載入失敗' });
     }
   }
 
@@ -1210,12 +1214,13 @@ export function initDrivePane({
         updateLoadingModal?.({ percent: 55, text: '同步資料夾…' });
         await refreshDriveList();
         updateLoadingModal?.({ percent: 95, text: '完成' });
+        setTimeout(() => closeModal?.(), 120);
       } catch (err) {
         log({ driveListError: String(err?.message || err) });
-      } finally {
-        setTimeout(() => closeModal?.(), 120);
+        closeModal?.();
+        showBlockingModal('建立資料夾失敗，請稍後再試。', { title: '建立失敗' });
       }
-    });
+    }, { once: true });
   }
 
   async function startUploadQueue(selectedFiles) {
@@ -1382,12 +1387,6 @@ export function initDrivePane({
         audio.src = url;
         audio.controls = true;
         wrap.appendChild(audio);
-      } else if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-        const iframe = document.createElement('iframe');
-        iframe.src = url;
-        iframe.className = 'viewer';
-        iframe.title = resolvedName;
-        wrap.appendChild(iframe);
       } else if (ct.startsWith('text/')) {
         try {
           const textContent = await blob.text();
@@ -1402,15 +1401,15 @@ export function initDrivePane({
         }
       } else {
         const message = document.createElement('div');
-        message.style.textAlign = 'center';
-        message.innerHTML = `無法預覽此類型（${escapeHtml(ct)}）。<br/><br/>`;
+        message.className = 'preview-message';
+        message.textContent = `無法預覽此類型（${ct}）`;
+        wrap.appendChild(message);
         const link = document.createElement('a');
         link.href = url;
         link.download = resolvedName;
         link.textContent = '下載檔案';
-        link.className = 'primary';
-        message.appendChild(link);
-        wrap.appendChild(message);
+        link.className = 'preview-download';
+        wrap.appendChild(link);
       }
 
       openModal?.();

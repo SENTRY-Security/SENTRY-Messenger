@@ -373,3 +373,30 @@ pre#out {
 .upload-actions button {
   min-width: 92px;
 }
+
+.preview-message {
+  padding: 24px 16px;
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+  letter-spacing: 0.2px;
+}
+
+.preview-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #0f172a, #1e293b);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.2);
+  cursor: pointer;
+}
+
+.preview-download:active {
+  transform: translateY(1px);
+}
