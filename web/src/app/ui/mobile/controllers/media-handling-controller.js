@@ -12,41 +12,41 @@ import { escapeHtml, fmtSize } from '../ui-utils.js';
 export class MediaHandlingController extends BaseController {
     constructor(deps) {
         super(deps);
-        this.loadingModalUpdateFn = null;
     }
 
     /**
      * Show modal loading state.
      */
     _showModalLoading(text) {
+        if (typeof this.deps.showModalLoading === 'function') {
+            this.deps.showModalLoading(text);
+            return;
+        }
+        // Fallback: open modal manually
         const modalEl = document.getElementById('modal');
         const title = document.getElementById('modalTitle');
         const body = document.getElementById('modalBody');
         if (!modalEl || !title || !body) return;
-
-        this.deps.showConfirmModal?.({
-            title: '處理中',
-            confirmText: '取消',
-            onConfirm: () => {
-                this.deps.closePreviewModal?.();
-            }
-        });
-
-        // Customizing the modal for loading
-        // Ideally we should use a proper modal API, but reusing existing DOM manipulation for now
-        // to match legacy behavior.
         modalEl.classList.add('loading-modal');
         title.textContent = text || '載入中…';
-        body.innerHTML = '<div class="spinner"></div><div class="progress-text"></div>';
-
-        this.loadingModalUpdateFn = ({ percent, text: statusText }) => {
-            const txt = body.querySelector('.progress-text');
-            if (txt) txt.textContent = statusText || '';
-        };
+        body.innerHTML = '<div class="loading-wrap"><div class="progress-bar" style="width:100%;"><div id="loadingBar" class="progress-inner" style="width:0%;"></div></div><div id="loadingText" class="loading-text"></div></div>';
+        this.deps.openPreviewModal?.();
     }
 
     _updateLoadingModal(state) {
-        if (this.loadingModalUpdateFn) this.loadingModalUpdateFn(state);
+        if (typeof this.deps.updateLoadingModal === 'function') {
+            this.deps.updateLoadingModal(state);
+            return;
+        }
+        // Fallback: update DOM directly
+        const bar = document.getElementById('loadingBar');
+        if (bar && typeof state.percent === 'number') {
+            bar.style.width = `${Math.min(Math.max(state.percent, 0), 100)}%`;
+        }
+        const label = document.getElementById('loadingText');
+        if (label && typeof state.text === 'string') {
+            label.textContent = state.text;
+        }
     }
 
     /**
@@ -65,7 +65,6 @@ export class MediaHandlingController extends BaseController {
                     envelope: media.envelope,
                     messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
                     onStatus: ({ stage, loaded, total }) => {
-                        if (!this.loadingModalUpdateFn) return;
                         if (stage === 'sign') {
                             this._updateLoadingModal({ percent: 5, text: '取得下載授權中…' });
                         } else if (stage === 'download-start') {
@@ -156,7 +155,7 @@ export class MediaHandlingController extends BaseController {
 
         const ct = (contentType || '').toLowerCase();
 
-        const openModal = () => this.deps.modalOptions?.openPreviewModal?.();
+        const openModal = () => this.deps.openPreviewModal?.();
         const closeModal = () => this.deps.closePreviewModal?.();
         const showConfirm = this.deps.showConfirmModal;
 
@@ -167,7 +166,7 @@ export class MediaHandlingController extends BaseController {
                 modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
             });
             if (handled) {
-                this.deps.modalOptions?.openPreviewModal?.();
+                this.deps.openPreviewModal?.();
                 return;
             }
 
@@ -232,6 +231,6 @@ export class MediaHandlingController extends BaseController {
             wrap.appendChild(message);
         }
 
-        this.deps.modalOptions?.openPreviewModal?.();
+        this.deps.openPreviewModal?.();
     }
 }

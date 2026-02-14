@@ -425,7 +425,10 @@ export function initMessagesPane({
     updateThreadAvatar: (key, avatar) => controllers.callLog.updateThreadAvatar(key, avatar),
     isLatestOutgoingForStatus: (convId, msgId) => isLatestOutgoingForStatus(convId, msgId),
     resolveRenderEntryCounter: (msg) => resolveRenderEntryCounter(msg),
-    closePreviewModal: modalOptions?.closePreviewModal,
+    closePreviewModal: modalOptions?.closeModal,
+    openPreviewModal: modalOptions?.openModal,
+    showModalLoading: modalOptions?.showModalLoading,
+    updateLoadingModal: modalOptions?.updateLoadingModal,
     showSecurityModal: modalOptions?.showSecurityModal,
     handleConversationDelete: (args) => handleConversationDelete(args), // Keep local for now
     requireSubscriptionActive: () => requireSubscriptionActive(),
