@@ -5,6 +5,7 @@ import { encryptAndPutWithProgress, deleteEncryptedObjects, downloadAndDecrypt, 
 import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
+import { openImageViewer } from './viewers/image-viewer.js';
 
 const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500MB per file
@@ -1445,10 +1446,41 @@ export function initDrivePane({
         iframe.title = resolvedName;
         wrap.appendChild(iframe);
       } else if (ct.startsWith('image/')) {
-        const img = document.createElement('img');
-        img.src = url;
-        img.alt = resolvedName;
-        wrap.appendChild(img);
+        // Use full-screen image viewer with drive save support
+        closeModal?.();
+        openImageViewer({
+          url,
+          blob,
+          name: resolvedName,
+          contentType: ct,
+          source: 'drive',
+          originalKey: key,
+          onSaveToDrive: async (editedBlob, mode, editedName) => {
+            const saveName = editedName || resolvedName;
+            const saveFile = new File([editedBlob], saveName, { type: 'image/png' });
+            if (mode === 'overwrite' && key) {
+              // Delete original then upload replacement
+              try {
+                const matches = driveState.currentMessages
+                  .filter((msg) => {
+                    const direct = typeof msg?.obj_key === 'string' ? msg.obj_key : '';
+                    if (direct && direct === key) return true;
+                    const header = safeJSON(msg?.header_json || msg?.header || '{}');
+                    return typeof header?.obj === 'string' && header.obj === key;
+                  });
+                const ids = matches.map((msg) => String(msg?.id || '')).filter(Boolean);
+                await performDelete({ keys: [key], ids });
+              } catch (err) {
+                log({ driveOverwriteDeleteError: err?.message || err });
+              }
+            }
+            await startUploadQueue([saveFile]);
+          },
+          onClose: () => {
+            try { URL.revokeObjectURL(url); } catch {}
+          }
+        });
+        return;
       } else if (ct.startsWith('video/')) {
         const video = document.createElement('video');
         video.src = url;

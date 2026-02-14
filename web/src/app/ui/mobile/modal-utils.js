@@ -1,5 +1,6 @@
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { sessionStore } from './session-store.js';
+import { cleanupImageViewer } from './viewers/image-viewer.js';
 
 export function setupModalController({ shareButtonProvider } = {}) {
   const getShareButton = typeof shareButtonProvider === 'function'
@@ -65,6 +66,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'subscription-modal-shell'
     );
     document.querySelector('.pdf-confirm')?.remove();
+    cleanupImageViewer();
 
     if (typeof modal.__avatarCleanup === 'function') {
       try { modal.__avatarCleanup(); } catch (err) { console.warn(err); }

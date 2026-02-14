@@ -1,0 +1,473 @@
+/* ── Image Viewer / Editor Overlay ── */
+
+body.iv-open {
+  overflow: hidden !important;
+}
+
+.iv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  color: #e2e8f0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ── Toolbar (shared preview + editor) ── */
+.iv-toolbar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  background: rgba(0, 0, 0, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+
+.iv-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.iv-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ── Icon Buttons ── */
+.iv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+  flex-shrink: 0;
+}
+
+.iv-btn:active {
+  background: rgba(255, 255, 255, 0.18);
+  transform: scale(0.95);
+}
+
+.iv-btn:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.iv-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ── Preview Stage ── */
+.iv-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+}
+
+.iv-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transform-origin: center center;
+  transition: transform 0.08s ease-out;
+  will-change: transform;
+}
+
+/* ── Editor Layer ── */
+.iv-editor {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+.iv-editor-toolbar {
+  z-index: 12;
+}
+
+/* ── Canvas Stage ── */
+.iv-canvas-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #111;
+  position: relative;
+}
+
+.iv-canvas {
+  display: block;
+  border-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+/* Fabric.js canvas wrapper override */
+.iv-canvas-stage .canvas-container {
+  margin: auto !important;
+}
+
+.iv-crop-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* ── Editor Footer ── */
+.iv-editor-footer {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  background: rgba(0, 0, 0, 0.55);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+
+.iv-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.iv-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.iv-tool-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+.iv-tool-btn:active {
+  transform: scale(0.92);
+}
+
+.iv-tool-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.15);
+}
+
+/* ── Send / Save action button ── */
+.iv-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  color: #0b1220;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(56, 189, 248, 0.35);
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.iv-action-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+.iv-action-btn:active {
+  transform: scale(0.92);
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.25);
+}
+
+/* ── Brush Sub-toolbar ── */
+.iv-brush-bar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgba(15, 23, 42, 0.85);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.iv-color-row,
+.iv-size-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+}
+
+.iv-color-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.iv-color-dot:active {
+  transform: scale(0.9);
+}
+
+.iv-color-dot.active {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.4);
+  transform: scale(1.1);
+}
+
+.iv-size-btn {
+  min-width: 36px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0 8px;
+}
+
+.iv-size-btn:active {
+  transform: scale(0.92);
+}
+
+.iv-size-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}
+
+/* ── Crop Confirm Bar ── */
+.iv-crop-bar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  background: rgba(0, 0, 0, 0.55);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+
+.iv-crop-label {
+  font-size: 13px;
+  color: #94a3b8;
+  flex: 1;
+  text-align: center;
+}
+
+.iv-crop-cancel {
+  border-color: rgba(239, 68, 68, 0.3) !important;
+  color: #fca5a5 !important;
+}
+
+.iv-crop-confirm {
+  border-color: rgba(34, 197, 94, 0.3) !important;
+  color: #86efac !important;
+}
+
+/* ── Drive Save Dialog ── */
+.iv-save-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.iv-save-dialog::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.iv-save-panel {
+  position: relative;
+  z-index: 1;
+  width: min(300px, 88vw);
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.iv-save-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e2e8f0;
+  text-align: center;
+}
+
+.iv-save-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e2e8f0;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.iv-save-option svg {
+  flex-shrink: 0;
+  color: #38bdf8;
+}
+
+.iv-save-option:active {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.iv-save-cancel {
+  padding: 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: center;
+  transition: color 0.15s ease;
+}
+
+.iv-save-cancel:active {
+  color: #e2e8f0;
+}
+
+/* ── Cropper.js dark theme overrides ── */
+.iv-canvas-stage .cropper-modal {
+  background-color: #000;
+  opacity: 0.6;
+}
+
+.iv-canvas-stage .cropper-view-box {
+  outline-color: rgba(56, 189, 248, 0.8);
+}
+
+.iv-canvas-stage .cropper-line {
+  background-color: #38bdf8;
+}
+
+.iv-canvas-stage .cropper-point {
+  background-color: #38bdf8;
+}
+
+.iv-canvas-stage .cropper-dashed {
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+/* ── Responsive ── */
+@media (max-width: 480px) {
+  .iv-toolbar {
+    padding: 8px 10px;
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+    gap: 6px;
+  }
+
+  .iv-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+
+  .iv-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .iv-tool-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+  }
+
+  .iv-tool-btn svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .iv-title {
+    font-size: 13px;
+  }
+
+  .iv-editor-footer {
+    padding: 8px 10px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+}

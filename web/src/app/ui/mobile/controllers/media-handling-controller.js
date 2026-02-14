@@ -6,6 +6,7 @@
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
+import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize } from '../ui-utils.js';
 
 export class MediaHandlingController extends BaseController {
@@ -175,10 +176,26 @@ export class MediaHandlingController extends BaseController {
             msg.innerHTML = `PDF 無法內嵌預覽，將直接下載。<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">下載檔案</a>`;
             wrap.appendChild(msg);
         } else if (ct.startsWith('image/')) {
-            const img = document.createElement('img');
-            img.src = url;
-            img.alt = resolvedName;
-            wrap.appendChild(img);
+            // Use full-screen image viewer instead of basic modal
+            closeModal?.();
+            const onSendToChat = async (editedFile) => {
+                const messageSending = this.deps.controllers?.messageSending;
+                if (messageSending) {
+                    await messageSending.handleComposerFileSelection({ target: { files: [editedFile] } });
+                }
+            };
+            openImageViewer({
+                url,
+                blob,
+                name: resolvedName,
+                contentType: ct,
+                source: 'chat',
+                onSendToChat,
+                onClose: () => {
+                    try { URL.revokeObjectURL(url); } catch {}
+                }
+            });
+            return;
         } else if (ct.startsWith('video/')) {
             const video = document.createElement('video');
             video.src = url;
