@@ -18,7 +18,7 @@
     #appLoadingModal .loading-logo{width:56px;height:56px;margin-bottom:16px}
     #appLoadingModal .loading-brand{font-size:16px;font-weight:700;letter-spacing:2.5px;color:#0f172a;margin-bottom:28px}
     #appLoadingModal .loading-bar-track{width:180px;height:3px;border-radius:2px;background:#e2e8f0;overflow:hidden;margin-bottom:14px}
-    #appLoadingModal .loading-bar-fill{width:70%;height:100%;border-radius:2px;background:linear-gradient(90deg,#3b82f6,#6366f1);transition:width .4s ease}
+    #appLoadingModal .loading-bar-fill{width:70%;height:100%;border-radius:2px;background:linear-gradient(90deg,#3b82f6,#6366f1)}
     #appLoadingModal .loading-label{font-size:13px;color:#94a3b8;letter-spacing:.3px}
   </style>
   <!-- Async CSS — non-render-blocking -->
@@ -63,14 +63,47 @@
       var label = document.getElementById('appLoadingLabel');
       var modal = document.getElementById('appLoadingModal');
       var current = 70;
+      var fillRAF = null;
+      var fillTarget = 0;
+      var fillLast = 0;
+      var FILL_SPEED = 10;
+      function setBarWidth(pct) { if (bar) bar.style.width = pct + '%'; }
+      function startSlowFill(target) {
+        fillTarget = target;
+        if (fillRAF) return;
+        fillLast = performance.now();
+        function tick(now) {
+          var dt = (now - fillLast) / 1000;
+          fillLast = now;
+          if (current < fillTarget - 0.3) {
+            current = Math.min(current + FILL_SPEED * dt, fillTarget - 0.3);
+            setBarWidth(current);
+            fillRAF = requestAnimationFrame(tick);
+          } else {
+            fillRAF = null;
+          }
+        }
+        fillRAF = requestAnimationFrame(tick);
+      }
+      function stopSlowFill() {
+        if (fillRAF) { cancelAnimationFrame(fillRAF); fillRAF = null; }
+      }
       window.__updateLoadingProgress = function (stageId) {
         var stage = stages[stageId];
         if (!stage || stage.progress <= current) return;
+        stopSlowFill();
         current = stage.progress;
-        if (bar)   bar.style.width = stage.progress + '%';
+        setBarWidth(current);
         if (label) label.textContent = stage.label;
+        // Find next stage to slowly fill toward
+        var keys = Object.keys(stages);
+        var idx = keys.indexOf(stageId);
+        if (idx >= 0 && idx < keys.length - 1) {
+          startSlowFill(stages[keys[idx + 1]].progress);
+        }
       };
       window.__hideLoadingModal = function () {
+        stopSlowFill();
         if (!modal) return;
         modal.classList.add('fade-out');
         setTimeout(function () { if (modal.parentNode) modal.parentNode.removeChild(modal); }, 400);
@@ -97,6 +130,8 @@
       setTimeout(function () {
         if (!cssDone) markCssDone();
       }, 3000);
+      // Start slow-fill immediately from 70% toward first stage (74%)
+      startSlowFill(stages.styles.progress);
     })();
   </script>
 

@@ -458,10 +458,41 @@ const STEP_PROGRESS = {
   'contact-restore': { start: 50, done: 70, label: '還原聯絡人…' },
 };
 let currentProgress = 0;
+let fillRAF = null;
+let fillTarget = 0;
+let fillLast = 0;
+const FILL_SPEED = 10; // % per second — smooth continuous fill
+
+function setBarWidth(pct) {
+  if (transitionBar) transitionBar.style.width = pct + '%';
+}
+
+function startSlowFill(target) {
+  fillTarget = target;
+  if (fillRAF) return;               // already animating
+  fillLast = performance.now();
+  function tick(now) {
+    const dt = (now - fillLast) / 1000;
+    fillLast = now;
+    if (currentProgress < fillTarget - 0.3) {
+      currentProgress = Math.min(currentProgress + FILL_SPEED * dt, fillTarget - 0.3);
+      setBarWidth(currentProgress);
+      fillRAF = requestAnimationFrame(tick);
+    } else {
+      fillRAF = null;
+    }
+  }
+  fillRAF = requestAnimationFrame(tick);
+}
+
+function stopSlowFill() {
+  if (fillRAF) { cancelAnimationFrame(fillRAF); fillRAF = null; }
+}
 
 function setTransitionProgress(pct, label) {
+  stopSlowFill();
   if (pct > currentProgress) currentProgress = pct;
-  if (transitionBar) transitionBar.style.width = currentProgress + '%';
+  setBarWidth(currentProgress);
   if (transitionLabel && label) transitionLabel.textContent = label;
 }
 
@@ -469,8 +500,13 @@ function updateBootstrapStep(step, status) {
   const def = STEP_PROGRESS[step];
   if (!def) return;
   if (status === 'start') {
-    setTransitionProgress(def.start, def.label);
+    // Snap to start value, update label, then slowly fill toward done
+    if (def.start > currentProgress) currentProgress = def.start;
+    setBarWidth(currentProgress);
+    if (transitionLabel) transitionLabel.textContent = def.label;
+    startSlowFill(def.done);
   } else if (status === 'success' || status === 'skip' || status === 'info') {
+    // Snap to done value immediately
     setTransitionProgress(def.done, null);
   }
   // error status: keep current progress/label — hideLoading will dismiss modal
@@ -480,9 +516,10 @@ function resetBootstrapProgress() { currentProgress = 0; }
 function initBootstrapProgress() { /* no-op: progress bar driven by updateBootstrapStep */ }
 
 function showLoading(message) {
+  stopSlowFill();
   if (transitionModal) transitionModal.classList.remove('hidden');
   currentProgress = 0;
-  if (transitionBar) transitionBar.style.width = '0%';
+  setBarWidth(0);
   if (transitionLabel) transitionLabel.textContent = message || '登入中…';
   if (unlockBtn) unlockBtn.disabled = true;
 }
@@ -492,9 +529,10 @@ function updateLoading(message) {
 }
 
 function hideLoading() {
+  stopSlowFill();
   if (transitionModal) transitionModal.classList.add('hidden');
   currentProgress = 0;
-  if (transitionBar) transitionBar.style.width = '0%';
+  setBarWidth(0);
   if (unlockBtn) unlockBtn.disabled = false;
 }
 
