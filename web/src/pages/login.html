@@ -72,6 +72,8 @@
         padding:32px 26px 36px;
         box-shadow:0 26px 60px rgba(15,23,42,0.45);
         position:relative;
+        z-index:10;
+        transition:transform .55s cubic-bezier(0.4,0,1,1),opacity .4s ease;
       }
       .brand { position:relative; display:flex; align-items:center; gap:12px; margin-bottom:18px; }
       .brand img { height:30px; width:auto; }
@@ -278,25 +280,30 @@
       .version-storage-row { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:10px; border:1px solid rgba(148,163,184,0.35); background:rgba(15,23,42,0.9); color:#e2e8f0; text-align:left; font-size:12px; box-shadow:0 10px 26px rgba(2,6,23,0.32); }
       .version-storage-row span:last-child { color:#bae6fd; }
       .version-storage-total { padding:8px 10px; border-radius:10px; border:1px solid rgba(148,163,184,0.35); background:rgba(15,23,42,0.78); color:#bfdbfe; }
-      #loginTransitionModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;transition:opacity .5s ease;overflow:hidden}
-      #loginTransitionModal.hidden{display:none}
-      #loginTransitionModal .tm-canvas{position:absolute;inset:0;z-index:0}
-      #loginTransitionModal .tm-overlay{position:absolute;inset:0;z-index:1;background:radial-gradient(ellipse at 50% 50%,transparent 0%,rgba(5,10,20,0.4) 60%,rgba(5,10,20,0.85) 100%);pointer-events:none}
-      #loginTransitionModal .tm-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:none}
-      #loginTransitionModal .tm-logo{width:52px;height:52px;margin-bottom:18px;filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation:tm-pulse 3s ease-in-out infinite}
-      #loginTransitionModal .tm-brand{font-size:18px;font-weight:700;letter-spacing:4px;color:#e0f2fe;margin-bottom:8px;text-shadow:0 0 20px rgba(56,189,248,0.5),0 0 40px rgba(99,102,241,0.3);min-width:220px;text-align:center;height:1.4em;line-height:1.4em}
-      #loginTransitionModal .tm-brand .char{display:inline-block;transition:color .15s ease,text-shadow .15s ease}
-      #loginTransitionModal .tm-brand .char.resolved{color:#e0f2fe}
-      #loginTransitionModal .tm-brand .char.scrambling{color:#38bdf8;text-shadow:0 0 8px rgba(56,189,248,0.8)}
-      #loginTransitionModal .tm-sublabel{font-size:11px;letter-spacing:2.5px;color:rgba(148,163,184,0.65);text-transform:uppercase;margin-bottom:32px}
-      #loginTransitionModal .tm-bar-track{width:200px;height:2px;border-radius:1px;background:rgba(148,163,184,0.15);overflow:hidden;position:relative;margin-bottom:16px}
-      #loginTransitionModal .tm-bar-fill{width:0%;height:100%;border-radius:1px;background:linear-gradient(90deg,#0ea5e9,#6366f1,#a855f7);box-shadow:0 0 12px rgba(99,102,241,0.6);transition:width .3s ease}
-      #loginTransitionModal .tm-bar-scan{position:absolute;top:0;height:100%;width:40px;background:linear-gradient(90deg,transparent,rgba(56,189,248,0.6),transparent);animation:tm-scan 2s linear infinite}
-      #loginTransitionModal .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
+      #loginStage{position:fixed;inset:0;z-index:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;overflow:hidden}
+      #loginStage .tm-canvas{position:absolute;inset:0;z-index:0}
+      #loginStage .tm-overlay{position:absolute;inset:0;z-index:1;background:radial-gradient(ellipse at 50% 50%,transparent 0%,rgba(5,10,20,0.4) 60%,rgba(5,10,20,0.85) 100%);pointer-events:none;opacity:0;transition:opacity .6s ease}
+      #loginStage .tm-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:none;opacity:0;transition:opacity .6s ease}
+      #loginStage.active .tm-overlay,#loginStage.active .tm-content{opacity:1}
+      #loginStage .tm-logo{width:52px;height:52px;margin-bottom:18px;filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation:tm-pulse 3s ease-in-out infinite}
+      #loginStage .tm-brand{font-size:18px;font-weight:700;letter-spacing:4px;color:#e0f2fe;margin-bottom:8px;text-shadow:0 0 20px rgba(56,189,248,0.5),0 0 40px rgba(99,102,241,0.3);min-width:220px;text-align:center;height:1.4em;line-height:1.4em}
+      #loginStage .tm-brand .char{display:inline-block;transition:color .15s ease,text-shadow .15s ease}
+      #loginStage .tm-brand .char.resolved{color:#e0f2fe}
+      #loginStage .tm-brand .char.scrambling{color:#38bdf8;text-shadow:0 0 8px rgba(56,189,248,0.8)}
+      #loginStage .tm-sublabel{font-size:11px;letter-spacing:2.5px;color:rgba(148,163,184,0.65);text-transform:uppercase;margin-bottom:32px}
+      #loginStage .tm-bar-track{width:200px;height:2px;border-radius:1px;background:rgba(148,163,184,0.15);overflow:hidden;position:relative;margin-bottom:16px}
+      #loginStage .tm-bar-fill{width:0%;height:100%;border-radius:1px;background:linear-gradient(90deg,#0ea5e9,#6366f1,#a855f7);box-shadow:0 0 12px rgba(99,102,241,0.6);transition:width .3s ease}
+      #loginStage .tm-bar-scan{position:absolute;top:0;height:100%;width:40px;background:linear-gradient(90deg,transparent,rgba(56,189,248,0.6),transparent);animation:tm-scan 2s linear infinite}
+      #loginStage .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
       @keyframes tm-pulse{0%,100%{filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:brightness(0) invert(1) drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
       @keyframes tm-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
-      html.no-anim #loginTransitionModal .tm-logo{animation:none}
-      html.no-anim #loginTransitionModal .tm-bar-scan{animation:none}
+      .login-shell.panel-exit{transform:translateY(-120vh);opacity:0;pointer-events:none}
+      .login-shell.panel-enter{animation:panelSlideIn .6s cubic-bezier(0,0,0.2,1) forwards}
+      @keyframes panelSlideIn{from{transform:translateY(100vh);opacity:0}to{transform:translateY(0);opacity:1}}
+      html.no-anim #loginStage .tm-logo{animation:none}
+      html.no-anim #loginStage .tm-bar-scan{animation:none}
+      html.no-anim .login-shell.panel-exit{transition:none}
+      html.no-anim .login-shell.panel-enter{animation:none}
     </style>
   </head>
   <body>
@@ -315,6 +322,21 @@
       };
       setTimeout(function(){ window.__hideLoginSplash(); }, 8000);
     </script>
+    <!-- Background Stage — matrix rain + transition visuals (always present, content hidden until active) -->
+    <div id="loginStage">
+      <canvas class="tm-canvas" id="tmCanvas"></canvas>
+      <div class="tm-overlay"></div>
+      <div class="tm-content">
+        <img class="tm-logo" src="/assets/images/logo.svg" alt="" />
+        <div class="tm-brand" id="tmBrand" aria-label="SENTRY MESSENGER"></div>
+        <div class="tm-sublabel">END-TO-END ENCRYPTED</div>
+        <div class="tm-bar-track">
+          <div id="loginTransitionBar" class="tm-bar-fill"></div>
+          <div class="tm-bar-scan"></div>
+        </div>
+        <div id="loginTransitionLabel" class="loading-label">INITIALIZING...</div>
+      </div>
+    </div>
     <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
       <span class="icon" aria-hidden="true">📱</span>
       <strong>請以直立模式使用</strong>
@@ -388,6 +410,7 @@
 
       <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text">SENTRY MESSENGER 採用 E2EE 端對端加密技術，所有加解密均於前端計算，伺服器端僅儲存加密過的資訊，所有敏感資訊僅保留於記憶體，並於畫面切換時即刻清除。</span></p>
     </div>
+  </main>
     <div id="loginModal" class="modal hidden" aria-hidden="true">
       <div class="modal-backdrop" id="loginModalBackdrop"></div>
       <div class="modal-panel" role="dialog" aria-modal="true">
@@ -419,7 +442,6 @@
         </div>
       </div>
     </div>
-  </main>
 
     <div id="loginLoading" class="loading-backdrop hidden" role="presentation">
       <div class="loading-card" role="status" aria-live="polite">
@@ -442,21 +464,6 @@
     <button class="version-info-btn" id="versionInfoBtnLogin" aria-label="顯示版本資訊">i</button>
     <div class="version-info-popup" id="versionInfoPopupLogin" role="dialog" aria-hidden="true"></div>
 
-    <!-- Transition modal — sci-fi particle + matrix rain + text decrypt -->
-    <div id="loginTransitionModal" class="hidden">
-      <canvas class="tm-canvas" id="tmCanvas"></canvas>
-      <div class="tm-overlay"></div>
-      <div class="tm-content">
-        <img class="tm-logo" src="/assets/images/logo.svg" alt="" />
-        <div class="tm-brand" id="tmBrand" aria-label="SENTRY MESSENGER"></div>
-        <div class="tm-sublabel">END-TO-END ENCRYPTED</div>
-        <div class="tm-bar-track">
-          <div id="loginTransitionBar" class="tm-bar-fill"></div>
-          <div class="tm-bar-scan"></div>
-        </div>
-        <div id="loginTransitionLabel" class="loading-label">INITIALIZING...</div>
-      </div>
-    </div>
     <script>
     /* ── Transition Canvas: Matrix Rain ── */
     (function(){

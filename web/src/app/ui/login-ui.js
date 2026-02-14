@@ -429,7 +429,7 @@ applyAccountMode();
 if (getSession() || getHasMK() || getWrappedMK()) {
   markVerifiedUI();
 }
-const transitionModal = document.getElementById('loginTransitionModal');
+const loginStage = document.getElementById('loginStage');
 const transitionBar = document.getElementById('loginTransitionBar');
 const transitionLabel = document.getElementById('loginTransitionLabel');
 
@@ -540,11 +540,16 @@ function initBootstrapProgress() { /* no-op: progress bar driven by updateBootst
 
 function showLoading(message) {
   stopSlowFill();
-  if (transitionModal) transitionModal.classList.remove('hidden');
   currentProgress = 0;
   setBarWidth(0);
   if (transitionLabel) transitionLabel.textContent = message || 'INITIALIZING...';
   if (unlockBtn) unlockBtn.disabled = true;
+  // Slide panel up, reveal background stage
+  if (loginShellEl) {
+    loginShellEl.classList.remove('panel-enter');
+    loginShellEl.classList.add('panel-exit');
+  }
+  if (loginStage) loginStage.classList.add('active');
   // Start sci-fi canvas + text scramble
   if (typeof window.__tmCanvasStart === 'function') window.__tmCanvasStart();
   if (typeof window.__tmScrambleStart === 'function') window.__tmScrambleStart();
@@ -559,7 +564,16 @@ function hideLoading() {
   // Stop sci-fi canvas + text scramble
   if (typeof window.__tmCanvasStop === 'function') window.__tmCanvasStop();
   if (typeof window.__tmScrambleStop === 'function') window.__tmScrambleStop();
-  if (transitionModal) transitionModal.classList.add('hidden');
+  // Fade out stage, slide panel back in from below
+  if (loginStage) loginStage.classList.remove('active');
+  if (loginShellEl) {
+    loginShellEl.classList.remove('panel-exit');
+    loginShellEl.classList.add('panel-enter');
+    loginShellEl.addEventListener('animationend', function handler() {
+      loginShellEl.classList.remove('panel-enter');
+      loginShellEl.removeEventListener('animationend', handler);
+    });
+  }
   currentProgress = 0;
   setBarWidth(0);
   if (unlockBtn) unlockBtn.disabled = false;
