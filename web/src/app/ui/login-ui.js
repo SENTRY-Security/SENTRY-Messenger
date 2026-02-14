@@ -557,9 +557,11 @@ function showLoading(message) {
     loginShellEl.classList.add('panel-exit');
   }
   if (loginStage) loginStage.classList.add('active');
-  // Start sci-fi canvas + text scramble
+  // Start sci-fi canvas immediately; delay brand decode by 0.45s
   if (typeof window.__tmCanvasStart === 'function') window.__tmCanvasStart();
-  if (typeof window.__tmScrambleStart === 'function') window.__tmScrambleStart();
+  setTimeout(() => {
+    if (typeof window.__tmScrambleStart === 'function') window.__tmScrambleStart();
+  }, 450);
 }
 
 function updateLoading(message) {
