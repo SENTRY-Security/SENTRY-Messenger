@@ -15,15 +15,18 @@
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 
 /** Dynamically load argon2-browser (UMD) if not present. */
-export async function loadArgon2() {
-  if (globalThis.argon2) return;
-  await new Promise((resolve, reject) => {
+let _argon2Loading = null;
+export function loadArgon2() {
+  if (globalThis.argon2) return Promise.resolve();
+  if (_argon2Loading) return _argon2Loading;
+  _argon2Loading = new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = 'https://cdn.jsdelivr.net/npm/argon2-browser@1.18.0/dist/argon2-bundled.min.js';
     s.onload = resolve;
-    s.onerror = () => reject(new Error('argon2 load failed'));
+    s.onerror = () => { _argon2Loading = null; reject(new Error('argon2 load failed')); };
     document.head.appendChild(s);
   });
+  return _argon2Loading;
 }
 
 /** Derive a KEK (AES-GCM raw key) from password using Argon2id */

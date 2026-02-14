@@ -33,6 +33,7 @@ import {
 import { triggerContactSecretsBackup, hydrateContactSecretsFromBackup } from '../features/contact-backup.js';
 import { IDENTICON_PALETTE, buildIdenticonSvg } from '../lib/identicon.js';
 import { initProfileDefaultsOnce } from '../features/profile.js';
+import { loadArgon2 } from '../crypto/kdf.js';
 import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
 
 function summarizeMkForLog(mkRaw) {
@@ -643,6 +644,29 @@ const updateUidDisplay = () => {
 updateUidDisplay();
 if (typeof window.__hideLoginSplash === 'function') window.__hideLoginSplash();
 
+let appPrefetched = false;
+function prefetchAppResources() {
+  if (appPrefetched) return;
+  appPrefetched = true;
+  // Prefetch app-mobile.js and key CSS for faster post-login page load
+  const urls = [
+    '/app/ui/app-mobile.js',
+    '/assets/app-base.css',
+    '/assets/app-layout.css',
+    '/assets/app-messages.css',
+    '/assets/app-contacts.css',
+    '/assets/app-modals.css',
+  ];
+  for (const url of urls) {
+    try {
+      const link = document.createElement('link');
+      link.rel = 'prefetch';
+      link.href = url;
+      document.head.appendChild(link);
+    } catch { }
+  }
+}
+
 function markVerifiedUI() {
   setPasswordAreaVisible(true);
   if (pwdEl) {
@@ -652,6 +676,10 @@ function markVerifiedUI() {
       } catch { }
     });
   }
+  // Preload Argon2 WASM while user types password (eliminates CDN fetch during MK unwrap)
+  loadArgon2().catch(() => {});
+  // Prefetch app.html resources during password-typing idle time
+  prefetchAppResources();
 }
 
 function setUidVerifyingState(active) {
