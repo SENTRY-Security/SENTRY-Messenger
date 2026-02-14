@@ -23,7 +23,7 @@ export function initDrivePane({
   const usageValueEl = dom.usageValue ?? document.getElementById('driveUsageValue');
   const usageTotalEl = dom.usageTotal ?? document.getElementById('driveUsageTotal');
   const usagePercentEl = dom.usagePercent ?? document.getElementById('driveUsagePercent');
-  const usageNoteEl = dom.usageNote ?? document.getElementById('driveUsageNote');
+  const usageNoteEl = null;
   const usageProgressEl = dom.usageProgress ?? document.getElementById('driveUsageProgress');
   const usageBarEl = dom.usageBar ?? document.getElementById('driveUsageBar');
   const driveSectionEl = dom.driveSection ?? document.getElementById('tab-drive');
@@ -533,7 +533,6 @@ export function initDrivePane({
     const percentRaw = quotaBytes > 0 ? (usageBytes / quotaBytes) * 100 : 0;
     const percent = Number.isFinite(percentRaw) ? Math.min(100, Math.max(0, percentRaw)) : 0;
     const percentLabel = formatPercentLabel(percent);
-    const remaining = Math.max(0, quotaBytes - usageBytes);
 
     if (usageBarEl) {
       usageBarEl.style.width = `${percent}%`;
@@ -542,11 +541,6 @@ export function initDrivePane({
     if (usagePercentEl) usagePercentEl.textContent = percentLabel;
     if (usageValueEl) usageValueEl.textContent = fmtSize(usageBytes);
     if (usageTotalEl) usageTotalEl.textContent = `/ ${fmtSize(quotaBytes)}`;
-    if (usageNoteEl) {
-      usageNoteEl.textContent = usageBytes > 0
-        ? `剩餘 ${fmtSize(remaining)}`
-        : `總容量 ${fmtSize(quotaBytes)}`;
-    }
     if (usageProgressEl) {
       usageProgressEl.setAttribute('aria-valuenow', String(Math.round(percent)));
       usageProgressEl.setAttribute('aria-valuetext', `${fmtSize(usageBytes)} / ${fmtSize(quotaBytes)}`);
@@ -717,19 +711,34 @@ export function initDrivePane({
     return true;
   }
 
+  function showListSkeleton() {
+    if (!driveListEl) return;
+    renderCrumb();
+    driveListEl.innerHTML = '';
+    for (let i = 0; i < 4; i++) {
+      const li = document.createElement('li');
+      li.className = 'file-item skeleton-item';
+      li.setAttribute('aria-hidden', 'true');
+      li.innerHTML = `
+        <div class="item-content">
+          <div class="meta">
+            <div class="name"><span class="skeleton-bone skeleton-icon"></span><span class="skeleton-bone skeleton-text"></span></div>
+            <div class="sub"><span class="skeleton-bone skeleton-sub"></span></div>
+          </div>
+        </div>`;
+      driveListEl.appendChild(li);
+    }
+  }
+
   async function navigateToCwd(nextCwd) {
     const cleaned = sanitizePathSegments(Array.isArray(nextCwd) ? nextCwd : []);
     driveState.cwd = [...cleaned];
     ensureSafeCwd();
-    showModalLoading?.('載入資料夾中…');
-    updateLoadingModal?.({ percent: 12, text: '同步列表…' });
+    showListSkeleton();
     try {
       await refreshDriveList();
-      updateLoadingModal?.({ percent: 90, text: '完成' });
-      setTimeout(() => closeModal?.(), 120);
     } catch (err) {
       log({ driveNavigateError: err?.message || err, cwd: driveState.cwd });
-      closeModal?.();
       showBlockingModal('無法載入資料夾，請稍後再試。', { title: '載入失敗' });
     }
   }
@@ -845,8 +854,14 @@ export function initDrivePane({
       const name = f.header?.name || key.split('/').pop() || 'file.bin';
       const size = f.header?.size || 0;
       const ct = f.header?.contentType || 'application/octet-stream';
-      const ts = f.ts ? new Date(f.ts * 1000).toLocaleString() : '';
+      const ts = friendlyTimestamp(f.ts);
+      const friendlyCt = friendlyContentType(ct);
       const iconClass = fileIconForName(name, ct);
+      const iconColor = fileIconColor(name, ct);
+      const isImage = ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(String(name || '').split('.').pop().toLowerCase());
+      const iconHtml = isImage
+        ? `<span class="file-thumb" aria-hidden="true"><i class='${iconClass}'></i></span>`
+        : `<i class='${iconClass}' style="color:${iconColor}" aria-hidden="true"></i>`;
       const li = document.createElement('li');
       li.className = 'file-item file';
       li.dataset.type = 'file';
@@ -857,8 +872,8 @@ export function initDrivePane({
       li.innerHTML = `
         <div class="item-content">
           <div class="meta">
-            <div class="name"><i class='${iconClass}' aria-hidden="true"></i><span class="label">${escapeHtml(name)}</span></div>
-            <div class="sub">${fmtSize(size)} · ${escapeHtml(ct)} · ${escapeHtml(ts)}</div>
+            <div class="name">${iconHtml}<span class="label">${escapeHtml(name)}</span></div>
+            <div class="sub">${fmtSize(size)} · ${escapeHtml(friendlyCt)}${ts ? ` · ${escapeHtml(ts)}` : ''}</div>
           </div>
         </div>
         <button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`;
@@ -895,7 +910,15 @@ export function initDrivePane({
       driveListEl.appendChild(li);
     }
     if (!folders.length && !files.length) {
-      driveListEl.innerHTML = '<li class="empty">（此資料夾沒有內容）</li>';
+      const emptyLi = document.createElement('li');
+      emptyLi.className = 'empty-state';
+      emptyLi.innerHTML = `
+        <i class='bx bx-cloud-upload' aria-hidden="true"></i>
+        <p class="empty-state-title">這裡還沒有檔案</p>
+        <p class="empty-state-hint">上傳檔案或建立資料夾開始使用</p>
+        <button type="button" class="empty-state-btn">上傳檔案</button>`;
+      emptyLi.querySelector('.empty-state-btn')?.addEventListener('click', () => openUploadModal());
+      driveListEl.appendChild(emptyLi);
     }
   }
 
@@ -912,6 +935,56 @@ export function initDrivePane({
     if (['zip','rar','7z','gz','tar','tgz','bz2'].includes(ext)) return 'bx bx-archive';
     if (['txt','md','log','json','xml','yml','yaml'].includes(ext) || ct.startsWith('text/')) return 'bx bx-file';
     return 'bx bx-file';
+  }
+
+  function fileIconColor(name, contentType) {
+    const ext = String(name || '').split('.').pop().toLowerCase();
+    const ct = String(contentType || '').toLowerCase();
+    if (ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(ext)) return '#16a34a';
+    if (ct.startsWith('video/') || ['mp4','mov','m4v','webm','avi','mkv'].includes(ext)) return '#7c3aed';
+    if (ct.startsWith('audio/') || ['mp3','wav','m4a','aac','flac','ogg'].includes(ext)) return '#7c3aed';
+    if (ext === 'pdf') return '#dc2626';
+    if (['doc','docx','rtf','odt','pages'].includes(ext)) return '#2563eb';
+    if (['xls','xlsx','csv','ods','numbers'].includes(ext)) return '#16a34a';
+    if (['ppt','pptx','odp','key'].includes(ext)) return '#ea580c';
+    if (['zip','rar','7z','gz','tar','tgz','bz2'].includes(ext)) return '#d97706';
+    return '#2563eb';
+  }
+
+  function friendlyContentType(ct) {
+    const s = String(ct || '').toLowerCase();
+    if (s.startsWith('image/')) return s.replace('image/', '').toUpperCase() + ' 圖片';
+    if (s.startsWith('video/')) return s.replace('video/', '').toUpperCase() + ' 影片';
+    if (s.startsWith('audio/')) return s.replace('audio/', '').toUpperCase() + ' 音檔';
+    if (s === 'application/pdf') return 'PDF 文件';
+    if (s.includes('word') || s.includes('document')) return 'Word 文件';
+    if (s.includes('sheet') || s.includes('excel')) return '試算表';
+    if (s.includes('presentation') || s.includes('powerpoint')) return '簡報';
+    if (s.includes('zip') || s.includes('compressed') || s.includes('archive') || s.includes('rar') || s.includes('7z') || s.includes('tar') || s.includes('gzip')) return '壓縮檔';
+    if (s.startsWith('text/')) return s.replace('text/', '').toUpperCase() + ' 文字';
+    if (s === 'application/octet-stream') return '檔案';
+    if (s === 'application/json') return 'JSON';
+    return s;
+  }
+
+  function friendlyTimestamp(unixSec) {
+    if (!unixSec) return '';
+    const date = new Date(unixSec * 1000);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffSec = Math.floor(diffMs / 1000);
+    if (diffSec < 60) return '剛剛';
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin} 分鐘前`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr} 小時前`;
+    const diffDay = Math.floor(diffHr / 24);
+    if (diffDay < 7) return `${diffDay} 天前`;
+    const y = date.getFullYear();
+    const m = date.getMonth() + 1;
+    const d = date.getDate();
+    if (y === now.getFullYear()) return `${m}月${d}日`;
+    return `${y}/${m}/${d}`;
   }
 
   function attachLongPressEdit(li, { type, name, key }) {
