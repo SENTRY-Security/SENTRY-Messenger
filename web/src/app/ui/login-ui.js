@@ -429,158 +429,65 @@ applyAccountMode();
 if (getSession() || getHasMK() || getWrappedMK()) {
   markVerifiedUI();
 }
-const loadingBackdrop = document.getElementById('loginLoading'); const loadingTextEl = document.getElementById('loginLoadingText');
-const bootstrapProgressEl = document.getElementById('loginBootstrapProgress');
-const bootstrapStepsListEl = document.getElementById('loginBootstrapSteps');
 const transitionModal = document.getElementById('loginTransitionModal');
 const transitionBar = document.getElementById('loginTransitionBar');
 const transitionLabel = document.getElementById('loginTransitionLabel');
-const bootstrapStepDefs = [
-  { key: 'opaque', label: '驗證帳戶（OPAQUE）' },
-  { key: 'wrap-mk', label: '保護主金鑰' },
-  { key: 'mk-store', label: '儲存主金鑰' },
-  { key: 'devkeys-fetch', label: '讀取裝置備份' },
-  { key: 'prekeys-sync', label: '同步預共享金鑰' },
-  { key: 'generate-bundle', label: '產生預共享金鑰' },
-  { key: 'prekeys-publish', label: '上傳預共享金鑰' },
-  { key: 'wrap-device', label: '備份裝置金鑰' },
-  { key: 'devkeys-store', label: '儲存裝置備份' },
-  { key: 'nickname-init', label: '設定初始暱稱中' },
-  { key: 'avatar-init', label: '設定初始頭像中' },
-  { key: 'contact-restore', label: '還原聯絡人及金鑰' }
-];
-const bootstrapStepMap = new Map();
-let bootstrapInitialized = false;
 
-
-function resetBootstrapProgress() {
-  bootstrapInitialized = false;
-  bootstrapStepMap.clear();
-  if (bootstrapStepsListEl) bootstrapStepsListEl.innerHTML = '';
-  if (bootstrapProgressEl) bootstrapProgressEl.classList.add('hidden');
-}
-
-function formatBootstrapDetail(detail) {
-  if (!detail) return '';
-  if (typeof detail === 'string') return detail;
-  if (typeof detail === 'number') return String(detail);
-  if (typeof detail === 'object') {
-    if (detail.opkCount !== undefined && detail.opkCount !== null) {
-      return `OPK 數量：${detail.opkCount}`;
-    }
-    if (detail.message) return String(detail.message);
-    if (detail.note) return String(detail.note);
-    if (detail.error) return String(detail.error);
-  }
-  return '';
-}
-
-function initBootstrapProgress() {
-  if (!bootstrapProgressEl || !bootstrapStepsListEl) return;
-  bootstrapProgressEl.classList.remove('hidden');
-  bootstrapStepsListEl.innerHTML = '';
-  bootstrapStepMap.clear();
-  for (const def of bootstrapStepDefs) {
-    if (newAccount && def.key === 'prekeys-sync') continue;
-    if (newAccount && def.key === 'contact-restore') continue;
-    if (!newAccount && (def.key === 'nickname-init' || def.key === 'avatar-init')) continue;
-    if (!newAccount && (def.key === 'devkeys-fetch' || def.key === 'devkeys-store')) continue; // Login flow uses contact-restore instead of devkeys raw fetch
-    const li = document.createElement('li');
-    li.dataset.step = def.key;
-    const row = document.createElement('div');
-    row.className = 'row';
-    const label = document.createElement('span');
-    label.className = 'label-text';
-    label.textContent = def.label;
-    const status = document.createElement('span');
-    status.className = 'status-text';
-    status.textContent = '等待';
-    row.append(label, status);
-    const detail = document.createElement('span');
-    detail.className = 'detail-text';
-    detail.textContent = '';
-    detail.style.display = 'none';
-    li.append(row, detail);
-    bootstrapStepsListEl.append(li);
-    bootstrapStepMap.set(def.key, { el: li, statusText: status, detailText: detail, status: 'pending' });
-  }
-  bootstrapInitialized = true;
-}
-
-const BOOTSTRAP_STATE_CLASS = {
-  start: 'in-progress',
-  success: 'success',
-  error: 'error',
-  skip: 'skip',
-  info: 'info'
+// --- Unified white loading modal (progress bar + label) ---
+// Step-to-progress mapping: login phase covers 0% → 5%, then app.html continues from 5%.
+const STEP_PROGRESS = {
+  'opaque':          { start: 0.5, done: 1,   label: '驗證帳戶中…' },
+  'wrap-mk':         { start: 1,   done: 1.5, label: '保護主金鑰…' },
+  'mk-store':        { start: 1.5, done: 2,   label: '儲存主金鑰…' },
+  'devkeys-fetch':   { start: 2,   done: 2.5, label: '讀取裝置備份…' },
+  'prekeys-sync':    { start: 2.5, done: 3.5, label: '同步加密金鑰…' },
+  'generate-bundle': { start: 2,   done: 2.5, label: '產生加密金鑰…' },
+  'prekeys-publish': { start: 2.5, done: 3,   label: '上傳加密金鑰…' },
+  'wrap-device':     { start: 3,   done: 3.5, label: '備份裝置金鑰…' },
+  'devkeys-store':   { start: 3.5, done: 4,   label: '儲存裝置備份…' },
+  'nickname-init':   { start: 4,   done: 4.5, label: '設定暱稱…' },
+  'avatar-init':     { start: 4.5, done: 5,   label: '設定頭像…' },
+  'contact-restore': { start: 3.5, done: 5,   label: '還原聯絡人…' },
 };
+let currentProgress = 0;
 
-const BOOTSTRAP_STATUS_TEXT = {
-  pending: '等待',
-  start: '處理中…',
-  success: '完成',
-  error: '失敗',
-  skip: '略過',
-  info: '完成'
-};
-
-function fadeOutBootstrapEntry(step, entry) {
-  if (!entry?.el || entry.el.dataset.fading === '1') return;
-  const el = entry.el;
-  el.dataset.fading = '1';
-  const triggerFade = () => el.classList.add('fading-out');
-  requestAnimationFrame(() => requestAnimationFrame(triggerFade));
-  const remove = () => {
-    if (el?.parentElement) {
-      el.parentElement.removeChild(el);
-    }
-    bootstrapStepMap.delete(step);
-  };
-  el.addEventListener('transitionend', remove, { once: true });
-  setTimeout(remove, 650);
+function setTransitionProgress(pct, label) {
+  if (pct > currentProgress) currentProgress = pct;
+  if (transitionBar) transitionBar.style.width = currentProgress + '%';
+  if (transitionLabel && label) transitionLabel.textContent = label;
 }
 
-function updateBootstrapStep(step, status, detail) {
-  const entry = bootstrapStepMap.get(step);
-  if (!entry) return;
-  entry.status = status;
-  const classNames = ['in-progress', 'success', 'error', 'skip', 'info'];
-  entry.el.classList.remove(...classNames);
-  const cls = BOOTSTRAP_STATE_CLASS[status];
-  if (cls) entry.el.classList.add(cls);
-  if (status === 'start' && !cls) entry.el.classList.add('in-progress');
-  entry.statusText.textContent = BOOTSTRAP_STATUS_TEXT[status] || BOOTSTRAP_STATUS_TEXT.pending;
-  const detailText = formatBootstrapDetail(detail);
-  if (detailText) {
-    entry.detailText.textContent = detailText;
-    entry.detailText.style.display = '';
-  } else {
-    entry.detailText.textContent = '';
-    entry.detailText.style.display = 'none';
+function updateBootstrapStep(step, status) {
+  const def = STEP_PROGRESS[step];
+  if (!def) return;
+  if (status === 'start') {
+    setTransitionProgress(def.start, def.label);
+  } else if (status === 'success' || status === 'skip' || status === 'info') {
+    setTransitionProgress(def.done, null);
   }
-  if (status === 'success' || status === 'skip' || status === 'info') {
-    fadeOutBootstrapEntry(step, entry);
-  }
+  // error status: keep current progress/label — hideLoading will dismiss modal
 }
+
+function resetBootstrapProgress() { currentProgress = 0; }
+function initBootstrapProgress() { /* no-op: progress bar driven by updateBootstrapStep */ }
 
 function showLoading(message) {
-  if (loadingBackdrop) loadingBackdrop.classList.remove('hidden');
-  if (loadingTextEl) loadingTextEl.textContent = message || '登入中，請稍候…';
+  if (transitionModal) transitionModal.classList.remove('hidden');
+  currentProgress = 0;
+  if (transitionBar) transitionBar.style.width = '0%';
+  if (transitionLabel) transitionLabel.textContent = message || '登入中…';
   if (unlockBtn) unlockBtn.disabled = true;
 }
 
 function updateLoading(message) {
-  if (loadingTextEl && message) loadingTextEl.textContent = message;
+  if (transitionLabel && message) transitionLabel.textContent = message;
 }
 
 function hideLoading() {
-  if (loadingBackdrop) loadingBackdrop.classList.add('hidden');
+  if (transitionModal) transitionModal.classList.add('hidden');
+  currentProgress = 0;
+  if (transitionBar) transitionBar.style.width = '0%';
   if (unlockBtn) unlockBtn.disabled = false;
-}
-
-function showTransitionModal() {
-  if (transitionModal) transitionModal.classList.remove('hidden');
-  if (loadingBackdrop) loadingBackdrop.classList.add('hidden');
 }
 
 function showWelcomeModal() {
@@ -1012,8 +919,8 @@ async function onUnlock() {
       }
     }
     updateUidDisplay();
-    // Seamless transition: show white loading modal identical to app.html before redirect
-    showTransitionModal();
+    // Set progress to 5% (matches app.html initial bar-fill) for seamless visual handoff
+    setTransitionProgress(5, '載入中…');
     // handoff MK/UID to next page (sessionStorage, same-tab only)
     try {
       const mk = getMkRaw();
@@ -1088,7 +995,6 @@ async function onUnlock() {
     // sessionStorage is synchronous — redirect immediately for seamless transition
     location.replace(window.location.origin + '/pages/app.html');
   } catch (e) {
-    if (transitionModal) transitionModal.classList.add('hidden');
     hideLoading();
     loginInProgress = false;
     log({ unlockError: String(e?.message || e) });
