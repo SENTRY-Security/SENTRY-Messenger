@@ -1279,7 +1279,7 @@ export class MessageFlowController extends BaseController {
                     this.elements.messagesEmpty.innerHTML =
                         '<i class="bx bx-message-dots" aria-hidden="true"></i>' +
                         '<p class="messages-empty-title">尚未選擇任何對話</p>' +
-                        '<p class="messages-empty-hint">從左側選擇一個對話開始聊天</p>';
+                        '<p class="messages-empty-hint">選擇一個對話開始聊天</p>';
                 }
             }
         }
