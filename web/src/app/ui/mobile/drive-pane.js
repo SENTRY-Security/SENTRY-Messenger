@@ -1327,14 +1327,18 @@ export function initDrivePane({
     showProgressModal?.(files.length === 1 ? (files[0].name || '檔案') : `${files.length} 個檔案`);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const titleEl = document.querySelector('.progress-wrap .progress-title');
+    const subtitleEl = document.querySelector('.progress-wrap .progress-subtitle');
+    const pctEl = document.getElementById('progressPercent');
     const textEl = document.getElementById('progressText');
     const innerEl = document.getElementById('progressInner');
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        if (titleEl) titleEl.textContent = `上傳中 (${i + 1}/${files.length})：${file.name || '檔案'}`;
+        if (titleEl) titleEl.textContent = file.name || '檔案';
+        if (subtitleEl) subtitleEl.textContent = files.length > 1 ? `檔案 ${i + 1} / ${files.length}` : '上傳中…';
         if (innerEl) innerEl.style.width = '0%';
-        if (textEl) textEl.textContent = '準備中…';
+        if (pctEl) pctEl.innerHTML = '0<span>%</span>';
+        if (textEl) textEl.textContent = '';
         await encryptAndPutWithProgress({
           convId,
           file,
@@ -1356,11 +1360,12 @@ export function initDrivePane({
           }
         });
         if (innerEl) innerEl.style.width = '100%';
-        if (textEl) textEl.textContent = `已完成 (${i + 1}/${files.length})`;
+        if (pctEl) pctEl.innerHTML = '100<span>%</span>';
+        if (textEl) textEl.textContent = files.length > 1 ? `已完成 ${i + 1} / ${files.length}` : '';
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
       completeProgressModal?.();
-      await new Promise((resolve) => setTimeout(resolve, 680));
+      await new Promise((resolve) => setTimeout(resolve, 880));
       await refreshDriveList();
     } catch (err) {
       log({ driveUploadError: err?.message || err });

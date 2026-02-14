@@ -247,6 +247,10 @@ export function setupModalController({ shareButtonProvider } = {}) {
     }, { once: true });
   }
 
+  const PROGRESS_ICON_UPLOAD = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 19V5m0 0l-5 5m5-5l5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const PROGRESS_ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const PROGRESS_ICON_FAIL = '<svg viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
   function showProgressModal(name) {
     const modal = document.getElementById('modal');
     const body = document.getElementById('modalBody');
@@ -268,26 +272,39 @@ export function setupModalController({ shareButtonProvider } = {}) {
     if (modalTitle) modalTitle.textContent = '';
     body.innerHTML = `
       <div class="progress-wrap">
-        <div class="progress-title">上傳中：${escapeHtml(name || '檔案')}</div>
-        <div id="progressText" class="progress-text">準備中…</div>
+        <div class="progress-icon progress-icon--uploading">${PROGRESS_ICON_UPLOAD}</div>
+        <div class="progress-title">${escapeHtml(name || '檔案')}</div>
+        <div class="progress-subtitle">準備上傳…</div>
+        <div id="progressPercent" class="progress-percent">0<span>%</span></div>
         <div class="progress-bar"><div id="progressInner" class="progress-inner" style="width:0%;"></div></div>
+        <div id="progressText" class="progress-text"></div>
       </div>`;
     openModal();
   }
 
   function updateProgressModal(progress) {
     const inner = document.getElementById('progressInner');
+    const pctEl = document.getElementById('progressPercent');
     const text = document.getElementById('progressText');
-    if (inner) inner.style.width = `${Math.min(Math.max(progress.percent || 0, 0), 100)}%`;
-    if (text) text.textContent = `${progress.percent || 0}% · ${fmtSize(progress.loaded || 0)} / ${fmtSize(progress.total || 0)}`;
+    const pct = Math.min(Math.max(progress.percent || 0, 0), 100);
+    if (inner) inner.style.width = `${pct}%`;
+    if (pctEl) pctEl.innerHTML = `${Math.round(pct)}<span>%</span>`;
+    if (text) {
+      const loaded = fmtSize(progress.loaded || 0);
+      const total = fmtSize(progress.total || 0);
+      text.textContent = `${loaded} / ${total}`;
+    }
   }
 
   function completeProgressModal() {
-    const text = document.getElementById('progressText');
-    const inner = document.getElementById('progressInner');
-    if (text) text.textContent = '完成！';
-    if (inner) inner.style.width = '100%';
-    setTimeout(() => closeModal(), 650);
+    const body = document.getElementById('modalBody');
+    if (!body) return;
+    body.innerHTML = `
+      <div class="progress-wrap">
+        <div class="progress-icon progress-icon--done">${PROGRESS_ICON_CHECK}</div>
+        <div class="progress-done-text">上傳完成</div>
+      </div>`;
+    setTimeout(() => closeModal(), 800);
   }
 
   function failProgressModal(message) {
@@ -295,10 +312,11 @@ export function setupModalController({ shareButtonProvider } = {}) {
     if (!body) return;
     body.innerHTML = `
       <div class="progress-wrap">
+        <div class="progress-icon progress-icon--fail">${PROGRESS_ICON_FAIL}</div>
         <div class="progress-title">上傳失敗</div>
-        <div class="progress-text" style="color:#fecaca;">${escapeHtml(message || '未知錯誤')}</div>
+        <div class="progress-fail-text">${escapeHtml(message || '未知錯誤')}</div>
       </div>`;
-    setTimeout(() => closeModal(), 1600);
+    setTimeout(() => closeModal(), 1800);
   }
 
   return {
