@@ -1221,6 +1221,7 @@ const btnProfileEdit = document.getElementById('btnProfileEdit');
 const profileAvatarImg = document.getElementById('profileAvatarImg');
 const contactsListEl = document.getElementById('contactsList');
 const contactsScrollEl = document.getElementById('contactsScroll');
+const contactsSearchEl = document.getElementById('contactsSearch');
 const contactsRefreshEl = document.getElementById('contactsRefreshHint');
 const contactsRefreshLabel = contactsRefreshEl?.querySelector('.label') || null;
 const connectionIndicator = document.getElementById('connectionIndicator');
@@ -1477,7 +1478,7 @@ presenceManager = createPresenceManager({
 });
 
 const contactsView = initContactsView({
-  dom: { contactsListEl, contactsScrollEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl },
+  dom: { contactsListEl, contactsScrollEl, contactsSearchEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl },
   loadContactsApi: loadContacts,
   saveContactApi: saveContact,
   friendsDeleteContact,

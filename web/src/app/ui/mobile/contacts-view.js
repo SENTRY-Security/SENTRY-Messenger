@@ -36,6 +36,7 @@ export function initContactsView(options) {
   const {
     contactsListEl,
     contactsScrollEl,
+    contactsSearchEl,
     contactsRefreshEl,
     contactsRefreshLabel
   } = dom;
@@ -54,6 +55,20 @@ export function initContactsView(options) {
     const count = Array.isArray(sessionStore.contactState) ? sessionStore.contactState.length : 0;
     counterEl.textContent = String(count);
   };
+
+  // --- Contact search / filter ---
+  const applyContactFilter = () => {
+    if (!contactsListEl) return;
+    const query = (contactsSearchEl?.value || '').trim().toLowerCase();
+    contactsListEl.querySelectorAll('.contact-item').forEach((item) => {
+      if (!query) { item.style.display = ''; return; }
+      const name = (item.querySelector('.name')?.textContent || '').toLowerCase();
+      item.style.display = name.includes(query) ? '' : 'none';
+    });
+  };
+  if (contactsSearchEl) {
+    contactsSearchEl.addEventListener('input', applyContactFilter);
+  }
 
   if (!sessionStore.conversationIndex) sessionStore.conversationIndex = new Map();
   const conversationIndex = sessionStore.conversationIndex;
@@ -235,6 +250,7 @@ export function initContactsView(options) {
     });
     updateStats?.();
     updateContactCount();
+    applyContactFilter();
     try { document.dispatchEvent(new CustomEvent('contacts:rendered')); } catch { }
   }
 

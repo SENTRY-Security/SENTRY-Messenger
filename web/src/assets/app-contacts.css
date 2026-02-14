@@ -132,6 +132,42 @@ html.no-anim .cover-spinner {
   color: #0f172a;
 }
 
+.contacts-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 8px 0 4px;
+}
+
+.contacts-search-wrap > i {
+  position: absolute;
+  left: 12px;
+  font-size: 18px;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.contacts-search {
+  width: 100%;
+  padding: 10px 12px 10px 36px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  font-size: 14px;
+  color: #0f172a;
+  outline: none;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.contacts-search::placeholder {
+  color: #94a3b8;
+}
+
+.contacts-search:focus {
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
+}
+
 .contact-list {
   list-style: none;
   padding-left: 0;
