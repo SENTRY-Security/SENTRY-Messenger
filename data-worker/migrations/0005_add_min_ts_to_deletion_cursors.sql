@@ -5,4 +5,5 @@
 -- the created_at (seconds) of the last message at deletion time and
 -- provides a correct cross-sender filter.
 
-ALTER TABLE deletion_cursors ADD COLUMN min_ts REAL NOT NULL DEFAULT 0;
+-- ALTER TABLE deletion_cursors ADD COLUMN min_ts REAL NOT NULL DEFAULT 0;
+-- FIXED: Column min_ts already exists, skipping this step.
