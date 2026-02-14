@@ -33,20 +33,20 @@
                     │                     SENTRY Messenger                         │
                     └──────────────────────────────────────────────────────────────┘
 
-  ┌──────────────────────┐     ┌───────────────────────┐     ┌─────────────────────────┐
-  │   Frontend (web/)    │     │  Backend (src/)        │     │  Data Layer              │
-  │                      │     │                        │     │  (data-worker/)          │
-  │  Cloudflare Pages    │────▶│  Express + WebSocket   │────▶│  Cloudflare Workers      │
-  │  Vanilla JS SPA      │     │  Linode VPS (PM2)      │     │  D1 (SQLite) + R2 Storage│
-  │  esbuild bundler     │     │  HMAC-signed requests  │     │                          │
-  └──────────────────────┘     └───────────────────────┘     └─────────────────────────┘
-         │                              │                              │
-         │  ◀── HTTPS/WSS ──▶          │  ◀── HMAC-auth REST ──▶     │
-         │                              │                              │
+  ┌──────────────────────┐     ┌───────────────────────┐     ┌──────────────────────────┐
+  │   Frontend (web/)    │     │  Backend (src/)       │     │  Data Layer              │
+  │                      │     │                       │     │  (data-worker/)          │
+  │  Cloudflare Pages    │────▶│  Express + WebSocket  │────▶│  Cloudflare Workers      │
+  │  Vanilla JS SPA      │     │  Linode VPS (PM2)     │     │  D1 (SQLite) + R2 Storage│
+  │  esbuild bundler     │     │  HMAC-signed requests │     │                          │
+  └──────────────────────┘     └───────────────────────┘     └──────────────────────────┘
+         │                              │                             │
+         │  ◀── HTTPS/WSS ──▶           │  ◀── HMAC-auth REST ──▶     │
+         │                              │                             │
   ┌──────┴──────┐               ┌───────┴───────┐             ┌───────┴───────┐
   │ X3DH + DR   │               │ Rate Limit    │             │ D1 Database   │
-  │ 客戶端加密   │               │ Helmet/CORS   │             │ R2 媒體儲存   │
-  │ IndexedDB   │               │ JWT WS Auth   │             │ OPAQUE 紀錄   │
+  │ 客戶端加密    │               │ Helmet/CORS   │             │ R2 媒體儲存    │
+  │ IndexedDB   │               │ JWT WS Auth   │             │ OPAQUE 紀錄    │
   └─────────────┘               └───────────────┘             └───────────────┘
 ```
 
@@ -480,31 +480,31 @@ NFC 標籤 tap → UID + Counter + CMAC
 
 ```
                           ┌─────────────────────────────┐
-                          │     Entry Events             │
-                          │  login / ws / enter /        │
-                          │  resume / scroll             │
+                          │     Entry Events            │
+                          │  login / ws / enter /       │
+                          │  resume / scroll            │
                           └──────────┬──────────────────┘
                                      │
                           ┌──────────▼──────────────────┐
                           │       Facade (入口)          │
-                          │  messages-flow/index.js      │
+                          │  messages-flow/index.js     │
                           └──────────┬──────────────────┘
                                      │
                     ┌────────────────┴────────────────┐
-                    │                                  │
+                    │                                 │
          ┌──────────▼──────────┐           ┌──────────▼──────────┐
-         │    A Route           │           │    B Route           │
-         │    Replay (Vault)    │           │    Live Decrypt      │
-         │                      │           │                      │
-         │  mutateState=false   │           │  mutateState=true    │
-         │  allowReplay=true    │           │  allowReplay=false   │
-         │                      │           │                      │
-         │  ● vaultGet only     │           │  ● DR 推進 state     │
-         │  ● AES-GCM 解密     │           │  ● vaultPut incoming │
-         │  ● 不推進 DR        │           │  ● persist snapshot  │
-         │  ● 不 vaultPut      │           │  ● gap fill          │
-         │                      │           │  ● catch-up          │
-         └──────────────────────┘           └──────────────────────┘
+         │    A Route          │           │    B Route          │
+         │    Replay (Vault)   │           │    Live Decrypt     │
+         │                     │           │                     │
+         │  mutateState=false  │           │  mutateState=true   │
+         │  allowReplay=true   │           │  allowReplay=false  │
+         │                     │           │                     │
+         │  ● vaultGet only    │           │  ● DR 推進 state     │
+         │  ● AES-GCM 解密      │           │  ● vaultPut incoming │
+         │  ● 不推進 DR         │           │  ● persist snapshot  │
+         │  ● 不 vaultPut       │          │  ● gap fill          │
+         │                     │           │  ● catch-up          │
+         └─────────────────────┘           └──────────────────────┘
 ```
 
 ### 發送流程
