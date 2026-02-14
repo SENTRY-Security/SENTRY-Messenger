@@ -73,7 +73,7 @@
         box-shadow:0 26px 60px rgba(15,23,42,0.45);
         position:relative;
         z-index:10;
-        transition:transform .9s cubic-bezier(0.25,0,0.3,1),opacity .7s ease;
+        transition:opacity .4s ease;
       }
       .brand { position:relative; display:flex; align-items:center; gap:12px; margin-bottom:18px; }
       .brand img { height:30px; width:auto; }
@@ -297,12 +297,13 @@
       #loginStage .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
       @keyframes tm-pulse{0%,100%{filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:brightness(0) invert(1) drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
       @keyframes tm-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
-      .login-shell.panel-exit{transform:translateY(-120vh);opacity:0;pointer-events:none}
+      .login-shell.panel-exit{animation:panelSlideOut 1s forwards;pointer-events:none}
+      @keyframes panelSlideOut{0%{transform:translateY(0);opacity:1;animation-timing-function:ease-out}15%{transform:translateY(28px);opacity:1;animation-timing-function:cubic-bezier(0.4,0,1,1)}100%{transform:translateY(-120vh);opacity:0}}
       .login-shell.panel-enter{animation:panelSlideIn .6s cubic-bezier(0,0,0.2,1) forwards}
       @keyframes panelSlideIn{from{transform:translateY(100vh);opacity:0}to{transform:translateY(0);opacity:1}}
       html.no-anim #loginStage .tm-logo{animation:none}
       html.no-anim #loginStage .tm-bar-scan{animation:none}
-      html.no-anim .login-shell.panel-exit{transition:none}
+      html.no-anim .login-shell.panel-exit{animation:none}
       html.no-anim .login-shell.panel-enter{animation:none}
     </style>
   </head>
