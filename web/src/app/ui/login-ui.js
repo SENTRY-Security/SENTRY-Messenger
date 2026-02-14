@@ -561,7 +561,7 @@ function showLoading(message) {
   if (typeof window.__tmCanvasStart === 'function') window.__tmCanvasStart();
   setTimeout(() => {
     if (typeof window.__tmScrambleStart === 'function') window.__tmScrambleStart();
-  }, 450);
+  }, 750);
 }
 
 function updateLoading(message) {
