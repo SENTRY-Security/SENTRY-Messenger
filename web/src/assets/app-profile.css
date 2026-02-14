@@ -315,6 +315,27 @@ body.modal-open .profile-share-btn {
   display: block;
 }
 
+.avatar-preview {
+  width: min(280px, 82vw);
+  height: min(280px, 82vw);
+  border-radius: 24px;
+  background: #e2e8f0;
+  margin: 0 auto;
+  overflow: hidden;
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14);
+}
+
+.avatar-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.modal.avatar-preview-modal .modal-body {
+  overflow: hidden;
+}
+
 .avatar-cropper.zoom-hint::after {
   content: '雙指 / 滾輪可縮放';
   position: absolute;
