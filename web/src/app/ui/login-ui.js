@@ -716,14 +716,14 @@ passwordToggles.forEach((btn) => {
     if (!id) return;
     const input = document.getElementById(id);
     if (!input) return;
-    const isPassword = input.type === 'password';
-    input.type = isPassword ? 'text' : 'password';
+    const isMasked = input.classList.contains('pw-masked');
+    input.classList.toggle('pw-masked', !isMasked);
     const icon = btn.querySelector('.pw-icon');
     if (icon) {
-      icon.innerHTML = isPassword ? PW_ICON_HIDE : PW_ICON_SHOW;
-      icon.dataset.state = isPassword ? 'hide' : 'show';
+      icon.innerHTML = isMasked ? PW_ICON_HIDE : PW_ICON_SHOW;
+      icon.dataset.state = isMasked ? 'hide' : 'show';
     }
-    btn.setAttribute('aria-label', isPassword ? '隱藏密碼' : '顯示密碼');
+    btn.setAttribute('aria-label', isMasked ? '隱藏密碼' : '顯示密碼');
   });
 });
 if (welcomeNextBtn) {
@@ -1067,6 +1067,9 @@ async function onUnlock() {
         log({ contactSecretHandoffError: err?.message || err });
       }
     } catch { }
+    // Clear password values before redirect to prevent any lingering autofill triggers
+    if (pwdEl) pwdEl.value = '';
+    if (pwdConfirmEl) pwdConfirmEl.value = '';
     // sessionStorage is synchronous — redirect immediately for seamless transition
     location.replace(window.location.origin + '/pages/app.html');
   } catch (e) {
@@ -1302,13 +1305,8 @@ function b64u8(b64s) { const bin = atob(b64s); const u8 = new Uint8Array(bin.len
       el.setAttribute('autocapitalize', 'off');
       el.setAttribute('autocorrect', 'off');
       el.setAttribute('spellcheck', 'false');
-      // for password fields specifically
-      if (el.type === 'password') {
-        el.setAttribute('autocomplete', 'new-password');
-        el.setAttribute('data-1p-ignore', 'true');
-        el.setAttribute('data-lpignore', 'true');
-        if (!el.getAttribute('name')) el.setAttribute('name', '__no_store_pwd__');
-      }
+      el.setAttribute('data-1p-ignore', 'true');
+      el.setAttribute('data-lpignore', 'true');
     });
   } catch { }
 })();
