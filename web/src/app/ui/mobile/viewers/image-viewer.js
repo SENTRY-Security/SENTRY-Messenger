@@ -353,11 +353,15 @@ export async function openImageViewer(opts) {
       const c = document.createElement('canvas');
       const tempImg = new Image();
       tempImg.onload = () => {
-        c.width = tempImg.naturalWidth;
-        c.height = tempImg.naturalHeight;
-        c.getContext('2d').drawImage(tempImg, 0, 0);
-        originalImageDataUrl = c.toDataURL('image/png');
-        resolve(originalImageDataUrl);
+        try {
+          c.width = tempImg.naturalWidth;
+          c.height = tempImg.naturalHeight;
+          c.getContext('2d').drawImage(tempImg, 0, 0);
+          originalImageDataUrl = c.toDataURL('image/png');
+          resolve(originalImageDataUrl);
+        } catch {
+          resolve(url);
+        }
       };
       tempImg.onerror = () => resolve(url);
       tempImg.src = url;
@@ -374,6 +378,7 @@ export async function openImageViewer(opts) {
 
     try {
       const fabric = await getFabric();
+      if (!editorOpen) return; // Aborted during CDN load
       const FabricCanvas = fabric.Canvas;
       const FabricImage = fabric.FabricImage || fabric.Image;
 
@@ -383,6 +388,7 @@ export async function openImageViewer(opts) {
         img.onload = resolve;
         img.onerror = resolve;
       });
+      if (!editorOpen) return; // Aborted during image wait
 
       const natW = img.naturalWidth || 800;
       const natH = img.naturalHeight || 600;
@@ -400,6 +406,12 @@ export async function openImageViewer(opts) {
       canvas.style.width = displayW + 'px';
       canvas.style.height = displayH + 'px';
 
+      // Dispose stale FabricCanvas from a previously aborted init
+      if (fabricCanvas) {
+        try { fabricCanvas.dispose(); } catch {}
+        fabricCanvas = null;
+      }
+
       fabricCanvas = new FabricCanvas(canvas, {
         width: displayW,
         height: displayH,
@@ -410,7 +422,17 @@ export async function openImageViewer(opts) {
 
       // Load image as background
       const dataUrl = await loadOriginalDataUrl();
+      if (!editorOpen) { // Aborted during data URL conversion
+        try { fabricCanvas.dispose(); } catch {}
+        fabricCanvas = null;
+        return;
+      }
       const fabricImg = await FabricImage.fromURL(dataUrl, { crossOrigin: 'anonymous' });
+      if (!editorOpen) { // Aborted during Fabric image load
+        try { fabricCanvas.dispose(); } catch {}
+        fabricCanvas = null;
+        return;
+      }
       fabricImg.scaleToWidth(displayW);
       fabricImg.scaleToHeight(displayH);
       fabricCanvas.backgroundImage = fabricImg;
