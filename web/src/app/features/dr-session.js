@@ -1485,11 +1485,10 @@ function normalizePeerBundleFromPrekeys(bundle) {
   if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
     throw new Error('peer bundle missing');
   }
-  // Validate raw API response keys (accept both snake_case from API and camelCase).
-  const topAllowed = new Set(['ok', 'deviceId', 'device_id', 'signedPrekey', 'signed_prekey', 'opk']);
+  // API response uses snake_case; allowlist must match API contract exactly.
+  const topAllowed = new Set(['ok', 'device_id', 'signed_prekey', 'opk']);
   assertNoExtraKeys(bundle, topAllowed, 'peer bundle');
-  // API response uses snake_case (device_id, signed_prekey); normalize to camelCase.
-  const signedPrekey = bundle.signedPrekey || bundle.signed_prekey;
+  const signedPrekey = bundle.signed_prekey;
   const opk = bundle.opk;
   if (!signedPrekey || typeof signedPrekey !== 'object' || Array.isArray(signedPrekey)) {
     throw new Error('peer bundle missing signedPrekey');
