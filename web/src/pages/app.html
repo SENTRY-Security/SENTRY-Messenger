@@ -13,7 +13,10 @@
   <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
   <!-- Loading Modal inline styles — renders before any external CSS -->
   <style>
-    #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;transition:opacity .5s ease}
+    #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;transition:opacity .5s ease;overflow:hidden}
+    #appLoadingModal .app-tm-canvas{position:absolute;inset:0;z-index:0}
+    #appLoadingModal .app-tm-overlay{position:absolute;inset:0;z-index:1;background:radial-gradient(ellipse at 50% 50%,transparent 0%,rgba(5,10,20,0.4) 60%,rgba(5,10,20,0.85) 100%);pointer-events:none}
+    #appLoadingModal .app-tm-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:none}
     #appLoadingModal.fade-out{opacity:0;pointer-events:none}
     #appLoadingModal .loading-logo{width:52px;height:52px;margin-bottom:18px;filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}
     #appLoadingModal .loading-brand{font-size:18px;font-weight:700;letter-spacing:4px;color:#e0f2fe;margin-bottom:8px;text-shadow:0 0 20px rgba(56,189,248,0.5),0 0 40px rgba(99,102,241,0.3)}
@@ -45,15 +48,69 @@
 <body>
   <!-- Loading Modal — visible instantly, dismissed after hydration -->
   <div id="appLoadingModal">
-    <img class="loading-logo" src="/assets/images/logo.svg" alt="" />
-    <div class="loading-brand">SENTRY MESSENGER</div>
-    <div class="loading-sublabel">END-TO-END ENCRYPTED</div>
-    <div class="loading-bar-track">
-      <div id="appLoadingBar" class="loading-bar-fill"></div>
-      <div class="loading-bar-scan"></div>
+    <canvas class="app-tm-canvas" id="appTmCanvas"></canvas>
+    <div class="app-tm-overlay"></div>
+    <div class="app-tm-content">
+      <img class="loading-logo" src="/assets/images/logo.svg" alt="" />
+      <div class="loading-brand">SENTRY MESSENGER</div>
+      <div class="loading-sublabel">END-TO-END ENCRYPTED</div>
+      <div class="loading-bar-track">
+        <div id="appLoadingBar" class="loading-bar-fill"></div>
+        <div class="loading-bar-scan"></div>
+      </div>
+      <div id="appLoadingLabel" class="loading-label">LOADING SECURE SESSION...</div>
     </div>
-    <div id="appLoadingLabel" class="loading-label">LOADING SECURE SESSION...</div>
   </div>
+  <script>
+  /* ── App Loading: Matrix Rain ── */
+  (function(){
+    var cvs, ctx, w, h, raf, columns, drops, running = false;
+    var CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789アイウエオカキクケコサシスセソ$@#&%!?<>{}[]';
+    var FS = 13;
+    function init(){
+      cvs = document.getElementById('appTmCanvas');
+      if(!cvs) return;
+      ctx = cvs.getContext('2d');
+      resize();
+      window.addEventListener('resize', resize);
+    }
+    function resize(){
+      if(!cvs) return;
+      w = cvs.width = cvs.parentElement.clientWidth;
+      h = cvs.height = cvs.parentElement.clientHeight;
+      columns = Math.floor(w / FS);
+      drops = [];
+      for(var i=0;i<columns;i++) drops[i] = -(Math.random()*80|0);
+    }
+    function tick(){
+      if(!running) return;
+      ctx.fillStyle = 'rgba(5,10,20,0.12)';
+      ctx.fillRect(0,0,w,h);
+      ctx.font = FS + 'px monospace';
+      for(var i=0;i<columns;i++){
+        if(drops[i]<0){ drops[i]++; continue; }
+        var ch = CHARS[Math.random()*CHARS.length|0];
+        var y = drops[i] * FS;
+        ctx.fillStyle = 'rgba(16,185,129,0.7)';
+        ctx.fillText(ch, i*FS, y);
+        if(y > FS){
+          ctx.fillStyle = 'rgba(16,185,129,0.08)';
+          ctx.fillText(CHARS[Math.random()*CHARS.length|0], i*FS, y - FS);
+        }
+        drops[i]++;
+        if(y > h && Math.random() > 0.975) drops[i] = 0;
+      }
+      raf = requestAnimationFrame(tick);
+    }
+    // Auto-start
+    running = true;
+    init();
+    if(ctx){ ctx.fillStyle='#050a14'; ctx.fillRect(0,0,w,h); }
+    tick();
+    // Expose stop so __hideLoadingModal can call it
+    window.__appTmStop = function(){ running = false; if(raf) cancelAnimationFrame(raf); };
+  })();
+  </script>
   <script>
     (function () {
       var stages = {
@@ -109,6 +166,7 @@
       };
       window.__hideLoadingModal = function () {
         stopSlowFill();
+        if (typeof window.__appTmStop === 'function') window.__appTmStop();
         if (!modal) return;
         modal.classList.add('fade-out');
         setTimeout(function () { if (modal.parentNode) modal.parentNode.removeChild(modal); }, 400);
