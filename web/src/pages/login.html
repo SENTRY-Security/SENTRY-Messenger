@@ -277,13 +277,25 @@
       .version-storage-row { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:10px; border:1px solid rgba(148,163,184,0.35); background:rgba(15,23,42,0.9); color:#e2e8f0; text-align:left; font-size:12px; box-shadow:0 10px 26px rgba(2,6,23,0.32); }
       .version-storage-row span:last-child { color:#bae6fd; }
       .version-storage-total { padding:8px 10px; border-radius:10px; border:1px solid rgba(148,163,184,0.35); background:rgba(15,23,42,0.78); color:#bfdbfe; }
-      #loginTransitionModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;transition:opacity .35s ease}
+      #loginTransitionModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;transition:opacity .5s ease;overflow:hidden}
       #loginTransitionModal.hidden{display:none}
-      #loginTransitionModal .loading-logo{width:56px;height:56px;margin-bottom:16px}
-      #loginTransitionModal .loading-brand{font-size:16px;font-weight:700;letter-spacing:2.5px;color:#0f172a;margin-bottom:28px}
-      #loginTransitionModal .loading-bar-track{width:180px;height:3px;border-radius:2px;background:#e2e8f0;overflow:hidden;margin-bottom:14px}
-      #loginTransitionModal .loading-bar-fill{width:0%;height:100%;border-radius:2px;background:linear-gradient(90deg,#3b82f6,#6366f1)}
-      #loginTransitionModal .loading-label{font-size:13px;color:#94a3b8;letter-spacing:.3px}
+      #loginTransitionModal .tm-canvas{position:absolute;inset:0;z-index:0}
+      #loginTransitionModal .tm-overlay{position:absolute;inset:0;z-index:1;background:radial-gradient(ellipse at 50% 50%,transparent 0%,rgba(5,10,20,0.4) 60%,rgba(5,10,20,0.85) 100%);pointer-events:none}
+      #loginTransitionModal .tm-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:none}
+      #loginTransitionModal .tm-logo{width:52px;height:52px;margin-bottom:18px;filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation:tm-pulse 3s ease-in-out infinite}
+      #loginTransitionModal .tm-brand{font-size:18px;font-weight:700;letter-spacing:4px;color:#e0f2fe;margin-bottom:8px;text-shadow:0 0 20px rgba(56,189,248,0.5),0 0 40px rgba(99,102,241,0.3);min-width:220px;text-align:center;height:1.4em;line-height:1.4em}
+      #loginTransitionModal .tm-brand .char{display:inline-block;transition:color .15s ease,text-shadow .15s ease}
+      #loginTransitionModal .tm-brand .char.resolved{color:#e0f2fe}
+      #loginTransitionModal .tm-brand .char.scrambling{color:#38bdf8;text-shadow:0 0 8px rgba(56,189,248,0.8)}
+      #loginTransitionModal .tm-sublabel{font-size:11px;letter-spacing:2.5px;color:rgba(148,163,184,0.65);text-transform:uppercase;margin-bottom:32px}
+      #loginTransitionModal .tm-bar-track{width:200px;height:2px;border-radius:1px;background:rgba(148,163,184,0.15);overflow:hidden;position:relative;margin-bottom:16px}
+      #loginTransitionModal .tm-bar-fill{width:0%;height:100%;border-radius:1px;background:linear-gradient(90deg,#0ea5e9,#6366f1,#a855f7);box-shadow:0 0 12px rgba(99,102,241,0.6);transition:width .3s ease}
+      #loginTransitionModal .tm-bar-scan{position:absolute;top:0;height:100%;width:40px;background:linear-gradient(90deg,transparent,rgba(56,189,248,0.6),transparent);animation:tm-scan 2s linear infinite}
+      #loginTransitionModal .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
+      @keyframes tm-pulse{0%,100%{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
+      @keyframes tm-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
+      html.no-anim #loginTransitionModal .tm-logo{animation:none}
+      html.no-anim #loginTransitionModal .tm-bar-scan{animation:none}
     </style>
   </head>
   <body>
@@ -429,15 +441,204 @@
     <button class="version-info-btn" id="versionInfoBtnLogin" aria-label="顯示版本資訊">i</button>
     <div class="version-info-popup" id="versionInfoPopupLogin" role="dialog" aria-hidden="true"></div>
 
-    <!-- Transition modal — pixel-identical to app.html #appLoadingModal for seamless page switch -->
+    <!-- Transition modal — sci-fi particle + matrix rain + text decrypt -->
     <div id="loginTransitionModal" class="hidden">
-      <img class="loading-logo" src="/assets/images/logo.svg" alt="" />
-      <div class="loading-brand">SENTRY MESSENGER</div>
-      <div class="loading-bar-track">
-        <div id="loginTransitionBar" class="loading-bar-fill"></div>
+      <canvas class="tm-canvas" id="tmCanvas"></canvas>
+      <div class="tm-overlay"></div>
+      <div class="tm-content">
+        <img class="tm-logo" src="/assets/images/logo.svg" alt="" />
+        <div class="tm-brand" id="tmBrand" aria-label="SENTRY MESSENGER"></div>
+        <div class="tm-sublabel">END-TO-END ENCRYPTED</div>
+        <div class="tm-bar-track">
+          <div id="loginTransitionBar" class="tm-bar-fill"></div>
+          <div class="tm-bar-scan"></div>
+        </div>
+        <div id="loginTransitionLabel" class="loading-label">INITIALIZING...</div>
       </div>
-      <div id="loginTransitionLabel" class="loading-label">載入中…</div>
     </div>
+    <script>
+    /* ── Transition Canvas: Particle Constellation + Matrix Rain ── */
+    (function(){
+      var cvs, ctx, w, h, raf, particles, columns, drops, running = false;
+      var PARTICLE_COUNT = 65;
+      var MATRIX_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789アイウエオカキクケコサシスセソ$@#&%!?<>{}[]';
+      var FONT_SIZE = 13;
+      var PARTICLE_SPEED = 0.3;
+      var LINE_DIST = 120;
+
+      function initCanvas(){
+        cvs = document.getElementById('tmCanvas');
+        if(!cvs) return;
+        ctx = cvs.getContext('2d');
+        resize();
+        window.addEventListener('resize', resize);
+      }
+
+      function resize(){
+        if(!cvs) return;
+        w = cvs.width = cvs.parentElement.clientWidth;
+        h = cvs.height = cvs.parentElement.clientHeight;
+        initParticles();
+        initMatrix();
+      }
+
+      function initParticles(){
+        particles = [];
+        for(var i=0;i<PARTICLE_COUNT;i++){
+          particles.push({
+            x: Math.random()*w,
+            y: Math.random()*h,
+            vx: (Math.random()-0.5)*PARTICLE_SPEED,
+            vy: (Math.random()-0.5)*PARTICLE_SPEED,
+            r: Math.random()*1.5+0.5,
+            a: Math.random()*0.5+0.3
+          });
+        }
+      }
+
+      function initMatrix(){
+        columns = Math.floor(w / FONT_SIZE);
+        drops = [];
+        for(var i=0;i<columns;i++){
+          drops[i] = -(Math.random()*80|0); // stagger start
+        }
+      }
+
+      function drawParticles(){
+        for(var i=0;i<particles.length;i++){
+          var p = particles[i];
+          p.x += p.vx; p.y += p.vy;
+          if(p.x<0) p.x=w; if(p.x>w) p.x=0;
+          if(p.y<0) p.y=h; if(p.y>h) p.y=0;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+          ctx.fillStyle = 'rgba(56,189,248,' + p.a + ')';
+          ctx.fill();
+        }
+        // Draw connection lines
+        ctx.lineWidth = 0.4;
+        for(var i=0;i<particles.length;i++){
+          for(var j=i+1;j<particles.length;j++){
+            var dx=particles[i].x-particles[j].x;
+            var dy=particles[i].y-particles[j].y;
+            var dist=dx*dx+dy*dy;
+            if(dist<LINE_DIST*LINE_DIST){
+              var alpha = (1 - Math.sqrt(dist)/LINE_DIST) * 0.25;
+              ctx.beginPath();
+              ctx.moveTo(particles[i].x, particles[i].y);
+              ctx.lineTo(particles[j].x, particles[j].y);
+              ctx.strokeStyle = 'rgba(99,102,241,' + alpha + ')';
+              ctx.stroke();
+            }
+          }
+        }
+      }
+
+      function drawMatrix(){
+        ctx.font = FONT_SIZE + 'px monospace';
+        for(var i=0;i<columns;i++){
+          if(drops[i]<0){ drops[i]++; continue; }
+          var ch = MATRIX_CHARS[Math.random()*MATRIX_CHARS.length|0];
+          var y = drops[i] * FONT_SIZE;
+          // Bright head
+          ctx.fillStyle = 'rgba(16,185,129,0.7)';
+          ctx.fillText(ch, i*FONT_SIZE, y);
+          // Trail
+          if(y > FONT_SIZE){
+            ctx.fillStyle = 'rgba(16,185,129,0.08)';
+            ctx.fillText(MATRIX_CHARS[Math.random()*MATRIX_CHARS.length|0], i*FONT_SIZE, y - FONT_SIZE);
+          }
+          drops[i]++;
+          if(y > h && Math.random() > 0.975){
+            drops[i] = 0;
+          }
+        }
+      }
+
+      function tick(){
+        if(!running) return;
+        // Fade trail
+        ctx.fillStyle = 'rgba(5,10,20,0.12)';
+        ctx.fillRect(0, 0, w, h);
+        drawMatrix();
+        drawParticles();
+        raf = requestAnimationFrame(tick);
+      }
+
+      window.__tmCanvasStart = function(){
+        if(running) return;
+        running = true;
+        initCanvas();
+        if(ctx){ ctx.fillStyle='#050a14'; ctx.fillRect(0,0,w,h); }
+        tick();
+      };
+      window.__tmCanvasStop = function(){
+        running = false;
+        if(raf) cancelAnimationFrame(raf);
+        raf = null;
+      };
+    })();
+
+    /* ── Brand Text Scramble/Decrypt Animation ── */
+    (function(){
+      var BRAND = 'SENTRY MESSENGER';
+      var GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&!?<>{}[]';
+      var el, chars, resolved, frame, raf, running;
+
+      function init(){
+        el = document.getElementById('tmBrand');
+        if(!el) return;
+        el.innerHTML = '';
+        chars = [];
+        resolved = [];
+        for(var i=0;i<BRAND.length;i++){
+          var span = document.createElement('span');
+          span.className = 'char scrambling';
+          span.textContent = BRAND[i] === ' ' ? '\u00A0' : GLYPHS[Math.random()*GLYPHS.length|0];
+          el.appendChild(span);
+          chars.push(span);
+          resolved.push(BRAND[i] === ' ');
+        }
+        frame = 0;
+      }
+
+      function tick(){
+        if(!running) return;
+        frame++;
+        var revealIdx = Math.floor(frame / 3); // reveal 1 char every 3 frames (~50ms each)
+        for(var i=0;i<chars.length;i++){
+          if(BRAND[i] === ' ') continue;
+          if(i <= revealIdx){
+            if(!resolved[i]){
+              chars[i].textContent = BRAND[i];
+              chars[i].className = 'char resolved';
+              resolved[i] = true;
+            }
+          } else {
+            chars[i].textContent = GLYPHS[Math.random()*GLYPHS.length|0];
+          }
+        }
+        if(revealIdx >= BRAND.length){
+          // All resolved — keep stable
+          running = false;
+          return;
+        }
+        raf = requestAnimationFrame(tick);
+      }
+
+      window.__tmScrambleStart = function(){
+        running = true;
+        init();
+        tick();
+      };
+      window.__tmScrambleStop = function(){
+        running = false;
+        if(raf) cancelAnimationFrame(raf);
+        // Show final text
+        if(el) el.textContent = BRAND;
+      };
+    })();
+    </script>
 
     <script>
       const params = new URLSearchParams(location.search);

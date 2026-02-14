@@ -13,13 +13,16 @@
   <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
   <!-- Loading Modal inline styles — renders before any external CSS -->
   <style>
-    #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;transition:opacity .35s ease}
+    #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;transition:opacity .5s ease}
     #appLoadingModal.fade-out{opacity:0;pointer-events:none}
-    #appLoadingModal .loading-logo{width:56px;height:56px;margin-bottom:16px}
-    #appLoadingModal .loading-brand{font-size:16px;font-weight:700;letter-spacing:2.5px;color:#0f172a;margin-bottom:28px}
-    #appLoadingModal .loading-bar-track{width:180px;height:3px;border-radius:2px;background:#e2e8f0;overflow:hidden;margin-bottom:14px}
-    #appLoadingModal .loading-bar-fill{width:70%;height:100%;border-radius:2px;background:linear-gradient(90deg,#3b82f6,#6366f1)}
-    #appLoadingModal .loading-label{font-size:13px;color:#94a3b8;letter-spacing:.3px}
+    #appLoadingModal .loading-logo{width:52px;height:52px;margin-bottom:18px;filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}
+    #appLoadingModal .loading-brand{font-size:18px;font-weight:700;letter-spacing:4px;color:#e0f2fe;margin-bottom:8px;text-shadow:0 0 20px rgba(56,189,248,0.5),0 0 40px rgba(99,102,241,0.3)}
+    #appLoadingModal .loading-sublabel{font-size:11px;letter-spacing:2.5px;color:rgba(148,163,184,0.65);text-transform:uppercase;margin-bottom:32px}
+    #appLoadingModal .loading-bar-track{width:200px;height:2px;border-radius:1px;background:rgba(148,163,184,0.15);overflow:hidden;margin-bottom:16px;position:relative}
+    #appLoadingModal .loading-bar-fill{width:70%;height:100%;border-radius:1px;background:linear-gradient(90deg,#0ea5e9,#6366f1,#a855f7);box-shadow:0 0 12px rgba(99,102,241,0.6);transition:width .3s ease}
+    #appLoadingModal .loading-bar-scan{position:absolute;top:0;height:100%;width:40px;background:linear-gradient(90deg,transparent,rgba(56,189,248,0.6),transparent);animation:app-scan 2s linear infinite}
+    #appLoadingModal .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
+    @keyframes app-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
   </style>
   <!-- Async CSS — non-render-blocking -->
   <link rel="stylesheet" href="/assets/app-bundle.css" media="print" onload="this.media='all'" />
@@ -44,20 +47,22 @@
   <div id="appLoadingModal">
     <img class="loading-logo" src="/assets/images/logo.svg" alt="" />
     <div class="loading-brand">SENTRY MESSENGER</div>
+    <div class="loading-sublabel">END-TO-END ENCRYPTED</div>
     <div class="loading-bar-track">
       <div id="appLoadingBar" class="loading-bar-fill"></div>
+      <div class="loading-bar-scan"></div>
     </div>
-    <div id="appLoadingLabel" class="loading-label">載入中…</div>
+    <div id="appLoadingLabel" class="loading-label">LOADING SECURE SESSION...</div>
   </div>
   <script>
     (function () {
       var stages = {
-        styles:        { label: '載入介面樣式…',     progress: 74 },
-        scripts:       { label: '載入程式模組…',     progress: 80 },
-        account:       { label: '同步帳號資料…',     progress: 86 },
-        contacts:      { label: '同步聯絡人…',       progress: 92 },
-        conversations: { label: '同步對話紀錄…',     progress: 96 },
-        ready:         { label: '準備完成',           progress: 100 }
+        styles:        { label: 'LOADING INTERFACE...',       progress: 74 },
+        scripts:       { label: 'LOADING MODULES...',         progress: 80 },
+        account:       { label: 'SYNCING ACCOUNT DATA...',    progress: 86 },
+        contacts:      { label: 'SYNCING CONTACTS...',        progress: 92 },
+        conversations: { label: 'SYNCING CONVERSATIONS...',   progress: 96 },
+        ready:         { label: 'SYSTEM READY',               progress: 100 }
       };
       var bar   = document.getElementById('appLoadingBar');
       var label = document.getElementById('appLoadingLabel');

@@ -442,20 +442,20 @@ const transitionLabel = document.getElementById('loginTransitionLabel');
 // Both paths span 0%→70% since flow-specific steps occupy non-overlapping ranges.
 const STEP_PROGRESS = {
   // Shared steps (0% → 20%)
-  'opaque':          { start: 2,  done: 10, label: '驗證帳戶中…' },
-  'wrap-mk':         { start: 10, done: 16, label: '保護主金鑰…' },
-  'mk-store':        { start: 16, done: 20, label: '儲存主金鑰…' },
+  'opaque':          { start: 2,  done: 10, label: 'AUTHENTICATING...' },
+  'wrap-mk':         { start: 10, done: 16, label: 'ENCRYPTING MASTER KEY...' },
+  'mk-store':        { start: 16, done: 20, label: 'SECURING KEY VAULT...' },
   // New-account only (20% → 70%)
-  'generate-bundle': { start: 20, done: 30, label: '產生加密金鑰…' },
-  'prekeys-publish': { start: 30, done: 40, label: '上傳加密金鑰…' },
-  'wrap-device':     { start: 40, done: 48, label: '備份裝置金鑰…' },
-  'devkeys-store':   { start: 48, done: 54, label: '儲存裝置備份…' },
-  'nickname-init':   { start: 54, done: 62, label: '設定暱稱…' },
-  'avatar-init':     { start: 62, done: 70, label: '設定頭像…' },
+  'generate-bundle': { start: 20, done: 30, label: 'GENERATING CIPHER KEYS...' },
+  'prekeys-publish': { start: 30, done: 40, label: 'PUBLISHING PREKEYS...' },
+  'wrap-device':     { start: 40, done: 48, label: 'WRAPPING DEVICE KEYS...' },
+  'devkeys-store':   { start: 48, done: 54, label: 'STORING DEVICE BACKUP...' },
+  'nickname-init':   { start: 54, done: 62, label: 'SETTING IDENTITY...' },
+  'avatar-init':     { start: 62, done: 70, label: 'CONFIGURING PROFILE...' },
   // Existing-account only (20% → 70%)
-  'devkeys-fetch':   { start: 20, done: 32, label: '讀取裝置備份…' },
-  'prekeys-sync':    { start: 32, done: 50, label: '同步加密金鑰…' },
-  'contact-restore': { start: 50, done: 70, label: '還原聯絡人…' },
+  'devkeys-fetch':   { start: 20, done: 32, label: 'FETCHING DEVICE KEYS...' },
+  'prekeys-sync':    { start: 32, done: 50, label: 'SYNCING CIPHER KEYS...' },
+  'contact-restore': { start: 50, done: 70, label: 'RESTORING CONTACTS...' },
 };
 let currentProgress = 0;
 let fillRAF = null;
@@ -543,8 +543,11 @@ function showLoading(message) {
   if (transitionModal) transitionModal.classList.remove('hidden');
   currentProgress = 0;
   setBarWidth(0);
-  if (transitionLabel) transitionLabel.textContent = message || '登入中…';
+  if (transitionLabel) transitionLabel.textContent = message || 'INITIALIZING...';
   if (unlockBtn) unlockBtn.disabled = true;
+  // Start sci-fi canvas + text scramble
+  if (typeof window.__tmCanvasStart === 'function') window.__tmCanvasStart();
+  if (typeof window.__tmScrambleStart === 'function') window.__tmScrambleStart();
 }
 
 function updateLoading(message) {
@@ -553,6 +556,9 @@ function updateLoading(message) {
 
 function hideLoading() {
   stopSlowFill();
+  // Stop sci-fi canvas + text scramble
+  if (typeof window.__tmCanvasStop === 'function') window.__tmCanvasStop();
+  if (typeof window.__tmScrambleStop === 'function') window.__tmScrambleStop();
   if (transitionModal) transitionModal.classList.add('hidden');
   currentProgress = 0;
   setBarWidth(0);
@@ -837,7 +843,7 @@ async function onUnlock() {
       initBootstrapProgress(); // Enable UI for re-login flow (contact-restore)
     }
     loginInProgress = true;
-    showLoading(newAccount ? '正在建立安全環境…' : '登入中，請稍候…');
+    showLoading(newAccount ? 'BUILDING SECURE ENVIRONMENT...' : 'AUTHENTICATING...');
     let contactRestorePromise = null;
     let profileInitPromise = null;
     const currentPreBundle = newAccount ? preBundlePromise : undefined;
@@ -989,7 +995,7 @@ async function onUnlock() {
     }
     updateUidDisplay();
     // Set progress to 70% (matches app.html initial bar-fill) for seamless visual handoff
-    setTransitionProgress(70, '載入中…');
+    setTransitionProgress(70, 'LOADING SECURE SESSION...');
     // handoff MK/UID to next page (sessionStorage, same-tab only)
     try {
       const mk = getMkRaw();
