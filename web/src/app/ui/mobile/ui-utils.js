@@ -88,18 +88,18 @@ export async function blobToDataURL(blob) {
   });
 }
 
+const SNIPPET_MAX_LEN = 42;
+
 export function buildConversationSnippet(text) {
   if (!text) return '';
   const cleaned = String(text).replace(/\s+/g, ' ').trim();
   if (!cleaned) return '';
-  const MAX_LEN = 42;
-  return cleaned.length > MAX_LEN ? `${cleaned.slice(0, MAX_LEN - 1)}…` : cleaned;
+  return cleaned.length > SNIPPET_MAX_LEN ? `${cleaned.slice(0, SNIPPET_MAX_LEN - 1)}…` : cleaned;
 }
 
 const MSG_TYPE_LABELS = {
   'contact-share': '已建立安全連線',
   'contact_share': '已建立安全連線',
-  'media': '傳送了媒體',
   'call-log': '通話紀錄',
   'call_log': '通話紀錄',
   'conversation-deleted': '',
@@ -111,14 +111,40 @@ const MSG_TYPE_LABELS = {
   'system': '系統訊息'
 };
 
+/**
+ * Resolve human-readable preview text from a message item.
+ * This is the SINGLE source of truth for all preview text generation.
+ *
+ * Accepts either a timeline message object or a plain { text, msgType, media, callLog } bag.
+ */
 export function resolveMessagePreview(item) {
   if (!item) return '有新訊息';
   const msgType = item.msgType || item.type || item.subtype || null;
+
+  // 1. Static type labels (non-media)
   if (msgType && MSG_TYPE_LABELS[msgType] !== undefined) {
     return MSG_TYPE_LABELS[msgType] || '';
   }
+
+  // 2. Media — resolve by MIME when available
+  if (msgType === 'media' || item.media) {
+    const media = item.media || item;
+    const mime = (media.contentType || media.mimeType || '').toLowerCase();
+    if (mime.startsWith('image/')) return '[圖片]';
+    if (mime.startsWith('video/')) return '[影片]';
+    const name = media.name || media.filename || '附件';
+    return `[檔案] ${name}`;
+  }
+
+  // 3. Call log
+  if (msgType === 'call-log' || msgType === 'call_log') {
+    const kind = item.callLog?.kind || item.kind || '';
+    return kind === 'video' ? '[視訊通話]' : '[語音通話]';
+  }
+
+  // 4. Plain text — check for raw JSON payloads
   const text = typeof item.text === 'string' ? item.text : '';
-  // Detect raw JSON payloads that shouldn't be shown verbatim
+  if (text === 'CONTROL_SKIP') return '系統訊息';
   if (text.startsWith('{') || text.startsWith('[')) {
     try {
       const parsed = JSON.parse(text);
@@ -126,8 +152,79 @@ export function resolveMessagePreview(item) {
       if (innerType && MSG_TYPE_LABELS[innerType] !== undefined) {
         return MSG_TYPE_LABELS[innerType];
       }
+      if (innerType === 'media') {
+        const mime = (parsed.contentType || parsed.mimeType || '').toLowerCase();
+        if (mime.startsWith('image/')) return '[圖片]';
+        if (mime.startsWith('video/')) return '[影片]';
+        return `[檔案] ${parsed.name || parsed.filename || '附件'}`;
+      }
       return '有新訊息';
     } catch { /* not JSON, fall through */ }
   }
   return buildConversationSnippet(text) || '有新訊息';
+}
+
+/**
+ * Degraded preview strings that should not overwrite a good decrypted preview.
+ */
+const DEGRADED_PREVIEWS = new Set([
+  '訊息尚未解密🔐',
+  '(載入失敗)',
+  '🔒 加密訊息'
+]);
+
+export function isDegradedPreview(text) {
+  return !text || DEGRADED_PREVIEWS.has(text);
+}
+
+/**
+ * Single entry-point to update a thread's preview fields with guard logic.
+ * Returns true if the thread was actually updated.
+ */
+export function updateThreadPreview(thread, { text, ts, messageId, direction, msgType } = {}, { force = false } = {}) {
+  if (!thread) return false;
+  const newTs = Number(ts) || 0;
+  const existingTs = Number(thread.lastMessageTs) || 0;
+
+  if (thread.previewLoaded && existingTs > 0 && !force) {
+    // Don't overwrite with older message
+    if (newTs > 0 && newTs < existingTs) return false;
+    // Don't overwrite a good preview with a degraded one for the same message
+    if (thread.lastMessageId === messageId
+        && thread.lastMessageText
+        && !isDegradedPreview(thread.lastMessageText)
+        && isDegradedPreview(text)) {
+      return false;
+    }
+  }
+
+  thread.lastMessageText = text ?? '';
+  thread.lastMessageTs = Number.isFinite(Number(ts)) ? Number(ts) : null;
+  thread.lastMessageId = messageId || null;
+  thread.lastDirection = direction || null;
+  thread.lastMsgType = msgType || null;
+  thread.previewLoaded = true;
+  thread.needsRefresh = false;
+  return true;
+}
+
+/**
+ * Single formatThreadPreview — render a thread object into a display snippet.
+ */
+export function formatThreadPreview(thread) {
+  if (!thread) return '尚無訊息';
+  if (thread.lastMsgType === 'conversation-deleted' || thread.lastMsgType === 'conversation_deleted') {
+    return '尚無訊息';
+  }
+  const preview = resolveMessagePreview({
+    text: thread.lastMessageText || '',
+    msgType: thread.lastMsgType || null
+  });
+  if (!preview || preview === '有新訊息') {
+    return thread.lastMessageTs ? '' : '尚無訊息';
+  }
+  if (thread.lastDirection === 'outgoing') {
+    return `你：${preview}`;
+  }
+  return preview;
 }

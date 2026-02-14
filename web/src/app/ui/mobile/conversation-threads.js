@@ -15,7 +15,7 @@ import {
 import { restorePendingInvites } from './session-store.js';
 import { timelineGetTimeline } from '../../features/timeline-store.js';
 import { messagesFlowFacade } from '../../features/messages-flow-facade.js';
-import { escapeHtml } from './ui-utils.js';
+import { escapeHtml, resolveMessagePreview, updateThreadPreview, formatThreadPreview } from './ui-utils.js';
 import { listSecureMessages } from '../../api/messages.js';
 import { buildDrAadFromHeader } from '../../crypto/dr.js';
 import { b64u8 } from '../../crypto/nacl.js';
@@ -277,24 +277,14 @@ export function createConversationThreadsManager(deps) {
                         includeKeys: true
                     });
                     if (!r?.ok) {
-                        thread.previewLoaded = true;
-                        thread.lastMessageText = '(載入失敗)';
-                        thread.needsRefresh = false;
+                        updateThreadPreview(thread, { text: '(載入失敗)' });
                         return;
                     }
                     const items = Array.isArray(data?.items) ? data.items : [];
                     if (!items.length) {
-                        thread.lastMessageText = '';
-                        thread.lastMessageTs = null;
-                        thread.lastMessageId = null;
-                        // Preserve 'conversation-deleted' so the thread stays hidden
-                        if (thread.lastMsgType !== 'conversation-deleted') {
-                            thread.lastMsgType = null;
-                        }
-                        thread.lastDirection = null;
-                        thread.previewLoaded = true;
+                        const preservedType = thread.lastMsgType === 'conversation-deleted' ? 'conversation-deleted' : null;
+                        updateThreadPreview(thread, { text: '', ts: null, messageId: null, direction: null, msgType: preservedType }, { force: true });
                         thread.unreadCount = 0;
-                        thread.needsRefresh = false;
                         return;
                     }
                     const latest = items[0];
@@ -323,76 +313,36 @@ export function createConversationThreadsManager(deps) {
                     const ciphertextB64 = latest.ciphertext_b64 || latest.ciphertextB64 || null;
                     const ivB64 = header?.iv_b64 || null;
 
-                    let text = null;
+                    let rawText = null;
                     if (messageKeyB64 && ciphertextB64 && ivB64) {
-                        // Has key → attempt decrypt
                         try {
-                            text = await _decryptPreviewMessage(messageKeyB64, ivB64, ciphertextB64, header);
+                            rawText = await _decryptPreviewMessage(messageKeyB64, ivB64, ciphertextB64, header);
                         } catch (err) {
                             log({ previewDecryptFailed: err?.message, conversationId: thread.conversationId });
-                            text = null;
+                            rawText = null;
                         }
                     }
 
-                    // Format preview text
-                    if (text && typeof text === 'string' && text.trim()) {
-                        // Handle conversation-deleted or control messages
+                    let text;
+                    if (rawText && typeof rawText === 'string' && rawText.trim()) {
                         if (msgType === 'conversation-deleted') {
                             text = '尚無訊息';
-                        } else if (text === 'CONTROL_SKIP') {
-                            text = '系統訊息';
-                        } else if (text.startsWith('{') || text.startsWith('[')) {
-                            // Detect raw JSON payloads (e.g. contact-share, media)
-                            try {
-                                const parsed = JSON.parse(text);
-                                const innerType = parsed?.type || parsed?.msgType || null;
-                                if (innerType === 'contact-share' || innerType === 'contact_share') text = '已建立安全連線';
-                                else if (innerType === 'media') text = '傳送了媒體';
-                                else text = '有新訊息';
-                            } catch { /* not JSON, keep original text */ }
+                        } else {
+                            text = resolveMessagePreview({ text: rawText, msgType });
                         }
                     } else {
-                        // No key or decrypt failed
                         text = '訊息尚未解密🔐';
                     }
 
-                    // Guard: don't overwrite a good Live Flow preview with a degraded one.
-                    // If the thread already has the same message decrypted correctly,
-                    // or already has a newer message, skip this update.
-                    const existingTs = Number(thread.lastMessageTs) || 0;
-                    const newTs = Number(ts) || 0;
-                    if (thread.previewLoaded && existingTs > 0) {
-                        if (newTs < existingTs) {
-                            // Server has older message — keep newer Live Flow preview
-                            thread.needsRefresh = false;
-                            return;
-                        }
-                        if (thread.lastMessageId === messageId
-                            && thread.lastMessageText
-                            && thread.lastMessageText !== '訊息尚未解密🔐'
-                            && thread.lastMessageText !== '(載入失敗)'
-                            && text === '訊息尚未解密🔐') {
-                            // Same message already decrypted — don't overwrite with failed decrypt
-                            thread.needsRefresh = false;
-                            return;
-                        }
-                    }
-
-                    thread.lastMessageText = text;
-                    thread.lastMessageTs = ts;
-                    thread.lastMessageId = messageId;
-                    thread.lastDirection = direction;
-                    thread.lastMsgType = msgType;
-                    thread.previewLoaded = true;
-                    thread.needsRefresh = false;
+                    const updated = updateThreadPreview(thread, { text, ts, messageId, direction, msgType });
+                    if (!updated) return;
 
                     if (thread.lastReadTs === null || thread.lastReadTs === undefined) {
                         thread.lastReadTs = ts;
                         thread.unreadCount = 0;
                     }
                 } catch (err) {
-                    thread.previewLoaded = true;
-                    thread.lastMessageText = '(載入失敗)';
+                    updateThreadPreview(thread, { text: '(載入失敗)' });
                     log({ conversationPreviewError: err?.message || err, conversationId: thread?.conversationId });
                 } finally {
                     thread.needsRefresh = false;
@@ -407,24 +357,6 @@ export function createConversationThreadsManager(deps) {
 
         await Promise.allSettled(tasks);
         renderCallback?.();
-    }
-
-    function formatThreadPreview(thread) {
-        // [FIX] Handle Deleted Conversation Tombstone
-        if (thread.lastMsgType === 'conversation-deleted') {
-            return '尚無訊息';
-        }
-
-        const raw = thread.lastMessageText || '';
-        const maxLen = 50;
-        let text = raw.trim();
-        if (text.length > maxLen) text = text.slice(0, maxLen) + '…';
-        const snippet = text || (thread.lastMessageTs ? '' : '尚無訊息');
-        if (!snippet) return '';
-        if (thread.lastDirection === 'outgoing') {
-            return `你：${snippet}`;
-        }
-        return snippet;
     }
 
     function getThreadsForRender() {
@@ -445,7 +377,6 @@ export function createConversationThreadsManager(deps) {
         resolveTargetDeviceForConv,
         syncConversationThreadsFromContacts,
         refreshConversationPreviews,
-        formatThreadPreview,
         getThreadsForRender,
         computeTotalUnread,
         threadPeer,

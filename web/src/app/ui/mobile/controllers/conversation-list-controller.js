@@ -7,7 +7,7 @@ import { BaseController } from './base-controller.js';
 import { normalizePeerKey, splitPeerKey, resolveReadyContactCoreEntry, isCoreVaultReady, listReadyContacts, upsertContactCore } from '../contact-core-store.js';
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/store.js';
 import { restorePendingInvites } from '../session-store.js';
-import { escapeHtml, resolveMessagePreview } from '../ui-utils.js';
+import { escapeHtml, resolveMessagePreview, updateThreadPreview, formatThreadPreview } from '../ui-utils.js';
 import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../features/messages/parser.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
@@ -444,22 +444,13 @@ export class ConversationListController extends BaseController {
                     const currentThread = threadsMap.get(thread.conversationId);
                     if (!currentThread) return;
 
-                    const currentTs = currentThread.lastMessageTs || 0;
-                    const newTs = ts || 0;
-
-                    // Update if newer OR if we never had a preview
-                    if (newTs >= currentTs || !currentThread.previewLoaded) {
-                        currentThread.lastMessageText = text;
-                        currentThread.lastMessageTs = ts;
-                        currentThread.lastMessageId = previewMsg ? normalizeTimelineMessageId(previewMsg) : null;
-                        currentThread.lastDirection = direction;
-                        currentThread.lastMsgType = type;
-                        currentThread.previewLoaded = true;
-                        currentThread.needsRefresh = false;
-
-                        // Force re-render of this item? 
-                        // The loop calls renderConversationList() at the end.
-                    }
+                    updateThreadPreview(currentThread, {
+                        text,
+                        ts,
+                        messageId: previewMsg ? normalizeTimelineMessageId(previewMsg) : null,
+                        direction,
+                        msgType: type
+                    });
                 } catch (err) {
                     console.error('Preview refresh failed', err);
                 }
@@ -483,26 +474,9 @@ export class ConversationListController extends BaseController {
 
         const lastMsg = timeline[timeline.length - 1];
         const msgType = lastMsg.msgType || lastMsg.subtype || 'text';
-        let text;
-        if (lastMsg.text) {
-            text = lastMsg.text;
-        } else if (lastMsg.media) {
-            const mime = (lastMsg.media.contentType || lastMsg.media.mimeType || '').toLowerCase();
-            if (mime.startsWith('image/')) {
-                text = '[圖片]';
-            } else if (mime.startsWith('video/')) {
-                text = '[影片]';
-            } else {
-                text = `[檔案] ${lastMsg.media.name || '附件'}`;
-            }
-        } else if (msgType === 'call-log' || msgType === 'call_log') {
-            const clKind = lastMsg?.callLog?.kind || lastMsg?.kind || '';
-            text = clKind === 'video' ? '[視訊通話]' : '[語音通話]';
-        } else if (msgType === 'contact-share') {
-            text = '[系統] 您已與對方成為好友';
-        } else {
-            text = '...';
-        }
+        const text = msgType === 'conversation-deleted'
+            ? '尚無訊息'
+            : resolveMessagePreview(lastMsg);
         const ts = lastMsg.ts || Date.now();
 
         this.upsertThread({
@@ -513,19 +487,16 @@ export class ConversationListController extends BaseController {
             lastMsgType: msgType
         });
 
-        // Upsert thread helper above doesn't set text automatically from args (it copies prev), 
-        // so we must manually update it if we want to sync real-time content.
-        // Or we can modify upsertThread to accept text/ts.
-        // Actually, upsertThread defined above takes nick/avatar only.
-
         const threads = this.getThreads();
         const thread = threads.get(state.conversationId);
         if (thread) {
-            thread.lastMessageText = msgType === 'conversation-deleted' ? '尚無訊息' : text;
-            thread.lastMessageTs = ts;
-            thread.lastMsgType = msgType;
-            thread.lastDirection = lastMsg.direction;
-            threads.set(state.conversationId, thread);
+            updateThreadPreview(thread, {
+                text,
+                ts,
+                messageId: lastMsg.id || lastMsg.messageId || null,
+                direction: lastMsg.direction,
+                msgType
+            }, { force: true });
         }
     }
 
@@ -610,39 +581,6 @@ export class ConversationListController extends BaseController {
             return '昨天';
         }
         return date.toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' });
-    }
-
-    /**
-     * Build conversation snippet from text.
-     */
-    _buildConversationSnippet(text) {
-        if (!text || typeof text !== 'string') return '';
-        const cleaned = text.replace(/\s+/g, ' ').trim();
-        const MAX_LEN = 42;
-        return cleaned.length > MAX_LEN ? cleaned.slice(0, MAX_LEN - 1) + '…' : cleaned;
-    }
-
-    /**
-     * Format thread preview text.
-     */
-    formatThreadPreview(thread) {
-        // [FIX] Explicit handling if type is present
-        if (thread.lastMsgType === 'conversation-deleted' || thread.lastMsgType === 'conversation_deleted') {
-            return '尚無訊息';
-        }
-
-        const preview = resolveMessagePreview({
-            text: thread.lastMessageText || '',
-            msgType: thread.lastMsgType || null
-        });
-        if (!preview || preview === '有新訊息') {
-            // No meaningful preview — show placeholder
-            return thread.lastMessageTs ? '' : '尚無訊息';
-        }
-        if (thread.lastDirection === 'outgoing') {
-            return `你：${preview}`;
-        }
-        return preview;
     }
 
     /**
@@ -864,7 +802,7 @@ export class ConversationListController extends BaseController {
             const initials = this._initialsFromName(nickname, peerDigest);
             const avatarSrc = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
             const timeLabel = this._formatConversationPreviewTime(thread.lastMessageTs);
-            const snippet = this.formatThreadPreview(thread);
+            const snippet = formatThreadPreview(thread);
             const offlineUnread = Number.isFinite(thread.offlineUnreadCount) ? thread.offlineUnreadCount : 0;
             const unread = (Number.isFinite(thread.unreadCount) ? thread.unreadCount : 0) + offlineUnread;
 

@@ -52,7 +52,7 @@ import {
     invalidateGapPlaceholderState,
     markGapPlaceholderFailures
 } from '../../../features/messages/placeholder-store.js';
-import { buildConversationSnippet, resolveMessagePreview, shouldNotifyForMessage, escapeHtml } from '../ui-utils.js';
+import { resolveMessagePreview, updateThreadPreview, shouldNotifyForMessage, escapeHtml } from '../ui-utils.js';
 import { messagesFlowFacade } from '../../../features/messages-flow-facade.js';
 import { recordMessageRead, recordMessageDelivered, maybeSendDeliveryReceipt } from '../../../features/messages-support/receipt-store.js';
 import { handleSecureConversationControlMessage } from '../../../features/secure-conversation-manager.js';
@@ -812,16 +812,16 @@ export class MessageFlowController extends BaseController {
 
         for (const item of batchEntries) {
             if (!isUserTimelineMessage(item)) continue;
-            thread.lastMessageText = item.text || item.error || '';
-            thread.lastMessageTs = typeof item.ts === 'number' ? item.ts : thread.lastMessageTs || null;
-            thread.lastMessageId = item.messageId || item.id || thread.lastMessageId || null;
-            thread.lastDirection = item.direction || thread.lastDirection || null;
-            thread.lastMsgType = item.msgType || item.type || item.subtype || thread.lastMsgType || null;
+            const previewText = resolveMessagePreview(item);
+            updateThreadPreview(thread, {
+                text: previewText,
+                ts: typeof item.ts === 'number' ? item.ts : thread.lastMessageTs,
+                messageId: item.messageId || item.id || thread.lastMessageId,
+                direction: item.direction || thread.lastDirection,
+                msgType: item.msgType || item.type || item.subtype || thread.lastMsgType
+            }, { force: true });
             if (item.direction === 'incoming') incomingCount += 1;
         }
-        // Mark as loaded so async preview refresh doesn't overwrite with stale data
-        thread.previewLoaded = true;
-        thread.needsRefresh = false;
 
         const isActivePeer = !peerDigest || state.activePeerDigest === peerDigest;
 
@@ -1045,10 +1045,13 @@ export class MessageFlowController extends BaseController {
                 m?.direction === 'outgoing' || m?.direction === 'incoming'
             );
             if (lastUserMsg) {
-                thread.lastMessageText = lastUserMsg.text || '';
-                thread.lastMessageTs = lastUserMsg.ts || null;
-                thread.lastDirection = lastUserMsg.direction || null;
-                thread.lastMessageId = lastUserMsg.id || lastUserMsg.messageId || null;
+                updateThreadPreview(thread, {
+                    text: resolveMessagePreview(lastUserMsg),
+                    ts: lastUserMsg.ts || null,
+                    messageId: lastUserMsg.id || lastUserMsg.messageId || null,
+                    direction: lastUserMsg.direction || null,
+                    msgType: lastUserMsg.msgType || lastUserMsg.subtype || null
+                }, { force: true });
             }
         }
 

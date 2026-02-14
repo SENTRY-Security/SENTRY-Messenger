@@ -832,15 +832,7 @@ export function initMessagesPane({
   }
 
 
-  function formatThreadPreview(thread) {
-    const raw = thread.lastMessageText || '';
-    const snippet = buildConversationSnippet(raw) || (thread.lastMessageTs ? '' : '尚無訊息');
-    if (!snippet) return '';
-    if (thread.lastDirection === 'outgoing') {
-      return `你：${snippet}`;
-    }
-    return snippet;
-  }
+  // formatThreadPreview removed — unified in ui-utils.js
 
   function clearMessagesView() {
     if (elements.messagesList) elements.messagesList.innerHTML = '';
