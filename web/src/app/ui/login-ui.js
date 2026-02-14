@@ -162,7 +162,11 @@ function isAutomationEnv() {
 
 setLogSink((line) => {
   if (out) out.textContent = line;
-  if (shouldShowModal(line)) showModalMessage(line);
+  // Suppress error modal while login is in progress — non-fatal diagnostic
+  // logs (e.g. contactRestoreError, deviceIdStorageError) would otherwise
+  // trigger the fallback "unknown error" modal. Real errors always call
+  // hideLoading() and set loginInProgress=false before calling log().
+  if (!loginInProgress && shouldShowModal(line)) showModalMessage(line);
 });
 
 let identiconRenderSeq = 0;
