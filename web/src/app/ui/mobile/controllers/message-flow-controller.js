@@ -1271,9 +1271,15 @@ export class MessageFlowController extends BaseController {
                 // If we have an active peer but no messages, it means "No messages yet".
                 // If we have no active peer, it means "No conversation selected".
                 if (state.activePeerDigest) {
-                    this.elements.messagesEmpty.textContent = '尚無訊息';
+                    this.elements.messagesEmpty.innerHTML =
+                        '<i class="bx bx-message-detail" aria-hidden="true"></i>' +
+                        '<p class="messages-empty-title">尚無訊息</p>' +
+                        '<p class="messages-empty-hint">發送第一則訊息開始對話</p>';
                 } else {
-                    this.elements.messagesEmpty.textContent = '尚未選擇任何對話';
+                    this.elements.messagesEmpty.innerHTML =
+                        '<i class="bx bx-message-dots" aria-hidden="true"></i>' +
+                        '<p class="messages-empty-title">尚未選擇任何對話</p>' +
+                        '<p class="messages-empty-hint">從左側選擇一個對話開始聊天</p>';
                 }
             }
         }

@@ -788,10 +788,31 @@
 }
 
 .messages-empty {
-  color: #94a3b8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 40px 20px 36px;
   text-align: center;
-  font-size: 14px;
-  padding: 40px 12px;
+}
+
+.messages-empty > i {
+  font-size: 44px;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.messages-empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.messages-empty-hint {
+  margin: 0;
+  font-size: 13px;
+  color: #94a3b8;
 }
 
 .messages-composer {
