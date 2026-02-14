@@ -1,10 +1,13 @@
 :root {
-  color-scheme: light;
-  --bg: #f8fafc;
-  --fg: #111827;
-  --muted: #6b7280;
-  --line: rgba(148,163,184,0.2);
-  --brand: #111827;
+  color-scheme: dark;
+  --bg: #0f172a;
+  --bg-surface: #1e293b;
+  --bg-elevated: #334155;
+  --fg: #f1f5f9;
+  --fg-secondary: #94a3b8;
+  --muted: #94a3b8;
+  --line: rgba(148,163,184,0.12);
+  --brand: #f1f5f9;
   --topbar-height: 64px;
   --topbar-offset: calc(var(--topbar-height) + env(safe-area-inset-top, 0px));
   --navbar-height: calc(78px + env(safe-area-inset-bottom, 0px));

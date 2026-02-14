@@ -66,7 +66,7 @@ html.no-anim .cover-spinner {
   justify-content: center;
   gap: 8px;
   height: 44px;
-  color: #64748b;
+  color: #94a3b8;
   font-size: 12px;
   letter-spacing: 0.3px;
   opacity: 0;
@@ -86,12 +86,12 @@ html.no-anim .cover-spinner {
 }
 
 .contacts-refresh.ready {
-  color: #0f172a;
+  color: #f1f5f9;
   font-weight: 500;
 }
 
 .contacts-refresh.ready .icon {
-  color: #0f172a;
+  color: #f1f5f9;
 }
 
 .drive-refresh {
@@ -104,7 +104,7 @@ html.no-anim .cover-spinner {
   justify-content: center;
   gap: 8px;
   height: 44px;
-  color: #64748b;
+  color: #94a3b8;
   font-size: 12px;
   letter-spacing: 0.3px;
   opacity: 0;
@@ -124,12 +124,12 @@ html.no-anim .cover-spinner {
 }
 
 .drive-refresh.ready {
-  color: #0f172a;
+  color: #f1f5f9;
   font-weight: 500;
 }
 
 .drive-refresh.ready .icon {
-  color: #0f172a;
+  color: #f1f5f9;
 }
 
 .contacts-search-wrap {
@@ -152,9 +152,9 @@ html.no-anim .cover-spinner {
   padding: 10px 12px 10px 36px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
+  background: var(--bg-surface);
   font-size: 14px;
-  color: #0f172a;
+  color: var(--fg);
   outline: none;
   transition: border-color .2s ease, box-shadow .2s ease;
 }
@@ -208,8 +208,8 @@ html.no-anim .cover-spinner {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.06);
+  background: var(--bg-surface);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
   transition: transform .18s ease;
 }
 
@@ -217,14 +217,14 @@ html.no-anim .cover-spinner {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #e2e8f0;
+  background: var(--bg-elevated);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 18px;
-  color: #64748b;
-  border: 1px solid rgba(15, 23, 42, 0.35);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.2);
   box-sizing: border-box;
 }
 
@@ -245,7 +245,7 @@ html.no-anim .cover-spinner {
 .contact-item .info .name {
   font-size: 15px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -319,14 +319,16 @@ input[type="password"] {
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 15px;
-  background: #fff;
+  background: var(--bg-surface);
+  color: var(--fg);
 }
 
 button {
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
+  background: var(--bg-surface);
+  color: var(--fg);
   cursor: pointer;
   touch-action: manipulation;
 }
@@ -349,8 +351,8 @@ button.loading .btn-spinner {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  border: 2px solid rgba(15, 23, 42, 0.25);
-  border-top-color: #0f172a;
+  border: 2px solid rgba(148, 163, 184, 0.3);
+  border-top-color: #f1f5f9;
   animation: modal-spin .8s linear infinite;
 }
 
@@ -360,10 +362,10 @@ button.primary.loading .btn-spinner {
 }
 
 button.primary {
-  background: linear-gradient(180deg, #111827, #0f172a);
-  color: #fff;
-  border-color: #0f172a;
-  box-shadow: 0 6px 16px rgba(2, 6, 23, 0.15);
+  background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+  color: #0f172a;
+  border-color: #0ea5e9;
+  box-shadow: 0 6px 16px rgba(14, 165, 233, 0.25);
 }
 
 button.primary:active {
@@ -384,7 +386,7 @@ button.primary:active {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  color: #6b7280;
+  color: #94a3b8;
   letter-spacing: 0.3px;
 }
 
@@ -392,7 +394,7 @@ button.primary:active {
   background: none;
   border: none;
   padding: 0;
-  color: #2563eb;
+  color: #38bdf8;
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
@@ -404,12 +406,12 @@ button.primary:active {
 
 .crumb .crumb-current {
   font-size: 13px;
-  color: #0f172a;
+  color: var(--fg);
   font-weight: 600;
 }
 
 .crumb .sep {
-  color: #cbd5f5;
+  color: #475569;
   margin: 0 4px;
 }
 
@@ -428,18 +430,18 @@ button.primary:active {
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #f1f5f9;
+  background: var(--bg-elevated);
   cursor: pointer;
   transition: background .2s, color .2s, border-color .2s, transform .15s ease;
 }
 
 .list-actions button i {
   font-size: 18px;
-  color: #0f172a;
+  color: var(--fg);
 }
 
 .list-actions button:hover {
-  background: #e2e8f0;
+  background: #475569;
 }
 
 .list-actions button:active {

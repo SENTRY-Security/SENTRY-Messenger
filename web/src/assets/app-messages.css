@@ -7,7 +7,7 @@
   border: 1px solid transparent;
   border-radius: 0;
   overflow: hidden;
-  background: #fff;
+  background: var(--bg-surface);
   min-height: 0;
   box-shadow: none;
   width: 100%;
@@ -48,7 +48,7 @@
   justify-content: center;
   gap: 8px;
   height: 36px;
-  color: #64748b;
+  color: #94a3b8;
   font-size: 12px;
   letter-spacing: 0.3px;
   opacity: 0;
@@ -106,20 +106,20 @@
 }
 
 .conversation-item:not(.disabled) .item-content:hover {
-  background: #e2e8f0;
+  background: var(--bg-elevated);
 }
 
 .conversation-item.active .item-content {
   background: rgba(56,189,248,0.12);
   border-left-color: #38bdf8;
-  color: #0f172a;
+  color: var(--fg);
 }
 
 .conversation-avatar {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #cbd5f5;
+  background: #475569;
   color: #fff;
   display: flex;
   align-items: center;
@@ -163,7 +163,7 @@
   flex: 1;
   font-size: 14px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -180,7 +180,7 @@
 .conversation-snippet {
   flex: 1;
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -247,7 +247,7 @@
 }
 
 .conversation-item.active .conversation-name {
-  color: #0f172a;
+  color: var(--fg);
 }
 
 .conversation-item.active .conversation-time {
@@ -280,7 +280,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  background: #fff;
+  background: var(--bg-surface);
 }
 
 .messages-header-meta {
@@ -304,8 +304,8 @@
   height: 40px;
   border-radius: 14px;
   border: 1px solid var(--line);
-  background: #f8fafc;
-  color: #0f172a;
+  background: var(--bg-elevated);
+  color: var(--fg);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -315,8 +315,8 @@
 }
 
 .messages-action-btn:hover:not(:disabled) {
-  background: #e2e8f0;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  background: #475569;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
 .messages-action-btn:active:not(:disabled) {
@@ -339,7 +339,7 @@
 
 .messages-header span.status {
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .messages-back {
@@ -350,9 +350,9 @@
   height: 38px;
   border-radius: 14px;
   border: 1px solid var(--line);
-  background: #fff;
-  color: #0f172a;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .messages-back i {
@@ -368,7 +368,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  background: #f8fafc;
+  background: var(--bg);
   overscroll-behavior: contain;
 }
 
@@ -417,12 +417,12 @@
   height: 38px;
   border-radius: 50%;
   overflow: hidden;
-  background: #e2e8f0;
+  background: var(--bg-elevated);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 14px;
-  color: #64748b;
+  color: #94a3b8;
   flex-shrink: 0;
 }
 
@@ -438,11 +438,11 @@
   margin: 0 auto 12px;
   padding: 6px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  background: #fff;
-  color: #475569;
+  border: 1px solid var(--line);
+  background: var(--bg-surface);
+  color: #94a3b8;
   font-size: 12px;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -453,7 +453,7 @@
   height: 16px;
   border-radius: 50%;
   border: 2px solid rgba(148, 163, 184, 0.35);
-  border-top-color: #2563eb;
+  border-top-color: #38bdf8;
   animation: modal-spin .9s linear infinite;
   display: none;
 }
@@ -472,8 +472,8 @@
   border-radius: 16px;
   font-size: 14px;
   line-height: 1.5;
-  color: #0f172a;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+  color: var(--fg);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
   word-wrap: break-word;
 }
 
@@ -488,10 +488,10 @@
 .message-bubble.message-placeholder {
   position: relative;
   overflow: hidden;
-  background: #e2e8f0;
+  background: var(--bg-elevated);
   color: #94a3b8;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
 }
 
 .message-bubble.message-placeholder.placeholder-outgoing {
@@ -507,16 +507,16 @@
 }
 
 .message-bubble.message-placeholder.placeholder-failed {
-  background: #fee2e2;
-  color: #b91c1c;
-  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
 }
 
 .message-bubble.message-placeholder.placeholder-shimmer::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.75) 50%, rgba(255, 255, 255, 0) 100%);
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0) 0%, rgba(148, 163, 184, 0.15) 50%, rgba(148, 163, 184, 0) 100%);
   transform: translateX(-100%);
   animation: msg-shimmer 1.2s linear infinite;
 }
@@ -531,7 +531,7 @@
   content: '';
   position: absolute;
   inset: -40% -20%;
-  background: linear-gradient(120deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.45) 45%, rgba(255, 255, 255, 0) 70%);
+  background: linear-gradient(120deg, rgba(148, 163, 184, 0) 0%, rgba(148, 163, 184, 0.15) 45%, rgba(148, 163, 184, 0) 70%);
   transform: translateX(-120%);
   animation: msg-reveal-scan 420ms ease-out;
   pointer-events: none;
@@ -553,8 +553,8 @@
   justify-content: center;
   font-size: 20px;
   flex-shrink: 0;
-  background: rgba(15, 23, 42, 0.1);
-  color: #0f172a;
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--fg);
 }
 
 .message-me .message-file-icon {
@@ -579,7 +579,7 @@
 
 .message-file-meta {
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
   opacity: 0.9;
 }
 
@@ -593,8 +593,8 @@
   padding: 6px 14px;
   font-size: 12px;
   cursor: pointer;
-  background: rgba(15, 23, 42, 0.08);
-  color: #0f172a;
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--fg);
   transition: background .18s ease;
 }
 
@@ -610,7 +610,7 @@
 
 .message-file-progress {
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
   text-align: right;
 }
 
@@ -625,7 +625,7 @@
 .message-file-preview {
   margin-top: 8px;
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.04);
+  background: rgba(148, 163, 184, 0.1);
   padding: 12px;
   display: flex;
   justify-content: center;
@@ -635,7 +635,7 @@
   overflow: hidden;
   text-align: center;
   font-size: 12px;
-  color: #475569;
+  color: #94a3b8;
 }
 
 .message-me .message-file-preview {
@@ -663,7 +663,7 @@
   height: 180px;
   border: none;
   border-radius: 12px;
-  background: #eef2ff;
+  background: #1e293b;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
 }
 
@@ -680,8 +680,8 @@
   padding: 6px 14px;
   font-size: 12px;
   cursor: pointer;
-  background: rgba(15, 23, 42, 0.08);
-  color: #0f172a;
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--fg);
   transition: background .18s ease;
 }
 
@@ -696,15 +696,15 @@
 }
 
 .message-file-preview[data-preview-state="loading"] {
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .message-file-preview[data-preview-state="error"] {
-  color: #dc2626;
+  color: #fca5a5;
 }
 
 .message-file-preview[data-preview-state="unsupported"] {
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .message-me {
@@ -716,15 +716,15 @@
 
 .message-peer {
   margin-right: auto;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
   border-bottom-left-radius: 4px;
 }
 
 .message-meta {
   margin-top: 6px;
   font-size: 11px;
-  color: #64748b;
+  color: #94a3b8;
   text-align: right;
   display: flex;
   justify-content: flex-end;
@@ -738,7 +738,7 @@
 
 .message-status {
   font-size: 12px;
-  color: #475569;
+  color: #94a3b8;
   letter-spacing: -0.4px;
   min-width: 14px;
   text-align: right;
@@ -806,7 +806,7 @@
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #334155;
+  color: var(--fg);
 }
 
 .messages-empty-hint {
@@ -829,7 +829,7 @@
   gap: 8px;
   padding: 10px 14px;
   border-top: 1px solid var(--line);
-  background: #fff;
+  background: var(--bg-surface);
   overscroll-behavior: none;
   touch-action: none;
 }
@@ -839,9 +839,9 @@
   width: 44px;
   height: 44px;
   border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: #f8fafc;
-  color: #0f172a;
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+  color: var(--fg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -856,10 +856,12 @@
   flex: 1 1 auto;
   min-width: 0;
   resize: none;
-  border: 1px solid rgba(148, 163, 184, 0.6);
+  border: 1px solid var(--line);
   border-radius: 16px;
   padding: 10px 14px;
   font-size: 14px;
+  background: var(--bg-elevated);
+  color: var(--fg);
   min-height: 44px;
   max-height: 120px;
 }
@@ -892,7 +894,7 @@
     border-radius: 0;
     min-height: calc(var(--app-height) - 140px);
     box-shadow: none;
-    background: #fff;
+    background: var(--bg-surface);
   }
 
   .messages-body {
@@ -959,16 +961,16 @@
   left: 50%;
   transform: translateX(-50%);
   z-index: 5000;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 16px;
   padding: 10px 14px;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
   display: none;
   align-items: center;
   gap: 10px;
   max-width: 300px;
   width: calc(100vw - 56px);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--line);
   max-height: 64px;
   cursor: pointer;
   pointer-events: auto;
@@ -990,12 +992,12 @@
   border-radius: 50%;
   overflow: hidden;
   flex-shrink: 0;
-  background: #e2e8f0;
+  background: var(--bg-elevated);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .toast-avatar img {
@@ -1014,7 +1016,7 @@
 
 .toast-text {
   font-size: 13px;
-  color: #0f172a;
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1022,7 +1024,7 @@
 
 .toast-sub {
   font-size: 11px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .message-separator {

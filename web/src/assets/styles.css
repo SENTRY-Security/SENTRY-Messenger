@@ -1,12 +1,15 @@
 :root {
-  color-scheme: light;
+  color-scheme: dark;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
-  --brand: #0f172a;
-  --bg: #f8fafc;
-  --fg: #111827;
-  --muted: #64748b;
-  --line: rgba(148,163,184,0.2);
-  --accent: #2563eb;
+  --brand: #f1f5f9;
+  --bg: #0f172a;
+  --bg-surface: #1e293b;
+  --bg-elevated: #334155;
+  --fg: #f1f5f9;
+  --fg-secondary: #94a3b8;
+  --muted: #94a3b8;
+  --line: rgba(148,163,184,0.12);
+  --accent: #38bdf8;
 }
 
 * {
@@ -135,15 +138,15 @@ textarea {
 main.content {
   display: block;
   min-height: 100vh;
-  background: #f8fafc;
+  background: var(--bg);
 }
 
 .card {
-  background: #fff;
+  background: var(--bg-surface);
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 16px;
-  box-shadow: 0 10px 24px rgba(15,23,42,0.06), 0 0 0 1px rgba(99,102,241,0.04);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.2), 0 0 0 1px rgba(99,102,241,0.06);
 }
 
 .grid {

@@ -5,13 +5,13 @@
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #f8fafc;
+  background: var(--bg-surface);
   margin: 0 0 10px;
 }
 
 .drive-usage-label {
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -22,7 +22,7 @@
   gap: 4px;
   font-size: 13px;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--fg);
   white-space: nowrap;
 }
 
@@ -57,7 +57,7 @@
 .drive-usage-percent {
   font-size: 12px;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--fg);
   white-space: nowrap;
 }
 
@@ -82,8 +82,8 @@
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
+  background: var(--bg-surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
   transition: transform .15s ease, box-shadow .15s ease;
   cursor: pointer;
   outline: none;
@@ -99,16 +99,16 @@
 }
 
 .file-item.folder {
-  background: #f8fafc;
+  background: var(--bg-elevated);
 }
 
 .file-item:hover {
   transform: translateY(-1px);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
 }
 
 .file-item:focus-visible {
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
   transform: none;
 }
 
@@ -135,7 +135,7 @@
   gap: 8px;
   font-weight: 600;
   font-size: 15px;
-  color: #0f172a;
+  color: var(--fg);
   min-width: 0;
 }
 
@@ -161,7 +161,7 @@
   height: 36px;
   flex: 0 0 36px;
   border-radius: 10px;
-  background: linear-gradient(135deg, #dcfce7, #bbf7d0);
+  background: rgba(22, 163, 74, 0.15);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -173,7 +173,7 @@
 }
 
 .file-item .sub {
-  color: #6b7280;
+  color: #94a3b8;
   font-size: 12px;
   letter-spacing: 0.3px;
 }
@@ -233,7 +233,7 @@
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #334155;
+  color: var(--fg);
 }
 
 .empty-state-hint {
@@ -271,7 +271,7 @@
 .skeleton-bone {
   display: inline-block;
   border-radius: 6px;
-  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+  background: linear-gradient(90deg, #334155 25%, #475569 50%, #334155 75%);
   background-size: 400px 100%;
   animation: shimmer 1.4s ease-in-out infinite;
 }
@@ -295,7 +295,8 @@
 
 pre#out {
   white-space: pre-wrap;
-  background: #f9fafb;
+  background: var(--bg-surface);
+  color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
@@ -308,7 +309,7 @@ pre#out {
 }
 
 .modal.folder-modal .modal-body {
-  background: #f8fafc;
+  background: var(--bg);
   padding: 22px 24px;
 }
 
@@ -325,7 +326,7 @@ pre#out {
 
 .folder-form label {
   font-size: 13px;
-  color: #1f2937;
+  color: var(--fg);
   font-weight: 600;
 }
 
@@ -334,19 +335,20 @@ pre#out {
   border-radius: 12px;
   padding: 12px;
   font-size: 14px;
-  background: #fff;
+  background: var(--bg-surface);
+  color: var(--fg);
 }
 
 .folder-hint {
   margin: 0;
   font-size: 12px;
-  color: #64748b;
+  color: #94a3b8;
 }
 
 .folder-error {
   margin: 0;
   font-size: 12px;
-  color: #b91c1c;
+  color: #fca5a5;
   min-height: 16px;
 }
 
@@ -367,7 +369,7 @@ pre#out {
 }
 
 .modal.upload-modal .modal-body {
-  background: #f8fafc;
+  background: var(--bg);
   padding: 22px 24px;
 }
 
@@ -381,7 +383,7 @@ pre#out {
   position: relative;
   border: 1px dashed var(--line);
   border-radius: 14px;
-  background: #fff;
+  background: var(--bg-surface);
   overflow: hidden;
 }
 
@@ -400,7 +402,7 @@ pre#out {
   justify-content: center;
   gap: 6px;
   padding: 22px 18px;
-  color: #0f172a;
+  color: var(--fg);
   font-size: 14px;
   font-weight: 600;
   pointer-events: none;
@@ -408,12 +410,12 @@ pre#out {
 
 .upload-callout i {
   font-size: 28px;
-  color: #2563eb;
+  color: #38bdf8;
 }
 
 .upload-name {
   font-size: 13px;
-  color: #64748b;
+  color: #94a3b8;
   letter-spacing: 0.3px;
   margin-top: 6px;
 }
@@ -427,7 +429,7 @@ pre#out {
 .upload-error {
   margin: 0;
   font-size: 12px;
-  color: #b91c1c;
+  color: #fca5a5;
   min-height: 16px;
 }
 
@@ -444,7 +446,7 @@ pre#out {
 .preview-message {
   padding: 24px 16px;
   text-align: center;
-  color: #64748b;
+  color: #94a3b8;
   font-size: 14px;
   letter-spacing: 0.2px;
 }
