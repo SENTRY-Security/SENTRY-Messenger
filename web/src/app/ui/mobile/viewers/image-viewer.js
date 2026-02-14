@@ -193,6 +193,9 @@ export async function openImageViewer(opts) {
   const activePointers = new Map();
   let pinchStartDist = null;
   let pinchStartScale = 1;
+  let pinchStartMid = null;
+  let pinchStartTx = 0;
+  let pinchStartTy = 0;
   let panStart = null;
   let lastTapTime = 0;
 
@@ -204,12 +207,21 @@ export async function openImageViewer(opts) {
     return Math.sqrt(dx * dx + dy * dy);
   };
 
+  const pointerMid = () => {
+    const pts = Array.from(activePointers.values());
+    if (pts.length < 2) return { x: pts[0]?.x || 0, y: pts[0]?.y || 0 };
+    return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+  };
+
   const onStagePointerDown = (e) => {
     stage.setPointerCapture(e.pointerId);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.size === 2) {
       pinchStartDist = pointerDist();
       pinchStartScale = previewScale;
+      pinchStartMid = pointerMid();
+      pinchStartTx = previewTx;
+      pinchStartTy = previewTy;
       panStart = null;
     } else if (activePointers.size === 1) {
       // Double-tap detection
@@ -236,6 +248,10 @@ export async function openImageViewer(opts) {
       e.preventDefault();
       const dist = pointerDist();
       previewScale = Math.min(6, Math.max(0.5, pinchStartScale * (dist / pinchStartDist)));
+      // Track midpoint movement for two-finger pan
+      const mid = pointerMid();
+      previewTx = pinchStartTx + (mid.x - pinchStartMid.x);
+      previewTy = pinchStartTy + (mid.y - pinchStartMid.y);
       applyPreviewTransform();
     } else if (panStart && activePointers.size === 1) {
       e.preventDefault();
@@ -249,7 +265,14 @@ export async function openImageViewer(opts) {
   const onStagePointerUp = (e) => {
     stage.releasePointerCapture?.(e.pointerId);
     activePointers.delete(e.pointerId);
-    if (activePointers.size < 2) pinchStartDist = null;
+    if (activePointers.size < 2) {
+      pinchStartDist = null;
+      // Seamless transition: if one finger remains after pinch, allow immediate single-finger pan
+      if (activePointers.size === 1 && previewScale > 1) {
+        const remaining = activePointers.values().next().value;
+        panStart = { x: remaining.x, y: remaining.y, tx: previewTx, ty: previewTy };
+      }
+    }
     if (activePointers.size === 0) panStart = null;
   };
 
