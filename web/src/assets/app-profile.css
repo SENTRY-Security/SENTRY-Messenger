@@ -19,7 +19,7 @@
   border-radius: 999px;
   overflow: visible;
   border: 2px solid transparent;
-  background: linear-gradient(#fff, #fff) padding-box, linear-gradient(135deg, #ff8a00, #e52e71) border-box;
+  background: linear-gradient(#fff, #fff) padding-box, linear-gradient(135deg, #38bdf8, #6366f1) border-box;
   display: flex;
   align-items: center;
   justify-content: center;

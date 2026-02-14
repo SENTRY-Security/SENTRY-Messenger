@@ -8,10 +8,10 @@
   justify-content: space-between;
   align-items: center;
   padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px;
-  border-bottom: none;
-  background: #fff;
+  border-bottom: 1px solid rgba(148,163,184,0.12);
+  background: rgba(15,23,42,0.92);
   backdrop-filter: saturate(180%) blur(6px);
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
 }
 
 .topbar .title {
@@ -21,7 +21,9 @@
   gap: 10px;
   font-size: 16px;
   font-weight: 700;
-  letter-spacing: 0.4px;
+  letter-spacing: 2px;
+  color: #e0f2fe;
+  font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 }
 
 .topbar .actions {
@@ -33,6 +35,7 @@
   height: 20px;
   width: auto;
   display: block;
+  filter: brightness(0) invert(1);
 }
 
 .connection-indicator {
@@ -42,6 +45,8 @@
   font-size: 12px;
   font-weight: 500;
   color: #94a3b8;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
+  letter-spacing: 0.3px;
 }
 
 .connection-indicator .dot {
@@ -82,14 +87,14 @@
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(148,163,184,0.25);
   background: #f8fafc;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   overflow: visible;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.25);
   cursor: pointer;
   transition: transform .16s ease, box-shadow .16s ease;
 }
@@ -279,12 +284,12 @@ body.messages-fullscreen .messages-scroll {
   bottom: 0;
   left: 0;
   right: 0;
-  border-top: 1px solid var(--line);
-  background: #fff;
+  border-top: 1px solid rgba(148,163,184,0.12);
+  background: rgba(15,23,42,0.92);
   display: flex;
   justify-content: space-around;
   padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px));
-  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 -6px 20px rgba(0,0,0,0.3);
   backdrop-filter: saturate(180%) blur(8px);
 }
 
@@ -297,7 +302,7 @@ body.messages-fullscreen .messages-scroll {
   border: none;
   background: none;
   padding: 8px 10px;
-  color: #6b7280;
+  color: rgba(148,163,184,0.7);
   font-size: 11px;
   min-width: 72px;
 }
@@ -326,7 +331,7 @@ body.messages-fullscreen .messages-scroll {
 
 .navbtn.active,
 .navbtn:focus {
-  color: #111827;
+  color: #e0f2fe;
 }
 
 .navbtn i {

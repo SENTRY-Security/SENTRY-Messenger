@@ -46,7 +46,7 @@
   position: absolute;
   inset: 0;
   width: 0%;
-  background: linear-gradient(90deg, #2563eb, #0ea5e9);
+  background: linear-gradient(90deg, #0ea5e9, #6366f1, #a855f7);
   transition: width .28s ease;
 }
 

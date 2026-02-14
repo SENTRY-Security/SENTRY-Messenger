@@ -110,8 +110,8 @@
 }
 
 .conversation-item.active .item-content {
-  background: #dbeafe;
-  border-left-color: #2563eb;
+  background: rgba(56,189,248,0.12);
+  border-left-color: #38bdf8;
   color: #0f172a;
 }
 
@@ -251,7 +251,7 @@
 }
 
 .conversation-item.active .conversation-time {
-  color: #2563eb;
+  color: #0ea5e9;
 }
 
 .conversation-empty {
@@ -849,12 +849,12 @@
   height: 44px;
   border-radius: 16px;
   border: none;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.28);
+  box-shadow: 0 10px 24px rgba(99,102,241,0.25);
 }
 
 .composer-send i {
