@@ -47,53 +47,36 @@ const DECISION_TRACE_LOG_CAP = 5;
  * Handle conversation-deleted post-processing after live decrypt.
  * Sets the peer's own deletion cursor on the server to match the initiator's cursor.
  * Uses timestamp-based filtering (clearTimestamp) for correct cross-sender deletion,
- * with counter-based fallback for backward compatibility.
  */
 function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
   if (!conversationId || !decryptedMessage) return;
   const msgType = decryptedMessage.msgType || decryptedMessage.type || '';
   if (msgType !== 'conversation-deleted') return;
 
-  // Parse clearCounter and clearTimestamp from decrypted text payload
-  let clearCounter = null;
+  // Parse clearTimestamp from decrypted text payload
   let clearTimestamp = 0;
   const rawText = decryptedMessage.text || '';
   try {
     if (typeof rawText === 'string' && rawText.trim().startsWith('{')) {
       const parsed = JSON.parse(rawText);
-      if (Number.isFinite(parsed?.clearCounter)) {
-        clearCounter = parsed.clearCounter;
-      }
       if (Number.isFinite(parsed?.clearTimestamp) && parsed.clearTimestamp > 0) {
         clearTimestamp = parsed.clearTimestamp;
       }
     }
   } catch {}
 
-  // Fallback: use the message's own counter (the tombstone counter itself)
-  if (clearCounter === null) {
-    const c = Number(decryptedMessage.counter ?? decryptedMessage.headerCounter);
-    if (Number.isFinite(c) && c > 0) {
-      // Use counter - 1 since the tombstone itself should remain visible
-      clearCounter = c > 1 ? c - 1 : c;
-    }
-  }
-
-  // Fallback for clearTimestamp: use the message's own timestamp
+  // Use the message's own timestamp if not provided in payload
   if (!clearTimestamp) {
     const ts = Number(decryptedMessage.ts ?? decryptedMessage.timestamp ?? 0);
     if (ts > 0) clearTimestamp = ts > 100000000000 ? Math.floor(ts / 1000) : ts;
   }
 
-  if ((clearCounter !== null && clearCounter > 0) || clearTimestamp > 0) {
-    // Set server-side deletion cursor for our own account (with timestamp)
-    setDeletionCursor(conversationId, clearCounter || 0, { minTs: clearTimestamp }).catch(err => {
+  if (clearTimestamp > 0) {
+    setDeletionCursor(conversationId, clearTimestamp).catch(err => {
       console.warn('[facade] setDeletionCursor for conversation-deleted failed', err?.message || err);
     });
 
-    // Set local in-memory clear-after filter
-    const nowMs = Date.now();
-    clearConversationHistory(conversationId, nowMs);
+    clearConversationHistory(conversationId, Date.now());
   }
 
   // Dispatch DOM event for UI cleanup (thread removal, contact hiding)
@@ -101,7 +84,6 @@ function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
     document.dispatchEvent(new CustomEvent('sentry:conversation-deleted', {
       detail: {
         conversationId,
-        clearCounter,
         clearTimestamp,
         senderDigest: decryptedMessage.senderDigest || null
       }

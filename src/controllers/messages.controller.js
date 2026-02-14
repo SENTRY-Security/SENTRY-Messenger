@@ -1182,15 +1182,14 @@ export const setDeletionCursor = async (req, res) => {
 
   const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
   const conversationIdRaw = rawBody.conversation_id || rawBody.conversationId;
-  const minCounter = Number(rawBody.min_counter || rawBody.minCounter);
   const minTsRaw = Number(rawBody.min_ts || rawBody.minTs || 0);
   const minTs = Number.isFinite(minTsRaw) && minTsRaw > 0 ? minTsRaw : 0;
 
   if (!conversationIdRaw) {
     return res.status(400).json({ error: 'BadRequest', message: 'conversation_id required' });
   }
-  if (!Number.isFinite(minCounter)) {
-    return res.status(400).json({ error: 'BadRequest', message: 'min_counter required' });
+  if (!minTs) {
+    return res.status(400).json({ error: 'BadRequest', message: 'min_ts required' });
   }
 
   const account = extractAccountFromRequest(req);
@@ -1214,7 +1213,6 @@ export const setDeletionCursor = async (req, res) => {
   const payload = {
     conversationId: auth.conversationId,
     accountDigest: auth.accountDigest,
-    minCounter,
     minTs
   };
   const body = JSON.stringify(payload);
