@@ -438,6 +438,12 @@ export async function openImageViewer(opts) {
       fabricCanvas.backgroundImage = fabricImg;
       fabricCanvas.renderAll();
 
+      // Ensure touch-action: none on Fabric.js upper canvas for mobile drawing
+      const upperCanvas = fabricCanvas.upperCanvasEl || fabricCanvas.wrapperEl?.querySelector('.upper-canvas');
+      if (upperCanvas) upperCanvas.style.touchAction = 'none';
+      const wrapperEl = fabricCanvas.wrapperEl || canvas.parentElement;
+      if (wrapperEl) wrapperEl.style.touchAction = 'none';
+
       // Set up brush (lazy-init: Fabric.js v6 only creates freeDrawingBrush when isDrawingMode=true)
       if (!fabricCanvas.freeDrawingBrush) {
         fabricCanvas.isDrawingMode = true;

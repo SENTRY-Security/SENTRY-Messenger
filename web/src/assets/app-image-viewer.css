@@ -126,6 +126,7 @@ body.iv-open {
   overflow: hidden;
   background: #111;
   position: relative;
+  touch-action: none;
 }
 
 .iv-canvas {
