@@ -22,12 +22,10 @@
     #appLoadingModal .loading-label{font-size:13px;color:#94a3b8;letter-spacing:.3px}
   </style>
   <!-- Async CSS — non-render-blocking -->
-  <link rel="stylesheet" href="/assets/styles.css" media="print" onload="this.media='all'" />
-  <noscript><link rel="stylesheet" href="/assets/styles.css" /></noscript>
+  <link rel="stylesheet" href="/assets/app-bundle.css" media="print" onload="this.media='all'" />
+  <noscript><link rel="stylesheet" href="/assets/app-bundle.css" /></noscript>
   <link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" media="print" onload="this.media='all'" />
   <noscript><link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" /></noscript>
-  <link rel="stylesheet" href="/assets/profile-extra.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/cropper.css" media="print" onload="this.media='all'" />
   <script>
     // 防止未初始化時的全域 ReferenceError（Safari 會因 inviteBtn 未宣告而中斷）
     if (typeof inviteBtn === 'undefined') {
@@ -39,15 +37,6 @@
     window.APP_VERSION = '0.1.21-atomic-fix';
     window.APP_BUILD_AT = (function () { try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
   </script>
-  <link rel="stylesheet" href="/assets/app-base.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-layout.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-subscription.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-contacts.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-drive.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-modals.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-messages.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-profile.css" media="print" onload="this.media='all'" />
-  <link rel="stylesheet" href="/assets/app-share.css" media="print" onload="this.media='all'" />
 </head>
 
 <body>

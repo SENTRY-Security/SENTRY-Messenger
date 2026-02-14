@@ -58,13 +58,13 @@ const result = await build({
 });
 console.timeEnd('esbuild');
 
-// --- Report bundle sizes ---
+// --- Report JS bundle sizes ---
 if (result.metafile) {
   const outputs = result.metafile.outputs;
   const entries = Object.entries(outputs)
     .filter(([k]) => k.endsWith('.js'))
     .sort((a, b) => b[1].bytes - a[1].bytes);
-  console.log('\nBundle output:');
+  console.log('\nJS bundle output:');
   let total = 0;
   for (const [file, info] of entries) {
     const kb = (info.bytes / 1024).toFixed(1);
@@ -72,6 +72,26 @@ if (result.metafile) {
     console.log(`  ${file}  ${kb} KB`);
   }
   console.log(`  Total: ${(total / 1024).toFixed(1)} KB\n`);
+}
+
+// --- Bundle CSS (app-bundle.css → single minified file) ---
+console.time('css-bundle');
+const cssResult = await build({
+  entryPoints: ['src/assets/app-bundle.css'],
+  bundle: true,
+  outdir: resolve(dist, 'assets'),
+  minify: true,
+  logLevel: 'info',
+  metafile: true
+});
+console.timeEnd('css-bundle');
+
+if (cssResult.metafile) {
+  const cssOutputs = Object.entries(cssResult.metafile.outputs)
+    .filter(([k]) => k.endsWith('.css'));
+  for (const [file, info] of cssOutputs) {
+    console.log(`CSS bundle: ${file}  ${(info.bytes / 1024).toFixed(1)} KB`);
+  }
 }
 
 // --- Copy static assets ---

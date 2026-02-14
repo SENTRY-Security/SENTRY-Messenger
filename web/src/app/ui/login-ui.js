@@ -649,14 +649,10 @@ let appPrefetched = false;
 function prefetchAppResources() {
   if (appPrefetched) return;
   appPrefetched = true;
-  // Prefetch app-mobile.js and key CSS for faster post-login page load
+  // Prefetch app-mobile.js and bundled CSS for faster post-login page load
   const urls = [
     '/app/ui/app-mobile.js',
-    '/assets/app-base.css',
-    '/assets/app-layout.css',
-    '/assets/app-messages.css',
-    '/assets/app-contacts.css',
-    '/assets/app-modals.css',
+    '/assets/app-bundle.css',
   ];
   for (const url of urls) {
     try {

@@ -1,0 +1,14 @@
+/* app-bundle.css — CSS entry point for esbuild bundling.
+   Order matches app.html's original <link> loading order. */
+@import "./styles.css";
+@import "./profile-extra.css";
+@import "./cropper.css";
+@import "./app-base.css";
+@import "./app-layout.css";
+@import "./app-subscription.css";
+@import "./app-contacts.css";
+@import "./app-drive.css";
+@import "./app-modals.css";
+@import "./app-messages.css";
+@import "./app-profile.css";
+@import "./app-share.css";
