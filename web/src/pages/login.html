@@ -605,7 +605,7 @@
       function tick(){
         if(!running) return;
         frame++;
-        var revealIdx = Math.floor(frame / 3); // reveal 1 char every 3 frames (~50ms each)
+        var revealIdx = Math.floor(frame / 6); // reveal 1 char every 6 frames (~100ms each)
         for(var i=0;i<chars.length;i++){
           if(BRAND[i] === ' ') continue;
           if(i <= revealIdx){
