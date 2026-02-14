@@ -457,14 +457,11 @@
       </div>
     </div>
     <script>
-    /* ── Transition Canvas: Particle Constellation + Matrix Rain ── */
+    /* ── Transition Canvas: Matrix Rain ── */
     (function(){
-      var cvs, ctx, w, h, raf, particles, columns, drops, running = false;
-      var PARTICLE_COUNT = 65;
+      var cvs, ctx, w, h, raf, columns, drops, running = false;
       var MATRIX_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789アイウエオカキクケコサシスセソ$@#&%!?<>{}[]';
       var FONT_SIZE = 13;
-      var PARTICLE_SPEED = 0.3;
-      var LINE_DIST = 120;
 
       function initCanvas(){
         cvs = document.getElementById('tmCanvas');
@@ -478,59 +475,14 @@
         if(!cvs) return;
         w = cvs.width = cvs.parentElement.clientWidth;
         h = cvs.height = cvs.parentElement.clientHeight;
-        initParticles();
         initMatrix();
-      }
-
-      function initParticles(){
-        particles = [];
-        for(var i=0;i<PARTICLE_COUNT;i++){
-          particles.push({
-            x: Math.random()*w,
-            y: Math.random()*h,
-            vx: (Math.random()-0.5)*PARTICLE_SPEED,
-            vy: (Math.random()-0.5)*PARTICLE_SPEED,
-            r: Math.random()*1.5+0.5,
-            a: Math.random()*0.5+0.3
-          });
-        }
       }
 
       function initMatrix(){
         columns = Math.floor(w / FONT_SIZE);
         drops = [];
         for(var i=0;i<columns;i++){
-          drops[i] = -(Math.random()*80|0); // stagger start
-        }
-      }
-
-      function drawParticles(){
-        for(var i=0;i<particles.length;i++){
-          var p = particles[i];
-          p.x += p.vx; p.y += p.vy;
-          if(p.x<0) p.x=w; if(p.x>w) p.x=0;
-          if(p.y<0) p.y=h; if(p.y>h) p.y=0;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
-          ctx.fillStyle = 'rgba(56,189,248,' + p.a + ')';
-          ctx.fill();
-        }
-        // Draw connection lines
-        ctx.lineWidth = 0.4;
-        for(var i=0;i<particles.length;i++){
-          for(var j=i+1;j<particles.length;j++){
-            var dx=particles[i].x-particles[j].x;
-            var dy=particles[i].y-particles[j].y;
-            var dist=dx*dx+dy*dy;
-            if(dist<LINE_DIST*LINE_DIST){
-              var alpha = (1 - Math.sqrt(dist)/LINE_DIST) * 0.25;
-              ctx.beginPath();
-              ctx.moveTo(particles[i].x, particles[i].y);
-              ctx.lineTo(particles[j].x, particles[j].y);
-              ctx.strokeStyle = 'rgba(99,102,241,' + alpha + ')';
-              ctx.stroke();
-            }
-          }
+          drops[i] = -(Math.random()*80|0);
         }
       }
 
@@ -540,10 +492,8 @@
           if(drops[i]<0){ drops[i]++; continue; }
           var ch = MATRIX_CHARS[Math.random()*MATRIX_CHARS.length|0];
           var y = drops[i] * FONT_SIZE;
-          // Bright head
           ctx.fillStyle = 'rgba(16,185,129,0.7)';
           ctx.fillText(ch, i*FONT_SIZE, y);
-          // Trail
           if(y > FONT_SIZE){
             ctx.fillStyle = 'rgba(16,185,129,0.08)';
             ctx.fillText(MATRIX_CHARS[Math.random()*MATRIX_CHARS.length|0], i*FONT_SIZE, y - FONT_SIZE);
@@ -557,11 +507,9 @@
 
       function tick(){
         if(!running) return;
-        // Fade trail
         ctx.fillStyle = 'rgba(5,10,20,0.12)';
         ctx.fillRect(0, 0, w, h);
         drawMatrix();
-        drawParticles();
         raf = requestAnimationFrame(tick);
       }
 
