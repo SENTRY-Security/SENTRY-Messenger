@@ -135,7 +135,7 @@ textarea {
 main.content {
   display: block;
   min-height: 100vh;
-  background: #fff;
+  background: #f8fafc;
 }
 
 .card {
