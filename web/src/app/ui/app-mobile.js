@@ -2308,7 +2308,7 @@ if (typeof document !== 'undefined') {
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
         handleBackgroundAutoLogout();
-      }, 500);
+      }, 0);
     }
   });
 }
@@ -2351,8 +2351,17 @@ if (typeof window !== 'undefined') {
     }
   });
   window.addEventListener('blur', () => {
-    // 僅在 visibilityState === hidden 時才自動登出；單純 blur 不觸發
-    log({ autoLogoutSkip: 'blur-ignored' });
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      log({ autoLogoutBlur: 'hidden-immediate' });
+      if (!backgroundLogoutTimer) {
+        backgroundLogoutTimer = setTimeout(() => {
+          backgroundLogoutTimer = null;
+          handleBackgroundAutoLogout();
+        }, 0);
+      }
+    } else {
+      log({ autoLogoutSkip: 'blur-visible' });
+    }
   });
   window.addEventListener('beforeunload', () => {
     disposeCallMediaSession();
