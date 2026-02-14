@@ -2,115 +2,99 @@
 <html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>已登出 | SENTRY Message</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>已登出 | SENTRY MESSENGER</title>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.ico" />
     <style>
-      :root {
-        color-scheme: dark;
-      }
-      * {
-        box-sizing: border-box;
-      }
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
-        margin: 0;
         min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: radial-gradient(circle at top, #1f2937, #0f172a 65%);
-        font-family: 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
-        color: #f8fafc;
-      }
-      .logout-container {
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 36px;
-        padding: 32px;
-        text-align: center;
-      }
-      .logo-wrapper {
-        width: 180px;
-        height: 180px;
-        border-radius: 50%;
-        position: relative;
-        display: flex;
-        align-items: center;
         justify-content: center;
-        background: rgba(239, 68, 68, 0.15);
-        box-shadow: 0 0 45px rgba(248, 113, 113, 0.35);
+        background: #050a14;
+        font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+        color: #f8fafc;
         overflow: hidden;
-      }
-      .logo-wrapper .logo-ring {
-        position: absolute;
-        inset: -12px;
-        border-radius: 50%;
-        border: 3px solid rgba(248, 113, 113, 0.45);
-        box-shadow: 0 0 32px rgba(248, 113, 113, 0.35);
-        filter: blur(0.2px);
-        animation: ringPulse 4.5s ease-in-out infinite;
-        pointer-events: none;
-      }
-      .logo-wrapper::before,
-      .logo-wrapper::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(248, 113, 113, 0.45), transparent 70%);
-        opacity: 0.7;
-        animation: pulse 4s ease-in-out infinite;
-      }
-      .logo-wrapper::after {
-        animation-delay: 2s;
-      }
-      .logo-wrapper img {
         position: relative;
-        width: 88px;
-        height: 88px;
+      }
+      /* subtle radial vignette overlay */
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: radial-gradient(ellipse at 50% 50%, transparent 0%, rgba(5,10,20,0.4) 60%, rgba(5,10,20,0.85) 100%);
+        pointer-events: none;
+        z-index: 0;
+      }
+      .logout-stage {
+        position: relative;
         z-index: 1;
-        filter: drop-shadow(0 0 12px rgba(248, 113, 113, 0.45));
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0;
+        padding: 32px;
       }
-      .logout-message {
-        font-size: 1.1rem;
-        letter-spacing: 0.05em;
-        color: rgba(248, 250, 252, 0.85);
+      /* logo with breathing glow */
+      .logout-logo {
+        width: 52px;
+        height: 52px;
+        margin-bottom: 18px;
+        filter: brightness(0) invert(1)
+          drop-shadow(0 0 18px rgba(56,189,248,0.45))
+          drop-shadow(0 0 40px rgba(99,102,241,0.25));
+        animation: logo-pulse 3s ease-in-out infinite;
       }
-      @keyframes pulse {
-        0%,
-        100% {
-          transform: scale(0.95);
-          opacity: 0.55;
+      @keyframes logo-pulse {
+        0%, 100% {
+          filter: brightness(0) invert(1)
+            drop-shadow(0 0 18px rgba(56,189,248,0.45))
+            drop-shadow(0 0 40px rgba(99,102,241,0.25));
         }
         50% {
-          transform: scale(1.05);
-          opacity: 0.95;
+          filter: brightness(0) invert(1)
+            drop-shadow(0 0 28px rgba(56,189,248,0.7))
+            drop-shadow(0 0 60px rgba(99,102,241,0.4));
         }
       }
-      @keyframes ringPulse {
-        0%,
-        100% {
-          transform: scale(0.98);
-          opacity: 0.55;
-        }
-        35% {
-          transform: scale(1.03);
-          opacity: 0.85;
-        }
-        70% {
-          transform: scale(1.05);
-          opacity: 0.65;
-        }
+      /* brand text */
+      .logout-brand {
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: 4px;
+        color: #e0f2fe;
+        margin-bottom: 8px;
+        text-shadow: 0 0 20px rgba(56,189,248,0.5), 0 0 40px rgba(99,102,241,0.3);
+      }
+      /* sublabel */
+      .logout-sublabel {
+        font-size: 11px;
+        letter-spacing: 2.5px;
+        color: rgba(148,163,184,0.65);
+        text-transform: uppercase;
+        margin-bottom: 32px;
+      }
+      /* logout message */
+      .logout-message {
+        font-size: 13px;
+        letter-spacing: 1px;
+        color: rgba(148,163,184,0.7);
+        animation: msg-fade-in .8s ease forwards;
+      }
+      @keyframes msg-fade-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0); }
       }
     </style>
   </head>
   <body>
-    <main class="logout-container" aria-labelledby="logoutMessage">
-      <div class="logo-wrapper">
-        <span class="logo-ring" aria-hidden="true"></span>
-        <img src="../assets/images/logo.svg" alt="SENTRY Message" />
-      </div>
+    <main class="logout-stage" aria-labelledby="logoutMessage">
+      <img class="logout-logo" src="../assets/images/logo.svg" alt="" />
+      <div class="logout-brand">SENTRY MESSENGER</div>
+      <div class="logout-sublabel">END-TO-END ENCRYPTED</div>
       <p id="logoutMessage" class="logout-message">系統已登出，所有本機資料已清除。</p>
     </main>
   </body>
