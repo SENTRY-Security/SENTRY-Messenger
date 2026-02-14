@@ -685,6 +685,7 @@ const updateUidDisplay = () => {
   renderIdenticon(uid, { pending: !uid });
 };
 updateUidDisplay();
+if (typeof window.__hideLoginSplash === 'function') window.__hideLoginSplash();
 
 function markVerifiedUI() {
   setPasswordAreaVisible(true);

@@ -23,6 +23,13 @@
       window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
     </script>
     <style>
+      #loginSplash{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(160deg,#0f172a,#1e293b 65%,#020617);transition:opacity .35s ease}
+      #loginSplash.fade-out{opacity:0;pointer-events:none}
+      #loginSplash .splash-logo{width:48px;height:48px;margin-bottom:14px}
+      #loginSplash .splash-brand{font-size:15px;font-weight:700;letter-spacing:2.2px;color:#f8fafc;margin-bottom:22px}
+      #loginSplash .splash-spinner{width:36px;height:36px;border-radius:50%;border:3px solid rgba(148,163,184,0.25);border-top-color:#38bdf8;animation:login-spin .9s linear infinite;margin-bottom:12px}
+      #loginSplash .splash-text{font-size:13px;color:#94a3b8;letter-spacing:.3px}
+      html.no-anim #loginSplash .splash-spinner{animation:none}
       :root { color-scheme: light; --bg:#0f172a; --fg:#111827; --muted:#64748b; --line:#e2e8f0; --card:#ffffff; --gradient: linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
       html, body { height:100%; min-height:100%; }
       html { background:var(--gradient); }
@@ -281,6 +288,20 @@
     </style>
   </head>
   <body>
+    <div id="loginSplash">
+      <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
+      <div class="splash-brand">SENTRY MESSENGER</div>
+      <div class="splash-spinner" aria-hidden="true"></div>
+      <div class="splash-text">載入中…</div>
+    </div>
+    <script>
+      window.__hideLoginSplash = function(){
+        var el = document.getElementById('loginSplash');
+        if (!el) return;
+        el.classList.add('fade-out');
+        setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 400);
+      };
+    </script>
     <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
       <span class="icon" aria-hidden="true">📱</span>
       <strong>請以直立模式使用</strong>
