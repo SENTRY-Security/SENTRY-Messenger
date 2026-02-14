@@ -1447,6 +1447,9 @@ export function initDrivePane({
         wrap.appendChild(iframe);
       } else if (ct.startsWith('image/')) {
         // Use full-screen image viewer with drive save support
+        // Clear the modal's object URL reference BEFORE closing, so closeModal()
+        // does not revoke the blob URL that the image viewer still needs.
+        setModalObjectUrl?.(null);
         closeModal?.();
         openImageViewer({
           url,
