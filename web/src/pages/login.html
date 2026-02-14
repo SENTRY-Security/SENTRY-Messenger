@@ -11,7 +11,6 @@
     <meta name="color-scheme" content="light" />
     <title>SENTRY MESSENGER — Login</title>
     <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
-    <link rel="stylesheet" href="/assets/styles.css" />
     <script>
       // e2e: query ?e2e=1 以停用動畫
       try {
@@ -269,6 +268,16 @@
       html.orientation-block { height:100%; overflow:hidden; }
       html.orientation-block body { overflow:hidden; height:100%; }
       html.orientation-block .orientation-overlay { display:flex; }
+      button, input, select, textarea { font-family:inherit; color:inherit; font-size:14px; }
+      .version-info-btn { position:fixed; bottom:16px; right:16px; width:28px; height:28px; border-radius:999px; border:none; background:rgba(15,23,42,0.78); color:#f8fafc; font-size:14px; font-weight:600; display:flex; align-items:center; justify-content:center; cursor:pointer; opacity:0.55; transition:opacity .2s ease, transform .2s ease; z-index:2200; }
+      .version-info-btn:hover, .version-info-btn:focus-visible { opacity:0.95; transform:scale(1.05); outline:none; }
+      .version-info-popup { position:fixed; bottom:54px; right:16px; max-width:240px; border-radius:14px; padding:12px 14px; font-size:12px; line-height:1.6; background:rgba(15,23,42,0.92); color:#f1f5f9; box-shadow:0 14px 34px rgba(15,23,42,0.45); z-index:2200; display:none; }
+      .version-info-popup[data-open="true"] { display:block; }
+      .version-info-popup strong { display:block; font-size:12px; letter-spacing:0.3px; margin-bottom:4px; color:#bae6fd; }
+      .version-storage-list { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+      .version-storage-row { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:10px; border:1px solid rgba(148,163,184,0.35); background:rgba(15,23,42,0.9); color:#e2e8f0; text-align:left; font-size:12px; box-shadow:0 10px 26px rgba(2,6,23,0.32); }
+      .version-storage-row span:last-child { color:#bae6fd; }
+      .version-storage-total { padding:8px 10px; border-radius:10px; border:1px solid rgba(148,163,184,0.35); background:rgba(15,23,42,0.78); color:#bfdbfe; }
     </style>
   </head>
   <body>
