@@ -164,36 +164,7 @@ setLogSink((line) => {
 });
 
 let identiconRenderSeq = 0;
-let mosaicTimer = null;
-let pendingStartAt = null;
-let pendingRenderTimeout = null;
 
-function applyMosaicColors() {
-  if (!uidIdenticonEl) return;
-  const cells = uidIdenticonEl.querySelectorAll('.mosaic div');
-  if (!cells?.length) return;
-  cells.forEach((cell) => {
-    const color = IDENTICON_PALETTE[Math.floor(Math.random() * IDENTICON_PALETTE.length)];
-    cell.style.background = color;
-  });
-}
-
-function startMosaicColors() {
-  stopMosaicColors();
-  applyMosaicColors();
-  mosaicTimer = setInterval(applyMosaicColors, 320);
-}
-
-function stopMosaicColors() {
-  if (mosaicTimer) {
-    clearInterval(mosaicTimer);
-    mosaicTimer = null;
-  }
-  if (pendingRenderTimeout) {
-    clearTimeout(pendingRenderTimeout);
-    pendingRenderTimeout = null;
-  }
-}
 let passwordAreaVisible = false;
 
 function setPasswordAreaVisible(visible) {
@@ -208,26 +179,11 @@ function setPasswordAreaVisible(visible) {
 async function renderIdenticon(uid, { pending = false } = {}) {
   if (!uidIdenticonEl) return;
   if (pending || !uid) {
-    pendingStartAt = Date.now();
     uidIdenticonEl.classList.add('pending');
     const blocks = Array.from({ length: 25 }).map((_, i) => `<div style="--i:${i};"></div>`).join('');
     uidIdenticonEl.innerHTML = `<div class="mosaic">${blocks}</div>`;
-    startMosaicColors();
     return;
   }
-  const elapsed = pendingStartAt ? Date.now() - pendingStartAt : null;
-  const minPendingMs = 2500;
-  if (elapsed !== null && elapsed < minPendingMs) {
-    if (pendingRenderTimeout) {
-      clearTimeout(pendingRenderTimeout);
-      pendingRenderTimeout = null;
-    }
-    const remain = minPendingMs - elapsed;
-    pendingRenderTimeout = setTimeout(() => renderIdenticon(uid, { pending: false }), remain);
-    return;
-  }
-  pendingStartAt = null;
-  stopMosaicColors();
   uidIdenticonEl.classList.remove('pending');
   const seq = ++identiconRenderSeq;
   try {
