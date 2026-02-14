@@ -2728,63 +2728,47 @@ export async function sendDrMedia(params = {}) {
     throw new Error('file required');
   }
 
-  const recvDeviceId = peerDeviceInput || conversation?.peerDeviceId || null;
-  const queueKey = recvDeviceId ? `${peer}::${recvDeviceId}` : peer;
-
-  return enqueueDrSessionOp(queueKey, () => sendDrMediaCore(params));
-}
-
-export async function sendDrMediaCore(params = {}) {
-  const { file, conversation, convId, dir, onProgress, abortSignal, peerDeviceId: peerDeviceInput = null } = params;
-  const peer = resolvePeerDigest(params);
-  if (!peer) throw new Error('peerAccountDigest required');
-  if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
-    throw new Error('file required');
-  }
-
   const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
     ? params.messageId.trim()
     : null;
-  if (!messageId) {
-    throw new Error('messageId required for media send');
-  }
+  if (!messageId) throw new Error('messageId required for media send');
 
-  const convContext = conversation || conversationContextForPeer({ peerAccountDigest: peer, peerDeviceId: peerDeviceInput || conversation?.peerDeviceId || null });
+  const recvDeviceId = peerDeviceInput || conversation?.peerDeviceId || null;
+  const queueKey = recvDeviceId ? `${peer}::${recvDeviceId}` : peer;
+
+  // --- Phase 1: Ensure DR session is ready (brief lock) ---
+  const convContext = conversation || conversationContextForPeer({ peerAccountDigest: peer, peerDeviceId: recvDeviceId });
   const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
   if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
 
   const { deviceId: peerDeviceId } = ensurePeerIdentity({
     peerAccountDigest: peer,
-    peerDeviceId: peerDeviceInput || conversation?.peerDeviceId || convContext?.peerDeviceId || null,
+    peerDeviceId: recvDeviceId || convContext?.peerDeviceId || null,
     conversationId: convId || convContext?.conversation_id || convContext?.conversationId || null
   });
 
-  let state = drState({ peerAccountDigest: peer, peerDeviceId });
-  let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
-  const hasDrInit = !!(convContext?.dr_init?.guest_bundle);
-
-  if (!hasDrState) {
-    try {
-      await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
-    } catch (err) {
-      if (!hasDrInit) {
-        throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+  await enqueueDrSessionOp(queueKey, async () => {
+    let state = drState({ peerAccountDigest: peer, peerDeviceId });
+    let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+    const hasDrInit = !!(convContext?.dr_init?.guest_bundle);
+    if (!hasDrState) {
+      try {
+        await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
+      } catch (err) {
+        if (!hasDrInit) throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
       }
-      throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+      state = drState({ peerAccountDigest: peer, peerDeviceId });
+      hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
     }
-    state = drState({ peerAccountDigest: peer, peerDeviceId });
-    hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
-  }
+    if (!hasDrState && !hasDrInit) {
+      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+    }
+  });
 
-  if (!hasDrState && !hasDrInit) {
-    throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
-  }
-
+  // --- Phase 2: Upload files OUTSIDE the lock (allows incoming messages to decrypt concurrently) ---
   let conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
-
-  const msgType = 'media';
-  const accountDigest = (getAccountDigest() || '').toUpperCase();
 
   const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
   let previewInfo = null;
@@ -2830,6 +2814,131 @@ export async function sendDrMediaCore(params = {}) {
     encryptionKey: { key: sharedMediaKey, type: 'shared' },
     encryptionInfoTag: 'media/v1'
   });
+
+  // --- Phase 3: DR encrypt + vault + send (brief lock — only crypto, no network upload) ---
+  return enqueueDrSessionOp(queueKey, () => sendDrMediaCore({
+    ...params,
+    _preUpload: { uploadResult, previewInfo, previewLocalUrl, sharedMediaKey, conversationId }
+  }));
+}
+
+export async function sendDrMediaCore(params = {}) {
+  const { file, conversation, convId, dir, onProgress, abortSignal, peerDeviceId: peerDeviceInput = null, _preUpload = null } = params;
+  const peer = resolvePeerDigest(params);
+  if (!peer) throw new Error('peerAccountDigest required');
+  if (!file || typeof file !== 'object' || typeof file.arrayBuffer !== 'function') {
+    throw new Error('file required');
+  }
+
+  const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length
+    ? params.messageId.trim()
+    : null;
+  if (!messageId) {
+    throw new Error('messageId required for media send');
+  }
+
+  const convContext = conversation || conversationContextForPeer({ peerAccountDigest: peer, peerDeviceId: peerDeviceInput || conversation?.peerDeviceId || null });
+  const tokenB64 = convContext?.token_b64 || convContext?.tokenB64 || null;
+  if (!tokenB64) throw new Error('conversation token missing for peer, please refresh contacts');
+
+  const { deviceId: peerDeviceId } = ensurePeerIdentity({
+    peerAccountDigest: peer,
+    peerDeviceId: peerDeviceInput || conversation?.peerDeviceId || convContext?.peerDeviceId || null,
+    conversationId: convId || convContext?.conversation_id || convContext?.conversationId || null
+  });
+
+  let uploadResult, previewInfo, previewLocalUrl, conversationId;
+
+  if (_preUpload) {
+    // [PERF] Uploads already completed outside the DR session lock (sendDrMedia Phase 2).
+    // This avoids holding the lock during slow network I/O, allowing incoming messages to decrypt concurrently.
+    uploadResult = _preUpload.uploadResult;
+    previewInfo = _preUpload.previewInfo;
+    previewLocalUrl = _preUpload.previewLocalUrl;
+    conversationId = _preUpload.conversationId;
+
+    // DR session was already ensured in Phase 1 — just fetch current state
+    const state0 = drState({ peerAccountDigest: peer, peerDeviceId });
+    if (!(state0?.rk && state0.myRatchetPriv && state0.myRatchetPub)) {
+      throw new Error('DR session lost after upload — please retry');
+    }
+  } else {
+    // Fallback: original inline path (used by direct sendDrMediaCore callers)
+    let state = drState({ peerAccountDigest: peer, peerDeviceId });
+    let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+    const hasDrInit = !!(convContext?.dr_init?.guest_bundle);
+
+    if (!hasDrState) {
+      try {
+        await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
+      } catch (err) {
+        if (!hasDrInit) {
+          throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+        }
+        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+      }
+      state = drState({ peerAccountDigest: peer, peerDeviceId });
+      hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
+    }
+
+    if (!hasDrState && !hasDrInit) {
+      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+    }
+
+    conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
+    if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
+
+    const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
+    previewInfo = null;
+    previewLocalUrl = null;
+    try {
+      const previewCandidate = await buildMediaPreviewBlob(file);
+      if (previewCandidate?.blob) {
+        const previewName = typeof file.name === 'string' && file.name
+          ? `${file.name}.preview.jpg`
+          : 'preview.jpg';
+        const previewFile = blobToNamedFile(previewCandidate.blob, previewName);
+        previewLocalUrl = URL.createObjectURL(previewCandidate.blob);
+        const previewUpload = await encryptAndPutWithProgress({
+          convId: conversationId,
+          file: previewFile,
+          dir,
+          onProgress: null,
+          skipIndex: true,
+          encryptionKey: { key: sharedMediaKey, type: 'shared' },
+          encryptionInfoTag: 'media/preview-v1'
+        });
+        previewInfo = {
+          objectKey: previewUpload.objectKey,
+          size: previewUpload.size ?? previewFile?.size ?? previewCandidate.blob?.size ?? null,
+          contentType: previewFile?.type || previewCandidate.contentType || 'image/jpeg',
+          envelope: previewUpload.envelope || null,
+          width: previewCandidate.width || null,
+          height: previewCandidate.height || null
+        };
+        if (previewLocalUrl) previewInfo.localUrl = previewLocalUrl;
+      }
+    } catch (err) {
+      logDrSend('preview-generate-failed', { peerAccountDigest: peer, error: err?.message || err });
+    }
+
+    uploadResult = await encryptAndPutWithProgress({
+      convId: conversationId,
+      file,
+      dir,
+      onProgress,
+      abortSignal,
+      skipIndex: true,
+      encryptionKey: { key: sharedMediaKey, type: 'shared' },
+      encryptionInfoTag: 'media/v1'
+    });
+  }
+
+  // Fetch current DR state (available regardless of _preUpload path)
+  let state = drState({ peerAccountDigest: peer, peerDeviceId });
+
+  const msgType = 'media';
+  const accountDigest = (getAccountDigest() || '').toUpperCase();
 
   const metadata = {
     type: 'media',
