@@ -285,6 +285,27 @@ export async function unlockAndInit({ password, onProgress } = {}) {
   let wrappedDevEnvelope = null;
   report('prekeys-sync', 'skip');
 
+  // Start devkeys fetch in parallel with evidence fetch
+  const fetchDevkeys = async () => {
+    const { r, data } = await devkeysFetch({ accountToken, accountDigest });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error('devkeys.fetch failed');
+    return data;
+  };
+  report('devkeys-fetch', 'start');
+  const devkeysPromise = fetchDevkeys().then(
+    (result) => {
+      if (!result) report('devkeys-fetch', 'info', '未找到裝置備份');
+      else report('devkeys-fetch', 'success');
+      return result;
+    },
+    (err) => {
+      report('devkeys-fetch', 'error', err?.message || err);
+      throw err;
+    }
+  );
+  devkeysPromise.catch(() => {}); // prevent unhandled rejection if evidence fails first
+
   const evidenceResult = await runStep('mk-evidence', async () => {
     try {
       return await fetchServerEvidenceStrict({ accountToken, accountDigest });
@@ -423,13 +444,6 @@ export async function unlockAndInit({ password, onProgress } = {}) {
   }
 
   // Ensure device bundle / replenish OPKs
-  const fetchDevkeys = async () => {
-    const { r, data } = await devkeysFetch({ accountToken, accountDigest });
-    if (r.status === 404) return null;
-    if (!r.ok) throw new Error('devkeys.fetch failed');
-    return data;
-  };
-
   const publishBundle = async (bundlePub, { devicePriv = null, deviceId = null, allowFallback = true } = {}) => {
     const resolvedDeviceId = deviceId || getDeviceId() || devicePriv?.device_id || devicePriv?.deviceId || null;
     const resolvedSpk = bundlePub?.signedPrekey || (devicePriv ? {
@@ -477,18 +491,11 @@ export async function unlockAndInit({ password, onProgress } = {}) {
     return true;
   };
 
-  // Try existing backup
-  report('devkeys-fetch', 'start');
+  // Try existing backup (fetched in parallel with evidence)
   let existing = null;
   try {
-    existing = await fetchDevkeys();
-    if (!existing) {
-      report('devkeys-fetch', 'info', '未找到裝置備份');
-    } else {
-      report('devkeys-fetch', 'success');
-    }
+    existing = await devkeysPromise;
   } catch (err) {
-    report('devkeys-fetch', 'error', err?.message || err);
     throw err;
   }
   let hasExistingBackup = !!(existing && existing.wrapped_dev);
@@ -555,34 +562,29 @@ export async function unlockAndInit({ password, onProgress } = {}) {
       devicePriv.deviceId = deviceId;
       setDeviceId(deviceId);
       try { console.log('[login-flow] deviceId:set:replenish', deviceId); } catch { }
+      // Generate OPKs first, then batch SPK + OPKs into a single publish call
+      report('generate-bundle', 'start');
+      const { opks, opkPrivMap, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
+      if (opks.length > 0) {
+        report('generate-bundle', 'success', { opkCount: opks.length });
+      } else {
+        report('generate-bundle', 'skip');
+      }
       await runStep('prekeys-sync', () => publishBundle({
         ik_pub: devicePriv.ik_pub_b64,
         spk_pub: devicePriv.spk_pub_b64,
-        spk_sig: devicePriv.spk_sig_b64
+        spk_sig: devicePriv.spk_sig_b64,
+        opks: opks.length > 0 ? opks : undefined
       }, { devicePriv, deviceId, allowFallback: false }));
-      const { opks, opkPrivMap, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);
+      report('prekeys-publish', opks.length > 0 ? 'success' : 'skip');
       if (opks.length > 0) {
-        report('generate-bundle', 'start');
-        report('prekeys-publish', 'start');
-        try {
-          await publishBundle({ opks }, { devicePriv, deviceId });
-        } catch (e) {
-          report('prekeys-publish', 'error', e?.message || e);
-          report('generate-bundle', 'error', e?.message || e);
-          throw new Error('keys.publish (replenish) failed: ' + asMsg(e));
-        }
         devicePriv.next_opk_id = next;
         devicePriv.device_id = deviceId;
         devicePriv.deviceId = deviceId;
         if (!devicePriv.opk_priv_map) devicePriv.opk_priv_map = {};
         Object.assign(devicePriv.opk_priv_map, opkPrivMap || {});
-        report('generate-bundle', 'success', { opkCount: opks.length });
-        report('prekeys-publish', 'success');
         replenished = true;
         nextId = next;
-      } else {
-        report('generate-bundle', 'skip');
-        report('prekeys-publish', 'skip');
       }
       const wrapped_dev = await runStep('wrap-device', () => wrapDevicePrivWithMK(devicePriv, getMkRaw()));
       try {
