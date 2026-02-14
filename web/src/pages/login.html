@@ -33,8 +33,6 @@
       :root { color-scheme: light; --bg:#0f172a; --fg:#111827; --muted:#64748b; --line:#e2e8f0; --card:#ffffff; --gradient: linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
       html, body { height:100%; min-height:100%; }
       html { background:var(--gradient); }
-      html, body { height:100%; min-height:100%; }
-      html { background:var(--gradient); }
       /* 減少初始動畫干擾（e2e 用）：停用旋轉（僅當 html.no-anim） */
       html.no-anim .loading-spinner,
       html.no-anim button.loading .btn-spinner,
@@ -202,7 +200,7 @@
         cursor:pointer;
         padding:4px;
       }
-      .password-toggle i { font-size:20px; }
+      .password-toggle .pw-icon { width:20px; height:20px; }
       .password-toggle:focus { outline:none; }
       .notice {
         display:flex;
@@ -301,6 +299,7 @@
         el.classList.add('fade-out');
         setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 400);
       };
+      setTimeout(function(){ window.__hideLoginSplash(); }, 8000);
     </script>
     <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
       <span class="icon" aria-hidden="true">📱</span>
