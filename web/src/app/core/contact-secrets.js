@@ -2269,32 +2269,68 @@ export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
       }
     }
 
+    // Return fallback from contact-secrets map if found
+    if (fallbackRecord?.conversationToken) {
+      console.log('[call] token-lookup', JSON.stringify({
+        peerAccountDigest, key, found: true, source: 'secrets-digest-fallback', fallbackKey
+      }));
+      return fallbackRecord.conversationToken;
+    }
+
+    // Last resort: check the in-memory contactIndex (populated by upsertContactCore)
+    // which may have the token even when contact-secrets map doesn't.
+    const coreToken = lookupTokenFromContactIndex(peerAccountDigest, key);
     console.log('[call] token-lookup', JSON.stringify({
       peerAccountDigest,
       key,
-      found: false,
-      reason: 'no-record',
+      found: !!coreToken,
+      reason: coreToken ? 'contactIndex-fallback' : 'no-record',
       mapSize: map.size,
-      matchingKeys: matchingKeys.slice(0, 3),
-      hasFallback: !!fallbackRecord,
-      fallbackKey,
-      fallbackHasToken: !!fallbackRecord?.conversationToken
+      matchingKeys: matchingKeys.slice(0, 3)
     }));
-
-    // Return fallback if found
-    if (fallbackRecord?.conversationToken) {
-      return fallbackRecord.conversationToken;
-    }
-    return null;
+    return coreToken;
   }
   const token = record.conversationToken || null;
+  if (!token) {
+    // Record exists but token is null — try contactIndex fallback
+    const coreToken = lookupTokenFromContactIndex(peerAccountDigest, key);
+    console.log('[call] token-lookup', JSON.stringify({
+      peerAccountDigest, key, found: !!coreToken,
+      reason: coreToken ? 'contactIndex-fallback' : 'record-no-token',
+      hasConversationId: !!record.conversationId
+    }));
+    return coreToken;
+  }
   console.log('[call] token-lookup', JSON.stringify({
     peerAccountDigest,
     key,
-    found: !!token,
+    found: true,
     hasConversationId: !!record.conversationId
   }));
   return token;
+}
+
+/**
+ * Fallback: look up conversationToken from the in-memory contactIndex.
+ * The contactIndex is populated by upsertContactCore / applyDerivedOutputs
+ * which may run before setContactSecret propagates the token to the
+ * persistent contact-secrets map.
+ */
+function lookupTokenFromContactIndex(peerAccountDigest, peerKey) {
+  const contactIndex = sessionStore.contactIndex;
+  if (!contactIndex || !(contactIndex instanceof Map)) return null;
+  // Try exact peerKey first
+  const entry = contactIndex.get(peerKey) || null;
+  if (entry?.conversation?.token_b64) return entry.conversation.token_b64;
+  if (entry?.conversationToken) return entry.conversationToken;
+  // Try by digest prefix
+  for (const [k, v] of contactIndex.entries()) {
+    if (k.startsWith(peerAccountDigest + '::') || k === peerAccountDigest) {
+      if (v?.conversation?.token_b64) return v.conversation.token_b64;
+      if (v?.conversationToken) return v.conversationToken;
+    }
+  }
+  return null;
 }
 
 export function lockContactSecrets(reason = 'locked') {
