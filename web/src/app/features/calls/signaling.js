@@ -233,6 +233,11 @@ export function handleCallAuxMessage(msg) {
   if (msg.type === 'call-error') {
     emitCallEvent(CALL_EVENT.ERROR, { error: msg, session: getCallSessionSnapshot() });
     log({ callSignalError: msg.code || 'unknown', callId: msg.callId || null, peerAccountDigest: msg.targetAccountDigest || msg.toAccountDigest || msg.peerAccountDigest || null });
+    // Fail the session so the call overlay doesn't stay stuck
+    const session = getCallSessionSnapshot();
+    if (session?.callId && session.status !== CALL_SESSION_STATUS.ENDED && session.status !== CALL_SESSION_STATUS.FAILED) {
+      completeCallSession({ reason: msg.code || 'server-error', error: msg.message || msg.code || 'call-error' });
+    }
     return true;
   }
   if (msg.type === 'call-event-ack') {
