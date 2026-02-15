@@ -13,7 +13,8 @@ export const CALL_MEDIA_STATE_STATUS = Object.freeze({
   KEY_PENDING: 'key_pending',
   READY: 'ready',
   ROTATING: 'rotating',
-  FAILED: 'failed'
+  FAILED: 'failed',
+  SKIPPED: 'skipped'
 });
 
 const DEFAULT_AUDIO_MEDIA = Object.freeze({

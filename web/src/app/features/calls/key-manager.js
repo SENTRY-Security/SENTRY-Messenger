@@ -381,6 +381,20 @@ function handleCallStateEvent(session) {
     }
     return;
   }
+  // When the call is connected but no key envelope was exchanged (no
+  // pending envelope and no derived context), mark E2E as skipped so
+  // the UI shows "通話未加密" instead of "正在準備端到端加密…".
+  if (
+    snapshot.status === CALL_SESSION_STATUS.IN_CALL
+    && !hasContext
+    && !state?.pendingEnvelope
+  ) {
+    const currentStatus = state?.status;
+    if (currentStatus !== CALL_MEDIA_STATE_STATUS.SKIPPED) {
+      setCallMediaStatus(CALL_MEDIA_STATE_STATUS.SKIPPED);
+    }
+    return;
+  }
   maybeDeriveKeys('state');
 }
 

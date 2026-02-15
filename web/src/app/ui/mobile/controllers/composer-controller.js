@@ -10,10 +10,12 @@ import {
     requestOutgoingCall,
     getCallSessionSnapshot,
     getCallCapability,
+    setCallMediaStatus,
     CALL_REQUEST_KIND,
     CALL_SESSION_DIRECTION,
     getSelfProfileSummary
 } from '../../../features/calls/state.js';
+import { CALL_MEDIA_STATE_STATUS } from '../../../../shared/calls/schemas.js';
 import { sendCallInviteSignal } from '../../../features/calls/signaling.js';
 import { startOutgoingCallMedia } from '../../../features/calls/media-session.js';
 import { prepareCallKeyEnvelope } from '../../../features/calls/key-manager.js';
@@ -235,6 +237,7 @@ export class ComposerController extends BaseController {
             // E2E media encryption is optional — proceed without it when the
             // conversation token is unavailable (e.g. contact not yet synced).
             this.log({ callKeyEnvelopeWarning: err?.message || err, peerAccountDigest: state.activePeerDigest });
+            setCallMediaStatus(CALL_MEDIA_STATE_STATUS.SKIPPED);
         }
 
         const traceId = snapshot?.traceId || result?.session?.metadata?.traceId || null;
