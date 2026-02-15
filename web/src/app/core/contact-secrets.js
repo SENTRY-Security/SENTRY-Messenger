@@ -2239,95 +2239,40 @@ export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
   const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
   const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
   const map = ensureMap();
+  const normalized = normalizeAccountDigest(peerAccountDigest);
 
-  // Debug: log all keys in map to understand the structure
-  const mapKeys = Array.from(map.keys());
-  const matchingKeys = mapKeys.filter(k => k.includes(peerAccountDigest?.slice(0, 16) || ''));
-
-  if (!key) {
-    console.log('[call] token-lookup', JSON.stringify({
-      peerAccountDigest,
-      peerDeviceIdHint,
-      found: false,
-      reason: 'no-key',
-      mapSize: map.size,
-      matchingKeys: matchingKeys.slice(0, 3)
-    }));
-    return null;
+  // 1. Exact key lookup
+  if (key) {
+    const record = map.get(key);
+    if (record?.conversationToken) return record.conversationToken;
   }
 
-  const record = map.get(key);
-  if (!record) {
-    // Try to find by digest only (without device id)
-    let fallbackRecord = null;
-    let fallbackKey = null;
+  // 2. Digest-prefix fallback: find any entry in the cloud-restored map
+  //    matching this peer digest (handles device-id differences).
+  if (normalized) {
     for (const [k, v] of map.entries()) {
-      if (k.startsWith(peerAccountDigest + '::') || k === peerAccountDigest) {
-        fallbackRecord = v;
-        fallbackKey = k;
-        break;
+      if (k.startsWith(normalized + '::') || k === normalized) {
+        if (v?.conversationToken) return v.conversationToken;
       }
     }
-
-    // Return fallback from contact-secrets map if found
-    if (fallbackRecord?.conversationToken) {
-      console.log('[call] token-lookup', JSON.stringify({
-        peerAccountDigest, key, found: true, source: 'secrets-digest-fallback', fallbackKey
-      }));
-      return fallbackRecord.conversationToken;
-    }
-
-    // Last resort: check the in-memory contactIndex (populated by upsertContactCore)
-    // which may have the token even when contact-secrets map doesn't.
-    const coreToken = lookupTokenFromContactIndex(peerAccountDigest, key);
-    console.log('[call] token-lookup', JSON.stringify({
-      peerAccountDigest,
-      key,
-      found: !!coreToken,
-      reason: coreToken ? 'contactIndex-fallback' : 'no-record',
-      mapSize: map.size,
-      matchingKeys: matchingKeys.slice(0, 3)
-    }));
-    return coreToken;
   }
-  const token = record.conversationToken || null;
-  if (!token) {
-    // Record exists but token is null — try contactIndex fallback
-    const coreToken = lookupTokenFromContactIndex(peerAccountDigest, key);
-    console.log('[call] token-lookup', JSON.stringify({
-      peerAccountDigest, key, found: !!coreToken,
-      reason: coreToken ? 'contactIndex-fallback' : 'record-no-token',
-      hasConversationId: !!record.conversationId
-    }));
-    return coreToken;
-  }
-  console.log('[call] token-lookup', JSON.stringify({
-    peerAccountDigest,
-    key,
-    found: true,
-    hasConversationId: !!record.conversationId
-  }));
-  return token;
+
+  return null;
 }
 
 /**
- * Fallback: look up conversationToken from the in-memory contactIndex.
- * The contactIndex is populated by upsertContactCore / applyDerivedOutputs
- * which may run before setContactSecret propagates the token to the
- * persistent contact-secrets map.
+ * Find a peer's device ID by account digest from the cloud-restored
+ * contact-secrets map.  Used during D1 contact restore when the encrypted
+ * blob is missing the peerDeviceId that was available at share-time.
  */
-function lookupTokenFromContactIndex(peerAccountDigest, peerKey) {
-  const contactIndex = sessionStore.contactIndex;
-  if (!contactIndex || !(contactIndex instanceof Map)) return null;
-  // Try exact peerKey first
-  const entry = contactIndex.get(peerKey) || null;
-  if (entry?.conversation?.token_b64) return entry.conversation.token_b64;
-  if (entry?.conversationToken) return entry.conversationToken;
-  // Try by digest prefix
-  for (const [k, v] of contactIndex.entries()) {
-    if (k.startsWith(peerAccountDigest + '::') || k === peerAccountDigest) {
-      if (v?.conversation?.token_b64) return v.conversation.token_b64;
-      if (v?.conversationToken) return v.conversationToken;
+export function findPeerDeviceIdByDigest(digest) {
+  const normalized = normalizeAccountDigest(digest);
+  if (!normalized) return null;
+  const map = ensureMap();
+  for (const [k] of map.entries()) {
+    if (k.startsWith(normalized + '::')) {
+      const sep = k.indexOf('::');
+      if (sep > 0 && k.length > sep + 2) return k.slice(sep + 2);
     }
   }
   return null;

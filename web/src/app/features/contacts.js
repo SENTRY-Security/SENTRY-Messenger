@@ -19,7 +19,7 @@ import {
 import { ensureDrSession } from './dr-session.js';
 import { normalizeNickname } from './profile.js';
 import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } from './contact-share.js';
-import { getContactSecret, setContactSecret } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, findPeerDeviceIdByDigest } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
 import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
@@ -266,13 +266,18 @@ export async function applyContactShareFromCommit({
   }
 
   const normalizedNickname = normalizeNickname(contact?.nickname || '') || '';
+  // Always include peer device ID in the conversation blob so it persists
+  // through D1 cloud backup/restore (the DR envelope provides it).
+  const conversationWithDevice = conversation
+    ? { ...conversation, peerDeviceId: conversation.peerDeviceId || deviceId }
+    : conversation;
   const entry = {
     peerAccountDigest: digest,
     nickname: normalizedNickname,
     avatar: contact?.avatar || null,
     addedAt: Number(contact?.addedAt || nowTs()),
     msgId: messageId || null,
-    conversation
+    conversation: conversationWithDevice
   };
   const corePayload = buildContactCorePayload(entry, deviceId);
   if (!corePayload) {
@@ -365,7 +370,13 @@ export async function applyContactShareFromCommit({
     // [Migration] Sync new state to D1 (Self-Healing)
     // This ensures that if I come online and peer has changed Avatar/Nickname,
     // we save this new state to D1 immediately.
-    const updatedEntry = { ...entry, conversation: contact?.conversation ? extractConversationFromContact(contact) : conversation };
+    const baseConversation = contact?.conversation ? extractConversationFromContact(contact) : conversationWithDevice;
+    // Ensure peerDeviceId survives the D1 round-trip so restore can
+    // reconstruct the correct contact-secrets key.
+    const uplinkConversation = baseConversation
+      ? { ...baseConversation, peerDeviceId: baseConversation.peerDeviceId || deviceId }
+      : conversationWithDevice;
+    const updatedEntry = { ...entry, conversation: uplinkConversation };
     uplinkContactToD1(updatedEntry).catch(err => console.warn('[contacts] uplink from share failed', err));
   } else {
     if (DEBUG.contactsA1) console.log('[contacts] skipping side effects for history replay', { digest });
@@ -395,21 +406,34 @@ export async function loadContacts() {
       msgId: 'restored-from-d1'
     }));
 
-    // Re-inject conversation secrets and core store
+    // Re-inject conversation secrets and core store.
+    // The vault backup restore (hydrateContactSecretsFromBackup) runs BEFORE this
+    // D1 restore, so the contact-secrets map may already contain entries with the
+    // correct peerKey.  When the D1 blob is missing peerDeviceId (legacy data),
+    // fall back to the vault-restored map to discover it.
     entries.forEach(e => {
       if (e.conversation?.token_b64) {
-        setContactSecret(e.peerAccountDigest, {
-          conversation: {
-            token: e.conversation.token_b64,
-            id: e.conversation.conversation_id,
-            drInit: e.conversation.dr_init
-          },
-          deviceId: deviceId,
-          peerDeviceId: e.conversation.peerDeviceId || null
-        });
+        let peerDevId = e.conversation.peerDeviceId || null;
+        if (!peerDevId && e.peerAccountDigest) {
+          peerDevId = findPeerDeviceIdByDigest(e.peerAccountDigest);
+        }
+        if (peerDevId) {
+          setContactSecret(e.peerAccountDigest, {
+            conversation: {
+              token: e.conversation.token_b64,
+              id: e.conversation.conversation_id,
+              drInit: e.conversation.dr_init
+            },
+            deviceId: deviceId,
+            peerDeviceId: peerDevId
+          });
+        }
       }
 
-      const corePayload = buildContactCorePayload(e, e.conversation?.peerDeviceId || 'unknown');
+      const peerDevForCore = e.conversation?.peerDeviceId
+        || findPeerDeviceIdByDigest(e.peerAccountDigest)
+        || 'unknown';
+      const corePayload = buildContactCorePayload(e, peerDevForCore);
       if (corePayload) upsertContactCore(corePayload, 'd1-restore');
     });
 
