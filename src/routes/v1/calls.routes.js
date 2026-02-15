@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { asyncH } from '../../middlewares/async.js';
 import {
   inviteCall,
   cancelCall,
@@ -11,12 +12,12 @@ import {
 
 const r = Router();
 
-r.post('/calls/invite', inviteCall);
-r.post('/calls/cancel', cancelCall);
-r.post('/calls/ack', acknowledgeCall);
-r.post('/calls/report-metrics', reportCallMetrics);
-r.get('/calls/network-config', getCallNetworkConfig);
-r.get('/calls/:callId', getCallSession);
-r.post('/calls/turn-credentials', issueTurnCredentials);
+r.post('/calls/invite', asyncH(inviteCall));
+r.post('/calls/cancel', asyncH(cancelCall));
+r.post('/calls/ack', asyncH(acknowledgeCall));
+r.post('/calls/report-metrics', asyncH(reportCallMetrics));
+r.get('/calls/network-config', asyncH(getCallNetworkConfig));
+r.get('/calls/:callId', asyncH(getCallSession));
+r.post('/calls/turn-credentials', asyncH(issueTurnCredentials));
 
 export default r;
