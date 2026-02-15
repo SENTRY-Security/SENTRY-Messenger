@@ -313,10 +313,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
   const lockKey = senderDeviceId ? `${senderDigest}::${senderDeviceId}` : senderDigest;
 
   const stateOp = () => enqueueDrSessionOp(lockKey, async () => {
-    // [FIX] Clone State to Prevent Mutation Leak
-    // The shared state must NOT be advanced until we are ready to persist (after Vault).
-    // We use structuredClone if available, or assume POJO (with Buffers safe in standard Clone).
-    const rawState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+    let rawState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
 
     // [DEBUG-TRACE]
     if (DEBUG.drVerbose) {
@@ -329,8 +326,49 @@ async function decryptIncomingSingle(params = {}, adapters) {
       });
     }
 
+    // [FIX] X3DH PreKey Bootstrap — BEFORE hasUsableDrState guard.
+    // When a PreKey message (Type 3) arrives, the header carries ik/ek/spk fields
+    // sufficient to bootstrap a new DR session (Responder role).
+    // Previously this code lived AFTER the hasUsableDrState check, making it
+    // unreachable when the QR displayer received the scanner's first message
+    // before handleContactInitEvent had completed (no DR state yet).
+    // This caused a brief "無法解密" flash followed by tombstone after retry.
+    // Moving it here ensures both:
+    //   1. New sessions: bootstrap creates DR state from the PreKey header.
+    //   2. Existing sessions: bootstrap resets (force:true) to accept a peer session reset.
+    const headerIk = header?.ik || header?.ik_pub || header?.ik_pub_b64 || null;
+    if (headerIk) {
+      if (adapters.bootstrapDrFromGuestBundle) {
+        try {
+          await adapters.bootstrapDrFromGuestBundle({
+            guestBundle: {
+              ik_pub: headerIk,
+              ek_pub: header?.ek || header?.ek_pub || header?.ek_pub_b64 || null,
+              spk_pub: header?.spk || header?.spk_pub || header?.spk_pub_b64 || null,
+              spk_sig: header?.spk_sig || header?.spk_sig_b64 || null,
+              opk_id: header?.opk_id || header?.opkId || null
+            },
+            peerAccountDigest: senderDigest,
+            peerDeviceId: senderDeviceId,
+            conversationId,
+            force: true // Accept the reset
+          });
+          // Refresh state after bootstrap
+          const bootstrappedState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+          if (hasUsableDrState(bootstrappedState)) {
+            rawState = bootstrappedState;
+          }
+        } catch (err) {
+          console.warn('[state-live] PreKey bootstrap failed', err);
+          // Fallthrough to hasUsableDrState check (likely fails, but consistent)
+        }
+      } else {
+        console.warn('[state-live] bootstrapDrFromGuestBundle adapter missing');
+      }
+    }
+
     if (!hasUsableDrState(rawState)) {
-      console.warn('[state-live] DR state missing for text message', { senderDigest, senderDeviceId });
+      console.warn('[state-live] DR state missing for text message', { senderDigest, senderDeviceId, hadPreKeyHeader: !!headerIk });
       return {
         ...base,
         reasonCode: 'DR_STATE_UNAVAILABLE',
@@ -357,41 +395,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
     const packetKey = messageId || (Number.isFinite(counter) ? `${conversationId}:${counter}` : null);
     let messageKeyB64 = null;
     let plaintext = null;
-
-    // X3DH PreKey Handling
-    // If the header contains identity key info, this is likely a PreKey Message (Type 3).
-    // We must bootstrap the session (Responder role) before attempting to decrypt.
-    // This implies we accept a session reset from the remote peer.
-    const headerIk = header?.ik || header?.ik_pub || header?.ik_pub_b64 || null;
-    if (headerIk) {
-      if (adapters.bootstrapDrFromGuestBundle) {
-        try {
-          await adapters.bootstrapDrFromGuestBundle({
-            guestBundle: {
-              ik_pub: headerIk,
-              ek_pub: header?.ek || header?.ek_pub || header?.ek_pub_b64 || null,
-              spk_pub: header?.spk || header?.spk_pub || header?.spk_pub_b64 || null,
-              spk_sig: header?.spk_sig || header?.spk_sig_b64 || null,
-              opk_id: header?.opk_id || header?.opkId || null
-            },
-            peerAccountDigest: senderDigest,
-            peerDeviceId: senderDeviceId,
-            conversationId,
-            force: true // Accept the reset
-          });
-          // Refresh state after bootstrap
-          const newState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
-          if (hasUsableDrState(newState)) {
-            Object.assign(state, newState); // Mutate local reference to usage newer state
-          }
-        } catch (err) {
-          console.warn('[state-live] bootstrap-session failed', err);
-          // Fallthrough to attempt normal decryption (likely fails, but consistent)
-        }
-      } else {
-        console.warn('[state-live] bootstrapDrFromGuestBundle adapter missing');
-      }
-    }
 
     const skippedKeysBuffer = [];
     try {
@@ -660,7 +663,36 @@ async function commitIncomingSingle(params = {}, adapters) {
   if (!adapters?.drDecryptText || !adapters?.drState || !adapters?.vaultPutIncomingKey) {
     return { ...base, reasonCode: 'ADAPTERS_UNAVAILABLE' };
   }
-  const state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+  let state = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+
+  // [FIX] X3DH PreKey Bootstrap — BEFORE hasUsableDrState guard.
+  // Same fix as decryptIncomingSingle: when a PreKey message (Type 3) arrives
+  // for a new contact, bootstrap the DR session from the header before checking state.
+  const headerIk = header?.ik || header?.ik_pub || header?.ik_pub_b64 || null;
+  if (headerIk && !hasUsableDrState(state) && adapters.bootstrapDrFromGuestBundle) {
+    try {
+      await adapters.bootstrapDrFromGuestBundle({
+        guestBundle: {
+          ik_pub: headerIk,
+          ek_pub: header?.ek || header?.ek_pub || header?.ek_pub_b64 || null,
+          spk_pub: header?.spk || header?.spk_pub || header?.spk_pub_b64 || null,
+          spk_sig: header?.spk_sig || header?.spk_sig_b64 || null,
+          opk_id: header?.opk_id || header?.opkId || null
+        },
+        peerAccountDigest: senderDigest,
+        peerDeviceId: senderDeviceId,
+        conversationId,
+        force: true
+      });
+      const bootstrappedState = adapters.drState({ peerAccountDigest: senderDigest, peerDeviceId: senderDeviceId });
+      if (hasUsableDrState(bootstrappedState)) {
+        state = bootstrappedState;
+      }
+    } catch (err) {
+      console.warn('[state-live] commitIncomingSingle PreKey bootstrap failed', err);
+    }
+  }
+
   if (!hasUsableDrState(state)) {
     return { ...base, reasonCode: 'DR_STATE_UNAVAILABLE' };
   }
