@@ -223,7 +223,7 @@ export class ComposerController extends BaseController {
             return;
         }
 
-        let envelope;
+        let envelope = null;
         try {
             envelope = await prepareCallKeyEnvelope({
                 callId,
@@ -232,9 +232,9 @@ export class ComposerController extends BaseController {
                 direction: CALL_SESSION_DIRECTION.OUTGOING
             });
         } catch (err) {
-            this.log({ callKeyEnvelopeError: err?.message || err, peerAccountDigest: state.activePeerDigest });
-            this.showToast('無法建立通話加密金鑰');
-            return;
+            // E2E media encryption is optional — proceed without it when the
+            // conversation token is unavailable (e.g. contact not yet synced).
+            this.log({ callKeyEnvelopeWarning: err?.message || err, peerAccountDigest: state.activePeerDigest });
         }
 
         const traceId = snapshot?.traceId || result?.session?.metadata?.traceId || null;

@@ -774,12 +774,15 @@ async function upsertCallSession(env, payload = {}) {
 
   await env.DB.prepare(`
     INSERT INTO call_sessions (
-      call_id, caller_account_digest, callee_account_digest,
+      call_id, caller_uid, callee_uid,
+      caller_account_digest, callee_account_digest,
       status, mode,
       capabilities_json, metadata_json, metrics_json,
       created_at, updated_at, connected_at, ended_at, end_reason, expires_at, last_event
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
     ON CONFLICT(call_id) DO UPDATE SET
+      caller_uid=excluded.caller_uid,
+      callee_uid=excluded.callee_uid,
       caller_account_digest=excluded.caller_account_digest,
       callee_account_digest=excluded.callee_account_digest,
       status=excluded.status,
@@ -796,6 +799,8 @@ async function upsertCallSession(env, payload = {}) {
       created_at=call_sessions.created_at
   `).bind(
     callId,
+    callerDigest,
+    calleeDigest,
     callerDigest,
     calleeDigest,
     status,
