@@ -280,9 +280,10 @@ export class ComposerController extends BaseController {
         } catch (err) {
             this.log({ callMediaStartError: err?.message || err });
             this.showToast('無法啟動通話媒體：' + (err?.message || err));
+            return;
         }
 
-        this.showToast('已發起語音通話');
+        this.showToast(actionType === 'video' ? '已發起視訊通話' : '已發起語音通話');
     }
 
     /**

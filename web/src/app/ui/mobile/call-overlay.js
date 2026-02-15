@@ -994,12 +994,14 @@ export function initCallOverlay({ showToast }) {
     try {
       await acknowledgeCall({ callId: session.callId, traceId: session.traceId });
       updateCallSessionStatus(CALL_SESSION_STATUS.CONNECTING, { callId: session.callId });
-      await acceptIncomingCallMedia({ callId: session.callId, peerAccountDigest: session.peerAccountDigest });
+      // Send call-accept BEFORE media setup so the caller receives the state
+      // transition signal before the SDP answer, preventing state regression.
       sendCallSignal('call-accept', {
         callId: session.callId,
         targetAccountDigest: session.peerAccountDigest || null,
         metadata: { acceptedAt: Date.now() }
       });
+      await acceptIncomingCallMedia({ callId: session.callId, peerAccountDigest: session.peerAccountDigest });
     } catch (err) {
       log({ callAcceptError: err?.message || err });
       showToast?.('接聽失敗', { variant: 'error' });

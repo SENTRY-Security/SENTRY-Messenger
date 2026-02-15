@@ -229,8 +229,14 @@ export async function startOutgoingCallMedia({ callId } = {}) {
   activePeerKey = identity.peerKey;
   direction = 'outgoing';
   awaitingAnswer = true;
-  await ensurePeerConnection();
-  await createAndSendOffer();
+  try {
+    await ensurePeerConnection();
+    await createAndSendOffer();
+  } catch (err) {
+    if (!err?.__callFail) {
+      failCall('outgoing-media-setup-failed', err);
+    }
+  }
 }
 
 export async function acceptIncomingCallMedia({ callId } = {}) {
@@ -239,11 +245,17 @@ export async function acceptIncomingCallMedia({ callId } = {}) {
   activePeerKey = identity.peerKey;
   direction = 'incoming';
   awaitingOfferAfterAccept = true;
-  await ensurePeerConnection();
-  if (pendingOffer && pendingOffer.callId === callId) {
-    await applyRemoteOfferAndAnswer(pendingOffer);
-    pendingOffer = null;
-    awaitingOfferAfterAccept = false;
+  try {
+    await ensurePeerConnection();
+    if (pendingOffer && pendingOffer.callId === callId) {
+      await applyRemoteOfferAndAnswer(pendingOffer);
+      pendingOffer = null;
+      awaitingOfferAfterAccept = false;
+    }
+  } catch (err) {
+    if (!err?.__callFail) {
+      failCall('incoming-media-setup-failed', err);
+    }
   }
 }
 
@@ -568,10 +580,16 @@ async function buildRtcConfiguration() {
       })
       .filter(Boolean)
     : [];
-  const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
-  const credentialServers = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
+  let credentialServers = [];
+  try {
+    const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
+    credentialServers = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
+  } catch (err) {
+    log({ callTurnCredentialError: err?.message || err });
+    // Continue with STUN-only — TURN is preferred but not mandatory
+  }
   if (!credentialServers.length) {
-    failCall('turn-credentials-missing');
+    log({ callTurnCredentialWarning: 'no TURN servers available, using STUN-only' });
   }
   const iceServers = [...baseServers, ...credentialServers];
   if (!iceServers.length) {
@@ -766,6 +784,8 @@ function cleanupPeerConnection(reason) {
   if (peerConnection) {
     try { peerConnection.onicecandidate = null; } catch { }
     try { peerConnection.ontrack = null; } catch { }
+    try { peerConnection.oniceconnectionstatechange = null; } catch { }
+    try { peerConnection.onconnectionstatechange = null; } catch { }
     try { peerConnection.close(); } catch { }
   }
   if (localStream) {

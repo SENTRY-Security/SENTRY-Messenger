@@ -180,7 +180,10 @@ function applySignalToState(msg) {
   const reason = msg.payload?.reason || msg.reason || msg.error || msg.type;
   switch (msg.type) {
     case 'call-accept':
-      updateCallSessionStatus(CALL_SESSION_STATUS.CONNECTING, { callId: msg.callId });
+      // Guard: do not regress from IN_CALL back to CONNECTING
+      if (session.status !== CALL_SESSION_STATUS.IN_CALL) {
+        updateCallSessionStatus(CALL_SESSION_STATUS.CONNECTING, { callId: msg.callId });
+      }
       break;
     case 'call-end':
       completeCallSession({ reason: reason || 'peer_end' });
