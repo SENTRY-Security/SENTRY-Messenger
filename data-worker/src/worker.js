@@ -2405,15 +2405,16 @@ async function handleMessagesRoutes(req, env) {
     return json({
       config: {
         version: 1,
-        turnSecretsEndpoint: '/api/v1/calls/turn-secrets', // Stub endpoint
+        turnSecretsEndpoint: '/api/v1/calls/turn-credentials',
+        turnTtlSeconds: 300,
+        rtcpProbe: { timeoutMs: 1500, maxAttempts: 3, targetBitrateKbps: 2000 },
+        bandwidthProfiles: [],
         ice: {
           iceTransportPolicy: 'all',
           bundlePolicy: 'balanced',
           continualGatheringPolicy: 'gather_continually',
           servers: [
-            {
-              urls: ['stun:stun.l.google.com:19302'] // Default public STUN
-            }
+            { urls: ['stun:stun.cloudflare.com:3478'] }
           ]
         },
         fallback: {

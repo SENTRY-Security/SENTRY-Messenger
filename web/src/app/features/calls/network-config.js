@@ -4,6 +4,26 @@ import { setCallNetworkConfig } from './state.js';
 
 const API_CONFIG_URL = '/api/v1/calls/network-config';
 
+// Hardcoded fallback so calls can proceed even when the API endpoint is unreachable.
+const FALLBACK_CONFIG = Object.freeze({
+  version: 1,
+  turnSecretsEndpoint: '/api/v1/calls/turn-credentials',
+  turnTtlSeconds: 300,
+  rtcpProbe: { timeoutMs: 1500, maxAttempts: 3, targetBitrateKbps: 2000 },
+  bandwidthProfiles: [],
+  ice: {
+    iceTransportPolicy: 'all',
+    bundlePolicy: 'balanced',
+    continualGatheringPolicy: 'gather_continually',
+    servers: [{ urls: ['stun:stun.cloudflare.com:3478'] }]
+  },
+  fallback: {
+    maxPeerConnectionRetries: 2,
+    relayOnlyAfterAttempts: 2,
+    showBlockedAfterSeconds: 20
+  }
+});
+
 let cachedConfig = null;
 let inflight = null;
 
@@ -164,6 +184,12 @@ export async function loadCallNetworkConfig({ forceRefresh = false, signal } = {
   inflight = fetchFromApi({ signal })
     .then((config) => validateConfig(config))
     .then((config) => applyConfig(config))
+    .catch((err) => {
+      // API unreachable or returned an error — use hardcoded fallback so the
+      // call can still proceed with STUN (TURN credentials are fetched separately).
+      console.warn('[call] network-config fetch failed, using fallback:', err?.message || err);
+      return applyConfig(normalizeConfig(FALLBACK_CONFIG));
+    })
     .finally(() => {
       inflight = null;
     });
