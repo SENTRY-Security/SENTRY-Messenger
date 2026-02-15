@@ -469,8 +469,11 @@ async function ensurePeerConnection() {
       promoteSessionToInCall('ice-state');
     } else if (iceState === 'failed') {
       showToast?.('通話連線失敗', { variant: 'error' });
-      completeCallSession({ reason: iceState });
+      completeCallSession({ reason: iceState, error: 'ice-connection-failed' });
       cleanupPeerConnection(iceState);
+    } else if (iceState === 'disconnected') {
+      log({ callIceDisconnected: true, callId: activeCallId });
+      showToast?.('通話連線不穩定', { variant: 'warning' });
     }
   };
   peerConnection.onconnectionstatechange = () => {
@@ -479,10 +482,13 @@ async function ensurePeerConnection() {
       promoteSessionToInCall('connection-state');
       return;
     }
-    if (state === 'failed' || state === 'disconnected') {
-      showToast?.('通話連線中斷', { variant: 'warning' });
-      completeCallSession({ reason: state });
+    if (state === 'failed') {
+      showToast?.('通話連線中斷', { variant: 'error' });
+      completeCallSession({ reason: state, error: 'peer-connection-failed' });
       cleanupPeerConnection(state);
+    } else if (state === 'disconnected') {
+      log({ callConnectionDisconnected: true, callId: activeCallId });
+      showToast?.('通話連線不穩定', { variant: 'warning' });
     } else if (state === 'closed') {
       cleanupPeerConnection(state);
     }
