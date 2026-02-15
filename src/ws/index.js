@@ -2,7 +2,7 @@ import { WebSocketServer } from 'ws';
 import { logger } from '../utils/logger.js';
 import { verifyWsToken } from '../utils/ws-token.js';
 import { normalizeCallId } from '../utils/call-validators.js';
-import { appendCallEvent, touchDeviceRegistry, assertDeviceIdActive } from '../services/call-worker.js';
+import { appendCallEvent, touchDeviceRegistry, assertDeviceIdActive, hasCallWorkerConfig } from '../services/call-worker.js';
 import { normalizeSessionTs } from '../utils/session-utils.js';
 
 const clients = new Map(); // accountDigest -> Set<WebSocket>
@@ -253,13 +253,15 @@ async function handleCallSignal(ws, msg) {
     return;
   }
 
-  try {
-    await touchDeviceRegistry({ accountDigest: ws.__accountDigest, deviceId: senderDeviceId });
-    await assertDeviceIdActive({ accountDigest: ws.__accountDigest, deviceId: senderDeviceId });
-    await assertDeviceIdActive({ accountDigest: targetAccountDigest, deviceId: targetDeviceId });
-  } catch (err) {
-    sendCallError(ws, err?.code || 'DEVICE_NOT_ACTIVE', err?.message || 'device not active', { event: rawType, callId, peerAccountDigest: targetAccountDigest });
-    return;
+  if (hasCallWorkerConfig()) {
+    try {
+      await touchDeviceRegistry({ accountDigest: ws.__accountDigest, deviceId: senderDeviceId });
+      await assertDeviceIdActive({ accountDigest: ws.__accountDigest, deviceId: senderDeviceId });
+      await assertDeviceIdActive({ accountDigest: targetAccountDigest, deviceId: targetDeviceId });
+    } catch (err) {
+      sendCallError(ws, err?.code || 'DEVICE_NOT_ACTIVE', err?.message || 'device not active', { event: rawType, callId, peerAccountDigest: targetAccountDigest });
+      return;
+    }
   }
 
   if (rawType === 'call-invite') {

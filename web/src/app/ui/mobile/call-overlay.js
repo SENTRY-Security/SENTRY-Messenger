@@ -992,7 +992,12 @@ export function initCallOverlay({ showToast }) {
     state.actionBusy = true;
     render(session);
     try {
-      await acknowledgeCall({ callId: session.callId, traceId: session.traceId });
+      // acknowledgeCall is for server tracking only — do not block the call if it fails
+      try {
+        await acknowledgeCall({ callId: session.callId, traceId: session.traceId });
+      } catch (ackErr) {
+        log({ callAcknowledgeError: ackErr?.message || ackErr, callId: session.callId });
+      }
       updateCallSessionStatus(CALL_SESSION_STATUS.CONNECTING, { callId: session.callId });
       // Send call-accept BEFORE media setup so the caller receives the state
       // transition signal before the SDP answer, preventing state regression.
@@ -1038,7 +1043,12 @@ export function initCallOverlay({ showToast }) {
     state.actionBusy = true;
     render(session);
     try {
-      await cancelCall({ callId: session.callId, reason: 'caller_cancelled' });
+      // cancelCall is for server tracking only — do not block the cancel if it fails
+      try {
+        await cancelCall({ callId: session.callId, reason: 'caller_cancelled' });
+      } catch (cancelErr) {
+        log({ callCancelApiError: cancelErr?.message || cancelErr, callId: session.callId });
+      }
       endCallMediaSession('cancelled');
       if (session.peerAccountDigest) {
         sendCallSignal('call-cancel', {

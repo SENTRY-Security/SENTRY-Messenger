@@ -451,20 +451,21 @@ export async function requestOutgoingCall({
     peerAccountDigest: activeSession.peerAccountDigest,
     traceId: activeSession.traceId
   });
+  const metadata = {};
+  if (peerDisplayName) metadata.peerDisplayName = peerDisplayName;
+  if (peerAvatarUrl) metadata.peerAvatarUrl = peerAvatarUrl;
+  const selfProfile = resolveSelfProfileSummary();
+  if (selfProfile.displayName) {
+    metadata.displayName = selfProfile.displayName;
+    metadata.callerDisplayName = selfProfile.displayName;
+  }
+  if (selfProfile.avatarUrl) {
+    metadata.avatarUrl = selfProfile.avatarUrl;
+    metadata.callerAvatarUrl = selfProfile.avatarUrl;
+  }
+  let response = null;
   try {
-    const metadata = {};
-    if (peerDisplayName) metadata.peerDisplayName = peerDisplayName;
-    if (peerAvatarUrl) metadata.peerAvatarUrl = peerAvatarUrl;
-    const selfProfile = resolveSelfProfileSummary();
-    if (selfProfile.displayName) {
-      metadata.displayName = selfProfile.displayName;
-      metadata.callerDisplayName = selfProfile.displayName;
-    }
-    if (selfProfile.avatarUrl) {
-      metadata.avatarUrl = selfProfile.avatarUrl;
-      metadata.callerAvatarUrl = selfProfile.avatarUrl;
-    }
-    const response = await createCallInvite({
+    response = await createCallInvite({
       peerAccountDigest: peerDigest,
       mode: activeSession.kind === CALL_REQUEST_KIND.VIDEO ? 'video' : 'voice',
       capabilities: activeSession.localCapability,
@@ -472,31 +473,37 @@ export async function requestOutgoingCall({
       traceId: activeSession.traceId,
       preferredDeviceId: normalizedPeerDeviceId || null
     });
-    if (response?.callId) {
-      activeSession.callId = response.callId;
-    }
-    if (response?.targetDeviceId) {
-      setCallPeerDeviceId(response.targetDeviceId, { callId: activeSession.callId });
-    } else {
-      throw new Error('invite-target-device-missing');
-    }
-    if (response?.session) {
-      activeSession.serverSession = { ...response.session };
-      applyServerStatus(response.session.status);
-    }
-    emitState('outgoing-request-confirmed', {
-      callId: activeSession.callId,
-      serverSession: activeSession.serverSession || null
-    });
-    return { ok: true, callId: activeSession.callId, session: response?.session || null };
   } catch (err) {
-    const message = err?.message || 'call invite failed';
-    activeSession.status = CALL_SESSION_STATUS.FAILED;
-    activeSession.lastError = message;
-    activeSession.endedAt = Date.now();
-    emitState('outgoing-request-failed', { error: message });
-    return { ok: false, error: message };
+    log({ callInviteApiFailed: err?.message || err, peerAccountDigest: peerDigest });
   }
+  if (response?.callId) {
+    activeSession.callId = response.callId;
+  }
+  // Fallback: generate a local callId if the server didn't provide one
+  if (!activeSession.callId) {
+    activeSession.callId = crypto.randomUUID();
+  }
+  if (response?.targetDeviceId) {
+    setCallPeerDeviceId(response.targetDeviceId, { callId: activeSession.callId });
+  } else if (normalizedPeerDeviceId) {
+    // Use the locally-known peer device ID when the server is unavailable
+    setCallPeerDeviceId(normalizedPeerDeviceId, { callId: activeSession.callId });
+  } else {
+    activeSession.status = CALL_SESSION_STATUS.FAILED;
+    activeSession.lastError = 'invite-target-device-missing';
+    activeSession.endedAt = Date.now();
+    emitState('outgoing-request-failed', { error: 'invite-target-device-missing' });
+    return { ok: false, error: 'invite-target-device-missing' };
+  }
+  if (response?.session) {
+    activeSession.serverSession = { ...response.session };
+    applyServerStatus(response.session.status);
+  }
+  emitState('outgoing-request-confirmed', {
+    callId: activeSession.callId,
+    serverSession: activeSession.serverSession || null
+  });
+  return { ok: true, callId: activeSession.callId, session: response?.session || null };
 }
 
 export function markIncomingCall({

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import baseCallNetworkConfig from '../../web/src/shared/calls/network-config.json' with { type: 'json' };
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
 import { normalizeAccountDigest, AccountDigestRegex } from '../utils/account-verify.js';
-import { appendCallEvent, callWorkerRequest, ensureCallWorkerConfig, touchDeviceRegistry, assertDeviceIdActive, listActiveDevices } from '../services/call-worker.js';
+import { appendCallEvent, callWorkerRequest, ensureCallWorkerConfig, hasCallWorkerConfig, touchDeviceRegistry, assertDeviceIdActive, listActiveDevices } from '../services/call-worker.js';
 import { CallIdRegex } from '../utils/call-validators.js';
 
 const DEFAULT_SESSION_TTL = Number(process.env.CALL_SESSION_TTL_SECONDS || 90);
@@ -249,7 +249,7 @@ async function resolveTargetDeviceId(peerAccountDigest, preferredDeviceId = null
 }
 
 export async function inviteCall(req, res) {
-  if (!ensureCallWorkerConfig(res)) return;
+  const workerAvailable = hasCallWorkerConfig();
   const parsed = CallInviteSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -271,6 +271,26 @@ export async function inviteCall(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
+  const callId = (input.callId && input.callId.toLowerCase()) || crypto.randomUUID();
+  const ttlSeconds = clamp(input.expiresInSeconds ?? DEFAULT_SESSION_TTL, 30, 600);
+
+  // Degraded mode: Data API worker not configured — skip device validation
+  // and D1 session creation, but still allow calls via WebSocket signaling.
+  if (!workerAvailable) {
+    const targetDeviceId = input.preferredDeviceId || null;
+    if (!targetDeviceId) {
+      return res.status(400).json({ error: 'BadRequest', message: 'preferredDeviceId required when data worker is unavailable' });
+    }
+    return res.status(200).json({
+      ok: true,
+      callId,
+      targetDeviceId,
+      session: null,
+      expiresInSeconds: ttlSeconds,
+      degraded: true
+    });
+  }
+
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
   let targetDeviceId;
@@ -281,8 +301,6 @@ export async function inviteCall(req, res) {
     const code = err?.code || 'peer-device-not-active';
     return res.status(status).json({ error: code, message: err?.message || code });
   }
-  const callId = (input.callId && input.callId.toLowerCase()) || crypto.randomUUID();
-  const ttlSeconds = clamp(input.expiresInSeconds ?? DEFAULT_SESSION_TTL, 30, 600);
   const expiresAt = Date.now() + ttlSeconds * 1000;
   const sessionPayload = {
     callId,
@@ -324,7 +342,7 @@ export async function inviteCall(req, res) {
 }
 
 export async function cancelCall(req, res) {
-  if (!ensureCallWorkerConfig(res)) return;
+  const workerAvailable = hasCallWorkerConfig();
   const parsed = CallMutateSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -341,6 +359,9 @@ export async function cancelCall(req, res) {
     });
   } catch (err) {
     return respondAccountError(res, err);
+  }
+  if (!workerAvailable) {
+    return res.status(200).json({ ok: true, session: null, degraded: true });
   }
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
@@ -372,7 +393,7 @@ export async function cancelCall(req, res) {
 }
 
 export async function acknowledgeCall(req, res) {
-  if (!ensureCallWorkerConfig(res)) return;
+  const workerAvailable = hasCallWorkerConfig();
   const parsed = CallAckSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -389,6 +410,9 @@ export async function acknowledgeCall(req, res) {
     });
   } catch (err) {
     return respondAccountError(res, err);
+  }
+  if (!workerAvailable) {
+    return res.status(200).json({ ok: true, session: null, degraded: true });
   }
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
@@ -418,7 +442,7 @@ export async function acknowledgeCall(req, res) {
 }
 
 export async function reportCallMetrics(req, res) {
-  if (!ensureCallWorkerConfig(res)) return;
+  const workerAvailable = hasCallWorkerConfig();
   const parsed = CallMetricsSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });
@@ -435,6 +459,9 @@ export async function reportCallMetrics(req, res) {
     });
   } catch (err) {
     return respondAccountError(res, err);
+  }
+  if (!workerAvailable) {
+    return res.status(200).json({ ok: true, session: null, degraded: true });
   }
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
@@ -462,7 +489,9 @@ export async function reportCallMetrics(req, res) {
 }
 
 export async function getCallSession(req, res) {
-  if (!ensureCallWorkerConfig(res)) return;
+  if (!hasCallWorkerConfig()) {
+    return res.status(200).json({ ok: true, session: null, degraded: true });
+  }
   const callId = String(req.params?.callId || '').trim().toLowerCase();
   if (!CallIdRegex.test(callId)) {
     return res.status(400).json({ error: 'BadRequest', message: 'invalid call id' });
@@ -519,8 +548,10 @@ export async function getCallNetworkConfig(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
-  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
-  if (!okDevice) return;
+  if (hasCallWorkerConfig()) {
+    const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+    if (!okDevice) return;
+  }
   const config = buildCallNetworkConfig();
   return res.status(200).json({ ok: true, config });
 }
@@ -547,8 +578,10 @@ export async function issueTurnCredentials(req, res) {
   } catch (err) {
     return respondAccountError(res, err);
   }
-  const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
-  if (!okDevice) return;
+  if (hasCallWorkerConfig()) {
+    const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
+    if (!okDevice) return;
+  }
   const ttlSeconds = clamp(input.ttlSeconds ?? TURN_TTL_SECONDS, 60, 600);
 
   // Request credentials from Cloudflare TURN API
