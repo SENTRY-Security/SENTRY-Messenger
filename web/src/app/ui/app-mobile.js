@@ -94,7 +94,7 @@ import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../feature
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
 import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
 import { messagesFlowFacade, setMessagesFlowFacadeWsSend } from '../features/messages-flow-facade.js';
-import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT, REMOTE_BACKUP_FORCE_ON_LOGOUT } from '../features/restore-policy.js';
+import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
 import { requestWsToken } from '../api/ws.js';
@@ -111,7 +111,6 @@ import {
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initContactSecretsBackup,
-  triggerContactSecretsBackup,
   hydrateContactSecretsFromBackup,
   getLastBackupHydrateResult,
   getLatestBackupMeta
@@ -485,26 +484,22 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
 
   try {
     disposeCallMediaSession();
-    await flushDrSnapshotsBeforeLogout('secure-logout', {
-      forceRemote: true,
-      keepalive: true,
-      sourceTag: 'app-mobile:secure-logout'
-    });
+    await flushDrSnapshotsBeforeLogout('secure-logout');
   } catch (err) {
     log({ contactSecretsSnapshotFlushError: err?.message || err, reason: 'secure-logout-call' });
   }
 
+  // ── 不需要在登出時推送 contact-secrets backup ──
+  // 接收鏈在收訊時已透過 Vault Put 保存 message key 並推進 DR 計數器 (Nr)。
+  // 即使登出前備份失敗，下次登入的自癒迴圈會自動修復：
+  //   1. 伺服器訊息不會因下載而刪除（cursor 分頁，無 auto-delete）
+  //   2. 登入時從 vault 還原 DR state → gap-queue 偵測缺口 → 重新拉取未處理訊息
+  //   3. DR ratchet 具確定性：同起點 + 同密文 = 同 key，解密必定成功
+  //   4. Vault Put 冪等（UNIQUE 約束），重複寫入無副作用
+  // 因此登出時的 remote backup 是冗餘的，移除可避免登出延遲與超時風險。
+  // 僅保留 persistContactSecrets (本地快照) 與 lockContactSecrets (清除記憶體)。
   try {
     persistContactSecrets();
-    const backupPromise = triggerContactSecretsBackup('secure-logout', {
-      force: REMOTE_BACKUP_FORCE_ON_LOGOUT === true,
-      keepalive: true,
-      sourceTag: 'app-mobile:secureLogout'
-    });
-    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 5000));
-    await Promise.race([backupPromise, timeoutPromise]).catch((err) => {
-      log({ contactSecretsBackupDuringLogoutError: err?.message || err });
-    });
   } catch (err) {
     log({ contactSecretsPersistError: err?.message || err });
   } finally {
@@ -844,7 +839,7 @@ function persistContactSecretMetadata({ snapshot, source, keyOptions }) {
   return meta;
 }
 
-function flushDrSnapshotsBeforeLogout(reason = 'secure-logout', { forceRemote = false, keepalive = false, sourceTag = null } = {}) {
+function flushDrSnapshotsBeforeLogout(reason = 'secure-logout') {
   const startedAt = Date.now();
   const peerSet = new Set();
   if (sessionStore.contactSecrets instanceof Map) {
@@ -901,18 +896,8 @@ function flushDrSnapshotsBeforeLogout(reason = 'secure-logout', { forceRemote = 
   } catch (err) {
     log({ contactSecretsPersistError: err?.message || err, reason: 'flushDrSnapshotsBeforeLogout' });
   }
-  try {
-    const shouldForceRemote = forceRemote || REMOTE_BACKUP_FORCE_ON_LOGOUT === true;
-    if (shouldForceRemote) {
-      triggerContactSecretsBackup(reason || 'secure-logout', {
-        force: true,
-        keepalive: keepalive === true,
-        sourceTag: sourceTag || `app-mobile:flush:${reason || 'secure-logout'}`
-      }).catch((err) => log({ contactSecretsBackupDuringLogoutError: err?.message || err }));
-    }
-  } catch (err) {
-    log({ contactSecretsBackupDuringLogoutError: err?.message || err });
-  }
+  // remote backup 已移除 — 理由同 secureLogout 註解：
+  // 自癒迴圈保證下次登入能從 vault 還原 + gap-fill 重新解密，不需要在登出時推送。
   logCapped('contactSecretsSnapshotFlushDoneTrace', {
     reason,
     peers: peerSet.size,
@@ -2299,11 +2284,7 @@ if (typeof document !== 'undefined') {
       });
     }
     if (document.hidden) {
-      flushDrSnapshotsBeforeLogout('visibilitychange', {
-        forceRemote: true,
-        keepalive: true,
-        sourceTag: 'app-mobile:visibilitychange'
-      });
+      flushDrSnapshotsBeforeLogout('visibilitychange');
       flushContactSecretsLocal('visibilitychange');
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
@@ -2329,11 +2310,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', (event) => {
     if (logoutInProgress) return;
     if (event && event.persisted) return;
-    flushDrSnapshotsBeforeLogout('pagehide', {
-      forceRemote: true,
-      keepalive: true,
-      sourceTag: 'app-mobile:pagehide'
-    });
+    flushDrSnapshotsBeforeLogout('pagehide');
     flushContactSecretsLocal('pagehide');
     if (isReloadNavigation()) {
       forceReloadLogout();
