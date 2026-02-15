@@ -2232,50 +2232,16 @@ export function getContactSecretSections(peerAccountDigest, opts = {}) {
 
 /**
  * Get conversation token for call key derivation.
- * Unlike getContactSecret, this does NOT filter by deviceId.
- * For calls, we only need the shared conversationToken.
+ * Looks up by exact peerKey (digest::deviceId) in the cloud-restored
+ * contact-secrets map.
  */
 export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
   const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
   const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
+  if (!key) return null;
   const map = ensureMap();
-  const normalized = normalizeAccountDigest(peerAccountDigest);
-
-  // 1. Exact key lookup
-  if (key) {
-    const record = map.get(key);
-    if (record?.conversationToken) return record.conversationToken;
-  }
-
-  // 2. Digest-prefix fallback: find any entry in the cloud-restored map
-  //    matching this peer digest (handles device-id differences).
-  if (normalized) {
-    for (const [k, v] of map.entries()) {
-      if (k.startsWith(normalized + '::') || k === normalized) {
-        if (v?.conversationToken) return v.conversationToken;
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Find a peer's device ID by account digest from the cloud-restored
- * contact-secrets map.  Used during D1 contact restore when the encrypted
- * blob is missing the peerDeviceId that was available at share-time.
- */
-export function findPeerDeviceIdByDigest(digest) {
-  const normalized = normalizeAccountDigest(digest);
-  if (!normalized) return null;
-  const map = ensureMap();
-  for (const [k] of map.entries()) {
-    if (k.startsWith(normalized + '::')) {
-      const sep = k.indexOf('::');
-      if (sep > 0 && k.length > sep + 2) return k.slice(sep + 2);
-    }
-  }
-  return null;
+  const record = map.get(key);
+  return record?.conversationToken || null;
 }
 
 export function lockContactSecrets(reason = 'locked') {

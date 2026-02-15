@@ -19,7 +19,7 @@ import {
 import { ensureDrSession } from './dr-session.js';
 import { normalizeNickname } from './profile.js';
 import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } from './contact-share.js';
-import { getContactSecret, setContactSecret, findPeerDeviceIdByDigest } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
 import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
@@ -407,33 +407,26 @@ export async function loadContacts() {
     }));
 
     // Re-inject conversation secrets and core store.
-    // The vault backup restore (hydrateContactSecretsFromBackup) runs BEFORE this
-    // D1 restore, so the contact-secrets map may already contain entries with the
-    // correct peerKey.  When the D1 blob is missing peerDeviceId (legacy data),
-    // fall back to the vault-restored map to discover it.
+    // Vault backup restore (hydrateContactSecretsFromBackup) has already run
+    // and is the primary source of conversationToken.  D1 restore provides
+    // per-contact metadata (nickname, avatar) and also carries the token as
+    // a secondary write — but only when peerDeviceId is present in the blob.
     entries.forEach(e => {
-      if (e.conversation?.token_b64) {
-        let peerDevId = e.conversation.peerDeviceId || null;
-        if (!peerDevId && e.peerAccountDigest) {
-          peerDevId = findPeerDeviceIdByDigest(e.peerAccountDigest);
-        }
-        if (peerDevId) {
-          setContactSecret(e.peerAccountDigest, {
-            conversation: {
-              token: e.conversation.token_b64,
-              id: e.conversation.conversation_id,
-              drInit: e.conversation.dr_init
-            },
-            deviceId: deviceId,
-            peerDeviceId: peerDevId
-          });
-        }
+      const peerDevId = e.conversation?.peerDeviceId || null;
+
+      if (e.conversation?.token_b64 && peerDevId) {
+        setContactSecret(e.peerAccountDigest, {
+          conversation: {
+            token: e.conversation.token_b64,
+            id: e.conversation.conversation_id,
+            drInit: e.conversation.dr_init
+          },
+          deviceId: deviceId,
+          peerDeviceId: peerDevId
+        });
       }
 
-      const peerDevForCore = e.conversation?.peerDeviceId
-        || findPeerDeviceIdByDigest(e.peerAccountDigest)
-        || 'unknown';
-      const corePayload = buildContactCorePayload(e, peerDevForCore);
+      const corePayload = buildContactCorePayload(e, peerDevId || 'unknown');
       if (corePayload) upsertContactCore(corePayload, 'd1-restore');
     });
 
