@@ -1922,7 +1922,7 @@ function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動�
   secureLogout(reason, { auto: true });
 }
 
-let profileHydrationStarted = false;
+let profileHydrationRunning = false;
 
 const toProfileDigest = (value) => {
   if (!value) return null;
@@ -2194,13 +2194,17 @@ async function hydrateProfileSnapshotForDigest(peerDigest) {
 }
 
 async function hydrateProfileSnapshots() {
-  if (profileHydrationStarted) return;
-  profileHydrationStarted = true;
-  const targets = collectProfileHydrateTargets();
-  for (const digest of targets) {
-    // 逐個執行，避免洪泛請求；失敗會記錄原因。
-    // eslint-disable-next-line no-await-in-loop
-    await hydrateProfileSnapshotForDigest(digest);
+  if (profileHydrationRunning) return;
+  profileHydrationRunning = true;
+  try {
+    const targets = collectProfileHydrateTargets();
+    for (const digest of targets) {
+      // 逐個執行，避免洪泛請求；失敗會記錄原因。
+      // eslint-disable-next-line no-await-in-loop
+      await hydrateProfileSnapshotForDigest(digest);
+    }
+  } finally {
+    profileHydrationRunning = false;
   }
 }
 

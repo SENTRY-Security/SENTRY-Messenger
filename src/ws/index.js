@@ -575,17 +575,8 @@ function handleClientMessage(ws, data) {
   if (msg.type === 'contacts-reload') {
     const targetDigest = extractPeerAccountDigest(msg);
     if (!targetDigest) return;
-    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId);
-    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId);
-    if (!senderDeviceId || !targetDeviceId) {
-      logger.warn({
-        event: 'ws.contacts-reload.missing-device',
-        targetDigest,
-        senderDeviceId: senderDeviceId || null,
-        targetDeviceId: targetDeviceId || null
-      }, 'drop contacts-reload due to missing deviceId');
-      return;
-    }
+    const senderDeviceId = canonicalDeviceId(msg.senderDeviceId) || null;
+    const targetDeviceId = canonicalDeviceId(msg.targetDeviceId) || null;
     broadcastByDigest(targetDigest, {
       type: 'contacts-reload',
       ts: Date.now(),
