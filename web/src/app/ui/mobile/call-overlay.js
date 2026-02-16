@@ -13,8 +13,6 @@ import {
   endCallMediaSession,
   setLocalAudioMuted,
   isLocalAudioMuted,
-  setRemoteAudioMuted,
-  isRemoteAudioMuted,
   isLocalVideoMuted,
   setLocalVideoMuted,
   setRemoteVideoElement,
@@ -173,9 +171,10 @@ function ensureStyles() {
     .call-overlay .call-controls {
       margin-top: 22px;
       display: flex;
-      gap: 14px;
+      gap: 20px;
       justify-content: center;
-      flex-wrap: wrap;
+      align-items: center;
+      flex-wrap: nowrap;
     }
     .call-overlay .call-controls.hidden,
     .call-overlay .call-actions.hidden {
@@ -207,10 +206,23 @@ function ensureStyles() {
     .call-overlay .call-btn.accept { background: #0ea5e9; }
     .call-overlay .call-btn.reject { background: #ef4444; }
     .call-overlay .call-btn.cancel { background: #475569; }
-    .call-overlay .call-btn.hangup { background: #ef4444; flex: 1; min-width: 140px; }
+    .call-overlay .call-btn.hangup { background: #ef4444; }
     .call-overlay .call-btn.toggle.active {
       background: #0ea5e9;
       box-shadow: 0 0 18px rgba(14,165,233,0.45);
+    }
+    .call-overlay .call-controls .call-btn {
+      min-width: 48px;
+      width: 48px;
+      height: 48px;
+      padding: 0;
+    }
+    .call-overlay .call-controls .call-btn i {
+      margin-right: 0;
+      font-size: 22px;
+    }
+    .call-overlay .call-controls .call-btn span {
+      display: none;
     }
     .call-overlay .call-minify-btn {
       position: absolute;
@@ -251,6 +263,7 @@ function ensureStyles() {
       pointer-events: none;
       touch-action: none;
       z-index: 1000;
+      overflow: hidden;
     }
     .call-overlay .call-mini-bubble.dragging {
       opacity: 0.85;
@@ -272,6 +285,25 @@ function ensureStyles() {
       width: 100%;
       height: 100%;
       object-fit: cover;
+    }
+    .call-overlay .call-mini-video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+    .call-overlay.video-minimized .call-mini-bubble {
+      width: 120px;
+      height: 160px;
+      border-radius: 12px;
+    }
+    .call-overlay.video-minimized .call-mini-video {
+      display: block;
+    }
+    .call-overlay.video-minimized .call-mini-avatar {
+      display: none;
     }
     .call-overlay.minimized {
       pointer-events: none;
@@ -322,6 +354,9 @@ function ensureStyles() {
       overflow: hidden;
       background: #1e293b;
       z-index: 2;
+      touch-action: none;
+      cursor: grab;
+      user-select: none;
     }
     .call-overlay .call-local-pip video {
       width: 100%;
@@ -433,13 +468,13 @@ function ensureOverlayElements() {
       actionsRow: root.querySelector('.call-actions'),
       controlsRow: root.querySelector('.call-controls'),
       muteBtn: root.querySelector('[data-call-action="mute"]'),
-      speakerBtn: root.querySelector('[data-call-action="speaker"]'),
       hangupBtn: root.querySelector('[data-call-action="hangup"]'),
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
+      miniVideo: root.querySelector('.call-mini-video'),
       remoteVideo: root.querySelector('.call-remote-video'),
       localPip: root.querySelector('.call-local-pip'),
       localPipVideo: root.querySelector('.call-local-pip video'),
@@ -483,17 +518,14 @@ function ensureOverlayElements() {
         <button type="button" class="call-btn toggle" data-call-action="camera" aria-pressed="false" style="display:none">
           <i class='bx bx-video'></i><span>鏡頭</span>
         </button>
-        <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
-          <i class='bx bx-refresh'></i><span>翻轉</span>
-        </button>
         <button type="button" class="call-btn toggle" data-call-action="mute" aria-pressed="false">
           <i class='bx bx-microphone-off'></i><span>靜音</span>
         </button>
-        <button type="button" class="call-btn toggle" data-call-action="speaker" aria-pressed="false">
-          <i class='bx bx-volume-full'></i><span>喇叭</span>
-        </button>
         <button type="button" class="call-btn hangup" data-call-action="hangup">
           <i class='bx bx-phone-off'></i><span>掛斷</span>
+        </button>
+        <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
+          <i class='bx bx-refresh'></i><span>翻轉</span>
         </button>
       </div>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
@@ -516,6 +548,7 @@ function ensureOverlayElements() {
     </div>
     <div class="call-mini-bubble" role="button" aria-label="回到通話視窗" tabindex="0">
       <div class="call-mini-avatar" aria-hidden="true"></div>
+      <video class="call-mini-video" autoplay playsinline muted></video>
     </div>
   `;
   document.body.appendChild(root);
@@ -533,13 +566,13 @@ function ensureOverlayElements() {
     actionsRow: root.querySelector('.call-actions'),
     controlsRow: root.querySelector('.call-controls'),
     muteBtn: root.querySelector('[data-call-action="mute"]'),
-    speakerBtn: root.querySelector('[data-call-action="speaker"]'),
       hangupBtn: root.querySelector('[data-call-action="hangup"]'),
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
+      miniVideo: root.querySelector('.call-mini-video'),
       remoteVideo: root.querySelector('.call-remote-video'),
       localPip: root.querySelector('.call-local-pip'),
       localPipVideo: root.querySelector('.call-local-pip video'),
@@ -642,8 +675,17 @@ export function initCallOverlay({ showToast }) {
     toneCallId: null,
     playedToneKeys: new Set(),
     minimized: false,
+    videoSwapped: false,
     bubble: { x: null, y: null },
     bubbleDrag: {
+      pointerId: null,
+      startX: 0,
+      startY: 0,
+      baseX: 0,
+      baseY: 0,
+      moved: false
+    },
+    localPipDrag: {
       pointerId: null,
       startX: 0,
       startY: 0,
@@ -657,8 +699,10 @@ export function initCallOverlay({ showToast }) {
 
   function clampBubblePosition(x, y) {
     if (typeof window === 'undefined') return { x, y };
-    const maxX = Math.max(BUBBLE_MARGIN, window.innerWidth - BUBBLE_SIZE - BUBBLE_MARGIN);
-    const maxY = Math.max(BUBBLE_MARGIN, window.innerHeight - BUBBLE_SIZE - BUBBLE_MARGIN);
+    const bw = ui.bubble?.offsetWidth || BUBBLE_SIZE;
+    const bh = ui.bubble?.offsetHeight || BUBBLE_SIZE;
+    const maxX = Math.max(BUBBLE_MARGIN, window.innerWidth - bw - BUBBLE_MARGIN);
+    const maxY = Math.max(BUBBLE_MARGIN, window.innerHeight - bh - BUBBLE_MARGIN);
     const clampedX = Math.min(Math.max(x, BUBBLE_MARGIN), maxX);
     const clampedY = Math.min(Math.max(y, BUBBLE_MARGIN), maxY);
     return { x: clampedX, y: clampedY };
@@ -695,6 +739,13 @@ export function initCallOverlay({ showToast }) {
   function minimizeOverlay() {
     if (state.minimized) return;
     state.minimized = true;
+    const session = getCallSessionSnapshot();
+    const isVideo = session?.kind === CALL_REQUEST_KIND.VIDEO;
+    ui.root?.classList.toggle('video-minimized', isVideo);
+    if (isVideo && ui.miniVideo && ui.remoteVideo?.srcObject) {
+      ui.miniVideo.srcObject = ui.remoteVideo.srcObject;
+      try { ui.miniVideo.play(); } catch {}
+    }
     ensureBubblePosition();
     updateMinimizedState();
   }
@@ -702,6 +753,8 @@ export function initCallOverlay({ showToast }) {
   function restoreOverlay() {
     if (!state.minimized) return;
     state.minimized = false;
+    ui.root?.classList.remove('video-minimized');
+    if (ui.miniVideo) ui.miniVideo.srcObject = null;
     updateMinimizedState();
   }
 
@@ -712,6 +765,10 @@ export function initCallOverlay({ showToast }) {
     if (!visible) {
       stopTimer();
       state.minimized = false;
+      resetVideoSwap();
+      resetPipPosition();
+      ui.root?.classList.remove('video-minimized');
+      if (ui.miniVideo) ui.miniVideo.srcObject = null;
       updateMinimizedState();
     } else {
       updateMinimizedState();
@@ -835,12 +892,118 @@ export function initCallOverlay({ showToast }) {
     }
   }
 
+  // ── Local PIP drag + tap-to-swap ──
+  function handlePipPointerDown(event) {
+    if (!ui.localPip) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const pointerId = event.pointerId ?? 'mouse';
+    state.localPipDrag.pointerId = pointerId;
+    state.localPipDrag.startX = event.clientX;
+    state.localPipDrag.startY = event.clientY;
+    const rect = ui.localPip.getBoundingClientRect();
+    state.localPipDrag.baseX = rect.left;
+    state.localPipDrag.baseY = rect.top;
+    state.localPipDrag.moved = false;
+    ui.localPip.setPointerCapture?.(pointerId);
+  }
+
+  function handlePipPointerMove(event) {
+    if (state.localPipDrag.pointerId == null) return;
+    if (event.pointerId !== state.localPipDrag.pointerId) return;
+    const dx = event.clientX - state.localPipDrag.startX;
+    const dy = event.clientY - state.localPipDrag.startY;
+    if (!state.localPipDrag.moved && Math.hypot(dx, dy) > MIN_DRAG_DISTANCE) {
+      state.localPipDrag.moved = true;
+    }
+    if (!state.localPipDrag.moved) return;
+    const newX = state.localPipDrag.baseX + dx;
+    const newY = state.localPipDrag.baseY + dy;
+    const maxX = window.innerWidth - ui.localPip.offsetWidth - 8;
+    const maxY = window.innerHeight - ui.localPip.offsetHeight - 8;
+    ui.localPip.style.left = `${Math.min(Math.max(8, newX), maxX)}px`;
+    ui.localPip.style.top = `${Math.min(Math.max(8, newY), maxY)}px`;
+    ui.localPip.style.right = 'auto';
+    ui.localPip.style.bottom = 'auto';
+  }
+
+  function finishPipPointer(event, cancelled = false) {
+    if (state.localPipDrag.pointerId == null || event.pointerId !== state.localPipDrag.pointerId) return;
+    ui.localPip?.releasePointerCapture?.(state.localPipDrag.pointerId);
+    const moved = state.localPipDrag.moved;
+    state.localPipDrag.pointerId = null;
+    state.localPipDrag.moved = false;
+    if (!cancelled && !moved) {
+      toggleVideoSwap();
+    }
+  }
+
+  function handlePipPointerUp(event) { finishPipPointer(event, false); }
+  function handlePipPointerCancel(event) { finishPipPointer(event, true); }
+
+  function resetPipPosition() {
+    if (!ui.localPip) return;
+    ui.localPip.style.left = '';
+    ui.localPip.style.top = '';
+    ui.localPip.style.right = '';
+    ui.localPip.style.bottom = '';
+  }
+
+  // ── Video swap (tap local PIP to swap local/remote) ──
+  function toggleVideoSwap() {
+    if (!ui.remoteVideo || !ui.localPipVideo) return;
+    const session = getCallSessionSnapshot();
+    if (!session || session.kind !== CALL_REQUEST_KIND.VIDEO) return;
+    state.videoSwapped = !state.videoSwapped;
+    applyVideoSwap();
+  }
+
+  function applyVideoSwap() {
+    if (!ui.remoteVideo || !ui.localPipVideo) return;
+    const ls = getLocalStream();
+    const remoteStream = state._cachedRemoteStream || ui.remoteVideo.srcObject;
+    if (!state.videoSwapped) {
+      // Normal: main = remote, PIP = local
+      if (remoteStream) {
+        ui.remoteVideo.srcObject = remoteStream;
+      }
+      if (ls) {
+        ui.localPipVideo.srcObject = ls;
+        ui.localPipVideo.muted = true;
+      }
+      ui.remoteVideo.style.transform = '';
+      ui.localPipVideo.style.transform = 'scaleX(-1)';
+      state._cachedRemoteStream = null;
+    } else {
+      // Swapped: main = local (mirrored), PIP = remote
+      state._cachedRemoteStream = remoteStream;
+      if (ls) {
+        ui.remoteVideo.srcObject = ls;
+        ui.remoteVideo.muted = true;
+      }
+      if (remoteStream) {
+        ui.localPipVideo.srcObject = remoteStream;
+        ui.localPipVideo.muted = true;
+      }
+      ui.remoteVideo.style.transform = 'scaleX(-1)';
+      ui.localPipVideo.style.transform = '';
+    }
+    try { ui.remoteVideo.play(); } catch {}
+    try { ui.localPipVideo.play(); } catch {}
+  }
+
+  function resetVideoSwap() {
+    if (!state.videoSwapped) return;
+    state.videoSwapped = false;
+    state._cachedRemoteStream = null;
+    if (ui.remoteVideo) ui.remoteVideo.style.transform = '';
+    if (ui.localPipVideo) ui.localPipVideo.style.transform = 'scaleX(-1)';
+  }
+
   function syncControlStates(session) {
     const controls = session?.mediaState?.controls || {};
     const localMuted = controls.audioMuted ?? isLocalAudioMuted();
-    const remoteMuted = controls.remoteMuted ?? isRemoteAudioMuted();
     setToggleState(ui.muteBtn, !!localMuted);
-    setToggleState(ui.speakerBtn, !!remoteMuted);
     const videoEnabled = controls.videoEnabled ?? !isLocalVideoMuted();
     setToggleState(ui.cameraBtn, !!videoEnabled);
   }
@@ -908,7 +1071,7 @@ export function initCallOverlay({ showToast }) {
       if (btn) btn.disabled = disable;
     });
     const togglesDisabled = disable || !showControlsRow;
-    [ui.muteBtn, ui.speakerBtn].forEach((btn) => {
+    [ui.muteBtn].forEach((btn) => {
       if (btn) btn.disabled = togglesDisabled;
     });
 
@@ -955,7 +1118,8 @@ export function initCallOverlay({ showToast }) {
       }
 
       // Re-attach localPip srcObject if we have a local stream with video tracks
-      if (ui.localPipVideo && (inCall || connecting)) {
+      // Skip re-attachment when video is swapped (user controls srcObject assignment)
+      if (ui.localPipVideo && (inCall || connecting) && !state.videoSwapped) {
         const ls = getLocalStream();
         if (ls && ls.getVideoTracks().length && ui.localPipVideo.srcObject !== ls) {
           ui.localPipVideo.srcObject = ls;
@@ -970,6 +1134,8 @@ export function initCallOverlay({ showToast }) {
       }
     } else {
       // Reset video elements when not video
+      resetVideoSwap();
+      resetPipPosition();
       if (ui.remoteVideo) ui.remoteVideo.style.display = 'none';
       if (ui.localPip) ui.localPip.style.display = 'none';
       if (ui.videoWaiting) ui.videoWaiting.style.display = 'none';
@@ -1103,14 +1269,6 @@ export function initCallOverlay({ showToast }) {
     setLocalAudioMuted(next);
   }
 
-  function handleSpeakerToggle() {
-    const session = getCallSessionSnapshot();
-    if (!session) return;
-    const controls = session.mediaState?.controls || {};
-    const next = !(controls.remoteMuted ?? isRemoteAudioMuted());
-    setRemoteAudioMuted(next);
-  }
-
   async function handleCameraToggle() {
     const session = getCallSessionSnapshot();
     if (!session) return;
@@ -1128,13 +1286,17 @@ export function initCallOverlay({ showToast }) {
   ui.cancelBtn?.addEventListener('click', handleCancel);
   ui.hangupBtn?.addEventListener('click', handleHangup);
   ui.muteBtn?.addEventListener('click', handleMuteToggle);
-  ui.speakerBtn?.addEventListener('click', handleSpeakerToggle);
   ui.cameraBtn?.addEventListener('click', handleCameraToggle);
   ui.flipCameraBtn?.addEventListener('click', handleFlipCamera);
   ui.minifyBtn?.addEventListener('click', minimizeOverlay);
   // Wire video elements to media-session
   if (ui.remoteVideo) setRemoteVideoElement(ui.remoteVideo);
   if (ui.localPipVideo) setLocalVideoElement(ui.localPipVideo);
+  // Local PIP drag + tap-to-swap
+  ui.localPip?.addEventListener('pointerdown', handlePipPointerDown);
+  ui.localPip?.addEventListener('pointermove', handlePipPointerMove);
+  ui.localPip?.addEventListener('pointerup', handlePipPointerUp);
+  ui.localPip?.addEventListener('pointercancel', handlePipPointerCancel);
 
   ui.bubble?.addEventListener('pointerdown', handleBubblePointerDown);
   ui.bubble?.addEventListener('pointermove', handleBubblePointerMove);
@@ -1191,12 +1353,15 @@ export function initCallOverlay({ showToast }) {
     ui.cancelBtn?.removeEventListener('click', handleCancel);
     ui.hangupBtn?.removeEventListener('click', handleHangup);
     ui.muteBtn?.removeEventListener('click', handleMuteToggle);
-    ui.speakerBtn?.removeEventListener('click', handleSpeakerToggle);
     ui.cameraBtn?.removeEventListener('click', handleCameraToggle);
     ui.flipCameraBtn?.removeEventListener('click', handleFlipCamera);
     ui.minifyBtn?.removeEventListener('click', minimizeOverlay);
     setRemoteVideoElement(null);
     setLocalVideoElement(null);
+    ui.localPip?.removeEventListener('pointerdown', handlePipPointerDown);
+    ui.localPip?.removeEventListener('pointermove', handlePipPointerMove);
+    ui.localPip?.removeEventListener('pointerup', handlePipPointerUp);
+    ui.localPip?.removeEventListener('pointercancel', handlePipPointerCancel);
     ui.bubble?.removeEventListener('pointerdown', handleBubblePointerDown);
     ui.bubble?.removeEventListener('pointermove', handleBubblePointerMove);
     ui.bubble?.removeEventListener('pointerup', handleBubblePointerUp);
