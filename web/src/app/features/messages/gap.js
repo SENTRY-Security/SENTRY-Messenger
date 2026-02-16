@@ -44,7 +44,7 @@ export async function fetchServerMaxCounter({ conversationId, senderDeviceId } =
         const { r, data } = await fetchSecureMaxCounter({ conversationId, senderDeviceId });
         const ok = !!r?.ok;
         const status = typeof r?.status === 'number' ? r.status : null;
-        const maxCounterRaw = data?.maxCounter ?? data?.max_counter ?? null;
+        const maxCounterRaw = data?.max_counter ?? null;
         const maxCounter = Number.isFinite(Number(maxCounterRaw)) ? Number(maxCounterRaw) : null;
         const errorCode = ok
             ? null

@@ -200,14 +200,12 @@ export async function exchangeSDM(p) {
   if (!r.ok) throw new Error(`sdm.exchange failed: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
 
   setSession(data.session || null);
-  setHasMK(!!(data.hasMK || data.has_mk));
+  setHasMK(!!data.has_mk);
   setWrappedMK(data.wrapped_mk || null);
-  if (data.accountToken) setAccountToken(data.accountToken);
   if (data.account_token) setAccountToken(data.account_token);
-  if (data.accountDigest) setAccountDigest(data.accountDigest);
   if (data.account_digest) setAccountDigest(data.account_digest);
-  if (Object.prototype.hasOwnProperty.call(data, 'opaqueServerId') || Object.prototype.hasOwnProperty.call(data, 'opaque_server_id')) {
-    setOpaqueServerId(data.opaqueServerId || data.opaque_server_id || null);
+  if (Object.prototype.hasOwnProperty.call(data, 'opaque_server_id')) {
+    setOpaqueServerId(data.opaque_server_id || null);
   } else {
     setOpaqueServerId(null);
   }
@@ -215,17 +213,17 @@ export async function exchangeSDM(p) {
   emitIdentityTrace({
     sourceTag: 'sdm-exchange',
     uidHexSuffix4: uidHex ? uidHex.slice(-4) : null,
-    uidDigestSuffix4: data?.uidDigest ? String(data.uidDigest).slice(-4) : null,
-    accountDigestSuffix4: (getAccountDigest() || data.accountDigest || data.account_digest || '').slice(-4) || null,
-    hasMK: !!(data?.hasMK || data?.has_mk)
+    uidDigestSuffix4: data?.uid_digest ? String(data.uid_digest).slice(-4) : null,
+    accountDigestSuffix4: (getAccountDigest() || data.account_digest || '').slice(-4) || null,
+    hasMK: !!data?.has_mk
   });
 
   return {
     session: getSession(),
     hasMK: getHasMK(),
     wrapped_mk: getWrappedMK() || undefined,
-    accountToken: getAccountToken() || data.accountToken || data.account_token || null,
-    accountDigest: getAccountDigest() || data.accountDigest || data.account_digest || null
+    accountToken: getAccountToken() || data.account_token || null,
+    accountDigest: getAccountDigest() || data.account_digest || null
   };
 }
 

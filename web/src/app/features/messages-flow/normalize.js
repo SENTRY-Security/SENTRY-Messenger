@@ -112,7 +112,7 @@ function parseMediaMessage({ plaintext, meta }) {
       height: Number.isFinite(previewHeight) ? previewHeight : null
     } : null,
     dir,
-    senderDigest: (typeof meta?.senderDigest === 'string' && meta.senderDigest.trim()) ? meta.senderDigest.trim() : null
+    senderDigest: (typeof meta?.sender_digest === 'string' && meta.sender_digest.trim()) ? meta.sender_digest.trim() : null
   };
 
   if (parsed?.sha256) mediaInfo.sha256 = parsed.sha256;

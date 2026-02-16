@@ -8,9 +8,9 @@ const DigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const RedeemSchema = z.object({
   token: z.string().min(8),
-  dryRun: z.boolean().optional(),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(DigestRegex).optional()
+  dry_run: z.boolean().optional(),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(DigestRegex).optional()
 });
 
 export const redeem = async (req, res) => {
@@ -66,9 +66,10 @@ export const status = async (req, res) => {
 };
 
 export const tokenStatus = async (req, res) => {
-  const tokenId = typeof req.query?.tokenId === 'string' ? req.query.tokenId.trim()
-    : (typeof req.query?.voucherId === 'string' ? req.query.voucherId.trim()
-      : (typeof req.query?.jti === 'string' ? req.query.jti.trim() : ''));
+  const tokenId = typeof req.query?.token_id === 'string' ? req.query.token_id.trim()
+    : (typeof req.query?.tokenId === 'string' ? req.query.tokenId.trim()
+      : (typeof req.query?.voucherId === 'string' ? req.query.voucherId.trim()
+        : (typeof req.query?.jti === 'string' ? req.query.jti.trim() : '')));
   if (!tokenId) {
     return res.status(400).json({ error: 'BadRequest', message: 'tokenId required' });
   }

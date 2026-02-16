@@ -24,7 +24,7 @@ export async function sdmExchange({ uid, sdmmac, sdmcounter, nonce = 'n/a' }) {
  */
 export async function sdmDebugKit({ uidHex } = {}) {
   const payload = {};
-  if (uidHex) payload.uidHex = uidHex;
+  if (uidHex) payload.uid_hex = uidHex;
   return await fetchJSON('/api/v1/auth/sdm/debug-kit', payload);
 }
 
@@ -36,8 +36,8 @@ export async function sdmDebugKit({ uidHex } = {}) {
 export async function mkStore({ session, accountToken, accountDigest, wrapped_mk }) {
   const body = { wrapped_mk };
   if (session && session.length >= 8) body.session = session; // optional; required only for first init
-  if (accountToken) body.accountToken = accountToken;
-  if (accountDigest) body.accountDigest = accountDigest;
+  if (accountToken) body.account_token = accountToken;
+  if (accountDigest) body.account_digest = accountDigest;
   return await fetchJSON('/api/v1/mk/store', body);
 }
 
@@ -47,5 +47,5 @@ export async function mkStore({ session, accountToken, accountDigest, wrapped_mk
  * @returns {Promise<{ r: Response, data: any }>} r.status === 204 on success
  */
 export async function mkUpdate({ accountToken, accountDigest, wrapped_mk }) {
-  return await fetchJSON('/api/v1/mk/update', { accountToken, accountDigest, wrapped_mk });
+  return await fetchJSON('/api/v1/mk/update', { account_token: accountToken, account_digest: accountDigest, wrapped_mk });
 }

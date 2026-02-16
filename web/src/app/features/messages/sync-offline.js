@@ -145,9 +145,9 @@ export async function processOfflineSync({ source, reasonCode }, dependencies = 
             const itemsFetched = stats?.fetchedItems ?? result?.serverItemCount ?? result?.items?.length ?? 0;
             const decryptOkCount = stats?.decryptOk ?? 0;
             const vaultPutIncomingOkCount = stats?.vaultPutIncomingOk ?? 0;
-            const nextCursor = result?.nextCursor
-                || (result?.nextCursorTs != null
-                    ? { ts: result.nextCursorTs, id: result?.nextCursorId ?? null }
+            const nextCursor = result?.next_cursor
+                || (result?.next_cursor_ts != null
+                    ? { ts: result.next_cursor_ts, id: result?.next_cursor_id ?? null }
                     : null);
 
             if (result?.hasMoreAtCursor && nextCursor) {

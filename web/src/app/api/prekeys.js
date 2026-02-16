@@ -11,12 +11,12 @@ const AccountDigestRegex = /^[0-9A-F]{64}$/;
 
 function buildAccountPayload({ accountToken, accountDigest } = {}) {
   const payload = {};
-  if (accountToken) payload.accountToken = accountToken;
+  if (accountToken) payload.account_token = accountToken;
   const digest = accountDigest || getAccountDigest();
   if (digest && AccountDigestRegex.test(String(digest).toUpperCase())) {
-    payload.accountDigest = String(digest).toUpperCase();
+    payload.account_digest = String(digest).toUpperCase();
   }
-  if (!payload.accountToken && !payload.accountDigest) {
+  if (!payload.account_token && !payload.account_digest) {
     throw new Error('accountToken or accountDigest required');
   }
   return payload;
@@ -31,13 +31,13 @@ function buildAccountPayload({ accountToken, accountDigest } = {}) {
 export async function prekeysPublish({ accountToken, accountDigest, deviceId, signedPrekey, opks } = {}) {
   const body = buildAccountPayload({ accountToken, accountDigest });
   const device = deviceId || ensureDeviceId();
-  if (device) body.deviceId = device;
+  if (device) body.device_id = device;
   if (signedPrekey) {
     const enriched = { ...signedPrekey };
     if (!enriched.ik_pub) {
       throw new Error('signedPrekey.ik_pub required');
     }
-    body.signedPrekey = enriched;
+    body.signed_prekey = enriched;
   }
   if (Array.isArray(opks)) body.opks = opks;
   return await fetchJSON('/api/v1/keys/publish', body);
@@ -53,7 +53,7 @@ export async function prekeysBundle({ peer_accountDigest, peer_deviceId } = {}) 
   if (!digest || !AccountDigestRegex.test(String(digest).toUpperCase())) {
     throw new Error('peer_accountDigest required');
   }
-  const body = { peer_accountDigest: String(digest).toUpperCase() };
-  if (peer_deviceId) body.peer_deviceId = String(peer_deviceId).trim();
+  const body = { peer_account_digest: String(digest).toUpperCase() };
+  if (peer_deviceId) body.peer_device_id = String(peer_deviceId).trim();
   return await fetchJSON('/api/v1/keys/bundle', body);
 }

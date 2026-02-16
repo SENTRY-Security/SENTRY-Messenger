@@ -6,21 +6,21 @@ const AccountDigestRegex = /^[0-9A-F]{64}$/;
 
 function withAccountToken(payload = {}) {
   const out = { ...payload };
-  if (out.accountToken == null) {
+  if (out.account_token == null) {
     const token = getAccountToken();
-    if (token) out.accountToken = token;
+    if (token) out.account_token = token;
   }
-  if (!out.accountToken) {
+  if (!out.account_token) {
     throw new Error('Not unlocked: account token missing');
   }
-  if (out.accountDigest == null) {
+  if (out.account_digest == null) {
     const digest = getAccountDigest();
-    if (digest) out.accountDigest = digest;
+    if (digest) out.account_digest = digest;
   }
-  if (out.accountDigest != null) {
-    const cleanedDigest = String(out.accountDigest).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-    if (cleanedDigest && AccountDigestRegex.test(cleanedDigest)) out.accountDigest = cleanedDigest;
-    else delete out.accountDigest;
+  if (out.account_digest != null) {
+    const cleanedDigest = String(out.account_digest).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+    if (cleanedDigest && AccountDigestRegex.test(cleanedDigest)) out.account_digest = cleanedDigest;
+    else delete out.account_digest;
   }
   return out;
 }
@@ -40,7 +40,7 @@ function buildError(status, data, defaultMsg) {
 
 export async function invitesCreate({ ownerPublicKeyB64 } = {}) {
   const payload = withAccountToken({});
-  if (ownerPublicKeyB64) payload.ownerPublicKeyB64 = ownerPublicKeyB64;
+  if (ownerPublicKeyB64) payload.owner_public_key_b64 = ownerPublicKeyB64;
   const { r, data } = await fetchJSON('/api/v1/invites/create', payload, withDeviceHeaders());
   log({ inviteCreateResult: data });
   if (!r.ok) {
@@ -54,7 +54,7 @@ export async function invitesDeliver({ inviteId, ciphertextEnvelope } = {}) {
   if (!ciphertextEnvelope || typeof ciphertextEnvelope !== 'object') {
     throw new Error('ciphertextEnvelope required');
   }
-  const payload = withAccountToken({ inviteId, ciphertextEnvelope });
+  const payload = withAccountToken({ invite_id: inviteId, ciphertext_envelope: ciphertextEnvelope });
   const { r, data } = await fetchJSON('/api/v1/invites/deliver', payload, withDeviceHeaders());
   if (!r.ok) {
     throw buildError(r.status, data, 'invite deliver failed');
@@ -64,7 +64,7 @@ export async function invitesDeliver({ inviteId, ciphertextEnvelope } = {}) {
 
 export async function invitesConsume({ inviteId } = {}) {
   if (!inviteId) throw new Error('inviteId required');
-  const payload = withAccountToken({ inviteId });
+  const payload = withAccountToken({ invite_id: inviteId });
   const { r, data } = await fetchJSON('/api/v1/invites/consume', payload, withDeviceHeaders());
   if (!r.ok) {
     throw buildError(r.status, data, 'invite consume failed');
@@ -74,7 +74,7 @@ export async function invitesConsume({ inviteId } = {}) {
 
 export async function invitesStatus({ inviteId } = {}) {
   if (!inviteId) throw new Error('inviteId required');
-  const payload = withAccountToken({ inviteId });
+  const payload = withAccountToken({ invite_id: inviteId });
   const { r, data } = await fetchJSON('/api/v1/invites/status', payload, withDeviceHeaders());
   if (!r.ok) {
     throw buildError(r.status, data, 'invite status failed');

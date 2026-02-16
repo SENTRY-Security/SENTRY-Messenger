@@ -8,9 +8,9 @@ function normalizeMembers(list = []) {
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const entry of list) {
-    const identity = normalizePeerIdentity(entry?.accountDigest || entry?.peerAccountDigest || entry);
+    const identity = normalizePeerIdentity(entry?.accountDigest || entry?.account_digest || entry?.peerAccountDigest || entry);
     if (!identity.key) continue;
-    out.push({ accountDigest: identity.accountDigest || null });
+    out.push({ account_digest: identity.accountDigest || null });
   }
   return out;
 }
@@ -20,8 +20,8 @@ export async function createGroup({ groupId, conversationId, name, avatar, membe
   if (!conversationId) throw new Error('conversationId required');
   const normalizedMembers = normalizeMembers(members);
   const overrides = {
-    groupId,
-    conversationId,
+    group_id: groupId,
+    conversation_id: conversationId,
     name,
     avatar,
     members: normalizedMembers
@@ -36,7 +36,7 @@ export async function createGroup({ groupId, conversationId, name, avatar, membe
 export async function addGroupMembers({ groupId, members = [] } = {}) {
   if (!groupId) throw new Error('groupId required');
   if (!members.length) throw new Error('members required');
-  const payload = buildAccountPayload({ overrides: { groupId, members: normalizeMembers(members) } });
+  const payload = buildAccountPayload({ overrides: { group_id: groupId, members: normalizeMembers(members) } });
   const r = await fetchWithTimeout('/api/v1/groups/members/add', jsonReq(payload), 15000);
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -46,7 +46,7 @@ export async function addGroupMembers({ groupId, members = [] } = {}) {
 export async function removeGroupMembers({ groupId, members = [], status } = {}) {
   if (!groupId) throw new Error('groupId required');
   if (!members.length) throw new Error('members required');
-  const overrides = { groupId, members: normalizeMembers(members) };
+  const overrides = { group_id: groupId, members: normalizeMembers(members) };
   if (status) overrides.status = status;
   const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout('/api/v1/groups/members/remove', jsonReq(payload), 15000);

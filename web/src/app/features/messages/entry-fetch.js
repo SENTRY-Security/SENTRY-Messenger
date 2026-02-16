@@ -177,7 +177,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
     // [FIX] Offline/History Contact Share Processing
     // We must intercept contact-share BEFORE DR Decryption because it uses Session Key, not DR.
     // Ensure side effects (Profile Update) are applied even for history messages.
-    const headerType = header?.meta?.msgType || header?.msgType || item.msgType || null;
+    const headerType = header?.meta?.msg_type || header?.msgType || item.msgType || null;
     const isContactShare = headerType === 'contact-share' || (header?.contact === 1 || header?.contact === '1');
 
     if (isContactShare) {
@@ -315,7 +315,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
     } catch (err) {
         // [Fix Persistent Placeholder]
         // Fallback for DR failure on contact-share
-        const headerType = header?.meta?.msgType || header?.msgType || item.msgType || null;
+        const headerType = header?.meta?.msg_type || header?.msgType || item.msgType || null;
         const isContactShare = headerType === 'contact-share' || (header?.contact === 1 || header?.contact === '1');
 
         if (isContactShare) {
@@ -1055,7 +1055,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                 }
                 if (h) {
                     // Check if contact-share or known control type
-                    const type = h.meta?.msgType || h.msgType;
+                    const type = h.meta?.msg_type || h.msgType;
                     if (type === 'control') continue;
                 }
 
@@ -1069,7 +1069,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                 const isIncoming = (
                     raw.senderDeviceId && raw.senderDeviceId !== selfDeviceId
                 ) || (
-                        h.meta?.senderDeviceId && h.meta.senderDeviceId !== selfDeviceId
+                        h.meta?.sender_device_id && h.meta.sender_device_id !== selfDeviceId
                     ) || raw.direction === 'incoming'; // Fallback if computed externally)) continue;
 
                 // Direction check

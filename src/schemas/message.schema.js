@@ -4,7 +4,7 @@ const AccountDigestRegex = /^[0-9A-F]{64}$/;
 
 // Legacy placeholder schema (non-DR media/text)
 export const CreateMessageSchema = z.object({
-  convId: z.string().min(1),
+  conv_id: z.string().min(1),
   type: z.enum(['text', 'media']).default('text'),
   id: z.string().uuid(),
   ciphertext_b64: z.string().min(1),
@@ -14,11 +14,11 @@ export const CreateMessageSchema = z.object({
   counter: z.number().int(),
   receiver_account_digest: z.string().regex(AccountDigestRegex),
   receiver_device_id: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -33,11 +33,11 @@ export const CreateSecureMessageSchema = z.object({
   receiver_device_id: z.string().min(1),
   receiver_account_digest: z.string().regex(AccountDigestRegex).optional(),
   created_at: z.number().int().optional(),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
   if (!value.header_json && !value.header) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'header required' });

@@ -141,41 +141,41 @@ const WrappedMkSchema = z.object({
 
 const StoreMkSchema = z.object({
   session: z.string().min(8),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional(),
   wrapped_mk: WrappedMkSchema
 });
 
 const UpdateMkSchema = z.object({
-  accountToken: z.string().min(8),
-  accountDigest: z.string().regex(AccountDigestRegex),
+  account_token: z.string().min(8),
+  account_digest: z.string().regex(AccountDigestRegex),
   wrapped_mk: WrappedMkSchema
 });
 
 const DebugKitSchema = z.object({
-  uidHex: z.string().min(14).optional()
+  uid_hex: z.string().min(14).optional()
 });
 
 // ---- OPAQUE Schemas ----
 const OpaqueRegisterInitSchema = z.object({
-  accountDigest: z.string().regex(AccountDigestRegex),
+  account_digest: z.string().regex(AccountDigestRegex),
   request_b64: z.string().min(8)
 });
 
 const OpaqueRegisterFinishSchema = z.object({
-  accountDigest: z.string().regex(AccountDigestRegex),
+  account_digest: z.string().regex(AccountDigestRegex),
   record_b64: z.string().min(8),
   client_identity: z.string().min(1).nullable().optional()
 });
 
 const OpaqueLoginInitSchema = z.object({
-  accountDigest: z.string().regex(AccountDigestRegex),
+  account_digest: z.string().regex(AccountDigestRegex),
   ke1_b64: z.string().min(8),
   context: z.string().min(1).optional()
 });
 
 const OpaqueLoginFinishSchema = z.object({
-  opaqueSession: z.string().min(8),
+  opaque_session: z.string().min(8),
   ke3_b64: z.string().min(8)
 });
 
@@ -197,7 +197,7 @@ function nextDebugCounter(uidHex) {
 r.post('/auth/sdm/debug-kit', (req, res) => {
   try {
     const input = DebugKitSchema.parse(req.body || {});
-    let uidHex = normalizeUidHex(input.uidHex);
+    let uidHex = normalizeUidHex(input.uid_hex);
     if (!uidHex) {
       uidHex = crypto.randomBytes(7).toString('hex').toUpperCase();
     }
@@ -208,7 +208,7 @@ r.post('/auth/sdm/debug-kit', (req, res) => {
     const cmacHex = computeSdmCmac({ uidHex, ctrHex, sdmFileReadKeyHex: keyToHex(keyBuf) });
     const nonce = `debug-${Date.now()}`;
 
-    return res.json({ uidHex, sdmcounter: ctrHex, sdmmac: cmacHex, nonce });
+    return res.json({ uid_hex: uidHex, sdmcounter: ctrHex, sdmmac: cmacHex, nonce });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });
   }
@@ -260,12 +260,12 @@ r.post('/auth/sdm/exchange', async (req, res) => {
 
     return res.json({
       session,
-      hasMK: !!(data.hasMK || data.has_mk),
+      has_mk: !!(data.hasMK || data.has_mk),
       wrapped_mk: data.wrapped_mk || undefined,
-      accountToken,
-      accountDigest: accountDigest.toUpperCase(),
-      uidDigest: uidDigest || null,
-      opaqueServerId: OPAQUE_SERVER_ID || null
+      account_token: accountToken,
+      account_digest: accountDigest.toUpperCase(),
+      uid_digest: uidDigest || null,
+      opaque_server_id: OPAQUE_SERVER_ID || null
     });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });
@@ -288,12 +288,12 @@ r.post('/mk/store', async (req, res) => {
     let accountDigest = null;
 
     if (sessionValid) {
-      accountToken = sess.accountToken || input.accountToken || null;
-      accountDigest = (sess.accountDigest || input.accountDigest || '').toUpperCase();
-      if (input.accountToken && input.accountToken !== accountToken) {
+      accountToken = sess.accountToken || input.account_token || null;
+      accountDigest = (sess.accountDigest || input.account_digest || '').toUpperCase();
+      if (input.account_token && input.account_token !== accountToken) {
         return res.status(401).json({ error: 'SessionMismatch', message: 'account token mismatch' });
       }
-      if (input.accountDigest && input.accountDigest.toUpperCase() !== accountDigest) {
+      if (input.account_digest && input.account_digest.toUpperCase() !== accountDigest) {
         return res.status(401).json({ error: 'SessionMismatch', message: 'account digest mismatch' });
       }
     } else {
@@ -407,8 +407,8 @@ r.post('/mk/update', async (req, res) => {
     const input = UpdateMkSchema.parse(req.body || {});
     const path = '/d1/tags/store-mk';
     const body = JSON.stringify({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest,
+      accountToken: input.account_token,
+      accountDigest: input.account_digest,
       wrapped_mk: input.wrapped_mk
     });
     const sig = signHmac(path, body, HMAC_SECRET);
@@ -438,8 +438,8 @@ r.post('/auth/opaque/register-init', async (req, res) => {
     // Validate length before deserializing to avoid opaque-ts generic errors
     const reqBytes = Array.from(b64flexToU8(input.request_b64));
     const expectedReq = RegistrationRequest.sizeSerialized(cfg);
-    try { console.warn('[opaque.register-init] sizes', { acct: input.accountDigest, req_b64_len: input.request_b64?.length || 0, req_bytes_len: reqBytes.length, expected: expectedReq }); } catch {}
-    logger.info({ op: 'opaque.register-init', acct: input.accountDigest, req_b64_len: input.request_b64?.length || 0, req_bytes_len: reqBytes.length, expected: expectedReq });
+    try { console.warn('[opaque.register-init] sizes', { acct: input.account_digest, req_b64_len: input.request_b64?.length || 0, req_bytes_len: reqBytes.length, expected: expectedReq }); } catch {}
+    logger.info({ op: 'opaque.register-init', acct: input.account_digest, req_b64_len: input.request_b64?.length || 0, req_bytes_len: reqBytes.length, expected: expectedReq });
     if (reqBytes.length !== expectedReq) {
       return res.status(400).json({ error: 'BadRequest', message: `invalid request_b64 length (got ${reqBytes.length}, expected ${expectedReq})` });
     }
@@ -451,7 +451,7 @@ r.post('/auth/opaque/register-init', async (req, res) => {
     }
     let out;
     try {
-      out = await server.registerInit(reqObj, input.accountDigest.toUpperCase());
+      out = await server.registerInit(reqObj, input.account_digest.toUpperCase());
     } catch (e) {
       try { console.warn('[opaque.register-init] thrown', e?.message || e); } catch {}
       return res.status(404).json({ error: 'RecordNotFound' });
@@ -476,7 +476,7 @@ r.post('/auth/opaque/register-finish', async (req, res) => {
     const input = OpaqueRegisterFinishSchema.parse(req.body || {});
     const path = '/d1/opaque/store';
     const body = JSON.stringify({
-      accountDigest: input.accountDigest.toUpperCase(),
+      accountDigest: input.account_digest.toUpperCase(),
       record_b64: input.record_b64,
       client_identity: input.client_identity ?? null
     });
@@ -509,7 +509,7 @@ r.post('/auth/opaque/login-init', async (req, res) => {
 
     // fetch registration record from Worker
     const fetchPath = '/d1/opaque/fetch';
-    const fetchBody = JSON.stringify({ accountDigest: input.accountDigest.toUpperCase() });
+    const fetchBody = JSON.stringify({ accountDigest: input.account_digest.toUpperCase() });
     const sig = signHmac(fetchPath, fetchBody, HMAC_SECRET);
     const w = await fetch(`${DATA_API}${fetchPath}`, {
       method: 'POST',
@@ -517,8 +517,8 @@ r.post('/auth/opaque/login-init', async (req, res) => {
       body: fetchBody
     });
     if (w.status === 404) {
-      try { console.warn('[opaque.login-init] 404 record', { acct: input.accountDigest }); } catch {}
-      logger.info({ op: 'opaque.login-init', acct: input.accountDigest, status: 404 });
+      try { console.warn('[opaque.login-init] 404 record', { acct: input.account_digest }); } catch {}
+      logger.info({ op: 'opaque.login-init', acct: input.account_digest, status: 404 });
       return res.status(404).json({ error: 'RecordNotFound' });
     }
     const data = await w.json().catch(async () => ({ text: await w.text().catch(() => '') }));
@@ -528,8 +528,8 @@ r.post('/auth/opaque/login-init', async (req, res) => {
     const client_identity = data.client_identity ? String(data.client_identity) : undefined;
     // Guard: if record is empty or too short, treat as not found
     const recBytes = Array.from(b64flexToU8(record_b64));
-    try { console.warn('[opaque.login-init] record sizes', { acct: input.accountDigest, record_b64_len: record_b64.length, record_bytes_len: recBytes.length }); } catch {}
-    logger.info({ op: 'opaque.login-init', acct: input.accountDigest, record_b64_len: record_b64.length, record_bytes_len: recBytes.length });
+    try { console.warn('[opaque.login-init] record sizes', { acct: input.account_digest, record_b64_len: record_b64.length, record_bytes_len: recBytes.length }); } catch {}
+    logger.info({ op: 'opaque.login-init', acct: input.account_digest, record_b64_len: record_b64.length, record_bytes_len: recBytes.length });
     const minRecord = RegistrationRecord.sizeSerialized(cfg);
     if (!record_b64 || recBytes.length < minRecord) {
       return res.status(404).json({ error: 'RecordNotFound' });
@@ -544,8 +544,8 @@ r.post('/auth/opaque/login-init', async (req, res) => {
 
     // Validate ke1 length before deserializing
     const ke1Bytes = Array.from(b64flexToU8(input.ke1_b64));
-    try { console.warn('[opaque.login-init] ke1 sizes', { acct: input.accountDigest, ke1_b64_len: input.ke1_b64?.length || 0, ke1_bytes_len: ke1Bytes.length }); } catch {}
-    logger.info({ op: 'opaque.login-init', acct: input.accountDigest, ke1_b64_len: input.ke1_b64?.length || 0, ke1_bytes_len: ke1Bytes.length });
+    try { console.warn('[opaque.login-init] ke1 sizes', { acct: input.account_digest, ke1_b64_len: input.ke1_b64?.length || 0, ke1_bytes_len: ke1Bytes.length }); } catch {}
+    logger.info({ op: 'opaque.login-init', acct: input.account_digest, ke1_b64_len: input.ke1_b64?.length || 0, ke1_bytes_len: ke1Bytes.length });
     if (ke1Bytes.length !== KE1.sizeSerialized(cfg)) {
       // invalid ke1 from client — cause re-register flow
       return res.status(404).json({ error: 'RecordNotFound' });
@@ -556,7 +556,7 @@ r.post('/auth/opaque/login-init', async (req, res) => {
     } catch (e) {
       return res.status(404).json({ error: 'RecordNotFound' });
     }
-    const initRes = await server.authInit(ke1, record, input.accountDigest.toUpperCase(), client_identity, input.context || undefined);
+    const initRes = await server.authInit(ke1, record, input.account_digest.toUpperCase(), client_identity, input.context || undefined);
     if (initRes instanceof Error) {
       // Treat incompatible/corrupted record as missing to trigger re-register on the client.
       return res.status(404).json({ error: 'RecordNotFound', message: 'register required' });
@@ -579,8 +579,8 @@ r.post('/auth/opaque/login-finish', async (req, res) => {
     const server = await initOpaqueIfReady();
     if (!server) return res.status(500).json({ error: 'ConfigError', message: 'OPAQUE not configured' });
     const input = OpaqueLoginFinishSchema.parse(req.body || {});
-    const rec = OPAQUE_EXPECTED.get(input.opaqueSession);
-    OPAQUE_EXPECTED.delete(input.opaqueSession);
+    const rec = OPAQUE_EXPECTED.get(input.opaque_session);
+    OPAQUE_EXPECTED.delete(input.opaque_session);
     if (!rec) return res.status(400).json({ error: 'OpaqueSessionNotFound' });
     const now = Math.floor(Date.now() / 1000);
     if (rec.exp && rec.exp < now) return res.status(400).json({ error: 'OpaqueSessionExpired' });
@@ -592,7 +592,7 @@ r.post('/auth/opaque/login-finish', async (req, res) => {
     try {
       ke3 = KE3.deserialize(cfg, Array.from(b64flexToU8(input.ke3_b64)));
     } catch { return res.status(400).json({ error: 'BadRequest', message: 'invalid ke3_b64' }); }
-    logger.info({ op: 'opaque.login-finish', opaqueSession: input.opaqueSession, expected_len: rec.expected_b64?.length || 0, ke3_len: input.ke3_b64?.length || 0 });
+    logger.info({ op: 'opaque.login-finish', opaqueSession: input.opaque_session, expected_len: rec.expected_b64?.length || 0, ke3_len: input.ke3_b64?.length || 0 });
     const fin = server.authFinish(ke3, expected);
     if (fin instanceof Error) return res.status(400).json({ error: 'OpaqueLoginFinishFailed', message: fin.message || 'login-finish failed' });
     const session_key_b64 = u8ToB64(new Uint8Array(fin.session_key));

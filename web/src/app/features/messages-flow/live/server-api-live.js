@@ -4,23 +4,19 @@
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
 
 function resolveNextCursorTs(data) {
-  if (data?.nextCursorTs != null) return data.nextCursorTs;
   if (data?.next_cursor_ts != null) return data.next_cursor_ts;
-  if (data?.nextCursor?.ts != null) return data.nextCursor.ts;
-  if (data?.nextCursor?.cursorTs != null) return data.nextCursor.cursorTs;
+  if (data?.next_cursor?.ts != null) return data.next_cursor.ts;
   return null;
 }
 
 function resolveNextCursorId(data) {
-  if (data?.nextCursorId != null) return data.nextCursorId;
   if (data?.next_cursor_id != null) return data.next_cursor_id;
-  if (data?.nextCursor?.id != null) return data.nextCursor.id;
-  if (data?.nextCursor?.cursorId != null) return data.nextCursor.cursorId;
+  if (data?.next_cursor?.id != null) return data.next_cursor.id;
   return null;
 }
 
 function resolveNextCursor(data) {
-  if (data?.nextCursor) return data.nextCursor;
+  if (data?.next_cursor) return data.next_cursor;
   const ts = resolveNextCursorTs(data);
   const id = resolveNextCursorId(data);
   if (ts == null && id == null) return null;

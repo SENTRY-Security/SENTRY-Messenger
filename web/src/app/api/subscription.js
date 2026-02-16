@@ -4,8 +4,8 @@ import { buildAccountPayload } from '../core/store.js';
 function buildHeaders() {
   const payload = buildAccountPayload();
   const headers = {};
-  if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
-  if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
+  if (payload.account_token) headers['X-Account-Token'] = payload.account_token;
+  if (payload.account_digest) headers['X-Account-Digest'] = payload.account_digest;
   return headers;
 }
 
@@ -14,9 +14,9 @@ export async function redeemSubscription({ token, dryRun = false } = {}) {
   const payload = buildAccountPayload();
   const body = {
     token,
-    dryRun,
-    accountToken: payload.accountToken || undefined,
-    accountDigest: payload.accountDigest || undefined
+    dry_run: dryRun,
+    account_token: payload.account_token || undefined,
+    account_digest: payload.account_digest || undefined
   };
   const r = await fetchWithTimeout('/api/v1/subscription/redeem', {
     method: 'POST',
@@ -48,7 +48,7 @@ export async function subscriptionStatus() {
   const headers = buildHeaders();
   const payload = buildAccountPayload();
   const params = new URLSearchParams();
-  if (payload.accountDigest) params.set('digest', payload.accountDigest);
+  if (payload.account_digest) params.set('digest', payload.account_digest);
   params.set('limit', '200');
   const r = await fetchWithTimeout(`/api/v1/subscription/status?${params.toString()}`, { headers }, 10000);
   const txt = await r.text();
@@ -59,7 +59,7 @@ export async function subscriptionStatus() {
 export async function voucherStatus(tokenId) {
   if (!tokenId) throw new Error('tokenId required');
   const headers = buildHeaders();
-  const url = `/api/v1/subscription/token-status?tokenId=${encodeURIComponent(tokenId)}`;
+  const url = `/api/v1/subscription/token-status?token_id=${encodeURIComponent(tokenId)}`;
   const r = await fetchWithTimeout(url, { headers }, 10000);
   const txt = await r.text();
   let data; try { data = JSON.parse(txt); } catch { data = txt; }

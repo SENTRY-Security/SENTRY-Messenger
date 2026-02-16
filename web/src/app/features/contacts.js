@@ -665,10 +665,10 @@ export async function saveContact(contact) {
 
     if (!r.ok) {
       if (r.status === 409 && data?.error === 'CounterTooLow') {
-        const maxCounter = Number.isFinite(data?.maxCounter)
-          ? Number(data.maxCounter)
-          : Number.isFinite(data?.details?.maxCounter)
-            ? Number(data.details.maxCounter)
+        const maxCounter = Number.isFinite(data?.max_counter)
+          ? Number(data.max_counter)
+          : Number.isFinite(data?.details?.max_counter)
+            ? Number(data.details.max_counter)
             : null;
         const seed = maxCounter === null ? 1 : maxCounter + 1;
         setDeviceCounter(seed);

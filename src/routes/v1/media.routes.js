@@ -27,28 +27,28 @@ const SYSTEM_DIR_SENT = '__SYS_SENT__';
 const SYSTEM_DIR_RECEIVED = '__SYS_RECV__';
 
 const SignPutSchema = z.object({
-  convId: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  conv_id: z.string().min(1),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional(),
   ext: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/i).optional(),
-  contentType: z.string().min(1).optional(),
-  dir: z.string().max(200).optional(), // optional subdirectory inside convId (already hashed client-side)
+  content_type: z.string().min(1).optional(),
+  dir: z.string().max(200).optional(),
   size: z.number().int().min(1).optional(),
   direction: z.enum(['sent', 'received']).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
 const SignGetSchema = z.object({
   key: z.string().min(3),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  downloadName: z.string().min(1).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional(),
+  download_name: z.string().min(1).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -101,8 +101,8 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   const ttlSec = Number(process.env.SIGNED_PUT_TTL || 900);
   const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 524_288_000;
 
-  const tokenClean = input.accountToken ? String(input.accountToken).trim() : undefined;
-  const digestClean = input.accountDigest ? normalizeAccountDigest(input.accountDigest) : undefined;
+  const tokenClean = input.account_token ? String(input.account_token).trim() : undefined;
+  const digestClean = input.account_digest ? normalizeAccountDigest(input.account_digest) : undefined;
   const accountPayload = {};
   if (tokenClean) accountPayload.accountToken = tokenClean;
   if (digestClean) accountPayload.accountDigest = digestClean;
@@ -121,9 +121,9 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   if (!resolvedDigest) {
     return res.status(502).json({ error: 'VerifyFailed', message: 'account digest missing' });
   }
-  const convId = normalizeConversationId(input.convId);
+  const convId = normalizeConversationId(input.conv_id);
   if (!convId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'invalid convId' });
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid conv_id' });
   }
 
   if (!isSystemOwnedConversation({ convId, accountDigest: resolvedDigest })) {
@@ -188,7 +188,7 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   // 不限制 Content-Type，全部允許；若要限制可透過 env 重啟後再加入檢查。
   const allowed = [];
 
-  const ct = input.contentType || 'application/octet-stream';
+  const ct = input.content_type || 'application/octet-stream';
 
   if (input.size != null) {
     try {
@@ -223,8 +223,8 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
 r.post('/media/sign-get', asyncH(async (req, res) => {
   const input = SignGetSchema.parse(req.body);
 
-  const tokenClean = input.accountToken ? String(input.accountToken).trim() : undefined;
-  const digestClean = input.accountDigest ? normalizeAccountDigest(input.accountDigest) : undefined;
+  const tokenClean = input.account_token ? String(input.account_token).trim() : undefined;
+  const digestClean = input.account_digest ? normalizeAccountDigest(input.account_digest) : undefined;
   const accountPayload = {};
   if (tokenClean) accountPayload.accountToken = tokenClean;
   if (digestClean) accountPayload.accountDigest = digestClean;
@@ -266,7 +266,7 @@ r.post('/media/sign-get', asyncH(async (req, res) => {
   }
 
   const ttlSec = Number(process.env.SIGNED_GET_TTL || 900);
-  const out = await createDownloadGet({ key: input.key, ttlSec, downloadName: input.downloadName });
+  const out = await createDownloadGet({ key: input.key, ttlSec, downloadName: input.download_name });
   res.json({ download: out, expiresIn: ttlSec });
 }));
 

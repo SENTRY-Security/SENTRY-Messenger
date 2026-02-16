@@ -21,49 +21,49 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
 }
 
 const GroupMemberSchema = z.object({
-  accountDigest: z.string().regex(AccountDigestRegex),
+  account_digest: z.string().regex(AccountDigestRegex),
   role: z.enum(['owner', 'admin', 'member']).optional(),
-  inviterAccountDigest: z.string().regex(AccountDigestRegex).optional(),
+  inviter_account_digest: z.string().regex(AccountDigestRegex).optional(),
   status: z.enum(['active', 'left', 'kicked', 'removed']).optional()
 });
 
 const CreateGroupSchema = z.object({
-  groupId: z.string().regex(GroupIdRegex),
-  conversationId: z.string().regex(ConversationIdRegex),
+  group_id: z.string().regex(GroupIdRegex),
+  conversation_id: z.string().regex(ConversationIdRegex),
   name: z.string().min(1).max(120).optional(),
   avatar: z.any().optional(),
   members: z.array(GroupMemberSchema).optional(),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
 const AddMembersSchema = z.object({
-  groupId: z.string().regex(GroupIdRegex),
+  group_id: z.string().regex(GroupIdRegex),
   members: z.array(GroupMemberSchema).min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
 const RemoveMembersSchema = z.object({
-  groupId: z.string().regex(GroupIdRegex),
+  group_id: z.string().regex(GroupIdRegex),
   members: z.array(z.object({
-    accountDigest: z.string().regex(AccountDigestRegex),
+    account_digest: z.string().regex(AccountDigestRegex),
     status: z.enum(['active', 'left', 'kicked', 'removed']).optional()
   })).min(1),
   status: z.enum(['active', 'left', 'kicked', 'removed']).optional(),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -93,21 +93,21 @@ export const createGroup = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
   }
 
   const payload = {
-    groupId: input.groupId,
-    conversationId: input.conversationId,
+    groupId: input.group_id,
+    conversationId: input.conversation_id,
     creatorAccountDigest: auth.accountDigest,
     name: input.name || null,
     avatar: input.avatar ?? null,
     members: (input.members || []).map((m) => ({
-      accountDigest: m.accountDigest
+      accountDigest: m.account_digest
     }))
   };
 
@@ -146,17 +146,17 @@ export const addGroupMembers = async (req, res) => {
 
   try {
     await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
   }
 
   const payload = {
-    groupId: input.groupId,
+    groupId: input.group_id,
     members: (input.members || []).map((m) => ({
-      accountDigest: m.accountDigest
+      accountDigest: m.account_digest
     }))
   };
   const path = '/d1/groups/members/add';
@@ -194,17 +194,17 @@ export const removeGroupMembers = async (req, res) => {
 
   try {
     await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
   }
 
   const payload = {
-    groupId: input.groupId,
+    groupId: input.group_id,
     members: (input.members || []).map((m) => ({
-      accountDigest: m.accountDigest
+      accountDigest: m.account_digest
     })),
     status: input.status || null
   };
@@ -242,9 +242,9 @@ export const getGroup = async (req, res) => {
 
   const query = new URLSearchParams();
   query.set('groupId', groupId);
-  const accountDigest = req.query?.accountDigest;
+  const accountDigest = req.query?.account_digest || req.query?.accountDigest;
   if (!accountDigest) {
-    return res.status(400).json({ error: 'BadRequest', message: 'accountDigest required' });
+    return res.status(400).json({ error: 'BadRequest', message: 'account_digest required' });
   }
   query.set('accountDigest', accountDigest);
   const path = `/d1/groups/get?${query.toString()}`;

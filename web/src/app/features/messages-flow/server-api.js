@@ -143,7 +143,7 @@ export async function fetchSecureMaxCounter({
   if (!r?.ok) {
     throw new Error(resolveMaxCounterError(data));
   }
-  const maxCounterRaw = data?.maxCounter ?? data?.max_counter ?? null;
+  const maxCounterRaw = data?.max_counter ?? null;
   const maxCounter = Number.isFinite(Number(maxCounterRaw)) ? Number(maxCounterRaw) : null;
   return { maxCounter };
 }

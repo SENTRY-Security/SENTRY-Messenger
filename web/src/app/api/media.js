@@ -15,7 +15,7 @@ import { getAccountToken, getAccountDigest, buildAccountPayload, ensureDeviceId,
 export async function signPut({ convId, contentType, dir, size, direction, accountToken, accountDigest } = {}) {
   const resolvedConv = typeof convId === 'string' ? convId : '';
   if (!resolvedConv) throw new Error('convId required');
-  const body = { convId: resolvedConv, contentType };
+  const body = { conv_id: resolvedConv, content_type: contentType };
   const headers = {};
   const deviceId = ensureDeviceId();
   if (deviceId) headers['X-Device-Id'] = deviceId;
@@ -23,9 +23,9 @@ export async function signPut({ convId, contentType, dir, size, direction, accou
   if (typeof size === 'number') body.size = size;
   if (direction) body.direction = direction;
   const token = accountToken || getAccountToken();
-  if (token) body.accountToken = token;
+  if (token) body.account_token = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
-  if (digest) body.accountDigest = digest;
+  if (digest) body.account_digest = digest;
   return await fetchJSON('/api/v1/media/sign-put', body, headers);
 }
 
@@ -42,9 +42,9 @@ export async function signGet({ key, accountToken, accountDigest } = {}) {
   const deviceId = ensureDeviceId();
   if (deviceId) headers['X-Device-Id'] = deviceId;
   const token = accountToken || getAccountToken();
-  if (token) body.accountToken = token;
+  if (token) body.account_token = token;
   const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
-  if (digest) body.accountDigest = digest;
+  if (digest) body.account_digest = digest;
   return await fetchJSON('/api/v1/media/sign-get', body, headers);
 }
 
@@ -66,16 +66,19 @@ export async function createMessage(body) {
     const messageId = typeof payload.id === 'string' && payload.id.trim().length ? payload.id.trim() : null;
     if (!messageId) throw new Error('id (messageId) required');
     payload.id = messageId;
-    const accountDigest = (payload.accountDigest || getAccountDigest() || '').toUpperCase();
+    const accountDigest = (payload.account_digest || payload.accountDigest || getAccountDigest() || '').toUpperCase();
     if (!accountDigest) throw new Error('accountDigest required');
-    payload.accountDigest = accountDigest;
+    payload.account_digest = accountDigest;
+    delete payload.accountDigest;
     payload.counter = counter;
-    const receiverDigest = (payload.receiverAccountDigest || accountDigest || '').toUpperCase();
+    const receiverDigest = (payload.receiver_account_digest || payload.receiverAccountDigest || accountDigest || '').toUpperCase();
     if (!receiverDigest) throw new Error('receiverAccountDigest required');
     payload.receiver_account_digest = receiverDigest;
-    const receiverDeviceId = payload.receiverDeviceId || deviceId;
+    delete payload.receiverAccountDigest;
+    const receiverDeviceId = payload.receiver_device_id || payload.receiverDeviceId || deviceId;
     if (!receiverDeviceId) throw new Error('receiverDeviceId required');
     payload.receiver_device_id = receiverDeviceId;
+    delete payload.receiverDeviceId;
 
     if (payload.header && typeof payload.header === 'object') {
       const headerObj = { ...payload.header };
@@ -86,7 +89,7 @@ export async function createMessage(body) {
       payload.header_json = JSON.stringify(headerObj);
     }
     try {
-      console.log('[media.api] createMessage', { deviceId, convId: payload.convId || null, counter, attempt });
+      console.log('[media.api] createMessage', { deviceId, convId: payload.conv_id || payload.convId || null, counter, attempt });
     } catch {}
     const res = await fetchJSON('/api/v1/messages', payload, headers);
     lastRes = res;
@@ -97,13 +100,13 @@ export async function createMessage(body) {
     try {
       console.warn('[media.api] createMessage failed', {
         status: res?.r?.status,
-        convId: payload.convId || null,
+        convId: payload.conv_id || payload.convId || null,
         error: res?.data || res
       });
     } catch {}
     const detail = res?.data || res;
     const errCode = detail?.error || detail?.code || null;
-    const maxCounter = detail?.details?.maxCounter;
+    const maxCounter = detail?.details?.max_counter ?? detail?.details?.maxCounter;
     if (res?.r?.status === 409 && errCode === 'CounterTooLow' && Number.isFinite(maxCounter)) {
       // bump local counter and retry once
       try { setDeviceCounter(Number(maxCounter)); } catch {}
@@ -117,7 +120,7 @@ export async function createMessage(body) {
 
 export async function deleteMediaKeys({ ids = [], keys = [], conversationId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
-  const overrides = { conversationId, ids };
+  const overrides = { conversation_id: conversationId, ids };
   if (keys && keys.length) overrides.keys = keys;
   const payload = buildAccountPayload({ overrides });
   const headers = { 'X-Client-Id': 'webdemo' };

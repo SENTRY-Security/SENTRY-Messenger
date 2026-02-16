@@ -12,8 +12,8 @@ export { createMessage } from './media.js'; // legacy POST /api/v1/messages wrap
 export function buildAccountHeaders() {
   const payload = buildAccountPayload();
   const headers = {};
-  if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
-  if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
+  if (payload.account_token) headers['X-Account-Token'] = payload.account_token;
+  if (payload.account_digest) headers['X-Account-Digest'] = payload.account_digest;
   try {
     const deviceId = ensureDeviceId();
     if (deviceId) headers['X-Device-Id'] = deviceId;
@@ -70,8 +70,8 @@ export function toDigestOnly(value, { endpoint = '/api/v1/messages/outgoing-stat
 function buildMessageAuthHeaders({ endpoint, deviceId } = {}) {
   const payload = buildAccountPayload();
   const headers = {};
-  if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
-  if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
+  if (payload.account_token) headers['X-Account-Token'] = payload.account_token;
+  if (payload.account_digest) headers['X-Account-Digest'] = payload.account_digest;
   if (!headers['X-Account-Token'] && !headers['X-Account-Digest']) {
     throw new Error('accountToken or accountDigest required');
   }
@@ -108,10 +108,10 @@ function buildOutgoingStatusRequest({ conversationId, senderDeviceId, receiverAc
   });
   const body = buildAccountPayload({
     overrides: {
-      conversationId,
-      senderDeviceId: resolvedDeviceId,
-      receiverAccountDigest: receiverDigest,
-      messageIds: ids
+      conversation_id: conversationId,
+      sender_device_id: resolvedDeviceId,
+      receiver_account_digest: receiverDigest,
+      message_ids: ids
     }
   });
   return {
@@ -233,8 +233,8 @@ export async function fetchSendState({ conversationId, senderDeviceId } = {}) {
   });
   const payload = buildAccountPayload({
     overrides: {
-      conversationId,
-      senderDeviceId: resolvedDeviceId
+      conversation_id: conversationId,
+      sender_device_id: resolvedDeviceId
     }
   });
   const r = await fetchWithTimeout('/api/v1/messages/send-state', jsonReq(payload, headers), 15000);
@@ -262,8 +262,8 @@ export async function atomicSend({ conversationId, senderDeviceId, message, vaul
   const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({ endpoint, deviceId: senderDeviceId });
   const payload = buildAccountPayload({
     overrides: {
-      conversationId,
-      senderDeviceId: resolvedDeviceId,
+      conversation_id: conversationId,
+      sender_device_id: resolvedDeviceId,
       message,
       vault,
       backup
@@ -285,7 +285,7 @@ export async function listMessages({ convId, limit = 20, cursorTs } = {}) {
   if (!convId) throw new Error('convId required');
   const qs = new URLSearchParams();
   if (limit) qs.set('limit', String(limit));
-  if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursorTs', String(cursorTs));
+  if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursor_ts', String(cursorTs));
   const url = `/api/v1/conversations/${encodeURIComponent(convId)}/messages?${qs.toString()}`;
 
   const headers = buildAccountHeaders();
@@ -298,11 +298,11 @@ export async function listMessages({ convId, limit = 20, cursorTs } = {}) {
 export async function listSecureMessages({ conversationId, limit = 20, cursorTs, cursorId, includeKeys } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const qs = new URLSearchParams();
-  qs.set('conversationId', conversationId);
+  qs.set('conversation_id', conversationId);
   if (limit) qs.set('limit', String(limit));
-  if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursorTs', String(cursorTs));
-  if (cursorId !== undefined && cursorId !== null && cursorId !== '') qs.set('cursorId', String(cursorId));
-  if (includeKeys) qs.set('includeKeys', 'true');
+  if (cursorTs !== undefined && cursorTs !== null && cursorTs !== '') qs.set('cursor_ts', String(cursorTs));
+  if (cursorId !== undefined && cursorId !== null && cursorId !== '') qs.set('cursor_id', String(cursorId));
+  if (includeKeys) qs.set('include_keys', 'true');
   const url = `/api/v1/messages/secure?${qs.toString()}`;
   const headers = buildAccountHeaders();
   const r = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
@@ -326,12 +326,12 @@ export async function getSecureMessageByCounter({ conversationId, counter, sende
   if (!conversationId) throw new Error('conversationId required');
   if (!Number.isFinite(Number(counter))) throw new Error('counter required');
   const qs = new URLSearchParams();
-  qs.set('conversationId', conversationId);
+  qs.set('conversation_id', conversationId);
   qs.set('counter', String(counter));
-  if (senderDeviceId) qs.set('senderDeviceId', String(senderDeviceId));
+  if (senderDeviceId) qs.set('sender_device_id', String(senderDeviceId));
   const senderDigest = senderAccountDigest ? normalizeAccountDigest(senderAccountDigest) : null;
-  if (senderDigest) qs.set('senderAccountDigest', senderDigest);
-  if (includeKeys) qs.set('includeKeys', 'true');
+  if (senderDigest) qs.set('sender_account_digest', senderDigest);
+  if (includeKeys) qs.set('include_keys', 'true');
   console.log('[API] getSecureMessageByCounter', { counter, includeKeys, url: qs.toString() });
   const url = `/api/v1/messages/by-counter?v=${Date.now()}&${qs.toString()}`;
   const headers = buildAccountHeaders();
@@ -346,8 +346,8 @@ export async function fetchSecureMaxCounter({ conversationId, senderDeviceId } =
   const deviceId = typeof senderDeviceId === 'string' ? senderDeviceId.trim() : '';
   if (!deviceId) throw new Error('senderDeviceId required');
   const qs = new URLSearchParams();
-  qs.set('conversationId', conversationId);
-  qs.set('senderDeviceId', deviceId);
+  qs.set('conversation_id', conversationId);
+  qs.set('sender_device_id', deviceId);
   const endpoint = '/api/v1/messages/secure/max-counter';
   const { headers } = buildMessageAuthHeaders({ endpoint });
   const r = await fetchWithTimeout(`${endpoint}?${qs.toString()}`, { method: 'GET', headers }, 15000);

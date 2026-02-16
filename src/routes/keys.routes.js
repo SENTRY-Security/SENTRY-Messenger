@@ -18,12 +18,12 @@ if (!DATA_API || !HMAC_SECRET) {
 const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const AccountSelectorSchema = z.object({
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).strict();
 const withAccountSelectorGuard = (schema) => schema.superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -40,14 +40,14 @@ const SignedPrekeySchema = z.object({
 }).strict();
 
 const PublishSchema = withAccountSelectorGuard(AccountSelectorSchema.extend({
-  deviceId: z.string().min(1),
-  signedPrekey: SignedPrekeySchema,
+  device_id: z.string().min(1),
+  signed_prekey: SignedPrekeySchema,
   opks: z.array(OpkSchema).optional().default([])
 }).strict());
 
 const BundleSchema = z.object({
-  peer_accountDigest: z.string().regex(AccountDigestRegex),
-  peer_deviceId: z.string().min(1).optional()
+  peer_account_digest: z.string().regex(AccountDigestRegex),
+  peer_device_id: z.string().min(1).optional()
 }).strict();
 
 // ---- Helpers ----
@@ -78,10 +78,10 @@ async function callWorkerGet(pathWithQuery) {
   });
 }
 
-function prepAccountPayload({ accountToken, accountDigest }) {
+function prepAccountPayload({ account_token, account_digest }) {
   const payload = {};
-  if (accountToken) payload.accountToken = String(accountToken).trim();
-  if (accountDigest) payload.accountDigest = String(accountDigest).trim().toUpperCase();
+  if (account_token) payload.accountToken = String(account_token).trim();
+  if (account_digest) payload.accountDigest = String(account_digest).trim().toUpperCase();
   return payload;
 }
 
@@ -93,20 +93,20 @@ r.post('/keys/publish', async (req, res) => {
     const input = PublishSchema.parse(req.body || {});
 
     const { accountDigest } = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
 
     const path = '/d1/prekeys/publish';
     const signedPrekey = {
-      id: input.signedPrekey.id,
-      pub: input.signedPrekey.pub,
-      sig: input.signedPrekey.sig,
-      ik_pub: input.signedPrekey.ik_pub
+      id: input.signed_prekey.id,
+      pub: input.signed_prekey.pub,
+      sig: input.signed_prekey.sig,
+      ik_pub: input.signed_prekey.ik_pub
     };
     const payload = {
       accountDigest,
-      deviceId: input.deviceId,
+      deviceId: input.device_id,
       signedPrekey,
       opks: input.opks || []
     };
@@ -128,8 +128,8 @@ r.post('/keys/bundle', async (req, res) => {
     const input = BundleSchema.parse(req.body || {});
 
     const qs = new URLSearchParams();
-    qs.set('peerAccountDigest', String(input.peer_accountDigest).trim().toUpperCase());
-    if (input.peer_deviceId) qs.set('peerDeviceId', String(input.peer_deviceId).trim());
+    qs.set('peerAccountDigest', String(input.peer_account_digest).trim().toUpperCase());
+    if (input.peer_device_id) qs.set('peerDeviceId', String(input.peer_device_id).trim());
     const path = `/d1/prekeys/bundle?${qs.toString()}`;
     const w = await callWorkerGet(path);
     const data = await w.json().catch(async () => ({ text: await w.text().catch(() => '') }));

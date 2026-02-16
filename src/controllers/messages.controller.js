@@ -77,38 +77,38 @@ async function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT_MS) {
 
 const DeleteMessagesSchema = z.object({
   ids: z.array(z.string().min(1)),
-  conversationId: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  conversation_id: z.string().min(1),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
 
 
 const SendStateSchema = z.object({
-  conversationId: z.string().min(8),
-  senderDeviceId: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  conversation_id: z.string().min(8),
+  sender_device_id: z.string().min(1),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
 const OutgoingStatusSchema = z.object({
-  conversationId: z.string().min(8),
-  senderDeviceId: z.string().min(1),
-  receiverAccountDigest: z.string().regex(AccountDigestRegex),
-  messageIds: z.array(z.string().min(8)).max(200),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  conversation_id: z.string().min(8),
+  sender_device_id: z.string().min(1),
+  receiver_account_digest: z.string().regex(AccountDigestRegex),
+  message_ids: z.array(z.string().min(8)).max(200),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -180,7 +180,7 @@ export const createMessage = async (req, res) => {
 
   // Validate body（legacy schema，轉送到新版 secure messages）
   const input = CreateMessageSchema.parse(req.body);
-  const { convId: rawConvId, accountToken, accountDigest, ...messageInput } = input;
+  const { conv_id: rawConvId, account_token: accountToken, account_digest: accountDigest, ...messageInput } = input;
   const account = extractAccountFromRequest(req);
   const deviceId = account.deviceId || null;
   if (!deviceId) {
@@ -333,8 +333,8 @@ export const createSecureMessage = async (req, res) => {
 
   const {
     conversation_id: rawConversationId,
-    accountToken,
-    accountDigest,
+    account_token: accountToken,
+    account_digest: accountDigest,
     sender_device_id,
     receiver_device_id,
     receiver_account_digest,
@@ -552,8 +552,8 @@ export const atomicSend = async (req, res) => {
 
   // Reconstruct payload to ensure clean JSON for HMAC and Worker validation
   const payload = {
-    conversationId: rawBody.conversationId,
-    senderDeviceId: rawBody.senderDeviceId,
+    conversationId: rawBody.conversation_id || rawBody.conversationId,
+    senderDeviceId: rawBody.sender_device_id || rawBody.senderDeviceId,
     accountDigest: auth.accountDigest, // Authenticated digest
     message: rawBody.message,
     vault: rawBody.vault,
@@ -660,7 +660,7 @@ export const listMessages = async (req, res) => {
   // Build query string
   const params = new URLSearchParams();
   params.append('conversationId', auth.conversationId);
-  if (req.query.cursorTs) params.append('cursorTs', req.query.cursorTs);
+  if (req.query.cursor_ts || req.query.cursorTs) params.append('cursorTs', req.query.cursor_ts || req.query.cursorTs);
   if (req.query.limit) params.append('limit', req.query.limit);
   const path = `/d1/messages?${params.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
@@ -699,9 +699,9 @@ export const listSecureMessages = async (req, res) => {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
 
-  const conversationIdRaw = req.query.conversationId || req.query.conversation_id;
+  const conversationIdRaw = req.query.conversation_id || req.query.conversationId;
   if (!conversationIdRaw) {
-    return res.status(400).json({ error: 'BadRequest', message: 'conversationId required' });
+    return res.status(400).json({ error: 'BadRequest', message: 'conversation_id required' });
   }
 
   const account = extractAccountFromRequest(req);
@@ -729,11 +729,11 @@ export const listSecureMessages = async (req, res) => {
 
   const params = new URLSearchParams();
   params.set('conversationId', auth.conversationId);
-  if (req.query.cursorTs) params.set('cursorTs', String(req.query.cursorTs));
-  if (req.query.cursorId) params.set('cursorId', String(req.query.cursorId));
+  if (req.query.cursor_ts || req.query.cursorTs) params.set('cursorTs', String(req.query.cursor_ts || req.query.cursorTs));
+  if (req.query.cursor_id || req.query.cursorId) params.set('cursorId', String(req.query.cursor_id || req.query.cursorId));
   if (req.query.cursorCounter) params.set('cursorCounter', String(req.query.cursorCounter));
   if (req.query.limit) params.set('limit', String(req.query.limit));
-  if (req.query.includeKeys) params.set('includeKeys', 'true');
+  if (req.query.include_keys || req.query.includeKeys) params.set('includeKeys', 'true');
 
   const path = `/d1/messages?${params.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
@@ -839,11 +839,11 @@ export const getSecureMaxCounter = async (req, res) => {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
 
-  const conversationIdRaw = req.query.conversationId || req.query.conversation_id;
+  const conversationIdRaw = req.query.conversation_id || req.query.conversationId;
   if (!conversationIdRaw || String(conversationIdRaw).trim().length < 8) {
-    return res.status(400).json({ error: 'BadRequest', message: 'conversationId required' });
+    return res.status(400).json({ error: 'BadRequest', message: 'conversation_id required' });
   }
-  const senderDeviceId = canonDevice(req.query.senderDeviceId || req.query.sender_device_id || null);
+  const senderDeviceId = canonDevice(req.query.sender_device_id || req.query.senderDeviceId || null);
   if (!senderDeviceId) {
     return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId required' });
   }
@@ -895,9 +895,9 @@ export const getSecureMaxCounter = async (req, res) => {
     const tsRaw = data?.ts ?? data?.serverTime ?? data?.server_time ?? null;
     const ts = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
     return res.json({
-      conversationId: auth.conversationId,
-      senderDeviceId,
-      maxCounter,
+      conversation_id: auth.conversationId,
+      sender_device_id: senderDeviceId,
+      max_counter: maxCounter,
       ts
     });
   } catch (err) {
@@ -910,9 +910,9 @@ export const getSecureMessageByCounter = async (req, res) => {
     return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
   }
 
-  const conversationIdRaw = req.query.conversationId || req.query.conversation_id;
+  const conversationIdRaw = req.query.conversation_id || req.query.conversationId;
   if (!conversationIdRaw) {
-    return res.status(400).json({ error: 'BadRequest', message: 'conversationId required' });
+    return res.status(400).json({ error: 'BadRequest', message: 'conversation_id required' });
   }
   const counter = Number(req.query.counter);
   if (!Number.isFinite(counter)) {
@@ -946,11 +946,11 @@ export const getSecureMessageByCounter = async (req, res) => {
   const params = new URLSearchParams();
   params.set('conversationId', auth.conversationId);
   params.set('counter', String(counter));
-  const senderDeviceId = canonDevice(req.query.senderDeviceId || req.query.sender_device_id || null);
+  const senderDeviceId = canonDevice(req.query.sender_device_id || req.query.senderDeviceId || null);
   if (senderDeviceId) params.set('senderDeviceId', senderDeviceId);
-  const senderAccountDigest = canonAccount(req.query.senderAccountDigest || req.query.sender_account_digest || null);
+  const senderAccountDigest = canonAccount(req.query.sender_account_digest || req.query.senderAccountDigest || null);
   if (senderAccountDigest) params.set('senderAccountDigest', senderAccountDigest);
-  if (req.query.includeKeys) params.set('includeKeys', 'true');
+  if (req.query.include_keys || req.query.includeKeys) params.set('includeKeys', 'true');
 
   const path = `/d1/messages/by-counter?${params.toString()}`;
   const sig = signHmac(path, '', HMAC_SECRET);
@@ -995,9 +995,9 @@ export const getSendState = async (req, res) => {
   let auth;
   try {
     auth = await authorizeAccountForConversation({
-      conversationId: input.conversationId,
-      accountToken: input.accountToken || account.accountToken,
-      accountDigest: input.accountDigest || account.accountDigest,
+      conversationId: input.conversation_id,
+      accountToken: input.account_token || account.accountToken,
+      accountDigest: input.account_digest || account.accountDigest,
       deviceId: account.deviceId || null,
       requireDeviceId: true
     });
@@ -1005,13 +1005,13 @@ export const getSendState = async (req, res) => {
     return respondAccountError(res, err, 'conversation authorization failed');
   }
 
-  const senderDeviceId = canonDevice(input.senderDeviceId || account.deviceId);
+  const senderDeviceId = canonDevice(input.sender_device_id || account.deviceId);
   if (!senderDeviceId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId required' });
+    return res.status(400).json({ error: 'BadRequest', message: 'sender_device_id required' });
   }
   const headerDeviceId = canonDevice(account.deviceId || null);
   if (headerDeviceId && senderDeviceId !== headerDeviceId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId mismatch' });
+    return res.status(400).json({ error: 'BadRequest', message: 'sender_device_id mismatch' });
   }
 
   const path = '/d1/messages/send-state';
@@ -1065,9 +1065,9 @@ export const listOutgoingStatus = async (req, res) => {
   let auth;
   try {
     auth = await authorizeAccountForConversation({
-      conversationId: input.conversationId,
-      accountToken: input.accountToken || account.accountToken,
-      accountDigest: input.accountDigest || account.accountDigest,
+      conversationId: input.conversation_id,
+      accountToken: input.account_token || account.accountToken,
+      accountDigest: input.account_digest || account.accountDigest,
       deviceId: account.deviceId || null,
       requireDeviceId: true
     });
@@ -1075,16 +1075,16 @@ export const listOutgoingStatus = async (req, res) => {
     return respondAccountError(res, err, 'conversation authorization failed');
   }
 
-  const senderDeviceId = canonDevice(input.senderDeviceId || account.deviceId);
+  const senderDeviceId = canonDevice(input.sender_device_id || account.deviceId);
   if (!senderDeviceId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId required' });
+    return res.status(400).json({ error: 'BadRequest', message: 'sender_device_id required' });
   }
   const headerDeviceId = canonDevice(account.deviceId || null);
   if (headerDeviceId && senderDeviceId !== headerDeviceId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'senderDeviceId mismatch' });
+    return res.status(400).json({ error: 'BadRequest', message: 'sender_device_id mismatch' });
   }
 
-  const messageIds = Array.from(new Set((input.messageIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  const messageIds = Array.from(new Set((input.message_ids || []).map((id) => String(id || '').trim()).filter(Boolean)));
   if (!messageIds.length) {
     return res.status(400).json({ error: 'BadRequest', message: 'messageIds required' });
   }
@@ -1093,7 +1093,7 @@ export const listOutgoingStatus = async (req, res) => {
   const body = JSON.stringify({
     conversationId: auth.conversationId,
     senderAccountDigest: auth.accountDigest,
-    receiverAccountDigest: input.receiverAccountDigest,
+    receiverAccountDigest: input.receiver_account_digest,
     senderDeviceId,
     messageIds
   });
@@ -1131,9 +1131,9 @@ export const deleteMessages = async (req, res) => {
   let auth;
   try {
     auth = await authorizeAccountForConversation({
-      conversationId: input.conversationId,
-      accountToken: input.accountToken || account.accountToken,
-      accountDigest: input.accountDigest || account.accountDigest,
+      conversationId: input.conversation_id,
+      accountToken: input.account_token || account.accountToken,
+      accountDigest: input.account_digest || account.accountDigest,
       deviceId: account.deviceId || null,
       requireDeviceId: true
     });

@@ -32,61 +32,61 @@ function respondAccountError(res, err, defaultMsg = 'authorization failed') {
 }
 
 const InviteCreateSchema = z.object({
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  ownerPublicKeyB64: z.string().min(16).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional(),
+  owner_public_key_b64: z.string().min(16).optional()
 }).strict();
 
 const InviteDeliverSchema = z.object({
-  inviteId: z.string().min(8),
-  ciphertextEnvelope: z.any(),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  invite_id: z.string().min(8),
+  ciphertext_envelope: z.any(),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).strict();
 
 const InviteConsumeSchema = z.object({
-  inviteId: z.string().min(8),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  invite_id: z.string().min(8),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).strict();
 
 const InviteStatusSchema = z.object({
-  inviteId: z.string().min(8),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  invite_id: z.string().min(8),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).strict();
 
 const INVITE_DELIVER_ALIAS_FIELDS = new Set([
-  'invite_id',
-  'account_token',
-  'account_digest',
-  'ciphertext_envelope'
+  'inviteId',
+  'accountToken',
+  'accountDigest',
+  'ciphertextEnvelope'
 ]);
 const INVITE_CONSUME_ALIAS_FIELDS = new Set([
-  'invite_id',
-  'account_token',
-  'account_digest'
+  'inviteId',
+  'accountToken',
+  'accountDigest'
 ]);
 const INVITE_STATUS_ALIAS_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest'
+]);
+const INVITE_DELIVER_ALLOWED_FIELDS = new Set([
+  'invite_id',
+  'ciphertext_envelope',
+  'account_token',
+  'account_digest'
+]);
+const INVITE_CONSUME_ALLOWED_FIELDS = new Set([
   'invite_id',
   'account_token',
   'account_digest'
 ]);
-const INVITE_DELIVER_ALLOWED_FIELDS = new Set([
-  'inviteId',
-  'ciphertextEnvelope',
-  'accountToken',
-  'accountDigest'
-]);
-const INVITE_CONSUME_ALLOWED_FIELDS = new Set([
-  'inviteId',
-  'accountToken',
-  'accountDigest'
-]);
 const INVITE_STATUS_ALLOWED_FIELDS = new Set([
-  'inviteId',
-  'accountToken',
-  'accountDigest'
+  'invite_id',
+  'account_token',
+  'account_digest'
 ]);
 
 function rejectInviteSchemaMismatch(res, body, { allowedFields, aliasFields }) {
@@ -128,15 +128,15 @@ export const createInviteDropbox = async (req, res) => {
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
-  if (!input.accountToken) {
-    return res.status(401).json({ error: 'Unauthorized', message: 'accountToken required' });
+  if (!input.account_token) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'account_token required' });
   }
 
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err, 'account verification failed');
@@ -147,10 +147,10 @@ export const createInviteDropbox = async (req, res) => {
   const bodyPayload = {
     inviteId,
     deviceId: senderDeviceId,
-    accountToken: String(input.accountToken).trim(),
+    accountToken: String(input.account_token).trim(),
     accountDigest: auth.accountDigest
   };
-  if (input.ownerPublicKeyB64) bodyPayload.ownerPublicKeyB64 = input.ownerPublicKeyB64;
+  if (input.owner_public_key_b64) bodyPayload.ownerPublicKeyB64 = input.owner_public_key_b64;
   const body = JSON.stringify(bodyPayload);
   const sig = signHmac(path, body, HMAC_SECRET);
 
@@ -199,12 +199,12 @@ export const createInviteDropbox = async (req, res) => {
   }
 
   return res.json({
-    inviteId,
-    expiresAt,
-    ownerAccountDigest: normalizeAccountDigest(data?.owner_account_digest || data?.ownerAccountDigest || auth.accountDigest),
-    ownerDeviceId: data?.owner_device_id || data?.ownerDeviceId || senderDeviceId,
-    ownerPublicKeyB64,
-    prekeyBundle
+    invite_id: inviteId,
+    expires_at: expiresAt,
+    owner_account_digest: normalizeAccountDigest(data?.owner_account_digest || data?.ownerAccountDigest || auth.accountDigest),
+    owner_device_id: data?.owner_device_id || data?.ownerDeviceId || senderDeviceId,
+    owner_public_key_b64: ownerPublicKeyB64,
+    prekey_bundle: prekeyBundle
   });
 };
 
@@ -227,18 +227,18 @@ export const deliverInviteDropbox = async (req, res) => {
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
-  if (!input.accountToken) {
-    return res.status(401).json({ error: 'Unauthorized', message: 'accountToken required' });
+  if (!input.account_token) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'account_token required' });
   }
-  if (!input.ciphertextEnvelope || typeof input.ciphertextEnvelope !== 'object') {
-    return res.status(400).json({ error: 'BadRequest', message: 'ciphertextEnvelope required' });
+  if (!input.ciphertext_envelope || typeof input.ciphertext_envelope !== 'object') {
+    return res.status(400).json({ error: 'BadRequest', message: 'ciphertext_envelope required' });
   }
 
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err, 'account verification failed');
@@ -246,9 +246,9 @@ export const deliverInviteDropbox = async (req, res) => {
 
   const path = '/d1/invites/deliver';
   const bodyPayload = {
-    inviteId: input.inviteId,
-    ciphertextEnvelope: input.ciphertextEnvelope,
-    accountToken: String(input.accountToken).trim(),
+    inviteId: input.invite_id,
+    ciphertextEnvelope: input.ciphertext_envelope,
+    accountToken: String(input.account_token).trim(),
     accountDigest: auth.accountDigest,
     deviceId: senderDeviceId
   };
@@ -300,7 +300,7 @@ export const deliverInviteDropbox = async (req, res) => {
       manager.sendInviteDelivered(null, {
         targetAccountDigest: targetDigest,
         targetDeviceId: data?.owner_device_id || data?.ownerDeviceId || null,
-        inviteId: input.inviteId
+        inviteId: input.invite_id
       });
     }
   } catch (err) {
@@ -329,15 +329,15 @@ export const consumeInviteDropbox = async (req, res) => {
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
-  if (!input.accountToken) {
-    return res.status(401).json({ error: 'Unauthorized', message: 'accountToken required' });
+  if (!input.account_token) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'account_token required' });
   }
 
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err, 'account verification failed');
@@ -345,8 +345,8 @@ export const consumeInviteDropbox = async (req, res) => {
 
   const path = '/d1/invites/consume';
   const bodyPayload = {
-    inviteId: input.inviteId,
-    accountToken: String(input.accountToken).trim(),
+    inviteId: input.invite_id,
+    accountToken: String(input.account_token).trim(),
     accountDigest: auth.accountDigest,
     deviceId: senderDeviceId
   };
@@ -397,10 +397,10 @@ export const consumeInviteDropbox = async (req, res) => {
 
   return res.json({
     ok: true,
-    inviteId: data?.invite_id || data?.inviteId || input.inviteId || null,
-    expiresAt: data?.expires_at || data?.expiresAt || null,
-    ownerDeviceId: data?.owner_device_id || data?.ownerDeviceId || null,
-    ciphertextEnvelope: envelope
+    invite_id: data?.invite_id || data?.inviteId || input.invite_id || null,
+    expires_at: data?.expires_at || data?.expiresAt || null,
+    owner_device_id: data?.owner_device_id || data?.ownerDeviceId || null,
+    ciphertext_envelope: envelope
   });
 };
 
@@ -419,15 +419,15 @@ export const statusInviteDropbox = async (req, res) => {
   } catch (err) {
     return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
   }
-  if (!input.accountToken) {
-    return res.status(401).json({ error: 'Unauthorized', message: 'accountToken required' });
+  if (!input.account_token) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'account_token required' });
   }
 
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err, 'account verification failed');
@@ -435,8 +435,8 @@ export const statusInviteDropbox = async (req, res) => {
 
   const path = '/d1/invites/status';
   const bodyPayload = {
-    inviteId: input.inviteId,
-    accountToken: String(input.accountToken).trim(),
+    inviteId: input.invite_id,
+    accountToken: String(input.account_token).trim(),
     accountDigest: auth.accountDigest
   };
   const body = JSON.stringify(bodyPayload);

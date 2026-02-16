@@ -565,7 +565,7 @@ export function initDrivePane({
       if (!r.ok) throw new Error(typeof data === 'string' ? data : JSON.stringify(data));
       const chunk = Array.isArray(data?.items) ? data.items : [];
       if (chunk.length) items.push(...chunk);
-      const next = data?.nextCursorTs;
+      const next = data?.next_cursor_ts;
       if (!next) break;
       cursor = next;
     }

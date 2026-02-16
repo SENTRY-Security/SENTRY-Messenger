@@ -597,8 +597,8 @@ export function resetAll() {
 export function buildAccountPayload(opts = {}) {
   const { overrides = {} } = opts;
   const payload = { ...overrides };
-  if (_ACCOUNT_TOKEN && payload.accountToken == null) payload.accountToken = _ACCOUNT_TOKEN;
-  if (_ACCOUNT_DIGEST && payload.accountDigest == null) payload.accountDigest = _ACCOUNT_DIGEST;
+  if (_ACCOUNT_TOKEN && payload.account_token == null) payload.account_token = _ACCOUNT_TOKEN;
+  if (_ACCOUNT_DIGEST && payload.account_digest == null) payload.account_digest = _ACCOUNT_DIGEST;
   return payload;
 }
 
