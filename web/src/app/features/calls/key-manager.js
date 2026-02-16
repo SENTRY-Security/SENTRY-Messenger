@@ -165,6 +165,14 @@ async function maybeDeriveKeys(trigger = 'auto') {
   const mediaState = getCallMediaState();
   if (!session?.peerAccountDigest || !session?.peerDeviceId || !mediaState?.pendingEnvelope) return null;
   if (deriveTask) return deriveTask;
+  // Guard against re-entrant calls: deriveKeysFromEnvelope emits STATE
+  // events synchronously (setCallMediaStatus(KEY_PENDING)) before its
+  // first `await`.  Those events trigger handleCallStateEvent which calls
+  // maybeDeriveKeys again.  The assignment `deriveTask = deriveKeysFrom…`
+  // only completes AFTER the synchronous portion returns, so deriveTask
+  // is still null during re-entry → infinite recursion → stack overflow.
+  // Setting a placeholder here prevents that.
+  deriveTask = Promise.resolve();
   deriveTask = deriveKeysFromEnvelope({ session, envelope: mediaState.pendingEnvelope, trigger })
     .catch((err) => {
       log({ callKeyDeriveError: err?.message || err, trigger });
