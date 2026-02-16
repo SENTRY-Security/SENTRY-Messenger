@@ -1943,7 +1943,7 @@ export async function sendDrPlaintextCore(params = {}) {
     postNr: postSnapshot?.Nr ?? null,
     postHasCkS: !!postSnapshot?.ckS_b64,
     transportCounter,
-    msgType: meta?.msgType || null
+    msgType: msgType || null
   }, { level: 'log' });
 
   const headerPayload = {
@@ -1965,7 +1965,7 @@ export async function sendDrPlaintextCore(params = {}) {
   try {
     drConsole.log('[msg] send:counter', JSON.stringify({
       messageId,
-      msgType: meta?.msgType || null,
+      msgType: msgType || null,
       headerN,
       transportCounter
     }));
@@ -2073,7 +2073,7 @@ export async function sendDrPlaintextCore(params = {}) {
         createdAt: now,
         peerAccountDigest: peer,
         peerDeviceId: peerDeviceId || null,
-        meta: { msgType: meta.msgType },
+        meta: { msgType },
         dr: preSnapshot
           ? {
             snapshotBefore: preSnapshot,
@@ -2108,7 +2108,7 @@ export async function sendDrPlaintextCore(params = {}) {
         id: messageId,
         header: headerPayload,
         counter: transportCounter,
-        msgType: meta.msgType,
+        msgType: msgType,
         sourceTag: 'dr-session:post-enqueue'
       });
     } catch (timelineErr) {
@@ -2218,7 +2218,7 @@ export async function sendDrPlaintextCore(params = {}) {
         try {
           drConsole.log('[msg] send:counter', JSON.stringify({
             messageId: replacementMessageId,
-            msgType: repairMeta?.msgType || null,
+            msgType: msgType || null,
             headerN: repairHeaderN,
             transportCounter: repairTransportCounter
           }));
@@ -2288,7 +2288,7 @@ export async function sendDrPlaintextCore(params = {}) {
           createdAt: repairNow,
           peerAccountDigest: peer,
           peerDeviceId: peerDeviceId || null,
-          meta: { msgType: repairMeta.msgType },
+          meta: { msgType },
           dr: repairPreSnapshot
             ? {
               snapshotBefore: repairPreSnapshot,
@@ -2305,7 +2305,7 @@ export async function sendDrPlaintextCore(params = {}) {
             id: replacementMessageId,
             header: repairHeaderPayload,
             counter: repairTransportCounter,
-            msgType: repairMeta.msgType,
+            msgType: msgType,
             sourceTag: 'dr-session:repair-post-enqueue'
           });
         } catch (e) {
@@ -3033,7 +3033,7 @@ export async function sendDrMediaCore(params = {}) {
   try {
     drConsole.log('[msg] send:counter', JSON.stringify({
       messageId,
-      msgType: meta?.msgType || null,
+      msgType: msgType || null,
       headerN,
       transportCounter
     }));
