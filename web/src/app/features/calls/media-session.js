@@ -45,6 +45,7 @@ let localVideoEl = null;
 let cameraFacing = 'user';
 let pendingRemoteCandidates = [];
 let e2eeReceiverConfirmed = false;
+let peerConnectionEncodedStreams = false;
 
 function isVideoCall() {
   const session = getCallSessionSnapshot();
@@ -447,6 +448,13 @@ function applyRemoteAudioElementStyles(el) {
 async function ensurePeerConnection() {
   if (peerConnection) return peerConnection;
   const rtcConfig = await buildRtcConfiguration();
+  // NOTE: We intentionally do NOT set encodedInsertableStreams: true
+  // here because the peer might not support E2EE (e.g. iOS Safari)
+  // and we cannot reliably determine the peer's capability before
+  // creating the connection (the callee never sends its capabilities
+  // back to the caller).  Without the constructor flag, receiver
+  // createEncodedStreams() would throw "Too late"; the guard in
+  // setupInsertableStreamsForReceiver prevents the call entirely.
   peerConnection = new RTCPeerConnection(rtcConfig);
   peerConnection.onicecandidate = (event) => {
     try {
@@ -838,6 +846,7 @@ function cleanupPeerConnection(reason) {
     try { localVideoEl.srcObject = null; } catch { }
   }
   e2eeReceiverConfirmed = false;
+  peerConnectionEncodedStreams = false;
   resetControlStates();
   if (reason) {
     log({ callMediaCleanup: reason });
@@ -908,8 +917,14 @@ function peerSupportsInsertableStreams() {
   // reflects the peer's advertised capability.  If the peer does not
   // support insertable streams we must not encrypt (they cannot decrypt)
   // and need not decrypt (they did not encrypt).
+  //
+  // IMPORTANT: require explicit `true` — mediaState.capabilities is
+  // initialised from localCapability (resetMediaState) before the
+  // peer's envelope overrides it.  Defaulting to `true` when the field
+  // is missing or the caps are null would incorrectly assume the peer
+  // supports E2EE.
   const caps = getCallMediaState()?.capabilities;
-  return caps ? caps.insertableStreams !== false : true;
+  return caps?.insertableStreams === true;
 }
 
 function setupInsertableStreamsForSender(sender, track) {
@@ -931,6 +946,10 @@ function setupInsertableStreamsForSender(sender, track) {
 }
 
 function setupInsertableStreamsForReceiver(receiver, track) {
+  // Receiver encoded streams require the encodedInsertableStreams
+  // constructor flag.  Without it, createEncodedStreams() throws
+  // "Too late" and may leave the receiver in a broken state.
+  if (!peerConnectionEncodedStreams) return;
   if (!supportsInsertableStreams() || !receiver || !track) return;
   if (!peerSupportsInsertableStreams()) return;
   const keyContext = getCallKeyContext();
