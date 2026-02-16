@@ -98,7 +98,7 @@ export class ComposerController extends BaseController {
     updateConversationActionsAvailability() {
         const state = this.getMessageState();
         const enabled = !!(state.activePeerDigest && state.conversationToken && this._isSubscriptionActive());
-        const buttons = [this.elements.callBtn, this.elements.videoBtn];
+        const buttons = [this.elements.callBtn];
         for (const btn of buttons) {
             if (!btn) continue;
             btn.disabled = !enabled;

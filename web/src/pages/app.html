@@ -303,8 +303,18 @@
               <div class="messages-actions">
                 <span id="messagesWsIndicator" class="connection-indicator messages-ws-indicator"
                   aria-hidden="true"><span class="dot" aria-hidden="true"></span></span>
-                <button id="messagesCallBtn" type="button" class="messages-action-btn" aria-label="語音通話" title="語音通話"
-                  disabled><i class='bx bx-phone'></i></button>
+                <div class="call-menu-wrapper">
+                  <button id="messagesCallBtn" type="button" class="messages-action-btn" aria-label="通話" title="通話"
+                    disabled><i class='bx bx-phone'></i></button>
+                  <div id="callSubmenu" class="call-submenu hidden">
+                    <button type="button" class="call-submenu-item" data-call-type="voice">
+                      <i class='bx bx-phone'></i><span>語音通話</span>
+                    </button>
+                    <button type="button" class="call-submenu-item" data-call-type="video">
+                      <i class='bx bx-video'></i><span>視訊通話</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
             <div id="messagesScroll" class="messages-scroll">

@@ -353,7 +353,7 @@ export function initMessagesPane({
     loadMoreLabel: dom.messagesLoadMoreLabel ?? document.querySelector('.messages-load-more .label'),
     loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('.messages-load-more .spinner'),
     callBtn: dom.messagesCallBtn ?? document.getElementById('messagesCallBtn'),
-    videoBtn: dom.messagesVideoBtn ?? document.getElementById('messagesVideoBtn')
+    callSubmenu: document.getElementById('callSubmenu')
   };
 
   console.log('[messages-pane] init elements check:', {
@@ -618,13 +618,11 @@ export function initMessagesPane({
     // Disable call/video buttons while a call is in progress
     const available = canStartCall();
     if (elements.callBtn) elements.callBtn.disabled = !available;
-    if (elements.videoBtn) elements.videoBtn.disabled = !available;
   });
   // Sync call button state on init (user may open a chat while already in a call)
   {
     const available = canStartCall();
     if (elements.callBtn) elements.callBtn.disabled = !available;
-    if (elements.videoBtn) elements.videoBtn.disabled = !available;
   }
 
   for (const info of listSecureConversationStatuses()) {
@@ -1252,8 +1250,39 @@ export function initMessagesPane({
       controllers.messageSending.handleComposerFileSelection(event);
     });
 
-    elements.callBtn?.addEventListener('click', () => controllers.composer.handleConversationAction('voice'));
-    elements.videoBtn?.addEventListener('click', () => controllers.composer.handleConversationAction('video'));
+    // Call button toggles the submenu
+    elements.callBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const submenu = elements.callSubmenu;
+      if (!submenu) return;
+      const isHidden = submenu.classList.contains('hidden');
+      submenu.classList.toggle('hidden', !isHidden);
+      if (isHidden) {
+        // Close submenu when clicking outside
+        const closeSubmenu = (ev) => {
+          if (!submenu.contains(ev.target) && ev.target !== elements.callBtn) {
+            submenu.classList.add('hidden');
+            document.removeEventListener('click', closeSubmenu);
+            document.removeEventListener('touchstart', closeSubmenu);
+          }
+        };
+        setTimeout(() => {
+          document.addEventListener('click', closeSubmenu);
+          document.addEventListener('touchstart', closeSubmenu);
+        }, 0);
+      }
+    });
+
+    // Call submenu item clicks
+    elements.callSubmenu?.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-call-type]');
+      if (!item) return;
+      const callType = item.getAttribute('data-call-type');
+      elements.callSubmenu.classList.add('hidden');
+      if (callType === 'voice' || callType === 'video') {
+        controllers.composer.handleConversationAction(callType);
+      }
+    });
     elements.createGroupBtn?.addEventListener('click', () => controllers.groupBuilder.handleCreateGroup());
 
     if (elements.scrollEl) {

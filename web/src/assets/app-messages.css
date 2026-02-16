@@ -329,6 +329,65 @@
   box-shadow: none;
 }
 
+/* Call submenu wrapper */
+.call-menu-wrapper {
+  position: relative;
+}
+
+.call-submenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 100;
+  min-width: 150px;
+  background: var(--bg-elevated, #1e293b);
+  border: 1px solid var(--line, #334155);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: callSubmenuIn .15s ease;
+}
+
+.call-submenu.hidden {
+  display: none;
+}
+
+@keyframes callSubmenuIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.call-submenu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg, #e2e8f0);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background .12s ease;
+  white-space: nowrap;
+}
+
+.call-submenu-item i {
+  font-size: 18px;
+}
+
+.call-submenu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.call-submenu-item:active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .messages-header strong {
   font-size: 17px;
   letter-spacing: 0.3px;
