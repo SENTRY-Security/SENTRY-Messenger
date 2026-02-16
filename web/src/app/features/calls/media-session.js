@@ -878,11 +878,12 @@ function attachRemoteStream(stream) {
         remoteVideoEl.srcObject = stream;
         remoteVideoEl.muted = true;
       }
-      if (remoteVideoEl.paused) {
-        const maybePlay = remoteVideoEl.play();
-        if (maybePlay && typeof maybePlay.catch === 'function') {
-          maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
-        }
+      // Always call play() — on iOS Safari a video track added after the
+      // stream was first attached will not render until play() is re-invoked,
+      // even when the element is already playing the audio-only stream.
+      const maybePlay = remoteVideoEl.play();
+      if (maybePlay && typeof maybePlay.catch === 'function') {
+        maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
       }
     } catch (err) {
       log({ callMediaVideoAttachError: err?.message || err });
