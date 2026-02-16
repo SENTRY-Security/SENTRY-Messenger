@@ -567,7 +567,7 @@ r.post('/auth/opaque/login-init', async (req, res) => {
     const opaqueSession = `opaque-${b64url(crypto.randomBytes(18))}`;
     const exp = Math.floor(Date.now() / 1000) + 120;
     OPAQUE_EXPECTED.set(opaqueSession, { expected_b64, exp });
-    return res.json({ ke2_b64, opaqueSession });
+    return res.json({ ke2_b64, opaque_session: opaqueSession });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });
   }

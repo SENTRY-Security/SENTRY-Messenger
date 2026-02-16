@@ -34,7 +34,7 @@ export async function opaqueRegister({ password, accountDigest, clientIdentity, 
   if (reqObj instanceof Error) throw reqObj;
   const request_b64 = u8ToB64(new Uint8Array(reqObj.serialize()));
   const { r: r1, data: d1 } = await fetchJSON('/api/v1/auth/opaque/register-init', {
-    accountDigest,
+    account_digest: accountDigest,
     request_b64
   });
   if (!r1.ok || !d1?.response_b64) {
@@ -49,7 +49,7 @@ export async function opaqueRegister({ password, accountDigest, clientIdentity, 
   if (fin instanceof Error) throw fin;
   const record_b64 = u8ToB64(new Uint8Array(fin.record.serialize()));
   const { r: r2, data: d2 } = await fetchJSON('/api/v1/auth/opaque/register-finish', {
-    accountDigest,
+    account_digest: accountDigest,
     record_b64,
     client_identity: clientIdentity || null
   });
@@ -68,10 +68,10 @@ export async function opaqueLogin({ password, accountDigest, context, serverId, 
   if (ke1 instanceof Error) throw ke1;
   const ke1_b64 = u8ToB64(new Uint8Array(ke1.serialize()));
   const { r: r1, data: d1 } = await fetchJSON('/api/v1/auth/opaque/login-init', {
-    accountDigest,
+    account_digest: accountDigest,
     ke1_b64
   });
-  if (!r1.ok || !d1?.ke2_b64 || !d1?.opaqueSession) {
+  if (!r1.ok || !d1?.ke2_b64 || !d1?.opaque_session) {
     const msg = typeof d1 === 'string' ? d1 : d1?.message || d1?.error || 'opaque login-init failed';
     throw new Error(msg);
   }
@@ -81,7 +81,7 @@ export async function opaqueLogin({ password, accountDigest, context, serverId, 
   if (fin instanceof Error) throw fin;
   const ke3_b64 = u8ToB64(new Uint8Array(fin.ke3.serialize()));
   const { r: r2, data: d2 } = await fetchJSON('/api/v1/auth/opaque/login-finish', {
-    opaqueSession: d1.opaqueSession,
+    opaque_session: d1.opaque_session,
     ke3_b64
   });
   if (!r2.ok || !d2?.ok || !d2?.session_key_b64) {

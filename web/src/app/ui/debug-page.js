@@ -135,12 +135,12 @@ async function handleSimulate() {
       return;
     }
     const kit = data || {};
-    if (!kit.uidHex || !kit.sdmcounter || !kit.sdmmac) {
+    if (!kit.uid_hex || !kit.sdmcounter || !kit.sdmmac) {
       throw new Error('後端回傳的 debug 資料不完整');
     }
     const updatedChip = {
       ...chip,
-      uidHex: kit.uidHex,
+      uidHex: kit.uid_hex,
       sdmcounter: kit.sdmcounter,
       sdmmac: kit.sdmmac,
       nonce: kit.nonce || chip.nonce
