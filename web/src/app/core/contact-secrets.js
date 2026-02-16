@@ -2233,15 +2233,37 @@ export function getContactSecretSections(peerAccountDigest, opts = {}) {
 /**
  * Get conversation token for call key derivation.
  * Looks up by exact peerKey (digest::deviceId) in the cloud-restored
- * contact-secrets map.
+ * contact-secrets map.  Falls back to alias lookup then digest-prefix
+ * scan when the exact key is missing (e.g. fast-path import cleared the map).
  */
 export function getConversationTokenForCall(peerAccountDigest, opts = {}) {
   const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
-  const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
-  if (!key) return null;
+  const { key, identity } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
   const map = ensureMap();
-  const record = map.get(key);
-  return record?.conversationToken || null;
+  // 1. Exact key lookup
+  if (key) {
+    const token = map.get(key)?.conversationToken;
+    if (token) return token;
+  }
+  // 2. Alias-based fallback: accountDigest → primary key
+  const digest = identity?.accountDigest || normalizeAccountDigest(peerAccountDigest);
+  if (digest) {
+    const primaryKey = contactAliasToPrimary.get(digest);
+    if (primaryKey) {
+      const token = map.get(primaryKey)?.conversationToken;
+      if (token) return token;
+    }
+  }
+  // 3. Digest-prefix scan: find any entry for the same account
+  if (digest) {
+    const prefix = `${digest}::`;
+    for (const [k, record] of map) {
+      if (k.startsWith(prefix) && record?.conversationToken) {
+        return record.conversationToken;
+      }
+    }
+  }
+  return null;
 }
 
 export function lockContactSecrets(reason = 'locked') {

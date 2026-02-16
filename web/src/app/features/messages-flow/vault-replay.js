@@ -393,7 +393,7 @@ export async function decryptReplayBatch({
         // We use 'merge' or 'replace'? `importContactSecretsSnapshot` with `replace: true` 
         // is generally safe because it has internal checks to only promote if newer/better.
         importContactSecretsSnapshot(vaultKeyResult.drStateSnapshot, {
-          replace: true,
+          replace: false,
           reason: 'vault-replay-healing',
           persist: true
         });

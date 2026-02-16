@@ -220,14 +220,14 @@ export class ActiveConversationController extends BaseController {
                     const tasks = [];
                     if (data?.outgoing?.dr_state) {
                         tasks.push(importContactSecretsSnapshot(data.outgoing.dr_state, {
-                            replace: true,
+                            replace: false,
                             persist: true,
                             reason: 'fast-path-out'
                         }));
                     }
                     if (data?.incoming?.dr_state) {
                         tasks.push(importContactSecretsSnapshot(data.incoming.dr_state, {
-                            replace: true,
+                            replace: false,
                             persist: true,
                             reason: 'fast-path-in'
                         }));
