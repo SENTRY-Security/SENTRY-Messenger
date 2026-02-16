@@ -21,6 +21,7 @@ import { startOutgoingCallMedia } from '../../../features/calls/media-session.js
 import { prepareCallKeyEnvelope } from '../../../features/calls/key-manager.js';
 import { buildCallPeerIdentity } from '../../../features/calls/identity.js';
 import { getAccountDigest, normalizePeerIdentity } from '../../../core/store.js';
+import { isIosWebKitLikeBrowser } from '../browser-detection.js';
 import { sendDrText } from '../../../features/dr-session.js';
 import { getReplacementInfo } from '../../../features/messages/ui/outbox-hooks.js';
 import { normalizeCounterValue, normalizeTimelineMessageId } from '../../../features/messages/parser.js';
@@ -192,6 +193,37 @@ export class ComposerController extends BaseController {
         const { peerKey } = buildCallPeerIdentity({ peerAccountDigest, peerDeviceId });
 
         if (!this._requireSubscriptionActive()) return;
+
+        // iOS Safari 26.3+ may revoke the user gesture context after async
+        // operations (API call, key derivation), causing getUserMedia() to fail
+        // later in attachLocalMedia().  Pre-acquire the media stream now while
+        // we are still in the direct call stack of the user's tap/click.
+        if (isIosWebKitLikeBrowser()) {
+            try {
+                const wantVideo = actionType === 'video';
+                const constraints = {
+                    audio: true,
+                    video: wantVideo
+                        ? { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
+                        : false
+                };
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                if (this.sessionStore) {
+                    this.sessionStore.cachedMicrophoneStream = stream;
+                }
+            } catch (preAcquireErr) {
+                // If video fails, try audio-only so we at least have mic access
+                if (actionType === 'video') {
+                    try {
+                        const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                        if (this.sessionStore) {
+                            this.sessionStore.cachedMicrophoneStream = audioOnly;
+                        }
+                    } catch { /* attachLocalMedia will retry */ }
+                }
+                this.log({ callPreAcquireMediaWarning: preAcquireErr?.message || preAcquireErr });
+            }
+        }
 
         let result;
         try {

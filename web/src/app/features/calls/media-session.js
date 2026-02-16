@@ -146,6 +146,35 @@ function setCachedMicrophoneStream(stream) {
   return stream;
 }
 
+/**
+ * Ensure the peer connection has transceivers for receiving media.
+ * addTrack() creates 'sendrecv' transceivers for local tracks, but when a
+ * media kind is absent (e.g. video in a voice-only call that still wants to
+ * receive video), we add a 'recvonly' transceiver so the SDP includes the
+ * correct m-line.
+ *
+ * This replaces the deprecated offerToReceiveAudio / offerToReceiveVideo
+ * options in createOffer(), which iOS Safari 26.3+ no longer supports.
+ */
+function ensureReceiveTransceivers(wantVideo) {
+  if (!peerConnection) return;
+  const transceivers = peerConnection.getTransceivers();
+  const hasAudio = transceivers.some((t) => {
+    const kind = t.sender?.track?.kind || t.receiver?.track?.kind;
+    return kind === 'audio';
+  });
+  const hasVideo = transceivers.some((t) => {
+    const kind = t.sender?.track?.kind || t.receiver?.track?.kind;
+    return kind === 'video';
+  });
+  if (!hasAudio) {
+    peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+  }
+  if (wantVideo && !hasVideo) {
+    peerConnection.addTransceiver('video', { direction: 'recvonly' });
+  }
+}
+
 function normalizeCallSignal(signal) {
   if (!signal || typeof signal !== 'object') return signal;
   const payload = signal.payload;
@@ -526,9 +555,20 @@ async function attachLocalMedia() {
   try {
     const cached = getCachedMicrophoneStream();
     if (cached) {
-      const tracks = cloneLiveAudioTracks(cached);
-      if (tracks.length) {
-        localStream = new MediaStream(tracks);
+      const wantVideo = isVideoCall();
+      if (wantVideo && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
+        // Video call with pre-acquired video+audio stream: clone all live tracks
+        const liveTracks = cached.getTracks()
+          .filter((t) => t.readyState === 'live')
+          .map((t) => (typeof t.clone === 'function' ? t.clone() : t));
+        if (liveTracks.length) {
+          localStream = new MediaStream(liveTracks);
+        }
+      } else {
+        const tracks = cloneLiveAudioTracks(cached);
+        if (tracks.length) {
+          localStream = new MediaStream(tracks);
+        }
       }
     }
     if (!localStream) {
@@ -620,14 +660,21 @@ async function buildRtcConfiguration() {
   if (!iceServers.length) {
     failCall('ice-servers-missing');
   }
-  return { iceServers };
+  // Explicitly set standard RTCConfiguration properties.  iOS Safari 26.3+
+  // may default to different values if these are omitted.
+  const iceTransportPolicy = config?.ice?.iceTransportPolicy || 'all';
+  const bundlePolicy = config?.ice?.bundlePolicy || 'balanced';
+  return { iceServers, iceTransportPolicy, bundlePolicy, rtcpMuxPolicy: 'require' };
 }
 
 async function createAndSendOffer() {
   if (!peerConnection) return;
   try {
     const wantVideo = isVideoCall();
-    const offer = await peerConnection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: wantVideo });
+    // Use transceiver API instead of deprecated offerToReceiveAudio/Video
+    // options which iOS Safari 26.3+ no longer supports.
+    ensureReceiveTransceivers(wantVideo);
+    const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
     awaitingAnswer = true;
     if (!sendSignal) {
