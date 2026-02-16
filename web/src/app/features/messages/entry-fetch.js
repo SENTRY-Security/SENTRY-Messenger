@@ -1212,7 +1212,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
                 conversationId,
                 messageId: messageObj.id,
                 direction: messageObj.direction,
-                msgType: messageObj.type,
+                msgType: messageObj.msgType || messageObj.type,
                 ts: messageObj.ts,
                 text: messageObj.text,
                 media: messageObj.media || null,

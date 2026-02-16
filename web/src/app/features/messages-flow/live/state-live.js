@@ -7,6 +7,7 @@ import { DEBUG } from '../../../ui/mobile/debug-flags.js';
 import { applyContactShareFromCommit } from '../../contacts.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
 import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js';
+import { normalizeCallLogPayload, resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
 
 function hasUsableDrState(holder) {
   if (
@@ -573,6 +574,15 @@ async function decryptIncomingSingle(params = {}, adapters) {
           };
         }
 
+        // Build callLog nested object for call-log messages (renderer requires msg.callLog)
+        let callLog = null;
+        if (msgType === 'call-log') {
+          callLog = normalizeCallLogPayload(content, meta || {});
+          const viewerRole = resolveViewerRole(callLog.authorRole, 'incoming');
+          const { label, subLabel } = describeCallLogForViewer(callLog, viewerRole);
+          callLog = { ...callLog, viewerRole, label, subLabel };
+        }
+
         // Merge parsed content for media fields, but enforce secure properties
         result.decryptedMessage = {
           ...content,
@@ -584,7 +594,8 @@ async function decryptIncomingSingle(params = {}, adapters) {
           direction: 'incoming',
           msgType,
           media,
-          text: content.text || text,
+          callLog,
+          text: (msgType === 'call-log' && callLog) ? (callLog.label || 'Call') : (content.text || text),
           messageKeyB64,
           counter,
           headerCounter: counter,
@@ -871,6 +882,15 @@ async function commitIncomingSingle(params = {}, adapters) {
         if (semantic.subtype === 'contact-share') msgType = 'contact-share';
       }
 
+      // Build callLog nested object for call-log messages (renderer requires msg.callLog)
+      let batchCallLog = null;
+      if (msgType === 'call-log') {
+        batchCallLog = normalizeCallLogPayload(content, meta || {});
+        const batchViewerRole = resolveViewerRole(batchCallLog.authorRole, 'incoming');
+        const batchDesc = describeCallLogForViewer(batchCallLog, batchViewerRole);
+        batchCallLog = { ...batchCallLog, viewerRole: batchViewerRole, label: batchDesc.label, subLabel: batchDesc.subLabel };
+      }
+
       const entries = [{
         ...content,
         conversationId,
@@ -880,7 +900,8 @@ async function commitIncomingSingle(params = {}, adapters) {
         ts,
         tsMs: resolveMessageTsMs(ts),
         counter: Number.isFinite(resolvedCounter) ? Number(resolvedCounter) : null,
-        text: content.text || text,
+        text: (msgType === 'call-log' && batchCallLog) ? (batchCallLog.label || 'Call') : (content.text || text),
+        callLog: batchCallLog,
         senderDigest,
         senderDeviceId: resolvedSenderDeviceId,
         targetDeviceId
