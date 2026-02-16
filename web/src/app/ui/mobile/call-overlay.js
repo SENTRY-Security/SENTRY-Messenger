@@ -744,7 +744,7 @@ export function initCallOverlay({ showToast }) {
     ui.root?.classList.toggle('video-minimized', isVideo);
     if (isVideo && ui.miniVideo && ui.remoteVideo?.srcObject) {
       ui.miniVideo.srcObject = ui.remoteVideo.srcObject;
-      try { ui.miniVideo.play(); } catch {}
+      ui.miniVideo.play().catch(() => {});
     }
     ensureBubblePosition();
     updateMinimizedState();
@@ -988,8 +988,8 @@ export function initCallOverlay({ showToast }) {
       ui.remoteVideo.style.transform = 'scaleX(-1)';
       ui.localPipVideo.style.transform = '';
     }
-    try { ui.remoteVideo.play(); } catch {}
-    try { ui.localPipVideo.play(); } catch {}
+    ui.remoteVideo.play().catch(() => {});
+    ui.localPipVideo.play().catch(() => {});
   }
 
   function resetVideoSwap() {
@@ -1124,7 +1124,7 @@ export function initCallOverlay({ showToast }) {
         if (ls && ls.getVideoTracks().length && ui.localPipVideo.srcObject !== ls) {
           ui.localPipVideo.srcObject = ls;
           ui.localPipVideo.muted = true;
-          try { ui.localPipVideo.play(); } catch {}
+          ui.localPipVideo.play().catch(() => {});
         }
       }
 

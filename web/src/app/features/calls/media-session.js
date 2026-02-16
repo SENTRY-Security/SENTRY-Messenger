@@ -344,7 +344,7 @@ export async function toggleLocalVideo(enabled) {
       localVideoMuted = false;
       if (localVideoEl) {
         localVideoEl.srcObject = localStream;
-        try { localVideoEl.play(); } catch {}
+        localVideoEl.play().catch(() => {});
       }
       updateCallMedia({ controls: { videoEnabled: true, videoMuted: false } });
     } catch (err) {
@@ -388,7 +388,7 @@ export async function switchCamera() {
     cameraFacing = nextFacing;
     if (localVideoEl) {
       localVideoEl.srcObject = localStream;
-      try { localVideoEl.play(); } catch {}
+      localVideoEl.play().catch(() => {});
     }
   } catch (err) {
     log({ callSwitchCameraError: err?.message || err });
