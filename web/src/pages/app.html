@@ -534,19 +534,20 @@
   <div id="mediaPermissionOverlay" class="media-permission-overlay" aria-hidden="true" style="display:none">
     <div class="media-permission-card" role="dialog" aria-modal="true" aria-labelledby="mediaPermissionTitle">
       <i class='bx bxs-lock-shield icon' aria-hidden="true"></i>
-      <h2 id="mediaPermissionTitle">啟用語音通話</h2>
-      <p>點擊下方按鈕，一鍵授權麥克風並解鎖音訊播放，確保來電正常響鈴。</p>
+      <h2 id="mediaPermissionTitle">啟用語音與視訊通話</h2>
+      <p>點擊下方按鈕，一鍵授權麥克風與鏡頭並解鎖音訊播放，確保來電正常響鈴。</p>
       <ul>
         <li><i class='bx bx-microphone'></i><span>允許麥克風才能建立端到端加密語音通話。</span></li>
+        <li><i class='bx bx-video'></i><span>允許鏡頭才能使用視訊通話。</span></li>
         <li><i class='bx bx-volume-full'></i><span>同時解鎖音訊播放，避免來電鈴聲被瀏覽器阻擋。</span></li>
       </ul>
       <div id="mediaPermissionStatus" class="media-permission-status" role="status" aria-live="polite"></div>
       <p class="media-permission-hints">
-        若未彈出瀏覽器授權視窗，請按「取消重試」後再試一次，或稍後到 Safari 設定 > 網站進階設定 > 麥克風重新允許。
+        若未彈出瀏覽器授權視窗，請按「取消重試」後再試一次，或稍後到 Safari 設定 > 網站進階設定 > 麥克風與相機重新允許。
       </p>
       <div class="media-permission-actions">
         <button id="mediaPermissionAllowBtn" type="button" class="media-permission-btn">
-          <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel">允許麥克風</span>
+          <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel">允許麥克風與鏡頭</span>
         </button>
         <button id="mediaPermissionDebugBtn" type="button" class="media-permission-skip" style="display:none">查詢
           Debug</button>
