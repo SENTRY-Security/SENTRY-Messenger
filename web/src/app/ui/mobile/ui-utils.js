@@ -98,8 +98,6 @@ export function buildConversationSnippet(text) {
 }
 
 const MSG_TYPE_LABELS = {
-  'contact-share': '已建立安全連線',
-  'contact_share': '已建立安全連線',
   'call-log': '通話紀錄',
   'call_log': '通話紀錄',
   'conversation-deleted': '',
@@ -111,6 +109,34 @@ const MSG_TYPE_LABELS = {
   'system': '系統訊息'
 };
 
+const CONTACT_SHARE_REASON_LABELS = {
+  nickname: '已更新暱稱',
+  avatar: '已更新頭像',
+  profile: '已更新個人資料',
+  update: '已更新個人資料',
+  manual: '已更新個人資料'
+};
+
+function resolveContactSharePreview(item) {
+  // 1. Try reason from spread content fields (live-decrypt path)
+  const directReason = item?.reason;
+  if (directReason && CONTACT_SHARE_REASON_LABELS[directReason]) {
+    return CONTACT_SHARE_REASON_LABELS[directReason];
+  }
+  // 2. Try parsing text JSON (formatThreadPreview path — text is raw JSON)
+  const text = typeof item?.text === 'string' ? item.text : '';
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      const reason = parsed?.reason;
+      if (reason && CONTACT_SHARE_REASON_LABELS[reason]) {
+        return CONTACT_SHARE_REASON_LABELS[reason];
+      }
+    } catch { /* not JSON */ }
+  }
+  return '已建立安全連線';
+}
+
 /**
  * Resolve human-readable preview text from a message item.
  * This is the SINGLE source of truth for all preview text generation.
@@ -121,7 +147,12 @@ export function resolveMessagePreview(item) {
   if (!item) return '有新訊息';
   const msgType = item.msgType || item.type || item.subtype || null;
 
-  // 1. Static type labels (non-media)
+  // 1a. Contact-share — reason-aware preview
+  if (msgType === 'contact-share' || msgType === 'contact_share') {
+    return resolveContactSharePreview(item);
+  }
+
+  // 1b. Static type labels (non-media)
   if (msgType && MSG_TYPE_LABELS[msgType] !== undefined) {
     return MSG_TYPE_LABELS[msgType] || '';
   }
@@ -149,6 +180,9 @@ export function resolveMessagePreview(item) {
     try {
       const parsed = JSON.parse(text);
       const innerType = parsed?.type || parsed?.msgType || null;
+      if (innerType === 'contact-share' || innerType === 'contact_share') {
+        return resolveContactSharePreview(parsed);
+      }
       if (innerType && MSG_TYPE_LABELS[innerType] !== undefined) {
         return MSG_TYPE_LABELS[innerType];
       }
@@ -215,6 +249,14 @@ export function formatThreadPreview(thread) {
   if (!thread) return '尚無訊息';
   if (thread.lastMsgType === 'conversation-deleted' || thread.lastMsgType === 'conversation_deleted') {
     return '尚無訊息';
+  }
+  // contact-share preview is already reason-resolved when stored; re-resolving
+  // would lose the reason field and fall back to the generic label.
+  if ((thread.lastMsgType === 'contact-share' || thread.lastMsgType === 'contact_share')
+      && thread.lastMessageText && !isDegradedPreview(thread.lastMessageText)) {
+    const csPreview = thread.lastMessageText;
+    if (thread.lastDirection === 'outgoing') return `你：${csPreview}`;
+    return csPreview;
   }
   const preview = resolveMessagePreview({
     text: thread.lastMessageText || '',

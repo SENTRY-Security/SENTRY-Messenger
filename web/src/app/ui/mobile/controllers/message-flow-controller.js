@@ -933,19 +933,29 @@ export class MessageFlowController extends BaseController {
                     silent: !!item?.silent
                 });
                 if (shouldNotify) {
-                    this.deps.playNotificationSound?.();
-                    playedSound = true;
+                    const itemMsgType = item.msgType || item.type || item.subtype || null;
+                    const isContactShare = itemMsgType === 'contact-share' || itemMsgType === 'contact_share';
+                    const isProfileUpdate = isContactShare && item.reason && item.reason !== 'invite-consume';
+
+                    // Profile update contact-share should not ring
+                    if (!isProfileUpdate) {
+                        this.deps.playNotificationSound?.();
+                        playedSound = true;
+                    }
 
                     const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-                    // Re-resolve nickname/avatar for toast if needed, or pass from caller?
-                    // Simplified for now, using thread data or defaults
                     const nickname = thread.nickname || '新訊息';
                     const previewText = resolveMessagePreview(item);
                     const avatarUrlToast = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
                     const initialsToast = this.deps.controllers?.conversationList?.getInitials(nickname, peerDigest || '').slice(0, 2);
                     const toastPeerDeviceId = thread?.peerDeviceId || null;
 
-                    this.deps.showToast?.(`${nickname}：${previewText}`, {
+                    // Profile updates: "小明 已更新暱稱"; chat messages: "小明：你好"
+                    const toastText = isProfileUpdate
+                        ? `${nickname} ${previewText}`
+                        : `${nickname}：${previewText}`;
+
+                    this.deps.showToast?.(toastText, {
                         onClick: () => this.deps.controllers?.activeConversation?.openConversationFromToast({
                             peerAccountDigest: peerDigest,
                             convId,

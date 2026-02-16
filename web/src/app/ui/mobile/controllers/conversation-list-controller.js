@@ -432,8 +432,12 @@ export class ConversationListController extends BaseController {
                         } else if (type === 'call_log' || type === 'call-log') {
                             const clKind = payload?.kind || previewMsg?.callLog?.kind || '';
                             text = clKind === 'video' ? '[視訊通話]' : '[語音通話]';
-                        } else if (type === 'contact-share') {
-                            text = '[系統] 您已與對方成為好友';
+                        } else if (type === 'contact-share' || type === 'contact_share') {
+                            const csReason = payload?.reason;
+                            if (csReason === 'nickname') text = '已更新暱稱';
+                            else if (csReason === 'avatar') text = '已更新頭像';
+                            else if (csReason === 'profile' || csReason === 'update' || csReason === 'manual') text = '已更新個人資料';
+                            else text = '已建立安全連線';
                         } else {
                             text = previewMsg.ciphertext_b64 ? '🔒 加密訊息' : '新訊息';
                         }
