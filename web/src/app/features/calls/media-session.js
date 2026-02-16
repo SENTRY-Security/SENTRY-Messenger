@@ -44,6 +44,7 @@ let remoteVideoEl = null;
 let localVideoEl = null;
 let cameraFacing = 'user';
 let pendingRemoteCandidates = [];
+let e2eeReceiverConfirmed = false;
 
 function isVideoCall() {
   const session = getCallSessionSnapshot();
@@ -836,6 +837,7 @@ function cleanupPeerConnection(reason) {
   if (localVideoEl) {
     try { localVideoEl.srcObject = null; } catch { }
   }
+  e2eeReceiverConfirmed = false;
   resetControlStates();
   if (reason) {
     log({ callMediaCleanup: reason });
@@ -912,6 +914,13 @@ function peerSupportsInsertableStreams() {
 function setupInsertableStreamsForSender(sender, track) {
   if (!supportsInsertableStreams() || !sender || !track) return;
   if (!peerSupportsInsertableStreams()) return;
+  // Never encrypt until we've confirmed receiver transforms work.
+  // Without this gate the caller encrypts outgoing data in
+  // attachLocalMedia (key context is already set by
+  // prepareCallKeyEnvelope), but the receiver side fails with
+  // "Too late to create encoded streams" — the peer then receives
+  // encrypted frames it cannot decrypt, causing noise / no video.
+  if (!e2eeReceiverConfirmed) return;
   const keyContext = getCallKeyContext();
   if (!keyContext) return;
   const keyName = track.kind === 'video' ? 'videoTx' : 'audioTx';
@@ -928,7 +937,22 @@ function setupInsertableStreamsForReceiver(receiver, track) {
   const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';
   const transform = createEncryptionTransform(keyName, 'decrypt');
   if (!transform) return;
-  applyTransformStream(receiver, transform);
+  if (applyTransformStream(receiver, transform)) {
+    if (!e2eeReceiverConfirmed) {
+      e2eeReceiverConfirmed = true;
+      // Receiver confirmed — now apply sender transforms for existing tracks.
+      applySenderTransformsDeferred();
+    }
+  }
+}
+
+function applySenderTransformsDeferred() {
+  if (!peerConnection) return;
+  for (const sender of peerConnection.getSenders()) {
+    if (sender.track) {
+      setupInsertableStreamsForSender(sender, sender.track);
+    }
+  }
 }
 
 function createEncryptionTransform(keyName, mode) {
@@ -977,20 +1001,24 @@ function applyTransformStream(target, transformStream) {
       readable.pipeThrough(transformStream).pipeTo(writable).catch((err) => {
         log({ callMediaPipeError: err?.message || err });
       });
+      return true;
     } else if (typeof target.createEncodedVideoStreams === 'function') {
       const { readable, writable } = target.createEncodedVideoStreams();
       readable.pipeThrough(transformStream).pipeTo(writable).catch((err) => {
         log({ callMediaPipeError: err?.message || err });
       });
+      return true;
     } else if (typeof target.createEncodedAudioStreams === 'function') {
       const { readable, writable } = target.createEncodedAudioStreams();
       readable.pipeThrough(transformStream).pipeTo(writable).catch((err) => {
         log({ callMediaPipeError: err?.message || err });
       });
+      return true;
     }
   } catch (err) {
     log({ callMediaTransformUnsupported: err?.message || err });
   }
+  return false;
 }
 
 function incrementFrameCounter(keyName) {
