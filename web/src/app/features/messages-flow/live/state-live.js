@@ -946,8 +946,8 @@ async function persistAndAppendBatch(params = {}, adapters) {
   const appendableMessages = [];
   for (const message of decryptedMessages) {
     const messageId = message?.messageId || message?.id || null;
-    // [FIX] Relax Key Check for Vault-Exempt Types (Contact Share / System)
-    const isVaultExempt = message?.msgType === 'contact-share' || message?.msgType === 'system';
+    // [FIX] Relax Key Check for Vault-Exempt Types (Contact Share / System / Call-Log)
+    const isVaultExempt = message?.msgType === 'contact-share' || message?.msgType === 'system' || message?.msgType === 'call-log';
     if (!messageId || (!message?.messageKeyB64 && !isVaultExempt)) {
       vaultPutFail += 1;
       continue;

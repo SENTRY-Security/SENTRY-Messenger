@@ -464,7 +464,6 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         text: messageObj.text || null,
         media: messageObj.media || null,
         callLog: messageObj.callLog || null,
-        callLog: messageObj.callLog || null,
         senderDigest: senderAccountDigest || null,
         senderDeviceId,
         peerDeviceId,

@@ -5,7 +5,7 @@
 
 import { BaseController } from './base-controller.js';
 import { normalizePeerKey } from '../contact-core-store.js';
-import { getAccountDigest, normalizePeerDeviceId, normalizePeerIdentity } from '../../../core/store.js';
+import { getAccountDigest, normalizeAccountDigest, normalizePeerDeviceId, normalizePeerIdentity } from '../../../core/store.js';
 import {
     CALL_SESSION_STATUS,
     CALL_SESSION_DIRECTION,
@@ -253,7 +253,11 @@ export class CallLogController extends BaseController {
         };
 
         const isOutgoing = direction === CALL_SESSION_DIRECTION.OUTGOING;
-        const isActive = state.activePeerDigest === peerDigest
+        // [FIX] Normalize both digests for comparison.
+        // state.activePeerDigest may be in "DIGEST::DEVICEID" format (from normalizePeerKey),
+        // while peerDigest is just "DIGEST" (from normalizeAccountDigest).
+        const stateDigestNorm = normalizeAccountDigest(state.activePeerDigest);
+        const isActive = stateDigestNorm === peerDigest
             && (!state.activePeerDeviceId || state.activePeerDeviceId === peerDeviceId);
         const exists = this.hasCallLog(entry.callId);
 
