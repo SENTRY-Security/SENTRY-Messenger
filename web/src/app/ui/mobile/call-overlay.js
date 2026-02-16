@@ -306,6 +306,23 @@ function ensureStyles() {
     .call-overlay.video-minimized .call-mini-avatar {
       display: none;
     }
+    .call-overlay .call-mini-local-video {
+      position: absolute;
+      bottom: 4px;
+      left: 4px;
+      width: 36px;
+      height: 48px;
+      border-radius: 6px;
+      object-fit: cover;
+      transform: scaleX(-1);
+      display: none;
+      z-index: 1;
+      border: 1.5px solid rgba(255,255,255,0.3);
+      background: #1e293b;
+    }
+    .call-overlay.video-minimized .call-mini-local-video {
+      display: block;
+    }
     .call-overlay.minimized {
       pointer-events: none;
     }
@@ -476,6 +493,7 @@ function ensureOverlayElements() {
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
       miniVideo: root.querySelector('.call-mini-video'),
+      miniLocalVideo: root.querySelector('.call-mini-local-video'),
       remoteVideo: root.querySelector('.call-remote-video'),
       localPip: root.querySelector('.call-local-pip'),
       localPipVideo: root.querySelector('.call-local-pip video'),
@@ -550,6 +568,7 @@ function ensureOverlayElements() {
     <div class="call-mini-bubble" role="button" aria-label="回到通話視窗" tabindex="0">
       <div class="call-mini-avatar" aria-hidden="true"></div>
       <video class="call-mini-video" autoplay playsinline muted></video>
+      <video class="call-mini-local-video" autoplay playsinline muted></video>
     </div>
   `;
   document.body.appendChild(root);
@@ -574,6 +593,7 @@ function ensureOverlayElements() {
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
       miniVideo: root.querySelector('.call-mini-video'),
+      miniLocalVideo: root.querySelector('.call-mini-local-video'),
       remoteVideo: root.querySelector('.call-remote-video'),
       localPip: root.querySelector('.call-local-pip'),
       localPipVideo: root.querySelector('.call-local-pip video'),
@@ -747,6 +767,13 @@ export function initCallOverlay({ showToast }) {
       ui.miniVideo.srcObject = ui.remoteVideo.srcObject;
       ui.miniVideo.play().catch(() => {});
     }
+    if (isVideo && ui.miniLocalVideo) {
+      const ls = getLocalStream();
+      if (ls && ls.getVideoTracks().length) {
+        ui.miniLocalVideo.srcObject = ls;
+        ui.miniLocalVideo.play().catch(() => {});
+      }
+    }
     ensureBubblePosition();
     updateMinimizedState();
   }
@@ -756,6 +783,7 @@ export function initCallOverlay({ showToast }) {
     state.minimized = false;
     ui.root?.classList.remove('video-minimized');
     if (ui.miniVideo) ui.miniVideo.srcObject = null;
+    if (ui.miniLocalVideo) ui.miniLocalVideo.srcObject = null;
     updateMinimizedState();
   }
 
@@ -770,6 +798,7 @@ export function initCallOverlay({ showToast }) {
       resetPipPosition();
       ui.root?.classList.remove('video-minimized');
       if (ui.miniVideo) ui.miniVideo.srcObject = null;
+      if (ui.miniLocalVideo) ui.miniLocalVideo.srcObject = null;
       updateMinimizedState();
     } else {
       updateMinimizedState();
