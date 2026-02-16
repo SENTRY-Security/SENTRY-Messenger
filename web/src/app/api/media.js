@@ -66,6 +66,11 @@ export async function createMessage(body) {
     const messageId = typeof payload.id === 'string' && payload.id.trim().length ? payload.id.trim() : null;
     if (!messageId) throw new Error('id (messageId) required');
     payload.id = messageId;
+    // Normalize convId → conv_id
+    const convId = payload.conv_id || payload.convId || null;
+    if (!convId) throw new Error('conv_id required');
+    payload.conv_id = convId;
+    delete payload.convId;
     const accountDigest = (payload.account_digest || payload.accountDigest || getAccountDigest() || '').toUpperCase();
     if (!accountDigest) throw new Error('accountDigest required');
     payload.account_digest = accountDigest;
