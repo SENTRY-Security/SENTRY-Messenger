@@ -825,9 +825,9 @@ export function setupShareController(options) {
   function applyInviteStatusSnapshot(snapshot) {
     if (!shareState.currentInvite || !snapshot) return;
     shareState.currentInvite.status = snapshot.status || shareState.currentInvite.status || null;
-    shareState.currentInvite.deliveredAt = snapshot.deliveredAt || null;
-    shareState.currentInvite.consumedAt = snapshot.consumedAt || null;
-    if (snapshot.isExpired) {
+    shareState.currentInvite.deliveredAt = snapshot.delivered_at || null;
+    shareState.currentInvite.consumedAt = snapshot.consumed_at || null;
+    if (snapshot.is_expired) {
       markInviteExpired();
     }
   }
@@ -836,15 +836,15 @@ export function setupShareController(options) {
     const id = String(inviteId || '').trim();
     if (!id) throw new Error('inviteId required');
     const snapshot = await invitesStatus({ inviteId: id });
-    if (!snapshot || snapshot.inviteId !== id) {
+    if (!snapshot || snapshot.invite_id !== id) {
       throw new Error('invite status response mismatch');
     }
     applyInviteStatusSnapshot(snapshot);
     log({
       inviteStatusRefreshed: {
-        inviteId: snapshot.inviteId,
+        inviteId: snapshot.invite_id,
         status: snapshot.status || null,
-        isExpired: !!snapshot.isExpired,
+        isExpired: !!snapshot.is_expired,
         source
       }
     });
@@ -945,18 +945,18 @@ export function setupShareController(options) {
       await ensureOwnerPrekeys({ force: false, reason: 'invite' });
       setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
       const invite = await invitesCreate();
-      if (!invite || !invite.inviteId || !invite.expiresAt || !invite.ownerPublicKeyB64 || !invite.prekeyBundle) {
+      if (!invite || !invite.invite_id || !invite.expires_at || !invite.owner_public_key_b64 || !invite.prekey_bundle) {
         throw new Error('伺服器回傳內容不完整');
       }
       shareState.currentInvite = {
-        inviteId: String(invite.inviteId),
-        expiresAt: Number(invite.expiresAt),
-        ownerAccountDigest: invite.ownerAccountDigest || ownerAccountDigest,
-        ownerDeviceId: invite.ownerDeviceId || ownerDeviceId,
-        ownerPublicKeyB64: String(invite.ownerPublicKeyB64 || ''),
+        inviteId: String(invite.invite_id),
+        expiresAt: Number(invite.expires_at),
+        ownerAccountDigest: invite.owner_account_digest || ownerAccountDigest,
+        ownerDeviceId: invite.owner_device_id || ownerDeviceId,
+        ownerPublicKeyB64: String(invite.owner_public_key_b64 || ''),
         v: INVITE_PROTOCOL_VERSION,
         msgType: INVITE_QR_TYPE,
-        prekeyBundle: invite.prekeyBundle || null
+        prekeyBundle: invite.prekey_bundle || null
       };
       shareState.inviteStatusNextPollAt = 0;
       shareState.inviteStatusPollInFlight = false;
@@ -2276,7 +2276,7 @@ export function setupShareController(options) {
           throw new Error('裝置私鑰缺失，無法解密邀請');
         }
         const res = await invitesConsume({ inviteId: id });
-        const envelope = res?.ciphertextEnvelope || null;
+        const envelope = res?.ciphertext_envelope || null;
         if (!envelope) {
           throw new Error('伺服器回傳內容不完整');
         }

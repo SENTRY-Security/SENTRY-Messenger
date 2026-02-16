@@ -471,5 +471,11 @@ export const statusInviteDropbox = async (req, res) => {
     return res.status(upstream.status).json(errPayload);
   }
 
-  return res.json(data);
+  return res.json({
+    invite_id: data?.inviteId || data?.invite_id || input.invite_id || null,
+    status: data?.status || null,
+    is_expired: !!(data?.isExpired || data?.is_expired),
+    delivered_at: data?.deliveredAt || data?.delivered_at || null,
+    consumed_at: data?.consumedAt || data?.consumed_at || null
+  });
 };
