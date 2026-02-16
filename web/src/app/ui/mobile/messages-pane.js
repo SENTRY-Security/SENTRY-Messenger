@@ -420,6 +420,7 @@ export function initMessagesPane({
     handleMessageDecrypted: (args) => controllers.messageFlow.handleMessageDecrypted(args),
     updateMessagesUI: (args) => controllers.messageFlow.updateMessagesUI(args),
     updateMessagesStatusUI: () => controllers.messageFlow.updateMessagesUI({ preserveScroll: true, forceFullRender: true }),
+    refreshTimelineState: (convId) => controllers.messageFlow.refreshTimelineState(convId),
     upsertConversationThread: (args) => controllers.conversationList.upsertThread(args),
     threadPeer: (t) => threadPeer(t),
     updateThreadAvatar: (key, avatar) => controllers.callLog.updateThreadAvatar(key, avatar),

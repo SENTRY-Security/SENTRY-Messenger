@@ -805,6 +805,15 @@ form {
   background: rgba(248, 113, 113, 0.2);
 }
 
+.call-log-chip.cancelled {
+  background: rgba(226, 232, 240, 0.9);
+  color: #475569;
+}
+
+.call-log-chip.cancelled .call-log-icon {
+  background: rgba(100, 116, 139, 0.15);
+}
+
 .alert {
   border-radius: 12px;
   padding: 12px 14px;
