@@ -654,6 +654,7 @@ async function applyRemoteOfferAndAnswer(msg) {
   if (!peerConnection || !msg?.description) return;
   try {
     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
+    await flushPendingRemoteCandidates();
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
     if (!sendSignal) {
