@@ -67,7 +67,10 @@ export class CallLogController extends BaseController {
      */
     hasCallLog(callId) {
         if (!callId) return false;
-        if (this.sentCallLogIds.has(callId)) return true;
+        // NOTE: Do NOT check sentCallLogIds here — that set is for event-level
+        // dedup (preventing handleCallStateEvent from re-processing the same call).
+        // Checking it here would cause exists=true immediately after the dedup
+        // guard adds the identifier, preventing both local message creation and DR send.
         const state = this.getMessageState();
         const messages = state.messages || [];
         return messages.some((m) => m?.callLog?.callId === callId || m?.callId === callId);
@@ -165,10 +168,21 @@ export class CallLogController extends BaseController {
      */
     handleCallStateEvent(detail = {}) {
         const session = detail.session || null;
-        if (!session) return;
+        if (!session) {
+            console.warn('[CallLog] handleCallStateEvent: no session in detail');
+            return;
+        }
 
         const status = session.status;
         if (![CALL_SESSION_STATUS.ENDED, CALL_SESSION_STATUS.FAILED].includes(status)) return;
+
+        console.warn('[CallLog] handleCallStateEvent FIRED', {
+            status, callId: session.callId, direction: session.direction,
+            peerAccountDigest: session.peerAccountDigest?.slice(-8),
+            peerDeviceId: session.peerDeviceId?.slice(-8),
+            peerKey: session.peerKey?.slice(-12),
+            connectedAt: session.connectedAt, endedAt: session.endedAt
+        });
 
         const peerProfile = resolveCallPeerProfile({
             peerAccountDigest: session.peerAccountDigest,
@@ -182,18 +196,34 @@ export class CallLogController extends BaseController {
             || normalizePeerIdentity(session?.peerKey || session)?.deviceId
             || null;
 
+        console.warn('[CallLog] peer resolved', {
+            peerDigest: peerDigest?.slice(-8),
+            peerDeviceId: peerDeviceId?.slice(-8),
+            profileConvId: peerProfile.conversationId
+        });
+
         const identifier = session.callId || session.traceId || `${peerDigest || 'unknown'}-${session.requestedAt || Date.now()}`;
-        if (this.sentCallLogIds.has(identifier)) return;
+        if (this.sentCallLogIds.has(identifier)) {
+            console.warn('[CallLog] DEDUP: identifier already processed', identifier);
+            return;
+        }
         this.sentCallLogIds.add(identifier);
 
         if (!peerDigest || !peerDeviceId) {
+            console.warn('[CallLog] SKIP: missing peer', { peerDigest, peerDeviceId });
             this.log({ callLogSkip: 'missing-peer', callId: session.callId || identifier });
             return;
         }
 
         const state = this.getMessageState();
         const conversationId = state.conversationId || peerProfile.conversationId || null;
+        console.warn('[CallLog] conversationId resolved', {
+            stateConvId: state.conversationId,
+            profileConvId: peerProfile.conversationId,
+            final: conversationId
+        });
         if (!conversationId) {
+            console.warn('[CallLog] SKIP: missing conversation');
             this.log({ callLogSkip: 'missing-conversation', callId: session.callId || identifier });
             return;
         }
@@ -202,6 +232,9 @@ export class CallLogController extends BaseController {
         const startedAtMs = session.connectedAt || session.requestedAt || null;
         const startedAt = startedAtMs || null;
         const endedAt = endedAtMs;
+        // Timeline store and renderer expect timestamps in SECONDS (Unix epoch).
+        // session.endedAt / Date.now() return milliseconds.
+        const endedAtSec = Math.floor(endedAtMs / 1000);
 
         const direction = (() => {
             if (session.direction === CALL_SESSION_DIRECTION.INCOMING || session.direction === CALL_SESSION_DIRECTION.OUTGOING) {
@@ -240,7 +273,7 @@ export class CallLogController extends BaseController {
         const entry = {
             id: messageId,
             callId: session.callId || identifier,
-            ts: endedAt,
+            ts: endedAtSec,
             peerAccountDigest: peerDigest,
             peerDeviceId,
             direction,
@@ -261,6 +294,14 @@ export class CallLogController extends BaseController {
             && (!state.activePeerDeviceId || state.activePeerDeviceId === peerDeviceId);
         const exists = this.hasCallLog(entry.callId);
 
+        console.warn('[CallLog] decision state', {
+            isActive, exists, isOutgoing, outcome,
+            stateDigestNorm: stateDigestNorm?.slice(-8),
+            peerDigest: peerDigest?.slice(-8),
+            stateActivePeerDigest: state.activePeerDigest?.slice(-12),
+            stateActivePeerDeviceId: state.activePeerDeviceId?.slice(-8)
+        });
+
         const viewerMessage = this.createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
 
         let localMessage = null;
@@ -280,13 +321,13 @@ export class CallLogController extends BaseController {
             localMessage.conversationId = conversationId;
 
             const appended = appendUserMessage(conversationId, localMessage);
-            if (appended) {
-                this.log({ event: 'timeline:append', conversationId, messageId: localMessage.id, msgType: 'call-log' });
-            }
+            console.warn('[CallLog] LOCAL message appended', { appended, messageId: localMessage.id, ts: localMessage.ts });
 
             this.deps.refreshTimelineState?.(conversationId);
             this.deps.updateMessagesUI?.({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
             this.trackCallLogPlaceholder(peerDigest, entry.callId, localMessage);
+        } else {
+            console.warn('[CallLog] LOCAL message SKIPPED', { isActive, exists });
         }
 
         this.updateThreadsWithCallLogDisplay({
@@ -298,7 +339,10 @@ export class CallLogController extends BaseController {
 
         if (entry.id && !this.sentCallLogIds.has(entry.id) && !exists) {
             this.sentCallLogIds.add(entry.id);
+            console.warn('[CallLog] DR SEND starting', { callId: entry.callId, peerDigest: peerDigest?.slice(-8) });
             this._sendCallLog(entry, conversationId, peerDigest, peerDeviceId, outcome, durationSeconds, normalizedReason, startedAt, endedAt, localMessage);
+        } else {
+            console.warn('[CallLog] DR SEND skipped', { hasId: !!entry.id, inSet: this.sentCallLogIds.has(entry.id), exists });
         }
 
         this.releaseCallLogPlaceholder(peerDigest, entry.callId);
@@ -309,6 +353,7 @@ export class CallLogController extends BaseController {
      * @private
      */
     async _sendCallLog(entry, conversationId, peerDigest, peerDeviceId, outcome, durationSeconds, reason, startedAt, endedAt, localMessage) {
+        console.warn('[CallLog] _sendCallLog: calling sendDrCallLog', { callId: entry.callId, outcome, direction: entry.direction });
         try {
             const res = await sendDrCallLog({
                 peerAccountDigest: peerDigest,
@@ -345,6 +390,7 @@ export class CallLogController extends BaseController {
                 this.deps.updateMessagesStatusUI?.();
             }
         } catch (err) {
+            console.warn('[CallLog] _sendCallLog FAILED', err?.message || err);
             this.log({ callLogSendError: err?.message || err, peerAccountDigest: peerDigest });
             if (localMessage) {
                 const replacementInfo = this.deps.getReplacementInfo?.(err);
