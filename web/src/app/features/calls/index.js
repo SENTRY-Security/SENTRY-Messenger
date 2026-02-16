@@ -56,6 +56,7 @@ export {
   isLocalVideoMuted,
   setLocalVideoMuted,
   getLocalStream,
+  getRemoteStream,
   setRemoteVideoElement,
   setLocalVideoElement,
   toggleLocalVideo,

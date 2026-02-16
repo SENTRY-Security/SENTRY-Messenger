@@ -294,16 +294,23 @@ export function getLocalStream() {
   return localStream;
 }
 
+export function getRemoteStream() {
+  return remoteStream;
+}
+
 export function setRemoteVideoElement(el) {
   remoteVideoEl = el || null;
-  if (remoteVideoEl && remoteStream) {
-    try {
-      remoteVideoEl.srcObject = remoteStream;
-      const maybePlay = remoteVideoEl.play();
-      if (maybePlay && typeof maybePlay.catch === 'function') {
-        maybePlay.catch(() => {});
-      }
-    } catch {}
+  if (remoteVideoEl) {
+    remoteVideoEl.muted = true;
+    if (remoteStream) {
+      try {
+        remoteVideoEl.srcObject = remoteStream;
+        const maybePlay = remoteVideoEl.play();
+        if (maybePlay && typeof maybePlay.catch === 'function') {
+          maybePlay.catch(() => {});
+        }
+      } catch {}
+    }
   }
 }
 
@@ -845,6 +852,7 @@ function attachRemoteStream(stream) {
   if (remoteVideoEl && stream) {
     try {
       remoteVideoEl.srcObject = stream;
+      remoteVideoEl.muted = true;
       const maybePlay = remoteVideoEl.play();
       if (maybePlay && typeof maybePlay.catch === 'function') {
         maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));

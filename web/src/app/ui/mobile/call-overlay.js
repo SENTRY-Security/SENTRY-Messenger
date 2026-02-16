@@ -18,6 +18,7 @@ import {
   setRemoteVideoElement,
   setLocalVideoElement,
   getLocalStream,
+  getRemoteStream,
   toggleLocalVideo,
   switchCamera,
   resolveCallPeerProfile
@@ -529,7 +530,7 @@ function ensureOverlayElements() {
         </button>
       </div>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
-      <video class="call-remote-video" autoplay playsinline style="display:none"></video>
+      <video class="call-remote-video" autoplay playsinline muted style="display:none"></video>
       <div class="call-video-waiting" style="display:none">
         <div class="call-avatar" aria-hidden="true"></div>
         <div class="vw-name">好友</div>
@@ -1114,6 +1115,20 @@ export function initCallOverlay({ showToast }) {
           renderAvatarContent(ui.videoTopBarAvatar, profile);
           if (ui.videoTopBarName) ui.videoTopBarName.textContent = profile.name || '好友';
           if (ui.videoTopBarStatus) ui.videoTopBarStatus.textContent = describeSecureStatus(session);
+        }
+      }
+
+      // Re-attach remoteVideo srcObject and ensure play() is called.
+      // ontrack may fire before the element is visible, so play() can fail;
+      // re-trigger it here on every render while the call is active.
+      if (ui.remoteVideo && (inCall || connecting) && !state.videoSwapped) {
+        const rs = getRemoteStream();
+        if (rs) {
+          if (ui.remoteVideo.srcObject !== rs) {
+            ui.remoteVideo.srcObject = rs;
+            ui.remoteVideo.muted = true;
+          }
+          ui.remoteVideo.play().catch(() => {});
         }
       }
 
