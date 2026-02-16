@@ -5,21 +5,21 @@ import { ensureCallWorkerConfig, callWorkerRequest } from '../services/call-work
 import { logger } from '../utils/logger.js';
 
 const BackupRequestSchema = z.object({
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional(),
   payload: z.any(),
   checksum: z.string().max(128).optional(),
-  snapshotVersion: z.number().int().optional(),
+  snapshot_version: z.number().int().optional(),
   entries: z.number().int().optional(),
-  updatedAt: z.number().int().optional(),
+  updated_at: z.number().int().optional(),
   bytes: z.number().int().optional(),
-  withDrState: z.number().int().optional(),
-  deviceLabel: z.string().max(120).optional(),
-  deviceId: z.string().max(120),
+  with_dr_state: z.number().int().optional(),
+  device_label: z.string().max(120).optional(),
+  device_id: z.string().max(120),
   reason: z.string().max(80).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
   if (!value.payload || typeof value.payload !== 'object') {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'payload required' });
@@ -64,28 +64,28 @@ export const backupContactSecrets = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
   }
 
-  if (!input.deviceId) {
-    return res.status(400).json({ error: 'BadRequest', message: 'deviceId required' });
+  if (!input.device_id) {
+    return res.status(400).json({ error: 'BadRequest', message: 'device_id required' });
   }
 
   const workerPayload = {
     accountDigest: auth.accountDigest,
     payload: input.payload,
     checksum: input.checksum || null,
-    snapshotVersion: input.snapshotVersion ?? null,
+    snapshotVersion: input.snapshot_version ?? null,
     entries: input.entries ?? null,
-    updatedAt: input.updatedAt ?? Date.now(),
+    updatedAt: input.updated_at ?? Date.now(),
     bytes: input.bytes ?? null,
-    withDrState: input.withDrState ?? null,
-    deviceLabel: input.deviceLabel ?? null,
-    deviceId: input.deviceId,
+    withDrState: input.with_dr_state ?? null,
+    deviceLabel: input.device_label ?? null,
+    deviceId: input.device_id,
     reason: input.reason || 'auto'
   };
 

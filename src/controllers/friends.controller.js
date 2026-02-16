@@ -31,14 +31,14 @@ function respondAccountError(res, err, fallback = 'authorization failed') {
 }
 
 const DeleteContactSchema = z.object({
-  accountDigest: z.string().regex(AccountDigestRegex),
-  peerAccountDigest: z.string().regex(AccountDigestRegex),
-  conversationId: z.string().min(8).optional(),
-  peerDeviceId: z.string().min(1).optional(),
-  accountToken: z.string().min(8).optional()
+  account_digest: z.string().regex(AccountDigestRegex),
+  peer_account_digest: z.string().regex(AccountDigestRegex),
+  conversation_id: z.string().min(8).optional(),
+  peer_device_id: z.string().min(1).optional(),
+  account_token: z.string().min(8).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -62,17 +62,17 @@ export const deleteContact = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err, 'account verification failed');
   }
 
   const ownerAccountDigest = auth.accountDigest;
-  const peerAccountDigest = input.peerAccountDigest ? normalizeAccountDigest(input.peerAccountDigest) : null;
+  const peerAccountDigest = input.peer_account_digest ? normalizeAccountDigest(input.peer_account_digest) : null;
   if (!peerAccountDigest) {
-    return res.status(400).json({ error: 'BadRequest', message: 'peerAccountDigest required' });
+    return res.status(400).json({ error: 'BadRequest', message: 'peer_account_digest required' });
   }
 
   const path = '/d1/friends/contact-delete';
@@ -107,8 +107,8 @@ export const deleteContact = async (req, res) => {
     const peerTargetDigest = peerAccountDigest || normalizeAccountDigest(data?.results?.[0]?.target || null);
     if (peerTargetDigest) {
       manager.notifyContactsReload(null, peerTargetDigest);
-      const targetDeviceId = req.body?.targetDeviceId || null;
-      const conversationId = input.conversationId || null;
+      const targetDeviceId = req.body?.target_device_id || req.body?.targetDeviceId || null;
+      const conversationId = input.conversation_id || null;
       if (targetDeviceId && conversationId) {
         manager.sendContactRemoved(null, {
           fromAccountDigest: ownerAccountDigest,

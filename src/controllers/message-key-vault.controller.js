@@ -18,32 +18,34 @@ function logMessageKeyVault(kind, payload) {
 }
 
 const PutSchema = z.object({
-  conversationId: z.string().min(8),
-  messageId: z.string().min(8),
-  senderDeviceId: z.string().min(1),
-  targetDeviceId: z.string().min(1),
+  conversation_id: z.string().min(8),
+  message_id: z.string().min(8),
+  sender_device_id: z.string().min(1),
+  target_device_id: z.string().min(1),
   direction: z.enum(['incoming', 'outgoing']),
-  msgType: z.string().max(64).optional(),
-  headerCounter: z.number().int().nonnegative().nullable().optional(),
+  msg_type: z.string().max(64).optional(),
+  header_counter: z.number().int().nonnegative().nullable().optional(),
   wrapped_mk: z.object({}).passthrough(),
   wrap_context: z.object({}).passthrough(),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  dr_state: z.any().optional(),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
 const GetSchema = z.object({
-  conversationId: z.string().min(8),
-  messageId: z.string().min(1),
-  senderDeviceId: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  conversation_id: z.string().min(8),
+  message_id: z.string().min(1),
+  sender_device_id: z.string().min(1),
+  header_counter: z.number().int().nonnegative().nullable().optional(),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -74,7 +76,7 @@ export const putMessageKeyVault = async (req, res) => {
     // We intentionally omit input.accountDigest here to avoid a mismatch error
     // if the sender is writing to a peer's vault.
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken
+      accountToken: input.account_token
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -82,14 +84,14 @@ export const putMessageKeyVault = async (req, res) => {
 
   const payload = {
     // Use the explicit target digest (Peer) if provided, otherwise default to authenticated user (Self).
-    accountDigest: input.accountDigest || auth.accountDigest,
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    senderDeviceId: input.senderDeviceId,
-    targetDeviceId: input.targetDeviceId,
+    accountDigest: input.account_digest || auth.accountDigest,
+    conversationId: input.conversation_id,
+    messageId: input.message_id,
+    senderDeviceId: input.sender_device_id,
+    targetDeviceId: input.target_device_id,
     direction: input.direction,
-    msgType: input.msgType || null,
-    headerCounter: input.headerCounter ?? null,
+    msgType: input.msg_type || null,
+    headerCounter: input.header_counter ?? null,
     wrapped_mk: input.wrapped_mk,
     wrap_context: input.wrap_context
   };
@@ -101,9 +103,9 @@ export const putMessageKeyVault = async (req, res) => {
     });
     logMessageKeyVault('put', {
       accountDigestSuffix4: payload.accountDigest ? payload.accountDigest.slice(-4) : null,
-      conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId.slice(0, 8),
-      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      conversationIdPrefix8: input.conversation_id.slice(0, 8),
+      messageIdPrefix8: input.message_id.slice(0, 8),
+      senderDeviceIdSuffix4: input.sender_device_id.slice(-4),
       status: 200,
       errorCode: null
     });
@@ -120,9 +122,9 @@ export const putMessageKeyVault = async (req, res) => {
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
     logMessageKeyVault('put', {
       accountDigestSuffix4: payload.accountDigest ? payload.accountDigest.slice(-4) : null,
-      conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId.slice(0, 8),
-      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      conversationIdPrefix8: input.conversation_id.slice(0, 8),
+      messageIdPrefix8: input.message_id.slice(0, 8),
+      senderDeviceIdSuffix4: input.sender_device_id.slice(-4),
       status,
       errorCode: payloadErr?.error || null
     });
@@ -143,8 +145,8 @@ export const getMessageKeyVault = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -152,9 +154,9 @@ export const getMessageKeyVault = async (req, res) => {
 
   const payload = {
     accountDigest: auth.accountDigest,
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    senderDeviceId: input.senderDeviceId
+    conversationId: input.conversation_id,
+    messageId: input.message_id,
+    senderDeviceId: input.sender_device_id
   };
 
   try {
@@ -164,9 +166,9 @@ export const getMessageKeyVault = async (req, res) => {
     });
     logMessageKeyVault('get', {
       accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
-      conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId.slice(0, 8),
-      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      conversationIdPrefix8: input.conversation_id.slice(0, 8),
+      messageIdPrefix8: input.message_id.slice(0, 8),
+      senderDeviceIdSuffix4: input.sender_device_id.slice(-4),
       status: 200,
       errorCode: null
     });
@@ -183,9 +185,9 @@ export const getMessageKeyVault = async (req, res) => {
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
     logMessageKeyVault('get', {
       accountDigestSuffix4: auth.accountDigest ? auth.accountDigest.slice(-4) : null,
-      conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId.slice(0, 8),
-      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      conversationIdPrefix8: input.conversation_id.slice(0, 8),
+      messageIdPrefix8: input.message_id.slice(0, 8),
+      senderDeviceIdSuffix4: input.sender_device_id.slice(-4),
       status,
       errorCode: payload?.error || null
     });
@@ -194,13 +196,13 @@ export const getMessageKeyVault = async (req, res) => {
 };
 
 const GetCountSchema = z.object({
-  conversationId: z.string().min(8),
-  messageId: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  conversation_id: z.string().min(8),
+  message_id: z.string().min(1),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -217,16 +219,16 @@ export const getVaultPutCount = async (req, res) => {
   try {
     // Just verify auth, we don't strictly need user info for counting but good practice
     await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
   }
 
   const payload = {
-    conversationId: input.conversationId,
-    messageId: input.messageId
+    conversationId: input.conversation_id,
+    messageId: input.message_id
   };
 
   try {
@@ -249,14 +251,14 @@ export const getVaultPutCount = async (req, res) => {
   }
 };
 const DeleteSchema = z.object({
-  conversationId: z.string().min(8),
-  messageId: z.string().min(1),
-  senderDeviceId: z.string().min(1),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  conversation_id: z.string().min(8),
+  message_id: z.string().min(1),
+  sender_device_id: z.string().min(1),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -273,8 +275,8 @@ export const deleteMessageKeyVault = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -285,9 +287,9 @@ export const deleteMessageKeyVault = async (req, res) => {
   // Since the vault is partitioned by accountDigest, the user can only delete from their own partition.
   const payload = {
     accountDigest: auth.accountDigest,
-    conversationId: input.conversationId,
-    messageId: input.messageId,
-    senderDeviceId: input.senderDeviceId
+    conversationId: input.conversation_id,
+    messageId: input.message_id,
+    senderDeviceId: input.sender_device_id
   };
 
   try {
@@ -297,9 +299,9 @@ export const deleteMessageKeyVault = async (req, res) => {
     });
     logMessageKeyVault('put', { // Log as 'put' kind since it's a write op
       accountDigestSuffix4: auth.accountDigest.slice(-4),
-      conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId.slice(0, 8),
-      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      conversationIdPrefix8: input.conversation_id.slice(0, 8),
+      messageIdPrefix8: input.message_id.slice(0, 8),
+      senderDeviceIdSuffix4: input.sender_device_id.slice(-4),
       status: 200,
       deleted: data?.deleted,
       errorCode: null
@@ -317,9 +319,9 @@ export const deleteMessageKeyVault = async (req, res) => {
       : { error: 'WorkerError', message: err?.message || 'worker request failed' };
     logMessageKeyVault('put', {
       accountDigestSuffix4: auth.accountDigest.slice(-4),
-      conversationIdPrefix8: input.conversationId.slice(0, 8),
-      messageIdPrefix8: input.messageId.slice(0, 8),
-      senderDeviceIdSuffix4: input.senderDeviceId.slice(-4),
+      conversationIdPrefix8: input.conversation_id.slice(0, 8),
+      messageIdPrefix8: input.message_id.slice(0, 8),
+      senderDeviceIdSuffix4: input.sender_device_id.slice(-4),
       status,
       errorCode: payloadErr?.error || null
     });
@@ -328,12 +330,12 @@ export const deleteMessageKeyVault = async (req, res) => {
 };
 
 const GetLatestStateSchema = z.object({
-  conversationId: z.string().min(8),
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  conversation_id: z.string().min(8),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -350,8 +352,8 @@ export const getLatestStateVault = async (req, res) => {
   let auth;
   try {
     auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -359,7 +361,7 @@ export const getLatestStateVault = async (req, res) => {
 
   const payload = {
     accountDigest: auth.accountDigest,
-    conversationId: input.conversationId
+    conversationId: input.conversation_id
   };
 
   try {
@@ -370,7 +372,7 @@ export const getLatestStateVault = async (req, res) => {
     if (data) {
       logMessageKeyVault('get', {
         accountDigestSuffix4: auth.accountDigest.slice(-4),
-        conversationIdPrefix8: input.conversationId.slice(0, 8),
+        conversationIdPrefix8: input.conversation_id.slice(0, 8),
         status: 200,
         eventSubType: 'latest-state'
       });

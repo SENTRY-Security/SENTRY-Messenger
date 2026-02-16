@@ -3,17 +3,17 @@ import { getAccountToken, getAccountDigest, ensureDeviceId } from '../core/store
 
 function withAccount(payload = {}) {
   const out = { ...payload };
-  if (out.accountToken == null) {
+  if (out.account_token == null) {
     const token = getAccountToken();
-    if (token) out.accountToken = token;
+    if (token) out.account_token = token;
   }
-  if (out.accountDigest == null) {
+  if (out.account_digest == null) {
     const digest = getAccountDigest();
-    if (digest) out.accountDigest = digest;
+    if (digest) out.account_digest = digest;
   }
-  if (out.accountDigest != null) {
-    const cleanedDigest = String(out.accountDigest).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-    if (cleanedDigest) out.accountDigest = cleanedDigest; else delete out.accountDigest;
+  if (out.account_digest != null) {
+    const cleanedDigest = String(out.account_digest).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+    if (cleanedDigest) out.account_digest = cleanedDigest; else delete out.account_digest;
   }
   return out;
 }
@@ -26,7 +26,7 @@ function withDeviceHeaders() {
 export async function friendsDeleteContact({ peerAccountDigest } = {}) {
   const digest = getAccountDigest();
   if (!digest) throw new Error('Not unlocked: account missing');
-  const payload = withAccount({ peerAccountDigest });
+  const payload = withAccount({ peer_account_digest: peerAccountDigest });
   const { r, data } = await fetchJSON('/api/v1/friends/delete', payload, withDeviceHeaders());
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'delete contact failed', r.status);

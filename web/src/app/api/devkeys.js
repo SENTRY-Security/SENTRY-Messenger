@@ -10,11 +10,11 @@ import { getAccountToken, getAccountDigest } from '../core/store.js';
 function buildPayload(base = {}) {
   const payload = {};
   const token = base.accountToken ?? getAccountToken();
-  if (token) payload.accountToken = String(token).trim();
+  if (token) payload.account_token = String(token).trim();
   const digestInput = base.accountDigest ?? getAccountDigest();
   if (digestInput) {
     const cleaned = String(digestInput).replace(/[^0-9A-F]/gi, '').toUpperCase();
-    if (cleaned) payload.accountDigest = cleaned;
+    if (cleaned) payload.account_digest = cleaned;
   }
   return payload;
 }

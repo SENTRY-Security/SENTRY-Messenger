@@ -5,8 +5,8 @@ import { log } from '../core/log.js';
 function buildAccountHeaders() {
   const payload = buildAccountPayload();
   const headers = {};
-  if (payload.accountToken) headers['X-Account-Token'] = payload.accountToken;
-  if (payload.accountDigest) headers['X-Account-Digest'] = payload.accountDigest;
+  if (payload.account_token) headers['X-Account-Token'] = payload.account_token;
+  if (payload.account_digest) headers['X-Account-Digest'] = payload.account_digest;
   return headers;
 }
 
@@ -33,13 +33,13 @@ export async function uploadContactSecretsBackup({
 } = {}, fetchOptions = {}) {
   const overrides = { payload, reason: reason || 'auto' };
   if (checksum != null) overrides.checksum = checksum;
-  if (snapshotVersion != null) overrides.snapshotVersion = snapshotVersion;
+  if (snapshotVersion != null) overrides.snapshot_version = snapshotVersion;
   if (Number.isFinite(entries)) overrides.entries = entries;
-  if (Number.isFinite(updatedAt)) overrides.updatedAt = updatedAt;
+  if (Number.isFinite(updatedAt)) overrides.updated_at = updatedAt;
   if (Number.isFinite(bytes)) overrides.bytes = bytes;
-  if (Number.isFinite(withDrState)) overrides.withDrState = withDrState;
-  if (deviceLabel) overrides.deviceLabel = deviceLabel;
-  if (deviceId) overrides.deviceId = deviceId;
+  if (Number.isFinite(withDrState)) overrides.with_dr_state = withDrState;
+  if (deviceLabel) overrides.device_label = deviceLabel;
+  if (deviceId) overrides.device_id = deviceId;
   const body = buildAccountPayload({ overrides });
   const request = jsonReq(body);
   const merged = { ...request, ...fetchOptions };

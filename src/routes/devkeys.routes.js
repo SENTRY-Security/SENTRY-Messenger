@@ -31,13 +31,13 @@ async function callWorker(path, bodyObj) {
 const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const AccountSelectorBase = z.object({
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 });
 
 function ensureAccountSelector(value, ctx) {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 }
 
@@ -70,16 +70,16 @@ function digestToken(token) {
   return crypto.createHash('sha256').update(String(token), 'utf8').digest('hex').toUpperCase();
 }
 
-function prepAccountPayload({ accountToken, accountDigest }) {
+function prepAccountPayload({ account_token, account_digest }) {
   const payload = {};
-  const tokenClean = accountToken ? String(accountToken).trim() : '';
+  const tokenClean = account_token ? String(account_token).trim() : '';
   if (tokenClean) {
     payload.accountToken = tokenClean;
     payload.accountDigest = digestToken(tokenClean);
     return payload;
   }
-  if (accountDigest) {
-    const cleanedDigest = String(accountDigest).replace(/[^0-9A-F]/gi, '').toUpperCase();
+  if (account_digest) {
+    const cleanedDigest = String(account_digest).replace(/[^0-9A-F]/gi, '').toUpperCase();
     if (cleanedDigest) payload.accountDigest = cleanedDigest;
   }
   return payload;

@@ -12,12 +12,12 @@ const latestLoginTs = new Map(); // accountDigest -> sessionTs
 const AccountDigestRegex = /^[0-9A-Fa-f]{64}$/;
 
 const TokenRequestSchema = z.object({
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional(),
-  sessionTs: z.number().int().optional() // client-supplied timestamp; informational only
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional(),
+  session_ts: z.number().int().optional() // client-supplied timestamp; informational only
 }).superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
 
@@ -33,9 +33,9 @@ r.post('/ws/token', async (req, res) => {
   }
 
   const payload = {};
-  if (input.accountToken) payload.accountToken = String(input.accountToken).trim();
-  if (input.accountDigest) {
-    const normalizedDigest = normalizeAccountDigest(input.accountDigest);
+  if (input.account_token) payload.accountToken = String(input.account_token).trim();
+  if (input.account_digest) {
+    const normalizedDigest = normalizeAccountDigest(input.account_digest);
     if (normalizedDigest) payload.accountDigest = normalizedDigest;
   }
 
@@ -63,10 +63,10 @@ r.post('/ws/token', async (req, res) => {
   const { token, payload: tokenPayload } = createWsToken({ accountDigest, issuedAt: sessionTs });
   return res.json({
     token,
-    expiresAt: tokenPayload.exp,
-    accountDigest: tokenPayload.accountDigest,
-    sessionTs,
-    clientSessionTs: input.sessionTs ?? null
+    expires_at: tokenPayload.exp,
+    account_digest: tokenPayload.accountDigest,
+    session_ts: sessionTs,
+    client_session_ts: input.session_ts ?? null
   });
 });
 

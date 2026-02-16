@@ -17,52 +17,52 @@ const DEFAULT_TURN_ENDPOINT = '/api/v1/calls/turn-credentials';
 const RAW_CALL_NETWORK_CONFIG = baseCallNetworkConfig?.default ?? baseCallNetworkConfig ?? {};
 
 const BaseAccountSchema = z.object({
-  accountToken: z.string().min(8).optional(),
-  accountDigest: z.string().regex(AccountDigestRegex).optional()
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
 });
 
 const withAccountAuthGuard = (schema) => schema.superRefine((value, ctx) => {
-  if (!value.accountToken && !value.accountDigest) {
+  if (!value.account_token && !value.account_digest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'accountToken or accountDigest required' });
   }
 });
 
 const CallInviteSchema = withAccountAuthGuard(BaseAccountSchema.extend({
-  peerAccountDigest: z.string().regex(AccountDigestRegex),
-  callId: z.string().regex(CallIdRegex).optional(),
+  peer_account_digest: z.string().regex(AccountDigestRegex),
+  call_id: z.string().regex(CallIdRegex).optional(),
   mode: z.enum(['voice', 'video']).optional(),
-  preferredDeviceId: z.string().min(1).optional(),
+  preferred_device_id: z.string().min(1).optional(),
   capabilities: z.record(z.any()).optional(),
   metadata: z.record(z.any()).optional(),
-  expiresInSeconds: z.number().int().min(30).max(600).optional(),
-  traceId: z.string().min(6).max(64).optional(),
-  deviceId: z.string().min(1).optional()
+  expires_in_seconds: z.number().int().min(30).max(600).optional(),
+  trace_id: z.string().min(6).max(64).optional(),
+  device_id: z.string().min(1).optional()
 }));
 
 const CallMutateSchema = withAccountAuthGuard(BaseAccountSchema.extend({
-  callId: z.string().regex(CallIdRegex),
+  call_id: z.string().regex(CallIdRegex),
   reason: z.string().max(48).optional(),
-  traceId: z.string().max(64).optional(),
-  deviceId: z.string().min(1).optional()
+  trace_id: z.string().max(64).optional(),
+  device_id: z.string().min(1).optional()
 }));
 
 const CallAckSchema = withAccountAuthGuard(BaseAccountSchema.extend({
-  callId: z.string().regex(CallIdRegex),
-  traceId: z.string().max(64).optional(),
-  deviceId: z.string().min(1).optional()
+  call_id: z.string().regex(CallIdRegex),
+  trace_id: z.string().max(64).optional(),
+  device_id: z.string().min(1).optional()
 }));
 
 const CallMetricsSchema = withAccountAuthGuard(BaseAccountSchema.extend({
-  callId: z.string().regex(CallIdRegex),
+  call_id: z.string().regex(CallIdRegex),
   metrics: z.record(z.any()),
   status: z.enum(['dialing', 'ringing', 'connected', 'ended', 'failed']).optional(),
-  endReason: z.string().max(48).optional(),
+  end_reason: z.string().max(48).optional(),
   ended: z.boolean().optional(),
-  deviceId: z.string().min(1).optional()
+  device_id: z.string().min(1).optional()
 }));
 
 const TurnCredentialSchema = withAccountAuthGuard(BaseAccountSchema.extend({
-  ttlSeconds: z.number().int().min(60).max(600).optional()
+  ttl_seconds: z.number().int().min(60).max(600).optional()
 }));
 
 function cloneNetworkConfigTemplate() {
@@ -259,25 +259,25 @@ export async function inviteCall(req, res) {
   if (!senderDeviceId) {
     return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
   }
-  const peerDigest = normalizeAccountDigest(input.peerAccountDigest);
+  const peerDigest = normalizeAccountDigest(input.peer_account_digest);
   if (!peerDigest) {
     return res.status(400).json({ error: 'BadRequest', message: 'peerAccountDigest required' });
   }
   try {
     var auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
   }
-  const callId = (input.callId && input.callId.toLowerCase()) || crypto.randomUUID();
-  const ttlSeconds = clamp(input.expiresInSeconds ?? DEFAULT_SESSION_TTL, 30, 600);
+  const callId = (input.call_id && input.call_id.toLowerCase()) || crypto.randomUUID();
+  const ttlSeconds = clamp(input.expires_in_seconds ?? DEFAULT_SESSION_TTL, 30, 600);
 
   // Degraded mode: Data API worker not configured — skip device validation
   // and D1 session creation, but still allow calls via WebSocket signaling.
   if (!workerAvailable) {
-    const targetDeviceId = input.preferredDeviceId || null;
+    const targetDeviceId = input.preferred_device_id || null;
     if (!targetDeviceId) {
       return res.status(400).json({ error: 'BadRequest', message: 'preferredDeviceId required when data worker is unavailable' });
     }
@@ -297,10 +297,10 @@ export async function inviteCall(req, res) {
     if (!okDevice) return;
     let targetDeviceId;
     try {
-      targetDeviceId = await resolveTargetDeviceId(peerDigest, input.preferredDeviceId || null);
+      targetDeviceId = await resolveTargetDeviceId(peerDigest, input.preferred_device_id || null);
     } catch (err) {
       // If preferred device was given and device validation failed, fall through to degraded
-      if (!input.preferredDeviceId) {
+      if (!input.preferred_device_id) {
         const status = err?.status || 409;
         const code = err?.code || 'peer-device-not-active';
         return res.status(status).json({ error: code, message: err?.message || code });
@@ -318,7 +318,7 @@ export async function inviteCall(req, res) {
       capabilities: input.capabilities || null,
       metadata: {
         ...(input.metadata || {}),
-        traceId: input.traceId || null,
+        traceId: input.trace_id || null,
         initiatedBy: auth.accountDigest
       },
       targetDeviceId,
@@ -342,10 +342,10 @@ export async function inviteCall(req, res) {
     await appendCallEvent({
       callId,
       type: 'call-invite',
-      payload: { traceId: input.traceId || null, mode: input.mode || 'voice', capabilities: input.capabilities || null, targetDeviceId },
+      payload: { traceId: input.trace_id || null, mode: input.mode || 'voice', capabilities: input.capabilities || null, targetDeviceId },
       fromAccountDigest: auth.accountDigest,
       toAccountDigest: peerDigest,
-      traceId: input.traceId || null
+      traceId: input.trace_id || null
     });
     return res.status(200).json({
       ok: true,
@@ -357,7 +357,7 @@ export async function inviteCall(req, res) {
   } catch (workerErr) {
     // Data API worker is configured but unreachable/broken — fall back to degraded mode
     console.error('[calls] worker unavailable, using degraded mode:', workerErr?.message || workerErr);
-    const targetDeviceId = input.preferredDeviceId || null;
+    const targetDeviceId = input.preferred_device_id || null;
     if (!targetDeviceId) {
       return res.status(400).json({ error: 'BadRequest', message: 'preferredDeviceId required when data worker is unavailable' });
     }
@@ -385,8 +385,8 @@ export async function cancelCall(req, res) {
   }
   try {
     var auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -397,7 +397,7 @@ export async function cancelCall(req, res) {
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
   const payload = {
-    callId: input.callId,
+    callId: input.call_id,
     status: 'ended',
     endReason: input.reason || 'cancelled',
     endedAt: Date.now(),
@@ -414,11 +414,11 @@ export async function cancelCall(req, res) {
     return res.status(err.status || 502).json({ error: 'CallCancelFailed', message: err?.message, details: err?.payload || null });
   }
   await appendCallEvent({
-    callId: input.callId,
+    callId: input.call_id,
     type: 'call-cancel',
     payload: { reason: input.reason || 'cancelled' },
     fromAccountDigest: auth.accountDigest,
-    traceId: input.traceId || null
+    traceId: input.trace_id || null
   });
   return res.status(200).json({ ok: true, session: workerRes?.session || null });
 }
@@ -436,8 +436,8 @@ export async function acknowledgeCall(req, res) {
   }
   try {
     var auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -448,7 +448,7 @@ export async function acknowledgeCall(req, res) {
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
   const payload = {
-    callId: input.callId,
+    callId: input.call_id,
     status: 'ringing',
     expiresAt: Date.now() + 90_000,
     metadata: {
@@ -463,11 +463,11 @@ export async function acknowledgeCall(req, res) {
     return res.status(err.status || 502).json({ error: 'CallAckFailed', message: err?.message, details: err?.payload || null });
   }
   await appendCallEvent({
-    callId: input.callId,
+    callId: input.call_id,
     type: 'call-ack',
     payload: { ackAccountDigest: auth.accountDigest },
     fromAccountDigest: auth.accountDigest,
-    traceId: input.traceId || null
+    traceId: input.trace_id || null
   });
   return res.status(200).json({ ok: true, session: workerRes?.session || null });
 }
@@ -485,8 +485,8 @@ export async function reportCallMetrics(req, res) {
   }
   try {
     var auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -497,10 +497,10 @@ export async function reportCallMetrics(req, res) {
   const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
   if (!okDevice) return;
   const payload = {
-    callId: input.callId,
+    callId: input.call_id,
     metrics: input.metrics,
     status: input.status,
-    endReason: input.endReason,
+    endReason: input.end_reason,
     endedAt: input.ended ? Date.now() : undefined,
     senderDeviceId
   };
@@ -511,7 +511,7 @@ export async function reportCallMetrics(req, res) {
     return res.status(err.status || 502).json({ error: 'CallMetricsFailed', message: err?.message, details: err?.payload || null });
   }
   await appendCallEvent({
-    callId: input.callId,
+    callId: input.call_id,
     type: 'call-report-metrics',
     payload: input.metrics,
     fromAccountDigest: auth.accountDigest
@@ -603,8 +603,8 @@ export async function issueTurnCredentials(req, res) {
   const input = parsed.data;
   try {
     var auth = await resolveAccountAuth({
-      accountToken: input.accountToken,
-      accountDigest: input.accountDigest
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
     });
   } catch (err) {
     return respondAccountError(res, err);
@@ -613,7 +613,7 @@ export async function issueTurnCredentials(req, res) {
     const okDevice = await assertActiveDeviceOrFail(res, auth.accountDigest, senderDeviceId);
     if (!okDevice) return;
   }
-  const ttlSeconds = clamp(input.ttlSeconds ?? TURN_TTL_SECONDS, 60, 600);
+  const ttlSeconds = clamp(input.ttl_seconds ?? TURN_TTL_SECONDS, 60, 600);
 
   // Request credentials from Cloudflare TURN API
   try {

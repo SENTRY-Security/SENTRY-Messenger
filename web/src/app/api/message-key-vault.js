@@ -23,14 +23,14 @@ export async function putMessageKeyVault(params = {}) {
     : (Number.isFinite(Number(headerCounterRaw)) ? Number(headerCounterRaw) : null);
   const payload = buildAccountPayload({
     overrides: {
-      accountDigest: params.accountDigest,
-      conversationId: params.conversationId,
-      messageId: params.messageId,
-      senderDeviceId: params.senderDeviceId,
-      targetDeviceId: params.targetDeviceId,
+      account_digest: params.accountDigest,
+      conversation_id: params.conversationId,
+      message_id: params.messageId,
+      sender_device_id: params.senderDeviceId,
+      target_device_id: params.targetDeviceId,
       direction: params.direction,
-      msgType: params.msgType || null,
-      headerCounter,
+      msg_type: params.msgType || null,
+      header_counter: headerCounter,
       wrapped_mk: params.wrapped_mk,
       wrap_context: params.wrap_context,
       dr_state: params.dr_state || null
@@ -48,10 +48,10 @@ export async function getMessageKeyVault(params = {}) {
   }
   const payload = buildAccountPayload({
     overrides: {
-      conversationId: params.conversationId,
-      messageId: params.messageId || null,
-      headerCounter: params.headerCounter ?? null,
-      senderDeviceId: params.senderDeviceId
+      conversation_id: params.conversationId,
+      message_id: params.messageId || null,
+      header_counter: params.headerCounter ?? null,
+      sender_device_id: params.senderDeviceId
     }
   });
   const r = await fetchWithTimeout('/api/v1/message-key-vault/get', jsonReq(payload), 10000);
@@ -62,8 +62,8 @@ export async function getVaultPutCount(params = {}) {
   if (!params?.messageId) throw new Error('messageId required');
   const payload = buildAccountPayload({
     overrides: {
-      conversationId: params.conversationId,
-      messageId: params.messageId
+      conversation_id: params.conversationId,
+      message_id: params.messageId
     }
   });
   const r = await fetchWithTimeout('/api/v1/message-key-vault/count', jsonReq(payload), 5000);
@@ -76,9 +76,9 @@ export async function deleteMessageKeyVault(params = {}) {
   if (!params?.senderDeviceId) throw new Error('senderDeviceId required');
   const payload = buildAccountPayload({
     overrides: {
-      conversationId: params.conversationId,
-      messageId: params.messageId,
-      senderDeviceId: params.senderDeviceId
+      conversation_id: params.conversationId,
+      message_id: params.messageId,
+      sender_device_id: params.senderDeviceId
     }
   });
   const r = await fetchWithTimeout('/api/v1/message-key-vault/delete', jsonReq(payload), 5000);
@@ -89,8 +89,8 @@ export async function getLatestStateVault(params = {}) {
   if (!params?.conversationId) throw new Error('conversationId required');
   const payload = buildAccountPayload({
     overrides: {
-      conversationId: params.conversationId,
-      senderDeviceId: params.senderDeviceId // Optional optimization
+      conversation_id: params.conversationId,
+      sender_device_id: params.senderDeviceId // Optional optimization
     }
   });
   const r = await fetchWithTimeout('/api/v1/message-key-vault/latest-state', jsonReq(payload), 8000); // Higher timeout for SQL query

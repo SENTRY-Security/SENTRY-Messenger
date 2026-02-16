@@ -77,7 +77,7 @@ export function createWsIntegration({ deps }) {
       err.code = typeof data === 'object' ? (data?.error || null) : null;
       throw err;
     }
-    const expiresAt = Number(data.expiresAt || data.exp || 0) || null;
+    const expiresAt = Number(data.expires_at || data.expiresAt || data.exp || 0) || null;
     wsAuthTokenInfo = { token: data.token, expiresAt };
     return wsAuthTokenInfo;
   }
