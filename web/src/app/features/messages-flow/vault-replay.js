@@ -5,6 +5,7 @@ import { MessageKeyVault } from '../message-key-vault.js';
 import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../../crypto/dr.js';
 import { b64u8 as naclB64u8 } from '../../crypto/nacl.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
+import { normalizeCallLogPayload, resolveViewerRole, describeCallLogForViewer } from '../calls/call-log.js';
 import {
   normalizeSemanticSubtype,
   isUserMessageSubtype,
@@ -485,6 +486,20 @@ export async function decryptReplayBatch({
         }
       } catch (e) {
         console.warn('[vault-replay] failed to parse media json', e);
+      }
+    }
+
+    // 3. If identified as call-log, build callLog nested object (renderer requires msg.callLog)
+    if (decryptedItem.msgType === 'call-log' && typeof text === 'string' && text.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(text);
+        const callLog = normalizeCallLogPayload(parsed, item.meta || {});
+        const viewerRole = resolveViewerRole(callLog.authorRole, decryptedItem.direction || 'incoming');
+        const { label, subLabel } = describeCallLogForViewer(callLog, viewerRole);
+        decryptedItem.callLog = { ...callLog, viewerRole, label, subLabel };
+        decryptedItem.text = label || 'Call';
+      } catch (e) {
+        console.warn('[vault-replay] failed to parse call-log json', e);
       }
     }
 
