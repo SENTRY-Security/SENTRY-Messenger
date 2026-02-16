@@ -209,6 +209,9 @@ export function initCallMediaSession({ sendSignalFn, showToastFn }) {
   sendSignal = typeof sendSignalFn === 'function' ? sendSignalFn : null;
   showToast = typeof showToastFn === 'function' ? showToastFn : () => { };
   ensureRemoteAudioElement();
+  // Advertise accurate insertableStreams capability early so the call-invite
+  // signal (sent before attachLocalMedia) reflects actual browser support.
+  hydrateCallCapability({ insertableStreams: supportsInsertableStreams() });
   if (unsubscribers.length) return;
   unsubscribers = [
     subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => handleSignal(signal)),
@@ -561,7 +564,7 @@ async function attachLocalMedia() {
     }
     const hasVideo = localStream.getVideoTracks().length > 0;
     updateCallMedia({ controls: { videoEnabled: hasVideo } });
-    hydrateCallCapability({ video: hasVideo });
+    hydrateCallCapability({ video: hasVideo, insertableStreams: supportsInsertableStreams() });
   } catch (err) {
     showToast?.('無法存取麥克風：' + (err?.message || err), { variant: 'error' });
     log({ callMediaMicError: err?.message || err });
@@ -845,23 +848,39 @@ function attachRemoteStream(stream) {
     // iOS Safari garbles audio when the same MediaStream is shared between
     // an <audio> and a <video> element.  Give the audio element a dedicated
     // stream that contains only audio tracks to avoid the conflict.
+    // Skip reassignment when the tracks haven't changed so a pending play()
+    // is not interrupted by a redundant load (fixes "play() interrupted by a
+    // new load request" on back-to-back ontrack events).
     const audioTracks = stream.getAudioTracks();
-    remoteAudioEl.srcObject = audioTracks.length
-      ? new MediaStream(audioTracks)
-      : stream;
-    remoteAudioEl.style.display = 'block';
-    applyRemoteAudioMuteState();
-    attemptRemoteAudioPlayback();
+    if (audioTracks.length) {
+      const curSrc = remoteAudioEl.srcObject;
+      const curIds = curSrc ? curSrc.getAudioTracks().map((t) => t.id) : [];
+      const newIds = audioTracks.map((t) => t.id);
+      const changed = curIds.length !== newIds.length
+        || newIds.some((id, i) => id !== curIds[i]);
+      if (changed) {
+        remoteAudioEl.srcObject = new MediaStream(audioTracks);
+        remoteAudioEl.style.display = 'block';
+        applyRemoteAudioMuteState();
+        attemptRemoteAudioPlayback();
+      }
+    }
   } catch (err) {
     log({ callMediaAttachError: err?.message || err });
   }
   if (remoteVideoEl && stream) {
     try {
-      remoteVideoEl.srcObject = stream;
-      remoteVideoEl.muted = true;
-      const maybePlay = remoteVideoEl.play();
-      if (maybePlay && typeof maybePlay.catch === 'function') {
-        maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
+      // Avoid redundant srcObject assignment — same MediaStream reference
+      // means tracks are updated in place, no need to trigger a new load.
+      if (remoteVideoEl.srcObject !== stream) {
+        remoteVideoEl.srcObject = stream;
+        remoteVideoEl.muted = true;
+      }
+      if (remoteVideoEl.paused) {
+        const maybePlay = remoteVideoEl.play();
+        if (maybePlay && typeof maybePlay.catch === 'function') {
+          maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
+        }
       }
     } catch (err) {
       log({ callMediaVideoAttachError: err?.message || err });
@@ -881,8 +900,18 @@ function attemptRemoteAudioPlayback() {
   }
 }
 
+function peerSupportsInsertableStreams() {
+  // After receiving the peer's key envelope, mediaState.capabilities
+  // reflects the peer's advertised capability.  If the peer does not
+  // support insertable streams we must not encrypt (they cannot decrypt)
+  // and need not decrypt (they did not encrypt).
+  const caps = getCallMediaState()?.capabilities;
+  return caps ? caps.insertableStreams !== false : true;
+}
+
 function setupInsertableStreamsForSender(sender, track) {
   if (!supportsInsertableStreams() || !sender || !track) return;
+  if (!peerSupportsInsertableStreams()) return;
   const keyContext = getCallKeyContext();
   if (!keyContext) return;
   const keyName = track.kind === 'video' ? 'videoTx' : 'audioTx';
@@ -893,6 +922,7 @@ function setupInsertableStreamsForSender(sender, track) {
 
 function setupInsertableStreamsForReceiver(receiver, track) {
   if (!supportsInsertableStreams() || !receiver || !track) return;
+  if (!peerSupportsInsertableStreams()) return;
   const keyContext = getCallKeyContext();
   if (!keyContext) return;
   const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';
