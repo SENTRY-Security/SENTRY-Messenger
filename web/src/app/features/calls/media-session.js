@@ -842,7 +842,13 @@ function cleanupPeerConnection(reason) {
 function attachRemoteStream(stream) {
   if (!remoteAudioEl) return;
   try {
-    remoteAudioEl.srcObject = stream;
+    // iOS Safari garbles audio when the same MediaStream is shared between
+    // an <audio> and a <video> element.  Give the audio element a dedicated
+    // stream that contains only audio tracks to avoid the conflict.
+    const audioTracks = stream.getAudioTracks();
+    remoteAudioEl.srcObject = audioTracks.length
+      ? new MediaStream(audioTracks)
+      : stream;
     remoteAudioEl.style.display = 'block';
     applyRemoteAudioMuteState();
     attemptRemoteAudioPlayback();
