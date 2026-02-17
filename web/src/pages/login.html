@@ -30,9 +30,9 @@
       #loginSplash .splash-spinner{width:36px;height:36px;border-radius:50%;border:3px solid rgba(148,163,184,0.25);border-top-color:#38bdf8;animation:login-spin .9s linear infinite;margin-bottom:12px}
       #loginSplash .splash-text{font-size:13px;color:#94a3b8;letter-spacing:.3px}
       html.no-anim #loginSplash .splash-spinner{animation:none}
-      :root { color-scheme: light; --bg:#0f172a; --fg:#111827; --muted:#64748b; --line:#e2e8f0; --card:#ffffff; --gradient: linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
+      :root { color-scheme: dark; --bg:#0f172a; --fg:#111827; --muted:#64748b; --line:#e2e8f0; --card:#ffffff; --gradient: linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
       html, body { height:100%; min-height:100%; }
-      html { background:var(--gradient); }
+      html { background:var(--gradient); background-color:#0f172a; }
       /* 減少初始動畫干擾（e2e 用）：停用旋轉（僅當 html.no-anim） */
       html.no-anim .loading-spinner,
       html.no-anim button.loading .btn-spinner,
@@ -46,6 +46,7 @@
         min-height:100vh;
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, 'Noto Sans TC', sans-serif;
         background:var(--gradient);
+        background-color:#0f172a;
         background-attachment:fixed;
         display:flex;
         justify-content:center;
@@ -66,6 +67,7 @@
         pointer-events:none;
       }
       .login-shell {
+        color-scheme:light;
         width:min(420px,100%);
         background:var(--card);
         border-radius:24px;
@@ -277,9 +279,9 @@
       html.orientation-block body { overflow:hidden; height:100%; }
       html.orientation-block .orientation-overlay { display:flex; }
       button, input, select, textarea { font-family:inherit; color:inherit; font-size:14px; }
-      .version-info-btn { position:fixed; bottom:16px; right:16px; width:28px; height:28px; border-radius:999px; border:none; background:rgba(15,23,42,0.78); color:#f8fafc; font-size:14px; font-weight:600; display:flex; align-items:center; justify-content:center; cursor:pointer; opacity:0.55; transition:opacity .2s ease, transform .2s ease; z-index:2200; }
+      .version-info-btn { position:fixed; bottom:calc(16px + env(safe-area-inset-bottom, 0px)); right:16px; width:28px; height:28px; border-radius:999px; border:none; background:rgba(15,23,42,0.78); color:#f8fafc; font-size:14px; font-weight:600; display:flex; align-items:center; justify-content:center; cursor:pointer; opacity:0.55; transition:opacity .2s ease, transform .2s ease; z-index:2200; }
       .version-info-btn:hover, .version-info-btn:focus-visible { opacity:0.95; transform:scale(1.05); outline:none; }
-      .version-info-popup { position:fixed; bottom:54px; right:16px; max-width:240px; border-radius:14px; padding:12px 14px; font-size:12px; line-height:1.6; background:rgba(15,23,42,0.92); color:#f1f5f9; box-shadow:0 14px 34px rgba(15,23,42,0.45); z-index:2200; display:none; }
+      .version-info-popup { position:fixed; bottom:calc(54px + env(safe-area-inset-bottom, 0px)); right:16px; max-width:240px; border-radius:14px; padding:12px 14px; font-size:12px; line-height:1.6; background:rgba(15,23,42,0.92); color:#f1f5f9; box-shadow:0 14px 34px rgba(15,23,42,0.45); z-index:2200; display:none; }
       .version-info-popup[data-open="true"] { display:block; }
       .version-info-popup strong { display:block; font-size:12px; letter-spacing:0.3px; margin-bottom:4px; color:#bae6fd; }
       .version-storage-list { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
