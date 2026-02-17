@@ -13,11 +13,12 @@
   <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
   <!-- Loading Modal inline styles — renders before any external CSS -->
   <style>
-    #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;transition:opacity .5s ease;overflow:hidden}
+    #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;overflow:hidden}
     #appLoadingModal .app-tm-canvas{position:absolute;inset:0;z-index:0}
     #appLoadingModal .app-tm-overlay{position:absolute;inset:0;z-index:1;background:radial-gradient(ellipse at 50% 50%,transparent 0%,rgba(5,10,20,0.4) 60%,rgba(5,10,20,0.85) 100%);pointer-events:none}
     #appLoadingModal .app-tm-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:0;pointer-events:none}
-    #appLoadingModal.fade-out{opacity:0;pointer-events:none}
+    #appLoadingModal.glitch-out{pointer-events:none;animation:glitch-dissolve .7s ease-out forwards}
+    @keyframes glitch-dissolve{0%{transform:translate(0);filter:none;opacity:1}15%{transform:translate(-5px,2px) skewX(-2deg);filter:hue-rotate(90deg) saturate(3) brightness(1.4);opacity:1}30%{transform:translate(6px,-3px) skewX(3deg);filter:hue-rotate(-60deg) brightness(1.8);opacity:.9}50%{transform:translate(-3px,4px) scaleX(1.03);filter:blur(2px) hue-rotate(120deg) saturate(2);opacity:.65}70%{transform:translate(4px,-2px) scaleY(1.04);filter:blur(6px) brightness(1.2);opacity:.3}100%{transform:translate(0) scale(1.06);filter:blur(16px);opacity:0}}
     #appLoadingModal .loading-logo{width:52px;height:52px;margin-bottom:18px;filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation:app-pulse 3s ease-in-out infinite}
     #appLoadingModal .loading-brand{font-size:18px;font-weight:700;letter-spacing:4px;color:#e0f2fe;margin-bottom:8px;text-shadow:0 0 20px rgba(56,189,248,0.5),0 0 40px rgba(99,102,241,0.3);min-width:220px;text-align:center;height:1.4em;line-height:1.4em}
     #appLoadingModal .loading-sublabel{font-size:11px;letter-spacing:2.5px;color:rgba(148,163,184,0.65);text-transform:uppercase;margin-bottom:32px}
@@ -212,8 +213,8 @@
         stopSlowFill();
         if (typeof window.__appTmStop === 'function') window.__appTmStop();
         if (!modal) return;
-        modal.classList.add('fade-out');
-        setTimeout(function () { if (modal.parentNode) modal.parentNode.removeChild(modal); }, 400);
+        modal.classList.add('glitch-out');
+        setTimeout(function () { if (modal.parentNode) modal.parentNode.removeChild(modal); }, 750);
       };
       /* ── Morph progress bar into "Enter" button ── */
       window.__morphToEnterButton = function () {
