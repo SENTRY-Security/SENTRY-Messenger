@@ -27,6 +27,26 @@
     #appLoadingModal .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
     @keyframes app-pulse{0%,100%{filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:brightness(0) invert(1) drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
     @keyframes app-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
+    /* ── Morph: progress bar → enter button ── */
+    #appLoadingModal .loading-bar-track{transition:width .6s cubic-bezier(.4,0,.2,1),height .6s cubic-bezier(.4,0,.2,1),border-radius .6s ease,box-shadow .6s ease,transform .15s ease}
+    #appLoadingModal .loading-enter-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;letter-spacing:3px;color:#fff;opacity:0;transition:opacity .4s ease .3s;pointer-events:none;z-index:2;text-shadow:0 0 10px rgba(255,255,255,0.3)}
+    #appLoadingModal .loading-status{font-size:12px;min-height:16px;color:#f97316;opacity:0;transition:opacity .3s ease;margin-top:-8px}
+    #appLoadingModal .loading-skip{font-size:12px;color:rgba(148,163,184,0.45);cursor:pointer;opacity:0;transition:opacity .4s ease .6s;pointer-events:none;border:none;background:none;font-family:inherit;letter-spacing:1px;padding:4px 8px}
+    #appLoadingModal .loading-skip:active{opacity:.7}
+    #appLoadingModal.morph-enter .app-tm-content{pointer-events:auto}
+    #appLoadingModal.morph-enter .loading-bar-track{width:220px;height:48px;border-radius:24px;cursor:pointer;animation:app-btn-glow 2s ease-in-out infinite}
+    #appLoadingModal.morph-enter .loading-bar-fill{width:100%!important;border-radius:24px;transition:width .3s ease,border-radius .6s ease,background .4s ease}
+    #appLoadingModal.morph-enter .loading-bar-scan{height:100%;border-radius:24px}
+    #appLoadingModal.morph-enter .loading-enter-label{opacity:1;pointer-events:auto}
+    #appLoadingModal.morph-enter .loading-sublabel{opacity:0;transition:opacity .3s ease}
+    #appLoadingModal.morph-enter .loading-status{opacity:1}
+    #appLoadingModal.morph-enter .loading-skip{opacity:1;pointer-events:auto}
+    #appLoadingModal.morph-enter .loading-bar-track:active{transform:scale(0.97)}
+    @keyframes app-btn-glow{0%,100%{box-shadow:0 0 20px rgba(56,189,248,0.4),0 0 60px rgba(99,102,241,0.2)}50%{box-shadow:0 0 30px rgba(56,189,248,0.6),0 0 80px rgba(99,102,241,0.35)}}
+    #appLoadingModal.morph-authorizing .loading-bar-track{pointer-events:none;cursor:default;animation:none;box-shadow:0 0 15px rgba(56,189,248,0.3)}
+    #appLoadingModal.morph-authorizing .loading-enter-label{letter-spacing:2px}
+    #appLoadingModal.morph-success .loading-bar-fill{background:linear-gradient(90deg,#22c55e,#15803d)!important}
+    #appLoadingModal.morph-success .loading-bar-track{animation:none;box-shadow:0 0 25px rgba(34,197,94,0.5),0 0 60px rgba(34,197,94,0.2)}
   </style>
   <!-- Async CSS — non-render-blocking -->
   <link rel="stylesheet" href="/assets/app-bundle.css" media="print" onload="this.media='all'" />
@@ -55,11 +75,14 @@
       <img class="loading-logo" src="/assets/images/logo.svg" alt="" />
       <div class="loading-brand">SENTRY MESSENGER</div>
       <div class="loading-sublabel">END-TO-END ENCRYPTED</div>
-      <div class="loading-bar-track">
+      <div class="loading-bar-track" id="appEnterBtn">
         <div id="appLoadingBar" class="loading-bar-fill"></div>
         <div class="loading-bar-scan"></div>
+        <span id="appEnterLabel" class="loading-enter-label">進 入</span>
       </div>
       <div id="appLoadingLabel" class="loading-label">LOADING SECURE SESSION...</div>
+      <div id="appLoadingStatus" class="loading-status"></div>
+      <button id="appLoadingSkip" class="loading-skip">稍後再說</button>
     </div>
   </div>
   <script>
@@ -191,6 +214,43 @@
         if (!modal) return;
         modal.classList.add('fade-out');
         setTimeout(function () { if (modal.parentNode) modal.parentNode.removeChild(modal); }, 400);
+      };
+      /* ── Morph progress bar into "Enter" button ── */
+      window.__morphToEnterButton = function () {
+        stopSlowFill();
+        current = 100;
+        setBarWidth(100);
+        if (label) label.textContent = 'SYSTEM READY';
+        setTimeout(function () {
+          if (modal) modal.classList.add('morph-enter');
+          if (label) { label.textContent = '點擊以啟用安全通訊'; label.style.letterSpacing = '1.5px'; }
+        }, 600);
+      };
+      window.__setSplashStatus = function (msg) {
+        var el = document.getElementById('appLoadingStatus');
+        if (el) el.textContent = msg || '';
+      };
+      window.__setSplashAuthorizing = function (active) {
+        if (!modal) return;
+        var enterLabel = document.getElementById('appEnterLabel');
+        if (active) {
+          modal.classList.add('morph-authorizing');
+          if (enterLabel) enterLabel.textContent = '授權中\u2026';
+          if (label) label.textContent = '請在系統視窗中按下「允許」';
+        } else {
+          modal.classList.remove('morph-authorizing');
+          if (enterLabel) enterLabel.textContent = '進 入';
+          if (label) { label.textContent = '點擊以啟用安全通訊'; label.style.letterSpacing = '1.5px'; }
+        }
+      };
+      window.__setSplashSuccess = function () {
+        if (!modal) return;
+        modal.classList.add('morph-success');
+        modal.classList.remove('morph-authorizing');
+        var enterLabel = document.getElementById('appEnterLabel');
+        if (enterLabel) enterLabel.textContent = '\u2713';
+        if (label) label.textContent = '授權成功';
+        setTimeout(function () { window.__hideLoadingModal(); }, 800);
       };
       // Auto-advance to 'styles' when all async CSS is loaded
       var cssDone = false;

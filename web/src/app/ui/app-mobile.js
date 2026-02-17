@@ -1241,7 +1241,11 @@ const mediaPermissionMgr = createMediaPermissionManager({
   audioPermissionKey: AUDIO_PERMISSION_KEY,
   deps: { log, showToast, sessionStore, resumeNotifyAudioContext, audioManager }
 });
-const initMediaPermissionPrompt = () => mediaPermissionMgr.init();
+let _mediaPermissionNeeded = false;
+const initMediaPermissionPrompt = () => {
+  const result = mediaPermissionMgr.init();
+  _mediaPermissionNeeded = result?.permissionNeeded ?? false;
+};
 
 const connIndicator = createConnectionIndicator(connectionIndicator);
 const updateConnectionIndicator = (state) => connIndicator.update(state);
@@ -2240,9 +2244,47 @@ postLoginInitPromise
     messagesFlowFacade.onLoginResume({ source: 'login', runRestore: false, runOfflineDecrypt: false });
     // Ensure profile (identicon/avatar) is loaded before dismissing modal
     await profileInitPromise.catch(() => { });
-    // --- Loading Modal: hydration done → dismiss ---
+    // --- Loading Modal: hydration done → enter or dismiss ---
     window.__updateLoadingProgress?.('ready');
-    setTimeout(() => window.__hideLoadingModal?.(), 350);
+    if (_mediaPermissionNeeded) {
+      setTimeout(() => {
+        window.__morphToEnterButton?.();
+        // Wire up splash enter-button click → request mic+camera permission
+        const enterBtn = document.getElementById('appEnterBtn');
+        const skipBtn = document.getElementById('appLoadingSkip');
+        let splashBusy = false;
+        const handleEnter = async () => {
+          if (splashBusy) return;
+          splashBusy = true;
+          mediaPermissionMgr.warmUpAudio();
+          mediaPermissionMgr.playChime({ volume: 0.3 });
+          window.__setSplashAuthorizing?.(true);
+          window.__setSplashStatus?.('');
+          try {
+            const result = await mediaPermissionMgr.requestAccessWithVideo({ timeoutMs: 8000 });
+            log({ splashPermission: 'granted', video: result.videoGranted });
+            await mediaPermissionMgr.finalize({ warning: false, autoCloseDelayMs: 0, statusMessage: null });
+            window.__setSplashSuccess?.();
+          } catch (err) {
+            log({ splashPermissionError: err?.message || err });
+            window.__setSplashAuthorizing?.(false);
+            window.__setSplashStatus?.(mediaPermissionMgr.describeError(err));
+            showToast?.('授權失敗，請再試一次', { variant: 'warning' });
+            splashBusy = false;
+          }
+        };
+        const handleSkip = () => {
+          mediaPermissionMgr.warmUpAudio();
+          try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch { }
+          showToast?.('未啟用麥克風，通話可能無法使用', { variant: 'warning' });
+          window.__hideLoadingModal?.();
+        };
+        enterBtn?.addEventListener('click', handleEnter);
+        skipBtn?.addEventListener('click', handleSkip);
+      }, 350);
+    } else {
+      setTimeout(() => window.__hideLoadingModal?.(), 350);
+    }
   });
 
 function updateProfileStats() {

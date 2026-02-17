@@ -279,61 +279,68 @@ export function createMediaPermissionManager({
 
   // --- Public API ---
 
+  async function requestAccessWithVideo({ timeoutMs = 8000 } = {}) {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('瀏覽器不支援媒體授權，請改用最新版 Safari / Chrome。');
+    }
+    const withTimeout = (promise, label) => Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`${label || 'media'} timeout`)), timeoutMs);
+      })
+    ]);
+    let stream = null;
+    let videoGranted = false;
+    // Phase 1: try audio + video together
+    try {
+      stream = await withTimeout(
+        navigator.mediaDevices.getUserMedia({ audio: true, video: true }),
+        'audio+video'
+      );
+      videoGranted = true;
+    } catch (err) {
+      log({ splashPermissionVideoFallback: { name: err?.name, message: err?.message } });
+      // Phase 2: fall back to audio-only with constraint profiles
+      const profiles = getMicrophoneConstraintProfiles();
+      let lastErr = err;
+      for (let i = 0; i < profiles.length; i++) {
+        try {
+          stream = await withTimeout(
+            navigator.mediaDevices.getUserMedia(profiles[i]),
+            'audio'
+          );
+          break;
+        } catch (fallbackErr) {
+          lastErr = fallbackErr;
+          if (!isConstraintUnsatisfiedError(fallbackErr)) throw fallbackErr;
+        }
+      }
+      if (!stream) throw lastErr || new Error('需要授權麥克風才能繼續使用語音通話');
+    }
+    cacheStream(stream);
+    return { audioGranted: true, videoGranted };
+  }
+
   function init() {
-    if (!overlay) return;
-    if (overlay.dataset.init === '1') return;
-    overlay.dataset.init = '1';
+    if (overlay) {
+      if (overlay.dataset.init === '1') return { permissionNeeded: false };
+      overlay.dataset.init = '1';
+    }
     setButtonState();
     if (isAutomationEnvironment()) {
       markGranted();
       hide();
       warmUpAudio();
-      return;
+      return { permissionNeeded: false };
     }
     if (hasFlag()) {
       hide();
       warmUpAudio();
-      return;
+      return { permissionNeeded: false };
     }
-    show();
-    allowBtn?.addEventListener('click', handleGrant);
-    skipBtn?.addEventListener('click', () => {
-      warmUpAudio();
-      try { sessionStorage.setItem(audioPermissionKey, 'granted'); } catch { }
-      hide();
-      setStatus('');
-      systemGranted = false;
-      setButtonState();
-      showToast?.('未啟用麥克風，通話可能無法使用', { variant: 'warning' });
-    });
-    if (debugBtn && !debugBtn.dataset.init) {
-      debugBtn.dataset.init = '1';
-      debugBtn.addEventListener('click', async (event) => {
-        event.preventDefault();
-        try {
-          const perm = await navigator.permissions?.query?.({ name: 'microphone' }).catch(() => null);
-          const devices = await navigator.mediaDevices?.enumerateDevices?.().catch(() => []);
-          const hasLabel = Array.isArray(devices) && devices.some((d) => d.kind === 'audioinput' && d.label);
-          const toastMessage = perm?.state === 'granted'
-            ? '已授權麥克風權限'
-            : `權限狀態：${perm?.state || 'unknown'} / Label: ${hasLabel ? '有' : '無'}`;
-          showToast?.(toastMessage, { variant: perm?.state === 'granted' || hasLabel ? 'success' : 'warning' });
-          log({ mediaPermissionDebugCheck: { perm: perm?.state, label: hasLabel, devicesLength: devices?.length || 0, toast: toastMessage } });
-          if (perm?.state === 'granted' || hasLabel) {
-            try {
-              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-              log({ mediaPermissionDebugStream: { tracks: stream?.getTracks?.().length || 0 } });
-              setStatus('已確認授權並啟動麥克風，稍後會自動關閉提示。', { success: true });
-              await finalize({ warning: false, autoCloseDelayMs: 1500, statusMessage: null });
-              setTimeout(() => { try { stream?.getTracks?.().forEach((track) => track.stop()); } catch { } }, 500);
-            } catch (err) { log({ mediaPermissionDebugStreamError: err?.message || err }); }
-          }
-        } catch (err) {
-          showToast?.('無法取得權限狀態', { variant: 'warning' });
-          log({ mediaPermissionDebugError: err?.message || err });
-        }
-      });
-    }
+    // Permission needed — splash screen handles the UI; keep overlay hidden
+    hide();
+    return { permissionNeeded: true };
   }
 
   return {
@@ -347,6 +354,9 @@ export function createMediaPermissionManager({
     stopStreamTracks,
     isLiveStream,
     cacheStream,
-    getCachedStream: () => cachedMicStream
+    getCachedStream: () => cachedMicStream,
+    requestAccessWithVideo,
+    finalize,
+    describeError
   };
 }
