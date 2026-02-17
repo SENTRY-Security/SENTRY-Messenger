@@ -56,6 +56,17 @@ const InviteStatusSchema = z.object({
   account_digest: z.string().regex(AccountDigestRegex).optional()
 }).strict();
 
+const InviteConfirmSchema = z.object({
+  invite_id: z.string().min(8),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
+}).strict();
+
+const InviteUnconfirmedSchema = z.object({
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
+}).strict();
+
 const INVITE_DELIVER_ALIAS_FIELDS = new Set([
   'inviteId',
   'accountToken',
@@ -84,6 +95,26 @@ const INVITE_CONSUME_ALLOWED_FIELDS = new Set([
   'account_digest'
 ]);
 const INVITE_STATUS_ALLOWED_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest'
+]);
+const INVITE_CONFIRM_ALIAS_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest'
+]);
+const INVITE_CONFIRM_ALLOWED_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest'
+]);
+const INVITE_UNCONFIRMED_ALIAS_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest'
+]);
+const INVITE_UNCONFIRMED_ALLOWED_FIELDS = new Set([
   'invite_id',
   'account_token',
   'account_digest'
@@ -477,5 +508,159 @@ export const statusInviteDropbox = async (req, res) => {
     is_expired: !!(data?.isExpired || data?.is_expired),
     delivered_at: data?.deliveredAt || data?.delivered_at || null,
     consumed_at: data?.consumedAt || data?.consumed_at || null
+  });
+};
+
+export const confirmInviteDropbox = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
+  const schemaError = rejectInviteSchemaMismatch(res, req.body, {
+    allowedFields: INVITE_CONFIRM_ALLOWED_FIELDS,
+    aliasFields: INVITE_CONFIRM_ALIAS_FIELDS
+  });
+  if (schemaError) return schemaError;
+  let input;
+  try {
+    input = InviteConfirmSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
+  }
+  if (!input.account_token) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'account_token required' });
+  }
+
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
+  const path = '/d1/invites/confirm';
+  const bodyPayload = {
+    inviteId: input.invite_id,
+    accountToken: String(input.account_token).trim(),
+    accountDigest: auth.accountDigest,
+    deviceId: senderDeviceId
+  };
+  const body = JSON.stringify(bodyPayload);
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  let upstream;
+  try {
+    upstream = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+  } catch (err) {
+    return res.status(504).json({
+      error: 'InviteConfirmFailed',
+      message: 'Upstream timeout',
+      details: err?.message || 'fetch aborted'
+    });
+  }
+
+  let data;
+  try {
+    data = await upstream.json();
+  } catch {
+    data = {};
+  }
+
+  if (!upstream.ok) {
+    const errPayload = data && typeof data === 'object'
+      ? data
+      : { error: 'InviteConfirmFailed', details: data || 'upstream error' };
+    return res.status(upstream.status).json(errPayload);
+  }
+
+  return res.json({
+    ok: true,
+    invite_id: data?.invite_id || data?.inviteId || input.invite_id || null
+  });
+};
+
+export const unconfirmedInvitesDropbox = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
+  const schemaError = rejectInviteSchemaMismatch(res, req.body, {
+    allowedFields: INVITE_UNCONFIRMED_ALLOWED_FIELDS,
+    aliasFields: INVITE_UNCONFIRMED_ALIAS_FIELDS
+  });
+  if (schemaError) return schemaError;
+  let input;
+  try {
+    input = InviteUnconfirmedSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
+  }
+  if (!input.account_token) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'account_token required' });
+  }
+
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
+  const path = '/d1/invites/unconfirmed';
+  const bodyPayload = {
+    accountToken: String(input.account_token).trim(),
+    accountDigest: auth.accountDigest
+  };
+  const body = JSON.stringify(bodyPayload);
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  let upstream;
+  try {
+    upstream = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+  } catch (err) {
+    return res.status(504).json({
+      error: 'InviteUnconfirmedFailed',
+      message: 'Upstream timeout',
+      details: err?.message || 'fetch aborted'
+    });
+  }
+
+  let data;
+  try {
+    data = await upstream.json();
+  } catch {
+    data = {};
+  }
+
+  if (!upstream.ok) {
+    const errPayload = data && typeof data === 'object'
+      ? data
+      : { error: 'InviteUnconfirmedFailed', details: data || 'upstream error' };
+    return res.status(upstream.status).json(errPayload);
+  }
+
+  return res.json({
+    ok: true,
+    invites: Array.isArray(data?.invites) ? data.invites : []
   });
 };

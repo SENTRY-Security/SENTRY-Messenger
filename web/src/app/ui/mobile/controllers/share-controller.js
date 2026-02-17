@@ -1,7 +1,7 @@
 // Share controller (Signal-style): QR carries inviteId + owner metadata + prekey bundle.
 // Flow: generate invite -> scan -> sealed dropbox deliver -> owner consume (X3DH).
 
-import { invitesCreate, invitesDeliver, invitesConsume, invitesStatus } from '../../../api/invites.js';
+import { invitesCreate, invitesDeliver, invitesConsume, invitesConfirm, invitesStatus } from '../../../api/invites.js';
 import { prekeysPublish } from '../../../api/prekeys.js';
 import { devkeysStore } from '../../../api/devkeys.js';
 import { encodeFriendInvite, decodeFriendInvite } from '../../../lib/invite.js';
@@ -2245,6 +2245,12 @@ export function setupShareController(options) {
     // Without this, closing before any message exchange loses the DR session on restore
     triggerContactSecretsBackup('invite-consume', { force: true })
       .catch(err => console.warn('[share-controller] owner backup failed', err));
+
+    if (inviteId) {
+      invitesConfirm({ inviteId }).catch(err =>
+        console.warn('[share-controller] invite confirm failed', err)
+      );
+    }
 
     return {
       inviteId,

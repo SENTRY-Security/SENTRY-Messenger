@@ -9,8 +9,9 @@ import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { hydrateDrStatesFromContactSecrets } from './dr-session.js';
 import { flushPendingContactShares } from './contacts.js';
+import { reconcileUnconfirmedInvites } from './invite-reconciler.js';
 
-const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5'];
+const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5', 'Stage6'];
 const restoreGapQueue = createGapQueue({
   getLocalProcessedCounter: (conversationId) => getLocalProcessedCounter({ conversationId })
 });
@@ -130,12 +131,12 @@ function buildSummary() {
 
 function logPipelineDone() {
   logCapped('restorePipelineDoneTrace', {
-    stage: 'Stage5',
+    stage: 'Stage6',
     ok: true,
     reasonCode: null,
     tsMs: nowMs()
   }, RESTORE_PIPELINE_LOG_CAP);
-  emitStageEvent('Stage5', true, null, null);
+  emitStageEvent('Stage6', true, null, null);
 }
 
 function normalizeConversationId(value) {
@@ -623,6 +624,26 @@ export async function startRestorePipeline({ source } = {}) {
 
   setStage('Stage5');
   recordStageResult('Stage5', { ok: true });
+
+  setStage('Stage6');
+  try {
+    const result = await reconcileUnconfirmedInvites();
+    recordStageResult('Stage6', {
+      ok: true,
+      progress: {
+        total: result.total,
+        alreadyReady: result.alreadyReady,
+        replayed: result.replayed,
+        failed: result.failed
+      }
+    });
+  } catch (err) {
+    recordStageResult('Stage6', {
+      ok: false,
+      reasonCode: 'RECONCILE_FAILED'
+    });
+  }
+
   state.inFlight = false;
   logPipelineDone();
   return { ok: true };

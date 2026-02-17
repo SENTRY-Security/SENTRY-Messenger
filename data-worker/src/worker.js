@@ -340,6 +340,26 @@ const INVITE_STATUS_ALLOWED_FIELDS = new Set([
   'accountToken',
   'accountDigest'
 ]);
+const INVITE_CONFIRM_ALIAS_FIELDS = new Set([
+  'invite_id',
+  'account_token',
+  'account_digest',
+  'device_id'
+]);
+const INVITE_CONFIRM_ALLOWED_FIELDS = new Set([
+  'inviteId',
+  'accountToken',
+  'accountDigest',
+  'deviceId'
+]);
+const INVITE_UNCONFIRMED_ALIAS_FIELDS = new Set([
+  'account_token',
+  'account_digest'
+]);
+const INVITE_UNCONFIRMED_ALLOWED_FIELDS = new Set([
+  'accountToken',
+  'accountDigest'
+]);
 
 function findAliasKey(payload, aliasKeys) {
   if (!payload || typeof payload !== 'object') return null;
@@ -1697,6 +1717,114 @@ async function handleInviteDropboxRoutes(req, env) {
     });
   }
 
+  // Confirm invite (owner marks consume as fully processed)
+  if (req.method === 'POST' && url.pathname === '/d1/invites/confirm') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const aliasKey = findAliasKey(body, INVITE_CONFIRM_ALIAS_FIELDS);
+    if (aliasKey) return inviteAliasError(aliasKey);
+    const unexpectedKey = findUnexpectedKey(body, INVITE_CONFIRM_ALLOWED_FIELDS);
+    if (unexpectedKey) return inviteUnexpectedFieldError(unexpectedKey);
+    const inviteId = String(body?.inviteId || '').trim();
+    const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
+    if (!inviteId || inviteId.length < 8) {
+      return json({ error: 'BadRequest', message: 'inviteId required' }, { status: 400 });
+    }
+    if (!accountToken) {
+      return json({ error: 'Unauthorized', message: 'accountToken required' }, { status: 401 });
+    }
+
+    let account;
+    try {
+      account = await resolveAccount(env, {
+        accountToken,
+        accountDigest
+      }, { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
+    } catch (err) {
+      return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+    }
+    if (!account) {
+      return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
+    }
+
+    const row = await env.DB.prepare(
+      `SELECT status, owner_account_digest FROM invite_dropbox WHERE invite_id=?1`
+    ).bind(inviteId).first();
+    if (!row) return json({ error: 'NotFound' }, { status: 404 });
+
+    if (row.owner_account_digest !== account.account_digest) {
+      return json({ error: 'Forbidden', message: 'invite access denied' }, { status: 403 });
+    }
+
+    if (row.status === 'CONFIRMED') {
+      return json({ ok: true, invite_id: inviteId });
+    }
+    if (row.status !== 'CONSUMED') {
+      return json({ error: 'BadRequest', message: 'invite not in CONSUMED state' }, { status: 400 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `UPDATE invite_dropbox SET status='CONFIRMED', updated_at=?2 WHERE invite_id=?1 AND status='CONSUMED'`
+    ).bind(inviteId, now).run();
+
+    return json({ ok: true, invite_id: inviteId });
+  }
+
+  // List unconfirmed (CONSUMED but not CONFIRMED) invites for an account
+  if (req.method === 'POST' && url.pathname === '/d1/invites/unconfirmed') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const aliasKey = findAliasKey(body, INVITE_UNCONFIRMED_ALIAS_FIELDS);
+    if (aliasKey) return inviteAliasError(aliasKey);
+    const unexpectedKey = findUnexpectedKey(body, INVITE_UNCONFIRMED_ALLOWED_FIELDS);
+    if (unexpectedKey) return inviteUnexpectedFieldError(unexpectedKey);
+    const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
+    if (!accountToken) {
+      return json({ error: 'Unauthorized', message: 'accountToken required' }, { status: 401 });
+    }
+
+    let account;
+    try {
+      account = await resolveAccount(env, {
+        accountToken,
+        accountDigest
+      }, { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
+    } catch (err) {
+      return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+    }
+    if (!account) {
+      return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const rows = await env.DB.prepare(
+      `SELECT invite_id, owner_device_id, expires_at
+         FROM invite_dropbox
+        WHERE owner_account_digest=?1 AND status='CONSUMED' AND expires_at > ?2`
+    ).bind(account.account_digest, now).all();
+
+    const invites = (rows?.results || []).map(r => ({
+      invite_id: r.invite_id,
+      owner_device_id: r.owner_device_id,
+      expires_at: r.expires_at
+    }));
+
+    return json({ ok: true, invites });
+  }
+
   // Check invite status (owner or deliverer)
   if (req.method === 'POST' && url.pathname === '/d1/invites/status') {
     await ensureDataTables(env);
@@ -1752,7 +1880,7 @@ async function handleInviteDropboxRoutes(req, env) {
     const isExpired = Number(row.expires_at) <= now;
     let status = row.status;
     let updatedAt = row.updated_at || row.created_at || null;
-    if (isExpired && status !== 'CONSUMED') {
+    if (isExpired && status !== 'CONSUMED' && status !== 'CONFIRMED') {
       await markInviteExpired(env, inviteId, now);
       status = 'EXPIRED';
       updatedAt = now;

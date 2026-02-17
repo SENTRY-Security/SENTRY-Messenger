@@ -646,6 +646,15 @@ export class ConversationListController extends BaseController {
         this.conversationsRefreshing = true;
         this.updateConversationPull(CONV_PULL_THRESHOLD);
         try {
+            this.deps.reconcileUnconfirmedInvites?.()
+                .then(result => {
+                    if (result && (result.replayed > 0 || result.alreadyReady > 0)) {
+                        this.deps.syncConversationThreadsFromContacts?.();
+                        this.renderConversationList();
+                    }
+                })
+                .catch(err => this.log?.({ reconcileOnRefreshError: err?.message }));
+
             this.deps.syncConversationThreadsFromContacts?.();
             await this.deps.refreshConversationPreviews?.({ force: true });
             this.renderConversationList();

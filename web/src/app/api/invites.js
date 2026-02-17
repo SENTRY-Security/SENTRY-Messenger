@@ -72,6 +72,21 @@ export async function invitesConsume({ inviteId } = {}) {
   return data;
 }
 
+export async function invitesConfirm({ inviteId } = {}) {
+  if (!inviteId) throw new Error('inviteId required');
+  const payload = withAccountToken({ invite_id: inviteId });
+  const { r, data } = await fetchJSON('/api/v1/invites/confirm', payload, withDeviceHeaders());
+  if (!r.ok) throw buildError(r.status, data, 'invite confirm failed');
+  return data;
+}
+
+export async function invitesUnconfirmed() {
+  const payload = withAccountToken({});
+  const { r, data } = await fetchJSON('/api/v1/invites/unconfirmed', payload, withDeviceHeaders());
+  if (!r.ok) throw buildError(r.status, data, 'invite unconfirmed query failed');
+  return data;
+}
+
 export async function invitesStatus({ inviteId } = {}) {
   if (!inviteId) throw new Error('inviteId required');
   const payload = withAccountToken({ invite_id: inviteId });

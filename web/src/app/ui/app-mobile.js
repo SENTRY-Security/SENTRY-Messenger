@@ -59,6 +59,7 @@ import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
 import { SecureStatusController } from './mobile/controllers/secure-status-controller.js';
 import { setupShareController } from './mobile/controllers/share-controller.js';
+import { initInviteReconciler, reconcileUnconfirmedInvites } from '../features/invite-reconciler.js';
 import {
   loadLatestProfile as loadProfileControlState,
   persistProfileForAccount,
@@ -1850,6 +1851,8 @@ const {
   handleContactInitEvent,
   closeShareModal
 } = shareController;
+
+initInviteReconciler({ handleContactInitEvent });
 
 // --- WebSocket integration ---
 const wsIntegration = createWsIntegration({
