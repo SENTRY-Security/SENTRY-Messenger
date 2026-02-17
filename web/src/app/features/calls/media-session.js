@@ -553,9 +553,9 @@ async function attachLocalMedia() {
     return;
   }
   try {
+    const wantVideo = isVideoCall();
     const cached = getCachedMicrophoneStream();
     if (cached) {
-      const wantVideo = isVideoCall();
       if (wantVideo && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
         // Video call with pre-acquired video+audio stream: clone all live tracks
         const liveTracks = cached.getTracks()
@@ -564,15 +564,18 @@ async function attachLocalMedia() {
         if (liveTracks.length) {
           localStream = new MediaStream(liveTracks);
         }
-      } else {
+      } else if (!wantVideo) {
+        // Voice call: only need audio tracks from the cached stream.
         const tracks = cloneLiveAudioTracks(cached);
         if (tracks.length) {
           localStream = new MediaStream(tracks);
         }
       }
+      // Video call but cached stream lacks live video tracks: fall through
+      // to the fresh getUserMedia() path below so we request camera access
+      // rather than silently downgrading to a voice-only call.
     }
     if (!localStream) {
-      const wantVideo = isVideoCall();
       const videoConstraints = wantVideo
         ? { facingMode: cameraFacing, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
         : false;
