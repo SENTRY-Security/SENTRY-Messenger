@@ -9,7 +9,7 @@ import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
 import { hydrateDrStatesFromContactSecrets } from './dr-session.js';
 import { flushPendingContactShares } from './contacts.js';
-import { reconcileUnconfirmedInvites } from './invite-reconciler.js';
+import { reconcileUnconfirmedInvites, reconcileUnconfirmedDeliveries } from './invite-reconciler.js';
 
 const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5', 'Stage6'];
 const restoreGapQueue = createGapQueue({
@@ -627,14 +627,23 @@ export async function startRestorePipeline({ source } = {}) {
 
   setStage('Stage6');
   try {
-    const result = await reconcileUnconfirmedInvites();
+    const [result, deliveryResult] = await Promise.all([
+      reconcileUnconfirmedInvites(),
+      reconcileUnconfirmedDeliveries()
+    ]);
     recordStageResult('Stage6', {
       ok: true,
       progress: {
         total: result.total,
         alreadyReady: result.alreadyReady,
         replayed: result.replayed,
-        failed: result.failed
+        failed: result.failed,
+        deliveries: {
+          total: deliveryResult.total,
+          alreadyReady: deliveryResult.alreadyReady,
+          replayed: deliveryResult.replayed,
+          failed: deliveryResult.failed
+        }
       }
     });
   } catch (err) {

@@ -28,7 +28,7 @@ import { decryptContactPayload } from '../../../features/contact-share.js';
 import { flushPendingContactShares, uplinkContactToD1 } from '../../../features/contacts.js';
 import { triggerContactSecretsBackup } from '../../../features/contact-backup.js';
 import { setContactSecret, getContactSecret, restoreContactSecrets } from '../../../core/contact-secrets.js';
-import { sessionStore, restorePendingInvites, persistPendingInvites } from '../session-store.js';
+import { sessionStore, restorePendingInvites, persistPendingInvites, upsertDeliveryIntent, markDeliveryIntentDelivered, removeDeliveryIntent } from '../session-store.js';
 import { upsertContactCore, findContactCoreByAccountDigest, migrateContactCorePeerDevice, removeContactCore } from '../contact-core-store.js';
 import { bootstrapDrFromGuestBundle, copyDrState, persistDrSnapshot, snapshotDrState, sendDrPlaintext } from '../../../features/dr-session.js';
 import { ensureDevicePrivAvailable } from '../../../features/device-priv.js';
@@ -1240,8 +1240,23 @@ export function setupShareController(options) {
         payload: contactInitPayload,
         expiresAt
       });
+      // Persist delivery intent BEFORE the deliver API call so we can replay
+      // if the app crashes after deliver succeeds but before local processing.
+      upsertDeliveryIntent({
+        inviteId: parsed.inviteId,
+        ownerAccountDigest: resolvedOwnerDigest,
+        ownerDeviceId: resolvedOwnerDeviceId,
+        ownerBundle,
+        ekPrivB64: ekPair.priv,
+        ekPubB64: ekPair.pub,
+        guestBundle,
+        guestProfile,
+        deliverCompleted: false,
+        createdAt: Date.now()
+      });
       deliverAttempted = true;
       await invitesDeliver({ inviteId: parsed.inviteId, ciphertextEnvelope: envelope });
+      markDeliveryIntentDelivered(parsed.inviteId);
       deliverOk = true;
       logCapped('inviteDeliverResult', { inviteId: parsed.inviteId, ok: true }, LOG_CAP);
       console.log('[share-controller]', { inviteDropboxDelivered: { inviteId: parsed.inviteId, targetDigest: resolvedOwnerDigest, targetDeviceId: resolvedOwnerDeviceId } });
@@ -1339,6 +1354,8 @@ export function setupShareController(options) {
         conversationId,
         conversationToken
       });
+      // Local processing complete – remove the delivery intent
+      removeDeliveryIntent(parsed.inviteId);
       try { document.dispatchEvent(new CustomEvent('contacts:pending-invites-updated')); } catch { }
 
       if (inviteScanStatus) inviteScanStatus.textContent = '投遞成功，等待對方取回';
@@ -1350,6 +1367,10 @@ export function setupShareController(options) {
       const msg = err?.message || String(err);
       const status = Number(err?.status || err?.response?.status || 0);
       const code = err?.code || err?.data?.error || err?.data?.code || null;
+      // If deliver never completed, clean up the delivery intent
+      if (deliverAttempted && !deliverOk && parsed?.inviteId) {
+        removeDeliveryIntent(parsed.inviteId);
+      }
       if (deliverAttempted && !deliverOk) {
         logCapped('inviteDeliverResult', {
           inviteId: parsed?.inviteId || null,
@@ -2582,6 +2603,107 @@ export function setupShareController(options) {
     }
   }
 
+  /**
+   * Replay a delivery intent: re-derive the scanner-side session from stored material.
+   * Called by the reconciler when the app crashed after deliver but before local processing.
+   */
+  async function replayDeliveryIntent(intent) {
+    const {
+      inviteId,
+      ownerAccountDigest,
+      ownerDeviceId,
+      ownerBundle: storedOwnerBundle,
+      ekPrivB64,
+      ekPubB64,
+      guestBundle: storedGuestBundle,
+      guestProfile: storedGuestProfile
+    } = intent || {};
+    if (!inviteId || !ownerAccountDigest || !ownerDeviceId || !storedOwnerBundle || !ekPrivB64 || !ekPubB64) {
+      throw new Error('replayDeliveryIntent: missing required fields');
+    }
+    const resolvedOwnerDigest = ownerAccountDigest;
+    const resolvedOwnerDeviceId = ownerDeviceId;
+    if (!resolvedOwnerDigest || !resolvedOwnerDeviceId) {
+      throw new Error('replayDeliveryIntent: invalid owner identity');
+    }
+
+    const devicePriv = await ensureDevicePrivLoaded();
+    if (!devicePriv) throw new Error('replayDeliveryIntent: device key unavailable');
+
+    const ekPair = { priv: ekPrivB64, pub: ekPubB64 };
+    const ownerBundleForInit = mapOwnerBundleToX3dh(storedOwnerBundle);
+    const initiatorState = await x3dhInitiate(devicePriv, ownerBundleForInit, ekPair);
+    if (!(initiatorState?.rk instanceof Uint8Array)) {
+      throw new Error('replayDeliveryIntent: x3dh missing rk');
+    }
+
+    const conversationContext = await deriveConversationContextFromSecret(initiatorState.rk, { deviceId: resolvedOwnerDeviceId });
+    const conversationId = conversationContext?.conversationId || null;
+    const conversationToken = conversationContext?.tokenB64 || null;
+    if (!conversationId || !conversationToken) {
+      throw new Error('replayDeliveryIntent: missing conversation context');
+    }
+
+    const drInitPayload = storedGuestBundle
+      ? { guest_bundle: storedGuestBundle, role: 'initiator' }
+      : null;
+    const conversationPayload = {
+      token_b64: conversationToken,
+      conversation_id: conversationId,
+      peerDeviceId: resolvedOwnerDeviceId,
+      ...(drInitPayload ? { dr_init: drInitPayload } : null)
+    };
+
+    const conversationIndex = ensureConversationIndex();
+    const prevConvEntry = conversationIndex.get(conversationId) || {};
+    conversationIndex.set(conversationId, {
+      ...prevConvEntry,
+      token_b64: conversationToken,
+      peerAccountDigest: resolvedOwnerDigest,
+      peerDeviceId: resolvedOwnerDeviceId,
+      dr_init: prevConvEntry.dr_init || drInitPayload || null
+    });
+
+    const drHolder = drState({ peerAccountDigest: resolvedOwnerDigest, peerDeviceId: resolvedOwnerDeviceId });
+    if (drHolder && !(drHolder.rk instanceof Uint8Array)) {
+      copyDrState(drHolder, initiatorState, { callsiteTag: 'delivery-intent-replay' });
+    }
+    if (drHolder) {
+      drHolder.baseKey = drHolder.baseKey || {};
+      if (!drHolder.baseKey.role) drHolder.baseKey.role = 'initiator';
+      if (!drHolder.baseKey.conversationId) drHolder.baseKey.conversationId = conversationId;
+      if (!drHolder.baseKey.peerAccountDigest) drHolder.baseKey.peerAccountDigest = resolvedOwnerDigest;
+      if (!drHolder.baseKey.peerDeviceId) drHolder.baseKey.peerDeviceId = resolvedOwnerDeviceId;
+    }
+
+    storeContactSecretMapping({
+      peerAccountDigest: resolvedOwnerDigest,
+      peerDeviceId: resolvedOwnerDeviceId,
+      sessionKey: conversationToken,
+      conversation: conversationPayload,
+      drState: drHolder,
+      role: 'initiator'
+    });
+
+    uplinkContactToD1({
+      peerAccountDigest: resolvedOwnerDigest,
+      conversation: conversationPayload
+    }).catch(err => console.warn('[share-controller] delivery-intent replay uplink failed', err));
+
+    triggerContactSecretsBackup('delivery-intent-replay', { force: true, allowWithoutDrState: true })
+      .catch(err => console.warn('[share-controller] delivery-intent replay backup failed', err));
+
+    removeDeliveryIntent(inviteId);
+
+    logCapped('deliveryIntentReplayed', {
+      inviteId,
+      conversationIdPrefix8: conversationId?.slice(0, 8) || null,
+      ownerDigestSuffix4: resolvedOwnerDigest?.slice(-4) || null
+    }, 5);
+
+    return { inviteId, conversationId, peerDigest: resolvedOwnerDigest };
+  }
+
   return {
     openShareModal,
     closeShareModal,
@@ -2590,6 +2712,7 @@ export function setupShareController(options) {
     consumeInviteDropbox,
     handleContactShareEvent,
     handleContactInitEvent,
+    replayDeliveryIntent,
     broadcastContactUpdate,
     setWsSend(fn) {
       wsTransport = typeof fn === 'function' ? fn : null;

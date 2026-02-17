@@ -655,6 +655,15 @@ export class ConversationListController extends BaseController {
                 })
                 .catch(err => this.log?.({ reconcileOnRefreshError: err?.message }));
 
+            this.deps.reconcileUnconfirmedDeliveries?.()
+                .then(result => {
+                    if (result && (result.replayed > 0 || result.alreadyReady > 0)) {
+                        this.deps.syncConversationThreadsFromContacts?.();
+                        this.renderConversationList();
+                    }
+                })
+                .catch(err => this.log?.({ reconcileDeliveriesOnRefreshError: err?.message }));
+
             this.deps.syncConversationThreadsFromContacts?.();
             await this.deps.refreshConversationPreviews?.({ force: true });
             this.renderConversationList();

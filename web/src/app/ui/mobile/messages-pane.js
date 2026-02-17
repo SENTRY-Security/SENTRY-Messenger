@@ -28,7 +28,7 @@ import {
 // Actually grep showed "conversationIdFromToken," in import.
 // I will replace the whole block.
 import { sessionStore, resetMessageState, restorePendingInvites } from './session-store.js';
-import { reconcileUnconfirmedInvites } from '../../features/invite-reconciler.js';
+import { reconcileUnconfirmedInvites, reconcileUnconfirmedDeliveries } from '../../features/invite-reconciler.js';
 import { deleteContactSecret, getContactSecret, getCorruptContact, unhideContactSecret } from '../../core/contact-secrets.js';
 import { setDeletionCursor, setPeerDeletionCursor } from '../../features/soft-deletion/deletion-store.js';
 import { clearDrState, drState } from '../../core/store.js';
@@ -409,6 +409,7 @@ export function initMessagesPane({
     syncConversationThreadsFromContacts: () => controllers.conversationList.syncFromContacts(),
     refreshConversationPreviews: (args) => controllers.conversationList.refreshPreviews(args),
     reconcileUnconfirmedInvites: () => reconcileUnconfirmedInvites(),
+    reconcileUnconfirmedDeliveries: () => reconcileUnconfirmedDeliveries(),
     refreshContactsUnreadBadges: () => controllers.conversationList.refreshUnreadBadges(),
     isDesktopLayout: () => controllers.layout.isDesktopLayout(),
     get pendingSecureReadyPeer() { return controllers.secureStatus.pendingSecureReadyPeer; },

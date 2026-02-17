@@ -53,6 +53,7 @@ const defaultWsState = {
 };
 
 const PENDING_INVITES_STORAGE_KEY = 'pendingInvites-v1';
+const DELIVERY_INTENTS_STORAGE_KEY = 'deliveryIntents-v1';
 const OFFLINE_DECRYPT_CURSOR_STORAGE_KEY = 'offlineDecryptCursor-v1';
 const PENDING_VAULT_PUT_STORAGE_KEY = 'pendingVaultPut-v1';
 let pendingInvitesRestored = false;
@@ -462,4 +463,69 @@ export async function hydrateConversationsFromSecrets() {
     else if (res) pending += 1;
   }
   return { ready, pending };
+}
+
+// ---------------------------------------------------------------------------
+// Delivery Intents – localStorage-based storage for scanner (B) side recovery.
+// Stores enough material (ephemeral key, owner bundle) to re-derive the session
+// if the app crashes after deliver API succeeds but before local processing.
+// ---------------------------------------------------------------------------
+
+function readDeliveryIntents() {
+  try {
+    const raw = typeof localStorage !== 'undefined'
+      ? localStorage.getItem(DELIVERY_INTENTS_STORAGE_KEY)
+      : null;
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDeliveryIntents(intents) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(DELIVERY_INTENTS_STORAGE_KEY, JSON.stringify(intents));
+    }
+  } catch { }
+}
+
+export function upsertDeliveryIntent(intent) {
+  if (!intent?.inviteId) return;
+  const intents = readDeliveryIntents().filter(i => i.inviteId !== intent.inviteId);
+  intents.push({
+    inviteId: intent.inviteId,
+    ownerAccountDigest: intent.ownerAccountDigest || null,
+    ownerDeviceId: intent.ownerDeviceId || null,
+    ownerBundle: intent.ownerBundle || null,
+    ekPrivB64: intent.ekPrivB64 || null,
+    ekPubB64: intent.ekPubB64 || null,
+    guestBundle: intent.guestBundle || null,
+    guestProfile: intent.guestProfile || null,
+    deliverCompleted: !!intent.deliverCompleted,
+    createdAt: intent.createdAt || Date.now()
+  });
+  writeDeliveryIntents(intents);
+}
+
+export function markDeliveryIntentDelivered(inviteId) {
+  if (!inviteId) return;
+  const intents = readDeliveryIntents();
+  const intent = intents.find(i => i.inviteId === inviteId);
+  if (intent) {
+    intent.deliverCompleted = true;
+    writeDeliveryIntents(intents);
+  }
+}
+
+export function removeDeliveryIntent(inviteId) {
+  if (!inviteId) return;
+  const intents = readDeliveryIntents().filter(i => i.inviteId !== inviteId);
+  writeDeliveryIntents(intents);
+}
+
+export function listDeliveryIntents() {
+  return readDeliveryIntents();
 }
