@@ -52,7 +52,8 @@ button {
   border-radius: 12px;
   border: 1px solid transparent;
   padding: 10px 14px;
-  background: #fff;
+  background: var(--bg-elevated, #334155);
+  color: var(--fg, #f1f5f9);
   transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
 }
 
@@ -74,10 +75,11 @@ button.primary {
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.25);
 }
 
-button.secondary {
-  background: #e2e8f0;
-  color: #0f172a;
-  border-color: rgba(148, 163, 184, 0.4);
+button.secondary,
+.btn-secondary {
+  background: var(--bg-elevated, #334155);
+  color: var(--fg, #f1f5f9);
+  border-color: var(--line, rgba(148, 163, 184, 0.12));
 }
 
 .icon-btn {
@@ -87,7 +89,7 @@ button.secondary {
   padding: 8px 12px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--bg-elevated, #334155);
   color: var(--fg);
 }
 
