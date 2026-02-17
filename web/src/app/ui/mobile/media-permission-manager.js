@@ -317,7 +317,11 @@ export function createMediaPermissionManager({
       }
       if (!stream) throw lastErr || new Error('需要授權麥克風才能繼續使用語音通話');
     }
-    cacheStream(stream);
+    // Permission is granted — release the hardware immediately so the
+    // indicator light (iOS green/orange dot) turns off.  When a call is
+    // actually placed or answered, getUserMedia() will be called again
+    // and will succeed without a prompt because the permission persists.
+    stopStreamTracks(stream);
     return { audioGranted: true, videoGranted };
   }
 

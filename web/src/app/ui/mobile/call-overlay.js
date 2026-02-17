@@ -23,6 +23,7 @@ import {
   switchCamera,
   resolveCallPeerProfile
 } from '../../features/calls/index.js';
+import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 import { createCallAudioManager } from './call-audio.js';
 
@@ -1202,6 +1203,50 @@ export function initCallOverlay({ showToast }) {
     }
     state.actionBusy = true;
     render(session);
+
+    // Gate: require media permission before answering.
+    // Acquiring here also preserves the iOS Safari user gesture context
+    // and caches the stream for attachLocalMedia() to reuse.
+    const wantVideo = session.kind === CALL_REQUEST_KIND.VIDEO;
+    let mediaStream = null;
+    try {
+      const constraints = {
+        audio: true,
+        video: wantVideo
+          ? { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
+          : false
+      };
+      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (mediaErr) {
+      // Video call: fall back to audio-only (camera denied is tolerable)
+      if (wantVideo) {
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch { /* handled below */ }
+      }
+      if (!mediaStream) {
+        log({ callAnswerMediaPermissionDenied: mediaErr?.message || mediaErr, callId: session.callId });
+        showToast?.('需要麥克風權限才能接聽通話', { variant: 'error' });
+        // Treat permission denial as rejecting the call
+        try {
+          if (session.peerAccountDigest) {
+            sendCallSignal('call-reject', {
+              callId: session.callId,
+              targetAccountDigest: session.peerAccountDigest || null,
+              reason: 'media_permission_denied'
+            });
+          }
+          endCallMediaSession('rejected');
+          completeCallSession({ reason: 'rejected' });
+        } catch { }
+        state.actionBusy = false;
+        render();
+        return;
+      }
+    }
+    // Cache the live stream so attachLocalMedia() reuses it
+    try { sessionStore.cachedMicrophoneStream = mediaStream; } catch { }
+
     try {
       // acknowledgeCall is for server tracking only — do not block the call if it fails
       try {
