@@ -396,10 +396,10 @@ export function createWsIntegration({ deps }) {
       const tokenCandidate = normalizeWsToken(entry?.token_b64 || entry?.tokenB64 || entry?.conversationToken || null);
       if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
       if (!resolvedPeerDigest) {
-        resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || entry?.peer_account_digest || null);
+        resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || null);
       }
       if (!resolvedPeerDeviceId) {
-        resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
+        resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || null);
       }
     }
     const threads = sessionStore.conversationThreads instanceof Map ? sessionStore.conversationThreads : null;
@@ -408,10 +408,10 @@ export function createWsIntegration({ deps }) {
       const tokenCandidate = normalizeWsToken(entry?.conversationToken || entry?.token_b64 || entry?.tokenB64 || null);
       if (!tokenB64 && tokenCandidate) tokenB64 = tokenCandidate;
       if (!resolvedPeerDigest) {
-        resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || entry?.peer_account_digest || null);
+        resolvedPeerDigest = normalizeAccountDigest(entry?.peerAccountDigest || null);
       }
       if (!resolvedPeerDeviceId) {
-        resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
+        resolvedPeerDeviceId = normalizePeerDeviceId(entry?.peerDeviceId || null);
       }
     }
     if (!tokenB64 && resolvedPeerDigest) {

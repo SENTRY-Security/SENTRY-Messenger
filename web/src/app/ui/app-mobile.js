@@ -1748,9 +1748,7 @@ async function runPostLoginContactHydrate() {
 async function addContactEntry(contact) {
   const peerDigest =
     contact?.peerAccountDigest ||
-    contact?.peer_account_digest ||
     contact?.accountDigest ||
-    contact?.account_digest ||
     contact?.peer ||
     null;
   console.log('[app-mobile]', {
@@ -2000,7 +1998,7 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
   let threadForPeer = null;
   if (threadsMap) {
     for (const thread of threadsMap.values()) {
-      const acct = toProfileDigest(thread?.peerAccountDigest || thread?.peer_account_digest || null);
+      const acct = toProfileDigest(thread?.peerAccountDigest || null);
       if (acct === digest) {
         threadForPeer = thread;
         break;
@@ -2040,7 +2038,7 @@ function applyProfileSnapshotToStores(peerDigest, profile) {
 
   if (threadsMap) {
     for (const thread of threadsMap.values()) {
-      const acct = toProfileDigest(thread?.peerAccountDigest || thread?.peer_account_digest || null);
+      const acct = toProfileDigest(thread?.peerAccountDigest || null);
       if (acct !== digest) continue;
       const peerDeviceId = thread?.peerDeviceId || null;
       if (thread?.conversationId && (thread?.conversationToken || thread?.conversation?.token_b64) && peerDeviceId) {

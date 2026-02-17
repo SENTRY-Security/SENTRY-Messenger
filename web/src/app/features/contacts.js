@@ -539,7 +539,7 @@ export async function saveContact(contact) {
   if (DEBUG.contactsA1) {
     console.log('[contacts]', {
       contactSaveStart: {
-        peerAccountDigest: contact?.peerAccountDigest ?? contact?.peer_account_digest ?? null,
+        peerAccountDigest: contact?.peerAccountDigest ?? null,
         hasConversation: !!(contact?.conversation?.conversation_id && contact?.conversation?.token_b64),
         hasSecret: !!contact?.contactSecret,
         nickname: contact?.nickname,

@@ -170,13 +170,13 @@ function resolvePeerDeviceIdFromConversationId(conversationId) {
   const convIndex = sessionStore?.conversationIndex;
   if (convIndex && typeof convIndex.get === 'function') {
     const entry = convIndex.get(convId);
-    const deviceId = entry?.peerDeviceId || entry?.peer_device_id || null;
+    const deviceId = entry?.peerDeviceId || null;
     if (deviceId) return deviceId;
   }
   const threads = sessionStore?.conversationThreads;
   if (threads && typeof threads.get === 'function') {
     const entry = threads.get(convId);
-    const deviceId = entry?.peerDeviceId || entry?.peer_device_id || null;
+    const deviceId = entry?.peerDeviceId || null;
     if (deviceId) return deviceId;
   }
   return null;

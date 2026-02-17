@@ -3540,10 +3540,8 @@ export async function sendDrCallLog(params = {}) {
   const peerAccountDigest = resolvePeerDigest(params);
   const peerDeviceId = normalizePeerDeviceId(
     params.peerDeviceId
-    || params.peer_device_id
     || params.receiverDeviceId
     || params.targetDeviceId
-    || params.peerDeviceId // for consistency if already normalized
     || null
   );
   const messageId = typeof params?.messageId === 'string' && params.messageId.trim().length

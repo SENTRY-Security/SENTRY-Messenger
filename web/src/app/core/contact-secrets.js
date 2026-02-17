@@ -1694,10 +1694,10 @@ export async function decryptContactSecretPayload(envelope, mkRaw) {
 
 function normalizeStructuredEntry(entry, { source = 'normalize-entry' } = {}) {
   if (!entry || typeof entry !== 'object') return null;
-  const peerAccountDigest = normalizeAccountDigest(entry.peerAccountDigest || null);
+  const peerAccountDigest = normalizeAccountDigest(entry.peerAccountDigest || entry.peer_account_digest || null);
   if (!peerAccountDigest) return null;
   const conversation = entry.conversation || {};
-  const explicitPeerDeviceId = normalizePeerDeviceId(entry.peerDeviceId || null);
+  const explicitPeerDeviceId = normalizePeerDeviceId(entry.peerDeviceId || entry.peer_device_id || null);
   const devices = entry.devices && typeof entry.devices === 'object' ? entry.devices : null;
   const deviceKeys = devices ? Object.keys(devices).map((k) => normalizePeerDeviceId(k)).filter(Boolean) : [];
   const peerDeviceId = explicitPeerDeviceId || (deviceKeys.length === 1 ? deviceKeys[0] : null);
@@ -2173,7 +2173,7 @@ export function updateContactProfile(peerAccountDigest, { nickname, avatar, peer
 }
 
 export function getContactSecret(peerAccountDigest, opts = {}) {
-  const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || opts.peer_device_id || opts.peerDeviceIdHint || null);
+  const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || opts.peerDeviceIdHint || null);
   const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
   if (!key) return null;
   const parsedKey = parsePeerKey(key);
