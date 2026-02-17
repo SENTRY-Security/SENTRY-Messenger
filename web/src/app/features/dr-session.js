@@ -1948,9 +1948,9 @@ export async function sendDrPlaintextCore(params = {}) {
 
   const headerPayload = {
     ...pkt.header,
-    // peerAccountDigest 定義為「對方」身份，便於接收端驗證，不做任何 fallback
-    peerAccountDigest: peer || null,
-    peerDeviceId: peerDeviceId || null,
+    // peer_account_digest 定義為「對方」身份，便於接收端驗證，不做任何 fallback
+    peer_account_digest: peer || null,
+    peer_device_id: peerDeviceId || null,
     iv_b64: pkt.iv_b64,
     meta
   };
