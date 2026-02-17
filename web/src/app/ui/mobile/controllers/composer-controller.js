@@ -198,43 +198,30 @@ export class ComposerController extends BaseController {
         // operations (API call, key derivation), causing getUserMedia() to fail
         // later in attachLocalMedia().  Pre-acquire the media stream now while
         // we are still in the direct call stack of the user's tap/click.
-        //
-        // Skip if the media-permission-manager already cached a live stream
-        // with the required tracks — avoids a redundant permission prompt.
         if (isIosWebKitLikeBrowser()) {
-            const cached = this.sessionStore?.cachedMicrophoneStream || null;
-            const hasLiveAudio = cached?.getAudioTracks?.()?.some((t) => t.readyState === 'live');
-            const wantVideo = actionType === 'video';
-            const hasLiveVideo = !wantVideo || cached?.getVideoTracks?.()?.some((t) => t.readyState === 'live');
-
-            if (!hasLiveAudio || !hasLiveVideo) {
-                try {
-                    const constraints = {
-                        audio: true,
-                        video: wantVideo
-                            ? { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
-                            : false
-                    };
-                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                    if (this.sessionStore) {
-                        // Stop old cached tracks before overwriting
-                        if (cached && cached !== stream) {
-                            try { cached.getTracks().forEach((t) => t.stop()); } catch { }
-                        }
-                        this.sessionStore.cachedMicrophoneStream = stream;
-                    }
-                } catch (preAcquireErr) {
-                    // If video fails, try audio-only so we at least have mic access
-                    if (wantVideo && !hasLiveAudio) {
-                        try {
-                            const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-                            if (this.sessionStore) {
-                                this.sessionStore.cachedMicrophoneStream = audioOnly;
-                            }
-                        } catch { /* attachLocalMedia will retry */ }
-                    }
-                    this.log({ callPreAcquireMediaWarning: preAcquireErr?.message || preAcquireErr });
+            try {
+                const wantVideo = actionType === 'video';
+                const constraints = {
+                    audio: true,
+                    video: wantVideo
+                        ? { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
+                        : false
+                };
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                if (this.sessionStore) {
+                    this.sessionStore.cachedMicrophoneStream = stream;
                 }
+            } catch (preAcquireErr) {
+                // If video fails, try audio-only so we at least have mic access
+                if (actionType === 'video') {
+                    try {
+                        const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                        if (this.sessionStore) {
+                            this.sessionStore.cachedMicrophoneStream = audioOnly;
+                        }
+                    } catch { /* attachLocalMedia will retry */ }
+                }
+                this.log({ callPreAcquireMediaWarning: preAcquireErr?.message || preAcquireErr });
             }
         }
 
