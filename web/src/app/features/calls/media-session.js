@@ -665,8 +665,13 @@ async function buildRtcConfiguration() {
   }
   // Explicitly set standard RTCConfiguration properties.  iOS Safari 26.3+
   // may default to different values if these are omitted.
+  //
+  // Use 'max-bundle' so all media types (audio + video) share a single
+  // ICE transport.  'balanced' can cause video to fail independently when
+  // the separate video transport cannot traverse a NAT / firewall that
+  // the audio transport successfully negotiated.
   const iceTransportPolicy = config?.ice?.iceTransportPolicy || 'all';
-  const bundlePolicy = config?.ice?.bundlePolicy || 'balanced';
+  const bundlePolicy = config?.ice?.bundlePolicy || 'max-bundle';
   return { iceServers, iceTransportPolicy, bundlePolicy, rtcpMuxPolicy: 'require' };
 }
 
@@ -932,15 +937,22 @@ function attachRemoteStream(stream) {
   }
   if (remoteVideoEl && stream) {
     try {
-      // Avoid redundant srcObject assignment — same MediaStream reference
-      // means tracks are updated in place, no need to trigger a new load.
-      if (remoteVideoEl.srcObject !== stream) {
+      // iOS Safari 26.3 does not automatically activate a video track that
+      // was added to an already-attached MediaStream.  Even calling play()
+      // on the element is not enough — the video decoder is never started
+      // unless srcObject is reassigned.
+      //
+      // Unlike the <audio> element (where a redundant srcObject assignment
+      // interrupts playback and causes audible glitches), reassigning
+      // srcObject on a <video> element only causes an invisible re-load,
+      // so it is safe to do unconditionally.
+      const hasLiveVideo = stream.getVideoTracks().some((t) => t.readyState === 'live');
+      if (hasLiveVideo || remoteVideoEl.srcObject !== stream) {
         remoteVideoEl.srcObject = stream;
         remoteVideoEl.muted = true;
       }
-      // Always call play() — on iOS Safari a video track added after the
-      // stream was first attached will not render until play() is re-invoked,
-      // even when the element is already playing the audio-only stream.
+      // Always call play() as a secondary measure for browsers that do
+      // pick up new tracks but need an explicit play() to start rendering.
       const maybePlay = remoteVideoEl.play();
       if (maybePlay && typeof maybePlay.catch === 'function') {
         maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
