@@ -26,6 +26,10 @@ const CALL_RELEASE_EVENTS = new Set(['call-end', 'call-cancel', 'call-reject', '
 const CALL_RENEW_EVENTS = new Set(['call-ringing', 'call-accept', 'call-media-update', 'call-ice-candidate', 'call-offer', 'call-answer']);
 const CALL_LOCK_TTL_MS = Math.max(30_000, Number(process.env.CALL_LOCK_TTL_MS || 120000));
 const MAX_SIGNAL_JSON_BYTES = 16 * 1024;
+// SDP descriptions from newer Safari versions can be larger due to additional
+// codecs and extensions.  Use a higher limit for the description field to
+// prevent silent drops that break call connectivity.
+const MAX_SDP_JSON_BYTES = 64 * 1024;
 const MAX_SIGNAL_STRING_BYTES = 4096;
 const callLocks = new Map(); // accountDigest -> { callId, expiresAt }
 let lastCallLockSweep = 0;
@@ -138,8 +142,12 @@ function buildCallDetail(msg = {}) {
   }
   if (msg.description !== undefined) {
     if (typeof msg.description === 'object' && msg.description !== null) {
-      const cloned = safeCloneObject(msg.description);
-      if (cloned !== null) detail.description = cloned;
+      const cloned = safeCloneObject(msg.description, MAX_SDP_JSON_BYTES);
+      if (cloned !== null) {
+        detail.description = cloned;
+      } else {
+        logger.warn({ sdpLen: JSON.stringify(msg.description).length, limit: MAX_SDP_JSON_BYTES }, 'ws_call_sdp_dropped');
+      }
     } else {
       const desc = limitString(msg.description, 4096);
       if (desc !== null) detail.description = desc;

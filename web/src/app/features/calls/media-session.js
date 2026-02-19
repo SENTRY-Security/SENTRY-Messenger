@@ -675,6 +675,34 @@ async function buildRtcConfiguration() {
   return { iceServers, iceTransportPolicy, bundlePolicy, rtcpMuxPolicy: 'require' };
 }
 
+/**
+ * Sanitize outgoing SDP for cross-version Safari compatibility.
+ *
+ * iOS Safari 26.3+ includes `a=extmap-allow-mixed` in its SDP, which
+ * signals support for mixed one-byte / two-byte RTP header extensions.
+ * When this attribute is present, the local browser may send RTP packets
+ * with two-byte header extensions that older Safari versions cannot parse,
+ * causing both audio and video to fail silently (packets arrive but the
+ * RTP demuxer drops them).
+ *
+ * Stripping this attribute forces both sides to use only one-byte header
+ * extensions, which all Safari versions support.
+ *
+ * This only affects the signaled SDP (sent to the remote peer), not the
+ * local description already applied via setLocalDescription().  The local
+ * browser adapts to whichever extension format the remote peer negotiates.
+ */
+function sanitizeOutgoingSdp(sdp) {
+  if (typeof sdp !== 'string') return sdp;
+  // Remove `a=extmap-allow-mixed` (session-level or media-level).
+  // This is a single line that appears on its own (no value after it).
+  const sanitized = sdp.replace(/a=extmap-allow-mixed\r?\n/g, '');
+  if (sanitized !== sdp) {
+    log({ sdpSanitized: 'extmap-allow-mixed-removed' });
+  }
+  return sanitized;
+}
+
 async function createAndSendOffer() {
   if (!peerConnection) return;
   try {
@@ -695,7 +723,7 @@ async function createAndSendOffer() {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: { sdp: offer.sdp, type: offer.type }
+      description: { sdp: sanitizeOutgoingSdp(offer.sdp), type: offer.type }
     });
     if (!sent) {
       throw new Error('call-offer send failed');
@@ -722,7 +750,7 @@ async function applyRemoteOfferAndAnswer(msg) {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: { sdp: answer.sdp, type: answer.type }
+      description: { sdp: sanitizeOutgoingSdp(answer.sdp), type: answer.type }
     });
     if (!sent) {
       throw new Error('call-answer send failed');
