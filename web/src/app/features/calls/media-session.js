@@ -676,31 +676,176 @@ async function buildRtcConfiguration() {
 }
 
 /**
- * Sanitize outgoing SDP for cross-version Safari compatibility.
+ * Sanitize SDP for cross-version Safari / WebKit compatibility.
  *
- * iOS Safari 26.3+ includes `a=extmap-allow-mixed` in its SDP, which
- * signals support for mixed one-byte / two-byte RTP header extensions.
- * When this attribute is present, the local browser may send RTP packets
- * with two-byte header extensions that older Safari versions cannot parse,
- * causing both audio and video to fail silently (packets arrive but the
- * RTP demuxer drops them).
+ * iOS Safari 26.3+ generates SDP that contains attributes and codecs
+ * that older Safari versions (iOS 15–18) cannot negotiate correctly.
+ * When such an SDP is used as the local description AND sent to a
+ * remote peer running older Safari, media silently fails — ICE
+ * connects but RTP packets are dropped or decoded incorrectly.
  *
- * Stripping this attribute forces both sides to use only one-byte header
- * extensions, which all Safari versions support.
+ * IMPORTANT: This function MUST be called BEFORE setLocalDescription()
+ * so that both the local browser's RTP stack and the remote peer see
+ * the same sanitized SDP.  Previously it was only applied before
+ * sending, causing a mismatch where the local browser thought features
+ * like extmap-allow-mixed were negotiated but the remote peer did not.
  *
- * This only affects the signaled SDP (sent to the remote peer), not the
- * local description already applied via setLocalDescription().  The local
- * browser adapts to whichever extension format the remote peer negotiates.
+ * Sanitizations applied:
+ * 1. Remove `a=extmap-allow-mixed` — prevents two-byte RTP header
+ *    extensions that older WebKit cannot parse.
+ * 2. Remove H.265 (HEVC) codec lines — iOS 26.3 may offer H.265 but
+ *    older Safari cannot decode it; leaving it causes negotiation to
+ *    pick H.265 as preferred and the callee silently fails.
+ * 3. Remove AV1 codec lines — same rationale as H.265.
+ * 4. Remove `a=extmap` entries for experimental/unsupported extensions
+ *    that older Safari ignores, which can cause extension ID conflicts.
  */
-function sanitizeOutgoingSdp(sdp) {
+function sanitizeSdp(sdp) {
   if (typeof sdp !== 'string') return sdp;
-  // Remove `a=extmap-allow-mixed` (session-level or media-level).
-  // This is a single line that appears on its own (no value after it).
-  const sanitized = sdp.replace(/a=extmap-allow-mixed\r?\n/g, '');
-  if (sanitized !== sdp) {
-    log({ sdpSanitized: 'extmap-allow-mixed-removed' });
+  const changes = [];
+
+  // 1. Remove `a=extmap-allow-mixed` (session-level or media-level).
+  let sanitized = sdp.replace(/a=extmap-allow-mixed\r?\n/g, '');
+  if (sanitized !== sdp) changes.push('extmap-allow-mixed');
+
+  // 2. Remove H.265/HEVC codec — find its payload type from rtpmap lines
+  //    and strip all references (rtpmap, fmtp, rtcp-fb, and from m= line).
+  sanitized = removeCodecByName(sanitized, 'H265', changes);
+  sanitized = removeCodecByName(sanitized, 'HEVC', changes);
+
+  // 3. Remove AV1 codec
+  sanitized = removeCodecByName(sanitized, 'AV1', changes);
+
+  // 4. Remove experimental/problematic RTP header extensions.
+  //    Only strip extensions that are new in iOS 26.3+ and not negotiated
+  //    by older Safari.  We keep well-known extensions like abs-send-time,
+  //    toffset, ssrc-audio-level, and mid.
+  const stripExtUris = [
+    'dependency-descriptor',
+    'color-space',
+    'urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id',
+    'urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id'
+  ];
+  const beforeExt = sanitized;
+  sanitized = sanitized.replace(/a=extmap:\d+(?:\/\w+)? [^\r\n]+\r?\n/g, (line) => {
+    if (stripExtUris.some((uri) => line.includes(uri))) {
+      return '';
+    }
+    return line;
+  });
+  if (sanitized !== beforeExt) changes.push('problematic-extmap');
+
+  if (changes.length) {
+    log({ sdpSanitized: changes.join(','), callId: activeCallId });
   }
   return sanitized;
+}
+
+/**
+ * Remove a video codec from SDP by name (e.g. 'H265', 'AV1').
+ * Strips the payload type from m=video line and removes associated
+ * a=rtpmap, a=fmtp, and a=rtcp-fb lines.
+ */
+function removeCodecByName(sdp, codecName, changes) {
+  const upper = codecName.toUpperCase();
+  // Find all payload types for this codec
+  const ptRegex = new RegExp(
+    `^a=rtpmap:(\\d+)\\s+${escapeRegex(codecName)}/`,
+    'gim'
+  );
+  const payloadTypes = [];
+  let match;
+  while ((match = ptRegex.exec(sdp)) !== null) {
+    payloadTypes.push(match[1]);
+  }
+  if (!payloadTypes.length) return sdp;
+
+  let result = sdp;
+  for (const pt of payloadTypes) {
+    // Remove a=rtpmap, a=fmtp, a=rtcp-fb lines for this PT
+    const lineRegex = new RegExp(
+      `^a=(?:rtpmap|fmtp|rtcp-fb):${pt}\\b[^\\r\\n]*\\r?\\n`,
+      'gm'
+    );
+    result = result.replace(lineRegex, '');
+
+    // Remove PT from m=video line
+    // m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 ...
+    result = result.replace(
+      /^(m=video\s+\d+\s+[\w/]+)([\s\d]+)\r?\n/m,
+      (mLine) => {
+        // Split the payload types, remove the target PT, rejoin
+        const parts = mLine.trimEnd().split(/\s+/);
+        const filtered = parts.filter((p) => p !== pt);
+        return filtered.join(' ') + '\r\n';
+      }
+    );
+
+    // Also remove from apt-based RTX entries that reference this PT
+    // e.g. a=fmtp:97 apt=96  where 96 is the removed codec
+    const rtxPts = [];
+    const aptCheckRegex = new RegExp(`^a=fmtp:(\\d+)\\s+apt=${pt}\\b`, 'gm');
+    let aptMatch;
+    while ((aptMatch = aptCheckRegex.exec(result)) !== null) {
+      rtxPts.push(aptMatch[1]);
+    }
+    for (const rtxPt of rtxPts) {
+      const rtxLineRegex = new RegExp(
+        `^a=(?:rtpmap|fmtp|rtcp-fb):${rtxPt}\\b[^\\r\\n]*\\r?\\n`,
+        'gm'
+      );
+      result = result.replace(rtxLineRegex, '');
+      result = result.replace(
+        /^(m=video\s+\d+\s+[\w/]+)([\s\d]+)\r?\n/m,
+        (mLine) => {
+          const parts = mLine.trimEnd().split(/\s+/);
+          const filtered = parts.filter((p) => p !== rtxPt);
+          return filtered.join(' ') + '\r\n';
+        }
+      );
+    }
+  }
+
+  if (result !== sdp) {
+    changes.push(upper);
+  }
+  return result;
+}
+
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Log SDP characteristics for debugging call negotiation issues.
+ */
+function logSdpInfo(label, sdp) {
+  if (typeof sdp !== 'string') return;
+  try {
+    const codecs = [];
+    const extmapMixed = /a=extmap-allow-mixed/.test(sdp);
+    const rtpmapRegex = /^a=rtpmap:\d+\s+([^\s/]+)/gm;
+    let m;
+    while ((m = rtpmapRegex.exec(sdp)) !== null) {
+      if (!codecs.includes(m[1])) codecs.push(m[1]);
+    }
+    const setupMatch = sdp.match(/a=setup:(\w+)/);
+    const dtlsSetup = setupMatch ? setupMatch[1] : 'none';
+    const fingerprint = /a=fingerprint:/.test(sdp);
+    const iceUfrag = /a=ice-ufrag:/.test(sdp);
+    const mLines = (sdp.match(/^m=/gm) || []).length;
+    log({
+      sdpDiag: label,
+      codecs: codecs.join(','),
+      extmapMixed,
+      dtlsSetup,
+      fingerprint,
+      iceUfrag,
+      mLines,
+      sdpLen: sdp.length,
+      callId: activeCallId
+    });
+  } catch { }
 }
 
 async function createAndSendOffer() {
@@ -710,8 +855,14 @@ async function createAndSendOffer() {
     // Use transceiver API instead of deprecated offerToReceiveAudio/Video
     // options which iOS Safari 26.3+ no longer supports.
     ensureReceiveTransceivers(wantVideo);
-    const offer = await peerConnection.createOffer();
+    const rawOffer = await peerConnection.createOffer();
+    logSdpInfo('offer-raw', rawOffer.sdp);
+    // Sanitize BEFORE setLocalDescription so the browser's RTP stack
+    // also uses the compatible SDP (not just the remote peer).
+    const sanitizedSdp = sanitizeSdp(rawOffer.sdp);
+    const offer = { sdp: sanitizedSdp, type: rawOffer.type };
     await peerConnection.setLocalDescription(offer);
+    logSdpInfo('offer-local', sanitizedSdp);
     awaitingAnswer = true;
     if (!sendSignal) {
       throw new Error('call signal sender missing');
@@ -723,7 +874,7 @@ async function createAndSendOffer() {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: { sdp: sanitizeOutgoingSdp(offer.sdp), type: offer.type }
+      description: offer
     });
     if (!sent) {
       throw new Error('call-offer send failed');
@@ -736,10 +887,16 @@ async function createAndSendOffer() {
 async function applyRemoteOfferAndAnswer(msg) {
   if (!peerConnection || !msg?.description) return;
   try {
+    logSdpInfo('remote-offer', msg.description.sdp);
     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
     await flushPendingRemoteCandidates();
-    const answer = await peerConnection.createAnswer();
+    const rawAnswer = await peerConnection.createAnswer();
+    logSdpInfo('answer-raw', rawAnswer.sdp);
+    // Sanitize BEFORE setLocalDescription — same rationale as the offer path.
+    const sanitizedSdp = sanitizeSdp(rawAnswer.sdp);
+    const answer = { sdp: sanitizedSdp, type: rawAnswer.type };
     await peerConnection.setLocalDescription(answer);
+    logSdpInfo('answer-local', sanitizedSdp);
     if (!sendSignal) {
       throw new Error('call signal sender missing');
     }
@@ -750,7 +907,7 @@ async function applyRemoteOfferAndAnswer(msg) {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: { sdp: sanitizeOutgoingSdp(answer.sdp), type: answer.type }
+      description: answer
     });
     if (!sent) {
       throw new Error('call-answer send failed');
@@ -821,7 +978,17 @@ async function handleIncomingAnswer(msg) {
     }
   }
   try {
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
+    logSdpInfo('remote-answer', msg.description.sdp);
+    // Sanitize the incoming answer as well — the remote peer (older Safari)
+    // may include attributes or codec selections that conflict with the
+    // sanitized local offer.  Applying the same sanitization ensures the
+    // remote description is consistent with the local description.
+    const remoteSdp = msg.description.sdp;
+    const sanitizedRemoteSdp = typeof remoteSdp === 'string'
+      ? sanitizeSdp(remoteSdp)
+      : remoteSdp;
+    const remoteDesc = { sdp: sanitizedRemoteSdp, type: msg.description.type };
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(remoteDesc));
     await flushPendingRemoteCandidates();
     // Do NOT promote here — receiving the SDP answer does not mean media
     // is flowing.  Wait for ICE/connection state 'connected' or ontrack
