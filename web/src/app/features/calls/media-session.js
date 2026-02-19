@@ -726,54 +726,31 @@ async function buildRtcConfiguration() {
 }
 
 /**
- * Sanitize SDP for cross-version Safari / WebKit compatibility.
+ * Sanitize outgoing SDP for cross-version Safari compatibility.
  *
- * iOS Safari 26.3+ generates SDP that contains attributes that older
- * Safari versions (iOS 15–18) cannot negotiate correctly.  When such an
- * SDP is used as the local description AND sent to a remote peer running
- * older Safari, media silently fails — ICE connects but RTP packets are
- * dropped or decoded incorrectly.
+ * IMPORTANT: Do NOT use this on the SDP passed to setLocalDescription().
+ * iOS Safari 26.3's WebKit ICE implementation breaks when
+ * setLocalDescription receives a modified SDP (even removing a single
+ * attribute like `a=extmap-allow-mixed` causes ICE to go from
+ * 'checking' directly to 'failed').
  *
- * IMPORTANT: This function MUST be called BEFORE setLocalDescription()
- * so that both the local browser's RTP stack and the remote peer see
- * the same sanitized SDP.  Previously it was only applied before
- * sending, causing a mismatch where the local browser thought features
- * like extmap-allow-mixed were negotiated but the remote peer did not.
- *
- * We intentionally avoid modifying codec payload types or m= lines.
- * Removing codecs from the SDP can corrupt the session description in
- * ways that WebKit silently rejects, breaking ICE gathering entirely.
- *
- * Sanitizations applied:
- * 1. Remove `a=extmap-allow-mixed` — prevents two-byte RTP header
- *    extensions that older WebKit cannot parse.
- * 2. Force `a=setup:actpass` in offers — ensures proper DTLS role
- *    negotiation; iOS 26.3 may default to `a=setup:active` which
- *    older Safari cannot handle as caller.
+ * This function is applied ONLY to the SDP sent to the remote peer
+ * via signaling.  The local browser keeps its original SDP intact,
+ * and the standard SDP offer/answer negotiation handles the rest:
+ * if the remote peer's answer omits an attribute, the local browser
+ * adapts accordingly.
  */
-function sanitizeSdp(sdp, sdpType) {
+function sanitizeOutgoingSdp(sdp) {
   if (typeof sdp !== 'string') return sdp;
   const changes = [];
 
-  // 1. Remove `a=extmap-allow-mixed` (session-level or media-level).
+  // Remove `a=extmap-allow-mixed` (session-level or media-level).
+  // Older Safari does not support mixed one-byte/two-byte RTP header
+  // extensions.  By removing this from the signaled offer, the remote
+  // peer will not include it in its answer, and the local browser's
+  // negotiation should fall back to one-byte-only extensions.
   let sanitized = sdp.replace(/a=extmap-allow-mixed\r?\n/g, '');
   if (sanitized !== sdp) changes.push('extmap-allow-mixed');
-
-  // 2. Normalize DTLS setup to 'actpass' for OFFERS only.
-  //    When iOS 26.3 is the caller, it may generate an offer with
-  //    `a=setup:active` instead of the standard `a=setup:actpass`.
-  //    Older Safari expects `actpass` in offers and picks 'active' as
-  //    answerer.  If the offer already says 'active', the answerer may
-  //    also pick 'active', causing a DTLS role collision (both sides
-  //    try to be the DTLS client → handshake fails → ICE reports failure).
-  //
-  //    NOTE: Do NOT apply this to answers — the answerer correctly uses
-  //    `a=setup:active` to indicate it will be the DTLS client.
-  if (sdpType === 'offer') {
-    const beforeSetup = sanitized;
-    sanitized = sanitized.replace(/a=setup:active\r?\n/g, 'a=setup:actpass\r\n');
-    if (sanitized !== beforeSetup) changes.push('dtls-setup-actpass');
-  }
 
   if (changes.length) {
     log({ sdpSanitized: changes.join(','), callId: activeCallId });
@@ -822,14 +799,15 @@ async function createAndSendOffer() {
     // Use transceiver API instead of deprecated offerToReceiveAudio/Video
     // options which iOS Safari 26.3+ no longer supports.
     ensureReceiveTransceivers(wantVideo);
-    const rawOffer = await peerConnection.createOffer();
-    logSdpInfo('offer-raw', rawOffer.sdp);
-    // Sanitize BEFORE setLocalDescription so the browser's RTP stack
-    // also uses the compatible SDP (not just the remote peer).
-    const sanitizedSdp = sanitizeSdp(rawOffer.sdp, 'offer');
-    const offer = { sdp: sanitizedSdp, type: rawOffer.type };
+    const offer = await peerConnection.createOffer();
+    logSdpInfo('offer-raw', offer.sdp);
+    // setLocalDescription MUST use the ORIGINAL SDP — modifying it
+    // (even removing a=extmap-allow-mixed) causes iOS Safari 26.3's
+    // ICE engine to fail (checking → failed with 0 successful pairs).
     await peerConnection.setLocalDescription(offer);
-    logSdpInfo('offer-local', sanitizedSdp);
+    logSdpInfo('offer-local', offer.sdp);
+    // Sanitize only the SDP sent to the remote peer via signaling.
+    const outgoingSdp = sanitizeOutgoingSdp(offer.sdp);
     awaitingAnswer = true;
     if (!sendSignal) {
       throw new Error('call signal sender missing');
@@ -841,7 +819,7 @@ async function createAndSendOffer() {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: offer
+      description: { sdp: outgoingSdp, type: offer.type }
     });
     if (!sent) {
       throw new Error('call-offer send failed');
@@ -857,13 +835,13 @@ async function applyRemoteOfferAndAnswer(msg) {
     logSdpInfo('remote-offer', msg.description.sdp);
     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
     await flushPendingRemoteCandidates();
-    const rawAnswer = await peerConnection.createAnswer();
-    logSdpInfo('answer-raw', rawAnswer.sdp);
-    // Sanitize BEFORE setLocalDescription — same rationale as the offer path.
-    const sanitizedSdp = sanitizeSdp(rawAnswer.sdp, 'answer');
-    const answer = { sdp: sanitizedSdp, type: rawAnswer.type };
+    const answer = await peerConnection.createAnswer();
+    logSdpInfo('answer-raw', answer.sdp);
+    // setLocalDescription MUST use the ORIGINAL answer SDP.
     await peerConnection.setLocalDescription(answer);
-    logSdpInfo('answer-local', sanitizedSdp);
+    logSdpInfo('answer-local', answer.sdp);
+    // Sanitize only the SDP sent to the remote peer.
+    const outgoingSdp = sanitizeOutgoingSdp(answer.sdp);
     if (!sendSignal) {
       throw new Error('call signal sender missing');
     }
@@ -874,7 +852,7 @@ async function applyRemoteOfferAndAnswer(msg) {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: answer
+      description: { sdp: outgoingSdp, type: answer.type }
     });
     if (!sent) {
       throw new Error('call-answer send failed');
@@ -946,16 +924,10 @@ async function handleIncomingAnswer(msg) {
   }
   try {
     logSdpInfo('remote-answer', msg.description.sdp);
-    // Sanitize the incoming answer as well — the remote peer (older Safari)
-    // may include attributes or codec selections that conflict with the
-    // sanitized local offer.  Applying the same sanitization ensures the
-    // remote description is consistent with the local description.
-    const remoteSdp = msg.description.sdp;
-    const sanitizedRemoteSdp = typeof remoteSdp === 'string'
-      ? sanitizeSdp(remoteSdp, 'answer')
-      : remoteSdp;
-    const remoteDesc = { sdp: sanitizedRemoteSdp, type: msg.description.type };
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+    // Do NOT sanitize the incoming answer — setRemoteDescription must
+    // receive the answer exactly as the remote peer generated it.
+    // Modifying it can break DTLS/SRTP negotiation or ICE.
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
     await flushPendingRemoteCandidates();
     // Do NOT promote here — receiving the SDP answer does not mean media
     // is flowing.  Wait for ICE/connection state 'connected' or ontrack
@@ -970,6 +942,14 @@ async function handleIncomingCandidate(msg) {
   if (!peerConnection) return;
   const candidate = msg.candidate;
   if (!candidate) return;
+  // Log incoming remote candidate for diagnostics
+  const candStr = typeof candidate === 'object' ? (candidate.candidate || '') : String(candidate);
+  let remoteType = 'unknown';
+  if (candStr.includes(' host ')) remoteType = 'host';
+  else if (candStr.includes(' srflx ')) remoteType = 'srflx';
+  else if (candStr.includes(' relay ')) remoteType = 'relay';
+  else if (candStr.includes(' prflx ')) remoteType = 'prflx';
+  log({ callRemoteCandidate: remoteType, callId: activeCallId, queued: !peerConnection.remoteDescription?.type });
   const fromDigest = normalizeAccountDigest(msg.fromAccountDigest || msg.from_account_digest || null);
   const fromDeviceId = normalizePeerDeviceId(msg.fromDeviceId || msg.from_device_id || msg.senderDeviceId || null);
   if (fromDigest && fromDeviceId) {
