@@ -485,9 +485,29 @@ async function ensurePeerConnection() {
   // createEncodedStreams() would throw "Too late"; the guard in
   // setupInsertableStreamsForReceiver prevents the call entirely.
   peerConnection = new RTCPeerConnection(rtcConfig);
+  // Track gathered ICE candidate types for diagnostics
+  const candidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
+
   peerConnection.onicecandidate = (event) => {
     try {
-      if (!event.candidate || !sendSignal || !activeCallId) return;
+      if (!event.candidate) {
+        // Gathering complete (null candidate)
+        log({
+          callIceGatheringDone: true,
+          callId: activeCallId,
+          candidates: { ...candidateStats }
+        });
+        return;
+      }
+      if (!sendSignal || !activeCallId) return;
+      // Track candidate types for diagnostics
+      const candStr = event.candidate.candidate || '';
+      if (candStr.includes(' host ')) candidateStats.host++;
+      else if (candStr.includes(' srflx ')) candidateStats.srflx++;
+      else if (candStr.includes(' relay ')) candidateStats.relay++;
+      else if (candStr.includes(' prflx ')) candidateStats.prflx++;
+      candidateStats.total++;
+
       const candidateInit = typeof event.candidate.toJSON === 'function'
         ? event.candidate.toJSON()
         : event.candidate;
@@ -505,17 +525,40 @@ async function ensurePeerConnection() {
       failCall('ice-candidate-send-failed', err);
     }
   };
+  peerConnection.onicegatheringstatechange = () => {
+    const gatherState = peerConnection.iceGatheringState;
+    log({ callIceGatheringState: gatherState, callId: activeCallId, candidates: { ...candidateStats } });
+  };
   peerConnection.ontrack = (event) => {
     remoteStream = event.streams[0] || new MediaStream([event.track]);
+    log({ callRemoteTrack: event.track?.kind, readyState: event.track?.readyState, callId: activeCallId });
     attachRemoteStream(remoteStream);
     setupInsertableStreamsForReceiver(event.receiver, event.track);
     promoteSessionToInCall('remote-track');
   };
   peerConnection.oniceconnectionstatechange = () => {
     const iceState = peerConnection.iceConnectionState;
+    log({
+      callIceConnectionState: iceState,
+      callId: activeCallId,
+      signalingState: peerConnection.signalingState,
+      localDesc: peerConnection.localDescription?.type || 'none',
+      remoteDesc: peerConnection.remoteDescription?.type || 'none',
+      candidates: { ...candidateStats }
+    });
     if (iceState === 'connected' || iceState === 'completed') {
       promoteSessionToInCall('ice-state');
     } else if (iceState === 'failed') {
+      // Log detailed failure info before showing toast
+      log({
+        callIceFailed: true,
+        callId: activeCallId,
+        direction,
+        candidates: { ...candidateStats },
+        hasLocalDesc: !!peerConnection.localDescription,
+        hasRemoteDesc: !!peerConnection.remoteDescription,
+        signalingState: peerConnection.signalingState
+      });
       showToast?.('通話連線失敗', { variant: 'error' });
       completeCallSession({ reason: iceState, error: 'ice-connection-failed' });
       cleanupPeerConnection(iceState);
@@ -526,6 +569,7 @@ async function ensurePeerConnection() {
   };
   peerConnection.onconnectionstatechange = () => {
     const state = peerConnection.connectionState;
+    log({ callConnectionState: state, callId: activeCallId });
     if (state === 'connected' || state === 'completed') {
       promoteSessionToInCall('connection-state');
       return;
@@ -652,12 +696,18 @@ async function buildRtcConfiguration() {
   try {
     const creds = await issueTurnCredentials({ ttlSeconds: config?.turnTtlSeconds || 300 });
     credentialServers = Array.isArray(creds?.iceServers) ? creds.iceServers : [];
+    log({
+      callTurnCredentials: 'ok',
+      turnServerCount: credentialServers.length,
+      turnUrls: credentialServers.map((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(',')).join(';'),
+      callId: activeCallId
+    });
   } catch (err) {
-    log({ callTurnCredentialError: err?.message || err });
+    log({ callTurnCredentialError: err?.message || err, callId: activeCallId });
     // Continue with STUN-only — TURN is preferred but not mandatory
   }
   if (!credentialServers.length) {
-    log({ callTurnCredentialWarning: 'no TURN servers available, using STUN-only' });
+    log({ callTurnCredentialWarning: 'no TURN servers available, using STUN-only', callId: activeCallId });
   }
   const iceServers = [...baseServers, ...credentialServers];
   if (!iceServers.length) {
@@ -678,11 +728,11 @@ async function buildRtcConfiguration() {
 /**
  * Sanitize SDP for cross-version Safari / WebKit compatibility.
  *
- * iOS Safari 26.3+ generates SDP that contains attributes and codecs
- * that older Safari versions (iOS 15–18) cannot negotiate correctly.
- * When such an SDP is used as the local description AND sent to a
- * remote peer running older Safari, media silently fails — ICE
- * connects but RTP packets are dropped or decoded incorrectly.
+ * iOS Safari 26.3+ generates SDP that contains attributes that older
+ * Safari versions (iOS 15–18) cannot negotiate correctly.  When such an
+ * SDP is used as the local description AND sent to a remote peer running
+ * older Safari, media silently fails — ICE connects but RTP packets are
+ * dropped or decoded incorrectly.
  *
  * IMPORTANT: This function MUST be called BEFORE setLocalDescription()
  * so that both the local browser's RTP stack and the remote peer see
@@ -690,17 +740,18 @@ async function buildRtcConfiguration() {
  * sending, causing a mismatch where the local browser thought features
  * like extmap-allow-mixed were negotiated but the remote peer did not.
  *
+ * We intentionally avoid modifying codec payload types or m= lines.
+ * Removing codecs from the SDP can corrupt the session description in
+ * ways that WebKit silently rejects, breaking ICE gathering entirely.
+ *
  * Sanitizations applied:
  * 1. Remove `a=extmap-allow-mixed` — prevents two-byte RTP header
  *    extensions that older WebKit cannot parse.
- * 2. Remove H.265 (HEVC) codec lines — iOS 26.3 may offer H.265 but
- *    older Safari cannot decode it; leaving it causes negotiation to
- *    pick H.265 as preferred and the callee silently fails.
- * 3. Remove AV1 codec lines — same rationale as H.265.
- * 4. Remove `a=extmap` entries for experimental/unsupported extensions
- *    that older Safari ignores, which can cause extension ID conflicts.
+ * 2. Force `a=setup:actpass` in offers — ensures proper DTLS role
+ *    negotiation; iOS 26.3 may default to `a=setup:active` which
+ *    older Safari cannot handle as caller.
  */
-function sanitizeSdp(sdp) {
+function sanitizeSdp(sdp, sdpType) {
   if (typeof sdp !== 'string') return sdp;
   const changes = [];
 
@@ -708,112 +759,26 @@ function sanitizeSdp(sdp) {
   let sanitized = sdp.replace(/a=extmap-allow-mixed\r?\n/g, '');
   if (sanitized !== sdp) changes.push('extmap-allow-mixed');
 
-  // 2. Remove H.265/HEVC codec — find its payload type from rtpmap lines
-  //    and strip all references (rtpmap, fmtp, rtcp-fb, and from m= line).
-  sanitized = removeCodecByName(sanitized, 'H265', changes);
-  sanitized = removeCodecByName(sanitized, 'HEVC', changes);
-
-  // 3. Remove AV1 codec
-  sanitized = removeCodecByName(sanitized, 'AV1', changes);
-
-  // 4. Remove experimental/problematic RTP header extensions.
-  //    Only strip extensions that are new in iOS 26.3+ and not negotiated
-  //    by older Safari.  We keep well-known extensions like abs-send-time,
-  //    toffset, ssrc-audio-level, and mid.
-  const stripExtUris = [
-    'dependency-descriptor',
-    'color-space',
-    'urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id',
-    'urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id'
-  ];
-  const beforeExt = sanitized;
-  sanitized = sanitized.replace(/a=extmap:\d+(?:\/\w+)? [^\r\n]+\r?\n/g, (line) => {
-    if (stripExtUris.some((uri) => line.includes(uri))) {
-      return '';
-    }
-    return line;
-  });
-  if (sanitized !== beforeExt) changes.push('problematic-extmap');
+  // 2. Normalize DTLS setup to 'actpass' for OFFERS only.
+  //    When iOS 26.3 is the caller, it may generate an offer with
+  //    `a=setup:active` instead of the standard `a=setup:actpass`.
+  //    Older Safari expects `actpass` in offers and picks 'active' as
+  //    answerer.  If the offer already says 'active', the answerer may
+  //    also pick 'active', causing a DTLS role collision (both sides
+  //    try to be the DTLS client → handshake fails → ICE reports failure).
+  //
+  //    NOTE: Do NOT apply this to answers — the answerer correctly uses
+  //    `a=setup:active` to indicate it will be the DTLS client.
+  if (sdpType === 'offer') {
+    const beforeSetup = sanitized;
+    sanitized = sanitized.replace(/a=setup:active\r?\n/g, 'a=setup:actpass\r\n');
+    if (sanitized !== beforeSetup) changes.push('dtls-setup-actpass');
+  }
 
   if (changes.length) {
     log({ sdpSanitized: changes.join(','), callId: activeCallId });
   }
   return sanitized;
-}
-
-/**
- * Remove a video codec from SDP by name (e.g. 'H265', 'AV1').
- * Strips the payload type from m=video line and removes associated
- * a=rtpmap, a=fmtp, and a=rtcp-fb lines.
- */
-function removeCodecByName(sdp, codecName, changes) {
-  const upper = codecName.toUpperCase();
-  // Find all payload types for this codec
-  const ptRegex = new RegExp(
-    `^a=rtpmap:(\\d+)\\s+${escapeRegex(codecName)}/`,
-    'gim'
-  );
-  const payloadTypes = [];
-  let match;
-  while ((match = ptRegex.exec(sdp)) !== null) {
-    payloadTypes.push(match[1]);
-  }
-  if (!payloadTypes.length) return sdp;
-
-  let result = sdp;
-  for (const pt of payloadTypes) {
-    // Remove a=rtpmap, a=fmtp, a=rtcp-fb lines for this PT
-    const lineRegex = new RegExp(
-      `^a=(?:rtpmap|fmtp|rtcp-fb):${pt}\\b[^\\r\\n]*\\r?\\n`,
-      'gm'
-    );
-    result = result.replace(lineRegex, '');
-
-    // Remove PT from m=video line
-    // m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 ...
-    result = result.replace(
-      /^(m=video\s+\d+\s+[\w/]+)([\s\d]+)\r?\n/m,
-      (mLine) => {
-        // Split the payload types, remove the target PT, rejoin
-        const parts = mLine.trimEnd().split(/\s+/);
-        const filtered = parts.filter((p) => p !== pt);
-        return filtered.join(' ') + '\r\n';
-      }
-    );
-
-    // Also remove from apt-based RTX entries that reference this PT
-    // e.g. a=fmtp:97 apt=96  where 96 is the removed codec
-    const rtxPts = [];
-    const aptCheckRegex = new RegExp(`^a=fmtp:(\\d+)\\s+apt=${pt}\\b`, 'gm');
-    let aptMatch;
-    while ((aptMatch = aptCheckRegex.exec(result)) !== null) {
-      rtxPts.push(aptMatch[1]);
-    }
-    for (const rtxPt of rtxPts) {
-      const rtxLineRegex = new RegExp(
-        `^a=(?:rtpmap|fmtp|rtcp-fb):${rtxPt}\\b[^\\r\\n]*\\r?\\n`,
-        'gm'
-      );
-      result = result.replace(rtxLineRegex, '');
-      result = result.replace(
-        /^(m=video\s+\d+\s+[\w/]+)([\s\d]+)\r?\n/m,
-        (mLine) => {
-          const parts = mLine.trimEnd().split(/\s+/);
-          const filtered = parts.filter((p) => p !== rtxPt);
-          return filtered.join(' ') + '\r\n';
-        }
-      );
-    }
-  }
-
-  if (result !== sdp) {
-    changes.push(upper);
-  }
-  return result;
-}
-
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -829,19 +794,21 @@ function logSdpInfo(label, sdp) {
     while ((m = rtpmapRegex.exec(sdp)) !== null) {
       if (!codecs.includes(m[1])) codecs.push(m[1]);
     }
-    const setupMatch = sdp.match(/a=setup:(\w+)/);
-    const dtlsSetup = setupMatch ? setupMatch[1] : 'none';
+    const setupMatches = sdp.match(/a=setup:(\w+)/g) || [];
+    const dtlsSetup = setupMatches.map((s) => s.replace('a=setup:', '')).join(',');
     const fingerprint = /a=fingerprint:/.test(sdp);
     const iceUfrag = /a=ice-ufrag:/.test(sdp);
     const mLines = (sdp.match(/^m=/gm) || []).length;
+    const bundleGroup = sdp.match(/a=group:BUNDLE\s+([^\r\n]+)/);
     log({
       sdpDiag: label,
       codecs: codecs.join(','),
       extmapMixed,
-      dtlsSetup,
+      dtlsSetup: dtlsSetup || 'none',
       fingerprint,
       iceUfrag,
       mLines,
+      bundle: bundleGroup ? bundleGroup[1].trim() : 'none',
       sdpLen: sdp.length,
       callId: activeCallId
     });
@@ -859,7 +826,7 @@ async function createAndSendOffer() {
     logSdpInfo('offer-raw', rawOffer.sdp);
     // Sanitize BEFORE setLocalDescription so the browser's RTP stack
     // also uses the compatible SDP (not just the remote peer).
-    const sanitizedSdp = sanitizeSdp(rawOffer.sdp);
+    const sanitizedSdp = sanitizeSdp(rawOffer.sdp, 'offer');
     const offer = { sdp: sanitizedSdp, type: rawOffer.type };
     await peerConnection.setLocalDescription(offer);
     logSdpInfo('offer-local', sanitizedSdp);
@@ -893,7 +860,7 @@ async function applyRemoteOfferAndAnswer(msg) {
     const rawAnswer = await peerConnection.createAnswer();
     logSdpInfo('answer-raw', rawAnswer.sdp);
     // Sanitize BEFORE setLocalDescription — same rationale as the offer path.
-    const sanitizedSdp = sanitizeSdp(rawAnswer.sdp);
+    const sanitizedSdp = sanitizeSdp(rawAnswer.sdp, 'answer');
     const answer = { sdp: sanitizedSdp, type: rawAnswer.type };
     await peerConnection.setLocalDescription(answer);
     logSdpInfo('answer-local', sanitizedSdp);
@@ -985,7 +952,7 @@ async function handleIncomingAnswer(msg) {
     // remote description is consistent with the local description.
     const remoteSdp = msg.description.sdp;
     const sanitizedRemoteSdp = typeof remoteSdp === 'string'
-      ? sanitizeSdp(remoteSdp)
+      ? sanitizeSdp(remoteSdp, 'answer')
       : remoteSdp;
     const remoteDesc = { sdp: sanitizedRemoteSdp, type: msg.description.type };
     await peerConnection.setRemoteDescription(new RTCSessionDescription(remoteDesc));
