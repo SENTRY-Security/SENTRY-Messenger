@@ -727,7 +727,9 @@ async function applyRemoteOfferAndAnswer(msg) {
     if (!sent) {
       throw new Error('call-answer send failed');
     }
-    promoteSessionToInCall('answer-sent');
+    // Do NOT promote here — the SDP answer being sent does not mean media
+    // is flowing.  Wait for ICE/connection state 'connected' or ontrack
+    // events to promote, so the UI accurately reflects actual connectivity.
   } catch (err) {
     failCall('answer-failed', err);
   }
@@ -793,7 +795,9 @@ async function handleIncomingAnswer(msg) {
   try {
     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.description));
     await flushPendingRemoteCandidates();
-    promoteSessionToInCall('answer-received');
+    // Do NOT promote here — receiving the SDP answer does not mean media
+    // is flowing.  Wait for ICE/connection state 'connected' or ontrack
+    // events to promote, so the UI accurately reflects actual connectivity.
   } catch (err) {
     if (err?.__callFail) return;
     failCall('remote-answer-failed', err);
@@ -862,6 +866,10 @@ function handleSessionState(session) {
 }
 
 function cleanupPeerConnection(reason) {
+  if (audioPlayRetryTimer) {
+    clearTimeout(audioPlayRetryTimer);
+    audioPlayRetryTimer = null;
+  }
   if (peerConnection) {
     try { peerConnection.onicecandidate = null; } catch { }
     try { peerConnection.ontrack = null; } catch { }
@@ -963,12 +971,32 @@ function attachRemoteStream(stream) {
   }
 }
 
-function attemptRemoteAudioPlayback() {
+let audioPlayRetryTimer = null;
+
+function attemptRemoteAudioPlayback(retryCount = 0) {
+  if (audioPlayRetryTimer) {
+    clearTimeout(audioPlayRetryTimer);
+    audioPlayRetryTimer = null;
+  }
   if (!remoteAudioEl || typeof remoteAudioEl.play !== 'function') return;
   try {
     const maybePromise = remoteAudioEl.play();
     if (maybePromise && typeof maybePromise.catch === 'function') {
-      maybePromise.catch((err) => log({ callMediaPlayError: err?.message || err }));
+      maybePromise.catch((err) => {
+        log({ callMediaPlayError: err?.message || err, retryCount });
+        // iOS Safari may reject play() outside user gesture context.
+        // Retry with exponential backoff (200ms, 400ms, 800ms, 1600ms)
+        // up to 4 times — media may become playable after ICE connects
+        // or the audio context unlocks.
+        const MAX_RETRIES = 4;
+        if (retryCount < MAX_RETRIES && remoteAudioEl && peerConnection) {
+          const delay = 200 * Math.pow(2, retryCount);
+          audioPlayRetryTimer = setTimeout(() => {
+            audioPlayRetryTimer = null;
+            attemptRemoteAudioPlayback(retryCount + 1);
+          }, delay);
+        }
+      });
     }
   } catch (err) {
     log({ callMediaPlayError: err?.message || err });

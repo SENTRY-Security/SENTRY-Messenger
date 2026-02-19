@@ -146,7 +146,7 @@ function buildEnvStunServers() {
 function buildIceConfig(initial = {}) {
   const base = {
     iceTransportPolicy: typeof initial?.iceTransportPolicy === 'string' ? initial.iceTransportPolicy : 'all',
-    bundlePolicy: typeof initial?.bundlePolicy === 'string' ? initial.bundlePolicy : 'balanced',
+    bundlePolicy: typeof initial?.bundlePolicy === 'string' ? initial.bundlePolicy : 'max-bundle',
     continualGatheringPolicy: typeof initial?.continualGatheringPolicy === 'string' ? initial.continualGatheringPolicy : 'gather_continually',
     servers: sanitizeIceServers(initial?.servers || [])
   };

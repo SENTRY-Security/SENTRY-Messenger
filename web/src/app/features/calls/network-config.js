@@ -13,7 +13,7 @@ const FALLBACK_CONFIG = Object.freeze({
   bandwidthProfiles: [],
   ice: {
     iceTransportPolicy: 'all',
-    bundlePolicy: 'balanced',
+    bundlePolicy: 'max-bundle',
     continualGatheringPolicy: 'gather_continually',
     servers: [{ urls: ['stun:stun.cloudflare.com:3478'] }]
   },
@@ -82,7 +82,7 @@ function normalizeIceServers(list = []) {
 function normalizeIce(raw = {}) {
   return {
     iceTransportPolicy: raw.iceTransportPolicy ? String(raw.iceTransportPolicy) : 'all',
-    bundlePolicy: raw.bundlePolicy ? String(raw.bundlePolicy) : 'balanced',
+    bundlePolicy: raw.bundlePolicy ? String(raw.bundlePolicy) : 'max-bundle',
     continualGatheringPolicy: raw.continualGatheringPolicy ? String(raw.continualGatheringPolicy) : 'gather_continually',
     servers: normalizeIceServers(raw.servers)
   };
