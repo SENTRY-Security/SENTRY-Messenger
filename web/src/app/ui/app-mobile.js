@@ -1911,6 +1911,35 @@ function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動�
     forceReloadLogout();
     return;
   }
+  // Re-check visibility: on iOS Safari, transient hidden states (keyboard
+  // dismiss, share sheet, system overlay) may have already resolved by the
+  // time the deferred timer fires.  Bail out if the page is visible again.
+  if (typeof document !== 'undefined' && !document.hidden) {
+    log({ autoLogoutSkip: 'visible-at-fire', reason });
+    return;
+  }
+  // Wait for settings to load before deciding — if settings are not yet
+  // hydrated, sessionStore.settingsState is null and getEffective() falls
+  // back to DEFAULT_SETTINGS (autoLogoutOnBackground: true), which would
+  // ignore the user's "disabled" preference.
+  if (!sessionStore.settingsState && settingsInitPromise) {
+    settingsInitPromise
+      .catch(() => null)
+      .then(() => {
+        // Re-check after settings load completes
+        if (logoutInProgress || _autoLoggedOut) return;
+        if (typeof document !== 'undefined' && !document.hidden) return;
+        const settings = getEffectiveSettingsState();
+        if (!settings.autoLogoutOnBackground) {
+          log({ autoLogoutSkip: 'setting-disabled-after-hydrate' });
+          return;
+        }
+        if (!getMkRaw()) return;
+        log({ autoLogoutBackgroundTriggered: true, reason, deferred: true });
+        secureLogout(reason, { auto: true });
+      });
+    return;
+  }
   const settings = getEffectiveSettingsState();
   if (!settings.autoLogoutOnBackground) {
     log({ autoLogoutSkip: 'setting-disabled' });
@@ -2314,6 +2343,14 @@ function updateProfileStats() {
   } catch { }
 })();
 
+// Grace period before background auto-logout fires (milliseconds).
+// iOS Safari can briefly set document.hidden = true during transient system
+// events (keyboard dismiss, share sheet, Control Center swipe, app-switcher
+// peek gesture).  A 2-second grace period allows these transient states to
+// resolve without false-positive logouts.  The handler also re-checks
+// document.hidden before executing.
+const BACKGROUND_LOGOUT_DELAY_MS = 2000;
+
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (backgroundLogoutTimer) {
@@ -2337,7 +2374,7 @@ if (typeof document !== 'undefined') {
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
         handleBackgroundAutoLogout();
-      }, 0);
+      }, BACKGROUND_LOGOUT_DELAY_MS);
     }
   });
 }
@@ -2372,21 +2409,16 @@ if (typeof window !== 'undefined') {
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
         handleBackgroundAutoLogout();
-      }, 0);
+      }, BACKGROUND_LOGOUT_DELAY_MS);
     }
   });
+  // NOTE: The 'blur' event is NOT used for auto-logout.  On iOS Safari,
+  // blur fires in many foreground scenarios (alert dialogs, share sheets,
+  // browser extension overlays, system permissions prompts) that do not
+  // mean the user left the app.  The visibilitychange and pagehide
+  // handlers are sufficient for detecting actual background transitions.
   window.addEventListener('blur', () => {
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-      log({ autoLogoutBlur: 'hidden-immediate' });
-      if (!backgroundLogoutTimer) {
-        backgroundLogoutTimer = setTimeout(() => {
-          backgroundLogoutTimer = null;
-          handleBackgroundAutoLogout();
-        }, 0);
-      }
-    } else {
-      log({ autoLogoutSkip: 'blur-visible' });
-    }
+    log({ autoLogoutSkip: 'blur-no-logout' });
   });
   window.addEventListener('beforeunload', () => {
     disposeCallMediaSession();
