@@ -46,6 +46,8 @@ let cameraFacing = 'user';
 let pendingRemoteCandidates = [];
 let e2eeReceiverConfirmed = false;
 let peerConnectionEncodedStreams = false;
+let iceRestartAttempted = false;
+let remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
 
 function isVideoCall() {
   const session = getCallSessionSnapshot();
@@ -210,6 +212,7 @@ async function addRemoteCandidate(candidate) {
   try {
     await peerConnection.addIceCandidate(candidate);
   } catch (err) {
+    log({ callAddIceCandidateError: err?.message || String(err), callId: activeCallId });
     failCall('add-ice-candidate-failed', err);
   }
 }
@@ -549,16 +552,91 @@ async function ensurePeerConnection() {
     if (iceState === 'connected' || iceState === 'completed') {
       promoteSessionToInCall('ice-state');
     } else if (iceState === 'failed') {
-      // Log detailed failure info before showing toast
+      // Collect getStats() for deep ICE diagnostics before any action
+      (async () => {
+        try {
+          const stats = await peerConnection.getStats();
+          const pairs = [];
+          const transports = [];
+          stats.forEach((report) => {
+            if (report.type === 'candidate-pair') {
+              pairs.push({
+                state: report.state,
+                nominated: report.nominated,
+                localId: report.localCandidateId,
+                remoteId: report.remoteCandidateId,
+                bytesSent: report.bytesSent,
+                bytesReceived: report.bytesReceived,
+                requestsSent: report.requestsSent,
+                responsesReceived: report.responsesReceived,
+                requestsReceived: report.requestsReceived,
+                responsesSent: report.responsesSent
+              });
+            }
+            if (report.type === 'transport') {
+              transports.push({
+                dtlsState: report.dtlsState,
+                iceState: report.iceState,
+                selectedPairId: report.selectedCandidatePairId,
+                tlsVersion: report.tlsVersion,
+                dtlsCipher: report.dtlsCipher,
+                srtpCipher: report.srtpCipher
+              });
+            }
+          });
+          log({
+            callIceFailedStats: true,
+            callId: activeCallId,
+            candidatePairs: pairs.length,
+            pairsDetail: JSON.stringify(pairs.slice(0, 8)),
+            transports: JSON.stringify(transports),
+            remoteCandidates: { ...remoteCandidateStats }
+          });
+        } catch (statsErr) {
+          log({ callIceStatsError: statsErr?.message, callId: activeCallId });
+        }
+      })();
       log({
         callIceFailed: true,
         callId: activeCallId,
         direction,
         candidates: { ...candidateStats },
+        remoteCandidates: { ...remoteCandidateStats },
         hasLocalDesc: !!peerConnection.localDescription,
         hasRemoteDesc: !!peerConnection.remoteDescription,
-        signalingState: peerConnection.signalingState
+        signalingState: peerConnection.signalingState,
+        iceRestartAttempted
       });
+      // Attempt ICE restart once before giving up
+      if (!iceRestartAttempted && peerConnection.signalingState === 'stable') {
+        iceRestartAttempted = true;
+        log({ callIceRestart: true, callId: activeCallId });
+        (async () => {
+          try {
+            peerConnection.restartIce();
+            const restartOffer = await peerConnection.createOffer({ iceRestart: true });
+            await peerConnection.setLocalDescription(restartOffer);
+            awaitingAnswer = true; // Accept the new answer from callee
+            logSdpInfo('offer-restart', restartOffer.sdp);
+            if (sendSignal) {
+              const targetIdentity = requirePeerIdentitySnapshot();
+              sendSignal('call-offer', {
+                callId: activeCallId,
+                targetAccountDigest: targetIdentity.digest,
+                senderDeviceId: requireLocalDeviceId(),
+                targetDeviceId: targetIdentity.deviceId,
+                description: restartOffer
+              });
+            }
+          } catch (restartErr) {
+            log({ callIceRestartError: restartErr?.message, callId: activeCallId });
+            showToast?.('通話連線失敗', { variant: 'error' });
+            completeCallSession({ reason: 'ice-restart-failed', error: 'ice-connection-failed' });
+            cleanupPeerConnection('ice-restart-failed');
+          }
+        })();
+        return; // Don't fail the call yet — wait for restart result
+      }
       showToast?.('通話連線失敗', { variant: 'error' });
       completeCallSession({ reason: iceState, error: 'ice-connection-failed' });
       cleanupPeerConnection(iceState);
@@ -726,39 +804,6 @@ async function buildRtcConfiguration() {
 }
 
 /**
- * Sanitize outgoing SDP for cross-version Safari compatibility.
- *
- * IMPORTANT: Do NOT use this on the SDP passed to setLocalDescription().
- * iOS Safari 26.3's WebKit ICE implementation breaks when
- * setLocalDescription receives a modified SDP (even removing a single
- * attribute like `a=extmap-allow-mixed` causes ICE to go from
- * 'checking' directly to 'failed').
- *
- * This function is applied ONLY to the SDP sent to the remote peer
- * via signaling.  The local browser keeps its original SDP intact,
- * and the standard SDP offer/answer negotiation handles the rest:
- * if the remote peer's answer omits an attribute, the local browser
- * adapts accordingly.
- */
-function sanitizeOutgoingSdp(sdp) {
-  if (typeof sdp !== 'string') return sdp;
-  const changes = [];
-
-  // Remove `a=extmap-allow-mixed` (session-level or media-level).
-  // Older Safari does not support mixed one-byte/two-byte RTP header
-  // extensions.  By removing this from the signaled offer, the remote
-  // peer will not include it in its answer, and the local browser's
-  // negotiation should fall back to one-byte-only extensions.
-  let sanitized = sdp.replace(/a=extmap-allow-mixed\r?\n/g, '');
-  if (sanitized !== sdp) changes.push('extmap-allow-mixed');
-
-  if (changes.length) {
-    log({ sdpSanitized: changes.join(','), callId: activeCallId });
-  }
-  return sanitized;
-}
-
-/**
  * Log SDP characteristics for debugging call negotiation issues.
  */
 function logSdpInfo(label, sdp) {
@@ -773,17 +818,25 @@ function logSdpInfo(label, sdp) {
     }
     const setupMatches = sdp.match(/a=setup:(\w+)/g) || [];
     const dtlsSetup = setupMatches.map((s) => s.replace('a=setup:', '')).join(',');
-    const fingerprint = /a=fingerprint:/.test(sdp);
+    const fpMatch = sdp.match(/a=fingerprint:(\S+)/);
+    const fpAlgo = fpMatch ? fpMatch[1] : 'none';
     const iceUfrag = /a=ice-ufrag:/.test(sdp);
+    const iceOptions = sdp.match(/a=ice-options:([^\r\n]+)/);
+    const rtcpMux = /a=rtcp-mux/.test(sdp);
     const mLines = (sdp.match(/^m=/gm) || []).length;
     const bundleGroup = sdp.match(/a=group:BUNDLE\s+([^\r\n]+)/);
+    const midMatches = sdp.match(/a=mid:([^\r\n]+)/g) || [];
+    const mids = midMatches.map((m) => m.replace('a=mid:', '')).join(',');
     log({
       sdpDiag: label,
       codecs: codecs.join(','),
       extmapMixed,
       dtlsSetup: dtlsSetup || 'none',
-      fingerprint,
+      fpAlgo,
       iceUfrag,
+      iceOptions: iceOptions ? iceOptions[1].trim() : 'none',
+      rtcpMux,
+      mids,
       mLines,
       bundle: bundleGroup ? bundleGroup[1].trim() : 'none',
       sdpLen: sdp.length,
@@ -801,13 +854,14 @@ async function createAndSendOffer() {
     ensureReceiveTransceivers(wantVideo);
     const offer = await peerConnection.createOffer();
     logSdpInfo('offer-raw', offer.sdp);
-    // setLocalDescription MUST use the ORIGINAL SDP — modifying it
-    // (even removing a=extmap-allow-mixed) causes iOS Safari 26.3's
-    // ICE engine to fail (checking → failed with 0 successful pairs).
+    // setLocalDescription MUST use the ORIGINAL unmodified SDP.
+    // Any SDP munging (even removing a=extmap-allow-mixed) breaks
+    // iOS Safari 26.3's ICE engine.  Standard SDP offer/answer
+    // negotiation handles cross-version compatibility naturally —
+    // if the remote peer doesn't support an attribute, it omits it
+    // from its answer, and the local browser adapts.
     await peerConnection.setLocalDescription(offer);
     logSdpInfo('offer-local', offer.sdp);
-    // Sanitize only the SDP sent to the remote peer via signaling.
-    const outgoingSdp = sanitizeOutgoingSdp(offer.sdp);
     awaitingAnswer = true;
     if (!sendSignal) {
       throw new Error('call signal sender missing');
@@ -819,7 +873,7 @@ async function createAndSendOffer() {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: { sdp: outgoingSdp, type: offer.type }
+      description: offer
     });
     if (!sent) {
       throw new Error('call-offer send failed');
@@ -837,11 +891,9 @@ async function applyRemoteOfferAndAnswer(msg) {
     await flushPendingRemoteCandidates();
     const answer = await peerConnection.createAnswer();
     logSdpInfo('answer-raw', answer.sdp);
-    // setLocalDescription MUST use the ORIGINAL answer SDP.
+    // Send the original answer — no SDP munging.
     await peerConnection.setLocalDescription(answer);
     logSdpInfo('answer-local', answer.sdp);
-    // Sanitize only the SDP sent to the remote peer.
-    const outgoingSdp = sanitizeOutgoingSdp(answer.sdp);
     if (!sendSignal) {
       throw new Error('call signal sender missing');
     }
@@ -852,7 +904,7 @@ async function applyRemoteOfferAndAnswer(msg) {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: { sdp: outgoingSdp, type: answer.type }
+      description: answer
     });
     if (!sent) {
       throw new Error('call-answer send failed');
@@ -893,6 +945,12 @@ async function handleIncomingOffer(msg) {
     pendingOffer = msg;
     await applyRemoteOfferAndAnswer(msg);
     awaitingOfferAfterAccept = false;
+  } else if (peerConnection && peerConnection.signalingState === 'stable') {
+    // Re-offer during active call (e.g. ICE restart from remote peer).
+    // Apply it immediately so the callee generates a new answer.
+    log({ callReOfferReceived: true, callId: activeCallId });
+    pendingOffer = msg;
+    await applyRemoteOfferAndAnswer(msg);
   } else {
     pendingOffer = msg;
   }
@@ -949,6 +1007,11 @@ async function handleIncomingCandidate(msg) {
   else if (candStr.includes(' srflx ')) remoteType = 'srflx';
   else if (candStr.includes(' relay ')) remoteType = 'relay';
   else if (candStr.includes(' prflx ')) remoteType = 'prflx';
+  if (remoteType === 'host') remoteCandidateStats.host++;
+  else if (remoteType === 'srflx') remoteCandidateStats.srflx++;
+  else if (remoteType === 'relay') remoteCandidateStats.relay++;
+  else if (remoteType === 'prflx') remoteCandidateStats.prflx++;
+  remoteCandidateStats.total++;
   log({ callRemoteCandidate: remoteType, callId: activeCallId, queued: !peerConnection.remoteDescription?.type });
   const fromDigest = normalizeAccountDigest(msg.fromAccountDigest || msg.from_account_digest || null);
   const fromDeviceId = normalizePeerDeviceId(msg.fromDeviceId || msg.from_device_id || msg.senderDeviceId || null);
@@ -1039,6 +1102,8 @@ function cleanupPeerConnection(reason) {
   pendingRemoteCandidates = [];
   activeCallId = null;
   activePeerKey = null;
+  iceRestartAttempted = false;
+  remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
   if (remoteAudioEl) {
     try {
       remoteAudioEl.srcObject = null;
