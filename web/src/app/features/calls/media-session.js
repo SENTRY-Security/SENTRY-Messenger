@@ -46,7 +46,6 @@ let cameraFacing = 'user';
 let pendingRemoteCandidates = [];
 let e2eeReceiverConfirmed = false;
 let peerConnectionEncodedStreams = false;
-let iceRestartAttempted = false;
 let remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
 
 function isVideoCall() {
@@ -480,6 +479,26 @@ function applyRemoteAudioElementStyles(el) {
 async function ensurePeerConnection() {
   if (peerConnection) return peerConnection;
   const rtcConfig = await buildRtcConfiguration();
+
+  // Generate an explicit ECDSA P-256 certificate for DTLS.
+  // iOS 26.3 may default to a different curve or algorithm (e.g. P-384
+  // or Ed25519) that older Safari versions cannot negotiate during the
+  // DTLS handshake.  Since ICE "checking → failed" occurs even with
+  // relay candidates on both sides, the failure likely happens at the
+  // DTLS layer (browsers report DTLS failure as ICE failure).
+  // ECDSA P-256 is universally supported across all Safari versions.
+  try {
+    const cert = await RTCPeerConnection.generateCertificate({
+      name: 'ECDSA',
+      namedCurve: 'P-256'
+    });
+    rtcConfig.certificates = [cert];
+    log({ callCertGenerated: 'ECDSA-P256', callId: activeCallId });
+  } catch (certErr) {
+    log({ callCertError: certErr?.message || String(certErr), callId: activeCallId });
+    // Continue without explicit certificate — browser picks its default
+  }
+
   // NOTE: We intentionally do NOT set encodedInsertableStreams: true
   // here because the peer might not support E2EE (e.g. iOS Safari)
   // and we cannot reliably determine the peer's capability before
@@ -539,6 +558,27 @@ async function ensurePeerConnection() {
     setupInsertableStreamsForReceiver(event.receiver, event.track);
     promoteSessionToInCall('remote-track');
   };
+  // Log DTLS transport state changes — DTLS failure is often
+  // reported as ICE failure by WebKit.  This helps distinguish
+  // ICE-level vs DTLS-level failures.
+  try {
+    const dtlsCheck = setInterval(() => {
+      if (!peerConnection) { clearInterval(dtlsCheck); return; }
+      try {
+        const senders = peerConnection.getSenders();
+        const transport = senders[0]?.transport;
+        if (transport && transport.state) {
+          log({ callDtlsState: transport.state, iceTransportState: transport.iceTransport?.state, callId: activeCallId });
+          if (transport.state === 'connected' || transport.state === 'failed' || transport.state === 'closed') {
+            clearInterval(dtlsCheck);
+          }
+        }
+      } catch { clearInterval(dtlsCheck); }
+    }, 500);
+    // Cleanup after 30s regardless
+    setTimeout(() => clearInterval(dtlsCheck), 30000);
+  } catch { }
+
   peerConnection.oniceconnectionstatechange = () => {
     const iceState = peerConnection.iceConnectionState;
     log({
@@ -552,12 +592,15 @@ async function ensurePeerConnection() {
     if (iceState === 'connected' || iceState === 'completed') {
       promoteSessionToInCall('ice-state');
     } else if (iceState === 'failed') {
-      // Collect getStats() for deep ICE diagnostics before any action
+      // Collect getStats() for deep ICE/DTLS diagnostics
+      const pc = peerConnection; // capture ref before cleanup
       (async () => {
         try {
-          const stats = await peerConnection.getStats();
+          const stats = await pc.getStats();
           const pairs = [];
           const transports = [];
+          const localCands = {};
+          const remoteCands = {};
           stats.forEach((report) => {
             if (report.type === 'candidate-pair') {
               pairs.push({
@@ -567,10 +610,10 @@ async function ensurePeerConnection() {
                 remoteId: report.remoteCandidateId,
                 bytesSent: report.bytesSent,
                 bytesReceived: report.bytesReceived,
-                requestsSent: report.requestsSent,
-                responsesReceived: report.responsesReceived,
-                requestsReceived: report.requestsReceived,
-                responsesSent: report.responsesSent
+                reqSent: report.requestsSent,
+                resRecv: report.responsesReceived,
+                reqRecv: report.requestsReceived,
+                resSent: report.responsesSent
               });
             }
             if (report.type === 'transport') {
@@ -583,14 +626,32 @@ async function ensurePeerConnection() {
                 srtpCipher: report.srtpCipher
               });
             }
+            if (report.type === 'local-candidate') {
+              localCands[report.id] = {
+                type: report.candidateType,
+                protocol: report.protocol,
+                address: report.address,
+                port: report.port,
+                relayProtocol: report.relayProtocol
+              };
+            }
+            if (report.type === 'remote-candidate') {
+              remoteCands[report.id] = {
+                type: report.candidateType,
+                protocol: report.protocol,
+                address: report.address,
+                port: report.port
+              };
+            }
           });
           log({
             callIceFailedStats: true,
             callId: activeCallId,
             candidatePairs: pairs.length,
-            pairsDetail: JSON.stringify(pairs.slice(0, 8)),
+            pairsDetail: JSON.stringify(pairs.slice(0, 10)),
             transports: JSON.stringify(transports),
-            remoteCandidates: { ...remoteCandidateStats }
+            localCands: JSON.stringify(Object.values(localCands).slice(0, 6)),
+            remoteCands: JSON.stringify(Object.values(remoteCands).slice(0, 6))
           });
         } catch (statsErr) {
           log({ callIceStatsError: statsErr?.message, callId: activeCallId });
@@ -602,41 +663,10 @@ async function ensurePeerConnection() {
         direction,
         candidates: { ...candidateStats },
         remoteCandidates: { ...remoteCandidateStats },
-        hasLocalDesc: !!peerConnection.localDescription,
-        hasRemoteDesc: !!peerConnection.remoteDescription,
-        signalingState: peerConnection.signalingState,
-        iceRestartAttempted
+        hasLocalDesc: !!pc.localDescription,
+        hasRemoteDesc: !!pc.remoteDescription,
+        signalingState: pc.signalingState
       });
-      // Attempt ICE restart once before giving up
-      if (!iceRestartAttempted && peerConnection.signalingState === 'stable') {
-        iceRestartAttempted = true;
-        log({ callIceRestart: true, callId: activeCallId });
-        (async () => {
-          try {
-            peerConnection.restartIce();
-            const restartOffer = await peerConnection.createOffer({ iceRestart: true });
-            await peerConnection.setLocalDescription(restartOffer);
-            awaitingAnswer = true; // Accept the new answer from callee
-            logSdpInfo('offer-restart', restartOffer.sdp);
-            if (sendSignal) {
-              const targetIdentity = requirePeerIdentitySnapshot();
-              sendSignal('call-offer', {
-                callId: activeCallId,
-                targetAccountDigest: targetIdentity.digest,
-                senderDeviceId: requireLocalDeviceId(),
-                targetDeviceId: targetIdentity.deviceId,
-                description: restartOffer
-              });
-            }
-          } catch (restartErr) {
-            log({ callIceRestartError: restartErr?.message, callId: activeCallId });
-            showToast?.('通話連線失敗', { variant: 'error' });
-            completeCallSession({ reason: 'ice-restart-failed', error: 'ice-connection-failed' });
-            cleanupPeerConnection('ice-restart-failed');
-          }
-        })();
-        return; // Don't fail the call yet — wait for restart result
-      }
       showToast?.('通話連線失敗', { variant: 'error' });
       completeCallSession({ reason: iceState, error: 'ice-connection-failed' });
       cleanupPeerConnection(iceState);
@@ -820,7 +850,8 @@ function logSdpInfo(label, sdp) {
     const dtlsSetup = setupMatches.map((s) => s.replace('a=setup:', '')).join(',');
     const fpMatch = sdp.match(/a=fingerprint:(\S+)/);
     const fpAlgo = fpMatch ? fpMatch[1] : 'none';
-    const iceUfrag = /a=ice-ufrag:/.test(sdp);
+    const ufragMatch = sdp.match(/a=ice-ufrag:([^\r\n]+)/);
+    const iceUfrag = ufragMatch ? ufragMatch[1].trim() : 'none';
     const iceOptions = sdp.match(/a=ice-options:([^\r\n]+)/);
     const rtcpMux = /a=rtcp-mux/.test(sdp);
     const mLines = (sdp.match(/^m=/gm) || []).length;
@@ -945,12 +976,6 @@ async function handleIncomingOffer(msg) {
     pendingOffer = msg;
     await applyRemoteOfferAndAnswer(msg);
     awaitingOfferAfterAccept = false;
-  } else if (peerConnection && peerConnection.signalingState === 'stable') {
-    // Re-offer during active call (e.g. ICE restart from remote peer).
-    // Apply it immediately so the callee generates a new answer.
-    log({ callReOfferReceived: true, callId: activeCallId });
-    pendingOffer = msg;
-    await applyRemoteOfferAndAnswer(msg);
   } else {
     pendingOffer = msg;
   }
@@ -1102,7 +1127,6 @@ function cleanupPeerConnection(reason) {
   pendingRemoteCandidates = [];
   activeCallId = null;
   activePeerKey = null;
-  iceRestartAttempted = false;
   remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
   if (remoteAudioEl) {
     try {
