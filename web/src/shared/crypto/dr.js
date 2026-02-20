@@ -306,12 +306,11 @@ export async function x3dhRespond(devicePriv, guestBundle) {
 }
 
 export async function drRatchet(st, theirRatchetPubU8) {
-  const nsBase = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0;
-  const nrBase = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0;
-  const nsPrev = Number.isFinite(st?.Ns) ? Number(st.Ns) : 0;
-  const nrPrev = Number.isFinite(st?.Nr) ? Number(st.Nr) : 0;
-  st.NsTotal = nsBase + nsPrev;
-  st.NrTotal = nrBase + nrPrev;
+  // [Phase 0.1] NsTotal/NrTotal are transport counters managed externally:
+  //   NsTotal — incremented by drEncryptText (line 389) + reserveTransportCounter
+  //   NrTotal — incremented by caller (state-live / persistContactShareSequence)
+  // drRatchet must NOT accumulate Ns/Nr into them; doing so would double-count
+  // once the receiving-side ratchet is re-enabled (Ns/Nr reset to 0 each epoch).
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);
   const { a: newRoot, b: chainSeed } = split64(rkOut);

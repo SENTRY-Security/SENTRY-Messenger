@@ -423,6 +423,15 @@ async function seedTransportCounterFromServer({
     }
     if (maxCounter > 0 && Number(state.NsTotal) < maxCounter) {
       state.NsTotal = maxCounter;
+      // [Phase 0.4] When transport counter is seeded from server, we don't know the
+      // chain state of the last epoch. Reset chain counters and clear ckS to force
+      // a fresh send-side ratchet on the next drEncryptText call. This ensures:
+      //   1. Ns=0 + new DH keypair → no stale chain key reuse
+      //   2. PN captures the correct previous chain length (0 after seed)
+      //   3. ckS=null triggers the ratchet path in drEncryptText:352
+      state.Ns = 0;
+      state.PN = 0;
+      state.ckS = null;
       log({
         transportCounterSeeded: {
           conversationId: convId,
@@ -430,6 +439,7 @@ async function seedTransportCounterFromServer({
           peerDeviceId,
           senderDeviceId: deviceId,
           maxCounter,
+          chainReset: true,
           source: sourceTag
         }
       });
@@ -1895,10 +1905,10 @@ export async function sendDrPlaintextCore(params = {}) {
   logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: preSnapshot || null });
   const pkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
-  const afterEncryptTotal = Number(state?.NsTotal);
-  if (!Number.isFinite(afterEncryptTotal) || afterEncryptTotal === transportCounter + 1 || afterEncryptTotal < transportCounter) {
-    state.NsTotal = transportCounter;
-  }
+  // [Phase 0.2] Transport counter is the single source of truth for NsTotal.
+  // drEncryptText internally increments NsTotal as a side-effect, but reserveTransportCounter
+  // already reserved the correct value. Unconditionally set to avoid drift when ratchet resets Ns.
+  state.NsTotal = transportCounter;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
@@ -2195,10 +2205,8 @@ export async function sendDrPlaintextCore(params = {}) {
         logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: repairPreSnapshot || null });
         const repairPkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
         const repairMessageKeyB64 = repairPkt?.message_key_b64 || null;
-        const afterRepairTotal = Number(state?.NsTotal);
-        if (!Number.isFinite(afterRepairTotal) || afterRepairTotal === repairTransportCounter + 1 || afterRepairTotal < repairTransportCounter) {
-          state.NsTotal = repairTransportCounter;
-        }
+        // [Phase 0.2] Unconditional transport counter assignment (see text send path comment).
+        state.NsTotal = repairTransportCounter;
         const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
         const repairNow = Date.now();
         const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
@@ -2988,10 +2996,8 @@ export async function sendDrMediaCore(params = {}) {
   logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
   const pkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
-  const afterEncryptTotal = Number(state?.NsTotal);
-  if (!Number.isFinite(afterEncryptTotal) || afterEncryptTotal === transportCounter + 1 || afterEncryptTotal < transportCounter) {
-    state.NsTotal = transportCounter;
-  }
+  // [Phase 0.2] Unconditional transport counter assignment (see text send path comment).
+  state.NsTotal = transportCounter;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
@@ -3257,10 +3263,8 @@ export async function sendDrMediaCore(params = {}) {
       logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: repairPreSnapshot || null, objectKey: metadata.objectKey });
       const repairPkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
       const repairMessageKeyB64 = repairPkt?.message_key_b64 || null;
-      const afterRepairTotal = Number(state?.NsTotal);
-      if (!Number.isFinite(afterRepairTotal) || afterRepairTotal === repairTransportCounter + 1 || afterRepairTotal < repairTransportCounter) {
-        state.NsTotal = repairTransportCounter;
-      }
+      // [Phase 0.2] Unconditional transport counter assignment (see text send path comment).
+      state.NsTotal = repairTransportCounter;
       const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
       const repairNow = Date.now();
       const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
@@ -4520,10 +4524,17 @@ export async function persistContactShareSequence(params) {
   }
 
   // 1. Advance State (Manual)
-  // This logic mirrors the manual ratchet advance previously in state-live.js
+  // [Phase 0.3] NrTotal is a transport counter (monotonic, never resets).
+  // headerCounter is the transport-layer counter from the server message.
+  // We must only advance NrTotal forward, never allow it to regress
+  // (e.g. when a new ratchet epoch starts, chain counter resets to 0 but NrTotal must not).
+  // Nr (per-chain counter) is managed by drDecryptText and must NOT be overwritten here,
+  // as it resets to 0 on each ratchet epoch.
   if (state) {
-    state.NrTotal = headerCounter;
-    if ((state.Nr || 0) < headerCounter) state.Nr = headerCounter;
+    const currentNrTotal = Number.isFinite(state.NrTotal) ? Number(state.NrTotal) : 0;
+    if (Number.isFinite(headerCounter) && headerCounter > currentNrTotal) {
+      state.NrTotal = headerCounter;
+    }
   }
 
   // 2. Local Persistence (Critical)
