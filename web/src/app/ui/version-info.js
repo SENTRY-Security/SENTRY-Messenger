@@ -283,6 +283,15 @@ function getAppBuildCommit() {
   return null;
 }
 
+const GIT_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px;margin-right:2px;opacity:.75"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
+const GITHUB_TREE_URL = 'https://github.com/SENTRY-Security/SENTRY-Messenger/tree/';
+
+function buildCommitHtml(commit) {
+  const safe = escapeHtml(commit);
+  const short = safe.length > 8 ? safe.slice(0, 8) : safe;
+  return `<a href="${GITHUB_TREE_URL}${safe}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:2px" title="${safe}">${GIT_ICON}<code style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px;font-size:11px;letter-spacing:.5px">${short}</code></a>`;
+}
+
 function formatInfo(info) {
   const now = new Date();
   const fetchedAt = info?.fetchedAt ? new Date(info.fetchedAt) : now;
@@ -311,7 +320,7 @@ function renderPopup(popup, info) {
 
   popup.innerHTML = `
     <strong>版本資訊</strong>
-    ${details.appBuildCommit ? `<div>建置版號：<code style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px;font-size:11px;letter-spacing:.5px">${details.appBuildCommit}</code></div>` : ''}
+    ${details.appBuildCommit ? `<div>建置版號：${buildCommitHtml(details.appBuildCommit)}</div>` : ''}
     <div>前端建置：${details.appBuildAt}</div>
     <div>前端載入：${details.clientLoadedAt}</div>
     <div style="margin-top:10px;font-weight:600;">前端儲存資訊</div>
@@ -352,8 +361,10 @@ function renderModalContent(container, info) {
   const details = formatInfo(info);
   const storageStats = collectStorageStats();
   const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
+  const commitRow = details.appBuildCommit
+    ? `<div class="version-row"><span class="version-label">${escapeHtml('建置版號')}</span><span class="version-value">${buildCommitHtml(details.appBuildCommit)}</span></div>`
+    : '';
   const rows = [
-    ...(details.appBuildCommit ? [['建置版號', details.appBuildCommit]] : []),
     ['前端建置', details.appBuildAt],
     ['前端載入', details.clientLoadedAt],
     ['更新時間', details.fetchedAt]
@@ -367,6 +378,7 @@ function renderModalContent(container, info) {
 
   container.innerHTML = `
     <div class="version-modal">
+      ${commitRow}
       ${rows.map(([label, value]) => `<div class="version-row"><span class="version-label">${escapeHtml(label)}</span><span class="version-value">${escapeHtml(value)}</span></div>`).join('')}
       <div class="version-section-title">前端儲存資訊</div>
       <div class="version-storage-list">
