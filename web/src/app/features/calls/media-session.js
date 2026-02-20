@@ -579,7 +579,8 @@ async function ensurePeerConnection() {
     setTimeout(() => clearInterval(dtlsCheck), 30000);
   } catch { }
 
-  peerConnection.oniceconnectionstatechange = () => {
+  peerConnection.oniceconnectionstatechange = async () => {
+    if (!peerConnection) return;
     const iceState = peerConnection.iceConnectionState;
     log({
       callIceConnectionState: iceState,
@@ -592,80 +593,87 @@ async function ensurePeerConnection() {
     if (iceState === 'connected' || iceState === 'completed') {
       promoteSessionToInCall('ice-state');
     } else if (iceState === 'failed') {
-      // Collect getStats() for deep ICE/DTLS diagnostics
-      const pc = peerConnection; // capture ref before cleanup
-      (async () => {
-        try {
-          const stats = await pc.getStats();
-          const pairs = [];
-          const transports = [];
-          const localCands = {};
-          const remoteCands = {};
-          stats.forEach((report) => {
-            if (report.type === 'candidate-pair') {
-              pairs.push({
-                state: report.state,
-                nominated: report.nominated,
-                localId: report.localCandidateId,
-                remoteId: report.remoteCandidateId,
-                bytesSent: report.bytesSent,
-                bytesReceived: report.bytesReceived,
-                reqSent: report.requestsSent,
-                resRecv: report.responsesReceived,
-                reqRecv: report.requestsReceived,
-                resSent: report.responsesSent
-              });
-            }
-            if (report.type === 'transport') {
-              transports.push({
-                dtlsState: report.dtlsState,
-                iceState: report.iceState,
-                selectedPairId: report.selectedCandidatePairId,
-                tlsVersion: report.tlsVersion,
-                dtlsCipher: report.dtlsCipher,
-                srtpCipher: report.srtpCipher
-              });
-            }
-            if (report.type === 'local-candidate') {
-              localCands[report.id] = {
-                type: report.candidateType,
-                protocol: report.protocol,
-                address: report.address,
-                port: report.port,
-                relayProtocol: report.relayProtocol
-              };
-            }
-            if (report.type === 'remote-candidate') {
-              remoteCands[report.id] = {
-                type: report.candidateType,
-                protocol: report.protocol,
-                address: report.address,
-                port: report.port
-              };
-            }
-          });
-          log({
-            callIceFailedStats: true,
-            callId: activeCallId,
-            candidatePairs: pairs.length,
-            pairsDetail: JSON.stringify(pairs.slice(0, 10)),
-            transports: JSON.stringify(transports),
-            localCands: JSON.stringify(Object.values(localCands).slice(0, 6)),
-            remoteCands: JSON.stringify(Object.values(remoteCands).slice(0, 6))
-          });
-        } catch (statsErr) {
-          log({ callIceStatsError: statsErr?.message, callId: activeCallId });
-        }
-      })();
+      // CRITICAL: collect getStats() BEFORE cleanup — the previous
+      // version ran getStats() in an async IIFE *after* cleanup had
+      // already closed the peer connection, producing empty results
+      // (candidatePairs: 0, remoteCands: []).
+      const savedCallId = activeCallId;
+      try {
+        const stats = await Promise.race([
+          peerConnection.getStats(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('stats-timeout')), 3000))
+        ]);
+        const pairs = [];
+        const transports = [];
+        const localCands = {};
+        const remoteCands = {};
+        stats.forEach((report) => {
+          if (report.type === 'candidate-pair') {
+            pairs.push({
+              st: report.state,
+              nom: report.nominated,
+              lid: report.localCandidateId,
+              rid: report.remoteCandidateId,
+              bSent: report.bytesSent,
+              bRecv: report.bytesReceived,
+              reqS: report.requestsSent,
+              resR: report.responsesReceived,
+              reqR: report.requestsReceived,
+              resS: report.responsesSent,
+              curRtt: report.currentRoundTripTime
+            });
+          }
+          if (report.type === 'transport') {
+            transports.push({
+              dtlsState: report.dtlsState,
+              iceState: report.iceState,
+              selectedPairId: report.selectedCandidatePairId,
+              tlsVersion: report.tlsVersion,
+              dtlsCipher: report.dtlsCipher,
+              srtpCipher: report.srtpCipher
+            });
+          }
+          if (report.type === 'local-candidate') {
+            localCands[report.id] = {
+              typ: report.candidateType,
+              proto: report.protocol,
+              addr: report.address,
+              port: report.port,
+              relProto: report.relayProtocol
+            };
+          }
+          if (report.type === 'remote-candidate') {
+            remoteCands[report.id] = {
+              typ: report.candidateType,
+              proto: report.protocol,
+              addr: report.address,
+              port: report.port
+            };
+          }
+        });
+        log({
+          callIceFailedStats: true,
+          callId: savedCallId,
+          candidatePairs: pairs.length,
+          pairsDetail: JSON.stringify(pairs.slice(0, 12)),
+          transports: JSON.stringify(transports),
+          localCands: JSON.stringify(Object.values(localCands).slice(0, 8)),
+          remoteCands: JSON.stringify(Object.values(remoteCands).slice(0, 8))
+        });
+      } catch (statsErr) {
+        log({ callIceStatsError: statsErr?.message, callId: savedCallId });
+      }
+      // Guard: peer connection may have been cleaned up during await
+      if (!peerConnection) return;
       log({
         callIceFailed: true,
         callId: activeCallId,
         direction,
         candidates: { ...candidateStats },
         remoteCandidates: { ...remoteCandidateStats },
-        hasLocalDesc: !!pc.localDescription,
-        hasRemoteDesc: !!pc.remoteDescription,
-        signalingState: pc.signalingState
+        hasLocalDesc: !!peerConnection.localDescription,
+        hasRemoteDesc: !!peerConnection.remoteDescription,
+        signalingState: peerConnection.signalingState
       });
       showToast?.('通話連線失敗', { variant: 'error' });
       completeCallSession({ reason: iceState, error: 'ice-connection-failed' });
@@ -1037,7 +1045,20 @@ async function handleIncomingCandidate(msg) {
   else if (remoteType === 'relay') remoteCandidateStats.relay++;
   else if (remoteType === 'prflx') remoteCandidateStats.prflx++;
   remoteCandidateStats.total++;
-  log({ callRemoteCandidate: remoteType, callId: activeCallId, queued: !peerConnection.remoteDescription?.type });
+  // Log candidate details — the first 3 candidates include the full
+  // candidate string so we can inspect address family (IPv4/IPv6),
+  // ufrag, sdpMid, and relay addresses.
+  const candDetail = {
+    callRemoteCandidate: remoteType,
+    callId: activeCallId,
+    queued: !peerConnection.remoteDescription?.type
+  };
+  if (remoteCandidateStats.total <= 3 && typeof candidate === 'object') {
+    candDetail.sdpMid = candidate.sdpMid ?? candidate.sdpMLineIndex;
+    candDetail.ufrag = candidate.usernameFragment || undefined;
+    candDetail.cand = (candidate.candidate || '').slice(0, 160);
+  }
+  log(candDetail);
   const fromDigest = normalizeAccountDigest(msg.fromAccountDigest || msg.from_account_digest || null);
   const fromDeviceId = normalizePeerDeviceId(msg.fromDeviceId || msg.from_device_id || msg.senderDeviceId || null);
   if (fromDigest && fromDeviceId) {
