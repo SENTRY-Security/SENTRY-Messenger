@@ -289,7 +289,8 @@ export const createMessage = async (req, res) => {
         ts: Number(messageInput.created_at || messageInput.ts || Date.now()),
         senderAccountDigest: auth.accountDigest,
         senderDeviceId,
-        targetDeviceId: canonDevice(receiverDeviceId)
+        targetDeviceId: canonDevice(receiverDeviceId),
+        counter
       });
     } catch (err) {
       logger.warn({ ws_notify_error: err?.message || err });
@@ -486,7 +487,8 @@ export const createSecureMessage = async (req, res) => {
         ts: createdAt,
         senderAccountDigest: auth.accountDigest,
         senderDeviceId: canonDevice(senderDeviceId),
-        targetDeviceId: canonDevice(targetDeviceId)
+        targetDeviceId: canonDevice(targetDeviceId),
+        counter: messageCounter
       });
     } catch (err) {
       logger.warn({ ws_notify_error: err?.message || err }, 'ws_notify_secure_message_failed');
@@ -604,6 +606,7 @@ export const atomicSend = async (req, res) => {
       const messageId = messagePayload.id;
       const ts = messagePayload.created_at || messagePayload.ts;
       if (receiverDigest && conversationId && messageId) {
+        const msgCounter = Number(messagePayload.counter);
         const mgr = getWebSocketManager();
         mgr.notifySecureMessage({
           targetAccountDigest: receiverDigest,
@@ -613,7 +616,8 @@ export const atomicSend = async (req, res) => {
           ts: Number(ts) || Date.now(),
           senderAccountDigest: auth.accountDigest,
           senderDeviceId: senderDevice,
-          targetDeviceId: canonDevice(messagePayload.receiver_device_id || messagePayload.receiverDeviceId)
+          targetDeviceId: canonDevice(messagePayload.receiver_device_id || messagePayload.receiverDeviceId),
+          counter: Number.isFinite(msgCounter) ? msgCounter : null
         });
       }
     } catch (err) {

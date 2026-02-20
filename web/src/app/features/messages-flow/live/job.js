@@ -149,6 +149,18 @@ export function validateLiveJob(job = null) {
   return { ok: true, reason: null, missing: null };
 }
 
+function resolveCounter(event, ctx) {
+  const candidates = [
+    event?.counter,
+    ctx?.counter
+  ];
+  for (const value of candidates) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+  return null;
+}
+
 export function createLiveJobFromWsEvent(event = null, ctx = null) {
   const job = {
     type: LIVE_JOB_TYPES.WS_INCOMING,
@@ -159,7 +171,8 @@ export function createLiveJobFromWsEvent(event = null, ctx = null) {
     peerDeviceId: resolvePeerDeviceId(event, ctx),
     tokenB64: resolveTokenB64(event, ctx),
     sourceTag: resolveSourceTag(event, ctx),
-    createdAt: resolveCreatedAt(event, ctx)
+    createdAt: resolveCreatedAt(event, ctx),
+    counter: resolveCounter(event, ctx)
   };
   const hasMessageId = !!normalizeMessageIdValue(job.messageId);
   const hasServerMessageId = !!normalizeMessageIdValue(job.serverMessageId);

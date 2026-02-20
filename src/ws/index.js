@@ -647,7 +647,7 @@ export function setupWebSocket(server) {
       if (!digest) return;
       broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    notifySecureMessage({ targetAccountDigest, conversationId, messageId, preview, ts = Date.now(), senderAccountDigest, senderDeviceId, targetDeviceId }) {
+    notifySecureMessage({ targetAccountDigest, conversationId, messageId, preview, ts = Date.now(), senderAccountDigest, senderDeviceId, targetDeviceId, counter }) {
       const target = canonicalAccountDigest(targetAccountDigest);
       const senderDev = canonicalDeviceId(senderDeviceId);
       const targetDev = canonicalDeviceId(targetDeviceId);
@@ -664,6 +664,11 @@ export function setupWebSocket(server) {
         }, 'drop notifySecureMessage due to missing deviceId');
         return;
       }
+      // [FIX] Include counter in WS payload so receiver can do early gap detection
+      // in the facade before calling consumeLiveJob. Without this, the facade's
+      // gap check is always skipped (liveJobCounter is null) and out-of-order
+      // messages are only caught inside consumeLiveJob where gap recovery is less reliable.
+      const normalizedCounter = Number.isFinite(Number(counter)) ? Number(counter) : null;
       broadcastByDigest(target, {
         type: 'secure-message',
         conversationId,
@@ -671,6 +676,7 @@ export function setupWebSocket(server) {
         preview: preview || '',
         ts,
         count: 1,
+        counter: normalizedCounter,
         senderAccountDigest: canonicalAccountDigest(senderAccountDigest),
         senderDeviceId: senderDev,
         targetDeviceId: targetDev,

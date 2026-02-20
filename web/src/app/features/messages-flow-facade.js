@@ -458,11 +458,14 @@ function createMessagesFlowFacade() {
             || resolvePeerDeviceIdFromConversationId(summaryConversationId);
 
           if (peerDeviceId) {
+            // [FIX] Use lazy:false to ensure gap task is enqueued immediately.
+            // With lazy:true, the probe skips enqueueing if the latest message
+            // has no vault key yet, causing the gap to never be filled.
             void maxCounterProbe({
               conversationId: summaryConversationId,
               senderDeviceId: peerDeviceId,
               source: 'gap_detected_ws',
-              lazy: true
+              lazy: false
             });
           }
           return { ok: false, reasonCode: 'GAP_DETECTED' };
@@ -528,11 +531,31 @@ function createMessagesFlowFacade() {
             getDeviceId: storeGetDeviceId
           };
 
-          // Fix: Handle GapDetectedError to avoid Uncaught Promise in console
+          // Fix: Handle GapDetectedError — trigger maxCounterProbe for gap recovery
           const livePromise = consumeLiveJob(liveJob, liveCtx)
             .catch(err => {
               if (err?.name === 'GapDetectedError') {
-                console.log('[facade] Gap detected in B-Route (Benign, failing over to Legacy/History)', err.message);
+                console.log('[facade] Gap detected in B-Route, triggering maxCounterProbe for recovery', err.message);
+
+                // [FIX] Trigger non-lazy maxCounterProbe to fill the gap.
+                // Without this, messages that arrive out-of-order via WS are silently
+                // dropped because the facade early gap check is skipped (WS events
+                // lack a counter field) and no other code path retries them.
+                const gapConvId = liveJob?.conversationId || liveJobConversationId;
+                if (gapConvId) {
+                  const gapPeerDeviceId = liveJob?.peerDeviceId
+                    || liveJobCtx?.peerDeviceId
+                    || resolvePeerDeviceIdFromConversationId(gapConvId);
+                  if (gapPeerDeviceId) {
+                    void maxCounterProbe({
+                      conversationId: gapConvId,
+                      senderDeviceId: gapPeerDeviceId,
+                      source: 'gap_detected_live_catch',
+                      lazy: false
+                    });
+                  }
+                }
+
                 return {
                   ok: false,
                   reasonCode: 'GAP_DETECTED',
