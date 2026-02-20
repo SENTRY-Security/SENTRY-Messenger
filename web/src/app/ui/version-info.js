@@ -285,6 +285,11 @@ function getAppBuildTime() {
   try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); }
 }
 
+function getAppBuildCommit() {
+  if (typeof window !== 'undefined' && window.APP_BUILD_COMMIT) return window.APP_BUILD_COMMIT;
+  return null;
+}
+
 function formatInfo(info) {
   const now = new Date();
   const fetchedAt = info?.fetchedAt ? new Date(info.fetchedAt) : now;
@@ -292,6 +297,7 @@ function formatInfo(info) {
     version: info?.version || info?.build || 'unknown',
     appVersion: getAppVersion(),
     appBuildAt: getAppBuildTime(),
+    appBuildCommit: getAppBuildCommit(),
     fetchedAt: fetchedAt.toLocaleString('zh-TW', { hour12: false }),
     clientLoadedAt: now.toLocaleString('zh-TW', { hour12: false })
   };
@@ -315,6 +321,7 @@ function renderPopup(popup, info) {
   popup.innerHTML = `
     <strong>版本資訊</strong>
     <div>前端版本：${details.appVersion}</div>
+    ${details.appBuildCommit ? `<div>建置版號：<code style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px;font-size:11px;letter-spacing:.5px">${details.appBuildCommit}</code></div>` : ''}
     <div>前端建置：${details.appBuildAt}</div>
     <div>前端載入：${details.clientLoadedAt}</div>
     <div>版本：${details.version}</div>
@@ -358,6 +365,7 @@ function renderModalContent(container, info) {
   const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
   const rows = [
     ['前端版本', details.appVersion],
+    ...(details.appBuildCommit ? [['建置版號', details.appBuildCommit]] : []),
     ['前端建置', details.appBuildAt],
     ['前端載入', details.clientLoadedAt],
     ['版本', details.version],
