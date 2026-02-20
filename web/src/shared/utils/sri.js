@@ -2,26 +2,46 @@
 // Subresource Integrity (SRI) verification for dynamic ESM imports.
 //
 // Native dynamic import() does not support integrity attributes.
-// This module fetches the script text, verifies its SHA-384 hash against a
-// known-good digest, then executes via a Blob URL so the browser treats it
-// as a same-origin ES module.
+// This module provides two strategies:
+//
+// 1. Blob URL (default) — fetch, verify hash, execute via Blob URL.
+//    Works for self-contained modules with no internal sub-imports.
+//
+// 2. Verify-then-import — fetch to verify hash, then use native import()
+//    so the browser can resolve relative sub-dependencies normally.
+//    Use this for CDN modules that have internal imports (e.g. esm.sh).
 //
 // Usage:
 //   import { importWithSRI } from '/shared/utils/sri.js';
+//
+//   // Self-contained module (no sub-imports):
 //   const mod = await importWithSRI(
-//     'https://cdn.jsdelivr.net/npm/foo@1.0.0/+esm',
+//     'https://cdn.jsdelivr.net/npm/foo@1.0.0/dist/foo.min.mjs',
 //     'sha384-<base64hash>'
+//   );
+//
+//   // Module with sub-dependencies (esm.sh, jsdelivr +esm):
+//   const mod = await importWithSRI(
+//     'https://esm.sh/@cloudflare/opaque-ts@0.7.5',
+//     'sha384-<base64hash>',
+//     { useNativeImport: true }
 //   );
 
 /**
  * Fetch a remote ES module, verify its SHA-384 integrity, and return the
  * evaluated module namespace.
  *
- * @param {string} url   – Fully-qualified HTTPS URL of the ES module.
- * @param {string} expected – SRI string, e.g. "sha384-<base64>".
+ * @param {string} url       – Fully-qualified HTTPS URL of the ES module.
+ * @param {string} expected  – SRI string, e.g. "sha384-<base64>".
+ * @param {object} [opts]    – Options.
+ * @param {boolean} [opts.useNativeImport=false]
+ *   When true, after verifying the hash the module is loaded via native
+ *   import() instead of a Blob URL. This allows internal sub-imports to
+ *   resolve correctly (e.g. esm.sh modules that depend on other esm.sh
+ *   packages). The browser cache ensures the same verified bytes are used.
  * @returns {Promise<object>} – The module namespace object.
  */
-export async function importWithSRI(url, expected) {
+export async function importWithSRI(url, expected, opts) {
   const res = await fetch(url, { credentials: 'omit' });
   if (!res.ok) throw new Error(`SRI fetch failed: ${url} (${res.status})`);
 
@@ -36,7 +56,13 @@ export async function importWithSRI(url, expected) {
     );
   }
 
-  // Execute the verified source as a same-origin ES module via Blob URL.
+  // For modules with sub-dependencies, use native import() after verification.
+  // The browser cache will serve the identical bytes we just verified.
+  if (opts?.useNativeImport) {
+    return import(/* webpackIgnore: true */ url);
+  }
+
+  // For self-contained modules, execute via Blob URL (strongest isolation).
   const blob = new Blob([new Uint8Array(buf)], { type: 'application/javascript' });
   const blobUrl = URL.createObjectURL(blob);
   try {

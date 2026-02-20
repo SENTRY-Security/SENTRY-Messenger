@@ -15,11 +15,11 @@ import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
 /* ── Fabric.js lazy loader (CDN, SRI-verified) ── */
 let fabricLibPromise = null;
-const FABRIC_URL = 'https://cdn.jsdelivr.net/npm/fabric@6/dist/index.min.mjs';
+const FABRIC_URL = 'https://cdn.jsdelivr.net/npm/fabric@6.9.1/dist/index.min.mjs';
 
 async function getFabric() {
   if (fabricLibPromise) return fabricLibPromise;
-  fabricLibPromise = importWithSRI(FABRIC_URL, CDN_SRI[FABRIC_URL])
+  fabricLibPromise = importWithSRI(FABRIC_URL, CDN_SRI[FABRIC_URL], { useNativeImport: true })
     .then(mod => {
       // Fabric.js v6 ESM uses named exports: { Canvas, PencilBrush, FabricImage, ... }
       // The +esm wrapper may wrap them under mod.default; fall back to mod itself.

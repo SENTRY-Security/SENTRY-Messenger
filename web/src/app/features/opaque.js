@@ -14,13 +14,13 @@ const OPAQUE_MSG_URL = 'https://esm.sh/@cloudflare/opaque-ts@0.7.5/lib/src/messa
 async function loadOpaque() {
   if (_opaque) return _opaque;
   // Pin version that matches server library — verified via SRI
-  const mod = await importWithSRI(OPAQUE_URL, CDN_SRI[OPAQUE_URL]);
+  const mod = await importWithSRI(OPAQUE_URL, CDN_SRI[OPAQUE_URL], { useNativeImport: true });
   _opaque = mod;
   return _opaque;
 }
 
 async function loadOpaqueMessages() {
-  return importWithSRI(OPAQUE_MSG_URL, CDN_SRI[OPAQUE_MSG_URL]);
+  return importWithSRI(OPAQUE_MSG_URL, CDN_SRI[OPAQUE_MSG_URL], { useNativeImport: true });
 }
 
 function u8ToB64(u8) {

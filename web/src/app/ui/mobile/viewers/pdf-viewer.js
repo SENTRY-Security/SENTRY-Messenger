@@ -11,7 +11,7 @@ const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/p
 
 async function getPdfJs() {
   if (pdfJsLibPromise) return pdfJsLibPromise;
-  pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL])
+  pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL], { useNativeImport: true })
     .then((lib) => {
       try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
       return lib;

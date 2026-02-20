@@ -21,8 +21,8 @@ export const CDN_SRI = Object.freeze({
   'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs':
     'sha384-HXCJ3rARqiE+JOSpfGWiNpJUUz0h+azkE77MD1efceK0nzmU+s3R6JEyRi9Q/boO',
 
-  // fabric.js 6.9.1 (ESM, dynamic import — pinned via exact file path)
-  'https://cdn.jsdelivr.net/npm/fabric@6/dist/index.min.mjs':
+  // fabric.js 6.9.1 (ESM, dynamic import — pinned to exact version)
+  'https://cdn.jsdelivr.net/npm/fabric@6.9.1/dist/index.min.mjs':
     'sha384-/i37Stljnn6zFDrOX6krpOpuMGxlNOHslv93j45mxw+g8XfLy/sN/UO14bbFa/Zh',
 
   // boxicons 2.1.4 (CSS, loaded via <link> in app.html)

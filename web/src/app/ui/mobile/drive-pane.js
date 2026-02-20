@@ -228,7 +228,7 @@ export function initDrivePane({
 
   async function getPdfJs() {
     if (pdfJsLibPromise) return pdfJsLibPromise;
-    pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL])
+    pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL], { useNativeImport: true })
       .then((lib) => {
         try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
         return lib;
