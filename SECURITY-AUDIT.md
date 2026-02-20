@@ -50,7 +50,7 @@ The sending-side ratchet step in `ratchetDH()` is **commented out with `[DEBUG]`
 
 **Impact:** The DH ratchet never advances on the sending side. A single compromised chain key reveals **all future messages** in that direction. Forward secrecy — the core security property of the Double Ratchet protocol — is effectively disabled. The private ratchet key is never rotated, so a one-time key compromise has permanent effect.
 
-**Recommendation:** Uncomment lines 324-330 immediately. This appears to be debug instrumentation that was never reverted. Verify with integration tests that ratchet state advances correctly for both initiator and responder roles.
+**Recommendation:** Uncomment lines 324-330 — but **NOT in isolation**. This change has cascading effects across the entire counter-based message delivery pipeline. See **Appendix A** for the complete impact analysis covering 14 identified problems across 6 architectural layers and 12 files requiring synchronized updates. Simply uncommenting these lines without the companion changes **will break message delivery and cause permanent message loss**.
 
 ---
 
@@ -471,7 +471,7 @@ Run `npm audit` for the full machine-readable report.
 
 | # | Action | Effort |
 |---|--------|--------|
-| 1 | **Uncomment ratchet rotation** in `dr.js:324-330` and verify with tests | Low |
+| 1 | **Enable ratchet rotation** — requires synchronized changes across 12 files (see Appendix A) | High |
 | 2 | **Set all DEBUG flags to `false`** in `debug-flags.js` | Low |
 | 3 | **Remove or gate `/auth/opaque/debug`** endpoint behind admin auth | Low |
 | 4 | **Run `npm audit fix`** and update AWS SDK packages | Low |
@@ -501,6 +501,519 @@ Run `npm audit` for the full machine-readable report.
 | 18 | Add rate limiting to staging environments | Low |
 | 19 | Evaluate hardware-backed key storage (WebAuthn PRF) | High |
 | 20 | Review and reduce `SKIPPED_KEYS_PER_CHAIN_MAX` if feasible | Low |
+
+---
+
+## Appendix A: Forward Secrecy Enablement — Full Impact Analysis
+
+**Date:** 2026-02-20
+**Context:** CRIT-01 recommends uncommenting the ratchet rotation in `dr.js:323-330`. This appendix analyzes the **complete blast radius** of that change across the entire codebase, identifying every module that requires synchronized updates.
+
+> **CRITICAL WARNING:** Simply uncommenting lines 323-330 without the synchronized changes described below **will break message delivery**, cause **counter desynchronization**, and potentially result in **permanent message loss**.
+
+---
+
+### A.1 Architecture Overview: Two Counter Domains
+
+The system maintains **two independent counter domains** that must remain synchronized:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  DR Protocol Layer (per-chain counters)                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
+│  │ Ns (send)│  │ Nr (recv)│  │ PN (prev)│  ← per epoch  │
+│  │ resets=0 │  │ resets=0 │  │ = old Ns │    on ratchet  │
+│  └──────────┘  └──────────┘  └──────────┘               │
+└──────────┬───────────────────────────────────────────────┘
+           │ mapped via NsTotal / NrTotal
+┌──────────▼───────────────────────────────────────────────┐
+│  Transport Layer (monotonic counters)                    │
+│  ┌──────────┐  ┌──────────┐                              │
+│  │ NsTotal  │  │ NrTotal  │  ← never reset,             │
+│  │ (global) │  │ (global) │    strictly increasing       │
+│  └──────────┘  └──────────┘                              │
+└──────────┬───────────────────────────────────────────────┘
+           │ used as `counter` field in API
+┌──────────▼───────────────────────────────────────────────┐
+│  Server DB (D1/SQLite)                                   │
+│  messages_secure.counter  ← monotonic per                │
+│                              (conversation_id,           │
+│                               sender_account_digest,     │
+│                               sender_device_id)          │
+│  Constraint: new counter > MAX(counter) else 409         │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Current state (ratchet disabled):** Ns never resets, NsTotal ≈ Ns, so both domains stay trivially synchronized.
+
+**After enabling ratchet:** Ns resets to 0 on each DH ratchet step. NsTotal must absorb the reset and continue incrementing. This is where the bugs emerge.
+
+---
+
+### A.2 Layer 1 — DR Protocol (`web/src/shared/crypto/dr.js`)
+
+#### A.2.1 `drRatchet()` (line 308-343) — The Core Change
+
+**What gets uncommented:**
+```javascript
+st.ckS = null;                          // line 324: clear old sending chain
+st.PN = st.Ns;                          // line 326: save previous chain length
+st.Ns = 0;                              // line 327: reset sending counter
+st.myRatchetPriv = myNew.secretKey;     // line 329: rotate DH keypair
+st.myRatchetPub = myNew.publicKey;      // line 330: rotate DH keypair
+```
+
+**Problem 1: NsTotal double-counting**
+
+Lines 309-314 execute BEFORE the uncommented code:
+```javascript
+const nsBase = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0;
+const nsPrev = Number.isFinite(st?.Ns) ? Number(st.Ns) : 0;
+st.NsTotal = nsBase + nsPrev;  // line 313
+```
+
+But `drEncryptText()` at line 389 ALSO increments NsTotal:
+```javascript
+st.NsTotal = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) + 1 : st.Ns;
+```
+
+**Result:** When `drRatchet` is called from `drDecryptText` (receiving side), NsTotal gets `+= Ns`. Then when the next `drEncryptText` fires, NsTotal gets `+= 1` again. If Ns was 5 before the ratchet:
+- NsTotal goes from X to X+5 (in drRatchet)
+- Then X+5 to X+6 (in drEncryptText)
+- But it should only go from X to X+1 (the next message)
+- **Net error: NsTotal is inflated by (Ns - 1) = 4**
+
+**Fix required:** `drRatchet` should NOT accumulate `NsTotal += Ns`. NsTotal is already being maintained by `drEncryptText` per-message. The accumulation at line 313 is only correct if `drRatchet` is the *only* place that tracks total counts — but it isn't.
+
+**Problem 2: Asymmetric ratchet behavior**
+
+`drRatchet()` is called from `drDecryptText()` (receiving-side ratchet), but the **sending-side ratchet** happens inside `drEncryptText()` at lines 362-382. Both paths update `PN`, `Ns`, and DH keys, but they do so independently:
+
+| Operation | `drRatchet` (recv-side) | `drEncryptText` (send-side) |
+|-----------|------------------------|-----------------------------|
+| PN update | `st.PN = st.Ns` ✓ | `st.PN = st.Ns` ✓ |
+| Ns reset | `st.Ns = 0` ✓ | `st.Ns = 0` ✓ |
+| ckS clear | `st.ckS = null` ✓ | triggers because `!st.ckS` |
+| DH rotate | `myNew = genX25519Keypair()` ✓ | `myNew = genX25519Keypair()` ✓ |
+| NsTotal | `+= Ns` (WRONG) | `+= 1` (correct per-msg) |
+
+**This means recv-side and send-side ratchets have DIFFERENT NsTotal semantics.** The fix must unify them.
+
+#### A.2.2 `drEncryptText()` (line 345-438)
+
+**Problem 3: NsTotal is incremented twice on send-side ratchet**
+
+When `!st.ckS` and `st.theirRatchetPub` exists (line 352, 362), a send-side ratchet occurs:
+1. Line 370: `st.Ns = 0`
+2. Line 388: `st.Ns += 1` → Ns becomes 1
+3. Line 389: `st.NsTotal = NsTotal + 1`
+
+This is correct for the send-side path. But if a recv-side ratchet already fired `drRatchet()` which did `NsTotal += Ns`, then the `+1` at line 389 compounds on an already-inflated NsTotal.
+
+**Fix required:** Remove `NsTotal += Ns` from `drRatchet()`. Let `drEncryptText` be the sole owner of NsTotal increments.
+
+#### A.2.3 `drDecryptText()` (line 440-994)
+
+**Problem 4: Out-of-order messages from old chain are unrecoverable**
+
+After a ratchet is performed at line 717, `working.theirRatchetPub` is updated to the new key. If a late message arrives with the OLD `ek_pub_b64`:
+
+1. Line 645-646: `sameReceiveChain` = false (old key ≠ new key)
+2. Line 649: replay check skipped (not same chain)
+3. Line 683: enters ratchet branch (keys differ)
+4. Line 717: `drRatchet(working, theirPub)` — performs DH with old key but current `myRatchetPriv`
+5. Since `myRatchetPriv` was rotated during the earlier ratchet, the DH output is wrong
+6. Derived `ckR` is wrong → derived `mk` is wrong → **AES-GCM decryption fails**
+
+**Fix required:** Before ratcheting, check the skipped keys map for old chain IDs. If `packet.header.ek_pub_b64` matches a chain in `skippedKeys`, use the stored key instead of ratcheting. The special case at line 666-676 (responder, headerN===1, Nr===0) is insufficient — it only covers the initial handshake scenario.
+
+**Problem 5: `pn` header value is unvalidated**
+
+Line 698: `if (prevChainId && working.ckR && Number.isFinite(pn) && pn > working.Nr)`
+
+The `pn` value comes from the packet header (attacker-controlled). A malicious `pn=999999` forces derivation of up to 999999 keys in the while-loop at lines 707-713. The warning at line 700-703 only logs — it doesn't abort.
+
+**Fix required:** Hard-reject if `pn - working.Nr > SKIPPED_KEYS_PER_CHAIN_MAX`.
+
+---
+
+### A.3 Layer 2 — Transport Counter Bridge (`web/src/app/features/dr-session.js`)
+
+#### A.3.1 `reserveTransportCounter()` (line 322-353)
+
+```javascript
+const before = requireTransportCounter(state, ...);  // reads state.NsTotal
+const reserved = before + 1;
+state.NsTotal = reserved;  // writes state.NsTotal
+return reserved;
+```
+
+**Problem 6: Race between reserve and encrypt**
+
+The flow is:
+1. `reserveTransportCounter()` → NsTotal = X+1, returns X+1
+2. `drEncryptText()` → internally does NsTotal += 1, making NsTotal = X+2
+3. Line 1898-1901 "correction":
+   ```javascript
+   if (afterEncryptTotal === transportCounter + 1  // X+2 === X+2? YES
+       || afterEncryptTotal < transportCounter) {
+     state.NsTotal = transportCounter;  // force NsTotal back to X+1
+   }
+   ```
+
+Currently this works because `drEncryptText` always increments NsTotal by exactly 1, matching the `=== transportCounter + 1` condition, so the correction fires and resets NsTotal to the reserved value.
+
+**After enabling ratchet:** If a send-side ratchet occurs inside `drEncryptText`, NsTotal changes by more than +1 (due to Problem 3's `NsTotal += Ns` in `drRatchet`). The correction condition `afterEncryptTotal === transportCounter + 1` becomes FALSE, and `afterEncryptTotal < transportCounter` is also FALSE. **The correction doesn't fire**, leaving NsTotal inflated. Next `reserveTransportCounter` returns an inflated value. The server has a gap in counter sequence (some counter values were never sent). The receiving gap-queue tries to fetch those phantom counters and gets 404s.
+
+**Fix required:** The correction logic needs to either:
+- Always force `state.NsTotal = transportCounter` after encryption (simplest)
+- Or be removed entirely if `drEncryptText` stops touching NsTotal
+
+#### A.3.2 `seedTransportCounterFromServer()` (line 355-451)
+
+This function queries the server for existing messages and sets NsTotal to the highest observed counter. It runs when `state.baseKey.snapshot === true` (restored from snapshot).
+
+**Problem 7: No chain epoch awareness**
+
+The seed logic scans up to 50 messages and picks the max counter. After enabling ratchet, the same conversation may have messages across multiple chain epochs. The max counter is correct as a transport-layer value, but the function also doesn't reset `Ns` to match the chain-epoch position.
+
+**Impact:** After snapshot restore, `Ns` may be stale (from an old epoch), while NsTotal is correct (from server). The next `drEncryptText` uses the stale `Ns` to build the AAD counter (`buildDrAad({ counter: st.Ns })`), which won't match what the receiver expects.
+
+**Fix required:** When seeding from server, also reset `Ns = 0` and `PN = 0` since the chain-epoch state is lost. Or store `Ns` and `PN` in the snapshot and restore them alongside NsTotal.
+
+#### A.3.3 CounterTooLow Repair (line 2164-2260)
+
+```javascript
+if (errorCode === COUNTER_TOO_LOW_CODE) {
+  const sendState = await fetchAuthoritativeSendState({...});
+  state.NsTotal = expectedCounter - 1;  // line 2177: FORCE OVERWRITE
+  // ... re-encrypt with new counter ...
+}
+```
+
+**Problem 8: Re-encryption consumes a chain key without updating the receiver**
+
+When CounterTooLow triggers:
+1. First `drEncryptText` already consumed chain key N and incremented Ns
+2. NsTotal is overwritten to server's `expectedCounter - 1`
+3. Second `drEncryptText` consumes chain key N+1 and increments Ns again
+4. Message is sent with the server's expected counter
+
+But chain key N was consumed for a ciphertext that was **never delivered** (the 409 response means the server rejected it). The receiver will never see a message encrypted with chain key N, but the sender's chain has advanced past it.
+
+**After enabling ratchet:** This is worse because:
+- If the re-encryption triggers a send-side ratchet (because `ckS = null` after recv-side ratchet), the wasted chain key is from the OLD epoch, and the new message is from a NEW epoch
+- The receiver expects the next message on the old epoch's chain, but gets a message on a new epoch's chain with a different `ek_pub_b64`
+- The receiver's `pn` check will have gaps
+
+**Fix required:** On CounterTooLow, the first encrypted packet must be discarded AND the DR state must be rolled back to pre-encryption state before re-encrypting. The current code does not roll back DR state — it only overwrites NsTotal.
+
+#### A.3.4 `persistContactShareSequence()` (line 4500-4590)
+
+```javascript
+state.NrTotal = headerCounter;  // line 4525: DIRECT OVERWRITE
+if ((state.Nr || 0) < headerCounter) state.Nr = headerCounter;  // line 4526
+```
+
+**Problem 9: NrTotal overwrite ignores chain epoch boundaries**
+
+This function sets NrTotal = headerCounter (from the received message's DR header `n` field). But after enabling ratchet, `header.n` resets to 1 at each epoch. Setting `NrTotal = 1` when it was previously 50 causes NrTotal to **go backwards**, breaking the transport-layer monotonicity invariant.
+
+**Fix required:** NrTotal should be `max(current NrTotal, NrTotal + 1)` — monotonically increasing, never decreasing. The header counter `n` should be used for chain-level tracking only.
+
+---
+
+### A.4 Layer 3 — Server APIs
+
+#### A.4.1 `POST /messages/secure` — Counter Validation
+
+**File:** `data-worker/src/worker.js:2193-2203`
+
+```javascript
+const maxCounter = Number(maxRow?.max_counter ?? -1);
+if (maxCounter >= 0 && msgCounter <= maxCounter) {
+  return json({ error: 'CounterTooLow', maxCounter }, { status: 409 });
+}
+```
+
+**Impact of ratchet enablement:** The server enforces **strict monotonicity** (`counter > max_counter`). This is correct and requires no change. However, the client must ensure NsTotal never produces duplicates or gaps — which is exactly what Problems 6-8 above can cause.
+
+#### A.4.2 `GET /messages/by-counter` — Gap Filling
+
+**File:** `data-worker/src/worker.js` and `web/src/app/features/messages-flow/gap-queue.js`
+
+```javascript
+// gap-queue.js: sequential counter fetch
+for (let counter = startCounter; counter <= targetCounter; counter += 1) {
+  const result = await fetchByCounter(conversationId, counter, ...);
+}
+```
+
+**Problem 10: Assumes no gaps in counter sequence**
+
+The gap-queue iterates every integer from `startCounter` to `targetCounter`. If the sender's NsTotal jumped (due to inflation from Problem 6), some counter values in that range were never stored on the server. The gap-queue will:
+1. Fetch counter N → 404 (doesn't exist)
+2. Retry up to `GAP_QUEUE_RETRY_MAX` times
+3. Eventually mark as `unable_to_decrypt`
+4. Move to counter N+1
+
+This causes unnecessary network traffic, delays, and false-positive "unable to decrypt" errors in the UI.
+
+**Fix required:** The gap-queue should tolerate 404s gracefully — skip missing counters instead of retrying them as errors. Or better: ensure the sender never creates counter gaps.
+
+#### A.4.3 `POST /messages/send-state` — Counter Recovery
+
+**File:** `data-worker/src/worker.js:2383-2415`
+
+```javascript
+const expectedCounter = lastAcceptedCounter + 1;
+```
+
+**Problem 11: `send-state` response is unauthenticated**
+
+The `expectedCounter` value is returned as a plain JSON number. There is no HMAC or signature binding it to the conversation/device. A MITM (even at the CDN layer) could return a fabricated low `expectedCounter`, causing the client to:
+1. Set `NsTotal = (fake low value) - 1`
+2. Re-encrypt a message with a counter that was already used
+3. Server accepts it (if the MITM also blocks the original message)
+4. **Counter reuse**: two different plaintexts encrypted with different chain keys but same transport counter
+
+After enabling ratchet, this is more dangerous because counter reuse across chain epochs could cause the receiver to attempt decryption with the wrong chain key, permanently corrupting their ratchet state.
+
+**Fix required:** Either sign the `send-state` response with the conversation's HMAC secret, or eliminate the counter recovery flow entirely and use a server-assigned counter model.
+
+---
+
+### A.5 Layer 4 — Receiving Pipeline
+
+#### A.5.1 `getLocalProcessedCounter()` (local-counter.js)
+
+**Priority order:**
+1. Vault `header_counter` (from `MessageKeyVault.getLatestState()`)
+2. DR state `holder.NrTotal` (from in-memory `drSessMap`)
+3. Default: 0
+
+**Problem 12: Vault `header_counter` uses DR-level counter, not transport counter**
+
+The vault stores `headerCounter` which comes from `vaultCounter = transportCounter` (dr-session.js:1993). Currently this equals NsTotal. But the probe/gap system uses this as the "local processed counter" to compare against `max-counter` from the server.
+
+After enabling ratchet, if NrTotal gets corrupted (Problem 9), the local processed counter becomes incorrect. The probe will either:
+- Think there's a gap when there isn't (unnecessary fetches)
+- Think there's no gap when there is (missed messages)
+
+**Fix required:** Ensure vault always stores the **transport-layer counter** (NsTotal/NrTotal), not the DR-layer counter (Ns/Nr). The current code does this correctly (`vaultCounter = transportCounter`), but Problem 9's NrTotal overwrite can break the invariant.
+
+#### A.5.2 Max Counter Probe (probe.js)
+
+```javascript
+const serverMax = await fetchMaxCounter({...});
+const localMax = await getLocalProcessedCounter({...});
+if (serverMax > localMax) → enqueue gap tasks
+```
+
+**No direct issues** from ratchet enablement, assuming NrTotal is correctly maintained. But if the sender creates counter gaps (Problem 10), the probe will trigger gap filling for phantom counters.
+
+---
+
+### A.6 Layer 5 — Outbox and Send Policy
+
+#### A.6.1 Outbox Counter Sorting (outbox.js:273-280)
+
+```javascript
+function compareCounterOrder(a, b) {
+  const aCounter = getJobCounter(a);
+  const bCounter = getJobCounter(b);
+  return aCounter - bCounter;  // sort ascending
+}
+```
+
+**Problem 13: Counter-based ordering breaks on CounterTooLow replacement**
+
+When a CounterTooLow replacement occurs, the original job has counter N and the replacement has counter M (where M > N, possibly non-consecutive). If both jobs are in the outbox simultaneously (e.g., the original hasn't been removed yet), the sorting is correct but the stale job will be sent first and fail again, creating a cascade of 409 errors.
+
+**Fix required:** Ensure stale jobs are removed from the outbox before replacement jobs are inserted. The current code at `outbox.js:960` does check for CounterTooLow errors, but the timing depends on event loop ordering.
+
+#### A.6.2 `getJobCounter()` (outbox.js:119-127)
+
+```javascript
+function getJobCounter(job) {
+  const direct = normalizeCounter(job?.counter);
+  if (Number.isFinite(direct)) return direct;
+  const header = typeof job?.headerJson === 'string' ? JSON.parse(job.headerJson) : job?.header;
+  const headerCounter = normalizeCounter(header?.counter);
+  return headerCounter;
+}
+```
+
+This uses the transport counter, which is correct. No change needed for ratchet enablement.
+
+---
+
+### A.7 Layer 6 — Persistence and State Recovery
+
+#### A.7.1 `snapshotDrState()` (dr-session.js:843-908)
+
+The snapshot includes:
+```javascript
+{
+  Ns, Nr, PN,        // chain-level counters
+  NsTotal, NrTotal,  // transport-level counters
+  myRatchetPriv_b64, myRatchetPub_b64,  // DH keypair
+  theirRatchetPub_b64,                   // peer's DH public key
+  ckS_b64, ckR_b64,                     // chain keys
+  rk_b64,                               // root key
+  pendingSendRatchet,
+  role
+}
+```
+
+**Problem 14: Snapshot timing with ratchet creates split-brain**
+
+Current flow:
+```
+preSnapshot  = snapshotDrState(state)     // line 1892
+pkt          = drEncryptText(state, text)  // line 1896 — MAY RATCHET
+state.NsTotal = transportCounter           // line 1900 — correction
+postSnapshot = snapshotDrState(state)     // line 1902
+persistDrSnapshot(state)                   // line 2003
+```
+
+After enabling ratchet, `drEncryptText` might trigger a send-side ratchet that rotates the DH keypair. Between `preSnapshot` and `persistDrSnapshot`, the state has fundamentally changed (new keys, reset counters). If the app crashes after `drEncryptText` but before `persistDrSnapshot`:
+- The message was sent with NEW keys
+- The persisted state has OLD keys
+- On restart, the state is restored from OLD snapshot
+- Next message uses OLD keys → receiver gets wrong DH → decryption fails
+
+The `persistDrSnapshot` at line 2003 attempts to prevent this, but it runs AFTER the network send attempt starts. If the network call is in-flight when the crash occurs, the state may not be persisted.
+
+**Fix required:** Persist the post-encryption snapshot BEFORE initiating the network send. The comment at line 1997-2002 acknowledges this ("MUST persist the post-encryption snapshot to local storage BEFORE attempting the network send"), and line 2003 does persist before the actual `atomicSend`. This is correct but fragile — the persist must succeed before the atomicSend call.
+
+#### A.7.2 `copyDrState()` (dr-session.js:1310-1380)
+
+```javascript
+target.NsTotal = Number.isFinite(source.NsTotal) ? source.NsTotal : numberOrDefault(target.NsTotal, 0);
+```
+
+**No issues** — this correctly copies NsTotal as-is. However, after enabling ratchet, `ckS` may be `null` (cleared by ratchet). The copy function handles this:
+```javascript
+target.ckS = source.ckS instanceof Uint8Array ? cloneU8(source.ckS) : null;
+```
+This is correct.
+
+#### A.7.3 Vault Key Storage (message-key-vault.js)
+
+The vault stores `headerCounter` alongside each message key. This is the transport counter. After ratchet enablement, the vault continues to function correctly because it uses the transport counter (NsTotal), not the chain counter (Ns).
+
+**No changes required** in the vault layer itself, provided NsTotal is correctly maintained upstream.
+
+---
+
+### A.8 Summary: Required Changes by File
+
+| File | Line(s) | Change Required | Priority |
+|------|---------|----------------|----------|
+| `shared/crypto/dr.js` | 313-314 | Remove `NsTotal += Ns` accumulation in `drRatchet` — let `drEncryptText` own NsTotal | **CRITICAL** |
+| `shared/crypto/dr.js` | 323-330 | Uncomment ckS, PN, Ns, myRatchetPriv/Pub updates | **CRITICAL** |
+| `shared/crypto/dr.js` | 665-676 | Generalize old-chain message handling beyond responder/headerN===1/Nr===0 special case | **HIGH** |
+| `shared/crypto/dr.js` | 698-704 | Hard-reject `pn` gaps larger than `SKIPPED_KEYS_PER_CHAIN_MAX` | **HIGH** |
+| `dr-session.js` | 1898-1901 | Simplify correction: always `state.NsTotal = transportCounter` (remove conditional) | **HIGH** |
+| `dr-session.js` | 2177 | Add DR state rollback before re-encryption on CounterTooLow | **HIGH** |
+| `dr-session.js` | 2992-2993 | Same correction fix for media send path | **HIGH** |
+| `dr-session.js` | 4525-4526 | Change `NrTotal = headerCounter` to `NrTotal = max(NrTotal, NrTotal + 1)` | **HIGH** |
+| `dr-session.js` | 355-451 | `seedTransportCounterFromServer`: also reset Ns=0, PN=0 on seed | **MEDIUM** |
+| `gap-queue.js` | fetch loop | Tolerate 404 (skip) instead of treating as retriable error | **MEDIUM** |
+| `data-worker/worker.js` | send-state | Sign `expectedCounter` response or remove counter recovery | **MEDIUM** |
+| `outbox.js` | 960 | Ensure stale CounterTooLow jobs are purged before replacement enqueue | **LOW** |
+
+---
+
+### A.9 Recommended Implementation Order
+
+**Phase 1: DR Protocol Fix (must be atomic)**
+1. Fix `drRatchet()`: remove NsTotal accumulation, uncomment ratchet lines
+2. Fix `drEncryptText()`: ensure NsTotal is only incremented by +1 per message
+3. Add old-chain message rescue via skippedKeys lookup in `drDecryptText()`
+4. Hard-reject oversized `pn` gaps
+
+**Phase 2: Transport Layer Synchronization**
+5. Simplify NsTotal correction in `sendDrPlaintext` and `sendDrMedia`
+6. Fix CounterTooLow repair to include DR state rollback
+7. Fix `persistContactShareSequence` NrTotal handling
+8. Fix `seedTransportCounterFromServer` to reset chain-level counters
+
+**Phase 3: Server and Pipeline Hardening**
+9. Make gap-queue 404-tolerant
+10. Sign or remove `send-state` counter recovery
+11. Add integration tests for cross-epoch message delivery
+12. Add integration tests for out-of-order message delivery across ratchet boundaries
+
+**Phase 4: Verification**
+13. End-to-end test: initiator sends N messages, responder replies, ratchet occurs, verify all messages decrypt
+14. End-to-end test: simulate message reordering across ratchet boundary
+15. End-to-end test: simulate CounterTooLow recovery during ratchet
+16. End-to-end test: simulate app crash/restore during ratchet
+
+---
+
+### A.10 Counter Flow Diagram (After Fix)
+
+```
+SENDER                                    RECEIVER
+──────                                    ────────
+
+1. reserveTransportCounter()
+   NsTotal = NsTotal + 1
+   transportCounter = NsTotal
+       │
+2. drEncryptText(state, text)
+   ├─ if (!ckS && theirRatchetPub):
+   │    SEND-SIDE RATCHET
+   │    PN = Ns
+   │    Ns = 0
+   │    ckS = KDF(rk, DH(newKey, theirPub))
+   │    rotate myRatchetPriv/Pub
+   │    [NsTotal NOT touched here]
+   │
+   ├─ mk = KDF(ckS)
+   │  ckS = next(ckS)
+   │  Ns += 1
+   │  NsTotal += 1                    (*)
+   │
+   ├─ header = { ek_pub: myPub, pn: PN, n: Ns }
+   │  ciphertext = AES-GCM(mk, plaintext, AAD(Ns))
+       │
+3. state.NsTotal = transportCounter   // correction: undo (*)
+       │
+4. POST /messages/secure
+   { counter: transportCounter,               GET /messages/by-counter
+     header_json, ciphertext_b64 }  ────────► { counter: N }
+                                                    │
+                                              5. drDecryptText(state, packet)
+                                                 ├─ if (ek_pub ≠ theirRatchetPub):
+                                                 │    RECV-SIDE RATCHET
+                                                 │    skip old chain keys up to pn
+                                                 │    drRatchet(state, ek_pub)
+                                                 │    ckR = KDF(rk, DH(myPriv, ek_pub))
+                                                 │    ckS = null  ← triggers send ratchet on next send
+                                                 │    PN = Ns     ← save for next send header
+                                                 │    Ns = 0
+                                                 │    Nr = 0
+                                                 │    rotate myRatchetPriv/Pub
+                                                 │    [NsTotal NOT touched]
+                                                 │    [NrTotal NOT touched — dr.js leaves this to caller]
+                                                 │
+                                                 ├─ mk = KDF(ckR, skip to header.n)
+                                                 │  Nr = header.n
+                                                 │  NrTotal += 1
+                                                 │
+                                                 └─ plaintext = AES-GCM-decrypt(mk, ct, AAD)
+                                                        │
+                                              6. vault.put(headerCounter: transportCounter)
+                                                 persistDrSnapshot(state)
+```
+
+---
+
+*End of Appendix A*
 
 ---
 
