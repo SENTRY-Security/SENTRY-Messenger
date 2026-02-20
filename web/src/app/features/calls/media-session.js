@@ -47,6 +47,7 @@ let pendingRemoteCandidates = [];
 let e2eeReceiverConfirmed = false;
 let peerConnectionEncodedStreams = false;
 let remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
+let iceFailureCollecting = false; // guards against connectionstatechange racing with getStats()
 
 function isVideoCall() {
   const session = getCallSessionSnapshot();
@@ -593,10 +594,11 @@ async function ensurePeerConnection() {
     if (iceState === 'connected' || iceState === 'completed') {
       promoteSessionToInCall('ice-state');
     } else if (iceState === 'failed') {
-      // CRITICAL: collect getStats() BEFORE cleanup — the previous
-      // version ran getStats() in an async IIFE *after* cleanup had
-      // already closed the peer connection, producing empty results
-      // (candidatePairs: 0, remoteCands: []).
+      // CRITICAL: collect getStats() BEFORE cleanup.
+      // Set a flag so onconnectionstatechange (which fires
+      // synchronously during our await) does NOT race and close
+      // the peer connection before we finish collecting stats.
+      iceFailureCollecting = true;
       const savedCallId = activeCallId;
       try {
         const stats = await Promise.race([
@@ -607,7 +609,9 @@ async function ensurePeerConnection() {
         const transports = [];
         const localCands = {};
         const remoteCands = {};
+        let totalReports = 0;
         stats.forEach((report) => {
+          totalReports++;
           if (report.type === 'candidate-pair') {
             pairs.push({
               st: report.state,
@@ -654,6 +658,7 @@ async function ensurePeerConnection() {
         log({
           callIceFailedStats: true,
           callId: savedCallId,
+          totalReports,
           candidatePairs: pairs.length,
           pairsDetail: JSON.stringify(pairs.slice(0, 12)),
           transports: JSON.stringify(transports),
@@ -663,6 +668,7 @@ async function ensurePeerConnection() {
       } catch (statsErr) {
         log({ callIceStatsError: statsErr?.message, callId: savedCallId });
       }
+      iceFailureCollecting = false;
       // Guard: peer connection may have been cleaned up during await
       if (!peerConnection) return;
       log({
@@ -691,6 +697,10 @@ async function ensurePeerConnection() {
       return;
     }
     if (state === 'failed') {
+      // If the ICE failure handler is currently collecting getStats(),
+      // skip cleanup here — the ICE handler owns the lifecycle and
+      // will cleanup after stats are collected.
+      if (iceFailureCollecting) return;
       showToast?.('通話連線中斷', { variant: 'error' });
       completeCallSession({ reason: state, error: 'peer-connection-failed' });
       cleanupPeerConnection(state);
@@ -1149,6 +1159,7 @@ function cleanupPeerConnection(reason) {
   activeCallId = null;
   activePeerKey = null;
   remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
+  iceFailureCollecting = false;
   if (remoteAudioEl) {
     try {
       remoteAudioEl.srcObject = null;
