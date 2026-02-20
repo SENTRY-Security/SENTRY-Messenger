@@ -273,13 +273,6 @@ function attachStorageDetailHandlers(root) {
   });
 }
 
-function getAppVersion() {
-  if (typeof window !== 'undefined') {
-    return window.APP_VERSION || 'unknown';
-  }
-  return 'unknown';
-}
-
 function getAppBuildTime() {
   if (typeof window !== 'undefined' && window.APP_BUILD_AT) return window.APP_BUILD_AT;
   try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); }
@@ -294,8 +287,6 @@ function formatInfo(info) {
   const now = new Date();
   const fetchedAt = info?.fetchedAt ? new Date(info.fetchedAt) : now;
   return {
-    version: info?.version || info?.build || 'unknown',
-    appVersion: getAppVersion(),
     appBuildAt: getAppBuildTime(),
     appBuildCommit: getAppBuildCommit(),
     fetchedAt: fetchedAt.toLocaleString('zh-TW', { hour12: false }),
@@ -320,11 +311,9 @@ function renderPopup(popup, info) {
 
   popup.innerHTML = `
     <strong>版本資訊</strong>
-    <div>前端版本：${details.appVersion}</div>
     ${details.appBuildCommit ? `<div>建置版號：<code style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:4px;font-size:11px;letter-spacing:.5px">${details.appBuildCommit}</code></div>` : ''}
     <div>前端建置：${details.appBuildAt}</div>
     <div>前端載入：${details.clientLoadedAt}</div>
-    <div>版本：${details.version}</div>
     <div style="margin-top:10px;font-weight:600;">前端儲存資訊</div>
     <div class="version-storage-list">
       ${storageRows}
@@ -364,11 +353,9 @@ function renderModalContent(container, info) {
   const storageStats = collectStorageStats();
   const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
   const rows = [
-    ['前端版本', details.appVersion],
     ...(details.appBuildCommit ? [['建置版號', details.appBuildCommit]] : []),
     ['前端建置', details.appBuildAt],
     ['前端載入', details.clientLoadedAt],
-    ['版本', details.version],
     ['更新時間', details.fetchedAt]
   ];
   const storageRows = storageStats.map((item) => {
