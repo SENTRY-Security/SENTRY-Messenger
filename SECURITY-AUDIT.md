@@ -1050,7 +1050,7 @@ SENDER                                    RECEIVER
  │       ╰─ 還原: rk, ckS, ckR, Ns, Nr, PN, NsTotal, NrTotal,
  │                myRatchetPriv, myRatchetPub, theirRatchetPub,
  │                pendingSendRatchet
- │       ╰─ 【缺失】skippedKeys → 始終為空 Map
+ │       ╰─ skippedKeys → 始終為空 Map（✓ 正確：單調接收架構下不需要）
  │
  ├─ Stage4: probeMaxCounter → gap detection
  │   └─ 對每個 conversation 查 server max counter vs local counter
@@ -1068,10 +1068,12 @@ SENDER                                    RECEIVER
  │   └─ backup: contact-secrets snapshot (encrypted with MK)
  └─ *** backup 是隨每次送出訊息 piggyback 上傳的 ***
 
-使用中（每次收到訊息）
+使用中（每次收到訊息）— 單調接收架構
  │
- ├─ drDecryptText → 可能觸發 ratchet, 產生 skippedKeys
- ├─ vault put (skipped keys) → 立即存入 server
+ ├─ 以 localMax + 1 開始，逐一 fetch by counter（嚴格遞增）
+ │   ╰─ coordinator.js [STRICT SEQUENTIAL] 保證 live 訊息也補齊 gap
+ ├─ drDecryptText → 可能觸發 ratchet
+ │   ╰─ 因為單調處理，Nr 始終 = pn → 不產生 skippedKeys（見 Appendix C）
  ├─ vault put (message key) → 存入 server, 附帶 drStateSnapshot
  └─ persistDrSnapshot → 寫入 localStorage (下次登出前會被清空)
      ╰─ 也寫入 contactSecrets Map (in-memory)
@@ -1086,10 +1088,9 @@ SENDER                                    RECEIVER
  └─ localStorage 清空
 ```
 
-**核心發現：** Server-side DR state 的最新版本依賴：
-1. **送出時**：atomic-send 的 backup payload（每次送出都更新）
-2. **收到時**：vault put 附帶的 drStateSnapshot（每次收到都更新）
-3. **登出時**：不推 remote backup → 如果最後一個操作是「收到訊息」，DR state 只在 vault 裡
+**核心發現：**
+1. Server-side DR state 的最新版本依賴：送出時 backup、收到時 vault put、登出時不推 backup
+2. **接收端是單調架構**：由 gap-queue 和 coordinator 的 [STRICT SEQUENTIAL] 保證，接收端始終以 DR counter 遞增順序處理訊息 → skippedKeys 永遠為空（詳見 Appendix C）
 
 ---
 
@@ -1103,8 +1104,8 @@ SENDER                                    RECEIVER
 - snapshot 的 selfDeviceId 匹配拒絕（只有一個 device）
 
 **仍然存在的問題：**
-- 舊 session 被踢除時，如果正在 ratchet 中途（DH 已旋轉但 snapshot 未 persist），server-side 的 snapshot 是過期的
-- 新裝置登入後注水還原的 state 可能與 server 上已送出/收到的訊息不一致
+- 舊 session 被踢除時，如果正在 ratchet 中途（DH 已旋轉但 snapshot 未 persist），server-side 的 snapshot 是過期的。但 drRatchet 的 ckR 推導是確定性的（同一 myPriv × theirPub = 同一 ckR），所以下次登入可以從 gap messages 重新推導（效能損失但不影響正確性）
+- 新裝置登入後注水還原的 state 可能與 server 上已送出/收到的訊息不一致（透過 seedTransportCounterFromServer + pendingSendRatchet 自癒）
 
 ---
 
@@ -1125,22 +1126,19 @@ SENDER                                    RECEIVER
 | # | 工作項目 | 檔案 | 說明 |
 |---|---------|------|------|
 | 1.1 | **啟用 drRatchet 的 sending-side 更新** | `dr.js:323-330` | 取消註解 `ckS = null`, `PN = st.Ns`, `Ns = 0`, `myRatchetPriv/Pub = myNew`。這是前向保密的核心開關。 |
-| 1.2 | **在 drDecryptText 中加入舊鏈訊息解密支援** | `dr.js:665-676` | 目前只處理 `responder && headerN===1 && Nr===0` 的特殊情況。需要泛化：收到的 `ek_pub_b64` 若匹配 `skippedKeys` 中的某個 chainId，直接從 skippedKeys 取 key 解密，不觸發 ratchet。 |
+| ~~1.2~~ | ~~**在 drDecryptText 中加入舊鏈訊息解密支援**~~ | | ~~移除：單調接收架構下不需要（見 Appendix C.4）~~ |
 | 1.3 | **硬拒絕過大的 pn gap** | `dr.js:698-704` | 將 warn 改為 throw：`if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) throw new Error('pn gap exceeds limit')`。防止 DoS。 |
 | 1.4 | **AAD 必須強制存在** | `dr.js:399-401` | 移除 fallback：`if (!aad) throw new Error('AAD construction failed')`。 |
 | 1.5 | **drDecryptText 中 ratchet 後正確維護 working.ckS** | `dr.js:717-722` | `drRatchet` 啟用後會設 `ckS = null`，確保 `working` copy 正確反映此狀態，且 commit 回 `st` 時不遺漏。（目前 line 882-894 已完整 copy working→st，但需驗證 ckS=null 的傳播。） |
-| 1.6 | **為 Phase 1 撰寫端對端密碼學測試** | `tests/` | 測試案例：(a) 基本 ratchet 旋轉 (b) 多次連續 ratchet (c) 亂序訊息 (d) pn gap 拒絕 (e) AAD 強制。 |
+| 1.6 | **為 Phase 1 撰寫端對端密碼學測試** | `tests/` | 測試案例：(a) 基本 ratchet 旋轉 (b) 多次連續 ratchet (c) pn gap 拒絕 (d) AAD 強制 (e) 單調接收下 skippedKeys 為空的驗證。 |
+| 1.7 | **pn 一致性斷言** | `dr.js:697-698` | 在 ratchet 路徑中加入 `if (pn !== working.Nr) console.error('[dr] CONSISTENCY VIOLATION')`。單調架構下 pn 必定等於 Nr，不一致代表有 bug（見 Appendix C.5）。 |
 
-#### Phase 2: Snapshot 序列化擴展（持久化層）
+#### ~~Phase 2: Snapshot 序列化擴展（持久化層）~~ — 已移除
 
-| # | 工作項目 | 檔案 | 說明 |
-|---|---------|------|------|
-| 2.1 | **Snapshot 格式升版至 v2，加入 skippedKeys 序列化** | `dr-session.js:878-906 snapshotDrState()` | 新增 `skippedKeys_json` 欄位。格式：`{ [chainId]: { [counter]: mkB64 } }`。Map of Map → plain object → JSON string → base64。因為登入前 localStorage 清空且 server-side backup 是唯一持久化來源，skippedKeys 必須被序列化才能跨 session 存活。 |
-| 2.2 | **Snapshot 還原支援 v2 skippedKeys** | `dr-session.js:951-1114 restoreDrStateFromSnapshot()` | 讀取 `skippedKeys_json`，反序列化為 `Map<chainId, Map<counter, mkB64>>`，寫入 `holder.skippedKeys`。v1 snapshot 向後相容（skippedKeys 為空 Map）。 |
-| 2.3 | **Contact-secrets entry 結構支援 v2 snapshot** | `core/contact-secrets.js` | `normalizeStructuredEntry()` 和 `buildStructuredEntry()` 需要能處理包含 `skippedKeys_json` 的 drState。驗證 JSON.stringify/parse 不會損壞 base64 值。 |
-| 2.4 | **Vault 附帶的 drStateSnapshot 也包含 skippedKeys** | `messages-flow/live/state-live.js:424-426, 812-814` | `adapters.snapshotAndEncryptDrState()` 最終呼叫 `snapshotDrState()`，所以只要 2.1 修好，這裡自動包含。但需驗證加密後 payload size 不會超過 server 限制。 |
-| 2.5 | **skippedKeys 大小限制** | `dr.js` | 在 `snapshotDrState` 中，如果 skippedKeys 總數超過某個上限（例如 500），truncate 最舊的 entries。防止 snapshot payload 膨脹。 |
-| 2.6 | **Snapshot v2 遷移測試** | `tests/` | 驗證 v1 → v2 升級、v2 → v2 round-trip、v1 讀取（向後相容）。 |
+> **移除原因：** 單調接收架構下 skippedKeys 永遠為空，不需要序列化。
+> Snapshot 格式維持 v1 不變。詳見 Appendix C.3-C.4。
+>
+> 原 6 項工作（2.1-2.6）全部移除。
 
 #### Phase 3: Transport 層同步（counter-based API 適配）
 
@@ -1165,23 +1163,23 @@ SENDER                                    RECEIVER
 
 | # | 工作項目 | 檔案 | 說明 |
 |---|---------|------|------|
-| 5.1 | **Ratchet 中途被踢除的恢復邏輯** | `dr-session.js` | 場景：drDecryptText 觸發了 ratchet（DH 旋轉、ckS=null），但 vault put 和 persist 還沒執行就被 force-logout 踢除。下次登入：(a) server 上的 snapshot 是 ratchet 前的版本 (b) 但 server 上已有對方用新 chain 加密的訊息。解法：gap-queue 拉取訊息 → drDecryptText 再次 ratchet（因為 ek_pub_b64 與 state 不同）→ 確保 ratchet 是冪等的（同一 DH 輸入 = 同一 chain key）。**需驗證 drRatchet 的確定性**：`scalarMult(myPriv, theirPub)` → 如果 myPriv 未旋轉（snapshot 是 ratchet 前的），結果與第一次 ratchet 相同。✓ |
+| 5.1 | **Ratchet 中途被踢除的恢復邏輯** | `dr-session.js` | 場景：drDecryptText 觸發了 ratchet（DH 旋轉、ckS=null），但 vault put 和 persist 還沒執行就被 force-logout 踢除。下次登入：(a) server 上的 snapshot 是 ratchet 前的版本 (b) 但 server 上已有對方用新 chain 加密的訊息。解法：gap-queue 拉取訊息 → drDecryptText 再次 ratchet（因為 ek_pub_b64 與 state 不同）→ drRatchet 的 ckR 推導是確定性的：`scalarMult(myPriv, theirPub)` → 因為 myPriv 未旋轉（snapshot 是 ratchet 前的），結果與第一次 ratchet 相同。✓ 而新的 myRatchetPub 是隨機生成但只用於後續送出（此時已重新 persist），所以不影響解密。 |
 | 5.2 | **送出訊息在 ratchet 後 crash 的恢復** | `dr-session.js` | 場景：drEncryptText 觸發 send-side ratchet → atomicSend → server 接受 → 但 app crash 在 persist 之前。下次登入：NsTotal 在 server 上已遞增，但 client 的 snapshot 是 ratchet 前的。解法：`seedTransportCounterFromServer` (Phase 3.3) 會修正 NsTotal。但 DH 金鑰也需要旋轉——這次 ratchet 使用的 myNew keypair 已經丟失。必須生成新的 keypair 並重新 ratchet。解法是 Phase 4.2 的 `pendingSendRatchet = true`。 |
-| 5.3 | **Vault put 失敗後 skippedKeys 的自癒** | `state-live.js:448-452` | 目前 vault put 失敗只是 warn。啟用 ratchet 後，skippedKeys 丟失 = 亂序訊息無法解密。改為：vault put 失敗時，將 skippedKeys 保留在 in-memory Map，並在下一次成功的 vault put 時重試。另外在 snapshot 中序列化 skippedKeys（Phase 2.1）作為 fallback。 |
+| ~~5.3~~ | ~~**Vault put 失敗後 skippedKeys 的自癒**~~ | | ~~移除：單調接收架構下 skippedKeys 為空（見 Appendix C.4）~~ |
 | 5.4 | **send-state API 回應增加完整性驗證** | `data-worker/worker.js:2408-2414, dr-session.js:2177` | 為 `send-state` 回應加入 HMAC 簽章（使用 DATA_API_HMAC），client 端驗證後才接受 expectedCounter。防止 MITM 注入假值導致 counter 回退。 |
-| 5.5 | **Snapshot payload size 監控** | `contact-backup.js, message-key-vault.js` | 加入 skippedKeys 後 snapshot size 會增長。加入 size 監控和告警。如果 payload 超過 server 的 body size limit (2MB)，truncate skippedKeys。 |
+| ~~5.5~~ | ~~**Snapshot payload size 監控**~~ | | ~~移除：不新增 skippedKeys 後 snapshot 大小不變（見 Appendix C.4）~~ |
 
 #### Phase 6: 整合測試
 
 | # | 工作項目 | 說明 |
 |---|---------|------|
 | 6.1 | **E2E: 基本 ratchet 旋轉** | Alice→Bob 5 則 → Bob→Alice 3 則 → Alice→Bob 2 則。驗證所有訊息解密成功，ek_pub_b64 在每個方向切換時變化。 |
-| 6.2 | **E2E: 亂序訊息跨 ratchet 邊界** | Alice 依序送 msg1(chain1), msg2(chain1), msg3(chain2, ratcheted)。Bob 收到順序：msg3, msg1, msg2。驗證三則都能解密。 |
+| 6.2 | **E2E: 單調接收下 skippedKeys 為空** | Alice→Bob 5 則（含 ratchet 邊界）。驗證 Bob 的 `onSkippedKeys` callback 從未被觸發（skippedKeysBuffer 始終為空）。同時驗證 pn 一致性斷言（Phase 1.7）不觸發。 |
 | 6.3 | **E2E: 登出→登入→還原** | Alice→Bob 5 則 → Bob 登出 → Bob 登入 → 驗證 DR state 正確還原 → Bob 可以繼續對話（送出和接收）。 |
-| 6.4 | **E2E: 被踢除→新裝置登入** | Alice→Bob 5 則 → Bob 被 force-logout → Bob 在新裝置登入（同 deviceId）→ 還原 → Alice→Bob 再送 3 則 → 驗證 Bob 能解密後 3 則。 |
-| 6.5 | **E2E: CounterTooLow 修復後 ratchet 正確性** | 模擬 409 → repair → 驗證 sender 和 receiver 的 chain state 一致。 |
+| 6.4 | **E2E: 被踢除→新裝置登入** | Alice→Bob 5 則 → Bob 被 force-logout → Bob 在新裝置登入（同 deviceId）→ 還原 → Alice→Bob 再送 3 則 → 驗證 Bob 能解密後 3 則（drRatchet 確定性再推導）。 |
+| 6.5 | **E2E: CounterTooLow 修復後 ratchet 正確性** | 模擬 409 → DR state rollback → repair → 驗證 sender 和 receiver 的 chain state 一致，且無 skippedKeys 產生。 |
 | 6.6 | **E2E: gap-queue 404 容錯** | 製造一個 counter gap（跳過 counter 5）→ gap-queue 應跳過 5，成功處理 4 和 6。 |
-| 6.7 | **E2E: Snapshot v1→v2 遷移** | 用 v1 格式的 backup 登入，驗證注水成功，skippedKeys 為空但功能正常（透過 pendingSendRatchet 自癒）。 |
+| ~~6.7~~ | ~~**E2E: Snapshot v1→v2 遷移**~~ | ~~移除：不需要 v2 格式（見 Appendix C.4）~~ |
 
 ---
 
@@ -1193,65 +1191,286 @@ Phase 0 (前置重構)
   └─ 0.5 等 0.1-0.4 完成
 
 Phase 1 (DR 協定) ← 依賴 Phase 0
-  ├─ 1.1 是核心開關，1.2-1.5 與 1.1 配合
-  └─ 1.6 等 1.1-1.5 完成
+  ├─ 1.1 是核心開關，1.3-1.5, 1.7 與 1.1 配合
+  └─ 1.6 等 1.1-1.5, 1.7 完成
+  ╰─ (1.2 已移除 — 單調接收不需要)
 
-Phase 2 (Snapshot) ← 可與 Phase 1 並行
-  ├─ 2.1, 2.2 是核心
-  ├─ 2.3, 2.4 依賴 2.1
-  └─ 2.5, 2.6 依賴 2.1-2.2
+Phase 2 — 已整體移除（單調接收架構下 skippedKeys 為空）
 
 Phase 3 (Transport) ← 依賴 Phase 0
-  ├─ 3.1, 3.2 可並行
+  ├─ 3.1, 3.2 可並行（★ 3.1 提升為 MVP 必要項）
   ├─ 3.3 獨立
   └─ 3.4 獨立
 
-Phase 4 (注水還原) ← 依賴 Phase 2
+Phase 4 (注水還原) ← 依賴 Phase 0
   ├─ 4.1, 4.2 可並行
-  ├─ 4.3, 4.4 可並行
+  ├─ 4.3, 4.4 可並行（降級為「建議但非 MVP 必須」）
   └─ 4.5 依賴 4.3
 
-Phase 5 (邊界條件) ← 依賴 Phase 1 + Phase 2
+Phase 5 (邊界條件) ← 依賴 Phase 1
   ├─ 5.1, 5.2 依賴 Phase 1
-  ├─ 5.3 依賴 Phase 2
-  └─ 5.4, 5.5 獨立
+  └─ 5.4 獨立
+  ╰─ (5.3, 5.5 已移除)
 
 Phase 6 (整合測試) ← 依賴所有 Phase
 ```
 
 ---
 
-### B.5 風險矩陣
+### B.5 風險矩陣（修訂版 — 反映單調接收架構）
 
 | 風險 | 發生條件 | 後果 | 緩解措施 |
 |------|---------|------|---------|
-| Ratchet 中途被踢除 | force-logout + 未完成 persist | 下次登入 state 過期，需重新 ratchet | Phase 4.4 (force-logout backup) + Phase 5.1 (ratchet 冪等性) |
-| skippedKeys 丟失 | vault put 失敗 + 登出 + 登入 | 亂序訊息永久不可解密 | Phase 2.1 (snapshot 序列化) + Phase 5.3 (retry) |
+| Ratchet 中途被踢除 | force-logout + 未完成 persist | 下次登入 state 過期，需重新 ratchet（效能損失但不影響正確性） | Phase 4.4 (force-logout backup) + Phase 5.1 (drRatchet ckR 推導確定性) |
+| ~~skippedKeys 丟失~~ | ~~vault put 失敗~~ | ~~不適用~~ | ~~單調接收架構下 skippedKeys 永遠為空（見 Appendix C.3）~~ |
 | NsTotal 與 server counter 不同步 | drRatchet 累加 + 修正邏輯失效 | 409 CounterTooLow 循環 | Phase 0.1-0.3 (統一 NsTotal 管理權) |
-| Snapshot payload 過大 | 大量 skippedKeys | server reject / 傳輸失敗 | Phase 2.5 (truncation) + Phase 5.5 (監控) |
-| V1→V2 遷移中訊息丟失 | 用 v1 snapshot 登入後收到跨 epoch 亂序訊息 | 無 skippedKeys 可用 | Phase 4.2 (pendingSendRatchet 強制 ratchet) |
+| CounterTooLow 幻影 chain key | 409 repair 未 rollback DR state | 接收端出現 within-chain skippedKeys（違反單調架構不變量） | Phase 3.1 (DR state rollback before re-encrypt) — **MVP 必要項** |
+| ~~Snapshot payload 過大~~ | ~~大量 skippedKeys~~ | ~~不適用~~ | ~~移除 skippedKeys 序列化後不存在此風險~~ |
 | send-state MITM | 攻擊者注入假 expectedCounter | counter 回退 → 密文覆蓋 | Phase 5.4 (HMAC 簽章) |
+| DH key rotation 後 crash | drEncryptText ratchet + atomicSend OK + persist fail | 下次登入 DH keypair 不一致 | Phase 3.3 (seed NsTotal) + Phase 4.2 (pendingSendRatchet) |
 
 ---
 
-### B.6 最小可行變更集（MVP）
+### B.6 最小可行變更集（MVP）— 修訂版
+
+> **修訂依據：** 單調接收架構確認後，skippedKeys 相關工作項目移除，CounterTooLow DR state rollback 提升為必要項。詳見 Appendix C.6。
 
 如果要以最小風險、最少程式碼啟用前向保密，最小變更集是：
 
-1. **Phase 0.1-0.3**（統一 NsTotal 語義）— 必須
-2. **Phase 1.1**（取消註解 ratchet）— 必須
-3. **Phase 1.3**（硬拒絕 pn gap）— 必須
-4. **Phase 0.4**（NrTotal 單調）— 必須
-5. **Phase 2.1-2.2**（skippedKeys 序列化）— 必須（因為 session 不持久）
-6. **Phase 4.3**（登出前推 backup）— 必須（因為 localStorage 會被清）
+| # | 工作項目 | 必要性 |
+|---|---------|--------|
+| 1 | **Phase 0.1-0.2** — NsTotal/NrTotal 管理權統一 | 必須：消除 ratchet 啟用後的 counter 雙重計算 |
+| 2 | **Phase 0.3** — NsTotal 修正邏輯簡化 | 必須：消除語義衝突 |
+| 3 | **Phase 0.4** — NrTotal 單調遞增 | 必須：防止 ratchet 後 header.n 歸零導致 NrTotal 倒退 |
+| 4 | **Phase 1.1** — 啟用 drRatchet sending-side | 必須：前向保密核心開關 |
+| 5 | **Phase 1.3** — 硬拒絕過大 pn gap | 必須：DoS 防護 |
+| 6 | **Phase 3.1** — CounterTooLow DR state rollback | 必須：消除唯一可能的 skippedKeys 來源 |
 
-共 **8 個工作項目**，涉及 **3 個檔案**（`dr.js`, `dr-session.js`, `app-mobile.js`）。
+共 **6 個工作項目**，涉及 **2 個檔案**（`dr.js`, `dr-session.js`）。
 
-其餘 Phase 是「應該做但可以分批」的加固措施。
+**與原 MVP 差異：**
+- ~~Phase 2.1-2.2（skippedKeys 序列化）~~ — 移除：單調接收下不需要
+- ~~Phase 4.3（登出前推 backup）~~ — 從 MVP 降級為「建議但非必須」。理由：即使登出後 state 過期，drRatchet 的 ckR 推導是確定性的（同一 myPriv × theirPub），下次登入透過 gap-queue 重新推導即可。效能損失但不影響正確性。
+- **Phase 3.1 新增** — 從「Phase 3 加固」提升為 MVP 必要項。理由：這是消除 CounterTooLow 幻影 chain key 的關鍵，確保單調接收架構的不變量成立。
+
+其餘 Phase 是「建議分批實施」的加固措施。
 
 ---
 
 *End of Appendix B*
+
+## Appendix C: 單調接收架構（Monotonic Receiver Architecture）— 對前向保密工作項目的簡化
+
+**Date:** 2026-02-20
+**依據：** 系統設計者確認：
+
+> 發送端會先寫入加密訊息在伺服器端，且是 counter 單調推進的原子性發送。
+> WS 只是通知接收端進行解密。雖然 WS 可能會因為網路因素導致接收端亂序跳號，
+> 但接收端還是會以它自己實際的 DR counter 抓取伺服器儲存的未解密加密訊息單調推進再 vaultPut，
+> 而不是直接進行推進並儲存 skipped keys。
+
+---
+
+### C.1 架構模型
+
+```
+Sender                         Server                        Receiver
+  │                              │                              │
+  ├─ drEncryptText (chain key #N)│                              │
+  ├─ atomicSend(counter=T) ─────►│ store(counter=T, n=N)        │
+  │                              │                              │
+  ├─ drEncryptText (chain key #N+1)                             │
+  ├─ atomicSend(counter=T+1) ───►│ store(counter=T+1, n=N+1)   │
+  │                              │                              │
+  │                              │◄── WS notify ───────────────►│ (可能亂序)
+  │                              │                              │
+  │                              │  ┌─ Receiver 不依賴 WS 順序 ─┐
+  │                              │  │  以 localMax + 1 開始     │
+  │                              │  │  逐一 fetch by counter    │
+  │                              │  │  monotonic: T → T+1 → …  │
+  │                              │  └──────────────────────────┘
+  │                              │                              │
+  │                              │◄── GET /by-counter?c=T ──────┤
+  │                              ├── response(n=N) ────────────►│ drDecryptText
+  │                              │                              │ Nr: 0→1 (=N)
+  │                              │◄── GET /by-counter?c=T+1 ────┤
+  │                              ├── response(n=N+1) ──────────►│ drDecryptText
+  │                              │                              │ Nr: 1→2 (=N+1)
+```
+
+**關鍵不變量（Invariant）：** 接收端的 DR chain counter `Nr` 始終等於下一個待處理的 header counter `n - 1`。
+
+---
+
+### C.2 程式碼驗證
+
+三處程式碼共同保證了單調接收：
+
+#### 1. gap-queue.js:296-320 — Gap 填充嚴格遞增
+```javascript
+// 從 startCounter 到 targetCounter 逐一遞增處理
+for (let counter = startCounter; counter <= targetCounter; counter += 1) {
+    const result = await fetchWithRetry(conversationId, counter, ...);
+    if (!result.ok) { failed = true; break; }
+    // commitBRouteCounter → drDecryptText
+    cursor = counter;
+}
+```
+
+#### 2. coordinator.js:293-365 — Live 訊息前置 gap 填充
+```javascript
+// [STRICT SEQUENTIAL] Blocking Gap Fill
+if (counter > localMax + 1) {
+    // 先補齊 localMax+1 到 counter-1 的所有訊息
+    for (let c = start; c <= end; c++) {
+        const fetchRes = await depsGetMsgByCounter({ conversationId, counter: c });
+        await stateAccess.commitIncomingSingle({ ..., counter: c });
+    }
+}
+// 然後才處理當前 live 訊息
+await stateAccess.commitIncomingSingle({ ..., counter });
+```
+
+#### 3. dr.js — 接收端 DR counter 推進
+```javascript
+// 解密後 Nr 遞增 (line 812)
+working.Nr += 1;
+// 且確保不低於 headerN (line 813-814)
+if (headerN > working.Nr) working.Nr = headerN;
+// NrTotal 也遞增 (line 816)
+working.NrTotal = Number.isFinite(working.NrTotal) ? working.NrTotal + 1 : working.Nr;
+```
+
+---
+
+### C.3 skippedKeys 在單調架構下的分析
+
+DR 協定中有兩處產生 skippedKeys：
+
+#### 場景 A: 跨 ratchet 舊鏈補 key（dr.js:698-716）
+
+```javascript
+// Ratchet 偵測: ek_pub_b64 與 state 不一致
+if (prevChainId && working.ckR && pn > working.Nr) {
+    // 補齊 Nr → pn 的 key
+    while (nr < pn) { ... newSkippedKeys.push(...) }
+}
+```
+
+**單調架構下：** 發送端在 ratchet 時設 `PN = Ns`（告訴接收端「我在舊鏈送了 Ns 則」）。接收端因為單調處理，在遇到 ratchet 訊息前已經處理完舊鏈所有訊息，所以 `Nr === PN`。條件 `pn > working.Nr` 永遠為 `false`。
+
+**結論：** 跨 ratchet skippedKeys 永遠為空。
+
+#### 場景 B: 同鏈內跳號（dr.js:758-765）
+
+```javascript
+// 如果 header.n 大於 Nr+1，補齊中間的 key
+while (working.Nr + 1 < headerN) {
+    ... newSkippedKeys.push(...)
+}
+```
+
+**單調架構下：** 接收端逐一處理每個 transport counter，對應的 header.n 也是逐一遞增的。`Nr + 1 === headerN` 始終成立。
+
+**唯一例外：CounterTooLow 修復幻影（Phantom）**
+
+```
+發送端:
+  drEncryptText → chain key #N, Ns=N, header.n=N  (消耗一個 chain key)
+  atomicSend(counter=T) → 409 CounterTooLow
+  NsTotal = expectedCounter - 1  (修正 transport counter)
+  drEncryptText → chain key #N+1, Ns=N+1, header.n=N+1  (再消耗一個)
+  atomicSend(counter=expectedCounter) → 200 OK
+
+接收端:
+  fetch counter=expectedCounter → header.n=N+1
+  但 Nr=N-1（上一次處理的是 n=N-1）
+  while(Nr+1 < N+1) → true → 產生一個 skippedKey for n=N（幻影）
+```
+
+**解法：Phase 3.1（CounterTooLow DR state rollback）消除此幻影。** 回滾 DR state 後重新加密，header.n 不會跳號。
+
+**結論：** 實施 Phase 3.1 後，同鏈內 skippedKeys 也永遠為空。
+
+---
+
+### C.4 對 Appendix B 工作項目的影響
+
+以下工作項目因單調接收架構而可以 **移除或大幅簡化**：
+
+| 原工作項目 | 原因 | 處置 |
+|-----------|------|------|
+| **Phase 1.2** — 舊鏈訊息解密支援 | 接收端不會遇到跨 ratchet 亂序訊息 | **移除** |
+| **Phase 2（全部 6 項）** — skippedKeys 序列化 | skippedKeys 永遠為空，無需序列化 | **移除整個 Phase** |
+| **Phase 5.3** — Vault put 失敗後 skippedKeys 自癒 | skippedKeys 不存在 | **移除** |
+| **Phase 5.5** — Snapshot payload size 監控 | 移除 skippedKeys 後 snapshot 大小不變 | **移除** |
+| **Phase 6.2** — 亂序跨 ratchet 測試 | 改為驗證「不產生 skippedKeys」的正確性測試 | **改寫** |
+| **Phase 6.7** — Snapshot v1→v2 遷移 | 不需要 v2 格式 | **移除** |
+| **B.5 風險矩陣** — skippedKeys 丟失風險 | 風險不存在 | **移除** |
+| **B.5 風險矩陣** — Snapshot payload 過大 | 風險不存在 | **移除** |
+| **B.5 風險矩陣** — V1→V2 遷移風險 | 不需要遷移 | **移除** |
+
+以下工作項目 **保持不變但理由更清晰**：
+
+| 工作項目 | 補充說明 |
+|---------|---------|
+| **Phase 3.1** — CounterTooLow DR state rollback | 重要性提升：這是消除「唯一可能產生 skippedKeys 的場景」的關鍵修復 |
+| **Phase 4.3** — 登出前推 backup | 仍然需要：防止 DH key rotation 後 state 遺失（避免重新處理 gap messages） |
+| **Phase 5.1** — Ratchet 中途被踢除 | 仍然需要分析，但風險降低：drRatchet 的 ckR 推導是確定性的（同一 myPriv × theirPub = 同一 ckR） |
+
+---
+
+### C.5 pn 欄位的新語義：一致性檢查
+
+在單調接收架構下，`pn` 欄位（header 中的 previous chain length）從「告訴接收端補多少 skipped keys」變為「一致性檢查值」：
+
+```javascript
+// 啟用 ratchet 後，在 drDecryptText 中加入斷言：
+if (ratchetPerformed && Number.isFinite(pn) && pn !== preRatchetNr) {
+    console.error('[dr] CONSISTENCY VIOLATION: pn !== Nr at ratchet', {
+        pn, nr: preRatchetNr, headerN, conversationIdPrefix8
+    });
+    // 根據嚴格程度，可以 throw 或 warn
+}
+```
+
+如果 `pn !== Nr`，代表接收端漏處理了舊鏈上的某些訊息，這在單調架構下不應該發生，表示有 bug。
+
+---
+
+### C.6 修訂後的最小可行變更集（Revised MVP）
+
+移除 skippedKeys 相關項目後，MVP 從 **8 項** 縮減為 **6 項**：
+
+| # | 工作項目 | 檔案 | 必要性 |
+|---|---------|------|--------|
+| 1 | Phase 0.1-0.2 — NsTotal/NrTotal 管理權統一 | `dr.js:309-314` | 必須：消除 ratchet 啟用後的 counter 雙重計算 |
+| 2 | Phase 0.3 — NsTotal 修正邏輯簡化 | `dr-session.js:1898,2198,2992` | 必須：消除語義衝突 |
+| 3 | Phase 0.4 — NrTotal 單調遞增 | `dr-session.js:4525` | 必須：防止 ratchet 後 header.n 歸零導致 NrTotal 倒退 |
+| 4 | Phase 1.1 — 啟用 drRatchet sending-side | `dr.js:323-330` | 必須：前向保密核心開關 |
+| 5 | Phase 1.3 — 硬拒絕過大 pn gap | `dr.js:698-704` | 必須：DoS 防護 |
+| 6 | Phase 3.1 — CounterTooLow DR state rollback | `dr-session.js:2164-2260` | 必須：消除唯一可能的 skippedKeys 來源 |
+
+共 **6 項**，涉及 **2 個檔案**（`dr.js`, `dr-session.js`）。
+
+**與原 MVP 差異：**
+- 移除 Phase 2.1-2.2（skippedKeys 序列化）— 不需要
+- 移除 Phase 4.3（登出前推 backup）— 從 MVP 降級為「建議但非必須」。理由：即使登出後 state 過期，drRatchet 的 ckR 推導是確定性的（同一 myPriv × theirPub），下次登入可以從 gap messages 重新推導。效能損失（重新處理 gap）但不影響正確性。
+- 新增 Phase 3.1 — 從「Phase 3 加固」提升為 MVP 必要項。理由：這是消除幻影 skippedKeys 的關鍵。
+
+---
+
+### C.7 注意事項
+
+1. **skippedKeys 程式碼不需要刪除**：`drDecryptText` 中的 skippedKeys 推導邏輯（dr.js:698-716, 758-765）應該保留作為防禦性程式碼。如果因為 bug 導致接收端不是嚴格單調的，skippedKeys 機制可以作為 safety net。但不需要投入工程資源去序列化和持久化它們。
+
+2. **pn 一致性檢查應加入 Phase 1**：在 Phase 1 增加一項工作（1.7）：在 drDecryptText 的 ratchet 路徑中加入 `pn === Nr` 斷言。這是低成本的正確性保證。
+
+3. **CounterTooLow 修復的 media 路徑**：Phase 3.2（media send）也需要同樣的 DR state rollback。此項從「加固」提升為 MVP 考量。
+
+---
+
+*End of Appendix C*
 
 ---
 
