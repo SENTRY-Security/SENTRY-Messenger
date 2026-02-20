@@ -210,7 +210,31 @@ function normalizeCandidate(candidate) {
 async function addRemoteCandidate(candidate) {
   if (!peerConnection || !candidate) return;
   try {
-    await peerConnection.addIceCandidate(candidate);
+    // iOS 26.3 WebKit silently drops candidates whose usernameFragment
+    // is null/undefined — they never appear in the ICE agent (0 candidate
+    // pairs, 0 remote candidates in getStats) despite addIceCandidate
+    // resolving without error.
+    //
+    // Older Safari versions do NOT include usernameFragment in
+    // RTCIceCandidate.toJSON(), so candidates from older peers arrive
+    // without it.  Per the W3C spec, candidates without usernameFragment
+    // should be associated with the latest remote description, but iOS
+    // 26.3 appears to require it explicitly.
+    //
+    // Fix: inject usernameFragment from the remote SDP's a=ice-ufrag
+    // when it is missing from the candidate init object.
+    let init = candidate;
+    if (typeof candidate === 'object' && !candidate.usernameFragment) {
+      const sdp = peerConnection.remoteDescription?.sdp;
+      if (sdp) {
+        const ufrag = sdp.match(/a=ice-ufrag:([^\r\n]+)/)?.[1]?.trim();
+        if (ufrag) {
+          init = { ...candidate, usernameFragment: ufrag };
+          log({ callCandidateUfragInjected: ufrag, sdpMid: init.sdpMid, callId: activeCallId });
+        }
+      }
+    }
+    await peerConnection.addIceCandidate(init);
   } catch (err) {
     log({ callAddIceCandidateError: err?.message || String(err), callId: activeCallId });
     failCall('add-ice-candidate-failed', err);
