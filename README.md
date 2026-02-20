@@ -188,6 +188,8 @@ SENTRY-Messenger/
 ├── web/                              # ═══ Frontend SPA ═══
 │   ├── build.mjs                     # esbuild 打包設定
 │   ├── package.json                  # 前端依賴 (esbuild)
+│   ├── scripts/
+│   │   └── verify-build.mjs         # 打包完整性驗證腳本
 │   └── src/
 │       ├── index.html                # 入口頁（導向 login）
 │       │
@@ -409,6 +411,10 @@ SENTRY-Messenger/
 │       │           ├── qr-scanner.min.js    # QR 掃描器
 │       │           ├── qr-scanner-worker.min.js # QR Worker
 │       │           └── qrcode-generator.js  # QR 產生器
+│       │
+│       ├── libs/                     # 第三方預編譯函式庫
+│       │   ├── nacl-fast.min.js     #   TweetNaCl 壓縮版
+│       │   └── ntag424-sim.js       #   NFC 標籤模擬
 │       │
 │       ├── shared/                   # 前後端共用程式碼
 │       │   ├── crypto/
