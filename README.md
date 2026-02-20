@@ -17,6 +17,7 @@
 - [API 端點](#api-端點)
 - [WebSocket 即時通訊](#websocket-即時通訊)
 - [安全設計原則](#安全設計原則)
+- [零本地儲存架構](#零本地儲存架構)
 - [快速開始](#快速開始)
 - [部署](#部署)
 - [測試](#測試)
@@ -1124,6 +1125,140 @@ Client                                Server
 - 每個 conversation 維護**單調遞增 counter**
 - 伺服器端強制驗證 `counter > max_counter`
 - 客戶端 per-conversation 序列化處理，防止並行推進
+
+## 零本地儲存架構
+
+> **本系統面向極窄用戶族群，核心訴求：手機上不留存任何敏感資料。**
+> 這是 SENTRY Messenger 有別於一般端對端加密通訊軟體（Signal、WhatsApp 等）的根本差異。
+
+---
+
+### 設計哲學
+
+一般 E2EE 通訊軟體將密鑰、DR state、訊息資料庫儲存在裝置本地（SQLite、IndexedDB、Keychain）。SENTRY Messenger 反其道而行：
+
+| 項目 | 一般 E2EE App | SENTRY Messenger |
+|------|-------------|------------------|
+| DR state 持久化 | 本地資料庫 | 加密後存 server，登入時注水還原 |
+| 訊息資料庫 | 本地 SQLite/IndexedDB | 不存在，全部透過 Vault 從 server 解密重播 |
+| 聯絡人密鑰 | 本地 Keychain/DB | 加密後存 server（contact-secrets backup） |
+| 登出後殘留 | 資料庫殘留（需手動刪除） | localStorage/sessionStorage 清空，無殘留 |
+| 登入前狀態 | 上次 session 的本地資料 | 空白（localStorage 已被清空） |
+
+### 系統約束
+
+#### 1. localStorage / sessionStorage 在登入前、登出前都會被清空
+
+```
+登入流程:
+  clearAllBrowserStorage()     ← 清空 localStorage/sessionStorage/IndexedDB
+  OPAQUE auth → 取得 session
+  hydrateFromServer()          ← 從 server 注水還原所有狀態
+
+登出流程:
+  flushDrSnapshotsBeforeLogout()  ← 將 in-memory state 寫入 localStorage（即將被清除）
+  persistContactSecrets()          ← 寫入 localStorage（即將被清除）
+  clearAllBrowserStorage()         ← 清空所有本地儲存
+```
+
+**含義：** 任何寫入 localStorage 的資料都是暫時性的，僅在單次 session 內存活。跨 session 的持久化完全依賴 server-side 加密備份。
+
+#### 2. 一個帳號同時只有一個 deviceId
+
+- 跨裝置登入共用同一個 `deviceId`
+- 在新裝置登入時，舊裝置會收到 `force-logout` WebSocket 事件被踢除
+- 不存在多裝置同時在線的場景
+- 不需要處理多 device 的 DR state 衝突
+
+#### 3. 所有持久化資料加密存在 server-side，登入時注水還原
+
+持久化鏈路：
+```
+in-memory state
+    ↓ snapshotDrState()
+encrypted JSON payload
+    ↓ AES-256-GCM (key = HKDF(MK))
+server-side storage
+    ↓ contact-secrets backup / vault drStateSnapshot
+    ↓ (兩條路徑都會更新 server-side 的 DR state)
+
+登入還原（6 階段管線）:
+  Stage 0: OPAQUE auth → session + MK derivation
+  Stage 1: restoreContactSecrets() → 從 localStorage（永遠是空的）
+  Stage 2: hydrateContactSecretsFromBackup() → 從 server 拉取 + MK 解密
+  Stage 3: hydrateDrStatesFromContactSecrets() → 寫入 drSessMap (in-memory)
+  Stage 4: probeMaxCounter() → 對每個 conversation 偵測 gap
+  Stage 5: gap-queue drain → 逐一拉取缺失訊息 → DR decrypt → vault put
+```
+
+**Server-side DR state 的更新時機：**
+- **送出訊息時**：`atomicSend` 的 `backup` payload（每次送出都 piggyback 一份 contact-secrets 備份）
+- **收到訊息時**：`vaultPut` 附帶的 `drStateSnapshot`（每次成功解密都更新）
+- **登出時**：目前設計為**不推** remote backup（vault 中已有最新 snapshot）
+
+#### 4. 單調接收架構（Monotonic Receiver Architecture）
+
+這是另一個與一般 E2EE 通訊軟體的重大差異：
+
+```
+一般 E2EE App:
+  WS 收到訊息 → 直接 DR decrypt（可能亂序）→ 儲存 skippedKeys → 本地 DB 寫入
+
+SENTRY Messenger:
+  WS 只是通知 → Receiver 以自己的 DR counter 順序從 server 拉取 → 單調推進解密 → vault put
+```
+
+**發送端：**
+- `drEncryptText()` → `atomicSend(counter=NsTotal)` → server 原子寫入
+- Transport counter (`NsTotal`) 嚴格單調遞增
+- Server 端驗證 `counter > max_counter`（409 CounterTooLow 拒絕）
+
+**接收端：**
+- WS `secure-message` 事件只是通知，**不攜帶訊息內容**
+- 接收端從 `localMax + 1` 開始，逐一 `GET /messages/by-counter` 拉取
+- `gap-queue.js` 嚴格 `for (counter = start; counter <= target; counter++)` 遞增
+- `coordinator.js` 有 `[STRICT SEQUENTIAL]` guard：live 訊息到達時，先補齊所有 gap 再處理當前訊息
+- DR decrypt 按照 chain counter 順序推進，`Nr` 始終等於 `headerN - 1`
+
+**關鍵不變量：** 接收端的 DR chain counter `Nr` 始終等於下一個待處理訊息的 `header.n - 1`。
+
+**直接影響：**
+- Double Ratchet 的 `skippedKeys` 機制（用於亂序訊息解密）在此架構下**永遠為空**
+- `pn` 欄位（previous chain length）在 ratchet 時始終等於 `Nr`，可作為一致性斷言
+- 不需要序列化/持久化 `skippedKeys`（`snapshotDrState()` 不包含 skippedKeys 是正確的設計）
+- 不需要處理跨 ratchet 邊界的亂序訊息解密
+
+#### 5. Master Key (MK) 生命週期
+
+```
+註冊:
+  使用者密碼 → Argon2id → MK
+  MK → AES-256-GCM wrap → wrapped_mk_json → server 儲存
+
+登入:
+  OPAQUE auth → session key → 衍生解密能力
+  GET wrapped_mk_json → Argon2id(password) → unwrap → MK (in-memory)
+  MK → HKDF-SHA256 → 用途專屬子金鑰（backup 加密、vault wrapping 等）
+
+使用中:
+  MK 只存在 in-memory，不寫入 localStorage
+  MK 用於加解密所有 server-side 備份
+
+登出/被踢除:
+  MK 從 memory 清除，無本地殘留
+```
+
+### 對開發的影響
+
+1. **不要假設 localStorage 有資料**：任何讀取 localStorage 的程式碼都必須處理空值。登入後的第一個資料來源永遠是 server-side backup。
+
+2. **不要在本地儲存敏感資料**：所有需要跨 session 存活的狀態必須透過 `atomicSend` 的 backup piggyback 或顯式 `triggerContactSecretsBackup()` 上傳到 server。
+
+3. **不要假設訊息會亂序到達**：接收端是嚴格單調的。如果 DR 層出現 skippedKeys，代表有 bug（可能是 CounterTooLow repair 未正確 rollback DR state）。
+
+4. **不要依賴 IndexedDB 持久化**：IndexedDB 在登出時會被清空（`clearAllBrowserStorage` 包含 `indexedDB.deleteDatabase`）。
+
+5. **DR state 的 "ground truth" 在 server**：in-memory state 是工作副本，vault 中的 `drStateSnapshot` 和 contact-secrets backup 是持久化真相。如果兩者不一致，以 vault（per-message 更新）為準。
 
 ---
 
