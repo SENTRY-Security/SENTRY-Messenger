@@ -63,16 +63,21 @@ Login restore (6-stage pipeline in restore-coordinator.js):
 
 **This is the most important architectural difference from standard Double Ratchet implementations.**
 
-Standard E2EE apps: WS delivers message → DR decrypt (possibly out-of-order) → store skippedKeys → local DB.
+Standard E2EE apps: WS delivers ciphertext → DR decrypt (possibly out-of-order) → store skippedKeys → local DB.
+
+**Core guarantee:** Messages are persisted on the server via `atomicSend` before WS notifications are sent. Even if WS notifications arrive out of order, the data is always available when the receiver fetches sequentially.
 
 SENTRY Messenger:
-- **Sender:** `drEncryptText()` → `atomicSend(counter=NsTotal)` → server validates `counter > max_counter` (409 if not)
-- **WS is notification-only:** `secure-message` event tells receiver "there's a new message" but does NOT carry the message content
-- **Receiver fetches by counter in strict order:** Starting from `localMax + 1`, fetching each counter sequentially via `GET /messages/by-counter`
+- **Sender:** `drEncryptText()` → `atomicSend(counter=NsTotal)` → server validates `counter > max_counter` (409 if not) → **after persistence**, server sends WS notification to receiver
+- **WS carries metadata (counter, sender digest, etc.) and may arrive out of order** — e.g., counter 4's notification may arrive before counter 3's. The receiver does NOT rely on WS arrival order for DR state advancement
+- **WS triggers a fetch cycle**, not direct decryption — upon receiving any WS notification, the receiver fetches from `localMax + 1` upward
+- **Receiver fetches by counter in strict order:** Starting from `localMax + 1`, fetching each counter sequentially via `GET /messages/by-counter`. Even if a "future" counter arrives (e.g., 5 when local is at 2), it just means 3 and 4's WS notifications are late — but 3 and 4 already exist on the server
 - **gap-queue.js** enforces `for (counter = start; counter <= target; counter++)` — strictly monotonic
 - **coordinator.js** has `[STRICT SEQUENTIAL]` guard: before processing a live WS message, it fills ALL gaps first
 
-**Invariant:** Receiver's DR chain counter `Nr` always equals `header.n - 1` for the next message to process.
+**Invariants:**
+- Server writes before notifying → data always exists when fetched
+- Receiver's DR chain counter `Nr` always equals `header.n - 1` for the next message to process
 
 **Direct consequences for code:**
 - `skippedKeys` (DR protocol mechanism for out-of-order messages) is **always empty** under this architecture
@@ -160,6 +165,6 @@ When the server returns 409 CounterTooLow, the current repair logic (`dr-session
 5. **Two counter domains** — don't confuse `Ns`/`Nr` (per-chain, resets) with `NsTotal`/`NrTotal` (per-conversation, monotonic)
 6. **DR state ground truth is on the server** — vault drStateSnapshot > in-memory > localStorage
 7. **MK never leaves memory** — derived from password, used for all backup crypto, cleared on logout
-8. **WS is notification-only for messages** — receiver fetches by counter, does not decrypt WS payload
+8. **WS notifications may arrive out of order, but DR decryption is always monotonic** — WS carries metadata and triggers fetch; receiver always fetches sequentially from server regardless of WS arrival order
 9. **Atomic send guarantees consistency** — message + vault + backup always committed together
 10. **Single deviceId** — no multi-device race conditions to handle

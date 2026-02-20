@@ -1198,29 +1198,41 @@ server-side storage
 
 #### 4. 單調接收架構（Monotonic Receiver Architecture）
 
-這是另一個與一般 E2EE 通訊軟體的重大差異：
+這是另一個與一般 E2EE 通訊軟體的重大差異。
+
+**核心保證：** 訊息透過 `atomicSend` 單調寫入 server（先寫後通知），WS 通知**在 server 持久化完成後才觸發**。因此，即使 WS 通知亂序到達，接收端從 server 逐一 fetch 時，資料一定已經存在。
 
 ```
 一般 E2EE App:
-  WS 收到訊息 → 直接 DR decrypt（可能亂序）→ 儲存 skippedKeys → 本地 DB 寫入
+  WS 收到密文 → 直接 DR decrypt（可能亂序）→ 儲存 skippedKeys → 本地 DB 寫入
 
 SENTRY Messenger:
-  WS 只是通知 → Receiver 以自己的 DR counter 順序從 server 拉取 → 單調推進解密 → vault put
+  sender atomicSend → server 單調寫入（先持久化）→ WS 通知接收端（可能亂序到達）
+  → 接收端忽略 WS 到達順序 → 從 localMax+1 逐一向 server fetch → 單調推進 DR decrypt → vault put
 ```
 
 **發送端：**
 - `drEncryptText()` → `atomicSend(counter=NsTotal)` → server 原子寫入
 - Transport counter (`NsTotal`) 嚴格單調遞增
 - Server 端驗證 `counter > max_counter`（409 CounterTooLow 拒絕）
+- **寫入完成後** server 才向接收端發送 WS `secure-message` 通知
 
-**接收端：**
-- WS `secure-message` 事件只是通知，**不攜帶訊息內容**
-- 接收端從 `localMax + 1` 開始，逐一 `GET /messages/by-counter` 拉取
+**WS 通知：**
+- WS `secure-message` 事件**攜帶 counter、sender digest 等 metadata**
+- WS 通知**可能亂序到達**（例如 counter 4 的通知先於 counter 3 到達）
+- 接收端**不依賴 WS 到達順序**來推進 DR state
+- WS 的作用是**觸發 fetch 流程**，而非提供解密素材
+
+**接收端（單調 fetch）：**
+- 收到任何 WS 通知後，從 `localMax + 1` 開始，逐一 `GET /messages/by-counter` 拉取
+- 即使收到「未來」的 counter（如收到 5 但本地只到 2），只代表 3、4 的 WS 通知遲到，但 server 上 3、4 的資料早已存在
 - `gap-queue.js` 嚴格 `for (counter = start; counter <= target; counter++)` 遞增
 - `coordinator.js` 有 `[STRICT SEQUENTIAL]` guard：live 訊息到達時，先補齊所有 gap 再處理當前訊息
 - DR decrypt 按照 chain counter 順序推進，`Nr` 始終等於 `headerN - 1`
 
-**關鍵不變量：** 接收端的 DR chain counter `Nr` 始終等於下一個待處理訊息的 `header.n - 1`。
+**關鍵不變量：**
+- Server 先寫後通知 → fetch 時資料必定存在
+- 接收端的 DR chain counter `Nr` 始終等於下一個待處理訊息的 `header.n - 1`
 
 **直接影響：**
 - Double Ratchet 的 `skippedKeys` 機制（用於亂序訊息解密）在此架構下**永遠為空**
@@ -1254,7 +1266,7 @@ SENTRY Messenger:
 
 2. **不要在本地儲存敏感資料**：所有需要跨 session 存活的狀態必須透過 `atomicSend` 的 backup piggyback 或顯式 `triggerContactSecretsBackup()` 上傳到 server。
 
-3. **不要假設訊息會亂序到達**：接收端是嚴格單調的。如果 DR 層出現 skippedKeys，代表有 bug（可能是 CounterTooLow repair 未正確 rollback DR state）。
+3. **WS 通知可能亂序，但 DR 解密永遠單調**：WS 到達順序不影響 DR 推進，接收端永遠從 server 逐一 fetch。如果 DR 層出現 skippedKeys，代表有 bug（可能是 CounterTooLow repair 未正確 rollback DR state）。
 
 4. **不要依賴 IndexedDB 持久化**：IndexedDB 在登出時會被清空（`clearAllBrowserStorage` 包含 `indexedDB.deleteDatabase`）。
 
