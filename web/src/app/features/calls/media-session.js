@@ -934,7 +934,30 @@ async function createAndSendOffer() {
     // if the remote peer doesn't support an attribute, it omits it
     // from its answer, and the local browser adapts.
     await peerConnection.setLocalDescription(offer);
-    logSdpInfo('offer-local', offer.sdp);
+
+    // Wait for ICE gathering to complete so the offer SDP contains
+    // ALL candidates.  This avoids reliance on addIceCandidate() which
+    // is broken on iOS 26.3 WebKit (silently drops trickled candidates).
+    const pc = peerConnection; // capture ref
+    await new Promise((resolve) => {
+      if (!pc || pc.iceGatheringState === 'complete') { resolve(); return; }
+      const onGatheringDone = () => {
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', onGatheringDone);
+          resolve();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', onGatheringDone);
+      setTimeout(() => {
+        pc.removeEventListener('icegatheringstatechange', onGatheringDone);
+        resolve();
+      }, 6000);
+    });
+
+    // Use localDescription (not the raw offer) — it contains all
+    // gathered ICE candidates embedded in the SDP.
+    const fullOffer = peerConnection.localDescription;
+    logSdpInfo('offer-local', fullOffer.sdp);
     awaitingAnswer = true;
     if (!sendSignal) {
       throw new Error('call signal sender missing');
@@ -946,7 +969,7 @@ async function createAndSendOffer() {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: offer
+      description: fullOffer
     });
     if (!sent) {
       throw new Error('call-offer send failed');
@@ -964,9 +987,37 @@ async function applyRemoteOfferAndAnswer(msg) {
     await flushPendingRemoteCandidates();
     const answer = await peerConnection.createAnswer();
     logSdpInfo('answer-raw', answer.sdp);
-    // Send the original answer — no SDP munging.
     await peerConnection.setLocalDescription(answer);
-    logSdpInfo('answer-local', answer.sdp);
+
+    // CRITICAL: Wait for ICE gathering to complete so the answer SDP
+    // contains ALL candidates.  iOS 26.3 WebKit has a bug where
+    // addIceCandidate() silently drops trickled candidates (they never
+    // register in the ICE agent — 0 candidate pairs, 0 remote candidates
+    // in getStats()).  By embedding candidates directly in the answer SDP,
+    // setRemoteDescription() on the caller side processes them from the
+    // SDP parser, completely bypassing addIceCandidate().
+    const pc = peerConnection; // capture ref
+    await new Promise((resolve) => {
+      if (!pc || pc.iceGatheringState === 'complete') { resolve(); return; }
+      const onGatheringDone = () => {
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', onGatheringDone);
+          resolve();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', onGatheringDone);
+      // Safety timeout — don't block forever
+      setTimeout(() => {
+        pc.removeEventListener('icegatheringstatechange', onGatheringDone);
+        resolve();
+      }, 6000);
+    });
+
+    // Use localDescription (not the original answer variable) because
+    // localDescription now contains all gathered ICE candidates in the SDP.
+    const fullAnswer = peerConnection.localDescription;
+    logSdpInfo('answer-full', fullAnswer.sdp);
+
     if (!sendSignal) {
       throw new Error('call signal sender missing');
     }
@@ -977,7 +1028,7 @@ async function applyRemoteOfferAndAnswer(msg) {
       targetAccountDigest: targetIdentity.digest,
       senderDeviceId: requireLocalDeviceId(),
       targetDeviceId: targetIdentity.deviceId,
-      description: answer
+      description: fullAnswer
     });
     if (!sent) {
       throw new Error('call-answer send failed');
