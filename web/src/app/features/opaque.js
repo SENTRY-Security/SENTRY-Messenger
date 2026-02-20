@@ -3,15 +3,24 @@
 // Provides helpers to register/login against server OPAQUE endpoints.
 
 import { fetchJSON } from '../core/http.js';
+import { importWithSRI } from '/shared/utils/sri.js';
+import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
 // Lazy-load OPAQUE client from esm.sh (works on Cloudflare Pages without bundling)
 let _opaque = null;
+const OPAQUE_URL = 'https://esm.sh/@cloudflare/opaque-ts@0.7.5';
+const OPAQUE_MSG_URL = 'https://esm.sh/@cloudflare/opaque-ts@0.7.5/lib/src/messages.js';
+
 async function loadOpaque() {
   if (_opaque) return _opaque;
-  // Pin version that matches server library
-  const mod = await import('https://esm.sh/@cloudflare/opaque-ts@0.7.5');
+  // Pin version that matches server library — verified via SRI
+  const mod = await importWithSRI(OPAQUE_URL, CDN_SRI[OPAQUE_URL]);
   _opaque = mod;
   return _opaque;
+}
+
+async function loadOpaqueMessages() {
+  return importWithSRI(OPAQUE_MSG_URL, CDN_SRI[OPAQUE_MSG_URL]);
 }
 
 function u8ToB64(u8) {
@@ -41,7 +50,7 @@ export async function opaqueRegister({ password, accountDigest, clientIdentity, 
     const msg = typeof d1 === 'string' ? d1 : d1?.message || d1?.error || 'opaque register-init failed';
     throw new Error(msg);
   }
-  const response = (await import('https://esm.sh/@cloudflare/opaque-ts@0.7.5/lib/src/messages.js')).RegistrationResponse.deserialize(
+  const response = (await loadOpaqueMessages()).RegistrationResponse.deserialize(
     cfg,
     Array.from(b64ToU8(d1.response_b64))
   );
@@ -75,7 +84,7 @@ export async function opaqueLogin({ password, accountDigest, context, serverId, 
     const msg = typeof d1 === 'string' ? d1 : d1?.message || d1?.error || 'opaque login-init failed';
     throw new Error(msg);
   }
-  const KE2 = (await import('https://esm.sh/@cloudflare/opaque-ts@0.7.5/lib/src/messages.js')).KE2;
+  const KE2 = (await loadOpaqueMessages()).KE2;
   const ke2Obj = KE2.deserialize(cfg, Array.from(b64ToU8(d1.ke2_b64)));
   const fin = await client.authFinish(ke2Obj, serverId || undefined, clientIdentity || undefined, context || undefined);
   if (fin instanceof Error) throw fin;

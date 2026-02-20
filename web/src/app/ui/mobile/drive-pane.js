@@ -6,6 +6,8 @@ import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
 import { openImageViewer } from './viewers/image-viewer.js';
+import { importWithSRI } from '/shared/utils/sri.js';
+import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
 const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500MB per file
@@ -221,13 +223,14 @@ export function initDrivePane({
     }
   }
 
+  const PDFJS_ESM_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/+esm';
+  const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
+
   async function getPdfJs() {
     if (pdfJsLibPromise) return pdfJsLibPromise;
-    const version = '4.8.69';
-    const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
-    pdfJsLibPromise = import(`https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/+esm`)
+    pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL])
       .then((lib) => {
-        try { lib.GlobalWorkerOptions.workerSrc = workerUrl; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
+        try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
         return lib;
       })
       .catch((err) => { pdfJsLibPromise = null; throw err; });
