@@ -1,6 +1,6 @@
 import { log } from '../../../core/log.js';
 import { escapeHtml } from '../ui-utils.js';
-import { importWithSRI } from '/shared/utils/sri.js';
+import { importWithSRI, fetchBlobWithSRI } from '/shared/utils/sri.js';
 import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
 let pdfJsLibPromise = null;
@@ -12,8 +12,11 @@ const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/p
 async function getPdfJs() {
   if (pdfJsLibPromise) return pdfJsLibPromise;
   pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL], { useNativeImport: true })
-    .then((lib) => {
-      try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
+    .then(async (lib) => {
+      try {
+        const workerBlob = await fetchBlobWithSRI(PDFJS_WORKER_URL, CDN_SRI[PDFJS_WORKER_URL]);
+        lib.GlobalWorkerOptions.workerSrc = workerBlob;
+      } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
       return lib;
     })
     .catch((err) => { pdfJsLibPromise = null; throw err; });

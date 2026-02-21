@@ -31,7 +31,7 @@
 | ⬜ | MED-03 | WebSocket Token Custom Implementation | — | — |
 | ⬜ | MED-04 | NTAG424 KDF Hardcoded Salt | — | — |
 | ✅ | MED-05 | Remote Console Debug Endpoint | 2026-02-21 | 端點已不再使用，移除 `debug.routes.js` 及路由掛載 |
-| ⬜ | MED-06 | No SRI for CDN Imports | — | — |
+| ✅ | MED-06 | No SRI for CDN Imports | 2026-02-21 | 所有 CDN 匯入皆有 SRI：`importWithSRI()` + `fetchBlobWithSRI()`（PDF.js worker）+ `<script>`/`<link>` integrity 屬性 |
 | ⬜ | MED-07 | `trust proxy` Set to `loopback` | — | — |
 | ⬜ | MED-08 | Skipped Message Keys Limit DoS | — | — |
 | ⬜ | MED-09 | CI/CD Pipeline Disabled | — | — |
@@ -399,19 +399,22 @@ const enableRateLimit = process.env.NODE_ENV === 'production' && process.env.DIS
 
 ---
 
-### MED-06: 外部 CDN 匯入缺少 Subresource Integrity (SRI)
+### MED-06: 外部 CDN 匯入缺少 Subresource Integrity (SRI) ✅ 已修正
 
-**檔案：** `web/build.mjs:55-58`
+**檔案：** `web/src/shared/utils/sri.js`、`web/src/shared/utils/cdn-integrity.js`
+**嚴重程度：** MEDIUM
+**修正日期：** 2026-02-21
 
-```javascript
-external: [
-  'https://esm.sh/*',
-  'https://cdn.jsdelivr.net/*',
-  'tweetnacl'
-],
-```
+**已修正：** 所有外部 CDN 匯入皆透過 SRI 驗證 SHA-384 雜湊值：
 
-載入外部 CDN 資源時未使用 SRI 雜湊值。若 CDN 遭到入侵，可能注入惡意程式碼。
+| 匯入方式 | SRI 機制 | 涵蓋資源 |
+|----------|----------|----------|
+| ESM dynamic import | `importWithSRI()` — fetch → SHA-384 驗證 → blob URL / native import | opaque-ts、pdfjs-dist、fabric.js |
+| Web Worker script | `fetchBlobWithSRI()` — fetch → SHA-384 驗證 → blob URL 作為 workerSrc | pdfjs-dist worker |
+| `<script>` tag | `integrity` + `crossorigin` 屬性 | argon2-browser |
+| `<link>` tag | `integrity` + `crossorigin` 屬性 | boxicons CSS |
+
+所有雜湊值集中管理於 `cdn-integrity.js`。
 
 ---
 

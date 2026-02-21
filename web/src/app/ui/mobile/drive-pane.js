@@ -6,7 +6,7 @@ import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
 import { openImageViewer } from './viewers/image-viewer.js';
-import { importWithSRI } from '/shared/utils/sri.js';
+import { importWithSRI, fetchBlobWithSRI } from '/shared/utils/sri.js';
 import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
 const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
@@ -229,8 +229,11 @@ export function initDrivePane({
   async function getPdfJs() {
     if (pdfJsLibPromise) return pdfJsLibPromise;
     pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL], { useNativeImport: true })
-      .then((lib) => {
-        try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
+      .then(async (lib) => {
+        try {
+          const workerBlob = await fetchBlobWithSRI(PDFJS_WORKER_URL, CDN_SRI[PDFJS_WORKER_URL]);
+          lib.GlobalWorkerOptions.workerSrc = workerBlob;
+        } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
         return lib;
       })
       .catch((err) => { pdfJsLibPromise = null; throw err; });

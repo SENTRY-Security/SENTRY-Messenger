@@ -41,6 +41,33 @@
  *   packages). The browser cache ensures the same verified bytes are used.
  * @returns {Promise<object>} – The module namespace object.
  */
+/**
+ * Fetch a remote script, verify its SHA-384 integrity, and return a Blob URL.
+ * Useful for Web Worker scripts where native import() is not applicable.
+ *
+ * @param {string} url       – Fully-qualified HTTPS URL of the script.
+ * @param {string} expected  – SRI string, e.g. "sha384-<base64>".
+ * @returns {Promise<string>} – A Blob URL containing the verified script.
+ */
+export async function fetchBlobWithSRI(url, expected) {
+  const res = await fetch(url, { credentials: 'omit' });
+  if (!res.ok) throw new Error(`SRI fetch failed: ${url} (${res.status})`);
+
+  const buf = await res.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-384', buf);
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(digest)));
+  const actual = `sha384-${b64}`;
+
+  if (actual !== expected) {
+    throw new Error(
+      `SRI mismatch for ${url}\n  expected: ${expected}\n  actual:   ${actual}`
+    );
+  }
+
+  const blob = new Blob([new Uint8Array(buf)], { type: 'application/javascript' });
+  return URL.createObjectURL(blob);
+}
+
 export async function importWithSRI(url, expected, opts) {
   const res = await fetch(url, { credentials: 'omit' });
   if (!res.ok) throw new Error(`SRI fetch failed: ${url} (${res.status})`);
