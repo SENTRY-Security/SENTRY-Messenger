@@ -28,20 +28,6 @@
 //   );
 
 /**
- * Fetch a remote ES module, verify its SHA-384 integrity, and return the
- * evaluated module namespace.
- *
- * @param {string} url       – Fully-qualified HTTPS URL of the ES module.
- * @param {string} expected  – SRI string, e.g. "sha384-<base64>".
- * @param {object} [opts]    – Options.
- * @param {boolean} [opts.useNativeImport=false]
- *   When true, after verifying the hash the module is loaded via native
- *   import() instead of a Blob URL. This allows internal sub-imports to
- *   resolve correctly (e.g. esm.sh modules that depend on other esm.sh
- *   packages). The browser cache ensures the same verified bytes are used.
- * @returns {Promise<object>} – The module namespace object.
- */
-/**
  * Fetch a remote script, verify its SHA-384 integrity, and return a Blob URL.
  * Useful for Web Worker scripts where native import() is not applicable.
  *
@@ -68,6 +54,20 @@ export async function fetchBlobWithSRI(url, expected) {
   return URL.createObjectURL(blob);
 }
 
+/**
+ * Fetch a remote ES module, verify its SHA-384 integrity, and return the
+ * evaluated module namespace.
+ *
+ * @param {string} url       – Fully-qualified HTTPS URL of the ES module.
+ * @param {string} expected  – SRI string, e.g. "sha384-<base64>".
+ * @param {object} [opts]    – Options.
+ * @param {boolean} [opts.useNativeImport=false]
+ *   When true, after verifying the hash the module is loaded via native
+ *   import() instead of a Blob URL. This allows internal sub-imports to
+ *   resolve correctly (e.g. esm.sh modules that depend on other esm.sh
+ *   packages). The browser cache ensures the same verified bytes are used.
+ * @returns {Promise<object>} – The module namespace object.
+ */
 export async function importWithSRI(url, expected, opts) {
   const res = await fetch(url, { credentials: 'omit' });
   if (!res.ok) throw new Error(`SRI fetch failed: ${url} (${res.status})`);
