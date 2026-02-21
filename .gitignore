@@ -23,6 +23,7 @@ coverage/
 .wrangler/
 .venv/
 artifacts/
+test-results/
 
 # Test large assets (keep repo lean; remove if you want to track binaries)
 test/*.mp4
