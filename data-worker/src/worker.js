@@ -107,6 +107,20 @@ async function verifyHMAC(req, env) {
   return timingSafeEqual(sig, sigPipe) || timingSafeEqual(sig, sigNewline);
 }
 
+// [Phase 5.4] Sign response body with HMAC-SHA256 for integrity verification.
+// Prevents MITM from injecting fake values (e.g. expectedCounter) into responses.
+async function signResponseBody(env, bodyString) {
+  if (!env.HMAC_SECRET) return null;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(env.HMAC_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(bodyString));
+  return btoa(String.fromCharCode(...new Uint8Array(mac)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 // ---- 帳號與 MK / TAGS 相關共用 ----
 let dataTablesReady = false;
 
@@ -2405,12 +2419,21 @@ async function handleMessagesRoutes(req, env) {
     `).bind(conversationId, accountDigest, senderDeviceId).first();
     const lastAcceptedCounter = Number(row?.counter);
     const expectedCounter = Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter + 1 : 1;
-    return json({
+    // [Phase 5.4] Sign the response body to prevent MITM counter regression attacks.
+    const responseData = {
       ok: true,
       expected_counter: expectedCounter,
       last_accepted_counter: Number.isFinite(lastAcceptedCounter) ? lastAcceptedCounter : null,
       last_accepted_message_id: row?.id || null,
       server_time: Math.floor(Date.now() / 1000)
+    };
+    const responseBody = JSON.stringify(responseData);
+    const responseHmac = await signResponseBody(env, responseBody);
+    return new Response(responseBody, {
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        ...(responseHmac ? { 'x-response-hmac': responseHmac } : {})
+      }
     });
   }
 

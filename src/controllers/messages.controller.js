@@ -16,6 +16,7 @@
 import { CreateMessageSchema, CreateSecureMessageSchema } from '../schemas/message.schema.js';
 import { signHmac } from '../utils/hmac.js';
 import { z } from 'zod';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
 import { logger } from '../utils/logger.js';
@@ -1036,6 +1037,17 @@ export const getSendState = async (req, res) => {
     let data; try { data = JSON.parse(text); } catch { data = text; }
     if (!r.ok) {
       return res.status(502).json({ error: 'D1ReadFailed', status: r.status, details: data });
+    }
+    // [Phase 5.4] Verify response HMAC to prevent MITM counter regression attacks.
+    // If the worker signed the response, the HMAC must match before we trust expectedCounter.
+    const responseHmac = r.headers.get('x-response-hmac');
+    if (responseHmac && HMAC_SECRET) {
+      const expected = crypto.createHmac('sha256', HMAC_SECRET).update(text).digest('base64url');
+      if (responseHmac.length !== expected.length ||
+          !crypto.timingSafeEqual(Buffer.from(responseHmac), Buffer.from(expected))) {
+        logger.error('[send-state] Response HMAC verification failed — possible MITM');
+        return res.status(502).json({ error: 'IntegrityError', message: 'send-state response integrity check failed' });
+      }
     }
     return res.json(data);
   } catch (err) {
