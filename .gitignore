@@ -34,6 +34,3 @@ test/*.mobileconfig
 # Logs / temp
 *.log
 scripts/cleanup/*.log
-
-# Internal-only notes
-docs/internal/tun-host.md
