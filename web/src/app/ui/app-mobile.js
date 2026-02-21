@@ -54,6 +54,7 @@ import {
 import { friendsDeleteContact } from '../api/friends.js';
 import { mkUpdate } from '../api/auth.js';
 import { loadContacts, saveContact, getLastContactsHydrateSummary, uplinkContactToD1 } from '../features/contacts.js';
+import { triggerContactSecretsBackup } from '../features/contact-backup.js';
 import { saveSettings, loadSettings, DEFAULT_SETTINGS } from '../features/settings.js';
 import { getSimStoragePrefix, getSimStorageKey } from '../../libs/ntag424-sim.js';
 // 加上版本 query 以強制瀏覽器抓最新版（避免舊版 module 快取）
@@ -490,15 +491,16 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
     log({ contactSecretsSnapshotFlushError: err?.message || err, reason: 'secure-logout-call' });
   }
 
-  // ── 不需要在登出時推送 contact-secrets backup ──
-  // 接收鏈在收訊時已透過 Vault Put 保存 message key 並推進 DR 計數器 (Nr)。
-  // 即使登出前備份失敗，下次登入的自癒迴圈會自動修復：
-  //   1. 伺服器訊息不會因下載而刪除（cursor 分頁，無 auto-delete）
-  //   2. 登入時從 vault 還原 DR state → gap-queue 偵測缺口 → 重新拉取未處理訊息
-  //   3. DR ratchet 具確定性：同起點 + 同密文 = 同 key，解密必定成功
-  //   4. Vault Put 冪等（UNIQUE 約束），重複寫入無副作用
-  // 因此登出時的 remote backup 是冗餘的，移除可避免登出延遲與超時風險。
-  // 僅保留 persistContactSecrets (本地快照) 與 lockContactSecrets (清除記憶體)。
+  // [Phase 4.3] Force push contact-secrets backup before logout.
+  // With DH ratchet enabled, the current DH keypair (myRatchetPriv/Pub) rotates
+  // on every direction change and is NOT in the per-message vault. If we don't
+  // push a backup here, the next login will lose the current DH keypair, forcing
+  // a re-derivation from the last vault snapshot (which may be stale).
+  try {
+    await triggerContactSecretsBackup('secure-logout', { force: true, sourceTag: 'secure-logout' });
+  } catch (err) {
+    log({ contactSecretsLogoutBackupError: err?.message || err, reason: 'secure-logout' });
+  }
   try {
     persistContactSecrets();
   } catch (err) {

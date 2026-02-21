@@ -1309,12 +1309,20 @@ export function hydrateDrStatesFromContactSecrets({ source = 'hydrateDrStatesFro
         peerDeviceId,
         snapshot,
         sourceTag: source || 'hydrateDrStatesFromContactSecrets',
-        sourceTag: source || 'hydrateDrStatesFromContactSecrets',
         // [FIX] PREVENT OVERWRITE: Do not force overwrite if local state is newer.
         // source === 'post-login-hydrate' should respect downgrade protection.
         force: source === 'restore_pipeline_stage3'
       });
-      if (ok) restoredCount += 1;
+      if (ok) {
+        // [Phase 4.2] Force a DH ratchet on the next send after hydration.
+        // The restored snapshot may be stale (from a previous session). Setting
+        // pendingSendRatchet ensures drEncryptText generates a fresh DH keypair
+        // before sending, re-establishing forward secrecy even if the snapshot's
+        // DH keys were compromised.
+        const holder = drState({ peerAccountDigest, peerDeviceId });
+        if (holder) holder.pendingSendRatchet = true;
+        restoredCount += 1;
+      }
       else skippedCount += 1;
     } catch {
       errorCount += 1;

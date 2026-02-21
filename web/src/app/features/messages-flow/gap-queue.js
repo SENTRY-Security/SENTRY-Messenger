@@ -246,6 +246,20 @@ export function createGapQueue(deps = {}) {
         });
         return { ok: true, item };
       } catch (err) {
+        // [Phase 3.3] 404 = counter doesn't exist on the server.
+        // This is legal after CounterTooLow repair: the phantom counter was never
+        // persisted, so the server has no message at that position. Skip immediately
+        // without retrying — the counter will never appear.
+        if (err?.httpStatus === 404) {
+          logGapQueueTrace(logger, 'gapQueueProcessTrace', {
+            conversationIdPrefix8,
+            stage: 'counter_not_found',
+            counter,
+            attempt,
+            ok: false
+          });
+          return { ok: false, notFound: true, errorMessage: err?.message || 'counter not found' };
+        }
         lastError = err?.message || String(err);
         if (attempt < GAP_QUEUE_RETRY_MAX) {
           await sleep(GAP_QUEUE_RETRY_INTERVAL_MS);
@@ -298,6 +312,13 @@ export function createGapQueue(deps = {}) {
       for (let counter = startCounter; counter <= targetCounter; counter += 1) {
         const result = await fetchWithRetry(conversationId, counter, conversationIdPrefix8);
         if (!result.ok) {
+          // [Phase 3.3] 404 (counter_not_found) — skip this counter and continue.
+          // After CounterTooLow repair, the phantom counter was never persisted on the server.
+          // Blocking the entire gap-queue on a missing counter would stall all subsequent messages.
+          if (result.notFound) {
+            cursor = counter;
+            continue;
+          }
           failed = true;
           break;
         }
