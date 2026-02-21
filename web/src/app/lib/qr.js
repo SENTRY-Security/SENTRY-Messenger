@@ -7,7 +7,7 @@ import qrcode from './vendor/qrcode-generator.js';
  * @param {number} margin
  * @returns {HTMLCanvasElement}
  */
-export function generateQR(text, size = 220, margin = 4) {
+export function generateQR(text, size = 220, margin = 12) {
   try {
     const qr = qrcode(0, 'L'); // typeNumber 0 = auto
     qr.addData(text);
