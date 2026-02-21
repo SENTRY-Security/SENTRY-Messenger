@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "NODE_ENV=development node src/server.js",
     "start": "NODE_ENV=production node src/server.js",
+    "test:unit": "node --test 'tests/unit/*.spec.mjs'",
+    "build:web": "cd web && npm run build",
+    "verify:web": "cd web && npm run verify",
     "test:front:login": "playwright test"
   },
   "devDependencies": {
