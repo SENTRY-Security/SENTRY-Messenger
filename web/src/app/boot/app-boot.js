@@ -80,6 +80,7 @@ window.API_ORIGIN = (document.querySelector('meta[name="api-origin"]') || {}).co
     var fallback = document.createElement('script');
     fallback.type = 'module';
     fallback.src = '/app/ui/app-mobile.js?v=' + Date.now();
+    if (script.integrity) { fallback.integrity = script.integrity; fallback.crossOrigin = 'anonymous'; }
     document.body.appendChild(fallback);
   };
   document.body.appendChild(script);
