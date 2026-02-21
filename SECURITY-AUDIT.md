@@ -28,7 +28,7 @@
 | ✅ | HIGH-08 | `elliptic` Library Used | 2026-02-21 | 已於 CRIT-04 中遷移至 `@noble/curves` 並移除 `elliptic` 依賴 |
 | ✅ | MED-01 | CORS Allows Null Origin | 2026-02-21 | 區分 `undefined`（合法無 Origin header）與 `null`（沙箱 iframe / file://），僅允許前者 |
 | ✅ | MED-02 | Rate Limiting Disabled in Non-Prod | 2026-02-21 | Rate limit 預設所有環境啟用，僅可透過 `DISABLE_RATE_LIMIT=1` 明確停用 |
-| ⬜ | MED-03 | WebSocket Token Custom Implementation | — | — |
+| ✅ | MED-03 | WebSocket Token Custom Implementation | 2026-02-21 | 自定義 JWT 實作替換為 `jsonwebtoken` 函式庫，含 `algorithms` 白名單防止 alg 攻擊 |
 | ⬜ | MED-04 | NTAG424 KDF Hardcoded Salt | — | — |
 | ✅ | MED-05 | Remote Console Debug Endpoint | 2026-02-21 | 端點已不再使用，移除 `debug.routes.js` 及路由掛載 |
 | ✅ | MED-06 | No SRI for CDN Imports | 2026-02-21 | 所有 CDN 匯入皆有 SRI：`importWithSRI()` + `fetchBlobWithSRI()`（PDF.js worker）+ `<script>`/`<link>` integrity 屬性 |
@@ -371,11 +371,17 @@ return {
 
 ---
 
-### MED-03: WebSocket Token 使用自定義實作
+### MED-03: WebSocket Token 使用自定義實作 ✅ 已修正
 
 **檔案：** `src/utils/ws-token.js`
+**修正日期：** 2026-02-21
 
-使用了自定義的類 JWT token 實作，而非標準的 JWT 函式庫。雖然該實作包含了時序安全比較和正確的 HMAC-SHA256，但與經過實戰驗證的函式庫相比，自定義的加密 token 實作存在較高的隱微漏洞風險。
+**已修正：** 自定義的類 JWT 實作（手動 HMAC-SHA256 簽署 / 驗證）替換為已在 `package.json` 中的 `jsonwebtoken` 函式庫。改動重點：
+
+- `jwt.sign()` 取代手動的 header + payload + signature 拼接
+- `jwt.verify()` 取代手動的 `timingSafeEqual` + payload 解析
+- 驗證時指定 `algorithms: ['HS256']` 白名單，防止 `alg: none` 等降級攻擊
+- 外部 API 合約（`createWsToken` / `verifyWsToken` 的參數與回傳值）完全不變
 
 ---
 
