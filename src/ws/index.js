@@ -647,7 +647,7 @@ export function setupWebSocket(server) {
       if (!digest) return;
       broadcastByDigest(digest, { type: 'contacts-reload', ts: Date.now(), accountDigest: digest });
     },
-    notifySecureMessage({ targetAccountDigest, conversationId, messageId, preview, ts = Date.now(), senderAccountDigest, senderDeviceId, targetDeviceId, counter }) {
+    notifySecureMessage({ targetAccountDigest, conversationId, messageId, ts = Date.now(), senderAccountDigest, senderDeviceId, targetDeviceId, counter }) {
       const target = canonicalAccountDigest(targetAccountDigest);
       const senderDev = canonicalDeviceId(senderDeviceId);
       const targetDev = canonicalDeviceId(targetDeviceId);
@@ -669,11 +669,12 @@ export function setupWebSocket(server) {
       // gap check is always skipped (liveJobCounter is null) and out-of-order
       // messages are only caught inside consumeLiveJob where gap recovery is less reliable.
       const normalizedCounter = Number.isFinite(Number(counter)) ? Number(counter) : null;
+      // [HIGH-02 FIX] No preview field — WS notifications carry only metadata.
+      // Client decrypts message content locally after fetching by counter.
       broadcastByDigest(target, {
         type: 'secure-message',
         conversationId,
         messageId: messageId || null,
-        preview: preview || '',
         ts,
         count: 1,
         counter: normalizedCounter,

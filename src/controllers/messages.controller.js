@@ -280,7 +280,7 @@ export const createMessage = async (req, res) => {
       mgr.notifySecureMessage({
         targetAccountDigest: receiverDigest,
         conversationId: auth.conversationId,
-        preview: messageInput.preview || messageInput.text || '',
+        // [HIGH-02 FIX] Never send plaintext preview via WS — client decrypts locally
         ts: Number(messageInput.created_at || messageInput.ts || Date.now()),
         senderAccountDigest: auth.accountDigest,
         senderDeviceId,
@@ -478,7 +478,6 @@ export const createSecureMessage = async (req, res) => {
         targetAccountDigest: receiver_account_digest,
         conversationId: auth.conversationId,
         messageId: messageId,
-        preview: '',
         ts: createdAt,
         senderAccountDigest: auth.accountDigest,
         senderDeviceId: canonDevice(senderDeviceId),
@@ -607,7 +606,6 @@ export const atomicSend = async (req, res) => {
           targetAccountDigest: receiverDigest,
           conversationId: conversationId,
           messageId: messageId,
-          preview: '',
           ts: Number(ts) || Date.now(),
           senderAccountDigest: auth.accountDigest,
           senderDeviceId: senderDevice,

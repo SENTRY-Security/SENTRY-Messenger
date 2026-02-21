@@ -19,7 +19,7 @@
 | ⬜ | CRIT-03 | Unauthenticated OPAQUE Debug Endpoint | — | 待移除或加入 admin HMAC 認證 |
 | ✅ | CRIT-04 | Dependency Vulnerabilities (27 total) | 2026-02-21 | `npm audit fix` 升級 AWS SDK / qs / lodash / systeminformation；`elliptic` 遷移至 `@noble/curves`（移除依賴）。剩餘 pm2 ReDoS (low, 無修正) 接受風險 |
 | ✅ | HIGH-01 | AAD Omission Fallback in AES-GCM | 2026-02-20 | Phase 1.4：AAD 為 null 時改為 throw，不再 fallback。commit `787954e` |
-| ⬜ | HIGH-02 | Plaintext Preview via WebSocket | — | 待移除 WS 通知中的 `preview` 欄位 |
+| ✅ | HIGH-02 | Plaintext Preview via WebSocket | 2026-02-21 | 從所有呼叫點移除 `preview` 參數，從 `notifySecureMessage` 簽名及 WS broadcast payload 中完全刪除 |
 | ✅ | HIGH-03 | Message Key in Encrypted Packet Output | 2026-02-21 | 審計完成：`vaultAtomicPayload` 透過 `...vaultParams` 展開洩漏原始金鑰至 atomicSend。已從 text/media 兩條路徑排除，outbox `dr` 屬性同步清理 |
 | ✅ | HIGH-04 | Source Maps in Production Build | 2026-02-21 | `build.mjs` 設定 `sourcemap: false` |
 | ✅ | HIGH-05 | Missing CSP | 2026-02-21 | `_headers` 加入完整 CSP + X-Content-Type-Options + X-Frame-Options + Referrer-Policy + Permissions-Policy |
@@ -233,24 +233,19 @@ const cipherParams = aad ? { name: 'AES-GCM', iv, additionalData: aad }
 
 ---
 
-### HIGH-02: 明文訊息預覽透過 WebSocket 傳送
+### HIGH-02: 明文訊息預覽透過 WebSocket 傳送 ✅ 已修正
 
-**檔案：** `src/controllers/messages.controller.js:288`
+**檔案：** `src/controllers/messages.controller.js`, `src/ws/index.js`
 **嚴重程度：** HIGH
+**修正日期：** 2026-02-21
 
-```javascript
-mgr.notifySecureMessage({
-  // ...
-  preview: messageInput.preview || messageInput.text || '',
-});
-```
+**已修正：** 從整個 WS 通知管線中完全移除 `preview` 欄位：
+1. `messages.controller.js:283` — 移除 `preview: messageInput.preview || messageInput.text || ''`（唯一洩漏明文的呼叫點）
+2. `messages.controller.js:481, 609` — 移除 `preview: ''`（已安全但不需要）
+3. `ws/index.js:notifySecureMessage` — 從函式簽名移除 `preview` 參數
+4. `ws/index.js:broadcastByDigest` payload — 移除 `preview` 欄位
 
-**影響：** 當新的安全訊息被儲存時，伺服器發送的 WebSocket 通知中包含了明文 `preview` 或 `text` 欄位。這意味著推播通知包含了**未加密的訊息內容**，因而：
-- 在伺服器端以明文方式透過 WebSocket 傳輸
-- 對任何伺服器端的日誌記錄或監控系統可見
-- 使通知傳遞環節的端到端加密形同虛設
-
-**建議：** 從 WebSocket 通知中完全移除 `preview` 欄位，或將其替換為靜態佔位文字（例如「新訊息」）。客戶端應在本地解密訊息後再顯示預覽。
+客戶端從未使用 WS 通知中的 `preview`（`ws-integration.js` 無任何 `preview` 讀取），僅使用 `counter`/`conversationId` 等元資料觸發 fetch cycle。
 
 ---
 
