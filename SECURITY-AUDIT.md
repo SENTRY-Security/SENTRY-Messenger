@@ -26,8 +26,8 @@
 | ✅ | HIGH-06 | Unrestricted Media Upload Content-Type | 2026-02-21 | `media.routes.js` 加入 content-type allowlist，非允許類型回傳 415 |
 | ✅ | HIGH-07 | IndexedDB Key Material Unprotected | 2026-02-21 | Outbox DR snapshots encrypted with AES-256-GCM (MK + HKDF `outbox-dr/v1`) before IndexedDB write; `clearAllBrowserStorage` now awaits IndexedDB deletion |
 | ✅ | HIGH-08 | `elliptic` Library Used | 2026-02-21 | 已於 CRIT-04 中遷移至 `@noble/curves` 並移除 `elliptic` 依賴 |
-| ⬜ | MED-01 | CORS Allows Null Origin | — | — |
-| ⬜ | MED-02 | Rate Limiting Disabled in Non-Prod | — | — |
+| ✅ | MED-01 | CORS Allows Null Origin | 2026-02-21 | 區分 `undefined`（合法無 Origin header）與 `null`（沙箱 iframe / file://），僅允許前者 |
+| ✅ | MED-02 | Rate Limiting Disabled in Non-Prod | 2026-02-21 | Rate limit 預設所有環境啟用，僅可透過 `DISABLE_RATE_LIMIT=1` 明確停用 |
 | ⬜ | MED-03 | WebSocket Token Custom Implementation | — | — |
 | ⬜ | MED-04 | NTAG424 KDF Hardcoded Salt | — | — |
 | ✅ | MED-05 | Remote Console Debug Endpoint | 2026-02-21 | 端點已不再使用，移除 `debug.routes.js` 及路由掛載 |
@@ -350,27 +350,24 @@ return {
 
 ## 3. MEDIUM 嚴重程度發現
 
-### MED-01: CORS 允許 Null Origin
+### MED-01: CORS 允許 Null Origin ✅ 已修正
 
 **檔案：** `src/app.js:28`
+**修正日期：** 2026-02-21
 
-```javascript
-if (!origin) return cb(null, true); // non-browser or same-origin
-```
+**已修正：** 將 `!origin`（同時匹配 `undefined` 和 `null`）改為 `origin === undefined`，明確區分：
 
-當 `origin` 為 `undefined`（非瀏覽器請求）時，CORS 允許該請求通過。這對伺服器對伺服器的呼叫而言是標準做法，但同時也允許來自 `null` origin 的請求（沙箱 iframe、file:// 協定、重新導向），可能被利用進行類似 CSRF 的攻擊。
+- `undefined` — 合法的非瀏覽器請求或同源請求（無 Origin header）→ 放行
+- `null` — 沙箱 iframe、`file://` 協定、重新導向等 → 拒絕（不在 allowList 中）
 
 ---
 
-### MED-02: 非正式環境中停用了速率限制
+### MED-02: 非正式環境中停用了速率限制 ✅ 已修正
 
 **檔案：** `src/app.js:50`
+**修正日期：** 2026-02-21
 
-```javascript
-const enableRateLimit = process.env.NODE_ENV === 'production' && process.env.DISABLE_RATE_LIMIT !== '1';
-```
-
-速率限制僅在正式環境中啟用。可從網路存取的測試環境或開發環境對暴力破解攻擊毫無防護。
+**已修正：** 移除 `NODE_ENV === 'production'` 條件，rate limiter 現在預設在所有環境啟用。僅可透過 `DISABLE_RATE_LIMIT=1` 環境變數明確停用（供本機開發等情境使用）。
 
 ---
 

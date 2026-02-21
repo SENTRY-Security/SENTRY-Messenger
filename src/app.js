@@ -25,7 +25,9 @@ const allowList = (env.CORS_ORIGIN ?? '')
   .filter(Boolean);
 const corsOrigin = allowList.length
   ? (origin, cb) => {
-    if (!origin) return cb(null, true); // non-browser or same-origin
+    // Allow requests with no Origin header (non-browser / same-origin).
+    // Reject Origin: null (sandboxed iframes, file://, redirects).
+    if (origin === undefined) return cb(null, true);
     cb(null, allowList.includes(origin));
   }
   : false;
@@ -46,8 +48,8 @@ app.use(express.json({
 // 日誌
 app.use(pinoHttp({ logger }));
 
-// API 基礎 Rate Limit（僅在正式環境啟用，可視路徑細分）
-const enableRateLimit = process.env.NODE_ENV === 'production' && process.env.DISABLE_RATE_LIMIT !== '1';
+// API 基礎 Rate Limit（預設啟用；僅可透過 DISABLE_RATE_LIMIT=1 明確停用）
+const enableRateLimit = process.env.DISABLE_RATE_LIMIT !== '1';
 if (enableRateLimit) {
   const apiRateLimiter = rateLimit({
     windowMs: 60 * 1000,
