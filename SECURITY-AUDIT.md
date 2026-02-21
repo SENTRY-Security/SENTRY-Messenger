@@ -34,9 +34,9 @@
 | ✅ | MED-06 | No SRI for CDN Imports | 2026-02-21 | 所有 CDN 匯入皆有 SRI：`importWithSRI()` + `fetchBlobWithSRI()`（PDF.js worker）+ `<script>`/`<link>` integrity 屬性 |
 | ✅ | MED-07 | `trust proxy` Set to `loopback` | 2026-02-21 | 改為透過 `TRUST_PROXY` 環境變數配置，預設 `loopback`，可隨部署架構調整 |
 | ✅ | MED-08 | Skipped Message Keys Limit DoS | 2026-02-21 | `SKIPPED_KEYS_PER_CHAIN_MAX` 從 100 降至 5，符合單調接收架構 |
-| ✅ | MED-09 | CI/CD Pipeline Disabled | 2026-02-21 | 刪除過時的 `e2e.yml.disabled`，消除殘留配置 |
+| ✅ | MED-09 | CI/CD Pipeline Disabled | 2026-02-21 | 刪除過時的 `e2e.yml.disabled`；新增 `.github/workflows/ci.yml`（unit tests + frontend build/SRI verify）、`.github/dependabot.yml`、npm scripts (`test:unit`, `build:web`, `verify:web`) |
 | ✅ | MED-10 | `getStatus` Leaks Environment Info | 2026-02-21 | 移除 `getStatus` 及 `/status` 路由，`/health` 已足夠 |
-| ⬜ | MED-11 | No `.env.example` Template | — | — |
+| ✅ | MED-11 | No `.env.example` Template | 2026-02-21 | 新增 `.env.example`，含 10 區塊、完整型別與安全標註 |
 
 ### Appendix B 工作項目修正狀態
 
@@ -77,7 +77,7 @@
 | ✅ | 6 | 6.6 — E2E: gap-queue 404 容錯 | 2026-02-21 | `54828ab` | phantom gap 下 DR chain 連續性不受影響 |
 | ~~ | 6 | ~~6.7 — Snapshot v1→v2 遷移~~ | — | — | 已移除：不需要 v2 格式 |
 
-**測試統計：** 45 tests pass（Phase 0: 7, Phase 1: 8, Phase 3: 7, Phase 5: 9, Phase 6: 14），zero regression。
+**測試統計：** 67 tests pass（Phase 0: 7, Phase 1: 8, Phase 3: 7, Phase 5: 9, Phase 6: 14, 其他: 22），zero regression。CI workflow 驗證：`npm run test:unit` 全綠。
 
 ---
 
@@ -442,10 +442,20 @@ return {
 
 ### MED-09: CI/CD 流水線已停用 ✅ 已修正
 
-**檔案：** `.github/workflows/e2e.yml.disabled`（已刪除）
+**檔案：** `.github/workflows/e2e.yml.disabled`（已刪除）、`.github/workflows/ci.yml`（新增）、`.github/dependabot.yml`（新增）
 **修正日期：** 2026-02-21
 
-**已修正：** 過時的 `e2e.yml.disabled` 已刪除，消除殘留配置。未來如需 CI/CD 應從頭建立新的 workflow。
+**已修正（兩階段）：**
+
+1. **清理：** 刪除過時的 `e2e.yml.disabled`，消除殘留配置。
+2. **建置 CI/CD：** 新增完整的 GitHub Actions CI workflow（`.github/workflows/ci.yml`）：
+   - **unit-tests** job：Node.js 22 + `npm run test:unit`（67 tests pass）
+   - **build-web** job：esbuild 前端建置 + SRI 完整性驗證（`npm run build:web` + `npm run verify:web`）
+   - 觸發條件：push 到 `main`/`staging`、PR 到 `main`
+   - `concurrency` 設定避免重複執行
+   - Build artifact 上傳保留 7 天
+3. **自動化依賴更新：** 新增 `.github/dependabot.yml`，涵蓋 root npm、web/ npm、GitHub Actions 版本更新（weekly）。
+4. **npm scripts：** `package.json` 新增 `test:unit`、`build:web`、`verify:web` 供 CI 及本地使用。
 
 ---
 
@@ -458,9 +468,26 @@ return {
 
 ---
 
-### MED-11: 缺少 `.env.example` 範本
+### MED-11: 缺少 `.env.example` 範本 ✅ 已修正
 
-儲存庫中不存在 `.env.example` 檔案來記錄所需的環境變數。這增加了設定錯誤的風險（缺少 HMAC 密鑰、金鑰長度錯誤等）。
+**修正日期：** 2026-02-21
+
+**已修正：** 新增 `.env.example`，包含 10 個區塊、169 行，涵蓋所有必要環境變數：
+
+| 區塊 | 內容 |
+|------|------|
+| 1. Basic Runtime | PORT, SERVICE_NAME, SERVICE_VERSION |
+| 2. URL / Origin | CORS_ORIGIN, DATA_API_URL, PORTAL_API_ORIGIN, S3_ENDPOINT |
+| 3. Feature Flags | REMOTE_CONSOLE_ENABLED, SIGNED_PUT/GET_TTL, UPLOAD_MAX_BYTES, TURN_TTL |
+| 4. Cloudflare Account | CLOUDFLARE_ACCOUNT_ID, EMAIL, API_KEY |
+| 5. Storage / Bucket | S3_REGION, S3_BUCKET |
+| 6. Service Secrets | INVITE_TOKEN_KEY, DATA_API_HMAC, WS_TOKEN_SECRET, ACCOUNT_HMAC_KEY, S3 keys |
+| 7. TURN/SFU Tokens | CLOUDFLARE_TURN/SFU_TOKEN_ID/KEY |
+| 8. NTAG424 Crypto | NTAG424_KM, KDF, SALT, INFO, KVER |
+| 9. OPAQUE / PAKE | OPAQUE_OPRF_SEED, AKE_PRIV/PUB_B64, SERVER_ID |
+| 10. PEM Material | PRIVATE_KEY_PUBLIC_PEM |
+
+每個變數標註型別（`[secret string]`、`[integer]`、`[csv<string URL>]` 等），秘密欄位留空不填預設值。
 
 ---
 
@@ -471,7 +498,7 @@ return {
 | LOW-01 | `package-lock.json` 使用插入號範圍 (^)，允許次要版本漂移 | `package.json` |
 | LOW-02 | 多重 HMAC secret 回退鏈可能造成混淆 | `src/controllers/messages.controller.js` |
 | LOW-03 | `node-aes-cmac` (v0.1.1) 維護程度極低 | `package.json` |
-| LOW-04 | 未配置 Dependabot 或 Renovate 進行自動化更新 | `.github/` |
+| ~~LOW-04~~ | ~~未配置 Dependabot 或 Renovate 進行自動化更新~~ | ✅ `.github/dependabot.yml` 已新增 |
 | LOW-05 | 授權條款 (AGPL-3.0) 要求網路使用時公開原始碼——請確保合規 | `package.json` |
 | LOW-06 | `packetHolderCache`（Map，最大 2000）除大小限制外無 TTL/驅逐機制 | `dr.js:23-24` |
 | LOW-07 | 伺服器端匯入了客戶端的 debug-flags 模組 | `messages.controller.js:25` |
@@ -534,8 +561,8 @@ return {
 | 9 | 在 `web/src/_headers` 中加入 CSP 及安全標頭 | 中 |
 | 10 | 為媒體上傳實作 content-type 白名單 | 中 |
 | 11 | 在正式環境建置中停用 source maps（`sourcemap: false`） | 低 |
-| 12 | 啟用包含 `npm audit` 和 SAST 步驟的 CI/CD 流水線 | 中 |
-| 13 | 建立 `.env.example` 文件以記載所有必要的環境變數 | 低 |
+| ~~12~~ | ~~啟用包含 `npm audit` 和 SAST 步驟的 CI/CD 流水線~~ | ✅ 已完成 |
+| ~~13~~ | ~~建立 `.env.example` 文件以記載所有必要的環境變數~~ | ✅ 已完成 |
 | 14 | 移除或限制 `/api/v1/status` 端點 | 低 |
 
 ### 中期（一個月內）
@@ -544,7 +571,7 @@ return {
 |---|------|--------|
 | 15 | 為外部 CDN 匯入加入 SRI 雜湊值 | 中 |
 | 16 | 實作建置時期 debug 程式碼剝離（esbuild `define`） | 中 |
-| 17 | 配置 Dependabot 或 Renovate 進行自動化相依性更新 | 低 |
+| ~~17~~ | ~~配置 Dependabot 或 Renovate 進行自動化相依性更新~~ | ✅ 已完成 |
 | 18 | 在 staging 環境加入速率限制 | 低 |
 | 19 | 評估硬體支援的金鑰儲存方案（WebAuthn PRF） | 高 |
 | 20 | 審查並在可行時降低 `SKIPPED_KEYS_PER_CHAIN_MAX` 的值 | 低 |
