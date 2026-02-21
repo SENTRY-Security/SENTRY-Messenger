@@ -7,13 +7,7 @@
   "scripts": {
     "dev": "NODE_ENV=development node src/server.js",
     "start": "NODE_ENV=production node src/server.js",
-    "test:login-flow": "node scripts/test-login-flow.mjs",
-    "test:prekeys-devkeys": "node scripts/test-prekeys-devkeys.mjs",
-    "test:messages-secure": "node scripts/test-messages-secure.mjs",
-    "test:front:login": "playwright test",
-    "test:friends-messages": "node scripts/test-friends-messages.mjs",
-    "test:calls-encryption": "node scripts/test-calls-encryption.mjs",
-    "test:front:call-audio": "npx playwright test tests/e2e/call-audio.spec.mjs"
+    "test:front:login": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.0",
