@@ -2046,8 +2046,11 @@ export async function sendDrPlaintextCore(params = {}) {
     let vaultAtomicPayload = null;
     try {
       const { wrapped, context } = await MessageKeyVault.preparePayload({ ...vaultParams, drStateSnapshot });
+      // [HIGH-03 FIX] Exclude messageKeyB64 from network payload — raw message key
+      // must never leave the browser. Only the MK-wrapped envelope (wrapped_mk) is sent.
+      const { messageKeyB64: _mkLocal, ...vaultParamsSafe } = vaultParams;
       vaultAtomicPayload = {
-        ...vaultParams,
+        ...vaultParamsSafe,
         wrapped_mk: wrapped,
         wrap_context: context,
         dr_state: drStateSnapshot
@@ -2095,8 +2098,7 @@ export async function sendDrPlaintextCore(params = {}) {
         dr: preSnapshot
           ? {
             snapshotBefore: preSnapshot,
-            snapshotAfter: postSnapshot,
-            messageKeyB64
+            snapshotAfter: postSnapshot
           }
           : null,
         vault: vaultAtomicPayload,   // [ATOMIC-SEND]
@@ -2329,8 +2331,7 @@ export async function sendDrPlaintextCore(params = {}) {
           dr: repairPreSnapshot
             ? {
               snapshotBefore: repairPreSnapshot,
-              snapshotAfter: repairPostSnapshot,
-              messageKeyB64: repairMessageKeyB64
+              snapshotAfter: repairPostSnapshot
             }
             : null
         });
@@ -3125,8 +3126,11 @@ export async function sendDrMediaCore(params = {}) {
   let vaultAtomicPayload = null;
   try {
     const { wrapped, context } = await MessageKeyVault.preparePayload({ ...vaultParams, drStateSnapshot });
+    // [HIGH-03 FIX] Exclude messageKeyB64 from network payload — raw message key
+    // must never leave the browser. Only the MK-wrapped envelope (wrapped_mk) is sent.
+    const { messageKeyB64: _mkLocal, drStateSnapshot: _snap, ...vaultParamsSafe } = vaultParams;
     vaultAtomicPayload = {
-      ...vaultParams,
+      ...vaultParamsSafe,
       wrapped_mk: wrapped,
       wrap_context: context,
       dr_state: drStateSnapshot
@@ -3169,8 +3173,7 @@ export async function sendDrMediaCore(params = {}) {
     dr: preSnapshot
       ? {
         snapshotBefore: preSnapshot,
-        snapshotAfter: postSnapshot,
-        messageKeyB64
+        snapshotAfter: postSnapshot
       }
       : null,
     vault: vaultAtomicPayload,   // [ATOMIC-SEND]
@@ -3357,8 +3360,7 @@ export async function sendDrMediaCore(params = {}) {
         dr: repairPreSnapshot
           ? {
             snapshotBefore: repairPreSnapshot,
-            snapshotAfter: repairPostSnapshot,
-            messageKeyB64: repairMessageKeyB64
+            snapshotAfter: repairPostSnapshot
           }
           : null
       });

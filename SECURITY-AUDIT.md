@@ -20,7 +20,7 @@
 | ✅ | CRIT-04 | Dependency Vulnerabilities (27 total) | 2026-02-21 | `npm audit fix` 升級 AWS SDK / qs / lodash / systeminformation；`elliptic` 遷移至 `@noble/curves`（移除依賴）。剩餘 pm2 ReDoS (low, 無修正) 接受風險 |
 | ✅ | HIGH-01 | AAD Omission Fallback in AES-GCM | 2026-02-20 | Phase 1.4：AAD 為 null 時改為 throw，不再 fallback。commit `787954e` |
 | ⬜ | HIGH-02 | Plaintext Preview via WebSocket | — | 待移除 WS 通知中的 `preview` 欄位 |
-| ⬜ | HIGH-03 | Message Key in Encrypted Packet Output | — | 待審計 `message_key_b64` 使用處 |
+| ✅ | HIGH-03 | Message Key in Encrypted Packet Output | 2026-02-21 | 審計完成：`vaultAtomicPayload` 透過 `...vaultParams` 展開洩漏原始金鑰至 atomicSend。已從 text/media 兩條路徑排除，outbox `dr` 屬性同步清理 |
 | ⬜ | HIGH-04 | Source Maps in Production Build | — | 待設 `sourcemap: false` |
 | ⬜ | HIGH-05 | Missing CSP | — | 待加入 security headers |
 | ⬜ | HIGH-06 | Unrestricted Media Upload Content-Type | — | 待加入 allowlist |
@@ -254,10 +254,11 @@ mgr.notifySecureMessage({
 
 ---
 
-### HIGH-03: 訊息金鑰被包含在加密封包輸出中
+### HIGH-03: 訊息金鑰被包含在加密封包輸出中 ✅ 已修正
 
-**檔案：** `web/src/shared/crypto/dr.js:436`
+**檔案：** `web/src/shared/crypto/dr.js:447`, `web/src/app/features/dr-session.js`
 **嚴重程度：** HIGH
+**修正日期：** 2026-02-21
 
 ```javascript
 return {
@@ -271,7 +272,14 @@ return {
 
 **影響：** `drEncryptText()` 函式在回傳物件中同時包含了訊息金鑰（`mk`）與密文。若任何程式碼路徑序列化或傳輸了完整的回傳物件（例如用於除錯、日誌記錄或網路傳輸），則用於加密訊息的對稱金鑰將與密文一同暴露，使加密完全失去意義。
 
-**建議：** 審查所有呼叫 `drEncryptText()` 的程式碼，確保 `message_key_b64` 在傳輸前被移除。考慮將其從回傳值中完全刪除，若金鑰備份（vault）有需要，僅透過單獨的管道提供。
+**審計結論：** `drEncryptText()` 回傳 `message_key_b64` 本身是必要的（vault 需要用它進行 MK 包裝），但 `dr-session.js` 在構建 `vaultAtomicPayload` 時透過 `...vaultParams` 展開，將原始金鑰洩漏至 `atomicSend` 的 HTTP request body。雖然伺服器端不讀取此欄位，但原始金鑰以明文形式出現在網路傳輸中。
+
+**已修正：**
+1. **text send 路徑** (`dr-session.js:2049-2055`)：構建 `vaultAtomicPayload` 時以解構排除 `messageKeyB64`
+2. **media send 路徑** (`dr-session.js:3129-3135`)：同上
+3. **outbox `dr` 屬性** (text: `~2095`, media: `~3175`, text-repair: `~2333`, media-repair: `~3365`)：移除 `messageKeyB64` 避免不必要的本地持久化
+4. `putMessageKey` 路徑已確認安全 — 內部僅送出 `wrapped_mk`（AES-256-GCM with HKDF(MK)），不含原始金鑰
+5. `recordDrMessageHistory` 路徑已確認安全 — 純記憶體內操作，歷史記錄透過 contact-secrets 備份時已加密
 
 ---
 
