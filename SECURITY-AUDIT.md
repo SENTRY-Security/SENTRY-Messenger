@@ -33,7 +33,7 @@
 | ✅ | MED-05 | Remote Console Debug Endpoint | 2026-02-21 | 端點已不再使用，移除 `debug.routes.js` 及路由掛載 |
 | ✅ | MED-06 | No SRI for CDN Imports | 2026-02-21 | 所有 CDN 匯入皆有 SRI：`importWithSRI()` + `fetchBlobWithSRI()`（PDF.js worker）+ `<script>`/`<link>` integrity 屬性 |
 | ✅ | MED-07 | `trust proxy` Set to `loopback` | 2026-02-21 | 改為透過 `TRUST_PROXY` 環境變數配置，預設 `loopback`，可隨部署架構調整 |
-| ⬜ | MED-08 | Skipped Message Keys Limit DoS | — | — |
+| ✅ | MED-08 | Skipped Message Keys Limit DoS | 2026-02-21 | `SKIPPED_KEYS_PER_CHAIN_MAX` 從 100 降至 5，符合單調接收架構 |
 | ⬜ | MED-09 | CI/CD Pipeline Disabled | — | — |
 | ✅ | MED-10 | `getStatus` Leaks Environment Info | 2026-02-21 | 移除 `getStatus` 及 `/status` 路由，`/health` 已足夠 |
 | ⬜ | MED-11 | No `.env.example` Template | — | — |
@@ -430,15 +430,13 @@ return {
 
 ---
 
-### MED-08: 跳過訊息金鑰的上限可能導致 DoS
+### MED-08: 跳過訊息金鑰的上限可能導致 DoS ✅ 已修正
 
 **檔案：** `web/src/shared/crypto/dr.js:22`
 
-```javascript
-const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
-```
+**修正日期：** 2026-02-21
 
-攻擊者可發送具有高計數器值的訊息，迫使接收者針對每條鏈衍生並儲存多達 100 個跳過的訊息金鑰，造成計算與記憶體開銷。
+**已修正：** `SKIPPED_KEYS_PER_CHAIN_MAX` 從 `100` 降至 `5`。在單調接收架構下，`pn` 應始終等於 `Nr`（零跳過金鑰），任何 gap > 0 已屬異常。保留極小容差（5）以應對 CounterTooLow repair 等邊緣情況，同時有效防止透過大量鏈金鑰衍生進行的 DoS 攻擊。
 
 ---
 

@@ -19,7 +19,10 @@ import { toU8Strict } from '../utils/u8-strict.js';
 import { DEBUG } from '../../app/ui/mobile/debug-flags.js';
 
 const encoder = new TextEncoder();
-const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
+// Under the monotonic receiver architecture pn should always equal Nr at
+// ratchet boundaries (zero skipped keys). A small tolerance covers edge cases
+// (e.g. CounterTooLow repair) without allowing DoS via chain key grinding.
+const SKIPPED_KEYS_PER_CHAIN_MAX = 5;
 const PACKET_HOLDER_CACHE_MAX = 2000;
 const packetHolderCache = new Map();
 const drDebugLogsEnabled = DEBUG.drVerbose === true;
