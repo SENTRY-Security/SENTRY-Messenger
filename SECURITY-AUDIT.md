@@ -30,7 +30,7 @@
 | ⬜ | MED-02 | Rate Limiting Disabled in Non-Prod | — | — |
 | ⬜ | MED-03 | WebSocket Token Custom Implementation | — | — |
 | ⬜ | MED-04 | NTAG424 KDF Hardcoded Salt | — | — |
-| ⬜ | MED-05 | Remote Console Debug Endpoint | — | — |
+| ✅ | MED-05 | Remote Console Debug Endpoint | 2026-02-21 | 端點已不再使用，移除 `debug.routes.js` 及路由掛載 |
 | ⬜ | MED-06 | No SRI for CDN Imports | — | — |
 | ⬜ | MED-07 | `trust proxy` Set to `loopback` | — | — |
 | ⬜ | MED-08 | Skipped Message Keys Limit DoS | — | — |
@@ -392,13 +392,12 @@ const enableRateLimit = process.env.NODE_ENV === 'production' && process.env.DIS
 
 ---
 
-### MED-05: 遠端主控台除錯端點將任意客戶端資料寫入磁碟
+### MED-05: 遠端主控台除錯端點將任意客戶端資料寫入磁碟 ✅ 已修正
 
-**檔案：** `src/routes/v1/debug.routes.js:88-104`
+**檔案：** `src/routes/v1/debug.routes.js`（已刪除）
+**修正日期：** 2026-02-21
 
-雖然預設為停用且需要帳號驗證，但啟用後 `/debug/console` 端點會透過 `fs.appendFile` 將客戶端提供的資料直接寫入檔案系統。`entries` 陣列接受任意的 `args: z.array(z.any())`，可被利用於：
-- 磁碟耗盡攻擊
-- 使用精心構造的酬載進行日誌注入
+**已修正：** 端點已不再使用（前端無任何引用）。完整移除 `debug.routes.js` 檔案及 `routes/index.js` 中的路由掛載。
 
 ---
 

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import v1msg from './v1/messages.routes.js';
 import v1media from './v1/media.routes.js';
 import v1calls from './v1/calls.routes.js';
-import v1debug from './v1/debug.routes.js';
+
 import v1contactSecrets from './v1/contact-secrets.routes.js';
 import v1groups from './v1/groups.routes.js';
 import v1subscription from './v1/subscription.routes.js';
@@ -30,7 +30,7 @@ r.use('/v1', v1media);
 r.use('/v1', v1calls);
 r.use('/v1', v1contactSecrets);
 r.use('/v1', v1contacts);
-r.use('/v1', v1debug);
+
 r.use('/v1', v1groups);
 r.use('/v1', v1subscription);
 r.use('/v1', v1admin);
