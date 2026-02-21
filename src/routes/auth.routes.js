@@ -6,7 +6,7 @@ import { deriveSdmFileReadKey, keyToHex } from '../lib/ntag424-kdf.js';
 import { signHmac } from '../utils/hmac.js';
 import { logger } from '../utils/logger.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE2, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
-import elliptic from 'elliptic';
+import { p256 } from '@noble/curves/p256';
 
 const r = Router();
 
@@ -87,15 +87,14 @@ async function initOpaqueIfReady() {
         return opaqueServer;
       }
     }
-    // Use elliptic P-256 to build a keypair (compressed pub)
-    const { ec: ECClass } = elliptic;
-    const ec = new ECClass('p256');
-    const kp2 = ec.genKeyPair();
-    const privArr = kp2.getPrivate().toArray('be', 32);
-    const pubArr = kp2.getPublic(true, 'array'); // compressed 33 bytes
+    // Use @noble/curves P-256 to build a keypair (compressed pub)
+    const privKey = p256.utils.randomPrivateKey();           // Uint8Array(32)
+    const pubKey  = p256.getPublicKey(privKey, true);        // compressed 33 bytes
+    const privArr = Array.from(privKey);
+    const pubArr  = Array.from(pubKey);
     const fallback2 = { private_key: Uint8Array.from(privArr), public_key: Uint8Array.from(pubArr) };
     if (tryInit(fallback2)) {
-      console.warn('[opaque.init] using ephemeral AKE keypair (fallback-elliptic)');
+      console.warn('[opaque.init] using ephemeral AKE keypair (fallback-noble)');
       return opaqueServer;
     }
   } catch (e) {

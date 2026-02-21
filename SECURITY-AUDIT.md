@@ -17,7 +17,7 @@
 | ✅ | CRIT-01 | Double Ratchet Forward Secrecy Disabled | 2026-02-20 | Phase 0–1 完整啟用 DH ratchet。`dr.js:323-330` 取消註解 + 14 項 counter 管理重構。commit `7282392`, `787954e` |
 | ⬜ | CRIT-02 | Debug Flags Hardcoded to `true` | — | 待將 `debug-flags.js` 所有 flag 設為 `false` |
 | ⬜ | CRIT-03 | Unauthenticated OPAQUE Debug Endpoint | — | 待移除或加入 admin HMAC 認證 |
-| ⬜ | CRIT-04 | Dependency Vulnerabilities (27 total) | — | 待 `npm audit fix` + AWS SDK 升級 |
+| ✅ | CRIT-04 | Dependency Vulnerabilities (27 total) | 2026-02-21 | `npm audit fix` 升級 AWS SDK / qs / lodash / systeminformation；`elliptic` 遷移至 `@noble/curves`（移除依賴）。剩餘 pm2 ReDoS (low, 無修正) 接受風險 |
 | ✅ | HIGH-01 | AAD Omission Fallback in AES-GCM | 2026-02-20 | Phase 1.4：AAD 為 null 時改為 throw，不再 fallback。commit `787954e` |
 | ⬜ | HIGH-02 | Plaintext Preview via WebSocket | — | 待移除 WS 通知中的 `preview` 欄位 |
 | ⬜ | HIGH-03 | Message Key in Encrypted Packet Output | — | 待審計 `message_key_b64` 使用處 |
@@ -184,25 +184,28 @@ r.get('/auth/opaque/debug', (req, res) => {
 
 ---
 
-### CRIT-04: 相依套件漏洞 — 共 27 個（1 個 CRITICAL、22 個 HIGH）
+### CRIT-04: 相依套件漏洞 — 共 27 個（1 個 CRITICAL、22 個 HIGH） ✅ 已修正
 
 **來源：** `npm audit` 輸出
 **嚴重程度：** CRITICAL（綜合評估）
+**修正日期：** 2026-02-21
 
-| 套件 | 嚴重程度 | 問題 | 是否有修正 |
-|------|----------|------|------------|
-| fast-xml-parser (經由 @aws-sdk) | CRITICAL | RangeError DoS、Entity expansion 繞過、DOCTYPE 中的 Regex 注入 | 更新 AWS SDK |
-| elliptic | HIGH | 具風險的 ECDLP 實作 (GHSA-848j-6mx2-7j84) | 遷移至 @noble/curves |
-| systeminformation | HIGH | 透過未清理的輸入進行命令注入 | npm audit fix |
-| pm2 | HIGH | 正規表達式 DoS | 無可用修正 |
-| qs | HIGH | arrayLimit 繞過 (DoS) | npm audit fix |
-| lodash | MODERATE | `_.unset`/`_.omit` 中的原型污染 | npm audit fix |
+| 套件 | 嚴重程度 | 問題 | 修正狀態 |
+|------|----------|------|----------|
+| fast-xml-parser (經由 @aws-sdk) | CRITICAL | RangeError DoS、Entity expansion 繞過、DOCTYPE 中的 Regex 注入 | ✅ `npm audit fix` 升級 AWS SDK |
+| elliptic | HIGH | 具風險的 ECDLP 實作 (GHSA-848j-6mx2-7j84) | ✅ 遷移至 `@noble/curves/p256`，移除 `elliptic` 依賴 |
+| systeminformation | HIGH | 透過未清理的輸入進行命令注入 | ✅ `npm audit fix` + override 升級 |
+| pm2 | LOW | 正規表達式 DoS | ⚠️ 無可用修正。風險接受：pm2 為 process manager，不處理使用者輸入 |
+| qs | HIGH | arrayLimit 繞過 (DoS) | ✅ `npm audit fix` |
+| lodash | MODERATE | `_.unset`/`_.omit` 中的原型污染 | ✅ `npm audit fix` |
 
-**建議：**
-1. `npm install @aws-sdk/client-s3@latest @aws-sdk/s3-presigned-post@latest @aws-sdk/s3-request-presigner@latest`
-2. `npm audit fix`
-3. 將 `auth.routes.js` 中的 `elliptic` 使用遷移至 `@noble/curves`（已是現有相依套件）
-4. 評估 pm2 替代方案，或以文件記錄方式接受風險
+**修正後 `npm audit` 結果：** 1 vulnerability (pm2, low severity, no fix available)
+
+**已執行的修正：**
+1. `npm audit fix` — 升級 `@aws-sdk/*`、`qs`、`lodash`、`systeminformation` 等 80 個套件
+2. `auth.routes.js` 中的 `elliptic` P-256 使用遷移至 `@noble/curves/p256`（`p256.utils.randomPrivateKey()` + `p256.getPublicKey()`）
+3. 從 `package.json` 移除 `elliptic` 依賴，連帶移除 `bn.js` 漏洞
+4. pm2 ReDoS：接受風險（process manager 不直接處理外部使用者輸入）
 
 ---
 
