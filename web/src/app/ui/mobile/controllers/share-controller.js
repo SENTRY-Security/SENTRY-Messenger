@@ -41,8 +41,8 @@ import { DEBUG } from '../debug-flags.js';
 
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
 // 手動標記目前 QR/聯絡人分享流程的版本，用來追蹤是否為最新部署
-const QR_BUILD_VERSION = 'qr-20250308-01';
-const INVITE_PROTOCOL_VERSION = 3;
+const QR_BUILD_VERSION = 'qr-20260221-bin';
+const INVITE_PROTOCOL_VERSION = 4;
 const INVITE_QR_TYPE = 'invite_dropbox';
 const INVITE_STATUS_POLL_MS = 12000;
 const CONTACT_INIT_VERSION = 1;
