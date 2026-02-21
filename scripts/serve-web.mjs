@@ -11,7 +11,11 @@ const ROOT = path.resolve(process.cwd(), 'web/src');
 const app = express();
 
 function rewriteApiOrigin(html) {
-  return html.replace(/window\.API_ORIGIN\s*=\s*'[^']*';/g, `window.API_ORIGIN = '${ORIGIN}';`);
+  // Rewrite <meta name="api-origin" content="..."> for external boot scripts
+  return html.replace(
+    /(<meta\s+name="api-origin"\s+content=")[^"]*(")/gi,
+    `$1${ORIGIN}$2`
+  );
 }
 
 function relaxCSP(html) {
@@ -39,6 +43,7 @@ async function sendRewritten(res, fileRel) {
 app.get('/__healthz', (req, res) => res.status(200).send('ok'));
 app.get('/pages/login.html', (req, res) => sendRewritten(res, 'pages/login.html').catch((e) => res.status(500).send(e?.message || 'err')));
 app.get('/pages/app.html', (req, res) => sendRewritten(res, 'pages/app.html').catch((e) => res.status(500).send(e?.message || 'err')));
+app.get('/pages/debug.html', (req, res) => sendRewritten(res, 'pages/debug.html').catch((e) => res.status(500).send(e?.message || 'err')));
 app.use(express.static(ROOT));
 
 app.listen(PORT, '0.0.0.0', () => {
