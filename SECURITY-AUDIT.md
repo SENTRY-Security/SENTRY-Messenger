@@ -35,7 +35,7 @@
 | ⬜ | MED-07 | `trust proxy` Set to `loopback` | — | — |
 | ⬜ | MED-08 | Skipped Message Keys Limit DoS | — | — |
 | ⬜ | MED-09 | CI/CD Pipeline Disabled | — | — |
-| ⬜ | MED-10 | `getStatus` Leaks Environment Info | — | — |
+| ✅ | MED-10 | `getStatus` Leaks Environment Info | 2026-02-21 | 移除 `getStatus` 及 `/status` 路由，`/health` 已足夠 |
 | ⬜ | MED-11 | No `.env.example` Template | — | — |
 
 ### Appendix B 工作項目修正狀態
@@ -449,21 +449,12 @@ CI/CD 工作流程已停用（檔案以 `.disabled` 後綴重新命名）。沒�
 
 ---
 
-### MED-10: `getStatus` 端點洩漏環境資訊
+### MED-10: `getStatus` 端點洩漏環境資訊 ✅ 已修正
 
-**檔案：** `src/controllers/messages.controller.js:31-36`
+**檔案：** `src/controllers/messages.controller.js`（已移除）、`src/routes/index.js`
+**修正日期：** 2026-02-21
 
-```javascript
-export const getStatus = (req, res) => {
-  res.json({
-    name: process.env.SERVICE_NAME,
-    version: process.env.SERVICE_VERSION,
-    env: process.env.NODE_ENV
-  });
-};
-```
-
-向未經驗證的請求暴露服務名稱、版本和環境資訊，可被用於偵察。
+**已修正：** 移除 `getStatus` 函式及 `GET /api/status` 路由。`/api/health` 已提供存活檢查（`{ ok: true }`），不需要額外的 status 端點。
 
 ---
 

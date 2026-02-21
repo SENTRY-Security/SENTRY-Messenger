@@ -16,13 +16,12 @@ import keys from './keys.routes.js';
 import devkeys from './devkeys.routes.js';
 import friends from './friends.routes.js';
 import wsToken from './ws-token.routes.js';
-import { getHealth, getStatus } from '../controllers/messages.controller.js';
+import { getHealth } from '../controllers/messages.controller.js';
 
 const r = Router();
 
-// health & status
+// health
 r.get('/health', getHealth);
-r.get('/status', getStatus);
 
 // v1 routes
 r.use('/v1', v1msg);

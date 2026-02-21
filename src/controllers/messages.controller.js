@@ -29,13 +29,7 @@ export const getHealth = (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 };
 
-export const getStatus = (req, res) => {
-  res.json({
-    name: process.env.SERVICE_NAME,
-    version: process.env.SERVICE_VERSION,
-    env: process.env.NODE_ENV
-  });
-};
+
 
 const DATA_API = process.env.DATA_API_URL;     // e.g. https://message-data.<account>.workers.dev
 const HMAC_SECRET = process.env.DATA_API_HMAC; // must match the Worker secret HMAC_SECRET
