@@ -4498,8 +4498,7 @@ try {
       const peer = job?.peerAccountDigest || null;
       const peerDeviceId = job?.peerDeviceId || null;
       // [SECURITY FIX HIGH-07] Decrypt DR snapshots sealed in IndexedDB
-      const rawDr = job?.dr || {};
-      const dr = (rawDr.aead === 'aes-256-gcm' ? await unsealOutboxDr(rawDr) : rawDr) || {};
+      const dr = (await unsealOutboxDr(job?.dr)) || {};
       const messageTs = Number(job?.createdAt);
       const nsBefore = Number.isFinite(dr?.snapshotBefore?.Ns) ? Number(dr.snapshotBefore.Ns) : null;
       const nsAfter = Number.isFinite(dr?.snapshotAfter?.Ns) ? Number(dr.snapshotAfter.Ns) : null;

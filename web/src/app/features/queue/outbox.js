@@ -241,15 +241,10 @@ async function sealDrField(dr) {
 
 /**
  * [SECURITY FIX HIGH-07] Decrypt DR snapshot payload read from IndexedDB.
- * Handles backward compatibility: if the field is already a plain object
- * (pre-migration jobs), returns it as-is.
+ * Only accepts encrypted envelopes — plaintext DR objects are rejected.
  */
 export async function unsealOutboxDr(sealedDr) {
-  if (!sealedDr) return null;
-  // Backward compat: plain (unencrypted) DR objects have snapshotBefore/After
-  if (sealedDr.snapshotBefore !== undefined || sealedDr.snapshotAfter !== undefined) return sealedDr;
-  // Encrypted envelope
-  if (sealedDr.aead !== 'aes-256-gcm') return null;
+  if (!sealedDr || sealedDr.aead !== 'aes-256-gcm') return null;
   const mk = getMkRaw();
   if (!mk) return null;
   try {
