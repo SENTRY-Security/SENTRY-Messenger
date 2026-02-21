@@ -5,6 +5,7 @@ import { verifySdmCmacFromEnvWithFallback, computeSdmCmac } from '../lib/ntag424
 import { deriveSdmFileReadKey, keyToHex } from '../lib/ntag424-kdf.js';
 import { signHmac } from '../utils/hmac.js';
 import { logger } from '../utils/logger.js';
+import { adminIpGuard } from '../middlewares/admin-ip-guard.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE2, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 import { p256 } from '@noble/curves/p256';
 
@@ -601,8 +602,8 @@ r.post('/auth/opaque/login-finish', async (req, res) => {
   }
 });
 
-// DEBUG: OPAQUE config introspection (non-sensitive)
-r.get('/auth/opaque/debug', (req, res) => {
+// DEBUG: OPAQUE config introspection — restricted to ADMIN_IP_ALLOW whitelist
+r.get('/auth/opaque/debug', adminIpGuard, (req, res) => {
   try {
     const seedHex = String(OPAQUE_SEED_HEX || '');
     const privB64 = String(OPAQUE_AKE_PRIV_B64 || '');

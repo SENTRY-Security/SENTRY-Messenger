@@ -16,7 +16,7 @@
 |:----:|---------|------|:--------:|----------|
 | ✅ | CRIT-01 | Double Ratchet Forward Secrecy Disabled | 2026-02-20 | Phase 0–1 完整啟用 DH ratchet。`dr.js:323-330` 取消註解 + 14 項 counter 管理重構。commit `7282392`, `787954e` |
 | ⬜ | CRIT-02 | Debug Flags Hardcoded to `true` | — | 待將 `debug-flags.js` 所有 flag 設為 `false` |
-| ⬜ | CRIT-03 | Unauthenticated OPAQUE Debug Endpoint | — | 待移除或加入 admin HMAC 認證 |
+| ✅ | CRIT-03 | Unauthenticated OPAQUE Debug Endpoint | 2026-02-21 | 新增 `adminIpGuard` middleware（CIDR 白名單），套用至 `/auth/opaque/debug`；`ADMIN_IP_ALLOW` 未設定時一律 403 |
 | ✅ | CRIT-04 | Dependency Vulnerabilities (27 total) | 2026-02-21 | `npm audit fix` 升級 AWS SDK / qs / lodash / systeminformation；`elliptic` 遷移至 `@noble/curves`（移除依賴）。剩餘 pm2 ReDoS (low, 無修正) 接受風險 |
 | ✅ | HIGH-01 | AAD Omission Fallback in AES-GCM | 2026-02-20 | Phase 1.4：AAD 為 null 時改為 throw，不再 fallback。commit `787954e` |
 | ✅ | HIGH-02 | Plaintext Preview via WebSocket | 2026-02-21 | 從所有呼叫點移除 `preview` 參數，從 `notifySecureMessage` 簽名及 WS broadcast payload 中完全刪除 |
@@ -152,35 +152,24 @@ export const DEBUG = {
 
 ---
 
-### CRIT-03: 未經身分驗證的 OPAQUE Debug 端點
+### CRIT-03: 未經身分驗證的 OPAQUE Debug 端點 ✅ 已修正
 
 **檔案：** `src/routes/auth.routes.js:606-624`
 **嚴重程度：** CRITICAL
 **CVSS 估計：** 7.8
+**修正日期：** 2026-02-21
 
-```javascript
-r.get('/auth/opaque/debug', (req, res) => {
-  const out = {
-    hasSeed: /^[0-9A-Fa-f]{64}$/.test(seedHex),
-    hasPriv: !!privB64,
-    hasPub: !!pubB64,
-    seedLen: seedHex.length,
-    privLen: Buffer.from(privB64 || '', 'base64').length || 0,
-    pubLen: Buffer.from(pubB64 || '', 'base64').length || 0,
-    serverId: OPAQUE_SERVER_ID || null
-  };
-  return res.json(out);
-});
-```
+**原始問題：** `/auth/opaque/debug` 端點無需任何身分驗證即可公開存取，揭露 OPAQUE 密碼學材料配置狀態、金鑰長度及伺服器識別碼。
 
-**影響：** 此端點**無需任何身分驗證即可公開存取**。它揭露了：
-- OPAQUE 密碼學材料（seed、私鑰、公鑰）是否已配置
-- 所有金鑰材料的確切位元組長度
-- OPAQUE 伺服器識別碼字串
+**已修正：** 新增 `adminIpGuard` middleware（`src/middlewares/admin-ip-guard.js`），基於 `ADMIN_IP_ALLOW` 環境變數的 IP/CIDR 白名單進行存取控制：
 
-此資訊能夠促成針對性攻擊：攻擊者可判斷使用的確切金鑰類型/曲線、確認伺服器正在執行 OPAQUE，並利用伺服器 ID 進行協定層級的攻擊。金鑰長度的揭露縮小了暴力破解的搜尋空間。
+1. **白名單機制：** `ADMIN_IP_ALLOW` 支援逗號分隔的 IPv4/IPv6 地址及 CIDR 網段（例如 `10.0.0.0/8,::1`）
+2. **預設拒絕：** 未設定 `ADMIN_IP_ALLOW` 時，所有 admin 端點一律回傳 403
+3. **CIDR 比對：** 支援任意前綴長度、IPv4-mapped IPv6（`::ffff:x.x.x.x`）正規化
+4. **日誌記錄：** 被阻擋的請求記錄 IP 和路徑至 warn level
+5. **套用方式：** `r.get('/auth/opaque/debug', adminIpGuard, handler)` — 作為 route-level middleware
 
-**建議：** 完全移除此端點，或透過管理員 HMAC 身分驗證（`verifyIncomingHmac`）加以保護。密碼學配置的 debug 內省功能絕不應公開存取。
+**部署須知：** 在 `.env` 中設定 `ADMIN_IP_ALLOW=127.0.0.1,::1`（僅允許本地存取）或包含管理員 VPN 網段。
 
 ---
 
