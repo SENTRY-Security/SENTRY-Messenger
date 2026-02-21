@@ -34,7 +34,7 @@
 | ✅ | MED-06 | No SRI for CDN Imports | 2026-02-21 | 所有 CDN 匯入皆有 SRI：`importWithSRI()` + `fetchBlobWithSRI()`（PDF.js worker）+ `<script>`/`<link>` integrity 屬性 |
 | ✅ | MED-07 | `trust proxy` Set to `loopback` | 2026-02-21 | 改為透過 `TRUST_PROXY` 環境變數配置，預設 `loopback`，可隨部署架構調整 |
 | ✅ | MED-08 | Skipped Message Keys Limit DoS | 2026-02-21 | `SKIPPED_KEYS_PER_CHAIN_MAX` 從 100 降至 5，符合單調接收架構 |
-| ⬜ | MED-09 | CI/CD Pipeline Disabled | — | — |
+| ✅ | MED-09 | CI/CD Pipeline Disabled | 2026-02-21 | 刪除過時的 `e2e.yml.disabled`，消除殘留配置 |
 | ✅ | MED-10 | `getStatus` Leaks Environment Info | 2026-02-21 | 移除 `getStatus` 及 `/status` 路由，`/health` 已足夠 |
 | ⬜ | MED-11 | No `.env.example` Template | — | — |
 
@@ -440,11 +440,12 @@ return {
 
 ---
 
-### MED-09: CI/CD 流水線已停用
+### MED-09: CI/CD 流水線已停用 ✅ 已修正
 
-**檔案：** `.github/workflows/e2e.yml.disabled`
+**檔案：** `.github/workflows/e2e.yml.disabled`（已刪除）
+**修正日期：** 2026-02-21
 
-CI/CD 工作流程已停用（檔案以 `.disabled` 後綴重新命名）。沒有自動化安全檢查（npm audit、SAST、程式碼檢查）在 Pull Request 或推送至主分支時執行。
+**已修正：** 過時的 `e2e.yml.disabled` 已刪除，消除殘留配置。未來如需 CI/CD 應從頭建立新的 workflow。
 
 ---
 
