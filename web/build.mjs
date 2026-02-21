@@ -109,7 +109,7 @@ if (cssResult.metafile) {
 }
 
 // --- Copy static assets ---
-const staticDirs = ['pages', 'assets', 'libs', 'shared'];
+const staticDirs = ['pages', 'assets', 'libs', 'shared', 'app/boot'];
 for (const dir of staticDirs) {
   cpSync(resolve(src, dir), resolve(dist, dir), { recursive: true });
 }
@@ -197,68 +197,69 @@ try {
   console.warn('Warning: could not inject SRI into app.html:', err.message);
 }
 
-// login.html: inject integrity for login-ui.js loader
+// login-boot.js: inject SRI for login-ui.js loader
+const loginBootPath = resolve(dist, 'app/boot/login-boot.js');
 const loginHtmlPath = resolve(dist, 'pages/login.html');
 try {
-  let html = readFileSync(loginHtmlPath, 'utf8');
+  let js = readFileSync(loginBootPath, 'utf8');
   const jsIntegrity = bundledSRI['/app/ui/login-ui.js'];
   if (jsIntegrity) {
-    // Insert var before the IIFE (not inside it)
-    html = html.replace(
+    js = js.replace(
       '(function loadLoginModule(){',
-      `var __SRI_LOGIN_JS__ = "${jsIntegrity}";\n      (function loadLoginModule(){`
+      `var __SRI_LOGIN_JS__ = "${jsIntegrity}";\n(function loadLoginModule(){`
     );
-    // Patch script loader to add integrity
-    html = html.replace(
-      "script.src = `/app/ui/login-ui.js?v=${encodeURIComponent(stamp)}`;",
-      "script.src = `/app/ui/login-ui.js?v=${encodeURIComponent(stamp)}`;\n        if (typeof __SRI_LOGIN_JS__ === 'string') { script.integrity = __SRI_LOGIN_JS__; script.crossOrigin = 'anonymous'; }"
+    js = js.replace(
+      "script.src = '/app/ui/login-ui.js?v=' + encodeURIComponent(stamp);",
+      "script.src = '/app/ui/login-ui.js?v=' + encodeURIComponent(stamp);\n    if (typeof __SRI_LOGIN_JS__ === 'string') { script.integrity = __SRI_LOGIN_JS__; script.crossOrigin = 'anonymous'; }"
     );
   }
-  writeFileSync(loginHtmlPath, html);
-  console.log('SRI injected into login.html');
+  writeFileSync(loginBootPath, js);
+  console.log('SRI injected into login-boot.js');
 } catch (err) {
-  console.warn('Warning: could not inject SRI into login.html:', err.message);
+  console.warn('Warning: could not inject SRI into login-boot.js:', err.message);
 }
 
-// debug.html: inject integrity for debug-page.js loader
+// debug-boot.js: inject SRI for debug-page.js loader
+const debugBootPath = resolve(dist, 'app/boot/debug-boot.js');
 const debugHtmlPath = resolve(dist, 'pages/debug.html');
 try {
-  let html = readFileSync(debugHtmlPath, 'utf8');
+  let js = readFileSync(debugBootPath, 'utf8');
   const jsIntegrity = bundledSRI['/app/ui/debug-page.js'];
   if (jsIntegrity) {
-    html = html.replace(
+    js = js.replace(
       '(function loadDebugModule(){',
-      `var __SRI_DEBUG_JS__ = "${jsIntegrity}";\n      (function loadDebugModule(){`
+      `var __SRI_DEBUG_JS__ = "${jsIntegrity}";\n(function loadDebugModule(){`
     );
-    html = html.replace(
-      "script.src = `/app/ui/debug-page.js?v=${encodeURIComponent(stamp)}`;",
-      "script.src = `/app/ui/debug-page.js?v=${encodeURIComponent(stamp)}`;\n        if (typeof __SRI_DEBUG_JS__ === 'string') { script.integrity = __SRI_DEBUG_JS__; script.crossOrigin = 'anonymous'; }"
+    js = js.replace(
+      "script.src = '/app/ui/debug-page.js?v=' + encodeURIComponent(stamp);",
+      "script.src = '/app/ui/debug-page.js?v=' + encodeURIComponent(stamp);\n    if (typeof __SRI_DEBUG_JS__ === 'string') { script.integrity = __SRI_DEBUG_JS__; script.crossOrigin = 'anonymous'; }"
     );
   }
-  writeFileSync(debugHtmlPath, html);
-  console.log('SRI injected into debug.html');
+  writeFileSync(debugBootPath, js);
+  console.log('SRI injected into debug-boot.js');
 } catch (err) {
-  console.warn('Warning: could not inject SRI into debug.html:', err.message);
+  console.warn('Warning: could not inject SRI into debug-boot.js:', err.message);
 }
 
-// app.html: inject integrity for app-mobile.js loader
+// app-boot.js: inject SRI for app-mobile.js loader
+const appBootPath = resolve(dist, 'app/boot/app-boot.js');
 try {
-  let html = readFileSync(appHtmlPath, 'utf8');
+  let js = readFileSync(appBootPath, 'utf8');
   const jsIntegrity = bundledSRI['/app/ui/app-mobile.js'];
   if (jsIntegrity) {
-    html = html.replace(
+    js = js.replace(
       '(function loadAppModule() {',
-      `var __SRI_APP_JS__ = "${jsIntegrity}";\n    (function loadAppModule() {`
+      `var __SRI_APP_JS__ = "${jsIntegrity}";\n(function loadAppModule() {`
     );
-    html = html.replace(
+    js = js.replace(
       "script.src = versionedSrc;",
-      "script.src = versionedSrc;\n      if (typeof __SRI_APP_JS__ === 'string') { script.integrity = __SRI_APP_JS__; script.crossOrigin = 'anonymous'; }"
+      "script.src = versionedSrc;\n    if (typeof __SRI_APP_JS__ === 'string') { script.integrity = __SRI_APP_JS__; script.crossOrigin = 'anonymous'; }"
     );
   }
-  writeFileSync(appHtmlPath, html);
-  console.log('SRI injected into app.html (app-mobile.js)');
+  writeFileSync(appBootPath, js);
+  console.log('SRI injected into app-boot.js');
 } catch (err) {
-  console.warn('Warning: could not inject SRI into app.html for JS:', err.message);
+  console.warn('Warning: could not inject SRI into app-boot.js for JS:', err.message);
 }
 
 // ============================================================================
@@ -274,19 +275,23 @@ try {
   gitDirty = execSync('git status --porcelain', { encoding: 'utf8' }).trim().length > 0;
 } catch { /* not a git repo or git not available */ }
 
-// Inject commit hash into app.html and login.html for version display
+// Inject commit hash into boot JS files for version display
 // (must happen BEFORE manifest generation so hashes are final)
-for (const htmlPath of [appHtmlPath, loginHtmlPath]) {
+const bootFilesForCommit = [
+  resolve(dist, 'app/boot/app-head.js'),
+  resolve(dist, 'app/boot/login-head.js')
+];
+for (const bootPath of bootFilesForCommit) {
   try {
-    let html = readFileSync(htmlPath, 'utf8');
-    html = html.replace(
+    let js = readFileSync(bootPath, 'utf8');
+    js = js.replace(
       /window\.APP_BUILD_AT\s*=/,
-      `window.APP_BUILD_COMMIT = '${gitCommit.slice(0, 8)}';\n    window.APP_BUILD_AT =`
+      `window.APP_BUILD_COMMIT = '${gitCommit.slice(0, 8)}';\nwindow.APP_BUILD_AT =`
     );
-    writeFileSync(htmlPath, html);
+    writeFileSync(bootPath, js);
   } catch { /* optional */ }
 }
-console.log('Commit hash injected into HTML.');
+console.log('Commit hash injected into boot files.');
 
 /** Recursively collect all files in a directory */
 function walkDir(dir, base = dir) {
