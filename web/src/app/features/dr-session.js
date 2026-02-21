@@ -39,7 +39,8 @@ import {
   processOutboxJobNow,
   setOutboxHooks,
   startOutboxProcessor,
-  isConversationLocked
+  isConversationLocked,
+  unsealOutboxDr
 } from './queue/outbox.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log, logCapped } from '../core/log.js';
@@ -4496,7 +4497,9 @@ try {
 
       const peer = job?.peerAccountDigest || null;
       const peerDeviceId = job?.peerDeviceId || null;
-      const dr = job?.dr || {};
+      // [SECURITY FIX HIGH-07] Decrypt DR snapshots sealed in IndexedDB
+      const rawDr = job?.dr || {};
+      const dr = (rawDr.aead === 'aes-256-gcm' ? await unsealOutboxDr(rawDr) : rawDr) || {};
       const messageTs = Number(job?.createdAt);
       const nsBefore = Number.isFinite(dr?.snapshotBefore?.Ns) ? Number(dr.snapshotBefore.Ns) : null;
       const nsAfter = Number.isFinite(dr?.snapshotAfter?.Ns) ? Number(dr.snapshotAfter.Ns) : null;

@@ -425,10 +425,10 @@ function clearSessionHandoff() {
   }
 }
 
-function clearAllBrowserStorage(logoutMessage) {
+async function clearAllBrowserStorage(logoutMessage) {
   try {
     if (typeof caches !== 'undefined' && typeof caches.keys === 'function') {
-      caches.keys()
+      await caches.keys()
         .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
         .catch((err) => log({ secureLogoutCacheClearError: err?.message || err }));
     }
@@ -436,9 +436,11 @@ function clearAllBrowserStorage(logoutMessage) {
     log({ secureLogoutCacheClearError: err?.message || err });
   }
 
+  // [SECURITY FIX HIGH-07] Await IndexedDB deletion to ensure key material
+  // is wiped before the page navigates away on logout.
   try {
     if (typeof indexedDB !== 'undefined' && typeof indexedDB.databases === 'function') {
-      indexedDB.databases()
+      await indexedDB.databases()
         .then((dbs) => Promise.all(
           dbs
             .map((db) => db?.name)
@@ -624,7 +626,7 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
     log({ contactSecretsHandoffError: err?.message || err });
   }
   clearLocalEncryptedCaches();
-  clearAllBrowserStorage(safeMessage);
+  await clearAllBrowserStorage(safeMessage);
 
   try { resetAll(); } catch (err) {
     log({ secureLogoutResetError: err?.message || err });

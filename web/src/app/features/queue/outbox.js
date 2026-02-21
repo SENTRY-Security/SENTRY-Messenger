@@ -7,9 +7,12 @@ import {
   listOutboxRecords,
   putOutboxRecord
 } from './db.js';
-import { getAccountDigest } from '../../core/store.js'; // [FIX] Import
+import { getAccountDigest, getMkRaw } from '../../core/store.js'; // [FIX] Import
+import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../../crypto/aead.js';
 import { log, logCapped, logForensicsEvent } from '../../core/log.js';
 import { TRANSIENT_RETRY_MAX, TRANSIENT_RETRY_INTERVAL_MS } from './send-policy.js';
+
+const OUTBOX_DR_INFO_TAG = 'outbox-dr/v1';
 
 const TYPE_MESSAGE = 'message';
 const TYPE_RECEIPT = 'receipt';
@@ -220,6 +223,42 @@ export function setOutboxDebug(flag = true) {
   debug = !!flag;
 }
 
+/**
+ * [SECURITY FIX HIGH-07] Encrypt DR snapshot payload before IndexedDB storage.
+ * DR snapshots contain private keys (myRatchetPriv, rk, ckS, ckR) that must
+ * never be stored as plaintext in IndexedDB.
+ */
+async function sealDrField(dr) {
+  if (!dr) return null;
+  const mk = getMkRaw();
+  if (!mk) return null; // No MK → don't store plaintext; drop the field
+  try {
+    return await wrapWithMK_JSON(dr, mk, OUTBOX_DR_INFO_TAG);
+  } catch {
+    return null; // Encryption failed → drop rather than leak plaintext
+  }
+}
+
+/**
+ * [SECURITY FIX HIGH-07] Decrypt DR snapshot payload read from IndexedDB.
+ * Handles backward compatibility: if the field is already a plain object
+ * (pre-migration jobs), returns it as-is.
+ */
+export async function unsealOutboxDr(sealedDr) {
+  if (!sealedDr) return null;
+  // Backward compat: plain (unencrypted) DR objects have snapshotBefore/After
+  if (sealedDr.snapshotBefore !== undefined || sealedDr.snapshotAfter !== undefined) return sealedDr;
+  // Encrypted envelope
+  if (sealedDr.aead !== 'aes-256-gcm') return null;
+  const mk = getMkRaw();
+  if (!mk) return null;
+  try {
+    return await unwrapWithMK_JSON(sealedDr, mk);
+  } catch {
+    return null;
+  }
+}
+
 export async function enqueueOutboxJob(input = {}) {
   if (isReceiptJob(input)) {
     const jobId = typeof input?.jobId === 'string' ? input.jobId : null;
@@ -235,6 +274,10 @@ export async function enqueueOutboxJob(input = {}) {
     return { ok: false, skipped: true, error: 'receipt outbox disabled' };
   }
   const job = normalizeJob(input);
+  // [SECURITY FIX HIGH-07] Encrypt DR snapshots before writing to IndexedDB
+  if (job.dr) {
+    job.dr = await sealDrField(job.dr);
+  }
   await putOutboxRecord(job);
   logOutboxJobTrace({
     job,

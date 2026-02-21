@@ -24,7 +24,7 @@
 | ✅ | HIGH-04 | Source Maps in Production Build | 2026-02-21 | `build.mjs` 設定 `sourcemap: false` |
 | ✅ | HIGH-05 | Missing CSP | 2026-02-21 | `_headers` 加入完整 CSP + X-Content-Type-Options + X-Frame-Options + Referrer-Policy + Permissions-Policy |
 | ✅ | HIGH-06 | Unrestricted Media Upload Content-Type | 2026-02-21 | `media.routes.js` 加入 content-type allowlist，非允許類型回傳 415 |
-| ⬜ | HIGH-07 | IndexedDB Key Material Unprotected | — | 待評估 WebAuthn PRF |
+| ✅ | HIGH-07 | IndexedDB Key Material Unprotected | 2026-02-21 | Outbox DR snapshots encrypted with AES-256-GCM (MK + HKDF `outbox-dr/v1`) before IndexedDB write; `clearAllBrowserStorage` now awaits IndexedDB deletion |
 | ✅ | HIGH-08 | `elliptic` Library Used | 2026-02-21 | 已於 CRIT-04 中遷移至 `@noble/curves` 並移除 `elliptic` 依賴 |
 | ⬜ | MED-01 | CORS Allows Null Origin | — | — |
 | ⬜ | MED-02 | Rate Limiting Disabled in Non-Prod | — | — |
@@ -319,19 +319,22 @@ return {
 
 ---
 
-### HIGH-07: IndexedDB 中的金鑰材料缺乏作業系統層級保護
+### HIGH-07: IndexedDB 中的金鑰材料缺乏作業系統層級保護 ✅ 已修正
 
-**檔案：** `web/src/app/features/message-key-vault.js`、`web/src/shared/crypto/db.js`
+**檔案：** `web/src/app/features/queue/outbox.js`、`web/src/app/features/queue/db.js`
 **嚴重程度：** HIGH
+**修正日期：** 2026-02-21
 
-所有密碼學金鑰材料（身分金鑰、棘輪狀態、預備金鑰、訊息金鑰）皆以 AES-GCM 包裝後儲存於 IndexedDB 中，使用由 `crypto.subtle` 衍生的金鑰進行包裝。然而：
-- 包裝金鑰本身也儲存在 IndexedDB 中
-- 未使用硬體支援的金鑰儲存機制（WebAuthn、平台金鑰鏈）
-- 任何具有同源存取權限的腳本皆可讀取所有金鑰材料
+**原始問題：** Outbox queue 在 IndexedDB (`sentry-message-queue`) 中以明文儲存 DR 快照（`dr.snapshotBefore` / `dr.snapshotAfter`），包含 DH 棘輪私鑰 (`myRatchetPriv_b64`)、根金鑰 (`rk_b64`) 及鏈金鑰 (`ckS_b64`, `ckR_b64`)。`clearAllBrowserStorage()` 的 IndexedDB 刪除為非同步 fire-and-forget，登出時可能未完成即導向新頁面。
 
-**影響：** 一個 XSS 漏洞（參見 HIGH-05）將允許完全提取所有密碼學金鑰，使攻擊者能解密所有過去和未來的訊息。
+**已修正（兩項措施）：**
 
-**建議：** 考慮盡可能對包裝金鑰使用 Web Crypto API 的 `extractable: false` 選項。研究 WebAuthn PRF 擴充功能以實現硬體綁定的金鑰衍生。至少應確保健全的 CSP 以防止 XSS。
+1. **Outbox DR 快照加密：** `enqueueOutboxJob()` 在寫入 IndexedDB 前，使用 `wrapWithMK_JSON(dr, MK, 'outbox-dr/v1')` 將 DR 快照以 AES-256-GCM + HKDF(SHA-256) 加密。加密金鑰衍生自記憶體中的 Master Key (MK)，登出後 MK 消失，即使 IndexedDB 殘留亦無法解密。讀取時透過 `unsealOutboxDr()` 解密，支援向下相容（辨識舊版明文格式）。
+2. **IndexedDB 刪除改為 await：** `clearAllBrowserStorage()` 改為 `async function`，IndexedDB 刪除操作現在被 `await`，確保在頁面導向前完成清除。
+
+**注意：** 原始報告引用的 `web/src/shared/crypto/db.js` 不存在於目前程式碼中（已過時的參考）。實際曝露點為 `web/src/app/features/queue/db.js`。`message-key-vault.js` 僅使用記憶體快取 + server API，不直接使用 IndexedDB。
+
+**未來考慮：** WebAuthn PRF 硬體綁定金鑰衍生仍可作為額外防護層，但不再為必要前置條件。
 
 ---
 
