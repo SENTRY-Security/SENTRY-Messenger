@@ -11,8 +11,9 @@ import { notFound, errorHandler } from './middlewares/error.js';
 
 const app = express();
 
-// trust loopback proxy (Nginx) for accurate client IP headers
-app.set('trust proxy', 'loopback');
+// Trust proxy for accurate client IP headers (default: loopback).
+// Override via TRUST_PROXY env var for non-loopback reverse proxies.
+app.set('trust proxy', env.TRUST_PROXY);
 
 // 安全與效能
 app.use(helmet());

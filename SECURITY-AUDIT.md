@@ -32,7 +32,7 @@
 | ⬜ | MED-04 | NTAG424 KDF Hardcoded Salt | — | — |
 | ✅ | MED-05 | Remote Console Debug Endpoint | 2026-02-21 | 端點已不再使用，移除 `debug.routes.js` 及路由掛載 |
 | ✅ | MED-06 | No SRI for CDN Imports | 2026-02-21 | 所有 CDN 匯入皆有 SRI：`importWithSRI()` + `fetchBlobWithSRI()`（PDF.js worker）+ `<script>`/`<link>` integrity 屬性 |
-| ⬜ | MED-07 | `trust proxy` Set to `loopback` | — | — |
+| ✅ | MED-07 | `trust proxy` Set to `loopback` | 2026-02-21 | 改為透過 `TRUST_PROXY` 環境變數配置，預設 `loopback`，可隨部署架構調整 |
 | ⬜ | MED-08 | Skipped Message Keys Limit DoS | — | — |
 | ⬜ | MED-09 | CI/CD Pipeline Disabled | — | — |
 | ✅ | MED-10 | `getStatus` Leaks Environment Info | 2026-02-21 | 移除 `getStatus` 及 `/status` 路由，`/health` 已足夠 |
@@ -421,15 +421,12 @@ return {
 
 ---
 
-### MED-07: `trust proxy` 設定為 `loopback`
+### MED-07: `trust proxy` 設定為 `loopback` ✅ 已修正
 
-**檔案：** `src/app.js:15`
+**檔案：** `src/app.js:15`、`src/utils/env.js`
+**修正日期：** 2026-02-21
 
-```javascript
-app.set('trust proxy', 'loopback');
-```
-
-若應用程式並非位於迴環介面上的反向代理之後，或攻擊者能直接連線至應用程式，則攻擊者可偽造 `X-Forwarded-For` 標頭以繞過基於 IP 的速率限制。
+**已修正：** 將硬編碼的 `'loopback'` 改為透過 `TRUST_PROXY` 環境變數配置（預設仍為 `'loopback'`）。當部署架構改變（例如反向代理不在同一台機器上）時，可透過環境變數調整而無需修改程式碼。
 
 ---
 
