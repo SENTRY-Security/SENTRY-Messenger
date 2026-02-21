@@ -18,6 +18,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const src = resolve(__dirname, 'src');
 const dist = resolve(__dirname, 'dist');
 
+// --- Build-time debug flag (from env or parent .env) ---
+// DEBUG_MODE=true  → debug flags enabled (development)
+// DEBUG_MODE=false → debug flags disabled (production, default)
+const debugMode = String(process.env.DEBUG_MODE || 'false').toLowerCase() === 'true';
+console.log(`DEBUG_MODE=${debugMode}`);
+
+
 // --- Plugin: resolve absolute paths (/shared/..., /libs/...) to src/ ---
 const absolutePathPlugin = {
   name: 'absolute-paths',
@@ -51,6 +58,9 @@ const result = await build({
   minify: true,
   sourcemap: false,
   target: ['es2022'],
+  define: {
+    '__DEBUG_MODE__': JSON.stringify(debugMode)
+  },
   plugins: [absolutePathPlugin],
   external: [
     'https://esm.sh/*',

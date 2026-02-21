@@ -15,7 +15,7 @@
 | 狀態 | Finding | 標題 | 修正日期 | 修正細節 |
 |:----:|---------|------|:--------:|----------|
 | ✅ | CRIT-01 | Double Ratchet Forward Secrecy Disabled | 2026-02-20 | Phase 0–1 完整啟用 DH ratchet。`dr.js:323-330` 取消註解 + 14 項 counter 管理重構。commit `7282392`, `787954e` |
-| ⬜ | CRIT-02 | Debug Flags Hardcoded to `true` | — | 待將 `debug-flags.js` 所有 flag 設為 `false` |
+| ✅ | CRIT-02 | Debug Flags Hardcoded to `true` | 2026-02-21 | `debug-flags.js` 改為讀取 esbuild `define` 注入的 `__DEBUG_MODE__`；`build.mjs` 從 `DEBUG_MODE` env var 控制；預設 `false`（production safe） |
 | ✅ | CRIT-03 | Unauthenticated OPAQUE Debug Endpoint | 2026-02-21 | 新增 `adminIpGuard` middleware（CIDR 白名單），套用至 `/auth/opaque/debug`；`ADMIN_IP_ALLOW` 未設定時一律 403 |
 | ✅ | CRIT-04 | Dependency Vulnerabilities (27 total) | 2026-02-21 | `npm audit fix` 升級 AWS SDK / qs / lodash / systeminformation；`elliptic` 遷移至 `@noble/curves`（移除依賴）。剩餘 pm2 ReDoS (low, 無修正) 接受風險 |
 | ✅ | HIGH-01 | AAD Omission Fallback in AES-GCM | 2026-02-20 | Phase 1.4：AAD 為 null 時改為 throw，不再 fallback。commit `787954e` |
@@ -130,25 +130,27 @@ SENTRY-Messenger 是一款端對端加密通訊應用程式，實作了 X3DH 金
 
 ---
 
-### CRIT-02: Debug 旗標在正式環境中被寫死為 `true`
+### CRIT-02: Debug 旗標在正式環境中被寫死為 `true` ✅ 已修正
 
-**檔案：** `web/src/app/ui/mobile/debug-flags.js:1-17`
+**檔案：** `web/src/app/ui/mobile/debug-flags.js:1-17`、`web/build.mjs`
 **嚴重程度：** CRITICAL
 **CVSS 估計：** 7.5
+**修正日期：** 2026-02-21
 
-```javascript
-export const DEBUG = {
-  replay: true,           // ← enabled
-  drVerbose: true,        // ← enabled — dumps DR state to console
-  conversationReset: true // ← enabled
-};
-```
+**原始問題：** `DEBUG.replay`、`DEBUG.drVerbose`、`DEBUG.conversationReset` 被寫死為 `true`，導致 DR 密碼學 metadata 在所有環境（含 production）中輸出至 console。
 
-**影響：** 這些旗標被整個程式碼庫所匯入，包括 `dr.js`（第 25 行：`const drDebugLogsEnabled = DEBUG.drVerbose === true`）。當 `drVerbose` 為 true 時，Double Ratchet 會將 DH 輸出雜湊、chain key 種子雜湊、臨時金鑰前綴、message key 雜湊、IV 雜湊、密文雜湊、AAD 雜湊及 counter 值以 `console.warn` 輸出到主控台。此 metadata 足以讓擁有主控台存取權的進階攻擊者（例如透過 XSS 或瀏覽器擴充功能）進行密碼分析或確認訊息內容。
+**已修正：** 改為建置時期環境變數控制：
 
-此外，`DEBUG.replay = true` 啟用了重播診斷程式碼路徑，而 `DEBUG.conversationReset = true` 啟用了重設追蹤 — 兩者皆會洩漏協定狀態。
+1. **`debug-flags.js`**：三個安全敏感旗標（`replay`、`drVerbose`、`conversationReset`）改為讀取 `__DEBUG_MODE__` 常量，由 esbuild 在建置時替換
+2. **`build.mjs`**：新增 `define: { '__DEBUG_MODE__': JSON.stringify(debugMode) }`，從 `DEBUG_MODE` 環境變數讀取
+3. **`.env.example`**：新增 `DEBUG_MODE=false` 欄位，含完整說明
+4. **預設值：** `false` — 未設定時所有 debug 旗標關閉（production safe）
 
-**建議：** 將所有 DEBUG 旗標在正式環境建置中設為 `false`。實作建置階段的旗標或環境變數，以從正式環境套件中移除 debug 日誌（例如使用 esbuild 的 `define` 選項）。
+**驗證結果：**
+- `DEBUG_MODE=false`（預設）→ minified 輸出 `replay:!1`（false）
+- `DEBUG_MODE=true` → minified 輸出 `replay:!0`（true）
+
+**部署須知：** Production 建置使用 `npm run build:web`（預設 `DEBUG_MODE=false`）。開發建置使用 `DEBUG_MODE=true npm run build:web`。
 
 ---
 
