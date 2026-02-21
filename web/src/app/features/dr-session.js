@@ -2184,6 +2184,27 @@ export async function sendDrPlaintextCore(params = {}) {
         });
         const expectedCounter = sendState.expectedCounter;
         replacementInfo.expectedCounter = expectedCounter;
+
+        // [Phase 3.1] Rollback DR state before re-encrypt.
+        // The first drEncryptText consumed a chain key (ckS → mk → ckS') and advanced Ns.
+        // If we re-encrypt on the ADVANCED state, the consumed chain key becomes a "phantom":
+        //   - Ns was incremented but the server rejected the message
+        //   - The receiver will never fetch this counter → produces a skippedKey
+        // By restoring to preSnapshot (the state before the first drEncryptText), we ensure
+        // the re-encrypt uses the SAME chain position, producing the same mk derivation path.
+        // Only NsTotal is overridden to match the server's expected transport counter.
+        const rollbackOk = restoreDrStateFromSnapshot({
+          snapshot: preSnapshot,
+          peerAccountDigest: peer,
+          peerDeviceId,
+          force: true,
+          sourceTag: 'counterTooLow-rollback'
+        });
+        if (!rollbackOk) {
+          drConsole.error('[counterTooLow] DR state rollback failed — cannot safely re-encrypt');
+          throw new Error('CounterTooLow repair failed: DR state rollback rejected');
+        }
+
         state.NsTotal = expectedCounter - 1;
         failureCounter = expectedCounter;
         failureSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
@@ -3242,6 +3263,21 @@ export async function sendDrMediaCore(params = {}) {
       });
       const expectedCounter = sendState.expectedCounter;
       replacementInfo.expectedCounter = expectedCounter;
+
+      // [Phase 3.1] Rollback DR state before re-encrypt (media path).
+      // Same rationale as text path: prevent phantom chain key consumption.
+      const rollbackOk = restoreDrStateFromSnapshot({
+        snapshot: preSnapshot,
+        peerAccountDigest: peer,
+        peerDeviceId,
+        force: true,
+        sourceTag: 'counterTooLow-rollback-media'
+      });
+      if (!rollbackOk) {
+        drConsole.error('[counterTooLow:media] DR state rollback failed — cannot safely re-encrypt');
+        throw new Error('CounterTooLow repair failed: DR state rollback rejected (media)');
+      }
+
       state.NsTotal = expectedCounter - 1;
       failureCounter = expectedCounter;
       failureSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
