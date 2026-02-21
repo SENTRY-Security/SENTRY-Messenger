@@ -1,8 +1,13 @@
 // Centralized debug switches (front-end + local diagnostics)
+// __DEBUG_MODE__ is replaced at build time by esbuild `define` (see build.mjs).
+// Controlled via DEBUG_MODE env var: true → dev builds, false → production.
+// eslint-disable-next-line no-undef
+const _dm = __DEBUG_MODE__;
+
 export const DEBUG = {
-  replay: true,
+  replay: _dm,
   forensics: false,
-  drVerbose: true,
+  drVerbose: _dm,
   profileCounter: false,
   drCounter: false,
   contactsA1: false,
@@ -12,7 +17,7 @@ export const DEBUG = {
   uiNoise: false,
   queueNoise: false,
   avatarBug: false,
-  conversationReset: true,
+  conversationReset: _dm,
   identityTrace: false
 };
 

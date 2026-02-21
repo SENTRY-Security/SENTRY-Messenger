@@ -19,7 +19,10 @@ import { toU8Strict } from '../utils/u8-strict.js';
 import { DEBUG } from '../../app/ui/mobile/debug-flags.js';
 
 const encoder = new TextEncoder();
-const SKIPPED_KEYS_PER_CHAIN_MAX = 100;
+// Under the monotonic receiver architecture pn should always equal Nr at
+// ratchet boundaries (zero skipped keys). A small tolerance covers edge cases
+// (e.g. CounterTooLow repair) without allowing DoS via chain key grinding.
+const SKIPPED_KEYS_PER_CHAIN_MAX = 5;
 const PACKET_HOLDER_CACHE_MAX = 2000;
 const packetHolderCache = new Map();
 const drDebugLogsEnabled = DEBUG.drVerbose === true;
@@ -306,30 +309,36 @@ export async function x3dhRespond(devicePriv, guestBundle) {
 }
 
 export async function drRatchet(st, theirRatchetPubU8) {
-  const nsBase = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0;
-  const nrBase = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0;
-  const nsPrev = Number.isFinite(st?.Ns) ? Number(st.Ns) : 0;
-  const nrPrev = Number.isFinite(st?.Nr) ? Number(st.Nr) : 0;
-  st.NsTotal = nsBase + nsPrev;
-  st.NrTotal = nrBase + nrPrev;
+  // [Phase 0.1] NsTotal/NrTotal are transport counters managed externally.
+  //
+  // [Phase 1.1] Receiving-side ratchet (first half of Signal Double Ratchet).
+  //
+  // This function performs ONLY the receive-side DH ratchet step:
+  //   1. DH(old_private, new_peer_public) → KDF_RK → new root key + ckR
+  //   2. Clear ckS (forces lazy send-side ratchet on next drEncryptText)
+  //   3. Reset Nr (new receiving chain epoch)
+  //   4. Update theirRatchetPub
+  //
+  // The send-side ratchet (PN save, Ns reset, new DH keypair, second DH → ckS)
+  // is DEFERRED to drEncryptText when it detects ckS === null. This "lazy" pattern:
+  //   - Avoids generating a wasted DH keypair if we never send
+  //   - Correctly preserves st.Ns for PN at the moment of the next send
+  //   - Matches the existing pendingSendRatchet → ckS=null → drEncryptText flow
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);
   const { a: newRoot, b: chainSeed } = split64(rkOut);
   const dhOutHash = await hashPrefix(dh);
   const ckRSeedHash = await hashPrefix(chainSeed);
-  const myNew = await genX25519Keypair();
   st.rk = newRoot;
   st.ckR = chainSeed;
-  // [DEBUG] Disable recurring ratchet: Keep existing sending chain alive.
-  // st.ckS = null;
-  // [DEBUG] Disable sending side updates entirely
-  // st.PN = st.Ns;
-  // st.Ns = 0;
+  st.ckS = null;
   st.Nr = 0;
-  // st.myRatchetPriv = myNew.secretKey;
-  // st.myRatchetPub = myNew.publicKey;
   st.theirRatchetPub = theirRatchetPubU8;
   st.pendingSendRatchet = false;
+  // NOTE: st.PN, st.Ns, st.myRatchetPriv, st.myRatchetPub are intentionally
+  // NOT modified here. They are preserved so that drEncryptText can:
+  //   - Read st.Ns to set PN (previous chain length) correctly
+  //   - Generate a fresh DH keypair for the send-side ratchet
   try {
     if (drDebugLogsEnabled) {
       console.warn('[dr-debug:ratchet-dh]', {
@@ -397,7 +406,12 @@ export async function drEncryptText(st, plaintext, opts = {}) {
     ['encrypt']
   );
   const aad = buildDrAad({ version, deviceId, counter: st.Ns });
-  const cipherParams = aad ? { name: 'AES-GCM', iv, additionalData: aad } : { name: 'AES-GCM', iv };
+  // [Phase 1.4] AAD is mandatory — it binds ciphertext to (version, deviceId, chain counter).
+  // Without AAD, AES-GCM does not authenticate the counter, allowing message reordering attacks.
+  if (!aad) {
+    throw new Error('drEncryptText: AAD construction failed (missing deviceId or invalid counter)');
+  }
+  const cipherParams = { name: 'AES-GCM', iv, additionalData: aad };
   const ctBuf = await crypto.subtle.encrypt(cipherParams, key, new TextEncoder().encode(plaintext));
   try {
     encIvHash = await hashPrefix(iv);
@@ -443,6 +457,56 @@ export async function drDecryptText(st, packet, opts = {}) {
   let chainId = null; // Used in logs
   let nUsed = null; // Used in ensureDrMeta
   let nrAfterRatchet = null; // Used in ensureDrMeta
+  // [Phase 1.5] Hoisted to function scope so catch block's ensureDrMeta can access them.
+  let ratchetPerformed = false;
+  let nrAtDerive = null;
+  let postRatchetTheirPubPrefix = null;
+  let dhOutHash = null;
+  let ckRSeedHash = null;
+  let ckSSeedHash = null;
+  let mkHash = null;
+  let chainHash = null;
+  let encIvHash = null;
+  let encCtHash = null;
+  let encAadHash = null;
+  let decIvHash = null;
+  let decCtHash = null;
+  let decAadHash = null;
+  let encMkHash = null;
+  let fingerprintBeforeDecrypt = null;
+
+  // [Phase 1.5] Hoist holderSnapshot + restoreHolder above the try block so they
+  // are accessible in the catch block for rollback on any error (including pn gap rejection).
+  const holderSnapshot = {
+    rk: cloneU8(st?.rk) || null,
+    ckS: cloneU8(st?.ckS) || null,
+    ckR: cloneU8(st?.ckR) || null,
+    Ns: Number.isFinite(st?.Ns) ? Number(st.Ns) : 0,
+    Nr: Number.isFinite(st?.Nr) ? Number(st.Nr) : 0,
+    NsTotal: Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0,
+    NrTotal: Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0,
+    PN: Number.isFinite(st?.PN) ? Number(st.PN) : 0,
+    myRatchetPriv: cloneU8(st?.myRatchetPriv) || null,
+    myRatchetPub: cloneU8(st?.myRatchetPub) || null,
+    theirRatchetPub: cloneU8(st?.theirRatchetPub) || null,
+    pendingSendRatchet: !!st?.pendingSendRatchet,
+    skippedKeys: cloneSkippedKeys(st?.skippedKeys)
+  };
+  const restoreHolder = () => {
+    st.rk = holderSnapshot.rk;
+    st.ckS = holderSnapshot.ckS;
+    st.ckR = holderSnapshot.ckR;
+    st.Ns = holderSnapshot.Ns;
+    st.Nr = holderSnapshot.Nr;
+    st.NsTotal = holderSnapshot.NsTotal;
+    st.NrTotal = holderSnapshot.NrTotal;
+    st.PN = holderSnapshot.PN;
+    st.myRatchetPriv = holderSnapshot.myRatchetPriv;
+    st.myRatchetPub = holderSnapshot.myRatchetPub;
+    st.theirRatchetPub = holderSnapshot.theirRatchetPub;
+    st.pendingSendRatchet = holderSnapshot.pendingSendRatchet;
+    st.skippedKeys = cloneSkippedKeys(holderSnapshot.skippedKeys);
+  };
 
   try {
     const onMessageKey = typeof opts?.onMessageKey === 'function' ? opts.onMessageKey : null;
@@ -494,36 +558,6 @@ export async function drDecryptText(st, packet, opts = {}) {
         if (!firstKey.done) packetHolderCache.delete(firstKey.value);
       }
     }
-    const holderSnapshot = {
-      rk: cloneU8(st?.rk) || null,
-      ckS: cloneU8(st?.ckS) || null,
-      ckR: cloneU8(st?.ckR) || null,
-      Ns: Number.isFinite(st?.Ns) ? Number(st.Ns) : 0,
-      Nr: Number.isFinite(st?.Nr) ? Number(st.Nr) : 0,
-      NsTotal: Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0,
-      NrTotal: Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0,
-      PN: Number.isFinite(st?.PN) ? Number(st.PN) : 0,
-      myRatchetPriv: cloneU8(st?.myRatchetPriv) || null,
-      myRatchetPub: cloneU8(st?.myRatchetPub) || null,
-      theirRatchetPub: cloneU8(st?.theirRatchetPub) || null,
-      pendingSendRatchet: !!st?.pendingSendRatchet,
-      skippedKeys: cloneSkippedKeys(st?.skippedKeys)
-    };
-    const restoreHolder = () => {
-      st.rk = holderSnapshot.rk;
-      st.ckS = holderSnapshot.ckS;
-      st.ckR = holderSnapshot.ckR;
-      st.Ns = holderSnapshot.Ns;
-      st.Nr = holderSnapshot.Nr;
-      st.NsTotal = holderSnapshot.NsTotal;
-      st.NrTotal = holderSnapshot.NrTotal;
-      st.PN = holderSnapshot.PN;
-      st.myRatchetPriv = holderSnapshot.myRatchetPriv;
-      st.myRatchetPub = holderSnapshot.myRatchetPub;
-      st.theirRatchetPub = holderSnapshot.theirRatchetPub;
-      st.pendingSendRatchet = holderSnapshot.pendingSendRatchet;
-      st.skippedKeys = cloneSkippedKeys(holderSnapshot.skippedKeys);
-    };
     const resolveRole = (holder) => {
       if (typeof holder?.baseKey?.role === 'string') return holder.baseKey.role.toLowerCase();
       if (typeof holder?.baseRole === 'string') return holder.baseRole.toLowerCase();
@@ -586,21 +620,6 @@ export async function drDecryptText(st, packet, opts = {}) {
     } catch { }
     nUsed = headerN;
     nrAfterRatchet = Number(st.Nr);
-    let nrAtDerive = null;
-    let postRatchetTheirPubPrefix = null;
-    let dhOutHash = null;
-    let ckRSeedHash = null;
-    let ckSSeedHash = null;
-    let mkHash = null;
-    let chainHash = null;
-    let encIvHash = null;
-    let encCtHash = null;
-    let encAadHash = null;
-    let decIvHash = null;
-    let decCtHash = null;
-    let decAadHash = null;
-    let encMkHash = null;
-    let fingerprintBeforeDecrypt = null;
     currentNr = Number.isFinite(Number(st?.Nr)) ? Number(st.Nr) : 0;
     const working = {
       rk: cloneU8(st?.rk) || null,
@@ -660,7 +679,7 @@ export async function drDecryptText(st, packet, opts = {}) {
         throw new Error('replay or out-of-order message counter');
       }
     }
-    let ratchetPerformed = false;
+    ratchetPerformed = false;
 
     // 若接收端狀態的對方 ratchet 公鑰與封包不一致，且這是第一封消息，嘗試丟棄舊的 receive chain 讓後續能依新公鑰重新進入 ratchet。
     if (
@@ -697,10 +716,12 @@ export async function drDecryptText(st, packet, opts = {}) {
       // Before switching to the new ratchet key, fill skipped message keys on the previous receiving chain up to pn.
       if (prevChainId && working.ckR && Number.isFinite(pn) && pn > working.Nr) {
         const gap = pn - working.Nr;
+        // [Phase 1.2] Hard-reject excessive pn gaps to prevent DoS via chain key grinding.
+        // Under the monotonic receiver architecture, pn should equal Nr (all prior messages
+        // in the old chain were already processed in order). Any gap > 0 is suspicious;
+        // gap > SKIPPED_KEYS_PER_CHAIN_MAX is certainly an attack or a bug.
         if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) {
-          if (drDebugLogsEnabled) {
-            console.warn('[dr] skipped-key gap too large', { gap, pn, nr: working.Nr, chain: prevChainId });
-          }
+          throw new Error(`pn gap ${gap} exceeds limit ${SKIPPED_KEYS_PER_CHAIN_MAX} (pn=${pn}, Nr=${working.Nr})`);
         }
         let ckR = working.ckR;
         let nr = working.Nr;
@@ -713,6 +734,17 @@ export async function drDecryptText(st, packet, opts = {}) {
         }
         working.ckR = ckR;
         working.Nr = nr;
+      }
+      // [Phase 1.3] pn consistency assertion.
+      // Under the monotonic receiver architecture, all messages on the previous chain
+      // were processed in order BEFORE this ratchet message arrived. Therefore:
+      //   - If pn is valid, working.Nr should now equal pn (after gap-fill above)
+      //   - pn !== Nr means messages were lost or counter semantics are wrong
+      // Log a warning rather than throw, since this is a consistency check not a security gate.
+      if (prevChainId && Number.isFinite(pn) && working.Nr !== pn) {
+        console.error('[dr] CONSISTENCY: pn !== Nr at ratchet boundary', {
+          pn, Nr: working.Nr, chain: prevChainId?.slice(0, 12)
+        });
       }
       const ratchetResult = await drRatchet(working, theirPub);
       if (!(working.ckR instanceof Uint8Array) || !working.ckR.length) {

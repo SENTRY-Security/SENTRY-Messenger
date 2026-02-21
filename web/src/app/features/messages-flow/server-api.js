@@ -157,7 +157,11 @@ export async function getSecureMessageByCounter({
 } = {}) {
   const { r, data } = await fetchByCounter({ conversationId, counter, senderDeviceId, includeKeys });
   if (!r?.ok) {
-    throw new Error(resolveByCounterError(data));
+    // [Phase 3.3] Propagate HTTP status so callers (gap-queue) can distinguish
+    // 404 (counter doesn't exist — legal after CounterTooLow repair) from other errors.
+    const err = new Error(resolveByCounterError(data));
+    err.httpStatus = r?.status ?? null;
+    throw err;
   }
   const item = resolveSecureMessageItem(data);
   if (!item) {

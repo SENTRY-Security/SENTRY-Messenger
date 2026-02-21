@@ -11,6 +11,7 @@
   <meta name="color-scheme" content="light" />
   <title>SENTRY MESSENGER — App</title>
   <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+  <meta name="api-origin" content="https://api.message.sentry.red" />
   <!-- Loading Modal inline styles — renders before any external CSS -->
   <style>
     #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;overflow:hidden}
@@ -50,21 +51,11 @@
     #appLoadingModal.morph-success .loading-bar-track{animation:none;box-shadow:0 0 25px rgba(34,197,94,0.5),0 0 60px rgba(34,197,94,0.2)}
   </style>
   <!-- Async CSS — non-render-blocking -->
-  <link rel="stylesheet" href="/assets/app-bundle.css" media="print" onload="this.media='all'" />
+  <link rel="stylesheet" href="/assets/app-bundle.css" media="print" />
   <noscript><link rel="stylesheet" href="/assets/app-bundle.css" /></noscript>
-  <link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" integrity="sha384-42kyIPf7HDYLkGffmxDhSx/3Z/53wGBs3nD6wEFxsbeDc7rMO6mkYbkAcpRsnMU2" crossorigin="anonymous" media="print" onload="this.media='all'" />
+  <link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" integrity="sha384-42kyIPf7HDYLkGffmxDhSx/3Z/53wGBs3nD6wEFxsbeDc7rMO6mkYbkAcpRsnMU2" crossorigin="anonymous" media="print" />
   <noscript><link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" integrity="sha384-42kyIPf7HDYLkGffmxDhSx/3Z/53wGBs3nD6wEFxsbeDc7rMO6mkYbkAcpRsnMU2" crossorigin="anonymous" /></noscript>
-  <script>
-    // 防止未初始化時的全域 ReferenceError（Safari 會因 inviteBtn 未宣告而中斷）
-    if (typeof inviteBtn === 'undefined') {
-      // eslint-disable-next-line no-var
-      var inviteBtn = null;
-    }
-  </script>
-  <script>
-    window.APP_VERSION = '0.1.21-atomic-fix';
-    window.APP_BUILD_AT = (function () { try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
-  </script>
+  <script src="/app/boot/app-head.js"></script>
 </head>
 
 <body>
@@ -86,199 +77,7 @@
       <button id="appLoadingSkip" class="loading-skip">稍後再說</button>
     </div>
   </div>
-  <script>
-  /* ── App Loading: Matrix Rain ── */
-  (function(){
-    var cvs, ctx, w, h, raf, columns, drops, running = false;
-    var CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789アイウエオカキクケコサシスセソ$@#&%!?<>{}[]';
-    var FS = 13;
-    function init(){
-      cvs = document.getElementById('appTmCanvas');
-      if(!cvs) return;
-      ctx = cvs.getContext('2d');
-      resize();
-      window.addEventListener('resize', resize);
-    }
-    function resize(){
-      if(!cvs) return;
-      w = cvs.width = cvs.parentElement.clientWidth;
-      h = cvs.height = cvs.parentElement.clientHeight;
-      columns = Math.floor(w / FS);
-      var maxRow = Math.floor(h / FS);
-      drops = [];
-      for(var i=0;i<columns;i++){
-        // 40% of columns start mid-screen so canvas looks pre-populated on load
-        drops[i] = Math.random() < 0.4 ? (Math.random()*maxRow|0) : -(Math.random()*80|0);
-      }
-    }
-    function tick(){
-      if(!running) return;
-      ctx.fillStyle = 'rgba(5,10,20,0.12)';
-      ctx.fillRect(0,0,w,h);
-      ctx.font = FS + 'px monospace';
-      for(var i=0;i<columns;i++){
-        if(drops[i]<0){ drops[i]++; continue; }
-        var ch = CHARS[Math.random()*CHARS.length|0];
-        var y = drops[i] * FS;
-        ctx.fillStyle = 'rgba(16,185,129,0.7)';
-        ctx.fillText(ch, i*FS, y);
-        if(y > FS){
-          ctx.fillStyle = 'rgba(16,185,129,0.08)';
-          ctx.fillText(CHARS[Math.random()*CHARS.length|0], i*FS, y - FS);
-        }
-        drops[i]++;
-        if(y > h && Math.random() > 0.975) drops[i] = 0;
-      }
-      raf = requestAnimationFrame(tick);
-    }
-    // Auto-start — pre-draw several frames so canvas looks populated immediately
-    running = true;
-    init();
-    if(ctx){
-      ctx.fillStyle='#050a14'; ctx.fillRect(0,0,w,h);
-      // Silently advance a few frames to seed visible characters
-      ctx.font = FS + 'px monospace';
-      for(var f=0;f<8;f++){
-        ctx.fillStyle='rgba(5,10,20,0.12)'; ctx.fillRect(0,0,w,h);
-        for(var i=0;i<columns;i++){
-          if(drops[i]<0){ drops[i]++; continue; }
-          var ch=CHARS[Math.random()*CHARS.length|0];
-          var y=drops[i]*FS;
-          ctx.fillStyle='rgba(16,185,129,0.7)'; ctx.fillText(ch,i*FS,y);
-          if(y>FS){ ctx.fillStyle='rgba(16,185,129,0.08)'; ctx.fillText(CHARS[Math.random()*CHARS.length|0],i*FS,y-FS); }
-          drops[i]++;
-          if(y>h&&Math.random()>0.975) drops[i]=0;
-        }
-      }
-    }
-    tick();
-    // Expose stop so __hideLoadingModal can call it
-    window.__appTmStop = function(){ running = false; if(raf) cancelAnimationFrame(raf); };
-  })();
-  </script>
-  <script>
-    (function () {
-      var stages = {
-        styles:        { label: 'LOADING INTERFACE...',       progress: 74 },
-        scripts:       { label: 'LOADING MODULES...',         progress: 80 },
-        account:       { label: 'SYNCING ACCOUNT DATA...',    progress: 86 },
-        contacts:      { label: 'SYNCING CONTACTS...',        progress: 92 },
-        conversations: { label: 'SYNCING CONVERSATIONS...',   progress: 96 },
-        ready:         { label: 'SYSTEM READY',               progress: 100 }
-      };
-      var bar   = document.getElementById('appLoadingBar');
-      var label = document.getElementById('appLoadingLabel');
-      var modal = document.getElementById('appLoadingModal');
-      var current = 70;
-      var fillRAF = null;
-      var fillTarget = 0;
-      var fillLast = 0;
-      var FILL_SPEED = 10;
-      function setBarWidth(pct) { if (bar) bar.style.width = pct + '%'; }
-      function startSlowFill(target) {
-        fillTarget = target;
-        if (fillRAF) return;
-        fillLast = performance.now();
-        function tick(now) {
-          var dt = (now - fillLast) / 1000;
-          fillLast = now;
-          if (current < fillTarget - 0.3) {
-            current = Math.min(current + FILL_SPEED * dt, fillTarget - 0.3);
-            setBarWidth(current);
-            fillRAF = requestAnimationFrame(tick);
-          } else {
-            fillRAF = null;
-          }
-        }
-        fillRAF = requestAnimationFrame(tick);
-      }
-      function stopSlowFill() {
-        if (fillRAF) { cancelAnimationFrame(fillRAF); fillRAF = null; }
-      }
-      window.__updateLoadingProgress = function (stageId) {
-        var stage = stages[stageId];
-        if (!stage || stage.progress <= current) return;
-        stopSlowFill();
-        current = stage.progress;
-        setBarWidth(current);
-        if (label) label.textContent = stage.label;
-        // Find next stage to slowly fill toward
-        var keys = Object.keys(stages);
-        var idx = keys.indexOf(stageId);
-        if (idx >= 0 && idx < keys.length - 1) {
-          startSlowFill(stages[keys[idx + 1]].progress);
-        }
-      };
-      window.__hideLoadingModal = function () {
-        stopSlowFill();
-        if (typeof window.__appTmStop === 'function') window.__appTmStop();
-        if (!modal) return;
-        modal.classList.add('glitch-out');
-        setTimeout(function () { if (modal.parentNode) modal.parentNode.removeChild(modal); }, 750);
-      };
-      /* ── Morph progress bar into "Enter" button ── */
-      window.__morphToEnterButton = function () {
-        stopSlowFill();
-        current = 100;
-        setBarWidth(100);
-        if (label) label.textContent = 'SYSTEM READY';
-        setTimeout(function () {
-          if (modal) modal.classList.add('morph-enter');
-          if (label) { label.textContent = '點擊以啟用安全通訊'; label.style.letterSpacing = '1.5px'; }
-        }, 600);
-      };
-      window.__setSplashStatus = function (msg) {
-        var el = document.getElementById('appLoadingStatus');
-        if (el) el.textContent = msg || '';
-      };
-      window.__setSplashAuthorizing = function (active) {
-        if (!modal) return;
-        var enterLabel = document.getElementById('appEnterLabel');
-        if (active) {
-          modal.classList.add('morph-authorizing');
-          if (enterLabel) enterLabel.textContent = '授權中\u2026';
-          if (label) label.textContent = '請在系統視窗中按下「允許」';
-        } else {
-          modal.classList.remove('morph-authorizing');
-          if (enterLabel) enterLabel.textContent = '進 入';
-          if (label) { label.textContent = '點擊以啟用安全通訊'; label.style.letterSpacing = '1.5px'; }
-        }
-      };
-      window.__setSplashSuccess = function () {
-        if (!modal) return;
-        modal.classList.add('morph-success');
-        modal.classList.remove('morph-authorizing');
-        var enterLabel = document.getElementById('appEnterLabel');
-        if (enterLabel) enterLabel.textContent = '\u2713';
-        if (label) label.textContent = '授權成功';
-        setTimeout(function () { window.__hideLoadingModal(); }, 800);
-      };
-      // Auto-advance to 'styles' when all async CSS is loaded
-      var cssDone = false;
-      var cssLinks = document.querySelectorAll('link[rel="stylesheet"][media="print"]');
-      var loaded = 0;
-      var total = cssLinks.length;
-      function markCssDone() {
-        if (cssDone) return;
-        cssDone = true;
-        window.__updateLoadingProgress('styles');
-      }
-      function onCssLoad() {
-        loaded++;
-        if (loaded >= total) markCssDone();
-      }
-      for (var i = 0; i < cssLinks.length; i++) {
-        cssLinks[i].addEventListener('load', onCssLoad);
-      }
-      if (total === 0) markCssDone();
-      // Safety: if cached CSS already switched media before this script ran, or onload failed
-      setTimeout(function () {
-        if (!cssDone) markCssDone();
-      }, 3000);
-      // Start slow-fill immediately from 70% toward first stage (74%)
-      startSlowFill(stages.styles.progress);
-    })();
-  </script>
+  <script src="/app/boot/app-loading.js"></script>
 
   <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
     <span class="icon" aria-hidden="true">📱</span>
@@ -619,91 +418,7 @@
   <div id="logoutRedirectCover" class="logout-redirect-cover" aria-hidden="true">
     <div class="cover-spinner" aria-hidden="true"></div>
   </div>
-  <script>
-    window.API_ORIGIN = 'https://api.message.sentry.red';
-    (function () {
-      const overlay = document.getElementById('orientationOverlay');
-      const docEl = document.documentElement;
-      const mq = window.matchMedia('(orientation: portrait)');
-      const isMobileLike = () => {
-        const touch = navigator.maxTouchPoints || navigator.msMaxTouchPoints || 0;
-        const shortEdge = Math.min(window.innerWidth, window.innerHeight);
-        const ua = navigator.userAgent || '';
-        const looksMobileUA = /iPhone|iPad|Android|Mobile/i.test(ua);
-        return shortEdge <= 1024 && (touch > 0 || looksMobileUA);
-      };
-      function update() {
-        if (!isMobileLike()) {
-          docEl.classList.remove('orientation-block');
-          if (overlay) overlay.setAttribute('aria-hidden', 'true');
-          return;
-        }
-        const portrait = mq.matches || window.innerHeight >= window.innerWidth;
-        if (portrait) {
-          docEl.classList.remove('orientation-block');
-          if (overlay) overlay.setAttribute('aria-hidden', 'true');
-        } else {
-          docEl.classList.add('orientation-block');
-          if (overlay) overlay.setAttribute('aria-hidden', 'false');
-        }
-      }
-      if (mq.addEventListener) mq.addEventListener('change', update); else mq.addListener(update);
-      window.addEventListener('orientationchange', update);
-      window.addEventListener('resize', update);
-      update();
-      if (screen.orientation && screen.orientation.lock && isMobileLike()) {
-        screen.orientation.lock('portrait').catch(() => { });
-      }
-    })();
-    (function disablePinchZoom() {
-      const prevent = (evt) => evt.preventDefault();
-      document.addEventListener('gesturestart', prevent, { passive: false });
-      document.addEventListener('gesturechange', prevent, { passive: false });
-      document.addEventListener('gestureend', prevent, { passive: false });
-    })();
-    (function maintainAppHeight() {
-      const docEl = document.documentElement;
-      let baseHeight = window.innerHeight || docEl.clientHeight || 0;
-      const applyHeight = (value) => {
-        if (!value) return;
-        docEl.style.setProperty('--app-height', `${value}px`);
-      };
-      applyHeight(baseHeight);
-      window.addEventListener('resize', () => {
-        const current = window.innerHeight || docEl.clientHeight || 0;
-        if (!current) return;
-        if (current >= baseHeight - 2) {
-          baseHeight = current;
-          applyHeight(baseHeight);
-        }
-      });
-      window.addEventListener('orientationchange', () => {
-        setTimeout(() => {
-          const current = window.innerHeight || docEl.clientHeight || baseHeight;
-          baseHeight = current;
-          applyHeight(baseHeight);
-        }, 300);
-      });
-    })();
-  </script>
-  <script>
-    (function loadAppModule() {
-      const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
-      const versionedSrc = `/app/ui/app-mobile.js?v=${encodeURIComponent(stamp)}`;
-      const script = document.createElement('script');
-      script.type = 'module';
-      script.src = versionedSrc;
-      script.onerror = () => {
-        if (script.dataset.retry) return;
-        script.dataset.retry = '1';
-        const fallback = document.createElement('script');
-        fallback.type = 'module';
-        fallback.src = `/app/ui/app-mobile.js?v=${Date.now()}`;
-        document.body.appendChild(fallback);
-      };
-      document.body.appendChild(script);
-    })();
-  </script>
+  <script src="/app/boot/app-boot.js"></script>
 </body>
 
 </html>

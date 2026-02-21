@@ -3,7 +3,7 @@ import { restoreContactSecrets } from '../core/contact-secrets.js';
 import { logCapped } from '../core/log.js';
 import { RESTORE_PIPELINE_LOG_CAP } from './restore-policy.js';
 import { fetchSecureMaxCounter } from './messages-flow/server-api.js';
-import { hydrateContactSecretsFromBackup } from './contact-backup.js';
+import { hydrateContactSecretsFromBackup, triggerContactSecretsBackup } from './contact-backup.js';
 import { createGapQueue } from './messages-flow/gap-queue.js';
 import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
 import { sessionStore } from '../ui/mobile/session-store.js';
@@ -395,6 +395,15 @@ export async function startRestorePipeline({ source } = {}) {
 
   try {
     await flushPendingContactShares({ mk: getMkRaw() });
+  } catch { }
+
+  // [Phase 4.1] Immediately persist rehydrated DR state to server backup.
+  // After Stage 3 hydration, the in-memory DR state is the freshest ground truth.
+  // Without this backup, a crash before the next atomicSend would lose the rehydrated state.
+  // The DH keys and chain keys from hydration are NOT in the vault (vault only has per-message snapshots),
+  // so the contact-secrets backup is the only persistence path for the full DR state.
+  try {
+    await triggerContactSecretsBackup('post-hydrate', { force: true, sourceTag: 'restore-stage3' });
   } catch { }
 
   try {

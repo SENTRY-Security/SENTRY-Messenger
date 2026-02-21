@@ -9,6 +9,7 @@
     <meta name="color-scheme" content="light" />
     <title>SENTRY MESSENGER — Debug Tools</title>
     <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+    <meta name="api-origin" content="https://api.message.sentry.red" />
     <link rel="stylesheet" href="/assets/styles.css" />
     <style>
       :root {
@@ -130,23 +131,6 @@
       </section>
     </main>
 
-    <script>
-      window.API_ORIGIN = 'https://api.message.sentry.red';
-      (function loadDebugModule(){
-        const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
-        const script = document.createElement('script');
-        script.type = 'module';
-        script.src = `/app/ui/debug-page.js?v=${encodeURIComponent(stamp)}`;
-        script.onerror = () => {
-          if (script.dataset.retry) return;
-          script.dataset.retry = '1';
-          const fallback = document.createElement('script');
-          fallback.type = 'module';
-          fallback.src = `/app/ui/debug-page.js?v=${Date.now()}`;
-          document.body.appendChild(fallback);
-        };
-        document.body.appendChild(script);
-      })();
-    </script>
+    <script src="/app/boot/debug-boot.js"></script>
   </body>
 </html>

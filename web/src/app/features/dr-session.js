@@ -39,7 +39,8 @@ import {
   processOutboxJobNow,
   setOutboxHooks,
   startOutboxProcessor,
-  isConversationLocked
+  isConversationLocked,
+  unsealOutboxDr
 } from './queue/outbox.js';
 import { logDrCore, logMsgEvent } from '../lib/logging.js';
 import { log, logCapped } from '../core/log.js';
@@ -423,6 +424,15 @@ async function seedTransportCounterFromServer({
     }
     if (maxCounter > 0 && Number(state.NsTotal) < maxCounter) {
       state.NsTotal = maxCounter;
+      // [Phase 0.4] When transport counter is seeded from server, we don't know the
+      // chain state of the last epoch. Reset chain counters and clear ckS to force
+      // a fresh send-side ratchet on the next drEncryptText call. This ensures:
+      //   1. Ns=0 + new DH keypair → no stale chain key reuse
+      //   2. PN captures the correct previous chain length (0 after seed)
+      //   3. ckS=null triggers the ratchet path in drEncryptText:352
+      state.Ns = 0;
+      state.PN = 0;
+      state.ckS = null;
       log({
         transportCounterSeeded: {
           conversationId: convId,
@@ -430,6 +440,7 @@ async function seedTransportCounterFromServer({
           peerDeviceId,
           senderDeviceId: deviceId,
           maxCounter,
+          chainReset: true,
           source: sourceTag
         }
       });
@@ -1299,12 +1310,20 @@ export function hydrateDrStatesFromContactSecrets({ source = 'hydrateDrStatesFro
         peerDeviceId,
         snapshot,
         sourceTag: source || 'hydrateDrStatesFromContactSecrets',
-        sourceTag: source || 'hydrateDrStatesFromContactSecrets',
         // [FIX] PREVENT OVERWRITE: Do not force overwrite if local state is newer.
         // source === 'post-login-hydrate' should respect downgrade protection.
         force: source === 'restore_pipeline_stage3'
       });
-      if (ok) restoredCount += 1;
+      if (ok) {
+        // [Phase 4.2] Force a DH ratchet on the next send after hydration.
+        // The restored snapshot may be stale (from a previous session). Setting
+        // pendingSendRatchet ensures drEncryptText generates a fresh DH keypair
+        // before sending, re-establishing forward secrecy even if the snapshot's
+        // DH keys were compromised.
+        const holder = drState({ peerAccountDigest, peerDeviceId });
+        if (holder) holder.pendingSendRatchet = true;
+        restoredCount += 1;
+      }
       else skippedCount += 1;
     } catch {
       errorCount += 1;
@@ -1895,10 +1914,10 @@ export async function sendDrPlaintextCore(params = {}) {
   logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: preSnapshot || null });
   const pkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
-  const afterEncryptTotal = Number(state?.NsTotal);
-  if (!Number.isFinite(afterEncryptTotal) || afterEncryptTotal === transportCounter + 1 || afterEncryptTotal < transportCounter) {
-    state.NsTotal = transportCounter;
-  }
+  // [Phase 0.2] Transport counter is the single source of truth for NsTotal.
+  // drEncryptText internally increments NsTotal as a side-effect, but reserveTransportCounter
+  // already reserved the correct value. Unconditionally set to avoid drift when ratchet resets Ns.
+  state.NsTotal = transportCounter;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
@@ -2028,8 +2047,11 @@ export async function sendDrPlaintextCore(params = {}) {
     let vaultAtomicPayload = null;
     try {
       const { wrapped, context } = await MessageKeyVault.preparePayload({ ...vaultParams, drStateSnapshot });
+      // [HIGH-03 FIX] Exclude messageKeyB64 from network payload — raw message key
+      // must never leave the browser. Only the MK-wrapped envelope (wrapped_mk) is sent.
+      const { messageKeyB64: _mkLocal, ...vaultParamsSafe } = vaultParams;
       vaultAtomicPayload = {
-        ...vaultParams,
+        ...vaultParamsSafe,
         wrapped_mk: wrapped,
         wrap_context: context,
         dr_state: drStateSnapshot
@@ -2077,8 +2099,7 @@ export async function sendDrPlaintextCore(params = {}) {
         dr: preSnapshot
           ? {
             snapshotBefore: preSnapshot,
-            snapshotAfter: postSnapshot,
-            messageKeyB64
+            snapshotAfter: postSnapshot
           }
           : null,
         vault: vaultAtomicPayload,   // [ATOMIC-SEND]
@@ -2174,6 +2195,27 @@ export async function sendDrPlaintextCore(params = {}) {
         });
         const expectedCounter = sendState.expectedCounter;
         replacementInfo.expectedCounter = expectedCounter;
+
+        // [Phase 3.1] Rollback DR state before re-encrypt.
+        // The first drEncryptText consumed a chain key (ckS → mk → ckS') and advanced Ns.
+        // If we re-encrypt on the ADVANCED state, the consumed chain key becomes a "phantom":
+        //   - Ns was incremented but the server rejected the message
+        //   - The receiver will never fetch this counter → produces a skippedKey
+        // By restoring to preSnapshot (the state before the first drEncryptText), we ensure
+        // the re-encrypt uses the SAME chain position, producing the same mk derivation path.
+        // Only NsTotal is overridden to match the server's expected transport counter.
+        const rollbackOk = restoreDrStateFromSnapshot({
+          snapshot: preSnapshot,
+          peerAccountDigest: peer,
+          peerDeviceId,
+          force: true,
+          sourceTag: 'counterTooLow-rollback'
+        });
+        if (!rollbackOk) {
+          drConsole.error('[counterTooLow] DR state rollback failed — cannot safely re-encrypt');
+          throw new Error('CounterTooLow repair failed: DR state rollback rejected');
+        }
+
         state.NsTotal = expectedCounter - 1;
         failureCounter = expectedCounter;
         failureSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
@@ -2195,10 +2237,8 @@ export async function sendDrPlaintextCore(params = {}) {
         logDrSend('encrypt-before', { peerAccountDigest: peer, snapshot: repairPreSnapshot || null });
         const repairPkt = await drEncryptText(state, text, { deviceId: senderDeviceId, version: 1 });
         const repairMessageKeyB64 = repairPkt?.message_key_b64 || null;
-        const afterRepairTotal = Number(state?.NsTotal);
-        if (!Number.isFinite(afterRepairTotal) || afterRepairTotal === repairTransportCounter + 1 || afterRepairTotal < repairTransportCounter) {
-          state.NsTotal = repairTransportCounter;
-        }
+        // [Phase 0.2] Unconditional transport counter assignment (see text send path comment).
+        state.NsTotal = repairTransportCounter;
         const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
         const repairNow = Date.now();
         const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
@@ -2292,8 +2332,7 @@ export async function sendDrPlaintextCore(params = {}) {
           dr: repairPreSnapshot
             ? {
               snapshotBefore: repairPreSnapshot,
-              snapshotAfter: repairPostSnapshot,
-              messageKeyB64: repairMessageKeyB64
+              snapshotAfter: repairPostSnapshot
             }
             : null
         });
@@ -2988,10 +3027,8 @@ export async function sendDrMediaCore(params = {}) {
   logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
   const pkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
-  const afterEncryptTotal = Number(state?.NsTotal);
-  if (!Number.isFinite(afterEncryptTotal) || afterEncryptTotal === transportCounter + 1 || afterEncryptTotal < transportCounter) {
-    state.NsTotal = transportCounter;
-  }
+  // [Phase 0.2] Unconditional transport counter assignment (see text send path comment).
+  state.NsTotal = transportCounter;
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
@@ -3090,8 +3127,11 @@ export async function sendDrMediaCore(params = {}) {
   let vaultAtomicPayload = null;
   try {
     const { wrapped, context } = await MessageKeyVault.preparePayload({ ...vaultParams, drStateSnapshot });
+    // [HIGH-03 FIX] Exclude messageKeyB64 from network payload — raw message key
+    // must never leave the browser. Only the MK-wrapped envelope (wrapped_mk) is sent.
+    const { messageKeyB64: _mkLocal, drStateSnapshot: _snap, ...vaultParamsSafe } = vaultParams;
     vaultAtomicPayload = {
-      ...vaultParams,
+      ...vaultParamsSafe,
       wrapped_mk: wrapped,
       wrap_context: context,
       dr_state: drStateSnapshot
@@ -3134,8 +3174,7 @@ export async function sendDrMediaCore(params = {}) {
     dr: preSnapshot
       ? {
         snapshotBefore: preSnapshot,
-        snapshotAfter: postSnapshot,
-        messageKeyB64
+        snapshotAfter: postSnapshot
       }
       : null,
     vault: vaultAtomicPayload,   // [ATOMIC-SEND]
@@ -3236,6 +3275,21 @@ export async function sendDrMediaCore(params = {}) {
       });
       const expectedCounter = sendState.expectedCounter;
       replacementInfo.expectedCounter = expectedCounter;
+
+      // [Phase 3.1] Rollback DR state before re-encrypt (media path).
+      // Same rationale as text path: prevent phantom chain key consumption.
+      const rollbackOk = restoreDrStateFromSnapshot({
+        snapshot: preSnapshot,
+        peerAccountDigest: peer,
+        peerDeviceId,
+        force: true,
+        sourceTag: 'counterTooLow-rollback-media'
+      });
+      if (!rollbackOk) {
+        drConsole.error('[counterTooLow:media] DR state rollback failed — cannot safely re-encrypt');
+        throw new Error('CounterTooLow repair failed: DR state rollback rejected (media)');
+      }
+
       state.NsTotal = expectedCounter - 1;
       failureCounter = expectedCounter;
       failureSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
@@ -3257,10 +3311,8 @@ export async function sendDrMediaCore(params = {}) {
       logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: repairPreSnapshot || null, objectKey: metadata.objectKey });
       const repairPkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
       const repairMessageKeyB64 = repairPkt?.message_key_b64 || null;
-      const afterRepairTotal = Number(state?.NsTotal);
-      if (!Number.isFinite(afterRepairTotal) || afterRepairTotal === repairTransportCounter + 1 || afterRepairTotal < repairTransportCounter) {
-        state.NsTotal = repairTransportCounter;
-      }
+      // [Phase 0.2] Unconditional transport counter assignment (see text send path comment).
+      state.NsTotal = repairTransportCounter;
       const repairPostSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
       const repairNow = Date.now();
       const repairHeaderN = Number.isFinite(repairPkt?.header?.n) ? Number(repairPkt.header.n) : null;
@@ -3309,8 +3361,7 @@ export async function sendDrMediaCore(params = {}) {
         dr: repairPreSnapshot
           ? {
             snapshotBefore: repairPreSnapshot,
-            snapshotAfter: repairPostSnapshot,
-            messageKeyB64: repairMessageKeyB64
+            snapshotAfter: repairPostSnapshot
           }
           : null
       });
@@ -4446,7 +4497,8 @@ try {
 
       const peer = job?.peerAccountDigest || null;
       const peerDeviceId = job?.peerDeviceId || null;
-      const dr = job?.dr || {};
+      // [SECURITY FIX HIGH-07] Decrypt DR snapshots sealed in IndexedDB
+      const dr = (await unsealOutboxDr(job?.dr)) || {};
       const messageTs = Number(job?.createdAt);
       const nsBefore = Number.isFinite(dr?.snapshotBefore?.Ns) ? Number(dr.snapshotBefore.Ns) : null;
       const nsAfter = Number.isFinite(dr?.snapshotAfter?.Ns) ? Number(dr.snapshotAfter.Ns) : null;
@@ -4520,10 +4572,17 @@ export async function persistContactShareSequence(params) {
   }
 
   // 1. Advance State (Manual)
-  // This logic mirrors the manual ratchet advance previously in state-live.js
+  // [Phase 0.3] NrTotal is a transport counter (monotonic, never resets).
+  // headerCounter is the transport-layer counter from the server message.
+  // We must only advance NrTotal forward, never allow it to regress
+  // (e.g. when a new ratchet epoch starts, chain counter resets to 0 but NrTotal must not).
+  // Nr (per-chain counter) is managed by drDecryptText and must NOT be overwritten here,
+  // as it resets to 0 on each ratchet epoch.
   if (state) {
-    state.NrTotal = headerCounter;
-    if ((state.Nr || 0) < headerCounter) state.Nr = headerCounter;
+    const currentNrTotal = Number.isFinite(state.NrTotal) ? Number(state.NrTotal) : 0;
+    if (Number.isFinite(headerCounter) && headerCounter > currentNrTotal) {
+      state.NrTotal = headerCounter;
+    }
   }
 
   // 2. Local Persistence (Critical)

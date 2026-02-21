@@ -19,7 +19,8 @@ export const ALLOWED_ENVELOPE_INFO_TAGS = new Set([
   'contact-secrets/backup/v1',
   'devkeys/v1',
   'contact/v1',
-  'message-key/v1'
+  'message-key/v1',
+  'outbox-dr/v1'
 ]);
 
 function requireNonEmptyString(value, key) {

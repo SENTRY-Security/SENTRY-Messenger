@@ -16,6 +16,7 @@
 import { CreateMessageSchema, CreateSecureMessageSchema } from '../schemas/message.schema.js';
 import { signHmac } from '../utils/hmac.js';
 import { z } from 'zod';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { resolveAccountAuth, AccountAuthError } from '../utils/account-context.js';
 import { logger } from '../utils/logger.js';
@@ -28,13 +29,7 @@ export const getHealth = (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 };
 
-export const getStatus = (req, res) => {
-  res.json({
-    name: process.env.SERVICE_NAME,
-    version: process.env.SERVICE_VERSION,
-    env: process.env.NODE_ENV
-  });
-};
+
 
 const DATA_API = process.env.DATA_API_URL;     // e.g. https://message-data.<account>.workers.dev
 const HMAC_SECRET = process.env.DATA_API_HMAC; // must match the Worker secret HMAC_SECRET
@@ -285,7 +280,7 @@ export const createMessage = async (req, res) => {
       mgr.notifySecureMessage({
         targetAccountDigest: receiverDigest,
         conversationId: auth.conversationId,
-        preview: messageInput.preview || messageInput.text || '',
+        // [HIGH-02 FIX] Never send plaintext preview via WS — client decrypts locally
         ts: Number(messageInput.created_at || messageInput.ts || Date.now()),
         senderAccountDigest: auth.accountDigest,
         senderDeviceId,
@@ -483,7 +478,6 @@ export const createSecureMessage = async (req, res) => {
         targetAccountDigest: receiver_account_digest,
         conversationId: auth.conversationId,
         messageId: messageId,
-        preview: '',
         ts: createdAt,
         senderAccountDigest: auth.accountDigest,
         senderDeviceId: canonDevice(senderDeviceId),
@@ -612,7 +606,6 @@ export const atomicSend = async (req, res) => {
           targetAccountDigest: receiverDigest,
           conversationId: conversationId,
           messageId: messageId,
-          preview: '',
           ts: Number(ts) || Date.now(),
           senderAccountDigest: auth.accountDigest,
           senderDeviceId: senderDevice,
@@ -1036,6 +1029,17 @@ export const getSendState = async (req, res) => {
     let data; try { data = JSON.parse(text); } catch { data = text; }
     if (!r.ok) {
       return res.status(502).json({ error: 'D1ReadFailed', status: r.status, details: data });
+    }
+    // [Phase 5.4] Verify response HMAC to prevent MITM counter regression attacks.
+    // If the worker signed the response, the HMAC must match before we trust expectedCounter.
+    const responseHmac = r.headers.get('x-response-hmac');
+    if (responseHmac && HMAC_SECRET) {
+      const expected = crypto.createHmac('sha256', HMAC_SECRET).update(text).digest('base64url');
+      if (responseHmac.length !== expected.length ||
+          !crypto.timingSafeEqual(Buffer.from(responseHmac), Buffer.from(expected))) {
+        logger.error('[send-state] Response HMAC verification failed — possible MITM');
+        return res.status(502).json({ error: 'IntegrityError', message: 'send-state response integrity check failed' });
+      }
     }
     return res.json(data);
   } catch (err) {

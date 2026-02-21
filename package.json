@@ -7,13 +7,10 @@
   "scripts": {
     "dev": "NODE_ENV=development node src/server.js",
     "start": "NODE_ENV=production node src/server.js",
-    "test:login-flow": "node scripts/test-login-flow.mjs",
-    "test:prekeys-devkeys": "node scripts/test-prekeys-devkeys.mjs",
-    "test:messages-secure": "node scripts/test-messages-secure.mjs",
-    "test:front:login": "playwright test",
-    "test:friends-messages": "node scripts/test-friends-messages.mjs",
-    "test:calls-encryption": "node scripts/test-calls-encryption.mjs",
-    "test:front:call-audio": "npx playwright test tests/e2e/call-audio.spec.mjs"
+    "test:unit": "node --test 'tests/unit/*.spec.mjs'",
+    "build:web": "cd web && npm run build",
+    "verify:web": "cd web && npm run verify",
+    "test:front:login": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.0",
@@ -31,7 +28,6 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "ed2curve": "^0.3.0",
-    "elliptic": "^6.5.4",
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
