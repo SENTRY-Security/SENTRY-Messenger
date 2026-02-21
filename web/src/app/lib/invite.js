@@ -1,19 +1,8 @@
-// Friend invite helpers: encode/decode single-protocol payloads only.
-// v3 = legacy JSON-in-base64url  (~840 chars, QR version ~17)
-// v4 = compact binary-in-base64url (~370 chars, QR version ~10)
+// Friend invite helpers: encode/decode compact binary QR payloads.
+// v4 binary-in-base64url (~360 chars, QR version ~10)
 
-const INVITE_V3_JSON = 3;
 const INVITE_V4_BIN = 4;
 const INVITE_QR_TYPE = 'invite_dropbox';
-
-// Legacy JSON schema keys (for v3 decode)
-const INVITE_ALLOWED_KEYS = new Set([
-  'v', 'type', 'inviteId', 'ownerAccountDigest',
-  'ownerDeviceId', 'ownerPublicKeyB64', 'expiresAt', 'prekeyBundle'
-]);
-const BUNDLE_ALLOWED_KEYS = new Set([
-  'ikPubB64', 'spkPubB64', 'signatureB64', 'opkId', 'opkPubB64'
-]);
 
 // Fixed crypto field sizes (bytes)
 const DIGEST_LEN = 32;  // SHA-256
@@ -41,19 +30,10 @@ function requirePositiveNumber(value, code, fieldName) {
   return num;
 }
 
-function assertNoExtraKeys(obj, allowedKeys, code) {
-  for (const key of Object.keys(obj)) {
-    if (!allowedKeys.has(key)) {
-      throw schemaError(code, `unexpected field: ${key}`);
-    }
-  }
-}
-
 function normalizeOwnerBundle(bundle) {
   if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) {
     throw schemaError('InviteQrBundleInvalid', 'prekeyBundle required');
   }
-  assertNoExtraKeys(bundle, BUNDLE_ALLOWED_KEYS, 'InviteQrBundleInvalid');
   const ikPubB64 = requireNonEmptyString(bundle.ikPubB64, 'InviteQrBundleInvalid', 'ikPubB64');
   const spkPubB64 = requireNonEmptyString(bundle.spkPubB64, 'InviteQrBundleInvalid', 'spkPubB64');
   const signatureB64 = requireNonEmptyString(bundle.signatureB64, 'InviteQrBundleInvalid', 'signatureB64');
@@ -113,19 +93,6 @@ function bytesToB64Url(bytes) {
 
 function b64UrlToBytes(str) {
   return b64ToBytes(str.replace(/-/g, '+').replace(/_/g, '/'));
-}
-
-// Legacy: base64url-encode a UTF-8 string (for v3 JSON path)
-function base64UrlEncodeStr(str) {
-  let b64;
-  if (typeof globalThis?.btoa === 'function') {
-    b64 = globalThis.btoa(str);
-  } else if (typeof Buffer !== 'undefined') {
-    b64 = Buffer.from(str, 'utf8').toString('base64');
-  } else {
-    throw new Error('base64 encode not supported');
-  }
-  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 // ─── v4 binary pack / unpack ────────────────────────────────────
@@ -227,46 +194,6 @@ function unpackBinary(bytes) {
   };
 }
 
-// ─── v3 JSON decode (backward-compat) ───────────────────────────
-
-function decodeJsonObject(obj) {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    throw schemaError('InviteQrInvalid', 'invite payload invalid');
-  }
-  assertNoExtraKeys(obj, INVITE_ALLOWED_KEYS, 'InviteQrInvalid');
-  const v = Number(obj.v ?? 0);
-  if (!Number.isFinite(v) || v !== INVITE_V3_JSON) {
-    throw schemaError('InviteQrVersionMismatch', 'invite version mismatch');
-  }
-  const type = requireNonEmptyString(obj.type, 'InviteQrInvalid', 'type');
-  if (type !== INVITE_QR_TYPE) {
-    throw schemaError('InviteQrTypeMismatch', 'invite type mismatch');
-  }
-  const inviteId = requireNonEmptyString(obj.inviteId, 'InviteQrInvalid', 'inviteId');
-  const ownerAccountDigestRaw = requireNonEmptyString(obj.ownerAccountDigest, 'InviteQrInvalid', 'ownerAccountDigest');
-  const ownerAccountDigest = ownerAccountDigestRaw.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  if (!/^[0-9A-F]{64}$/.test(ownerAccountDigest)) {
-    throw schemaError('InviteQrInvalid', 'ownerAccountDigest invalid');
-  }
-  const ownerDeviceId = requireNonEmptyString(obj.ownerDeviceId, 'InviteQrInvalid', 'ownerDeviceId');
-  const ownerPublicKeyB64 = requireNonEmptyString(obj.ownerPublicKeyB64, 'InviteQrInvalid', 'ownerPublicKeyB64');
-  const expiresAt = requirePositiveNumber(obj.expiresAt, 'InviteQrInvalid', 'expiresAt');
-  if (expiresAt > 1_000_000_000_000) {
-    throw schemaError('InviteQrInvalid', 'expiresAt must be unix seconds');
-  }
-  const prekeyBundle = normalizeOwnerBundle(obj.prekeyBundle);
-  return {
-    v: INVITE_V3_JSON,
-    type,
-    inviteId,
-    ownerAccountDigest,
-    ownerDeviceId,
-    ownerPublicKeyB64,
-    expiresAt,
-    prekeyBundle
-  };
-}
-
 // ─── public API ─────────────────────────────────────────────────
 
 export function encodeFriendInvite(invite = {}) {
@@ -289,32 +216,13 @@ export function encodeFriendInvite(invite = {}) {
 export function decodeFriendInvite(input) {
   if (!input && input !== '') throw schemaError('InviteQrMissing', 'invite payload required');
 
-  // Object input → legacy JSON structure
-  if (typeof input === 'object') return decodeJsonObject(input);
-
-  const raw = String(input || '').trim();
+  const raw = typeof input === 'string' ? input.trim() : String(input || '').trim();
   if (!raw) throw schemaError('InviteQrMissing', 'invite payload required');
 
-  // Try v4 binary first
   try {
-    const bytes = b64UrlToBytes(raw);
-    if (bytes.length > 0 && bytes[0] === INVITE_V4_BIN) {
-      return unpackBinary(bytes);
-    }
+    return unpackBinary(b64UrlToBytes(raw));
   } catch (e) {
     if (e.code) throw e;
-    // fall through to JSON
-  }
-
-  // Fallback: v3 JSON
-  let obj;
-  try {
-    const normalized = raw.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
-    const json = decodeB64(padded);
-    obj = JSON.parse(json);
-  } catch (err) {
     throw schemaError('InviteQrDecodeFailed', 'invite payload decode failed');
   }
-  return decodeJsonObject(obj);
 }
