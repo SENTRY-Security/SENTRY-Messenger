@@ -45,7 +45,9 @@ function currentMode() {
 }
 
 function defaultSalt() {
-  return process.env.NTAG424_SALT || process.env.DOMAIN || 'sentry.red';
+  const salt = process.env.NTAG424_SALT || process.env.DOMAIN;
+  if (!salt) throw new Error('NTAG424_SALT (or DOMAIN) must be set — no hardcoded default');
+  return salt;
 }
 
 function defaultInfo() {

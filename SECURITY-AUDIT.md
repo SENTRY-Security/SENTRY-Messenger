@@ -29,7 +29,7 @@
 | ✅ | MED-01 | CORS Allows Null Origin | 2026-02-21 | 區分 `undefined`（合法無 Origin header）與 `null`（沙箱 iframe / file://），僅允許前者 |
 | ✅ | MED-02 | Rate Limiting Disabled in Non-Prod | 2026-02-21 | Rate limit 預設所有環境啟用，僅可透過 `DISABLE_RATE_LIMIT=1` 明確停用 |
 | ✅ | MED-03 | WebSocket Token Custom Implementation | 2026-02-21 | 自定義 JWT 實作替換為 `jsonwebtoken` 函式庫，含 `algorithms` 白名單防止 alg 攻擊 |
-| ⬜ | MED-04 | NTAG424 KDF Hardcoded Salt | — | — |
+| ✅ | MED-04 | NTAG424 KDF Hardcoded Salt | 2026-02-21 | `defaultSalt()` 移除硬編碼 `'sentry.red'` fallback，改為必填（未設定 `NTAG424_SALT` 或 `DOMAIN` 時 throw）；`.env.example` 同步移除範例值 |
 | ✅ | MED-05 | Remote Console Debug Endpoint | 2026-02-21 | 端點已不再使用，移除 `debug.routes.js` 及路由掛載 |
 | ✅ | MED-06 | No SRI for CDN Imports | 2026-02-21 | 所有 CDN 匯入皆有 SRI：`importWithSRI()` + `fetchBlobWithSRI()`（PDF.js worker）+ `<script>`/`<link>` integrity 屬性 |
 | ✅ | MED-07 | `trust proxy` Set to `loopback` | 2026-02-21 | 改為透過 `TRUST_PROXY` 環境變數配置，預設 `loopback`，可隨部署架構調整 |
@@ -385,11 +385,16 @@ return {
 
 ---
 
-### MED-04: NTAG424 KDF 使用硬編碼的預設 Salt
+### MED-04: NTAG424 KDF 使用硬編碼的預設 Salt ✅ 已修正
 
-**檔案：** `src/lib/ntag424-kdf.js`
+**檔案：** `src/lib/ntag424-kdf.js:47-49`
+**修正日期：** 2026-02-21
 
-未設定時，KDF 的 salt 預設為 `'sentry.red'`。硬編碼的 salt 會降低金鑰衍生對抗彩虹表攻擊的有效性。
+**原始問題：** `defaultSalt()` 在 `NTAG424_SALT` 未設定時回退至硬編碼的 `'sentry.red'`。硬編碼的 salt 會降低金鑰衍生對抗彩虹表攻擊的有效性，且讓不同部署環境產生相同的子金鑰。
+
+**已修正：**
+1. `defaultSalt()` 移除 `'sentry.red'` 硬編碼 fallback，改為 `process.env.NTAG424_SALT || process.env.DOMAIN`，若兩者皆未設定則 throw
+2. `.env.example` 中 `NTAG424_SALT` 的範例值已清空，標註為 `REQUIRED`
 
 ---
 
