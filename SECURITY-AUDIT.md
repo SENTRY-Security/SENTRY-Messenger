@@ -21,11 +21,11 @@
 | ✅ | HIGH-01 | AAD Omission Fallback in AES-GCM | 2026-02-20 | Phase 1.4：AAD 為 null 時改為 throw，不再 fallback。commit `787954e` |
 | ⬜ | HIGH-02 | Plaintext Preview via WebSocket | — | 待移除 WS 通知中的 `preview` 欄位 |
 | ✅ | HIGH-03 | Message Key in Encrypted Packet Output | 2026-02-21 | 審計完成：`vaultAtomicPayload` 透過 `...vaultParams` 展開洩漏原始金鑰至 atomicSend。已從 text/media 兩條路徑排除，outbox `dr` 屬性同步清理 |
-| ⬜ | HIGH-04 | Source Maps in Production Build | — | 待設 `sourcemap: false` |
-| ⬜ | HIGH-05 | Missing CSP | — | 待加入 security headers |
-| ⬜ | HIGH-06 | Unrestricted Media Upload Content-Type | — | 待加入 allowlist |
+| ✅ | HIGH-04 | Source Maps in Production Build | 2026-02-21 | `build.mjs` 設定 `sourcemap: false` |
+| ✅ | HIGH-05 | Missing CSP | 2026-02-21 | `_headers` 加入完整 CSP + X-Content-Type-Options + X-Frame-Options + Referrer-Policy + Permissions-Policy |
+| ✅ | HIGH-06 | Unrestricted Media Upload Content-Type | 2026-02-21 | `media.routes.js` 加入 content-type allowlist，非允許類型回傳 415 |
 | ⬜ | HIGH-07 | IndexedDB Key Material Unprotected | — | 待評估 WebAuthn PRF |
-| ⬜ | HIGH-08 | `elliptic` Library Used | — | 待遷移至 `@noble/curves` |
+| ✅ | HIGH-08 | `elliptic` Library Used | 2026-02-21 | 已於 CRIT-04 中遷移至 `@noble/curves` 並移除 `elliptic` 依賴 |
 | ⬜ | MED-01 | CORS Allows Null Origin | — | — |
 | ⬜ | MED-02 | Rate Limiting Disabled in Non-Prod | — | — |
 | ⬜ | MED-03 | WebSocket Token Custom Implementation | — | — |
@@ -283,68 +283,44 @@ return {
 
 ---
 
-### HIGH-04: 正式環境建置啟用了 Source Maps
+### HIGH-04: 正式環境建置啟用了 Source Maps ✅ 已修正
 
 **檔案：** `web/build.mjs:52`
 **嚴重程度：** HIGH
+**修正日期：** 2026-02-21
 
-```javascript
-sourcemap: true,
-```
-
-**影響：** 正式環境的 Source Maps 會暴露完整的原始程式碼，包括：
-- 所有密碼學實作細節
-- 認證邏輯
-- 除錯旗標位置與繞過模式
-- 內部 API 端點結構
-
-這大幅降低了針對應用程式進行定向攻擊的門檻。
-
-**建議：** 在正式環境建置中設定 `sourcemap: false`，或使用 `sourcemap: 'external'` 並僅從需要驗證或存取受限的端點提供 Source Maps。
+**已修正：** 將 `sourcemap: true` 改為 `sourcemap: false`。正式環境不再產生 `.map` 檔案。
 
 ---
 
-### HIGH-05: 缺少 Content Security Policy (CSP)
+### HIGH-05: 缺少 Content Security Policy (CSP) ✅ 已修正
 
 **檔案：** `web/src/_headers`
 **嚴重程度：** HIGH
+**修正日期：** 2026-02-21
 
-`_headers` 檔案僅包含快取控制指令，未定義任何 CSP 標頭。雖然 `helmet()` 為 API 伺服器提供了預設值，但透過 Cloudflare Pages 提供的靜態網頁前端**沒有 CSP**。
+**已修正：** 在 `_headers` 中加入完整的安全標頭：
 
-**影響：** 缺少 CSP 會使應用程式容易受到以下攻擊：
-- 載入外部腳本的 XSS 攻擊
-- 透過行內腳本進行資料外洩
-- 點擊劫持（clickjacking，因缺少 frame-ancestors 指令）
+| 標頭 | 值 |
+|------|-----|
+| Content-Security-Policy | `default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://esm.sh; style-src 'self' https://unpkg.com 'unsafe-inline'; font-src 'self' https://unpkg.com; connect-src 'self' https://api.message.sentry.red wss://api.message.sentry.red https://esm.sh https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'` |
+| X-Content-Type-Options | `nosniff` |
+| X-Frame-Options | `DENY` |
+| Referrer-Policy | `strict-origin-when-cross-origin` |
+| Permissions-Policy | `camera=(), microphone=(self), geolocation=(), payment=()` |
 
-鑑於該應用程式在瀏覽器中處理密碼學金鑰，XSS 尤其危險——攻擊者可能提取棘輪狀態、訊息金鑰或身分金鑰。
-
-**建議：** 在 `web/src/_headers` 中添加完整的 CSP 標頭：
-```
-/*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.workers.dev; frame-ancestors 'none'
-  X-Content-Type-Options: nosniff
-  X-Frame-Options: DENY
-  Referrer-Policy: strict-origin-when-cross-origin
-```
+**注意：** 若使用 R2 presigned URL 直接從瀏覽器上傳/下載媒體，需在部署時將 R2 endpoint 域名加入 `connect-src`。
 
 ---
 
-### HIGH-06: 媒體上傳的 Content-Type 未受限制
+### HIGH-06: 媒體上傳的 Content-Type 未受限制 ✅ 已修正
 
 **檔案：** `src/routes/v1/media.routes.js:188-191`
 **嚴重程度：** HIGH
+**修正日期：** 2026-02-21
 
-```javascript
-// 不限制 Content-Type，全部允許；若要限制可透過 env 重啟後再加入檢查。
-const allowed = [];
-```
-
-**影響：** S3 預簽名 URL 的產生接受任何內容類型。攻擊者可以：
-- 上傳可執行檔（.exe、.html、含有腳本的 .svg）
-- 儲存在 S3/R2 網域上下文中可執行的惡意 HTML
-- 若媒體 URL 曾在瀏覽器環境中被渲染，可進行儲存型 XSS 攻擊
-
-**建議：** 實作內容類型白名單（例如 `image/jpeg`、`image/png`、`image/webp`、`video/mp4`、`audio/ogg`、`application/octet-stream`）。拒絕或清理非預期的類型。
+**已修正：** 加入 content-type allowlist，非允許類型回傳 HTTP 415。允許清單：
+`image/jpeg`, `image/png`, `image/gif`, `image/webp`, `image/heic`, `image/heif`, `video/mp4`, `video/webm`, `video/quicktime`, `audio/aac`, `audio/mp4`, `audio/mpeg`, `audio/ogg`, `audio/webm`, `audio/wav`, `application/pdf`, `application/octet-stream`
 
 ---
 
@@ -364,19 +340,13 @@ const allowed = [];
 
 ---
 
-### HIGH-08: 已有 `@noble/curves` 可用，卻仍使用 `elliptic` 函式庫
+### HIGH-08: 已有 `@noble/curves` 可用，卻仍使用 `elliptic` 函式庫 ✅ 已修正
 
 **檔案：** `src/routes/auth.routes.js`
 **嚴重程度：** HIGH
+**修正日期：** 2026-02-21
 
-伺服器使用 `elliptic` 函式庫進行 P-256 運算，而 `@noble/curves`（一個現代、已通過審計、常數時間的實作）已作為依賴項安裝。
-
-**影響：** `elliptic` 函式庫存在已知的漏洞公告（GHSA-848j-6mx2-7j84），且使用非常數時間的純量乘法，在伺服器環境中容易受到時序側通道攻擊。
-
-**建議：** 將所有 `elliptic` 的使用替換為 `@noble/curves`：
-```javascript
-import { p256 } from '@noble/curves/p256';
-```
+**已修正：** 於 CRIT-04 中一併處理。`auth.routes.js` 中的 `elliptic` P-256 使用已遷移至 `@noble/curves/p256`，`elliptic` 已從 `package.json` 移除。
 
 ---
 

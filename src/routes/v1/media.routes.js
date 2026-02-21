@@ -185,10 +185,24 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
   const key = `${keyPrefix}/${uid}`;
 
-  // 不限制 Content-Type，全部允許；若要限制可透過 env 重啟後再加入檢查。
-  const allowed = [];
+  // [HIGH-06 FIX] Content-Type allowlist — reject executable/HTML/SVG types that
+  // could enable stored XSS if rendered in a browser context.
+  const ALLOWED_CONTENT_TYPES = new Set([
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif',
+    'video/mp4', 'video/webm', 'video/quicktime',
+    'audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/webm', 'audio/wav',
+    'application/pdf',
+    'application/octet-stream'
+  ]);
 
   const ct = input.content_type || 'application/octet-stream';
+  if (!ALLOWED_CONTENT_TYPES.has(ct)) {
+    return res.status(415).json({
+      error: 'UnsupportedMediaType',
+      message: `Content-Type "${ct}" is not allowed`,
+      allowed: [...ALLOWED_CONTENT_TYPES]
+    });
+  }
 
   if (input.size != null) {
     try {

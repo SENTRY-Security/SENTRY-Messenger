@@ -1,7 +1,18 @@
+# Security headers for Cloudflare Pages (app.message.sentry.red)
+#
+# NOTE: If R2 presigned uploads/downloads are used from the browser,
+# add the R2 endpoint domain to connect-src below. Example:
+#   connect-src ... https://<account-id>.r2.cloudflarestorage.com
+#
 /*
   Cache-Control: no-store, no-cache, must-revalidate, max-age=0
   Pragma: no-cache
   Expires: 0
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(self), geolocation=(), payment=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://esm.sh; style-src 'self' https://unpkg.com 'unsafe-inline'; font-src 'self' https://unpkg.com; connect-src 'self' https://api.message.sentry.red wss://api.message.sentry.red https://esm.sh https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
 
 /*.html
   Cache-Control: no-store, no-cache, must-revalidate, max-age=0

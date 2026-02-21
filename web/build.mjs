@@ -49,7 +49,7 @@ const result = await build({
   outdir: resolve(dist, 'app/ui'),
   chunkNames: 'chunks/[name]-[hash]',
   minify: true,
-  sourcemap: true,
+  sourcemap: false,
   target: ['es2022'],
   plugins: [absolutePathPlugin],
   external: [
