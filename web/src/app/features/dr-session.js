@@ -2095,8 +2095,31 @@ export async function sendDrPlaintextCore(params = {}) {
       // Ref: "Counter Gap Prevention"
       if (preSnapshot) {
         try {
-          // Explicit rollback to pre-encryption state.
-          copyDrState(state, preSnapshot, { callsiteTag: 'rollback-enqueue-fail' });
+          // [FIX] Capture live receive-side state before restore.
+          // A concurrent drDecryptText may have advanced ckR/Nr/NrTotal during
+          // our async encrypt+enqueue window. restoreDrStateFromSnapshot would
+          // overwrite those with the stale pre-encrypt snapshot.
+          const liveNr = Number.isFinite(state.Nr) ? Number(state.Nr) : 0;
+          const liveNrTotal = Number.isFinite(state.NrTotal) ? Number(state.NrTotal) : 0;
+          const liveCkR = state.ckR;
+          const liveTheirPub = state.theirRatchetPub;
+          // Use restoreDrStateFromSnapshot (not copyDrState) because preSnapshot
+          // is in _b64 format from snapshotDrState(); copyDrState expects raw
+          // Uint8Array fields and would wipe all keys to null.
+          restoreDrStateFromSnapshot({
+            peerAccountDigest: peer,
+            peerDeviceId,
+            snapshot: preSnapshot,
+            force: true,
+            targetState: state,
+            sourceTag: 'rollback-enqueue-fail'
+          });
+          // Re-apply live receive-side state: use Math.max for counters,
+          // keep live ckR / theirRatchetPub if they've advanced.
+          state.Nr = Math.max(liveNr, Number.isFinite(state.Nr) ? Number(state.Nr) : 0);
+          state.NrTotal = Math.max(liveNrTotal, Number.isFinite(state.NrTotal) ? Number(state.NrTotal) : 0);
+          state.ckR = liveCkR || state.ckR;
+          state.theirRatchetPub = liveTheirPub || state.theirRatchetPub;
           drConsole.warn('[dr-session] State Rolled Back due to Enqueue Failure', { messageId, counter: transportCounter });
         } catch (rollbackErr) {
           drConsole.error('[dr-session] CRITICAL: State Rollback Failed', rollbackErr);
@@ -3088,10 +3111,24 @@ export async function sendDrMediaCore(params = {}) {
     const currentCounter = Number(holder?.NsTotal);
     const shouldRestore = failureSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= failureCounter);
     if (shouldRestore) {
+      // [FIX] Capture live receive-side state before snapshot restore.
+      // A concurrent drDecryptText may have advanced ckR/Nr/NrTotal;
+      // restoreDrStateFromSnapshot would overwrite those with stale values.
+      const liveNr = Number.isFinite(holder?.Nr) ? Number(holder.Nr) : 0;
+      const liveNrTotal = Number.isFinite(holder?.NrTotal) ? Number(holder.NrTotal) : 0;
+      const liveCkR = holder?.ckR;
+      const liveTheirPub = holder?.theirRatchetPub;
       restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: failureSnapshot, force: true, sourceTag: 'send-failed' });
       const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
-      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < failureCounter)) {
-        refreshed.NsTotal = failureCounter;
+      if (refreshed) {
+        if (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < failureCounter) {
+          refreshed.NsTotal = failureCounter;
+        }
+        // Re-apply live receive-side state with Math.max for counters.
+        refreshed.Nr = Math.max(liveNr, Number.isFinite(refreshed.Nr) ? Number(refreshed.Nr) : 0);
+        refreshed.NrTotal = Math.max(liveNrTotal, Number.isFinite(refreshed.NrTotal) ? Number(refreshed.NrTotal) : 0);
+        refreshed.ckR = liveCkR || refreshed.ckR;
+        refreshed.theirRatchetPub = liveTheirPub || refreshed.theirRatchetPub;
       }
     } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < failureCounter)) {
       holder.NsTotal = failureCounter;
