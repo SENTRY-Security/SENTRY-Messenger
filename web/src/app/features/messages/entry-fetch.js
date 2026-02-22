@@ -408,14 +408,10 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         if (FETCH_LOG_ENABLED) log({ atomicPiggybackError: err?.message || err, conversationId, counter });
     }
 
-    // Now attempt to persist to contact-secrets map
-    const snapshotPersisted = !!persistDrSnapshot({ peerAccountDigest: peerDigest, state });
-
-    // Trigger backup regardless of persistDrSnapshot success
-    // Since we have the snapshot in vault, this is additional redundancy
-    const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
-    maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
-
+    // [FIX] Vault put BEFORE persist — only persist DR state to disk when the
+    // message key is safely in the vault.  If vault fails, in-memory state is
+    // advanced (so N+1 can proceed), but disk state stays at pre-N.  On app
+    // crash, the message is re-fetched from server and re-decrypted.
     let vaultPutStatus = null;
     try {
         await vaultPutMessageKey({
@@ -430,8 +426,17 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
             drStateSnapshot // Pass the encrypted snapshot (built from memory state)
         });
         vaultPutStatus = 'ok';
+
+        // Persist DR state to disk only AFTER vault success
+        persistDrSnapshot({ peerAccountDigest: peerDigest, state });
+
+        const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
+        maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
     } catch (err) {
         vaultPutStatus = 'pending';
+        // Key queued for retry — but do NOT persist DR state to disk.
+        // If app crashes, state reverts to last-persisted position and the
+        // message is re-processed from server on next fetch.
         if (enqueuePendingVaultPut) {
             enqueuePendingVaultPut({
                 conversationId,

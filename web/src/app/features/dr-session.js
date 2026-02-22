@@ -3442,7 +3442,10 @@ export async function sendDrMediaCore(params = {}) {
         if (repairErrorCode) repairErr.errorCode = repairErrorCode;
         repairErr.stage = 'send_fail';
         repairErr.replacement = replacementInfo;
-        restoreSendFailure(repairErr);
+        /* [SECURITY FIX] DO NOT rollback on repair network failure.
+         * Same timeout ambiguity as main send path — server may have
+         * received the repaired message.  Burn the counter instead. */
+        throw repairErr;
       }
       const repairData = repairResult.data && typeof repairResult.data === 'object' ? repairResult.data : {};
       const repairAckId = typeof repairData?.id === 'string' && repairData.id ? repairData.id : null;
@@ -3508,7 +3511,12 @@ export async function sendDrMediaCore(params = {}) {
     sendErr.status = Number.isFinite(result?.status) ? Number(result.status) : null;
     sendErr.code = errorCode || sendErr.code || sendErr.status || 'SendFailed';
     sendErr.stage = 'send_fail';
-    restoreSendFailure(sendErr);
+    /* [SECURITY FIX] DO NOT rollback DR state on network send failure.
+     * Same reasoning as sendDrPlaintextCore: timeout ambiguity means the
+     * server may have already received the message.  Rolling back NsTotal
+     * risks counter reuse → Replay / Duplicate N error on the receiver.
+     * It is safer to burn the counter (gap) than to compromise crypto chain. */
+    throw sendErr;
   }
   logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
 
