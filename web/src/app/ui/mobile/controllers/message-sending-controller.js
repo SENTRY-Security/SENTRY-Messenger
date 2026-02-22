@@ -277,6 +277,7 @@ export class MessageSendingController extends BaseController {
                     } else if (msg) {
                         messageStatus.applyOutgoingSent(msg, res, Date.now());
                         applyMediaMeta(msg, res);
+                        this.updateMessagesUI({ preserveScroll: true });
                     }
 
                 } catch (err) {

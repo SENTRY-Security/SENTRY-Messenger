@@ -260,8 +260,8 @@ export function getVaultAckCounter(conversationId) {
   return getVaultAckCounterV2(conversationId);
 }
 
-export function recordVaultAckCounter(conversationId, counter, ts = null) {
-  return recordVaultAckCounterV2(conversationId, counter, ts);
+export function recordVaultAckCounter(conversationId, counter, ts = null, messageId = null) {
+  return recordVaultAckCounterV2(conversationId, counter, ts, messageId);
 }
 
 export function getConversationClearAfter(conversationId) {
