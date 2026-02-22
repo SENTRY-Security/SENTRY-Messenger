@@ -1,5 +1,5 @@
 import { normalizeTimelineMessageId, normalizeCounterValue, normalizeRawMessageId, normalizeMsgTypeValue } from '../parser.js';
-import { resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
+import { normalizeCallLogPayload, resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
 import { getVaultAckCounter } from '../../messages-support/vault-ack-store.js';
 import { normalizeAccountDigest, getAccountDigest } from '../../../core/store.js';
 import { getTimeline } from '../../timeline-store.js';
@@ -212,7 +212,10 @@ export async function renderPdfThumbnail(media, canvas) {
 export function isUserTimelineMessage(msg) {
     if (!msg) return false;
     const type = msg.msgType || msg.subtype || 'text';
-    return type !== 'call-log' && type !== 'control';
+    // [FIX] Include 'call-log' as a user timeline message.
+    // Previously call-log was excluded, preventing thread preview updates,
+    // unread count increments, and notification triggers for call-log entries.
+    return type !== 'control';
 }
 
 export function isOutgoingFromSelf(msg, selfDigest) {
@@ -677,10 +680,29 @@ export class MessageRenderer {
 
 
 
-            if (messageType === 'call-log' && msg.callLog) {
+            if (messageType === 'call-log') {
+                // [FIX] Reconstruct callLog on-the-fly if missing.
+                // Some code paths (vault-replay edge cases, offline sync) may store the
+                // timeline entry with msgType='call-log' but without the pre-built callLog
+                // object, causing the tombstone to silently fall through to standard text
+                // rendering (invisible to the user).
+                let callLogObj = msg.callLog || null;
+                if (!callLogObj) {
+                    try {
+                        const raw = msg.text || '';
+                        const parsed = (typeof raw === 'string' && raw.trim().startsWith('{'))
+                            ? JSON.parse(raw) : {};
+                        const normalized = normalizeCallLogPayload(parsed, msg.meta || {});
+                        const vr = resolveViewerRole(normalized.authorRole, msg.direction || 'incoming');
+                        const desc = describeCallLogForViewer(normalized, vr);
+                        callLogObj = { ...normalized, viewerRole: vr, label: desc.label, subLabel: desc.subLabel };
+                    } catch {
+                        callLogObj = { outcome: 'missed', kind: 'voice', durationSeconds: 0, authorRole: 'outgoing' };
+                    }
+                }
                 li.className = 'call-log-entry';
                 const chip = document.createElement('div');
-                const outcome = msg.callLog.outcome || 'missed';
+                const outcome = callLogObj.outcome || 'missed';
                 chip.className = `call-log-chip ${outcome}`;
 
                 const icon = document.createElement('span');
@@ -694,8 +716,8 @@ export class MessageRenderer {
                 const main = document.createElement('div');
                 main.className = 'call-log-main';
 
-                const viewerRole = msg.callLog.viewerRole || resolveViewerRole(msg.callLog.authorRole, msg.direction);
-                const { label, subLabel } = describeCallLogForViewer(msg.callLog, viewerRole);
+                const viewerRole = callLogObj.viewerRole || resolveViewerRole(callLogObj.authorRole, msg.direction);
+                const { label, subLabel } = describeCallLogForViewer(callLogObj, viewerRole);
 
                 main.textContent = label || '語音通話';
                 textGroup.appendChild(main);
