@@ -4,7 +4,7 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { appendUserMessage, getTimeline } from '../../../features/timeline-store.js';
+import { appendUserMessage, getTimeline, removeMessagesMatching } from '../../../features/timeline-store.js';
 import { sendDrMedia, sendDrText } from '../../../features/dr-session.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
@@ -71,17 +71,22 @@ export class MessageSendingController extends BaseController {
         const state = this.getMessageState();
         if (!state.conversationId) return;
 
+        // Look up the message to abort any in-flight upload.
+        // getTimeline() returns a snapshot array; the objects inside are the
+        // same references stored in the underlying Map, so reading
+        // msg.abortController is safe.
         const timeline = getTimeline(state.conversationId);
-        const idx = timeline.findIndex(m => m.id === id);
-        if (idx !== -1) {
-            const msg = timeline[idx];
-            // [FIX] Abort in-flight upload before removing the message.
-            // Without this, the cancel button only hides the bubble while
-            // the upload keeps running in the background.
-            if (msg.abortController && typeof msg.abortController.abort === 'function') {
-                try { msg.abortController.abort(); } catch { }
-            }
-            timeline.splice(idx, 1);
+        const msg = timeline.find(m => m.id === id || m.messageId === id);
+        if (msg?.abortController && typeof msg.abortController.abort === 'function') {
+            try { msg.abortController.abort(); } catch { }
+        }
+
+        // [FIX] Use removeMessagesMatching to delete from the actual Map store.
+        // Previously we spliced from the snapshot array returned by getTimeline(),
+        // which had no effect on the underlying Map — the message would reappear
+        // on the next render cycle, making the cancel button appear broken.
+        const removed = removeMessagesMatching(state.conversationId, m => m.id === id || m.messageId === id);
+        if (removed > 0) {
             this.updateMessagesUI({ preserveScroll: true });
         }
     }
