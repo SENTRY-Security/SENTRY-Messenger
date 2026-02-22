@@ -505,7 +505,9 @@ export async function decryptReplayBatch({
     }
 
     // [FIX] Apply contact-share profile updates (vault-replay was missing this)
-    if (decryptedItem.msgType === 'contact-share' && text) {
+    // Only apply for INCOMING messages — outgoing contact-shares have sender=self,
+    // and processing them would overwrite the real contact with self's profile.
+    if (decryptedItem.msgType === 'contact-share' && text && decryptedItem.direction === 'incoming') {
       try {
         const messageTs = Number(item.ts ?? item.tsMs ?? Date.now());
         await applyContactShareFromCommit({

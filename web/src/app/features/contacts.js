@@ -236,6 +236,14 @@ export async function applyContactShareFromCommit({
   if (!digest || !deviceId || !sessionKey || !plaintext) {
     return { ok: false, reasonCode: 'MISSING_PARAMS' };
   }
+  // [FIX] Guard: never process a contact-share where peerAccountDigest is self.
+  // This happens when history replay processes OUTGOING contact-share messages —
+  // the sender (self) gets treated as the peer, overwriting the real contact entry
+  // with self's digest/nickname/avatar ("ghost self" bug).
+  const selfDigest = normalizeAccountDigest(getAccountDigest() || null);
+  if (selfDigest && digest === selfDigest) {
+    return { ok: false, reasonCode: 'SELF_DIGEST_SKIP' };
+  }
   let parsed = null;
   try {
     parsed = JSON.parse(plaintext);

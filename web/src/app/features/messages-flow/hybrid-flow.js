@@ -463,7 +463,9 @@ export async function smartFetchMessages({
                 }
 
                 // [FIX] Apply contact-share profile updates (Route A was missing this)
-                if (subtype === 'contact-share' && item.text) {
+                // Only apply for INCOMING — outgoing contact-shares have sender=self,
+                // processing them overwrites the real contact with self's profile.
+                if (subtype === 'contact-share' && item.text && item.direction === 'incoming') {
                     try {
                         const messageTs = Number(item.ts ?? item.timestamp ?? Date.now());
                         await applyContactShareFromCommit({
