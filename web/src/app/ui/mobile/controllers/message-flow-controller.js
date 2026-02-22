@@ -412,7 +412,12 @@ export class MessageFlowController extends BaseController {
             localMessage.counter = ackCounter;
         }
 
-        recordVaultAckCounter(convId, ackCounter, tsRaw);
+        // [FIX] Pass messageId so recordVaultAckCounter can trigger the
+        // per-message vault count HTTP fetch (the "New Logic" path in
+        // receipts.js). Without messageId the authoritative server count
+        // was never queried, leaving delivery status reliant solely on
+        // the counter-based bulk update which can miss individual messages.
+        recordVaultAckCounter(convId, ackCounter, tsRaw, messageId || null);
         logCapped('vaultAckWsRecvTrace', {
             conversationId: convId || null,
             messageId: messageId || null,

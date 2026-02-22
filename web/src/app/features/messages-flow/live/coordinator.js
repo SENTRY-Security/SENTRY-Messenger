@@ -798,7 +798,10 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
       const c = Number(decryptResult?.counter ?? decryptResult?.decryptedMessage?.counter);
       const counter = Number.isFinite(c) ? c : null;
 
-      if (senderAccountDigest && receiverAccountDigest && receiverDeviceId && counter !== null) {
+      // [FIX] Also guard on senderDeviceId (peerDeviceId). Without this check
+      // the call proceeds but maybeSendVaultAckWs silently returns at its own
+      // `!senderDeviceId` guard, making it impossible to diagnose from logs.
+      if (senderAccountDigest && senderDeviceId && receiverAccountDigest && receiverDeviceId && counter !== null) {
         try {
           console.log('[coordinator] maybeSendVaultAckWs', { conv: conversationId, mid: targetMessageId, ctr: counter });
         } catch { }
@@ -811,6 +814,15 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
           receiverDeviceId,
           counter
         });
+      } else {
+        logger('bRouteAckSkipped', {
+          conversationIdPrefix8: slicePrefix(conversationId, 8),
+          hasSenderDigest: !!senderAccountDigest,
+          hasSenderDevice: !!senderDeviceId,
+          hasReceiverDigest: !!receiverAccountDigest,
+          hasReceiverDevice: !!receiverDeviceId,
+          hasCounter: counter !== null
+        }, LIVE_MVP_LOG_CAP);
       }
     } catch (err) {
       logger('bRouteAckTrace', {

@@ -294,6 +294,14 @@ function createMessagesFlowFacade() {
       if (restorePromise && typeof restorePromise.catch === 'function') {
         restorePromise.catch(() => { });
       }
+      // [FIX] Trigger maxCounterProbe on WS reconnect so that any vault-ack
+      // messages lost during the disconnection window are reconciled via HTTP.
+      // Previously only onVisibilityResume called this, leaving WS-reconnect
+      // without a delivery-status reconciliation path.
+      triggerMaxCounterProbeForActiveConversations({
+        source: normalizeSourceTag(source, 'login_resume'),
+        lazy: true
+      });
       return restorePromise || null;
     },
 

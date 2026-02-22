@@ -1642,8 +1642,13 @@ export function initMessagesPane({
         }
       }
     },
+    // [FIX] Previously called undefined triggerOutgoingStatusReconcile which
+    // threw ReferenceError silently. Reconciliation is now handled by the
+    // facade's triggerMaxCounterProbeForActiveConversations (called from
+    // onLoginResume and onVisibilityResume). This stub remains for callers
+    // that still pass reconcileOutgoingStatusNow as a callback.
     reconcileOutgoingStatusNow: ({ conversationId, peerAccountDigest, source } = {}) => {
-      triggerOutgoingStatusReconcile({ conversationId, peerAccountDigest, source });
+      log({ reconcileOutgoingStatusNow: true, conversationId: conversationId || null, source: source || null });
     },
     updateLayoutMode: (args) => controllers.layout.updateLayoutMode(args),
     renderConversationList: () => controllers.conversationList.renderConversationList(),
