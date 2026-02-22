@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload, drEffectiveCounters, isDrRegression } from '../core/contact-secrets.js';
 import {
   initContactSecretsBackup,
   triggerContactSecretsBackup,
@@ -1022,49 +1022,34 @@ export function restoreDrStateFromSnapshot(params = {}) {
     }
   }
 
-  // 4. Determine Downgrade Status
-  // Downgrade = Same Chain (RK Equal) AND Sequence Number Decrease/Same.
-  // If RK Changed (!isRkEqual) -> Allow (Downgrade = false).
-  const downgrade = isRkEqual && hasExistingSend && (!incomingHasSend || (incomingNs !== null && incomingNs < Number(holder.Ns || 0)));
-
-  // [FIX] Nr/NrTotal downgrade protection — prevent stale backup from overwriting
-  // advanced receive chain state during mid-session hydration.
+  // 4. Monotonic enforcement (same chain only; new chain = rk changed → allow reset).
+  // Uses isDrRegression() — the single source of truth for counter comparison.
   const hasExistingRecv = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0
     && Number.isFinite(holder?.Nr) && Number(holder.Nr) >= 0;
   const incomingHasRecv = !!data.ckR_b64 && typeof data.ckR_b64 === 'string';
-  const incomingNr = Number.isFinite(data.Nr) ? Number(data.Nr) : null;
-  const incomingNrTotal = Number.isFinite(data.NrTotal) ? Number(data.NrTotal) : null;
-  const existingNrTotalVal = Number(holder.NrTotal || 0);
-  const nrDowngrade = isRkEqual && hasExistingRecv && (
-    // recv chain 被移除
-    !incomingHasRecv
-    // NrTotal 降級（舊 backup 的 receive chain 進度較低）
-    || (incomingNrTotal !== null && existingNrTotalVal > 0 && incomingNrTotal < existingNrTotalVal)
-    // 同一條 recv chain 但 Nr 降級
-    || (incomingNr !== null && incomingNr < Number(holder.Nr || 0))
-  );
 
-  if (!force && (downgrade || nrDowngrade)) {
-    if (isAutomationEnv()) {
-      drConsole.warn('[dr-restore-skip-downgrade]', JSON.stringify({
-        peerAccountDigest: peer,
-        peerDeviceId,
-        existingNs: Number(holder.Ns) || null,
-        incomingNs,
-        incomingHasSend,
-        existingNr: Number(holder.Nr) || null,
-        incomingNr,
-        existingNrTotal: existingNrTotalVal,
-        incomingNrTotal,
-        hasExistingRecv,
-        incomingHasRecv,
-        nrDowngrade,
-        sourceTag,
-        isRkEqual
-      }));
+  if (!force && isRkEqual) {
+    // Chain removal is also a regression (losing send/recv capability).
+    const chainRemoved = (hasExistingSend && !incomingHasSend) || (hasExistingRecv && !incomingHasRecv);
+    // Counter regression check using the unified utility.
+    const counterRegression = isDrRegression(holder, {
+      NsTotal: Number(data.NsTotal || 0), Ns: Number(data.Ns || 0),
+      NrTotal: Number(data.NrTotal || 0), Nr: Number(data.Nr || 0)
+    });
+    if (chainRemoved || counterRegression) {
+      if (isAutomationEnv()) {
+        const existing = drEffectiveCounters(holder);
+        const incoming = drEffectiveCounters({ NsTotal: Number(data.NsTotal || 0), Ns: Number(data.Ns || 0), NrTotal: Number(data.NrTotal || 0), Nr: Number(data.Nr || 0) });
+        drConsole.warn('[dr-restore-reject-regression]', JSON.stringify({
+          peerAccountDigest: peer, peerDeviceId, sourceTag,
+          existingSent: existing.sent, existingRecv: existing.received,
+          incomingSent: incoming.sent, incomingRecv: incoming.received,
+          chainRemoved
+        }));
+      }
+      logReject('MONOTONIC_REGRESSION_REJECT');
+      return false;
     }
-    logReject(nrDowngrade ? 'NR_DOWNGRADE_REJECT' : 'ROLE_GATING_REJECT');
-    return false;
   }
 
   // 5. Restore check for Snapshot Timestamp (Only if RK is Same)
@@ -1091,18 +1076,19 @@ export function restoreDrStateFromSnapshot(params = {}) {
   if (!Number.isFinite(nrTotal)) {
     throw new Error('dr snapshot missing NrTotal');
   }
-  holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
-  // [FIX] Nr/NrTotal: use max() to prevent regression when same chain (isRkEqual).
-  // New chain (!isRkEqual) allows reset since counters restart at 0.
+  // Monotonic counter assignment: same chain uses max(), new chain allows reset.
   if (isRkEqual) {
+    holder.Ns = Math.max(numberOrDefault(data.Ns, 0), holder.Ns || 0);
     holder.Nr = Math.max(numberOrDefault(data.Nr, 0), holder.Nr || 0);
+    holder.NsTotal = Math.max(nsTotal, holder.NsTotal || 0);
     holder.NrTotal = Math.max(nrTotal, holder.NrTotal || 0);
   } else {
+    holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
     holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
+    holder.NsTotal = nsTotal;
     holder.NrTotal = nrTotal;
   }
   holder.PN = numberOrDefault(data.PN, holder.PN || 0);
-  holder.NsTotal = nsTotal;
   holder.myRatchetPriv = data.myRatchetPriv_b64
     ? decodeKeyString(data.myRatchetPriv_b64, { keyName: 'myRatchetPriv', peerAccountDigest: peer, peerDeviceId, sourceTag })
     : null;
@@ -1221,59 +1207,29 @@ export function persistDrSnapshot(params = {}) {
     if (info?.conversationId || baseConversationId) conversationUpdate.id = info?.conversationId || baseConversationId;
     if (info?.conversationDrInit) conversationUpdate.drInit = info.conversationDrInit;
     if (Object.keys(conversationUpdate).length) update.conversation = conversationUpdate;
-    // 若現存快照有 send 鏈且 Ns>0，而新快照缺 send 鏈或 Ns 更低，避免覆蓋成 0。
+    // Monotonic persist check: reject if new snapshot is a regression from existing or holder.
     const existingSnap = info?.drState || null;
-    const existingNs = Number.isFinite(existingSnap?.Ns) ? Number(existingSnap.Ns) : null;
-    const existingTotal = Number(existingSnap?.NsTotal || 0) + Number(existingSnap?.Ns || 0);
-    const newNs = Number.isFinite(snap?.Ns) ? Number(snap.Ns) : null;
-    const newTotal = Number(snap?.NsTotal || 0) + Number(snap?.Ns || 0);
-    const holderTotal = Number(holder?.NsTotal || 0) + Number(holder?.Ns || 0);
-    const hasExistingSend = !!(existingSnap?.ckS || existingSnap?.ckS_b64) && Number(existingNs) > 0;
-    const hasExistingRecv = !!(existingSnap?.ckR || existingSnap?.ckR_b64) && Number.isFinite(existingSnap?.Nr) && Number(existingSnap.Nr) >= 0;
+    const hasExistingSend = !!(existingSnap?.ckS || existingSnap?.ckS_b64) && Number(existingSnap?.Ns || 0) > 0;
+    const hasExistingRecv = !!(existingSnap?.ckR || existingSnap?.ckR_b64) && Number.isFinite(existingSnap?.Nr);
     const lacksNewSend = !(snap?.ckS || snap?.ckS_b64);
     const lacksNewRecv = !(snap?.ckR || snap?.ckR_b64);
-    const nsDowngrade = Number.isFinite(existingNs) && Number.isFinite(newNs) && newNs < existingNs;
-    const totalDowngrade = Number.isFinite(existingTotal) && Number.isFinite(newTotal) && newTotal < existingTotal;
-    const holderDowngrade = Number.isFinite(holderTotal) && Number.isFinite(newTotal) && newTotal < holderTotal;
-    // [FIX] Nr/NrTotal 降級保護：防止舊 backup 覆蓋較新的 receive chain state
-    const existingNr = Number.isFinite(existingSnap?.Nr) ? Number(existingSnap.Nr) : null;
-    const existingNrTotal = Number.isFinite(existingSnap?.NrTotal) ? Number(existingSnap.NrTotal) : null;
-    const newNr = Number.isFinite(snap?.Nr) ? Number(snap.Nr) : null;
-    const newNrTotal = Number.isFinite(snap?.NrTotal) ? Number(snap.NrTotal) : null;
-    const nrTotalDowngrade = Number.isFinite(existingNrTotal) && existingNrTotal > 0
-      && Number.isFinite(newNrTotal) && newNrTotal < existingNrTotal;
-    if (
-      (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade))
-      || (hasExistingRecv && lacksNewRecv)
-      || (hasExistingRecv && nrTotalDowngrade)
-    ) {
+    // Chain removal check
+    const chainRemoved = (hasExistingSend && lacksNewSend) || (hasExistingRecv && lacksNewRecv);
+    // Counter regression: check against both persisted snapshot AND live holder
+    const snapRegression = existingSnap && isDrRegression(existingSnap, snap);
+    const holderRegression = holder && isDrRegression(holder, snap);
+    if (chainRemoved || snapRegression || holderRegression) {
       if (DEBUG.drCounter) {
+        const e = drEffectiveCounters(existingSnap);
+        const h = drEffectiveCounters(holder);
+        const n = drEffectiveCounters(snap);
         log({
           persistSnapshotSkippedDowngrade: {
-            conversationId: holder?.baseKey?.conversationId || baseConversationId || null,
-            convId: holder?.baseKey?.conversationId || baseConversationId || null,
             peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
-            peerAccountDigest: peer,
-            peerDeviceId,
-            deviceId: selfDeviceId,
-            existingNs,
-            newNs,
-            existingNr,
-            newNr,
-            existingNrTotal,
-            newNrTotal,
-            nrTotalDowngrade,
-            hasExistingSend,
-            hasExistingRecv,
-            lacksNewSend,
-            lacksNewRecv,
-            nsDowngrade,
-            totalDowngrade,
-            holderDowngrade,
-            existingTotal,
-            newTotal,
-            holderTotal,
-            reason: 'downgrade-check'
+            existingSent: e.sent, existingRecv: e.received,
+            holderSent: h.sent, holderRecv: h.received,
+            newSent: n.sent, newRecv: n.received,
+            chainRemoved, snapRegression, holderRegression
           }
         });
       }
@@ -4604,7 +4560,7 @@ export async function persistContactShareSequence(params) {
   // 1. Advance State (Manual)
   // This logic mirrors the manual ratchet advance previously in state-live.js
   if (state) {
-    state.NrTotal = headerCounter;
+    state.NrTotal = Math.max(headerCounter, state.NrTotal || 0);
     if ((state.Nr || 0) < headerCounter) state.Nr = headerCounter;
   }
 
