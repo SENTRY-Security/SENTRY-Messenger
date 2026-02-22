@@ -51,10 +51,11 @@ function resolvePeerIdentityFromStore(conversationId) {
 /**
  * Get the local processed counter for a conversation.
  * This is the maximum incoming counter that has a key in the vault.
- * 
- * Priority:
- * 1. Vault (server-side truth) - most reliable
- * 2. DR state NrTotal (memory fallback) - may be stale
+ *
+ * Priority (vault-first):
+ * 1. Vault (committed truth) — only advances after successful vault put
+ * 2. DR state NrTotal (fallback) — safe because snapshot+rollback ensures
+ *    NrTotal only advances when vault put succeeds
  */
 export async function getLocalProcessedCounter({ conversationId } = {}, deps = {}) {
   const convId = normalizeConversationId(conversationId);
@@ -77,8 +78,9 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     : resolvePeerIdentityFromStore;
   const identity = resolvePeer(convId);
 
-  // Try to get from vault (may be stale if vault put is still in-flight)
-  let vaultResult = null;
+  // Vault is the committed truth: a counter only appears after successful vault put.
+  // DR state in memory may be ahead if vault put failed (stale advance), so we
+  // trust vault first and only fall back to DR state when vault has no counter.
   try {
     const getLatestState = typeof deps?.getLatestState === 'function'
       ? deps.getLatestState
@@ -116,13 +118,15 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
 
     const vaultCounter = normalizeCounter(latestState?.incoming?.header_counter);
     if (vaultCounter !== null) {
-      // [FIX] Do NOT return vault counter immediately — it may be stale.
-      // After a live decrypt, DR state NrTotal is updated in memory instantly
-      // but the vault put is async (10-100ms). During this window the vault
-      // still reports the OLD counter, causing the next message's gap check
-      // to see a false gap (counter > localMax+1) even though the DR state
-      // has already advanced.  We take MAX(vault, drNrTotal) below.
-      vaultResult = vaultCounter;
+      logCapped('localCounterProviderTrace', {
+        conversationIdPrefix8: slicePrefix8(convId),
+        peerKeyPrefix8: slicePrefix8(identity?.key),
+        ok: true,
+        source: 'vault',
+        nrTotal: vaultCounter,
+        hasHolder: true
+      }, 5);
+      return vaultCounter;
     }
   } catch (err) {
     // Vault query failed, fallback to DR state
@@ -132,8 +136,10 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     }, 5);
   }
 
-  // Read DR state in memory (always up-to-date after live decrypt)
-  let drCounter = null;
+  // Fallback: DR state in memory.
+  // With snapshot+rollback in decrypt paths, DR NrTotal only advances
+  // when vault put succeeds, so this is a safe fallback when vault DB
+  // is unreachable or returns no counter.
   if (identity?.key) {
     const drSessMap = typeof deps?.getDrSessMap === 'function'
       ? deps.getDrSessMap()
@@ -141,28 +147,18 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     const holder = drSessMap && typeof drSessMap.get === 'function'
       ? drSessMap.get(identity.key)
       : null;
-    drCounter = normalizeCounter(holder?.NrTotal);
-  }
-
-  // [FIX] Take MAX(vault, drNrTotal) to avoid stale-vault false gaps.
-  // Both values are monotonically increasing, so MAX is always safe.
-  const bestCounter = Math.max(vaultResult ?? -1, drCounter ?? -1);
-
-  if (bestCounter >= 0) {
-    const source = (vaultResult !== null && (vaultResult >= (drCounter ?? -1)))
-      ? 'vault'
-      : (drCounter !== null ? 'dr_state' : 'vault');
-    logCapped('localCounterProviderTrace', {
-      conversationIdPrefix8: slicePrefix8(convId),
-      peerKeyPrefix8: slicePrefix8(identity?.key),
-      ok: true,
-      source,
-      nrTotal: bestCounter,
-      vaultCounter: vaultResult,
-      drCounter,
-      hasHolder: true
-    }, 5);
-    return bestCounter;
+    const drCounter = normalizeCounter(holder?.NrTotal);
+    if (drCounter !== null) {
+      logCapped('localCounterProviderTrace', {
+        conversationIdPrefix8: slicePrefix8(convId),
+        peerKeyPrefix8: slicePrefix8(identity?.key),
+        ok: true,
+        source: 'dr_state_fallback',
+        nrTotal: drCounter,
+        hasHolder: true
+      }, 5);
+      return drCounter;
+    }
   }
 
   // Neither source has a valid counter
