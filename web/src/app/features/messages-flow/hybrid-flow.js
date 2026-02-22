@@ -77,13 +77,55 @@ export async function smartFetchMessages({
     if (!mkRaw) throw new Error('MK missing');
 
     // 1. Fetch Items (with keys included)
-    const { items: rawItems, nextCursor, keys: fetchedKeys } = await listSecureMessagesForReplay({
-        conversationId,
-        limit,
-        cursorTs: cursor?.ts,
-        cursorId: cursor?.id,
-        includeKeys: true
-    });
+    // Retry policy (Route A network):
+    //   - Network disconnection: retry WITHOUT counting (wait for reconnect)
+    //   - Other errors: count toward MAX_FETCH_RETRIES then throw
+    //   - Key crypto failures: handled downstream in decryptReplayBatch (no retry)
+    const isNetworkError = (err) => {
+        if (!err) return false;
+        if (err.name === 'TypeError' && /fetch|network/i.test(err.message || '')) return true;
+        if (err.name === 'AbortError') return true;
+        const status = typeof err.status === 'number' ? err.status : null;
+        if (status === null || status === 0) {
+            if (/fetch|network|timeout|abort|ECONNREFUSED|ENOTFOUND/i.test(err.message || '')) return true;
+        }
+        return false;
+    };
+
+    const MAX_FETCH_RETRIES = 3;
+    const MAX_NETWORK_WAIT_MS = 5 * 60 * 1000; // 5 min cap for offline waits
+    const fetchStartTime = Date.now();
+    let fetchRetryCount = 0;
+    let rawItems, nextCursor, fetchedKeys;
+
+    while (true) {
+        try {
+            const result = await listSecureMessagesForReplay({
+                conversationId,
+                limit,
+                cursorTs: cursor?.ts,
+                cursorId: cursor?.id,
+                includeKeys: true
+            });
+            rawItems = result.items;
+            nextCursor = result.nextCursor;
+            fetchedKeys = result.keys;
+            break;
+        } catch (err) {
+            if (isNetworkError(err)) {
+                if (Date.now() - fetchStartTime > MAX_NETWORK_WAIT_MS) {
+                    throw new Error('Network unavailable too long during fetch');
+                }
+                console.warn('[HybridVerify] Fetch offline, waiting to retry...', err?.message);
+                await new Promise(r => setTimeout(r, 2000));
+                continue;
+            }
+            fetchRetryCount++;
+            if (fetchRetryCount > MAX_FETCH_RETRIES) throw err;
+            console.warn(`[HybridVerify] Fetch error (retry ${fetchRetryCount}/${MAX_FETCH_RETRIES})`, err?.message);
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, fetchRetryCount)));
+        }
+    }
     const serverKeys = fetchedKeys;
 
     if (!rawItems.length) {
