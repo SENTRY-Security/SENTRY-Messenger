@@ -879,17 +879,31 @@ export async function drDecryptText(st, packet, opts = {}) {
       }
     } catch { }
 
+    // [FIX] Capture send-side state BEFORE restoreHolder() wipes it.
+    // drEncryptText may have advanced Ns/ckS/NsTotal concurrently (during our
+    // await points). restoreHolder() would discard those changes, and writing
+    // back unmodified working-copy values would roll back the send chain,
+    // causing duplicate header.n on the next encrypt.
+    const liveNs = Number.isFinite(st.Ns) ? Number(st.Ns) : 0;
+    const liveNsTotal = Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0;
+    const liveCkS = st.ckS;
+    const liveMyRatchetPriv = st.myRatchetPriv;
+    const liveMyRatchetPub = st.myRatchetPub;
+    const livePN = Number.isFinite(st.PN) ? Number(st.PN) : 0;
+
     restoreHolder();
     st.rk = working.rk;
     st.ckR = working.ckR;
-    st.ckS = working.ckS;
-    st.Ns = working.Ns;
+    // Send-side fields: use Math.max for counters and preserve live chain
+    // state to avoid rolling back concurrent drEncryptText advances.
+    st.ckS = liveCkS || working.ckS;
+    st.Ns = Math.max(working.Ns, liveNs);
     st.Nr = working.Nr;
-    st.NsTotal = working.NsTotal;
+    st.NsTotal = Math.max(working.NsTotal, liveNsTotal);
     st.NrTotal = working.NrTotal;
-    st.PN = working.PN;
-    st.myRatchetPriv = working.myRatchetPriv;
-    st.myRatchetPub = working.myRatchetPub;
+    st.PN = Math.max(working.PN, livePN);
+    st.myRatchetPriv = liveMyRatchetPriv || working.myRatchetPriv;
+    st.myRatchetPub = liveMyRatchetPub || working.myRatchetPub;
     st.theirRatchetPub = working.theirRatchetPub;
     st.pendingSendRatchet = working.pendingSendRatchet;
     st.skippedKeys = cloneSkippedKeys(skippedNext);

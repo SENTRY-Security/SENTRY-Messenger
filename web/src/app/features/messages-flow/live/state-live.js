@@ -44,17 +44,23 @@ function snapshotDrStateFields(st) {
  */
 function restoreDrStateFields(st, snapshot) {
   if (!st || !snapshot) return false;
+  // Receive-side fields: restore unconditionally (that's the point of rollback)
   st.ckR = snapshot.ckR;
-  st.ckS = snapshot.ckS;
   st.rk = snapshot.rk;
   st.Nr = snapshot.Nr;
-  st.Ns = snapshot.Ns;
   st.NrTotal = snapshot.NrTotal;
-  st.NsTotal = snapshot.NsTotal;
-  st.myRatchetPriv = snapshot.myRatchetPriv;
-  st.myRatchetPub = snapshot.myRatchetPub;
   st.peerRatchetPub = snapshot.peerRatchetPub;
   if (snapshot.MKSkipped !== undefined) st.MKSkipped = snapshot.MKSkipped;
+  // [FIX] Send-side fields: use Math.max to avoid rolling back concurrent
+  // drEncryptText advances that occurred during our async decrypt window.
+  const snapNs = Number.isFinite(snapshot.Ns) ? Number(snapshot.Ns) : 0;
+  const snapNsTotal = Number.isFinite(snapshot.NsTotal) ? Number(snapshot.NsTotal) : 0;
+  st.Ns = Math.max(snapNs, Number.isFinite(st.Ns) ? Number(st.Ns) : 0);
+  st.NsTotal = Math.max(snapNsTotal, Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0);
+  // Preserve live ckS / keypair if they've advanced beyond the snapshot
+  st.ckS = st.ckS || snapshot.ckS;
+  st.myRatchetPriv = st.myRatchetPriv || snapshot.myRatchetPriv;
+  st.myRatchetPub = st.myRatchetPub || snapshot.myRatchetPub;
   return true;
 }
 
