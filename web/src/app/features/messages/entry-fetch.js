@@ -45,6 +45,7 @@ import {
 import {
     buildCounterMessageId
 } from './counter.js';
+import { isVaultPutNetworkError } from './vault.js';
 import { updateTimelineEntryStatusByCounter, appendUserMessage } from '../timeline-store.js';
 import { applyContactShareFromCommit } from '../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../contact-share.js';
@@ -731,7 +732,13 @@ export async function processDecryptPipelineForConversation({
                     }
                     vaultPutIncomingOk += 1;
                 } catch (vaultErr) {
-                    // Still failed, don't advance counter
+                    // [FIX] Network errors (offline/timeout) must NOT burn retry quota.
+                    // Only server-side rejections count toward exhaustion.
+                    if (isVaultPutNetworkError(vaultErr)) {
+                        // Don't increment failure counter — just break and retry later
+                        break;
+                    }
+                    // Still failed (server error), don't advance counter
                     const vaultFailureCount = incrementPipelineFailure(streamKey, counter);
                     if (vaultFailureCount >= COUNTER_GAP_RETRY_MAX) {
                         // Exhausted retries - advance anyway
