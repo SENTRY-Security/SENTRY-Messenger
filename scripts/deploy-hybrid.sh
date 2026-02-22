@@ -24,7 +24,7 @@ echo "⚡️ Deploying Data Worker..."
 if [ -d "$WORKER_DIR" ]; then
   cd "$WORKER_DIR"
   echo "   - Applying D1 migrations (remote)..."
-  npx wrangler d1 migrations apply message_db --remote
+  CI=true npx wrangler d1 migrations apply message_db --remote
   npx wrangler deploy
   cd ..
 else
