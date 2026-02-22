@@ -1490,6 +1490,7 @@ export function setupShareController(options) {
             conversationId: convId ? safePrefix(convId, 8) : null
           }, 5);
           setTimeout(() => {
+            if (pairingState.open) closePairingCodeModal();
             if (shareState.open) closeShareModal();
             if (convId && typeof switchTab === 'function') switchTab('messages');
           }, 1200);
@@ -1671,6 +1672,7 @@ export function setupShareController(options) {
       if (inviteScanStatus) inviteScanStatus.textContent = '投遞成功，等待對方取回';
       switchTab('contacts');
       setTimeout(() => {
+        if (pairingState.open) closePairingCodeModal();
         if (shareState.open) closeShareModal();
       }, 700);
     } catch (err) {
@@ -2662,6 +2664,9 @@ export function setupShareController(options) {
         setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });
         if (source === 'manual') {
           setInviteStatus('已取回邀請', { loading: false });
+        }
+        if (pairingState.open) {
+          closePairingCodeModal();
         }
         if (shareState.open && source !== 'manual') {
           const tab = typeof getCurrentTab === 'function' ? getCurrentTab() : null;
