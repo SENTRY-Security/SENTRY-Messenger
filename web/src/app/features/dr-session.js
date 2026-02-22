@@ -1204,9 +1204,17 @@ export function persistDrSnapshot(params = {}) {
     const nsDowngrade = Number.isFinite(existingNs) && Number.isFinite(newNs) && newNs < existingNs;
     const totalDowngrade = Number.isFinite(existingTotal) && Number.isFinite(newTotal) && newTotal < existingTotal;
     const holderDowngrade = Number.isFinite(holderTotal) && Number.isFinite(newTotal) && newTotal < holderTotal;
+    // [FIX] Nr/NrTotal 降級保護：防止舊 backup 覆蓋較新的 receive chain state
+    const existingNr = Number.isFinite(existingSnap?.Nr) ? Number(existingSnap.Nr) : null;
+    const existingNrTotal = Number.isFinite(existingSnap?.NrTotal) ? Number(existingSnap.NrTotal) : null;
+    const newNr = Number.isFinite(snap?.Nr) ? Number(snap.Nr) : null;
+    const newNrTotal = Number.isFinite(snap?.NrTotal) ? Number(snap.NrTotal) : null;
+    const nrTotalDowngrade = Number.isFinite(existingNrTotal) && existingNrTotal > 0
+      && Number.isFinite(newNrTotal) && newNrTotal < existingNrTotal;
     if (
       (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade))
       || (hasExistingRecv && lacksNewRecv)
+      || (hasExistingRecv && nrTotalDowngrade)
     ) {
       if (DEBUG.drCounter) {
         log({
@@ -1219,6 +1227,11 @@ export function persistDrSnapshot(params = {}) {
             deviceId: selfDeviceId,
             existingNs,
             newNs,
+            existingNr,
+            newNr,
+            existingNrTotal,
+            newNrTotal,
+            nrTotalDowngrade,
             hasExistingSend,
             hasExistingRecv,
             lacksNewSend,

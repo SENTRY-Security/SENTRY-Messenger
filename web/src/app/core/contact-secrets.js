@@ -1029,6 +1029,27 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     return null;
   }
   try {
+    // [FIX] Snapshot existing DR states BEFORE clearing map.
+    // After rebuild from backup, any DR state that was more advanced locally
+    // (higher NsTotal or NrTotal) will be restored to prevent counter regression.
+    let preClearDrStates = null;
+    if (replace && map.size > 0) {
+      preClearDrStates = new Map();
+      for (const [peerKey, record] of map.entries()) {
+        if (!record?.devices || typeof record.devices !== 'object') continue;
+        for (const [devId, devRec] of Object.entries(record.devices)) {
+          const dr = devRec?.drState;
+          if (!dr) continue;
+          const nsTotal = Number(dr.NsTotal || 0) + Number(dr.Ns || 0);
+          const nrTotal = Number(dr.NrTotal || 0);
+          if (nsTotal > 0 || nrTotal > 0) {
+            const key = `${peerKey}::${devId}`;
+            preClearDrStates.set(key, { peerKey, devId, drState: dr, nsTotal, nrTotal });
+          }
+        }
+      }
+      if (!preClearDrStates.size) preClearDrStates = null;
+    }
     if (replace) {
       map.clear();
       contactAliasToPrimary.clear();
@@ -1141,7 +1162,37 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
         log({ contactSecretRestoreError: err?.message || err, source: reason, peerAccountDigest: identity.key || identity.accountDigest || null });
       }
     }
-    debugLog('restore', { entries: map.size, corruptEntries: corruptEntries.length, source: reason });
+    // [FIX] Post-import DR state reconciliation:
+    // Restore any pre-clear DR state that was more advanced than the imported backup.
+    let drStateRestoredCount = 0;
+    if (preClearDrStates && preClearDrStates.size > 0) {
+      for (const [compositeKey, prev] of preClearDrStates.entries()) {
+        const record = map.get(prev.peerKey);
+        if (!record?.devices || typeof record.devices !== 'object') continue;
+        const devRec = record.devices[prev.devId];
+        if (!devRec) continue;
+        const importedDr = devRec.drState;
+        const importedNsTotal = importedDr ? (Number(importedDr.NsTotal || 0) + Number(importedDr.Ns || 0)) : 0;
+        const importedNrTotal = importedDr ? Number(importedDr.NrTotal || 0) : 0;
+        // Restore if local was strictly more advanced on either chain
+        if (prev.nsTotal > importedNsTotal || prev.nrTotal > importedNrTotal) {
+          devRec.drState = prev.drState;
+          drStateRestoredCount += 1;
+          try {
+            console.warn('[contact-secrets:dr-state-preserved]', {
+              peerKey: prev.peerKey?.slice(0, 8) || null,
+              devId: prev.devId?.slice(-4) || null,
+              localNsTotal: prev.nsTotal,
+              importedNsTotal,
+              localNrTotal: prev.nrTotal,
+              importedNrTotal,
+              source: reason
+            });
+          } catch { }
+        }
+      }
+    }
+    debugLog('restore', { entries: map.size, corruptEntries: corruptEntries.length, drStateRestoredCount, source: reason });
     const summaryPayload = {
       entries: totalEntries,
       withDrState,
