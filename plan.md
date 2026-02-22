@@ -1,350 +1,143 @@
-# 方向 C：Invite CONFIRMED 狀態 + Startup Reconciler
+# 配對碼加好友功能實作計劃
 
-## 概要
+## 概述
+在現有 QR Code 加好友流程旁，新增「6 碼配對碼」方式。點擊「加好友」按鈕後先跳出選單（QR / 配對碼）。配對碼 Modal 預設顯示自己的 6 碼（唯讀），可切換為輸入對方碼的模式。
 
-在 invite 生命週期加入 `CONFIRMED` 狀態，讓 client 在完整處理完 consume 後回報確認。
-兩個補救觸發點：(1) 啟動時 Stage6 自動 reconcile  (2) 聯絡人清單下拉刷新時觸發 reconcile。
+## 修改檔案清單
 
-狀態流：`CREATED → DELIVERED → CONSUMED → CONFIRMED`
-
----
-
-## 改動清單
-
-### 1. Data Worker — `data-worker/src/worker.js`
-
-#### 1a. 新增欄位驗證常數（~line 306 區塊）
-
-```js
-const INVITE_CONFIRM_ALIAS_FIELDS = new Set([
-  'invite_id', 'account_token', 'account_digest', 'device_id'
-]);
-const INVITE_CONFIRM_ALLOWED_FIELDS = new Set([
-  'inviteId', 'accountToken', 'accountDigest', 'deviceId'
-]);
-const INVITE_UNCONFIRMED_ALIAS_FIELDS = new Set([
-  'account_token', 'account_digest'
-]);
-const INVITE_UNCONFIRMED_ALLOWED_FIELDS = new Set([
-  'accountToken', 'accountDigest'
-]);
+### 1. 資料庫遷移
+**新增**: `data-worker/migrations/0007_add_pairing_code.sql`
+```sql
+ALTER TABLE invite_dropbox ADD COLUMN pairing_code TEXT;
+ALTER TABLE invite_dropbox ADD COLUMN prekey_bundle_json TEXT;
+CREATE UNIQUE INDEX idx_invite_dropbox_pairing_code
+  ON invite_dropbox(pairing_code)
+  WHERE pairing_code IS NOT NULL AND status = 'CREATED';
 ```
 
-#### 1b. 新增 `POST /d1/invites/confirm`（插在 `/d1/invites/status` 之前，~line 1698）
+### 2. Data Worker — `data-worker/src/worker.js`
 
-- 驗證 inviteId (min 8) + accountToken
-- resolveAccount
-- SELECT status, owner_account_digest WHERE invite_id=?
-- 403 if owner mismatch
-- 若 status 已是 'CONFIRMED' → 回 { ok: true }（冪等）
-- 若 status 不是 'CONSUMED' → 400 錯誤
-- UPDATE status='CONFIRMED', updated_at=now WHERE invite_id=? AND status='CONSUMED'
-- 回傳 { ok: true, invite_id }
+#### 2a. 修改 `/d1/invites/create` (~line 1486)
+- 產生隨機 6 碼數字（`000000`-`999999`）
+- 碰撞檢查：查詢未過期 + status=CREATED 的碼，若碰撞就重新產生（最多 10 次）
+- INSERT 時加入 `pairing_code` + `prekey_bundle_json` 欄位
+- **配對碼模式時** `expires_at` = `now + 180`（3 分鐘），QR 模式保持 300 秒
+- Response 加入 `pairing_code`
 
-#### 1c. 新增 `POST /d1/invites/unconfirmed`（插在 confirm 之後）
+#### 2b. 新增 `/d1/invites/lookup-code`
+- 接收 `pairingCode` (6 碼) + `accountToken` + `accountDigest`
+- Rate limit（記憶體 Map）：
+  - Key: `account_digest`
+  - 每次查詢失敗（碼不存在/已過期）+1 attempt
+  - 達到 3 次 → 鎖定 30 秒
+  - 成功查詢 → 重置計數
+- 查詢 `invite_dropbox WHERE pairing_code=? AND status='CREATED' AND expires_at > now`
+- 回傳完整 invite 資料（invite_id, owner_account_digest, owner_device_id, owner_public_key_b64, expires_at, prekey_bundle）
 
-- 驗證 accountToken
-- resolveAccount
-- SELECT invite_id, owner_device_id, expires_at FROM invite_dropbox
-  WHERE owner_account_digest=? AND status='CONSUMED' AND expires_at > now
-- 回傳 { ok: true, invites: [{ invite_id, owner_device_id, expires_at }, ...] }
+### 3. Express Controller — `src/controllers/invites.controller.js`
 
-#### 1d. 更新過期排除邏輯
+#### 3a. 修改 `createInviteDropbox()`
+- Response 加入 `pairing_code` 欄位
 
-`markInviteExpired` 的呼叫處（status endpoint line ~1755）：
-將 `status !== 'CONSUMED'` 改為 `status !== 'CONSUMED' && status !== 'CONFIRMED'`
+#### 3b. 新增 `lookupPairingCode()`
+- Zod schema: `{ pairing_code: z.string().regex(/^\d{6}$/), account_token, account_digest? }`
+- 驗證帳號 → 轉發至 `/d1/invites/lookup-code`
+- 回傳完整 invite 資料
 
----
+### 4. 路由 — `src/routes/v1/invites.routes.js`
+- 新增 `r.post('/invites/lookup-code', lookupPairingCode)`
 
-### 2. Express API Gateway — `src/controllers/invites.controller.js`
+### 5. Client API — `web/src/app/api/invites.js`
+- 新增 `invitesLookupCode({ pairingCode })` 函式
 
-#### 2a. 新增 Zod schemas
+### 6. HTML — `web/src/pages/app.html`
 
-```js
-const InviteConfirmSchema = z.object({
-  invite_id: z.string().min(8),
-  account_token: z.string().min(8).optional(),
-  account_digest: z.string().regex(AccountDigestRegex).optional()
-}).strict();
-
-const InviteUnconfirmedSchema = z.object({
-  account_token: z.string().min(8).optional(),
-  account_digest: z.string().regex(AccountDigestRegex).optional()
-}).strict();
+#### 6a. 加好友選單（在 btnShareModal 附近）
+```html
+<div id="addFriendMenu" class="add-friend-menu" style="display:none">
+  <button id="btnAddFriendQr">QRCode 加好友</button>
+  <button id="btnAddFriendCode">使用配對碼</button>
+</div>
 ```
 
-#### 2b. 新增欄位驗證常數
-
-```js
-const INVITE_CONFIRM_ALIAS_FIELDS = new Set(['inviteId', 'accountToken', 'accountDigest']);
-const INVITE_CONFIRM_ALLOWED_FIELDS = new Set(['invite_id', 'account_token', 'account_digest']);
-const INVITE_UNCONFIRMED_ALIAS_FIELDS = new Set(['inviteId', 'accountToken', 'accountDigest']);
-const INVITE_UNCONFIRMED_ALLOWED_FIELDS = new Set(['invite_id', 'account_token', 'account_digest']);
+#### 6b. 配對碼 Modal
+```html
+<div id="pairingCodeModal" class="modal pairing-code-modal" style="display:none">
+  <div class="modal-backdrop" data-pairing-close></div>
+  <div class="modal-panel pairing-code-panel">
+    <header class="pairing-code-head">
+      <button class="share-close" data-pairing-close-btn>×</button>
+      <span class="pairing-code-title">配對碼</span>
+    </header>
+    <div class="pairing-code-body">
+      <div class="pairing-code-countdown">
+        <span id="pairingCountdown"></span>
+        <button id="pairingRefreshBtn" type="button"><i class='bx bx-refresh'></i></button>
+      </div>
+      <div id="pairingDigits" class="pairing-code-digits">
+        <input type="tel" maxlength="1" readonly />  (×6)
+      </div>
+      <div class="pairing-code-actions">
+        <button id="btnPairingToggle" type="button">輸入對方配對碼</button>
+        <button id="btnPairingConfirm" type="button" style="display:none">確認</button>
+      </div>
+    </div>
+  </div>
+</div>
 ```
 
-#### 2c. 新增 `confirmInviteDropbox` handler
+### 7. CSS — `web/src/assets/app-share.css`
+- `.add-friend-menu` 彈出選單樣式
+- `.pairing-code-modal` / `.pairing-code-panel` Modal 樣式
+- `.pairing-code-digits` 6 格 PIN 輸入框
+- 倒數計時（共用現有 countdown 風格）
 
-- 驗 x-device-id header
-- rejectInviteSchemaMismatch
-- Zod parse
-- resolveAccountAuth
-- HMAC sign → proxy POST to `${DATA_API}/d1/invites/confirm`
-- 回傳 upstream 結果
+### 8. Share Controller — `web/src/app/ui/mobile/controllers/share-controller.js`
 
-#### 2d. 新增 `unconfirmedInvitesDropbox` handler
+#### 8a. 修改 `btnShareModal` click (line 329)
+- 改為顯示 `addFriendMenu` 選單
 
-- 驗 x-device-id header
-- rejectInviteSchemaMismatch
-- Zod parse
-- resolveAccountAuth
-- HMAC sign → proxy POST to `${DATA_API}/d1/invites/unconfirmed`
-- 回傳 { invites: [...] }
+#### 8b. 新增配對碼邏輯
+- `openPairingCodeModal()` — 開 Modal + 建立 invite + 顯示 6 碼
+- `closePairingCodeModal()` — 關閉 Modal
+- `togglePairingMode()` — 切換 readonly/input 模式
+- `onPairingConfirm()` — 呼叫 `invitesLookupCode` → 走 `handleInviteScan` 同路徑
+- `startPairingCountdown()` — 3 分鐘倒數，到期自動刷新
+- PIN 輸入框自動跳格邏輯
 
-### 3. Express Routes — `src/routes/v1/invites.routes.js`
+#### 8c. return 新增 public API
+- `openPairingCodeModal`, `closePairingCodeModal`
 
-新增兩行：
-```js
-r.post('/invites/confirm', confirmInviteDropbox);
-r.post('/invites/unconfirmed', unconfirmedInvitesDropbox);
-```
+### 9. app-mobile.js — `web/src/app/ui/app-mobile.js`
+- 新增 DOM element references（addFriendMenu, pairingCodeModal 等）
+- 傳遞新 DOM elements 到 share-controller
 
----
-
-### 4. Client API — `web/src/app/api/invites.js`
-
-#### 4a. `invitesConfirm({ inviteId })`
-
-```js
-export async function invitesConfirm({ inviteId } = {}) {
-  if (!inviteId) throw new Error('inviteId required');
-  const payload = withAccountToken({ invite_id: inviteId });
-  const { r, data } = await fetchJSON('/api/v1/invites/confirm', payload, withDeviceHeaders());
-  if (!r.ok) throw buildError(r.status, data, 'invite confirm failed');
-  return data;
-}
-```
-
-#### 4b. `invitesUnconfirmed()`
-
-```js
-export async function invitesUnconfirmed() {
-  const payload = withAccountToken({});
-  const { r, data } = await fetchJSON('/api/v1/invites/unconfirmed', payload, withDeviceHeaders());
-  if (!r.ok) throw buildError(r.status, data, 'invite unconfirmed query failed');
-  return data;
-}
-```
-
----
-
-### 5. Consume 完成後 Confirm — `web/src/app/ui/mobile/controllers/share-controller.js`
-
-在 `handleContactInitEvent` 函數末尾（line ~2247，`triggerContactSecretsBackup` 之後、`return` 之前）插入：
-
-```js
-if (inviteId) {
-  invitesConfirm({ inviteId }).catch(err =>
-    console.warn('[share-controller] invite confirm failed', err)
-  );
-}
-```
-
-需要在檔案頂部 import `invitesConfirm`。
-
----
-
-### 6. Startup Reconciler Stage6 — `web/src/app/features/restore-coordinator.js`
-
-#### 6a. 在 `startRestorePipeline` 的 Stage5 之後、`return { ok: true }` 之前，新增 Stage6
+## 流程
 
 ```
-setStage('Stage6');
-try {
-  const result = await reconcileUnconfirmedInvites();
-  recordStageResult('Stage6', {
-    ok: true,
-    progress: {
-      total: result.total,
-      alreadyReady: result.alreadyReady,
-      replayed: result.replayed,
-      failed: result.failed
-    }
-  });
-} catch (err) {
-  recordStageResult('Stage6', {
-    ok: false,
-    reasonCode: 'RECONCILE_FAILED'
-  });
-  // Stage6 失敗不 block pipeline
-}
+User clicks "加好友"
+    ↓
+┌─────────────┐
+│  選單彈出    │
+│  1. QR Code  │ → 現有 shareModal 流程
+│  2. 配對碼   │ → 配對碼 Modal
+└─────────────┘
+    ↓ (選配對碼)
+POST /api/v1/invites/create → 回傳 { invite_id, pairing_code, ... }
+    ↓
+┌───────────────────────────┐
+│  配對碼 Modal              │
+│  [4] [8] [2] [9] [1] [7]  │ ← readonly，我的碼
+│  [輸入對方配對碼]           │
+└───────────────────────────┘
+    ↓ (點擊 "輸入對方配對碼")
+┌───────────────────────────┐
+│  配對碼 Modal              │
+│  [ ] [ ] [ ] [ ] [ ] [ ]  │ ← 可輸入
+│  [顯示我的配對碼] [確認]    │
+└───────────────────────────┘
+    ↓ (輸入 6 碼 + 確認)
+POST /api/v1/invites/lookup-code { pairing_code }
+    ↓
+回傳完整 invite 資料 → 走 handleInviteScan 同路徑（deliver + x3dh）
 ```
-
-#### 6b. `reconcileUnconfirmedInvites()` 實作
-
-```
-async function reconcileUnconfirmedInvites() {
-  const res = await invitesUnconfirmed();
-  const invites = res?.invites || [];
-  let alreadyReady = 0, replayed = 0, failed = 0;
-
-  for (const inv of invites) {
-    const inviteId = inv.invite_id;
-    try {
-      // 嘗試查現有 contactCore — 但我們不知道 peerAccountDigest
-      // 所以走 re-consume 路線：consume 是冪等的，重新拿 envelope
-      const consumeRes = await invitesConsume({ inviteId });
-      const envelope = consumeRes?.ciphertext_envelope;
-      if (!envelope) { failed++; continue; }
-
-      const devicePriv = await ensureDevicePrivLoaded();
-      const payload = await openInviteEnvelope({
-        ownerPrivateKeyB64: devicePriv.spk_priv_b64,
-        envelope
-      });
-      const normalized = normalizeContactInitPayload(payload);
-      const peerDigest = normalized.guestAccountDigest;
-
-      // 檢查是否已有完整 contactCore
-      const existing = findContactCoreByAccountDigest(peerDigest);
-      const readyEntry = existing.find(e => e.entry?.isReady);
-
-      if (readyEntry) {
-        // 已完成，只是漏了 confirm
-        await invitesConfirm({ inviteId });
-        alreadyReady++;
-      } else {
-        // 需要重跑完整處理
-        const msg = {
-          guestAccountDigest: normalized.guestAccountDigest,
-          guestDeviceId: normalized.guestDeviceId,
-          guestBundle: normalized.guestBundle,
-          guestProfile: normalized.guestProfile
-        };
-        await handleContactInitEvent(msg, { inviteId });
-        await invitesConfirm({ inviteId });
-        replayed++;
-      }
-    } catch (err) {
-      failed++;
-      logCapped('reconcileInviteFailed', { inviteId, error: err?.message }, 5);
-    }
-  }
-  return { total: invites.length, alreadyReady, replayed, failed };
-}
-```
-
-#### 6c. 更新 STAGES 常數
-
-```js
-const STAGES = ['Stage0', 'Stage1', 'Stage2', 'Stage3', 'Stage4', 'Stage5', 'Stage6'];
-```
-
-#### 6d. 新增 imports
-
-在 restore-coordinator.js 頂部加入：
-```js
-import { invitesConsume, invitesConfirm, invitesUnconfirmed } from '../api/invites.js';
-```
-
-`openInviteEnvelope`、`normalizeContactInitPayload`、`findContactCoreByAccountDigest`、
-`handleContactInitEvent`、`ensureDevicePrivLoaded` 等函數需要從各自模組 import，
-或將 reconcile 邏輯放在 share-controller 中 export 給 restore-coordinator 呼叫。
-
----
-
-### 7. 下拉刷新觸發 Reconcile — `web/src/app/ui/mobile/controllers/conversation-list-controller.js`
-
-#### 7a. 在 `handleConversationRefresh()` 中新增 reconcile 呼叫
-
-現有邏輯（line ~644）：
-```js
-async handleConversationRefresh() {
-    if (this.conversationsRefreshing) return;
-    this.conversationsRefreshing = true;
-    this.updateConversationPull(CONV_PULL_THRESHOLD);
-    try {
-        this.deps.syncConversationThreadsFromContacts?.();
-        await this.deps.refreshConversationPreviews?.({ force: true });
-        this.renderConversationList();
-    } catch (err) { ... }
-}
-```
-
-改為：
-```js
-async handleConversationRefresh() {
-    if (this.conversationsRefreshing) return;
-    this.conversationsRefreshing = true;
-    this.updateConversationPull(CONV_PULL_THRESHOLD);
-    try {
-        // 同時觸發 unconfirmed invite reconcile（fire-and-forget）
-        this.deps.reconcileUnconfirmedInvites?.()
-            .then(result => {
-                if (result && (result.replayed > 0 || result.alreadyReady > 0)) {
-                    // 有補救成功的 invite，重新 sync + render
-                    this.deps.syncConversationThreadsFromContacts?.();
-                    this.renderConversationList();
-                }
-            })
-            .catch(err => this.log?.({ reconcileOnRefreshError: err?.message }));
-
-        this.deps.syncConversationThreadsFromContacts?.();
-        await this.deps.refreshConversationPreviews?.({ force: true });
-        this.renderConversationList();
-    } catch (err) { ... }
-}
-```
-
-#### 7b. 傳入 deps
-
-在建立 ConversationListController 的地方（`messages-pane.js` 或 `app-mobile.js`），
-將 `reconcileUnconfirmedInvites` 作為 dep 傳入：
-
-```js
-reconcileUnconfirmedInvites: () => reconcileUnconfirmedInvites()
-```
-
-#### 7c. `reconcileUnconfirmedInvites` 提取為共用模組
-
-由於 Stage6 和下拉刷新都要用，將 `reconcileUnconfirmedInvites()` 從 restore-coordinator
-提取到 `web/src/app/features/invite-reconciler.js` 作為獨立模組：
-
-```js
-// web/src/app/features/invite-reconciler.js
-import { invitesConsume, invitesConfirm, invitesUnconfirmed } from '../api/invites.js';
-// ... 其他需要的 imports
-
-let _reconciling = false; // 防止並發
-
-export async function reconcileUnconfirmedInvites() {
-    if (_reconciling) return { total: 0, alreadyReady: 0, replayed: 0, failed: 0, skipped: true };
-    _reconciling = true;
-    try {
-        const res = await invitesUnconfirmed();
-        const invites = res?.invites || [];
-        let alreadyReady = 0, replayed = 0, failed = 0;
-
-        for (const inv of invites) {
-            // ... 同 6b 的邏輯
-        }
-        return { total: invites.length, alreadyReady, replayed, failed };
-    } finally {
-        _reconciling = false;
-    }
-}
-```
-
-restore-coordinator.js 和 conversation-list-controller.js 都 import 這個共用函數。
-
----
-
-## 注意事項
-
-- `POST /d1/invites/confirm` 是冪等的：已 CONFIRMED 直接回 ok
-- `POST /d1/invites/consume` 也是冪等的：已 CONSUMED 直接回 envelope
-- Stage6 失敗不 block pipeline（非 fatal）
-- confirm 在 share-controller 是 fire-and-forget，不影響使用者體驗
-- 不需要 D1 migration（CONFIRMED 只是 status 欄位的新字串值，updated_at 已存在）
-- reconcile 有兩個觸發點：(1) 啟動 Stage6  (2) 下拉刷新聯絡人清單
-- `_reconciling` mutex 防止兩個觸發點並發執行（例如啟動時 Stage6 還在跑，用戶就下拉了）
-- 下拉刷新中 reconcile 是 fire-and-forget，不 block 主刷新流程
