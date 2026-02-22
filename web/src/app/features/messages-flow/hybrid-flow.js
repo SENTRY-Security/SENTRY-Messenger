@@ -540,81 +540,36 @@ export async function smartFetchMessages({
                     try {
                         // We must re-acquire the lock for the sequential group
                         await enqueueDrIncomingOp(groupLockKey, async () => {
-                            // [FIX] Deterministic failure reason codes that will NEVER
-                            // succeed on retry. Retrying these only blocks the queue
-                            // (~62 s with exponential backoff) and delays subsequent
-                            // messages from decrypting — causing the "stuck 解密中"
-                            // symptom when a contact-share (nickname change) fails.
-                            const NON_RETRYABLE_REASONS = new Set([
-                                'DECRYPT_FAIL',
-                                'MISSING_PARAMS',
-                                'MISSING_SENDER_IDENTITY',
-                                'ADAPTERS_UNAVAILABLE',
-                                'MISSING_CIPHERTEXT',
-                                'MISSING_MESSAGE_KEY',
-                                'CONTROL_SKIP'
-                            ]);
-
                             for (const item of backgroundQueue) {
-                                const MAX_RETRIES = 5;
-                                let retries = 0;
                                 let bResult = null;
 
-                                // ... Route B Retry Loop ...
-                                while (retries <= MAX_RETRIES) {
-                                    try {
-                                        bResult = await consumeLiveJob({
-                                            type: 'WS_INCOMING',
-                                            conversationId,
-                                            messageId: item.id,
-                                            serverMessageId: item.id,
-                                            tokenB64: context.tokenB64,
-                                            peerAccountDigest: groupDigest,
-                                            peerDeviceId: groupDeviceId,
-                                            sourceTag: 'hybrid-replay-fallback-seq-bg',
-                                            skipIncomingLock: true, // we held it via enqueue
-                                            bootstrapDrFromGuestBundle: null,
-                                            skipGapCheck: true
-                                        }, {
-                                            fetchSecureMessageById: createNoOpFetcher(item),
-                                            stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })
-                                        });
-                                        if (bResult.ok && bResult.decrypted) break;
-                                        // [FIX] Early exit for deterministic failures.
-                                        // These errors (e.g. replay/out-of-order counter,
-                                        // AEAD mismatch) are permanent — retrying wastes
-                                        // time and blocks all subsequent messages in queue.
-                                        if (bResult.reasonCode && NON_RETRYABLE_REASONS.has(bResult.reasonCode)) {
-                                            console.warn('[HybridVerify] Route B non-retryable failure, skipping', {
-                                                messageId: item.id,
-                                                reasonCode: bResult.reasonCode,
-                                                counter: item.counter
-                                            });
-                                            break;
-                                        }
-                                        retries++;
-                                        if (retries <= MAX_RETRIES) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
-                                    } catch (e) {
-                                        // [FIX] Check if thrown error is deterministic
-                                        // (e.g. "replay or out-of-order message counter").
-                                        const msg = e?.message || '';
-                                        const isDeterministic = msg.includes('replay')
-                                            || msg.includes('out-of-order')
-                                            || msg.includes('invalid message counter')
-                                            || msg.includes('INVARIANT_VIOLATION');
-                                        if (isDeterministic) {
-                                            console.warn('[HybridVerify] Route B deterministic exception, skipping', {
-                                                messageId: item.id,
-                                                error: msg,
-                                                counter: item.counter
-                                            });
-                                            bResult = { ok: false, reasonCode: 'DECRYPT_FAIL' };
-                                            break;
-                                        }
-                                        retries++;
-                                        if (retries <= MAX_RETRIES) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
-                                        else bResult = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
-                                    }
+                                // Live decrypt is a deterministic cryptographic operation:
+                                // same state + same ciphertext = same result every time.
+                                // Retrying serves no purpose and only blocks the queue.
+                                try {
+                                    bResult = await consumeLiveJob({
+                                        type: 'WS_INCOMING',
+                                        conversationId,
+                                        messageId: item.id,
+                                        serverMessageId: item.id,
+                                        tokenB64: context.tokenB64,
+                                        peerAccountDigest: groupDigest,
+                                        peerDeviceId: groupDeviceId,
+                                        sourceTag: 'hybrid-replay-fallback-seq-bg',
+                                        skipIncomingLock: true, // we held it via enqueue
+                                        bootstrapDrFromGuestBundle: null,
+                                        skipGapCheck: true
+                                    }, {
+                                        fetchSecureMessageById: createNoOpFetcher(item),
+                                        stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })
+                                    });
+                                } catch (e) {
+                                    console.warn('[HybridVerify] Route B decrypt exception', {
+                                        messageId: item.id,
+                                        error: e?.message || String(e),
+                                        counter: item.counter
+                                    });
+                                    bResult = { ok: false, reasonCode: 'DECRYPT_FAIL' };
                                 }
 
                                 // Handle Result
