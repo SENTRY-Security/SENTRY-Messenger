@@ -2835,15 +2835,20 @@ export async function sendDrMedia(params = {}) {
   const TICKET_POLL_MS = 50;
   const TICKET_TIMEOUT_MS = 120000; // 2 min safety timeout
   const ticketStart = Date.now();
-  while ((mediaSendTicketCurrent.get(queueKey) || 0) < myTicket) {
-    if (Date.now() - ticketStart > TICKET_TIMEOUT_MS) {
-      // Safety: don't block forever; advance ticket and proceed.
-      console.warn('[dr-media-send] ticket wait timeout', { queueKey, myTicket, current: mediaSendTicketCurrent.get(queueKey) });
-      break;
-    }
-    await new Promise((r) => setTimeout(r, TICKET_POLL_MS));
-  }
   try {
+    while ((mediaSendTicketCurrent.get(queueKey) || 0) < myTicket) {
+      // [FIX] Respect cancel signal during ticket wait — user expects
+      // the cancel button to take effect immediately, not after a 2-min wait.
+      if (abortSignal?.aborted) {
+        throw new DOMException('aborted', 'AbortError');
+      }
+      if (Date.now() - ticketStart > TICKET_TIMEOUT_MS) {
+        // Safety: don't block forever; advance ticket and proceed.
+        console.warn('[dr-media-send] ticket wait timeout', { queueKey, myTicket, current: mediaSendTicketCurrent.get(queueKey) });
+        break;
+      }
+      await new Promise((r) => setTimeout(r, TICKET_POLL_MS));
+    }
     return await enqueueDrSessionOp(queueKey, () => sendDrMediaCore({
       ...params,
       _preUpload: { uploadResult, previewInfo, previewLocalUrl, sharedMediaKey, conversationId }

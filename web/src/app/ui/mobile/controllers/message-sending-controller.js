@@ -64,30 +64,23 @@ export class MessageSendingController extends BaseController {
 
     /**
      * Remove a local message by ID (used for cancelling uploads etc.)
+     * Also aborts any in-flight upload tied to this message.
      */
     removeLocalMessageById(id) {
         if (!id) return;
         const state = this.getMessageState();
         if (!state.conversationId) return;
 
-        // This is a bit tricky since timeline-store might not expose a remove method easily.
-        // In messages-pane.js it seems it wasn't implemented or relied on re-render?
-        // Let's check the original implementation.
-        // Original implementation in messages-pane.js line 1921:
-        /*
-          function removeLocalMessageById(id) {
-            const state = getMessageState();
-            const timeline = getTimeline(state.conversationId);
-            const idx = timeline.findIndex(m => m.id === id);
-            if (idx !== -1) {
-              timeline.splice(idx, 1);
-              updateMessagesUI({ preserveScroll: true });
-            }
-          }
-        */
         const timeline = getTimeline(state.conversationId);
         const idx = timeline.findIndex(m => m.id === id);
         if (idx !== -1) {
+            const msg = timeline[idx];
+            // [FIX] Abort in-flight upload before removing the message.
+            // Without this, the cancel button only hides the bubble while
+            // the upload keeps running in the background.
+            if (msg.abortController && typeof msg.abortController.abort === 'function') {
+                try { msg.abortController.abort(); } catch { }
+            }
             timeline.splice(idx, 1);
             this.updateMessagesUI({ preserveScroll: true });
         }
@@ -282,6 +275,13 @@ export class MessageSendingController extends BaseController {
                     }
 
                 } catch (err) {
+                    // [FIX] User-initiated cancel (AbortError) — the message was
+                    // already removed from the timeline by removeLocalMessageById,
+                    // so just silently continue to the next file.
+                    if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
+                        continue;
+                    }
+
                     const messageStatus = this.deps.messageStatus;
                     const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
 
