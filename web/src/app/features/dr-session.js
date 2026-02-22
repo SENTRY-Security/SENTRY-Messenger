@@ -1027,7 +1027,24 @@ export function restoreDrStateFromSnapshot(params = {}) {
   // If RK Changed (!isRkEqual) -> Allow (Downgrade = false).
   const downgrade = isRkEqual && hasExistingSend && (!incomingHasSend || (incomingNs !== null && incomingNs < Number(holder.Ns || 0)));
 
-  if (!force && downgrade) {
+  // [FIX] Nr/NrTotal downgrade protection — prevent stale backup from overwriting
+  // advanced receive chain state during mid-session hydration.
+  const hasExistingRecv = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0
+    && Number.isFinite(holder?.Nr) && Number(holder.Nr) >= 0;
+  const incomingHasRecv = !!data.ckR_b64 && typeof data.ckR_b64 === 'string';
+  const incomingNr = Number.isFinite(data.Nr) ? Number(data.Nr) : null;
+  const incomingNrTotal = Number.isFinite(data.NrTotal) ? Number(data.NrTotal) : null;
+  const existingNrTotalVal = Number(holder.NrTotal || 0);
+  const nrDowngrade = isRkEqual && hasExistingRecv && (
+    // recv chain 被移除
+    !incomingHasRecv
+    // NrTotal 降級（舊 backup 的 receive chain 進度較低）
+    || (incomingNrTotal !== null && existingNrTotalVal > 0 && incomingNrTotal < existingNrTotalVal)
+    // 同一條 recv chain 但 Nr 降級
+    || (incomingNr !== null && incomingNr < Number(holder.Nr || 0))
+  );
+
+  if (!force && (downgrade || nrDowngrade)) {
     if (isAutomationEnv()) {
       drConsole.warn('[dr-restore-skip-downgrade]', JSON.stringify({
         peerAccountDigest: peer,
@@ -1035,11 +1052,18 @@ export function restoreDrStateFromSnapshot(params = {}) {
         existingNs: Number(holder.Ns) || null,
         incomingNs,
         incomingHasSend,
+        existingNr: Number(holder.Nr) || null,
+        incomingNr,
+        existingNrTotal: existingNrTotalVal,
+        incomingNrTotal,
+        hasExistingRecv,
+        incomingHasRecv,
+        nrDowngrade,
         sourceTag,
-        isRkEqual // Debug info
+        isRkEqual
       }));
     }
-    logReject('ROLE_GATING_REJECT');
+    logReject(nrDowngrade ? 'NR_DOWNGRADE_REJECT' : 'ROLE_GATING_REJECT');
     return false;
   }
 
@@ -1068,10 +1092,17 @@ export function restoreDrStateFromSnapshot(params = {}) {
     throw new Error('dr snapshot missing NrTotal');
   }
   holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
-  holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
+  // [FIX] Nr/NrTotal: use max() to prevent regression when same chain (isRkEqual).
+  // New chain (!isRkEqual) allows reset since counters restart at 0.
+  if (isRkEqual) {
+    holder.Nr = Math.max(numberOrDefault(data.Nr, 0), holder.Nr || 0);
+    holder.NrTotal = Math.max(nrTotal, holder.NrTotal || 0);
+  } else {
+    holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
+    holder.NrTotal = nrTotal;
+  }
   holder.PN = numberOrDefault(data.PN, holder.PN || 0);
   holder.NsTotal = nsTotal;
-  holder.NrTotal = nrTotal;
   holder.myRatchetPriv = data.myRatchetPriv_b64
     ? decodeKeyString(data.myRatchetPriv_b64, { keyName: 'myRatchetPriv', peerAccountDigest: peer, peerDeviceId, sourceTag })
     : null;
@@ -1540,6 +1571,10 @@ function normalizePeerBundleFromPrekeys(bundle) {
 const sessionLocks = new Map();
 const stateLockQueue = new Map();
 const incomingLockQueue = new Map();
+// [FIX] Media send ordering: ticket-based gate to ensure Phase 3 (DR encrypt)
+// runs in the same order as Phase 1 (user intent), regardless of upload speed.
+const mediaSendTicketCounter = new Map(); // key → next ticket number
+const mediaSendTicketCurrent = new Map(); // key → current serving ticket
 
 /**
  * [STATE MUTEX] (Low Level)
@@ -2761,6 +2796,8 @@ export async function sendDrMedia(params = {}) {
     conversationId: convId || convContext?.conversation_id || convContext?.conversationId || null
   });
 
+  // [FIX] Allocate a send-order ticket BEFORE upload, so Phase 3 respects user intent order.
+  let myTicket;
   await enqueueDrSessionOp(queueKey, async () => {
     let state = drState({ peerAccountDigest: peer, peerDeviceId });
     let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
@@ -2777,6 +2814,12 @@ export async function sendDrMedia(params = {}) {
     }
     if (!hasDrState && !hasDrInit) {
       throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+    }
+    // Assign ticket while holding the session lock — guarantees monotonic ordering.
+    myTicket = mediaSendTicketCounter.get(queueKey) || 0;
+    mediaSendTicketCounter.set(queueKey, myTicket + 1);
+    if (!mediaSendTicketCurrent.has(queueKey)) {
+      mediaSendTicketCurrent.set(queueKey, 0);
     }
   });
 
@@ -2830,10 +2873,36 @@ export async function sendDrMedia(params = {}) {
   });
 
   // --- Phase 3: DR encrypt + vault + send (brief lock — only crypto, no network upload) ---
-  return enqueueDrSessionOp(queueKey, () => sendDrMediaCore({
-    ...params,
-    _preUpload: { uploadResult, previewInfo, previewLocalUrl, sharedMediaKey, conversationId }
-  }));
+  // [FIX] Wait for our ticket before entering the DR session lock.
+  // This ensures that even if image B uploads faster than image A,
+  // B waits for A to DR-encrypt first, preserving monotonic Ns ordering.
+  const TICKET_POLL_MS = 50;
+  const TICKET_TIMEOUT_MS = 120000; // 2 min safety timeout
+  const ticketStart = Date.now();
+  while ((mediaSendTicketCurrent.get(queueKey) || 0) < myTicket) {
+    if (Date.now() - ticketStart > TICKET_TIMEOUT_MS) {
+      // Safety: don't block forever; advance ticket and proceed.
+      console.warn('[dr-media-send] ticket wait timeout', { queueKey, myTicket, current: mediaSendTicketCurrent.get(queueKey) });
+      break;
+    }
+    await new Promise((r) => setTimeout(r, TICKET_POLL_MS));
+  }
+  try {
+    return await enqueueDrSessionOp(queueKey, () => sendDrMediaCore({
+      ...params,
+      _preUpload: { uploadResult, previewInfo, previewLocalUrl, sharedMediaKey, conversationId }
+    }));
+  } finally {
+    // Advance the ticket counter so the next queued upload can proceed.
+    const nextTicket = (mediaSendTicketCurrent.get(queueKey) || 0) + 1;
+    mediaSendTicketCurrent.set(queueKey, nextTicket);
+    // Cleanup if all tickets are consumed.
+    const maxTicket = mediaSendTicketCounter.get(queueKey) || 0;
+    if (nextTicket >= maxTicket) {
+      mediaSendTicketCounter.delete(queueKey);
+      mediaSendTicketCurrent.delete(queueKey);
+    }
+  }
 }
 
 export async function sendDrMediaCore(params = {}) {

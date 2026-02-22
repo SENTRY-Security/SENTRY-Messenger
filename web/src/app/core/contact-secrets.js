@@ -1134,6 +1134,38 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
             });
           } catch { }
         }
+        // [FIX] In merge mode (!replace), preserve existing DR states that are more advanced
+        // than the incoming backup. This prevents performSync() from overwriting active DR state.
+        if (!replace) {
+          const existingRecord = map.get(peerKey);
+          if (existingRecord?.devices && record?.devices) {
+            for (const [devId, existingDev] of Object.entries(existingRecord.devices)) {
+              const existingDr = existingDev?.drState;
+              if (!existingDr) continue;
+              const incomingDev = record.devices[devId];
+              if (!incomingDev) {
+                // Incoming backup lacks this device — preserve the entire device record.
+                record.devices[devId] = existingDev;
+                continue;
+              }
+              const incomingDr = incomingDev.drState;
+              const existingNsT = Number(existingDr.NsTotal || 0) + Number(existingDr.Ns || 0);
+              const existingNrT = Number(existingDr.NrTotal || 0);
+              const incomingNsT = incomingDr ? (Number(incomingDr.NsTotal || 0) + Number(incomingDr.Ns || 0)) : 0;
+              const incomingNrT = incomingDr ? Number(incomingDr.NrTotal || 0) : 0;
+              if (existingNsT > incomingNsT || existingNrT > incomingNrT) {
+                // Existing DR state is more advanced — keep it.
+                incomingDev.drState = existingDr;
+                // Also preserve drHistory and cursors from existing if more advanced.
+                if (Array.isArray(existingDev.drHistory) && existingDev.drHistory.length > (Array.isArray(incomingDev.drHistory) ? incomingDev.drHistory.length : 0)) {
+                  incomingDev.drHistory = existingDev.drHistory;
+                  incomingDev.drHistoryCursorTs = existingDev.drHistoryCursorTs;
+                  incomingDev.drHistoryCursorId = existingDev.drHistoryCursorId;
+                }
+              }
+            }
+          }
+        }
         map.set(peerKey, record);
         registerContactAliases(peerKey, aliases);
         debugLog('restore-entry', {
