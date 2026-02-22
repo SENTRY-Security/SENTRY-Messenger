@@ -77,7 +77,8 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     : resolvePeerIdentityFromStore;
   const identity = resolvePeer(convId);
 
-  // Try to get from vault first (most reliable source)
+  // Try to get from vault (may be stale if vault put is still in-flight)
+  let vaultResult = null;
   try {
     const getLatestState = typeof deps?.getLatestState === 'function'
       ? deps.getLatestState
@@ -115,15 +116,13 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
 
     const vaultCounter = normalizeCounter(latestState?.incoming?.header_counter);
     if (vaultCounter !== null) {
-      logCapped('localCounterProviderTrace', {
-        conversationIdPrefix8: slicePrefix8(convId),
-        peerKeyPrefix8: slicePrefix8(identity?.key),
-        ok: true,
-        source: 'vault',
-        nrTotal: vaultCounter,
-        hasHolder: true
-      }, 5);
-      return vaultCounter;
+      // [FIX] Do NOT return vault counter immediately — it may be stale.
+      // After a live decrypt, DR state NrTotal is updated in memory instantly
+      // but the vault put is async (10-100ms). During this window the vault
+      // still reports the OLD counter, causing the next message's gap check
+      // to see a false gap (counter > localMax+1) even though the DR state
+      // has already advanced.  We take MAX(vault, drNrTotal) below.
+      vaultResult = vaultCounter;
     }
   } catch (err) {
     // Vault query failed, fallback to DR state
@@ -133,7 +132,40 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     }, 5);
   }
 
-  // Fallback to DR state in memory
+  // Read DR state in memory (always up-to-date after live decrypt)
+  let drCounter = null;
+  if (identity?.key) {
+    const drSessMap = typeof deps?.getDrSessMap === 'function'
+      ? deps.getDrSessMap()
+      : getDrSessMap();
+    const holder = drSessMap && typeof drSessMap.get === 'function'
+      ? drSessMap.get(identity.key)
+      : null;
+    drCounter = normalizeCounter(holder?.NrTotal);
+  }
+
+  // [FIX] Take MAX(vault, drNrTotal) to avoid stale-vault false gaps.
+  // Both values are monotonically increasing, so MAX is always safe.
+  const bestCounter = Math.max(vaultResult ?? -1, drCounter ?? -1);
+
+  if (bestCounter >= 0) {
+    const source = (vaultResult !== null && (vaultResult >= (drCounter ?? -1)))
+      ? 'vault'
+      : (drCounter !== null ? 'dr_state' : 'vault');
+    logCapped('localCounterProviderTrace', {
+      conversationIdPrefix8: slicePrefix8(convId),
+      peerKeyPrefix8: slicePrefix8(identity?.key),
+      ok: true,
+      source,
+      nrTotal: bestCounter,
+      vaultCounter: vaultResult,
+      drCounter,
+      hasHolder: true
+    }, 5);
+    return bestCounter;
+  }
+
+  // Neither source has a valid counter
   if (!identity?.key) {
     logCapped('localCounterProviderTrace', {
       conversationIdPrefix8: slicePrefix8(convId),
@@ -155,46 +187,22 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     return 0;
   }
 
-  const drSessMap = typeof deps?.getDrSessMap === 'function'
-    ? deps.getDrSessMap()
-    : getDrSessMap();
-  const holder = drSessMap && typeof drSessMap.get === 'function'
-    ? drSessMap.get(identity.key)
-    : null;
-  const counter = normalizeCounter(holder?.NrTotal);
-
-  if (counter === null) {
-    const hasHolder = !!holder;
-    const nrTotalRaw = Number.isFinite(Number(holder?.NrTotal)) ? Number(holder?.NrTotal) : null;
-    logCapped('localCounterProviderTrace', {
-      conversationIdPrefix8: slicePrefix8(convId),
-      peerKeyPrefix8: slicePrefix8(identity.key),
-      ok: false,
-      source: 'dr_state_fallback',
-      nrTotal: null,
-      nrTotalRaw,
-      unknownReason: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE',
-      hasHolder
-    }, 5);
-    if (onUnknown) {
-      onUnknown({
-        conversationId: convId,
-        reasonCode: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE',
-        source: 'dr_state_fallback',
-        unknownReason: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE'
-      });
-    }
-    return 0;
-  }
-
   logCapped('localCounterProviderTrace', {
     conversationIdPrefix8: slicePrefix8(convId),
     peerKeyPrefix8: slicePrefix8(identity.key),
-    ok: true,
+    ok: false,
     source: 'dr_state_fallback',
-    nrTotal: counter,
-    hasHolder: true
+    nrTotal: null,
+    unknownReason: 'MISSING_DR_STATE',
+    hasHolder: false
   }, 5);
-
-  return counter;
+  if (onUnknown) {
+    onUnknown({
+      conversationId: convId,
+      reasonCode: 'MISSING_DR_STATE',
+      source: 'dr_state_fallback',
+      unknownReason: 'MISSING_DR_STATE'
+    });
+  }
+  return 0;
 }

@@ -98,6 +98,26 @@ const maxCounterProbeQueue = createGapQueue({
 const maxCounterProbe = createMaxCounterProbe({ gapQueue: maxCounterProbeQueue });
 const liveLegacyAdapters = createLiveLegacyAdapters();
 
+// [FIX] Per-conversation promise chain for live message processing.
+// Without serialization, two messages for the same conversation (counter N and
+// N+1) run their gap checks concurrently.  Both see localMax = N-1 because
+// neither decrypt has started yet.  N passes (N == N-1+1) but N+1 fails
+// (N+1 > N-1+1) triggering a false GapDetectedError.
+// By chaining promises per conversation, N+1's gap check runs only after N's
+// full pipeline (gap check → decrypt → vault put → append) completes.
+const liveConversationChains = new Map();
+function enqueueLiveForConversation(conversationId, fn) {
+  const prev = liveConversationChains.get(conversationId) || Promise.resolve();
+  const next = prev.catch(() => { }).then(fn);
+  liveConversationChains.set(conversationId, next);
+  next.finally(() => {
+    if (liveConversationChains.get(conversationId) === next) {
+      liveConversationChains.delete(conversationId);
+    }
+  });
+  return next;
+}
+
 function toConversationIdPrefix8(conversationId) {
   if (!conversationId) return null;
   const trimmed = String(conversationId).trim();
@@ -540,8 +560,14 @@ function createMessagesFlowFacade() {
           };
 
           // Fix: Handle GapDetectedError — trigger maxCounterProbe for gap recovery
-          const livePromise = consumeLiveJob(liveJob, liveCtx)
-            .catch(err => {
+          // [FIX] Serialize live jobs per conversation via enqueueLiveForConversation.
+          // Without this, concurrent gap checks for N and N+1 both see stale localMax,
+          // causing N+1 to trigger a false GapDetectedError.
+          const liveConvId = liveJob?.conversationId || liveJobConversationId;
+          const livePromise = enqueueLiveForConversation(
+            liveConvId,
+            () => consumeLiveJob(liveJob, liveCtx)
+          ).catch(err => {
               if (err?.name === 'GapDetectedError') {
                 console.log('[facade] Gap detected in B-Route, triggering maxCounterProbe for recovery', err.message);
 
