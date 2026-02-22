@@ -2813,44 +2813,37 @@ export function setupShareController(options) {
     };
     entry.timer = setTimeout(async () => {
       pendingContactUpdates.delete(digest);
-      try {
-        await sendContactShare({
-          peerAccountDigest: payload.digest,
-          conversation: payload.conversation,
-          sessionKey: payload.sessionKey,
-          peerDeviceId: payload.peerDeviceId,
-          drInit: payload.drInit,
-          overrides: payload.overrides,
-          reason: payload.reason
-        });
-        entry.resolve?.(true);
-      } catch (err) {
-        console.error('[share-controller]', {
-          contactBroadcastError: err?.message || err,
-          peerAccountDigest: payload.digest,
-          peerDeviceId: payload.peerDeviceId,
-          reason: payload.reason,
-          attempt: 'debounced'
-        });
+      const MAX_RETRIES = 3;
+      const sendParams = {
+        peerAccountDigest: payload.digest,
+        conversation: payload.conversation,
+        sessionKey: payload.sessionKey,
+        peerDeviceId: payload.peerDeviceId,
+        drInit: payload.drInit,
+        overrides: payload.overrides,
+        reason: payload.reason
+      };
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
-          await sendContactShare({
-            peerAccountDigest: payload.digest,
-            conversation: payload.conversation,
-            sessionKey: payload.sessionKey,
-            peerDeviceId: payload.peerDeviceId,
-            drInit: payload.drInit,
-            overrides: payload.overrides,
-            reason: payload.reason
-          });
+          if (attempt > 0) {
+            // Exponential backoff: 2s, 4s
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+          }
+          await sendContactShare(sendParams);
           entry.resolve?.(true);
-        } catch (err2) {
+          return;
+        } catch (err) {
           console.error('[share-controller]', {
-            contactBroadcastRetryError: err2?.message || err2,
+            contactBroadcastError: err?.message || err,
             peerAccountDigest: payload.digest,
             peerDeviceId: payload.peerDeviceId,
-            reason: payload.reason
+            reason: payload.reason,
+            attempt: attempt + 1,
+            maxRetries: MAX_RETRIES
           });
-          entry.reject?.(err2);
+          if (attempt === MAX_RETRIES - 1) {
+            entry.reject?.(err);
+          }
         }
       }
     }, CONTACT_BROADCAST_DEBOUNCE_MS);
@@ -2881,7 +2874,16 @@ export function setupShareController(options) {
       const token = record.conversationToken || record.conversation?.token || null;
       const convId = record.conversationId || record.conversation?.id || null;
       const peerDeviceId = record.peerDeviceId || identity.deviceId || null;
-      if (!token || !convId || !peerDeviceId) continue;
+      if (!token || !convId || !peerDeviceId) {
+        console.warn('[share-controller] broadcastContactUpdate: skipping peer (missing fields)', {
+          digest: digest?.slice(0, 12),
+          hasToken: !!token,
+          hasConvId: !!convId,
+          hasPeerDeviceId: !!peerDeviceId,
+          reason: reasonKey
+        });
+        continue;
+      }
       const drInit = record.conversationDrInit || record.conversation?.drInit || null;
       const conversation = {
         token_b64: token,

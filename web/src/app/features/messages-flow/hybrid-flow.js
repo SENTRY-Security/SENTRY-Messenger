@@ -24,6 +24,7 @@ import { createLiveStateAccess } from './live/state-live.js';
 import { createLiveLegacyAdapters } from './live/adapters/index.js';
 import { setDeletionCursor } from '../soft-deletion/deletion-api.js';
 import { clearConversationHistory } from '../messages/cache.js';
+import { applyContactShareFromCommit } from '../contacts.js';
 
 const HYBRID_LOG_CAP = 5;
 const DEBUG = { drVerbose: true }; // [FIX] Define DEBUG to prevent ReferenceError
@@ -416,6 +417,24 @@ export async function smartFetchMessages({
                             console.warn('[hybrid-flow] setDeletionCursor for conversation-deleted failed', err?.message || err);
                         });
                         clearConversationHistory(conversationId, Date.now());
+                    }
+                }
+
+                // [FIX] Apply contact-share profile updates (Route A was missing this)
+                if (subtype === 'contact-share' && item.text) {
+                    try {
+                        const messageTs = Number(item.ts ?? item.timestamp ?? Date.now());
+                        await applyContactShareFromCommit({
+                            peerAccountDigest: groupDigest,
+                            peerDeviceId: groupDeviceId,
+                            sessionKey: context.tokenB64 || 'vault-replay',
+                            plaintext: item.text,
+                            messageId: item.messageId || item.serverMessageId || `${conversationId}:${item.counter}`,
+                            sourceTag: 'hybrid-flow:contact-share-route-a',
+                            profileUpdatedAt: messageTs
+                        });
+                    } catch (err) {
+                        console.warn('[hybrid-flow] contact-share apply failed (Route A)', err);
                     }
                 }
 
