@@ -963,8 +963,27 @@ export async function drDecryptText(st, packet, opts = {}) {
       return err.__drMeta;
     };
     let diff = null;
+    // [FIX] Capture send-side state before restoreHolder() in failure path.
+    // A concurrent drEncryptText may have advanced Ns/ckS during our awaits;
+    // restoreHolder() must not roll those back or the next encrypt will
+    // reuse the same header.n and chain key (duplicate + replay error).
+    const failLiveNs = Number.isFinite(st.Ns) ? Number(st.Ns) : 0;
+    const failLiveNsTotal = Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0;
+    const failLiveCkS = st.ckS;
+    const failLiveMyPriv = st.myRatchetPriv;
+    const failLiveMyPub = st.myRatchetPub;
+    const failLivePN = Number.isFinite(st.PN) ? Number(st.PN) : 0;
+    const protectSendSide = () => {
+      st.ckS = failLiveCkS || st.ckS;
+      st.Ns = Math.max(failLiveNs, Number.isFinite(st.Ns) ? Number(st.Ns) : 0);
+      st.NsTotal = Math.max(failLiveNsTotal, Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0);
+      st.PN = Math.max(failLivePN, Number.isFinite(st.PN) ? Number(st.PN) : 0);
+      st.myRatchetPriv = failLiveMyPriv || st.myRatchetPriv;
+      st.myRatchetPub = failLiveMyPub || st.myRatchetPub;
+    };
     if (isAeadFailure) {
       restoreHolder();
+      protectSendSide();
       try {
         const expected = fingerprintBeforeDecrypt || beforeAttempt;
         const afterRestore = await fingerprintState(st, mkHash, decCtHash);
@@ -994,13 +1013,24 @@ export async function drDecryptText(st, packet, opts = {}) {
         diff = diffFingerprint(beforeAttempt, afterAttempt);
       } catch { }
       restoreHolder();
+      protectSendSide();
     }
     if (diff && Object.keys(diff).length) {
-      const invariantErr = new Error('dr invariant violated: holder mutated during decrypt failure');
-      invariantErr.code = 'INVARIANT_VIOLATION';
-      invariantErr.__drInvariantDiff = diff;
-      invariantErr.__drMeta = ensureDrMeta();
-      throw invariantErr;
+      // [FIX] Exclude send-side fields from the invariant check.
+      // A concurrent drEncryptText legitimately advances Ns/ckS/PN;
+      // flagging that as an invariant violation masks the real decrypt error.
+      const sendSideKeys = new Set(['Ns', 'ckSHash', 'PN']);
+      const recvOnlyDiff = {};
+      for (const k of Object.keys(diff)) {
+        if (!sendSideKeys.has(k)) recvOnlyDiff[k] = diff[k];
+      }
+      if (Object.keys(recvOnlyDiff).length) {
+        const invariantErr = new Error('dr invariant violated: holder mutated during decrypt failure');
+        invariantErr.code = 'INVARIANT_VIOLATION';
+        invariantErr.__drInvariantDiff = diff;
+        invariantErr.__drMeta = ensureDrMeta();
+        throw invariantErr;
+      }
     }
     ensureDrMeta();
     throw err;
