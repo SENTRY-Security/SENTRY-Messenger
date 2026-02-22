@@ -109,6 +109,7 @@ async function verifyHMAC(req, env) {
 
 // ---- 帳號與 MK / TAGS 相關共用 ----
 let dataTablesReady = false;
+const _pairingCodeRateLimit = new Map(); // { accountDigest → { attempts, lockedUntil } }
 
 function bytesToHex(u8) {
   let out = '';
@@ -1178,6 +1179,19 @@ async function ensureDataTables(env) {
         console.warn('ensureDataTables: min_ts column add failed (may already exist)', alterErr?.message);
       }
     }
+    // Auto-add pairing_code + prekey_bundle_json columns to invite_dropbox
+    try {
+      await env.DB.prepare(`SELECT pairing_code FROM invite_dropbox LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE invite_dropbox ADD COLUMN pairing_code TEXT`).run();
+        await env.DB.prepare(`ALTER TABLE invite_dropbox ADD COLUMN prekey_bundle_json TEXT`).run();
+        await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_dropbox_pairing_code ON invite_dropbox(pairing_code) WHERE pairing_code IS NOT NULL AND status = 'CREATED'`).run();
+        console.log('ensureDataTables: added pairing_code + prekey_bundle_json columns to invite_dropbox');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: pairing_code columns add failed (may already exist)', alterErr?.message);
+      }
+    }
     if (missingTables.length || missingColumns.length) {
       const detail = [
         ...missingTables.map((name) => `table:${name}`),
@@ -1466,7 +1480,8 @@ async function handleInviteDropboxRoutes(req, env) {
     }
 
     const now = Math.floor(Date.now() / 1000);
-    const expiresAt = now + 300;
+    const wantPairingCode = !!(body?.wantPairingCode);
+    const expiresAt = now + (wantPairingCode ? 180 : 300);
     const ownerBundle = await allocateOwnerPrekeyBundle(env, account.account_digest, ownerDeviceId);
     if (!ownerBundle) {
       return json({ error: 'PrekeyUnavailable', message: 'owner prekey bundle unavailable' }, { status: 409 });
@@ -1483,21 +1498,6 @@ async function handleInviteDropboxRoutes(req, env) {
       return json({ error: 'OwnerPublicKeyMismatch', message: 'ownerPublicKeyB64 mismatch' }, { status: 400 });
     }
 
-    await env.DB.prepare(
-      `INSERT INTO invite_dropbox (
-          invite_id, owner_account_digest, owner_device_id,
-          owner_public_key_b64, expires_at, status, created_at, updated_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, 'CREATED', ?6, ?7)`
-    ).bind(
-      inviteId,
-      account.account_digest,
-      ownerDeviceId,
-      ownerPublicKeyB64,
-      expiresAt,
-      now,
-      now
-    ).run();
-
     const prekeyBundle = ownerBundle
       ? {
         ikPubB64: String(ownerBundle.ik_pub || '').trim(),
@@ -1508,13 +1508,131 @@ async function handleInviteDropboxRoutes(req, env) {
       }
       : null;
 
-    return json({
+    // Generate 6-digit pairing code if requested
+    let pairingCode = null;
+    if (wantPairingCode) {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const candidate = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+        const collision = await env.DB.prepare(
+          `SELECT 1 FROM invite_dropbox WHERE pairing_code=?1 AND status='CREATED' AND expires_at>?2 LIMIT 1`
+        ).bind(candidate, now).first();
+        if (!collision) { pairingCode = candidate; break; }
+      }
+      if (!pairingCode) {
+        return json({ error: 'PairingCodeUnavailable', message: 'could not generate unique pairing code' }, { status: 503 });
+      }
+    }
+
+    await env.DB.prepare(
+      `INSERT INTO invite_dropbox (
+          invite_id, owner_account_digest, owner_device_id,
+          owner_public_key_b64, expires_at, status, pairing_code, prekey_bundle_json,
+          created_at, updated_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, 'CREATED', ?6, ?7, ?8, ?9)`
+    ).bind(
+      inviteId,
+      account.account_digest,
+      ownerDeviceId,
+      ownerPublicKeyB64,
+      expiresAt,
+      pairingCode,
+      prekeyBundle ? JSON.stringify(prekeyBundle) : null,
+      now,
+      now
+    ).run();
+
+    const result = {
       ok: true,
       invite_id: inviteId,
       expires_at: expiresAt,
       owner_account_digest: account.account_digest,
       owner_device_id: ownerDeviceId,
       owner_public_key_b64: ownerPublicKeyB64,
+      prekey_bundle: prekeyBundle
+    };
+    if (pairingCode) result.pairing_code = pairingCode;
+    return json(result);
+  }
+
+  // Lookup invite by 6-digit pairing code (guest)
+  if (req.method === 'POST' && url.pathname === '/d1/invites/lookup-code') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const pairingCode = String(body?.pairingCode || '').trim();
+    const accountToken = typeof body?.accountToken === 'string' ? body.accountToken.trim() : '';
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || null);
+    if (!pairingCode || !/^\d{6}$/.test(pairingCode)) {
+      return json({ error: 'BadRequest', message: 'pairingCode must be 6 digits' }, { status: 400 });
+    }
+    if (!accountToken) {
+      return json({ error: 'Unauthorized', message: 'accountToken required' }, { status: 401 });
+    }
+
+    let account;
+    try {
+      account = await resolveAccount(env, {
+        accountToken,
+        accountDigest
+      }, { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest });
+    } catch (err) {
+      return json({ error: 'ConfigError', message: err?.message || 'resolveAccount failed' }, { status: 500 });
+    }
+    if (!account) {
+      return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
+    }
+
+    // Rate limit: 3 failed attempts → 30s lockout (in-memory per worker instance)
+    const rlKey = account.account_digest;
+    const rlEntry = _pairingCodeRateLimit.get(rlKey);
+    const now = Math.floor(Date.now() / 1000);
+    if (rlEntry && rlEntry.lockedUntil > now) {
+      return json({ error: 'RateLimited', message: 'too many attempts, try again later', retry_after: rlEntry.lockedUntil - now }, { status: 429 });
+    }
+
+    const row = await env.DB.prepare(
+      `SELECT invite_id, owner_account_digest, owner_device_id, owner_public_key_b64,
+              expires_at, prekey_bundle_json
+         FROM invite_dropbox
+        WHERE pairing_code=?1 AND status='CREATED' AND expires_at>?2
+        LIMIT 1`
+    ).bind(pairingCode, now).first();
+
+    if (!row) {
+      // Increment failed attempts
+      const attempts = (rlEntry?.attempts || 0) + 1;
+      if (attempts >= 3) {
+        _pairingCodeRateLimit.set(rlKey, { attempts, lockedUntil: now + 30 });
+      } else {
+        _pairingCodeRateLimit.set(rlKey, { attempts, lockedUntil: 0 });
+      }
+      return json({ error: 'NotFound', message: 'pairing code not found or expired' }, { status: 404 });
+    }
+
+    // Prevent looking up own invite
+    if (row.owner_account_digest === account.account_digest) {
+      return json({ error: 'BadRequest', message: 'cannot lookup own pairing code' }, { status: 400 });
+    }
+
+    // Success: reset rate limit
+    _pairingCodeRateLimit.delete(rlKey);
+
+    let prekeyBundle = null;
+    if (row.prekey_bundle_json) {
+      try { prekeyBundle = JSON.parse(row.prekey_bundle_json); } catch { /* ignore */ }
+    }
+
+    return json({
+      ok: true,
+      invite_id: row.invite_id,
+      expires_at: Number(row.expires_at),
+      owner_account_digest: row.owner_account_digest,
+      owner_device_id: row.owner_device_id,
+      owner_public_key_b64: row.owner_public_key_b64,
       prekey_bundle: prekeyBundle
     });
   }

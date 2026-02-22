@@ -5,7 +5,8 @@ import {
   consumeInviteDropbox,
   statusInviteDropbox,
   confirmInviteDropbox,
-  unconfirmedInvitesDropbox
+  unconfirmedInvitesDropbox,
+  lookupPairingCode
 } from '../../controllers/invites.controller.js';
 
 const r = Router();
@@ -16,5 +17,6 @@ r.post('/invites/consume', consumeInviteDropbox);
 r.post('/invites/confirm', confirmInviteDropbox);
 r.post('/invites/unconfirmed', unconfirmedInvitesDropbox);
 r.post('/invites/status', statusInviteDropbox);
+r.post('/invites/lookup-code', lookupPairingCode);
 
 export default r;

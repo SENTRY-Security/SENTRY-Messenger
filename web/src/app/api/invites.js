@@ -38,9 +38,10 @@ function buildError(status, data, defaultMsg) {
   return err;
 }
 
-export async function invitesCreate({ ownerPublicKeyB64 } = {}) {
+export async function invitesCreate({ ownerPublicKeyB64, wantPairingCode } = {}) {
   const payload = withAccountToken({});
   if (ownerPublicKeyB64) payload.owner_public_key_b64 = ownerPublicKeyB64;
+  if (wantPairingCode) payload.want_pairing_code = true;
   const { r, data } = await fetchJSON('/api/v1/invites/create', payload, withDeviceHeaders());
   log({ inviteCreateResult: data });
   if (!r.ok) {
@@ -93,6 +94,16 @@ export async function invitesStatus({ inviteId } = {}) {
   const { r, data } = await fetchJSON('/api/v1/invites/status', payload, withDeviceHeaders());
   if (!r.ok) {
     throw buildError(r.status, data, 'invite status failed');
+  }
+  return data;
+}
+
+export async function invitesLookupCode({ pairingCode } = {}) {
+  if (!pairingCode || !/^\d{6}$/.test(pairingCode)) throw new Error('pairingCode must be 6 digits');
+  const payload = withAccountToken({ pairing_code: pairingCode });
+  const { r, data } = await fetchJSON('/api/v1/invites/lookup-code', payload, withDeviceHeaders());
+  if (!r.ok) {
+    throw buildError(r.status, data, 'pairing code lookup failed');
   }
   return data;
 }

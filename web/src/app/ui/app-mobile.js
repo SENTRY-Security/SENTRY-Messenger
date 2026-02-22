@@ -1197,6 +1197,17 @@ const shareModalBackdrop = document.querySelector('[data-share-close]');
 const btnShareSwitchScan = document.getElementById('btnShareSwitchScan');
 const btnShareSwitchQr = document.getElementById('btnShareSwitchQr');
 const shareFlip = document.getElementById('shareFlip');
+// Pairing code elements
+const addFriendMenu = document.getElementById('addFriendMenu');
+const btnAddFriendQr = document.getElementById('btnAddFriendQr');
+const btnAddFriendCode = document.getElementById('btnAddFriendCode');
+const pairingCodeModal = document.getElementById('pairingCodeModal');
+const pairingDigits = document.getElementById('pairingDigits');
+const pairingCountdownEl = document.getElementById('pairingCountdown');
+const pairingRefreshBtn = document.getElementById('pairingRefreshBtn');
+const pairingStatusEl = document.getElementById('pairingStatus');
+const btnPairingToggle = document.getElementById('btnPairingToggle');
+const btnPairingConfirm = document.getElementById('btnPairingConfirm');
 const statContactsEl = document.getElementById('statContacts');
 const contactsCountEl = document.getElementById('contactsCount');
 const statFilesEl = document.getElementById('statFiles');
@@ -1829,7 +1840,17 @@ shareController = setupShareController({
     btnShareSwitchQr,
     shareFlip,
     inviteScanVideo,
-    inviteScanStatus
+    inviteScanStatus,
+    addFriendMenu,
+    btnAddFriendQr,
+    btnAddFriendCode,
+    pairingCodeModal,
+    pairingDigits,
+    pairingCountdownEl,
+    pairingRefreshBtn,
+    pairingStatusEl,
+    btnPairingToggle,
+    btnPairingConfirm
   },
   shareState,
   getProfileState: () => sessionStore.profileState,
