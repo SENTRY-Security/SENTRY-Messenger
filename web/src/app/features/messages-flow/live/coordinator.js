@@ -873,6 +873,18 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     reasonCode = LIVE_MVP_REASONS.OK;
   }
 
+  // [FIX] Mark placeholder as 'blocked' if the live flow failed to decrypt or
+  // append, so the UI shows an error state instead of eternal "解密中".
+  // Successful append is handled by state-live.js (removePendingLivePlaceholder).
+  if (reasonCode !== LIVE_MVP_REASONS.OK && targetMessageId && conversationId) {
+    try {
+      updatePendingLivePlaceholderStatus(conversationId, {
+        messageId: targetMessageId,
+        status: 'blocked'
+      });
+    } catch { }
+  }
+
   const finalResult = finalizeLiveMvpResult(result, startedAt, reasonCode);
 
   logger('liveMvpSummaryTrace', {

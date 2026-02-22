@@ -1164,14 +1164,35 @@ export class MessageFlowController extends BaseController {
         const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
         const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
         const pendingLiveEntries = getPendingLivePlaceholderEntries(state.conversationId);
+
+        // [FIX] Deduplicate: if a real (non-placeholder) timeline entry exists for a
+        // messageId, drop any stale placeholder with the same id.  This prevents the
+        // "stuck 解密中" symptom where gap-queue successfully decrypts a message
+        // (appending to timeline) but the pendingLivePlaceholder was never consumed.
+        const timelineIdSet = new Set(
+            timelineMessages
+                .filter(m => m.msgType !== 'placeholder' && !m.placeholder && !m.isPlaceholder)
+                .map(m => m.messageId || m.id)
+                .filter(Boolean)
+        );
+        const filterStale = (entries) =>
+            entries.filter(p => {
+                const pid = p.messageId || p.id;
+                return !pid || !timelineIdSet.has(pid);
+            });
+
+        const filteredReplay = filterStale(replayPlaceholderEntries);
+        const filteredGap = filterStale(gapPlaceholderEntries);
+        const filteredLive = filterStale(pendingLiveEntries);
+
         const mergedRaw = [
             ...timelineMessages,
-            ...replayPlaceholderEntries,
-            ...gapPlaceholderEntries,
-            ...pendingLiveEntries
+            ...filteredReplay,
+            ...filteredGap,
+            ...filteredLive
         ];
 
-        const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length + pendingLiveEntries.length;
+        const placeholderCount = filteredReplay.length + filteredGap.length + filteredLive.length;
 
         // Sort first to ensure chronological order
         // Sort first to ensure chronological order

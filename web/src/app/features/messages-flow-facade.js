@@ -561,6 +561,19 @@ function createMessagesFlowFacade() {
                       source: 'gap_detected_live_catch',
                       lazy: false
                     });
+                  } else {
+                    // [FIX] peerDeviceId unavailable — still attempt probe via
+                    // triggerMaxCounterProbeForActiveConversations which resolves
+                    // device IDs from sessionStore. Without this fallback, the gap
+                    // is never filled and the placeholder stays stuck forever.
+                    logCapped('gapDetectedPeerDeviceMissing', {
+                      conversationIdPrefix8: toConversationIdPrefix8(gapConvId),
+                      source: 'gap_detected_live_catch'
+                    }, 5);
+                    triggerMaxCounterProbeForActiveConversations({
+                      source: 'gap_detected_fallback',
+                      lazy: false
+                    });
                   }
                 }
 

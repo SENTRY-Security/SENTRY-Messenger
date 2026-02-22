@@ -8,6 +8,7 @@ import { applyContactShareFromCommit } from '../../contacts.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
 import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js';
 import { normalizeCallLogPayload, resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
+import { removePendingLivePlaceholder } from '../../messages/placeholder-store.js';
 
 function hasUsableDrState(holder) {
   if (
@@ -908,6 +909,14 @@ async function commitIncomingSingle(params = {}, adapters) {
       }];
       try {
         adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' });
+        // [FIX] Clean up stale live placeholder for this message.
+        // After gap-queue successfully decrypts & appends to timeline via
+        // commitIncomingSingle, the pendingLivePlaceholder must be removed.
+        // Otherwise the render merge keeps showing "解密中" alongside the
+        // real message.
+        if (messageId && conversationId) {
+          try { removePendingLivePlaceholder(conversationId, messageId); } catch { }
+        }
       } catch { }
     }
   }
@@ -1030,6 +1039,13 @@ async function persistAndAppendBatch(params = {}, adapters) {
       const result = adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' }) || null;
       const count = Number(result?.appendedCount);
       appendedCount = Number.isFinite(count) ? count : entries.length;
+      // [FIX] Clean up stale live placeholders after successful batch append.
+      for (const entry of entries) {
+        const eid = entry?.messageId || entry?.id;
+        if (eid && conversationId) {
+          try { removePendingLivePlaceholder(conversationId, eid); } catch { }
+        }
+      }
     } catch {
       appendOk = false;
     }
