@@ -306,11 +306,15 @@ export async function x3dhRespond(devicePriv, guestBundle) {
 }
 
 export async function drRatchet(st, theirRatchetPubU8) {
-  const nsBase = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0;
   const nrBase = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0;
-  const nsPrev = Number.isFinite(st?.Ns) ? Number(st.Ns) : 0;
   const nrPrev = Number.isFinite(st?.Nr) ? Number(st.Nr) : 0;
-  st.NsTotal = nsBase + nsPrev;
+  // [FIX] NsTotal accumulation disabled: since send-side ratcheting is disabled
+  // (st.Ns = 0 is commented out below), Ns keeps growing monotonically across all
+  // receive ratchets. Accumulating Ns into NsTotal on each ratchet causes NsTotal
+  // to compound quadratically (NsTotal += Ns every receive), leading to transport
+  // counter jumps that desync with the server's expected counter.
+  // NsTotal is maintained by reserveTransportCounter() in dr-session.js instead.
+  // st.NsTotal = nsBase + nsPrev;
   st.NrTotal = nrBase + nrPrev;
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);

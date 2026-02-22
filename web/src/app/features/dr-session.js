@@ -3062,6 +3062,15 @@ export async function sendDrMediaCore(params = {}) {
   const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
 
+  // [FIX] Unconditional Local Persistence (Split-Brain Prevention) — mirror sendDrPlaintextCore.
+  // We MUST persist the post-encryption snapshot to local storage BEFORE the network send.
+  // Without this, if the app restarts between a media send and the next send,
+  // the reloaded state has the OLD Ns value, producing a duplicate header counter
+  // (the exact same header.n as the media message).
+  // The vault put only backs up to the server, NOT to local IndexedDB,
+  // so it cannot replace local persistence.
+  persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
+
   const receiverDeviceId = peerDeviceId;
   const receiverAccountDigest = peer;
 
