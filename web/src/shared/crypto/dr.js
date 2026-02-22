@@ -723,7 +723,7 @@ export async function drDecryptText(st, packet, opts = {}) {
       ratchetPerformed = true;
       dhOutHash = ratchetResult?.dhOutHash || null;
       ckRSeedHash = ratchetResult?.ckRSeedHash || null;
-      ckSSeedHash = ratchetResult?.ckRSeedHash || null;
+      ckSSeedHash = ratchetResult?.ckSSeedHash || null;
     } else {
       working.theirRatchetPub = theirPub;
     }
