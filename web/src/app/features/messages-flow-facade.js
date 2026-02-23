@@ -12,11 +12,12 @@ import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
 import { smartFetchMessages } from './messages-flow/hybrid-flow.js';
 import { createGapQueue } from './messages-flow/gap-queue.js';
 import { createMaxCounterProbe } from './messages-flow/probe.js';
-import { consumeLiveJob } from './messages-flow/live/coordinator.js';
+import { consumeLiveJob, LIVE_RETRYABLE_REASONS } from './messages-flow/live/coordinator.js';
 import { createLiveJobFromWsEvent } from './messages-flow/live/job.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 import { decideNextAction } from './messages-flow/reconcile/decision.js';
 import { getMessagesFlowFlags } from './messages-flow/flags.js';
+import { LIVE_RETRY_MAX, LIVE_RETRY_BASE_MS } from './messages-flow/policy.js';
 import { decryptReplayBatch } from './messages-flow/vault-replay.js';
 import { normalizeReplayItems } from './messages-flow/normalize.js';
 import { handoffReplayVaultMissing } from './restore-coordinator.js';
@@ -26,6 +27,7 @@ import { MessageKeyVault } from './message-key-vault.js';
 import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
 import { getMkRaw as storeGetMkRaw } from '../core/store.js';
 import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
+import { updatePendingLivePlaceholderStatus } from './messages/placeholder-store.js';
 import { setDeletionCursor } from './soft-deletion/deletion-api.js';
 import { clearConversationHistory } from './messages/cache.js';
 const LIVE_ROUTE_LOG_CAP = 5;
@@ -294,6 +296,75 @@ function reconcileOutgoingStatusForConversation({
     return reconcileOutgoingStatusNow({ conversationId, peerAccountDigest, source });
   }
   return null;
+}
+
+// [FIX] Retry wrapper for live (B-route) message decryption.
+// When consumeLiveJob fails with a recoverable reason (SECURE_PENDING,
+// DR_STATE_UNAVAILABLE, VAULT_PUT_FAILED, NOT_FOUND, etc.), the message
+// was previously lost forever because the WebSocket event fires only once.
+// This wrapper retries with exponential backoff before giving up.
+// GapDetectedError is NEVER retried — it propagates to the caller for
+// maxCounterProbe-based gap recovery.
+async function consumeLiveJobWithRetry(job, ctx, { conversationIdPrefix8, messageIdPrefix8 } = {}) {
+  let lastResult = null;
+
+  for (let attempt = 0; attempt <= LIVE_RETRY_MAX; attempt++) {
+    if (attempt > 0) {
+      // Exponential backoff with ±25 % jitter
+      const baseDelay = LIVE_RETRY_BASE_MS * Math.pow(2, attempt - 1);
+      const jitter = baseDelay * (0.75 + Math.random() * 0.5);
+      const delayMs = Math.min(Math.round(jitter), 16000);
+
+      logCapped('liveRetryTrace', {
+        conversationIdPrefix8,
+        messageIdPrefix8,
+        attempt,
+        maxAttempts: LIVE_RETRY_MAX + 1,
+        delayMs,
+        previousReasonCode: lastResult?.reasonCode
+      }, 5);
+
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+
+      // Reset placeholder to 'pending' before retry (coordinator sets 'blocked'
+      // on each failure; we override it so the UI shows "解密中" during retries).
+      const messageId = job?.messageId || job?.serverMessageId;
+      const conversationId = job?.conversationId;
+      if (messageId && conversationId) {
+        try {
+          updatePendingLivePlaceholderStatus(conversationId, { messageId, status: 'pending' });
+        } catch { /* placeholder may not exist yet — safe to ignore */ }
+      }
+    }
+
+    try {
+      const result = await consumeLiveJob(job, ctx);
+      lastResult = result;
+
+      // Success or non-retryable failure → stop retrying
+      if (result?.ok || !LIVE_RETRYABLE_REASONS.has(result?.reasonCode)) {
+        return result;
+      }
+      // Retryable failure → continue to next attempt
+    } catch (err) {
+      // GapDetectedError: never retry — propagate for maxCounterProbe handling
+      if (err?.name === 'GapDetectedError') throw err;
+
+      // Other unexpected throws: retry if attempts remain
+      lastResult = { ok: false, reasonCode: 'LIVE_JOB_THROW', error: err?.message };
+      if (attempt >= LIVE_RETRY_MAX) throw err;
+    }
+  }
+
+  // All retries exhausted — log and return last failed result
+  logCapped('liveRetryExhausted', {
+    conversationIdPrefix8,
+    messageIdPrefix8,
+    reasonCode: lastResult?.reasonCode,
+    totalAttempts: LIVE_RETRY_MAX + 1
+  }, 5);
+
+  return lastResult;
 }
 
 function createMessagesFlowFacade() {
@@ -566,7 +637,10 @@ function createMessagesFlowFacade() {
           const liveConvId = liveJob?.conversationId || liveJobConversationId;
           const livePromise = enqueueLiveForConversation(
             liveConvId,
-            () => consumeLiveJob(liveJob, liveCtx)
+            () => consumeLiveJobWithRetry(liveJob, liveCtx, {
+              conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
+              messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8
+            })
           ).catch(err => {
               if (err?.name === 'GapDetectedError') {
                 console.log('[facade] Gap detected in B-Route, triggering maxCounterProbe for recovery', err.message);

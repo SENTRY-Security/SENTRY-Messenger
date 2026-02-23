@@ -53,7 +53,7 @@ const LIVE_MVP_LOG_CAP = 5;
 const LIVE_MVP_FETCH_LIMIT = 20;
 const B_ROUTE_COMMIT_LOG_CAP = 5;
 const PREFIX_LEN = 8;
-const LIVE_MVP_REASONS = Object.freeze({
+export const LIVE_MVP_REASONS = Object.freeze({
   MISSING_PARAMS: 'MISSING_PARAMS',
   ADAPTERS_UNAVAILABLE: 'ADAPTERS_UNAVAILABLE',
   SECURE_PENDING: 'SECURE_PENDING',
@@ -72,6 +72,21 @@ const LIVE_MVP_REASONS = Object.freeze({
   OK: 'OK',
   MATCHED: 'MATCHED'
 });
+
+// Reason codes that indicate a transient / not-yet-ready condition.
+// When consumeLiveJob returns one of these, the facade retries with backoff.
+export const LIVE_RETRYABLE_REASONS = new Set([
+  LIVE_MVP_REASONS.SECURE_PENDING,
+  LIVE_MVP_REASONS.SECURE_FAILED,
+  LIVE_MVP_REASONS.DR_STATE_UNAVAILABLE,
+  LIVE_MVP_REASONS.READY_FAILED,
+  LIVE_MVP_REASONS.NOT_FOUND,
+  LIVE_MVP_REASONS.VAULT_PUT_FAILED,
+  LIVE_MVP_REASONS.ADAPTERS_UNAVAILABLE,
+  'MISSING_DR_INIT_BOOTSTRAP',
+  'DR_BOOTSTRAP_UNAVAILABLE'
+]);
+
 const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
   fetchedCount: 0,
   decryptOkCount: 0,
