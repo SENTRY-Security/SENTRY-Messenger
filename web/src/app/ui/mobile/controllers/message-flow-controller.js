@@ -1133,7 +1133,8 @@ export class MessageFlowController extends BaseController {
                             // abort logic if needed, usually handled by store/controller
                             this.deps.controllers?.messageSending?.removeLocalMessageById(msgId);
                         }
-                    }
+                    },
+                    onAvatarClick: ({ avatarUrl, name }) => this.openAvatarPreview(avatarUrl, name)
                 }
             });
         }
@@ -1333,6 +1334,34 @@ export class MessageFlowController extends BaseController {
         } else if (anchor) {
             this.restoreScrollFromAnchor(anchor);
         }
+    }
+
+    /**
+     * Open a full-screen overlay to preview a contact's avatar.
+     */
+    openAvatarPreview(avatarUrl, name) {
+        if (!avatarUrl) return;
+        const existing = document.querySelector('.avatar-fullscreen-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'avatar-fullscreen-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-label', name || '頭像預覽');
+
+        const img = document.createElement('img');
+        img.src = avatarUrl;
+        img.alt = name || '頭像預覽';
+        overlay.appendChild(img);
+
+        const close = () => overlay.remove();
+        overlay.addEventListener('click', close);
+        const onKey = (e) => {
+            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+        };
+        document.addEventListener('keydown', onKey);
+
+        document.body.appendChild(overlay);
     }
 
     /**

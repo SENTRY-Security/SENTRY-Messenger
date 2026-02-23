@@ -763,7 +763,6 @@ export class MessageRenderer {
                 const initials = name ? name.slice(0, 1) : '好友';
 
                 avatar.textContent = initials;
-                avatar.textContent = initials;
                 const avatarUrl = resolveContactAvatarUrl(contact);
                 if (avatarUrl) {
                     const img = document.createElement('img');
@@ -771,6 +770,11 @@ export class MessageRenderer {
                     img.alt = name || 'avatar';
                     avatar.textContent = '';
                     avatar.appendChild(img);
+                    avatar.classList.add('message-avatar-clickable');
+                    avatar.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.callbacks.onAvatarClick?.({ avatarUrl, name });
+                    });
                 }
                 row.appendChild(avatar);
             } else {

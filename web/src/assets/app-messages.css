@@ -492,6 +492,37 @@
   display: block;
 }
 
+.message-avatar-clickable {
+  cursor: pointer;
+}
+
+/* Full-screen avatar preview overlay */
+.avatar-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  animation: avatarOverlayFadeIn 0.2s ease;
+}
+
+.avatar-fullscreen-overlay img {
+  max-width: 80vw;
+  max-height: 80vh;
+  border-radius: 8px;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+@keyframes avatarOverlayFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 .messages-load-more {
   align-self: center;
   margin: 0 auto 12px;
