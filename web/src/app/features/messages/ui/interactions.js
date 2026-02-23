@@ -151,9 +151,11 @@ export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } =
  */
 export function syncWsIndicator(targetEl, sourceEl) {
     if (!targetEl || !sourceEl) return;
-    targetEl.classList.remove('online', 'connecting');
+    targetEl.classList.remove('online', 'connecting', 'degraded');
     if (sourceEl.classList.contains('online')) {
         targetEl.classList.add('online');
+    } else if (sourceEl.classList.contains('degraded')) {
+        targetEl.classList.add('degraded');
     } else if (sourceEl.classList.contains('connecting')) {
         targetEl.classList.add('connecting');
     }

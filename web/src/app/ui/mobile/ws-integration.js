@@ -43,6 +43,10 @@ export function createWsIntegration({ deps }) {
   const CONNECT_TIMEOUT      = 15000;   // CONNECTING state max age
   const PENDING_QUEUE_LIMIT  = 200;
 
+  // --- Network quality detection ---
+  const RTT_WINDOW_SIZE  = 3;      // sliding window of last N pong RTTs
+  const RTT_DEGRADED_MS  = 3000;   // avg RTT ≥ 3 s → degraded
+
   // --- Connection state ---
   let wsConn = null;
   let wsReconnectTimer = null;
@@ -54,6 +58,11 @@ export function createWsIntegration({ deps }) {
   let lastPongAt = 0;
   let heartbeatTimer = null;
   let connecting = false;
+
+  // --- RTT state ---
+  let lastPingSentAt = 0;
+  const rttSamples = [];
+  let lastQuality = 'good';  // 'good' | 'degraded'
 
   // --- Auth ---
 
@@ -295,6 +304,7 @@ export function createWsIntegration({ deps }) {
         try { wsConn.close(); } catch { }
         return;  // onclose will trigger reconnect
       }
+      lastPingSentAt = Date.now();
       try { wsConn.send(JSON.stringify({ type: 'ping' })); } catch { }
     }, HEARTBEAT_INTERVAL);
   }
@@ -325,6 +335,10 @@ export function createWsIntegration({ deps }) {
     }
     stopHeartbeat();
     pendingMessages.length = 0;
+    // Reset RTT state
+    lastPingSentAt = 0;
+    rttSamples.length = 0;
+    lastQuality = 'good';
   }
 
   function clearAuth() {
@@ -454,7 +468,20 @@ export function createWsIntegration({ deps }) {
     const type = msg?.type;
     if (type === 'hello') return;
     if (type === 'pong') {
-      lastPongAt = Date.now();
+      const now = Date.now();
+      lastPongAt = now;
+      // RTT measurement — detect degraded network quality
+      if (lastPingSentAt > 0) {
+        const rtt = now - lastPingSentAt;
+        rttSamples.push(rtt);
+        if (rttSamples.length > RTT_WINDOW_SIZE) rttSamples.shift();
+        const avg = rttSamples.reduce((a, b) => a + b, 0) / rttSamples.length;
+        const quality = avg >= RTT_DEGRADED_MS ? 'degraded' : 'good';
+        if (quality !== lastQuality) {
+          lastQuality = quality;
+          updateConnectionIndicator(quality === 'degraded' ? 'degraded' : 'online');
+        }
+      }
       return;
     }
     if (type === 'auth') {

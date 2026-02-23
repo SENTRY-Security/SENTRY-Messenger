@@ -1260,7 +1260,18 @@ const initMediaPermissionPrompt = () => {
 };
 
 const connIndicator = createConnectionIndicator(connectionIndicator);
-const updateConnectionIndicator = (state) => connIndicator.update(state);
+let _lastDegradedToastAt = 0;
+const _DEGRADED_TOAST_COOLDOWN = 60000; // 1 min — avoid spamming toast on flapping RTT
+const updateConnectionIndicator = (state) => {
+  connIndicator.update(state);
+  if (state === 'degraded') {
+    const now = Date.now();
+    if (now - _lastDegradedToastAt >= _DEGRADED_TOAST_COOLDOWN) {
+      _lastDegradedToastAt = now;
+      showToast?.('網路連線不穩定', { variant: 'warning' });
+    }
+  }
+};
 
 function resetModalVariants(modalElement) {
   modalElement.classList.remove(...MODAL_VARIANTS);
