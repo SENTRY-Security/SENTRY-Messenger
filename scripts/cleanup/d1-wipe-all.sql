@@ -28,3 +28,5 @@ DELETE FROM prekey_opk;
 DELETE FROM device_backup;
 DELETE FROM media_objects;
 DELETE FROM accounts;
+DELETE FROM deletion_cursors;
+DELETE FROM conversation_deletion_log;
