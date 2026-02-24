@@ -583,6 +583,12 @@ export class MessageRenderer {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                console.warn('[VideoOverlay] play clicked', msgId, {
+                    hasBlob: !!media?._videoBlob,
+                    hasUrl: !!media?._videoDownloadedUrl,
+                    hasLocal: !!media?.localUrl,
+                    hasCallback: !!this.callbacks?.onPlayVideo
+                });
                 this.callbacks.onPlayVideo?.(media, msgId);
             });
             overlay.appendChild(btn);

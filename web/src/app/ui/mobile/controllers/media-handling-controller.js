@@ -116,6 +116,8 @@ export class MediaHandlingController extends BaseController {
 
             media._videoBlob = result.blob;
             media._videoDownloadedUrl = URL.createObjectURL(result.blob);
+            // Also set localUrl so the blob survives re-renders (applyMediaMeta preserves localUrl)
+            if (!media.localUrl) media.localUrl = media._videoDownloadedUrl;
             media._videoState = 'ready';
             media._videoProgress = 100;
             this._updateVideoOverlayUI(msgId, media);
@@ -138,23 +140,38 @@ export class MediaHandlingController extends BaseController {
      * Supports both server-downloaded blobs (_videoBlob) and local blobs (localUrl).
      */
     async playDownloadedVideo(media) {
+        if (!media) return;
         try {
-            let blob = media?._videoBlob || null;
-            if (!blob && media?.localUrl) {
-                const resp = await fetch(media.localUrl);
-                blob = await resp.blob();
-            }
-            if (!blob) {
+            let blob = media._videoBlob || null;
+            const blobUrl = media._videoDownloadedUrl || media.localUrl || null;
+
+            if (!blob && !blobUrl) {
                 this.deps.showToast?.('影片尚未下載完成');
                 return;
             }
+
+            // Pre-open the modal in loading state (matches openMediaPreview flow)
+            this._showModalLoading('準備播放…');
+
+            if (!blob && blobUrl) {
+                const resp = await fetch(blobUrl);
+                blob = await resp.blob();
+            }
+
+            if (!blob) {
+                this.deps.closePreviewModal?.();
+                this.deps.showToast?.('影片資料讀取失敗');
+                return;
+            }
+
             await this.renderMediaPreviewModal({
                 blob,
                 contentType: media.contentType || 'video/mp4',
                 name: media.name || '影片'
             });
         } catch (err) {
-            console.error('playDownloadedVideo error', err);
+            console.error('[playDownloadedVideo] error', err);
+            this.deps.closePreviewModal?.();
             this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }
     }
