@@ -474,12 +474,17 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
   _autoLoggedOut = true;
 
   const safeMessage = message || '已登出';
-  const settingsSnapshot = getEffectiveSettingsState();
-  const logoutRedirectInfo = getLogoutRedirectInfo(settingsSnapshot);
-  const logoutRedirectTarget = logoutRedirectInfo.url;
-  if (logoutRedirectInfo.isCustom) {
-    showLogoutRedirectCover();
-  } else {
+  let logoutRedirectTarget = '/pages/logout.html';
+  try {
+    const settingsSnapshot = getEffectiveSettingsState();
+    const logoutRedirectInfo = getLogoutRedirectInfo(settingsSnapshot);
+    logoutRedirectTarget = logoutRedirectInfo.url || '/pages/logout.html';
+    if (logoutRedirectInfo.isCustom) {
+      showLogoutRedirectCover();
+    } else {
+      hideLogoutRedirectCover();
+    }
+  } catch {
     hideLogoutRedirectCover();
   }
 
@@ -1039,7 +1044,18 @@ function flushContactSecretsLocal(reason = 'manual') {
 (function ensureUnlockedOrRedirect() {
   if (!getMkRaw()) {
     log('Not unlocked: redirecting to /pages/logout.html …');
-    secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
+    // secureLogout may be blocked if logoutInProgress is already true
+    // (e.g. from enforceReloadLogoutOnLoad). Use a direct redirect as fallback.
+    if (logoutInProgress) {
+      try { resetAll(); } catch { try { clearSecrets(); } catch { } }
+      try { sessionStorage.clear(); } catch { }
+      try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, '登入資訊已失效，請重新感應晶片'); } catch { }
+      setTimeout(() => {
+        try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
+      }, 60);
+    } else {
+      secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
+    }
   }
 })();
 
