@@ -818,6 +818,135 @@
   transform: scale(0.95);
 }
 
+/* ── Transfer progress bar (top-pinned) ─────────────────────────────────── */
+
+.transfer-progress-container {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: -18px -18px 12px -18px;
+  pointer-events: auto;
+}
+
+.transfer-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  color: #fff;
+  font-size: 13px;
+  pointer-events: auto;
+}
+
+.transfer-bar--upload {
+  background: linear-gradient(90deg, #0c4a6e, #0369a1);
+}
+
+.transfer-bar--download {
+  background: linear-gradient(90deg, #1e3a5f, #1d4ed8);
+}
+
+.transfer-bar-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.15);
+}
+
+.transfer-bar--upload .transfer-bar-icon {
+  animation: transfer-icon-up 1s ease-in-out infinite;
+}
+
+.transfer-bar--download .transfer-bar-icon {
+  animation: transfer-icon-down 1s ease-in-out infinite;
+}
+
+@keyframes transfer-icon-up {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes transfer-icon-down {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(3px); }
+}
+
+.transfer-bar-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.transfer-bar-name {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.9;
+}
+
+.transfer-bar-progress {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.2);
+  overflow: hidden;
+}
+
+.transfer-bar-progress-inner {
+  height: 100%;
+  border-radius: 999px;
+  background: #22d3ee;
+  transition: width 0.2s ease;
+}
+
+.transfer-bar--upload .transfer-bar-progress-inner {
+  background: #38bdf8;
+}
+
+.transfer-bar-pct {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.transfer-bar-cancel {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  padding: 0;
+}
+
+.transfer-bar-cancel:hover {
+  background: rgba(255,255,255,0.3);
+}
+
+.transfer-bar-cancel:active {
+  background: rgba(239,68,68,0.6);
+}
+
 .message-me {
   margin-left: auto;
   background: linear-gradient(135deg, #38bdf8, #0ea5e9);

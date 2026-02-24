@@ -8,6 +8,7 @@ import { downloadAndDecrypt } from '../../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
+import { isDownloadBusy, startDownload, updateDownloadProgress, endDownload } from '../../../features/transfer-progress.js';
 
 export class MediaHandlingController extends BaseController {
     constructor(deps) {
@@ -66,21 +67,37 @@ export class MediaHandlingController extends BaseController {
 
     /**
      * Download a video file inline (on the chat bubble) with progress.
-     * Updates media._videoState through: idle → downloading → ready
+     * Updates media._videoState through: idle → downloading → ready.
+     * Only one download at a time (enforced by transfer-progress lock).
      */
     async downloadVideoInline(media, msgId) {
         if (!media || !media.objectKey || !media.envelope) return;
         if (media._videoState === 'downloading' || media._videoState === 'ready') return;
 
+        if (isDownloadBusy()) {
+            this.deps.showToast?.('目前有檔案正在下載，請稍候再試');
+            return;
+        }
+
         media._videoState = 'downloading';
         media._videoProgress = 0;
         this._updateVideoOverlayUI(msgId, media);
+
+        const downloadAbort = new AbortController();
+        startDownload(media.name || '影片', () => {
+            try { downloadAbort.abort(); } catch {}
+            media._videoState = 'idle';
+            media._videoProgress = 0;
+            this._updateVideoOverlayUI(msgId, media);
+            endDownload();
+        });
 
         try {
             const result = await downloadAndDecrypt({
                 key: media.objectKey,
                 envelope: media.envelope,
                 messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                abortSignal: downloadAbort.signal,
                 onStatus: ({ stage, loaded, total }) => {
                     if (stage === 'sign') {
                         media._videoProgress = 2;
@@ -93,6 +110,7 @@ export class MediaHandlingController extends BaseController {
                         media._videoProgress = 98;
                     }
                     this._updateVideoOverlayUI(msgId, media);
+                    updateDownloadProgress(media._videoProgress);
                 }
             });
 
@@ -101,7 +119,12 @@ export class MediaHandlingController extends BaseController {
             media._videoState = 'ready';
             media._videoProgress = 100;
             this._updateVideoOverlayUI(msgId, media);
+            endDownload();
         } catch (err) {
+            endDownload();
+            if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
+                return; // user cancelled
+            }
             console.error('Video download error', err);
             media._videoState = 'idle';
             media._videoProgress = 0;

@@ -8,6 +8,7 @@ import { appendUserMessage, getTimeline, removeMessagesMatching } from '../../..
 import { sendDrMedia, sendDrText } from '../../../features/dr-session.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
+import { isUploadBusy, startUpload, updateUploadProgress, endUpload } from '../../../features/transfer-progress.js';
 
 export class MessageSendingController extends BaseController {
     constructor(deps) {
@@ -137,6 +138,12 @@ export class MessageSendingController extends BaseController {
         const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
         if (!files.length) return;
 
+        if (isUploadBusy()) {
+            this.deps.showToast?.('目前有檔案正在上傳，請稍候再試');
+            if (input) input.value = '';
+            return;
+        }
+
         const state = this.getMessageState();
         if (!state.activePeerDigest || !state.conversationToken) {
             this.deps.setMessagesStatus?.('請先選擇已建立安全對話的好友', true);
@@ -168,6 +175,17 @@ export class MessageSendingController extends BaseController {
                     }
                 });
 
+                const abortController = new AbortController();
+                localMsg.abortController = abortController;
+
+                // Show top progress bar
+                const fileName = file.name || '附件';
+                startUpload(fileName, () => {
+                    try { abortController.abort(); } catch {}
+                    this.removeLocalMessageById(localMsg.id);
+                    endUpload();
+                });
+
                 const progressHandler = (progress) => {
                     const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
                     if (!msg) return;
@@ -177,10 +195,8 @@ export class MessageSendingController extends BaseController {
 
                     this.applyUploadProgress(msg, { percent });
                     this.updateUploadOverlayUI(msg.id, msg.media);
+                    if (Number.isFinite(percent)) updateUploadProgress(percent);
                 };
-
-                const abortController = new AbortController();
-                localMsg.abortController = abortController;
 
                 try {
                     const res = await sendDrMedia({
@@ -280,7 +296,11 @@ export class MessageSendingController extends BaseController {
                         this.updateMessagesUI({ preserveScroll: true });
                     }
 
+                    endUpload();
+
                 } catch (err) {
+                    endUpload();
+
                     // [FIX] User-initiated cancel (AbortError) — the message was
                     // already removed from the timeline by removeLocalMessageById,
                     // so just silently continue to the next file.

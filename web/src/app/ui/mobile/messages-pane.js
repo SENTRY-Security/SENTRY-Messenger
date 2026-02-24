@@ -99,6 +99,7 @@ import {
 } from '../../features/messages/ui/interactions.js';
 // import { createConversationThreadsManager } from './conversation-threads.js';
 import { createMediaPreviewManager } from '../../features/messages/ui/media-preview.js';
+import { initTransferProgress } from '../../features/transfer-progress.js';
 import {
   isCounterTooLowError,
   extractFailureDetails,
@@ -489,6 +490,9 @@ export function initMessagesPane({
 
   // Initialize controllers
   Object.values(controllers).forEach(c => c.init?.());
+
+  // Initialize top-pinned transfer progress bar
+  initTransferProgress(elements.scrollEl);
 
   // Hook module-scope shim to controller
   _clearCallLogPlaceholdersShim = () => controllers.callLog.clearCallLogPlaceholders();
