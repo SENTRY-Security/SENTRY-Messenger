@@ -55,20 +55,9 @@ export class LayoutController extends BaseController {
      * Apply messages layout based on current state and viewport.
      */
     applyMessagesLayout() {
-        if (!this.elements.pane) { console.warn('Layout: missing pane'); return; }
+        if (!this.elements.pane) return;
         const state = this.getMessageState();
         const desktop = this.isDesktopLayout();
-        console.log('[Layout] applyMessagesLayout', {
-            viewMode: state.viewMode,
-            desktop,
-            hasNavbar: !!this.deps.navbarEl,
-            activePeer: !!state.activePeerDigest,
-            conversationId: !!state.conversationId
-        });
-
-        if (state.viewMode === 'detail' && !desktop) {
-            console.trace('[Layout] applyMessagesLayout trace (detail mode)');
-        }
 
         this.elements.pane.classList.toggle('is-desktop', desktop);
         if (desktop) {
@@ -87,30 +76,17 @@ export class LayoutController extends BaseController {
         }
 
         try {
-            // Debug visibility and FORCE display if needed
             const threadEl = document.querySelector('.messages-thread');
             if (threadEl) {
                 const style = window.getComputedStyle(threadEl);
-                console.log('[Layout] visibility check', {
-                    paneClasses: this.elements.pane.className,
-                    threadDisplay: style.display,
-                    threadVisibility: style.visibility,
-                    threadHeight: style.height
-                });
-
                 // Fail-safe: Force display if in detail mode but hidden
                 if (!desktop && state.viewMode === 'detail' && style.display === 'none') {
-                    console.warn('[Layout] Force-fixing thread visibility');
                     threadEl.style.display = 'flex';
                 } else if (!desktop && state.viewMode === 'list') {
-                    threadEl.style.display = ''; // Reset
+                    threadEl.style.display = '';
                 }
-            } else {
-                console.error('[Layout] .messages-thread element not found for visibility check');
             }
-        } catch (e) {
-            console.error('[Layout] visibility check failed', e);
-        }
+        } catch { /* ignore */ }
 
         if (this.elements.backBtn) {
             const showBack = !desktop && state.viewMode === 'detail';
@@ -136,13 +112,11 @@ export class LayoutController extends BaseController {
         }
 
         const currentTab = this.deps.getCurrentTab?.();
-        console.log('[Layout] applyMessagesLayout tab check', { currentTab, match: currentTab === 'messages' });
 
         if (currentTab === 'messages') {
             const detail = desktop || state.viewMode === 'detail';
             const topbarEl = document.querySelector('.topbar');
             const navbarEl = this.deps.navbarEl;
-            console.log('[Layout] applying mobile layout', { detail, hasTopbar: !!topbarEl, hasNavbar: !!navbarEl });
 
             if (topbarEl) {
                 if (detail && !desktop) {
@@ -178,11 +152,6 @@ export class LayoutController extends BaseController {
                 navbarEl?.classList.add('hidden');
                 mainContentEl?.classList.add('fullscreen');
                 document.body.classList.add('messages-fullscreen');
-                console.log('[Layout] updated classes (detail)', {
-                    topbarClasses: topbarEl?.className,
-                    navbarClasses: navbarEl?.className,
-                    bodyClasses: document.body.className
-                });
                 document.body.style.overscrollBehavior = 'contain';
             } else {
                 topbarEl?.classList.remove('hidden');

@@ -100,7 +100,7 @@ export function updateScrollOverflow(scrollEl) {
 export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } = {}) {
     let keyboardOffsetPx = 0;
     let keyboardActive = false;
-    let viewportGuardTimer = null;
+    let initialized = false;
 
     function applyOffset() {
         const kbOffset = Math.max(0, Math.min(360, Math.floor(keyboardOffsetPx)));
@@ -110,16 +110,12 @@ export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } =
         try {
             document.body.classList.toggle('keyboard-open', keyboardActive);
         } catch { /* ignore */ }
-        // Only scroll to bottom on keyboard OPEN transition and when user
-        // is already near the bottom.  Previously this fired unconditionally
-        // every 100ms via tick(), causing scroll jumps while reading history.
         if (keyboardActive && !wasActive && scrollEl && isNearBottom(scrollEl, 150)) {
             scrollEl.scrollTop = scrollEl.scrollHeight;
         }
     }
 
-    function tick() {
-        applyOffset();
+    function applyInitialStyles() {
         if (headerEl) {
             headerEl.style.transform = 'translateY(0)';
             headerEl.style.top = '0';
@@ -132,15 +128,13 @@ export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } =
 
     return {
         start() {
-            if (viewportGuardTimer) return;
-            viewportGuardTimer = setInterval(tick, 100);
-            tick();
+            if (initialized) return;
+            initialized = true;
+            applyInitialStyles();
+            applyOffset();
         },
         stop() {
-            if (viewportGuardTimer) {
-                clearInterval(viewportGuardTimer);
-                viewportGuardTimer = null;
-            }
+            // No-op: no timer to clean up (event-driven via visualViewport)
         },
         setOffset(px) {
             keyboardOffsetPx = px;

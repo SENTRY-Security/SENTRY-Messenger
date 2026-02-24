@@ -2407,6 +2407,8 @@ if (typeof document !== 'undefined') {
     }
     log({ autoLogoutVisibilityChange: document.visibilityState });
     if (!document.hidden) {
+      // Resume WebSocket timers when app returns to foreground
+      wsIntegration.resume();
       messagesFlowFacade.onVisibilityResume({
         source: 'visibility_resume',
         onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'visibility_resume' }),
@@ -2417,6 +2419,8 @@ if (typeof document !== 'undefined') {
       });
     }
     if (document.hidden) {
+      // Pause WebSocket timers to save battery while backgrounded
+      wsIntegration.pause();
       flushDrSnapshotsBeforeLogout('visibilitychange');
       flushContactSecretsLocal('visibilitychange');
       backgroundLogoutTimer = setTimeout(() => {

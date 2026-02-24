@@ -41,6 +41,7 @@ export function createWsIntegration({ deps }) {
   const HEARTBEAT_INTERVAL   = 30000;   // send ping every 30s
   const HEARTBEAT_TIMEOUT    = 45000;   // no pong within 45s → dead
   const CONNECT_TIMEOUT      = 15000;   // CONNECTING state max age
+  const MONITOR_INTERVAL     = 15000;   // connection check every 15s (was 5s)
   const PENDING_QUEUE_LIMIT  = 200;
 
   // --- Network quality detection ---
@@ -271,25 +272,55 @@ export function createWsIntegration({ deps }) {
     }).finally(() => { connecting = false; });
   }
 
-  function startMonitor(intervalMs = 5000) {
+  let monitorIntervalMs = MONITOR_INTERVAL;
+
+  function startMonitor(intervalMs = MONITOR_INTERVAL) {
+    monitorIntervalMs = intervalMs;
     if (monitorTimer) return;
-    monitorTimer = setInterval(() => {
-      // Detect hung CONNECTING state
-      if (wsConn && wsConn.readyState === WebSocket.CONNECTING) {
-        if (connectStartedAt && Date.now() - connectStartedAt > CONNECT_TIMEOUT) {
-          log({ wsConnectTimeout: true, elapsed: Date.now() - connectStartedAt });
-          try { wsConn.close(); } catch { }
-          wsConn = null;
-          connecting = false;
-          scheduleReconnect();
-        }
-        return;
+    monitorTimer = setInterval(monitorTick, monitorIntervalMs);
+  }
+
+  function monitorTick() {
+    // Detect hung CONNECTING state
+    if (wsConn && wsConn.readyState === WebSocket.CONNECTING) {
+      if (connectStartedAt && Date.now() - connectStartedAt > CONNECT_TIMEOUT) {
+        log({ wsConnectTimeout: true, elapsed: Date.now() - connectStartedAt });
+        try { wsConn.close(); } catch { }
+        wsConn = null;
+        connecting = false;
+        scheduleReconnect();
       }
-      if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
-        log({ wsMonitorReconnect: true, readyState: wsConn?.readyState ?? null });
-        ensure();
-      }
-    }, intervalMs);
+      return;
+    }
+    if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+      log({ wsMonitorReconnect: true, readyState: wsConn?.readyState ?? null });
+      ensure();
+    }
+  }
+
+  /**
+   * Pause monitor and heartbeat when app goes to background.
+   * Reduces CPU/battery usage while the page is hidden.
+   */
+  function pause() {
+    if (monitorTimer) {
+      clearInterval(monitorTimer);
+      monitorTimer = null;
+    }
+    stopHeartbeat();
+  }
+
+  /**
+   * Resume monitor and heartbeat when app returns to foreground.
+   */
+  function resume() {
+    if (!monitorTimer && monitorIntervalMs) {
+      monitorTimer = setInterval(monitorTick, monitorIntervalMs);
+    }
+    // Restart heartbeat only if connection is open
+    if (wsConn && wsConn.readyState === WebSocket.OPEN) {
+      startHeartbeat();
+    }
   }
 
   // --- Heartbeat (application-level ping/pong) ---
@@ -611,6 +642,8 @@ export function createWsIntegration({ deps }) {
     send,
     close,
     clearAuth,
-    startMonitor
+    startMonitor,
+    pause,
+    resume
   };
 }
