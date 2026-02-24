@@ -314,7 +314,7 @@ export async function applyContactShareFromCommit({
 
   if (existingEntry) {
     if (profileUpdatedAt && existingEntry.profileUpdatedAt && existingEntry.profileUpdatedAt > profileUpdatedAt) {
-      if (DEBUG.contactsA1 || true) {
+      if (DEBUG.contactsA1) {
         console.log('[contacts] skipping stale update', {
           digest,
           existingTs: existingEntry.profileUpdatedAt,
@@ -329,8 +329,7 @@ export async function applyContactShareFromCommit({
     const oldAvatar = resolveContactAvatarUrl(existingEntry);
     const newAvatar = resolveContactAvatarUrl({ avatar: contact?.avatar });
 
-    // [Debug] Log diff check
-    if (DEBUG.contactsA1 || true) {
+    if (DEBUG.contactsA1) {
       console.log('[contacts] diff check', {
         digest,
         oldName, newName,
@@ -348,7 +347,7 @@ export async function applyContactShareFromCommit({
       diff.avatar = { from: oldAvatar, to: newAvatar };
     }
   } else {
-    if (DEBUG.contactsA1 || true) console.log('[contacts] diff check: no existing entry for', digest);
+    if (DEBUG.contactsA1) console.log('[contacts] diff check: no existing entry for', digest);
   }
 
   try {
@@ -356,7 +355,7 @@ export async function applyContactShareFromCommit({
   } catch (err) {
     return { ok: false, reasonCode: 'CORE_UPSERT_FAILED', error: err };
   }
-  console.log('[contacts] applyContactShareFromCommit: upsert success', { sourceTag, diff: !!diff });
+  if (DEBUG.contactsA1) console.log('[contacts] applyContactShareFromCommit: upsert success', { sourceTag, diff: !!diff });
   removePendingInvitesByPeer({ peerAccountDigest: digest, peerDeviceId: deviceId });
   if (sourceTag === 'messages-flow:contact-share-commit') {
     const peerKey = identity.key || (digest && deviceId ? `${digest}::${deviceId}` : null);
@@ -365,6 +364,22 @@ export async function applyContactShareFromCommit({
       peerKey,
       sourceTag
     });
+    // [FIX] Emit contacts:entry-updated so messages pane refreshes
+    // active conversation header (name/avatar) and conversation list.
+    // Previously only contacts:changed was emitted, which only reloads
+    // the contacts tab — the messages UI was never notified.
+    if (peerKey && typeof document !== 'undefined') {
+      try {
+        document.dispatchEvent(new CustomEvent('contacts:entry-updated', {
+          detail: {
+            peerAccountDigest: peerKey,
+            peerKey,
+            isNew: !existingEntry,
+            entry: corePayload
+          }
+        }));
+      } catch { /* ignore */ }
+    }
   }
 
   // Auto-init X3DH session (fire and forget) to pre-warm keys
