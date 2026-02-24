@@ -242,20 +242,33 @@ export class MessageSendingController extends BaseController {
                         if (!targetMsg) return;
                         if (!targetMsg.media) targetMsg.media = {};
                         targetMsg.text = payload?.msg?.text || targetMsg.text;
+                        const pm = payload?.msg?.media || {};
+                        const tm = targetMsg.media;
                         targetMsg.media = {
-                            ...targetMsg.media,
-                            ...payload?.msg?.media,
-                            name: (payload?.msg?.media?.name || targetMsg.media.name || file.name || '附件'),
-                            size: Number.isFinite(payload?.msg?.media?.size) ? payload.msg.media.size : (typeof file.size === 'number' ? file.size : targetMsg.media.size || null),
-                            contentType: payload?.msg?.media?.contentType || targetMsg.media.contentType || file.type || 'application/octet-stream',
-                            localUrl: targetMsg.media.localUrl || localUrl,
-                            previewUrl: payload?.msg?.media?.previewUrl || targetMsg.media.previewUrl || targetMsg.media.localUrl || localUrl,
+                            ...tm,
+                            ...pm,
+                            name: (pm.name || tm.name || file.name || '附件'),
+                            size: Number.isFinite(pm.size) ? pm.size : (typeof file.size === 'number' ? file.size : tm.size || null),
+                            contentType: pm.contentType || tm.contentType || file.type || 'application/octet-stream',
+                            localUrl: tm.localUrl || localUrl,
+                            previewUrl: pm.previewUrl || tm.previewUrl || tm.localUrl || localUrl,
                             uploading: false,
                             progress: 100,
-                            envelope: payload?.msg?.media?.envelope || targetMsg.media.envelope || null,
-                            objectKey: payload?.msg?.media?.objectKey || targetMsg.media.objectKey || payload?.upload?.objectKey || null,
-                            preview: payload?.msg?.media?.preview || targetMsg.media.preview || null
+                            preview: pm.preview || tm.preview || null
                         };
+                        // Single-file fields
+                        if (!pm.chunked) {
+                            targetMsg.media.envelope = pm.envelope || tm.envelope || null;
+                            targetMsg.media.objectKey = pm.objectKey || tm.objectKey || payload?.upload?.objectKey || null;
+                        }
+                        // Chunked fields
+                        if (pm.chunked) {
+                            targetMsg.media.chunked = true;
+                            targetMsg.media.baseKey = pm.baseKey || tm.baseKey || payload?.upload?.baseKey || null;
+                            targetMsg.media.manifestEnvelope = pm.manifestEnvelope || tm.manifestEnvelope || null;
+                            targetMsg.media.chunkCount = pm.chunkCount || tm.chunkCount || null;
+                            targetMsg.media.totalSize = pm.totalSize || tm.totalSize || null;
+                        }
                     };
 
                     if (replacementInfo && msg) {

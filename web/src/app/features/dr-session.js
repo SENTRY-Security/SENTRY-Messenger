@@ -3317,6 +3317,36 @@ export async function sendDrMediaCore(params = {}) {
   } catch (e) {
     drConsole.warn('[dr-session] Failed to update timeline metadata (media)', e);
   }
+  // Helper: build msg.media and upload objects, handling chunked vs single-file.
+  const buildReturnMedia = (tsValue) => {
+    const base = {
+      name: metadata.name,
+      size: metadata.size,
+      contentType: metadata.contentType,
+      dir: metadata.dir,
+      createdAt: tsValue,
+      preview: metadata.preview || null,
+      previewUrl: previewLocalUrl || null
+    };
+    if (isChunkedResult) {
+      base.chunked = true;
+      base.baseKey = metadata.baseKey;
+      base.chunkCount = metadata.chunkCount;
+      base.totalSize = metadata.totalSize;
+      base.manifestEnvelope = metadata.manifestEnvelope;
+    } else {
+      base.objectKey = metadata.objectKey;
+      base.envelope = metadata.envelope;
+    }
+    return base;
+  };
+  const buildReturnUpload = () => {
+    if (isChunkedResult) {
+      return { baseKey: metadata.baseKey, size: uploadResult.totalSize || uploadResult.size };
+    }
+    return { objectKey: metadata.objectKey, envelope: metadata.envelope, size: uploadResult.size };
+  };
+
   if (isConversationLocked(conversationId)) {
     logDrSendTrace({ messageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: job?.jobId || null });
     // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
@@ -3331,23 +3361,9 @@ export async function sendDrMediaCore(params = {}) {
         ts: now,
         text: `[檔案] ${metadata.name}`,
         type: 'media',
-        media: {
-          objectKey: metadata.objectKey,
-          name: metadata.name,
-          size: metadata.size,
-          contentType: metadata.contentType,
-          envelope: metadata.envelope,
-          dir: metadata.dir,
-          createdAt: now,
-          preview: metadata.preview || null,
-          previewUrl: previewLocalUrl || null
-        }
+        media: buildReturnMedia(now)
       },
-      upload: {
-        objectKey: metadata.objectKey,
-        envelope: metadata.envelope,
-        size: uploadResult.size
-      }
+      upload: buildReturnUpload()
     };
   }
   const result = await processOutboxJobNow(job.jobId);
@@ -3363,23 +3379,9 @@ export async function sendDrMediaCore(params = {}) {
         ts: now,
         text: `[檔案] ${metadata.name}`,
         type: 'media',
-        media: {
-          objectKey: metadata.objectKey,
-          name: metadata.name,
-          size: metadata.size,
-          contentType: metadata.contentType,
-          envelope: metadata.envelope,
-          dir: metadata.dir,
-          createdAt: now,
-          preview: metadata.preview || null,
-          previewUrl: previewLocalUrl || null
-        }
+        media: buildReturnMedia(now)
       },
-      upload: {
-        objectKey: metadata.objectKey,
-        envelope: metadata.envelope,
-        size: uploadResult.size
-      }
+      upload: buildReturnUpload()
     };
   }
   if (!result.ok) {
@@ -3504,23 +3506,9 @@ export async function sendDrMediaCore(params = {}) {
             ts: repairNow,
             text: `[檔案] ${metadata.name}`,
             type: 'media',
-            media: {
-              objectKey: metadata.objectKey,
-              name: metadata.name,
-              size: metadata.size,
-              contentType: metadata.contentType,
-              envelope: metadata.envelope,
-              dir: metadata.dir,
-              createdAt: repairNow,
-              preview: metadata.preview || null,
-              previewUrl: previewLocalUrl || null
-            }
+            media: buildReturnMedia(repairNow)
           },
-          upload: {
-            objectKey: metadata.objectKey,
-            envelope: metadata.envelope,
-            size: uploadResult.size
-          },
+          upload: buildReturnUpload(),
           replacement: replacementInfo
         };
       }
@@ -3537,23 +3525,9 @@ export async function sendDrMediaCore(params = {}) {
             ts: repairNow,
             text: `[檔案] ${metadata.name}`,
             type: 'media',
-            media: {
-              objectKey: metadata.objectKey,
-              name: metadata.name,
-              size: metadata.size,
-              contentType: metadata.contentType,
-              envelope: metadata.envelope,
-              dir: metadata.dir,
-              createdAt: repairNow,
-              preview: metadata.preview || null,
-              previewUrl: previewLocalUrl || null
-            }
+            media: buildReturnMedia(repairNow)
           },
-          upload: {
-            objectKey: metadata.objectKey,
-            envelope: metadata.envelope,
-            size: uploadResult.size
-          },
+          upload: buildReturnUpload(),
           replacement: replacementInfo
         };
       }
@@ -3609,25 +3583,11 @@ export async function sendDrMediaCore(params = {}) {
           ts: repairNow,
           text: `[檔案] ${metadata.name}`,
           type: 'media',
-          media: {
-            objectKey: metadata.objectKey,
-            name: metadata.name,
-            size: metadata.size,
-            contentType: metadata.contentType,
-            envelope: metadata.envelope,
-            dir: metadata.dir,
-            createdAt: repairNow,
-            preview: metadata.preview || null,
-            previewUrl: previewLocalUrl || null
-          }
+          media: buildReturnMedia(repairNow)
         },
         convId: conversationId,
         secure: true,
-        upload: {
-          objectKey: metadata.objectKey,
-          envelope: metadata.envelope,
-          size: uploadResult.size
-        },
+        upload: buildReturnUpload(),
         replacement: replacementInfo
       };
     }
@@ -3683,25 +3643,11 @@ export async function sendDrMediaCore(params = {}) {
       ts: now,
       text: `[檔案] ${metadata.name}`,
       type: 'media',
-      media: {
-        objectKey: metadata.objectKey,
-        name: metadata.name,
-        size: metadata.size,
-        contentType: metadata.contentType,
-        envelope: metadata.envelope,
-        dir: metadata.dir,
-        createdAt: now,
-        preview: metadata.preview || null,
-        previewUrl: previewLocalUrl || null
-      }
+      media: buildReturnMedia(now)
     },
     convId: conversationId,
     secure: true,
-    upload: {
-      objectKey: metadata.objectKey,
-      envelope: metadata.envelope,
-      size: uploadResult.size
-    }
+    upload: buildReturnUpload()
   };
 }
 

@@ -256,9 +256,7 @@ export function createMsePlayer({ videoElement, onError }) {
         objectUrl = URL.createObjectURL(mediaSource);
         videoElement.src = objectUrl;
 
-        const openEvent = isMMS ? 'sourceopen' : 'sourceopen';
-
-        mediaSource.addEventListener(openEvent, () => {
+        mediaSource.addEventListener('sourceopen', () => {
           try {
             sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
             sourceBuffer.mode = 'sequence';
