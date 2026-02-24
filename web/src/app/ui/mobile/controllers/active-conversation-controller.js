@@ -161,6 +161,9 @@ export class ActiveConversationController extends BaseController {
         }
 
         console.log('[ActiveConversationController] setActiveConversation: processing', peerKey);
+        // Save draft for the conversation we're leaving
+        this.deps.controllers?.composer?.saveDraft();
+
         const state = this.getMessageState();
         const contactEntry = this.sessionStore.contactIndex?.get?.(peerKey) || null;
         const convEntry = contactEntry?.conversation || null;
@@ -283,6 +286,8 @@ export class ActiveConversationController extends BaseController {
         }
 
         this.deps.updateComposerAvailability?.();
+        // Restore draft for the conversation we're entering (or clear input)
+        this.deps.controllers?.composer?.restoreDraft();
         // [UX] Auto-focus input when entering conversation
         this.deps.focusComposerInput?.();
         console.log('[ActiveConversationController] setActiveConversation: done');
