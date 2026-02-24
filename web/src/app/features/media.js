@@ -6,7 +6,7 @@ import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMedi
 import { getMkRaw, buildAccountPayload } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
-import { encryptAndPutChunked, CHUNK_SIZE } from './chunked-upload.js';
+import { encryptAndPutChunked, CHUNK_SIZE, UnsupportedVideoFormatError } from './chunked-upload.js';
 
 const encoder = new TextEncoder();
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
@@ -586,5 +586,8 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
   const blob = new Blob([plain], { type: meta.contentType || 'application/octet-stream' });
   return { blob, contentType: meta.contentType || 'application/octet-stream', name: meta.name || 'decrypted.bin', bytes: plain.length };
 }
+
+// Re-export for callers (dr-session.js)
+export { UnsupportedVideoFormatError };
 
 // --- small helpers ---

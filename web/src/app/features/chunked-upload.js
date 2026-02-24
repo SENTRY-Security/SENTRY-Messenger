@@ -1,12 +1,14 @@
 // /app/features/chunked-upload.js
 // Chunked encrypted upload: split file into 5MB chunks, encrypt each independently,
 // upload as separate R2 objects, then upload an encrypted manifest.
+// Video files are automatically remuxed to fMP4 format before chunking.
 
 import { signPutChunked as apiSignPutChunked, cleanupChunked as apiCleanupChunked } from '../api/media.js';
 import { getMkRaw } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK } from '../crypto/aead.js';
 import { b64 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
+import { remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError } from './mp4-remuxer.js';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 const UPLOAD_CONCURRENCY = 3;
@@ -99,9 +101,20 @@ export async function encryptAndPutChunked({
   if (!mk && !useSharedKey) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
 
-  const contentType = resolveContentType(file);
+  // Remux video to fMP4 if needed (MOV, non-fragmented MP4 → fMP4)
+  let actualFile = file;
+  const rawType = (typeof file.type === 'string' ? file.type : '').toLowerCase().trim();
+  if (rawType.startsWith('video/')) {
+    if (!canRemuxVideo(file)) {
+      throw new UnsupportedVideoFormatError(`不支援此影片格式：${rawType}`);
+    }
+    const remuxResult = await remuxToFragmentedMp4(file);
+    actualFile = remuxResult.file;
+  }
+
+  const contentType = resolveContentType(actualFile);
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
-  const totalSize = typeof file.size === 'number' ? file.size : 0;
+  const totalSize = typeof actualFile.size === 'number' ? actualFile.size : 0;
   if (!totalSize) throw new Error('file size unknown');
 
   const chunkCount = Math.ceil(totalSize / CHUNK_SIZE);
@@ -136,7 +149,7 @@ export async function encryptAndPutChunked({
 
     const offset = index * CHUNK_SIZE;
     const end = Math.min(offset + CHUNK_SIZE, totalSize);
-    const chunkSlice = file.slice(offset, end);
+    const chunkSlice = actualFile.slice(offset, end);
     const plainBuf = new Uint8Array(await chunkSlice.arrayBuffer());
 
     // Encrypt this chunk independently
@@ -253,4 +266,4 @@ export async function encryptAndPutChunked({
   };
 }
 
-export { CHUNK_SIZE };
+export { CHUNK_SIZE, UnsupportedVideoFormatError };

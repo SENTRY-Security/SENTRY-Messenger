@@ -6,6 +6,7 @@
 import { BaseController } from './base-controller.js';
 import { appendUserMessage, getTimeline, removeMessagesMatching } from '../../../features/timeline-store.js';
 import { sendDrMedia, sendDrText } from '../../../features/dr-session.js';
+import { UnsupportedVideoFormatError } from '../../../features/media.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
 import { isUploadBusy, startUpload, updateUploadProgress, endUpload } from '../../../features/transfer-progress.js';
@@ -300,6 +301,14 @@ export class MessageSendingController extends BaseController {
 
                 } catch (err) {
                     endUpload();
+
+                    // Unsupported video format — show user-friendly modal and remove the local message
+                    if (err instanceof UnsupportedVideoFormatError || err?.name === 'UnsupportedVideoFormatError') {
+                        const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
+                        if (msg) this.removeLocalMessageById(localMsg.id);
+                        this.deps.showToast?.(err.message || '不支援此影片格式');
+                        continue;
+                    }
 
                     // [FIX] User-initiated cancel (AbortError) — the message was
                     // already removed from the timeline by removeLocalMessageById,

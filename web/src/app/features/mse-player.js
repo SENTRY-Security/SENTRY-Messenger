@@ -1,12 +1,29 @@
 // /app/features/mse-player.js
-// MediaSource Extensions (MSE) player wrapper for streaming encrypted video chunks.
+// MediaSource Extensions (MSE) / ManagedMediaSource (MMS) player wrapper
+// for streaming encrypted video chunks.
 // Handles SourceBuffer management, codec detection, and fallback to blob URL playback.
+// On iPhone (iOS 17.1+), uses ManagedMediaSource; on desktop/iPad, uses MediaSource.
 
 /**
- * Check if the browser supports MediaSource API.
+ * Resolve the best available MediaSource constructor.
+ * iPhone Safari requires ManagedMediaSource; desktop/iPad use standard MediaSource.
+ */
+function getMediaSourceCtor() {
+  if (typeof self !== 'undefined' && typeof self.ManagedMediaSource === 'function') {
+    return self.ManagedMediaSource;
+  }
+  if (typeof MediaSource !== 'undefined') {
+    return MediaSource;
+  }
+  return null;
+}
+
+/**
+ * Check if the browser supports MediaSource or ManagedMediaSource API.
  */
 export function isMseSupported() {
-  return typeof MediaSource !== 'undefined' && typeof MediaSource.isTypeSupported === 'function';
+  const Ctor = getMediaSourceCtor();
+  return !!Ctor && typeof Ctor.isTypeSupported === 'function';
 }
 
 /**
@@ -17,15 +34,18 @@ export function isMseSupported() {
  * Falls back to generic MIME type if detection fails.
  */
 export function detectCodecFromFirstChunk(data, contentType) {
+  const MSCtor = getMediaSourceCtor();
+  if (!MSCtor) return { mimeCodec: null, fragmented: false };
+
   // Check if it's fragmented MP4 by looking for 'moof' box
   const isFragmented = hasMp4Box(data, 'moof') || hasMp4Box(data, 'styp');
 
   if (contentType === 'video/webm' || contentType === 'audio/webm') {
     // WebM is always MSE-compatible
     const mimeCodec = `${contentType}; codecs="vp9,opus"`;
-    if (MediaSource.isTypeSupported(mimeCodec)) return { mimeCodec, fragmented: true };
+    if (MSCtor.isTypeSupported(mimeCodec)) return { mimeCodec, fragmented: true };
     const fallback = `${contentType}; codecs="vp8,vorbis"`;
-    if (MediaSource.isTypeSupported(fallback)) return { mimeCodec: fallback, fragmented: true };
+    if (MSCtor.isTypeSupported(fallback)) return { mimeCodec: fallback, fragmented: true };
     return { mimeCodec: contentType, fragmented: true };
   }
 
@@ -38,20 +58,23 @@ export function detectCodecFromFirstChunk(data, contentType) {
   const codecStr = extractMp4Codec(data);
   if (codecStr) {
     const mimeCodec = `video/mp4; codecs="${codecStr}"`;
-    if (MediaSource.isTypeSupported(mimeCodec)) return { mimeCodec, fragmented: true };
+    if (MSCtor.isTypeSupported(mimeCodec)) return { mimeCodec, fragmented: true };
   }
 
-  // Fallback: try common H.264 codec strings
+  // Fallback: try common codec strings
+  // Safari requires 'hvc1' for HEVC (not 'hev1')
   const candidates = [
-    'video/mp4; codecs="avc1.42E01E,mp4a.40.2"',  // Baseline
-    'video/mp4; codecs="avc1.4D401E,mp4a.40.2"',  // Main
-    'video/mp4; codecs="avc1.64001E,mp4a.40.2"',  // High
-    'video/mp4; codecs="avc1.42E01E"',             // Baseline video-only
-    'video/mp4; codecs="avc1.4D401E"',             // Main video-only
+    'video/mp4; codecs="avc1.42E01E,mp4a.40.2"',  // H.264 Baseline + AAC
+    'video/mp4; codecs="avc1.4D401E,mp4a.40.2"',  // H.264 Main + AAC
+    'video/mp4; codecs="avc1.64001E,mp4a.40.2"',  // H.264 High + AAC
+    'video/mp4; codecs="hvc1,mp4a.40.2"',          // HEVC + AAC (Safari)
+    'video/mp4; codecs="avc1.42E01E"',             // H.264 Baseline video-only
+    'video/mp4; codecs="avc1.4D401E"',             // H.264 Main video-only
+    'video/mp4; codecs="hvc1"',                    // HEVC video-only (Safari)
   ];
 
   for (const candidate of candidates) {
-    if (MediaSource.isTypeSupported(candidate)) {
+    if (MSCtor.isTypeSupported(candidate)) {
       return { mimeCodec: candidate, fragmented: true };
     }
   }
@@ -77,14 +100,15 @@ function hasMp4Box(data, boxType) {
 
 /**
  * Extract codec string from MP4 sample description atoms (stsd).
- * Very simplified — looks for 'avc1', 'avc3', 'hev1', 'hvc1' etc.
+ * Looks for 'avc1', 'avc3', 'hvc1', 'hev1' etc.
+ * For Safari HEVC, always emits 'hvc1' (Safari doesn't support 'hev1').
  */
 function extractMp4Codec(data) {
   const codecs = [];
   const limit = Math.min(data.length, 128 * 1024);
 
   // Look for common video codec identifiers
-  const videoCodecs = ['avc1', 'avc3', 'hev1', 'hvc1', 'vp09', 'av01'];
+  const videoCodecs = ['avc1', 'avc3', 'hvc1', 'hev1', 'vp09', 'av01'];
   const audioCodecs = ['mp4a', 'opus', 'ac-3', 'ec-3', 'flac'];
 
   for (const codec of [...videoCodecs, ...audioCodecs]) {
@@ -96,6 +120,11 @@ function extractMp4Codec(data) {
           // Try to read avcC config
           const profileStr = tryReadAvcProfile(data, i);
           codecs.push(profileStr || 'avc1.42E01E');
+        } else if (codec === 'hev1') {
+          // Safari requires 'hvc1' — normalize hev1 to hvc1
+          codecs.push('hvc1');
+        } else if (codec === 'hvc1') {
+          codecs.push('hvc1');
         } else if (codec === 'mp4a') {
           codecs.push('mp4a.40.2');
         } else {
@@ -133,7 +162,8 @@ function tryReadAvcProfile(data, avc1Offset) {
 }
 
 /**
- * Create an MSE-based video player controller.
+ * Create an MSE/MMS-based video player controller.
+ * Automatically uses ManagedMediaSource on iPhone Safari, MediaSource elsewhere.
  *
  * @param {{ videoElement: HTMLVideoElement, onError?: (err: Error) => void }} params
  * @returns {{
@@ -152,6 +182,9 @@ export function createMsePlayer({ videoElement, onError }) {
   let appending = false;
   let destroyed = false;
   let endPending = false;
+
+  const MSCtor = getMediaSourceCtor();
+  const isMMS = typeof self !== 'undefined' && typeof self.ManagedMediaSource === 'function' && MSCtor === self.ManagedMediaSource;
 
   const processQueue = () => {
     if (destroyed || appending || !sourceBuffer || !appendQueue.length) return;
@@ -204,18 +237,28 @@ export function createMsePlayer({ videoElement, onError }) {
 
   return {
     /**
-     * Initialize the MediaSource and attach to the video element.
+     * Initialize the MediaSource/ManagedMediaSource and attach to the video element.
      * @param {string} mimeCodec e.g. 'video/mp4; codecs="avc1.42E01E"'
      */
     init(mimeCodec) {
       return new Promise((resolve, reject) => {
         if (destroyed) return reject(new Error('player destroyed'));
+        if (!MSCtor) return reject(new Error('MediaSource/ManagedMediaSource not available'));
 
-        mediaSource = new MediaSource();
+        mediaSource = new MSCtor();
+
+        // ManagedMediaSource on iPhone: must disable remote playback
+        // (required unless providing an AirPlay source alternative)
+        if (isMMS && videoElement) {
+          videoElement.disableRemotePlayback = true;
+        }
+
         objectUrl = URL.createObjectURL(mediaSource);
         videoElement.src = objectUrl;
 
-        mediaSource.addEventListener('sourceopen', () => {
+        const openEvent = isMMS ? 'sourceopen' : 'sourceopen';
+
+        mediaSource.addEventListener(openEvent, () => {
           try {
             sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
             sourceBuffer.mode = 'sequence';
@@ -231,6 +274,15 @@ export function createMsePlayer({ videoElement, onError }) {
           reject(err);
           onError?.(err);
         }, { once: true });
+
+        // ManagedMediaSource: handle startstreaming/endstreaming for power efficiency
+        if (isMMS) {
+          mediaSource.addEventListener('startstreaming', () => {
+            // Browser wants data — resume processing queue if paused
+            processQueue();
+          });
+          // endstreaming: browser may evict buffered data, no action needed
+        }
       });
     },
 

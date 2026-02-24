@@ -36,6 +36,7 @@ import { initProfileDefaultsOnce } from '../features/profile.js';
 import { loadArgon2 } from '../crypto/kdf.js';
 import { generateInitialBundle } from '../crypto/prekeys.js';
 import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
+import { isIosVersionTooOld } from './mobile/browser-detection.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -107,6 +108,20 @@ const uidCardEl = document.getElementById('uidCard');
 const passwordAreaEl = document.getElementById('passwordArea');
 
 initVersionInfoButton({ buttonId: 'versionInfoBtnLogin', popupId: 'versionInfoPopupLogin' });
+
+// Block login on iOS < 17.1 (ManagedMediaSource not available)
+if (isIosVersionTooOld()) {
+  const shell = document.querySelector('.login-shell');
+  if (shell) shell.style.display = 'none';
+  const blocker = document.createElement('div');
+  blocker.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a0a;color:#e0e0e0;padding:2rem;text-align:center;z-index:99999;font-family:-apple-system,system-ui,sans-serif;';
+  blocker.innerHTML = '<div style="font-size:2.5rem;margin-bottom:1rem;">&#9888;&#65039;</div>'
+    + '<h2 style="margin:0 0 0.75rem;font-size:1.25rem;color:#fff;">iOS 版本過舊</h2>'
+    + '<p style="margin:0;font-size:0.95rem;line-height:1.6;max-width:320px;color:#aaa;">'
+    + '此應用程式需要 <strong style="color:#fff;">iOS 17.1</strong> 或以上版本才能正常運作。'
+    + '<br><br>請前往「設定 > 一般 > 軟體更新」升級您的裝置。</p>';
+  document.body.appendChild(blocker);
+}
 
 let pendingLogoutNotice = null;
 
