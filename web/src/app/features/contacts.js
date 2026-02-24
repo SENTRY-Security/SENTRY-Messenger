@@ -68,7 +68,7 @@ function emitContactsChanged({ conversationId, peerKey, sourceTag }) {
   if (now - last < CONTACTS_CHANGED_THROTTLE_MS && !isLiveContactShare) return;
   contactShareRefreshThrottle.set(conversationId, now);
   const reason = isLiveContactShare
-    ? (sourceTag === 'messages-flow:contact-share-commit' ? 'contact-share-commit' : sourceTag)
+    ? (sourceTag === 'messages-flow:contact-share-commit' ? 'contact-share-commit' : 'contact-share-commit-batch')
     : (sourceTag || 'contact-share-commit');
   const detail = {
     reason,
@@ -332,7 +332,18 @@ export async function applyContactShareFromCommit({
       }
       return { ok: true, reasonCode: 'STALE_SKIP', diff: null };
     }
-    if (incomingProfileVersion === null && profileUpdatedAt && existingEntry.profileUpdatedAt && existingEntry.profileUpdatedAt > profileUpdatedAt) {
+    // If existing entry has a profileVersion but incoming doesn't (legacy client),
+    // reject the update — once versioned, only versioned updates can replace.
+    if (incomingProfileVersion === null && existingVersion !== null) {
+      if (DEBUG.contactsA1) {
+        console.log('[contacts] skipping unversioned update for versioned entry', {
+          digest,
+          existingVersion
+        });
+      }
+      return { ok: true, reasonCode: 'STALE_SKIP', diff: null };
+    }
+    if (incomingProfileVersion === null && existingVersion === null && profileUpdatedAt && existingEntry.profileUpdatedAt && existingEntry.profileUpdatedAt > profileUpdatedAt) {
       if (DEBUG.contactsA1) {
         console.log('[contacts] skipping stale update (timestamp)', {
           digest,
@@ -876,6 +887,7 @@ export async function downlinkContactsFromD1() {
         avatar: decrypted.avatar,
         addedAt: decrypted.addedAt,
         profileUpdatedAt: decrypted.profileUpdatedAt, // [Fix] Restore profile timestamp
+        profileVersion: decrypted.profileVersion ?? null,
         isBlocked: row.isBlocked ?? row.is_blocked ?? false,
         conversation: decrypted.conversation || null
       };

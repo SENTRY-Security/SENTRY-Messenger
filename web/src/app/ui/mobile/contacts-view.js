@@ -1011,7 +1011,8 @@ export function initContactsView(options) {
     conversation,
     contactSecret,
     addedAt,
-    updatedAt
+    updatedAt,
+    profileVersion
   } = {}) {
     let digest = null;
     let peerDeviceIdFromKey = null;
@@ -1111,9 +1112,15 @@ export function initContactsView(options) {
           ? Number(existing.addedAt)
           : 0;
     const incomingHasProfile = !!normalizeNickname(nickname || '');
+    const incomingVersion = Number.isFinite(profileVersion) ? profileVersion : null;
+    const existingVersion = Number.isFinite(existing?.profileVersion) ? existing.profileVersion : null;
+    const versionSaysNewer = incomingVersion !== null && existingVersion !== null
+      ? incomingVersion > existingVersion
+      : null; // null = can't compare, fall back to timestamp
     const takeIncomingProfile =
       (incomingHasProfile && !existingHasProfile)
-      || (!prevUpdatedAt || (incomingUpdatedAt && incomingUpdatedAt >= prevUpdatedAt));
+      || (versionSaysNewer === true)
+      || (versionSaysNewer === null && (!prevUpdatedAt || (incomingUpdatedAt && incomingUpdatedAt >= prevUpdatedAt)));
 
     const normalizedIncomingNickname = normalizeNickname(nickname || '') || null;
     const nicknameToStore = takeIncomingProfile
@@ -1129,6 +1136,7 @@ export function initContactsView(options) {
       avatar: takeIncomingProfile ? (avatar || null) : (existing?.avatar || avatar || null),
       addedAt: existing?.addedAt || incomingAddedAt || now,
       profileUpdatedAt: takeIncomingProfile ? incomingUpdatedAt : (prevUpdatedAt || incomingUpdatedAt || now),
+      profileVersion: takeIncomingProfile ? (incomingVersion ?? existingVersion ?? null) : (existingVersion ?? incomingVersion ?? null),
       conversation: conversationPayload,
       contactSecret: typeof contactSecret === 'string' ? contactSecret : null
     };
@@ -1280,7 +1288,7 @@ export function initContactsView(options) {
   });
   document.addEventListener('contacts:changed', (event) => {
     const detail = event?.detail || {};
-    if (detail?.reason !== 'contact-share-commit' && detail?.reason !== 'messages-flow:contact-share-commit-batch') return;
+    if (detail?.reason !== 'contact-share-commit' && detail?.reason !== 'contact-share-commit-batch') return;
     if (contactsRefreshing) return;
     contactsRefreshing = true;
     Promise.resolve()

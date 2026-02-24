@@ -2226,6 +2226,7 @@ export function setupShareController(options) {
         avatar: payload.avatar || null,
         addedAt: payload.addedAt || null,
         updatedAt: payload.updatedAt || null,
+        profileVersion: payload.profileVersion ?? null,
         conversation,
         contactSecret: conversation.token_b64
       });
