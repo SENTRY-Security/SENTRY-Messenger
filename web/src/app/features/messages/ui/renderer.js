@@ -1,4 +1,5 @@
 import { normalizeTimelineMessageId, normalizeCounterValue, normalizeRawMessageId, normalizeMsgTypeValue } from '../parser.js';
+import { isNearBottom } from './interactions.js';
 import { normalizeCallLogPayload, resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
 import { getVaultAckCounter } from '../../messages-support/vault-ack-store.js';
 import { normalizeAccountDigest, getAccountDigest } from '../../../core/store.js';
@@ -342,10 +343,27 @@ export function buildRenderEntries({ timelineMessages = [] } = {}) {
 }
 
 export class MessageRenderer {
-    constructor({ messagesListEl, callbacks = {} }) {
+    constructor({ messagesListEl, scrollEl, callbacks = {} }) {
         this.listEl = messagesListEl;
+        this.scrollEl = scrollEl || null;
         this.callbacks = callbacks;
         this.shimmerIds = new Set();
+    }
+
+    /**
+     * After media elements load, maintain scroll position if user was near bottom.
+     * Prevents content from shifting away when images/videos finish loading.
+     */
+    _attachMediaLoadScrollGuard(el) {
+        if (!el) return;
+        const eventName = el.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
+        el.addEventListener(eventName, () => {
+            const scrollEl = this.scrollEl;
+            if (!scrollEl) return;
+            if (isNearBottom(scrollEl, 150)) {
+                scrollEl.scrollTop = scrollEl.scrollHeight;
+            }
+        }, { once: true });
     }
 
     attachMediaPreview(container, media) {
@@ -361,6 +379,7 @@ export class MessageRenderer {
             img.alt = media?.name || 'image preview';
             img.decoding = 'async';
             container.appendChild(img);
+            this._attachMediaLoadScrollGuard(img);
             setPreviewSource(img, media);
         } else if (type.startsWith('video/')) {
             const video = document.createElement('video');
@@ -370,6 +389,7 @@ export class MessageRenderer {
             video.playsInline = true;
             video.preload = 'metadata';
             container.appendChild(video);
+            this._attachMediaLoadScrollGuard(video);
             setPreviewSource(video, media);
         } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
             const pdf = document.createElement('canvas');

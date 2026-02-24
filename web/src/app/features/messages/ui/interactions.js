@@ -18,9 +18,13 @@ export function scrollToBottom(scrollEl) {
  */
 export function scrollToBottomSoon(scrollEl) {
     if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => scrollToBottom(scrollEl));
+        // Double-RAF ensures layout is complete before scrolling,
+        // preventing incorrect scroll position on large DOM updates.
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => scrollToBottom(scrollEl));
+        });
     } else {
-        setTimeout(() => scrollToBottom(scrollEl), 0);
+        setTimeout(() => scrollToBottom(scrollEl), 16);
     }
 }
 
@@ -100,12 +104,16 @@ export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } =
 
     function applyOffset() {
         const kbOffset = Math.max(0, Math.min(360, Math.floor(keyboardOffsetPx)));
+        const wasActive = keyboardActive;
         keyboardActive = kbOffset > 120;
         document.documentElement.style.setProperty('--kb-offset', `${kbOffset}px`);
         try {
             document.body.classList.toggle('keyboard-open', keyboardActive);
         } catch { /* ignore */ }
-        if (keyboardActive && scrollEl) {
+        // Only scroll to bottom on keyboard OPEN transition and when user
+        // is already near the bottom.  Previously this fired unconditionally
+        // every 100ms via tick(), causing scroll jumps while reading history.
+        if (keyboardActive && !wasActive && scrollEl && isNearBottom(scrollEl, 150)) {
             scrollEl.scrollTop = scrollEl.scrollHeight;
         }
     }

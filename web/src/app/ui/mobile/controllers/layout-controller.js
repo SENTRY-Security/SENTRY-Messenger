@@ -4,7 +4,7 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { createKeyboardOffsetManager } from '../../../features/messages/ui/interactions.js';
+import { createKeyboardOffsetManager, isNearBottom } from '../../../features/messages/ui/interactions.js';
 
 const DESKTOP_BREAKPOINT = 768;
 
@@ -230,10 +230,18 @@ export class LayoutController extends BaseController {
                 if (!vv) return;
                 const heightDiff = window.innerHeight - vv.height;
                 const offset = Math.max(0, heightDiff - (vv.offsetTop || 0));
+                const wasKeyboardOpen = this.keyboardOffsetPx > 120;
+                const isKeyboardOpen = offset > 120;
                 this.keyboardOffsetPx = offset;
                 this.applyKeyboardOffset();
-                if (this.elements.scrollEl) {
-                    this.elements.scrollEl.scrollTop = this.elements.scrollEl.scrollHeight;
+                // Only scroll to bottom when keyboard transitions from closed→open
+                // AND user is already near the bottom.  Previously this fired on
+                // every viewport change (including keyboard close), causing the
+                // scroll→blur→keyboard-close→scroll-to-bottom death loop.
+                if (isKeyboardOpen && !wasKeyboardOpen && this.elements.scrollEl) {
+                    if (isNearBottom(this.elements.scrollEl, 150)) {
+                        this.elements.scrollEl.scrollTop = this.elements.scrollEl.scrollHeight;
+                    }
                 }
             } catch (err) {
                 this.log({ keyboardOffsetError: err?.message || err });

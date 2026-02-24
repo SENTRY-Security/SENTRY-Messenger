@@ -1125,6 +1125,7 @@ export class MessageFlowController extends BaseController {
         if (!this.messageRenderer && this.elements.messagesList) {
             this.messageRenderer = new MessageRenderer({
                 messagesListEl: this.elements.messagesList,
+                scrollEl: this.elements.scrollEl,
                 messagesPlaceholdersEl: this.elements.messagesPlaceholders,
                 callbacks: {
                     onPreviewMedia: (m) => this.deps.controllers?.mediaHandling?.openMediaPreview(m),
@@ -1154,6 +1155,7 @@ export class MessageFlowController extends BaseController {
                     rendererConnected: rendererListEl?.isConnected
                 });
                 if (currentListEl) this.messageRenderer.listEl = currentListEl;
+                this.messageRenderer.scrollEl = this.elements.scrollEl;
                 // Placeholders are now inline, so we don't update placeholdersEl
             }
         }

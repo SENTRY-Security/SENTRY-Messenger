@@ -753,8 +753,15 @@ export function initMessagesPane({
   function handleMessagesScroll() {
     if (!elements.scrollEl) return;
     const atBottom = isNearMessagesBottom();
-    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !atBottom) {
-      elements.input.blur();
+    // Blur input only when user has scrolled significantly away from bottom (>200px).
+    // Using a generous threshold prevents the scroll→blur→keyboard-close→scroll
+    // feedback loop that occurred with the original !atBottom (32px) check.
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
+      const scrollEl = elements.scrollEl;
+      const dist = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+      if (dist > 200) {
+        elements.input.blur();
+      }
     }
     const state = getMessageState();
     if (!state.hasMore || state.loading) return;
@@ -768,15 +775,16 @@ export function initMessagesPane({
     } else {
       setLoadMoreState('idle');
     }
-    // if (atBottom) {
-    //   setNewMessageHint(false); // Removed: ReferenceError
-    // }
   }
 
   function handleMessagesTouchEnd() {
     if (!elements.scrollEl) return;
-    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !isNearMessagesBottom()) {
-      elements.input.blur();
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
+      const scrollEl = elements.scrollEl;
+      const dist = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+      if (dist > 200) {
+        elements.input.blur();
+      }
     }
     if (elements.scrollEl.scrollTop <= 20) {
       triggerAutoLoadOlder();
@@ -785,8 +793,12 @@ export function initMessagesPane({
 
   function handleMessagesWheel() {
     if (!elements.scrollEl) return;
-    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input && !isNearMessagesBottom()) {
-      elements.input.blur();
+    if (!suppressInputBlurOnce && elements.input && document.activeElement === elements.input) {
+      const scrollEl = elements.scrollEl;
+      const dist = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+      if (dist > 200) {
+        elements.input.blur();
+      }
     }
     if (elements.scrollEl.scrollTop <= 20) {
       triggerAutoLoadOlder();
