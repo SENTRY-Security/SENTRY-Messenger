@@ -1,9 +1,13 @@
 /**
- * Transfer Progress Module
+ * Transfer Progress Module (singleton)
  *
  * Manages a top-pinned progress bar for upload/download transfers.
  * Enforces: at most one upload + one download active simultaneously.
  * Renders up to two horizontal bars stacked vertically at the top of the chat scroll area.
+ *
+ * All DOM elements and event listeners are created exactly once.
+ * Cancel buttons read the current onCancel from module-level state at click-time,
+ * so no listener re-registration is needed when the callback changes.
  */
 
 // ── SVG icons ──────────────────────────────────────────────────────────────
@@ -12,31 +16,46 @@ const UPLOAD_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none"
 
 const DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M19 12l-7 7-7-7"/></svg>';
 
-const CANCEL_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+const CANCEL_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 
-// ── State ──────────────────────────────────────────────────────────────────
+// ── Singleton state ────────────────────────────────────────────────────────
 
-let _scrollEl = null;
+let _initialized = false;
 let _containerEl = null;
 
 // Each: { name, percent, onCancel } | null
 let _upload = null;
 let _download = null;
 
-// Pre-created bar elements (reused, not recreated each render)
+// Pre-created once, reused forever — never recreated or cloned.
 let _uploadBarEl = null;
 let _downloadBarEl = null;
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-/** Call once after DOM is ready. Pass the messages-scroll element. */
+/**
+ * Idempotent init. Safe to call multiple times; only the first call creates DOM.
+ * If the scrollEl changes (unlikely), re-attaches the existing container.
+ */
 export function initTransferProgress(scrollEl) {
-    _scrollEl = scrollEl;
-    if (!_scrollEl) return;
-    _containerEl = document.createElement('div');
-    _containerEl.className = 'transfer-progress-container';
-    _containerEl.style.display = 'none';
-    _scrollEl.insertBefore(_containerEl, _scrollEl.firstChild);
+    if (!scrollEl) return;
+
+    if (!_initialized) {
+        _containerEl = document.createElement('div');
+        _containerEl.className = 'transfer-progress-container';
+        _containerEl.style.display = 'none';
+
+        // Create both bars once with permanent click listeners
+        _uploadBarEl = _createBarElement('upload', () => _upload?.onCancel?.());
+        _downloadBarEl = _createBarElement('download', () => _download?.onCancel?.());
+
+        _initialized = true;
+    }
+
+    // (Re-)attach container if not already a child of this scrollEl
+    if (_containerEl.parentElement !== scrollEl) {
+        scrollEl.insertBefore(_containerEl, scrollEl.firstChild);
+    }
 }
 
 export function isUploadBusy() { return !!_upload; }
@@ -49,7 +68,8 @@ export function isDownloadBusy() { return !!_download; }
  */
 export function startUpload(name, onCancel) {
     _upload = { name: name || '檔案', percent: 0, onCancel };
-    _renderUpload();
+    _attachBar(_uploadBarEl, true);
+    _updateBar(_uploadBarEl, _upload);
     _updateVisibility();
 }
 
@@ -61,10 +81,7 @@ export function updateUploadProgress(percent) {
 
 export function endUpload() {
     _upload = null;
-    if (_uploadBarEl) {
-        _uploadBarEl.remove();
-        _uploadBarEl = null;
-    }
+    _detachBar(_uploadBarEl);
     _updateVisibility();
 }
 
@@ -75,7 +92,8 @@ export function endUpload() {
  */
 export function startDownload(name, onCancel) {
     _download = { name: name || '檔案', percent: 0, onCancel };
-    _renderDownload();
+    _attachBar(_downloadBarEl, false);
+    _updateBar(_downloadBarEl, _download);
     _updateVisibility();
 }
 
@@ -87,43 +105,29 @@ export function updateDownloadProgress(percent) {
 
 export function endDownload() {
     _download = null;
-    if (_downloadBarEl) {
-        _downloadBarEl.remove();
-        _downloadBarEl = null;
-    }
+    _detachBar(_downloadBarEl);
     _updateVisibility();
 }
 
-// ── Internal rendering ─────────────────────────────────────────────────────
+// ── Internal helpers (no listener registration) ────────────────────────────
 
 function _updateVisibility() {
     if (!_containerEl) return;
     _containerEl.style.display = (_upload || _download) ? '' : 'none';
 }
 
-function _renderUpload() {
-    if (!_containerEl || !_upload) return;
-    if (!_uploadBarEl) {
-        _uploadBarEl = _createBarElement('upload');
-        // Upload bar always first
-        _containerEl.insertBefore(_uploadBarEl, _containerEl.firstChild);
+function _attachBar(barEl, prepend) {
+    if (!_containerEl || !barEl) return;
+    if (barEl.parentElement === _containerEl) return; // already attached
+    if (prepend) {
+        _containerEl.insertBefore(barEl, _containerEl.firstChild);
+    } else {
+        _containerEl.appendChild(barEl);
     }
-    _updateBar(_uploadBarEl, _upload);
-    _wireCancel(_uploadBarEl, () => {
-        _upload?.onCancel?.();
-    });
 }
 
-function _renderDownload() {
-    if (!_containerEl || !_download) return;
-    if (!_downloadBarEl) {
-        _downloadBarEl = _createBarElement('download');
-        _containerEl.appendChild(_downloadBarEl);
-    }
-    _updateBar(_downloadBarEl, _download);
-    _wireCancel(_downloadBarEl, () => {
-        _download?.onCancel?.();
-    });
+function _detachBar(barEl) {
+    if (barEl?.parentElement) barEl.remove();
 }
 
 function _updateBar(barEl, state) {
@@ -137,20 +141,11 @@ function _updateBar(barEl, state) {
     if (pctEl) pctEl.textContent = `${pct}%`;
 }
 
-function _wireCancel(barEl, handler) {
-    const btn = barEl?.querySelector('.transfer-bar-cancel');
-    if (!btn) return;
-    // Replace to avoid duplicate listeners
-    const clone = btn.cloneNode(true);
-    btn.replaceWith(clone);
-    clone.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        handler();
-    });
-}
-
-function _createBarElement(type) {
+/**
+ * Create a bar element once. The cancel button's click handler reads
+ * the current onCancel from module state at click-time (no re-binding needed).
+ */
+function _createBarElement(type, onCancelThunk) {
     const bar = document.createElement('div');
     bar.className = `transfer-bar transfer-bar--${type}`;
 
@@ -182,6 +177,12 @@ function _createBarElement(type) {
     cancelBtn.className = 'transfer-bar-cancel';
     cancelBtn.title = '取消';
     cancelBtn.innerHTML = CANCEL_ICON;
+    // Single permanent listener — reads current callback via thunk at click-time
+    cancelBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onCancelThunk();
+    });
 
     bar.appendChild(icon);
     bar.appendChild(info);
