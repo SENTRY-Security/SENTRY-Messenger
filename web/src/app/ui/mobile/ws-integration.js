@@ -41,7 +41,6 @@ export function createWsIntegration({ deps }) {
   const HEARTBEAT_INTERVAL   = 30000;   // send ping every 30s
   const HEARTBEAT_TIMEOUT    = 45000;   // no pong within 45s → dead
   const CONNECT_TIMEOUT      = 15000;   // CONNECTING state max age
-  const MONITOR_INTERVAL     = 15000;   // connection check every 15s (was 5s)
   const PENDING_QUEUE_LIMIT  = 200;
 
   // --- Network quality detection ---
@@ -53,7 +52,7 @@ export function createWsIntegration({ deps }) {
   let wsReconnectTimer = null;
   let wsAuthTokenInfo = null;
   const pendingMessages = [];
-  let monitorTimer = null;
+  let connectTimeoutTimer = null;
   let reconnectAttempts = 0;
   let connectStartedAt = 0;
   let lastPongAt = 0;
@@ -159,8 +158,23 @@ export function createWsIntegration({ deps }) {
     const ws = new WebSocket(wsUrl);
     wsConn = ws;
     updateConnectionIndicator('connecting');
+
+    // Event-driven connect timeout: if onopen doesn't fire within CONNECT_TIMEOUT, abort.
+    if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
+    connectTimeoutTimer = setTimeout(() => {
+      connectTimeoutTimer = null;
+      if (ws === wsConn && ws.readyState === WebSocket.CONNECTING) {
+        log({ wsConnectTimeout: true, elapsed: Date.now() - connectStartedAt });
+        try { ws.close(); } catch { }
+        wsConn = null;
+        connecting = false;
+        scheduleReconnect();
+      }
+    }, CONNECT_TIMEOUT);
+
     ws.onopen = () => {
       if (ws !== wsConn) return;
+      if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       if (wsDebugEnabled) {
         log({ wsState: 'open' });
       }
@@ -200,6 +214,7 @@ export function createWsIntegration({ deps }) {
     };
     ws.onclose = (evt) => {
       if (ws !== wsConn) return;
+      if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       if (wsDebugEnabled) {
         log({ wsClose: { code: evt.code, reason: evt.reason } });
       }
@@ -218,6 +233,7 @@ export function createWsIntegration({ deps }) {
     };
     ws.onerror = () => {
       if (ws !== wsConn) return;
+      if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       if (wsDebugEnabled) {
         log({ wsError: true });
       }
@@ -272,54 +288,30 @@ export function createWsIntegration({ deps }) {
     }).finally(() => { connecting = false; });
   }
 
-  let monitorIntervalMs = MONITOR_INTERVAL;
-
-  function startMonitor(intervalMs = MONITOR_INTERVAL) {
-    monitorIntervalMs = intervalMs;
-    if (monitorTimer) return;
-    monitorTimer = setInterval(monitorTick, monitorIntervalMs);
-  }
-
-  function monitorTick() {
-    // Detect hung CONNECTING state
-    if (wsConn && wsConn.readyState === WebSocket.CONNECTING) {
-      if (connectStartedAt && Date.now() - connectStartedAt > CONNECT_TIMEOUT) {
-        log({ wsConnectTimeout: true, elapsed: Date.now() - connectStartedAt });
-        try { wsConn.close(); } catch { }
-        wsConn = null;
-        connecting = false;
-        scheduleReconnect();
-      }
-      return;
-    }
-    if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
-      log({ wsMonitorReconnect: true, readyState: wsConn?.readyState ?? null });
-      ensure();
-    }
-  }
+  // startMonitor is now a no-op: connection monitoring is fully event-driven.
+  // - Connect timeout: one-shot setTimeout in connect(), cleared on open/close/error.
+  // - Disconnect: onclose fires scheduleReconnect() automatically.
+  // - Heartbeat timeout: detected in heartbeat interval, triggers close → onclose.
+  function startMonitor() { }
 
   /**
-   * Pause monitor and heartbeat when app goes to background.
+   * Pause heartbeat when app goes to background.
    * Reduces CPU/battery usage while the page is hidden.
    */
   function pause() {
-    if (monitorTimer) {
-      clearInterval(monitorTimer);
-      monitorTimer = null;
-    }
     stopHeartbeat();
   }
 
   /**
-   * Resume monitor and heartbeat when app returns to foreground.
+   * Resume heartbeat when app returns to foreground.
+   * Also re-checks connection state in case it dropped while backgrounded.
    */
   function resume() {
-    if (!monitorTimer && monitorIntervalMs) {
-      monitorTimer = setInterval(monitorTick, monitorIntervalMs);
-    }
-    // Restart heartbeat only if connection is open
     if (wsConn && wsConn.readyState === WebSocket.OPEN) {
       startHeartbeat();
+    } else {
+      // Connection may have dropped while backgrounded — reconnect
+      ensure();
     }
   }
 
@@ -360,9 +352,9 @@ export function createWsIntegration({ deps }) {
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
     }
-    if (monitorTimer) {
-      clearInterval(monitorTimer);
-      monitorTimer = null;
+    if (connectTimeoutTimer) {
+      clearTimeout(connectTimeoutTimer);
+      connectTimeoutTimer = null;
     }
     stopHeartbeat();
     pendingMessages.length = 0;
