@@ -7,7 +7,7 @@ import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
-import { escapeHtml, fmtSize } from '../ui-utils.js';
+import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
 
 export class MediaHandlingController extends BaseController {
     constructor(deps) {
@@ -47,6 +47,82 @@ export class MediaHandlingController extends BaseController {
         if (label && typeof state.text === 'string') {
             label.textContent = state.text;
         }
+    }
+
+    /**
+     * Update the video overlay DOM in-place without a full re-render.
+     */
+    _updateVideoOverlayUI(msgId, media) {
+        const messagesList = this.elements?.messagesList || document.querySelector('.messages-list');
+        if (!messagesList) return;
+        const selector = `.message-bubble[data-message-id="${escapeSelector(msgId)}"] .message-file`;
+        const wrapper = messagesList.querySelector(selector);
+        if (!wrapper) return;
+        const renderer = this.deps.getMessageRenderer?.();
+        if (renderer && typeof renderer.renderVideoOverlay === 'function') {
+            renderer.renderVideoOverlay(wrapper, media, msgId);
+        }
+    }
+
+    /**
+     * Download a video file inline (on the chat bubble) with progress.
+     * Updates media._videoState through: idle → downloading → ready
+     */
+    async downloadVideoInline(media, msgId) {
+        if (!media || !media.objectKey || !media.envelope) return;
+        if (media._videoState === 'downloading' || media._videoState === 'ready') return;
+
+        media._videoState = 'downloading';
+        media._videoProgress = 0;
+        this._updateVideoOverlayUI(msgId, media);
+
+        try {
+            const result = await downloadAndDecrypt({
+                key: media.objectKey,
+                envelope: media.envelope,
+                messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                onStatus: ({ stage, loaded, total }) => {
+                    if (stage === 'sign') {
+                        media._videoProgress = 2;
+                    } else if (stage === 'download-start') {
+                        media._videoProgress = 5;
+                    } else if (stage === 'download') {
+                        const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
+                        media._videoProgress = pct != null ? Math.min(95, Math.max(5, pct)) : 45;
+                    } else if (stage === 'decrypt') {
+                        media._videoProgress = 98;
+                    }
+                    this._updateVideoOverlayUI(msgId, media);
+                }
+            });
+
+            media._videoBlob = result.blob;
+            media._videoDownloadedUrl = URL.createObjectURL(result.blob);
+            media._videoState = 'ready';
+            media._videoProgress = 100;
+            this._updateVideoOverlayUI(msgId, media);
+        } catch (err) {
+            console.error('Video download error', err);
+            media._videoState = 'idle';
+            media._videoProgress = 0;
+            this._updateVideoOverlayUI(msgId, media);
+            this.deps.showToast?.(`影片下載失敗：${err?.message || err}`);
+        }
+    }
+
+    /**
+     * Play an already-downloaded video in the preview modal.
+     */
+    async playDownloadedVideo(media) {
+        if (!media?._videoBlob) {
+            this.deps.showToast?.('影片尚未下載完成');
+            return;
+        }
+        await this.renderMediaPreviewModal({
+            blob: media._videoBlob,
+            contentType: media.contentType || 'video/mp4',
+            name: media.name || '影片'
+        });
     }
 
     /**

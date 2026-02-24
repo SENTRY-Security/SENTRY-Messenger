@@ -797,6 +797,27 @@
   color: #94a3b8;
 }
 
+/* Video download / play overlay */
+.video-action-overlay {
+  z-index: 2;
+}
+
+.video-download-btn,
+.video-play-btn {
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.video-download-btn:hover,
+.video-play-btn:hover {
+  transform: scale(1.08);
+  background: rgba(0, 0, 0, 0.6) !important;
+}
+
+.video-download-btn:active,
+.video-play-btn:active {
+  transform: scale(0.95);
+}
+
 .message-me {
   margin-left: auto;
   background: linear-gradient(135deg, #38bdf8, #0ea5e9);

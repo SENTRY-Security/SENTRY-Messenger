@@ -506,6 +506,118 @@ export class MessageRenderer {
         if (!existing) target.appendChild(overlay);
     }
 
+    /**
+     * Render a video download/play overlay on top of the preview thumbnail.
+     * States managed via media._videoState: 'idle' | 'downloading' | 'ready'
+     */
+    renderVideoOverlay(wrapper, media, msgId) {
+        if (!wrapper || !media) return;
+        const target = wrapper.querySelector('.message-file-preview');
+        if (!target) return;
+        target.style.position = 'relative';
+        const existing = target.querySelector('.video-action-overlay');
+
+        // Don't show during upload
+        if (media.uploading) {
+            if (existing) existing.remove();
+            return;
+        }
+
+        const state = media._videoState || 'idle';
+        const overlay = existing || document.createElement('div');
+        overlay.className = 'video-action-overlay';
+        Object.assign(overlay.style, {
+            position: 'absolute',
+            inset: '0',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '6px',
+            borderRadius: getComputedStyle(target).borderRadius || '12px',
+            pointerEvents: 'auto',
+            padding: '10px',
+            textAlign: 'center',
+            transition: 'background 0.2s ease'
+        });
+        overlay.innerHTML = '';
+
+        if (state === 'downloading') {
+            overlay.style.background = 'rgba(15,23,42,0.78)';
+            overlay.style.color = '#fff';
+            const pct = Math.round(media._videoProgress || 0);
+            const label = document.createElement('div');
+            label.textContent = `下載中… ${pct}%`;
+            label.style.fontWeight = '600';
+            label.style.fontSize = '13px';
+            overlay.appendChild(label);
+            const barWrap = document.createElement('div');
+            Object.assign(barWrap.style, {
+                width: '80%', height: '6px', borderRadius: '999px',
+                background: 'rgba(255,255,255,0.25)'
+            });
+            const bar = document.createElement('div');
+            Object.assign(bar.style, {
+                height: '100%', borderRadius: '999px',
+                background: '#22d3ee', width: `${pct}%`,
+                transition: 'width 0.15s ease'
+            });
+            barWrap.appendChild(bar);
+            overlay.appendChild(barWrap);
+        } else if (state === 'ready') {
+            overlay.style.background = 'rgba(15,23,42,0.38)';
+            overlay.style.color = '#fff';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'video-play-btn';
+            btn.innerHTML = '<svg viewBox="0 0 48 48" width="44" height="44" fill="currentColor"><path d="M18 12v24l18-12z"/></svg>';
+            Object.assign(btn.style, {
+                background: 'rgba(0,0,0,0.45)',
+                border: '2px solid rgba(255,255,255,0.6)',
+                borderRadius: '50%',
+                width: '52px', height: '52px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', color: '#fff'
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.callbacks.onPlayVideo?.(media, msgId);
+            });
+            overlay.appendChild(btn);
+        } else {
+            // idle — show download button
+            overlay.style.background = 'rgba(15,23,42,0.55)';
+            overlay.style.color = '#fff';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'video-download-btn';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+            Object.assign(btn.style, {
+                background: 'rgba(0,0,0,0.45)',
+                border: '2px solid rgba(255,255,255,0.6)',
+                borderRadius: '50%',
+                width: '52px', height: '52px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', color: '#fff'
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.callbacks.onDownloadVideo?.(media, msgId);
+            });
+            overlay.appendChild(btn);
+            if (Number.isFinite(media.size) && media.size > 0) {
+                const sizeLabel = document.createElement('div');
+                sizeLabel.textContent = formatBytes(media.size);
+                sizeLabel.style.fontSize = '11px';
+                sizeLabel.style.opacity = '0.9';
+                overlay.appendChild(sizeLabel);
+            }
+        }
+        if (!existing) target.appendChild(overlay);
+    }
+
     renderMediaBubble(bubble, msg) {
         const media = msg.media || {};
         bubble.classList.add('message-has-media');
@@ -525,7 +637,15 @@ export class MessageRenderer {
         info.appendChild(metaEl);
         wrapper.appendChild(preview);
         wrapper.appendChild(info);
-        this.enableMediaPreviewInteraction(wrapper, media);
+
+        // For incoming videos that need download, don't wire the generic click-to-preview;
+        // the video overlay handles download → play instead.
+        const isVideo = (media.contentType || '').toLowerCase().startsWith('video/');
+        const needsVideoOverlay = isVideo && !media.uploading && !media.localUrl;
+        if (!needsVideoOverlay) {
+            this.enableMediaPreviewInteraction(wrapper, media);
+        }
+
         bubble.appendChild(wrapper);
         this.attachMediaPreview(preview, media);
 
@@ -534,6 +654,10 @@ export class MessageRenderer {
         if (messageId) bubble.dataset.messageId = messageId;
 
         this.renderUploadOverlay(wrapper, media, messageId);
+
+        if (needsVideoOverlay) {
+            this.renderVideoOverlay(wrapper, media, messageId);
+        }
     }
 
     render(entries, { state, contacts, visibleStatusSet, shimmerIds, forceFullRender }) {

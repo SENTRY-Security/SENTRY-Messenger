@@ -1135,6 +1135,8 @@ export class MessageFlowController extends BaseController {
                             this.deps.controllers?.messageSending?.removeLocalMessageById(msgId);
                         }
                     },
+                    onDownloadVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.downloadVideoInline(media, msgId),
+                    onPlayVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.playDownloadedVideo(media),
                     onAvatarClick: ({ avatarUrl, name }) => this.openAvatarPreview(avatarUrl, name)
                 }
             });
