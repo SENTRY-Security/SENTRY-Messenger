@@ -103,6 +103,7 @@ function normalizeCoreInput(fields = {}) {
   const drInit = conversation.dr_init || conversation.drInit || fields.drInit || null;
   const addedAt = Number.isFinite(fields.addedAt) ? Number(fields.addedAt) : null;
   const profileUpdatedAt = Number.isFinite(fields.profileUpdatedAt) ? Number(fields.profileUpdatedAt) : null;
+  const profileVersion = Number.isFinite(fields.profileVersion) ? Number(fields.profileVersion) : null;
   const msgId = fields.msgId || null;
 
   return {
@@ -116,6 +117,7 @@ function normalizeCoreInput(fields = {}) {
     drInit,
     addedAt,
     profileUpdatedAt,
+    profileVersion,
     msgId,
     contactSecret: fields.contactSecret || null,
     sourceTag
@@ -148,6 +150,7 @@ function applyDerivedOutputs(entry) {
     avatar,
     addedAt: entry.addedAt ?? prevContact.addedAt ?? null,
     profileUpdatedAt: entry.profileUpdatedAt ?? prevContact.profileUpdatedAt ?? null,
+    profileVersion: entry.profileVersion ?? prevContact.profileVersion ?? null,
     msgId: entry.msgId ?? prevContact.msgId ?? null,
     conversation
   });
@@ -187,6 +190,7 @@ function applyDerivedOutputs(entry) {
     avatar,
     addedAt: entry.addedAt ?? (existingIdx >= 0 ? state[existingIdx]?.addedAt : null) ?? null,
     profileUpdatedAt: entry.profileUpdatedAt ?? (existingIdx >= 0 ? state[existingIdx]?.profileUpdatedAt : null) ?? null,
+    profileVersion: entry.profileVersion ?? (existingIdx >= 0 ? state[existingIdx]?.profileVersion : null) ?? null,
     msgId: entry.msgId ?? (existingIdx >= 0 ? state[existingIdx]?.msgId : null) ?? null,
     conversation,
     isReady: true
@@ -327,6 +331,7 @@ export function upsertContactCore(fields, sourceTag = 'unknown') {
     avatar: payload.avatar ?? existing?.avatar ?? null,
     addedAt: payload.addedAt ?? existing?.addedAt ?? null,
     profileUpdatedAt: payload.profileUpdatedAt ?? existing?.profileUpdatedAt ?? null,
+    profileVersion: payload.profileVersion ?? existing?.profileVersion ?? null,
     msgId: payload.msgId ?? existing?.msgId ?? null,
     contactSecret: payload.contactSecret ?? existing?.contactSecret ?? null,
     drInit: payload.drInit ?? existing?.drInit ?? null,
@@ -351,7 +356,7 @@ export function upsertContactCore(fields, sourceTag = 'unknown') {
   if (nextEntry.conversationToken && nextEntry.conversationToken !== existing?.conversationToken) {
     changedFields.conversationToken = summarizeToken(nextEntry.conversationToken);
   }
-  ['nickname', 'avatar', 'contactSecret', 'drInit', 'addedAt', 'profileUpdatedAt', 'msgId'].forEach((key) => {
+  ['nickname', 'avatar', 'contactSecret', 'drInit', 'addedAt', 'profileUpdatedAt', 'profileVersion', 'msgId'].forEach((key) => {
     if (nextEntry[key] !== existing?.[key]) changedFields[key] = nextEntry[key];
   });
   if (!existing?.isReady && nextEntry.isReady) {
@@ -384,11 +389,12 @@ export function patchContactCore(peerKey, patch = {}, sourceTag = 'unknown') {
     nickname: patch.nickname ?? existing.nickname,
     avatar: patch.avatar ?? existing.avatar,
     contactSecret: patch.contactSecret ?? existing.contactSecret,
-    drInit: patch.drInit ?? existing.drInit
+    drInit: patch.drInit ?? existing.drInit,
+    profileVersion: patch.profileVersion ?? existing.profileVersion
   };
   coreMap.set(key, nextEntry);
   const changedFields = {};
-  ['nickname', 'avatar', 'contactSecret', 'drInit'].forEach((field) => {
+  ['nickname', 'avatar', 'contactSecret', 'drInit', 'profileVersion'].forEach((field) => {
     if (nextEntry[field] !== existing[field]) changedFields[field] = nextEntry[field];
   });
   if (Object.keys(changedFields).length > 0) {

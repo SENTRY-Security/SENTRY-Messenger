@@ -1280,7 +1280,7 @@ export function initContactsView(options) {
   });
   document.addEventListener('contacts:changed', (event) => {
     const detail = event?.detail || {};
-    if (detail?.reason !== 'contact-share-commit') return;
+    if (detail?.reason !== 'contact-share-commit' && detail?.reason !== 'messages-flow:contact-share-commit-batch') return;
     if (contactsRefreshing) return;
     contactsRefreshing = true;
     Promise.resolve()

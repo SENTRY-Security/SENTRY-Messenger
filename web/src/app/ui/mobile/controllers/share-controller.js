@@ -1928,11 +1928,13 @@ export function setupShareController(options) {
     }
     const overrideNickname = overrides?.nickname;
     const effectiveNickname = overrideNickname || nickname || '';
+    const profileVersion = Number(profileState?.profileVersion) || 0;
     const payload = {
       nickname: effectiveNickname,
       avatar,
       addedAt: Math.floor(Date.now() / 1000),
-      updatedAt: profileUpdatedAt
+      updatedAt: profileUpdatedAt,
+      profileVersion
     };
     if (conversationInfo) payload.conversation = conversationInfo;
     return payload;
@@ -1982,7 +1984,7 @@ export function setupShareController(options) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw invitePayloadError('ContactSharePayloadInvalid', 'payload required');
     }
-    const allowed = new Set(['nickname', 'avatar', 'updatedAt', 'addedAt', 'conversation', 'reason']);
+    const allowed = new Set(['nickname', 'avatar', 'updatedAt', 'addedAt', 'conversation', 'reason', 'profileVersion']);
     assertNoExtraKeys(payload, allowed, 'ContactSharePayloadInvalid');
     const nickname = requireStringField(payload.nickname, 'nickname', 'ContactSharePayloadInvalid');
     const avatar = Object.prototype.hasOwnProperty.call(payload, 'avatar') ? payload.avatar : null;
@@ -2007,6 +2009,10 @@ export function setupShareController(options) {
     const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : null;
     const addedAt = Number.isFinite(addedAtRaw) && addedAtRaw > 0 ? addedAtRaw : null;
     const reason = typeof payload.reason === 'string' ? payload.reason.trim() : null;
+    const profileVersionRaw = Object.prototype.hasOwnProperty.call(payload, 'profileVersion')
+      ? Number(payload.profileVersion)
+      : null;
+    const profileVersion = Number.isFinite(profileVersionRaw) && profileVersionRaw >= 0 ? profileVersionRaw : null;
     const conversation = normalizeContactShareConversation(payload.conversation);
     return {
       nickname,
@@ -2014,6 +2020,7 @@ export function setupShareController(options) {
       updatedAt,
       addedAt,
       reason,
+      profileVersion,
       conversation
     };
   }

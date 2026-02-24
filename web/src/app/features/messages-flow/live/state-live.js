@@ -956,13 +956,15 @@ async function commitIncomingSingle(params = {}, adapters) {
       // Process contact-share payload (apply contact data)
       if (semantic.subtype === 'contact-share') {
         try {
+          const batchMessageTs = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
           await applyContactShareFromCommit({
             peerAccountDigest: senderDigest,
             peerDeviceId: senderDeviceId,
             sessionKey: tokenB64,
             plaintext: text,
             messageId,
-            sourceTag: 'messages-flow:contact-share-commit-batch'
+            sourceTag: 'messages-flow:contact-share-commit-batch',
+            profileUpdatedAt: batchMessageTs
           });
         } catch (err) {
           console.warn('[state-live] contact-share apply failed (batch)', err);

@@ -63,10 +63,12 @@ function emitContactsChanged({ conversationId, peerKey, sourceTag }) {
   if (typeof document === 'undefined') return;
   const now = Date.now();
   const last = contactShareRefreshThrottle.get(conversationId) || 0;
-  if (now - last < CONTACTS_CHANGED_THROTTLE_MS && sourceTag !== 'messages-flow:contact-share-commit') return;
+  const isLiveContactShare = sourceTag === 'messages-flow:contact-share-commit'
+    || sourceTag === 'messages-flow:contact-share-commit-batch';
+  if (now - last < CONTACTS_CHANGED_THROTTLE_MS && !isLiveContactShare) return;
   contactShareRefreshThrottle.set(conversationId, now);
-  const reason = sourceTag === 'messages-flow:contact-share-commit'
-    ? 'contact-share-commit'
+  const reason = isLiveContactShare
+    ? (sourceTag === 'messages-flow:contact-share-commit' ? 'contact-share-commit' : sourceTag)
     : (sourceTag || 'contact-share-commit');
   const detail = {
     reason,
@@ -192,6 +194,7 @@ function buildContactCorePayload(entry, peerDeviceId) {
     avatar: entry.avatar ?? null,
     addedAt: entry.addedAt ?? null,
     profileUpdatedAt: entry.profileUpdatedAt ?? null,
+    profileVersion: entry.profileVersion ?? null,
     msgId: entry.msgId ?? null,
     conversationId,
     conversationToken,
@@ -274,6 +277,7 @@ export async function applyContactShareFromCommit({
   }
 
   const normalizedNickname = normalizeNickname(contact?.nickname || '') || '';
+  const incomingProfileVersion = Number.isFinite(contact?.profileVersion) ? contact.profileVersion : null;
   // Always include peer device ID in the conversation blob so it persists
   // through D1 cloud backup/restore (the DR envelope provides it).
   const conversationWithDevice = conversation
@@ -284,6 +288,7 @@ export async function applyContactShareFromCommit({
     nickname: normalizedNickname,
     avatar: contact?.avatar || null,
     addedAt: Number(contact?.addedAt || nowTs()),
+    profileVersion: incomingProfileVersion,
     msgId: messageId || null,
     conversation: conversationWithDevice
   };
@@ -313,9 +318,23 @@ export async function applyContactShareFromCommit({
   const existingEntry = existingScan.find(m => m.entry?.conversationId === conversation.conversation_id)?.entry || existingScan[0]?.entry;
 
   if (existingEntry) {
-    if (profileUpdatedAt && existingEntry.profileUpdatedAt && existingEntry.profileUpdatedAt > profileUpdatedAt) {
+    // Stale check: prefer profileVersion (monotonic integer) over timestamp.
+    // If both sides have a profileVersion, use that for comparison.
+    // Fall back to timestamp comparison for legacy payloads without profileVersion.
+    const existingVersion = Number.isFinite(existingEntry.profileVersion) ? existingEntry.profileVersion : null;
+    if (incomingProfileVersion !== null && existingVersion !== null && incomingProfileVersion <= existingVersion) {
       if (DEBUG.contactsA1) {
-        console.log('[contacts] skipping stale update', {
+        console.log('[contacts] skipping stale update (profileVersion)', {
+          digest,
+          existingVersion,
+          incomingVersion: incomingProfileVersion
+        });
+      }
+      return { ok: true, reasonCode: 'STALE_SKIP', diff: null };
+    }
+    if (incomingProfileVersion === null && profileUpdatedAt && existingEntry.profileUpdatedAt && existingEntry.profileUpdatedAt > profileUpdatedAt) {
+      if (DEBUG.contactsA1) {
+        console.log('[contacts] skipping stale update (timestamp)', {
           digest,
           existingTs: existingEntry.profileUpdatedAt,
           incomingTs: profileUpdatedAt,
@@ -357,7 +376,9 @@ export async function applyContactShareFromCommit({
   }
   if (DEBUG.contactsA1) console.log('[contacts] applyContactShareFromCommit: upsert success', { sourceTag, diff: !!diff });
   removePendingInvitesByPeer({ peerAccountDigest: digest, peerDeviceId: deviceId });
-  if (sourceTag === 'messages-flow:contact-share-commit') {
+  const isContactShareCommit = sourceTag === 'messages-flow:contact-share-commit'
+    || sourceTag === 'messages-flow:contact-share-commit-batch';
+  if (isContactShareCommit) {
     const peerKey = identity.key || (digest && deviceId ? `${digest}::${deviceId}` : null);
     emitContactsChanged({
       conversationId: conversation.conversation_id,
@@ -366,8 +387,8 @@ export async function applyContactShareFromCommit({
     });
     // [FIX] Emit contacts:entry-updated so messages pane refreshes
     // active conversation header (name/avatar) and conversation list.
-    // Previously only contacts:changed was emitted, which only reloads
-    // the contacts tab — the messages UI was never notified.
+    // Both live (contact-share-commit) and batch (contact-share-commit-batch)
+    // paths must emit this event to ensure UI is always updated.
     if (peerKey && typeof document !== 'undefined') {
       try {
         document.dispatchEvent(new CustomEvent('contacts:entry-updated', {
@@ -798,6 +819,7 @@ export async function uplinkContactToD1(contactEntry, { isBlocked = false } = {}
     note: contactEntry.note || null,
     addedAt: contactEntry.addedAt,
     profileUpdatedAt: contactEntry.profileUpdatedAt, // [Fix] Persist profile timestamp
+    profileVersion: contactEntry.profileVersion ?? null,
     conversation: contactEntry.conversation // CRITICAL: Include session keys
   };
 
@@ -886,6 +908,7 @@ export async function backupAllContactsToD1() {
       avatar: entry.avatar,
       addedAt: entry.addedAt,
       profileUpdatedAt: entry.profileUpdatedAt, // [Fix] Persist timestamp in backup
+      profileVersion: entry.profileVersion ?? null,
       conversation: entry.conversation // Backup the keys too!
     };
     try {
