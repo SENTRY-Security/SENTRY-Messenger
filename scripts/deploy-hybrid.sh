@@ -24,7 +24,7 @@ echo "⚡️ Deploying Data Worker..."
 if [ -d "$WORKER_DIR" ]; then
   cd "$WORKER_DIR"
   echo "   - Applying D1 migrations (remote)..."
-  CI=true npx wrangler d1 migrations apply message_db --remote
+  CI=true npx wrangler d1 migrations apply message_db
   npx wrangler deploy
   cd ..
 else
@@ -69,13 +69,13 @@ git push origin "$CURRENT_BRANCH"
 # Helper function to reload or start PM2
 reload_pm2() {
   echo "     - Managing PM2 services..."
-  if pm2 list | grep -q "$PM2_APP_NAME"; then
+  if npx pm2 list | grep -q "$PM2_APP_NAME"; then
     echo "     - Reloading existing PM2 process..."
-    pm2 reload "$PM2_APP_NAME"
+    npx pm2 reload "$PM2_APP_NAME"
   else
     echo "     - No existing process found, starting new..."
-    pm2 start "$PM2_ENTRY" --name "$PM2_APP_NAME"
-    pm2 save
+    npx pm2 start "$PM2_ENTRY" --name "$PM2_APP_NAME"
+    npx pm2 save
   fi
 }
 
@@ -105,13 +105,13 @@ else
     npm install --production
     
     echo "     - Managing PM2 services..."
-    if pm2 list | grep -q "$PM2_APP_NAME"; then
+    if npx pm2 list | grep -q "$PM2_APP_NAME"; then
       echo "     - Reloading existing PM2 process..."
-      pm2 reload "$PM2_APP_NAME"
+      npx pm2 reload "$PM2_APP_NAME"
     else
       echo "     - No existing process found, starting new..."
-      pm2 start "$PM2_ENTRY" --name "$PM2_APP_NAME"
-      pm2 save
+      npx pm2 start "$PM2_ENTRY" --name "$PM2_APP_NAME"
+      npx pm2 save
     fi
 EOF
 fi

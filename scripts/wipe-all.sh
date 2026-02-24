@@ -5,7 +5,7 @@ echo "🗑️  Wiping all data from D1 database..."
 
 cd "$(dirname "$0")/../data-worker"
 
-npx wrangler d1 execute message_db --remote --command "
+npx wrangler d1 execute message_db --command "
 DELETE FROM accounts;
 DELETE FROM attachments;
 DELETE FROM call_events;

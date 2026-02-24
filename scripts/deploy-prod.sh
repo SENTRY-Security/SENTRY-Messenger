@@ -68,7 +68,7 @@ if [[ "$SKIP_WORKER" != true ]]; then
   wrangler deploy
   if [[ "$APPLY_MIGRATIONS" == true ]]; then
     echo "==> Applying D1 migrations (remote)"
-    wrangler d1 migrations apply message_db --remote
+    wrangler d1 migrations apply message_db
   fi
   popd >/dev/null
 else
