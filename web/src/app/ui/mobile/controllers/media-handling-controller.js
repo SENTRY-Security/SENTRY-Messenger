@@ -340,13 +340,21 @@ export class MediaHandlingController extends BaseController {
      * Play an already-downloaded video in the preview modal.
      * Supports both server-downloaded blobs (_videoBlob) and local blobs (localUrl).
      */
-    async playDownloadedVideo(media) {
+    async playDownloadedVideo(media, msgId) {
         if (!media) return;
         try {
             let blob = media._videoBlob || null;
             const blobUrl = media._videoDownloadedUrl || media.localUrl || null;
 
             if (!blob && !blobUrl) {
+                // No blob available — if chunked media, reset state so next click triggers download
+                if (media.chunked && media.baseKey && media.manifestEnvelope) {
+                    media._videoState = 'idle';
+                    media.localUrl = null;
+                    media._videoDownloadedUrl = null;
+                    this._updateVideoOverlayUI(msgId, media);
+                    return this.downloadChunkedVideoInline(media, msgId);
+                }
                 this.deps.showToast?.('影片尚未下載完成');
                 return;
             }
@@ -355,8 +363,34 @@ export class MediaHandlingController extends BaseController {
             this._showModalLoading('準備播放…');
 
             if (!blob && blobUrl) {
-                const resp = await fetch(blobUrl);
-                blob = await resp.blob();
+                try {
+                    const resp = await fetch(blobUrl);
+                    if (!resp.ok) throw new Error('blob fetch failed');
+                    blob = await resp.blob();
+                } catch {
+                    // Blob URL expired (e.g. after page lifecycle / memory pressure).
+                    // For chunked media, fallback to re-download.
+                    if (media.chunked && media.baseKey && media.manifestEnvelope) {
+                        this.deps.closePreviewModal?.();
+                        media._videoState = 'idle';
+                        media._videoBlob = null;
+                        media._videoDownloadedUrl = null;
+                        media.localUrl = null;
+                        this._updateVideoOverlayUI(msgId, media);
+                        return this.downloadChunkedVideoInline(media, msgId);
+                    }
+                    // For single-file media, fallback to full download via downloadVideoInline
+                    if (media.objectKey && media.envelope) {
+                        this.deps.closePreviewModal?.();
+                        media._videoState = 'idle';
+                        media._videoBlob = null;
+                        media._videoDownloadedUrl = null;
+                        media.localUrl = null;
+                        this._updateVideoOverlayUI(msgId, media);
+                        return this.downloadVideoInline(media, msgId);
+                    }
+                    blob = null;
+                }
             }
 
             if (!blob) {
