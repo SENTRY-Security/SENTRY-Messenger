@@ -570,14 +570,15 @@ export class MessageRenderer {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'video-play-btn';
-            btn.innerHTML = '<svg viewBox="0 0 48 48" width="44" height="44" fill="currentColor"><path d="M18 12v24l18-12z"/></svg>';
+            btn.innerHTML = '<svg viewBox="0 0 48 48" width="44" height="44" fill="currentColor" style="pointer-events:none"><path d="M18 12v24l18-12z"/></svg>';
             Object.assign(btn.style, {
                 background: 'rgba(0,0,0,0.45)',
                 border: '2px solid rgba(255,255,255,0.6)',
                 borderRadius: '50%',
                 width: '52px', height: '52px',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', color: '#fff'
+                cursor: 'pointer', color: '#fff',
+                zIndex: '5'
             });
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -592,7 +593,7 @@ export class MessageRenderer {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'video-download-btn';
-            btn.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
             Object.assign(btn.style, {
                 background: 'rgba(0,0,0,0.45)',
                 border: '2px solid rgba(255,255,255,0.6)',
@@ -638,10 +639,13 @@ export class MessageRenderer {
         wrapper.appendChild(preview);
         wrapper.appendChild(info);
 
-        // For incoming videos that need download, don't wire the generic click-to-preview;
-        // the video overlay handles download → play instead.
+        // For videos, use the download → play overlay instead of direct preview interaction.
+        // Outgoing videos with localUrl start in 'ready' state (blob still in memory).
         const isVideo = (media.contentType || '').toLowerCase().startsWith('video/');
-        const needsVideoOverlay = isVideo && !media.uploading && !media.localUrl;
+        const needsVideoOverlay = isVideo && !media.uploading;
+        if (needsVideoOverlay && media.localUrl && !media._videoState) {
+            media._videoState = 'ready';
+        }
         if (!needsVideoOverlay) {
             this.enableMediaPreviewInteraction(wrapper, media);
         }

@@ -112,17 +112,28 @@ export class MediaHandlingController extends BaseController {
 
     /**
      * Play an already-downloaded video in the preview modal.
+     * Supports both server-downloaded blobs (_videoBlob) and local blobs (localUrl).
      */
     async playDownloadedVideo(media) {
-        if (!media?._videoBlob) {
-            this.deps.showToast?.('影片尚未下載完成');
-            return;
+        try {
+            let blob = media?._videoBlob || null;
+            if (!blob && media?.localUrl) {
+                const resp = await fetch(media.localUrl);
+                blob = await resp.blob();
+            }
+            if (!blob) {
+                this.deps.showToast?.('影片尚未下載完成');
+                return;
+            }
+            await this.renderMediaPreviewModal({
+                blob,
+                contentType: media.contentType || 'video/mp4',
+                name: media.name || '影片'
+            });
+        } catch (err) {
+            console.error('playDownloadedVideo error', err);
+            this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }
-        await this.renderMediaPreviewModal({
-            blob: media._videoBlob,
-            contentType: media.contentType || 'video/mp4',
-            name: media.name || '影片'
-        });
     }
 
     /**
