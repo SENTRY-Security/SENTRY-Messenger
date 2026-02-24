@@ -5,6 +5,8 @@
 
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
+import { downloadChunkedManifest, streamChunks, downloadAllChunks } from '../../../features/chunked-download.js';
+import { isMseSupported, detectCodecFromFirstChunk, createMsePlayer } from '../../../features/mse-player.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -67,10 +69,15 @@ export class MediaHandlingController extends BaseController {
 
     /**
      * Download a video file inline (on the chat bubble) with progress.
+     * Routes to chunked or single-file download based on media.chunked flag.
      * Updates media._videoState through: idle → downloading → ready.
      * Only one download at a time (enforced by transfer-progress lock).
      */
     async downloadVideoInline(media, msgId) {
+        // Route to chunked download if media is chunked
+        if (media?.chunked && media.baseKey && media.manifestEnvelope) {
+            return this.downloadChunkedVideoInline(media, msgId);
+        }
         if (!media || !media.objectKey || !media.envelope) return;
         if (media._videoState === 'downloading' || media._videoState === 'ready') return;
 
@@ -132,6 +139,200 @@ export class MediaHandlingController extends BaseController {
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
             this.deps.showToast?.(`影片下載失敗：${err?.message || err}`);
+        }
+    }
+
+    /**
+     * Download a chunked video with MSE streaming playback (or fallback to blob).
+     * Downloads manifest → detects codec → streams chunks via MSE or downloads all.
+     */
+    async downloadChunkedVideoInline(media, msgId) {
+        if (!media || !media.baseKey || !media.manifestEnvelope) return;
+        if (media._videoState === 'downloading' || media._videoState === 'ready') return;
+
+        if (isDownloadBusy()) {
+            this.deps.showToast?.('目前有檔案正在下載，請稍候再試');
+            return;
+        }
+
+        media._videoState = 'downloading';
+        media._videoProgress = 0;
+        this._updateVideoOverlayUI(msgId, media);
+
+        const downloadAbort = new AbortController();
+        startDownload(media.name || '影片', () => {
+            try { downloadAbort.abort(); } catch {}
+            media._videoState = 'idle';
+            media._videoProgress = 0;
+            this._updateVideoOverlayUI(msgId, media);
+            endDownload();
+        });
+
+        try {
+            // Step 1: Download and decrypt manifest
+            media._videoProgress = 2;
+            this._updateVideoOverlayUI(msgId, media);
+            updateDownloadProgress(2);
+
+            const manifest = await downloadChunkedManifest({
+                baseKey: media.baseKey,
+                manifestEnvelope: media.manifestEnvelope,
+                abortSignal: downloadAbort.signal
+            });
+
+            media._videoProgress = 5;
+            this._updateVideoOverlayUI(msgId, media);
+            updateDownloadProgress(5);
+
+            // Step 2: Try MSE streaming playback
+            const useMse = isMseSupported() && (manifest.contentType === 'video/mp4' || manifest.contentType === 'video/webm');
+
+            if (useMse) {
+                const mseResult = await this._tryMsePlayback(media, msgId, manifest, downloadAbort);
+                if (mseResult) {
+                    endDownload();
+                    return; // MSE playback started successfully
+                }
+                // MSE failed — fall through to blob fallback
+            }
+
+            // Step 3: Fallback — download all chunks and assemble blob
+            const { blob, contentType, name } = await downloadAllChunks({
+                baseKey: media.baseKey,
+                manifest,
+                manifestEnvelope: media.manifestEnvelope,
+                abortSignal: downloadAbort.signal,
+                onProgress: ({ percent }) => {
+                    const adjusted = 5 + Math.round(percent * 0.9);
+                    media._videoProgress = Math.min(95, adjusted);
+                    this._updateVideoOverlayUI(msgId, media);
+                    updateDownloadProgress(media._videoProgress);
+                }
+            });
+
+            media._videoBlob = blob;
+            media._videoDownloadedUrl = URL.createObjectURL(blob);
+            if (!media.localUrl) media.localUrl = media._videoDownloadedUrl;
+            media._videoState = 'ready';
+            media._videoProgress = 100;
+            this._updateVideoOverlayUI(msgId, media);
+            endDownload();
+        } catch (err) {
+            endDownload();
+            if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
+                return;
+            }
+            console.error('Chunked video download error', err);
+            media._videoState = 'idle';
+            media._videoProgress = 0;
+            this._updateVideoOverlayUI(msgId, media);
+            this.deps.showToast?.(`影片下載失敗：${err?.message || err}`);
+        }
+    }
+
+    /**
+     * Attempt MSE streaming playback. Returns true if successful, false if should fallback.
+     * Downloads first chunk to detect codec, then streams remaining chunks.
+     */
+    async _tryMsePlayback(media, msgId, manifest, abortController) {
+        try {
+            const generator = streamChunks({
+                baseKey: media.baseKey,
+                manifest,
+                manifestEnvelope: media.manifestEnvelope,
+                abortSignal: abortController.signal,
+                onProgress: ({ percent }) => {
+                    const adjusted = 5 + Math.round(percent * 0.9);
+                    media._videoProgress = Math.min(95, adjusted);
+                    this._updateVideoOverlayUI(msgId, media);
+                    updateDownloadProgress(media._videoProgress);
+                }
+            });
+
+            // Get first chunk to detect codec
+            const firstResult = await generator.next();
+            if (firstResult.done) return false;
+            const firstChunk = firstResult.value.data;
+
+            const { mimeCodec, fragmented } = detectCodecFromFirstChunk(firstChunk, manifest.contentType);
+            if (!mimeCodec || !fragmented) {
+                // Not an MSE-compatible format — caller should use fallback
+                // But we already consumed first chunk, so we need to continue downloading all
+                // and assemble. Return false to signal fallback.
+                return false;
+            }
+
+            // Pre-open modal with video element
+            this._showModalLoading('串流播放中…');
+
+            const modalBody = document.getElementById('modalBody');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalEl = document.getElementById('modal');
+            if (!modalBody || !modalEl) return false;
+
+            // Clear modal loading state
+            const classesToRemove = [
+                'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
+                'confirm-modal', 'nickname-modal', 'avatar-modal',
+                'avatar-preview-modal', 'settings-modal'
+            ];
+            modalEl.classList.remove(...classesToRemove);
+            modalBody.innerHTML = '';
+            if (modalTitle) {
+                modalTitle.textContent = media.name || '影片';
+                modalTitle.setAttribute('title', media.name || '影片');
+            }
+
+            const container = document.createElement('div');
+            container.className = 'preview-wrap';
+            const wrap = document.createElement('div');
+            wrap.className = 'viewer';
+            container.appendChild(wrap);
+            modalBody.appendChild(container);
+
+            const video = document.createElement('video');
+            video.controls = true;
+            video.playsInline = true;
+            video.autoplay = true;
+            wrap.appendChild(video);
+
+            const msePlayer = createMsePlayer({
+                videoElement: video,
+                onError: (err) => {
+                    console.warn('[mse-player] error during playback:', err?.message);
+                }
+            });
+
+            // Store reference for cleanup
+            media._msePlayer = msePlayer;
+
+            await msePlayer.init(mimeCodec);
+
+            this.deps.openPreviewModal?.();
+
+            // Append first chunk
+            await msePlayer.appendChunk(firstChunk);
+
+            // Stream remaining chunks
+            for await (const { data } of generator) {
+                if (abortController.signal.aborted) {
+                    msePlayer.destroy();
+                    return true;
+                }
+                await msePlayer.appendChunk(data);
+            }
+
+            msePlayer.endOfStream();
+
+            media._videoState = 'ready';
+            media._videoProgress = 100;
+            this._updateVideoOverlayUI(msgId, media);
+
+            return true;
+        } catch (err) {
+            if (err?.name === 'AbortError') throw err; // re-throw abort
+            console.warn('[mse-playback] failed, will fallback:', err?.message);
+            return false;
         }
     }
 

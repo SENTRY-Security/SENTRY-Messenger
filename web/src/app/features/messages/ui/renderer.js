@@ -97,6 +97,7 @@ export function canPreviewMedia(media) {
     if (media.preview?.objectKey && media.preview?.envelope) return true;
     if (media.localUrl) return true;
     if (media.objectKey && media.envelope) return true;
+    if (media.chunked && media.baseKey && media.manifestEnvelope) return true;
     return false;
 }
 

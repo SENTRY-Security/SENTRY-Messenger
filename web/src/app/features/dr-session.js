@@ -33,7 +33,8 @@ import {
 } from './conversation.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
 import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
-import { encryptAndPutWithProgress } from './media.js';
+import { encryptAndPutWithProgress, shouldUseChunkedUpload } from './media.js';
+import { encryptAndPutChunked } from './chunked-upload.js';
 import {
   enqueueOutboxJob,
   processOutboxJobNow,
@@ -2840,16 +2841,31 @@ export async function sendDrMedia(params = {}) {
     logDrSend('preview-generate-failed', { peerAccountDigest: peer, error: err?.message || err });
   }
 
-  const uploadResult = await encryptAndPutWithProgress({
-    convId: conversationId,
-    file,
-    dir,
-    onProgress,
-    abortSignal,
-    skipIndex: true,
-    encryptionKey: { key: sharedMediaKey, type: 'shared' },
-    encryptionInfoTag: 'media/v1'
-  });
+  let uploadResult;
+  const isChunked = shouldUseChunkedUpload(file);
+
+  if (isChunked) {
+    uploadResult = await encryptAndPutChunked({
+      convId: conversationId,
+      file,
+      dir,
+      onProgress,
+      abortSignal,
+      encryptionKey: { key: sharedMediaKey, type: 'shared' },
+      direction: 'sent'
+    });
+  } else {
+    uploadResult = await encryptAndPutWithProgress({
+      convId: conversationId,
+      file,
+      dir,
+      onProgress,
+      abortSignal,
+      skipIndex: true,
+      encryptionKey: { key: sharedMediaKey, type: 'shared' },
+      encryptionInfoTag: 'media/v1'
+    });
+  }
 
   // --- Phase 3: DR encrypt + vault + send (brief lock — only crypto, no network upload) ---
   // [FIX] Wait for our ticket before entering the DR session lock.
@@ -2989,16 +3005,29 @@ export async function sendDrMediaCore(params = {}) {
       logDrSend('preview-generate-failed', { peerAccountDigest: peer, error: err?.message || err });
     }
 
-    uploadResult = await encryptAndPutWithProgress({
-      convId: conversationId,
-      file,
-      dir,
-      onProgress,
-      abortSignal,
-      skipIndex: true,
-      encryptionKey: { key: sharedMediaKey, type: 'shared' },
-      encryptionInfoTag: 'media/v1'
-    });
+    const isChunkedFallback = shouldUseChunkedUpload(file);
+    if (isChunkedFallback) {
+      uploadResult = await encryptAndPutChunked({
+        convId: conversationId,
+        file,
+        dir,
+        onProgress,
+        abortSignal,
+        encryptionKey: { key: sharedMediaKey, type: 'shared' },
+        direction: 'sent'
+      });
+    } else {
+      uploadResult = await encryptAndPutWithProgress({
+        convId: conversationId,
+        file,
+        dir,
+        onProgress,
+        abortSignal,
+        skipIndex: true,
+        encryptionKey: { key: sharedMediaKey, type: 'shared' },
+        encryptionInfoTag: 'media/v1'
+      });
+    }
   }
 
   // Fetch current DR state (available regardless of _preUpload path)
@@ -3007,20 +3036,52 @@ export async function sendDrMediaCore(params = {}) {
   const msgType = 'media';
   const accountDigest = (getAccountDigest() || '').toUpperCase();
 
+  const isChunkedResult = !!uploadResult.chunked;
+
   const metadata = {
     type: 'media',
-    objectKey: uploadResult.objectKey,
     name: typeof file.name === 'string' && file.name ? file.name : '附件',
-    size: typeof file.size === 'number' ? file.size : uploadResult.size ?? null,
+    size: typeof file.size === 'number' ? file.size : uploadResult.size ?? uploadResult.totalSize ?? null,
     contentType: file.type || 'application/octet-stream',
-    envelope: uploadResult.envelope || null,
     dir: Array.isArray(dir) && dir.length ? dir.map((seg) => String(seg || '').trim()).filter(Boolean) : null,
     preview: previewInfo || null
   };
 
-  const payloadText = JSON.stringify({
-    type: metadata.type,
-    media: {
+  // Chunked vs single-file metadata diverge here
+  if (isChunkedResult) {
+    metadata.chunked = true;
+    metadata.baseKey = uploadResult.baseKey;
+    metadata.chunkCount = uploadResult.chunkCount;
+    metadata.totalSize = uploadResult.totalSize;
+    metadata.manifestEnvelope = uploadResult.manifestEnvelope;
+  } else {
+    metadata.objectKey = uploadResult.objectKey;
+    metadata.envelope = uploadResult.envelope || null;
+  }
+
+  const mediaPayload = isChunkedResult
+    ? {
+      chunked: true,
+      baseKey: metadata.baseKey,
+      chunkCount: metadata.chunkCount,
+      totalSize: metadata.totalSize,
+      manifestEnvelope: metadata.manifestEnvelope,
+      name: metadata.name,
+      size: metadata.size,
+      contentType: metadata.contentType,
+      dir: metadata.dir,
+      preview: metadata.preview
+        ? {
+          objectKey: metadata.preview.objectKey,
+          size: metadata.preview.size,
+          contentType: metadata.preview.contentType,
+          envelope: metadata.preview.envelope,
+          width: metadata.preview.width,
+          height: metadata.preview.height
+        }
+        : undefined
+    }
+    : {
       objectKey: metadata.objectKey,
       name: metadata.name,
       size: metadata.size,
@@ -3037,7 +3098,11 @@ export async function sendDrMediaCore(params = {}) {
           height: metadata.preview.height
         }
         : undefined
-    }
+    };
+
+  const payloadText = JSON.stringify({
+    type: metadata.type,
+    media: mediaPayload
   });
 
   const senderDeviceId = ensureDeviceId();
@@ -3051,7 +3116,7 @@ export async function sendDrMediaCore(params = {}) {
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
   let failureSnapshot = preSnapshot;
   let failureCounter = transportCounter;
-  logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
+  logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey || metadata.baseKey });
   const pkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const afterEncryptTotal = Number(state?.NsTotal);
@@ -3082,12 +3147,20 @@ export async function sendDrMediaCore(params = {}) {
       receiver_account_digest: receiverAccountDigest || null,
       receiver_device_id: receiverDeviceId || null,
       type: 'media',
-      media: {
-        object_key: metadata.objectKey,
-        size: metadata.size,
-        name: metadata.name,
-        content_type: metadata.contentType
-      }
+      media: isChunkedResult
+        ? {
+          chunked: true,
+          base_key: metadata.baseKey,
+          size: metadata.size,
+          name: metadata.name,
+          content_type: metadata.contentType
+        }
+        : {
+          object_key: metadata.objectKey,
+          size: metadata.size,
+          name: metadata.name,
+          content_type: metadata.contentType
+        }
     };
     if (metadata.preview?.objectKey) {
       metaPayload.media.preview = {

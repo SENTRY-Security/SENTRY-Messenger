@@ -97,6 +97,15 @@ function parseMediaMessage({ plaintext, meta }) {
   const previewWidth = Number(previewSource?.width);
   const previewHeight = Number(previewSource?.height);
 
+  // Chunked media fields
+  const chunked = !!(parsed?.chunked || metaMedia?.chunked);
+  const baseKey = parsed?.baseKey || parsed?.base_key || metaMedia?.base_key || null;
+  const manifestEnvelope = parsed?.manifestEnvelope || parsed?.manifest_envelope || metaMedia?.manifest_envelope || null;
+  const chunkCountRaw = parsed?.chunkCount ?? parsed?.chunk_count ?? metaMedia?.chunk_count;
+  const chunkCount = Number.isFinite(Number(chunkCountRaw)) ? Number(chunkCountRaw) : null;
+  const totalSizeRaw = parsed?.totalSize ?? parsed?.total_size ?? metaMedia?.total_size;
+  const totalSize = Number.isFinite(Number(totalSizeRaw)) ? Number(totalSizeRaw) : null;
+
   const mediaInfo = {
     objectKey,
     name,
@@ -114,6 +123,15 @@ function parseMediaMessage({ plaintext, meta }) {
     dir,
     senderDigest: (typeof meta?.sender_digest === 'string' && meta.sender_digest.trim()) ? meta.sender_digest.trim() : null
   };
+
+  // Attach chunked fields if present
+  if (chunked && baseKey) {
+    mediaInfo.chunked = true;
+    mediaInfo.baseKey = baseKey;
+    mediaInfo.manifestEnvelope = manifestEnvelope;
+    mediaInfo.chunkCount = chunkCount;
+    mediaInfo.totalSize = totalSize;
+  }
 
   if (parsed?.sha256) mediaInfo.sha256 = parsed.sha256;
   if (parsed?.localUrl) mediaInfo.localUrl = parsed.localUrl;

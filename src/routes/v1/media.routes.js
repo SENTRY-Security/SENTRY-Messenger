@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncH } from '../../middlewares/async.js';
 import { z } from 'zod';
 import { customAlphabet } from 'nanoid';
-import { createDownloadGet, createUploadPut } from '../../services/s3.js';
+import { createDownloadGet, createUploadPut, deleteAllWithPrefix } from '../../services/s3.js';
 import { signHmac } from '../../utils/hmac.js';
 import {
   verifyAccount,
@@ -51,6 +51,89 @@ const SignGetSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
   }
 });
+
+const MAX_CHUNKS = 200; // 200 × 5MB = 1GB max chunked upload
+
+const accountAuth = z.object({
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
+}).superRefine((value, ctx) => {
+  if (!value.account_token && !value.account_digest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'account_token or account_digest required' });
+  }
+});
+
+const SignPutChunkedSchema = accountAuth.and(z.object({
+  conv_id: z.string().min(1),
+  total_size: z.number().int().min(1),
+  chunk_count: z.number().int().min(1).max(MAX_CHUNKS),
+  content_type: z.string().min(1).optional(),
+  direction: z.enum(['sent', 'received']).optional(),
+  dir: z.string().max(200).optional()
+}));
+
+const SignGetChunkedSchema = accountAuth.and(z.object({
+  base_key: z.string().min(3),
+  chunk_indices: z.array(z.number().int().min(0)).max(MAX_CHUNKS).optional()
+}));
+
+const CleanupChunkedSchema = accountAuth.and(z.object({
+  base_key: z.string().min(3)
+}));
+
+/**
+ * Shared helper: verify account + resolve digest.
+ * Returns { resolvedDigest } on success, or sends error response and returns null.
+ */
+async function verifyAndResolve(input, res) {
+  const tokenClean = input.account_token ? String(input.account_token).trim() : undefined;
+  const digestClean = input.account_digest ? normalizeAccountDigest(input.account_digest) : undefined;
+  const accountPayload = {};
+  if (tokenClean) accountPayload.accountToken = tokenClean;
+  if (digestClean) accountPayload.accountDigest = digestClean;
+
+  let verified;
+  try {
+    verified = await verifyAccount(accountPayload);
+  } catch (err) {
+    res.status(502).json({ error: 'VerifyFailed', message: err?.message || 'verify request failed' });
+    return null;
+  }
+  if (!verified.ok) {
+    const status = verified.status || 502;
+    res.status(status).json(verified.data || { error: 'VerifyFailed' });
+    return null;
+  }
+  const resolvedDigest = normalizeAccountDigest(verified.data?.account_digest || verified.data?.accountDigest || digestClean);
+  if (!resolvedDigest) {
+    res.status(502).json({ error: 'VerifyFailed', message: 'account digest missing' });
+    return null;
+  }
+  return { resolvedDigest };
+}
+
+/**
+ * Shared helper: authorize conversation access for a given convId.
+ * Returns true on success, or sends error response and returns false.
+ */
+async function authorizeConv(convId, resolvedDigest, req, res) {
+  if (isSystemOwnedConversation({ convId, accountDigest: resolvedDigest })) return true;
+  try {
+    await authorizeConversationAccess({
+      convId,
+      accountDigest: resolvedDigest,
+      deviceId: req.get('x-device-id') || null
+    });
+    return true;
+  } catch (err) {
+    const status = err?.status || 502;
+    const payload = err?.details && typeof err.details === 'object'
+      ? err.details
+      : { error: 'ConversationAccessDenied', message: err?.message || 'conversation access denied', details: err?.details || null };
+    res.status(status).json(payload);
+    return false;
+  }
+}
 
 async function fetchMediaUsage({ convId, prefix }) {
   if (!DATA_API || !HMAC_SECRET) return null;
@@ -268,6 +351,153 @@ r.post('/media/sign-get', asyncH(async (req, res) => {
   const ttlSec = Number(process.env.SIGNED_GET_TTL || 900);
   const out = await createDownloadGet({ key: input.key, ttlSec, downloadName: input.download_name });
   res.json({ download: out, expiresIn: ttlSec });
+}));
+
+// POST /api/v1/media/sign-put-chunked
+// Returns presigned PUT URLs for a chunked upload (manifest + N chunks).
+r.post('/media/sign-put-chunked', asyncH(async (req, res) => {
+  const input = SignPutChunkedSchema.parse(req.body);
+
+  const auth = await verifyAndResolve(input, res);
+  if (!auth) return;
+  const { resolvedDigest } = auth;
+
+  const convId = normalizeConversationId(input.conv_id);
+  if (!convId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid conv_id' });
+  }
+  if (!(await authorizeConv(convId, resolvedDigest, req, res))) return;
+
+  const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 524_288_000;
+  if (input.total_size > maxBytes) {
+    return res.status(413).json({
+      error: 'FileTooLarge',
+      message: `Payload exceeds limit ${maxBytes} bytes`,
+      maxBytes
+    });
+  }
+
+  // Quota check
+  const direction = input.direction === 'received' ? 'received' : (input.direction === 'sent' ? 'sent' : null);
+  let basePrefix = convId;
+  if (direction === 'received') {
+    basePrefix = `${convId}/${SYSTEM_DIR_RECEIVED}`;
+  } else if (direction === 'sent') {
+    basePrefix = `${convId}/${SYSTEM_DIR_SENT}`;
+  }
+
+  let dirClean = '';
+  if (input.dir && typeof input.dir === 'string') {
+    const segments = String(input.dir)
+      .replace(/\\+/g, '/').split('/').map((seg) => {
+        if (!seg) return '';
+        const normalized = seg.normalize('NFKC')
+          .replace(/[\u0000-\u001F\u007F]/gu, '')
+          .replace(/[\\/]/g, '')
+          .replace(/[?#*<>"'`|]/g, '')
+          .trim();
+        if (!normalized) return '';
+        return normalized.slice(0, 96);
+      })
+      .filter(Boolean);
+    if (segments.length) dirClean = segments.join('/');
+  }
+
+  const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
+
+  try {
+    const usage = await fetchMediaUsage({ convId, prefix: basePrefix });
+    const totalBytes = Number(usage?.totalBytes ?? usage?.total_bytes ?? 0);
+    const projected = totalBytes + Number(input.total_size);
+    const quotaBytes = Number.isFinite(DRIVE_QUOTA_BYTES) && DRIVE_QUOTA_BYTES > 0
+      ? DRIVE_QUOTA_BYTES
+      : 3 * 1024 * 1024 * 1024;
+    if (Number.isFinite(totalBytes) && projected > quotaBytes) {
+      return res.status(413).json({
+        error: 'FolderCapacityExceeded',
+        message: `空間不足，上限 ${quotaBytes} bytes`,
+        maxBytes: quotaBytes,
+        currentBytes: totalBytes
+      });
+    }
+  } catch (err) {
+    return res.status(502).json({ error: 'UsageLookupFailed', message: err?.message || 'failed to verify storage usage' });
+  }
+
+  const ttlSec = Number(process.env.SIGNED_PUT_TTL || 900);
+  const ct = input.content_type || 'application/octet-stream';
+  const uid = nano();
+  const baseKey = `${keyPrefix}/${uid}`;
+
+  // Generate presigned PUT for manifest
+  const manifestKey = `${baseKey}/m`;
+  const manifest = await createUploadPut({ key: manifestKey, contentType: 'application/octet-stream', ttlSec });
+
+  // Generate presigned PUT for each chunk
+  const chunks = [];
+  for (let i = 0; i < input.chunk_count; i++) {
+    const chunkKey = `${baseKey}/c/${i}`;
+    const chunkPut = await createUploadPut({ key: chunkKey, contentType: ct, ttlSec });
+    chunks.push({ index: i, ...chunkPut });
+  }
+
+  res.json({ baseKey, manifest, chunks, expiresIn: ttlSec });
+}));
+
+// POST /api/v1/media/sign-get-chunked
+// Returns presigned GET URLs for manifest and/or specific chunk indices.
+r.post('/media/sign-get-chunked', asyncH(async (req, res) => {
+  const input = SignGetChunkedSchema.parse(req.body);
+
+  const auth = await verifyAndResolve(input, res);
+  if (!auth) return;
+  const { resolvedDigest } = auth;
+
+  const convIdFragment = extractConversationIdFromKey(input.base_key);
+  const convId = convIdFragment ? normalizeConversationId(convIdFragment) : null;
+  if (!convId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid base_key' });
+  }
+  if (!(await authorizeConv(convId, resolvedDigest, req, res))) return;
+
+  const ttlSec = Number(process.env.SIGNED_GET_TTL || 900);
+  const baseKey = input.base_key;
+
+  // Always sign manifest
+  const manifestKey = `${baseKey}/m`;
+  const manifestGet = await createDownloadGet({ key: manifestKey, ttlSec });
+
+  // Sign requested chunk indices (or none if only manifest is needed)
+  const chunks = [];
+  if (input.chunk_indices && input.chunk_indices.length > 0) {
+    for (const idx of input.chunk_indices) {
+      const chunkKey = `${baseKey}/c/${idx}`;
+      const chunkGet = await createDownloadGet({ key: chunkKey, ttlSec });
+      chunks.push({ index: idx, ...chunkGet });
+    }
+  }
+
+  res.json({ manifest: manifestGet, chunks, expiresIn: ttlSec });
+}));
+
+// POST /api/v1/media/cleanup-chunked
+// Deletes all objects under a chunked upload base key (for cancellation / error cleanup).
+r.post('/media/cleanup-chunked', asyncH(async (req, res) => {
+  const input = CleanupChunkedSchema.parse(req.body);
+
+  const auth = await verifyAndResolve(input, res);
+  if (!auth) return;
+  const { resolvedDigest } = auth;
+
+  const convIdFragment = extractConversationIdFromKey(input.base_key);
+  const convId = convIdFragment ? normalizeConversationId(convIdFragment) : null;
+  if (!convId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid base_key' });
+  }
+  if (!(await authorizeConv(convId, resolvedDigest, req, res))) return;
+
+  const result = await deleteAllWithPrefix({ prefix: input.base_key });
+  res.json({ ok: true, deleted: result.deleted });
 }));
 
 export default r;
