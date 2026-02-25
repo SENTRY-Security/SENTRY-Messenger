@@ -422,6 +422,7 @@
 .messages-scroll {
   flex: 1 1 auto;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 18px;
   padding-bottom: calc(18px + var(--kb-offset, 0px) + 82px);
   display: flex;
