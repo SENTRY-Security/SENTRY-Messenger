@@ -27,18 +27,18 @@ export function isMseSupported() {
 }
 
 /**
- * Detect codec string from the first chunk of video data.
- * For fMP4: parses moov/ftyp boxes to find codec info.
- * Returns a MIME type with codec string, e.g. 'video/mp4; codecs="avc1.64001f,mp4a.40.2"'.
+ * Detect codec string from the init segment of fMP4 video data.
  *
- * Falls back to generic MIME type if detection fails.
+ * With segment-aligned chunking, chunk 0 is always the init segment
+ * containing ftyp + moov (NO moof — that's in media segments).
+ * The codec info is extracted from moov/trak/stsd atoms.
+ *
+ * Returns a MIME type with codec string, e.g. 'video/mp4; codecs="avc1.64001f,mp4a.40.2"'.
+ * Falls back to trying common codec strings if extraction fails.
  */
 export function detectCodecFromFirstChunk(data, contentType) {
   const MSCtor = getMediaSourceCtor();
   if (!MSCtor) return { mimeCodec: null, fragmented: false };
-
-  // Check if it's fragmented MP4 by looking for 'moof' box
-  const isFragmented = hasMp4Box(data, 'moof') || hasMp4Box(data, 'styp');
 
   if (contentType === 'video/webm' || contentType === 'audio/webm') {
     // WebM is always MSE-compatible
@@ -49,12 +49,19 @@ export function detectCodecFromFirstChunk(data, contentType) {
     return { mimeCodec: contentType, fragmented: true };
   }
 
-  if (!isFragmented) {
-    // Regular MP4 — not compatible with MSE without remuxing
+  // For segment-aligned fMP4, chunk 0 is the init segment (ftyp + moov).
+  // It does NOT contain 'moof' — moof is in media segment chunks.
+  // We detect fMP4 init segment by checking for 'moov' or 'ftyp' box.
+  const hasInit = hasMp4Box(data, 'moov') || hasMp4Box(data, 'ftyp');
+  // Also accept if moof is present (non-segment-aligned legacy or whole fMP4)
+  const hasMoof = hasMp4Box(data, 'moof') || hasMp4Box(data, 'styp');
+
+  if (!hasInit && !hasMoof) {
+    // Not a recognized MP4 format
     return { mimeCodec: null, fragmented: false };
   }
 
-  // Fragmented MP4 — try to extract codec from moov/trak atoms
+  // Try to extract codec from moov/trak/stsd atoms in the data
   const codecStr = extractMp4Codec(data);
   if (codecStr) {
     const mimeCodec = `video/mp4; codecs="${codecStr}"`;
@@ -84,11 +91,12 @@ export function detectCodecFromFirstChunk(data, contentType) {
 
 /**
  * Check if MP4 data contains a specific box type (e.g. 'moof', 'moov', 'ftyp').
+ * Scans the entire data (init segments can be large with many tracks).
  */
 function hasMp4Box(data, boxType) {
   if (!data || data.length < 8) return false;
   const needle = new TextEncoder().encode(boxType);
-  const limit = Math.min(data.length - 4, 64 * 1024); // Only scan first 64KB
+  const limit = data.length - 4;
   for (let i = 4; i < limit; i++) {
     if (data[i] === needle[0] && data[i + 1] === needle[1] &&
         data[i + 2] === needle[2] && data[i + 3] === needle[3]) {
@@ -105,7 +113,7 @@ function hasMp4Box(data, boxType) {
  */
 function extractMp4Codec(data) {
   const codecs = [];
-  const limit = Math.min(data.length, 128 * 1024);
+  const limit = data.length; // scan entire init segment
 
   // Look for common video codec identifiers
   const videoCodecs = ['avc1', 'avc3', 'hvc1', 'hev1', 'vp09', 'av01'];
