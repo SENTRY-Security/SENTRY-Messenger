@@ -6,6 +6,7 @@ import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMedi
 import { getMkRaw, buildAccountPayload } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
+import { encryptAndPutChunked, CHUNK_SIZE, UnsupportedVideoFormatError } from './chunked-upload.js';
 
 const encoder = new TextEncoder();
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
@@ -417,6 +418,32 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   return { objectKey, size: ct.cipherBuf.byteLength, envelope, message: dataMsg };
 }
 
+/**
+ * Check if a file should use chunked upload.
+ * ALL video files use chunked upload (regardless of size) for consistent
+ * fMP4 remuxing + MSE streaming playback.
+ */
+export function shouldUseChunkedUpload(file) {
+  if (!file || typeof file.size !== 'number') return false;
+  const ct = resolveContentType(file);
+  return ct.startsWith('video/');
+}
+
+/**
+ * Smart upload: delegates to chunked or single-file path.
+ * For chunked uploads, returns { chunked: true, baseKey, ... }.
+ * For single uploads, returns { chunked: false, objectKey, ... }.
+ */
+export async function smartEncryptAndPut(params = {}) {
+  const { file } = params;
+  if (shouldUseChunkedUpload(file)) {
+    const result = await encryptAndPutChunked(params);
+    return { ...result, chunked: true };
+  }
+  const result = await encryptAndPutWithProgress(params);
+  return { ...result, chunked: false };
+}
+
 /** Request a short-lived GET URL for an object key. */
 export async function signGet({ key }) {
   const { r, data } = await apiSignGet({ key });
@@ -560,5 +587,8 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
   const blob = new Blob([plain], { type: meta.contentType || 'application/octet-stream' });
   return { blob, contentType: meta.contentType || 'application/octet-stream', name: meta.name || 'decrypted.bin', bytes: plain.length };
 }
+
+// Re-export for callers (dr-session.js)
+export { UnsupportedVideoFormatError };
 
 // --- small helpers ---

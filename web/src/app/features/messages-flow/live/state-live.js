@@ -8,6 +8,61 @@ import { applyContactShareFromCommit } from '../../contacts.js';
 // import { normalizeTimelineEntry } from '../normalize.js';
 import { enqueueDrSessionOp, enqueueDrIncomingOp } from '../../dr-session.js';
 import { normalizeCallLogPayload, resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
+import { removePendingLivePlaceholder } from '../../messages/placeholder-store.js';
+
+/**
+ * Deep-clone the critical DR ratchet fields so we can restore them
+ * if a downstream operation (vault put) fails after drDecryptText
+ * has already advanced the shared in-memory state.
+ */
+function snapshotDrStateFields(st) {
+  if (!st) return null;
+  try {
+    // structuredClone correctly handles Uint8Array, Map, nested structures
+    return structuredClone({
+      ckR: st.ckR,
+      ckS: st.ckS,
+      rk: st.rk,
+      Nr: st.Nr,
+      Ns: st.Ns,
+      NrTotal: st.NrTotal,
+      NsTotal: st.NsTotal,
+      myRatchetPriv: st.myRatchetPriv,
+      myRatchetPub: st.myRatchetPub,
+      peerRatchetPub: st.peerRatchetPub,
+      MKSkipped: st.MKSkipped || null
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Restore DR state fields from a snapshot, rolling back drDecryptText's
+ * in-place mutations.  This lets the same message be retried (e.g. via
+ * gap queue) without losing the chain key.
+ */
+function restoreDrStateFields(st, snapshot) {
+  if (!st || !snapshot) return false;
+  // Receive-side fields: restore unconditionally (that's the point of rollback)
+  st.ckR = snapshot.ckR;
+  st.rk = snapshot.rk;
+  st.Nr = snapshot.Nr;
+  st.NrTotal = snapshot.NrTotal;
+  st.peerRatchetPub = snapshot.peerRatchetPub;
+  if (snapshot.MKSkipped !== undefined) st.MKSkipped = snapshot.MKSkipped;
+  // [FIX] Send-side fields: use Math.max to avoid rolling back concurrent
+  // drEncryptText advances that occurred during our async decrypt window.
+  const snapNs = Number.isFinite(snapshot.Ns) ? Number(snapshot.Ns) : 0;
+  const snapNsTotal = Number.isFinite(snapshot.NsTotal) ? Number(snapshot.NsTotal) : 0;
+  st.Ns = Math.max(snapNs, Number.isFinite(st.Ns) ? Number(st.Ns) : 0);
+  st.NsTotal = Math.max(snapNsTotal, Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0);
+  // Preserve live ckS / keypair if they've advanced beyond the snapshot
+  st.ckS = st.ckS || snapshot.ckS;
+  st.myRatchetPriv = st.myRatchetPriv || snapshot.myRatchetPriv;
+  st.myRatchetPub = st.myRatchetPub || snapshot.myRatchetPub;
+  return true;
+}
 
 function hasUsableDrState(holder) {
   if (
@@ -397,6 +452,10 @@ async function decryptIncomingSingle(params = {}, adapters) {
     let messageKeyB64 = null;
     let plaintext = null;
 
+    // [FIX] Snapshot DR state BEFORE drDecryptText so we can rollback
+    // if vault put fails after decrypt succeeds (same pattern as commitIncomingSingle).
+    const drStateBeforeDecrypt = snapshotDrStateFields(state);
+
     const skippedKeysBuffer = [];
     try {
       plaintext = await adapters.drDecryptText(state, {
@@ -413,21 +472,14 @@ async function decryptIncomingSingle(params = {}, adapters) {
         msgType: msgTypeHint || 'text'
       });
 
-      // [FIX] ATOMICITY: Keys FIRST, State SECOND.
-      // We must persist skipped keys to the Vault BEFORE we advance the local Ratchet State.
-      // If we advance state first and then crash before vaulting, the keys are lost forever (Replay/Order Error).
-
-      // 1. Vault Skipped Keys (Critical for Gap Recovery)
+      // 1. Vault Skipped Keys (best-effort, re-derivable on retry)
       if (skippedKeysBuffer.length && adapters.vaultPutIncomingKey) {
-        // Get DR state snapshot for skipped keys (important for recovery)
         let skippedDrStateSnapshot = null;
         if (adapters.snapshotAndEncryptDrState) {
           try {
             skippedDrStateSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId);
           } catch { }
         }
-
-        // Await vault put for skipped keys to ensure they are persisted
         try {
           await Promise.all(skippedKeysBuffer.map(k => {
             const gapCounter = k.headerCounter;
@@ -447,18 +499,47 @@ async function decryptIncomingSingle(params = {}, adapters) {
           if (skippedKeysBuffer.length > 0) console.log('[state-live] vaulted skipped keys', skippedKeysBuffer.length);
         } catch (e) {
           console.warn('[state-live] skipped-key vault failed', e);
-          // We proceed, but logging warning. Ideal is to fail-close, but network can be flaky.
-          // However, since we HAVEN'T advanced state yet, retry is safe.
         }
       }
 
-      // 2. Advance Ratchet State (Commit Point)
-      // Only advance if we successfully handled the keys (or processed them in memory)
-      // Since `state` is a clone, we must explicitly save it back to the store.
-      // If we don't, next message will read stale state and fail decryption (RK Loss).
+      // 2. [FIX] Vault put for the MAIN message key — inside DR lock for atomicity.
+      //    If vault put fails we rollback DR state so the chain key is preserved
+      //    for retry, enforcing the invariant: state only advances when key is
+      //    safely committed to vault.
+      if (messageKeyB64 && messageId && adapters.vaultPutIncomingKey) {
+        const vaultTargetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
+        try {
+          let encryptedDrSnapshot = null;
+          if (adapters.snapshotAndEncryptDrState) {
+            try { encryptedDrSnapshot = await adapters.snapshotAndEncryptDrState(senderDigest, senderDeviceId); } catch { }
+          }
+          await adapters.vaultPutIncomingKey({
+            conversationId,
+            messageId,
+            senderDeviceId,
+            targetDeviceId: vaultTargetDeviceId,
+            direction: 'incoming',
+            msgType: msgTypeHint || 'text',
+            messageKeyB64,
+            headerCounter: Number.isFinite(counter) ? counter : null,
+            drStateSnapshot: encryptedDrSnapshot
+          });
+        } catch (vaultErr) {
+          // Vault put failed — rollback DR state to preserve chain key for retry
+          console.warn('[state-live] live vault put failed, rolling back DR state', vaultErr);
+          restoreDrStateFields(state, drStateBeforeDecrypt);
+          return {
+            ...base,
+            reasonCode: 'VAULT_PUT_FAILED',
+            processedCount: 1,
+            failCount: 1
+          };
+        }
+      }
+
+      // 3. Persist DR state to disk only AFTER vault success
       if (adapters.persistDrSnapshot) {
         try {
-          // Note: persistDrSnapshot logic handles downgrade checks internally.
           await adapters.persistDrSnapshot({
             state,
             peerAccountDigest: senderDigest,
@@ -466,7 +547,6 @@ async function decryptIncomingSingle(params = {}, adapters) {
           });
         } catch (e) {
           console.error('[state-live] persistDrSnapshot failed - State Regression Risk!', e);
-          // Proceeding allows showing THIS message, but next one might fail.
         }
       }
     } catch (err) {
@@ -602,7 +682,10 @@ async function decryptIncomingSingle(params = {}, adapters) {
           senderDeviceId,
           targetDeviceId,
           senderDigest,
-          header: header || null
+          header: header || null,
+          // [FIX] Signal that vault put was done atomically inside the DR lock.
+          // persistAndAppendBatch should skip vault put for this message.
+          _vaultPutDone: true
         };
         result.okCount = 1;
 
@@ -724,6 +807,12 @@ async function commitIncomingSingle(params = {}, adapters) {
   let messageKeyB64 = null;
   let plaintext = null;
 
+  // [FIX] Snapshot DR state BEFORE drDecryptText so we can rollback
+  // if vault put fails after decrypt succeeds.  This preserves the
+  // chain key for retry and enforces the DR monotonic invariant:
+  // state only advances when the message key is safely committed to vault.
+  const drStateBeforeDecrypt = snapshotDrStateFields(state);
+
   const skippedKeysBuffer = [];
   try {
     plaintext = await adapters.drDecryptText(state, {
@@ -828,6 +917,10 @@ async function commitIncomingSingle(params = {}, adapters) {
       drStateSnapshot
     });
   } catch {
+    // [FIX] Vault put failed — rollback DR state so the chain key is preserved
+    // for retry.  Without rollback, NrTotal stays advanced in memory and the
+    // message key is permanently lost (can never be re-derived).
+    restoreDrStateFields(state, drStateBeforeDecrypt);
     return {
       ...base,
       reasonCode: 'VAULT_PUT_FAILED',
@@ -863,13 +956,15 @@ async function commitIncomingSingle(params = {}, adapters) {
       // Process contact-share payload (apply contact data)
       if (semantic.subtype === 'contact-share') {
         try {
+          const batchMessageTs = Number(raw?.ts || raw?.created_at || raw?.timestamp || Date.now());
           await applyContactShareFromCommit({
             peerAccountDigest: senderDigest,
             peerDeviceId: senderDeviceId,
             sessionKey: tokenB64,
             plaintext: text,
             messageId,
-            sourceTag: 'messages-flow:contact-share-commit-batch'
+            sourceTag: 'messages-flow:contact-share-commit-batch',
+            profileUpdatedAt: batchMessageTs
           });
         } catch (err) {
           console.warn('[state-live] contact-share apply failed (batch)', err);
@@ -908,6 +1003,14 @@ async function commitIncomingSingle(params = {}, adapters) {
       }];
       try {
         adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' });
+        // [FIX] Clean up stale live placeholder for this message.
+        // After gap-queue successfully decrypts & appends to timeline via
+        // commitIncomingSingle, the pendingLivePlaceholder must be removed.
+        // Otherwise the render merge keeps showing "解密中" alongside the
+        // real message.
+        if (messageId && conversationId) {
+          try { removePendingLivePlaceholder(conversationId, messageId); } catch { }
+        }
       } catch { }
     }
   }
@@ -952,6 +1055,15 @@ async function persistAndAppendBatch(params = {}, adapters) {
       vaultPutFail += 1;
       continue;
     }
+
+    // [FIX] If vault put was already done atomically inside the DR lock
+    // (decryptIncomingSingle), skip vault put here — just append to timeline.
+    if (message._vaultPutDone) {
+      vaultPutOk += 1;
+      appendableMessages.push(message);
+      continue;
+    }
+
     try {
       let drStateSnapshot = null;
       if (adapters.snapshotAndEncryptDrState && message.senderDigest && message.senderDeviceId) {
@@ -1030,6 +1142,13 @@ async function persistAndAppendBatch(params = {}, adapters) {
       const result = adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' }) || null;
       const count = Number(result?.appendedCount);
       appendedCount = Number.isFinite(count) ? count : entries.length;
+      // [FIX] Clean up stale live placeholders after successful batch append.
+      for (const entry of entries) {
+        const eid = entry?.messageId || entry?.id;
+        if (eid && conversationId) {
+          try { removePendingLivePlaceholder(conversationId, eid); } catch { }
+        }
+      }
     } catch {
       appendOk = false;
     }

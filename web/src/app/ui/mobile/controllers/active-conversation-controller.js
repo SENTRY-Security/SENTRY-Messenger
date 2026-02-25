@@ -152,15 +152,15 @@ export class ActiveConversationController extends BaseController {
      * This updates the global message state and triggers UI transition.
      */
     async setActiveConversation(peerAccountDigest, passedId = null, passedToken = null) {
-        console.log('[ActiveConversationController] setActiveConversation: start', { peerAccountDigest, passedId, hasPassedToken: !!passedToken });
         const peerKey = normalizePeerKey(peerAccountDigest);
         if (!peerKey) {
-            console.error('[ActiveConversationController] setActiveConversation: invalid peerKey');
             this.showToast('無效的聯絡人');
             return;
         }
 
-        console.log('[ActiveConversationController] setActiveConversation: processing', peerKey);
+        // Save draft for the conversation we're leaving
+        this.deps.controllers?.composer?.saveDraft();
+
         const state = this.getMessageState();
         const contactEntry = this.sessionStore.contactIndex?.get?.(peerKey) || null;
         const convEntry = contactEntry?.conversation || null;
@@ -170,7 +170,6 @@ export class ActiveConversationController extends BaseController {
 
         // [SPLIT-BRAIN CHECK]
         if (passedId && contactEntry?.conversation_id && passedId !== contactEntry.conversation_id) {
-            console.warn('[ActiveConversationController] Split-Brain detected. Migrating:', { from: passedId, to: contactEntry.conversation_id });
             migrateTimelineConversation(passedId, contactEntry.conversation_id);
             targetConvId = contactEntry.conversation_id;
         }
@@ -186,22 +185,13 @@ export class ActiveConversationController extends BaseController {
         state.hasMore = true;
         state.nextCursor = null;
         state.nextCursorTs = null;
-        console.log('[ActiveConversationController] state updated', {
-            activePeerDigest: state.activePeerDigest,
-            conversationId: state.conversationId,
-            passedId,
-            contactEntryId: contactEntry?.conversation_id
-        });
 
         // UI Reset
         this.clearMessagesView();
-        console.log('[ActiveConversationController] UI cleared');
 
         // Navigation
-        console.log('[ActiveConversationController] switching tab check', this.deps.getCurrentTab?.());
         if (this.deps.getCurrentTab?.() !== 'messages') {
             this.deps.switchTab?.('messages');
-            console.log('[ActiveConversationController] switched to messages tab');
         }
 
         // Refresh metadata
@@ -209,12 +199,10 @@ export class ActiveConversationController extends BaseController {
         const avatar = contactEntry?.avatar || null;
         this.updatePeerNameDisplay(nickname);
         this.updatePeerAvatar(avatar);
-        console.log('[ActiveConversationController] metadata refreshed', nickname);
 
         // Load messages if conversation exists (Token is optional for local load)
         if (state.conversationId) {
             // [FAST PATH] Restore DR State immediately
-            console.log('[ActiveConversationController] fast-path state restore start');
             MessageKeyVault.getLatestState({ conversationId: state.conversationId })
                 .then((data) => {
                     const tasks = [];
@@ -234,21 +222,11 @@ export class ActiveConversationController extends BaseController {
                     }
                     return Promise.all(tasks);
                 })
-                .then((results) => {
-                    if (results.length) console.log('[ActiveConversationController] fast-path state restored', results.length);
-                })
-                .catch((err) => {
-                    console.warn('[ActiveConversationController] fast-path failed (non-critical)', err);
-                });
+                .catch(() => { /* non-critical */ });
 
-            console.log('[ActiveConversationController] loading messages (async)...');
             // Non-blocking load to prevent UI freeze
             this.deps.loadActiveConversationMessages?.({ append: false })
-                .then(() => {
-                    console.log('[ActiveConversationController] messages loaded');
-                })
                 .catch((err) => {
-                    console.error('[ActiveConversationController] load messages error', err);
                     this.log({ loadMessagesError: err?.message || err, peerKey });
                 })
                 .finally(() => {
@@ -259,41 +237,29 @@ export class ActiveConversationController extends BaseController {
             // New or pending contact, ensure empty state shows
             if (this.elements.messagesEmpty) {
                 this.elements.messagesEmpty.classList.remove('hidden');
-                // Pre-set text for immediate feedback
                 this.elements.messagesEmpty.textContent = '尚無訊息';
             }
             this.deps.updateMessagesStatusUI?.();
-            console.log('[ActiveConversationController] new/pending conversation UI set');
         }
 
         // Final UI sync
-        console.log('[ActiveConversationController] debug UI sync', {
-            viewMode: state.viewMode,
-            hasLayoutDep: !!this.deps.applyMessagesLayout,
-            layoutControllerExists: !!this.deps.controllers?.layout // Check if we can access this
-        });
-
         try {
             this.deps.applyMessagesLayout?.();
-            console.log('[ActiveConversationController] applyMessagesLayout called');
             // Force UI update to trigger Double Tick logic + scroll to bottom on enter
             this.deps.updateMessagesUI?.({ scrollToEnd: true, forceFullRender: true });
-        } catch (e) {
-            console.error('[ActiveConversationController] applyMessagesLayout failed', e);
-        }
+        } catch { /* ignore */ }
 
         this.deps.updateComposerAvailability?.();
+        // Restore draft for the conversation we're entering (or clear input)
+        this.deps.controllers?.composer?.restoreDraft();
         // [UX] Auto-focus input when entering conversation
         this.deps.focusComposerInput?.();
-        console.log('[ActiveConversationController] setActiveConversation: done');
     }
 
     /**
      * Handle contact open conversation event.
      */
     handleContactOpenConversation(detail) {
-        console.log('[ActiveConversationController] handleContactOpenConversation', detail);
-
         // Try to resolve full key first using core store normalizer which handles {peerAccountDigest, peerDeviceId}
         let peerKey = null;
         if (detail?.peerAccountDigest && detail?.peerDeviceId) {
@@ -306,10 +272,7 @@ export class ActiveConversationController extends BaseController {
             peerKey = normalizePeerKey(detail?.peerAccountDigest || detail?.peerKey);
         }
 
-        if (!peerKey) {
-            console.warn('[ActiveConversationController] handleContactOpenConversation: missing peerKey', detail);
-            return;
-        }
+        if (!peerKey) return;
 
         // [FIX] Extract conversationId and token from detail
         // Support multiple structures:
@@ -326,7 +289,6 @@ export class ActiveConversationController extends BaseController {
             detail?.conversation?.token_b64 ||
             null;
 
-        console.log('[ActiveConversationController] routing to conversation', { peerKey, conversationId, hasToken: !!tokenB64 });
         this.setActiveConversation(peerKey, conversationId, tokenB64);
     }
 
@@ -341,12 +303,6 @@ export class ActiveConversationController extends BaseController {
         if (this.deps.getCurrentTab?.() !== 'messages') {
             this.deps.switchTab?.('messages');
         }
-
-        console.log('[ActiveConversationController] deps check:', {
-            hasApplyLayout: !!this.deps.applyMessagesLayout,
-            hasNavbar: !!this.deps.navbarEl,
-            hasMain: !!this.deps.mainContentEl
-        });
 
         // Ensure thread exists
         if (convId && tokenB64) {

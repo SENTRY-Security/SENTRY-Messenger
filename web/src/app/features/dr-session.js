@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload, drEffectiveCounters, isDrRegression } from '../core/contact-secrets.js';
 import {
   initContactSecretsBackup,
   triggerContactSecretsBackup,
@@ -33,7 +33,8 @@ import {
 } from './conversation.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
 import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
-import { encryptAndPutWithProgress } from './media.js';
+import { encryptAndPutWithProgress, shouldUseChunkedUpload, UnsupportedVideoFormatError } from './media.js';
+import { encryptAndPutChunked } from './chunked-upload.js';
 import {
   enqueueOutboxJob,
   processOutboxJobNow,
@@ -1022,25 +1023,34 @@ export function restoreDrStateFromSnapshot(params = {}) {
     }
   }
 
-  // 4. Determine Downgrade Status
-  // Downgrade = Same Chain (RK Equal) AND Sequence Number Decrease/Same.
-  // If RK Changed (!isRkEqual) -> Allow (Downgrade = false).
-  const downgrade = isRkEqual && hasExistingSend && (!incomingHasSend || (incomingNs !== null && incomingNs < Number(holder.Ns || 0)));
+  // 4. Monotonic enforcement (same chain only; new chain = rk changed → allow reset).
+  // Uses isDrRegression() — the single source of truth for counter comparison.
+  const hasExistingRecv = holder?.ckR instanceof Uint8Array && holder.ckR.length > 0
+    && Number.isFinite(holder?.Nr) && Number(holder.Nr) >= 0;
+  const incomingHasRecv = !!data.ckR_b64 && typeof data.ckR_b64 === 'string';
 
-  if (!force && downgrade) {
-    if (isAutomationEnv()) {
-      drConsole.warn('[dr-restore-skip-downgrade]', JSON.stringify({
-        peerAccountDigest: peer,
-        peerDeviceId,
-        existingNs: Number(holder.Ns) || null,
-        incomingNs,
-        incomingHasSend,
-        sourceTag,
-        isRkEqual // Debug info
-      }));
+  if (!force && isRkEqual) {
+    // Chain removal is also a regression (losing send/recv capability).
+    const chainRemoved = (hasExistingSend && !incomingHasSend) || (hasExistingRecv && !incomingHasRecv);
+    // Counter regression check using the unified utility.
+    const counterRegression = isDrRegression(holder, {
+      NsTotal: Number(data.NsTotal || 0), Ns: Number(data.Ns || 0),
+      NrTotal: Number(data.NrTotal || 0), Nr: Number(data.Nr || 0)
+    });
+    if (chainRemoved || counterRegression) {
+      if (isAutomationEnv()) {
+        const existing = drEffectiveCounters(holder);
+        const incoming = drEffectiveCounters({ NsTotal: Number(data.NsTotal || 0), Ns: Number(data.Ns || 0), NrTotal: Number(data.NrTotal || 0), Nr: Number(data.Nr || 0) });
+        drConsole.warn('[dr-restore-reject-regression]', JSON.stringify({
+          peerAccountDigest: peer, peerDeviceId, sourceTag,
+          existingSent: existing.sent, existingRecv: existing.received,
+          incomingSent: incoming.sent, incomingRecv: incoming.received,
+          chainRemoved
+        }));
+      }
+      logReject('MONOTONIC_REGRESSION_REJECT');
+      return false;
     }
-    logReject('ROLE_GATING_REJECT');
-    return false;
   }
 
   // 5. Restore check for Snapshot Timestamp (Only if RK is Same)
@@ -1067,11 +1077,19 @@ export function restoreDrStateFromSnapshot(params = {}) {
   if (!Number.isFinite(nrTotal)) {
     throw new Error('dr snapshot missing NrTotal');
   }
-  holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
-  holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
+  // Monotonic counter assignment: same chain uses max(), new chain allows reset.
+  if (isRkEqual) {
+    holder.Ns = Math.max(numberOrDefault(data.Ns, 0), holder.Ns || 0);
+    holder.Nr = Math.max(numberOrDefault(data.Nr, 0), holder.Nr || 0);
+    holder.NsTotal = Math.max(nsTotal, holder.NsTotal || 0);
+    holder.NrTotal = Math.max(nrTotal, holder.NrTotal || 0);
+  } else {
+    holder.Ns = numberOrDefault(data.Ns, holder.Ns || 0);
+    holder.Nr = numberOrDefault(data.Nr, holder.Nr || 0);
+    holder.NsTotal = nsTotal;
+    holder.NrTotal = nrTotal;
+  }
   holder.PN = numberOrDefault(data.PN, holder.PN || 0);
-  holder.NsTotal = nsTotal;
-  holder.NrTotal = nrTotal;
   holder.myRatchetPriv = data.myRatchetPriv_b64
     ? decodeKeyString(data.myRatchetPriv_b64, { keyName: 'myRatchetPriv', peerAccountDigest: peer, peerDeviceId, sourceTag })
     : null;
@@ -1190,46 +1208,29 @@ export function persistDrSnapshot(params = {}) {
     if (info?.conversationId || baseConversationId) conversationUpdate.id = info?.conversationId || baseConversationId;
     if (info?.conversationDrInit) conversationUpdate.drInit = info.conversationDrInit;
     if (Object.keys(conversationUpdate).length) update.conversation = conversationUpdate;
-    // 若現存快照有 send 鏈且 Ns>0，而新快照缺 send 鏈或 Ns 更低，避免覆蓋成 0。
+    // Monotonic persist check: reject if new snapshot is a regression from existing or holder.
     const existingSnap = info?.drState || null;
-    const existingNs = Number.isFinite(existingSnap?.Ns) ? Number(existingSnap.Ns) : null;
-    const existingTotal = Number(existingSnap?.NsTotal || 0) + Number(existingSnap?.Ns || 0);
-    const newNs = Number.isFinite(snap?.Ns) ? Number(snap.Ns) : null;
-    const newTotal = Number(snap?.NsTotal || 0) + Number(snap?.Ns || 0);
-    const holderTotal = Number(holder?.NsTotal || 0) + Number(holder?.Ns || 0);
-    const hasExistingSend = !!(existingSnap?.ckS || existingSnap?.ckS_b64) && Number(existingNs) > 0;
-    const hasExistingRecv = !!(existingSnap?.ckR || existingSnap?.ckR_b64) && Number.isFinite(existingSnap?.Nr) && Number(existingSnap.Nr) >= 0;
+    const hasExistingSend = !!(existingSnap?.ckS || existingSnap?.ckS_b64) && Number(existingSnap?.Ns || 0) > 0;
+    const hasExistingRecv = !!(existingSnap?.ckR || existingSnap?.ckR_b64) && Number.isFinite(existingSnap?.Nr);
     const lacksNewSend = !(snap?.ckS || snap?.ckS_b64);
     const lacksNewRecv = !(snap?.ckR || snap?.ckR_b64);
-    const nsDowngrade = Number.isFinite(existingNs) && Number.isFinite(newNs) && newNs < existingNs;
-    const totalDowngrade = Number.isFinite(existingTotal) && Number.isFinite(newTotal) && newTotal < existingTotal;
-    const holderDowngrade = Number.isFinite(holderTotal) && Number.isFinite(newTotal) && newTotal < holderTotal;
-    if (
-      (hasExistingSend && (lacksNewSend || nsDowngrade || totalDowngrade || holderDowngrade))
-      || (hasExistingRecv && lacksNewRecv)
-    ) {
+    // Chain removal check
+    const chainRemoved = (hasExistingSend && lacksNewSend) || (hasExistingRecv && lacksNewRecv);
+    // Counter regression: check against both persisted snapshot AND live holder
+    const snapRegression = existingSnap && isDrRegression(existingSnap, snap);
+    const holderRegression = holder && isDrRegression(holder, snap);
+    if (chainRemoved || snapRegression || holderRegression) {
       if (DEBUG.drCounter) {
+        const e = drEffectiveCounters(existingSnap);
+        const h = drEffectiveCounters(holder);
+        const n = drEffectiveCounters(snap);
         log({
           persistSnapshotSkippedDowngrade: {
-            conversationId: holder?.baseKey?.conversationId || baseConversationId || null,
-            convId: holder?.baseKey?.conversationId || baseConversationId || null,
             peerKey: `${peer || 'unknown'}::${peerDeviceId || 'unknown'}`,
-            peerAccountDigest: peer,
-            peerDeviceId,
-            deviceId: selfDeviceId,
-            existingNs,
-            newNs,
-            hasExistingSend,
-            hasExistingRecv,
-            lacksNewSend,
-            lacksNewRecv,
-            nsDowngrade,
-            totalDowngrade,
-            holderDowngrade,
-            existingTotal,
-            newTotal,
-            holderTotal,
-            reason: 'downgrade-check'
+            existingSent: e.sent, existingRecv: e.received,
+            holderSent: h.sent, holderRecv: h.received,
+            newSent: n.sent, newRecv: n.received,
+            chainRemoved, snapRegression, holderRegression
           }
         });
       }
@@ -1527,6 +1528,10 @@ function normalizePeerBundleFromPrekeys(bundle) {
 const sessionLocks = new Map();
 const stateLockQueue = new Map();
 const incomingLockQueue = new Map();
+// [FIX] Media send ordering: ticket-based gate to ensure Phase 3 (DR encrypt)
+// runs in the same order as Phase 1 (user intent), regardless of upload speed.
+const mediaSendTicketCounter = new Map(); // key → next ticket number
+const mediaSendTicketCurrent = new Map(); // key → current serving ticket
 
 /**
  * [STATE MUTEX] (Low Level)
@@ -2091,8 +2096,31 @@ export async function sendDrPlaintextCore(params = {}) {
       // Ref: "Counter Gap Prevention"
       if (preSnapshot) {
         try {
-          // Explicit rollback to pre-encryption state.
-          copyDrState(state, preSnapshot, { callsiteTag: 'rollback-enqueue-fail' });
+          // [FIX] Capture live receive-side state before restore.
+          // A concurrent drDecryptText may have advanced ckR/Nr/NrTotal during
+          // our async encrypt+enqueue window. restoreDrStateFromSnapshot would
+          // overwrite those with the stale pre-encrypt snapshot.
+          const liveNr = Number.isFinite(state.Nr) ? Number(state.Nr) : 0;
+          const liveNrTotal = Number.isFinite(state.NrTotal) ? Number(state.NrTotal) : 0;
+          const liveCkR = state.ckR;
+          const liveTheirPub = state.theirRatchetPub;
+          // Use restoreDrStateFromSnapshot (not copyDrState) because preSnapshot
+          // is in _b64 format from snapshotDrState(); copyDrState expects raw
+          // Uint8Array fields and would wipe all keys to null.
+          restoreDrStateFromSnapshot({
+            peerAccountDigest: peer,
+            peerDeviceId,
+            snapshot: preSnapshot,
+            force: true,
+            targetState: state,
+            sourceTag: 'rollback-enqueue-fail'
+          });
+          // Re-apply live receive-side state: use Math.max for counters,
+          // keep live ckR / theirRatchetPub if they've advanced.
+          state.Nr = Math.max(liveNr, Number.isFinite(state.Nr) ? Number(state.Nr) : 0);
+          state.NrTotal = Math.max(liveNrTotal, Number.isFinite(state.NrTotal) ? Number(state.NrTotal) : 0);
+          state.ckR = liveCkR || state.ckR;
+          state.theirRatchetPub = liveTheirPub || state.theirRatchetPub;
           drConsole.warn('[dr-session] State Rolled Back due to Enqueue Failure', { messageId, counter: transportCounter });
         } catch (rollbackErr) {
           drConsole.error('[dr-session] CRITICAL: State Rollback Failed', rollbackErr);
@@ -2748,6 +2776,8 @@ export async function sendDrMedia(params = {}) {
     conversationId: convId || convContext?.conversation_id || convContext?.conversationId || null
   });
 
+  // [FIX] Allocate a send-order ticket BEFORE upload, so Phase 3 respects user intent order.
+  let myTicket;
   await enqueueDrSessionOp(queueKey, async () => {
     let state = drState({ peerAccountDigest: peer, peerDeviceId });
     let hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
@@ -2764,6 +2794,12 @@ export async function sendDrMedia(params = {}) {
     }
     if (!hasDrState && !hasDrInit) {
       throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+    }
+    // Assign ticket while holding the session lock — guarantees monotonic ordering.
+    myTicket = mediaSendTicketCounter.get(queueKey) || 0;
+    mediaSendTicketCounter.set(queueKey, myTicket + 1);
+    if (!mediaSendTicketCurrent.has(queueKey)) {
+      mediaSendTicketCurrent.set(queueKey, 0);
     }
   });
 
@@ -2805,22 +2841,68 @@ export async function sendDrMedia(params = {}) {
     logDrSend('preview-generate-failed', { peerAccountDigest: peer, error: err?.message || err });
   }
 
-  const uploadResult = await encryptAndPutWithProgress({
-    convId: conversationId,
-    file,
-    dir,
-    onProgress,
-    abortSignal,
-    skipIndex: true,
-    encryptionKey: { key: sharedMediaKey, type: 'shared' },
-    encryptionInfoTag: 'media/v1'
-  });
+  let uploadResult;
+  const isChunked = shouldUseChunkedUpload(file);
+
+  if (isChunked) {
+    uploadResult = await encryptAndPutChunked({
+      convId: conversationId,
+      file,
+      dir,
+      onProgress,
+      abortSignal,
+      encryptionKey: { key: sharedMediaKey, type: 'shared' },
+      direction: 'sent'
+    });
+  } else {
+    uploadResult = await encryptAndPutWithProgress({
+      convId: conversationId,
+      file,
+      dir,
+      onProgress,
+      abortSignal,
+      skipIndex: true,
+      encryptionKey: { key: sharedMediaKey, type: 'shared' },
+      encryptionInfoTag: 'media/v1'
+    });
+  }
 
   // --- Phase 3: DR encrypt + vault + send (brief lock — only crypto, no network upload) ---
-  return enqueueDrSessionOp(queueKey, () => sendDrMediaCore({
-    ...params,
-    _preUpload: { uploadResult, previewInfo, previewLocalUrl, sharedMediaKey, conversationId }
-  }));
+  // [FIX] Wait for our ticket before entering the DR session lock.
+  // This ensures that even if image B uploads faster than image A,
+  // B waits for A to DR-encrypt first, preserving monotonic Ns ordering.
+  const TICKET_POLL_MS = 50;
+  const TICKET_TIMEOUT_MS = 120000; // 2 min safety timeout
+  const ticketStart = Date.now();
+  try {
+    while ((mediaSendTicketCurrent.get(queueKey) || 0) < myTicket) {
+      // [FIX] Respect cancel signal during ticket wait — user expects
+      // the cancel button to take effect immediately, not after a 2-min wait.
+      if (abortSignal?.aborted) {
+        throw new DOMException('aborted', 'AbortError');
+      }
+      if (Date.now() - ticketStart > TICKET_TIMEOUT_MS) {
+        // Safety: don't block forever; advance ticket and proceed.
+        console.warn('[dr-media-send] ticket wait timeout', { queueKey, myTicket, current: mediaSendTicketCurrent.get(queueKey) });
+        break;
+      }
+      await new Promise((r) => setTimeout(r, TICKET_POLL_MS));
+    }
+    return await enqueueDrSessionOp(queueKey, () => sendDrMediaCore({
+      ...params,
+      _preUpload: { uploadResult, previewInfo, previewLocalUrl, sharedMediaKey, conversationId }
+    }));
+  } finally {
+    // Advance the ticket counter so the next queued upload can proceed.
+    const nextTicket = (mediaSendTicketCurrent.get(queueKey) || 0) + 1;
+    mediaSendTicketCurrent.set(queueKey, nextTicket);
+    // Cleanup if all tickets are consumed.
+    const maxTicket = mediaSendTicketCounter.get(queueKey) || 0;
+    if (nextTicket >= maxTicket) {
+      mediaSendTicketCounter.delete(queueKey);
+      mediaSendTicketCurrent.delete(queueKey);
+    }
+  }
 }
 
 export async function sendDrMediaCore(params = {}) {
@@ -2923,16 +3005,29 @@ export async function sendDrMediaCore(params = {}) {
       logDrSend('preview-generate-failed', { peerAccountDigest: peer, error: err?.message || err });
     }
 
-    uploadResult = await encryptAndPutWithProgress({
-      convId: conversationId,
-      file,
-      dir,
-      onProgress,
-      abortSignal,
-      skipIndex: true,
-      encryptionKey: { key: sharedMediaKey, type: 'shared' },
-      encryptionInfoTag: 'media/v1'
-    });
+    const isChunkedFallback = shouldUseChunkedUpload(file);
+    if (isChunkedFallback) {
+      uploadResult = await encryptAndPutChunked({
+        convId: conversationId,
+        file,
+        dir,
+        onProgress,
+        abortSignal,
+        encryptionKey: { key: sharedMediaKey, type: 'shared' },
+        direction: 'sent'
+      });
+    } else {
+      uploadResult = await encryptAndPutWithProgress({
+        convId: conversationId,
+        file,
+        dir,
+        onProgress,
+        abortSignal,
+        skipIndex: true,
+        encryptionKey: { key: sharedMediaKey, type: 'shared' },
+        encryptionInfoTag: 'media/v1'
+      });
+    }
   }
 
   // Fetch current DR state (available regardless of _preUpload path)
@@ -2941,20 +3036,54 @@ export async function sendDrMediaCore(params = {}) {
   const msgType = 'media';
   const accountDigest = (getAccountDigest() || '').toUpperCase();
 
+  const isChunkedResult = !!uploadResult.chunked;
+
   const metadata = {
     type: 'media',
-    objectKey: uploadResult.objectKey,
     name: typeof file.name === 'string' && file.name ? file.name : '附件',
-    size: typeof file.size === 'number' ? file.size : uploadResult.size ?? null,
+    size: typeof file.size === 'number' ? file.size : uploadResult.size ?? uploadResult.totalSize ?? null,
     contentType: file.type || 'application/octet-stream',
-    envelope: uploadResult.envelope || null,
-    dir: Array.isArray(dir) && dir.length ? dir.map((seg) => String(seg || '').trim()).filter(Boolean) : null,
+    dir: Array.isArray(dir) && dir.length
+      ? dir.map((seg) => String(seg || '').trim()).filter(Boolean)
+      : (typeof dir === 'string' && dir.trim() ? dir.trim().split('/').filter(Boolean) : null),
     preview: previewInfo || null
   };
 
-  const payloadText = JSON.stringify({
-    type: metadata.type,
-    media: {
+  // Chunked vs single-file metadata diverge here
+  if (isChunkedResult) {
+    metadata.chunked = true;
+    metadata.baseKey = uploadResult.baseKey;
+    metadata.chunkCount = uploadResult.chunkCount;
+    metadata.totalSize = uploadResult.totalSize;
+    metadata.manifestEnvelope = uploadResult.manifestEnvelope;
+  } else {
+    metadata.objectKey = uploadResult.objectKey;
+    metadata.envelope = uploadResult.envelope || null;
+  }
+
+  const mediaPayload = isChunkedResult
+    ? {
+      chunked: true,
+      baseKey: metadata.baseKey,
+      chunkCount: metadata.chunkCount,
+      totalSize: metadata.totalSize,
+      manifestEnvelope: metadata.manifestEnvelope,
+      name: metadata.name,
+      size: metadata.size,
+      contentType: metadata.contentType,
+      dir: metadata.dir,
+      preview: metadata.preview
+        ? {
+          objectKey: metadata.preview.objectKey,
+          size: metadata.preview.size,
+          contentType: metadata.preview.contentType,
+          envelope: metadata.preview.envelope,
+          width: metadata.preview.width,
+          height: metadata.preview.height
+        }
+        : undefined
+    }
+    : {
       objectKey: metadata.objectKey,
       name: metadata.name,
       size: metadata.size,
@@ -2971,7 +3100,11 @@ export async function sendDrMediaCore(params = {}) {
           height: metadata.preview.height
         }
         : undefined
-    }
+    };
+
+  const payloadText = JSON.stringify({
+    type: metadata.type,
+    media: mediaPayload
   });
 
   const senderDeviceId = ensureDeviceId();
@@ -2985,7 +3118,7 @@ export async function sendDrMediaCore(params = {}) {
   const preSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false, forceNow: true });
   let failureSnapshot = preSnapshot;
   let failureCounter = transportCounter;
-  logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey });
+  logDrSend('encrypt-media-before', { peerAccountDigest: peer, snapshot: preSnapshot || null, objectKey: metadata.objectKey || metadata.baseKey });
   const pkt = await drEncryptText(state, payloadText, { deviceId: senderDeviceId, version: 1 });
   const messageKeyB64 = pkt?.message_key_b64 || null;
   const afterEncryptTotal = Number(state?.NsTotal);
@@ -2995,6 +3128,15 @@ export async function sendDrMediaCore(params = {}) {
   const postSnapshot = snapshotDrState(state, { setDefaultUpdatedAt: false });
   const now = Date.now();
   const headerN = Number.isFinite(pkt?.header?.n) ? Number(pkt.header.n) : null;
+
+  // [FIX] Unconditional Local Persistence (Split-Brain Prevention) — mirror sendDrPlaintextCore.
+  // We MUST persist the post-encryption snapshot to local storage BEFORE the network send.
+  // Without this, if the app restarts between a media send and the next send,
+  // the reloaded state has the OLD Ns value, producing a duplicate header counter
+  // (the exact same header.n as the media message).
+  // The vault put only backs up to the server, NOT to local IndexedDB,
+  // so it cannot replace local persistence.
+  persistDrSnapshot({ peerAccountDigest: peer, peerDeviceId, state });
 
   const receiverDeviceId = peerDeviceId;
   const receiverAccountDigest = peer;
@@ -3007,12 +3149,20 @@ export async function sendDrMediaCore(params = {}) {
       receiver_account_digest: receiverAccountDigest || null,
       receiver_device_id: receiverDeviceId || null,
       type: 'media',
-      media: {
-        object_key: metadata.objectKey,
-        size: metadata.size,
-        name: metadata.name,
-        content_type: metadata.contentType
-      }
+      media: isChunkedResult
+        ? {
+          chunked: true,
+          base_key: metadata.baseKey,
+          size: metadata.size,
+          name: metadata.name,
+          content_type: metadata.contentType
+        }
+        : {
+          object_key: metadata.objectKey,
+          size: metadata.size,
+          name: metadata.name,
+          content_type: metadata.contentType
+        }
     };
     if (metadata.preview?.objectKey) {
       metaPayload.media.preview = {
@@ -3045,10 +3195,24 @@ export async function sendDrMediaCore(params = {}) {
     const currentCounter = Number(holder?.NsTotal);
     const shouldRestore = failureSnapshot && (!Number.isFinite(currentCounter) || currentCounter <= failureCounter);
     if (shouldRestore) {
+      // [FIX] Capture live receive-side state before snapshot restore.
+      // A concurrent drDecryptText may have advanced ckR/Nr/NrTotal;
+      // restoreDrStateFromSnapshot would overwrite those with stale values.
+      const liveNr = Number.isFinite(holder?.Nr) ? Number(holder.Nr) : 0;
+      const liveNrTotal = Number.isFinite(holder?.NrTotal) ? Number(holder.NrTotal) : 0;
+      const liveCkR = holder?.ckR;
+      const liveTheirPub = holder?.theirRatchetPub;
       restoreDrStateFromSnapshot({ peerAccountDigest: peer, peerDeviceId, snapshot: failureSnapshot, force: true, sourceTag: 'send-failed' });
       const refreshed = drState({ peerAccountDigest: peer, peerDeviceId });
-      if (refreshed && (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < failureCounter)) {
-        refreshed.NsTotal = failureCounter;
+      if (refreshed) {
+        if (!Number.isFinite(refreshed.NsTotal) || refreshed.NsTotal < failureCounter) {
+          refreshed.NsTotal = failureCounter;
+        }
+        // Re-apply live receive-side state with Math.max for counters.
+        refreshed.Nr = Math.max(liveNr, Number.isFinite(refreshed.Nr) ? Number(refreshed.Nr) : 0);
+        refreshed.NrTotal = Math.max(liveNrTotal, Number.isFinite(refreshed.NrTotal) ? Number(refreshed.NrTotal) : 0);
+        refreshed.ckR = liveCkR || refreshed.ckR;
+        refreshed.theirRatchetPub = liveTheirPub || refreshed.theirRatchetPub;
       }
     } else if (holder && (!Number.isFinite(currentCounter) || currentCounter < failureCounter)) {
       holder.NsTotal = failureCounter;
@@ -3155,6 +3319,36 @@ export async function sendDrMediaCore(params = {}) {
   } catch (e) {
     drConsole.warn('[dr-session] Failed to update timeline metadata (media)', e);
   }
+  // Helper: build msg.media and upload objects, handling chunked vs single-file.
+  const buildReturnMedia = (tsValue) => {
+    const base = {
+      name: metadata.name,
+      size: metadata.size,
+      contentType: metadata.contentType,
+      dir: metadata.dir,
+      createdAt: tsValue,
+      preview: metadata.preview || null,
+      previewUrl: previewLocalUrl || null
+    };
+    if (isChunkedResult) {
+      base.chunked = true;
+      base.baseKey = metadata.baseKey;
+      base.chunkCount = metadata.chunkCount;
+      base.totalSize = metadata.totalSize;
+      base.manifestEnvelope = metadata.manifestEnvelope;
+    } else {
+      base.objectKey = metadata.objectKey;
+      base.envelope = metadata.envelope;
+    }
+    return base;
+  };
+  const buildReturnUpload = () => {
+    if (isChunkedResult) {
+      return { baseKey: metadata.baseKey, size: uploadResult.totalSize || uploadResult.size };
+    }
+    return { objectKey: metadata.objectKey, envelope: metadata.envelope, size: uploadResult.size };
+  };
+
   if (isConversationLocked(conversationId)) {
     logDrSendTrace({ messageId, stage: 'OUTBOX_QUEUED_LOCKED', jobId: job?.jobId || null });
     // [REMOVED] persistDrSnapshot here is redundant - vault put handles DR state backup
@@ -3169,23 +3363,9 @@ export async function sendDrMediaCore(params = {}) {
         ts: now,
         text: `[檔案] ${metadata.name}`,
         type: 'media',
-        media: {
-          objectKey: metadata.objectKey,
-          name: metadata.name,
-          size: metadata.size,
-          contentType: metadata.contentType,
-          envelope: metadata.envelope,
-          dir: metadata.dir,
-          createdAt: now,
-          preview: metadata.preview || null,
-          previewUrl: previewLocalUrl || null
-        }
+        media: buildReturnMedia(now)
       },
-      upload: {
-        objectKey: metadata.objectKey,
-        envelope: metadata.envelope,
-        size: uploadResult.size
-      }
+      upload: buildReturnUpload()
     };
   }
   const result = await processOutboxJobNow(job.jobId);
@@ -3201,23 +3381,9 @@ export async function sendDrMediaCore(params = {}) {
         ts: now,
         text: `[檔案] ${metadata.name}`,
         type: 'media',
-        media: {
-          objectKey: metadata.objectKey,
-          name: metadata.name,
-          size: metadata.size,
-          contentType: metadata.contentType,
-          envelope: metadata.envelope,
-          dir: metadata.dir,
-          createdAt: now,
-          preview: metadata.preview || null,
-          previewUrl: previewLocalUrl || null
-        }
+        media: buildReturnMedia(now)
       },
-      upload: {
-        objectKey: metadata.objectKey,
-        envelope: metadata.envelope,
-        size: uploadResult.size
-      }
+      upload: buildReturnUpload()
     };
   }
   if (!result.ok) {
@@ -3342,23 +3508,9 @@ export async function sendDrMediaCore(params = {}) {
             ts: repairNow,
             text: `[檔案] ${metadata.name}`,
             type: 'media',
-            media: {
-              objectKey: metadata.objectKey,
-              name: metadata.name,
-              size: metadata.size,
-              contentType: metadata.contentType,
-              envelope: metadata.envelope,
-              dir: metadata.dir,
-              createdAt: repairNow,
-              preview: metadata.preview || null,
-              previewUrl: previewLocalUrl || null
-            }
+            media: buildReturnMedia(repairNow)
           },
-          upload: {
-            objectKey: metadata.objectKey,
-            envelope: metadata.envelope,
-            size: uploadResult.size
-          },
+          upload: buildReturnUpload(),
           replacement: replacementInfo
         };
       }
@@ -3375,23 +3527,9 @@ export async function sendDrMediaCore(params = {}) {
             ts: repairNow,
             text: `[檔案] ${metadata.name}`,
             type: 'media',
-            media: {
-              objectKey: metadata.objectKey,
-              name: metadata.name,
-              size: metadata.size,
-              contentType: metadata.contentType,
-              envelope: metadata.envelope,
-              dir: metadata.dir,
-              createdAt: repairNow,
-              preview: metadata.preview || null,
-              previewUrl: previewLocalUrl || null
-            }
+            media: buildReturnMedia(repairNow)
           },
-          upload: {
-            objectKey: metadata.objectKey,
-            envelope: metadata.envelope,
-            size: uploadResult.size
-          },
+          upload: buildReturnUpload(),
           replacement: replacementInfo
         };
       }
@@ -3404,7 +3542,10 @@ export async function sendDrMediaCore(params = {}) {
         if (repairErrorCode) repairErr.errorCode = repairErrorCode;
         repairErr.stage = 'send_fail';
         repairErr.replacement = replacementInfo;
-        restoreSendFailure(repairErr);
+        /* [SECURITY FIX] DO NOT rollback on repair network failure.
+         * Same timeout ambiguity as main send path — server may have
+         * received the repaired message.  Burn the counter instead. */
+        throw repairErr;
       }
       const repairData = repairResult.data && typeof repairResult.data === 'object' ? repairResult.data : {};
       const repairAckId = typeof repairData?.id === 'string' && repairData.id ? repairData.id : null;
@@ -3444,25 +3585,11 @@ export async function sendDrMediaCore(params = {}) {
           ts: repairNow,
           text: `[檔案] ${metadata.name}`,
           type: 'media',
-          media: {
-            objectKey: metadata.objectKey,
-            name: metadata.name,
-            size: metadata.size,
-            contentType: metadata.contentType,
-            envelope: metadata.envelope,
-            dir: metadata.dir,
-            createdAt: repairNow,
-            preview: metadata.preview || null,
-            previewUrl: previewLocalUrl || null
-          }
+          media: buildReturnMedia(repairNow)
         },
         convId: conversationId,
         secure: true,
-        upload: {
-          objectKey: metadata.objectKey,
-          envelope: metadata.envelope,
-          size: uploadResult.size
-        },
+        upload: buildReturnUpload(),
         replacement: replacementInfo
       };
     }
@@ -3470,7 +3597,12 @@ export async function sendDrMediaCore(params = {}) {
     sendErr.status = Number.isFinite(result?.status) ? Number(result.status) : null;
     sendErr.code = errorCode || sendErr.code || sendErr.status || 'SendFailed';
     sendErr.stage = 'send_fail';
-    restoreSendFailure(sendErr);
+    /* [SECURITY FIX] DO NOT rollback DR state on network send failure.
+     * Same reasoning as sendDrPlaintextCore: timeout ambiguity means the
+     * server may have already received the message.  Rolling back NsTotal
+     * risks counter reuse → Replay / Duplicate N error on the receiver.
+     * It is safer to burn the counter (gap) than to compromise crypto chain. */
+    throw sendErr;
   }
   logDrSend('encrypt-media-after', { peerAccountDigest: peer, snapshot: postSnapshot || null, objectKey: metadata.objectKey });
 
@@ -3513,25 +3645,11 @@ export async function sendDrMediaCore(params = {}) {
       ts: now,
       text: `[檔案] ${metadata.name}`,
       type: 'media',
-      media: {
-        objectKey: metadata.objectKey,
-        name: metadata.name,
-        size: metadata.size,
-        contentType: metadata.contentType,
-        envelope: metadata.envelope,
-        dir: metadata.dir,
-        createdAt: now,
-        preview: metadata.preview || null,
-        previewUrl: previewLocalUrl || null
-      }
+      media: buildReturnMedia(now)
     },
     convId: conversationId,
     secure: true,
-    upload: {
-      objectKey: metadata.objectKey,
-      envelope: metadata.envelope,
-      size: uploadResult.size
-    }
+    upload: buildReturnUpload()
   };
 }
 
@@ -4522,7 +4640,7 @@ export async function persistContactShareSequence(params) {
   // 1. Advance State (Manual)
   // This logic mirrors the manual ratchet advance previously in state-live.js
   if (state) {
-    state.NrTotal = headerCounter;
+    state.NrTotal = Math.max(headerCounter, state.NrTotal || 0);
     if ((state.Nr || 0) < headerCounter) state.Nr = headerCounter;
   }
 

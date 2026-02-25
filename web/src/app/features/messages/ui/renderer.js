@@ -1,5 +1,6 @@
 import { normalizeTimelineMessageId, normalizeCounterValue, normalizeRawMessageId, normalizeMsgTypeValue } from '../parser.js';
-import { resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
+import { isNearBottom } from './interactions.js';
+import { normalizeCallLogPayload, resolveViewerRole, describeCallLogForViewer } from '../../calls/call-log.js';
 import { getVaultAckCounter } from '../../messages-support/vault-ack-store.js';
 import { normalizeAccountDigest, getAccountDigest } from '../../../core/store.js';
 import { getTimeline } from '../../timeline-store.js';
@@ -96,6 +97,7 @@ export function canPreviewMedia(media) {
     if (media.preview?.objectKey && media.preview?.envelope) return true;
     if (media.localUrl) return true;
     if (media.objectKey && media.envelope) return true;
+    if (media.chunked && media.baseKey && media.manifestEnvelope) return true;
     return false;
 }
 
@@ -212,7 +214,10 @@ export async function renderPdfThumbnail(media, canvas) {
 export function isUserTimelineMessage(msg) {
     if (!msg) return false;
     const type = msg.msgType || msg.subtype || 'text';
-    return type !== 'call-log' && type !== 'control';
+    // [FIX] Include 'call-log' as a user timeline message.
+    // Previously call-log was excluded, preventing thread preview updates,
+    // unread count increments, and notification triggers for call-log entries.
+    return type !== 'control';
 }
 
 export function isOutgoingFromSelf(msg, selfDigest) {
@@ -339,10 +344,27 @@ export function buildRenderEntries({ timelineMessages = [] } = {}) {
 }
 
 export class MessageRenderer {
-    constructor({ messagesListEl, callbacks = {} }) {
+    constructor({ messagesListEl, scrollEl, callbacks = {} }) {
         this.listEl = messagesListEl;
+        this.scrollEl = scrollEl || null;
         this.callbacks = callbacks;
         this.shimmerIds = new Set();
+    }
+
+    /**
+     * After media elements load, maintain scroll position if user was near bottom.
+     * Prevents content from shifting away when images/videos finish loading.
+     */
+    _attachMediaLoadScrollGuard(el) {
+        if (!el) return;
+        const eventName = el.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
+        el.addEventListener(eventName, () => {
+            const scrollEl = this.scrollEl;
+            if (!scrollEl) return;
+            if (isNearBottom(scrollEl, 150)) {
+                scrollEl.scrollTop = scrollEl.scrollHeight;
+            }
+        }, { once: true });
     }
 
     attachMediaPreview(container, media) {
@@ -358,16 +380,28 @@ export class MessageRenderer {
             img.alt = media?.name || 'image preview';
             img.decoding = 'async';
             container.appendChild(img);
+            this._attachMediaLoadScrollGuard(img);
             setPreviewSource(img, media);
         } else if (type.startsWith('video/')) {
-            const video = document.createElement('video');
-            video.className = 'message-file-preview-video';
-            video.controls = true;
-            video.muted = true;
-            video.playsInline = true;
-            video.preload = 'metadata';
-            container.appendChild(video);
-            setPreviewSource(video, media);
+            // For videos, prefer showing a still thumbnail image (JPEG preview)
+            // instead of a <video> element to avoid keeping video blobs in memory.
+            const hasPreview = media?.previewUrl || media?.preview?.localUrl ||
+                (media?.preview?.objectKey && media?.preview?.envelope);
+            if (hasPreview) {
+                const img = document.createElement('img');
+                img.className = 'message-file-preview-image';
+                img.alt = media?.name || 'video preview';
+                img.decoding = 'async';
+                container.appendChild(img);
+                this._attachMediaLoadScrollGuard(img);
+                setPreviewSource(img, media);
+            } else {
+                // No preview thumbnail available — show generic video icon
+                const generic = document.createElement('div');
+                generic.className = 'message-file-preview-generic';
+                generic.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+                container.appendChild(generic);
+            }
         } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
             const pdf = document.createElement('canvas');
             pdf.className = 'message-file-preview-pdf';
@@ -483,6 +517,101 @@ export class MessageRenderer {
         if (!existing) target.appendChild(overlay);
     }
 
+    /**
+     * Render a video download/play overlay on top of the preview thumbnail.
+     * States: 'idle' (show play button) | 'downloading' (show progress).
+     * No 'ready' state — each play triggers a fresh download/stream to avoid
+     * storing large video blobs in memory.
+     */
+    renderVideoOverlay(wrapper, media, msgId) {
+        if (!wrapper || !media) return;
+        const target = wrapper.querySelector('.message-file-preview');
+        if (!target) return;
+        target.style.position = 'relative';
+        const existing = target.querySelector('.video-action-overlay');
+
+        // Don't show during upload
+        if (media.uploading) {
+            if (existing) existing.remove();
+            return;
+        }
+
+        const state = media._videoState || 'idle';
+        const overlay = existing || document.createElement('div');
+        overlay.className = 'video-action-overlay';
+        Object.assign(overlay.style, {
+            position: 'absolute',
+            inset: '0',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '6px',
+            borderRadius: getComputedStyle(target).borderRadius || '12px',
+            pointerEvents: 'auto',
+            padding: '10px',
+            textAlign: 'center',
+            transition: 'background 0.2s ease'
+        });
+        overlay.innerHTML = '';
+
+        if (state === 'downloading') {
+            overlay.style.background = 'rgba(15,23,42,0.78)';
+            overlay.style.color = '#fff';
+            const pct = Math.round(media._videoProgress || 0);
+            const label = document.createElement('div');
+            label.textContent = `下載中… ${pct}%`;
+            label.style.fontWeight = '600';
+            label.style.fontSize = '13px';
+            overlay.appendChild(label);
+            const barWrap = document.createElement('div');
+            Object.assign(barWrap.style, {
+                width: '80%', height: '6px', borderRadius: '999px',
+                background: 'rgba(255,255,255,0.25)'
+            });
+            const bar = document.createElement('div');
+            Object.assign(bar.style, {
+                height: '100%', borderRadius: '999px',
+                background: '#22d3ee', width: `${pct}%`,
+                transition: 'width 0.15s ease'
+            });
+            barWrap.appendChild(bar);
+            overlay.appendChild(barWrap);
+        } else {
+            // idle — show play button (every click triggers a fresh download/stream)
+            overlay.style.background = 'rgba(15,23,42,0.38)';
+            overlay.style.color = '#fff';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'video-play-btn';
+            btn.innerHTML = '<svg viewBox="0 0 48 48" width="44" height="44" fill="currentColor" style="pointer-events:none"><path d="M18 12v24l18-12z"/></svg>';
+            Object.assign(btn.style, {
+                background: 'rgba(0,0,0,0.45)',
+                border: '2px solid rgba(255,255,255,0.6)',
+                borderRadius: '50%',
+                width: '52px', height: '52px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', color: '#fff',
+                zIndex: '5'
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // Unified play: always triggers fresh download/stream
+                this.callbacks.onDownloadVideo?.(media, msgId);
+            });
+            overlay.appendChild(btn);
+            if (Number.isFinite(media.size) && media.size > 0) {
+                const sizeLabel = document.createElement('div');
+                sizeLabel.textContent = formatBytes(media.size);
+                sizeLabel.style.fontSize = '11px';
+                sizeLabel.style.opacity = '0.9';
+                overlay.appendChild(sizeLabel);
+            }
+        }
+        if (!existing) target.appendChild(overlay);
+    }
+
     renderMediaBubble(bubble, msg) {
         const media = msg.media || {};
         bubble.classList.add('message-has-media');
@@ -502,7 +631,19 @@ export class MessageRenderer {
         info.appendChild(metaEl);
         wrapper.appendChild(preview);
         wrapper.appendChild(info);
-        this.enableMediaPreviewInteraction(wrapper, media);
+
+        // For videos, use the download/play overlay instead of direct preview interaction.
+        // All videos start in 'idle' state — no blobs are stored in memory.
+        // Each click triggers a fresh download/stream.
+        const isVideo = (media.contentType || '').toLowerCase().startsWith('video/');
+        const needsVideoOverlay = isVideo && !media.uploading;
+        if (needsVideoOverlay && !media._videoState) {
+            media._videoState = 'idle';
+        }
+        if (!needsVideoOverlay) {
+            this.enableMediaPreviewInteraction(wrapper, media);
+        }
+
         bubble.appendChild(wrapper);
         this.attachMediaPreview(preview, media);
 
@@ -511,6 +652,10 @@ export class MessageRenderer {
         if (messageId) bubble.dataset.messageId = messageId;
 
         this.renderUploadOverlay(wrapper, media, messageId);
+
+        if (needsVideoOverlay) {
+            this.renderVideoOverlay(wrapper, media, messageId);
+        }
     }
 
     render(entries, { state, contacts, visibleStatusSet, shimmerIds, forceFullRender }) {
@@ -677,10 +822,29 @@ export class MessageRenderer {
 
 
 
-            if (messageType === 'call-log' && msg.callLog) {
+            if (messageType === 'call-log') {
+                // [FIX] Reconstruct callLog on-the-fly if missing.
+                // Some code paths (vault-replay edge cases, offline sync) may store the
+                // timeline entry with msgType='call-log' but without the pre-built callLog
+                // object, causing the tombstone to silently fall through to standard text
+                // rendering (invisible to the user).
+                let callLogObj = msg.callLog || null;
+                if (!callLogObj) {
+                    try {
+                        const raw = msg.text || '';
+                        const parsed = (typeof raw === 'string' && raw.trim().startsWith('{'))
+                            ? JSON.parse(raw) : {};
+                        const normalized = normalizeCallLogPayload(parsed, msg.meta || {});
+                        const vr = resolveViewerRole(normalized.authorRole, msg.direction || 'incoming');
+                        const desc = describeCallLogForViewer(normalized, vr);
+                        callLogObj = { ...normalized, viewerRole: vr, label: desc.label, subLabel: desc.subLabel };
+                    } catch {
+                        callLogObj = { outcome: 'missed', kind: 'voice', durationSeconds: 0, authorRole: 'outgoing' };
+                    }
+                }
                 li.className = 'call-log-entry';
                 const chip = document.createElement('div');
-                const outcome = msg.callLog.outcome || 'missed';
+                const outcome = callLogObj.outcome || 'missed';
                 chip.className = `call-log-chip ${outcome}`;
 
                 const icon = document.createElement('span');
@@ -694,8 +858,8 @@ export class MessageRenderer {
                 const main = document.createElement('div');
                 main.className = 'call-log-main';
 
-                const viewerRole = msg.callLog.viewerRole || resolveViewerRole(msg.callLog.authorRole, msg.direction);
-                const { label, subLabel } = describeCallLogForViewer(msg.callLog, viewerRole);
+                const viewerRole = callLogObj.viewerRole || resolveViewerRole(callLogObj.authorRole, msg.direction);
+                const { label, subLabel } = describeCallLogForViewer(callLogObj, viewerRole);
 
                 main.textContent = label || '語音通話';
                 textGroup.appendChild(main);
@@ -741,7 +905,6 @@ export class MessageRenderer {
                 const initials = name ? name.slice(0, 1) : '好友';
 
                 avatar.textContent = initials;
-                avatar.textContent = initials;
                 const avatarUrl = resolveContactAvatarUrl(contact);
                 if (avatarUrl) {
                     const img = document.createElement('img');
@@ -749,6 +912,11 @@ export class MessageRenderer {
                     img.alt = name || 'avatar';
                     avatar.textContent = '';
                     avatar.appendChild(img);
+                    avatar.classList.add('message-avatar-clickable');
+                    avatar.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.callbacks.onAvatarClick?.({ avatarUrl, name });
+                    });
                 }
                 row.appendChild(avatar);
             } else {

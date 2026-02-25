@@ -4,7 +4,7 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { createKeyboardOffsetManager } from '../../../features/messages/ui/interactions.js';
+import { createKeyboardOffsetManager, isNearBottom } from '../../../features/messages/ui/interactions.js';
 
 const DESKTOP_BREAKPOINT = 768;
 
@@ -55,20 +55,9 @@ export class LayoutController extends BaseController {
      * Apply messages layout based on current state and viewport.
      */
     applyMessagesLayout() {
-        if (!this.elements.pane) { console.warn('Layout: missing pane'); return; }
+        if (!this.elements.pane) return;
         const state = this.getMessageState();
         const desktop = this.isDesktopLayout();
-        console.log('[Layout] applyMessagesLayout', {
-            viewMode: state.viewMode,
-            desktop,
-            hasNavbar: !!this.deps.navbarEl,
-            activePeer: !!state.activePeerDigest,
-            conversationId: !!state.conversationId
-        });
-
-        if (state.viewMode === 'detail' && !desktop) {
-            console.trace('[Layout] applyMessagesLayout trace (detail mode)');
-        }
 
         this.elements.pane.classList.toggle('is-desktop', desktop);
         if (desktop) {
@@ -87,30 +76,17 @@ export class LayoutController extends BaseController {
         }
 
         try {
-            // Debug visibility and FORCE display if needed
             const threadEl = document.querySelector('.messages-thread');
             if (threadEl) {
                 const style = window.getComputedStyle(threadEl);
-                console.log('[Layout] visibility check', {
-                    paneClasses: this.elements.pane.className,
-                    threadDisplay: style.display,
-                    threadVisibility: style.visibility,
-                    threadHeight: style.height
-                });
-
                 // Fail-safe: Force display if in detail mode but hidden
                 if (!desktop && state.viewMode === 'detail' && style.display === 'none') {
-                    console.warn('[Layout] Force-fixing thread visibility');
                     threadEl.style.display = 'flex';
                 } else if (!desktop && state.viewMode === 'list') {
-                    threadEl.style.display = ''; // Reset
+                    threadEl.style.display = '';
                 }
-            } else {
-                console.error('[Layout] .messages-thread element not found for visibility check');
             }
-        } catch (e) {
-            console.error('[Layout] visibility check failed', e);
-        }
+        } catch { /* ignore */ }
 
         if (this.elements.backBtn) {
             const showBack = !desktop && state.viewMode === 'detail';
@@ -136,13 +112,11 @@ export class LayoutController extends BaseController {
         }
 
         const currentTab = this.deps.getCurrentTab?.();
-        console.log('[Layout] applyMessagesLayout tab check', { currentTab, match: currentTab === 'messages' });
 
         if (currentTab === 'messages') {
             const detail = desktop || state.viewMode === 'detail';
             const topbarEl = document.querySelector('.topbar');
             const navbarEl = this.deps.navbarEl;
-            console.log('[Layout] applying mobile layout', { detail, hasTopbar: !!topbarEl, hasNavbar: !!navbarEl });
 
             if (topbarEl) {
                 if (detail && !desktop) {
@@ -178,11 +152,6 @@ export class LayoutController extends BaseController {
                 navbarEl?.classList.add('hidden');
                 mainContentEl?.classList.add('fullscreen');
                 document.body.classList.add('messages-fullscreen');
-                console.log('[Layout] updated classes (detail)', {
-                    topbarClasses: topbarEl?.className,
-                    navbarClasses: navbarEl?.className,
-                    bodyClasses: document.body.className
-                });
                 document.body.style.overscrollBehavior = 'contain';
             } else {
                 topbarEl?.classList.remove('hidden');
@@ -230,10 +199,18 @@ export class LayoutController extends BaseController {
                 if (!vv) return;
                 const heightDiff = window.innerHeight - vv.height;
                 const offset = Math.max(0, heightDiff - (vv.offsetTop || 0));
+                const wasKeyboardOpen = this.keyboardOffsetPx > 120;
+                const isKeyboardOpen = offset > 120;
                 this.keyboardOffsetPx = offset;
                 this.applyKeyboardOffset();
-                if (this.elements.scrollEl) {
-                    this.elements.scrollEl.scrollTop = this.elements.scrollEl.scrollHeight;
+                // Only scroll to bottom when keyboard transitions from closed→open
+                // AND user is already near the bottom.  Previously this fired on
+                // every viewport change (including keyboard close), causing the
+                // scroll→blur→keyboard-close→scroll-to-bottom death loop.
+                if (isKeyboardOpen && !wasKeyboardOpen && this.elements.scrollEl) {
+                    if (isNearBottom(this.elements.scrollEl, 150)) {
+                        this.elements.scrollEl.scrollTop = this.elements.scrollEl.scrollHeight;
+                    }
                 }
             } catch (err) {
                 this.log({ keyboardOffsetError: err?.message || err });

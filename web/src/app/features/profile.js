@@ -154,8 +154,10 @@ function normalizeProfilePayload(profile, { fallbackNickname, allowAvatar = true
     msgType: PROFILE_MESSAGE_TYPE,
     nickname,
     updatedAt: Number.isFinite(profile?.updatedAt) ? Number(profile.updatedAt) : now,
-    version: Number.isFinite(profile?.version) ? Number(profile.version) : 1
+    version: Number.isFinite(profile?.version) ? Number(profile.version) : 1,
+    profileVersion: Number.isFinite(profile?.profileVersion) ? Number(profile.profileVersion) : undefined
   };
+  if (payload.profileVersion === undefined) delete payload.profileVersion;
   if (allowAvatar && Object.prototype.hasOwnProperty.call(profile || {}, 'avatar')) {
     if (typeof profile.avatar !== 'undefined') payload.avatar = profile.avatar;
   }

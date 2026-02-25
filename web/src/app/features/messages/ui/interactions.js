@@ -18,9 +18,13 @@ export function scrollToBottom(scrollEl) {
  */
 export function scrollToBottomSoon(scrollEl) {
     if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(() => scrollToBottom(scrollEl));
+        // Double-RAF ensures layout is complete before scrolling,
+        // preventing incorrect scroll position on large DOM updates.
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => scrollToBottom(scrollEl));
+        });
     } else {
-        setTimeout(() => scrollToBottom(scrollEl), 0);
+        setTimeout(() => scrollToBottom(scrollEl), 16);
     }
 }
 
@@ -96,22 +100,22 @@ export function updateScrollOverflow(scrollEl) {
 export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } = {}) {
     let keyboardOffsetPx = 0;
     let keyboardActive = false;
-    let viewportGuardTimer = null;
+    let initialized = false;
 
     function applyOffset() {
         const kbOffset = Math.max(0, Math.min(360, Math.floor(keyboardOffsetPx)));
+        const wasActive = keyboardActive;
         keyboardActive = kbOffset > 120;
         document.documentElement.style.setProperty('--kb-offset', `${kbOffset}px`);
         try {
             document.body.classList.toggle('keyboard-open', keyboardActive);
         } catch { /* ignore */ }
-        if (keyboardActive && scrollEl) {
+        if (keyboardActive && !wasActive && scrollEl && isNearBottom(scrollEl, 150)) {
             scrollEl.scrollTop = scrollEl.scrollHeight;
         }
     }
 
-    function tick() {
-        applyOffset();
+    function applyInitialStyles() {
         if (headerEl) {
             headerEl.style.transform = 'translateY(0)';
             headerEl.style.top = '0';
@@ -124,15 +128,13 @@ export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } =
 
     return {
         start() {
-            if (viewportGuardTimer) return;
-            viewportGuardTimer = setInterval(tick, 100);
-            tick();
+            if (initialized) return;
+            initialized = true;
+            applyInitialStyles();
+            applyOffset();
         },
         stop() {
-            if (viewportGuardTimer) {
-                clearInterval(viewportGuardTimer);
-                viewportGuardTimer = null;
-            }
+            // No-op: no timer to clean up (event-driven via visualViewport)
         },
         setOffset(px) {
             keyboardOffsetPx = px;
@@ -151,9 +153,11 @@ export function createKeyboardOffsetManager({ scrollEl, headerEl, composerEl } =
  */
 export function syncWsIndicator(targetEl, sourceEl) {
     if (!targetEl || !sourceEl) return;
-    targetEl.classList.remove('online', 'connecting');
+    targetEl.classList.remove('online', 'connecting', 'degraded');
     if (sourceEl.classList.contains('online')) {
         targetEl.classList.add('online');
+    } else if (sourceEl.classList.contains('degraded')) {
+        targetEl.classList.add('degraded');
     } else if (sourceEl.classList.contains('connecting')) {
         targetEl.classList.add('connecting');
     }

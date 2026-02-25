@@ -1,7 +1,7 @@
 // Share controller (Signal-style): QR carries inviteId + owner metadata + prekey bundle.
 // Flow: generate invite -> scan -> sealed dropbox deliver -> owner consume (X3DH).
 
-import { invitesCreate, invitesDeliver, invitesConsume, invitesConfirm, invitesStatus } from '../../../api/invites.js';
+import { invitesCreate, invitesDeliver, invitesConsume, invitesConfirm, invitesStatus, invitesLookupCode } from '../../../api/invites.js';
 import { prekeysPublish } from '../../../api/prekeys.js';
 import { devkeysStore } from '../../../api/devkeys.js';
 import { encodeFriendInvite, decodeFriendInvite } from '../../../lib/invite.js';
@@ -41,8 +41,8 @@ import { DEBUG } from '../debug-flags.js';
 
 const CONTACT_UPDATE_REASONS = new Set(['update', 'nickname', 'avatar', 'profile', 'manual']);
 // 手動標記目前 QR/聯絡人分享流程的版本，用來追蹤是否為最新部署
-const QR_BUILD_VERSION = 'qr-20250308-01';
-const INVITE_PROTOCOL_VERSION = 3;
+const QR_BUILD_VERSION = 'qr-20260221-bin';
+const INVITE_PROTOCOL_VERSION = 4;
 const INVITE_QR_TYPE = 'invite_dropbox';
 const INVITE_STATUS_POLL_MS = 12000;
 const CONTACT_INIT_VERSION = 1;
@@ -311,7 +311,18 @@ export function setupShareController(options) {
     btnShareSwitchQr,
     shareFlip,
     inviteScanVideo,
-    inviteScanStatus
+    inviteScanStatus,
+    // Pairing code elements
+    addFriendMenu,
+    btnAddFriendQr,
+    btnAddFriendCode,
+    pairingCodeModal,
+    pairingDigits,
+    pairingCountdownEl,
+    pairingRefreshBtn,
+    pairingStatusEl,
+    btnPairingToggle,
+    btnPairingConfirm
   } = dom;
 
   shareState.mode = shareState.mode || 'qr';
@@ -319,14 +330,62 @@ export function setupShareController(options) {
   shareState.currentInvite = null;
   const qrErrorSilenceMs = 2000;
 
+  // ─── Pairing Code State ───
+  let pairingState = {
+    open: false,
+    inputMode: false, // false = show my code, true = enter peer code
+    currentInvite: null,
+    pairingCode: null,
+    timerId: null,
+    confirming: false
+  };
+
   if (shareModal) shareModal.setAttribute('data-share-mode', shareState.mode);
 
   const shareModalCloseButtons = shareModal
     ? Array.from(shareModal.querySelectorAll('[data-share-close-btn]'))
     : [];
   const shareBackdrop = shareModalBackdrop || (shareModal ? shareModal.querySelector('.modal-backdrop') : null);
+  const pairingCloseButtons = pairingCodeModal
+    ? Array.from(pairingCodeModal.querySelectorAll('[data-pairing-close-btn]'))
+    : [];
+  const pairingBackdrop = pairingCodeModal ? pairingCodeModal.querySelector('[data-pairing-close]') : null;
+  const pairingInputs = pairingDigits ? Array.from(pairingDigits.querySelectorAll('input')) : [];
 
-  if (btnShareModal) btnShareModal.addEventListener('click', () => openShareModal('qr'));
+  // ─── Add Friend Menu ───
+  function toggleAddFriendMenu() {
+    if (!addFriendMenu) return;
+    const visible = addFriendMenu.style.display !== 'none';
+    addFriendMenu.style.display = visible ? 'none' : 'flex';
+  }
+  function hideAddFriendMenu() {
+    if (addFriendMenu) addFriendMenu.style.display = 'none';
+  }
+
+  if (btnShareModal && addFriendMenu) {
+    btnShareModal.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleAddFriendMenu();
+    });
+    document.addEventListener('click', (e) => {
+      if (addFriendMenu.style.display === 'none') return;
+      if (!addFriendMenu.contains(e.target) && !btnShareModal.contains(e.target)) {
+        hideAddFriendMenu();
+      }
+    });
+    btnAddFriendQr?.addEventListener('click', () => {
+      hideAddFriendMenu();
+      openShareModal('qr');
+    });
+    btnAddFriendCode?.addEventListener('click', () => {
+      hideAddFriendMenu();
+      openPairingCodeModal();
+    });
+  } else if (btnShareModal) {
+    // Fallback: no menu elements, keep original behavior
+    btnShareModal.addEventListener('click', () => openShareModal('qr'));
+  }
+
   shareBackdrop?.addEventListener('click', closeShareModal);
   btnShareSwitchQr?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); showShareMode('qr'); });
   btnShareSwitchScan?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); showShareMode('scan'); });
@@ -352,6 +411,254 @@ export function setupShareController(options) {
   });
   // inviteRetryBtn event listener removed - button no longer exists
   // inviteConsumeBtn event listener removed - WS auto-consume is sufficient
+
+  // ─── Pairing Code Modal Logic ───
+
+  function setPairingStatus(text, { isError = false, isSuccess = false } = {}) {
+    if (!pairingStatusEl) return;
+    pairingStatusEl.textContent = text || '';
+    pairingStatusEl.classList.toggle('is-error', isError);
+    pairingStatusEl.classList.toggle('is-success', isSuccess);
+  }
+
+  function renderPairingDigits(code) {
+    if (!pairingInputs.length) return;
+    const digits = String(code || '').split('');
+    for (let i = 0; i < pairingInputs.length; i++) {
+      pairingInputs[i].value = digits[i] || '';
+      pairingInputs[i].readOnly = true;
+    }
+    pairingDigits?.classList.remove('is-input-mode');
+  }
+
+  function clearPairingDigits() {
+    for (const inp of pairingInputs) {
+      inp.value = '';
+      inp.readOnly = false;
+    }
+    pairingDigits?.classList.add('is-input-mode');
+    if (pairingInputs[0]) pairingInputs[0].focus();
+  }
+
+  function getPairingInput() {
+    return pairingInputs.map(inp => inp.value).join('');
+  }
+
+  // Auto-advance PIN inputs
+  for (let i = 0; i < pairingInputs.length; i++) {
+    const inp = pairingInputs[i];
+    inp.addEventListener('input', () => {
+      if (inp.readOnly) return;
+      // Keep only last digit
+      inp.value = inp.value.replace(/\D/g, '').slice(-1);
+      if (inp.value && i < pairingInputs.length - 1) {
+        pairingInputs[i + 1].focus();
+      }
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (inp.readOnly) return;
+      if (e.key === 'Backspace' && !inp.value && i > 0) {
+        pairingInputs[i - 1].focus();
+        pairingInputs[i - 1].value = '';
+        e.preventDefault();
+      }
+      if (e.key === 'Enter') {
+        const code = getPairingInput();
+        if (code.length === 6) onPairingConfirm();
+      }
+    });
+    // Handle paste
+    inp.addEventListener('paste', (e) => {
+      if (inp.readOnly) return;
+      e.preventDefault();
+      const pasted = (e.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+      for (let j = 0; j < pairingInputs.length; j++) {
+        pairingInputs[j].value = pasted[j] || '';
+      }
+      const focusIdx = Math.min(pasted.length, pairingInputs.length - 1);
+      pairingInputs[focusIdx].focus();
+    });
+  }
+
+  function formatCountdownPairing(sec) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function startPairingCountdown() {
+    clearPairingCountdown();
+    updatePairingCountdown();
+    pairingState.timerId = setInterval(updatePairingCountdown, 1000);
+  }
+
+  function clearPairingCountdown() {
+    if (pairingState.timerId) {
+      clearInterval(pairingState.timerId);
+      pairingState.timerId = null;
+    }
+  }
+
+  function updatePairingCountdown() {
+    const invite = pairingState.currentInvite;
+    if (!invite || !Number.isFinite(invite.expiresAt)) return;
+    const now = Date.now();
+    const remaining = Math.max(0, Math.ceil(invite.expiresAt - now / 1000));
+    if (remaining <= 0) {
+      // Auto-refresh on expiry
+      clearPairingCountdown();
+      setPairingStatus('配對碼已過期，正在刷新…');
+      refreshPairingCode();
+      return;
+    }
+    if (pairingCountdownEl) {
+      pairingCountdownEl.textContent = formatCountdownPairing(remaining);
+      pairingCountdownEl.classList.remove('is-error', 'is-loading');
+    }
+  }
+
+  async function generatePairingCode() {
+    const ownerAccountDigest = currentOwnerDigest();
+    const ownerDeviceId = ensureDeviceId();
+    if (!ownerAccountDigest || !ownerDeviceId) {
+      setPairingStatus('尚未登入，無法產生配對碼。', { isError: true });
+      return;
+    }
+    setPairingStatus('正在產生配對碼…');
+    if (pairingCountdownEl) {
+      pairingCountdownEl.textContent = '';
+      pairingCountdownEl.classList.add('is-loading');
+    }
+    try {
+      await ensureOwnerPrekeys({ force: false, reason: 'pairing-code' });
+      const invite = await invitesCreate({ wantPairingCode: true });
+      if (!invite?.invite_id || !invite?.pairing_code || !invite?.expires_at) {
+        throw new Error('伺服器回傳內容不完整');
+      }
+      pairingState.currentInvite = {
+        inviteId: String(invite.invite_id),
+        expiresAt: Number(invite.expires_at),
+        ownerAccountDigest: invite.owner_account_digest || ownerAccountDigest,
+        ownerDeviceId: invite.owner_device_id || ownerDeviceId,
+        ownerPublicKeyB64: String(invite.owner_public_key_b64 || ''),
+        v: INVITE_PROTOCOL_VERSION,
+        msgType: INVITE_QR_TYPE,
+        prekeyBundle: invite.prekey_bundle || null
+      };
+      pairingState.pairingCode = invite.pairing_code;
+      renderPairingDigits(invite.pairing_code);
+      startPairingCountdown();
+      setPairingStatus('');
+      console.log('[share-controller] pairing code generated', { pairingCode: invite.pairing_code, inviteId: invite.invite_id });
+    } catch (err) {
+      setPairingStatus(err?.message || '配對碼產生失敗', { isError: true });
+      console.error('[share-controller] pairing code generation failed', err);
+    }
+  }
+
+  function refreshPairingCode() {
+    pairingState.currentInvite = null;
+    pairingState.pairingCode = null;
+    // Stay in show-my-code mode on refresh
+    if (pairingState.inputMode) {
+      togglePairingMode();
+    }
+    generatePairingCode();
+  }
+
+  function togglePairingMode() {
+    pairingState.inputMode = !pairingState.inputMode;
+    if (pairingState.inputMode) {
+      // Switch to input mode
+      clearPairingDigits();
+      if (btnPairingToggle) btnPairingToggle.textContent = '顯示我的配對碼';
+      if (btnPairingConfirm) btnPairingConfirm.style.display = '';
+      setPairingStatus('');
+    } else {
+      // Switch back to show mode
+      renderPairingDigits(pairingState.pairingCode || '');
+      if (btnPairingToggle) btnPairingToggle.textContent = '輸入對方配對碼';
+      if (btnPairingConfirm) btnPairingConfirm.style.display = 'none';
+      setPairingStatus('');
+    }
+  }
+
+  async function onPairingConfirm() {
+    if (pairingState.confirming) return;
+    const code = getPairingInput();
+    if (!/^\d{6}$/.test(code)) {
+      setPairingStatus('請輸入完整的 6 位配對碼', { isError: true });
+      return;
+    }
+    pairingState.confirming = true;
+    if (btnPairingConfirm) btnPairingConfirm.disabled = true;
+    setPairingStatus('正在查詢配對碼…');
+    try {
+      const data = await invitesLookupCode({ pairingCode: code });
+      if (!data?.invite_id || !data?.owner_public_key_b64 || !data?.prekey_bundle) {
+        throw new Error('配對碼資料不完整');
+      }
+      setPairingStatus('配對成功，正在建立連線…', { isSuccess: true });
+      // Construct the same invite object that handleInviteScan expects
+      const inviteData = {
+        v: INVITE_PROTOCOL_VERSION,
+        type: INVITE_QR_TYPE,
+        inviteId: data.invite_id,
+        ownerAccountDigest: data.owner_account_digest,
+        ownerDeviceId: data.owner_device_id,
+        ownerPublicKeyB64: data.owner_public_key_b64,
+        expiresAt: data.expires_at,
+        prekeyBundle: data.prekey_bundle
+      };
+      // Encode as base64url so handleInviteScan can decode it
+      const encoded = encodeFriendInvite(inviteData);
+      closePairingCodeModal();
+      await handleInviteScan(encoded);
+    } catch (err) {
+      const msg = err?.data?.message || err?.message || '配對碼查詢失敗';
+      const isRateLimited = err?.status === 429;
+      setPairingStatus(isRateLimited ? '嘗試次數過多，請稍後再試' : msg, { isError: true });
+      console.error('[share-controller] pairing code lookup failed', err);
+    } finally {
+      pairingState.confirming = false;
+      if (btnPairingConfirm) btnPairingConfirm.disabled = false;
+    }
+  }
+
+  function openPairingCodeModal() {
+    if (!pairingCodeModal) return;
+    pairingState.open = true;
+    pairingState.inputMode = false;
+    pairingCodeModal.style.display = 'flex';
+    pairingCodeModal.setAttribute('aria-hidden', 'false');
+    lockBodyScroll();
+    if (btnPairingToggle) btnPairingToggle.textContent = '輸入對方配對碼';
+    if (btnPairingConfirm) btnPairingConfirm.style.display = 'none';
+    setPairingStatus('');
+    generatePairingCode();
+  }
+
+  function closePairingCodeModal() {
+    if (!pairingCodeModal) return;
+    pairingState.open = false;
+    pairingCodeModal.style.display = 'none';
+    pairingCodeModal.setAttribute('aria-hidden', 'true');
+    clearPairingCountdown();
+    unlockBodyScroll();
+  }
+
+  // Pairing code event listeners
+  pairingBackdrop?.addEventListener('click', closePairingCodeModal);
+  pairingCloseButtons.forEach(btn => btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closePairingCodeModal(); }));
+  btnPairingToggle?.addEventListener('click', togglePairingMode);
+  btnPairingConfirm?.addEventListener('click', onPairingConfirm);
+  pairingRefreshBtn?.addEventListener('click', () => {
+    if (pairingRefreshBtn.disabled) return;
+    pairingRefreshBtn.disabled = true;
+    generatePairingCode().finally(() => {
+      pairingRefreshBtn.disabled = false;
+    });
+  });
 
   function lockBodyScroll() {
     document.body.classList.add('modal-open');
@@ -1044,7 +1351,10 @@ export function setupShareController(options) {
   }
 
   function handleEscapeKey(e) {
-    if (e.key === 'Escape' && shareState.open) closeShareModal();
+    if (e.key === 'Escape') {
+      if (pairingState.open) { closePairingCodeModal(); return; }
+      if (shareState.open) closeShareModal();
+    }
   }
 
   async function ensureInviteScanner() {
@@ -1180,6 +1490,7 @@ export function setupShareController(options) {
             conversationId: convId ? safePrefix(convId, 8) : null
           }, 5);
           setTimeout(() => {
+            if (pairingState.open) closePairingCodeModal();
             if (shareState.open) closeShareModal();
             if (convId && typeof switchTab === 'function') switchTab('messages');
           }, 1200);
@@ -1361,6 +1672,7 @@ export function setupShareController(options) {
       if (inviteScanStatus) inviteScanStatus.textContent = '投遞成功，等待對方取回';
       switchTab('contacts');
       setTimeout(() => {
+        if (pairingState.open) closePairingCodeModal();
         if (shareState.open) closeShareModal();
       }, 700);
     } catch (err) {
@@ -1616,11 +1928,13 @@ export function setupShareController(options) {
     }
     const overrideNickname = overrides?.nickname;
     const effectiveNickname = overrideNickname || nickname || '';
+    const profileVersion = Number(profileState?.profileVersion) || 0;
     const payload = {
       nickname: effectiveNickname,
       avatar,
       addedAt: Math.floor(Date.now() / 1000),
-      updatedAt: profileUpdatedAt
+      updatedAt: profileUpdatedAt,
+      profileVersion
     };
     if (conversationInfo) payload.conversation = conversationInfo;
     return payload;
@@ -1670,7 +1984,7 @@ export function setupShareController(options) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw invitePayloadError('ContactSharePayloadInvalid', 'payload required');
     }
-    const allowed = new Set(['nickname', 'avatar', 'updatedAt', 'addedAt', 'conversation', 'reason']);
+    const allowed = new Set(['nickname', 'avatar', 'updatedAt', 'addedAt', 'conversation', 'reason', 'profileVersion']);
     assertNoExtraKeys(payload, allowed, 'ContactSharePayloadInvalid');
     const nickname = requireStringField(payload.nickname, 'nickname', 'ContactSharePayloadInvalid');
     const avatar = Object.prototype.hasOwnProperty.call(payload, 'avatar') ? payload.avatar : null;
@@ -1695,6 +2009,10 @@ export function setupShareController(options) {
     const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? updatedAtRaw : null;
     const addedAt = Number.isFinite(addedAtRaw) && addedAtRaw > 0 ? addedAtRaw : null;
     const reason = typeof payload.reason === 'string' ? payload.reason.trim() : null;
+    const profileVersionRaw = Object.prototype.hasOwnProperty.call(payload, 'profileVersion')
+      ? Number(payload.profileVersion)
+      : null;
+    const profileVersion = Number.isFinite(profileVersionRaw) && profileVersionRaw >= 0 ? profileVersionRaw : null;
     const conversation = normalizeContactShareConversation(payload.conversation);
     return {
       nickname,
@@ -1702,6 +2020,7 @@ export function setupShareController(options) {
       updatedAt,
       addedAt,
       reason,
+      profileVersion,
       conversation
     };
   }
@@ -1907,6 +2226,7 @@ export function setupShareController(options) {
         avatar: payload.avatar || null,
         addedAt: payload.addedAt || null,
         updatedAt: payload.updatedAt || null,
+        profileVersion: payload.profileVersion ?? null,
         conversation,
         contactSecret: conversation.token_b64
       });
@@ -2353,6 +2673,9 @@ export function setupShareController(options) {
         if (source === 'manual') {
           setInviteStatus('已取回邀請', { loading: false });
         }
+        if (pairingState.open) {
+          closePairingCodeModal();
+        }
         if (shareState.open && source !== 'manual') {
           const tab = typeof getCurrentTab === 'function' ? getCurrentTab() : null;
           if (typeof switchTab === 'function' && tab !== 'contacts') {
@@ -2498,44 +2821,37 @@ export function setupShareController(options) {
     };
     entry.timer = setTimeout(async () => {
       pendingContactUpdates.delete(digest);
-      try {
-        await sendContactShare({
-          peerAccountDigest: payload.digest,
-          conversation: payload.conversation,
-          sessionKey: payload.sessionKey,
-          peerDeviceId: payload.peerDeviceId,
-          drInit: payload.drInit,
-          overrides: payload.overrides,
-          reason: payload.reason
-        });
-        entry.resolve?.(true);
-      } catch (err) {
-        console.error('[share-controller]', {
-          contactBroadcastError: err?.message || err,
-          peerAccountDigest: payload.digest,
-          peerDeviceId: payload.peerDeviceId,
-          reason: payload.reason,
-          attempt: 'debounced'
-        });
+      const MAX_RETRIES = 3;
+      const sendParams = {
+        peerAccountDigest: payload.digest,
+        conversation: payload.conversation,
+        sessionKey: payload.sessionKey,
+        peerDeviceId: payload.peerDeviceId,
+        drInit: payload.drInit,
+        overrides: payload.overrides,
+        reason: payload.reason
+      };
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
-          await sendContactShare({
-            peerAccountDigest: payload.digest,
-            conversation: payload.conversation,
-            sessionKey: payload.sessionKey,
-            peerDeviceId: payload.peerDeviceId,
-            drInit: payload.drInit,
-            overrides: payload.overrides,
-            reason: payload.reason
-          });
+          if (attempt > 0) {
+            // Exponential backoff: 2s, 4s
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+          }
+          await sendContactShare(sendParams);
           entry.resolve?.(true);
-        } catch (err2) {
+          return;
+        } catch (err) {
           console.error('[share-controller]', {
-            contactBroadcastRetryError: err2?.message || err2,
+            contactBroadcastError: err?.message || err,
             peerAccountDigest: payload.digest,
             peerDeviceId: payload.peerDeviceId,
-            reason: payload.reason
+            reason: payload.reason,
+            attempt: attempt + 1,
+            maxRetries: MAX_RETRIES
           });
-          entry.reject?.(err2);
+          if (attempt === MAX_RETRIES - 1) {
+            entry.reject?.(err);
+          }
         }
       }
     }, CONTACT_BROADCAST_DEBOUNCE_MS);
@@ -2566,7 +2882,16 @@ export function setupShareController(options) {
       const token = record.conversationToken || record.conversation?.token || null;
       const convId = record.conversationId || record.conversation?.id || null;
       const peerDeviceId = record.peerDeviceId || identity.deviceId || null;
-      if (!token || !convId || !peerDeviceId) continue;
+      if (!token || !convId || !peerDeviceId) {
+        console.warn('[share-controller] broadcastContactUpdate: skipping peer (missing fields)', {
+          digest: digest?.slice(0, 12),
+          hasToken: !!token,
+          hasConvId: !!convId,
+          hasPeerDeviceId: !!peerDeviceId,
+          reason: reasonKey
+        });
+        continue;
+      }
       const drInit = record.conversationDrInit || record.conversation?.drInit || null;
       const conversation = {
         token_b64: token,
@@ -2714,6 +3039,8 @@ export function setupShareController(options) {
     handleContactInitEvent,
     replayDeliveryIntent,
     broadcastContactUpdate,
+    openPairingCodeModal,
+    closePairingCodeModal,
     setWsSend(fn) {
       wsTransport = typeof fn === 'function' ? fn : null;
     }

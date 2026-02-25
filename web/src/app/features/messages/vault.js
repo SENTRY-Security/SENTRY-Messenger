@@ -18,6 +18,26 @@ const OFFLINE_SYNC_LOG_CAP = 100;
 const OFFLINE_SYNC_PREFIX_LEN = 8;
 const OFFLINE_SYNC_SUFFIX_LEN = 4;
 
+/**
+ * Returns true when the error looks like a network-connectivity failure
+ * (offline, DNS failure, timeout) rather than a server-side rejection.
+ * Network errors should NOT count toward retry limits because they will
+ * always fail while offline — burning retries for nothing.
+ */
+export function isVaultPutNetworkError(err) {
+    if (!err) return false;
+    // fetch() throws TypeError on network failure
+    if (err.name === 'TypeError' && /fetch|network/i.test(err.message || '')) return true;
+    // AbortController timeout
+    if (err.name === 'AbortError') return true;
+    // fetchWithTimeout may produce errors with no HTTP status
+    const status = typeof err.status === 'number' ? err.status : null;
+    if (status === null || status === 0) {
+        if (/fetch|network|timeout|abort|ECONNREFUSED|ENOTFOUND/i.test(err.message || '')) return true;
+    }
+    return false;
+}
+
 function slicePrefix(value, len = OFFLINE_SYNC_PREFIX_LEN) {
     if (typeof value !== 'string') return null;
     return value.slice(0, len);
@@ -273,10 +293,14 @@ export async function flushPendingVaultPutsNow() {
             failed += 1;
             const errorCode = resolveErrorCode(err);
             const status = typeof err?.status === 'number' ? err.status : null;
+            // [FIX] Network errors (offline/timeout) should NOT burn retry quota.
+            // Only server-side rejections (4xx/5xx) count toward exhaustion.
+            const networkErr = isVaultPutNetworkError(err);
+            const effectiveAttemptCount = networkErr ? baseAttemptCount : attemptCount;
             const updated = {
                 ...item,
-                attemptCount,
-                nextAttemptAt: Date.now() + PENDING_VAULT_PUT_RETRY_INTERVAL_MS,
+                attemptCount: effectiveAttemptCount,
+                nextAttemptAt: Date.now() + (networkErr ? 10_000 : PENDING_VAULT_PUT_RETRY_INTERVAL_MS),
                 lastError: err?.message || (err ? String(err) : null),
                 lastErrorCode: errorCode || null,
                 lastStatus: Number.isFinite(Number(status)) ? Number(status) : null,
@@ -284,17 +308,17 @@ export async function flushPendingVaultPutsNow() {
             };
             logCapped('vaultPutRetryTrace', buildRetryTracePayload(
                 item,
-                attemptCount,
-                'failed',
+                effectiveAttemptCount,
+                networkErr ? 'network_fail' : 'failed',
                 errorCode || null,
                 status
             ), OFFLINE_SYNC_LOG_CAP);
-            if (attemptCount >= PENDING_VAULT_PUT_RETRY_MAX) {
+            if (!networkErr && effectiveAttemptCount >= PENDING_VAULT_PUT_RETRY_MAX) {
                 updated.exhausted = true;
                 logCapped('vaultPutPendingTrace', buildPendingTracePayload(
                     updated,
                     'exhausted',
-                    attemptCount,
+                    effectiveAttemptCount,
                     errorCode || null,
                     status
                 ), OFFLINE_SYNC_LOG_CAP);

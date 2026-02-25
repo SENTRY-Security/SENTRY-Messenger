@@ -45,6 +45,7 @@ import {
 import {
     buildCounterMessageId
 } from './counter.js';
+import { isVaultPutNetworkError } from './vault.js';
 import { updateTimelineEntryStatusByCounter, appendUserMessage } from '../timeline-store.js';
 import { applyContactShareFromCommit } from '../contacts.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../contact-share.js';
@@ -222,18 +223,24 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                 const plaintext = JSON.stringify({ type: 'contact-share', envelope });
                 const messageTs = Number(item.ts || item.created_at || item.createdAt || Date.now());
 
-                const applyResult = await applyContactShareFromCommit({
-                    peerAccountDigest: peerDigest,
-                    peerDeviceId: peerDeviceId,
-                    sessionKey: item.tokenB64,
-                    plaintext,
-                    messageId: item.serverMessageId || `${conversationId}:${counter}`,
-                    // [Fix] Use dynamic source tag to distinguish Live vs History
-                    // Live messages will have a different tag (e.g. 'messages:live' or 'messages:decrypt-pipeline')
-                    // causing isHistoryReplay to be false, thus ENABLING D1 uplink.
-                    sourceTag: ctx?.considerSource || 'entry-fetch:history-contact-share',
-                    profileUpdatedAt: messageTs
-                });
+                // [FIX] Only apply contact-share for INCOMING messages.
+                // Outgoing contact-shares have sender=self — applying them
+                // overwrites the real contact with self's profile ("ghost self" bug).
+                const isOutgoingContactShare = senderDeviceId === selfDeviceId;
+                const applyResult = isOutgoingContactShare
+                    ? { ok: false, reasonCode: 'SELF_DIGEST_SKIP' }
+                    : await applyContactShareFromCommit({
+                        peerAccountDigest: peerDigest,
+                        peerDeviceId: peerDeviceId,
+                        sessionKey: item.tokenB64,
+                        plaintext,
+                        messageId: item.serverMessageId || `${conversationId}:${counter}`,
+                        // [Fix] Use dynamic source tag to distinguish Live vs History
+                        // Live messages will have a different tag (e.g. 'messages:live' or 'messages:decrypt-pipeline')
+                        // causing isHistoryReplay to be false, thus ENABLING D1 uplink.
+                        sourceTag: ctx?.considerSource || 'entry-fetch:history-contact-share',
+                        profileUpdatedAt: messageTs
+                    });
 
                 if (applyResult?.diff && conversationId) {
                     // Sys notify logic (kept same as before)
@@ -408,14 +415,10 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
         if (FETCH_LOG_ENABLED) log({ atomicPiggybackError: err?.message || err, conversationId, counter });
     }
 
-    // Now attempt to persist to contact-secrets map
-    const snapshotPersisted = !!persistDrSnapshot({ peerAccountDigest: peerDigest, state });
-
-    // Trigger backup regardless of persistDrSnapshot success
-    // Since we have the snapshot in vault, this is additional redundancy
-    const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
-    maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
-
+    // [FIX] Vault put BEFORE persist — only persist DR state to disk when the
+    // message key is safely in the vault.  If vault fails, in-memory state is
+    // advanced (so N+1 can proceed), but disk state stays at pre-N.  On app
+    // crash, the message is re-fetched from server and re-decrypted.
     let vaultPutStatus = null;
     try {
         await vaultPutMessageKey({
@@ -430,8 +433,17 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
             drStateSnapshot // Pass the encrypted snapshot (built from memory state)
         });
         vaultPutStatus = 'ok';
+
+        // Persist DR state to disk only AFTER vault success
+        persistDrSnapshot({ peerAccountDigest: peerDigest, state });
+
+        const backupTag = item?.flags?.gapFill ? 'messages:gap-fill' : 'messages:decrypt-ok';
+        maybeTriggerBackupAfterDecrypt({ sourceTag: backupTag });
     } catch (err) {
         vaultPutStatus = 'pending';
+        // Key queued for retry — but do NOT persist DR state to disk.
+        // If app crashes, state reverts to last-persisted position and the
+        // message is re-processed from server on next fetch.
         if (enqueuePendingVaultPut) {
             enqueuePendingVaultPut({
                 conversationId,
@@ -726,7 +738,13 @@ export async function processDecryptPipelineForConversation({
                     }
                     vaultPutIncomingOk += 1;
                 } catch (vaultErr) {
-                    // Still failed, don't advance counter
+                    // [FIX] Network errors (offline/timeout) must NOT burn retry quota.
+                    // Only server-side rejections count toward exhaustion.
+                    if (isVaultPutNetworkError(vaultErr)) {
+                        // Don't increment failure counter — just break and retry later
+                        break;
+                    }
+                    // Still failed (server error), don't advance counter
                     const vaultFailureCount = incrementPipelineFailure(streamKey, counter);
                     if (vaultFailureCount >= COUNTER_GAP_RETRY_MAX) {
                         // Exhausted retries - advance anyway

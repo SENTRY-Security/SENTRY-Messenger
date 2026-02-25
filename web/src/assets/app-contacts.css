@@ -12,9 +12,13 @@ html.no-anim .cover-spinner {
   height: auto;
 }
 
-/* Fallback: show Drive tab by default in case JS fails */
+/* Drive tab: overflow-y: auto enables scroll; height: 100% constrains within
+   the flex parent (.content > .tab) so content doesn't overflow and get clipped. */
 #tab-drive {
   display: block;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  height: 100%;
 }
 
 .card {
@@ -52,7 +56,8 @@ html.no-anim .cover-spinner {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: visible;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding-bottom: calc(var(--navbar-height) + 28px);
 }
 
@@ -179,7 +184,6 @@ html.no-anim .cover-spinner {
   overflow-y: auto;
 }
 
-#tab-drive,
 #tab-profile {
   overflow: auto;
 }

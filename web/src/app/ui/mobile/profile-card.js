@@ -156,10 +156,12 @@ export function initProfileCard(options) {
       try {
         setSubmitLoading(true);
         const now = Date.now();
-        const next = { nickname: normalized, updatedAt: now, sourceTag: PROFILE_WRITE_SOURCE.USER_NICKNAME };
+        const prevVersion = Number(sessionStore.profileState?.profileVersion) || 0;
+        const next = { nickname: normalized, updatedAt: now, profileVersion: prevVersion + 1, sourceTag: PROFILE_WRITE_SOURCE.USER_NICKNAME };
         const saved = await saveProfile(next);
         sessionStore.profileState = { ...(sessionStore.profileState || {}), ...(saved || next) };
         sessionStore.profileState.nickname = normalizeNickname(sessionStore.profileState.nickname) || normalized;
+        sessionStore.profileState.profileVersion = next.profileVersion;
         updateProfileNicknameUI();
         updateStats?.();
         log({ profileNicknameUpdated: normalized });
@@ -396,17 +398,20 @@ export function initProfileCard(options) {
             setStatus(`上傳中… ${percent}%`);
           }
         });
+        const prevVersion = Number(sessionStore.profileState?.profileVersion) || 0;
         const next = {
           ...(sessionStore.profileState || {}),
           avatar: avatarMeta,
           nickname: sessionStore.profileState?.nickname || '',
           updatedAt: Date.now(),
+          profileVersion: prevVersion + 1,
           sourceTag: PROFILE_WRITE_SOURCE.EXPLICIT
         };
         const saved = await saveProfile(next);
         sessionStore.profileState = saved || next;
         const sanitizedNick = normalizeNickname(sessionStore.profileState.nickname);
         sessionStore.profileState.nickname = sanitizedNick || sessionStore.profileState.nickname || '';
+        sessionStore.profileState.profileVersion = next.profileVersion;
         updateProfileNicknameUI();
         await updateProfileAvatarUI();
         updateStats?.();

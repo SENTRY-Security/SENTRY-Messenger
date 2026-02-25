@@ -445,7 +445,16 @@ export async function hydrateContactSecretsFromBackup({ reason = 'post-login-hyd
       });
     }
     const snapshot = decryptResult.snapshot;
-    const summary = importContactSecretsSnapshot(snapshot, { replace: true, reason, persist: true });
+    // [FIX] Mid-session hydrates (dr-rescue, ensure-dr-session-missing) must NOT wipe the map.
+    // Only initial login/bootstrap paths should use replace: true.
+    // Mid-session hydrates use merge mode (replace: false) to avoid clearing active DR states.
+    const isMidSessionHydrate = reason && (
+      reason.startsWith('dr-rescue:')
+      || reason === 'ensure-dr-session-missing'
+      || reason === 'restore-pipeline-stage2'
+    );
+    const replaceMode = !isMidSessionHydrate;
+    const summary = importContactSecretsSnapshot(snapshot, { replace: replaceMode, reason, persist: true });
     if (summary) {
       const checksumRecord = await computeContactSecretsChecksum(snapshot).catch(() => null);
       latestPersistDetail = {
@@ -541,7 +550,8 @@ async function performSync() {
       return;
     }
     const snapshot = decryptResult.snapshot;
-    const summary = importContactSecretsSnapshot(snapshot, { replace: true, reason: 'remote-backup', persist: true });
+    // [FIX] performSync runs periodically — must use merge mode to avoid wiping active DR states.
+    const summary = importContactSecretsSnapshot(snapshot, { replace: false, reason: 'remote-backup', persist: true });
     if (summary) {
       const checksumRecord = await computeContactSecretsChecksum(snapshot).catch(() => null);
       latestPersistDetail = {

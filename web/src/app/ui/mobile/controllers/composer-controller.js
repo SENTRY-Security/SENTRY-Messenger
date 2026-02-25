@@ -32,6 +32,45 @@ export class ComposerController extends BaseController {
         super(deps);
         this.pendingNewMessageHint = false;
         this.suppressInputBlurOnce = false;
+        /** @type {Map<string, string>} Per-conversation draft text keyed by conversationId */
+        this._drafts = new Map();
+    }
+
+    /**
+     * Save the current input text as a draft for the active conversation.
+     * Should be called BEFORE switching away from a conversation.
+     */
+    saveDraft() {
+        const state = this.getMessageState();
+        const convId = state.conversationId;
+        if (!convId || !this.elements.input) return;
+        const text = (this.elements.input.value || '').trim();
+        if (text) {
+            this._drafts.set(convId, this.elements.input.value);
+        } else {
+            this._drafts.delete(convId);
+        }
+    }
+
+    /**
+     * Restore draft text for the active conversation (or clear the input).
+     * Should be called AFTER switching to a new conversation.
+     */
+    restoreDraft() {
+        const state = this.getMessageState();
+        const convId = state.conversationId;
+        if (!this.elements.input) return;
+        const draft = convId ? this._drafts.get(convId) : null;
+        this.elements.input.value = draft || '';
+    }
+
+    /**
+     * Clear the draft for a specific conversation (e.g. after sending a message).
+     */
+    clearDraft(conversationId) {
+        if (conversationId) {
+            this._drafts.delete(conversationId);
+        }
     }
 
     /**
@@ -378,6 +417,7 @@ export class ComposerController extends BaseController {
             this.elements.input.value = '';
             this.elements.input.focus();
         }
+        this.clearDraft(state.conversationId);
 
         try {
             const res = await sendDrText({

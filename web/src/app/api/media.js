@@ -123,6 +123,64 @@ export async function createMessage(body) {
   return lastRes;
 }
 
+/**
+ * Request presigned PUT URLs for a chunked upload (manifest + N chunk objects).
+ * @param {{ convId: string, totalSize: number, chunkCount: number, contentType?: string, direction?: string, dir?: string }} p
+ * @returns {Promise<{ r: Response, data: { baseKey: string, manifest: object, chunks: object[], expiresIn: number } }>}
+ */
+export async function signPutChunked({ convId, totalSize, chunkCount, contentType, direction, dir, accountToken, accountDigest } = {}) {
+  const resolvedConv = typeof convId === 'string' ? convId : '';
+  if (!resolvedConv) throw new Error('convId required');
+  const body = { conv_id: resolvedConv, total_size: totalSize, chunk_count: chunkCount };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  if (contentType) body.content_type = contentType;
+  if (direction) body.direction = direction;
+  if (dir) body.dir = dir;
+  const token = accountToken || getAccountToken();
+  if (token) body.account_token = token;
+  const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
+  if (digest) body.account_digest = digest;
+  return await fetchJSON('/api/v1/media/sign-put-chunked', body, headers);
+}
+
+/**
+ * Request presigned GET URLs for chunked download (manifest + optional chunk indices).
+ * @param {{ baseKey: string, chunkIndices?: number[] }} p
+ * @returns {Promise<{ r: Response, data: { manifest: object, chunks: object[], expiresIn: number } }>}
+ */
+export async function signGetChunked({ baseKey, chunkIndices, accountToken, accountDigest } = {}) {
+  if (!baseKey) throw new Error('baseKey required');
+  const body = { base_key: baseKey };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  if (chunkIndices && chunkIndices.length > 0) body.chunk_indices = chunkIndices;
+  const token = accountToken || getAccountToken();
+  if (token) body.account_token = token;
+  const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
+  if (digest) body.account_digest = digest;
+  return await fetchJSON('/api/v1/media/sign-get-chunked', body, headers);
+}
+
+/**
+ * Cleanup a failed chunked upload (delete all objects under the base key).
+ * @param {{ baseKey: string }} p
+ */
+export async function cleanupChunked({ baseKey, accountToken, accountDigest } = {}) {
+  if (!baseKey) throw new Error('baseKey required');
+  const body = { base_key: baseKey };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  const token = accountToken || getAccountToken();
+  if (token) body.account_token = token;
+  const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
+  if (digest) body.account_digest = digest;
+  return await fetchJSON('/api/v1/media/cleanup-chunked', body, headers);
+}
+
 export async function deleteMediaKeys({ ids = [], keys = [], conversationId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const overrides = { conversation_id: conversationId, ids };

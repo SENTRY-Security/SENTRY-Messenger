@@ -306,11 +306,15 @@ export async function x3dhRespond(devicePriv, guestBundle) {
 }
 
 export async function drRatchet(st, theirRatchetPubU8) {
-  const nsBase = Number.isFinite(st?.NsTotal) ? Number(st.NsTotal) : 0;
   const nrBase = Number.isFinite(st?.NrTotal) ? Number(st.NrTotal) : 0;
-  const nsPrev = Number.isFinite(st?.Ns) ? Number(st.Ns) : 0;
   const nrPrev = Number.isFinite(st?.Nr) ? Number(st.Nr) : 0;
-  st.NsTotal = nsBase + nsPrev;
+  // [FIX] NsTotal accumulation disabled: since send-side ratcheting is disabled
+  // (st.Ns = 0 is commented out below), Ns keeps growing monotonically across all
+  // receive ratchets. Accumulating Ns into NsTotal on each ratchet causes NsTotal
+  // to compound quadratically (NsTotal += Ns every receive), leading to transport
+  // counter jumps that desync with the server's expected counter.
+  // NsTotal is maintained by reserveTransportCounter() in dr-session.js instead.
+  // st.NsTotal = nsBase + nsPrev;
   st.NrTotal = nrBase + nrPrev;
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);
@@ -723,7 +727,7 @@ export async function drDecryptText(st, packet, opts = {}) {
       ratchetPerformed = true;
       dhOutHash = ratchetResult?.dhOutHash || null;
       ckRSeedHash = ratchetResult?.ckRSeedHash || null;
-      ckSSeedHash = ratchetResult?.ckRSeedHash || null;
+      ckSSeedHash = ratchetResult?.ckSSeedHash || null;
     } else {
       working.theirRatchetPub = theirPub;
     }
@@ -879,17 +883,31 @@ export async function drDecryptText(st, packet, opts = {}) {
       }
     } catch { }
 
+    // [FIX] Capture send-side state BEFORE restoreHolder() wipes it.
+    // drEncryptText may have advanced Ns/ckS/NsTotal concurrently (during our
+    // await points). restoreHolder() would discard those changes, and writing
+    // back unmodified working-copy values would roll back the send chain,
+    // causing duplicate header.n on the next encrypt.
+    const liveNs = Number.isFinite(st.Ns) ? Number(st.Ns) : 0;
+    const liveNsTotal = Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0;
+    const liveCkS = st.ckS;
+    const liveMyRatchetPriv = st.myRatchetPriv;
+    const liveMyRatchetPub = st.myRatchetPub;
+    const livePN = Number.isFinite(st.PN) ? Number(st.PN) : 0;
+
     restoreHolder();
     st.rk = working.rk;
     st.ckR = working.ckR;
-    st.ckS = working.ckS;
-    st.Ns = working.Ns;
+    // Send-side fields: use Math.max for counters and preserve live chain
+    // state to avoid rolling back concurrent drEncryptText advances.
+    st.ckS = liveCkS || working.ckS;
+    st.Ns = Math.max(working.Ns, liveNs);
     st.Nr = working.Nr;
-    st.NsTotal = working.NsTotal;
+    st.NsTotal = Math.max(working.NsTotal, liveNsTotal);
     st.NrTotal = working.NrTotal;
-    st.PN = working.PN;
-    st.myRatchetPriv = working.myRatchetPriv;
-    st.myRatchetPub = working.myRatchetPub;
+    st.PN = Math.max(working.PN, livePN);
+    st.myRatchetPriv = liveMyRatchetPriv || working.myRatchetPriv;
+    st.myRatchetPub = liveMyRatchetPub || working.myRatchetPub;
     st.theirRatchetPub = working.theirRatchetPub;
     st.pendingSendRatchet = working.pendingSendRatchet;
     st.skippedKeys = cloneSkippedKeys(skippedNext);
@@ -949,8 +967,27 @@ export async function drDecryptText(st, packet, opts = {}) {
       return err.__drMeta;
     };
     let diff = null;
+    // [FIX] Capture send-side state before restoreHolder() in failure path.
+    // A concurrent drEncryptText may have advanced Ns/ckS during our awaits;
+    // restoreHolder() must not roll those back or the next encrypt will
+    // reuse the same header.n and chain key (duplicate + replay error).
+    const failLiveNs = Number.isFinite(st.Ns) ? Number(st.Ns) : 0;
+    const failLiveNsTotal = Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0;
+    const failLiveCkS = st.ckS;
+    const failLiveMyPriv = st.myRatchetPriv;
+    const failLiveMyPub = st.myRatchetPub;
+    const failLivePN = Number.isFinite(st.PN) ? Number(st.PN) : 0;
+    const protectSendSide = () => {
+      st.ckS = failLiveCkS || st.ckS;
+      st.Ns = Math.max(failLiveNs, Number.isFinite(st.Ns) ? Number(st.Ns) : 0);
+      st.NsTotal = Math.max(failLiveNsTotal, Number.isFinite(st.NsTotal) ? Number(st.NsTotal) : 0);
+      st.PN = Math.max(failLivePN, Number.isFinite(st.PN) ? Number(st.PN) : 0);
+      st.myRatchetPriv = failLiveMyPriv || st.myRatchetPriv;
+      st.myRatchetPub = failLiveMyPub || st.myRatchetPub;
+    };
     if (isAeadFailure) {
       restoreHolder();
+      protectSendSide();
       try {
         const expected = fingerprintBeforeDecrypt || beforeAttempt;
         const afterRestore = await fingerprintState(st, mkHash, decCtHash);
@@ -980,13 +1017,24 @@ export async function drDecryptText(st, packet, opts = {}) {
         diff = diffFingerprint(beforeAttempt, afterAttempt);
       } catch { }
       restoreHolder();
+      protectSendSide();
     }
     if (diff && Object.keys(diff).length) {
-      const invariantErr = new Error('dr invariant violated: holder mutated during decrypt failure');
-      invariantErr.code = 'INVARIANT_VIOLATION';
-      invariantErr.__drInvariantDiff = diff;
-      invariantErr.__drMeta = ensureDrMeta();
-      throw invariantErr;
+      // [FIX] Exclude send-side fields from the invariant check.
+      // A concurrent drEncryptText legitimately advances Ns/ckS/PN;
+      // flagging that as an invariant violation masks the real decrypt error.
+      const sendSideKeys = new Set(['Ns', 'ckSHash', 'PN']);
+      const recvOnlyDiff = {};
+      for (const k of Object.keys(diff)) {
+        if (!sendSideKeys.has(k)) recvOnlyDiff[k] = diff[k];
+      }
+      if (Object.keys(recvOnlyDiff).length) {
+        const invariantErr = new Error('dr invariant violated: holder mutated during decrypt failure');
+        invariantErr.code = 'INVARIANT_VIOLATION';
+        invariantErr.__drInvariantDiff = diff;
+        invariantErr.__drMeta = ensureDrMeta();
+        throw invariantErr;
+      }
     }
     ensureDrMeta();
     throw err;

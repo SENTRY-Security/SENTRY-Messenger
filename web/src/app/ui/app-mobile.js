@@ -474,12 +474,17 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
   _autoLoggedOut = true;
 
   const safeMessage = message || '已登出';
-  const settingsSnapshot = getEffectiveSettingsState();
-  const logoutRedirectInfo = getLogoutRedirectInfo(settingsSnapshot);
-  const logoutRedirectTarget = logoutRedirectInfo.url;
-  if (logoutRedirectInfo.isCustom) {
-    showLogoutRedirectCover();
-  } else {
+  let logoutRedirectTarget = '/pages/logout.html';
+  try {
+    const settingsSnapshot = getEffectiveSettingsState();
+    const logoutRedirectInfo = getLogoutRedirectInfo(settingsSnapshot);
+    logoutRedirectTarget = logoutRedirectInfo.url || '/pages/logout.html';
+    if (logoutRedirectInfo.isCustom) {
+      showLogoutRedirectCover();
+    } else {
+      hideLogoutRedirectCover();
+    }
+  } catch {
     hideLogoutRedirectCover();
   }
 
@@ -1039,7 +1044,18 @@ function flushContactSecretsLocal(reason = 'manual') {
 (function ensureUnlockedOrRedirect() {
   if (!getMkRaw()) {
     log('Not unlocked: redirecting to /pages/logout.html …');
-    secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
+    // secureLogout may be blocked if logoutInProgress is already true
+    // (e.g. from enforceReloadLogoutOnLoad). Use a direct redirect as fallback.
+    if (logoutInProgress) {
+      try { resetAll(); } catch { try { clearSecrets(); } catch { } }
+      try { sessionStorage.clear(); } catch { }
+      try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, '登入資訊已失效，請重新感應晶片'); } catch { }
+      setTimeout(() => {
+        try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
+      }, 60);
+    } else {
+      secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
+    }
   }
 })();
 
@@ -1197,6 +1213,17 @@ const shareModalBackdrop = document.querySelector('[data-share-close]');
 const btnShareSwitchScan = document.getElementById('btnShareSwitchScan');
 const btnShareSwitchQr = document.getElementById('btnShareSwitchQr');
 const shareFlip = document.getElementById('shareFlip');
+// Pairing code elements
+const addFriendMenu = document.getElementById('addFriendMenu');
+const btnAddFriendQr = document.getElementById('btnAddFriendQr');
+const btnAddFriendCode = document.getElementById('btnAddFriendCode');
+const pairingCodeModal = document.getElementById('pairingCodeModal');
+const pairingDigits = document.getElementById('pairingDigits');
+const pairingCountdownEl = document.getElementById('pairingCountdown');
+const pairingRefreshBtn = document.getElementById('pairingRefreshBtn');
+const pairingStatusEl = document.getElementById('pairingStatus');
+const btnPairingToggle = document.getElementById('btnPairingToggle');
+const btnPairingConfirm = document.getElementById('btnPairingConfirm');
 const statContactsEl = document.getElementById('statContacts');
 const contactsCountEl = document.getElementById('contactsCount');
 const statFilesEl = document.getElementById('statFiles');
@@ -1249,7 +1276,18 @@ const initMediaPermissionPrompt = () => {
 };
 
 const connIndicator = createConnectionIndicator(connectionIndicator);
-const updateConnectionIndicator = (state) => connIndicator.update(state);
+let _lastDegradedToastAt = 0;
+const _DEGRADED_TOAST_COOLDOWN = 60000; // 1 min — avoid spamming toast on flapping RTT
+const updateConnectionIndicator = (state) => {
+  connIndicator.update(state);
+  if (state === 'degraded') {
+    const now = Date.now();
+    if (now - _lastDegradedToastAt >= _DEGRADED_TOAST_COOLDOWN) {
+      _lastDegradedToastAt = now;
+      showToast?.('網路連線不穩定', { variant: 'warning' });
+    }
+  }
+};
 
 function resetModalVariants(modalElement) {
   modalElement.classList.remove(...MODAL_VARIANTS);
@@ -1829,7 +1867,17 @@ shareController = setupShareController({
     btnShareSwitchQr,
     shareFlip,
     inviteScanVideo,
-    inviteScanStatus
+    inviteScanStatus,
+    addFriendMenu,
+    btnAddFriendQr,
+    btnAddFriendCode,
+    pairingCodeModal,
+    pairingDigits,
+    pairingCountdownEl,
+    pairingRefreshBtn,
+    pairingStatusEl,
+    btnPairingToggle,
+    btnPairingConfirm
   },
   shareState,
   getProfileState: () => sessionStore.profileState,
@@ -2359,6 +2407,8 @@ if (typeof document !== 'undefined') {
     }
     log({ autoLogoutVisibilityChange: document.visibilityState });
     if (!document.hidden) {
+      // Resume WebSocket timers when app returns to foreground
+      wsIntegration.resume();
       messagesFlowFacade.onVisibilityResume({
         source: 'visibility_resume',
         onOfflineDecryptError: (err) => log({ offlineDecryptSyncError: err?.message || err, source: 'visibility_resume' }),
@@ -2369,6 +2419,8 @@ if (typeof document !== 'undefined') {
       });
     }
     if (document.hidden) {
+      // Pause WebSocket timers to save battery while backgrounded
+      wsIntegration.pause();
       flushDrSnapshotsBeforeLogout('visibilitychange');
       flushContactSecretsLocal('visibilitychange');
       backgroundLogoutTimer = setTimeout(() => {

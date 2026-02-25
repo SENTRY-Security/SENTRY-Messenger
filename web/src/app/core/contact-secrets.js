@@ -44,6 +44,57 @@ let contactSecretsRestoreTraceCount = 0;
 let contactSecretsSanitizeDropCount = 0;
 let contactSecretWriteTraceCount = 0;
 
+// ─── DR Monotonic Counter Enforcement ───
+// Single source of truth for "is state A more advanced than state B?"
+// Used by ALL code paths that write DR state (backup import, merge, restore).
+// Principle: effective counter = Total + chain counter. Must never decrease.
+
+export function drEffectiveCounters(dr) {
+  if (!dr) return { sent: 0, received: 0 };
+  return {
+    sent: Number(dr.NsTotal || 0) + Number(dr.Ns || 0),
+    received: Number(dr.NrTotal || 0) + Number(dr.Nr || 0)
+  };
+}
+
+// Returns true if `incoming` would be a regression from `existing` on EITHER chain.
+export function isDrRegression(existing, incoming) {
+  const e = drEffectiveCounters(existing);
+  const i = drEffectiveCounters(incoming);
+  return i.sent < e.sent || i.received < e.received;
+}
+
+// For each device in `incomingDevices`, preserve the existing DR state if it is
+// more advanced. This is the SINGLE enforcement function used by both replace
+// and merge modes in applySnapshotPayload.
+function preserveMonotonicDrDevices(existingDevices, incomingDevices) {
+  if (!existingDevices || !incomingDevices) return 0;
+  let preservedCount = 0;
+  for (const [devId, existingDev] of Object.entries(existingDevices)) {
+    const existingDr = existingDev?.drState;
+    if (!existingDr) continue;
+    const incomingDev = incomingDevices[devId];
+    if (!incomingDev) {
+      // Incoming lacks this device entirely — preserve it.
+      incomingDevices[devId] = existingDev;
+      preservedCount += 1;
+      continue;
+    }
+    if (isDrRegression(existingDr, incomingDev.drState)) {
+      incomingDev.drState = existingDr;
+      // Also preserve drHistory/cursors tied to the more advanced state.
+      if (Array.isArray(existingDev.drHistory) && existingDev.drHistory.length > (Array.isArray(incomingDev.drHistory) ? incomingDev.drHistory.length : 0)) {
+        incomingDev.drHistory = existingDev.drHistory;
+        incomingDev.drHistoryCursorTs = existingDev.drHistoryCursorTs;
+        incomingDev.drHistoryCursorId = existingDev.drHistoryCursorId;
+      }
+      preservedCount += 1;
+    }
+  }
+  return preservedCount;
+}
+// ─── End DR Monotonic Enforcement ───
+
 function logContactSecretsRestoreTrace(payload = {}) {
   if (contactSecretsRestoreTraceCount >= CONTACT_SECRETS_RESTORE_TRACE_LIMIT) return;
   contactSecretsRestoreTraceCount += 1;
@@ -1029,6 +1080,17 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     return null;
   }
   try {
+    // Snapshot existing device records BEFORE clearing map (replace mode).
+    // After import, preserveMonotonicDrDevices() ensures counters never regress.
+    let preClearDevices = null;
+    if (replace && map.size > 0) {
+      preClearDevices = new Map();
+      for (const [peerKey, record] of map.entries()) {
+        if (!record?.devices || typeof record.devices !== 'object') continue;
+        preClearDevices.set(peerKey, record.devices);
+      }
+      if (!preClearDevices.size) preClearDevices = null;
+    }
     if (replace) {
       map.clear();
       contactAliasToPrimary.clear();
@@ -1113,6 +1175,14 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
             });
           } catch { }
         }
+        // Monotonic DR enforcement: preserve existing DR state if more advanced.
+        // Same function for both merge mode (existing from map) and replace mode (from preClearDevices).
+        if (!replace) {
+          const existingRecord = map.get(peerKey);
+          if (existingRecord?.devices && record?.devices) {
+            preserveMonotonicDrDevices(existingRecord.devices, record.devices);
+          }
+        }
         map.set(peerKey, record);
         registerContactAliases(peerKey, aliases);
         debugLog('restore-entry', {
@@ -1141,7 +1211,17 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
         log({ contactSecretRestoreError: err?.message || err, source: reason, peerAccountDigest: identity.key || identity.accountDigest || null });
       }
     }
-    debugLog('restore', { entries: map.size, corruptEntries: corruptEntries.length, source: reason });
+    // Post-import monotonic reconciliation (replace mode):
+    // Use the SAME preserveMonotonicDrDevices() to restore pre-clear states.
+    let drStateRestoredCount = 0;
+    if (preClearDevices && preClearDevices.size > 0) {
+      for (const [peerKey, oldDevices] of preClearDevices.entries()) {
+        const record = map.get(peerKey);
+        if (!record?.devices || typeof record.devices !== 'object') continue;
+        drStateRestoredCount += preserveMonotonicDrDevices(oldDevices, record.devices);
+      }
+    }
+    debugLog('restore', { entries: map.size, corruptEntries: corruptEntries.length, drStateRestoredCount, source: reason });
     const summaryPayload = {
       entries: totalEntries,
       withDrState,

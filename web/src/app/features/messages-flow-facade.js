@@ -12,11 +12,12 @@ import { createMessagesFlowScrollFetch } from './messages-flow/scroll-fetch.js';
 import { smartFetchMessages } from './messages-flow/hybrid-flow.js';
 import { createGapQueue } from './messages-flow/gap-queue.js';
 import { createMaxCounterProbe } from './messages-flow/probe.js';
-import { consumeLiveJob } from './messages-flow/live/coordinator.js';
+import { consumeLiveJob, LIVE_RETRYABLE_REASONS } from './messages-flow/live/coordinator.js';
 import { createLiveJobFromWsEvent } from './messages-flow/live/job.js';
 import { createLiveLegacyAdapters } from './messages-flow/live/adapters/index.js';
 import { decideNextAction } from './messages-flow/reconcile/decision.js';
 import { getMessagesFlowFlags } from './messages-flow/flags.js';
+import { LIVE_RETRY_MAX, LIVE_RETRY_BASE_MS } from './messages-flow/policy.js';
 import { decryptReplayBatch } from './messages-flow/vault-replay.js';
 import { normalizeReplayItems } from './messages-flow/normalize.js';
 import { handoffReplayVaultMissing } from './restore-coordinator.js';
@@ -26,6 +27,7 @@ import { MessageKeyVault } from './message-key-vault.js';
 import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
 import { getMkRaw as storeGetMkRaw } from '../core/store.js';
 import { getLocalProcessedCounter } from './messages-flow/local-counter.js';
+import { updatePendingLivePlaceholderStatus } from './messages/placeholder-store.js';
 import { setDeletionCursor } from './soft-deletion/deletion-api.js';
 import { clearConversationHistory } from './messages/cache.js';
 const LIVE_ROUTE_LOG_CAP = 5;
@@ -97,6 +99,26 @@ const maxCounterProbeQueue = createGapQueue({
 });
 const maxCounterProbe = createMaxCounterProbe({ gapQueue: maxCounterProbeQueue });
 const liveLegacyAdapters = createLiveLegacyAdapters();
+
+// [FIX] Per-conversation promise chain for live message processing.
+// Without serialization, two messages for the same conversation (counter N and
+// N+1) run their gap checks concurrently.  Both see localMax = N-1 because
+// neither decrypt has started yet.  N passes (N == N-1+1) but N+1 fails
+// (N+1 > N-1+1) triggering a false GapDetectedError.
+// By chaining promises per conversation, N+1's gap check runs only after N's
+// full pipeline (gap check → decrypt → vault put → append) completes.
+const liveConversationChains = new Map();
+function enqueueLiveForConversation(conversationId, fn) {
+  const prev = liveConversationChains.get(conversationId) || Promise.resolve();
+  const next = prev.catch(() => { }).then(fn);
+  liveConversationChains.set(conversationId, next);
+  next.finally(() => {
+    if (liveConversationChains.get(conversationId) === next) {
+      liveConversationChains.delete(conversationId);
+    }
+  });
+  return next;
+}
 
 function toConversationIdPrefix8(conversationId) {
   if (!conversationId) return null;
@@ -276,6 +298,75 @@ function reconcileOutgoingStatusForConversation({
   return null;
 }
 
+// [FIX] Retry wrapper for live (B-route) message decryption.
+// When consumeLiveJob fails with a recoverable reason (SECURE_PENDING,
+// DR_STATE_UNAVAILABLE, VAULT_PUT_FAILED, NOT_FOUND, etc.), the message
+// was previously lost forever because the WebSocket event fires only once.
+// This wrapper retries with exponential backoff before giving up.
+// GapDetectedError is NEVER retried — it propagates to the caller for
+// maxCounterProbe-based gap recovery.
+async function consumeLiveJobWithRetry(job, ctx, { conversationIdPrefix8, messageIdPrefix8 } = {}) {
+  let lastResult = null;
+
+  for (let attempt = 0; attempt <= LIVE_RETRY_MAX; attempt++) {
+    if (attempt > 0) {
+      // Exponential backoff with ±25 % jitter
+      const baseDelay = LIVE_RETRY_BASE_MS * Math.pow(2, attempt - 1);
+      const jitter = baseDelay * (0.75 + Math.random() * 0.5);
+      const delayMs = Math.min(Math.round(jitter), 16000);
+
+      logCapped('liveRetryTrace', {
+        conversationIdPrefix8,
+        messageIdPrefix8,
+        attempt,
+        maxAttempts: LIVE_RETRY_MAX + 1,
+        delayMs,
+        previousReasonCode: lastResult?.reasonCode
+      }, 5);
+
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+
+      // Reset placeholder to 'pending' before retry (coordinator sets 'blocked'
+      // on each failure; we override it so the UI shows "解密中" during retries).
+      const messageId = job?.messageId || job?.serverMessageId;
+      const conversationId = job?.conversationId;
+      if (messageId && conversationId) {
+        try {
+          updatePendingLivePlaceholderStatus(conversationId, { messageId, status: 'pending' });
+        } catch { /* placeholder may not exist yet — safe to ignore */ }
+      }
+    }
+
+    try {
+      const result = await consumeLiveJob(job, ctx);
+      lastResult = result;
+
+      // Success or non-retryable failure → stop retrying
+      if (result?.ok || !LIVE_RETRYABLE_REASONS.has(result?.reasonCode)) {
+        return result;
+      }
+      // Retryable failure → continue to next attempt
+    } catch (err) {
+      // GapDetectedError: never retry — propagate for maxCounterProbe handling
+      if (err?.name === 'GapDetectedError') throw err;
+
+      // Other unexpected throws: retry if attempts remain
+      lastResult = { ok: false, reasonCode: 'LIVE_JOB_THROW', error: err?.message };
+      if (attempt >= LIVE_RETRY_MAX) throw err;
+    }
+  }
+
+  // All retries exhausted — log and return last failed result
+  logCapped('liveRetryExhausted', {
+    conversationIdPrefix8,
+    messageIdPrefix8,
+    reasonCode: lastResult?.reasonCode,
+    totalAttempts: LIVE_RETRY_MAX + 1
+  }, 5);
+
+  return lastResult;
+}
+
 function createMessagesFlowFacade() {
   return {
     // Event -> facade-only handler. Do not add new flow logic here.
@@ -294,6 +385,14 @@ function createMessagesFlowFacade() {
       if (restorePromise && typeof restorePromise.catch === 'function') {
         restorePromise.catch(() => { });
       }
+      // [FIX] Trigger maxCounterProbe on WS reconnect so that any vault-ack
+      // messages lost during the disconnection window are reconciled via HTTP.
+      // Previously only onVisibilityResume called this, leaving WS-reconnect
+      // without a delivery-status reconciliation path.
+      triggerMaxCounterProbeForActiveConversations({
+        source: normalizeSourceTag(source, 'login_resume'),
+        lazy: true
+      });
       return restorePromise || null;
     },
 
@@ -532,8 +631,17 @@ function createMessagesFlowFacade() {
           };
 
           // Fix: Handle GapDetectedError — trigger maxCounterProbe for gap recovery
-          const livePromise = consumeLiveJob(liveJob, liveCtx)
-            .catch(err => {
+          // [FIX] Serialize live jobs per conversation via enqueueLiveForConversation.
+          // Without this, concurrent gap checks for N and N+1 both see stale localMax,
+          // causing N+1 to trigger a false GapDetectedError.
+          const liveConvId = liveJob?.conversationId || liveJobConversationId;
+          const livePromise = enqueueLiveForConversation(
+            liveConvId,
+            () => consumeLiveJobWithRetry(liveJob, liveCtx, {
+              conversationIdPrefix8: liveMvpResultMeta.conversationIdPrefix8,
+              messageIdPrefix8: liveMvpResultMeta.messageIdPrefix8
+            })
+          ).catch(err => {
               if (err?.name === 'GapDetectedError') {
                 console.log('[facade] Gap detected in B-Route, triggering maxCounterProbe for recovery', err.message);
 
@@ -551,6 +659,19 @@ function createMessagesFlowFacade() {
                       conversationId: gapConvId,
                       senderDeviceId: gapPeerDeviceId,
                       source: 'gap_detected_live_catch',
+                      lazy: false
+                    });
+                  } else {
+                    // [FIX] peerDeviceId unavailable — still attempt probe via
+                    // triggerMaxCounterProbeForActiveConversations which resolves
+                    // device IDs from sessionStore. Without this fallback, the gap
+                    // is never filled and the placeholder stays stuck forever.
+                    logCapped('gapDetectedPeerDeviceMissing', {
+                      conversationIdPrefix8: toConversationIdPrefix8(gapConvId),
+                      source: 'gap_detected_live_catch'
+                    }, 5);
+                    triggerMaxCounterProbeForActiveConversations({
+                      source: 'gap_detected_fallback',
                       lazy: false
                     });
                   }

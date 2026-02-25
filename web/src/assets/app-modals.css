@@ -1018,6 +1018,42 @@
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.35);
 }
 
+/* Video buffering overlay */
+.video-buffering-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(15, 23, 42, 0.88);
+  border-radius: 8px;
+  z-index: 2;
+  transition: opacity 0.3s ease;
+}
+
+.video-buffering-overlay.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.video-buffering-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid rgba(148, 163, 184, 0.2);
+  border-top-color: #38bdf8;
+  animation: modal-spin 0.9s linear infinite;
+}
+
+.video-buffering-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #e2e8f0;
+  letter-spacing: 0.3px;
+}
+
 .modal.change-password-modal .modal-panel {
   width: min(360px, 92vw);
 }

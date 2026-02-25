@@ -34,7 +34,8 @@ function respondAccountError(res, err, defaultMsg = 'authorization failed') {
 const InviteCreateSchema = z.object({
   account_token: z.string().min(8).optional(),
   account_digest: z.string().regex(AccountDigestRegex).optional(),
-  owner_public_key_b64: z.string().min(16).optional()
+  owner_public_key_b64: z.string().min(16).optional(),
+  want_pairing_code: z.boolean().optional()
 }).strict();
 
 const InviteDeliverSchema = z.object({
@@ -182,6 +183,7 @@ export const createInviteDropbox = async (req, res) => {
     accountDigest: auth.accountDigest
   };
   if (input.owner_public_key_b64) bodyPayload.ownerPublicKeyB64 = input.owner_public_key_b64;
+  if (input.want_pairing_code) bodyPayload.wantPairingCode = true;
   const body = JSON.stringify(bodyPayload);
   const sig = signHmac(path, body, HMAC_SECRET);
 
@@ -229,14 +231,17 @@ export const createInviteDropbox = async (req, res) => {
     return res.status(502).json({ error: 'InviteCreateFailed', message: 'worker response incomplete' });
   }
 
-  return res.json({
+  const result = {
     invite_id: inviteId,
     expires_at: expiresAt,
     owner_account_digest: normalizeAccountDigest(data?.owner_account_digest || data?.ownerAccountDigest || auth.accountDigest),
     owner_device_id: data?.owner_device_id || data?.ownerDeviceId || senderDeviceId,
     owner_public_key_b64: ownerPublicKeyB64,
     prekey_bundle: prekeyBundle
-  });
+  };
+  const pairingCode = data?.pairing_code || data?.pairingCode || null;
+  if (pairingCode) result.pairing_code = pairingCode;
+  return res.json(result);
 };
 
 export const deliverInviteDropbox = async (req, res) => {
@@ -662,5 +667,116 @@ export const unconfirmedInvitesDropbox = async (req, res) => {
   return res.json({
     ok: true,
     invites: Array.isArray(data?.invites) ? data.invites : []
+  });
+};
+
+const InviteLookupCodeSchema = z.object({
+  pairing_code: z.string().regex(/^\d{6}$/),
+  account_token: z.string().min(8).optional(),
+  account_digest: z.string().regex(AccountDigestRegex).optional()
+}).strict();
+
+const INVITE_LOOKUP_CODE_ALIAS_FIELDS = new Set([
+  'pairingCode',
+  'accountToken',
+  'accountDigest'
+]);
+const INVITE_LOOKUP_CODE_ALLOWED_FIELDS = new Set([
+  'pairing_code',
+  'account_token',
+  'account_digest'
+]);
+
+export const lookupPairingCode = async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API_URL or DATA_API_HMAC not configured' });
+  }
+  const senderDeviceId = req.get('x-device-id') || null;
+  if (!senderDeviceId) {
+    return res.status(400).json({ error: 'BadRequest', message: 'deviceId header required' });
+  }
+  const schemaError = rejectInviteSchemaMismatch(res, req.body, {
+    allowedFields: INVITE_LOOKUP_CODE_ALLOWED_FIELDS,
+    aliasFields: INVITE_LOOKUP_CODE_ALIAS_FIELDS
+  });
+  if (schemaError) return schemaError;
+  let input;
+  try {
+    input = InviteLookupCodeSchema.parse(req.body || {});
+  } catch (err) {
+    return res.status(400).json({ error: 'BadRequest', message: err?.message || 'invalid input' });
+  }
+  if (!input.account_token) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'account_token required' });
+  }
+
+  let auth;
+  try {
+    auth = await resolveAccountAuth({
+      accountToken: input.account_token,
+      accountDigest: input.account_digest
+    });
+  } catch (err) {
+    return respondAccountError(res, err, 'account verification failed');
+  }
+
+  const path = '/d1/invites/lookup-code';
+  const bodyPayload = {
+    pairingCode: input.pairing_code,
+    accountToken: String(input.account_token).trim(),
+    accountDigest: auth.accountDigest,
+    deviceId: senderDeviceId
+  };
+  const body = JSON.stringify(bodyPayload);
+  const sig = signHmac(path, body, HMAC_SECRET);
+
+  let upstream;
+  try {
+    upstream = await fetchWithTimeout(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body
+    });
+  } catch (err) {
+    return res.status(504).json({
+      error: 'LookupCodeFailed',
+      message: 'Upstream timeout',
+      details: err?.message || 'fetch aborted'
+    });
+  }
+
+  if (!upstream.ok) {
+    const txt = await upstream.text().catch(() => '');
+    let payload = null;
+    try {
+      payload = txt ? JSON.parse(txt) : null;
+    } catch {
+      payload = null;
+    }
+    const errPayload = payload && typeof payload === 'object'
+      ? payload
+      : { error: 'LookupCodeFailed', details: txt || 'upstream error' };
+    return res.status(upstream.status).json(errPayload);
+  }
+
+  let data;
+  try {
+    data = await upstream.json();
+  } catch {
+    data = {};
+  }
+
+  const ownerPublicKeyB64 = data?.owner_public_key_b64 || data?.ownerPublicKeyB64 || null;
+  const prekeyBundle = data?.prekey_bundle || data?.prekeyBundle || null;
+  const expiresAt = data?.expires_at || data?.expiresAt || null;
+
+  return res.json({
+    ok: true,
+    invite_id: data?.invite_id || data?.inviteId || null,
+    expires_at: expiresAt,
+    owner_account_digest: normalizeAccountDigest(data?.owner_account_digest || data?.ownerAccountDigest || null),
+    owner_device_id: data?.owner_device_id || data?.ownerDeviceId || null,
+    owner_public_key_b64: ownerPublicKeyB64,
+    prekey_bundle: prekeyBundle
   });
 };

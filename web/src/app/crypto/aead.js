@@ -13,6 +13,8 @@ import { toU8Strict } from '/shared/utils/u8-strict.js';
 export const ALLOWED_ENVELOPE_INFO_TAGS = new Set([
   'blob/v1',
   'media/v1',
+  'media/chunk-v1',
+  'media/manifest-v1',
   'profile/v1',
   'settings/v1',
   'snapshot/v1',

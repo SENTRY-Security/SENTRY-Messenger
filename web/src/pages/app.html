@@ -466,9 +466,21 @@
                 <div id="statContacts" class="stat-value">0</div>
                 <div class="stat-label">好友</div>
               </div>
-              <button id="btnShareModal" class="profile-share-btn" type="button" aria-label="新增好友" title="新增好友">
-                <i class='bx bx-user-plus'></i>
-              </button>
+              <div class="add-friend-wrapper">
+                <button id="btnShareModal" class="profile-share-btn" type="button" aria-label="新增好友" title="新增好友">
+                  <i class='bx bx-user-plus'></i>
+                </button>
+                <div id="addFriendMenu" class="add-friend-menu" style="display:none">
+                  <button id="btnAddFriendQr" class="add-friend-menu-item" type="button">
+                    <i class='bx bx-qr'></i>
+                    <span>QRCode 加好友</span>
+                  </button>
+                  <button id="btnAddFriendCode" class="add-friend-menu-item" type="button">
+                    <i class='bx bx-dialpad'></i>
+                    <span>使用配對碼</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -514,6 +526,38 @@
             <video id="inviteScanVideo" class="share-scan-video" muted playsinline></video>
             <div id="inviteScanStatus" class="share-scan-status"></div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pairing Code Modal -->
+  <div id="pairingCodeModal" class="modal pairing-code-modal" aria-hidden="true" style="display:none">
+    <div class="modal-backdrop" data-pairing-close></div>
+    <div class="modal-panel pairing-code-panel" role="dialog" aria-modal="true" aria-labelledby="pairingCodeTitle">
+      <header class="pairing-code-head">
+        <button type="button" class="share-close" data-pairing-close-btn aria-label="關閉">×</button>
+        <span id="pairingCodeTitle" class="pairing-code-title">配對碼</span>
+      </header>
+      <div class="pairing-code-body">
+        <div class="pairing-code-countdown">
+          <span id="pairingCountdown"></span>
+          <button id="pairingRefreshBtn" class="invite-refresh-btn" type="button" aria-label="刷新配對碼">
+            <i class='bx bx-refresh' aria-hidden="true"></i>
+          </button>
+        </div>
+        <div id="pairingDigits" class="pairing-code-digits">
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第1碼" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第2碼" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第3碼" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第4碼" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第5碼" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第6碼" />
+        </div>
+        <div id="pairingStatus" class="pairing-code-status"></div>
+        <div class="pairing-code-actions">
+          <button id="btnPairingToggle" class="pairing-toggle-btn" type="button">輸入對方配對碼</button>
+          <button id="btnPairingConfirm" class="pairing-confirm-btn" type="button" style="display:none">確認</button>
         </div>
       </div>
     </div>

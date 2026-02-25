@@ -24,6 +24,7 @@ import { createLiveStateAccess } from './live/state-live.js';
 import { createLiveLegacyAdapters } from './live/adapters/index.js';
 import { setDeletionCursor } from '../soft-deletion/deletion-api.js';
 import { clearConversationHistory } from '../messages/cache.js';
+import { applyContactShareFromCommit } from '../contacts.js';
 
 const HYBRID_LOG_CAP = 5;
 const DEBUG = { drVerbose: true }; // [FIX] Define DEBUG to prevent ReferenceError
@@ -76,13 +77,55 @@ export async function smartFetchMessages({
     if (!mkRaw) throw new Error('MK missing');
 
     // 1. Fetch Items (with keys included)
-    const { items: rawItems, nextCursor, keys: fetchedKeys } = await listSecureMessagesForReplay({
-        conversationId,
-        limit,
-        cursorTs: cursor?.ts,
-        cursorId: cursor?.id,
-        includeKeys: true
-    });
+    // Retry policy (Route A network):
+    //   - Network disconnection: retry WITHOUT counting (wait for reconnect)
+    //   - Other errors: count toward MAX_FETCH_RETRIES then throw
+    //   - Key crypto failures: handled downstream in decryptReplayBatch (no retry)
+    const isNetworkError = (err) => {
+        if (!err) return false;
+        if (err.name === 'TypeError' && /fetch|network/i.test(err.message || '')) return true;
+        if (err.name === 'AbortError') return true;
+        const status = typeof err.status === 'number' ? err.status : null;
+        if (status === null || status === 0) {
+            if (/fetch|network|timeout|abort|ECONNREFUSED|ENOTFOUND/i.test(err.message || '')) return true;
+        }
+        return false;
+    };
+
+    const MAX_FETCH_RETRIES = 3;
+    const MAX_NETWORK_WAIT_MS = 5 * 60 * 1000; // 5 min cap for offline waits
+    const fetchStartTime = Date.now();
+    let fetchRetryCount = 0;
+    let rawItems, nextCursor, fetchedKeys;
+
+    while (true) {
+        try {
+            const result = await listSecureMessagesForReplay({
+                conversationId,
+                limit,
+                cursorTs: cursor?.ts,
+                cursorId: cursor?.id,
+                includeKeys: true
+            });
+            rawItems = result.items;
+            nextCursor = result.nextCursor;
+            fetchedKeys = result.keys;
+            break;
+        } catch (err) {
+            if (isNetworkError(err)) {
+                if (Date.now() - fetchStartTime > MAX_NETWORK_WAIT_MS) {
+                    throw new Error('Network unavailable too long during fetch');
+                }
+                console.warn('[HybridVerify] Fetch offline, waiting to retry...', err?.message);
+                await new Promise(r => setTimeout(r, 2000));
+                continue;
+            }
+            fetchRetryCount++;
+            if (fetchRetryCount > MAX_FETCH_RETRIES) throw err;
+            console.warn(`[HybridVerify] Fetch error (retry ${fetchRetryCount}/${MAX_FETCH_RETRIES})`, err?.message);
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, fetchRetryCount)));
+        }
+    }
     const serverKeys = fetchedKeys;
 
     if (!rawItems.length) {
@@ -419,6 +462,26 @@ export async function smartFetchMessages({
                     }
                 }
 
+                // [FIX] Apply contact-share profile updates (Route A was missing this)
+                // Only apply for INCOMING — outgoing contact-shares have sender=self,
+                // processing them overwrites the real contact with self's profile.
+                if (subtype === 'contact-share' && item.text && item.direction === 'incoming') {
+                    try {
+                        const messageTs = Number(item.ts ?? item.timestamp ?? Date.now());
+                        await applyContactShareFromCommit({
+                            peerAccountDigest: groupDigest,
+                            peerDeviceId: groupDeviceId,
+                            sessionKey: context.tokenB64 || 'vault-replay',
+                            plaintext: item.text,
+                            messageId: item.messageId || item.serverMessageId || `${conversationId}:${item.counter}`,
+                            sourceTag: 'hybrid-flow:contact-share-route-a',
+                            profileUpdatedAt: messageTs
+                        });
+                    } catch (err) {
+                        console.warn('[hybrid-flow] contact-share apply failed (Route A)', err);
+                    }
+                }
+
                 const counter = Number(item.counter ?? item.n);
                 if (isControl && Number.isFinite(counter)) {
                     updateTimelineEntryStatusByCounter(conversationId, counter, 'hidden', { reason: 'CONTROL_MSG_DECRYPTED' });
@@ -522,37 +585,35 @@ export async function smartFetchMessages({
                         // We must re-acquire the lock for the sequential group
                         await enqueueDrIncomingOp(groupLockKey, async () => {
                             for (const item of backgroundQueue) {
-                                const MAX_RETRIES = 5;
-                                let retries = 0;
                                 let bResult = null;
 
-                                // ... Route B Retry Loop ...
-                                while (retries <= MAX_RETRIES) {
-                                    try {
-                                        bResult = await consumeLiveJob({
-                                            type: 'WS_INCOMING',
-                                            conversationId,
-                                            messageId: item.id,
-                                            serverMessageId: item.id,
-                                            tokenB64: context.tokenB64,
-                                            peerAccountDigest: groupDigest,
-                                            peerDeviceId: groupDeviceId,
-                                            sourceTag: 'hybrid-replay-fallback-seq-bg',
-                                            skipIncomingLock: true, // we held it via enqueue
-                                            bootstrapDrFromGuestBundle: null,
-                                            skipGapCheck: true
-                                        }, {
-                                            fetchSecureMessageById: createNoOpFetcher(item),
-                                            stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })
-                                        });
-                                        if (bResult.ok && bResult.decrypted) break;
-                                        retries++;
-                                        if (retries <= MAX_RETRIES) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
-                                    } catch (e) {
-                                        retries++;
-                                        if (retries <= MAX_RETRIES) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retries)));
-                                        else bResult = { ok: false, reason: 'ROUTE_B_EXCEPTION' };
-                                    }
+                                // Live decrypt is a deterministic cryptographic operation:
+                                // same state + same ciphertext = same result every time.
+                                // Retrying serves no purpose and only blocks the queue.
+                                try {
+                                    bResult = await consumeLiveJob({
+                                        type: 'WS_INCOMING',
+                                        conversationId,
+                                        messageId: item.id,
+                                        serverMessageId: item.id,
+                                        tokenB64: context.tokenB64,
+                                        peerAccountDigest: groupDigest,
+                                        peerDeviceId: groupDeviceId,
+                                        sourceTag: 'hybrid-replay-fallback-seq-bg',
+                                        skipIncomingLock: true, // we held it via enqueue
+                                        bootstrapDrFromGuestBundle: null,
+                                        skipGapCheck: true
+                                    }, {
+                                        fetchSecureMessageById: createNoOpFetcher(item),
+                                        stateAccess: createLiveStateAccess({ adapters: createLiveLegacyAdapters() })
+                                    });
+                                } catch (e) {
+                                    console.warn('[HybridVerify] Route B decrypt exception', {
+                                        messageId: item.id,
+                                        error: e?.message || String(e),
+                                        counter: item.counter
+                                    });
+                                    bResult = { ok: false, reasonCode: 'DECRYPT_FAIL' };
                                 }
 
                                 // Handle Result

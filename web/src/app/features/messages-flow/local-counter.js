@@ -51,10 +51,11 @@ function resolvePeerIdentityFromStore(conversationId) {
 /**
  * Get the local processed counter for a conversation.
  * This is the maximum incoming counter that has a key in the vault.
- * 
- * Priority:
- * 1. Vault (server-side truth) - most reliable
- * 2. DR state NrTotal (memory fallback) - may be stale
+ *
+ * Priority (vault-first):
+ * 1. Vault (committed truth) — only advances after successful vault put
+ * 2. DR state NrTotal (fallback) — safe because snapshot+rollback ensures
+ *    NrTotal only advances when vault put succeeds
  */
 export async function getLocalProcessedCounter({ conversationId } = {}, deps = {}) {
   const convId = normalizeConversationId(conversationId);
@@ -77,7 +78,9 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     : resolvePeerIdentityFromStore;
   const identity = resolvePeer(convId);
 
-  // Try to get from vault first (most reliable source)
+  // Vault is the committed truth: a counter only appears after successful vault put.
+  // DR state in memory may be ahead if vault put failed (stale advance), so we
+  // trust vault first and only fall back to DR state when vault has no counter.
   try {
     const getLatestState = typeof deps?.getLatestState === 'function'
       ? deps.getLatestState
@@ -133,7 +136,32 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     }, 5);
   }
 
-  // Fallback to DR state in memory
+  // Fallback: DR state in memory.
+  // With snapshot+rollback in decrypt paths, DR NrTotal only advances
+  // when vault put succeeds, so this is a safe fallback when vault DB
+  // is unreachable or returns no counter.
+  if (identity?.key) {
+    const drSessMap = typeof deps?.getDrSessMap === 'function'
+      ? deps.getDrSessMap()
+      : getDrSessMap();
+    const holder = drSessMap && typeof drSessMap.get === 'function'
+      ? drSessMap.get(identity.key)
+      : null;
+    const drCounter = normalizeCounter(holder?.NrTotal);
+    if (drCounter !== null) {
+      logCapped('localCounterProviderTrace', {
+        conversationIdPrefix8: slicePrefix8(convId),
+        peerKeyPrefix8: slicePrefix8(identity?.key),
+        ok: true,
+        source: 'dr_state_fallback',
+        nrTotal: drCounter,
+        hasHolder: true
+      }, 5);
+      return drCounter;
+    }
+  }
+
+  // Neither source has a valid counter
   if (!identity?.key) {
     logCapped('localCounterProviderTrace', {
       conversationIdPrefix8: slicePrefix8(convId),
@@ -155,46 +183,22 @@ export async function getLocalProcessedCounter({ conversationId } = {}, deps = {
     return 0;
   }
 
-  const drSessMap = typeof deps?.getDrSessMap === 'function'
-    ? deps.getDrSessMap()
-    : getDrSessMap();
-  const holder = drSessMap && typeof drSessMap.get === 'function'
-    ? drSessMap.get(identity.key)
-    : null;
-  const counter = normalizeCounter(holder?.NrTotal);
-
-  if (counter === null) {
-    const hasHolder = !!holder;
-    const nrTotalRaw = Number.isFinite(Number(holder?.NrTotal)) ? Number(holder?.NrTotal) : null;
-    logCapped('localCounterProviderTrace', {
-      conversationIdPrefix8: slicePrefix8(convId),
-      peerKeyPrefix8: slicePrefix8(identity.key),
-      ok: false,
-      source: 'dr_state_fallback',
-      nrTotal: null,
-      nrTotalRaw,
-      unknownReason: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE',
-      hasHolder
-    }, 5);
-    if (onUnknown) {
-      onUnknown({
-        conversationId: convId,
-        reasonCode: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE',
-        source: 'dr_state_fallback',
-        unknownReason: hasHolder ? 'INVALID_COUNTER' : 'MISSING_DR_STATE'
-      });
-    }
-    return 0;
-  }
-
   logCapped('localCounterProviderTrace', {
     conversationIdPrefix8: slicePrefix8(convId),
     peerKeyPrefix8: slicePrefix8(identity.key),
-    ok: true,
+    ok: false,
     source: 'dr_state_fallback',
-    nrTotal: counter,
-    hasHolder: true
+    nrTotal: null,
+    unknownReason: 'MISSING_DR_STATE',
+    hasHolder: false
   }, 5);
-
-  return counter;
+  if (onUnknown) {
+    onUnknown({
+      conversationId: convId,
+      reasonCode: 'MISSING_DR_STATE',
+      source: 'dr_state_fallback',
+      unknownReason: 'MISSING_DR_STATE'
+    });
+  }
+  return 0;
 }

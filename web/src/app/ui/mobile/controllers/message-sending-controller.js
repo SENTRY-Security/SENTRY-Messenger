@@ -4,10 +4,12 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { appendUserMessage, getTimeline } from '../../../features/timeline-store.js';
+import { appendUserMessage, getTimeline, removeMessagesMatching } from '../../../features/timeline-store.js';
 import { sendDrMedia, sendDrText } from '../../../features/dr-session.js';
+import { UnsupportedVideoFormatError } from '../../../features/media.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
+import { isUploadBusy, startUpload, updateUploadProgress, endUpload } from '../../../features/transfer-progress.js';
 
 export class MessageSendingController extends BaseController {
     constructor(deps) {
@@ -64,31 +66,29 @@ export class MessageSendingController extends BaseController {
 
     /**
      * Remove a local message by ID (used for cancelling uploads etc.)
+     * Also aborts any in-flight upload tied to this message.
      */
     removeLocalMessageById(id) {
         if (!id) return;
         const state = this.getMessageState();
         if (!state.conversationId) return;
 
-        // This is a bit tricky since timeline-store might not expose a remove method easily.
-        // In messages-pane.js it seems it wasn't implemented or relied on re-render?
-        // Let's check the original implementation.
-        // Original implementation in messages-pane.js line 1921:
-        /*
-          function removeLocalMessageById(id) {
-            const state = getMessageState();
-            const timeline = getTimeline(state.conversationId);
-            const idx = timeline.findIndex(m => m.id === id);
-            if (idx !== -1) {
-              timeline.splice(idx, 1);
-              updateMessagesUI({ preserveScroll: true });
-            }
-          }
-        */
+        // Look up the message to abort any in-flight upload.
+        // getTimeline() returns a snapshot array; the objects inside are the
+        // same references stored in the underlying Map, so reading
+        // msg.abortController is safe.
         const timeline = getTimeline(state.conversationId);
-        const idx = timeline.findIndex(m => m.id === id);
-        if (idx !== -1) {
-            timeline.splice(idx, 1);
+        const msg = timeline.find(m => m.id === id || m.messageId === id);
+        if (msg?.abortController && typeof msg.abortController.abort === 'function') {
+            try { msg.abortController.abort(); } catch { }
+        }
+
+        // [FIX] Use removeMessagesMatching to delete from the actual Map store.
+        // Previously we spliced from the snapshot array returned by getTimeline(),
+        // which had no effect on the underlying Map — the message would reappear
+        // on the next render cycle, making the cancel button appear broken.
+        const removed = removeMessagesMatching(state.conversationId, m => m.id === id || m.messageId === id);
+        if (removed > 0) {
             this.updateMessagesUI({ preserveScroll: true });
         }
     }
@@ -139,6 +139,12 @@ export class MessageSendingController extends BaseController {
         const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
         if (!files.length) return;
 
+        if (isUploadBusy()) {
+            this.deps.showToast?.('目前有檔案正在上傳，請稍候再試');
+            if (input) input.value = '';
+            return;
+        }
+
         const state = this.getMessageState();
         if (!state.activePeerDigest || !state.conversationToken) {
             this.deps.setMessagesStatus?.('請先選擇已建立安全對話的好友', true);
@@ -170,6 +176,17 @@ export class MessageSendingController extends BaseController {
                     }
                 });
 
+                const abortController = new AbortController();
+                localMsg.abortController = abortController;
+
+                // Show top progress bar
+                const fileName = file.name || '附件';
+                startUpload(fileName, () => {
+                    try { abortController.abort(); } catch {}
+                    this.removeLocalMessageById(localMsg.id);
+                    endUpload();
+                });
+
                 const progressHandler = (progress) => {
                     const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
                     if (!msg) return;
@@ -179,10 +196,8 @@ export class MessageSendingController extends BaseController {
 
                     this.applyUploadProgress(msg, { percent });
                     this.updateUploadOverlayUI(msg.id, msg.media);
+                    if (Number.isFinite(percent)) updateUploadProgress(percent);
                 };
-
-                const abortController = new AbortController();
-                localMsg.abortController = abortController;
 
                 try {
                     const res = await sendDrMedia({
@@ -190,7 +205,7 @@ export class MessageSendingController extends BaseController {
                         file,
                         conversation,
                         convId: state.conversationId,
-                        dir: state.conversationId ? ['messages', state.conversationId] : 'messages',
+                        dir: state.conversationId ? `messages/${state.conversationId}` : 'messages',
                         onProgress: progressHandler,
                         abortSignal: abortController.signal,
                         messageId
@@ -227,20 +242,42 @@ export class MessageSendingController extends BaseController {
                         if (!targetMsg) return;
                         if (!targetMsg.media) targetMsg.media = {};
                         targetMsg.text = payload?.msg?.text || targetMsg.text;
+                        const pm = payload?.msg?.media || {};
+                        const tm = targetMsg.media;
+
+                        // Revoke the local blob URL to free memory — video will be re-downloaded for playback
+                        const isVideo = (pm.contentType || tm.contentType || file.type || '').toLowerCase().startsWith('video/');
+                        if (isVideo && localUrl) {
+                            try { URL.revokeObjectURL(localUrl); } catch {}
+                        }
+
                         targetMsg.media = {
-                            ...targetMsg.media,
-                            ...payload?.msg?.media,
-                            name: (payload?.msg?.media?.name || targetMsg.media.name || file.name || '附件'),
-                            size: Number.isFinite(payload?.msg?.media?.size) ? payload.msg.media.size : (typeof file.size === 'number' ? file.size : targetMsg.media.size || null),
-                            contentType: payload?.msg?.media?.contentType || targetMsg.media.contentType || file.type || 'application/octet-stream',
-                            localUrl: targetMsg.media.localUrl || localUrl,
-                            previewUrl: payload?.msg?.media?.previewUrl || targetMsg.media.previewUrl || targetMsg.media.localUrl || localUrl,
+                            ...tm,
+                            ...pm,
+                            name: (pm.name || tm.name || file.name || '附件'),
+                            size: Number.isFinite(pm.size) ? pm.size : (typeof file.size === 'number' ? file.size : tm.size || null),
+                            contentType: pm.contentType || tm.contentType || file.type || 'application/octet-stream',
+                            // For videos: don't keep localUrl (blob), use previewUrl (thumbnail data URL) only
+                            // For non-videos: keep localUrl for preview
+                            localUrl: isVideo ? null : (tm.localUrl || localUrl),
+                            previewUrl: pm.previewUrl || tm.previewUrl || (isVideo ? null : (tm.localUrl || localUrl)),
                             uploading: false,
                             progress: 100,
-                            envelope: payload?.msg?.media?.envelope || targetMsg.media.envelope || null,
-                            objectKey: payload?.msg?.media?.objectKey || targetMsg.media.objectKey || payload?.upload?.objectKey || null,
-                            preview: payload?.msg?.media?.preview || targetMsg.media.preview || null
+                            preview: pm.preview || tm.preview || null
                         };
+                        // Single-file fields
+                        if (!pm.chunked) {
+                            targetMsg.media.envelope = pm.envelope || tm.envelope || null;
+                            targetMsg.media.objectKey = pm.objectKey || tm.objectKey || payload?.upload?.objectKey || null;
+                        }
+                        // Chunked fields
+                        if (pm.chunked) {
+                            targetMsg.media.chunked = true;
+                            targetMsg.media.baseKey = pm.baseKey || tm.baseKey || payload?.upload?.baseKey || null;
+                            targetMsg.media.manifestEnvelope = pm.manifestEnvelope || tm.manifestEnvelope || null;
+                            targetMsg.media.chunkCount = pm.chunkCount || tm.chunkCount || null;
+                            targetMsg.media.totalSize = pm.totalSize || tm.totalSize || null;
+                        }
                     };
 
                     if (replacementInfo && msg) {
@@ -279,9 +316,29 @@ export class MessageSendingController extends BaseController {
                     } else if (msg) {
                         messageStatus.applyOutgoingSent(msg, res, Date.now());
                         applyMediaMeta(msg, res);
+                        this.updateMessagesUI({ preserveScroll: true });
                     }
 
+                    endUpload();
+
                 } catch (err) {
+                    endUpload();
+
+                    // Unsupported video format — show user-friendly modal and remove the local message
+                    if (err instanceof UnsupportedVideoFormatError || err?.name === 'UnsupportedVideoFormatError') {
+                        const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
+                        if (msg) this.removeLocalMessageById(localMsg.id);
+                        this.deps.showToast?.(err.message || '不支援此影片格式');
+                        continue;
+                    }
+
+                    // [FIX] User-initiated cancel (AbortError) — the message was
+                    // already removed from the timeline by removeLocalMessageById,
+                    // so just silently continue to the next file.
+                    if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
+                        continue;
+                    }
+
                     const messageStatus = this.deps.messageStatus;
                     const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
 

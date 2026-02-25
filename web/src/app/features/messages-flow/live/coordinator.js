@@ -53,7 +53,7 @@ const LIVE_MVP_LOG_CAP = 5;
 const LIVE_MVP_FETCH_LIMIT = 20;
 const B_ROUTE_COMMIT_LOG_CAP = 5;
 const PREFIX_LEN = 8;
-const LIVE_MVP_REASONS = Object.freeze({
+export const LIVE_MVP_REASONS = Object.freeze({
   MISSING_PARAMS: 'MISSING_PARAMS',
   ADAPTERS_UNAVAILABLE: 'ADAPTERS_UNAVAILABLE',
   SECURE_PENDING: 'SECURE_PENDING',
@@ -72,6 +72,21 @@ const LIVE_MVP_REASONS = Object.freeze({
   OK: 'OK',
   MATCHED: 'MATCHED'
 });
+
+// Reason codes that indicate a transient / not-yet-ready condition.
+// When consumeLiveJob returns one of these, the facade retries with backoff.
+export const LIVE_RETRYABLE_REASONS = new Set([
+  LIVE_MVP_REASONS.SECURE_PENDING,
+  LIVE_MVP_REASONS.SECURE_FAILED,
+  LIVE_MVP_REASONS.DR_STATE_UNAVAILABLE,
+  LIVE_MVP_REASONS.READY_FAILED,
+  LIVE_MVP_REASONS.NOT_FOUND,
+  LIVE_MVP_REASONS.VAULT_PUT_FAILED,
+  LIVE_MVP_REASONS.ADAPTERS_UNAVAILABLE,
+  'MISSING_DR_INIT_BOOTSTRAP',
+  'DR_BOOTSTRAP_UNAVAILABLE'
+]);
+
 const LIVE_MVP_RESULT_METRICS_DEFAULTS = Object.freeze({
   fetchedCount: 0,
   decryptOkCount: 0,
@@ -798,7 +813,10 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
       const c = Number(decryptResult?.counter ?? decryptResult?.decryptedMessage?.counter);
       const counter = Number.isFinite(c) ? c : null;
 
-      if (senderAccountDigest && receiverAccountDigest && receiverDeviceId && counter !== null) {
+      // [FIX] Also guard on senderDeviceId (peerDeviceId). Without this check
+      // the call proceeds but maybeSendVaultAckWs silently returns at its own
+      // `!senderDeviceId` guard, making it impossible to diagnose from logs.
+      if (senderAccountDigest && senderDeviceId && receiverAccountDigest && receiverDeviceId && counter !== null) {
         try {
           console.log('[coordinator] maybeSendVaultAckWs', { conv: conversationId, mid: targetMessageId, ctr: counter });
         } catch { }
@@ -811,6 +829,15 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
           receiverDeviceId,
           counter
         });
+      } else {
+        logger('bRouteAckSkipped', {
+          conversationIdPrefix8: slicePrefix(conversationId, 8),
+          hasSenderDigest: !!senderAccountDigest,
+          hasSenderDevice: !!senderDeviceId,
+          hasReceiverDigest: !!receiverAccountDigest,
+          hasReceiverDevice: !!receiverDeviceId,
+          hasCounter: counter !== null
+        }, LIVE_MVP_LOG_CAP);
       }
     } catch (err) {
       logger('bRouteAckTrace', {
@@ -859,6 +886,18 @@ async function runLiveWsIncomingMvp(job = {}, deps = {}) {
     reasonCode = LIVE_MVP_REASONS.APPEND_FAILED;
   } else {
     reasonCode = LIVE_MVP_REASONS.OK;
+  }
+
+  // [FIX] Mark placeholder as 'blocked' if the live flow failed to decrypt or
+  // append, so the UI shows an error state instead of eternal "解密中".
+  // Successful append is handled by state-live.js (removePendingLivePlaceholder).
+  if (reasonCode !== LIVE_MVP_REASONS.OK && targetMessageId && conversationId) {
+    try {
+      updatePendingLivePlaceholderStatus(conversationId, {
+        messageId: targetMessageId,
+        status: 'blocked'
+      });
+    } catch { }
   }
 
   const finalResult = finalizeLiveMvpResult(result, startedAt, reasonCode);

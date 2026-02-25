@@ -15,6 +15,7 @@ import {
 } from '../semantic.js';
 import { buildDecryptError } from './normalize.js';
 import { importContactSecretsSnapshot } from '../../core/contact-secrets.js';
+import { applyContactShareFromCommit } from '../contacts.js';
 
 const decoder = new TextDecoder();
 
@@ -500,6 +501,26 @@ export async function decryptReplayBatch({
         decryptedItem.text = label || 'Call';
       } catch (e) {
         console.warn('[vault-replay] failed to parse call-log json', e);
+      }
+    }
+
+    // [FIX] Apply contact-share profile updates (vault-replay was missing this)
+    // Only apply for INCOMING messages — outgoing contact-shares have sender=self,
+    // and processing them would overwrite the real contact with self's profile.
+    if (decryptedItem.msgType === 'contact-share' && text && decryptedItem.direction === 'incoming') {
+      try {
+        const messageTs = Number(item.ts ?? item.tsMs ?? Date.now());
+        await applyContactShareFromCommit({
+          peerAccountDigest: item.senderAccountDigest,
+          peerDeviceId: item.senderDeviceId,
+          sessionKey: vaultKeyResult.messageKeyB64 || 'vault-replay',
+          plaintext: text,
+          messageId,
+          sourceTag: 'vault-replay:contact-share',
+          profileUpdatedAt: messageTs
+        });
+      } catch (err) {
+        console.warn('[vault-replay] contact-share apply failed', err);
       }
     }
 

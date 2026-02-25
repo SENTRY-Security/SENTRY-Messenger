@@ -412,7 +412,12 @@ export class MessageFlowController extends BaseController {
             localMessage.counter = ackCounter;
         }
 
-        recordVaultAckCounter(convId, ackCounter, tsRaw);
+        // [FIX] Pass messageId so recordVaultAckCounter can trigger the
+        // per-message vault count HTTP fetch (the "New Logic" path in
+        // receipts.js). Without messageId the authoritative server count
+        // was never queried, leaving delivery status reliant solely on
+        // the counter-based bulk update which can miss individual messages.
+        recordVaultAckCounter(convId, ackCounter, tsRaw, messageId || null);
         logCapped('vaultAckWsRecvTrace', {
             conversationId: convId || null,
             messageId: messageId || null,
@@ -1120,6 +1125,7 @@ export class MessageFlowController extends BaseController {
         if (!this.messageRenderer && this.elements.messagesList) {
             this.messageRenderer = new MessageRenderer({
                 messagesListEl: this.elements.messagesList,
+                scrollEl: this.elements.scrollEl,
                 messagesPlaceholdersEl: this.elements.messagesPlaceholders,
                 callbacks: {
                     onPreviewMedia: (m) => this.deps.controllers?.mediaHandling?.openMediaPreview(m),
@@ -1128,7 +1134,10 @@ export class MessageFlowController extends BaseController {
                             // abort logic if needed, usually handled by store/controller
                             this.deps.controllers?.messageSending?.removeLocalMessageById(msgId);
                         }
-                    }
+                    },
+                    onDownloadVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.downloadVideoInline(media, msgId),
+                    onPlayVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.downloadVideoInline(media, msgId),
+                    onAvatarClick: ({ avatarUrl, name }) => this.openAvatarPreview(avatarUrl, name)
                 }
             });
         }
@@ -1148,6 +1157,7 @@ export class MessageFlowController extends BaseController {
                     rendererConnected: rendererListEl?.isConnected
                 });
                 if (currentListEl) this.messageRenderer.listEl = currentListEl;
+                this.messageRenderer.scrollEl = this.elements.scrollEl;
                 // Placeholders are now inline, so we don't update placeholdersEl
             }
         }
@@ -1159,14 +1169,35 @@ export class MessageFlowController extends BaseController {
         const replayPlaceholderEntries = getReplayPlaceholderEntries(state.conversationId);
         const gapPlaceholderEntries = getGapPlaceholderEntries(state.conversationId);
         const pendingLiveEntries = getPendingLivePlaceholderEntries(state.conversationId);
+
+        // [FIX] Deduplicate: if a real (non-placeholder) timeline entry exists for a
+        // messageId, drop any stale placeholder with the same id.  This prevents the
+        // "stuck 解密中" symptom where gap-queue successfully decrypts a message
+        // (appending to timeline) but the pendingLivePlaceholder was never consumed.
+        const timelineIdSet = new Set(
+            timelineMessages
+                .filter(m => m.msgType !== 'placeholder' && !m.placeholder && !m.isPlaceholder)
+                .map(m => m.messageId || m.id)
+                .filter(Boolean)
+        );
+        const filterStale = (entries) =>
+            entries.filter(p => {
+                const pid = p.messageId || p.id;
+                return !pid || !timelineIdSet.has(pid);
+            });
+
+        const filteredReplay = filterStale(replayPlaceholderEntries);
+        const filteredGap = filterStale(gapPlaceholderEntries);
+        const filteredLive = filterStale(pendingLiveEntries);
+
         const mergedRaw = [
             ...timelineMessages,
-            ...replayPlaceholderEntries,
-            ...gapPlaceholderEntries,
-            ...pendingLiveEntries
+            ...filteredReplay,
+            ...filteredGap,
+            ...filteredLive
         ];
 
-        const placeholderCount = replayPlaceholderEntries.length + gapPlaceholderEntries.length + pendingLiveEntries.length;
+        const placeholderCount = filteredReplay.length + filteredGap.length + filteredLive.length;
 
         // Sort first to ensure chronological order
         // Sort first to ensure chronological order
@@ -1307,6 +1338,34 @@ export class MessageFlowController extends BaseController {
         } else if (anchor) {
             this.restoreScrollFromAnchor(anchor);
         }
+    }
+
+    /**
+     * Open a full-screen overlay to preview a contact's avatar.
+     */
+    openAvatarPreview(avatarUrl, name) {
+        if (!avatarUrl) return;
+        const existing = document.querySelector('.avatar-fullscreen-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'avatar-fullscreen-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-label', name || '頭像預覽');
+
+        const img = document.createElement('img');
+        img.src = avatarUrl;
+        img.alt = name || '頭像預覽';
+        overlay.appendChild(img);
+
+        const close = () => overlay.remove();
+        overlay.addEventListener('click', close);
+        const onKey = (e) => {
+            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+        };
+        document.addEventListener('keydown', onKey);
+
+        document.body.appendChild(overlay);
     }
 
     /**

@@ -43,17 +43,26 @@ export function createWsIntegration({ deps }) {
   const CONNECT_TIMEOUT      = 15000;   // CONNECTING state max age
   const PENDING_QUEUE_LIMIT  = 200;
 
+  // --- Network quality detection ---
+  const RTT_WINDOW_SIZE  = 3;      // sliding window of last N pong RTTs
+  const RTT_DEGRADED_MS  = 3000;   // avg RTT ≥ 3 s → degraded
+
   // --- Connection state ---
   let wsConn = null;
   let wsReconnectTimer = null;
   let wsAuthTokenInfo = null;
   const pendingMessages = [];
-  let monitorTimer = null;
+  let connectTimeoutTimer = null;
   let reconnectAttempts = 0;
   let connectStartedAt = 0;
   let lastPongAt = 0;
   let heartbeatTimer = null;
   let connecting = false;
+
+  // --- RTT state ---
+  let lastPingSentAt = 0;
+  const rttSamples = [];
+  let lastQuality = 'good';  // 'good' | 'degraded'
 
   // --- Auth ---
 
@@ -149,8 +158,23 @@ export function createWsIntegration({ deps }) {
     const ws = new WebSocket(wsUrl);
     wsConn = ws;
     updateConnectionIndicator('connecting');
+
+    // Event-driven connect timeout: if onopen doesn't fire within CONNECT_TIMEOUT, abort.
+    if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
+    connectTimeoutTimer = setTimeout(() => {
+      connectTimeoutTimer = null;
+      if (ws === wsConn && ws.readyState === WebSocket.CONNECTING) {
+        log({ wsConnectTimeout: true, elapsed: Date.now() - connectStartedAt });
+        try { ws.close(); } catch { }
+        wsConn = null;
+        connecting = false;
+        scheduleReconnect();
+      }
+    }, CONNECT_TIMEOUT);
+
     ws.onopen = () => {
       if (ws !== wsConn) return;
+      if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       if (wsDebugEnabled) {
         log({ wsState: 'open' });
       }
@@ -190,6 +214,7 @@ export function createWsIntegration({ deps }) {
     };
     ws.onclose = (evt) => {
       if (ws !== wsConn) return;
+      if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       if (wsDebugEnabled) {
         log({ wsClose: { code: evt.code, reason: evt.reason } });
       }
@@ -208,6 +233,7 @@ export function createWsIntegration({ deps }) {
     };
     ws.onerror = () => {
       if (ws !== wsConn) return;
+      if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       if (wsDebugEnabled) {
         log({ wsError: true });
       }
@@ -262,25 +288,31 @@ export function createWsIntegration({ deps }) {
     }).finally(() => { connecting = false; });
   }
 
-  function startMonitor(intervalMs = 5000) {
-    if (monitorTimer) return;
-    monitorTimer = setInterval(() => {
-      // Detect hung CONNECTING state
-      if (wsConn && wsConn.readyState === WebSocket.CONNECTING) {
-        if (connectStartedAt && Date.now() - connectStartedAt > CONNECT_TIMEOUT) {
-          log({ wsConnectTimeout: true, elapsed: Date.now() - connectStartedAt });
-          try { wsConn.close(); } catch { }
-          wsConn = null;
-          connecting = false;
-          scheduleReconnect();
-        }
-        return;
-      }
-      if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
-        log({ wsMonitorReconnect: true, readyState: wsConn?.readyState ?? null });
-        ensure();
-      }
-    }, intervalMs);
+  // startMonitor is now a no-op: connection monitoring is fully event-driven.
+  // - Connect timeout: one-shot setTimeout in connect(), cleared on open/close/error.
+  // - Disconnect: onclose fires scheduleReconnect() automatically.
+  // - Heartbeat timeout: detected in heartbeat interval, triggers close → onclose.
+  function startMonitor() { }
+
+  /**
+   * Pause heartbeat when app goes to background.
+   * Reduces CPU/battery usage while the page is hidden.
+   */
+  function pause() {
+    stopHeartbeat();
+  }
+
+  /**
+   * Resume heartbeat when app returns to foreground.
+   * Also re-checks connection state in case it dropped while backgrounded.
+   */
+  function resume() {
+    if (wsConn && wsConn.readyState === WebSocket.OPEN) {
+      startHeartbeat();
+    } else {
+      // Connection may have dropped while backgrounded — reconnect
+      ensure();
+    }
   }
 
   // --- Heartbeat (application-level ping/pong) ---
@@ -295,6 +327,7 @@ export function createWsIntegration({ deps }) {
         try { wsConn.close(); } catch { }
         return;  // onclose will trigger reconnect
       }
+      lastPingSentAt = Date.now();
       try { wsConn.send(JSON.stringify({ type: 'ping' })); } catch { }
     }, HEARTBEAT_INTERVAL);
   }
@@ -319,12 +352,16 @@ export function createWsIntegration({ deps }) {
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
     }
-    if (monitorTimer) {
-      clearInterval(monitorTimer);
-      monitorTimer = null;
+    if (connectTimeoutTimer) {
+      clearTimeout(connectTimeoutTimer);
+      connectTimeoutTimer = null;
     }
     stopHeartbeat();
     pendingMessages.length = 0;
+    // Reset RTT state
+    lastPingSentAt = 0;
+    rttSamples.length = 0;
+    lastQuality = 'good';
   }
 
   function clearAuth() {
@@ -454,7 +491,20 @@ export function createWsIntegration({ deps }) {
     const type = msg?.type;
     if (type === 'hello') return;
     if (type === 'pong') {
-      lastPongAt = Date.now();
+      const now = Date.now();
+      lastPongAt = now;
+      // RTT measurement — detect degraded network quality
+      if (lastPingSentAt > 0) {
+        const rtt = now - lastPingSentAt;
+        rttSamples.push(rtt);
+        if (rttSamples.length > RTT_WINDOW_SIZE) rttSamples.shift();
+        const avg = rttSamples.reduce((a, b) => a + b, 0) / rttSamples.length;
+        const quality = avg >= RTT_DEGRADED_MS ? 'degraded' : 'good';
+        if (quality !== lastQuality) {
+          lastQuality = quality;
+          updateConnectionIndicator(quality === 'degraded' ? 'degraded' : 'online');
+        }
+      }
       return;
     }
     if (type === 'auth') {
@@ -584,6 +634,8 @@ export function createWsIntegration({ deps }) {
     send,
     close,
     clearAuth,
-    startMonitor
+    startMonitor,
+    pause,
+    resume
   };
 }

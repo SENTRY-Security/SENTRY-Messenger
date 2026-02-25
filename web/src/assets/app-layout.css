@@ -68,6 +68,11 @@
   box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.35);
 }
 
+.connection-indicator.degraded .dot {
+  background: #eab308;
+  box-shadow: 0 0 0 1px rgba(234, 179, 8, 0.4);
+}
+
 .messages-ws-indicator {
   justify-content: center;
   width: 16px;
