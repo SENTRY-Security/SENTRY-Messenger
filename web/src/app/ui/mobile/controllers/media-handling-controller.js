@@ -8,7 +8,7 @@
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
-import { isMseSupported, detectCodecFromFirstChunk, detectCodecFromInitSegment, createMsePlayer } from '../../../features/mse-player.js';
+import { isMseSupported, detectCodecFromInitSegment, createMsePlayer } from '../../../features/mse-player.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -193,17 +193,12 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Determine track layout from manifest
-            // v3 manifest has tracks[] with per-chunk trackIndex
-            // v2 manifest (legacy) has no tracks — treat as single muxed SourceBuffer
-            const manifestTracks = manifest.tracks || null;
-            const numTracks = manifestTracks ? manifestTracks.length : 1;
-            const isMultiTrack = manifestTracks && manifestTracks.length > 1;
+            // Determine track layout from manifest (v3)
+            const manifestTracks = manifest.tracks;
+            const numTracks = manifestTracks.length;
 
-            // Track labels for routing: 'video', 'audio', or 'muxed'
-            const trackLabels = manifestTracks
-                ? manifestTracks.map(t => t.type || 'muxed')
-                : ['muxed'];
+            // Track labels for routing: 'video', 'audio', etc.
+            const trackLabels = manifestTracks.map(t => t.type);
 
             // Create MSE player
             msePlayer = createMsePlayer({
@@ -241,21 +236,11 @@ export class MediaHandlingController extends BaseController {
 
                 if (isInitSegment) {
                     // Init segment — detect codec and create SourceBuffer
-                    let mimeCodec;
-                    if (manifestTracks && manifestTracks[trackIndex]) {
-                        // v3: detect codec from per-track init segment
-                        const trackType = manifestTracks[trackIndex].type || 'video';
-                        mimeCodec = detectCodecFromInitSegment(data, trackType);
-                    }
-                    if (!mimeCodec) {
-                        // Fallback: use legacy detection for muxed/unknown
-                        const contentType = manifest.contentType || 'video/mp4';
-                        const result = detectCodecFromFirstChunk(data, contentType);
-                        mimeCodec = result?.mimeCodec;
-                    }
+                    const trackType = manifestTracks[trackIndex].type;
+                    const mimeCodec = detectCodecFromInitSegment(data, trackType);
 
                     if (!mimeCodec) {
-                        throw new Error('無法偵測影片編碼格式');
+                        throw new Error(`無法偵測 ${trackType} 軌道編碼格式`);
                     }
 
                     if (!sbCreated.has(label)) {
@@ -264,7 +249,6 @@ export class MediaHandlingController extends BaseController {
                     }
 
                     await msePlayer.appendChunk(label, data);
-                    initSegmentsReceived++;
                 } else {
                     // Media segment — route to correct SourceBuffer
                     await msePlayer.appendChunk(label, data);
