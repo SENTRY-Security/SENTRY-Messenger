@@ -3043,7 +3043,9 @@ export async function sendDrMediaCore(params = {}) {
     name: typeof file.name === 'string' && file.name ? file.name : '附件',
     size: typeof file.size === 'number' ? file.size : uploadResult.size ?? uploadResult.totalSize ?? null,
     contentType: file.type || 'application/octet-stream',
-    dir: Array.isArray(dir) && dir.length ? dir.map((seg) => String(seg || '').trim()).filter(Boolean) : null,
+    dir: Array.isArray(dir) && dir.length
+      ? dir.map((seg) => String(seg || '').trim()).filter(Boolean)
+      : (typeof dir === 'string' && dir.trim() ? dir.trim().split('/').filter(Boolean) : null),
     preview: previewInfo || null
   };
 

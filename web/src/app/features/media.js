@@ -419,11 +419,12 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
 }
 
 /**
- * Check if a file should use chunked upload (video > CHUNK_SIZE).
+ * Check if a file should use chunked upload.
+ * ALL video files use chunked upload (regardless of size) for consistent
+ * fMP4 remuxing + MSE streaming playback.
  */
 export function shouldUseChunkedUpload(file) {
   if (!file || typeof file.size !== 'number') return false;
-  if (file.size <= CHUNK_SIZE) return false;
   const ct = resolveContentType(file);
   return ct.startsWith('video/');
 }

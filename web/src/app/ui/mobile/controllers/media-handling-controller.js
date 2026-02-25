@@ -5,7 +5,7 @@
 
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
-import { downloadChunkedManifest, streamChunks, downloadAllChunks } from '../../../features/chunked-download.js';
+import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
 import { isMseSupported, detectCodecFromFirstChunk, createMsePlayer } from '../../../features/mse-player.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
@@ -68,86 +68,24 @@ export class MediaHandlingController extends BaseController {
     }
 
     /**
-     * Download a video file inline (on the chat bubble) with progress.
-     * Routes to chunked or single-file download based on media.chunked flag.
+     * Download and play a video inline.
+     * ALL videos use chunked upload + MSE streaming — no non-chunked fallback.
      * Updates media._videoState through: idle → downloading → (plays in modal) → idle.
-     * No blob is stored in memory — each play is a fresh download/stream.
+     * No blob is stored in memory — each play is a fresh MSE stream.
      * Only one download at a time (enforced by transfer-progress lock).
      */
     async downloadVideoInline(media, msgId) {
-        // Route to chunked download if media is chunked
-        if (media?.chunked && media.baseKey && media.manifestEnvelope) {
-            return this.downloadChunkedVideoInline(media, msgId);
-        }
-        if (!media || !media.objectKey || !media.envelope) return;
-        if (media._videoState === 'downloading') return;
-
-        if (isDownloadBusy()) {
-            this.deps.showToast?.('目前有檔案正在下載，請稍候再試');
+        if (!media?.chunked || !media.baseKey || !media.manifestEnvelope) {
+            this.deps.showToast?.('影片資料不完整，無法播放');
             return;
         }
-
-        media._videoState = 'downloading';
-        media._videoProgress = 0;
-        this._updateVideoOverlayUI(msgId, media);
-
-        const downloadAbort = new AbortController();
-        startDownload(media.name || '影片', () => {
-            try { downloadAbort.abort(); } catch {}
-            media._videoState = 'idle';
-            media._videoProgress = 0;
-            this._updateVideoOverlayUI(msgId, media);
-            endDownload();
-        });
-
-        try {
-            const result = await downloadAndDecrypt({
-                key: media.objectKey,
-                envelope: media.envelope,
-                messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
-                abortSignal: downloadAbort.signal,
-                onStatus: ({ stage, loaded, total }) => {
-                    if (stage === 'sign') {
-                        media._videoProgress = 2;
-                    } else if (stage === 'download-start') {
-                        media._videoProgress = 5;
-                    } else if (stage === 'download') {
-                        const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
-                        media._videoProgress = pct != null ? Math.min(95, Math.max(5, pct)) : 45;
-                    } else if (stage === 'decrypt') {
-                        media._videoProgress = 98;
-                    }
-                    this._updateVideoOverlayUI(msgId, media);
-                    updateDownloadProgress(media._videoProgress);
-                }
-            });
-
-            endDownload();
-
-            // Play immediately in modal, then release blob when modal closes.
-            // No blob is stored on the media object — avoids memory accumulation.
-            media._videoState = 'idle';
-            media._videoProgress = 0;
-            this._updateVideoOverlayUI(msgId, media);
-
-            await this._playBlobInModal(result.blob, media);
-        } catch (err) {
-            endDownload();
-            if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
-                return; // user cancelled
-            }
-            console.error('Video download error', err);
-            media._videoState = 'idle';
-            media._videoProgress = 0;
-            this._updateVideoOverlayUI(msgId, media);
-            this.deps.showToast?.(`影片下載失敗：${err?.message || err}`);
-        }
+        return this.downloadChunkedVideoInline(media, msgId);
     }
 
     /**
-     * Download a chunked video with MSE streaming playback (or fallback to blob).
-     * Downloads manifest → detects codec → streams chunks via MSE or downloads all.
-     * No blob is stored in memory — plays directly then releases.
+     * Download a chunked video with MSE streaming playback.
+     * ALL videos use chunked upload + fMP4 remux, so MSE is always available.
+     * No blob fallback — MSE streaming only.
      */
     async downloadChunkedVideoInline(media, msgId) {
         if (!media || !media.baseKey || !media.manifestEnvelope) return;
@@ -187,24 +125,15 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Step 2: Try MSE streaming playback
-            const useMse = isMseSupported() && (manifest.contentType === 'video/mp4' || manifest.contentType === 'video/webm');
-
-            if (useMse) {
-                const mseResult = await this._tryMsePlayback(media, msgId, manifest, downloadAbort);
-                if (mseResult) {
-                    endDownload();
-                    // MSE playback started — reset state to idle (MSE player manages its own memory)
-                    media._videoState = 'idle';
-                    media._videoProgress = 0;
-                    this._updateVideoOverlayUI(msgId, media);
-                    return;
-                }
-                // MSE failed — fall through to blob fallback
+            // Step 2: MSE streaming playback (mandatory — no fallback)
+            if (!isMseSupported()) {
+                throw new Error('此裝置不支援 MSE 串流播放');
+            }
+            if (manifest.contentType !== 'video/mp4' && manifest.contentType !== 'video/webm') {
+                throw new Error(`不支援的影片格式：${manifest.contentType}`);
             }
 
-            // Step 3: Fallback — download all chunks, play in modal, then release blob
-            const { blob } = await downloadAllChunks({
+            const generator = streamChunks({
                 baseKey: media.baseKey,
                 manifest,
                 manifestEnvelope: media.manifestEnvelope,
@@ -217,68 +146,24 @@ export class MediaHandlingController extends BaseController {
                 }
             });
 
-            endDownload();
-
-            // Play immediately in modal, then release blob when modal closes
-            media._videoState = 'idle';
-            media._videoProgress = 0;
-            this._updateVideoOverlayUI(msgId, media);
-
-            await this._playBlobInModal(blob, media);
-        } catch (err) {
-            endDownload();
-            if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
-                return;
-            }
-            console.error('Chunked video download error', err);
-            media._videoState = 'idle';
-            media._videoProgress = 0;
-            this._updateVideoOverlayUI(msgId, media);
-            this.deps.showToast?.(`影片下載失敗：${err?.message || err}`);
-        }
-    }
-
-    /**
-     * Attempt MSE streaming playback. Returns true if successful, false if should fallback.
-     * Downloads first chunk to detect codec, then streams remaining chunks.
-     */
-    async _tryMsePlayback(media, msgId, manifest, abortController) {
-        try {
-            const generator = streamChunks({
-                baseKey: media.baseKey,
-                manifest,
-                manifestEnvelope: media.manifestEnvelope,
-                abortSignal: abortController.signal,
-                onProgress: ({ percent }) => {
-                    const adjusted = 5 + Math.round(percent * 0.9);
-                    media._videoProgress = Math.min(95, adjusted);
-                    this._updateVideoOverlayUI(msgId, media);
-                    updateDownloadProgress(media._videoProgress);
-                }
-            });
-
             // Get first chunk to detect codec
             const firstResult = await generator.next();
-            if (firstResult.done) return false;
+            if (firstResult.done) throw new Error('影片無資料');
             const firstChunk = firstResult.value.data;
 
             const { mimeCodec, fragmented } = detectCodecFromFirstChunk(firstChunk, manifest.contentType);
             if (!mimeCodec || !fragmented) {
-                // Not an MSE-compatible format — caller should use fallback
-                // But we already consumed first chunk, so we need to continue downloading all
-                // and assemble. Return false to signal fallback.
-                return false;
+                throw new Error('影片格式不相容 MSE（非 fMP4）');
             }
 
-            // Pre-open modal with video element
+            // Open modal with video element
             this._showModalLoading('串流播放中…');
 
             const modalBody = document.getElementById('modalBody');
             const modalTitle = document.getElementById('modalTitle');
             const modalEl = document.getElementById('modal');
-            if (!modalBody || !modalEl) return false;
+            if (!modalBody || !modalEl) throw new Error('無法開啟播放視窗');
 
-            // Clear modal loading state
             const classesToRemove = [
                 'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
                 'confirm-modal', 'nickname-modal', 'avatar-modal',
@@ -331,119 +216,31 @@ export class MediaHandlingController extends BaseController {
 
             // Stream remaining chunks
             for await (const { data } of generator) {
-                if (abortController.signal.aborted) {
+                if (downloadAbort.signal.aborted) {
                     msePlayer.destroy();
                     modalObserver.disconnect();
-                    return true;
+                    break;
                 }
                 await msePlayer.appendChunk(data);
             }
 
-            msePlayer.endOfStream();
+            if (!downloadAbort.signal.aborted) {
+                msePlayer.endOfStream();
+            }
 
-            return true;
+            endDownload();
+            media._videoState = 'idle';
+            media._videoProgress = 0;
+            this._updateVideoOverlayUI(msgId, media);
         } catch (err) {
-            if (err?.name === 'AbortError') throw err; // re-throw abort
-            console.warn('[mse-playback] failed, will fallback:', err?.message);
-            return false;
-        }
-    }
-
-    /**
-     * Play a video — always triggers a fresh download/stream (no stored blobs).
-     * This is now the unified "play" handler: clicking the play overlay
-     * always re-downloads the video. This keeps memory usage minimal.
-     */
-    async playDownloadedVideo(media, msgId) {
-        if (!media) return;
-        // Always trigger a fresh download — no stored blobs
-        return this.downloadVideoInline(media, msgId);
-    }
-
-    /**
-     * Play a blob in the preview modal, then revoke the blob URL when the modal closes.
-     * The blob is NOT stored on the media object — it lives only while the modal is open.
-     */
-    async _playBlobInModal(blob, media) {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-
-        try {
-            const modalEl = document.getElementById('modal');
-            const body = document.getElementById('modalBody');
-            const title = document.getElementById('modalTitle');
-
-            if (!modalEl || !body || !title) {
-                URL.revokeObjectURL(url);
-                this.deps.showToast?.('無法顯示影片');
+            endDownload();
+            if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
                 return;
             }
-
-            // Clear modal classes
-            const classesToRemove = [
-                'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
-                'confirm-modal', 'nickname-modal', 'avatar-modal',
-                'avatar-preview-modal', 'settings-modal'
-            ];
-            modalEl.classList.remove(...classesToRemove);
-
-            body.innerHTML = '';
-            const resolvedName = media?.name || '影片';
-            title.textContent = resolvedName;
-            title.setAttribute('title', resolvedName);
-
-            const downloadBtn = document.getElementById('modalDownload');
-            if (downloadBtn) {
-                downloadBtn.style.display = 'none';
-                downloadBtn.onclick = null;
-            }
-
-            const container = document.createElement('div');
-            container.className = 'preview-wrap';
-            const wrap = document.createElement('div');
-            wrap.className = 'viewer';
-            container.appendChild(wrap);
-            body.appendChild(container);
-
-            const video = document.createElement('video');
-            video.src = url;
-            video.controls = true;
-            video.playsInline = true;
-            video.autoplay = true;
-            wrap.appendChild(video);
-
-            // Store the URL so modal-close cleanup can revoke it
-            modalEl.dataset.videoBlobUrl = url;
-
-            // Register one-time cleanup: revoke blob URL when modal is hidden
-            const cleanup = () => {
-                try { URL.revokeObjectURL(url); } catch {}
-                delete modalEl.dataset.videoBlobUrl;
-                video.src = '';
-                video.load(); // release video element's internal buffer
-            };
-            // Use MutationObserver to detect modal close (class removal or display change)
-            const observer = new MutationObserver(() => {
-                if (!modalEl.classList.contains('active') || modalEl.style.display === 'none') {
-                    cleanup();
-                    observer.disconnect();
-                }
-            });
-            observer.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
-
-            // Also listen for explicit close events
-            const onModalClose = () => {
-                cleanup();
-                observer.disconnect();
-                modalEl.removeEventListener('modal-close', onModalClose);
-            };
-            modalEl.addEventListener('modal-close', onModalClose, { once: true });
-
-            this.deps.openPreviewModal?.();
-        } catch (err) {
-            try { URL.revokeObjectURL(url); } catch {}
-            console.error('[_playBlobInModal] error', err);
-            this.deps.closePreviewModal?.();
+            console.error('Video MSE playback error', err);
+            media._videoState = 'idle';
+            media._videoProgress = 0;
+            this._updateVideoOverlayUI(msgId, media);
             this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }
     }
