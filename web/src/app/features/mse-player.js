@@ -259,7 +259,10 @@ export function createMsePlayer({ videoElement, onError }) {
         mediaSource.addEventListener('sourceopen', () => {
           try {
             sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
-            sourceBuffer.mode = 'sequence';
+            // Use 'segments' mode: each appended chunk is a complete fMP4 segment
+            // with its own timing info (moof+mdat). This is the correct mode for
+            // segment-aligned chunked playback.
+            sourceBuffer.mode = 'segments';
             resolve();
           } catch (err) {
             reject(err);

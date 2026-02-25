@@ -1,7 +1,16 @@
 // /app/features/chunked-upload.js
-// Chunked encrypted upload: split file into 5MB chunks, encrypt each independently,
-// upload as separate R2 objects, then upload an encrypted manifest.
-// Video files are automatically remuxed to fMP4 format before chunking.
+// Chunked encrypted upload for video files.
+//
+// VIDEO (fMP4/WebM):
+//   - Remuxes to fMP4 first (if needed), then each fMP4 segment (init + media segments)
+//     becomes a separate encrypted chunk. This ensures each chunk is a valid MSE segment
+//     that can be directly appended to SourceBuffer for streaming playback.
+//   - WebM files use fixed 5MB byte-range chunks (WebM is natively MSE-compatible).
+//
+// NON-VIDEO:
+//   - Fixed 5MB byte-range chunks (unchanged from original).
+//
+// Each chunk is independently encrypted with AES-256-GCM via HKDF-derived key.
 
 import { signPutChunked as apiSignPutChunked, cleanupChunked as apiCleanupChunked } from '../api/media.js';
 import { getMkRaw } from '../core/store.js';
@@ -10,7 +19,7 @@ import { b64 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError } from './mp4-remuxer.js';
 
-const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
 const UPLOAD_CONCURRENCY = 3;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
 
@@ -116,6 +125,13 @@ function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
 /**
  * Encrypt and upload a file in chunks.
  *
+ * For video files (MP4/MOV/WebM):
+ *   - MP4/MOV → remuxed to fMP4 → each fMP4 segment is one chunk
+ *   - WebM → fixed 5MB byte-range chunks
+ *
+ * For non-video files:
+ *   - Fixed 5MB byte-range chunks
+ *
  * @param {{
  *   convId: string,
  *   file: File|Blob,
@@ -145,26 +161,45 @@ export async function encryptAndPutChunked({
   if (!mk && !useSharedKey) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
 
-  // Remux video to fMP4 if needed (MOV, non-fragmented MP4 → fMP4)
-  let actualFile = file;
   const rawType = (typeof file.type === 'string' ? file.type : '').toLowerCase().trim();
-  if (rawType.startsWith('video/')) {
+  const isVideo = rawType.startsWith('video/');
+  const name = typeof file.name === 'string' ? file.name : 'blob.bin';
+  const cryptoKey = useSharedKey ? sharedKeyU8 : mk;
+
+  // For video files, try to get fMP4 segments
+  let fmp4Segments = null; // null = use byte-range chunking
+  let contentType = resolveContentType(file);
+  let totalSize;
+
+  if (isVideo) {
     if (!canRemuxVideo(file)) {
       throw new UnsupportedVideoFormatError(`不支援此影片格式：${rawType}`);
     }
     const remuxResult = await remuxToFragmentedMp4(file);
-    actualFile = remuxResult.file;
+    contentType = remuxResult.contentType;
+
+    if (remuxResult.segments) {
+      // fMP4 segments available — use segment-based chunking
+      fmp4Segments = remuxResult.segments;
+      // Calculate total size from segments
+      totalSize = 0;
+      for (const seg of fmp4Segments) totalSize += seg.byteLength;
+    } else {
+      // WebM or passthrough — use byte-range chunking on original file
+      totalSize = typeof file.size === 'number' ? file.size : 0;
+    }
+  } else {
+    totalSize = typeof file.size === 'number' ? file.size : 0;
   }
 
-  const contentType = resolveContentType(actualFile);
-  const name = typeof file.name === 'string' ? file.name : 'blob.bin';
-  const totalSize = typeof actualFile.size === 'number' ? actualFile.size : 0;
   if (!totalSize) throw new Error('file size unknown');
 
-  const chunkCount = Math.ceil(totalSize / CHUNK_SIZE);
-  const cryptoKey = useSharedKey ? sharedKeyU8 : mk;
+  // Determine chunk count
+  const chunkCount = fmp4Segments
+    ? fmp4Segments.length      // Each fMP4 segment = one chunk
+    : Math.ceil(totalSize / CHUNK_SIZE);  // Byte-range chunking
 
-  // Normalize dir: array or slash-string → HMAC-hashed storage path (same as media.js)
+  // Normalize dir
   const dirSegments = normalizeDirSegments(dir);
   let storageDir = '';
   if (dirSegments.length) {
@@ -192,17 +227,22 @@ export async function encryptAndPutChunked({
   const chunkMetas = new Array(chunkCount);
 
   // 2. Encrypt and upload chunks with concurrency limit
-  const pending = [];
-  let nextIndex = 0;
   let uploadError = null;
 
   const processChunk = async (index) => {
     if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
 
-    const offset = index * CHUNK_SIZE;
-    const end = Math.min(offset + CHUNK_SIZE, totalSize);
-    const chunkSlice = actualFile.slice(offset, end);
-    const plainBuf = new Uint8Array(await chunkSlice.arrayBuffer());
+    let plainBuf;
+    if (fmp4Segments) {
+      // fMP4 segment-based: each segment is already in memory as Uint8Array
+      plainBuf = fmp4Segments[index];
+    } else {
+      // Byte-range chunking: slice from file
+      const offset = index * CHUNK_SIZE;
+      const end = Math.min(offset + CHUNK_SIZE, totalSize);
+      const chunkSlice = file.slice(offset, end);
+      plainBuf = new Uint8Array(await chunkSlice.arrayBuffer());
+    }
 
     // Encrypt this chunk independently
     const ct = await aeadEncryptWithMK(plainBuf, cryptoKey, CHUNK_INFO_TAG);
@@ -235,6 +275,11 @@ export async function encryptAndPutChunked({
       total: totalSize,
       percent: Math.round((uploadedBytes / totalSize) * 100)
     });
+
+    // Allow GC of the segment data after upload
+    if (fmp4Segments) {
+      fmp4Segments[index] = null;
+    }
   };
 
   // Concurrency pool
@@ -259,7 +304,6 @@ export async function encryptAndPutChunked({
     }
     await Promise.all(pool);
   } catch (err) {
-    // Cleanup uploaded chunks on failure
     try { await apiCleanupChunked({ baseKey }); } catch { }
     throw err;
   }
@@ -271,8 +315,11 @@ export async function encryptAndPutChunked({
 
   // 3. Build and encrypt manifest
   const manifest = {
-    v: 1,
-    chunkSize: CHUNK_SIZE,
+    v: 2,
+    // segment_aligned: true means each chunk is a complete fMP4 segment (init or moof+mdat)
+    // segment_aligned: false means chunks are arbitrary byte ranges
+    segment_aligned: !!fmp4Segments,
+    chunkSize: fmp4Segments ? 0 : CHUNK_SIZE,  // 0 for segment-aligned (variable size)
     totalSize,
     totalChunks: chunkCount,
     contentType,

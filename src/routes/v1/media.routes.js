@@ -52,7 +52,7 @@ const SignGetSchema = z.object({
   }
 });
 
-const MAX_CHUNKS = 200; // 200 × 5MB = 1GB max chunked upload
+const MAX_CHUNKS = 2000; // Segment-aligned fMP4 chunks can produce many segments
 
 const accountAuth = z.object({
   account_token: z.string().min(8).optional(),

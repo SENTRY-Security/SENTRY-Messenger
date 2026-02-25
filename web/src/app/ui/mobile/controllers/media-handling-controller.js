@@ -1,11 +1,14 @@
 /**
  * MediaHandlingController
  * Manages media preview interactions and modals.
+ * Video playback uses MSE (ManagedMediaSource on iOS Safari 17.1+)
+ * for streaming encrypted chunks without loading the entire video into memory.
  */
 
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
+import { isMseSupported, detectCodecFromFirstChunk, createMsePlayer } from '../../../features/mse-player.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -67,10 +70,11 @@ export class MediaHandlingController extends BaseController {
     }
 
     /**
-     * Download and play a video inline.
-     * ALL videos use chunked upload + MSE streaming — no non-chunked fallback.
-     * Updates media._videoState through: idle → downloading → (plays in modal) → idle.
-     * No blob is stored in memory — each play is a fresh MSE stream.
+     * Download and play a video inline using MSE streaming.
+     * ALL videos use chunked upload with segment-aligned chunks.
+     * Each downloaded chunk is a complete fMP4 segment → appendBuffer directly to MSE.
+     *
+     * No blob is stored in memory — playback streams chunk by chunk.
      * Only one download at a time (enforced by transfer-progress lock).
      */
     async downloadVideoInline(media, msgId) {
@@ -82,13 +86,16 @@ export class MediaHandlingController extends BaseController {
     }
 
     /**
-     * Download a chunked video and play via Blob URL.
-     * ALL videos use chunked upload + fMP4 remux.
+     * Download a chunked video and play via MSE streaming.
      *
-     * Since chunks are encrypted at arbitrary byte boundaries (not fMP4 segment
-     * boundaries), we download all chunks, reassemble the complete fMP4, create
-     * a temporary Blob URL for <video>.src, and revoke it when the modal closes.
-     * No blob is stored on the media object — memory is freed on modal close.
+     * Each chunk is a complete fMP4 segment (init segment or moof+mdat pair)
+     * that can be directly appended to MSE SourceBuffer.
+     *
+     * Flow:
+     * 1. Download manifest → get chunk metadata
+     * 2. Download chunk 0 (init segment) → detect codec → init MSE → append
+     * 3. Stream remaining chunks → append each to SourceBuffer
+     * 4. Playback starts as soon as first media segment is buffered
      */
     async downloadChunkedVideoInline(media, msgId) {
         if (!media || !media.baseKey || !media.manifestEnvelope) return;
@@ -96,6 +103,12 @@ export class MediaHandlingController extends BaseController {
 
         if (isDownloadBusy()) {
             this.deps.showToast?.('目前有檔案正在下載，請稍候再試');
+            return;
+        }
+
+        // Check MSE support
+        if (!isMseSupported()) {
+            this.deps.showToast?.('此瀏覽器不支援影片串流播放');
             return;
         }
 
@@ -111,6 +124,8 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             endDownload();
         });
+
+        let msePlayer = null;
 
         try {
             // Step 1: Download and decrypt manifest
@@ -128,37 +143,11 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Step 2: Download ALL chunks and collect
-            const parts = [];
-            for await (const { data } of streamChunks({
-                baseKey: media.baseKey,
-                manifest,
-                manifestEnvelope: media.manifestEnvelope,
-                abortSignal: downloadAbort.signal,
-                onProgress: ({ percent }) => {
-                    const adjusted = 5 + Math.round(percent * 0.9);
-                    media._videoProgress = Math.min(95, adjusted);
-                    this._updateVideoOverlayUI(msgId, media);
-                    updateDownloadProgress(media._videoProgress);
-                }
-            })) {
-                parts.push(data);
-            }
-
-            if (!parts.length) throw new Error('影片無資料');
-
-            // Step 3: Create Blob URL from reassembled data
-            const contentType = manifest.contentType || 'video/mp4';
-            const blob = new Blob(parts, { type: contentType });
-            parts.length = 0; // free chunk references
-            const blobUrl = URL.createObjectURL(blob);
-
-            // Step 4: Open modal and play
+            // Step 2: Open modal with video element FIRST, then stream into it
             const modalBody = document.getElementById('modalBody');
             const modalTitle = document.getElementById('modalTitle');
             const modalEl = document.getElementById('modal');
             if (!modalBody || !modalEl) {
-                URL.revokeObjectURL(blobUrl);
                 throw new Error('無法開啟播放視窗');
             }
 
@@ -182,7 +171,6 @@ export class MediaHandlingController extends BaseController {
             modalBody.appendChild(container);
 
             const video = document.createElement('video');
-            video.src = blobUrl;
             video.controls = true;
             video.playsInline = true;
             video.autoplay = true;
@@ -190,10 +178,67 @@ export class MediaHandlingController extends BaseController {
 
             this.deps.openPreviewModal?.();
 
-            // Revoke blob URL when modal closes to free memory
+            // Step 3: Stream chunks via MSE
+            let firstChunkData = null;
+            let chunkIndex = 0;
+
+            for await (const { data, index } of streamChunks({
+                baseKey: media.baseKey,
+                manifest,
+                manifestEnvelope: media.manifestEnvelope,
+                abortSignal: downloadAbort.signal,
+                onProgress: ({ percent }) => {
+                    const adjusted = 5 + Math.round(percent * 0.9);
+                    media._videoProgress = Math.min(95, adjusted);
+                    this._updateVideoOverlayUI(msgId, media);
+                    updateDownloadProgress(media._videoProgress);
+                }
+            })) {
+                if (index === 0) {
+                    // First chunk = init segment — detect codec and init MSE
+                    firstChunkData = data;
+                    const contentType = manifest.contentType || 'video/mp4';
+                    const { mimeCodec } = detectCodecFromFirstChunk(data, contentType);
+
+                    if (!mimeCodec) {
+                        throw new Error('無法偵測影片編碼格式');
+                    }
+
+                    msePlayer = createMsePlayer({
+                        videoElement: video,
+                        onError: (err) => {
+                            console.error('[mse-player] error during playback:', err?.message || err);
+                        }
+                    });
+
+                    await msePlayer.init(mimeCodec);
+                    await msePlayer.appendChunk(data);
+                } else {
+                    // Media segments — append directly to SourceBuffer
+                    if (msePlayer) {
+                        await msePlayer.appendChunk(data);
+                    }
+                }
+                chunkIndex++;
+            }
+
+            // All chunks appended — signal end of stream
+            if (msePlayer) {
+                msePlayer.endOfStream();
+            }
+
+            endDownload();
+            media._videoState = 'idle';
+            media._videoProgress = 0;
+            this._updateVideoOverlayUI(msgId, media);
+
+            // Cleanup MSE when modal closes
             const modalObserver = new MutationObserver(() => {
                 if (!modalEl.classList.contains('active') || modalEl.style.display === 'none') {
-                    try { URL.revokeObjectURL(blobUrl); } catch {}
+                    if (msePlayer) {
+                        msePlayer.destroy();
+                        msePlayer = null;
+                    }
                     video.src = '';
                     video.load();
                     modalObserver.disconnect();
@@ -201,12 +246,12 @@ export class MediaHandlingController extends BaseController {
             });
             modalObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
 
-            endDownload();
-            media._videoState = 'idle';
-            media._videoProgress = 0;
-            this._updateVideoOverlayUI(msgId, media);
         } catch (err) {
             endDownload();
+            if (msePlayer) {
+                try { msePlayer.destroy(); } catch {}
+                msePlayer = null;
+            }
             if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
                 return;
             }
@@ -306,8 +351,6 @@ export class MediaHandlingController extends BaseController {
         title.setAttribute('title', resolvedName);
 
         const url = URL.createObjectURL(blob);
-        // If we had a setModalObjectUrl dependency, use it. Otherwise ignore.
-        // this.deps.setModalObjectUrl?.(url);
 
         const downloadBtn = document.getElementById('modalDownload');
         if (downloadBtn) {
