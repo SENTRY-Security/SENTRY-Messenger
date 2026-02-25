@@ -205,7 +205,7 @@ export class MessageSendingController extends BaseController {
                         file,
                         conversation,
                         convId: state.conversationId,
-                        dir: state.conversationId ? ['messages', state.conversationId] : 'messages',
+                        dir: state.conversationId ? `messages/${state.conversationId}` : 'messages',
                         onProgress: progressHandler,
                         abortSignal: abortController.signal,
                         messageId

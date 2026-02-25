@@ -13,6 +13,50 @@ import { remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError } from
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 const UPLOAD_CONCURRENCY = 3;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
+
+const encoder = new TextEncoder();
+
+function normalizeDirSegments(dir) {
+  if (!dir) return [];
+  if (Array.isArray(dir)) {
+    return dir
+      .map((seg) => String(seg || '').trim())
+      .map((seg) => seg.normalize('NFKC'))
+      .filter(Boolean);
+  }
+  return String(dir || '')
+    .split('/')
+    .map((seg) => String(seg || '').trim())
+    .map((seg) => seg.normalize('NFKC'))
+    .filter(Boolean);
+}
+
+function bytesToHex(u8) {
+  return Array.from(u8).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function deriveStorageDirPath(dirSegments, mk) {
+  if (!dirSegments || !dirSegments.length) return '';
+  const key = await crypto.subtle.importKey(
+    'raw',
+    toU8Strict(mk, 'chunked-upload.js:deriveStorageDirPath'),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  let prev = 'root';
+  const hashes = [];
+  for (const raw of dirSegments) {
+    const seg = String(raw || '').normalize('NFKC');
+    const data = encoder.encode(`drive-dir:${prev}:${seg}`);
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, data));
+    const token = bytesToHex(mac).slice(0, 32);
+    hashes.push(token);
+    prev = token;
+  }
+  return hashes.join('/');
+}
+
 const MANIFEST_INFO_TAG = 'media/manifest-v1';
 
 function normalizeSharedKey(input) {
@@ -120,6 +164,14 @@ export async function encryptAndPutChunked({
   const chunkCount = Math.ceil(totalSize / CHUNK_SIZE);
   const cryptoKey = useSharedKey ? sharedKeyU8 : mk;
 
+  // Normalize dir: array or slash-string → HMAC-hashed storage path (same as media.js)
+  const dirSegments = normalizeDirSegments(dir);
+  let storageDir = '';
+  if (dirSegments.length) {
+    if (!mk) throw new Error('MK required for directory hashing');
+    storageDir = await deriveStorageDirPath(dirSegments, mk);
+  }
+
   // 1. Request batch presigned URLs
   const { r: rSign, data: signData } = await apiSignPutChunked({
     convId,
@@ -127,7 +179,7 @@ export async function encryptAndPutChunked({
     chunkCount,
     contentType,
     direction,
-    dir: dir || undefined
+    dir: storageDir || undefined
   });
   if (!rSign.ok) throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
   const { baseKey, manifest: manifestPut, chunks: chunkPuts } = signData;
