@@ -8,7 +8,7 @@
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
-import { isMseSupported, detectCodecFromFirstChunk, createMsePlayer } from '../../../features/mse-player.js';
+import { isMseSupported, detectCodecFromFirstChunk, detectCodecFromInitSegment, createMsePlayer } from '../../../features/mse-player.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -193,9 +193,34 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Step 3: Stream chunks via MSE
-            let chunkIndex = 0;
+            // Determine track layout from manifest
+            // v3 manifest has tracks[] with per-chunk trackIndex
+            // v2 manifest (legacy) has no tracks — treat as single muxed SourceBuffer
+            const manifestTracks = manifest.tracks || null;
+            const numTracks = manifestTracks ? manifestTracks.length : 1;
+            const isMultiTrack = manifestTracks && manifestTracks.length > 1;
 
+            // Track labels for routing: 'video', 'audio', or 'muxed'
+            const trackLabels = manifestTracks
+                ? manifestTracks.map(t => t.type || 'muxed')
+                : ['muxed'];
+
+            // Create MSE player
+            msePlayer = createMsePlayer({
+                videoElement: video,
+                onError: (err) => {
+                    console.error('[mse-player] error during playback:', err?.message || err);
+                }
+            });
+            await msePlayer.open();
+
+            // Track which SourceBuffers have been created (by trackIndex)
+            const sbCreated = new Set();
+            // Count init segments received (one per track)
+            let initSegmentsReceived = 0;
+            let firstMediaAppended = false;
+
+            // Step 3: Stream chunks via MSE
             for await (const { data, index } of streamChunks({
                 baseKey: media.baseKey,
                 manifest,
@@ -208,39 +233,51 @@ export class MediaHandlingController extends BaseController {
                     updateDownloadProgress(media._videoProgress);
                 }
             })) {
-                if (index === 0) {
-                    // First chunk = init segment — detect codec and init MSE
-                    const contentType = manifest.contentType || 'video/mp4';
-                    const { mimeCodec } = detectCodecFromFirstChunk(data, contentType);
+                // Determine which track this chunk belongs to
+                const chunkMeta = manifest.chunks?.[index];
+                const trackIndex = chunkMeta?.trackIndex ?? 0;
+                const label = trackLabels[trackIndex] || 'muxed';
+                const isInitSegment = index < numTracks;
+
+                if (isInitSegment) {
+                    // Init segment — detect codec and create SourceBuffer
+                    let mimeCodec;
+                    if (manifestTracks && manifestTracks[trackIndex]) {
+                        // v3: detect codec from per-track init segment
+                        const trackType = manifestTracks[trackIndex].type || 'video';
+                        mimeCodec = detectCodecFromInitSegment(data, trackType);
+                    }
+                    if (!mimeCodec) {
+                        // Fallback: use legacy detection for muxed/unknown
+                        const contentType = manifest.contentType || 'video/mp4';
+                        const result = detectCodecFromFirstChunk(data, contentType);
+                        mimeCodec = result?.mimeCodec;
+                    }
 
                     if (!mimeCodec) {
                         throw new Error('無法偵測影片編碼格式');
                     }
 
-                    msePlayer = createMsePlayer({
-                        videoElement: video,
-                        onError: (err) => {
-                            console.error('[mse-player] error during playback:', err?.message || err);
-                        }
-                    });
-
-                    await msePlayer.init(mimeCodec);
-                    await msePlayer.appendChunk(data);
-                } else {
-                    // Media segments — append directly to SourceBuffer
-                    if (msePlayer) {
-                        await msePlayer.appendChunk(data);
+                    if (!sbCreated.has(label)) {
+                        msePlayer.addSourceBuffer(label, mimeCodec);
+                        sbCreated.add(label);
                     }
 
-                    // Remove buffering overlay after first media segment is appended
-                    if (chunkIndex === 1 && bufOverlay.parentNode) {
+                    await msePlayer.appendChunk(label, data);
+                    initSegmentsReceived++;
+                } else {
+                    // Media segment — route to correct SourceBuffer
+                    await msePlayer.appendChunk(label, data);
+
+                    // Remove buffering overlay after first media segment
+                    if (!firstMediaAppended && bufOverlay.parentNode) {
+                        firstMediaAppended = true;
                         bufOverlay.classList.add('fade-out');
                         setTimeout(() => {
                             try { bufOverlay.remove(); } catch {}
                         }, 300);
                     }
                 }
-                chunkIndex++;
             }
 
             // All chunks appended — signal end of stream
@@ -248,7 +285,7 @@ export class MediaHandlingController extends BaseController {
                 msePlayer.endOfStream();
             }
 
-            // Ensure overlay is removed even if only 1 chunk
+            // Ensure overlay is removed
             if (bufOverlay.parentNode) {
                 try { bufOverlay.remove(); } catch {}
             }

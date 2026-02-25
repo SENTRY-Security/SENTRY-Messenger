@@ -168,6 +168,8 @@ export async function encryptAndPutChunked({
 
   // For video files, try to get fMP4 segments
   let fmp4Segments = null; // null = use byte-range chunking
+  // fmp4Segments: array of { trackIndex, data } when segment-based
+  let fmp4Tracks = null; // track info: [{ type, codec }]
   let contentType = resolveContentType(file);
   let totalSize;
 
@@ -180,10 +182,14 @@ export async function encryptAndPutChunked({
 
     if (remuxResult.segments) {
       // fMP4 segments available — use segment-based chunking
+      // Each segment is { trackIndex, data }
       fmp4Segments = remuxResult.segments;
+      fmp4Tracks = remuxResult.tracks
+        ? remuxResult.tracks.map(t => ({ type: t.type, codec: t.codec }))
+        : [{ type: 'muxed', codec: null }];
       // Calculate total size from segments
       totalSize = 0;
-      for (const seg of fmp4Segments) totalSize += seg.byteLength;
+      for (const seg of fmp4Segments) totalSize += seg.data.byteLength;
     } else {
       // WebM or passthrough — use byte-range chunking on original file
       totalSize = typeof file.size === 'number' ? file.size : 0;
@@ -234,8 +240,8 @@ export async function encryptAndPutChunked({
 
     let plainBuf;
     if (fmp4Segments) {
-      // fMP4 segment-based: each segment is already in memory as Uint8Array
-      plainBuf = fmp4Segments[index];
+      // fMP4 segment-based: each segment is { trackIndex, data }
+      plainBuf = fmp4Segments[index].data;
     } else {
       // Byte-range chunking: slice from file
       const offset = index * CHUNK_SIZE;
@@ -260,13 +266,18 @@ export async function encryptAndPutChunked({
     });
 
     // Record metadata
-    chunkMetas[index] = {
+    const meta = {
       index,
       size: plainBuf.byteLength,
       cipher_size: ct.cipherBuf.byteLength,
       iv_b64: b64(ct.iv),
       salt_b64: b64(ct.hkdfSalt)
     };
+    // Tag with track index for fMP4 segment-based chunks
+    if (fmp4Segments) {
+      meta.trackIndex = fmp4Segments[index].trackIndex;
+    }
+    chunkMetas[index] = meta;
 
     // Update progress
     uploadedBytes += plainBuf.byteLength;
@@ -277,7 +288,8 @@ export async function encryptAndPutChunked({
     });
 
     // Allow GC of the segment data after upload
-    if (fmp4Segments) {
+    if (fmp4Segments && fmp4Segments[index]) {
+      fmp4Segments[index].data = null;
       fmp4Segments[index] = null;
     }
   };
@@ -315,7 +327,7 @@ export async function encryptAndPutChunked({
 
   // 3. Build and encrypt manifest
   const manifest = {
-    v: 2,
+    v: 3,
     // segment_aligned: true means each chunk is a complete fMP4 segment (init or moof+mdat)
     // segment_aligned: false means chunks are arbitrary byte ranges
     segment_aligned: !!fmp4Segments,
@@ -324,7 +336,11 @@ export async function encryptAndPutChunked({
     totalChunks: chunkCount,
     contentType,
     name,
-    chunks: chunkMetas
+    chunks: chunkMetas,
+    // Per-track info for multi-SourceBuffer MSE playback
+    // tracks[i] = { type: 'video'|'audio'|'muxed', codec: 'avc1.xxx'|'mp4a.40.2'|null }
+    // Each chunk's trackIndex references this array
+    tracks: fmp4Tracks || null
   };
 
   const manifestJson = new TextEncoder().encode(JSON.stringify(manifest));
