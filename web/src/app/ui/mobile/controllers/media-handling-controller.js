@@ -85,7 +85,12 @@ export class MediaHandlingController extends BaseController {
     /**
      * Download a chunked video with MSE streaming playback.
      * ALL videos use chunked upload + fMP4 remux, so MSE is always available.
-     * No blob fallback — MSE streaming only.
+     *
+     * Chunks are encrypted at arbitrary 5MB byte boundaries (not fMP4 segment
+     * boundaries), so we must download ALL chunks first, concatenate them into
+     * one contiguous fMP4 buffer, then feed the whole buffer to MSE in a single
+     * appendBuffer call.  This avoids SourceBuffer parse errors that occur when
+     * an append starts mid-atom.
      */
     async downloadChunkedVideoInline(media, msgId) {
         if (!media || !media.baseKey || !media.manifestEnvelope) return;
@@ -125,7 +130,7 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Step 2: MSE streaming playback (mandatory — no fallback)
+            // Step 2: Check MSE support
             if (!isMseSupported()) {
                 throw new Error('此裝置不支援 MSE 串流播放');
             }
@@ -133,7 +138,12 @@ export class MediaHandlingController extends BaseController {
                 throw new Error(`不支援的影片格式：${manifest.contentType}`);
             }
 
-            const generator = streamChunks({
+            // Step 3: Download ALL chunks and concatenate into one contiguous fMP4 buffer.
+            // Chunks are split at arbitrary byte boundaries during upload, so they
+            // cannot be appended individually to MSE SourceBuffer.
+            const parts = [];
+            let totalBytes = 0;
+            for await (const { data } of streamChunks({
                 baseKey: media.baseKey,
                 manifest,
                 manifestEnvelope: media.manifestEnvelope,
@@ -144,20 +154,30 @@ export class MediaHandlingController extends BaseController {
                     this._updateVideoOverlayUI(msgId, media);
                     updateDownloadProgress(media._videoProgress);
                 }
-            });
+            })) {
+                parts.push(data);
+                totalBytes += data.byteLength;
+            }
 
-            // Get first chunk to detect codec
-            const firstResult = await generator.next();
-            if (firstResult.done) throw new Error('影片無資料');
-            const firstChunk = firstResult.value.data;
+            if (!parts.length) throw new Error('影片無資料');
 
-            const { mimeCodec, fragmented } = detectCodecFromFirstChunk(firstChunk, manifest.contentType);
+            // Concatenate all chunks into single buffer
+            const fullBuffer = new Uint8Array(totalBytes);
+            let offset = 0;
+            for (const part of parts) {
+                fullBuffer.set(part, offset);
+                offset += part.byteLength;
+            }
+            parts.length = 0; // free references
+
+            // Step 4: Detect codec from the complete fMP4 data
+            const { mimeCodec, fragmented } = detectCodecFromFirstChunk(fullBuffer, manifest.contentType);
             if (!mimeCodec || !fragmented) {
                 throw new Error('影片格式不相容 MSE（非 fMP4）');
             }
 
-            // Open modal with video element
-            this._showModalLoading('串流播放中…');
+            // Step 5: Open modal and play via MSE
+            this._showModalLoading('準備播放…');
 
             const modalBody = document.getElementById('modalBody');
             const modalTitle = document.getElementById('modalTitle');
@@ -211,22 +231,9 @@ export class MediaHandlingController extends BaseController {
             });
             modalObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
 
-            // Append first chunk
-            await msePlayer.appendChunk(firstChunk);
-
-            // Stream remaining chunks
-            for await (const { data } of generator) {
-                if (downloadAbort.signal.aborted) {
-                    msePlayer.destroy();
-                    modalObserver.disconnect();
-                    break;
-                }
-                await msePlayer.appendChunk(data);
-            }
-
-            if (!downloadAbort.signal.aborted) {
-                msePlayer.endOfStream();
-            }
+            // Single appendBuffer with the complete fMP4 data
+            await msePlayer.appendChunk(fullBuffer);
+            msePlayer.endOfStream();
 
             endDownload();
             media._videoState = 'idle';
