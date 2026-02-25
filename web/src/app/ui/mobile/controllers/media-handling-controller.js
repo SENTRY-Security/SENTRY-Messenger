@@ -127,8 +127,58 @@ export class MediaHandlingController extends BaseController {
 
         let msePlayer = null;
 
+        // Step 1: IMMEDIATELY open modal with video element + buffering overlay
+        const modalBody = document.getElementById('modalBody');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalEl = document.getElementById('modal');
+        if (!modalBody || !modalEl) {
+            endDownload();
+            media._videoState = 'idle';
+            this.deps.showToast?.('無法開啟播放視窗');
+            return;
+        }
+
+        const classesToRemove = [
+            'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
+            'confirm-modal', 'nickname-modal', 'avatar-modal',
+            'avatar-preview-modal', 'settings-modal'
+        ];
+        modalEl.classList.remove(...classesToRemove);
+        modalBody.innerHTML = '';
+        if (modalTitle) {
+            modalTitle.textContent = media.name || '影片';
+            modalTitle.setAttribute('title', media.name || '影片');
+        }
+
+        const container = document.createElement('div');
+        container.className = 'preview-wrap';
+        const wrap = document.createElement('div');
+        wrap.className = 'viewer';
+        wrap.style.position = 'relative';
+        container.appendChild(wrap);
+        modalBody.appendChild(container);
+
+        const video = document.createElement('video');
+        video.controls = true;
+        video.playsInline = true;
+        video.autoplay = true;
+        video.style.width = '100%';
+        wrap.appendChild(video);
+
+        // Buffering overlay — shown until first media segment is appended
+        const bufOverlay = document.createElement('div');
+        bufOverlay.className = 'video-buffering-overlay';
+        bufOverlay.innerHTML = `
+            <div class="video-buffering-spinner"></div>
+            <div class="video-buffering-text">緩衝中...</div>
+        `;
+        wrap.appendChild(bufOverlay);
+
+        // Open modal immediately so user sees the player right away
+        this.deps.openPreviewModal?.();
+
         try {
-            // Step 1: Download and decrypt manifest
+            // Step 2: Download and decrypt manifest (user already sees the modal)
             media._videoProgress = 2;
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(2);
@@ -143,43 +193,7 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Step 2: Open modal with video element FIRST, then stream into it
-            const modalBody = document.getElementById('modalBody');
-            const modalTitle = document.getElementById('modalTitle');
-            const modalEl = document.getElementById('modal');
-            if (!modalBody || !modalEl) {
-                throw new Error('無法開啟播放視窗');
-            }
-
-            const classesToRemove = [
-                'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
-                'confirm-modal', 'nickname-modal', 'avatar-modal',
-                'avatar-preview-modal', 'settings-modal'
-            ];
-            modalEl.classList.remove(...classesToRemove);
-            modalBody.innerHTML = '';
-            if (modalTitle) {
-                modalTitle.textContent = media.name || '影片';
-                modalTitle.setAttribute('title', media.name || '影片');
-            }
-
-            const container = document.createElement('div');
-            container.className = 'preview-wrap';
-            const wrap = document.createElement('div');
-            wrap.className = 'viewer';
-            container.appendChild(wrap);
-            modalBody.appendChild(container);
-
-            const video = document.createElement('video');
-            video.controls = true;
-            video.playsInline = true;
-            video.autoplay = true;
-            wrap.appendChild(video);
-
-            this.deps.openPreviewModal?.();
-
             // Step 3: Stream chunks via MSE
-            let firstChunkData = null;
             let chunkIndex = 0;
 
             for await (const { data, index } of streamChunks({
@@ -196,7 +210,6 @@ export class MediaHandlingController extends BaseController {
             })) {
                 if (index === 0) {
                     // First chunk = init segment — detect codec and init MSE
-                    firstChunkData = data;
                     const contentType = manifest.contentType || 'video/mp4';
                     const { mimeCodec } = detectCodecFromFirstChunk(data, contentType);
 
@@ -218,6 +231,14 @@ export class MediaHandlingController extends BaseController {
                     if (msePlayer) {
                         await msePlayer.appendChunk(data);
                     }
+
+                    // Remove buffering overlay after first media segment is appended
+                    if (chunkIndex === 1 && bufOverlay.parentNode) {
+                        bufOverlay.classList.add('fade-out');
+                        setTimeout(() => {
+                            try { bufOverlay.remove(); } catch {}
+                        }, 300);
+                    }
                 }
                 chunkIndex++;
             }
@@ -225,6 +246,11 @@ export class MediaHandlingController extends BaseController {
             // All chunks appended — signal end of stream
             if (msePlayer) {
                 msePlayer.endOfStream();
+            }
+
+            // Ensure overlay is removed even if only 1 chunk
+            if (bufOverlay.parentNode) {
+                try { bufOverlay.remove(); } catch {}
             }
 
             endDownload();
@@ -253,12 +279,16 @@ export class MediaHandlingController extends BaseController {
                 msePlayer = null;
             }
             if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
+                // If aborted, close the modal
+                this.deps.closePreviewModal?.();
                 return;
             }
             console.error('Video playback error', err);
             media._videoState = 'idle';
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
+            // Close modal and show toast on error
+            this.deps.closePreviewModal?.();
             this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }
     }
