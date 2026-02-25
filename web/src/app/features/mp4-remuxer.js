@@ -386,13 +386,6 @@ export async function remuxToFragmentedMp4(file) {
     const initSegments = [];
     const mediaSegments = [];
 
-    // Multi-track segment merging state
-    let trackIds = [];
-    let numTracks = 0;
-    const segCountByTrack = {}; // trackId → count of segments received so far
-    const pendingByOrdinal = {}; // ordinal → { trackId: Uint8Array }
-    let nextEmitOrdinal = 0;
-
     mp4boxFile.onError = (err) => {
       reject(new Error('影片解析失敗：' + (err?.message || err || 'unknown mp4box error')));
     };
@@ -402,10 +395,6 @@ export async function remuxToFragmentedMp4(file) {
         reject(new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道'));
         return;
       }
-
-      trackIds = info.tracks.map(t => t.id);
-      numTracks = trackIds.length;
-      for (const tid of trackIds) segCountByTrack[tid] = 0;
 
       for (const track of info.tracks) {
         mp4boxFile.setSegmentOptions(track.id, null, {
@@ -421,30 +410,14 @@ export async function remuxToFragmentedMp4(file) {
       mp4boxFile.start();
     };
 
-    mp4boxFile.onSegment = (id, _user, buffer, _sampleNum, _isLast) => {
-      if (numTracks <= 1) {
-        // Single track — no merging needed
-        mediaSegments.push(new Uint8Array(buffer));
-        return;
-      }
-
-      // Multi-track: buffer by ordinal and merge when all tracks have a segment
-      const ordinal = segCountByTrack[id];
-      segCountByTrack[id]++;
-
-      if (!pendingByOrdinal[ordinal]) pendingByOrdinal[ordinal] = {};
-      pendingByOrdinal[ordinal][id] = new Uint8Array(buffer);
-
-      // Emit merged segments in order when all tracks are available
-      while (
-        pendingByOrdinal[nextEmitOrdinal] &&
-        Object.keys(pendingByOrdinal[nextEmitOrdinal]).length === numTracks
-      ) {
-        const parts = trackIds.map(tid => pendingByOrdinal[nextEmitOrdinal][tid]);
-        mediaSegments.push(concatU8(parts));
-        delete pendingByOrdinal[nextEmitOrdinal];
-        nextEmitOrdinal++;
-      }
+    // Each onSegment call produces a valid single-track moof+mdat fragment.
+    // For multi-track files, mp4box.js fires per-track in interleaved order:
+    //   video_seg_0, audio_seg_0, video_seg_1, audio_seg_1, ...
+    // MSE SourceBuffer can handle these as individual appends, as long as the
+    // init segment (merged moov) declares all tracks.
+    // No merging needed — just push each fragment directly.
+    mp4boxFile.onSegment = (_id, _user, buffer, _sampleNum, _isLast) => {
+      mediaSegments.push(new Uint8Array(buffer));
     };
 
     // Feed the entire file to mp4box
@@ -463,30 +436,13 @@ export async function remuxToFragmentedMp4(file) {
     // Give mp4box a moment to process all segments
     setTimeout(() => {
       try {
-        // Flush remaining buffered segments (tail segments from unequal track counts)
-        if (numTracks > 1) {
-          const maxOrdinal = Math.max(...Object.values(segCountByTrack));
-          for (let ord = nextEmitOrdinal; ord < maxOrdinal; ord++) {
-            const pending = pendingByOrdinal[ord];
-            if (!pending) continue;
-            // Emit whatever segments are available for this ordinal
-            const parts = [];
-            for (const tid of trackIds) {
-              if (pending[tid]) parts.push(pending[tid]);
-            }
-            if (parts.length > 0) {
-              mediaSegments.push(concatU8(parts));
-            }
-            delete pendingByOrdinal[ord];
-          }
-        }
-
         if (initSegments.length === 0 || mediaSegments.length === 0) {
           reject(new UnsupportedVideoFormatError('影片轉檔失敗：無法產生有效的分片格式'));
           return;
         }
 
         // Merge per-track init segments into a single valid init segment
+        // (one ftyp + one moov containing all trak atoms + combined mvex)
         const initSegment = mergeInitSegments(initSegments);
 
         const segments = [initSegment, ...mediaSegments];
