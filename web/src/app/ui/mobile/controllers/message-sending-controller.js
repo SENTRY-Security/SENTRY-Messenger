@@ -244,14 +244,23 @@ export class MessageSendingController extends BaseController {
                         targetMsg.text = payload?.msg?.text || targetMsg.text;
                         const pm = payload?.msg?.media || {};
                         const tm = targetMsg.media;
+
+                        // Revoke the local blob URL to free memory — video will be re-downloaded for playback
+                        const isVideo = (pm.contentType || tm.contentType || file.type || '').toLowerCase().startsWith('video/');
+                        if (isVideo && localUrl) {
+                            try { URL.revokeObjectURL(localUrl); } catch {}
+                        }
+
                         targetMsg.media = {
                             ...tm,
                             ...pm,
                             name: (pm.name || tm.name || file.name || '附件'),
                             size: Number.isFinite(pm.size) ? pm.size : (typeof file.size === 'number' ? file.size : tm.size || null),
                             contentType: pm.contentType || tm.contentType || file.type || 'application/octet-stream',
-                            localUrl: tm.localUrl || localUrl,
-                            previewUrl: pm.previewUrl || tm.previewUrl || tm.localUrl || localUrl,
+                            // For videos: don't keep localUrl (blob), use previewUrl (thumbnail data URL) only
+                            // For non-videos: keep localUrl for preview
+                            localUrl: isVideo ? null : (tm.localUrl || localUrl),
+                            previewUrl: pm.previewUrl || tm.previewUrl || (isVideo ? null : (tm.localUrl || localUrl)),
                             uploading: false,
                             progress: 100,
                             preview: pm.preview || tm.preview || null

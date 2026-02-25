@@ -383,15 +383,25 @@ export class MessageRenderer {
             this._attachMediaLoadScrollGuard(img);
             setPreviewSource(img, media);
         } else if (type.startsWith('video/')) {
-            const video = document.createElement('video');
-            video.className = 'message-file-preview-video';
-            video.controls = true;
-            video.muted = true;
-            video.playsInline = true;
-            video.preload = 'metadata';
-            container.appendChild(video);
-            this._attachMediaLoadScrollGuard(video);
-            setPreviewSource(video, media);
+            // For videos, prefer showing a still thumbnail image (JPEG preview)
+            // instead of a <video> element to avoid keeping video blobs in memory.
+            const hasPreview = media?.previewUrl || media?.preview?.localUrl ||
+                (media?.preview?.objectKey && media?.preview?.envelope);
+            if (hasPreview) {
+                const img = document.createElement('img');
+                img.className = 'message-file-preview-image';
+                img.alt = media?.name || 'video preview';
+                img.decoding = 'async';
+                container.appendChild(img);
+                this._attachMediaLoadScrollGuard(img);
+                setPreviewSource(img, media);
+            } else {
+                // No preview thumbnail available — show generic video icon
+                const generic = document.createElement('div');
+                generic.className = 'message-file-preview-generic';
+                generic.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+                container.appendChild(generic);
+            }
         } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
             const pdf = document.createElement('canvas');
             pdf.className = 'message-file-preview-pdf';
@@ -509,7 +519,9 @@ export class MessageRenderer {
 
     /**
      * Render a video download/play overlay on top of the preview thumbnail.
-     * States managed via media._videoState: 'idle' | 'downloading' | 'ready'
+     * States: 'idle' (show play button) | 'downloading' (show progress).
+     * No 'ready' state — each play triggers a fresh download/stream to avoid
+     * storing large video blobs in memory.
      */
     renderVideoOverlay(wrapper, media, msgId) {
         if (!wrapper || !media) return;
@@ -565,7 +577,8 @@ export class MessageRenderer {
             });
             barWrap.appendChild(bar);
             overlay.appendChild(barWrap);
-        } else if (state === 'ready') {
+        } else {
+            // idle — show play button (every click triggers a fresh download/stream)
             overlay.style.background = 'rgba(15,23,42,0.38)';
             overlay.style.color = '#fff';
             const btn = document.createElement('button');
@@ -584,34 +597,7 @@ export class MessageRenderer {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.warn('[VideoOverlay] play clicked', msgId, {
-                    hasBlob: !!media?._videoBlob,
-                    hasUrl: !!media?._videoDownloadedUrl,
-                    hasLocal: !!media?.localUrl,
-                    hasCallback: !!this.callbacks?.onPlayVideo
-                });
-                this.callbacks.onPlayVideo?.(media, msgId);
-            });
-            overlay.appendChild(btn);
-        } else {
-            // idle — show download button
-            overlay.style.background = 'rgba(15,23,42,0.55)';
-            overlay.style.color = '#fff';
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'video-download-btn';
-            btn.innerHTML = '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
-            Object.assign(btn.style, {
-                background: 'rgba(0,0,0,0.45)',
-                border: '2px solid rgba(255,255,255,0.6)',
-                borderRadius: '50%',
-                width: '52px', height: '52px',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', color: '#fff'
-            });
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+                // Unified play: always triggers fresh download/stream
                 this.callbacks.onDownloadVideo?.(media, msgId);
             });
             overlay.appendChild(btn);
@@ -646,12 +632,13 @@ export class MessageRenderer {
         wrapper.appendChild(preview);
         wrapper.appendChild(info);
 
-        // For videos, use the download → play overlay instead of direct preview interaction.
-        // Outgoing videos with localUrl start in 'ready' state (blob still in memory).
+        // For videos, use the download/play overlay instead of direct preview interaction.
+        // All videos start in 'idle' state — no blobs are stored in memory.
+        // Each click triggers a fresh download/stream.
         const isVideo = (media.contentType || '').toLowerCase().startsWith('video/');
         const needsVideoOverlay = isVideo && !media.uploading;
-        if (needsVideoOverlay && media.localUrl && !media._videoState) {
-            media._videoState = 'ready';
+        if (needsVideoOverlay && !media._videoState) {
+            media._videoState = 'idle';
         }
         if (!needsVideoOverlay) {
             this.enableMediaPreviewInteraction(wrapper, media);
