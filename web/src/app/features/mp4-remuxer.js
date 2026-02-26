@@ -107,10 +107,21 @@ function parseTopLevelBoxes(u8) {
   return boxes;
 }
 
+// Boxes that are part of the init segment (before first moof)
+const INIT_BOX_TYPES = new Set(['ftyp', 'moov', 'free', 'skip', 'wide']);
+// Boxes that appear between segments but belong WITH the next moof+mdat pair
+const SEGMENT_PREFIX_TYPES = new Set(['styp', 'sidx', 'ssix', 'prft']);
+// Boxes at the end of the file that are NOT valid media segments
+const TRAILING_BOX_TYPES = new Set(['mfra', 'mfro', 'free', 'skip', 'wide']);
+
 /**
  * Parse top-level MP4 boxes and split an already-fragmented MP4 into
  * an init segment (ftyp + moov) and media segments (each moof + mdat pair).
  * Already-fragmented files are typically single-SourceBuffer compatible.
+ *
+ * Correctly handles:
+ * - styp/sidx boxes that precede moof (included with the next segment)
+ * - Trailing non-media boxes like mfra/free (discarded, not valid MSE segments)
  *
  * @param {Uint8Array} u8 - The fMP4 file bytes
  * @returns {{ initSegment: Uint8Array, mediaSegments: Uint8Array[] }}
@@ -120,7 +131,10 @@ function splitFragmentedMp4(u8) {
   const mediaSegments = [];
   let i = 0;
   let foundFirstMoof = false;
+  // Pending parts that will become part of the next segment (styp, sidx, moof, mdat)
   let currentSegParts = [];
+  // Whether the current pending parts contain a moof (i.e. a real segment is forming)
+  let currentHasMoof = false;
 
   while (i < u8.length - 7) {
     let boxSize = readU32(u8, i);
@@ -134,31 +148,52 @@ function splitFragmentedMp4(u8) {
 
     const boxData = u8.subarray(i, i + boxSize);
 
-    if (boxType === 'moof') {
-      foundFirstMoof = true;
-      if (currentSegParts.length > 0) {
-        mediaSegments.push(concatU8(currentSegParts));
-        currentSegParts = [];
-      }
-      currentSegParts.push(boxData);
-    } else if (boxType === 'mdat') {
-      if (foundFirstMoof) {
+    if (!foundFirstMoof) {
+      // Before first moof — everything goes to init
+      if (boxType === 'moof') {
+        foundFirstMoof = true;
         currentSegParts.push(boxData);
-        mediaSegments.push(concatU8(currentSegParts));
-        currentSegParts = [];
+        currentHasMoof = true;
       } else {
         initParts.push(boxData);
       }
-    } else if (!foundFirstMoof) {
-      initParts.push(boxData);
-    } else {
+    } else if (boxType === 'moof') {
+      // New moof — flush previous segment if it contains a complete moof+mdat
+      if (currentSegParts.length > 0 && currentHasMoof) {
+        mediaSegments.push(concatU8(currentSegParts));
+        currentSegParts = [];
+        currentHasMoof = false;
+      } else if (currentSegParts.length > 0 && !currentHasMoof) {
+        // Pending prefix boxes (styp/sidx) without moof — keep them, they belong with this moof
+      }
       currentSegParts.push(boxData);
+      currentHasMoof = true;
+    } else if (boxType === 'mdat') {
+      // mdat — always pair with the current moof
+      currentSegParts.push(boxData);
+      if (currentHasMoof) {
+        mediaSegments.push(concatU8(currentSegParts));
+        currentSegParts = [];
+        currentHasMoof = false;
+      }
+    } else if (SEGMENT_PREFIX_TYPES.has(boxType)) {
+      // styp/sidx/ssix/prft — keep as prefix for the next moof+mdat segment
+      currentSegParts.push(boxData);
+    } else if (TRAILING_BOX_TYPES.has(boxType)) {
+      // mfra/free/skip/wide after media segments — discard (not valid MSE data)
+    } else {
+      // Unknown box type after first moof — include with current segment if building one
+      if (currentHasMoof) {
+        currentSegParts.push(boxData);
+      }
+      // Otherwise discard (not a valid media segment on its own)
     }
 
     i += boxSize;
   }
 
-  if (currentSegParts.length > 0) {
+  // Flush remaining segment only if it contains a moof (i.e. a real media segment)
+  if (currentSegParts.length > 0 && currentHasMoof) {
     mediaSegments.push(concatU8(currentSegParts));
   }
 

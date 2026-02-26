@@ -187,47 +187,106 @@ function tryReadAvcProfile(data, avc1Offset) {
 
 // ─── Single SourceBuffer Append Queue (internal) ───
 
-function createAppendQueue(sourceBuffer, onError) {
+// Seconds of already-played buffer to keep before evicting.
+const BUFFER_EVICT_KEEP_BEHIND = 5;
+// Max retries for QuotaExceededError before giving up.
+const QUOTA_MAX_RETRIES = 3;
+
+function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSource } = {}) {
   let queue = [];
   let appending = false;
   let destroyed = false;
+  let paused = false;  // For MMS endstreaming
+
+  /**
+   * Evict already-played buffer to free space for new appends.
+   * Returns a Promise that resolves when the eviction updateend fires.
+   */
+  function evictPlayed() {
+    const video = getVideoElement?.();
+    if (!video || !sourceBuffer || sourceBuffer.updating) return Promise.resolve();
+
+    const currentTime = video.currentTime || 0;
+    const removeEnd = Math.max(0, currentTime - BUFFER_EVICT_KEEP_BEHIND);
+    if (removeEnd <= 0) return Promise.resolve();
+
+    // Check if there's anything to remove
+    const buffered = sourceBuffer.buffered;
+    if (!buffered || buffered.length === 0 || buffered.start(0) >= removeEnd) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      const onDone = () => {
+        sourceBuffer.removeEventListener('updateend', onDone);
+        resolve();
+      };
+      sourceBuffer.addEventListener('updateend', onDone);
+      try {
+        sourceBuffer.remove(0, removeEnd);
+      } catch {
+        sourceBuffer.removeEventListener('updateend', onDone);
+        resolve();
+      }
+    });
+  }
 
   const processQueue = () => {
-    if (destroyed || appending || !sourceBuffer || !queue.length) return;
+    if (destroyed || appending || paused || !sourceBuffer || !queue.length) return;
     if (sourceBuffer.updating) return;
 
-    const { data, resolve, reject } = queue.shift();
+    const ms = getMediaSource?.();
+    if (ms && ms.readyState !== 'open') return;
+
+    const entry = queue.shift();
     appending = true;
 
-    const onUpdate = () => {
-      sourceBuffer.removeEventListener('updateend', onUpdate);
-      sourceBuffer.removeEventListener('error', onErr);
-      appending = false;
-      resolve();
-      processQueue();
+    let quotaRetries = 0;
+
+    const attemptAppend = (data) => {
+      const onUpdate = () => {
+        sourceBuffer.removeEventListener('updateend', onUpdate);
+        sourceBuffer.removeEventListener('error', onErr);
+        appending = false;
+        entry.resolve();
+        processQueue();
+      };
+
+      const onErr = () => {
+        sourceBuffer.removeEventListener('updateend', onUpdate);
+        sourceBuffer.removeEventListener('error', onErr);
+        appending = false;
+        const err = new Error('SourceBuffer append error');
+        entry.reject(err);
+        onError?.(err);
+      };
+
+      sourceBuffer.addEventListener('updateend', onUpdate);
+      sourceBuffer.addEventListener('error', onErr);
+
+      try {
+        sourceBuffer.appendBuffer(data);
+      } catch (err) {
+        sourceBuffer.removeEventListener('updateend', onUpdate);
+        sourceBuffer.removeEventListener('error', onErr);
+        appending = false;
+
+        // QuotaExceededError — evict played buffer and retry
+        if (err.name === 'QuotaExceededError' && quotaRetries < QUOTA_MAX_RETRIES) {
+          quotaRetries++;
+          evictPlayed().then(() => {
+            if (destroyed) { entry.reject(new Error('queue destroyed')); return; }
+            attemptAppend(data);
+          });
+          return;
+        }
+
+        entry.reject(err);
+        onError?.(err);
+      }
     };
 
-    const onErr = () => {
-      sourceBuffer.removeEventListener('updateend', onUpdate);
-      sourceBuffer.removeEventListener('error', onErr);
-      appending = false;
-      const err = new Error('SourceBuffer append error');
-      reject(err);
-      onError?.(err);
-    };
-
-    sourceBuffer.addEventListener('updateend', onUpdate);
-    sourceBuffer.addEventListener('error', onErr);
-
-    try {
-      sourceBuffer.appendBuffer(data);
-    } catch (err) {
-      sourceBuffer.removeEventListener('updateend', onUpdate);
-      sourceBuffer.removeEventListener('error', onErr);
-      appending = false;
-      reject(err);
-      onError?.(err);
-    }
+    attemptAppend(entry.data);
   };
 
   return {
@@ -239,6 +298,9 @@ function createAppendQueue(sourceBuffer, onError) {
       });
     },
     flush() { processQueue(); },
+    pause() { paused = true; },
+    resume() { paused = false; processQueue(); },
+    get pending() { return queue.length + (appending ? 1 : 0); },
     destroy() { destroyed = true; queue = []; }
   };
 }
@@ -257,14 +319,14 @@ function createAppendQueue(sourceBuffer, onError) {
  *   await player.appendChunk('audio', initSegmentData);
  *   await player.appendChunk('video', mediaSegmentData);
  *   // ...
- *   player.endOfStream();
+ *   await player.endOfStream();
  *
  * Usage for single-track / muxed:
  *   const player = createMsePlayer({ videoElement, onError });
  *   await player.addSourceBuffer('muxed', mimeCodec);
  *   await player.appendChunk('muxed', initData);
  *   await player.appendChunk('muxed', mediaData);
- *   player.endOfStream();
+ *   await player.endOfStream();
  */
 export function createMsePlayer({ videoElement, onError }) {
   let mediaSource = null;
@@ -294,9 +356,7 @@ export function createMsePlayer({ videoElement, onError }) {
         videoElement.disableRemotePlayback = true;
       }
 
-      objectUrl = URL.createObjectURL(mediaSource);
-      videoElement.src = objectUrl;
-
+      // Bind event listeners BEFORE setting src to avoid race conditions
       mediaSource.addEventListener('sourceopen', () => {
         sourceOpen = true;
         resolve();
@@ -310,13 +370,24 @@ export function createMsePlayer({ videoElement, onError }) {
       }, { once: true });
 
       if (isMMS) {
+        // ManagedMediaSource: pause/resume append queues based on streaming state.
+        // iOS Safari fires endstreaming when it has enough buffered data;
+        // startstreaming when it needs more.
         mediaSource.addEventListener('startstreaming', () => {
-          // Resume any paused queues
           for (const b of Object.values(buffers)) {
-            b.queue.flush();
+            b.queue.resume();
+          }
+        });
+        mediaSource.addEventListener('endstreaming', () => {
+          for (const b of Object.values(buffers)) {
+            b.queue.pause();
           }
         });
       }
+
+      // Set src after event listeners are bound
+      objectUrl = URL.createObjectURL(mediaSource);
+      videoElement.src = objectUrl;
     });
   }
 
@@ -333,7 +404,11 @@ export function createMsePlayer({ videoElement, onError }) {
     const sb = mediaSource.addSourceBuffer(mimeCodec);
     sb.mode = 'segments';
 
-    const queue = createAppendQueue(sb, onError);
+    const queue = createAppendQueue(sb, {
+      onError,
+      getVideoElement: () => videoElement,
+      getMediaSource: () => mediaSource
+    });
     buffers[label] = { sourceBuffer: sb, queue, mimeCodec };
   }
 
@@ -355,36 +430,59 @@ export function createMsePlayer({ videoElement, onError }) {
 
     /**
      * Signal end of stream after all queued chunks have been appended.
+     * Returns a Promise that resolves when endOfStream has been called.
      */
     endOfStream() {
-      if (destroyed || !mediaSource) return;
-      // Wait for all queues to drain, then call endOfStream
-      const allDone = () => {
-        try {
-          if (mediaSource.readyState === 'open') {
-            mediaSource.endOfStream();
-          }
-        } catch (err) {
-          console.warn('[mse-player] endOfStream error:', err?.message);
-        }
-      };
+      if (destroyed || !mediaSource) return Promise.resolve();
 
-      // Check if any SourceBuffer is still updating
-      const anyUpdating = Object.values(buffers).some(b => b.sourceBuffer?.updating);
-      if (!anyUpdating) {
-        allDone();
-      } else {
-        // Wait for all to finish
-        const checkInterval = setInterval(() => {
-          const still = Object.values(buffers).some(b => b.sourceBuffer?.updating);
-          if (!still) {
-            clearInterval(checkInterval);
-            allDone();
+      return new Promise((resolve) => {
+        const callEndOfStream = () => {
+          try {
+            if (mediaSource && mediaSource.readyState === 'open') {
+              mediaSource.endOfStream();
+            }
+          } catch (err) {
+            console.warn('[mse-player] endOfStream error:', err?.message);
           }
-        }, 50);
-        // Safety timeout
-        setTimeout(() => clearInterval(checkInterval), 10000);
-      }
+          resolve();
+        };
+
+        const waitForQuiet = () => {
+          if (destroyed || !mediaSource) { resolve(); return; }
+          const anyUpdating = Object.values(buffers).some(b => b.sourceBuffer?.updating);
+          const anyPending = Object.values(buffers).some(b => b.queue.pending > 0);
+          if (!anyUpdating && !anyPending) {
+            callEndOfStream();
+          } else {
+            // Poll until all SourceBuffers are idle
+            let attempts = 0;
+            const maxAttempts = 200; // 10s at 50ms intervals
+            const checkInterval = setInterval(() => {
+              attempts++;
+              if (destroyed || !mediaSource) {
+                clearInterval(checkInterval);
+                resolve();
+                return;
+              }
+              const still = Object.values(buffers).some(b => b.sourceBuffer?.updating);
+              const pending = Object.values(buffers).some(b => b.queue.pending > 0);
+              if (!still && !pending) {
+                clearInterval(checkInterval);
+                callEndOfStream();
+              } else if (attempts >= maxAttempts) {
+                clearInterval(checkInterval);
+                callEndOfStream(); // Force EOS after timeout
+              }
+            }, 50);
+          }
+        };
+
+        // Resume all paused queues so they can drain
+        for (const b of Object.values(buffers)) {
+          b.queue.resume();
+        }
+        waitForQuiet();
+      });
     },
 
     /**

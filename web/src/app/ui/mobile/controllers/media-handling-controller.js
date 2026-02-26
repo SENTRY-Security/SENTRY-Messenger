@@ -266,7 +266,7 @@ export class MediaHandlingController extends BaseController {
 
             // All chunks appended — signal end of stream
             if (msePlayer) {
-                msePlayer.endOfStream();
+                await msePlayer.endOfStream();
             }
 
             // Ensure overlay is removed
