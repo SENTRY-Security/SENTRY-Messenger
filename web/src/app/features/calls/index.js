@@ -60,5 +60,12 @@ export {
   setRemoteVideoElement,
   setLocalVideoElement,
   toggleLocalVideo,
-  switchCamera
+  switchCamera,
+  setFaceBlurEnabled,
+  isFaceBlurEnabled,
+  isFaceBlurActive
 } from './media-session.js';
+export {
+  createFaceBlurPipeline,
+  isFaceDetectorSupported
+} from './face-blur.js';

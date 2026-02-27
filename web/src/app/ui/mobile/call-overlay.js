@@ -21,7 +21,10 @@ import {
   getRemoteStream,
   toggleLocalVideo,
   switchCamera,
-  resolveCallPeerProfile
+  resolveCallPeerProfile,
+  setFaceBlurEnabled,
+  isFaceBlurEnabled,
+  isFaceBlurActive
 } from '../../features/calls/index.js';
 import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
@@ -490,6 +493,7 @@ function ensureOverlayElements() {
       hangupBtn: root.querySelector('[data-call-action="hangup"]'),
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
+      faceBlurBtn: root.querySelector('[data-call-action="face-blur"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
@@ -547,6 +551,9 @@ function ensureOverlayElements() {
         <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
           <i class='bx bx-refresh'></i><span>翻轉</span>
         </button>
+        <button type="button" class="call-btn toggle active" data-call-action="face-blur" aria-pressed="true" style="display:none">
+          <i class='bx bx-face'></i><span>模糊</span>
+        </button>
       </div>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
       <video class="call-remote-video" autoplay playsinline muted style="display:none"></video>
@@ -590,6 +597,7 @@ function ensureOverlayElements() {
       hangupBtn: root.querySelector('[data-call-action="hangup"]'),
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
+      faceBlurBtn: root.querySelector('[data-call-action="face-blur"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
@@ -1037,6 +1045,7 @@ export function initCallOverlay({ showToast }) {
     setToggleState(ui.muteBtn, !!localMuted);
     const videoEnabled = controls.videoEnabled ?? !isLocalVideoMuted();
     setToggleState(ui.cameraBtn, !!videoEnabled);
+    setToggleState(ui.faceBlurBtn, isFaceBlurEnabled());
   }
 
   function updateBubbleDetails(profile) {
@@ -1112,11 +1121,13 @@ export function initCallOverlay({ showToast }) {
     const inCall = session.status === CALL_SESSION_STATUS.IN_CALL;
     const connecting = session.status === CALL_SESSION_STATUS.CONNECTING;
 
-    // Camera / flip buttons visibility
+    // Camera / flip / face-blur buttons visibility
     if (ui.cameraBtn) ui.cameraBtn.style.display = isVideo && showControlsRow ? 'flex' : 'none';
     if (ui.flipCameraBtn) ui.flipCameraBtn.style.display = isVideo && showControlsRow ? 'flex' : 'none';
+    if (ui.faceBlurBtn) ui.faceBlurBtn.style.display = isVideo && showControlsRow && isFaceBlurActive() ? 'flex' : 'none';
     if (ui.cameraBtn) ui.cameraBtn.disabled = togglesDisabled;
     if (ui.flipCameraBtn) ui.flipCameraBtn.disabled = togglesDisabled;
+    if (ui.faceBlurBtn) ui.faceBlurBtn.disabled = togglesDisabled;
 
     // Video elements
     if (isVideo) {
@@ -1187,6 +1198,7 @@ export function initCallOverlay({ showToast }) {
       if (ui.videoTopBar) ui.videoTopBar.style.display = 'none';
       if (ui.cameraBtn) ui.cameraBtn.style.display = 'none';
       if (ui.flipCameraBtn) ui.flipCameraBtn.style.display = 'none';
+      if (ui.faceBlurBtn) ui.faceBlurBtn.style.display = 'none';
       // Reset accept button for voice
       if (ui.acceptBtn && incoming) {
         ui.acceptBtn.innerHTML = "<i class='bx bx-phone'></i>接聽";
@@ -1370,6 +1382,12 @@ export function initCallOverlay({ showToast }) {
     await switchCamera();
   }
 
+  function handleFaceBlurToggle() {
+    const next = !isFaceBlurEnabled();
+    setFaceBlurEnabled(next);
+    setToggleState(ui.faceBlurBtn, next);
+  }
+
   ui.acceptBtn?.addEventListener('click', handleAccept);
   ui.rejectBtn?.addEventListener('click', handleReject);
   ui.cancelBtn?.addEventListener('click', handleCancel);
@@ -1377,6 +1395,7 @@ export function initCallOverlay({ showToast }) {
   ui.muteBtn?.addEventListener('click', handleMuteToggle);
   ui.cameraBtn?.addEventListener('click', handleCameraToggle);
   ui.flipCameraBtn?.addEventListener('click', handleFlipCamera);
+  ui.faceBlurBtn?.addEventListener('click', handleFaceBlurToggle);
   ui.minifyBtn?.addEventListener('click', minimizeOverlay);
   // Wire video elements to media-session
   if (ui.remoteVideo) setRemoteVideoElement(ui.remoteVideo);
@@ -1444,6 +1463,7 @@ export function initCallOverlay({ showToast }) {
     ui.muteBtn?.removeEventListener('click', handleMuteToggle);
     ui.cameraBtn?.removeEventListener('click', handleCameraToggle);
     ui.flipCameraBtn?.removeEventListener('click', handleFlipCamera);
+    ui.faceBlurBtn?.removeEventListener('click', handleFaceBlurToggle);
     ui.minifyBtn?.removeEventListener('click', minimizeOverlay);
     setRemoteVideoElement(null);
     setLocalVideoElement(null);
