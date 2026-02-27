@@ -9,6 +9,7 @@ import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
 import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer } from '../../../features/mse-player.js';
+import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -209,12 +210,13 @@ export class MediaHandlingController extends BaseController {
             const isLegacyMultiTrack = numTracks > 1;
 
             // Create MSE player — always single 'muxed' SourceBuffer
-            msePlayer = createMsePlayer({
+            const createPlayer = () => createMsePlayer({
                 videoElement: video,
                 onError: (err) => {
                     console.warn('[mse-player] segment error (non-fatal):', err?.message || err);
                 }
             });
+            msePlayer = createPlayer();
             await msePlayer.open();
 
             let mseInitialized = false;
@@ -222,6 +224,52 @@ export class MediaHandlingController extends BaseController {
             let consecutiveErrors = 0;
             const MAX_CONSECUTIVE_ERRORS = 5;
             const initChunks = []; // For legacy multi-track: collect init segments
+
+            /**
+             * Try to initialize MSE with the given init segment and codec.
+             * Returns true on success. On failure, tries fallback strategies:
+             *   1. Re-detect codec from actual init segment bytes
+             *   2. Recreate MSE player and retry with detected codec
+             */
+            const tryInitMse = async (initData, primaryMimeCodec) => {
+                // Build ordered list of codecs to try
+                const codecs = [];
+                // Prefer codec detected from actual init segment data (most accurate)
+                const detected = detectCodecFromInitSegment(initData, 'muxed');
+                if (detected) codecs.push(detected);
+                // Then manifest codec (might differ in profile/level)
+                if (primaryMimeCodec && !codecs.includes(primaryMimeCodec)) {
+                    codecs.push(primaryMimeCodec);
+                }
+                if (codecs.length === 0) {
+                    throw new Error('無法偵測影片編碼格式');
+                }
+
+                for (let attempt = 0; attempt < codecs.length; attempt++) {
+                    const codec = codecs[attempt];
+                    try {
+                        if (attempt > 0) {
+                            // Previous codec failed — recreate MSE player entirely
+                            console.warn(`[mse] init append failed with ${codecs[attempt - 1]}, retrying with ${codec}`);
+                            try { msePlayer.destroy(); } catch {}
+                            video.src = '';
+                            video.load();
+                            msePlayer = createPlayer();
+                            await msePlayer.open();
+                        }
+                        msePlayer.addSourceBuffer('muxed', codec);
+                        await msePlayer.appendChunk('muxed', initData);
+                        return; // Success
+                    } catch (err) {
+                        console.warn(`[mse] init attempt ${attempt + 1}/${codecs.length} failed (${codec}):`, err?.message);
+                        if (attempt === codecs.length - 1) {
+                            // All codecs exhausted — try one more time with a clean player
+                            // using the first detected codec but without setting sb.mode
+                            throw err;
+                        }
+                    }
+                }
+            };
 
             // Step 3: Stream chunks via MSE
             for await (const { data, index } of streamChunks({
@@ -246,22 +294,14 @@ export class MediaHandlingController extends BaseController {
 
                         const mergedInit = mergeInitSegments(initChunks);
                         const manifestCodec = manifestTracks.map(t => t.codec).filter(Boolean).join(',');
-                        let mimeCodec = manifestCodec ? buildMimeFromCodecString(manifestCodec) : null;
-                        if (!mimeCodec) mimeCodec = detectCodecFromInitSegment(mergedInit, 'muxed');
-                        if (!mimeCodec) throw new Error('無法偵測影片編碼格式');
-
-                        msePlayer.addSourceBuffer('muxed', mimeCodec);
-                        await msePlayer.appendChunk('muxed', mergedInit);
+                        const primaryMime = manifestCodec ? buildMimeFromCodecString(manifestCodec) : null;
+                        await tryInitMse(mergedInit, primaryMime);
                         mseInitialized = true;
                     } else {
                         // New muxed manifest: single init segment (chunk 0)
                         const track = manifestTracks[0];
-                        let mimeCodec = track.codec ? buildMimeFromCodecString(track.codec) : null;
-                        if (!mimeCodec) mimeCodec = detectCodecFromInitSegment(data, 'muxed');
-                        if (!mimeCodec) throw new Error('無法偵測影片編碼格式');
-
-                        msePlayer.addSourceBuffer('muxed', mimeCodec);
-                        await msePlayer.appendChunk('muxed', data);
+                        const primaryMime = track.codec ? buildMimeFromCodecString(track.codec) : null;
+                        await tryInitMse(data, primaryMime);
                         mseInitialized = true;
                     }
                 } else {

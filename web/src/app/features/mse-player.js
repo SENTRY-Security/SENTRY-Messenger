@@ -454,7 +454,11 @@ export function createMsePlayer({ videoElement, onError }) {
     if (buffers[label]) throw new Error(`SourceBuffer "${label}" already exists`);
 
     const sb = mediaSource.addSourceBuffer(mimeCodec);
-    sb.mode = 'segments';
+    // On ManagedMediaSource (iOS Safari), setting mode can throw or cause
+    // later append errors. Only set explicitly on standard MediaSource.
+    if (!isMMS) {
+      try { sb.mode = 'segments'; } catch { /* leave browser default */ }
+    }
 
     const queue = createAppendQueue(sb, {
       onError,
@@ -464,9 +468,24 @@ export function createMsePlayer({ videoElement, onError }) {
     buffers[label] = { sourceBuffer: sb, queue, mimeCodec };
   }
 
+  /**
+   * Remove a previously-added SourceBuffer so it can be re-added with a
+   * different MIME codec string (used for init segment retry).
+   */
+  function removeSourceBuffer(label) {
+    const buf = buffers[label];
+    if (!buf) return;
+    buf.queue.destroy();
+    if (buf.sourceBuffer && mediaSource?.readyState === 'open') {
+      try { mediaSource.removeSourceBuffer(buf.sourceBuffer); } catch {}
+    }
+    delete buffers[label];
+  }
+
   return {
     open,
     addSourceBuffer,
+    removeSourceBuffer,
 
     /**
      * Queue a chunk of data to be appended to a specific track's SourceBuffer.
