@@ -248,7 +248,7 @@ export class MediaHandlingController extends BaseController {
             msePlayer = createMsePlayer({
                 videoElement: video,
                 onError: (err) => {
-                    console.error('[mse-player] error during playback:', err?.message || err);
+                    console.warn('[mse-player] segment error (non-fatal):', err?.message || err);
                 }
             });
             await msePlayer.open();
@@ -256,6 +256,8 @@ export class MediaHandlingController extends BaseController {
             // Track which SourceBuffers have been created (by trackIndex)
             const sbCreated = new Set();
             let firstMediaAppended = false;
+            let consecutiveErrors = 0;
+            const MAX_CONSECUTIVE_ERRORS = 5;
 
             // Step 3: Stream chunks via MSE
             for await (const { data, index } of streamChunks({
@@ -278,6 +280,7 @@ export class MediaHandlingController extends BaseController {
 
                 if (isInitSegment) {
                     // Init segment — detect codec and create SourceBuffer
+                    // Init errors are fatal (throw → caught by outer catch → blob fallback)
                     const trackType = manifestTracks[trackIndex].type;
                     const mimeCodec = detectCodecFromInitSegment(data, trackType);
 
@@ -292,10 +295,21 @@ export class MediaHandlingController extends BaseController {
 
                     await msePlayer.appendChunk(label, data);
                 } else {
-                    // Media segment — route to correct SourceBuffer
-                    await msePlayer.appendChunk(label, data);
+                    // Media segment — route to correct SourceBuffer.
+                    // Individual segment errors are non-fatal: skip and continue.
+                    try {
+                        await msePlayer.appendChunk(label, data);
+                        consecutiveErrors = 0;
+                    } catch (appendErr) {
+                        consecutiveErrors++;
+                        console.warn(`[mse] segment ${index} append failed (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, appendErr?.message);
+                        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                            throw new Error('MSE 串流持續失敗');
+                        }
+                        continue;
+                    }
 
-                    // Remove buffering overlay after first media segment
+                    // Remove buffering overlay after first successful media segment
                     if (!firstMediaAppended && bufOverlay.parentNode) {
                         firstMediaAppended = true;
                         bufOverlay.classList.add('fade-out');
@@ -336,25 +350,74 @@ export class MediaHandlingController extends BaseController {
             modalObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
 
         } catch (err) {
-            endDownload();
             // Release MSE resources
             if (msePlayer) {
                 try { msePlayer.destroy(); } catch {}
                 msePlayer = null;
             }
-            // Release video element — clear src to detach MediaSource and free
-            // the SourceBuffer memory held by the browser's media pipeline.
             try { video.src = ''; video.load(); } catch {}
+
             if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
-                // If aborted, close the modal
+                endDownload();
                 this.deps.closePreviewModal?.();
                 return;
             }
-            console.error('Video playback error', err);
+
+            // MSE failed — attempt blob URL fallback (re-download entire file).
+            // Works for muxed fMP4 and byte-range content; may not help multi-track
+            // but is harmless to try.
+            console.warn('[video] MSE failed, trying blob URL fallback:', err?.message);
+            try {
+                const { blob } = await downloadAllChunks({
+                    baseKey: media.baseKey,
+                    manifest,
+                    manifestEnvelope: media.manifestEnvelope,
+                    abortSignal: downloadAbort.signal,
+                    onProgress: ({ percent }) => {
+                        const adjusted = 5 + Math.round(percent * 0.9);
+                        media._videoProgress = Math.min(95, adjusted);
+                        this._updateVideoOverlayUI(msgId, media);
+                        updateDownloadProgress(media._videoProgress);
+                    }
+                });
+
+                const blobUrl = URL.createObjectURL(blob);
+                video.src = blobUrl;
+
+                if (bufOverlay?.parentNode) {
+                    bufOverlay.classList.add('fade-out');
+                    setTimeout(() => { try { bufOverlay.remove(); } catch {} }, 300);
+                }
+
+                endDownload();
+                media._videoState = 'idle';
+                media._videoProgress = 0;
+                this._updateVideoOverlayUI(msgId, media);
+
+                // Cleanup blob URL when modal closes
+                const blobObserver = new MutationObserver(() => {
+                    if (!modalEl.classList.contains('active') || modalEl.style.display === 'none') {
+                        try { URL.revokeObjectURL(blobUrl); } catch {}
+                        video.src = '';
+                        video.load();
+                        blobObserver.disconnect();
+                    }
+                });
+                blobObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
+                return;
+            } catch (fallbackErr) {
+                if (fallbackErr?.name === 'AbortError' || (fallbackErr instanceof DOMException && fallbackErr.message === 'aborted')) {
+                    endDownload();
+                    this.deps.closePreviewModal?.();
+                    return;
+                }
+                console.error('Video playback error (blob fallback also failed):', fallbackErr);
+            }
+
+            endDownload();
             media._videoState = 'idle';
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
-            // Close modal and show toast on error
             this.deps.closePreviewModal?.();
             this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }

@@ -286,6 +286,8 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
         const err = new Error('SourceBuffer append error');
         entry.reject(err);
         onError?.(err);
+        // Continue processing remaining entries so the queue doesn't stall
+        processQueue();
       };
 
       sourceBuffer.addEventListener('updateend', onUpdate);
