@@ -67,14 +67,43 @@ function needsTranscode(tracks) {
   return dominated;
 }
 
+// ─── Rotation detection from tkhd matrix ───
+
+/**
+ * Extract rotation angle (0, 90, 180, 270) from mp4box.js track.matrix.
+ * The matrix is a 3×3 column-major transform stored as 9 fixed-point values.
+ * mp4box.js exposes them as regular numbers (already divided by 0x10000).
+ */
+function getTrackRotation(track) {
+  const m = track.matrix;
+  if (!m || !Array.isArray(m) || m.length < 6) return 0;
+  // matrix layout: [a, b, u, c, d, v, tx, ty, w]
+  // a = m[0], b = m[1], c = m[3], d = m[4]
+  const a = m[0], b = m[1];
+  const deg = Math.round(Math.atan2(b, a) * (180 / Math.PI));
+  // Normalize to 0/90/180/270
+  const normalized = ((deg % 360) + 360) % 360;
+  if (normalized > 315 || normalized <= 45) return 0;
+  if (normalized > 45 && normalized <= 135) return 90;
+  if (normalized > 135 && normalized <= 225) return 180;
+  return 270;
+}
+
 // ─── Build encoder configs from mp4box track info ───
 
 function videoEncoderConfig(track) {
+  const codedW = track.video?.width || track.track_width || 640;
+  const codedH = track.video?.height || track.track_height || 480;
+  const rotation = getTrackRotation(track);
+  const swap = rotation === 90 || rotation === 270;
+
   // Target: H.264 Baseline for maximum MSE compatibility
+  // If source has 90°/270° rotation, swap output dimensions so the
+  // re-encoded video is already in display orientation (no matrix needed).
   return {
     codec: 'avc1.42001E', // Baseline profile, level 3.0
-    width: track.video?.width || track.track_width || 640,
-    height: track.video?.height || track.track_height || 480,
+    width: swap ? codedH : codedW,
+    height: swap ? codedW : codedH,
     bitrate: Math.min(
       (track.bitrate || 2_000_000),
       5_000_000
@@ -82,6 +111,7 @@ function videoEncoderConfig(track) {
     framerate: track.video?.frame_rate || track.timescale / (track.samples_duration / track.nb_samples) || 30,
     latencyMode: 'quality',
     avc: { format: 'avc' }, // Annex-B → mp4box expects AVC (length-prefixed)
+    _rotation: rotation, // internal: used by transcodeVideoTrack
   };
 }
 
@@ -345,6 +375,43 @@ function transcodeVideoTrack(track, samples, encConfig, output, onSample) {
     const totalCount = samples.length;
     let decoderDone = false;
 
+    const rotation = encConfig._rotation || 0;
+    const needsRotation = rotation !== 0;
+
+    // Prepare OffscreenCanvas for frame rotation (reused across all frames)
+    let rotCanvas = null;
+    let rotCtx = null;
+    if (needsRotation && typeof OffscreenCanvas === 'function') {
+      rotCanvas = new OffscreenCanvas(encConfig.width, encConfig.height);
+      rotCtx = rotCanvas.getContext('2d');
+    }
+
+    /**
+     * Rotate a decoded VideoFrame via OffscreenCanvas.
+     * Returns a new VideoFrame at the display dimensions; caller must close both.
+     */
+    function rotateFrame(frame) {
+      if (!rotCtx) return frame; // fallback: no rotation
+      const fw = frame.displayWidth;
+      const fh = frame.displayHeight;
+      const ow = encConfig.width;
+      const oh = encConfig.height;
+
+      rotCtx.clearRect(0, 0, ow, oh);
+      rotCtx.save();
+      rotCtx.translate(ow / 2, oh / 2);
+      rotCtx.rotate((rotation * Math.PI) / 180);
+      // After rotation, the source frame center must align with canvas center
+      rotCtx.drawImage(frame, -fw / 2, -fh / 2, fw, fh);
+      rotCtx.restore();
+
+      const rotated = new VideoFrame(rotCanvas, {
+        timestamp: frame.timestamp,
+        duration: frame.duration,
+      });
+      return rotated;
+    }
+
     // Encoder: collects re-encoded H.264 chunks
     const encoder = new VideoEncoder({
       output: (chunk, meta) => {
@@ -367,11 +434,16 @@ function transcodeVideoTrack(track, samples, encConfig, output, onSample) {
     });
     encoder.configure(encConfig);
 
-    // Decoder: decodes input frames → feeds to encoder
+    // Decoder: decodes input frames → optionally rotates → feeds to encoder
     const decoder = new VideoDecoder({
       output: (frame) => {
-        encoder.encode(frame, { keyFrame: decoded % 60 === 0 });
-        frame.close();
+        let toEncode = frame;
+        if (needsRotation) {
+          toEncode = rotateFrame(frame);
+          frame.close();
+        }
+        encoder.encode(toEncode, { keyFrame: decoded % 60 === 0 });
+        toEncode.close();
         decoded++;
       },
       error: (err) => reject(new Error('視訊解碼失敗：' + (err?.message || err))),

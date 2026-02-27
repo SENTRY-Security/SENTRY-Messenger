@@ -324,15 +324,20 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     const applyOrientation = () => {
         const w = video.videoWidth || 0;
         const h = video.videoHeight || 0;
-        const isLandscape = w > 0 && h > 0 && w >= h;
+        if (w <= 0 || h <= 0) return; // dimensions not yet available
+        const isLandscape = w > h;
         overlay.classList.toggle('vv-landscape', isLandscape);
         overlay.classList.toggle('vv-portrait', !isLandscape);
         statsPanel.classList.add('vv-stats-ready');
     };
 
+    // loadedmetadata: first chance — may report un-rotated coded dimensions
     video.addEventListener('loadedmetadata', applyOrientation);
+    // resize: fires when browser updates intrinsic size (e.g. after applying
+    // tkhd rotation matrix), giving us the correct display dimensions.
+    video.addEventListener('resize', applyOrientation);
 
-    // Fallback: if metadata doesn't arrive within 3s (e.g. slow MSE init),
+    // Fallback: if neither event fires within 3s (e.g. slow MSE init),
     // reveal the panel in its default portrait layout.
     const orientationFallbackTimer = setTimeout(() => {
         if (!statsPanel.classList.contains('vv-stats-ready')) {
