@@ -7,7 +7,7 @@
 
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
-import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
+import { downloadChunkedManifest, streamChunks, downloadAllChunks } from '../../../features/chunked-download.js';
 import { isMseSupported, detectCodecFromInitSegment, createMsePlayer } from '../../../features/mse-player.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
@@ -193,7 +193,51 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Determine track layout from manifest (v3)
+            // Non-segment-aligned manifests (WebM, byte-range chunks) cannot use
+            // MSE — the chunks are arbitrary byte ranges, not valid MSE segments.
+            // Fall back to downloading all chunks → blob URL → <video src>.
+            if (!manifest.segment_aligned || !manifest.tracks) {
+                const { blob, contentType } = await downloadAllChunks({
+                    baseKey: media.baseKey,
+                    manifest,
+                    manifestEnvelope: media.manifestEnvelope,
+                    abortSignal: downloadAbort.signal,
+                    onProgress: ({ percent }) => {
+                        const adjusted = 5 + Math.round(percent * 0.9);
+                        media._videoProgress = Math.min(95, adjusted);
+                        this._updateVideoOverlayUI(msgId, media);
+                        updateDownloadProgress(media._videoProgress);
+                    }
+                });
+
+                const blobUrl = URL.createObjectURL(blob);
+                video.src = blobUrl;
+
+                // Remove buffering overlay
+                if (bufOverlay.parentNode) {
+                    bufOverlay.classList.add('fade-out');
+                    setTimeout(() => { try { bufOverlay.remove(); } catch {} }, 300);
+                }
+
+                endDownload();
+                media._videoState = 'idle';
+                media._videoProgress = 0;
+                this._updateVideoOverlayUI(msgId, media);
+
+                // Cleanup blob URL when modal closes
+                const blobObserver = new MutationObserver(() => {
+                    if (!modalEl.classList.contains('active') || modalEl.style.display === 'none') {
+                        try { URL.revokeObjectURL(blobUrl); } catch {}
+                        video.src = '';
+                        video.load();
+                        blobObserver.disconnect();
+                    }
+                });
+                blobObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
+                return;
+            }
+
+            // Segment-aligned fMP4 — use MSE streaming playback
             const manifestTracks = manifest.tracks;
             const numTracks = manifestTracks.length;
 
@@ -211,8 +255,6 @@ export class MediaHandlingController extends BaseController {
 
             // Track which SourceBuffers have been created (by trackIndex)
             const sbCreated = new Set();
-            // Count init segments received (one per track)
-            let initSegmentsReceived = 0;
             let firstMediaAppended = false;
 
             // Step 3: Stream chunks via MSE

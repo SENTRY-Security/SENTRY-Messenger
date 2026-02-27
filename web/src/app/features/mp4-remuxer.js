@@ -326,9 +326,22 @@ export async function remuxToFragmentedMp4(file) {
         return;
       }
 
-      trackOrder = info.tracks.map(t => t.id);
+      // Only process video and audio tracks — subtitle, metadata, hint,
+      // and other track types are not supported by MSE SourceBuffer and
+      // would cause codec detection failures during playback.
+      const avTracks = info.tracks.filter(t => {
+        const tt = getTrackType(t);
+        return tt === 'video' || tt === 'audio';
+      });
 
-      for (const track of info.tracks) {
+      if (avTracks.length === 0) {
+        reject(new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道'));
+        return;
+      }
+
+      trackOrder = avTracks.map(t => t.id);
+
+      for (const track of avTracks) {
         const trackType = getTrackType(track);
         trackMap[track.id] = {
           type: trackType,
