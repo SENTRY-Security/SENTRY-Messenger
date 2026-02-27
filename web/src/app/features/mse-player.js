@@ -191,6 +191,8 @@ function tryReadAvcProfile(data, avc1Offset) {
 const BUFFER_EVICT_KEEP_BEHIND = 5;
 // Max retries for QuotaExceededError before giving up.
 const QUOTA_MAX_RETRIES = 3;
+// Proactive eviction: trigger when played-behind exceeds this many seconds.
+const PROACTIVE_EVICT_THRESHOLD = 15;
 
 function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSource } = {}) {
   let queue = [];
@@ -200,6 +202,7 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
 
   /**
    * Evict already-played buffer to free space for new appends.
+   * Keeps BUFFER_EVICT_KEEP_BEHIND seconds behind currentTime.
    * Returns a Promise that resolves when the eviction updateend fires.
    */
   function evictPlayed() {
@@ -231,12 +234,36 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
     });
   }
 
+  /**
+   * Check if proactive eviction is needed (buffered behind > threshold).
+   */
+  function shouldEvictProactively() {
+    const video = getVideoElement?.();
+    if (!video || !sourceBuffer) return false;
+    const buffered = sourceBuffer.buffered;
+    if (!buffered || buffered.length === 0) return false;
+    const currentTime = video.currentTime || 0;
+    const bufferStart = buffered.start(0);
+    return (currentTime - bufferStart) > PROACTIVE_EVICT_THRESHOLD;
+  }
+
   const processQueue = () => {
     if (destroyed || appending || paused || !sourceBuffer || !queue.length) return;
     if (sourceBuffer.updating) return;
 
     const ms = getMediaSource?.();
     if (ms && ms.readyState !== 'open') return;
+
+    // Proactive eviction: if too much played buffer has accumulated,
+    // evict before appending the next chunk to keep memory under control.
+    if (shouldEvictProactively()) {
+      appending = true; // Block queue while evicting
+      evictPlayed().then(() => {
+        appending = false;
+        if (!destroyed) processQueue();
+      });
+      return;
+    }
 
     const entry = queue.shift();
     appending = true;

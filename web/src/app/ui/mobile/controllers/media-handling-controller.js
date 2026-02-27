@@ -295,10 +295,14 @@ export class MediaHandlingController extends BaseController {
 
         } catch (err) {
             endDownload();
+            // Release MSE resources
             if (msePlayer) {
                 try { msePlayer.destroy(); } catch {}
                 msePlayer = null;
             }
+            // Release video element — clear src to detach MediaSource and free
+            // the SourceBuffer memory held by the browser's media pipeline.
+            try { video.src = ''; video.load(); } catch {}
             if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
                 // If aborted, close the modal
                 this.deps.closePreviewModal?.();
