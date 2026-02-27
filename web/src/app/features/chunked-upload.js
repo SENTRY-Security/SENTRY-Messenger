@@ -173,11 +173,24 @@ export async function encryptAndPutChunked({
   let contentType = resolveContentType(file);
   let totalSize;
 
+  // Progress allocation across all phases (percent ranges):
+  //   Video:     remux 0-10 | sign 10-12 | chunks 12-95 | manifest 95-100
+  //   Non-video: sign 0-2   | chunks 2-95  | manifest 95-100
+  const PHASE = isVideo
+    ? { remuxEnd: 10, signEnd: 12, chunkStart: 12, chunkEnd: 95, manifestEnd: 100 }
+    : { remuxEnd: 0,  signEnd: 2,  chunkStart: 2,  chunkEnd: 95, manifestEnd: 100 };
+
   if (isVideo) {
     if (!canRemuxVideo(file)) {
       throw new UnsupportedVideoFormatError(`不支援此影片格式：${rawType}`);
     }
-    const remuxResult = await remuxToFragmentedMp4(file);
+    const remuxResult = await remuxToFragmentedMp4(file, {
+      onProgress: ({ percent }) => {
+        // Map remux internal progress (0-100) → overall (0 → PHASE.remuxEnd)
+        onProgress?.({ percent: Math.round(percent * PHASE.remuxEnd / 100) });
+      }
+    });
+    onProgress?.({ percent: PHASE.remuxEnd });
     contentType = remuxResult.contentType;
 
     if (remuxResult.segments) {
@@ -214,6 +227,7 @@ export async function encryptAndPutChunked({
   }
 
   // 1. Request batch presigned URLs
+  onProgress?.({ percent: PHASE.remuxEnd });
   const { r: rSign, data: signData } = await apiSignPutChunked({
     convId,
     totalSize,
@@ -227,6 +241,7 @@ export async function encryptAndPutChunked({
   if (!baseKey || !manifestPut?.url || !chunkPuts?.length) {
     throw new Error('sign-put-chunked returned incomplete data');
   }
+  onProgress?.({ percent: PHASE.signEnd });
 
   // Track uploaded bytes for progress
   let uploadedBytes = 0;
@@ -279,12 +294,14 @@ export async function encryptAndPutChunked({
     }
     chunkMetas[index] = meta;
 
-    // Update progress
+    // Update progress — map chunk upload ratio into PHASE.chunkStart..chunkEnd range
     uploadedBytes += plainBuf.byteLength;
+    const chunkRatio = uploadedBytes / totalSize;
+    const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
     onProgress?.({
       loaded: uploadedBytes,
       total: totalSize,
-      percent: Math.round((uploadedBytes / totalSize) * 100)
+      percent: Math.round(PHASE.chunkStart + chunkRatio * chunkRange)
     });
 
     // Allow GC of the segment data after upload
@@ -326,6 +343,7 @@ export async function encryptAndPutChunked({
   }
 
   // 3. Build and encrypt manifest
+  onProgress?.({ percent: PHASE.chunkEnd });
   const manifest = {
     v: 3,
     // segment_aligned: true means each chunk is a complete fMP4 segment (init or moof+mdat)
@@ -359,6 +377,7 @@ export async function encryptAndPutChunked({
     try { await apiCleanupChunked({ baseKey }); } catch { }
     throw err;
   }
+  onProgress?.({ percent: PHASE.manifestEnd });
 
   const manifestEnvelope = {
     v: useSharedKey ? 2 : 1,

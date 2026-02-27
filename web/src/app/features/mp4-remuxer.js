@@ -288,6 +288,7 @@ function getTrackType(track) {
  * For non-fragmented MP4/MOV, remuxes via mp4box.js into per-track segments.
  *
  * @param {File|Blob} file - Source video file
+ * @param {{ onProgress?: (p: {percent: number}) => void }} [opts]
  * @returns {Promise<{
  *   tracks: Array<{type: string, codec: string, initSegment: Uint8Array, mediaSegments: Uint8Array[]}> | null,
  *   segments: Array<{trackIndex: number, data: Uint8Array}> | null,
@@ -296,7 +297,7 @@ function getTrackType(track) {
  *   name: string
  * }>}
  */
-export async function remuxToFragmentedMp4(file) {
+export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   if (!file) throw new Error('file required');
 
   const type = (typeof file.type === 'string' ? file.type : '').toLowerCase().trim();
@@ -304,6 +305,7 @@ export async function remuxToFragmentedMp4(file) {
 
   // WebM doesn't need remuxing — natively MSE-compatible.
   if (type === 'video/webm') {
+    onProgress?.({ percent: 100 });
     return { tracks: null, segments: null, contentType: 'video/webm', remuxed: false, name };
   }
 
@@ -312,12 +314,15 @@ export async function remuxToFragmentedMp4(file) {
     if (type.startsWith('video/')) {
       throw new UnsupportedVideoFormatError(`不支援此影片格式：${type}`);
     }
+    onProgress?.({ percent: 100 });
     return { tracks: null, segments: null, contentType: type || 'application/octet-stream', remuxed: false, name };
   }
 
-  // Read file to check if already fragmented
+  // Read file into memory
+  onProgress?.({ percent: 0 });
   const fileBuffer = await file.arrayBuffer();
   const fileU8 = new Uint8Array(fileBuffer);
+  onProgress?.({ percent: 30 });
 
   if (isAlreadyFragmented(fileU8)) {
     // Multi-track already-fragmented MP4 (e.g. separate video + audio tracks)
@@ -337,13 +342,16 @@ export async function remuxToFragmentedMp4(file) {
         { trackIndex: 0, data: initSegment },
         ...mediaSegments.map(data => ({ trackIndex: 0, data }))
       ];
+      onProgress?.({ percent: 100 });
       return { tracks: [track], segments, contentType: 'video/mp4', remuxed: false, name };
     }
     // Multi-track fMP4 — fall through to mp4box.js for per-track segmentation
   }
 
   // Need to remux: load mp4box.js and fragment the file
+  onProgress?.({ percent: 40 });
   const mp4boxMod = await loadMp4box();
+  onProgress?.({ percent: 60 });
   const MP4Box = mp4boxMod.default || mp4boxMod.createFile || mp4boxMod;
   const createFileFn = typeof MP4Box.createFile === 'function' ? MP4Box.createFile : MP4Box;
 
@@ -470,6 +478,7 @@ export async function remuxToFragmentedMp4(file) {
         }
 
         const outputName = name.replace(/\.(mov|m4v|qt)$/i, '.mp4');
+        onProgress?.({ percent: 100 });
         resolve({ tracks, segments, contentType: 'video/mp4', remuxed: true, name: outputName });
       } catch (err) {
         reject(new Error('影片重封裝失敗：' + (err?.message || err)));
