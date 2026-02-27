@@ -8,7 +8,8 @@
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { downloadChunkedManifest, streamChunks, downloadAllChunks } from '../../../features/chunked-download.js';
-import { isMseSupported, detectCodecFromInitSegment, createMsePlayer } from '../../../features/mse-player.js';
+import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer } from '../../../features/mse-player.js';
+import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -177,13 +178,14 @@ export class MediaHandlingController extends BaseController {
         // Open modal immediately so user sees the player right away
         this.deps.openPreviewModal?.();
 
+        let manifest = null;
         try {
             // Step 2: Download and decrypt manifest (user already sees the modal)
             media._videoProgress = 2;
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(2);
 
-            const manifest = await downloadChunkedManifest({
+            manifest = await downloadChunkedManifest({
                 baseKey: media.baseKey,
                 manifestEnvelope: media.manifestEnvelope,
                 abortSignal: downloadAbort.signal
@@ -237,14 +239,15 @@ export class MediaHandlingController extends BaseController {
                 return;
             }
 
-            // Segment-aligned fMP4 — use MSE streaming playback
+            // Segment-aligned fMP4 — use MSE streaming with single muxed SourceBuffer.
+            // New manifests: tracks = [{ type: 'muxed', codec }], chunk 0 = init, rest = media.
+            // Legacy manifests: tracks = [{ type: 'video' }, { type: 'audio' }],
+            //   first N chunks = per-track init → merge into one, rest = media.
             const manifestTracks = manifest.tracks;
             const numTracks = manifestTracks.length;
+            const isLegacyMultiTrack = numTracks > 1;
 
-            // Track labels for routing: 'video', 'audio', etc.
-            const trackLabels = manifestTracks.map(t => t.type);
-
-            // Create MSE player
+            // Create MSE player — always single 'muxed' SourceBuffer
             msePlayer = createMsePlayer({
                 videoElement: video,
                 onError: (err) => {
@@ -253,11 +256,11 @@ export class MediaHandlingController extends BaseController {
             });
             await msePlayer.open();
 
-            // Track which SourceBuffers have been created (by trackIndex)
-            const sbCreated = new Set();
+            let mseInitialized = false;
             let firstMediaAppended = false;
             let consecutiveErrors = 0;
             const MAX_CONSECUTIVE_ERRORS = 5;
+            const initChunks = []; // For legacy multi-track: collect init segments
 
             // Step 3: Stream chunks via MSE
             for await (const { data, index } of streamChunks({
@@ -272,33 +275,40 @@ export class MediaHandlingController extends BaseController {
                     updateDownloadProgress(media._videoProgress);
                 }
             })) {
-                // Determine which track this chunk belongs to
-                const chunkMeta = manifest.chunks?.[index];
-                const trackIndex = chunkMeta?.trackIndex ?? 0;
-                const label = trackLabels[trackIndex] || 'muxed';
                 const isInitSegment = index < numTracks;
 
                 if (isInitSegment) {
-                    // Init segment — detect codec and create SourceBuffer
-                    // Init errors are fatal (throw → caught by outer catch → blob fallback)
-                    const trackType = manifestTracks[trackIndex].type;
-                    const mimeCodec = detectCodecFromInitSegment(data, trackType);
+                    if (isLegacyMultiTrack) {
+                        // Old multi-track: collect per-track init segments, merge when all received
+                        initChunks.push(data);
+                        if (initChunks.length < numTracks) continue;
 
-                    if (!mimeCodec) {
-                        throw new Error(`無法偵測 ${trackType} 軌道編碼格式`);
+                        const mergedInit = mergeInitSegments(initChunks);
+                        const manifestCodec = manifestTracks.map(t => t.codec).filter(Boolean).join(',');
+                        let mimeCodec = manifestCodec ? buildMimeFromCodecString(manifestCodec) : null;
+                        if (!mimeCodec) mimeCodec = detectCodecFromInitSegment(mergedInit, 'muxed');
+                        if (!mimeCodec) throw new Error('無法偵測影片編碼格式');
+
+                        msePlayer.addSourceBuffer('muxed', mimeCodec);
+                        await msePlayer.appendChunk('muxed', mergedInit);
+                        mseInitialized = true;
+                    } else {
+                        // New muxed manifest: single init segment (chunk 0)
+                        const track = manifestTracks[0];
+                        let mimeCodec = track.codec ? buildMimeFromCodecString(track.codec) : null;
+                        if (!mimeCodec) mimeCodec = detectCodecFromInitSegment(data, 'muxed');
+                        if (!mimeCodec) throw new Error('無法偵測影片編碼格式');
+
+                        msePlayer.addSourceBuffer('muxed', mimeCodec);
+                        await msePlayer.appendChunk('muxed', data);
+                        mseInitialized = true;
                     }
-
-                    if (!sbCreated.has(label)) {
-                        msePlayer.addSourceBuffer(label, mimeCodec);
-                        sbCreated.add(label);
-                    }
-
-                    await msePlayer.appendChunk(label, data);
                 } else {
-                    // Media segment — route to correct SourceBuffer.
-                    // Individual segment errors are non-fatal: skip and continue.
+                    // Media segment — append to single muxed SourceBuffer
+                    if (!mseInitialized) continue;
+
                     try {
-                        await msePlayer.appendChunk(label, data);
+                        await msePlayer.appendChunk('muxed', data);
                         consecutiveErrors = 0;
                     } catch (appendErr) {
                         consecutiveErrors++;
@@ -364,11 +374,21 @@ export class MediaHandlingController extends BaseController {
             }
 
             // MSE failed — attempt blob URL fallback (re-download entire file).
-            // Works for muxed fMP4 and byte-range content; may not help multi-track
-            // but is harmless to try.
+            // For multi-track legacy manifests, merge init segments into valid fMP4.
             console.warn('[video] MSE failed, trying blob URL fallback:', err?.message);
+            if (!manifest) {
+                // Can't attempt fallback without manifest
+                endDownload();
+                media._videoState = 'idle';
+                media._videoProgress = 0;
+                this._updateVideoOverlayUI(msgId, media);
+                this.deps.closePreviewModal?.();
+                this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
+                return;
+            }
             try {
-                const { blob } = await downloadAllChunks({
+                const allChunks = [];
+                for await (const { data } of streamChunks({
                     baseKey: media.baseKey,
                     manifest,
                     manifestEnvelope: media.manifestEnvelope,
@@ -379,8 +399,21 @@ export class MediaHandlingController extends BaseController {
                         this._updateVideoOverlayUI(msgId, media);
                         updateDownloadProgress(media._videoProgress);
                     }
-                });
+                })) {
+                    allChunks.push(data);
+                }
 
+                // For legacy multi-track, merge init segments into one valid fMP4 init
+                let blobParts;
+                if (manifest.tracks && manifest.tracks.length > 1) {
+                    const numTrks = manifest.tracks.length;
+                    const mergedInit = mergeInitSegments(allChunks.slice(0, numTrks));
+                    blobParts = [mergedInit, ...allChunks.slice(numTrks)];
+                } else {
+                    blobParts = allChunks;
+                }
+
+                const blob = new Blob(blobParts, { type: manifest.contentType || 'video/mp4' });
                 const blobUrl = URL.createObjectURL(blob);
                 video.src = blobUrl;
 

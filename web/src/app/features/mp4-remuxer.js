@@ -2,9 +2,8 @@
 // Remux non-fragmented MP4/MOV to fragmented MP4 (fMP4) using mp4box.js.
 // Dynamically loads mp4box.js from CDN on first use. Pure JS, no WASM required.
 //
-// Returns per-track fMP4 segments for MSE-compatible chunked upload.
-// Each track gets its own init segment and media segments — designed for
-// MSE playback with one SourceBuffer per track (the correct MSE pattern).
+// ALWAYS returns MUXED single-track output so downstream code can use a single
+// MSE SourceBuffer and blob-URL fallback (concatenation = valid fMP4).
 
 const MP4BOX_CDN_URL = 'https://esm.sh/mp4box@0.5.3';
 
@@ -68,49 +67,6 @@ function isAlreadyFragmented(u8) {
 }
 
 /**
- * Count 'trak' sub-boxes in the moov box to determine number of tracks.
- * Used to decide whether splitFragmentedMp4 (single-track muxed) is safe,
- * or whether mp4box.js is needed for proper per-track segmentation.
- *
- * Multi-track already-fragmented MP4 files may have non-interleaved segments
- * (separate moof+mdat for video and audio). These cannot be fed to a single
- * muxed SourceBuffer — each track needs its own SourceBuffer.
- */
-function countMoovTracks(u8) {
-  let i = 0;
-  while (i < u8.length - 7) {
-    let boxSize = readU32(u8, i) >>> 0; // unsigned
-    const boxType = String.fromCharCode(u8[i + 4], u8[i + 5], u8[i + 6], u8[i + 7]);
-    let headerSize = 8;
-    if (boxSize === 1 && i + 16 <= u8.length) {
-      boxSize = readU64(u8, i + 8);
-      headerSize = 16;
-    }
-    if (boxSize < headerSize || i + boxSize > u8.length) break;
-
-    if (boxType === 'moov') {
-      let count = 0;
-      let j = i + headerSize;
-      const moovEnd = i + boxSize;
-      while (j < moovEnd - 7) {
-        let subSize = readU32(u8, j) >>> 0;
-        const subType = String.fromCharCode(u8[j + 4], u8[j + 5], u8[j + 6], u8[j + 7]);
-        if (subSize === 1 && j + 16 <= moovEnd) {
-          subSize = readU64(u8, j + 8);
-        }
-        if (subSize < 8 || j + subSize > moovEnd) break;
-        if (subType === 'trak') count++;
-        j += subSize;
-      }
-      return count;
-    }
-
-    i += boxSize;
-  }
-  return 0;
-}
-
-/**
  * Read a big-endian uint32 from data at the given offset.
  */
 function readU32(data, offset) {
@@ -150,21 +106,115 @@ function parseTopLevelBoxes(u8) {
   return boxes;
 }
 
-// Boxes that are part of the init segment (before first moof)
-const INIT_BOX_TYPES = new Set(['ftyp', 'moov', 'free', 'skip', 'wide']);
+/**
+ * Parse immediate child boxes inside a parent box.
+ * @param {Uint8Array} parentData - The full parent box bytes (including header)
+ * @param {number} headerSize - Size of parent's header (8 or 16)
+ */
+function parseChildBoxes(parentData, headerSize) {
+  const children = [];
+  let i = headerSize;
+  while (i < parentData.length - 7) {
+    let boxSize = readU32(parentData, i);
+    const boxType = String.fromCharCode(parentData[i + 4], parentData[i + 5], parentData[i + 6], parentData[i + 7]);
+    let hdr = 8;
+    if (boxSize === 1 && i + 16 <= parentData.length) {
+      boxSize = readU64(parentData, i + 8);
+      hdr = 16;
+    }
+    if (boxSize < hdr || i + boxSize > parentData.length) break;
+    children.push({ type: boxType, data: parentData.subarray(i, i + boxSize) });
+    i += boxSize;
+  }
+  return children;
+}
+
+/**
+ * Build an MP4 box from type + body content.
+ */
+function buildBox(type, body) {
+  const size = 8 + body.byteLength;
+  const box = new Uint8Array(size);
+  box[0] = (size >>> 24) & 0xff;
+  box[1] = (size >>> 16) & 0xff;
+  box[2] = (size >>> 8) & 0xff;
+  box[3] = size & 0xff;
+  box[4] = type.charCodeAt(0);
+  box[5] = type.charCodeAt(1);
+  box[6] = type.charCodeAt(2);
+  box[7] = type.charCodeAt(3);
+  box.set(body, 8);
+  return box;
+}
+
+/**
+ * Merge multiple per-track init segments into one combined init segment.
+ * Each input init segment has its own ftyp + moov (with one trak).
+ * Output has one ftyp + one moov (with all traks + merged mvex).
+ *
+ * Exported so the download side can merge old multi-track manifests.
+ */
+export function mergeInitSegments(initSegments) {
+  if (!initSegments || initSegments.length === 0) return new Uint8Array(0);
+  if (initSegments.length === 1) return initSegments[0];
+
+  let ftyp = null;
+  let mvhd = null;
+  const traks = [];
+  const trexes = [];
+
+  for (const initSeg of initSegments) {
+    const topBoxes = parseTopLevelBoxes(initSeg);
+    for (const box of topBoxes) {
+      if (box.type === 'ftyp' && !ftyp) {
+        ftyp = box.data;
+      }
+      if (box.type === 'moov') {
+        const moovChildren = parseChildBoxes(box.data, 8);
+        for (const child of moovChildren) {
+          if (child.type === 'mvhd' && !mvhd) {
+            mvhd = child.data;
+          }
+          if (child.type === 'trak') {
+            traks.push(child.data);
+          }
+          if (child.type === 'mvex') {
+            const mvexChildren = parseChildBoxes(child.data, 8);
+            for (const mc of mvexChildren) {
+              if (mc.type === 'trex') {
+                trexes.push(mc.data);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Build combined moov: mvhd + all traks + mvex(all trex)
+  const moovParts = [];
+  if (mvhd) moovParts.push(mvhd);
+  for (const trak of traks) moovParts.push(trak);
+  if (trexes.length > 0) {
+    moovParts.push(buildBox('mvex', concatU8(trexes)));
+  }
+  const moov = buildBox('moov', concatU8(moovParts));
+
+  return concatU8([ftyp || new Uint8Array(0), moov]);
+}
+
 // Boxes that appear between segments but belong WITH the next moof+mdat pair
 const SEGMENT_PREFIX_TYPES = new Set(['styp', 'sidx', 'ssix', 'prft']);
 // Boxes at the end of the file that are NOT valid media segments
 const TRAILING_BOX_TYPES = new Set(['mfra', 'mfro', 'free', 'skip', 'wide']);
 
 /**
- * Parse top-level MP4 boxes and split an already-fragmented MP4 into
- * an init segment (ftyp + moov) and media segments (each moof + mdat pair).
- * Already-fragmented files are typically single-SourceBuffer compatible.
+ * Split an already-fragmented MP4 into init segment (ftyp + moov) and
+ * media segments (each moof + mdat pair).
  *
- * Correctly handles:
- * - styp/sidx boxes that precede moof (included with the next segment)
- * - Trailing non-media boxes like mfra/free (discarded, not valid MSE segments)
+ * Works for both single-track and multi-track fMP4. For multi-track, each
+ * moof+mdat pair references a specific track_ID in the moov — the browser's
+ * MSE implementation handles demuxing internally when using a muxed SourceBuffer.
  *
  * @param {Uint8Array} u8 - The fMP4 file bytes
  * @returns {{ initSegment: Uint8Array, mediaSegments: Uint8Array[] }}
@@ -174,9 +224,7 @@ function splitFragmentedMp4(u8) {
   const mediaSegments = [];
   let i = 0;
   let foundFirstMoof = false;
-  // Pending parts that will become part of the next segment (styp, sidx, moof, mdat)
   let currentSegParts = [];
-  // Whether the current pending parts contain a moof (i.e. a real segment is forming)
   let currentHasMoof = false;
 
   while (i < u8.length - 7) {
@@ -192,7 +240,6 @@ function splitFragmentedMp4(u8) {
     const boxData = u8.subarray(i, i + boxSize);
 
     if (!foundFirstMoof) {
-      // Before first moof — everything goes to init
       if (boxType === 'moof') {
         foundFirstMoof = true;
         currentSegParts.push(boxData);
@@ -201,18 +248,14 @@ function splitFragmentedMp4(u8) {
         initParts.push(boxData);
       }
     } else if (boxType === 'moof') {
-      // New moof — flush previous segment if it contains a complete moof+mdat
       if (currentSegParts.length > 0 && currentHasMoof) {
         mediaSegments.push(concatU8(currentSegParts));
         currentSegParts = [];
         currentHasMoof = false;
-      } else if (currentSegParts.length > 0 && !currentHasMoof) {
-        // Pending prefix boxes (styp/sidx) without moof — keep them, they belong with this moof
       }
       currentSegParts.push(boxData);
       currentHasMoof = true;
     } else if (boxType === 'mdat') {
-      // mdat — always pair with the current moof
       currentSegParts.push(boxData);
       if (currentHasMoof) {
         mediaSegments.push(concatU8(currentSegParts));
@@ -220,22 +263,18 @@ function splitFragmentedMp4(u8) {
         currentHasMoof = false;
       }
     } else if (SEGMENT_PREFIX_TYPES.has(boxType)) {
-      // styp/sidx/ssix/prft — keep as prefix for the next moof+mdat segment
       currentSegParts.push(boxData);
     } else if (TRAILING_BOX_TYPES.has(boxType)) {
-      // mfra/free/skip/wide after media segments — discard (not valid MSE data)
+      // discard trailing non-media boxes
     } else {
-      // Unknown box type after first moof — include with current segment if building one
       if (currentHasMoof) {
         currentSegParts.push(boxData);
       }
-      // Otherwise discard (not a valid media segment on its own)
     }
 
     i += boxSize;
   }
 
-  // Flush remaining segment only if it contains a moof (i.e. a real media segment)
   if (currentSegParts.length > 0 && currentHasMoof) {
     mediaSegments.push(concatU8(currentSegParts));
   }
@@ -275,27 +314,19 @@ function getTrackType(track) {
 /**
  * Remux a video File/Blob to fragmented MP4 using mp4box.js.
  *
- * Returns per-track fMP4 data for MSE playback with separate SourceBuffers.
+ * ALWAYS returns MUXED single-track output:
+ * - tracks[0] = { type: 'muxed', codec, initSegment, mediaSegments[] }
+ * - segments[] = [{ trackIndex: 0, data: initSegment }, { trackIndex: 0, data: mediaSeg1 }, ...]
  *
- * Result format:
- * - tracks[]: array of { type, codec, initSegment, mediaSegments[] }
- * - segments[]: flat ordered array of { trackIndex, data } for chunked upload
- *   - First N entries are init segments (one per track)
- *   - Remaining entries are media segments in playback order
+ * This means the download side always uses a single MSE SourceBuffer,
+ * and blob-URL fallback (simple concatenation) always produces a valid fMP4.
  *
  * For WebM files, returns null tracks (WebM uses byte-range chunking).
- * For already-fragmented MP4, returns single-track format (already muxed).
- * For non-fragmented MP4/MOV, remuxes via mp4box.js into per-track segments.
+ * For already-fragmented MP4, splits at moof boundaries (works for single & multi-track).
+ * For non-fragmented MP4/MOV, remuxes via mp4box.js then merges into muxed output.
  *
  * @param {File|Blob} file - Source video file
  * @param {{ onProgress?: (p: {percent: number}) => void }} [opts]
- * @returns {Promise<{
- *   tracks: Array<{type: string, codec: string, initSegment: Uint8Array, mediaSegments: Uint8Array[]}> | null,
- *   segments: Array<{trackIndex: number, data: Uint8Array}> | null,
- *   contentType: string,
- *   remuxed: boolean,
- *   name: string
- * }>}
  */
 export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   if (!file) throw new Error('file required');
@@ -325,27 +356,21 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   onProgress?.({ percent: 30 });
 
   if (isAlreadyFragmented(fileU8)) {
-    // Multi-track already-fragmented MP4 (e.g. separate video + audio tracks)
-    // must go through mp4box.js for proper per-track segmentation.
-    // A single muxed SourceBuffer fails when segments are non-interleaved
-    // (separate moof+mdat per track) — the browser rejects single-track
-    // segments appended to a multi-codec SourceBuffer.
-    const moovTrackCount = countMoovTracks(fileU8);
-    if (moovTrackCount <= 1) {
-      // Single-track fMP4 — safe to use simple moof-boundary split
-      const { initSegment, mediaSegments } = splitFragmentedMp4(fileU8);
-      if (!initSegment.byteLength || mediaSegments.length === 0) {
-        throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
-      }
-      const track = { type: 'muxed', codec: null, initSegment, mediaSegments };
-      const segments = [
-        { trackIndex: 0, data: initSegment },
-        ...mediaSegments.map(data => ({ trackIndex: 0, data }))
-      ];
-      onProgress?.({ percent: 100 });
-      return { tracks: [track], segments, contentType: 'video/mp4', remuxed: false, name };
+    // Already-fragmented MP4 — split at moof boundaries.
+    // Works for both single-track and multi-track: the init segment contains
+    // the full moov with all track descriptions, and each moof+mdat pair
+    // references a specific track_ID that the browser demuxes internally.
+    const { initSegment, mediaSegments } = splitFragmentedMp4(fileU8);
+    if (!initSegment.byteLength || mediaSegments.length === 0) {
+      throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
     }
-    // Multi-track fMP4 — fall through to mp4box.js for per-track segmentation
+    const track = { type: 'muxed', codec: null, initSegment, mediaSegments };
+    const segments = [
+      { trackIndex: 0, data: initSegment },
+      ...mediaSegments.map(data => ({ trackIndex: 0, data }))
+    ];
+    onProgress?.({ percent: 100 });
+    return { tracks: [track], segments, contentType: 'video/mp4', remuxed: false, name };
   }
 
   // Need to remux: load mp4box.js and fragment the file
@@ -370,8 +395,7 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
     // Per-track state: trackId → { type, codec, initSegment, mediaSegments[] }
     const trackMap = {};
-    let trackOrder = []; // ordered track IDs as they appear in info.tracks
-    // Ordered list of media segments as they arrive: { trackId, data }
+    let trackOrder = [];
     const orderedMediaSegs = [];
 
     mp4boxFile.onError = (err) => {
@@ -384,9 +408,6 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
         return;
       }
 
-      // Only process video and audio tracks — subtitle, metadata, hint,
-      // and other track types are not supported by MSE SourceBuffer and
-      // would cause codec detection failures during playback.
       const avTracks = info.tracks.filter(t => {
         const tt = getTrackType(t);
         return tt === 'video' || tt === 'audio';
@@ -444,42 +465,46 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
     mp4boxFile.flush();
 
-    // Give mp4box a moment to process all segments
+    // mp4box.js processes synchronously in appendBuffer/flush, but use
+    // a short delay as a safety net for any async callback scheduling.
     setTimeout(() => {
       try {
-        // Build tracks array in order
-        const tracks = trackOrder.map(tid => trackMap[tid]).filter(t => t && t.initSegment);
+        const perTrackData = trackOrder.map(tid => trackMap[tid]).filter(t => t && t.initSegment);
 
-        if (tracks.length === 0) {
+        if (perTrackData.length === 0) {
           reject(new UnsupportedVideoFormatError('影片轉檔失敗：無法產生有效的分片格式'));
           return;
         }
 
-        // Build trackId → trackIndex mapping
-        const tidToIndex = {};
-        for (let i = 0; i < trackOrder.length; i++) {
-          tidToIndex[trackOrder[i]] = i;
-        }
+        // Merge per-track init segments into one combined muxed init segment.
+        // Single-track: pass-through. Multi-track: merge moov traks.
+        const combinedInit = perTrackData.length === 1
+          ? perTrackData[0].initSegment
+          : mergeInitSegments(perTrackData.map(t => t.initSegment));
+
+        // Combine codec strings: e.g. 'avc1.64001E,mp4a.40.2'
+        const combinedCodec = perTrackData.map(t => t.codec).filter(Boolean).join(',') || null;
+
+        // All media segments in the order mp4box.js fired them
+        const allMediaSegs = orderedMediaSegs.map(ms => ms.data);
+
+        const muxedTrack = {
+          type: 'muxed',
+          codec: combinedCodec,
+          initSegment: combinedInit,
+          mediaSegments: allMediaSegs
+        };
 
         // Build flat segments array for upload:
-        // First: init segments (one per track, in track order)
-        // Then: media segments in the order mp4box.js fired them
-        const segments = [];
-
-        for (let i = 0; i < tracks.length; i++) {
-          segments.push({ trackIndex: i, data: tracks[i].initSegment });
-        }
-
-        for (const ms of orderedMediaSegs) {
-          const idx = tidToIndex[ms.trackId];
-          if (idx !== undefined) {
-            segments.push({ trackIndex: idx, data: ms.data });
-          }
-        }
+        // [combined-init, mediaSeg1, mediaSeg2, ...]
+        const segments = [
+          { trackIndex: 0, data: combinedInit },
+          ...allMediaSegs.map(data => ({ trackIndex: 0, data }))
+        ];
 
         const outputName = name.replace(/\.(mov|m4v|qt)$/i, '.mp4');
         onProgress?.({ percent: 100 });
-        resolve({ tracks, segments, contentType: 'video/mp4', remuxed: true, name: outputName });
+        resolve({ tracks: [muxedTrack], segments, contentType: 'video/mp4', remuxed: true, name: outputName });
       } catch (err) {
         reject(new Error('影片重封裝失敗：' + (err?.message || err)));
       }

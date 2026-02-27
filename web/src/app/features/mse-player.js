@@ -60,7 +60,6 @@ export function detectCodecFromInitSegment(data, trackType) {
           'video/mp4; codecs="avc1.4D401E,mp4a.40.2"',   // H.264 Main + AAC
           'video/mp4; codecs="avc1.64001E,mp4a.40.2"',   // H.264 High + AAC
           'video/mp4; codecs="hvc1,mp4a.40.2"',           // HEVC + AAC (Safari)
-          'video/mp4; codecs="avc1.42E01E"',              // Video-only fallback
         ]
       : [
           'video/mp4; codecs="avc1.42E01E"',   // H.264 Baseline
@@ -73,6 +72,20 @@ export function detectCodecFromInitSegment(data, trackType) {
     if (MSCtor.isTypeSupported(candidate)) return candidate;
   }
 
+  return null;
+}
+
+/**
+ * Build a full MIME codec string from a codec identifier
+ * (e.g. "avc1.64001E,mp4a.40.2" → 'video/mp4; codecs="avc1.64001E,mp4a.40.2"').
+ * Returns the MIME type if the browser supports it, null otherwise.
+ */
+export function buildMimeFromCodecString(codecStr) {
+  if (!codecStr) return null;
+  const MSCtor = getMediaSourceCtor();
+  if (!MSCtor) return null;
+  const mime = `video/mp4; codecs="${codecStr}"`;
+  if (MSCtor.isTypeSupported(mime)) return mime;
   return null;
 }
 
