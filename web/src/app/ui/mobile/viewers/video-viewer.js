@@ -171,20 +171,34 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
 
     const applyVideoRotation = () => {
         if (manualRotation === 0) {
+            video.style.width = '';
+            video.style.height = '';
             video.style.transform = '';
             return;
         }
-        // For 90°/270°, the rotated element overflows its layout box.
-        // Scale it down so it fits within the stage.
         if (manualRotation === 90 || manualRotation === 270) {
-            const sw = stage.clientWidth || 1;
-            const sh = stage.clientHeight || 1;
-            const scale = Math.min(sw / sh, sh / sw);
-            video.style.transform = `rotate(${manualRotation}deg) scale(${scale})`;
+            // Swap the element's layout dimensions so that after rotation
+            // the visual bounding box matches the stage exactly.
+            // object-fit:contain then fits the video content within the
+            // swapped box, and rotation maps it back → fills 100% width.
+            const sw = stage.clientWidth;
+            const sh = stage.clientHeight;
+            video.style.width = sh + 'px';
+            video.style.height = sw + 'px';
+            video.style.transform = `rotate(${manualRotation}deg)`;
         } else {
+            // 180°: no dimension swap needed
+            video.style.width = '';
+            video.style.height = '';
             video.style.transform = `rotate(${manualRotation}deg)`;
         }
     };
+
+    // Re-apply on stage resize (device orientation change, window resize)
+    const rotationResizeObs = new ResizeObserver(() => {
+        if (manualRotation !== 0) applyVideoRotation();
+    });
+    rotationResizeObs.observe(stage);
 
     overlay.querySelector('[data-action="rotate-ccw"]').addEventListener('click', (e) => {
         e.stopPropagation();
@@ -517,6 +531,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
         destroyed = true;
         if (controlsTimer) clearTimeout(controlsTimer);
         clearTimeout(orientationFallbackTimer);
+        rotationResizeObs.disconnect();
         if (statsIntervalId) { clearInterval(statsIntervalId); statsIntervalId = null; }
         document.removeEventListener('keydown', onKeyDown);
         document.body.classList.remove('vv-open');
