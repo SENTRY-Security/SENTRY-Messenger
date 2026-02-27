@@ -1,9 +1,14 @@
 /**
- * Face Blur Pipeline
+ * Face Blur Pipeline — Cross-browser
+ * (Chrome, Edge, Safari, iOS Safari, Firefox)
  *
  * Intercepts a camera VideoTrack, draws each frame through a <canvas>,
  * detects faces, applies pixelation mosaic over detected regions,
  * and outputs a processed VideoTrack via canvas.captureStream().
+ *
+ * Face detection strategy:
+ *   1. Native FaceDetector API (Chrome 86+, Edge 86+)
+ *   2. Skin-color region detector fallback (all other browsers incl. iOS Safari)
  *
  * Pipeline:
  *   Camera VideoTrack → hidden <video> → Canvas drawImage
@@ -14,30 +19,205 @@
 import { log } from '../../core/log.js';
 
 const TARGET_FPS = 30;
-const DETECT_INTERVAL_MS = 150;
+const DETECT_INTERVAL_MS = 200;
 const PIXEL_BLOCK = 14;
 
-let detector = null;
-let detectorSupported = null;
+// ────────────────────────────────────────────────────────────
+// Skin-color face region detector (fallback for Safari / iOS)
+// ────────────────────────────────────────────────────────────
+// Downscales the frame, classifies pixels as skin using YCbCr
+// thresholds, clusters skin blocks via connected-component
+// labeling, and returns bounding boxes for face-like regions.
 
-async function getDetector() {
-  if (detector) return detector;
-  if (detectorSupported === false) return null;
+const ANALYSIS_W = 160;
+const ANALYSIS_H = 120;
+const GRID = 8;                // pixels per grid cell
+const SKIN_CELL_RATIO = 0.32; // min skin-pixel ratio to mark cell as "skin"
+const MIN_COMPONENT_CELLS = 6; // min connected cells for a face candidate
+const MIN_ASPECT = 0.45;
+const MAX_ASPECT = 2.2;
+
+class SkinFaceDetector {
+  constructor() {
+    this._canvas = document.createElement('canvas');
+    this._canvas.width = ANALYSIS_W;
+    this._canvas.height = ANALYSIS_H;
+    this._ctx = this._canvas.getContext('2d', { willReadFrequently: true });
+    this._gw = Math.ceil(ANALYSIS_W / GRID);
+    this._gh = Math.ceil(ANALYSIS_H / GRID);
+  }
+
+  async detect(source) {
+    const ctx = this._ctx;
+    const cw = ANALYSIS_W;
+    const ch = ANALYSIS_H;
+
+    try {
+      ctx.drawImage(source, 0, 0, cw, ch);
+    } catch {
+      return [];
+    }
+
+    let imageData;
+    try {
+      imageData = ctx.getImageData(0, 0, cw, ch);
+    } catch {
+      return [];
+    }
+
+    const data = imageData.data;
+    const gw = this._gw;
+    const gh = this._gh;
+
+    // ── Build skin grid ──
+    const grid = new Uint8Array(gw * gh);
+
+    for (let gy = 0; gy < gh; gy++) {
+      for (let gx = 0; gx < gw; gx++) {
+        let skinCount = 0;
+        let totalCount = 0;
+        const px0 = gx * GRID;
+        const py0 = gy * GRID;
+        const px1 = Math.min(px0 + GRID, cw);
+        const py1 = Math.min(py0 + GRID, ch);
+
+        for (let py = py0; py < py1; py++) {
+          for (let px = px0; px < px1; px++) {
+            const idx = (py * cw + px) * 4;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+
+            // RGB → YCbCr (BT.601)
+            const y  = 0.299 * r + 0.587 * g + 0.114 * b;
+            const cb = 128 - 0.169 * r - 0.331 * g + 0.5   * b;
+            const cr = 128 + 0.5   * r - 0.419 * g - 0.081 * b;
+
+            // Broad skin-color thresholds (covers light → dark skin tones)
+            if (y > 50 && cb >= 77 && cb <= 135 && cr >= 130 && cr <= 180) {
+              skinCount++;
+            }
+            totalCount++;
+          }
+        }
+
+        if (totalCount > 0 && skinCount / totalCount >= SKIN_CELL_RATIO) {
+          grid[gy * gw + gx] = 1;
+        }
+      }
+    }
+
+    // ── Connected-component labeling (BFS flood-fill) ──
+    const labels = new Int32Array(gw * gh);
+    let nextLabel = 1;
+    const components = [];
+
+    for (let gy = 0; gy < gh; gy++) {
+      for (let gx = 0; gx < gw; gx++) {
+        const idx = gy * gw + gx;
+        if (grid[idx] !== 1 || labels[idx] !== 0) continue;
+
+        const label = nextLabel++;
+        const queue = [idx];
+        labels[idx] = label;
+        let minX = gx, maxX = gx, minY = gy, maxY = gy;
+        let count = 0;
+
+        while (queue.length > 0) {
+          const ci = queue.pop();
+          const cx = ci % gw;
+          const cy = (ci - cx) / gw;
+          count++;
+          if (cx < minX) minX = cx;
+          if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy;
+          if (cy > maxY) maxY = cy;
+
+          // 4-connected neighbours
+          if (cy > 0)      { const ni = (cy - 1) * gw + cx; if (grid[ni] === 1 && labels[ni] === 0) { labels[ni] = label; queue.push(ni); } }
+          if (cy < gh - 1) { const ni = (cy + 1) * gw + cx; if (grid[ni] === 1 && labels[ni] === 0) { labels[ni] = label; queue.push(ni); } }
+          if (cx > 0)      { const ni = cy * gw + cx - 1;   if (grid[ni] === 1 && labels[ni] === 0) { labels[ni] = label; queue.push(ni); } }
+          if (cx < gw - 1) { const ni = cy * gw + cx + 1;   if (grid[ni] === 1 && labels[ni] === 0) { labels[ni] = label; queue.push(ni); } }
+        }
+
+        components.push({ minX, minY, maxX, maxY, count });
+      }
+    }
+
+    // ── Filter & scale back to source coordinates ──
+    const srcW = source.videoWidth || source.width || cw;
+    const srcH = source.videoHeight || source.height || ch;
+    const scaleX = srcW / cw;
+    const scaleY = srcH / ch;
+
+    const faces = [];
+    for (const comp of components) {
+      if (comp.count < MIN_COMPONENT_CELLS) continue;
+
+      const cellsW = comp.maxX - comp.minX + 1;
+      const cellsH = comp.maxY - comp.minY + 1;
+      const aspect = cellsW / (cellsH || 1);
+      if (aspect < MIN_ASPECT || aspect > MAX_ASPECT) continue;
+
+      faces.push({
+        boundingBox: {
+          x: comp.minX * GRID * scaleX,
+          y: comp.minY * GRID * scaleY,
+          width:  cellsW * GRID * scaleX,
+          height: cellsH * GRID * scaleY
+        }
+      });
+    }
+
+    return faces;
+  }
+}
+
+// ────────────────────────────────────────
+// Detection management (native → fallback)
+// ────────────────────────────────────────
+
+let nativeDetector = null;
+let nativeSupported = null;
+let skinDetector = null;
+
+function getNativeDetector() {
+  if (nativeSupported === false) return null;
+  if (nativeDetector) return nativeDetector;
   if (typeof globalThis.FaceDetector === 'undefined') {
-    detectorSupported = false;
-    log({ faceBlur: 'FaceDetector API not available' });
+    nativeSupported = false;
     return null;
   }
   try {
-    detector = new globalThis.FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
-    detectorSupported = true;
-    return detector;
-  } catch (err) {
-    detectorSupported = false;
-    log({ faceBlurDetectorError: err?.message || err });
+    nativeDetector = new globalThis.FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
+    nativeSupported = true;
+    return nativeDetector;
+  } catch {
+    nativeSupported = false;
     return null;
   }
 }
+
+function getSkinDetector() {
+  if (!skinDetector) skinDetector = new SkinFaceDetector();
+  return skinDetector;
+}
+
+async function detectFaces(source) {
+  const native = getNativeDetector();
+  if (native) {
+    try {
+      return await native.detect(source);
+    } catch {
+      // Native detector can throw on invalid source state; fall through
+    }
+  }
+  return getSkinDetector().detect(source);
+}
+
+// ────────────────────────
+// Optimized pixelation
+// ────────────────────────
 
 function pixelateRegion(ctx, x, y, w, h, blockSize) {
   const bs = Math.max(4, blockSize);
@@ -45,43 +225,61 @@ function pixelateRegion(ctx, x, y, w, h, blockSize) {
   const y0 = Math.max(0, Math.floor(y));
   const x1 = Math.min(ctx.canvas.width, Math.ceil(x + w));
   const y1 = Math.min(ctx.canvas.height, Math.ceil(y + h));
-  for (let by = y0; by < y1; by += bs) {
-    for (let bx = x0; bx < x1; bx += bs) {
-      const sw = Math.min(bs, x1 - bx);
-      const sh = Math.min(bs, y1 - by);
+  const regionW = x1 - x0;
+  const regionH = y1 - y0;
+  if (regionW <= 0 || regionH <= 0) return;
+
+  // Single getImageData for entire region (much faster than per-block)
+  let regionData;
+  try {
+    regionData = ctx.getImageData(x0, y0, regionW, regionH);
+  } catch {
+    return;
+  }
+  const data = regionData.data;
+
+  for (let by = 0; by < regionH; by += bs) {
+    for (let bx = 0; bx < regionW; bx += bs) {
+      const sw = Math.min(bs, regionW - bx);
+      const sh = Math.min(bs, regionH - by);
+      // Sample centre pixel from already-read data
       const cx = bx + (sw >> 1);
       const cy = by + (sh >> 1);
-      let pixel;
-      try {
-        pixel = ctx.getImageData(cx, cy, 1, 1).data;
-      } catch {
-        continue;
-      }
-      ctx.fillStyle = `rgb(${pixel[0]},${pixel[1]},${pixel[2]})`;
-      ctx.fillRect(bx, by, sw, sh);
+      const idx = (cy * regionW + cx) * 4;
+      ctx.fillStyle = `rgb(${data[idx]},${data[idx + 1]},${data[idx + 2]})`;
+      ctx.fillRect(x0 + bx, y0 + by, sw, sh);
     }
   }
 }
+
+// ────────────────────────
+// Pipeline
+// ────────────────────────
 
 /**
  * Create a face blur processing pipeline.
  *
  * @param {MediaStreamTrack} sourceTrack - The camera video track to process.
- * @returns {{ track: MediaStreamTrack, setEnabled: (b: boolean) => void, isEnabled: () => boolean, updateSource: (t: MediaStreamTrack) => void, destroy: () => void }}
+ * @returns {{ track, setEnabled, isEnabled, updateSource, destroy } | null}
+ *          null when the browser lacks captureStream support.
  */
 export function createFaceBlurPipeline(sourceTrack) {
   let enabled = true;
   let destroyed = false;
   let currentSource = sourceTrack;
   let lastDetectTime = 0;
+  let lastDrawTime = 0;
   let cachedFaces = [];
   let animFrameId = null;
+  let safariIntervalId = null;
 
   // Hidden video element to feed camera frames
   const srcVideo = document.createElement('video');
   srcVideo.setAttribute('playsinline', '');
   srcVideo.setAttribute('autoplay', '');
-  srcVideo.muted = true;
+  srcVideo.setAttribute('muted', '');          // HTML attribute (iOS Safari requirement)
+  srcVideo.muted = true;                       // JS property
+  srcVideo.playsInline = true;                 // JS property (iOS Safari)
   srcVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none';
   document.body.appendChild(srcVideo);
 
@@ -89,46 +287,63 @@ export function createFaceBlurPipeline(sourceTrack) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  // Output stream from canvas
+  // captureStream support check
+  if (typeof canvas.captureStream !== 'function') {
+    log({ faceBlur: 'captureStream not supported — pipeline disabled' });
+    try { srcVideo.remove(); } catch {}
+    return null;
+  }
+
   const outputStream = canvas.captureStream(TARGET_FPS);
   const outputTrack = outputStream.getVideoTracks()[0];
+  if (!outputTrack) {
+    log({ faceBlur: 'captureStream produced no video track' });
+    try { srcVideo.remove(); } catch {}
+    return null;
+  }
 
-  // Wire source
   function attachSource(track) {
     const ms = new MediaStream([track]);
     srcVideo.srcObject = ms;
     srcVideo.play().catch(() => {});
-    // Match canvas size to track settings
     const settings = track.getSettings?.() || {};
-    const w = settings.width || 640;
-    const h = settings.height || 480;
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width  = settings.width  || 640;
+    canvas.height = settings.height || 480;
   }
   attachSource(currentSource);
 
-  // Resize canvas when video metadata loads
+  // Resize canvas to actual video dimensions once available
   srcVideo.addEventListener('loadedmetadata', () => {
     if (srcVideo.videoWidth && srcVideo.videoHeight) {
-      canvas.width = srcVideo.videoWidth;
+      canvas.width  = srcVideo.videoWidth;
       canvas.height = srcVideo.videoHeight;
     }
   });
 
-  // Main render loop
-  async function processFrame() {
-    if (destroyed) return;
+  // ── Render loop ──
+  const useRVFC = typeof HTMLVideoElement !== 'undefined' &&
+    'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
-    // Schedule next frame
-    if ('requestVideoFrameCallback' in srcVideo && typeof srcVideo.requestVideoFrameCallback === 'function') {
-      srcVideo.requestVideoFrameCallback(() => processFrame());
+  function scheduleNextFrame() {
+    if (destroyed) return;
+    if (useRVFC) {
+      try {
+        srcVideo.requestVideoFrameCallback(() => processFrame());
+      } catch {
+        animFrameId = requestAnimationFrame(() => processFrame());
+      }
     } else {
       animFrameId = requestAnimationFrame(() => processFrame());
     }
+  }
 
-    // Draw current camera frame to canvas
+  async function processFrame() {
+    if (destroyed) return;
+    scheduleNextFrame();
+
     if (srcVideo.readyState < 2) return;
     ctx.drawImage(srcVideo, 0, 0, canvas.width, canvas.height);
+    lastDrawTime = performance.now();
 
     if (!enabled) return; // passthrough — just drawImage, no blur
 
@@ -137,31 +352,28 @@ export function createFaceBlurPipeline(sourceTrack) {
     if (now - lastDetectTime > DETECT_INTERVAL_MS) {
       lastDetectTime = now;
       try {
-        const det = await getDetector();
-        if (det && srcVideo.readyState >= 2) {
-          cachedFaces = await det.detect(srcVideo);
+        if (srcVideo.readyState >= 2) {
+          cachedFaces = await detectFaces(srcVideo);
         }
       } catch (err) {
-        // Detection can fail if video element is in a bad state; just skip
         if (err?.name !== 'InvalidStateError') {
           log({ faceBlurDetectError: err?.message || err });
         }
       }
     }
 
-    // Apply pixelation to detected face regions
+    // Pixelate detected face regions
     if (cachedFaces.length > 0) {
       for (const face of cachedFaces) {
         const box = face.boundingBox;
         if (!box) continue;
-        // Expand bounding box by 20% for better coverage
         const padX = box.width * 0.2;
         const padY = box.height * 0.2;
         pixelateRegion(
           ctx,
           box.x - padX,
           box.y - padY,
-          box.width + padX * 2,
+          box.width  + padX * 2,
           box.height + padY * 2,
           PIXEL_BLOCK
         );
@@ -169,23 +381,41 @@ export function createFaceBlurPipeline(sourceTrack) {
     }
   }
 
-  // Kick off render loop
+  // Safari captureStream quirk: the captured stream can stall if
+  // canvas paints stop (e.g. rAF throttled by the OS).  Keep a
+  // low-frequency interval as a heartbeat that only fires when
+  // the main render loop hasn't drawn recently.
+  const isSafari = typeof navigator !== 'undefined' &&
+    /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  if (isSafari) {
+    safariIntervalId = setInterval(() => {
+      if (destroyed || srcVideo.readyState < 2) return;
+      if (performance.now() - lastDrawTime > 80) {
+        ctx.drawImage(srcVideo, 0, 0, canvas.width, canvas.height);
+        lastDrawTime = performance.now();
+      }
+    }, Math.floor(1000 / TARGET_FPS));
+  }
+
+  // Kick off
   processFrame();
 
+  const detectorKind = getNativeDetector() ? 'native' : 'skin-color';
+  log({ faceBlurDetector: detectorKind, isSafari: !!isSafari });
+
   return {
-    /** The processed output video track. Wire this to RTCRtpSender and local preview. */
+    /** Processed output video track. */
     track: outputTrack,
 
-    /** Enable or disable face blur (pipeline always runs, just skips pixelation when disabled). */
+    /** Enable/disable face blur. Pipeline always runs; when disabled it just passes through. */
     setEnabled(val) {
       enabled = !!val;
       if (!enabled) cachedFaces = [];
     },
 
-    /** Whether face blur is currently enabled. */
     isEnabled() { return enabled; },
 
-    /** Swap the source track (e.g. after camera switch). Pipeline output track stays the same. */
+    /** Swap source track (camera switch). Output track stays the same. */
     updateSource(newTrack) {
       if (destroyed) return;
       currentSource = newTrack;
@@ -193,7 +423,7 @@ export function createFaceBlurPipeline(sourceTrack) {
       attachSource(newTrack);
     },
 
-    /** Tear down the pipeline. */
+    /** Tear down everything. */
     destroy() {
       if (destroyed) return;
       destroyed = true;
@@ -202,15 +432,29 @@ export function createFaceBlurPipeline(sourceTrack) {
         cancelAnimationFrame(animFrameId);
         animFrameId = null;
       }
+      if (safariIntervalId) {
+        clearInterval(safariIntervalId);
+        safariIntervalId = null;
+      }
       try { outputTrack.stop(); } catch {}
       try { srcVideo.srcObject = null; } catch {}
       try { srcVideo.remove(); } catch {}
-      detector = null;
+      nativeDetector = null;
     }
   };
 }
 
-/** Check if the browser supports the FaceDetector API. */
-export function isFaceDetectorSupported() {
-  return typeof globalThis.FaceDetector !== 'undefined';
+/**
+ * Check if the browser can run the face blur pipeline.
+ * Requires canvas.captureStream() support — available on
+ * Chrome 51+, Firefox 43+, Safari 15+ / iOS Safari 15+.
+ */
+export function isFaceBlurSupported() {
+  if (typeof document === 'undefined') return false;
+  try {
+    const c = document.createElement('canvas');
+    return typeof c.captureStream === 'function';
+  } catch {
+    return false;
+  }
 }

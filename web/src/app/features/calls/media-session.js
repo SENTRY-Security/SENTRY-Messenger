@@ -20,7 +20,7 @@ import {
   supportsInsertableStreams
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
-import { createFaceBlurPipeline, isFaceDetectorSupported } from './face-blur.js';
+import { createFaceBlurPipeline, isFaceBlurSupported } from './face-blur.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccountDigest } from '../../core/store.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
@@ -404,7 +404,7 @@ export async function toggleLocalVideo(enabled) {
       // Update or create face blur pipeline
       if (faceBlurPipeline) {
         faceBlurPipeline.updateSource(newTrack);
-      } else if (isFaceDetectorSupported() && faceBlurEnabled) {
+      } else if (isFaceBlurSupported() && faceBlurEnabled) {
         try {
           faceBlurPipeline = createFaceBlurPipeline(newTrack);
         } catch (err) {
@@ -822,10 +822,14 @@ async function attachLocalMedia() {
     }
     // Set up face blur pipeline for video tracks before adding to peer connection
     const videoTrack = localStream.getVideoTracks()[0];
-    if (videoTrack && isFaceDetectorSupported() && faceBlurEnabled) {
+    if (videoTrack && isFaceBlurSupported() && faceBlurEnabled) {
       try {
         faceBlurPipeline = createFaceBlurPipeline(videoTrack);
-        log({ faceBlurPipelineCreated: true });
+        if (faceBlurPipeline) {
+          log({ faceBlurPipelineCreated: true });
+        } else {
+          log({ faceBlur: 'pipeline returned null (captureStream unavailable)' });
+        }
       } catch (err) {
         log({ faceBlurPipelineError: err?.message || err });
         faceBlurPipeline = null;

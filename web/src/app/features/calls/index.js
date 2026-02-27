@@ -67,5 +67,5 @@ export {
 } from './media-session.js';
 export {
   createFaceBlurPipeline,
-  isFaceDetectorSupported
+  isFaceBlurSupported
 } from './face-blur.js';
