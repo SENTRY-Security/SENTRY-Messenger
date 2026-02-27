@@ -2682,13 +2682,17 @@ async function buildVideoPreviewBlob(file) {
     url = URL.createObjectURL(file);
     video.src = url;
 
-    // Wait for at least one frame to be available (not just metadata).
-    // Use longer timeout for large .mov files on iOS.
-    await waitForVideoEvent(video, 'loadeddata', 12000);
+    // iOS Safari ignores preload='auto' for programmatic <video> elements and
+    // will not fetch any data until play() is called.  Kick off load() + play()
+    // BEFORE waiting for 'loadeddata' so that the browser actually starts
+    // decoding frames.  Muted autoplay is allowed without a user gesture on all
+    // modern platforms (iOS 10+, Chrome 53+, Firefox 66+).
+    video.load();
+    const playReady = video.play().catch(() => {});
 
-    // iOS Safari requires play() before the decoder produces frames
-    // for canvas capture. Muted autoplay is allowed without user gesture.
-    try { await video.play(); } catch { /* ignore — best-effort */ }
+    // Wait for at least one frame to be available (not just metadata).
+    await waitForVideoEvent(video, 'loadeddata', 12000);
+    await playReady;
 
     const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
     const targetTime = Math.min(
