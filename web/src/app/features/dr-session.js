@@ -2715,7 +2715,7 @@ async function buildVideoPreviewBlob(file) {
   }
 }
 
-async function buildMediaPreviewBlob(file) {
+export async function buildMediaPreviewBlob(file) {
   const type = (file?.type || '').toLowerCase();
   if (type.startsWith('image/')) {
     return buildImagePreviewBlob(file);

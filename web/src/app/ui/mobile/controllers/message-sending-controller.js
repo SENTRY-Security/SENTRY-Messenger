@@ -5,7 +5,7 @@
 
 import { BaseController } from './base-controller.js';
 import { appendUserMessage, getTimeline, removeMessagesMatching } from '../../../features/timeline-store.js';
-import { sendDrMedia, sendDrText } from '../../../features/dr-session.js';
+import { sendDrMedia, sendDrText, buildMediaPreviewBlob } from '../../../features/dr-session.js';
 import { UnsupportedVideoFormatError } from '../../../features/media.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
@@ -160,6 +160,17 @@ export class MessageSendingController extends BaseController {
                 const messageId = crypto.randomUUID();
                 const previewText = `[檔案] ${file.name || '附件'}`;
 
+                // For video files, capture a real thumbnail so the bubble preview
+                // shows a valid image (instead of a video blob URL that <img> can't render).
+                let previewUrl = localUrl;
+                const isVideoFile = (file.type || '').toLowerCase().startsWith('video/');
+                if (isVideoFile) {
+                    try {
+                        const thumb = await buildMediaPreviewBlob(file);
+                        if (thumb?.blob) previewUrl = URL.createObjectURL(thumb.blob);
+                    } catch { /* fall back to localUrl */ }
+                }
+
                 const localMsg = this.appendLocalOutgoingMessage({
                     text: previewText,
                     ts: Date.now(),
@@ -170,7 +181,7 @@ export class MessageSendingController extends BaseController {
                         size: typeof file.size === 'number' ? file.size : null,
                         contentType: file.type || 'application/octet-stream',
                         localUrl,
-                        previewUrl: localUrl,
+                        previewUrl,
                         uploading: true,
                         progress: 0
                     }
@@ -249,6 +260,10 @@ export class MessageSendingController extends BaseController {
                         const isVideo = (pm.contentType || tm.contentType || file.type || '').toLowerCase().startsWith('video/');
                         if (isVideo && localUrl) {
                             try { URL.revokeObjectURL(localUrl); } catch {}
+                        }
+                        // Revoke the old thumbnail blob URL if sendDrMedia provided a new one
+                        if (isVideo && pm.previewUrl && tm.previewUrl && pm.previewUrl !== tm.previewUrl) {
+                            try { URL.revokeObjectURL(tm.previewUrl); } catch {}
                         }
 
                         targetMsg.media = {
