@@ -45,19 +45,29 @@ export function detectCodecFromInitSegment(data, trackType) {
     if (MSCtor.isTypeSupported(mimeCodec)) return mimeCodec;
   }
 
-  // Fallback: try common codec strings based on track type
+  // Fallback: try common codec strings based on track type.
+  // For 'muxed' tracks, try combined video+audio first, then video-only.
+  // A muxed SourceBuffer MUST declare both codecs or audio segments will be rejected.
   const candidates = trackType === 'audio'
     ? [
         'video/mp4; codecs="mp4a.40.2"',     // AAC-LC
         'video/mp4; codecs="mp4a.40.5"',     // HE-AAC
         'video/mp4; codecs="opus"',
       ]
-    : [
-        'video/mp4; codecs="avc1.42E01E"',   // H.264 Baseline
-        'video/mp4; codecs="avc1.4D401E"',   // H.264 Main
-        'video/mp4; codecs="avc1.64001E"',   // H.264 High
-        'video/mp4; codecs="hvc1"',           // HEVC (Safari)
-      ];
+    : trackType === 'muxed'
+      ? [
+          'video/mp4; codecs="avc1.42E01E,mp4a.40.2"',   // H.264 Baseline + AAC
+          'video/mp4; codecs="avc1.4D401E,mp4a.40.2"',   // H.264 Main + AAC
+          'video/mp4; codecs="avc1.64001E,mp4a.40.2"',   // H.264 High + AAC
+          'video/mp4; codecs="hvc1,mp4a.40.2"',           // HEVC + AAC (Safari)
+          'video/mp4; codecs="avc1.42E01E"',              // Video-only fallback
+        ]
+      : [
+          'video/mp4; codecs="avc1.42E01E"',   // H.264 Baseline
+          'video/mp4; codecs="avc1.4D401E"',   // H.264 Main
+          'video/mp4; codecs="avc1.64001E"',   // H.264 High
+          'video/mp4; codecs="hvc1"',           // HEVC (Safari)
+        ];
 
   for (const candidate of candidates) {
     if (MSCtor.isTypeSupported(candidate)) return candidate;

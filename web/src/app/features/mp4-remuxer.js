@@ -68,6 +68,49 @@ function isAlreadyFragmented(u8) {
 }
 
 /**
+ * Count 'trak' sub-boxes in the moov box to determine number of tracks.
+ * Used to decide whether splitFragmentedMp4 (single-track muxed) is safe,
+ * or whether mp4box.js is needed for proper per-track segmentation.
+ *
+ * Multi-track already-fragmented MP4 files may have non-interleaved segments
+ * (separate moof+mdat for video and audio). These cannot be fed to a single
+ * muxed SourceBuffer — each track needs its own SourceBuffer.
+ */
+function countMoovTracks(u8) {
+  let i = 0;
+  while (i < u8.length - 7) {
+    let boxSize = readU32(u8, i) >>> 0; // unsigned
+    const boxType = String.fromCharCode(u8[i + 4], u8[i + 5], u8[i + 6], u8[i + 7]);
+    let headerSize = 8;
+    if (boxSize === 1 && i + 16 <= u8.length) {
+      boxSize = readU64(u8, i + 8);
+      headerSize = 16;
+    }
+    if (boxSize < headerSize || i + boxSize > u8.length) break;
+
+    if (boxType === 'moov') {
+      let count = 0;
+      let j = i + headerSize;
+      const moovEnd = i + boxSize;
+      while (j < moovEnd - 7) {
+        let subSize = readU32(u8, j) >>> 0;
+        const subType = String.fromCharCode(u8[j + 4], u8[j + 5], u8[j + 6], u8[j + 7]);
+        if (subSize === 1 && j + 16 <= moovEnd) {
+          subSize = readU64(u8, j + 8);
+        }
+        if (subSize < 8 || j + subSize > moovEnd) break;
+        if (subType === 'trak') count++;
+        j += subSize;
+      }
+      return count;
+    }
+
+    i += boxSize;
+  }
+  return 0;
+}
+
+/**
  * Read a big-endian uint32 from data at the given offset.
  */
 function readU32(data, offset) {
@@ -277,19 +320,26 @@ export async function remuxToFragmentedMp4(file) {
   const fileU8 = new Uint8Array(fileBuffer);
 
   if (isAlreadyFragmented(fileU8)) {
-    // Already fMP4 — split at moof boundaries.
-    // Already-fragmented files have properly muxed segments, so treat as single "muxed" track.
-    const { initSegment, mediaSegments } = splitFragmentedMp4(fileU8);
-    if (!initSegment.byteLength || mediaSegments.length === 0) {
-      throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
+    // Multi-track already-fragmented MP4 (e.g. separate video + audio tracks)
+    // must go through mp4box.js for proper per-track segmentation.
+    // A single muxed SourceBuffer fails when segments are non-interleaved
+    // (separate moof+mdat per track) — the browser rejects single-track
+    // segments appended to a multi-codec SourceBuffer.
+    const moovTrackCount = countMoovTracks(fileU8);
+    if (moovTrackCount <= 1) {
+      // Single-track fMP4 — safe to use simple moof-boundary split
+      const { initSegment, mediaSegments } = splitFragmentedMp4(fileU8);
+      if (!initSegment.byteLength || mediaSegments.length === 0) {
+        throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
+      }
+      const track = { type: 'muxed', codec: null, initSegment, mediaSegments };
+      const segments = [
+        { trackIndex: 0, data: initSegment },
+        ...mediaSegments.map(data => ({ trackIndex: 0, data }))
+      ];
+      return { tracks: [track], segments, contentType: 'video/mp4', remuxed: false, name };
     }
-    // Single "muxed" track — all segments go to one SourceBuffer
-    const track = { type: 'muxed', codec: null, initSegment, mediaSegments };
-    const segments = [
-      { trackIndex: 0, data: initSegment },
-      ...mediaSegments.map(data => ({ trackIndex: 0, data }))
-    ];
-    return { tracks: [track], segments, contentType: 'video/mp4', remuxed: false, name };
+    // Multi-track fMP4 — fall through to mp4box.js for per-track segmentation
   }
 
   // Need to remux: load mp4box.js and fragment the file
