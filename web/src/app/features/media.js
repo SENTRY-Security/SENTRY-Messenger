@@ -55,7 +55,7 @@ function guessContentTypeFromName(name) {
   return EXT_CONTENT_TYPE.get(ext) || 'application/octet-stream';
 }
 
-function resolveContentType(file) {
+export function resolveContentType(file) {
   const fileType = typeof file?.type === 'string' ? file.type.trim() : '';
   if (fileType && fileType !== 'application/octet-stream') return fileType;
   const fileName = typeof file?.name === 'string' ? file.name : '';

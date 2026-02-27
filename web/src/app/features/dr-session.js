@@ -33,7 +33,7 @@ import {
 } from './conversation.js';
 import { ensureDevicePrivAvailable } from './device-priv.js';
 import { CONTROL_MESSAGE_TYPES } from './secure-conversation-signals.js';
-import { encryptAndPutWithProgress, shouldUseChunkedUpload, UnsupportedVideoFormatError } from './media.js';
+import { encryptAndPutWithProgress, shouldUseChunkedUpload, UnsupportedVideoFormatError, resolveContentType } from './media.js';
 import { encryptAndPutChunked } from './chunked-upload.js';
 import {
   enqueueOutboxJob,
@@ -2739,7 +2739,7 @@ async function buildVideoPreviewBlob(file) {
 }
 
 export async function buildMediaPreviewBlob(file) {
-  const type = (file?.type || '').toLowerCase();
+  const type = resolveContentType(file).toLowerCase();
   if (type.startsWith('image/')) {
     return buildImagePreviewBlob(file);
   }

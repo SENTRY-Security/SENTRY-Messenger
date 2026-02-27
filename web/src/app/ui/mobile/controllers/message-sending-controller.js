@@ -6,7 +6,7 @@
 import { BaseController } from './base-controller.js';
 import { appendUserMessage, getTimeline, removeMessagesMatching } from '../../../features/timeline-store.js';
 import { sendDrMedia, sendDrText, buildMediaPreviewBlob } from '../../../features/dr-session.js';
-import { UnsupportedVideoFormatError } from '../../../features/media.js';
+import { UnsupportedVideoFormatError, resolveContentType } from '../../../features/media.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
 import { isUploadBusy, startUpload, updateUploadProgress, endUpload } from '../../../features/transfer-progress.js';
@@ -162,7 +162,8 @@ export class MessageSendingController extends BaseController {
 
                 // For video files, don't block on thumbnail — let bubble appear instantly.
                 // Thumbnail is generated in the background and the bubble updates when ready.
-                const isVideoFile = (file.type || '').toLowerCase().startsWith('video/');
+                const resolvedType = resolveContentType(file);
+                const isVideoFile = resolvedType.toLowerCase().startsWith('video/');
                 const previewUrl = isVideoFile ? null : localUrl;
 
                 const localMsg = this.appendLocalOutgoingMessage({
@@ -173,7 +174,7 @@ export class MessageSendingController extends BaseController {
                     media: {
                         name: file.name || '附件',
                         size: typeof file.size === 'number' ? file.size : null,
-                        contentType: file.type || 'application/octet-stream',
+                        contentType: resolvedType,
                         localUrl,
                         previewUrl,
                         uploading: true,
