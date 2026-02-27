@@ -175,8 +175,15 @@ export class MediaHandlingController extends BaseController {
         `;
         wrap.appendChild(bufOverlay);
 
-        // Open modal immediately so user sees the player right away
+        // Open modal immediately so user sees the player right away.
+        // Use both deps callback AND direct DOM manipulation to ensure
+        // the modal is actually visible (guards against missing deps or
+        // normalizeOverlayState() racing to close it).
         this.deps.openPreviewModal?.();
+        modalEl.style.display = 'flex';
+        modalEl.setAttribute('aria-hidden', 'false');
+        modalEl.classList.add('show');
+        document.body.classList.add('modal-open');
 
         let manifest = null;
         try {
@@ -346,15 +353,17 @@ export class MediaHandlingController extends BaseController {
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
 
-            // Cleanup MSE when modal closes
+            // Cleanup MSE when modal closes.
+            // Check display==='none' (set by closeModal / normalizeOverlayState).
+            // Do NOT check 'active' class — openModal() never adds it.
             const modalObserver = new MutationObserver(() => {
-                if (!modalEl.classList.contains('active') || modalEl.style.display === 'none') {
+                if (modalEl.style.display === 'none' || modalEl.getAttribute('aria-hidden') === 'true') {
                     if (msePlayer) {
-                        msePlayer.destroy();
+                        try { msePlayer.destroy(); } catch {}
                         msePlayer = null;
                     }
-                    video.src = '';
-                    video.load();
+                    try { video.src = ''; video.load(); } catch {}
+                    modalEl.classList.remove('show');
                     modalObserver.disconnect();
                 }
             });
@@ -370,6 +379,7 @@ export class MediaHandlingController extends BaseController {
 
             if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
                 endDownload();
+                modalEl.classList.remove('show');
                 this.deps.closePreviewModal?.();
                 return;
             }
@@ -381,6 +391,7 @@ export class MediaHandlingController extends BaseController {
             media._videoState = 'idle';
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
+            modalEl.classList.remove('show');
             this.deps.closePreviewModal?.();
             this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }

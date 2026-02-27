@@ -256,7 +256,10 @@ observeTopbarHeight();
 
 function normalizeOverlayState() {
   const modal = document.getElementById('modal');
-  const modalHidden = !modal || modal.getAttribute('aria-hidden') === 'true' || modal.style.display === 'none';
+  // Respect .show class — video streaming adds it to prevent this function
+  // from racing with openModal and hiding the player mid-playback.
+  const modalForceOpen = modal?.classList.contains('show');
+  const modalHidden = !modalForceOpen && (!modal || modal.getAttribute('aria-hidden') === 'true' || modal.style.display === 'none');
   if (modalHidden && modal && modal.style.display !== 'none') modal.style.display = 'none';
   if (modalHidden) document.body.classList.remove('modal-open');
 
