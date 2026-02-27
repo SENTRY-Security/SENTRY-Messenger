@@ -246,8 +246,10 @@ body.vv-open {
   left: 0;
   right: 0;
   max-height: 35%;
-  background: rgba(2, 6, 23, 0.96);
-  border-top: 1px solid rgba(51, 65, 85, 0.5);
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border-top: 1px solid rgba(51, 65, 85, 0.4);
   border-radius: 0;
 }
 
@@ -258,9 +260,9 @@ body.vv-open {
   left: 10px;
   right: 10px;
   max-height: 50%;
-  background: rgba(2, 6, 23, 0.78);
-  backdrop-filter: blur(14px) saturate(120%);
-  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  background: rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
   border: 1px solid rgba(51, 65, 85, 0.4);
   border-radius: 12px;
 }

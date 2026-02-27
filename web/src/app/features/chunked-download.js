@@ -9,6 +9,11 @@ import { decryptWithMK as aeadDecryptWithMK, b64u8 } from '../crypto/aead.js';
 const CHUNK_INFO_TAG = 'media/chunk-v1';
 const MANIFEST_INFO_TAG = 'media/manifest-v1';
 
+// Timeout for a single chunk download (fetch + read body)
+const CHUNK_DOWNLOAD_TIMEOUT_MS = 30_000;
+// Max retries for a single chunk download or API call
+const MAX_RETRIES = 3;
+
 function normalizeSharedKey(input) {
   if (!input) return null;
   if (input instanceof Uint8Array) return input;
@@ -38,13 +43,53 @@ function resolveKey(manifestEnvelope) {
 }
 
 /**
- * Download a single URL as Uint8Array using fetch.
+ * Create an AbortSignal that fires on timeout OR when the parent signal aborts.
+ */
+function withTimeout(parentSignal, ms) {
+  const ac = new AbortController();
+  const tid = setTimeout(() => ac.abort(new DOMException('Download timed out', 'TimeoutError')), ms);
+  const cleanup = () => clearTimeout(tid);
+  ac.signal.addEventListener('abort', cleanup, { once: true });
+  if (parentSignal) {
+    if (parentSignal.aborted) { cleanup(); ac.abort(parentSignal.reason); }
+    else parentSignal.addEventListener('abort', () => { cleanup(); ac.abort(parentSignal.reason); }, { once: true });
+  }
+  return ac.signal;
+}
+
+/**
+ * Download a single URL as Uint8Array using fetch, with per-request timeout.
  */
 async function fetchAsUint8Array(url, abortSignal) {
-  const res = await fetch(url, { signal: abortSignal });
+  const signal = withTimeout(abortSignal, CHUNK_DOWNLOAD_TIMEOUT_MS);
+  const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`download failed (status ${res.status})`);
   const buf = await res.arrayBuffer();
   return new Uint8Array(buf);
+}
+
+/**
+ * Retry an async operation with exponential backoff.
+ * Rethrows AbortError immediately without retrying.
+ */
+async function withRetry(fn, { maxRetries = MAX_RETRIES, label = '', abortSignal } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      // Don't retry user-initiated aborts
+      if (err.name === 'AbortError' && abortSignal?.aborted) throw err;
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+        console.warn(`[chunked-dl] ${label} attempt ${attempt + 1}/${maxRetries + 1} failed: ${err?.message}, retrying in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -98,19 +143,21 @@ export async function downloadAndDecryptChunk({ chunkUrl, encryptionKey, chunkMe
 }
 
 /**
- * Get signed download URLs for specific chunk indices.
+ * Get signed download URLs for specific chunk indices (with retry).
  *
- * @param {{ baseKey: string, chunkIndices: number[] }} params
+ * @param {{ baseKey: string, chunkIndices: number[], abortSignal?: AbortSignal }} params
  * @returns {Promise<Map<number, string>>} Map of index → signed URL
  */
 export async function getChunkUrls({ baseKey, chunkIndices, abortSignal }) {
-  const { r, data } = await apiSignGetChunked({ baseKey, chunkIndices });
-  if (!r.ok) throw new Error('sign-get-chunked failed: ' + JSON.stringify(data));
-  const map = new Map();
-  for (const c of (data.chunks || [])) {
-    map.set(c.index, c.url);
-  }
-  return map;
+  return withRetry(async () => {
+    const { r, data } = await apiSignGetChunked({ baseKey, chunkIndices });
+    if (!r.ok) throw new Error('sign-get-chunked failed: ' + JSON.stringify(data));
+    const map = new Map();
+    for (const c of (data.chunks || [])) {
+      map.set(c.index, c.url);
+    }
+    return map;
+  }, { label: `getChunkUrls [${chunkIndices[0]}..${chunkIndices[chunkIndices.length - 1]}]`, abortSignal });
 }
 
 /**
@@ -144,12 +191,11 @@ export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abort
       const chunkMeta = manifest.chunks[idx];
       if (!chunkMeta) throw new Error(`No metadata for chunk ${idx}`);
 
-      const decrypted = await downloadAndDecryptChunk({
-        chunkUrl: url,
-        encryptionKey: cryptoKey,
-        chunkMeta,
-        abortSignal
-      });
+      // Retry individual chunk downloads to survive transient network failures
+      const decrypted = await withRetry(
+        () => downloadAndDecryptChunk({ chunkUrl: url, encryptionKey: cryptoKey, chunkMeta, abortSignal }),
+        { label: `chunk ${idx}/${totalChunks}`, abortSignal }
+      );
 
       const progress = (idx + 1) / totalChunks;
       onProgress?.({ chunkIndex: idx, totalChunks, progress, percent: Math.round(progress * 100) });

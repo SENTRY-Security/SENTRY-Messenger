@@ -216,6 +216,8 @@ const BUFFER_EVICT_KEEP_BEHIND = 5;
 const QUOTA_MAX_RETRIES = 3;
 // Proactive eviction: trigger when played-behind exceeds this many seconds.
 const PROACTIVE_EVICT_THRESHOLD = 15;
+// Safety timeout: if an append doesn't complete within this time, reject it.
+const APPEND_TIMEOUT_MS = 15_000;
 
 function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSource } = {}) {
   let queue = [];
@@ -294,17 +296,27 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
     let quotaRetries = 0;
 
     const attemptAppend = (data) => {
-      const onUpdate = () => {
+      let settled = false;
+      let appendTimer = null;
+
+      const cleanup = () => {
+        settled = true;
+        if (appendTimer) { clearTimeout(appendTimer); appendTimer = null; }
         sourceBuffer.removeEventListener('updateend', onUpdate);
         sourceBuffer.removeEventListener('error', onErr);
+      };
+
+      const onUpdate = () => {
+        if (settled) return;
+        cleanup();
         appending = false;
         entry.resolve();
         processQueue();
       };
 
       const onErr = () => {
-        sourceBuffer.removeEventListener('updateend', onUpdate);
-        sourceBuffer.removeEventListener('error', onErr);
+        if (settled) return;
+        cleanup();
         appending = false;
         const msState = getMediaSource?.()?.readyState || 'unknown';
         const sbUpdating = sourceBuffer?.updating ?? 'N/A';
@@ -318,11 +330,24 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
       sourceBuffer.addEventListener('updateend', onUpdate);
       sourceBuffer.addEventListener('error', onErr);
 
+      // Safety timeout: if neither updateend nor error fires, unblock the queue
+      appendTimer = setTimeout(() => {
+        if (settled) return;
+        cleanup();
+        appending = false;
+        // Try to abort the stuck update
+        try { if (sourceBuffer.updating) sourceBuffer.abort(); } catch {}
+        const err = new Error(`SourceBuffer append timed out (${APPEND_TIMEOUT_MS}ms, bytes=${data?.byteLength ?? 0})`);
+        entry.reject(err);
+        onError?.(err);
+        processQueue();
+      }, APPEND_TIMEOUT_MS);
+
       try {
         sourceBuffer.appendBuffer(data);
       } catch (err) {
-        sourceBuffer.removeEventListener('updateend', onUpdate);
-        sourceBuffer.removeEventListener('error', onErr);
+        if (settled) return;
+        cleanup();
         appending = false;
 
         // QuotaExceededError — evict played buffer and retry

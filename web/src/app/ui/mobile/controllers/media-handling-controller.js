@@ -247,10 +247,16 @@ export class MediaHandlingController extends BaseController {
             };
 
             // Step 3: Stream chunks via MSE (with blob-URL fallback)
+            // Downloads are decoupled from MSE appends — fire-and-forget with
+            // backpressure prevents MMS endstreaming pause from blocking downloads.
             let chunksReceived = 0;
             let bytesReceived = 0;
             let useBlobFallback = false;
             const blobParts = []; // Collects ALL chunks when blob fallback is active
+
+            const inflightAppends = new Set();
+            const MAX_INFLIGHT = 15;
+            let appendError = null;
 
             for await (const { data, index } of streamChunks({
                 baseKey: media.baseKey,
@@ -264,6 +270,9 @@ export class MediaHandlingController extends BaseController {
                     updateDownloadProgress(media._videoProgress);
                 }
             })) {
+                // Check if a previous append triggered a fatal error
+                if (appendError) throw appendError;
+
                 chunksReceived++;
                 bytesReceived += (data?.byteLength || 0);
                 viewer.updateChunkStats({ received: chunksReceived, bytes: bytesReceived });
@@ -305,25 +314,36 @@ export class MediaHandlingController extends BaseController {
                     }
                 } else {
                     if (!mseInitialized) continue;
-                    try {
-                        await msePlayer.appendChunk('muxed', data);
+
+                    // Fire-and-forget: don't block downloads waiting for MSE appends.
+                    // This is critical for MMS (iOS Safari) where endstreaming pauses
+                    // the append queue — blocking here would stall all chunk downloads.
+                    const p = msePlayer.appendChunk('muxed', data).then(() => {
                         consecutiveErrors = 0;
-                    } catch (appendErr) {
+                        if (!firstMediaAppended) {
+                            firstMediaAppended = true;
+                            viewer.hideBuffering();
+                        }
+                    }, (appendErr) => {
                         consecutiveErrors++;
                         console.warn(`[mse] segment ${index} append failed (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, appendErr?.message);
                         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                            throw new Error('MSE 串流持續失敗');
+                            appendError = new Error('MSE 串流持續失敗');
+                            try { downloadAbort.abort(); } catch {}
                         }
-                        continue;
-                    }
+                    });
+                    inflightAppends.add(p);
+                    p.finally(() => inflightAppends.delete(p));
 
-                    // Hide buffering overlay after first successful media segment
-                    if (!firstMediaAppended) {
-                        firstMediaAppended = true;
-                        viewer.hideBuffering();
+                    // Backpressure: if too many appends in-flight, wait for one to settle
+                    if (inflightAppends.size >= MAX_INFLIGHT) {
+                        await Promise.race(inflightAppends);
                     }
                 }
             }
+
+            // Check for deferred append errors
+            if (appendError) throw appendError;
 
             if (useBlobFallback) {
                 // All chunks collected — create blob URL and play natively
@@ -338,7 +358,11 @@ export class MediaHandlingController extends BaseController {
                 video.addEventListener('canplay', () => viewer.hideBuffering(), { once: true });
                 try { await video.play(); } catch { /* autoplay may be blocked */ }
             } else if (msePlayer) {
-                // All chunks appended — signal end of stream
+                // Wait for all in-flight appends to settle before signaling EOS
+                if (inflightAppends.size > 0) {
+                    await Promise.allSettled(inflightAppends);
+                }
+                if (appendError) throw appendError;
                 await msePlayer.endOfStream();
             }
 
