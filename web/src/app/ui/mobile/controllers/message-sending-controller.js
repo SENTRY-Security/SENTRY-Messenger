@@ -160,16 +160,10 @@ export class MessageSendingController extends BaseController {
                 const messageId = crypto.randomUUID();
                 const previewText = `[檔案] ${file.name || '附件'}`;
 
-                // For video files, capture a real thumbnail so the bubble preview
-                // shows a valid image (instead of a video blob URL that <img> can't render).
-                let previewUrl = localUrl;
+                // For video files, don't block on thumbnail — let bubble appear instantly.
+                // Thumbnail is generated in the background and the bubble updates when ready.
                 const isVideoFile = (file.type || '').toLowerCase().startsWith('video/');
-                if (isVideoFile) {
-                    try {
-                        const thumb = await buildMediaPreviewBlob(file);
-                        if (thumb?.blob) previewUrl = URL.createObjectURL(thumb.blob);
-                    } catch { /* fall back to localUrl */ }
-                }
+                const previewUrl = isVideoFile ? null : localUrl;
 
                 const localMsg = this.appendLocalOutgoingMessage({
                     text: previewText,
@@ -186,6 +180,18 @@ export class MessageSendingController extends BaseController {
                         progress: 0
                     }
                 });
+
+                // Background: generate video thumbnail and update bubble when ready
+                if (isVideoFile) {
+                    buildMediaPreviewBlob(file).then(thumb => {
+                        if (!thumb?.blob) return;
+                        const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
+                        if (msg?.media) {
+                            msg.media.previewUrl = URL.createObjectURL(thumb.blob);
+                            this.updateUploadOverlayUI(msg.id, msg.media);
+                        }
+                    }).catch(() => {});
+                }
 
                 const abortController = new AbortController();
                 localMsg.abortController = abortController;

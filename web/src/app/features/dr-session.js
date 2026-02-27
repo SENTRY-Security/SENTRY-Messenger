@@ -2804,14 +2804,23 @@ export async function sendDrMedia(params = {}) {
   });
 
   // --- Phase 2: Upload files OUTSIDE the lock (allows incoming messages to decrypt concurrently) ---
+  // Progress is reported across all sub-phases so the user sees continuous movement:
+  //   0-3%  : thumbnail generation
+  //   3-5%  : thumbnail upload
+  //   5-100%: main file upload (internally: remux/transcode → chunk encrypt → chunk upload)
+  const PREVIEW_GEN_END = 3;
+  const PREVIEW_UPLOAD_END = 5;
+
   let conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
   if (!conversationId) conversationId = await conversationIdFromToken(tokenB64);
 
   const sharedMediaKey = crypto.getRandomValues(new Uint8Array(32));
   let previewInfo = null;
   let previewLocalUrl = null;
+  onProgress?.({ percent: 0 });
   try {
     const previewCandidate = await buildMediaPreviewBlob(file);
+    onProgress?.({ percent: PREVIEW_GEN_END });
     if (previewCandidate?.blob) {
       const previewName = typeof file.name === 'string' && file.name
         ? `${file.name}.preview.jpg`
@@ -2840,6 +2849,16 @@ export async function sendDrMedia(params = {}) {
   } catch (err) {
     logDrSend('preview-generate-failed', { peerAccountDigest: peer, error: err?.message || err });
   }
+  onProgress?.({ percent: PREVIEW_UPLOAD_END });
+
+  // Remap main upload progress (0-100%) into the remaining range (PREVIEW_UPLOAD_END..100%)
+  const mainProgressRange = 100 - PREVIEW_UPLOAD_END;
+  const remappedProgress = onProgress
+    ? (p) => {
+        const inner = Number.isFinite(p?.percent) ? p.percent : 0;
+        onProgress({ percent: PREVIEW_UPLOAD_END + Math.round(inner * mainProgressRange / 100) });
+      }
+    : undefined;
 
   let uploadResult;
   const isChunked = shouldUseChunkedUpload(file);
@@ -2849,7 +2868,7 @@ export async function sendDrMedia(params = {}) {
       convId: conversationId,
       file,
       dir,
-      onProgress,
+      onProgress: remappedProgress,
       abortSignal,
       encryptionKey: { key: sharedMediaKey, type: 'shared' },
       direction: 'sent'
@@ -2859,7 +2878,7 @@ export async function sendDrMedia(params = {}) {
       convId: conversationId,
       file,
       dir,
-      onProgress,
+      onProgress: remappedProgress,
       abortSignal,
       skipIndex: true,
       encryptionKey: { key: sharedMediaKey, type: 'shared' },
