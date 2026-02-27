@@ -185,7 +185,8 @@ body.vv-open {
 /* ── Stats Panel (base) ── */
 .vv-stats {
   z-index: 6;
-  padding: 12px 14px;
+  position: relative;
+  padding: 10px 14px 12px;
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 11px;
   line-height: 1.6;
@@ -203,6 +204,37 @@ body.vv-open {
 
 .vv-stats[hidden] {
   display: none;
+}
+
+/* Close button inside stats panel */
+.vv-stats-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.6);
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.vv-stats-close:active {
+  background: rgba(51, 65, 85, 0.8);
+  color: #e2e8f0;
+  transform: scale(0.9);
+}
+
+.vv-stats-close svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* ── Landscape video: solid panel anchored to bottom of stage ── */

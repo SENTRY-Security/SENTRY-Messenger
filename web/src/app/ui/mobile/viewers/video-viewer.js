@@ -46,6 +46,7 @@ const ICON_BACK = '<svg viewBox="0 0 24 24" fill="none"><path d="M15 19l-7-7 7-7
 const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
 const ICON_PLAY_CENTER = '<svg viewBox="0 0 48 48" width="56" height="56" fill="currentColor" opacity="0.9"><path d="M18 12v24l18-12z"/></svg>';
+const ICON_CLOSE_SM = '<svg viewBox="0 0 16 16" fill="none"><path d="M12 4L4 12M4 4l8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 
 /**
  * Open the full-screen video viewer.
@@ -89,6 +90,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
                 <div class="vv-buffering-text">緩衝中...</div>
             </div>
             <div class="vv-stats">
+                <button type="button" class="vv-stats-close" aria-label="隱藏資訊">${ICON_CLOSE_SM}</button>
                 <div class="stats-section">
                     <div class="stats-label">BUFFER</div>
                     <div class="vv-stats-buffer-bar">
@@ -289,12 +291,28 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
 
     /* ── Stats Panel (default: visible) ── */
     statsToggle.classList.add('active');
+    const statsCloseBtn = statsPanel.querySelector('.vv-stats-close');
 
+    const hideStats = () => {
+        statsPanel.hidden = true;
+        statsToggle.classList.remove('active');
+    };
+
+    const showStats = () => {
+        statsPanel.hidden = false;
+        statsToggle.classList.add('active');
+    };
+
+    // Toolbar "i" button toggles panel
     statsToggle.addEventListener('click', (e) => {
         e.stopPropagation();
-        const willHide = !statsPanel.hidden;
-        statsPanel.hidden = willHide;
-        statsToggle.classList.toggle('active', !willHide);
+        if (statsPanel.hidden) showStats(); else hideStats();
+    });
+
+    // X button inside the panel hides it
+    statsCloseBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideStats();
     });
 
     /* ── Video Orientation Detection ── */
