@@ -1,11 +1,12 @@
 // /app/features/chunked-upload.js
 // Chunked encrypted upload for video files.
 //
-// VIDEO (fMP4/WebM):
-//   - Remuxes to fMP4 first (if needed), then each fMP4 segment (init + media segments)
-//     becomes a separate encrypted chunk. This ensures each chunk is a valid MSE segment
-//     that can be directly appended to SourceBuffer for streaming playback.
-//   - WebM files use fixed 5MB byte-range chunks (WebM is natively MSE-compatible).
+// VIDEO (fMP4):
+//   - Preprocessing: tries WebCodecs transcode first (guarantees MSE-compatible H.264 fMP4).
+//     If the input is already H.264+AAC, falls through to fast remux (no re-encoding).
+//     If WebCodecs is unavailable, falls back to remux-only.
+//   - Each fMP4 segment (init + media segments) becomes a separate encrypted chunk,
+//     ensuring each chunk is a valid MSE segment for SourceBuffer.appendBuffer().
 //
 // NON-VIDEO:
 //   - Fixed 5MB byte-range chunks (unchanged from original).
@@ -18,6 +19,7 @@ import { encryptWithMK as aeadEncryptWithMK } from '../crypto/aead.js';
 import { b64 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError } from './mp4-remuxer.js';
+import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
 const UPLOAD_CONCURRENCY = 3;
@@ -184,23 +186,49 @@ export async function encryptAndPutChunked({
     if (!canRemuxVideo(file)) {
       throw new UnsupportedVideoFormatError(`不支援此影片格式：${rawType}`);
     }
-    const remuxResult = await remuxToFragmentedMp4(file, {
-      onProgress: ({ percent }) => {
-        // Map remux internal progress (0-100) → overall (0 → PHASE.remuxEnd)
-        onProgress?.({ percent: Math.round(percent * PHASE.remuxEnd / 100) });
-      }
-    });
-    onProgress?.({ percent: PHASE.remuxEnd });
-    contentType = remuxResult.contentType;
 
-    if (remuxResult.segments) {
-      // fMP4 segments available — use segment-based chunking
-      // Each segment is { trackIndex, data }
-      fmp4Segments = remuxResult.segments;
-      fmp4Tracks = remuxResult.tracks
-        ? remuxResult.tracks.map(t => ({ type: t.type, codec: t.codec }))
+    // Preprocessing: WebCodecs transcode → remux fallback
+    // transcodeToFmp4 returns null if input is already MSE-safe (H.264+AAC)
+    // or if WebCodecs is unavailable, signalling to use the fast remux path.
+    let preprocessResult = null;
+
+    if (isWebCodecsSupported()) {
+      try {
+        preprocessResult = await transcodeToFmp4(file, {
+          onProgress: ({ phase, percent }) => {
+            if (phase === 'load') {
+              // Loading phase: 0-2% of overall
+              onProgress?.({ percent: Math.round(percent * 2 / 100) });
+            } else {
+              // Encoding phase: 2-10% of overall
+              onProgress?.({ percent: 2 + Math.round(percent * (PHASE.remuxEnd - 2) / 100) });
+            }
+          }
+        });
+      } catch (err) {
+        // WebCodecs failed — fall through to remux
+        console.warn('[chunked-upload] WebCodecs transcode failed, falling back to remux:', err?.message);
+        preprocessResult = null;
+      }
+    }
+
+    // If transcode returned null (already MSE-safe or unavailable), use remux
+    if (!preprocessResult) {
+      preprocessResult = await remuxToFragmentedMp4(file, {
+        onProgress: ({ percent }) => {
+          onProgress?.({ percent: Math.round(percent * PHASE.remuxEnd / 100) });
+        }
+      });
+    }
+
+    onProgress?.({ percent: PHASE.remuxEnd });
+    contentType = preprocessResult.contentType;
+
+    if (preprocessResult.segments) {
+      fmp4Segments = preprocessResult.segments;
+      fmp4Tracks = preprocessResult.tracks
+        ? preprocessResult.tracks.map(t => ({ type: t.type, codec: t.codec }))
         : [{ type: 'muxed', codec: null }];
-      // Calculate total size from segments
       totalSize = 0;
       for (const seg of fmp4Segments) totalSize += seg.data.byteLength;
     } else {

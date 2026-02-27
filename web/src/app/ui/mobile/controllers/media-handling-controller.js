@@ -7,9 +7,8 @@
 
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
-import { downloadChunkedManifest, streamChunks, downloadAllChunks } from '../../../features/chunked-download.js';
+import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
 import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer } from '../../../features/mse-player.js';
-import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -195,48 +194,10 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            // Non-segment-aligned manifests (WebM, byte-range chunks) cannot use
-            // MSE — the chunks are arbitrary byte ranges, not valid MSE segments.
-            // Fall back to downloading all chunks → blob URL → <video src>.
+            // Non-segment-aligned manifests cannot use MSE streaming.
+            // Blob URL fallback is strictly forbidden — reject playback.
             if (!manifest.segment_aligned || !manifest.tracks) {
-                const { blob, contentType } = await downloadAllChunks({
-                    baseKey: media.baseKey,
-                    manifest,
-                    manifestEnvelope: media.manifestEnvelope,
-                    abortSignal: downloadAbort.signal,
-                    onProgress: ({ percent }) => {
-                        const adjusted = 5 + Math.round(percent * 0.9);
-                        media._videoProgress = Math.min(95, adjusted);
-                        this._updateVideoOverlayUI(msgId, media);
-                        updateDownloadProgress(media._videoProgress);
-                    }
-                });
-
-                const blobUrl = URL.createObjectURL(blob);
-                video.src = blobUrl;
-
-                // Remove buffering overlay
-                if (bufOverlay.parentNode) {
-                    bufOverlay.classList.add('fade-out');
-                    setTimeout(() => { try { bufOverlay.remove(); } catch {} }, 300);
-                }
-
-                endDownload();
-                media._videoState = 'idle';
-                media._videoProgress = 0;
-                this._updateVideoOverlayUI(msgId, media);
-
-                // Cleanup blob URL when modal closes
-                const blobObserver = new MutationObserver(() => {
-                    if (!modalEl.classList.contains('active') || modalEl.style.display === 'none') {
-                        try { URL.revokeObjectURL(blobUrl); } catch {}
-                        video.src = '';
-                        video.load();
-                        blobObserver.disconnect();
-                    }
-                });
-                blobObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
-                return;
+                throw new Error('此影片格式不支援串流播放（非分段對齊）');
             }
 
             // Segment-aligned fMP4 — use MSE streaming with single muxed SourceBuffer.
@@ -373,79 +334,8 @@ export class MediaHandlingController extends BaseController {
                 return;
             }
 
-            // MSE failed — attempt blob URL fallback (re-download entire file).
-            // For multi-track legacy manifests, merge init segments into valid fMP4.
-            console.warn('[video] MSE failed, trying blob URL fallback:', err?.message);
-            if (!manifest) {
-                // Can't attempt fallback without manifest
-                endDownload();
-                media._videoState = 'idle';
-                media._videoProgress = 0;
-                this._updateVideoOverlayUI(msgId, media);
-                this.deps.closePreviewModal?.();
-                this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
-                return;
-            }
-            try {
-                const allChunks = [];
-                for await (const { data } of streamChunks({
-                    baseKey: media.baseKey,
-                    manifest,
-                    manifestEnvelope: media.manifestEnvelope,
-                    abortSignal: downloadAbort.signal,
-                    onProgress: ({ percent }) => {
-                        const adjusted = 5 + Math.round(percent * 0.9);
-                        media._videoProgress = Math.min(95, adjusted);
-                        this._updateVideoOverlayUI(msgId, media);
-                        updateDownloadProgress(media._videoProgress);
-                    }
-                })) {
-                    allChunks.push(data);
-                }
-
-                // For legacy multi-track, merge init segments into one valid fMP4 init
-                let blobParts;
-                if (manifest.tracks && manifest.tracks.length > 1) {
-                    const numTrks = manifest.tracks.length;
-                    const mergedInit = mergeInitSegments(allChunks.slice(0, numTrks));
-                    blobParts = [mergedInit, ...allChunks.slice(numTrks)];
-                } else {
-                    blobParts = allChunks;
-                }
-
-                const blob = new Blob(blobParts, { type: manifest.contentType || 'video/mp4' });
-                const blobUrl = URL.createObjectURL(blob);
-                video.src = blobUrl;
-
-                if (bufOverlay?.parentNode) {
-                    bufOverlay.classList.add('fade-out');
-                    setTimeout(() => { try { bufOverlay.remove(); } catch {} }, 300);
-                }
-
-                endDownload();
-                media._videoState = 'idle';
-                media._videoProgress = 0;
-                this._updateVideoOverlayUI(msgId, media);
-
-                // Cleanup blob URL when modal closes
-                const blobObserver = new MutationObserver(() => {
-                    if (!modalEl.classList.contains('active') || modalEl.style.display === 'none') {
-                        try { URL.revokeObjectURL(blobUrl); } catch {}
-                        video.src = '';
-                        video.load();
-                        blobObserver.disconnect();
-                    }
-                });
-                blobObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
-                return;
-            } catch (fallbackErr) {
-                if (fallbackErr?.name === 'AbortError' || (fallbackErr instanceof DOMException && fallbackErr.message === 'aborted')) {
-                    endDownload();
-                    this.deps.closePreviewModal?.();
-                    return;
-                }
-                console.error('Video playback error (blob fallback also failed):', fallbackErr);
-            }
+            // No blob URL fallback — MSE streaming is strictly required.
+            console.error('[video] MSE playback failed:', err?.message);
 
             endDownload();
             media._videoState = 'idle';
