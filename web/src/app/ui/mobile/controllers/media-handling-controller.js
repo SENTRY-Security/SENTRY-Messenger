@@ -335,9 +335,13 @@ export class MediaHandlingController extends BaseController {
                     inflightAppends.add(p);
                     p.finally(() => inflightAppends.delete(p));
 
-                    // Backpressure: if too many appends in-flight, wait for one to settle
+                    // Backpressure: if too many appends in-flight, wait for one to settle.
+                    // Safety timeout prevents permanent deadlock if all appends are stuck
+                    // (e.g. eviction hang, MMS endstreaming pause with no resume).
                     if (inflightAppends.size >= MAX_INFLIGHT) {
-                        await Promise.race(inflightAppends);
+                        const BACKPRESSURE_TIMEOUT = 20_000;
+                        const timeout = new Promise(r => setTimeout(r, BACKPRESSURE_TIMEOUT));
+                        await Promise.race([Promise.race(inflightAppends), timeout]);
                     }
                 }
             }

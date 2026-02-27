@@ -95,35 +95,25 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
             </div>
             <div class="vv-stats">
                 <button type="button" class="vv-stats-close" aria-label="隱藏資訊">${ICON_CLOSE_SM}</button>
-                <div class="stats-section">
-                    <div class="stats-label">BUFFER</div>
-                    <div class="vv-stats-buffer-bar">
-                        <div class="buf-range"></div>
-                        <div class="buf-played"></div>
-                        <div class="buf-cursor"></div>
-                    </div>
-                    <div class="stats-row"><span class="stats-key">Position</span><span class="stats-val" data-vs="position">0:00 / 0:00</span></div>
-                    <div class="stats-row"><span class="stats-key">Buffered</span><span class="stats-val" data-vs="buffered">0.0s</span></div>
-                </div>
-                <div class="stats-section">
-                    <div class="stats-label">MSE</div>
-                    <div class="stats-row"><span class="stats-key">Type</span><span class="stats-val" data-vs="mse-type">—</span></div>
-                    <div class="stats-row"><span class="stats-key">State</span><span class="stats-val" data-vs="state">—</span></div>
-                    <div class="stats-row"><span class="stats-key">Codec</span><span class="stats-val" data-vs="codec">—</span></div>
-                    <div class="stats-row"><span class="stats-key">SB Mode</span><span class="stats-val" data-vs="sbmode">—</span></div>
-                    <div class="stats-row"><span class="stats-key">Queue</span><span class="stats-val" data-vs="queue">0</span></div>
-                </div>
-                <div class="stats-section">
-                    <div class="stats-label">CHUNKS</div>
-                    <div class="vv-stats-chunk-bar"><div class="chunk-fill"></div><div class="chunk-buffered"></div></div>
-                    <div class="stats-row"><span class="stats-key">Progress</span><span class="stats-val" data-vs="chunks">0 / 0</span></div>
-                    <div class="stats-row"><span class="stats-key">Received</span><span class="stats-val" data-vs="bytes">0 B</span></div>
-                </div>
-                <div class="stats-section">
-                    <div class="stats-label">ENCRYPTION</div>
-                    <div class="stats-row"><span class="stats-key">Scheme</span><span class="stats-val">AEAD</span></div>
-                    <div class="stats-row"><span class="stats-key">Per-Chunk</span><span class="stats-val good">AES-256-GCM</span></div>
-                </div>
+                <table class="stats-table">
+                    <tr class="stats-section-header"><td colspan="2"><span class="stats-label">BUFFER</span></td></tr>
+                    <tr><td colspan="2"><div class="vv-stats-buffer-bar"><div class="buf-range"></div><div class="buf-played"></div><div class="buf-cursor"></div></div></td></tr>
+                    <tr><td class="stats-key">Position</td><td class="stats-val" data-vs="position">0:00 / 0:00</td></tr>
+                    <tr><td class="stats-key">Buffered</td><td class="stats-val" data-vs="buffered">0.0s</td></tr>
+                    <tr class="stats-section-header"><td colspan="2"><span class="stats-label">MSE</span></td></tr>
+                    <tr><td class="stats-key">Type</td><td class="stats-val" data-vs="mse-type">—</td></tr>
+                    <tr><td class="stats-key">State</td><td class="stats-val" data-vs="state">—</td></tr>
+                    <tr><td class="stats-key">Codec</td><td class="stats-val" data-vs="codec">—</td></tr>
+                    <tr><td class="stats-key">SB Mode</td><td class="stats-val" data-vs="sbmode">—</td></tr>
+                    <tr><td class="stats-key">Queue</td><td class="stats-val" data-vs="queue">0</td></tr>
+                    <tr class="stats-section-header"><td colspan="2"><span class="stats-label">CHUNKS</span></td></tr>
+                    <tr><td colspan="2"><div class="vv-stats-chunk-bar"><div class="chunk-fill"></div><div class="chunk-buffered"></div></div></td></tr>
+                    <tr><td class="stats-key">Progress</td><td class="stats-val" data-vs="chunks">0 / 0</td></tr>
+                    <tr><td class="stats-key">Received</td><td class="stats-val" data-vs="bytes">0 B</td></tr>
+                    <tr class="stats-section-header"><td colspan="2"><span class="stats-label">ENCRYPTION</span></td></tr>
+                    <tr><td class="stats-key">Scheme</td><td class="stats-val">AEAD</td></tr>
+                    <tr><td class="stats-key">Per-Chunk</td><td class="stats-val good">AES-256-GCM</td></tr>
+                </table>
             </div>
             <button type="button" class="vv-center-play" data-action="toggle" aria-label="播放">${ICON_PLAY_CENTER}</button>
         </div>

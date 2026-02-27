@@ -272,12 +272,26 @@ body.vv-open {
   bottom: 12px;
 }
 
-.vv-stats .stats-section {
-  margin-bottom: 10px;
+/* ── Stats Table ── */
+.vv-stats .stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  table-layout: fixed;
 }
 
-.vv-stats .stats-section:last-child {
-  margin-bottom: 0;
+.vv-stats .stats-table td {
+  padding: 1px 0;
+  vertical-align: middle;
+}
+
+.vv-stats .stats-section-header td {
+  padding-top: 8px;
+  padding-bottom: 2px;
+}
+
+.vv-stats .stats-section-header:first-child td {
+  padding-top: 0;
 }
 
 .vv-stats .stats-label {
@@ -286,24 +300,18 @@ body.vv-open {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  margin-bottom: 4px;
-}
-
-.vv-stats .stats-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1px 0;
 }
 
 .vv-stats .stats-key {
   color: #94a3b8;
+  width: 50%;
 }
 
 .vv-stats .stats-val {
   color: #e2e8f0;
   font-weight: 500;
   text-align: right;
+  width: 50%;
 }
 
 .vv-stats .stats-val.good {
@@ -326,7 +334,7 @@ body.vv-open {
   background: rgba(30, 41, 59, 0.8);
   border-radius: 4px;
   overflow: hidden;
-  margin: 4px 0 2px;
+  margin: 2px 0;
   border: 1px solid rgba(51, 65, 85, 0.4);
 }
 
@@ -364,7 +372,7 @@ body.vv-open {
   background: rgba(30, 41, 59, 0.8);
   border-radius: 3px;
   overflow: hidden;
-  margin: 4px 0 2px;
+  margin: 2px 0;
   border: 1px solid rgba(51, 65, 85, 0.4);
 }
 

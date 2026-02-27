@@ -218,6 +218,9 @@ const QUOTA_MAX_RETRIES = 3;
 const PROACTIVE_EVICT_THRESHOLD = 15;
 // Safety timeout: if an append doesn't complete within this time, reject it.
 const APPEND_TIMEOUT_MS = 15_000;
+// Safety timeout for buffer eviction (sourceBuffer.remove): if updateend
+// never fires after remove(), unblock the queue after this many ms.
+const EVICT_TIMEOUT_MS = 5_000;
 
 function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSource } = {}) {
   let queue = [];
@@ -245,16 +248,27 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
     }
 
     return new Promise((resolve) => {
-      const onDone = () => {
-        sourceBuffer.removeEventListener('updateend', onDone);
+      let settled = false;
+      let timer = null;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) { clearTimeout(timer); timer = null; }
+        sourceBuffer.removeEventListener('updateend', done);
         resolve();
       };
-      sourceBuffer.addEventListener('updateend', onDone);
+      sourceBuffer.addEventListener('updateend', done);
+      // Safety timeout: if updateend never fires, unblock anyway
+      timer = setTimeout(() => {
+        if (settled) return;
+        console.warn('[mse-player] evictPlayed: updateend timed out, forcing resolve');
+        try { if (sourceBuffer.updating) sourceBuffer.abort(); } catch {}
+        done();
+      }, EVICT_TIMEOUT_MS);
       try {
         sourceBuffer.remove(0, removeEnd);
       } catch {
-        sourceBuffer.removeEventListener('updateend', onDone);
-        resolve();
+        done();
       }
     });
   }
@@ -283,10 +297,22 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
     // evict before appending the next chunk to keep memory under control.
     if (shouldEvictProactively()) {
       appending = true; // Block queue while evicting
-      evictPlayed().then(() => {
+      // Double-safety: even if evictPlayed's own timeout fails, cap the total
+      // wait so the queue can never be permanently blocked by eviction.
+      let evictDone = false;
+      const unblockEvict = () => {
+        if (evictDone) return;
+        evictDone = true;
         appending = false;
         if (!destroyed) processQueue();
-      });
+      };
+      evictPlayed().then(unblockEvict, unblockEvict);
+      setTimeout(() => {
+        if (!evictDone) {
+          console.warn('[mse-player] proactive eviction overall timeout, forcing unblock');
+          unblockEvict();
+        }
+      }, EVICT_TIMEOUT_MS + 2_000);
       return;
     }
 
