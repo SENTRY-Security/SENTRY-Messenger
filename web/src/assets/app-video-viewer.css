@@ -1,0 +1,453 @@
+/* ── Video Viewer / Full-Screen Player ── */
+
+body.vv-open {
+  overflow: hidden !important;
+}
+
+.vv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  color: #e2e8f0;
+  user-select: none;
+  -webkit-user-select: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.vv-overlay.vv-visible {
+  opacity: 1;
+}
+
+/* ── Toolbar (top) ── */
+.vv-toolbar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
+  flex-shrink: 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.vv-controls-hidden .vv-toolbar {
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+
+.vv-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vv-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ── Icon Buttons ── */
+.vv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.vv-btn:active {
+  background: rgba(255, 255, 255, 0.18);
+  transform: scale(0.95);
+}
+
+.vv-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Stats toggle */
+.vv-stats-toggle {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+}
+
+.vv-stats-toggle.active {
+  background: rgba(56, 189, 248, 0.25);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+/* ── Stage (center) ── */
+.vv-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+  position: relative;
+  touch-action: manipulation;
+}
+
+.vv-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* ── Buffering Overlay ── */
+.vv-buffering {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(15, 23, 42, 0.88);
+  z-index: 3;
+  transition: opacity 0.3s ease;
+}
+
+.vv-buffering.vv-buf-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.vv-buffering-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid rgba(148, 163, 184, 0.2);
+  border-top-color: #38bdf8;
+  animation: vv-spin 0.9s linear infinite;
+}
+
+@keyframes vv-spin {
+  to { transform: rotate(360deg); }
+}
+
+.vv-buffering-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #e2e8f0;
+  letter-spacing: 0.3px;
+}
+
+/* ── Center Play Button ── */
+.vv-center-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.45);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  width: 68px;
+  height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.3s ease;
+}
+
+.vv-center-play:active {
+  transform: translate(-50%, -50%) scale(0.9);
+}
+
+/* ── Stats Panel ── */
+.vv-stats {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 6;
+  background: rgba(2, 6, 23, 0.92);
+  backdrop-filter: blur(12px) saturate(120%);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #cbd5e1;
+  pointer-events: auto;
+  max-height: 50%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.vv-stats[hidden] {
+  display: none;
+}
+
+.vv-stats .stats-section {
+  margin-bottom: 10px;
+}
+
+.vv-stats .stats-section:last-child {
+  margin-bottom: 0;
+}
+
+.vv-stats .stats-label {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+}
+
+.vv-stats .stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+}
+
+.vv-stats .stats-key {
+  color: #94a3b8;
+}
+
+.vv-stats .stats-val {
+  color: #e2e8f0;
+  font-weight: 500;
+  text-align: right;
+}
+
+.vv-stats .stats-val.good {
+  color: #34d399;
+}
+
+.vv-stats .stats-val.warn {
+  color: #fbbf24;
+}
+
+.vv-stats .stats-val.error {
+  color: #f87171;
+}
+
+/* Buffer visualization bar */
+.vv-stats-buffer-bar {
+  position: relative;
+  width: 100%;
+  height: 16px;
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 4px 0 2px;
+  border: 1px solid rgba(51, 65, 85, 0.4);
+}
+
+.vv-stats-buffer-bar .buf-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(56, 189, 248, 0.35);
+  border-radius: 2px;
+}
+
+.vv-stats-buffer-bar .buf-played {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(56, 189, 248, 0.7);
+  border-radius: 2px;
+}
+
+.vv-stats-buffer-bar .buf-cursor {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  background: #f8fafc;
+  border-radius: 1px;
+  box-shadow: 0 0 4px rgba(248, 250, 252, 0.5);
+}
+
+/* Chunk progress bar */
+.vv-stats-chunk-bar {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 4px 0 2px;
+  border: 1px solid rgba(51, 65, 85, 0.4);
+}
+
+.vv-stats-chunk-bar .chunk-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ── Custom Controls (bottom) ── */
+.vv-controls {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.7) 0%, transparent 100%);
+  flex-shrink: 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.vv-controls-hidden .vv-controls {
+  opacity: 0;
+  transform: translateY(100%);
+  pointer-events: none;
+}
+
+/* Play/Pause button */
+.vv-ctrl-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.vv-ctrl-btn:active {
+  background: rgba(255, 255, 255, 0.25);
+  transform: scale(0.92);
+}
+
+.vv-ctrl-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Time labels */
+.vv-time {
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.85);
+  flex-shrink: 0;
+  min-width: 36px;
+  text-align: center;
+}
+
+/* ── Seek Bar ── */
+.vv-seekbar {
+  flex: 1;
+  position: relative;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.vv-seekbar-track {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.vv-seekbar-buffered {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+.vv-seekbar-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: #38bdf8;
+  border-radius: 2px;
+  width: 0%;
+}
+
+.vv-seekbar-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #38bdf8;
+  border: 2px solid #fff;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  transition: transform 0.1s ease;
+  z-index: 1;
+}
+
+.vv-seekbar:active .vv-seekbar-thumb {
+  transform: translate(-50%, -50%) scale(1.3);
+}
+
+.vv-seekbar:active .vv-seekbar-track {
+  height: 6px;
+}
+
+/* ── Footer ── */
+.vv-footer {
+  position: relative;
+  z-index: 10;
+  text-align: center;
+  padding: 4px 16px;
+  padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  font-size: 10px;
+  color: rgba(148, 163, 184, 0.35);
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  background: #000;
+  transition: opacity 0.3s ease;
+}
+
+.vv-controls-hidden .vv-footer {
+  opacity: 0;
+}

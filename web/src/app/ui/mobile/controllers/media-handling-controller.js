@@ -12,6 +12,7 @@ import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, c
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
+import { openVideoViewer, cleanupVideoViewer } from '../viewers/video-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
 import { isDownloadBusy, startDownload, updateDownloadProgress, endDownload } from '../../../features/transfer-progress.js';
 
@@ -128,222 +129,30 @@ export class MediaHandlingController extends BaseController {
 
         let msePlayer = null;
 
-        // Step 1: IMMEDIATELY open modal with video element + buffering overlay
-        const modalBody = document.getElementById('modalBody');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalEl = document.getElementById('modal');
-        if (!modalBody || !modalEl) {
-            endDownload();
-            media._videoState = 'idle';
-            this.deps.showToast?.('無法開啟播放視窗');
-            return;
-        }
-
-        const classesToRemove = [
-            'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
-            'confirm-modal', 'nickname-modal', 'avatar-modal',
-            'avatar-preview-modal', 'settings-modal'
-        ];
-        modalEl.classList.remove(...classesToRemove);
-        modalBody.innerHTML = '';
-        if (modalTitle) {
-            modalTitle.textContent = media.name || '影片';
-            modalTitle.setAttribute('title', media.name || '影片');
-        }
-
-        const container = document.createElement('div');
-        container.className = 'preview-wrap';
-        const wrap = document.createElement('div');
-        wrap.className = 'viewer';
-        wrap.style.position = 'relative';
-        container.appendChild(wrap);
-        modalBody.appendChild(container);
-
-        const video = document.createElement('video');
-        video.controls = true;
-        video.playsInline = true;
-        video.autoplay = true;
-        video.style.width = '100%';
-        wrap.appendChild(video);
-
-        // Buffering overlay — shown until first media segment is appended
-        const bufOverlay = document.createElement('div');
-        bufOverlay.className = 'video-buffering-overlay';
-        bufOverlay.innerHTML = `
-            <div class="video-buffering-spinner"></div>
-            <div class="video-buffering-text">緩衝中...</div>
-        `;
-        wrap.appendChild(bufOverlay);
-
-        // ── Stats overlay — shows MSE buffer, codec, chunk & encryption info ──
-        const statsState = { chunksReceived: 0, totalChunks: 0, bytesReceived: 0, intervalId: null };
-
-        const statsToggle = document.createElement('button');
-        statsToggle.className = 'video-stats-toggle';
-        statsToggle.textContent = 'i';
-        statsToggle.setAttribute('aria-label', '串流資訊');
-
-        const statsPanel = document.createElement('div');
-        statsPanel.className = 'video-stats-panel';
-        statsPanel.hidden = true;
-
-        statsPanel.innerHTML = `
-            <div class="stats-section">
-                <div class="stats-label">BUFFER</div>
-                <div class="video-stats-buffer-bar">
-                    <div class="buf-range"></div>
-                    <div class="buf-played"></div>
-                    <div class="buf-cursor"></div>
-                </div>
-                <div class="stats-row"><span class="stats-key">Position</span><span class="stats-val" data-vs="position">0:00 / 0:00</span></div>
-                <div class="stats-row"><span class="stats-key">Buffered</span><span class="stats-val" data-vs="buffered">0.0s</span></div>
-            </div>
-            <div class="stats-section">
-                <div class="stats-label">MSE</div>
-                <div class="stats-row"><span class="stats-key">Type</span><span class="stats-val" data-vs="mse-type">—</span></div>
-                <div class="stats-row"><span class="stats-key">State</span><span class="stats-val" data-vs="state">—</span></div>
-                <div class="stats-row"><span class="stats-key">Codec</span><span class="stats-val" data-vs="codec">—</span></div>
-                <div class="stats-row"><span class="stats-key">SB Mode</span><span class="stats-val" data-vs="sbmode">—</span></div>
-                <div class="stats-row"><span class="stats-key">Queue</span><span class="stats-val" data-vs="queue">0</span></div>
-            </div>
-            <div class="stats-section">
-                <div class="stats-label">CHUNKS</div>
-                <div class="video-stats-chunk-bar"><div class="chunk-fill"></div></div>
-                <div class="stats-row"><span class="stats-key">Progress</span><span class="stats-val" data-vs="chunks">0 / 0</span></div>
-                <div class="stats-row"><span class="stats-key">Received</span><span class="stats-val" data-vs="bytes">0 B</span></div>
-            </div>
-            <div class="stats-section">
-                <div class="stats-label">ENCRYPTION</div>
-                <div class="stats-row"><span class="stats-key">Scheme</span><span class="stats-val">AEAD</span></div>
-                <div class="stats-row"><span class="stats-key">Per-Chunk</span><span class="stats-val good">AES-256-GCM</span></div>
-            </div>
-        `;
-
-        statsToggle.addEventListener('click', () => {
-            const show = statsPanel.hidden;
-            statsPanel.hidden = !show;
-            statsToggle.classList.toggle('active', show);
+        // Step 1: Open fullscreen video viewer immediately
+        const viewer = openVideoViewer({
+            name: media.name || '影片',
+            size: media.size,
+            onClose: () => {
+                // User closed the viewer — abort download and release resources
+                try { downloadAbort.abort(); } catch {}
+                if (msePlayer) {
+                    try { msePlayer.destroy(); } catch {}
+                    msePlayer = null;
+                }
+                try { video.src = ''; video.load(); } catch {}
+                endDownload();
+                media._videoState = 'idle';
+                media._videoProgress = 0;
+                this._updateVideoOverlayUI(msgId, media);
+            }
         });
 
-        wrap.appendChild(statsToggle);
-        wrap.appendChild(statsPanel);
-
-        // Helpers for stats display
-        const fmtTime = (s) => {
-            if (!isFinite(s) || s < 0) return '0:00';
-            const m = Math.floor(s / 60);
-            const sec = Math.floor(s % 60);
-            return `${m}:${sec.toString().padStart(2, '0')}`;
-        };
-        const fmtBytes = (b) => {
-            if (b < 1024) return `${b} B`;
-            if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
-            return `${(b / 1048576).toFixed(1)} MB`;
-        };
-
-        // Polling update for stats panel
-        const updateStats = () => {
-            if (!msePlayer || statsPanel.hidden) return;
-            try {
-                const st = msePlayer.getStats();
-                const dur = video.duration || 0;
-                const cur = video.currentTime || 0;
-                const muxedBuf = st.buffers.muxed;
-
-                // Position
-                const posEl = statsPanel.querySelector('[data-vs="position"]');
-                if (posEl) posEl.textContent = `${fmtTime(cur)} / ${fmtTime(dur)}`;
-
-                // Buffer bar visualization
-                const barEl = statsPanel.querySelector('.video-stats-buffer-bar');
-                if (barEl && dur > 0) {
-                    const rangeEl = barEl.querySelector('.buf-range');
-                    const playedEl = barEl.querySelector('.buf-played');
-                    const cursorEl = barEl.querySelector('.buf-cursor');
-                    try {
-                        if (video.buffered.length > 0) {
-                            const bs = video.buffered.start(0);
-                            const be = video.buffered.end(video.buffered.length - 1);
-                            rangeEl.style.left = `${(bs / dur) * 100}%`;
-                            rangeEl.style.width = `${((be - bs) / dur) * 100}%`;
-                        } else {
-                            rangeEl.style.left = '0%';
-                            rangeEl.style.width = '0%';
-                        }
-                    } catch { rangeEl.style.width = '0%'; }
-                    playedEl.style.left = '0%';
-                    playedEl.style.width = `${(cur / dur) * 100}%`;
-                    cursorEl.style.left = `${(cur / dur) * 100}%`;
-                }
-
-                // Buffered total
-                const bufEl = statsPanel.querySelector('[data-vs="buffered"]');
-                if (bufEl && muxedBuf) {
-                    const tb = muxedBuf.totalBuffered;
-                    bufEl.textContent = `${tb.toFixed(1)}s`;
-                    bufEl.className = `stats-val ${tb > 5 ? 'good' : tb > 1 ? '' : 'warn'}`;
-                }
-
-                // MSE type
-                const typeEl = statsPanel.querySelector('[data-vs="mse-type"]');
-                if (typeEl) typeEl.textContent = st.isMMS ? 'ManagedMediaSource' : 'MediaSource';
-
-                // State
-                const stateEl = statsPanel.querySelector('[data-vs="state"]');
-                if (stateEl) {
-                    stateEl.textContent = st.readyState;
-                    stateEl.className = `stats-val ${st.readyState === 'open' ? 'good' : st.readyState === 'ended' ? '' : 'error'}`;
-                }
-
-                // Codec
-                const codecEl = statsPanel.querySelector('[data-vs="codec"]');
-                if (codecEl && muxedBuf) {
-                    const raw = muxedBuf.mimeCodec || '—';
-                    const match = raw.match(/codecs="([^"]+)"/);
-                    codecEl.textContent = match ? match[1] : raw;
-                }
-
-                // SB Mode
-                const modeEl = statsPanel.querySelector('[data-vs="sbmode"]');
-                if (modeEl && muxedBuf) modeEl.textContent = muxedBuf.mode || 'default';
-
-                // Queue
-                const queueEl = statsPanel.querySelector('[data-vs="queue"]');
-                if (queueEl && muxedBuf) {
-                    queueEl.textContent = String(muxedBuf.queuePending);
-                    queueEl.className = `stats-val ${muxedBuf.queuePending > 3 ? 'warn' : ''}`;
-                }
-
-                // Chunks
-                const chunksEl = statsPanel.querySelector('[data-vs="chunks"]');
-                if (chunksEl) chunksEl.textContent = `${statsState.chunksReceived} / ${statsState.totalChunks}`;
-
-                const chunkFillEl = statsPanel.querySelector('.chunk-fill');
-                if (chunkFillEl && statsState.totalChunks > 0) {
-                    chunkFillEl.style.width = `${(statsState.chunksReceived / statsState.totalChunks) * 100}%`;
-                }
-
-                // Bytes
-                const bytesEl = statsPanel.querySelector('[data-vs="bytes"]');
-                if (bytesEl) bytesEl.textContent = fmtBytes(statsState.bytesReceived);
-            } catch {}
-        };
-
-        statsState.intervalId = setInterval(updateStats, 500);
-
-        // Open modal immediately so user sees the player right away.
-        // Use both deps callback AND direct DOM manipulation to ensure
-        // the modal is actually visible (guards against missing deps or
-        // normalizeOverlayState() racing to close it).
-        this.deps.openPreviewModal?.();
-        modalEl.style.display = 'flex';
-        modalEl.setAttribute('aria-hidden', 'false');
-        modalEl.classList.add('show');
-        document.body.classList.add('modal-open');
+        const video = viewer.video;
 
         let manifest = null;
         try {
-            // Step 2: Download and decrypt manifest (user already sees the modal)
+            // Step 2: Download and decrypt manifest
             media._videoProgress = 2;
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(2);
@@ -358,18 +167,14 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
 
-            statsState.totalChunks = manifest.totalChunks || 0;
+            viewer.updateChunkStats({ total: manifest.totalChunks || 0 });
 
             // Non-segment-aligned manifests cannot use MSE streaming.
-            // Blob URL fallback is strictly forbidden — reject playback.
             if (!manifest.segment_aligned || !manifest.tracks) {
                 throw new Error('此影片格式不支援串流播放（非分段對齊）');
             }
 
             // Segment-aligned fMP4 — use MSE streaming with single muxed SourceBuffer.
-            // New manifests: tracks = [{ type: 'muxed', codec }], chunk 0 = init, rest = media.
-            // Legacy manifests: tracks = [{ type: 'video' }, { type: 'audio' }],
-            //   first N chunks = per-track init → merge into one, rest = media.
             const manifestTracks = manifest.tracks;
             const numTracks = manifestTracks.length;
             const isLegacyMultiTrack = numTracks > 1;
@@ -382,27 +187,19 @@ export class MediaHandlingController extends BaseController {
                 }
             });
             msePlayer = createPlayer();
+            viewer.setMsePlayer(msePlayer);
             await msePlayer.open();
 
             let mseInitialized = false;
             let firstMediaAppended = false;
             let consecutiveErrors = 0;
             const MAX_CONSECUTIVE_ERRORS = 5;
-            const initChunks = []; // For legacy multi-track: collect init segments
+            const initChunks = [];
 
-            /**
-             * Try to initialize MSE with the given init segment and codec.
-             * Returns true on success. On failure, tries fallback strategies:
-             *   1. Re-detect codec from actual init segment bytes
-             *   2. Recreate MSE player and retry with detected codec
-             */
             const tryInitMse = async (initData, primaryMimeCodec) => {
-                // Build ordered list of codecs to try
                 const codecs = [];
-                // Prefer codec detected from actual init segment data (most accurate)
                 const detected = detectCodecFromInitSegment(initData, 'muxed');
                 if (detected) codecs.push(detected);
-                // Then manifest codec (might differ in profile/level)
                 if (primaryMimeCodec && !codecs.includes(primaryMimeCodec)) {
                     codecs.push(primaryMimeCodec);
                 }
@@ -414,29 +211,28 @@ export class MediaHandlingController extends BaseController {
                     const codec = codecs[attempt];
                     try {
                         if (attempt > 0) {
-                            // Previous codec failed — recreate MSE player entirely
                             console.warn(`[mse] init append failed with ${codecs[attempt - 1]}, retrying with ${codec}`);
                             try { msePlayer.destroy(); } catch {}
                             video.src = '';
                             video.load();
                             msePlayer = createPlayer();
+                            viewer.setMsePlayer(msePlayer);
                             await msePlayer.open();
                         }
                         msePlayer.addSourceBuffer('muxed', codec);
                         await msePlayer.appendChunk('muxed', initData);
-                        return; // Success
+                        return;
                     } catch (err) {
                         console.warn(`[mse] init attempt ${attempt + 1}/${codecs.length} failed (${codec}):`, err?.message);
-                        if (attempt === codecs.length - 1) {
-                            // All codecs exhausted — try one more time with a clean player
-                            // using the first detected codec but without setting sb.mode
-                            throw err;
-                        }
+                        if (attempt === codecs.length - 1) throw err;
                     }
                 }
             };
 
             // Step 3: Stream chunks via MSE
+            let chunksReceived = 0;
+            let bytesReceived = 0;
+
             for await (const { data, index } of streamChunks({
                 baseKey: media.baseKey,
                 manifest,
@@ -449,32 +245,29 @@ export class MediaHandlingController extends BaseController {
                     updateDownloadProgress(media._videoProgress);
                 }
             })) {
-                statsState.chunksReceived++;
-                statsState.bytesReceived += (data?.byteLength || 0);
+                chunksReceived++;
+                bytesReceived += (data?.byteLength || 0);
+                viewer.updateChunkStats({ received: chunksReceived, bytes: bytesReceived });
+
                 const isInitSegment = index < numTracks;
 
                 if (isInitSegment) {
                     if (isLegacyMultiTrack) {
-                        // Old multi-track: collect per-track init segments, merge when all received
                         initChunks.push(data);
                         if (initChunks.length < numTracks) continue;
-
                         const mergedInit = mergeInitSegments(initChunks);
                         const manifestCodec = manifestTracks.map(t => t.codec).filter(Boolean).join(',');
                         const primaryMime = manifestCodec ? buildMimeFromCodecString(manifestCodec) : null;
                         await tryInitMse(mergedInit, primaryMime);
                         mseInitialized = true;
                     } else {
-                        // New muxed manifest: single init segment (chunk 0)
                         const track = manifestTracks[0];
                         const primaryMime = track.codec ? buildMimeFromCodecString(track.codec) : null;
                         await tryInitMse(data, primaryMime);
                         mseInitialized = true;
                     }
                 } else {
-                    // Media segment — append to single muxed SourceBuffer
                     if (!mseInitialized) continue;
-
                     try {
                         await msePlayer.appendChunk('muxed', data);
                         consecutiveErrors = 0;
@@ -487,13 +280,10 @@ export class MediaHandlingController extends BaseController {
                         continue;
                     }
 
-                    // Remove buffering overlay after first successful media segment
-                    if (!firstMediaAppended && bufOverlay.parentNode) {
+                    // Hide buffering overlay after first successful media segment
+                    if (!firstMediaAppended) {
                         firstMediaAppended = true;
-                        bufOverlay.classList.add('fade-out');
-                        setTimeout(() => {
-                            try { bufOverlay.remove(); } catch {}
-                        }, 300);
+                        viewer.hideBuffering();
                     }
                 }
             }
@@ -503,36 +293,12 @@ export class MediaHandlingController extends BaseController {
                 await msePlayer.endOfStream();
             }
 
-            // Ensure overlay is removed
-            if (bufOverlay.parentNode) {
-                try { bufOverlay.remove(); } catch {}
-            }
-
             endDownload();
             media._videoState = 'idle';
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
 
-            // Cleanup MSE when modal closes.
-            // Check display==='none' (set by closeModal / normalizeOverlayState).
-            // Do NOT check 'active' class — openModal() never adds it.
-            const modalObserver = new MutationObserver(() => {
-                if (modalEl.style.display === 'none' || modalEl.getAttribute('aria-hidden') === 'true') {
-                    if (statsState.intervalId) { clearInterval(statsState.intervalId); statsState.intervalId = null; }
-                    if (msePlayer) {
-                        try { msePlayer.destroy(); } catch {}
-                        msePlayer = null;
-                    }
-                    try { video.src = ''; video.load(); } catch {}
-                    modalEl.classList.remove('show');
-                    modalObserver.disconnect();
-                }
-            });
-            modalObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
-
         } catch (err) {
-            // Release stats polling
-            if (statsState.intervalId) { clearInterval(statsState.intervalId); statsState.intervalId = null; }
             // Release MSE resources
             if (msePlayer) {
                 try { msePlayer.destroy(); } catch {}
@@ -542,20 +308,17 @@ export class MediaHandlingController extends BaseController {
 
             if (err?.name === 'AbortError' || (err instanceof DOMException && err.message === 'aborted')) {
                 endDownload();
-                modalEl.classList.remove('show');
-                this.deps.closePreviewModal?.();
+                // Viewer was already closed by onClose callback or user action
                 return;
             }
 
-            // No blob URL fallback — MSE streaming is strictly required.
             console.error('[video] MSE playback failed:', err?.message);
 
             endDownload();
             media._videoState = 'idle';
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
-            modalEl.classList.remove('show');
-            this.deps.closePreviewModal?.();
+            viewer.destroy();
             this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }
     }
