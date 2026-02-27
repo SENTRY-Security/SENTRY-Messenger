@@ -356,6 +356,9 @@ function ensureStyles() {
       background: #000;
       display: flex;
       flex-direction: column;
+      transform: none;
+      backdrop-filter: none;
+      box-shadow: none;
     }
     .call-overlay .call-remote-video {
       position: absolute;
@@ -1080,21 +1083,37 @@ export function initCallOverlay({ showToast }) {
     state.lastStatus = status;
   }
 
-  // Request camera preview for outgoing video calls.
-  // Caches the stream so attachLocalMedia() reuses it (no double getUserMedia).
+  // Obtain camera preview for outgoing video calls.
+  // First checks sessionStore for a stream already cached by the composer
+  // (which called getUserMedia before placing the call). Only falls back to
+  // a fresh getUserMedia when nothing is cached, avoiding double-acquisition
+  // that can fail or kill the first stream on mobile.
   async function requestOutgoingCameraPreview() {
     if (state._outgoingPreviewLoading || state._outgoingPreview) return;
     state._outgoingPreviewLoading = true;
+    log({ outgoingCameraPreview: 'requesting' });
     try {
+      // Prefer the stream already cached by the composer controller.
+      const cached = sessionStore?.cachedMicrophoneStream;
+      if (cached && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
+        log({ outgoingCameraPreview: 'reusing cached stream', videoTracks: cached.getVideoTracks().length });
+        state._outgoingPreview = cached;
+        render();
+        return;
+      }
+      // No usable cached stream — acquire a fresh one.
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
       });
+      const vTracks = stream.getVideoTracks();
+      log({ outgoingCameraPreview: 'acquired fresh', videoTracks: vTracks.length, audioTracks: stream.getAudioTracks().length });
+      if (!vTracks.length) { log({ outgoingCameraPreview: 'no video tracks' }); return; }
       state._outgoingPreview = stream;
       try { sessionStore.cachedMicrophoneStream = stream; } catch {}
       render();
-    } catch {
-      // Camera denied — keep avatar-only waiting screen
+    } catch (err) {
+      log({ outgoingCameraPreview: 'failed', error: err?.message || String(err) });
     } finally {
       state._outgoingPreviewLoading = false;
     }
@@ -1176,13 +1195,23 @@ export function initCallOverlay({ showToast }) {
       if (outgoing) {
         if (ui.remoteVideo) {
           ui.remoteVideo.style.transform = 'scaleX(-1)';
+          // Try multiple sources: WebRTC local stream → our preview → composer cached stream
           const ls = getLocalStream();
-          const preview = ls || state._outgoingPreview;
-          if (preview && preview.getVideoTracks().length) {
+          const cached = sessionStore?.cachedMicrophoneStream;
+          const preview = ls
+            || state._outgoingPreview
+            || (cached && cached.getVideoTracks().some((t) => t.readyState === 'live') ? cached : null);
+          log({ outgoingPreviewRender: true, hasLocalStream: !!ls, hasPreview: !!state._outgoingPreview, hasCached: !!cached, videoTracks: preview?.getVideoTracks()?.length ?? 0 });
+          if (preview && preview.getVideoTracks().some((t) => t.readyState === 'live')) {
+            if (!state._outgoingPreview) state._outgoingPreview = preview;
             if (ui.remoteVideo.srcObject !== preview) {
               ui.remoteVideo.srcObject = preview;
               ui.remoteVideo.muted = true;
-              ui.remoteVideo.play().catch(() => {});
+              ui.remoteVideo.play().then(() => {
+                log({ outgoingPreviewPlay: 'success' });
+              }).catch((e) => {
+                log({ outgoingPreviewPlay: 'failed', error: e?.message || String(e) });
+              });
             }
           } else if (!state._outgoingPreviewLoading) {
             requestOutgoingCameraPreview();
@@ -1190,9 +1219,7 @@ export function initCallOverlay({ showToast }) {
         }
         // Semi-transparent overlay so avatar/text is readable over camera feed
         if (ui.videoWaiting) {
-          ui.videoWaiting.style.background = 'rgba(0,0,0,0.35)';
-          ui.videoWaiting.style.backdropFilter = 'blur(2px)';
-          ui.videoWaiting.style.webkitBackdropFilter = 'blur(2px)';
+          ui.videoWaiting.style.background = 'rgba(0,0,0,0.4)';
         }
       } else {
         // Reset outgoing preview state
@@ -1201,8 +1228,6 @@ export function initCallOverlay({ showToast }) {
         if (ui.remoteVideo) ui.remoteVideo.style.transform = '';
         if (ui.videoWaiting) {
           ui.videoWaiting.style.background = '';
-          ui.videoWaiting.style.backdropFilter = '';
-          ui.videoWaiting.style.webkitBackdropFilter = '';
         }
       }
 
