@@ -193,7 +193,12 @@ body.vv-open {
   pointer-events: auto;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  transition: opacity 0.25s ease;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.vv-stats.vv-stats-ready {
+  opacity: 1;
 }
 
 .vv-stats[hidden] {
@@ -206,7 +211,7 @@ body.vv-open {
   bottom: 0;
   left: 0;
   right: 0;
-  max-height: 45%;
+  max-height: 35%;
   background: rgba(2, 6, 23, 0.96);
   border-top: 1px solid rgba(51, 65, 85, 0.5);
   border-radius: 0;
@@ -215,7 +220,7 @@ body.vv-open {
 /* ── Portrait video: floating semi-transparent overlay ── */
 .vv-portrait .vv-stats {
   position: absolute;
-  bottom: 12px;
+  bottom: 60px;
   left: 10px;
   right: 10px;
   max-height: 50%;
@@ -224,6 +229,11 @@ body.vv-open {
   -webkit-backdrop-filter: blur(14px) saturate(120%);
   border: 1px solid rgba(51, 65, 85, 0.4);
   border-radius: 12px;
+}
+
+/* When controls are hidden, let portrait stats reclaim the space */
+.vv-controls-hidden.vv-portrait .vv-stats {
+  bottom: 12px;
 }
 
 .vv-stats .stats-section {

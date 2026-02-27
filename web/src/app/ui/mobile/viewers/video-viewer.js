@@ -298,16 +298,29 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     });
 
     /* ── Video Orientation Detection ── */
-    // Default to portrait until metadata is available.
+    // Default to portrait; stats panel stays invisible (opacity:0) until
+    // orientation is resolved to avoid a layout flash on MSE streams
+    // where loadedmetadata may arrive after the first chunks are appended.
     overlay.classList.add('vv-portrait');
 
-    video.addEventListener('loadedmetadata', () => {
+    const applyOrientation = () => {
         const w = video.videoWidth || 0;
         const h = video.videoHeight || 0;
         const isLandscape = w > 0 && h > 0 && w >= h;
         overlay.classList.toggle('vv-landscape', isLandscape);
         overlay.classList.toggle('vv-portrait', !isLandscape);
-    });
+        statsPanel.classList.add('vv-stats-ready');
+    };
+
+    video.addEventListener('loadedmetadata', applyOrientation);
+
+    // Fallback: if metadata doesn't arrive within 3s (e.g. slow MSE init),
+    // reveal the panel in its default portrait layout.
+    const orientationFallbackTimer = setTimeout(() => {
+        if (!statsPanel.classList.contains('vv-stats-ready')) {
+            statsPanel.classList.add('vv-stats-ready');
+        }
+    }, 3000);
 
     const updateStats = () => {
         if (!msePlayer || statsPanel.hidden) return;
@@ -427,6 +440,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
         if (destroyed) return;
         destroyed = true;
         if (controlsTimer) clearTimeout(controlsTimer);
+        clearTimeout(orientationFallbackTimer);
         if (statsIntervalId) { clearInterval(statsIntervalId); statsIntervalId = null; }
         document.removeEventListener('keydown', onKeyDown);
         document.body.classList.remove('vv-open');
