@@ -189,6 +189,22 @@ export class MessageSendingController extends BaseController {
                         const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
                         if (msg?.media) {
                             msg.media.previewUrl = URL.createObjectURL(thumb.blob);
+
+                            // Replace generic video icon with actual preview image in the DOM
+                            const sel = `.message-bubble[data-message-id="${escapeSelector(msg.id)}"] .message-file-preview`;
+                            const previewEl = this.elements.messagesList?.querySelector(sel);
+                            if (previewEl) {
+                                const generic = previewEl.querySelector('.message-file-preview-generic');
+                                if (generic) {
+                                    const img = document.createElement('img');
+                                    img.className = 'message-file-preview-image';
+                                    img.alt = msg.media.name || 'video preview';
+                                    img.decoding = 'async';
+                                    img.src = msg.media.previewUrl;
+                                    generic.replaceWith(img);
+                                }
+                            }
+
                             this.updateUploadOverlayUI(msg.id, msg.media);
                         }
                     }).catch(() => {});
