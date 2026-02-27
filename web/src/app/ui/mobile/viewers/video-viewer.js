@@ -47,6 +47,8 @@ const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
 const ICON_PLAY_CENTER = '<svg viewBox="0 0 48 48" width="56" height="56" fill="currentColor" opacity="0.9"><path d="M18 12v24l18-12z"/></svg>';
 const ICON_CLOSE_SM = '<svg viewBox="0 0 16 16" fill="none"><path d="M12 4L4 12M4 4l8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const ICON_ROTATE_CCW = '<svg viewBox="0 0 24 24" fill="none"><path d="M2.5 2v6h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 8C4.7 4.7 8.1 3 12 3c5 0 9 4 9 9s-4 9-9 9c-3.5 0-6.6-2-8-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const ICON_ROTATE_CW = '<svg viewBox="0 0 24 24" fill="none"><path d="M21.5 2v6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M21.5 8C19.3 4.7 15.9 3 12 3c-5 0-9 4-9 9s4 9 9 9c3.5 0 6.6-2 8-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
 /**
  * Open the full-screen video viewer.
@@ -80,6 +82,8 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
             <button type="button" class="vv-btn" data-action="close" aria-label="關閉">${ICON_BACK}</button>
             <div class="vv-title">${escHtml(name)}</div>
             <div class="vv-toolbar-actions">
+                <button type="button" class="vv-btn vv-rotate-btn" data-action="rotate-ccw" aria-label="向左旋轉">${ICON_ROTATE_CCW}</button>
+                <button type="button" class="vv-btn vv-rotate-btn" data-action="rotate-cw" aria-label="向右旋轉">${ICON_ROTATE_CW}</button>
                 <button type="button" class="vv-btn vv-stats-toggle" data-action="stats" aria-label="串流資訊">i</button>
             </div>
         </div>
@@ -111,7 +115,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
                 </div>
                 <div class="stats-section">
                     <div class="stats-label">CHUNKS</div>
-                    <div class="vv-stats-chunk-bar"><div class="chunk-fill"></div></div>
+                    <div class="vv-stats-chunk-bar"><div class="chunk-fill"></div><div class="chunk-buffered"></div></div>
                     <div class="stats-row"><span class="stats-key">Progress</span><span class="stats-val" data-vs="chunks">0 / 0</span></div>
                     <div class="stats-row"><span class="stats-key">Received</span><span class="stats-val" data-vs="bytes">0 B</span></div>
                 </div>
@@ -161,6 +165,38 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     video.playsInline = true;
     video.autoplay = true;
     video.muted = false;
+
+    /* ── Manual Rotation ── */
+    let manualRotation = 0; // 0, 90, 180, 270
+
+    const applyVideoRotation = () => {
+        if (manualRotation === 0) {
+            video.style.transform = '';
+            return;
+        }
+        // For 90°/270°, the rotated element overflows its layout box.
+        // Scale it down so it fits within the stage.
+        if (manualRotation === 90 || manualRotation === 270) {
+            const sw = stage.clientWidth || 1;
+            const sh = stage.clientHeight || 1;
+            const scale = Math.min(sw / sh, sh / sw);
+            video.style.transform = `rotate(${manualRotation}deg) scale(${scale})`;
+        } else {
+            video.style.transform = `rotate(${manualRotation}deg)`;
+        }
+    };
+
+    overlay.querySelector('[data-action="rotate-ccw"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        manualRotation = (manualRotation + 270) % 360; // -90°
+        applyVideoRotation();
+    });
+
+    overlay.querySelector('[data-action="rotate-cw"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        manualRotation = (manualRotation + 90) % 360;
+        applyVideoRotation();
+    });
 
     /* ── Controls Visibility ── */
     const CONTROLS_TIMEOUT = 3500;
@@ -420,6 +456,23 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
             const chunkFillEl = statsPanel.querySelector('.chunk-fill');
             if (chunkFillEl && chunkStats.total > 0) {
                 chunkFillEl.style.width = `${(chunkStats.received / chunkStats.total) * 100}%`;
+            }
+
+            // Chunk-bar: overlay showing currently buffered range (vs evicted)
+            const chunkBufEl = statsPanel.querySelector('.chunk-buffered');
+            if (chunkBufEl && dur > 0) {
+                try {
+                    if (video.buffered.length > 0) {
+                        const bs = video.buffered.start(0);
+                        const be = video.buffered.end(video.buffered.length - 1);
+                        chunkBufEl.style.left = `${(bs / dur) * 100}%`;
+                        chunkBufEl.style.width = `${((be - bs) / dur) * 100}%`;
+                    } else {
+                        chunkBufEl.style.width = '0%';
+                    }
+                } catch {
+                    chunkBufEl.style.width = '0%';
+                }
             }
 
             // Bytes

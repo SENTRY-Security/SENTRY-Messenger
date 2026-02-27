@@ -117,6 +117,8 @@ body.vv-open {
   height: 100%;
   object-fit: contain;
   display: block;
+  transform-origin: center center;
+  transition: transform 0.25s ease;
 }
 
 /* ── Buffering Overlay ── */
@@ -366,9 +368,25 @@ body.vv-open {
 
 .vv-stats-chunk-bar .chunk-fill {
   height: 100%;
-  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.35), rgba(139, 92, 246, 0.35));
   border-radius: 2px;
   transition: width 0.3s ease;
+}
+
+/* Bright overlay = data currently in MSE buffer (not evicted) */
+.vv-stats-chunk-bar .chunk-buffered {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-radius: 2px;
+  transition: left 0.3s ease, width 0.3s ease;
+}
+
+/* Rotation buttons */
+.vv-rotate-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 /* ── Custom Controls (bottom) ── */

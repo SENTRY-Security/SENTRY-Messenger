@@ -306,7 +306,9 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
         sourceBuffer.removeEventListener('updateend', onUpdate);
         sourceBuffer.removeEventListener('error', onErr);
         appending = false;
-        const err = new Error('SourceBuffer append error');
+        const msState = getMediaSource?.()?.readyState || 'unknown';
+        const sbUpdating = sourceBuffer?.updating ?? 'N/A';
+        const err = new Error(`SourceBuffer append error (readyState=${msState}, updating=${sbUpdating}, bytes=${data?.byteLength ?? 0})`);
         entry.reject(err);
         onError?.(err);
         // Continue processing remaining entries so the queue doesn't stall

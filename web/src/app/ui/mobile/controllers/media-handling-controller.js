@@ -128,6 +128,7 @@ export class MediaHandlingController extends BaseController {
         });
 
         let msePlayer = null;
+        let blobUrl = null; // For blob-URL fallback when MSE init fails
 
         // Step 1: Open fullscreen video viewer immediately
         const viewer = openVideoViewer({
@@ -139,6 +140,10 @@ export class MediaHandlingController extends BaseController {
                 if (msePlayer) {
                     try { msePlayer.destroy(); } catch {}
                     msePlayer = null;
+                }
+                if (blobUrl) {
+                    try { URL.revokeObjectURL(blobUrl); } catch {}
+                    blobUrl = null;
                 }
                 try { video.src = ''; video.load(); } catch {}
                 endDownload();
@@ -203,6 +208,17 @@ export class MediaHandlingController extends BaseController {
                 if (primaryMimeCodec && !codecs.includes(primaryMimeCodec)) {
                     codecs.push(primaryMimeCodec);
                 }
+                // Standard fallback codecs — try broader profile/level combos
+                const fallbackCodecs = [
+                    'avc1.42E01E,mp4a.40.2',  // H.264 Baseline + AAC
+                    'avc1.4D401E,mp4a.40.2',  // H.264 Main + AAC
+                    'avc1.64001E,mp4a.40.2',  // H.264 High + AAC (lower level)
+                    'avc1.42E01E',             // H.264 Baseline (video only)
+                ];
+                for (const cs of fallbackCodecs) {
+                    const mime = buildMimeFromCodecString(cs);
+                    if (mime && !codecs.includes(mime)) codecs.push(mime);
+                }
                 if (codecs.length === 0) {
                     throw new Error('無法偵測影片編碼格式');
                 }
@@ -221,6 +237,7 @@ export class MediaHandlingController extends BaseController {
                         }
                         msePlayer.addSourceBuffer('muxed', codec);
                         await msePlayer.appendChunk('muxed', initData);
+                        console.info(`[mse] init succeeded with ${codec}`);
                         return;
                     } catch (err) {
                         console.warn(`[mse] init attempt ${attempt + 1}/${codecs.length} failed (${codec}):`, err?.message);
@@ -229,9 +246,11 @@ export class MediaHandlingController extends BaseController {
                 }
             };
 
-            // Step 3: Stream chunks via MSE
+            // Step 3: Stream chunks via MSE (with blob-URL fallback)
             let chunksReceived = 0;
             let bytesReceived = 0;
+            let useBlobFallback = false;
+            const blobParts = []; // Collects ALL chunks when blob fallback is active
 
             for await (const { data, index } of streamChunks({
                 baseKey: media.baseKey,
@@ -249,22 +268,40 @@ export class MediaHandlingController extends BaseController {
                 bytesReceived += (data?.byteLength || 0);
                 viewer.updateChunkStats({ received: chunksReceived, bytes: bytesReceived });
 
+                // Blob fallback mode: collect all chunks for later concatenation
+                if (useBlobFallback) {
+                    blobParts.push(data);
+                    continue;
+                }
+
                 const isInitSegment = index < numTracks;
 
                 if (isInitSegment) {
+                    let initData = data;
+                    let primaryMime = null;
+
                     if (isLegacyMultiTrack) {
                         initChunks.push(data);
                         if (initChunks.length < numTracks) continue;
-                        const mergedInit = mergeInitSegments(initChunks);
+                        initData = mergeInitSegments(initChunks);
                         const manifestCodec = manifestTracks.map(t => t.codec).filter(Boolean).join(',');
-                        const primaryMime = manifestCodec ? buildMimeFromCodecString(manifestCodec) : null;
-                        await tryInitMse(mergedInit, primaryMime);
-                        mseInitialized = true;
+                        primaryMime = manifestCodec ? buildMimeFromCodecString(manifestCodec) : null;
                     } else {
                         const track = manifestTracks[0];
-                        const primaryMime = track.codec ? buildMimeFromCodecString(track.codec) : null;
-                        await tryInitMse(data, primaryMime);
+                        primaryMime = track.codec ? buildMimeFromCodecString(track.codec) : null;
+                    }
+
+                    try {
+                        await tryInitMse(initData, primaryMime);
                         mseInitialized = true;
+                    } catch (initErr) {
+                        // MSE init failed after all retries — switch to blob fallback
+                        console.warn('[video] MSE init failed, switching to blob-URL fallback:', initErr?.message);
+                        useBlobFallback = true;
+                        blobParts.push(initData);
+                        try { msePlayer.destroy(); } catch {}
+                        msePlayer = null;
+                        continue;
                     }
                 } else {
                     if (!mseInitialized) continue;
@@ -288,8 +325,20 @@ export class MediaHandlingController extends BaseController {
                 }
             }
 
-            // All chunks appended — signal end of stream
-            if (msePlayer) {
+            if (useBlobFallback) {
+                // All chunks collected — create blob URL and play natively
+                console.info(`[video] blob fallback: ${blobParts.length} parts, ${bytesReceived} bytes`);
+                const blob = new Blob(blobParts, { type: manifest.contentType || 'video/mp4' });
+                blobParts.length = 0; // Release references
+
+                blobUrl = URL.createObjectURL(blob);
+                video.src = blobUrl;
+                video.load();
+
+                video.addEventListener('canplay', () => viewer.hideBuffering(), { once: true });
+                try { await video.play(); } catch { /* autoplay may be blocked */ }
+            } else if (msePlayer) {
+                // All chunks appended — signal end of stream
                 await msePlayer.endOfStream();
             }
 
@@ -303,6 +352,10 @@ export class MediaHandlingController extends BaseController {
             if (msePlayer) {
                 try { msePlayer.destroy(); } catch {}
                 msePlayer = null;
+            }
+            if (blobUrl) {
+                try { URL.revokeObjectURL(blobUrl); } catch {}
+                blobUrl = null;
             }
             try { video.src = ''; video.load(); } catch {}
 
