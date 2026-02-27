@@ -2677,10 +2677,19 @@ async function buildVideoPreviewBlob(file) {
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
+  video.preload = 'auto';
   try {
     url = URL.createObjectURL(file);
     video.src = url;
-    await waitForVideoEvent(video, 'loadedmetadata');
+
+    // Wait for at least one frame to be available (not just metadata).
+    // Use longer timeout for large .mov files on iOS.
+    await waitForVideoEvent(video, 'loadeddata', 12000);
+
+    // iOS Safari requires play() before the decoder produces frames
+    // for canvas capture. Muted autoplay is allowed without user gesture.
+    try { await video.play(); } catch { /* ignore — best-effort */ }
+
     const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
     const targetTime = Math.min(
       Math.max(duration * MEDIA_PREVIEW_CAPTURE_FRACTION, 0.08),
@@ -2689,13 +2698,25 @@ async function buildVideoPreviewBlob(file) {
     if (Number.isFinite(targetTime)) {
       try {
         video.currentTime = targetTime;
-        await waitForVideoEvent(video, 'seeked');
+        await waitForVideoEvent(video, 'seeked', 8000);
       } catch {
-        await waitForVideoEvent(video, 'loadeddata');
+        // Seek failed — capture whatever frame is currently decoded
       }
-    } else {
-      await waitForVideoEvent(video, 'loadeddata');
     }
+
+    // Ensure the target frame is fully decoded before capture.
+    // requestVideoFrameCallback is the most reliable signal (Safari 15.4+).
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      await new Promise(resolve => {
+        const id = video.requestVideoFrameCallback(resolve);
+        setTimeout(() => { try { video.cancelVideoFrameCallback(id); } catch {} resolve(); }, 2000);
+      });
+    } else {
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    video.pause();
+
     const vw = video.videoWidth || 0;
     const vh = video.videoHeight || 0;
     if (!vw || !vh) return null;
@@ -2709,6 +2730,8 @@ async function buildVideoPreviewBlob(file) {
     const blob = await canvasToJpegBlob(canvas);
     return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
   } finally {
+    try { video.pause(); } catch {}
+    try { video.removeAttribute('src'); video.load(); } catch {}
     if (url) {
       try { URL.revokeObjectURL(url); } catch { }
     }
