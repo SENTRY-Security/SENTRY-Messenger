@@ -88,7 +88,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
                 <div class="vv-buffering-spinner"></div>
                 <div class="vv-buffering-text">緩衝中...</div>
             </div>
-            <div class="vv-stats" hidden>
+            <div class="vv-stats">
                 <div class="stats-section">
                     <div class="stats-label">BUFFER</div>
                     <div class="vv-stats-buffer-bar">
@@ -287,12 +287,26 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     }, { passive: true });
     seekbar.addEventListener('touchend', () => { seekDragging = false; }, { passive: true });
 
-    /* ── Stats Panel ── */
+    /* ── Stats Panel (default: visible) ── */
+    statsToggle.classList.add('active');
+
     statsToggle.addEventListener('click', (e) => {
         e.stopPropagation();
-        const show = statsPanel.hidden;
-        statsPanel.hidden = !show;
-        statsToggle.classList.toggle('active', show);
+        const willHide = !statsPanel.hidden;
+        statsPanel.hidden = willHide;
+        statsToggle.classList.toggle('active', !willHide);
+    });
+
+    /* ── Video Orientation Detection ── */
+    // Default to portrait until metadata is available.
+    overlay.classList.add('vv-portrait');
+
+    video.addEventListener('loadedmetadata', () => {
+        const w = video.videoWidth || 0;
+        const h = video.videoHeight || 0;
+        const isLandscape = w > 0 && h > 0 && w >= h;
+        overlay.classList.toggle('vv-landscape', isLandscape);
+        overlay.classList.toggle('vv-portrait', !isLandscape);
     });
 
     const updateStats = () => {

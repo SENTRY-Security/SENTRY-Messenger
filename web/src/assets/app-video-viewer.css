@@ -182,31 +182,48 @@ body.vv-open {
   transform: translate(-50%, -50%) scale(0.9);
 }
 
-/* ── Stats Panel ── */
+/* ── Stats Panel (base) ── */
 .vv-stats {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  right: 8px;
   z-index: 6;
-  background: rgba(2, 6, 23, 0.92);
-  backdrop-filter: blur(12px) saturate(120%);
-  -webkit-backdrop-filter: blur(12px) saturate(120%);
-  border: 1px solid rgba(51, 65, 85, 0.5);
-  border-radius: 10px;
   padding: 12px 14px;
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 11px;
   line-height: 1.6;
   color: #cbd5e1;
   pointer-events: auto;
-  max-height: 50%;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  transition: opacity 0.25s ease;
 }
 
 .vv-stats[hidden] {
   display: none;
+}
+
+/* ── Landscape video: solid panel anchored to bottom of stage ── */
+.vv-landscape .vv-stats {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 45%;
+  background: rgba(2, 6, 23, 0.96);
+  border-top: 1px solid rgba(51, 65, 85, 0.5);
+  border-radius: 0;
+}
+
+/* ── Portrait video: floating semi-transparent overlay ── */
+.vv-portrait .vv-stats {
+  position: absolute;
+  bottom: 12px;
+  left: 10px;
+  right: 10px;
+  max-height: 50%;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border: 1px solid rgba(51, 65, 85, 0.4);
+  border-radius: 12px;
 }
 
 .vv-stats .stats-section {
