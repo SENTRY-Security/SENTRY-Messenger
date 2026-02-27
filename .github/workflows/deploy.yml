@@ -20,8 +20,7 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install Dependencies
-        working-directory: data-worker
+      - name: Install Root Dependencies
         run: npm install
 
       - name: Apply D1 Migrations
@@ -61,6 +60,15 @@ jobs:
       - name: Build Web
         working-directory: web
         run: npm run build
+
+      - name: Copy Functions to Dist
+        working-directory: web
+        run: |
+          if [ -d "functions" ]; then
+            echo "Copying functions to dist/functions..."
+            mkdir -p dist/functions
+            cp -r functions/* dist/functions/
+          fi
 
       - name: Deploy to Cloudflare Pages
         working-directory: web
