@@ -201,6 +201,15 @@ export class MediaHandlingController extends BaseController {
             const MAX_CONSECUTIVE_ERRORS = 5;
             const initChunks = [];
 
+            // Hide buffering overlay only when the video actually has frames
+            // (not just when MSE accepts data — that doesn't guarantee decodability).
+            video.addEventListener('canplay', () => {
+                if (!firstMediaAppended) {
+                    firstMediaAppended = true;
+                    viewer.hideBuffering();
+                }
+            }, { once: true });
+
             const tryInitMse = async (initData, primaryMimeCodec) => {
                 const codecs = [];
                 const detected = detectCodecFromInitSegment(initData, 'muxed');
@@ -257,6 +266,15 @@ export class MediaHandlingController extends BaseController {
             const inflightAppends = new Set();
             const MAX_INFLIGHT = 15;
             let appendError = null;
+            let mseAbandoned = false; // set when voluntarily switching to blob mid-stream
+
+            // Buffer health check: save first few chunks so we can switch to
+            // blob fallback if MSE accepts data but the decoder can't handle it
+            // (e.g. wrong codec detected, HEVC on non-HEVC-MSE browser, etc.).
+            const BUFFER_HEALTH_SEGMENTS = 4;
+            const savedForFallback = [];
+            let mediaSegmentsSent = 0;
+            let bufferHealthPassed = false;
 
             for await (const { data, index } of streamChunks({
                 baseKey: media.baseKey,
@@ -303,6 +321,7 @@ export class MediaHandlingController extends BaseController {
                     try {
                         await tryInitMse(initData, primaryMime);
                         mseInitialized = true;
+                        savedForFallback.push(initData); // keep for potential blob fallback
                     } catch (initErr) {
                         // MSE init failed after all retries — switch to blob fallback
                         console.warn('[video] MSE init failed, switching to blob-URL fallback:', initErr?.message);
@@ -315,16 +334,19 @@ export class MediaHandlingController extends BaseController {
                 } else {
                     if (!mseInitialized) continue;
 
+                    // Save for potential blob fallback until health check passes
+                    if (!bufferHealthPassed) {
+                        savedForFallback.push(data);
+                    }
+
                     // Fire-and-forget: don't block downloads waiting for MSE appends.
                     // This is critical for MMS (iOS Safari) where endstreaming pauses
                     // the append queue — blocking here would stall all chunk downloads.
                     const p = msePlayer.appendChunk('muxed', data).then(() => {
+                        if (mseAbandoned) return;
                         consecutiveErrors = 0;
-                        if (!firstMediaAppended) {
-                            firstMediaAppended = true;
-                            viewer.hideBuffering();
-                        }
                     }, (appendErr) => {
+                        if (mseAbandoned) return;
                         consecutiveErrors++;
                         console.warn(`[mse] segment ${index} append failed (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, appendErr?.message);
                         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
@@ -334,6 +356,39 @@ export class MediaHandlingController extends BaseController {
                     });
                     inflightAppends.add(p);
                     p.finally(() => inflightAppends.delete(p));
+                    mediaSegmentsSent++;
+
+                    // Buffer health check: after N segments, verify the video decoder
+                    // is actually producing output. If MSE accepted data but the buffer
+                    // is empty (codec mismatch, HEVC on non-HEVC browser, etc.),
+                    // abandon MSE and switch to blob-URL fallback.
+                    if (!bufferHealthPassed && mediaSegmentsSent === BUFFER_HEALTH_SEGMENTS) {
+                        // Wait for pending appends to settle (with safety timeout)
+                        if (inflightAppends.size > 0) {
+                            const healthWait = new Promise(r => setTimeout(r, 8_000));
+                            await Promise.race([Promise.allSettled([...inflightAppends]), healthWait]);
+                        }
+                        const hasBuffer = video.buffered?.length > 0;
+                        const hasMeta = video.readyState >= 1;
+                        if (!hasBuffer && !hasMeta) {
+                            console.warn(`[video] MSE buffer empty after ${mediaSegmentsSent} segments `
+                                + `(readyState=${video.readyState}), switching to blob fallback`);
+                            mseAbandoned = true;
+                            appendError = null;
+                            consecutiveErrors = 0;
+                            inflightAppends.clear();
+                            blobParts.push(...savedForFallback);
+                            savedForFallback.length = 0;
+                            useBlobFallback = true;
+                            try { msePlayer.destroy(); } catch {}
+                            msePlayer = null;
+                            mseInitialized = false;
+                            continue;
+                        } else {
+                            bufferHealthPassed = true;
+                            savedForFallback.length = 0; // free memory
+                        }
+                    }
 
                     // Backpressure: if too many appends in-flight, wait for one to settle.
                     // Safety timeout prevents permanent deadlock if all appends are stuck
@@ -346,8 +401,8 @@ export class MediaHandlingController extends BaseController {
                 }
             }
 
-            // Check for deferred append errors
-            if (appendError) throw appendError;
+            // Check for deferred append errors (skip if we voluntarily abandoned MSE)
+            if (appendError && !mseAbandoned) throw appendError;
 
             if (useBlobFallback) {
                 // All chunks collected — create blob URL and play natively
