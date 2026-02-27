@@ -2,9 +2,6 @@ name: Deploy to Cloudflare
 
 on:
   push:
-    branches:
-      - main
-      - claude/fix-mse-append-error-xTHHl
 
 jobs:
   deploy-worker:
