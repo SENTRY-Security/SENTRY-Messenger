@@ -109,3 +109,35 @@ jobs:
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CI: true
+
+  deploy-backend:
+    runs-on: ubuntu-latest
+    name: Deploy Node.js Backend
+    needs: [deploy-worker, deploy-pages]
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            cd service
+            echo "Pulling latest code..."
+            git fetch origin
+            BRANCH="${{ github.ref_name }}"
+            git checkout "$BRANCH" || git checkout -b "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            
+            echo "Installing dependencies..."
+            npm install --production
+            
+            echo "Managing PM2 services..."
+            if pm2 list | grep -q "message-api"; then
+              echo "Reloading existing PM2 process..."
+              pm2 reload message-api
+            else
+              echo "Starting new PM2 process..."
+              pm2 start src/server.js --name message-api
+              pm2 save
+            fi
