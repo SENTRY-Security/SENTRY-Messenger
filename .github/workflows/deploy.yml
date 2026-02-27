@@ -36,8 +36,8 @@ jobs:
           npx wrangler d1 info 99728586-d8a9-4525-a1af-e68e84594047 --remote || echo "Database info by ID failed."
           
           echo "Applying migrations..."
-          npx wrangler d1 migrations apply message_db --remote --yes || \
-          npx wrangler d1 migrations apply 99728586-d8a9-4525-a1af-e68e84594047 --remote --yes
+          npx wrangler d1 migrations apply message_db --remote || \
+          npx wrangler d1 migrations apply 99728586-d8a9-4525-a1af-e68e84594047 --remote
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
