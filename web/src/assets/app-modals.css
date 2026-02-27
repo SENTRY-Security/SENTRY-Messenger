@@ -1054,6 +1054,153 @@
   letter-spacing: 0.3px;
 }
 
+/* Video stats overlay — MSE streaming debug info */
+.video-stats-toggle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: rgba(15, 23, 42, 0.6);
+  color: rgba(148, 163, 184, 0.8);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+.video-stats-toggle:active,
+.video-stats-toggle.active {
+  background: rgba(56, 189, 248, 0.25);
+  color: #38bdf8;
+}
+
+.video-stats-panel {
+  position: absolute;
+  top: 44px;
+  left: 8px;
+  right: 8px;
+  z-index: 4;
+  background: rgba(2, 6, 23, 0.92);
+  backdrop-filter: blur(12px) saturate(120%);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #cbd5e1;
+  pointer-events: auto;
+  overflow: hidden;
+  max-height: calc(100% - 52px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.video-stats-panel[hidden] {
+  display: none;
+}
+
+.video-stats-panel .stats-section {
+  margin-bottom: 10px;
+}
+.video-stats-panel .stats-section:last-child {
+  margin-bottom: 0;
+}
+
+.video-stats-panel .stats-label {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+}
+
+.video-stats-panel .stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+}
+.video-stats-panel .stats-key {
+  color: #94a3b8;
+}
+.video-stats-panel .stats-val {
+  color: #e2e8f0;
+  font-weight: 500;
+  text-align: right;
+}
+.video-stats-panel .stats-val.good {
+  color: #34d399;
+}
+.video-stats-panel .stats-val.warn {
+  color: #fbbf24;
+}
+.video-stats-panel .stats-val.error {
+  color: #f87171;
+}
+
+/* Buffer visualization bar */
+.video-stats-buffer-bar {
+  position: relative;
+  width: 100%;
+  height: 16px;
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 4px 0 2px;
+  border: 1px solid rgba(51, 65, 85, 0.4);
+}
+.video-stats-buffer-bar .buf-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(56, 189, 248, 0.35);
+  border-radius: 2px;
+}
+.video-stats-buffer-bar .buf-played {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(56, 189, 248, 0.7);
+  border-radius: 2px;
+}
+.video-stats-buffer-bar .buf-cursor {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  background: #f8fafc;
+  border-radius: 1px;
+  box-shadow: 0 0 4px rgba(248, 250, 252, 0.5);
+}
+
+/* Chunk progress bar */
+.video-stats-chunk-bar {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 4px 0 2px;
+  border: 1px solid rgba(51, 65, 85, 0.4);
+}
+.video-stats-chunk-bar .chunk-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
 .modal.change-password-modal .modal-panel {
   width: min(360px, 92vw);
 }

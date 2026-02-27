@@ -584,6 +584,38 @@ export function createMsePlayer({ videoElement, onError }) {
     /** Get the list of track labels that have SourceBuffers. */
     get labels() { return Object.keys(buffers); },
 
-    get objectUrl() { return objectUrl; }
+    get objectUrl() { return objectUrl; },
+
+    /**
+     * Get real-time stats for the MSE player.
+     * Used by the video stats overlay to display buffer/queue info.
+     */
+    getStats() {
+      const stats = {
+        readyState: mediaSource?.readyState || 'closed',
+        isMMS: isMMS,
+        buffers: {}
+      };
+      for (const [label, buf] of Object.entries(buffers)) {
+        const sb = buf.sourceBuffer;
+        const ranges = [];
+        try {
+          if (sb?.buffered) {
+            for (let i = 0; i < sb.buffered.length; i++) {
+              ranges.push({ start: sb.buffered.start(i), end: sb.buffered.end(i) });
+            }
+          }
+        } catch {}
+        stats.buffers[label] = {
+          mimeCodec: buf.mimeCodec,
+          updating: sb?.updating || false,
+          queuePending: buf.queue.pending,
+          bufferedRanges: ranges,
+          totalBuffered: ranges.reduce((sum, r) => sum + (r.end - r.start), 0),
+          mode: sb?.mode || null
+        };
+      }
+      return stats;
+    }
   };
 }

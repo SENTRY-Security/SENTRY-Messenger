@@ -175,6 +175,162 @@ export class MediaHandlingController extends BaseController {
         `;
         wrap.appendChild(bufOverlay);
 
+        // ── Stats overlay — shows MSE buffer, codec, chunk & encryption info ──
+        const statsState = { chunksReceived: 0, totalChunks: 0, bytesReceived: 0, intervalId: null };
+
+        const statsToggle = document.createElement('button');
+        statsToggle.className = 'video-stats-toggle';
+        statsToggle.textContent = 'i';
+        statsToggle.setAttribute('aria-label', '串流資訊');
+
+        const statsPanel = document.createElement('div');
+        statsPanel.className = 'video-stats-panel';
+        statsPanel.hidden = true;
+
+        statsPanel.innerHTML = `
+            <div class="stats-section">
+                <div class="stats-label">BUFFER</div>
+                <div class="video-stats-buffer-bar">
+                    <div class="buf-range"></div>
+                    <div class="buf-played"></div>
+                    <div class="buf-cursor"></div>
+                </div>
+                <div class="stats-row"><span class="stats-key">Position</span><span class="stats-val" data-vs="position">0:00 / 0:00</span></div>
+                <div class="stats-row"><span class="stats-key">Buffered</span><span class="stats-val" data-vs="buffered">0.0s</span></div>
+            </div>
+            <div class="stats-section">
+                <div class="stats-label">MSE</div>
+                <div class="stats-row"><span class="stats-key">Type</span><span class="stats-val" data-vs="mse-type">—</span></div>
+                <div class="stats-row"><span class="stats-key">State</span><span class="stats-val" data-vs="state">—</span></div>
+                <div class="stats-row"><span class="stats-key">Codec</span><span class="stats-val" data-vs="codec">—</span></div>
+                <div class="stats-row"><span class="stats-key">SB Mode</span><span class="stats-val" data-vs="sbmode">—</span></div>
+                <div class="stats-row"><span class="stats-key">Queue</span><span class="stats-val" data-vs="queue">0</span></div>
+            </div>
+            <div class="stats-section">
+                <div class="stats-label">CHUNKS</div>
+                <div class="video-stats-chunk-bar"><div class="chunk-fill"></div></div>
+                <div class="stats-row"><span class="stats-key">Progress</span><span class="stats-val" data-vs="chunks">0 / 0</span></div>
+                <div class="stats-row"><span class="stats-key">Received</span><span class="stats-val" data-vs="bytes">0 B</span></div>
+            </div>
+            <div class="stats-section">
+                <div class="stats-label">ENCRYPTION</div>
+                <div class="stats-row"><span class="stats-key">Scheme</span><span class="stats-val">AEAD</span></div>
+                <div class="stats-row"><span class="stats-key">Per-Chunk</span><span class="stats-val good">AES-256-GCM</span></div>
+            </div>
+        `;
+
+        statsToggle.addEventListener('click', () => {
+            const show = statsPanel.hidden;
+            statsPanel.hidden = !show;
+            statsToggle.classList.toggle('active', show);
+        });
+
+        wrap.appendChild(statsToggle);
+        wrap.appendChild(statsPanel);
+
+        // Helpers for stats display
+        const fmtTime = (s) => {
+            if (!isFinite(s) || s < 0) return '0:00';
+            const m = Math.floor(s / 60);
+            const sec = Math.floor(s % 60);
+            return `${m}:${sec.toString().padStart(2, '0')}`;
+        };
+        const fmtBytes = (b) => {
+            if (b < 1024) return `${b} B`;
+            if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+            return `${(b / 1048576).toFixed(1)} MB`;
+        };
+
+        // Polling update for stats panel
+        const updateStats = () => {
+            if (!msePlayer || statsPanel.hidden) return;
+            try {
+                const st = msePlayer.getStats();
+                const dur = video.duration || 0;
+                const cur = video.currentTime || 0;
+                const muxedBuf = st.buffers.muxed;
+
+                // Position
+                const posEl = statsPanel.querySelector('[data-vs="position"]');
+                if (posEl) posEl.textContent = `${fmtTime(cur)} / ${fmtTime(dur)}`;
+
+                // Buffer bar visualization
+                const barEl = statsPanel.querySelector('.video-stats-buffer-bar');
+                if (barEl && dur > 0) {
+                    const rangeEl = barEl.querySelector('.buf-range');
+                    const playedEl = barEl.querySelector('.buf-played');
+                    const cursorEl = barEl.querySelector('.buf-cursor');
+                    try {
+                        if (video.buffered.length > 0) {
+                            const bs = video.buffered.start(0);
+                            const be = video.buffered.end(video.buffered.length - 1);
+                            rangeEl.style.left = `${(bs / dur) * 100}%`;
+                            rangeEl.style.width = `${((be - bs) / dur) * 100}%`;
+                        } else {
+                            rangeEl.style.left = '0%';
+                            rangeEl.style.width = '0%';
+                        }
+                    } catch { rangeEl.style.width = '0%'; }
+                    playedEl.style.left = '0%';
+                    playedEl.style.width = `${(cur / dur) * 100}%`;
+                    cursorEl.style.left = `${(cur / dur) * 100}%`;
+                }
+
+                // Buffered total
+                const bufEl = statsPanel.querySelector('[data-vs="buffered"]');
+                if (bufEl && muxedBuf) {
+                    const tb = muxedBuf.totalBuffered;
+                    bufEl.textContent = `${tb.toFixed(1)}s`;
+                    bufEl.className = `stats-val ${tb > 5 ? 'good' : tb > 1 ? '' : 'warn'}`;
+                }
+
+                // MSE type
+                const typeEl = statsPanel.querySelector('[data-vs="mse-type"]');
+                if (typeEl) typeEl.textContent = st.isMMS ? 'ManagedMediaSource' : 'MediaSource';
+
+                // State
+                const stateEl = statsPanel.querySelector('[data-vs="state"]');
+                if (stateEl) {
+                    stateEl.textContent = st.readyState;
+                    stateEl.className = `stats-val ${st.readyState === 'open' ? 'good' : st.readyState === 'ended' ? '' : 'error'}`;
+                }
+
+                // Codec
+                const codecEl = statsPanel.querySelector('[data-vs="codec"]');
+                if (codecEl && muxedBuf) {
+                    const raw = muxedBuf.mimeCodec || '—';
+                    const match = raw.match(/codecs="([^"]+)"/);
+                    codecEl.textContent = match ? match[1] : raw;
+                }
+
+                // SB Mode
+                const modeEl = statsPanel.querySelector('[data-vs="sbmode"]');
+                if (modeEl && muxedBuf) modeEl.textContent = muxedBuf.mode || 'default';
+
+                // Queue
+                const queueEl = statsPanel.querySelector('[data-vs="queue"]');
+                if (queueEl && muxedBuf) {
+                    queueEl.textContent = String(muxedBuf.queuePending);
+                    queueEl.className = `stats-val ${muxedBuf.queuePending > 3 ? 'warn' : ''}`;
+                }
+
+                // Chunks
+                const chunksEl = statsPanel.querySelector('[data-vs="chunks"]');
+                if (chunksEl) chunksEl.textContent = `${statsState.chunksReceived} / ${statsState.totalChunks}`;
+
+                const chunkFillEl = statsPanel.querySelector('.chunk-fill');
+                if (chunkFillEl && statsState.totalChunks > 0) {
+                    chunkFillEl.style.width = `${(statsState.chunksReceived / statsState.totalChunks) * 100}%`;
+                }
+
+                // Bytes
+                const bytesEl = statsPanel.querySelector('[data-vs="bytes"]');
+                if (bytesEl) bytesEl.textContent = fmtBytes(statsState.bytesReceived);
+            } catch {}
+        };
+
+        statsState.intervalId = setInterval(updateStats, 500);
+
         // Open modal immediately so user sees the player right away.
         // Use both deps callback AND direct DOM manipulation to ensure
         // the modal is actually visible (guards against missing deps or
@@ -201,6 +357,8 @@ export class MediaHandlingController extends BaseController {
             media._videoProgress = 5;
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(5);
+
+            statsState.totalChunks = manifest.totalChunks || 0;
 
             // Non-segment-aligned manifests cannot use MSE streaming.
             // Blob URL fallback is strictly forbidden — reject playback.
@@ -291,6 +449,8 @@ export class MediaHandlingController extends BaseController {
                     updateDownloadProgress(media._videoProgress);
                 }
             })) {
+                statsState.chunksReceived++;
+                statsState.bytesReceived += (data?.byteLength || 0);
                 const isInitSegment = index < numTracks;
 
                 if (isInitSegment) {
@@ -358,6 +518,7 @@ export class MediaHandlingController extends BaseController {
             // Do NOT check 'active' class — openModal() never adds it.
             const modalObserver = new MutationObserver(() => {
                 if (modalEl.style.display === 'none' || modalEl.getAttribute('aria-hidden') === 'true') {
+                    if (statsState.intervalId) { clearInterval(statsState.intervalId); statsState.intervalId = null; }
                     if (msePlayer) {
                         try { msePlayer.destroy(); } catch {}
                         msePlayer = null;
@@ -370,6 +531,8 @@ export class MediaHandlingController extends BaseController {
             modalObserver.observe(modalEl, { attributes: true, attributeFilter: ['class', 'style'] });
 
         } catch (err) {
+            // Release stats polling
+            if (statsState.intervalId) { clearInterval(statsState.intervalId); statsState.intervalId = null; }
             // Release MSE resources
             if (msePlayer) {
                 try { msePlayer.destroy(); } catch {}
