@@ -235,6 +235,11 @@ export async function encryptAndPutChunked({
       // WebM or passthrough — use byte-range chunking on original file
       totalSize = typeof file.size === 'number' ? file.size : 0;
     }
+
+    // Release the preprocessResult reference — segments are now in fmp4Segments,
+    // tracks extracted to fmp4Tracks. This drops the remuxer's internal references
+    // (muxedTrack, orderedMediaSegs, etc.) so GC can reclaim the file buffer.
+    preprocessResult = null;
   } else {
     totalSize = typeof file.size === 'number' ? file.size : 0;
   }

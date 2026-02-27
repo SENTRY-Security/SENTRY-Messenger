@@ -207,10 +207,14 @@ function demuxFile(file, mp4boxMod) {
     };
 
     try {
-      const buf = await file.arrayBuffer();
+      let buf = await file.arrayBuffer();
       buf.fileStart = 0;
       mp4boxFile.appendBuffer(buf);
       mp4boxFile.flush();
+      // mp4box reads synchronously — release the file buffer reference.
+      // Sample data references (s.data) point into mp4box's internal buffers,
+      // not into this ArrayBuffer, so it's safe to drop.
+      buf = null;
     } catch (err) {
       reject(new Error('無法解析此影片：' + (err?.message || err)));
       return;
@@ -262,6 +266,9 @@ async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onPro
     vEncConfig, encodedVideo,
     () => { processedSamples++; reportProgress(); }
   );
+  // Release video samples — transcodeVideoTrack already nulled individual entries,
+  // but drop the array reference too so the entire allocation can be reclaimed.
+  delete inputSamples[videoTrack.id];
 
   // ── Audio: passthrough if AAC, else re-encode ──
 
@@ -269,13 +276,17 @@ async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onPro
     const audioCodec = (audioTrack.codec || '').toLowerCase();
     if (MSE_SAFE_AUDIO.test(audioCodec)) {
       // AAC passthrough — no re-encoding needed
-      for (const s of (inputSamples[audioTrack.id] || [])) {
+      const audioSamples = inputSamples[audioTrack.id] || [];
+      for (let ai = 0; ai < audioSamples.length; ai++) {
+        const s = audioSamples[ai];
         encodedAudio.push({
           data: new Uint8Array(s.data),
           timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
           duration: Math.round((s.duration / s.timescale) * 1_000_000),
           key: s.is_sync,
         });
+        s.data = null;
+        audioSamples[ai] = null;
         processedSamples++;
         reportProgress();
       }
@@ -292,6 +303,7 @@ async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onPro
       }
       // If audio encode not supported, skip audio (video-only output)
     }
+    delete inputSamples[audioTrack.id];
   }
 
   onProgress?.({ phase: 'encode', percent: 95 });
@@ -300,11 +312,16 @@ async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onPro
 
   const segments = await muxToFmp4(encodedVideo, encodedAudio, vEncConfig, audioTrack, mp4boxMod);
 
+  // Release encoded frame arrays — data now lives in segments
+  const hadAudio = encodedAudio.length > 0;
+  encodedVideo.length = 0;
+  encodedAudio.length = 0;
+
   onProgress?.({ phase: 'encode', percent: 100 });
 
   // Build codec string
   const codecs = ['avc1.42001E'];
-  if (encodedAudio.length > 0) codecs.push('mp4a.40.2');
+  if (hadAudio) codecs.push('mp4a.40.2');
   const combinedCodec = codecs.join(',');
 
   return {
@@ -376,8 +393,10 @@ function transcodeVideoTrack(track, samples, encConfig, output, onSample) {
 
     decoder.configure(decoderConfig);
 
-    // Feed samples to decoder
-    for (const s of samples) {
+    // Feed samples to decoder, releasing each sample's data after
+    // it's been consumed to avoid holding all compressed frames in memory.
+    for (let si = 0; si < samples.length; si++) {
+      const s = samples[si];
       const chunk = new EncodedVideoChunk({
         type: s.is_sync ? 'key' : 'delta',
         timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
@@ -385,6 +404,9 @@ function transcodeVideoTrack(track, samples, encConfig, output, onSample) {
         data: s.data,
       });
       decoder.decode(chunk);
+      // Release reference to the compressed frame data so GC can reclaim it
+      s.data = null;
+      samples[si] = null;
     }
 
     decoder.flush().then(() => {
@@ -450,7 +472,8 @@ function transcodeAudioTrack(track, samples, encConfig, output, onSample) {
 
     decoder.configure(decoderConfig);
 
-    for (const s of samples) {
+    for (let si = 0; si < samples.length; si++) {
+      const s = samples[si];
       const chunk = new EncodedAudioChunk({
         type: s.is_sync ? 'key' : 'delta',
         timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
@@ -458,6 +481,8 @@ function transcodeAudioTrack(track, samples, encConfig, output, onSample) {
         data: s.data,
       });
       decoder.decode(chunk);
+      s.data = null;
+      samples[si] = null;
     }
 
     decoder.flush().then(() => {

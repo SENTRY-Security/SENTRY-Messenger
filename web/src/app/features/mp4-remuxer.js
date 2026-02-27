@@ -351,8 +351,8 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
   // Read file into memory
   onProgress?.({ percent: 0 });
-  const fileBuffer = await file.arrayBuffer();
-  const fileU8 = new Uint8Array(fileBuffer);
+  let fileBuffer = await file.arrayBuffer();
+  let fileU8 = new Uint8Array(fileBuffer);
   onProgress?.({ percent: 30 });
 
   if (isAlreadyFragmented(fileU8)) {
@@ -361,10 +361,14 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
     // the full moov with all track descriptions, and each moof+mdat pair
     // references a specific track_ID that the browser demuxes internally.
     const { initSegment, mediaSegments } = splitFragmentedMp4(fileU8);
+    // splitFragmentedMp4 creates independent copies via concatU8 —
+    // safe to release the original file buffer now.
+    fileU8 = null;
+    fileBuffer = null;
     if (!initSegment.byteLength || mediaSegments.length === 0) {
       throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
     }
-    const track = { type: 'muxed', codec: null, initSegment, mediaSegments };
+    const track = { type: 'muxed', codec: null, initSegment, mediaSegments: null };
     const segments = [
       { trackIndex: 0, data: initSegment },
       ...mediaSegments.map(data => ({ trackIndex: 0, data }))
@@ -446,24 +450,29 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
     mp4boxFile.onSegment = (id, _user, buffer, _sampleNum, _isLast) => {
       const data = new Uint8Array(buffer);
-      if (trackMap[id]) {
-        trackMap[id].mediaSegments.push(data);
-      }
+      // Only store in orderedMediaSegs — trackMap.mediaSegments is redundant
+      // and doubles memory usage. We build the final segments from orderedMediaSegs.
       orderedMediaSegs.push({ trackId: id, data });
     };
 
-    // Feed the entire file to mp4box
-    const buf = fileBuffer.slice(0);
-    buf.fileStart = 0;
+    // Feed the file buffer to mp4box.
+    // mp4box requires fileStart property but does NOT need a copy —
+    // it reads synchronously during appendBuffer.
+    fileBuffer.fileStart = 0;
 
     try {
-      mp4boxFile.appendBuffer(buf);
+      mp4boxFile.appendBuffer(fileBuffer);
     } catch (err) {
       reject(new UnsupportedVideoFormatError('無法解析此影片檔案：' + (err?.message || err)));
       return;
     }
 
     mp4boxFile.flush();
+
+    // mp4box reads synchronously — release the file buffer.
+    // Segment data in onSegment comes from mp4box's internal buffers, not fileBuffer.
+    fileBuffer = null;
+    fileU8 = null;
 
     // mp4box.js processes synchronously in appendBuffer/flush, but use
     // a short delay as a safety net for any async callback scheduling.
@@ -485,22 +494,30 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
         // Combine codec strings: e.g. 'avc1.64001E,mp4a.40.2'
         const combinedCodec = perTrackData.map(t => t.codec).filter(Boolean).join(',') || null;
 
-        // All media segments in the order mp4box.js fired them
-        const allMediaSegs = orderedMediaSegs.map(ms => ms.data);
-
-        const muxedTrack = {
-          type: 'muxed',
-          codec: combinedCodec,
-          initSegment: combinedInit,
-          mediaSegments: allMediaSegs
-        };
+        // Release per-track data — no longer needed after merging
+        for (const tid of trackOrder) {
+          if (trackMap[tid]) {
+            trackMap[tid].initSegment = null;
+            trackMap[tid] = null;
+          }
+        }
 
         // Build flat segments array for upload:
         // [combined-init, mediaSeg1, mediaSeg2, ...]
         const segments = [
           { trackIndex: 0, data: combinedInit },
-          ...allMediaSegs.map(data => ({ trackIndex: 0, data }))
+          ...orderedMediaSegs.map(ms => ({ trackIndex: 0, data: ms.data }))
         ];
+
+        // Release orderedMediaSegs — data now lives in segments array
+        orderedMediaSegs.length = 0;
+
+        const muxedTrack = {
+          type: 'muxed',
+          codec: combinedCodec,
+          initSegment: combinedInit,
+          mediaSegments: null // Not needed — segments array is the canonical source
+        };
 
         const outputName = name.replace(/\.(mov|m4v|qt)$/i, '.mp4');
         onProgress?.({ percent: 100 });
