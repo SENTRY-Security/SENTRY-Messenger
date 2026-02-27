@@ -723,7 +723,9 @@ export function initCallOverlay({ showToast }) {
       baseY: 0,
       moved: false
     },
-    lastProfileLogKey: null
+    lastProfileLogKey: null,
+    _outgoingPreview: null,
+    _outgoingPreviewLoading: false
   };
   const audio = createCallAudioManager();
 
@@ -1078,6 +1080,26 @@ export function initCallOverlay({ showToast }) {
     state.lastStatus = status;
   }
 
+  // Request camera preview for outgoing video calls.
+  // Caches the stream so attachLocalMedia() reuses it (no double getUserMedia).
+  async function requestOutgoingCameraPreview() {
+    if (state._outgoingPreviewLoading || state._outgoingPreview) return;
+    state._outgoingPreviewLoading = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
+      });
+      state._outgoingPreview = stream;
+      try { sessionStore.cachedMicrophoneStream = stream; } catch {}
+      render();
+    } catch {
+      // Camera denied — keep avatar-only waiting screen
+    } finally {
+      state._outgoingPreviewLoading = false;
+    }
+  }
+
   function render(session = getCallSessionSnapshot()) {
     ensureToneContext(session);
     syncAudio(session);
@@ -1132,7 +1154,8 @@ export function initCallOverlay({ showToast }) {
     // Video elements
     if (isVideo) {
       const hasRemoteVideo = inCall || connecting;
-      if (ui.remoteVideo) ui.remoteVideo.style.display = hasRemoteVideo ? 'block' : 'none';
+      // Also show remoteVideo during outgoing for local camera preview
+      if (ui.remoteVideo) ui.remoteVideo.style.display = (hasRemoteVideo || outgoing) ? 'block' : 'none';
       if (ui.localPip) ui.localPip.style.display = (inCall || connecting) ? 'block' : 'none';
 
       // Waiting screen (before connected)
@@ -1146,6 +1169,40 @@ export function initCallOverlay({ showToast }) {
             const videoStatusText = incoming ? '視訊來電' : '視訊撥號中…';
             ui.videoWaitingStatus.textContent = videoStatusText;
           }
+        }
+      }
+
+      // Outgoing video: show local camera preview as background
+      if (outgoing) {
+        if (ui.remoteVideo) {
+          ui.remoteVideo.style.transform = 'scaleX(-1)';
+          const ls = getLocalStream();
+          const preview = ls || state._outgoingPreview;
+          if (preview && preview.getVideoTracks().length) {
+            if (ui.remoteVideo.srcObject !== preview) {
+              ui.remoteVideo.srcObject = preview;
+              ui.remoteVideo.muted = true;
+              ui.remoteVideo.play().catch(() => {});
+            }
+          } else if (!state._outgoingPreviewLoading) {
+            requestOutgoingCameraPreview();
+          }
+        }
+        // Semi-transparent overlay so avatar/text is readable over camera feed
+        if (ui.videoWaiting) {
+          ui.videoWaiting.style.background = 'rgba(0,0,0,0.35)';
+          ui.videoWaiting.style.backdropFilter = 'blur(2px)';
+          ui.videoWaiting.style.webkitBackdropFilter = 'blur(2px)';
+        }
+      } else {
+        // Reset outgoing preview state
+        if (state._outgoingPreview) state._outgoingPreview = null;
+        state._outgoingPreviewLoading = false;
+        if (ui.remoteVideo) ui.remoteVideo.style.transform = '';
+        if (ui.videoWaiting) {
+          ui.videoWaiting.style.background = '';
+          ui.videoWaiting.style.backdropFilter = '';
+          ui.videoWaiting.style.webkitBackdropFilter = '';
         }
       }
 
