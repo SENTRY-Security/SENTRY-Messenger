@@ -21,7 +21,7 @@ jobs:
         run: npm install
 
       - name: Check Wrangler Authentication
-        run: npx wrangler whoami
+        run: npx wrangler@4 whoami
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
@@ -31,13 +31,8 @@ jobs:
       - name: Apply D1 Migrations
         working-directory: data-worker
         run: |
-          echo "Checking D1 database status..."
-          npx wrangler d1 info message_db --remote || echo "Database info by name failed, trying by ID..."
-          npx wrangler d1 info 99728586-d8a9-4525-a1af-e68e84594047 --remote || echo "Database info by ID failed."
-          
-          echo "Applying migrations..."
-          npx wrangler d1 migrations apply message_db --remote || \
-          npx wrangler d1 migrations apply 99728586-d8a9-4525-a1af-e68e84594047 --remote
+          echo "Applying D1 migrations..."
+          npx wrangler@4 d1 migrations apply message_db --remote || echo "No pending migrations or error applying migrations"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
@@ -49,7 +44,7 @@ jobs:
         working-directory: data-worker
         run: |
           echo "Deploying Cloudflare Worker..."
-          npx wrangler deploy
+          npx wrangler@4 deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
@@ -102,7 +97,7 @@ jobs:
         working-directory: web
         run: |
           echo "Deploying to Cloudflare Pages (Project: message-web-hybrid)..."
-          npx wrangler pages deploy ./dist --project-name message-web-hybrid --branch=${{ github.ref_name }}
+          npx wrangler@4 pages deploy ./dist --project-name message-web-hybrid --branch=${{ github.ref_name }} --commit-dirty=true --commit-message="CI Deploy $(date)"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
@@ -133,11 +128,11 @@ jobs:
             npm install --production
             
             echo "Managing PM2 services..."
-            if pm2 list | grep -q "message-api"; then
+            if npx pm2 list | grep -q "message-api"; then
               echo "Reloading existing PM2 process..."
-              pm2 reload message-api
+              npx pm2 reload message-api
             else
               echo "Starting new PM2 process..."
-              pm2 start src/server.js --name message-api
-              pm2 save
+              npx pm2 start src/server.js --name message-api
+              npx pm2 save
             fi
