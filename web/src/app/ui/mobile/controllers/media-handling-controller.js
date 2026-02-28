@@ -155,18 +155,40 @@ export class MediaHandlingController extends BaseController {
 
         const video = viewer.video;
 
+        // [FIX] Create MSE player and call video.play() SYNCHRONOUSLY before
+        // any await, while the user-gesture context from the tap is still valid.
+        // On iOS (ManagedMediaSource), non-muted autoplay requires a gesture.
+        // The manifest download below is async and would expire the gesture.
+        const createPlayer = () => createMsePlayer({
+            videoElement: video,
+            onError: (err) => {
+                console.warn('[mse-player] segment error (non-fatal):', err?.message || err);
+            }
+        });
+        msePlayer = createPlayer();
+        viewer.setMsePlayer(msePlayer);
+        const mseOpenPromise = msePlayer.open(); // Sets video.src synchronously
+        // Call play() immediately — gesture context still active.
+        // The browser queues the play and starts when data arrives.
+        video.play().catch(() => {});
+
         let manifest = null;
         try {
-            // Step 2: Download and decrypt manifest
+            // Step 2: Download and decrypt manifest (async — gesture context lost)
             media._videoProgress = 2;
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(2);
 
-            manifest = await downloadChunkedManifest({
-                baseKey: media.baseKey,
-                manifestEnvelope: media.manifestEnvelope,
-                abortSignal: downloadAbort.signal
-            });
+            // Wait for both MSE open and manifest download in parallel
+            const [, downloadedManifest] = await Promise.all([
+                mseOpenPromise,
+                downloadChunkedManifest({
+                    baseKey: media.baseKey,
+                    manifestEnvelope: media.manifestEnvelope,
+                    abortSignal: downloadAbort.signal
+                })
+            ]);
+            manifest = downloadedManifest;
 
             media._videoProgress = 5;
             this._updateVideoOverlayUI(msgId, media);
@@ -184,22 +206,6 @@ export class MediaHandlingController extends BaseController {
             const numTracks = manifestTracks.length;
             const isLegacyMultiTrack = numTracks > 1;
 
-            // Create MSE player — always single 'muxed' SourceBuffer
-            const createPlayer = () => createMsePlayer({
-                videoElement: video,
-                onError: (err) => {
-                    console.warn('[mse-player] segment error (non-fatal):', err?.message || err);
-                }
-            });
-            msePlayer = createPlayer();
-            viewer.setMsePlayer(msePlayer);
-            await msePlayer.open();
-
-            // Start playback early while the user-gesture context from the
-            // click that opened the viewer may still be valid.  The browser
-            // will wait for data and begin playing once enough is buffered.
-            video.play().catch(() => {});
-
             let mseInitialized = false;
             let firstMediaAppended = false;
             let consecutiveErrors = 0;
@@ -208,14 +214,27 @@ export class MediaHandlingController extends BaseController {
 
             // Hide buffering overlay only when the video actually has frames
             // (not just when MSE accepts data — that doesn't guarantee decodability).
-            video.addEventListener('canplay', () => {
+            const onCanPlay = () => {
                 if (!firstMediaAppended) {
                     firstMediaAppended = true;
                     viewer.hideBuffering();
                     // Ensure playback starts — autoplay may have been blocked
-                    if (video.paused) video.play().catch(() => {});
+                    if (video.paused) {
+                        video.play().catch(() => {
+                            // [FIX] Fallback: muted autoplay (always allowed on iOS).
+                            // Unmute once playback starts.
+                            video.muted = true;
+                            video.play().then(() => {
+                                video.muted = false;
+                            }).catch(() => {});
+                        });
+                    }
                 }
-            }, { once: true });
+            };
+            video.addEventListener('canplay', onCanPlay, { once: true });
+            // [FIX] Backup: 'loadeddata' fires earlier than 'canplay' on some
+            // iOS versions. Use it as additional trigger for hideBuffering/play.
+            video.addEventListener('loadeddata', onCanPlay, { once: true });
 
             const tryInitMse = async (initData, primaryMimeCodec) => {
                 const codecs = [];
