@@ -1,13 +1,20 @@
 #!/bin/bash
 set -e
 
-# Load environment variables from .env (Only CLOUDFLARE_*)
+# Load environment variables from .env
 if [ -f ".env" ]; then
   echo "📄 Loading Cloudflare credentials from .env"
-  export $(grep '^CLOUDFLARE_' .env | xargs)
+  # Use a more robust way to export variables, handling potential quotes
+  set -a
+  source .env
+  set +a
 else
   echo "⚠️  .env file not found"
 fi
+
+# Disable Wrangler telemetry to prevent hanging
+export WRANGLER_SEND_METRICS=false
+export WRANGLER_SKIP_UPDATE_CHECK=1
 
 # Configuration
 REMOTE_HOST="Message"
@@ -24,7 +31,7 @@ echo "⚡️ Deploying Data Worker..."
 if [ -d "$WORKER_DIR" ]; then
   cd "$WORKER_DIR"
   echo "   - Applying D1 migrations (remote)..."
-  CI=true npx wrangler d1 migrations apply message_db
+  npx wrangler d1 migrations apply message_db --remote || echo "     (No pending migrations or error applying migrations)"
   npx wrangler deploy
   cd ..
 else
