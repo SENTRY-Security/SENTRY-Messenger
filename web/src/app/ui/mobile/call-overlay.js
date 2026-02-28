@@ -832,6 +832,7 @@ export function initCallOverlay({ showToast }) {
       const localDisplay = getLocalDisplayStream();
       if (localDisplay && localDisplay.getVideoTracks().length) {
         ui.miniLocalVideo.srcObject = localDisplay;
+        ui.miniLocalVideo.style.transform = localMirrorTransform();
         ui.miniLocalVideo.play().catch(() => {});
       }
     }
@@ -925,7 +926,7 @@ export function initCallOverlay({ showToast }) {
 
   /** Return the CSS transform for local self-view: mirror front camera, no mirror for rear */
   function localMirrorTransform() {
-    return getCameraFacing() === 'environment' ? '' : 'scaleX(-1)';
+    return getCameraFacing() === 'environment' ? 'scaleX(1)' : 'scaleX(-1)';
   }
 
   const BLUR_MODE_CYCLE = [BLUR_MODE.FACE, BLUR_MODE.BACKGROUND, BLUR_MODE.OFF];
@@ -1619,6 +1620,9 @@ export function initCallOverlay({ showToast }) {
     }
     if (ui.remoteVideo && state.videoSwapped) {
       ui.remoteVideo.style.transform = mirror;
+    }
+    if (ui.miniLocalVideo) {
+      ui.miniLocalVideo.style.transform = mirror;
     }
   }
 
