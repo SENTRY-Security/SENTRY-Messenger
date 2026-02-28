@@ -1260,6 +1260,13 @@ export class MessageFlowController extends BaseController {
             // slice(startIndex) -> returns new array from Start to End.
             // We want [Tombstone, ...NewerMessages]
             sortedMessages = sortedMessages.slice(deletionTombstoneIndex);
+
+            // [FIX] Disable pull-to-load-more when tombstone is the history barrier.
+            // There are no meaningful older messages beyond the tombstone — they were
+            // cleared.  Without this, scrolling to the top would trigger a fetch that
+            // returns the same (or more) pre-tombstone messages, creating an infinite
+            // loop or showing cleared content.
+            state.hasMore = false;
         }
 
         // Normal filtering for other control messages
