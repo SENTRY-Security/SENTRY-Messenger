@@ -6,7 +6,7 @@
 import { BaseController } from './base-controller.js';
 import { appendUserMessage, getTimeline, removeMessagesMatching } from '../../../features/timeline-store.js';
 import { sendDrMedia, sendDrText, buildMediaPreviewBlob } from '../../../features/dr-session.js';
-import { UnsupportedVideoFormatError, resolveContentType } from '../../../features/media.js';
+import { UnsupportedVideoFormatError, resolveContentType, MAX_UPLOAD_BYTES } from '../../../features/media.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
 import { isUploadBusy, startUpload, updateUploadProgress, endUpload } from '../../../features/transfer-progress.js';
@@ -160,6 +160,13 @@ export class MessageSendingController extends BaseController {
 
         try {
             for (const file of files) {
+                // Early size guard: reject before loading the file into memory
+                if (typeof file.size === 'number' && file.size > MAX_UPLOAD_BYTES) {
+                    const limitMB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
+                    this.deps.showToast?.(`無法上傳：${file.name || '檔案'} 超過 ${limitMB}MB 限制`);
+                    continue;
+                }
+
                 const localUrl = URL.createObjectURL(file);
                 const messageId = crypto.randomUUID();
                 const previewText = `[檔案] ${file.name || '附件'}`;

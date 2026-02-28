@@ -27,6 +27,7 @@ import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
 const UPLOAD_CONCURRENCY = 3;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500MB — must match server UPLOAD_MAX_BYTES
 
 const encoder = new TextEncoder();
 
@@ -299,6 +300,14 @@ export async function encryptAndPutChunked({
   const useSharedKey = !!sharedKeyU8;
   if (!mk && !useSharedKey) throw new Error('Not unlocked: MK not ready');
   if (!file) throw new Error('file required');
+
+  // Early size guard: reject before loading the file into memory.
+  // Without this, a 600MB video would be fully read + remuxed (~1.2GB peak)
+  // only to be rejected by the server's 413 response at sign-put-chunked.
+  const fileSize = typeof file.size === 'number' ? file.size : null;
+  if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
+    throw new Error(`檔案大小超過 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB 限制`);
+  }
 
   const rawType = (typeof file.type === 'string' ? file.type : '').toLowerCase().trim();
   const isVideo = rawType.startsWith('video/');

@@ -9,7 +9,7 @@ import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { encryptAndPutChunked, CHUNK_SIZE, UnsupportedVideoFormatError } from './chunked-upload.js';
 
 const encoder = new TextEncoder();
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
+export const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB
 const MEDIA_INFO_TAG = 'media/v1';
 
 const EXT_CONTENT_TYPE = new Map([
