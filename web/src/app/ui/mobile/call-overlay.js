@@ -1243,31 +1243,43 @@ export function initCallOverlay({ showToast }) {
       if (outgoing) {
         if (ui.remoteVideo) {
           ui.remoteVideo.style.transform = 'scaleX(-1)';
-          // Try multiple sources: WebRTC local stream → our preview → composer cached stream
-          const ls = getLocalStream();
-          const cached = sessionStore?.cachedMicrophoneStream;
-          const preview = ls
-            || state._outgoingPreview
-            || (cached && cached.getVideoTracks().some((t) => t.readyState === 'live') ? cached : null);
-          log({ outgoingPreviewRender: true, hasLocalStream: !!ls, hasPreview: !!state._outgoingPreview, hasCached: !!cached, videoTracks: preview?.getVideoTracks()?.length ?? 0 });
-          if (preview && preview.getVideoTracks().some((t) => t.readyState === 'live')) {
-            if (!state._outgoingPreview) {
-              state._outgoingPreview = preview;
-              // Start face blur pipeline in background; raw stream shows immediately
-              startPreviewFaceBlur(preview);
-            }
-            if (ui.remoteVideo.srcObject !== preview && ui.remoteVideo.srcObject !== state._outgoingPreview) {
-              const streamToShow = state._outgoingPreview || preview;
-              ui.remoteVideo.srcObject = streamToShow;
+          // Check if the current srcObject still has live video tracks.
+          // Tracks can die when attachLocalMedia() clones them.
+          const curSrc = ui.remoteVideo.srcObject;
+          const hasLiveVideo = curSrc
+            && typeof curSrc.getVideoTracks === 'function'
+            && curSrc.getVideoTracks().some((t) => t.readyState === 'live');
+          if (!hasLiveVideo) {
+            // Find any available stream with live video tracks
+            const ls = getLocalStream();
+            const cached = sessionStore?.cachedMicrophoneStream;
+            const source = [ls, state._outgoingPreview, cached].find(
+              (s) => s && typeof s.getVideoTracks === 'function' && s.getVideoTracks().some((t) => t.readyState === 'live')
+            ) || null;
+            log({
+              outgoingPreview: 'searching',
+              hasLocalStream: !!ls,
+              lsVideoLive: ls ? ls.getVideoTracks().some((t) => t.readyState === 'live') : false,
+              hasPreview: !!state._outgoingPreview,
+              hasCached: !!cached,
+              cachedVideoLive: cached && typeof cached.getVideoTracks === 'function' ? cached.getVideoTracks().some((t) => t.readyState === 'live') : false,
+              foundSource: !!source
+            });
+            if (source) {
+              ui.remoteVideo.srcObject = source;
               ui.remoteVideo.muted = true;
               ui.remoteVideo.play().then(() => {
                 log({ outgoingPreviewPlay: 'success' });
               }).catch((e) => {
                 log({ outgoingPreviewPlay: 'failed', error: e?.message || String(e) });
               });
+              if (!state._outgoingPreview) {
+                state._outgoingPreview = source;
+                startPreviewFaceBlur(source);
+              }
+            } else if (!state._outgoingPreviewLoading) {
+              requestOutgoingCameraPreview();
             }
-          } else if (!state._outgoingPreviewLoading) {
-            requestOutgoingCameraPreview();
           }
         }
         // Semi-transparent overlay so avatar/text is readable over camera feed
