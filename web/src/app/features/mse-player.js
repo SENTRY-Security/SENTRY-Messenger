@@ -43,6 +43,34 @@ export function detectCodecFromInitSegment(data, trackType) {
   if (codecStr) {
     const mimeCodec = `video/mp4; codecs="${codecStr}"`;
     if (MSCtor.isTypeSupported(mimeCodec)) return mimeCodec;
+
+    // [FIX] If the extracted codec was HEVC but the generic "hvc1" wasn't
+    // supported by isTypeSupported (Chrome needs specific profile/level like
+    // "hvc1.1.6.L123.b0"), try common HEVC profile strings BEFORE falling
+    // through to H.264 candidates.  Returning H.264 for HEVC data causes
+    // the SourceBuffer append to fail and MediaSource to enter "ended" state.
+    const isHevc = /^hvc1|^hev1/i.test(codecStr);
+    if (isHevc) {
+      const hasAudio = codecStr.includes('mp4a');
+      const audioSuffix = hasAudio ? ',mp4a.40.2' : '';
+      const hevcProfiles = [
+        `hvc1.1.6.L93.b0${audioSuffix}`,   // Main L3.1
+        `hvc1.1.6.L120.b0${audioSuffix}`,  // Main L4.0
+        `hvc1.1.6.L123.b0${audioSuffix}`,  // Main L4.1
+        `hvc1.1.6.L150.b0${audioSuffix}`,  // Main L5.0
+        `hvc1.1.6.L153.b0${audioSuffix}`,  // Main L5.1
+        `hvc1.2.4.L120.b0${audioSuffix}`,  // Main 10 L4.0
+        `hvc1.2.4.L150.b0${audioSuffix}`,  // Main 10 L5.0
+      ];
+      for (const profile of hevcProfiles) {
+        const mime = `video/mp4; codecs="${profile}"`;
+        if (MSCtor.isTypeSupported(mime)) return mime;
+      }
+      // HEVC detected but not supported by MSE — return null so caller
+      // can try manifest codec or blob fallback.  Do NOT fall through
+      // to H.264 candidates which would cause an append error.
+      return null;
+    }
   }
 
   // Fallback: try common codec strings based on track type.

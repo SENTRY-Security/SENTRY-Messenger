@@ -219,10 +219,15 @@ export class MediaHandlingController extends BaseController {
 
             const tryInitMse = async (initData, primaryMimeCodec) => {
                 const codecs = [];
+                // [FIX] Prioritize manifest codec — it's the most authoritative
+                // source with the exact profile/level string from the original
+                // file. This avoids costly retry cycles where the wrong codec
+                // (e.g. H.264) is tried first for HEVC data, causing
+                // readyState=ended → destroy/recreate player → download aborts.
+                if (primaryMimeCodec) codecs.push(primaryMimeCodec);
                 const detected = detectCodecFromInitSegment(initData, 'muxed');
-                if (detected) codecs.push(detected);
-                if (primaryMimeCodec && !codecs.includes(primaryMimeCodec)) {
-                    codecs.push(primaryMimeCodec);
+                if (detected && !codecs.includes(detected)) {
+                    codecs.push(detected);
                 }
                 // Standard fallback codecs — try broader profile/level combos
                 const fallbackCodecs = [
@@ -250,6 +255,16 @@ export class MediaHandlingController extends BaseController {
                             msePlayer = createPlayer();
                             viewer.setMsePlayer(msePlayer);
                             await msePlayer.open();
+                            // Re-register canplay listener (original {once:true} is lost)
+                            video.addEventListener('canplay', () => {
+                                if (!firstMediaAppended) {
+                                    firstMediaAppended = true;
+                                    viewer.hideBuffering();
+                                    if (video.paused) video.play().catch(() => {});
+                                }
+                            }, { once: true });
+                            // Re-establish playback intent for user-gesture context
+                            video.play().catch(() => {});
                         }
                         msePlayer.addSourceBuffer('muxed', codec);
                         await msePlayer.appendChunk('muxed', initData);
