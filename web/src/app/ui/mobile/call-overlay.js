@@ -224,7 +224,8 @@ function ensureStyles() {
     .call-overlay .call-blur-mode-btn {
       position: absolute;
       top: 12px;
-      left: 12px;
+      left: 50%;
+      transform: translateX(-50%);
       background: rgba(15, 23, 42, 0.7);
       color: #f8fafc;
       border: 1px solid rgba(255,255,255,0.18);
@@ -242,7 +243,7 @@ function ensureStyles() {
       white-space: nowrap;
     }
     .call-overlay .call-blur-mode-btn:active {
-      transform: scale(0.95);
+      transform: translateX(-50%) scale(0.95);
     }
     .call-overlay .call-blur-mode-btn i {
       font-size: 16px;
