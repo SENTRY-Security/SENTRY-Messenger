@@ -24,7 +24,9 @@ import {
   resolveCallPeerProfile,
   setFaceBlurEnabled,
   isFaceBlurEnabled,
-  isFaceBlurActive
+  isFaceBlurActive,
+  createFaceBlurPipeline,
+  isFaceBlurSupported
 } from '../../features/calls/index.js';
 import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
@@ -728,7 +730,8 @@ export function initCallOverlay({ showToast }) {
     },
     lastProfileLogKey: null,
     _outgoingPreview: null,
-    _outgoingPreviewLoading: false
+    _outgoingPreviewLoading: false,
+    _outgoingBlurPipeline: null
   };
   const audio = createCallAudioManager();
 
@@ -810,6 +813,7 @@ export function initCallOverlay({ showToast }) {
       state.minimized = false;
       resetVideoSwap();
       resetPipPosition();
+      destroyPreviewBlurPipeline();
       ui.root?.classList.remove('video-minimized');
       if (ui.miniVideo) ui.miniVideo.srcObject = null;
       if (ui.miniLocalVideo) ui.miniLocalVideo.srcObject = null;
@@ -1083,6 +1087,38 @@ export function initCallOverlay({ showToast }) {
     state.lastStatus = status;
   }
 
+  // Apply face blur to a raw camera stream for preview display.
+  // Returns a new MediaStream with the blurred video track (+ original audio).
+  // Falls back to the original stream if face blur is not supported or fails.
+  function applyPreviewFaceBlur(rawStream) {
+    if (!isFaceBlurSupported() || !isFaceBlurEnabled()) return rawStream;
+    const videoTrack = rawStream.getVideoTracks()[0];
+    if (!videoTrack) return rawStream;
+    try {
+      const pipeline = createFaceBlurPipeline(videoTrack);
+      if (!pipeline || !pipeline.track) return rawStream;
+      // Destroy any previous preview pipeline
+      if (state._outgoingBlurPipeline) {
+        try { state._outgoingBlurPipeline.destroy(); } catch {}
+      }
+      state._outgoingBlurPipeline = pipeline;
+      // Build a new stream: blurred video + original audio tracks
+      const blurredStream = new MediaStream([pipeline.track, ...rawStream.getAudioTracks()]);
+      log({ outgoingCameraPreview: 'face blur applied' });
+      return blurredStream;
+    } catch (err) {
+      log({ outgoingCameraPreview: 'face blur failed, using raw', error: err?.message || String(err) });
+      return rawStream;
+    }
+  }
+
+  function destroyPreviewBlurPipeline() {
+    if (state._outgoingBlurPipeline) {
+      try { state._outgoingBlurPipeline.destroy(); } catch {}
+      state._outgoingBlurPipeline = null;
+    }
+  }
+
   // Obtain camera preview for outgoing video calls.
   // First checks sessionStore for a stream already cached by the composer
   // (which called getUserMedia before placing the call). Only falls back to
@@ -1093,24 +1129,25 @@ export function initCallOverlay({ showToast }) {
     state._outgoingPreviewLoading = true;
     log({ outgoingCameraPreview: 'requesting' });
     try {
+      let rawStream = null;
       // Prefer the stream already cached by the composer controller.
       const cached = sessionStore?.cachedMicrophoneStream;
       if (cached && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
         log({ outgoingCameraPreview: 'reusing cached stream', videoTracks: cached.getVideoTracks().length });
-        state._outgoingPreview = cached;
-        render();
-        return;
+        rawStream = cached;
+      } else {
+        // No usable cached stream — acquire a fresh one.
+        rawStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
+        });
+        const vTracks = rawStream.getVideoTracks();
+        log({ outgoingCameraPreview: 'acquired fresh', videoTracks: vTracks.length, audioTracks: rawStream.getAudioTracks().length });
+        if (!vTracks.length) { log({ outgoingCameraPreview: 'no video tracks' }); return; }
+        try { sessionStore.cachedMicrophoneStream = rawStream; } catch {}
       }
-      // No usable cached stream — acquire a fresh one.
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
-      });
-      const vTracks = stream.getVideoTracks();
-      log({ outgoingCameraPreview: 'acquired fresh', videoTracks: vTracks.length, audioTracks: stream.getAudioTracks().length });
-      if (!vTracks.length) { log({ outgoingCameraPreview: 'no video tracks' }); return; }
-      state._outgoingPreview = stream;
-      try { sessionStore.cachedMicrophoneStream = stream; } catch {}
+      // Apply face blur to the preview stream
+      state._outgoingPreview = applyPreviewFaceBlur(rawStream);
       render();
     } catch (err) {
       log({ outgoingCameraPreview: 'failed', error: err?.message || String(err) });
@@ -1198,12 +1235,13 @@ export function initCallOverlay({ showToast }) {
           // Try multiple sources: WebRTC local stream → our preview → composer cached stream
           const ls = getLocalStream();
           const cached = sessionStore?.cachedMicrophoneStream;
-          const preview = ls
-            || state._outgoingPreview
-            || (cached && cached.getVideoTracks().some((t) => t.readyState === 'live') ? cached : null);
-          log({ outgoingPreviewRender: true, hasLocalStream: !!ls, hasPreview: !!state._outgoingPreview, hasCached: !!cached, videoTracks: preview?.getVideoTracks()?.length ?? 0 });
+          let preview = ls || state._outgoingPreview;
+          // If no preview yet but cached stream available, apply face blur and use it
+          if (!preview && cached && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
+            preview = applyPreviewFaceBlur(cached);
+            state._outgoingPreview = preview;
+          }
           if (preview && preview.getVideoTracks().some((t) => t.readyState === 'live')) {
-            if (!state._outgoingPreview) state._outgoingPreview = preview;
             if (ui.remoteVideo.srcObject !== preview) {
               ui.remoteVideo.srcObject = preview;
               ui.remoteVideo.muted = true;
@@ -1225,6 +1263,7 @@ export function initCallOverlay({ showToast }) {
         // Reset outgoing preview state
         if (state._outgoingPreview) state._outgoingPreview = null;
         state._outgoingPreviewLoading = false;
+        destroyPreviewBlurPipeline();
         if (ui.remoteVideo) ui.remoteVideo.style.transform = '';
         if (ui.videoWaiting) {
           ui.videoWaiting.style.background = '';
