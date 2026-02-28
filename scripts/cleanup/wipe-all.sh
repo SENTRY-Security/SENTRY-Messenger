@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 SQL_FILE="$ROOT/scripts/cleanup/d1-wipe-all.sql"
-WRANGLER_BIN="${WRANGLER_BIN:-wrangler}"
 DB_NAME="${DB_NAME:-message_db}"
 WRANGLER_CONFIG="${WRANGLER_CONFIG:-$ROOT/data-worker/wrangler.toml}"
 REMOTE_FLAG="${REMOTE_FLAG:---remote}"
 SKIP_R2_WIPE="${SKIP_R2_WIPE:-false}"
+
+# Disable Wrangler telemetry and interactive prompts
+export WRANGLER_SEND_METRICS=false
+export WRANGLER_SKIP_UPDATE_CHECK=1
+export CI=true
 
 if [ ! -f "$SQL_FILE" ]; then
   echo "SQL file not found: $SQL_FILE" >&2
@@ -16,8 +20,8 @@ fi
 
 cd "$ROOT"
 
-echo "Executing wipe for DB=$DB_NAME using $WRANGLER_BIN with config $WRANGLER_CONFIG"
-"$WRANGLER_BIN" d1 execute "$DB_NAME" $REMOTE_FLAG --yes --config "$WRANGLER_CONFIG" --file "$SQL_FILE"
+echo "Executing wipe for DB=$DB_NAME using npx wrangler@4 with config $WRANGLER_CONFIG"
+npx "wrangler@4" d1 execute "$DB_NAME" $REMOTE_FLAG --yes --config "$WRANGLER_CONFIG" --file "$SQL_FILE"
 
 if [ "$SKIP_R2_WIPE" = "true" ]; then
   echo "Skipping R2 wipe (SKIP_R2_WIPE=true)"

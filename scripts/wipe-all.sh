@@ -2,15 +2,21 @@
 set -euo pipefail
 
 # 1. Setup paths and environment
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 SQL_FILE="$ROOT/scripts/cleanup/d1-wipe-all.sql"
-WRANGLER_BIN="npx wrangler"
 DB_NAME="message_db"
 WRANGLER_CONFIG="$ROOT/data-worker/wrangler.toml"
 
-# Load .env for R2 credentials
+# Disable Wrangler telemetry and interactive prompts
+export WRANGLER_SEND_METRICS=false
+export WRANGLER_SKIP_UPDATE_CHECK=1
+export CI=true
+
+# Load .env for Cloudflare + R2 credentials
 if [ -f "$ROOT/.env" ]; then
-  export $(grep '^S3_' "$ROOT/.env" | xargs)
+  set -a
+  source "$ROOT/.env"
+  set +a
 fi
 
 echo "🚀 Starting Full Environment Wipe (D1 + R2)..."
@@ -22,7 +28,7 @@ if [ ! -f "$SQL_FILE" ]; then
   exit 1
 fi
 
-$WRANGLER_BIN d1 execute "$DB_NAME" --remote --yes --config "$WRANGLER_CONFIG" --file "$SQL_FILE"
+npx "wrangler@4" d1 execute "$DB_NAME" --remote --yes --config "$WRANGLER_CONFIG" --file "$SQL_FILE"
 
 # 3. R2 Wipe
 if [ -z "${S3_ENDPOINT:-}" ] || [ -z "${S3_BUCKET:-}" ] || [ -z "${S3_ACCESS_KEY:-}" ] || [ -z "${S3_SECRET_KEY:-}" ]; then
