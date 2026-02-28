@@ -730,9 +730,9 @@ export function initCallOverlay({ showToast }) {
       moved: false
     },
     lastProfileLogKey: null,
-    _outgoingPreview: null,
-    _outgoingPreviewLoading: false,
-    _outgoingBlurPipeline: null
+    _waitingPreview: null,
+    _waitingPreviewLoading: false,
+    _waitingBlurPipeline: null
   };
   const audio = createCallAudioManager();
 
@@ -814,7 +814,7 @@ export function initCallOverlay({ showToast }) {
       state.minimized = false;
       resetVideoSwap();
       resetPipPosition();
-      destroyPreviewBlurPipeline();
+      destroyWaitingBlurPipeline();
       ui.root?.classList.remove('video-minimized');
       if (ui.miniVideo) ui.miniVideo.srcObject = null;
       if (ui.miniLocalVideo) ui.miniLocalVideo.srcObject = null;
@@ -1089,63 +1089,62 @@ export function initCallOverlay({ showToast }) {
     state.lastStatus = status;
   }
 
-  function destroyPreviewBlurPipeline() {
-    if (state._outgoingBlurPipeline) {
-      try { state._outgoingBlurPipeline.destroy(); } catch {}
-      state._outgoingBlurPipeline = null;
+  function destroyWaitingBlurPipeline() {
+    if (state._waitingBlurPipeline) {
+      try { state._waitingBlurPipeline.destroy(); } catch {}
+      state._waitingBlurPipeline = null;
     }
   }
 
-  // Start a face blur pipeline for the preview in the background.
+  // Start a face blur pipeline for the waiting-screen preview in the background.
   // Once the pipeline's canvas starts producing frames, swap the video
   // element's srcObject to the blurred stream so the transition is seamless.
-  function startPreviewFaceBlur(rawStream) {
+  // Used for both outgoing and incoming video calls.
+  function startWaitingFaceBlur(rawStream) {
     if (!isFaceBlurSupported() || !isFaceBlurEnabled()) return;
     const videoTrack = rawStream.getVideoTracks()[0];
     if (!videoTrack) return;
     try {
-      destroyPreviewBlurPipeline();
+      destroyWaitingBlurPipeline();
       const pipeline = createFaceBlurPipeline(videoTrack);
       if (!pipeline || !pipeline.track) return;
-      state._outgoingBlurPipeline = pipeline;
+      state._waitingBlurPipeline = pipeline;
       const blurredStream = new MediaStream([pipeline.track, ...rawStream.getAudioTracks()]);
       // Wait a short period for the pipeline's hidden video to load and
       // start drawing canvas frames, then swap to the blurred stream.
       const swapDelay = 300;
       setTimeout(() => {
-        if (!state._outgoingBlurPipeline || state._outgoingBlurPipeline !== pipeline) return;
-        if (!state._outgoingPreview) return; // already cleaned up
-        state._outgoingPreview = blurredStream;
+        if (!state._waitingBlurPipeline || state._waitingBlurPipeline !== pipeline) return;
+        if (!state._waitingPreview) return; // already cleaned up
+        state._waitingPreview = blurredStream;
         if (ui.remoteVideo && ui.remoteVideo.srcObject !== blurredStream) {
           ui.remoteVideo.srcObject = blurredStream;
           ui.remoteVideo.muted = true;
           ui.remoteVideo.play().catch(() => {});
-          log({ outgoingCameraPreview: 'switched to face blur stream' });
+          log({ waitingPreview: 'switched to face blur stream' });
         }
       }, swapDelay);
-      log({ outgoingCameraPreview: 'face blur pipeline started, will swap in ' + swapDelay + 'ms' });
+      log({ waitingPreview: 'face blur pipeline started, will swap in ' + swapDelay + 'ms' });
     } catch (err) {
-      log({ outgoingCameraPreview: 'face blur setup failed', error: err?.message || String(err) });
+      log({ waitingPreview: 'face blur setup failed', error: err?.message || String(err) });
     }
   }
 
-  // Obtain camera preview for outgoing video calls.
-  // First checks sessionStore for a stream already cached by the composer
-  // (which called getUserMedia before placing the call). Only falls back to
-  // a fresh getUserMedia when nothing is cached, avoiding double-acquisition
-  // that can fail or kill the first stream on mobile.
-  async function requestOutgoingCameraPreview() {
-    if (state._outgoingPreviewLoading || state._outgoingPreview) return;
-    state._outgoingPreviewLoading = true;
-    log({ outgoingCameraPreview: 'requesting' });
+  // Obtain camera preview for the waiting screen (outgoing or incoming video calls).
+  // First checks sessionStore for a stream already cached by the composer.
+  // Falls back to a fresh getUserMedia when nothing is cached.
+  async function requestWaitingCameraPreview() {
+    if (state._waitingPreviewLoading || state._waitingPreview) return;
+    state._waitingPreviewLoading = true;
+    log({ waitingPreview: 'requesting' });
     try {
       // Prefer the stream already cached by the composer controller.
       const cached = sessionStore?.cachedMicrophoneStream;
       if (cached && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
-        log({ outgoingCameraPreview: 'reusing cached stream', videoTracks: cached.getVideoTracks().length });
-        state._outgoingPreview = cached;
+        log({ waitingPreview: 'reusing cached stream', videoTracks: cached.getVideoTracks().length });
+        state._waitingPreview = cached;
         // Start face blur pipeline in background; raw stream shows immediately
-        startPreviewFaceBlur(cached);
+        startWaitingFaceBlur(cached);
         render();
         return;
       }
@@ -1155,17 +1154,17 @@ export function initCallOverlay({ showToast }) {
         video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
       });
       const vTracks = stream.getVideoTracks();
-      log({ outgoingCameraPreview: 'acquired fresh', videoTracks: vTracks.length, audioTracks: stream.getAudioTracks().length });
-      if (!vTracks.length) { log({ outgoingCameraPreview: 'no video tracks' }); return; }
-      state._outgoingPreview = stream;
+      log({ waitingPreview: 'acquired fresh', videoTracks: vTracks.length, audioTracks: stream.getAudioTracks().length });
+      if (!vTracks.length) { log({ waitingPreview: 'no video tracks' }); return; }
+      state._waitingPreview = stream;
       try { sessionStore.cachedMicrophoneStream = stream; } catch {}
       // Start face blur pipeline in background; raw stream shows immediately
-      startPreviewFaceBlur(stream);
+      startWaitingFaceBlur(stream);
       render();
     } catch (err) {
-      log({ outgoingCameraPreview: 'failed', error: err?.message || String(err) });
+      log({ waitingPreview: 'failed', error: err?.message || String(err) });
     } finally {
-      state._outgoingPreviewLoading = false;
+      state._waitingPreviewLoading = false;
     }
   }
 
@@ -1223,12 +1222,13 @@ export function initCallOverlay({ showToast }) {
     // Video elements
     if (isVideo) {
       const hasRemoteVideo = inCall || connecting;
-      // Also show remoteVideo during outgoing for local camera preview
-      if (ui.remoteVideo) ui.remoteVideo.style.display = (hasRemoteVideo || outgoing) ? 'block' : 'none';
+      const showWaiting = incoming || outgoing;
+      // Show remoteVideo during waiting (outgoing/incoming) for local camera preview,
+      // and during active call for remote video
+      if (ui.remoteVideo) ui.remoteVideo.style.display = (hasRemoteVideo || showWaiting) ? 'block' : 'none';
       if (ui.localPip) ui.localPip.style.display = (inCall || connecting) ? 'block' : 'none';
 
-      // Waiting screen (before connected)
-      const showWaiting = incoming || outgoing;
+      // Waiting screen overlay (before connected)
       if (ui.videoWaiting) {
         ui.videoWaiting.style.display = showWaiting ? 'flex' : 'none';
         if (showWaiting) {
@@ -1241,8 +1241,9 @@ export function initCallOverlay({ showToast }) {
         }
       }
 
-      // Outgoing video: show local camera preview as background
-      if (outgoing) {
+      // Waiting screen (outgoing or incoming): show local camera preview
+      // with face blur as background so the user can confirm the blur is active.
+      if (showWaiting) {
         if (ui.remoteVideo) {
           ui.remoteVideo.style.transform = 'scaleX(-1)';
           // Check if the current srcObject still has live video tracks.
@@ -1255,14 +1256,15 @@ export function initCallOverlay({ showToast }) {
             // Find any available stream with live video tracks
             const ls = getLocalStream();
             const cached = sessionStore?.cachedMicrophoneStream;
-            const source = [ls, state._outgoingPreview, cached].find(
+            const source = [ls, state._waitingPreview, cached].find(
               (s) => s && typeof s.getVideoTracks === 'function' && s.getVideoTracks().some((t) => t.readyState === 'live')
             ) || null;
             log({
-              outgoingPreview: 'searching',
+              waitingPreview: 'searching',
+              direction: outgoing ? 'outgoing' : 'incoming',
               hasLocalStream: !!ls,
               lsVideoLive: ls ? ls.getVideoTracks().some((t) => t.readyState === 'live') : false,
-              hasPreview: !!state._outgoingPreview,
+              hasPreview: !!state._waitingPreview,
               hasCached: !!cached,
               cachedVideoLive: cached && typeof cached.getVideoTracks === 'function' ? cached.getVideoTracks().some((t) => t.readyState === 'live') : false,
               foundSource: !!source
@@ -1271,16 +1273,16 @@ export function initCallOverlay({ showToast }) {
               ui.remoteVideo.srcObject = source;
               ui.remoteVideo.muted = true;
               ui.remoteVideo.play().then(() => {
-                log({ outgoingPreviewPlay: 'success' });
+                log({ waitingPreviewPlay: 'success' });
               }).catch((e) => {
-                log({ outgoingPreviewPlay: 'failed', error: e?.message || String(e) });
+                log({ waitingPreviewPlay: 'failed', error: e?.message || String(e) });
               });
-              if (!state._outgoingPreview) {
-                state._outgoingPreview = source;
-                startPreviewFaceBlur(source);
+              if (!state._waitingPreview) {
+                state._waitingPreview = source;
+                startWaitingFaceBlur(source);
               }
-            } else if (!state._outgoingPreviewLoading) {
-              requestOutgoingCameraPreview();
+            } else if (!state._waitingPreviewLoading) {
+              requestWaitingCameraPreview();
             }
           }
         }
@@ -1289,10 +1291,10 @@ export function initCallOverlay({ showToast }) {
           ui.videoWaiting.style.background = 'rgba(0,0,0,0.4)';
         }
       } else {
-        // Reset outgoing preview state
-        if (state._outgoingPreview) state._outgoingPreview = null;
-        state._outgoingPreviewLoading = false;
-        destroyPreviewBlurPipeline();
+        // Reset waiting preview state (call connected or ended)
+        if (state._waitingPreview) state._waitingPreview = null;
+        state._waitingPreviewLoading = false;
+        destroyWaitingBlurPipeline();
         if (ui.remoteVideo) ui.remoteVideo.style.transform = '';
         if (ui.videoWaiting) {
           ui.videoWaiting.style.background = '';
