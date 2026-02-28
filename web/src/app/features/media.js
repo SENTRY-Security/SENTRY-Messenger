@@ -357,8 +357,14 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
       onProgress({ loaded: evt.loaded, total: evt.total, percent: Math.round((evt.loaded / evt.total) * 100) });
     };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve(null);
-      else reject(new Error('PUT failed (status ' + xhr.status + ')'));
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // [FIX] Fire explicit 100% — browsers may not fire onprogress
+        // with loaded===total before onload, leaving progress at 99%.
+        onProgress?.({ loaded: 1, total: 1, percent: 100 });
+        resolve(null);
+      } else {
+        reject(new Error('PUT failed (status ' + xhr.status + ')'));
+      }
     };
     xhr.onerror = () => reject(new Error('PUT network error'));
     xhr.send(new Blob([ct.cipherBuf], { type: ctForPut }));

@@ -123,7 +123,11 @@ export class MessageSendingController extends BaseController {
             message.media.progress = 0;
             message.status = 'failed';
         } else {
-            message.media.uploading = true;
+            // [FIX] When progress reaches 100%, the file upload is done —
+            // Phase 3 (DR encrypt + server send) is pure crypto/network,
+            // not "uploading".  Clear the uploading flag so the overlay
+            // disappears immediately instead of staying stuck at 100%.
+            message.media.uploading = percent < 100;
             message.media.progress = percent;
             message.media.error = null;
         }
