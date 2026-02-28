@@ -13,6 +13,8 @@
 //   phase='load'   → WebCodecs capability check (instant, no WASM to load)
 //   phase='encode' → streaming transcode progress (0-100%)
 
+import { mergeInitSegments } from './mp4-remuxer.js';
+
 const MP4BOX_CDN_URL = 'https://esm.sh/mp4box@0.5.3';
 
 let _mp4boxModule = null;
@@ -630,7 +632,36 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
     mp4boxFile.setSegmentOptions(audioTrackId, null, { nbSamples: 100 });
   }
 
-  // Add video samples
+  // [FIX] Initialize segmentation and start() BEFORE adding samples.
+  // mp4box.js only triggers onSegment during addSample() when
+  // sampleProcessingStarted is true (set by start()). Previously, all
+  // samples were added before start(), so onSegment never fired and
+  // only ~0-3 seconds of video was produced.
+
+  // Collect init segments
+  const initSegs = mp4boxFile.initializeSegmentation();
+  const initParts = initSegs.map(s => new Uint8Array(s.buffer));
+
+  // [FIX] Use mergeInitSegments for multi-track (video+audio) init segments.
+  // Simple concatenation (concatU8) produces invalid fMP4 with two ftyp+moov
+  // blocks. mergeInitSegments properly combines traks into one moov.
+  const combinedInit = initParts.length === 1
+    ? initParts[0]
+    : mergeInitSegments(initParts);
+
+  segments.push({ trackIndex: 0, data: combinedInit });
+
+  // Set up segment collection callback BEFORE start()
+  const mediaSegs = [];
+  mp4boxFile.onSegment = (id, _user, buffer) => {
+    mediaSegs.push(new Uint8Array(buffer));
+  };
+
+  // Start segmentation — enables onSegment callbacks during addSample()
+  mp4boxFile.start();
+
+  // Add video samples — each addSample() may trigger onSegment
+  // when nbSamples have been accumulated
   for (const frame of encodedVideo) {
     const tsInTimescale = Math.round((frame.timestamp / 1_000_000) * 90000);
     const durInTimescale = Math.round((frame.duration / 1_000_000) * 90000);
@@ -657,26 +688,12 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
     }
   }
 
-  // Collect init segments
-  const initSegs = mp4boxFile.initializeSegmentation();
-  const initParts = initSegs.map(s => new Uint8Array(s.buffer));
+  // [FIX] Flush remaining samples to produce the last partial segment.
+  // Without flush(), the final samples (up to nbSamples-1 ≈ 3.3s at 30fps)
+  // are silently dropped.
+  try { mp4boxFile.flush(); } catch { /* flush may not exist in all mp4box builds */ }
 
-  // Merge init segments into one
-  const combinedInit = initParts.length === 1
-    ? initParts[0]
-    : concatU8(initParts);
-
-  segments.push({ trackIndex: 0, data: combinedInit });
-
-  // Collect media segments
-  const mediaSegs = [];
-  mp4boxFile.onSegment = (id, _user, buffer) => {
-    mediaSegs.push(new Uint8Array(buffer));
-  };
-
-  mp4boxFile.start();
-
-  // Media segments are produced synchronously by start()
+  // Collect all media segments produced by addSample() + flush()
   for (const seg of mediaSegs) {
     segments.push({ trackIndex: 0, data: seg });
   }
