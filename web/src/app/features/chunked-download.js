@@ -1,6 +1,6 @@
 // /app/features/chunked-download.js
 // Chunked encrypted download: fetch manifest, then download + decrypt chunks
-// sequentially or with small lookahead for streaming playback.
+// with concurrent downloads and URL prefetching for streaming playback.
 
 import { signGetChunked as apiSignGetChunked } from '../api/media.js';
 import { getMkRaw } from '../core/store.js';
@@ -161,46 +161,83 @@ export async function getChunkUrls({ baseKey, chunkIndices, abortSignal }) {
 }
 
 /**
- * Async generator that streams decrypted chunks sequentially.
- * Yields { index, data: Uint8Array, progress: number } for each chunk.
+ * Async generator that streams decrypted chunks with concurrent downloads.
+ * Yields { index, data: Uint8Array, progress: number } for each chunk **in order**.
  *
- * @param {{ baseKey: string, manifest: object, manifestEnvelope: object, abortSignal?: AbortSignal, onProgress?: Function }} params
+ * Optimizations over sequential download:
+ * 1. Concurrent downloads (default 3) — multiple chunks in-flight simultaneously
+ * 2. Larger URL signing batches (20) — fewer API round-trips
+ * 3. URL prefetching — next batch's signed URLs are requested while current batch downloads
+ *
+ * @param {{ baseKey: string, manifest: object, manifestEnvelope: object, abortSignal?: AbortSignal, onProgress?: Function, concurrency?: number }} params
  */
-export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abortSignal, onProgress }) {
+export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abortSignal, onProgress, concurrency = 3 }) {
   const cryptoKey = resolveKey(manifestEnvelope);
   const totalChunks = manifest.totalChunks;
 
-  // Request signed URLs in batches to avoid URL expiry issues
-  const BATCH_SIZE = 10;
+  // Larger batches to reduce API round-trips (signed URLs are valid for minutes)
+  const URL_BATCH_SIZE = 20;
+  const CONCURRENCY = Math.max(1, Math.min(concurrency, 6));
 
-  for (let batchStart = 0; batchStart < totalChunks; batchStart += BATCH_SIZE) {
+  let prefetchPromise = null;
+
+  for (let batchStart = 0; batchStart < totalChunks; batchStart += URL_BATCH_SIZE) {
     if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
 
-    const batchEnd = Math.min(batchStart + BATCH_SIZE, totalChunks);
+    const batchEnd = Math.min(batchStart + URL_BATCH_SIZE, totalChunks);
     const indices = [];
     for (let i = batchStart; i < batchEnd; i++) indices.push(i);
 
-    const urlMap = await getChunkUrls({ baseKey, chunkIndices: indices, abortSignal });
+    // Use prefetched URLs from previous iteration, or fetch now
+    const urlMap = prefetchPromise
+      ? await prefetchPromise
+      : await getChunkUrls({ baseKey, chunkIndices: indices, abortSignal });
+    prefetchPromise = null;
 
-    for (const idx of indices) {
+    // Prefetch next batch's signed URLs while we download the current batch
+    const nextBatchStart = batchEnd;
+    if (nextBatchStart < totalChunks) {
+      const nextEnd = Math.min(nextBatchStart + URL_BATCH_SIZE, totalChunks);
+      const nextIndices = [];
+      for (let i = nextBatchStart; i < nextEnd; i++) nextIndices.push(i);
+      prefetchPromise = getChunkUrls({ baseKey, chunkIndices: nextIndices, abortSignal });
+    }
+
+    // --- Concurrent downloads with ordered yield ---
+    // Sliding window: up to CONCURRENCY downloads in-flight, yield in index order.
+    const downloads = new Map(); // index → Promise<Uint8Array>
+    let head = 0; // next position in `indices` to yield
+    let tail = 0; // next position in `indices` to start downloading
+
+    const launchNext = () => {
+      while (tail < indices.length && tail - head < CONCURRENCY) {
+        const idx = indices[tail++];
+        const url = urlMap.get(idx);
+        const chunkMeta = manifest.chunks[idx];
+        if (!url) { downloads.set(idx, Promise.reject(new Error(`No signed URL for chunk ${idx}`))); continue; }
+        if (!chunkMeta) { downloads.set(idx, Promise.reject(new Error(`No metadata for chunk ${idx}`))); continue; }
+        downloads.set(idx, withRetry(
+          () => downloadAndDecryptChunk({ chunkUrl: url, encryptionKey: cryptoKey, chunkMeta, abortSignal }),
+          { label: `chunk ${idx}/${totalChunks}`, abortSignal }
+        ));
+      }
+    };
+
+    launchNext();
+
+    while (head < indices.length) {
       if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
 
-      const url = urlMap.get(idx);
-      if (!url) throw new Error(`No signed URL for chunk ${idx}`);
-
-      const chunkMeta = manifest.chunks[idx];
-      if (!chunkMeta) throw new Error(`No metadata for chunk ${idx}`);
-
-      // Retry individual chunk downloads to survive transient network failures
-      const decrypted = await withRetry(
-        () => downloadAndDecryptChunk({ chunkUrl: url, encryptionKey: cryptoKey, chunkMeta, abortSignal }),
-        { label: `chunk ${idx}/${totalChunks}`, abortSignal }
-      );
+      const idx = indices[head];
+      const data = await downloads.get(idx);
+      downloads.delete(idx);
+      head++;
+      launchNext(); // refill window
 
       const progress = (idx + 1) / totalChunks;
       onProgress?.({ chunkIndex: idx, totalChunks, progress, percent: Math.round(progress * 100) });
 
-      yield { index: idx, data: decrypted, progress };
+      yield { index: idx, data, progress };
     }
   }
 }
