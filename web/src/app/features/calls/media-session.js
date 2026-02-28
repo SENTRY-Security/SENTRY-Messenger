@@ -509,6 +509,10 @@ export async function switchCamera() {
   }
 }
 
+export function getCameraFacing() {
+  return cameraFacing;
+}
+
 function ensureRemoteAudioElement() {
   if (typeof document === 'undefined') return null;
   remoteAudioEl = document.getElementById('callRemoteAudio');

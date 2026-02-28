@@ -22,6 +22,7 @@ import {
   getRemoteStream,
   toggleLocalVideo,
   switchCamera,
+  getCameraFacing,
   resolveCallPeerProfile,
   setFaceBlurMode,
   getFaceBlurMode,
@@ -921,6 +922,11 @@ export function initCallOverlay({ showToast }) {
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
 
+  /** Return the CSS transform for local self-view: mirror front camera, no mirror for rear */
+  function localMirrorTransform() {
+    return getCameraFacing() === 'environment' ? '' : 'scaleX(-1)';
+  }
+
   const BLUR_MODE_CYCLE = [BLUR_MODE.FACE, BLUR_MODE.BACKGROUND, BLUR_MODE.OFF];
   const BLUR_MODE_UI = {
     [BLUR_MODE.FACE]:       { icon: 'bx-face',  label: '人臉馬賽克' },
@@ -1081,7 +1087,7 @@ export function initCallOverlay({ showToast }) {
         ui.localPipVideo.muted = true;
       }
       ui.remoteVideo.style.transform = '';
-      ui.localPipVideo.style.transform = 'scaleX(-1)';
+      ui.localPipVideo.style.transform = localMirrorTransform();
       state._cachedRemoteStream = null;
     } else {
       // Swapped: main = local blurred (mirrored), PIP = remote
@@ -1094,7 +1100,7 @@ export function initCallOverlay({ showToast }) {
         ui.localPipVideo.srcObject = remoteStream;
         ui.localPipVideo.muted = true;
       }
-      ui.remoteVideo.style.transform = 'scaleX(-1)';
+      ui.remoteVideo.style.transform = localMirrorTransform();
       ui.localPipVideo.style.transform = '';
     }
     ui.remoteVideo.play().catch(() => {});
@@ -1106,7 +1112,7 @@ export function initCallOverlay({ showToast }) {
     state.videoSwapped = false;
     state._cachedRemoteStream = null;
     if (ui.remoteVideo) ui.remoteVideo.style.transform = '';
-    if (ui.localPipVideo) ui.localPipVideo.style.transform = 'scaleX(-1)';
+    if (ui.localPipVideo) ui.localPipVideo.style.transform = localMirrorTransform();
   }
 
   function syncControlStates(session) {
@@ -1309,7 +1315,7 @@ export function initCallOverlay({ showToast }) {
       // with face blur as background so the user can confirm the blur is active.
       if (showWaiting) {
         if (ui.remoteVideo) {
-          ui.remoteVideo.style.transform = 'scaleX(-1)';
+          ui.remoteVideo.style.transform = localMirrorTransform();
           // Check if the current srcObject still has live video tracks.
           // Tracks can die when attachLocalMedia() clones them.
           const curSrc = ui.remoteVideo.srcObject;
@@ -1605,6 +1611,14 @@ export function initCallOverlay({ showToast }) {
 
   async function handleFlipCamera() {
     await switchCamera();
+    // Update mirror transform — front camera is mirrored, rear is not
+    const mirror = localMirrorTransform();
+    if (ui.localPipVideo && !state.videoSwapped) {
+      ui.localPipVideo.style.transform = mirror;
+    }
+    if (ui.remoteVideo && state.videoSwapped) {
+      ui.remoteVideo.style.transform = mirror;
+    }
   }
 
   function handleBlurModeCycle() {

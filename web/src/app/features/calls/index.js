@@ -62,6 +62,7 @@ export {
   setLocalVideoElement,
   toggleLocalVideo,
   switchCamera,
+  getCameraFacing,
   setFaceBlurMode,
   getFaceBlurMode,
   setFaceBlurEnabled,
