@@ -358,6 +358,22 @@ export function getLocalStream() {
   return localStream;
 }
 
+/**
+ * Return the local stream suitable for self-preview display.
+ * When the face blur pipeline is active and enabled, this returns a stream
+ * containing the blurred video track (+ original audio), so the user sees
+ * exactly what the remote peer receives.  Falls back to the raw localStream.
+ */
+export function getLocalDisplayStream() {
+  if (faceBlurPipeline && faceBlurEnabled && localStream) {
+    const blurTrack = faceBlurPipeline.track;
+    if (blurTrack && blurTrack.readyState === 'live') {
+      return new MediaStream([blurTrack, ...localStream.getAudioTracks()]);
+    }
+  }
+  return localStream;
+}
+
 export function getRemoteStream() {
   return remoteStream;
 }

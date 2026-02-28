@@ -18,6 +18,7 @@ import {
   setRemoteVideoElement,
   setLocalVideoElement,
   getLocalStream,
+  getLocalDisplayStream,
   getRemoteStream,
   toggleLocalVideo,
   switchCamera,
@@ -785,9 +786,9 @@ export function initCallOverlay({ showToast }) {
       ui.miniVideo.play().catch(() => {});
     }
     if (isVideo && ui.miniLocalVideo) {
-      const ls = getLocalStream();
-      if (ls && ls.getVideoTracks().length) {
-        ui.miniLocalVideo.srcObject = ls;
+      const localDisplay = getLocalDisplayStream();
+      if (localDisplay && localDisplay.getVideoTracks().length) {
+        ui.miniLocalVideo.srcObject = localDisplay;
         ui.miniLocalVideo.play().catch(() => {});
       }
     }
@@ -1008,25 +1009,26 @@ export function initCallOverlay({ showToast }) {
 
   function applyVideoSwap() {
     if (!ui.remoteVideo || !ui.localPipVideo) return;
-    const ls = getLocalStream();
+    // Use display stream (face-blurred when active) for self-preview
+    const localDisplay = getLocalDisplayStream();
     const remoteStream = state._cachedRemoteStream || ui.remoteVideo.srcObject;
     if (!state.videoSwapped) {
-      // Normal: main = remote, PIP = local
+      // Normal: main = remote, PIP = local (blurred)
       if (remoteStream) {
         ui.remoteVideo.srcObject = remoteStream;
       }
-      if (ls) {
-        ui.localPipVideo.srcObject = ls;
+      if (localDisplay) {
+        ui.localPipVideo.srcObject = localDisplay;
         ui.localPipVideo.muted = true;
       }
       ui.remoteVideo.style.transform = '';
       ui.localPipVideo.style.transform = 'scaleX(-1)';
       state._cachedRemoteStream = null;
     } else {
-      // Swapped: main = local (mirrored), PIP = remote
+      // Swapped: main = local blurred (mirrored), PIP = remote
       state._cachedRemoteStream = remoteStream;
-      if (ls) {
-        ui.remoteVideo.srcObject = ls;
+      if (localDisplay) {
+        ui.remoteVideo.srcObject = localDisplay;
         ui.remoteVideo.muted = true;
       }
       if (remoteStream) {
@@ -1321,14 +1323,22 @@ export function initCallOverlay({ showToast }) {
         }
       }
 
-      // Re-attach localPip srcObject if we have a local stream with video tracks
-      // Skip re-attachment when video is swapped (user controls srcObject assignment)
+      // Re-attach localPip srcObject if we have a local stream with video tracks.
+      // Use getLocalDisplayStream() so the PIP shows the face-blurred output
+      // (matching what the remote peer receives) when face blur is active.
+      // Skip re-attachment when video is swapped (user controls srcObject assignment).
       if (ui.localPipVideo && (inCall || connecting) && !state.videoSwapped) {
-        const ls = getLocalStream();
-        if (ls && ls.getVideoTracks().length && ui.localPipVideo.srcObject !== ls) {
-          ui.localPipVideo.srcObject = ls;
-          ui.localPipVideo.muted = true;
-          ui.localPipVideo.play().catch(() => {});
+        const displayStream = getLocalDisplayStream();
+        if (displayStream && displayStream.getVideoTracks().length) {
+          // Always re-assign because getLocalDisplayStream() creates a new
+          // MediaStream wrapper each call; compare by video track identity.
+          const curTrackId = ui.localPipVideo.srcObject?.getVideoTracks?.()?.[0]?.id;
+          const newTrackId = displayStream.getVideoTracks()[0]?.id;
+          if (curTrackId !== newTrackId) {
+            ui.localPipVideo.srcObject = displayStream;
+            ui.localPipVideo.muted = true;
+            ui.localPipVideo.play().catch(() => {});
+          }
         }
       }
 
