@@ -20,7 +20,7 @@ import {
   supportsInsertableStreams
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
-import { createFaceBlurPipeline, isFaceBlurSupported } from './face-blur.js';
+import { createFaceBlurPipeline, isFaceBlurSupported, BLUR_MODE } from './face-blur.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccountDigest } from '../../core/store.js';
 import { getCallAudioConstraints } from '../../ui/mobile/browser-detection.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
@@ -47,7 +47,7 @@ let localVideoEl = null;
 let cameraFacing = 'user';
 let pendingRemoteCandidates = [];
 let faceBlurPipeline = null;
-let faceBlurEnabled = true;
+let faceBlurMode = BLUR_MODE.FACE;
 let e2eeReceiverConfirmed = false;
 let peerConnectionEncodedStreams = false;
 let remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
@@ -366,7 +366,7 @@ export function getLocalStream() {
  * exactly what the remote peer receives.  Falls back to the raw localStream.
  */
 export function getLocalDisplayStream() {
-  if (faceBlurPipeline && faceBlurEnabled && localStream) {
+  if (faceBlurPipeline && faceBlurMode !== BLUR_MODE.OFF && localStream) {
     const blurTrack = faceBlurPipeline.track;
     if (blurTrack && blurTrack.readyState === 'live') {
       return new MediaStream([blurTrack, ...localStream.getAudioTracks()]);
@@ -421,9 +421,10 @@ export async function toggleLocalVideo(enabled) {
       // Update or create face blur pipeline
       if (faceBlurPipeline) {
         faceBlurPipeline.updateSource(newTrack);
-      } else if (isFaceBlurSupported() && faceBlurEnabled) {
+      } else if (isFaceBlurSupported()) {
         try {
           faceBlurPipeline = createFaceBlurPipeline(newTrack);
+          if (faceBlurPipeline) faceBlurPipeline.setMode(faceBlurMode);
         } catch (err) {
           log({ faceBlurPipelineError: err?.message || err });
           faceBlurPipeline = null;
@@ -840,11 +841,12 @@ async function attachLocalMedia() {
     }
     // Set up face blur pipeline for video tracks before adding to peer connection
     const videoTrack = localStream.getVideoTracks()[0];
-    if (videoTrack && isFaceBlurSupported() && faceBlurEnabled) {
+    if (videoTrack && isFaceBlurSupported()) {
       try {
         faceBlurPipeline = createFaceBlurPipeline(videoTrack);
         if (faceBlurPipeline) {
-          log({ faceBlurPipelineCreated: true });
+          faceBlurPipeline.setMode(faceBlurMode);
+          log({ faceBlurPipelineCreated: true, mode: faceBlurMode });
         } else {
           log({ faceBlur: 'pipeline returned null (captureStream unavailable)' });
         }
@@ -1609,15 +1611,24 @@ function applyRemoteAudioMuteState() {
   });
 }
 
-export function setFaceBlurEnabled(val) {
-  faceBlurEnabled = !!val;
+export function setFaceBlurMode(mode) {
+  faceBlurMode = (mode === BLUR_MODE.BACKGROUND || mode === BLUR_MODE.OFF) ? mode : BLUR_MODE.FACE;
   if (faceBlurPipeline) {
-    faceBlurPipeline.setEnabled(faceBlurEnabled);
+    faceBlurPipeline.setMode(faceBlurMode);
   }
 }
 
+export function getFaceBlurMode() {
+  return faceBlurMode;
+}
+
+/** @deprecated Use setFaceBlurMode() instead */
+export function setFaceBlurEnabled(val) {
+  setFaceBlurMode(val ? BLUR_MODE.FACE : BLUR_MODE.OFF);
+}
+
 export function isFaceBlurEnabled() {
-  return faceBlurEnabled;
+  return faceBlurMode !== BLUR_MODE.OFF;
 }
 
 export function isFaceBlurActive() {
@@ -1631,7 +1642,7 @@ function resetControlStates() {
   localAudioMuted = false;
   remoteAudioMuted = false;
   localVideoMuted = false;
-  faceBlurEnabled = true;
+  faceBlurMode = BLUR_MODE.FACE;
   cameraFacing = 'user';
   if (hadLocalMute) {
     applyLocalAudioMuteState();

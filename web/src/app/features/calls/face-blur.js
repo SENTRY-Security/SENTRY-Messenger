@@ -20,6 +20,9 @@
 
 import { log } from '../../core/log.js';
 
+/** Blur mode constants */
+export const BLUR_MODE = { FACE: 'face', BACKGROUND: 'background', OFF: 'off' };
+
 const TARGET_FPS = 30;
 const DETECT_INTERVAL_MS = 200;
 const PIXEL_BLOCK = 14;
@@ -300,11 +303,11 @@ function pixelateRegion(ctx, x, y, w, h, blockSize) {
  * Create a face blur processing pipeline.
  *
  * @param {MediaStreamTrack} sourceTrack - The camera video track to process.
- * @returns {{ track, setEnabled, isEnabled, updateSource, destroy } | null}
+ * @returns {{ track, setMode, getMode, setEnabled, isEnabled, updateSource, destroy } | null}
  *          null when the browser lacks captureStream support.
  */
 export function createFaceBlurPipeline(sourceTrack) {
-  let enabled = true;
+  let mode = BLUR_MODE.FACE;   // 'face' | 'background' | 'off'
   let destroyed = false;
   let currentSource = sourceTrack;
   let lastDetectTime = 0;
@@ -389,7 +392,7 @@ export function createFaceBlurPipeline(sourceTrack) {
     ctx.drawImage(srcVideo, 0, 0, canvas.width, canvas.height);
     lastDrawTime = performance.now();
 
-    if (!enabled) return;
+    if (mode === BLUR_MODE.OFF) return;
 
     const now = performance.now();
     if (now - lastDetectTime > DETECT_INTERVAL_MS) {
@@ -405,20 +408,45 @@ export function createFaceBlurPipeline(sourceTrack) {
       }
     }
 
-    if (cachedFaces.length > 0) {
+    if (mode === BLUR_MODE.FACE) {
+      // Pixelate detected face regions
+      if (cachedFaces.length > 0) {
+        for (const face of cachedFaces) {
+          const box = face.boundingBox;
+          if (!box) continue;
+          const padX = box.width * 0.2;
+          const padY = box.height * 0.2;
+          pixelateRegion(
+            ctx,
+            box.x - padX,
+            box.y - padY,
+            box.width  + padX * 2,
+            box.height + padY * 2,
+            PIXEL_BLOCK
+          );
+        }
+      }
+    } else if (mode === BLUR_MODE.BACKGROUND) {
+      // Save face regions, pixelate entire frame, then restore faces
+      const savedRegions = [];
       for (const face of cachedFaces) {
         const box = face.boundingBox;
         if (!box) continue;
-        const padX = box.width * 0.2;
-        const padY = box.height * 0.2;
-        pixelateRegion(
-          ctx,
-          box.x - padX,
-          box.y - padY,
-          box.width  + padX * 2,
-          box.height + padY * 2,
-          PIXEL_BLOCK
-        );
+        const padX = box.width * 0.25;
+        const padY = box.height * 0.25;
+        const rx = Math.max(0, Math.floor(box.x - padX));
+        const ry = Math.max(0, Math.floor(box.y - padY));
+        const rw = Math.min(canvas.width - rx, Math.ceil(box.width + padX * 2));
+        const rh = Math.min(canvas.height - ry, Math.ceil(box.height + padY * 2));
+        if (rw > 0 && rh > 0) {
+          try {
+            savedRegions.push({ data: ctx.getImageData(rx, ry, rw, rh), x: rx, y: ry });
+          } catch {}
+        }
+      }
+      pixelateRegion(ctx, 0, 0, canvas.width, canvas.height, PIXEL_BLOCK);
+      for (const region of savedRegions) {
+        try { ctx.putImageData(region.data, region.x, region.y); } catch {}
       }
     }
   }
@@ -444,12 +472,20 @@ export function createFaceBlurPipeline(sourceTrack) {
   return {
     track: outputTrack,
 
-    setEnabled(val) {
-      enabled = !!val;
-      if (!enabled) cachedFaces = [];
+    setMode(m) {
+      mode = (m === BLUR_MODE.BACKGROUND || m === BLUR_MODE.OFF) ? m : BLUR_MODE.FACE;
+      if (mode === BLUR_MODE.OFF) cachedFaces = [];
     },
 
-    isEnabled() { return enabled; },
+    getMode() { return mode; },
+
+    /** @deprecated Use setMode() instead */
+    setEnabled(val) {
+      mode = val ? BLUR_MODE.FACE : BLUR_MODE.OFF;
+      if (mode === BLUR_MODE.OFF) cachedFaces = [];
+    },
+
+    isEnabled() { return mode !== BLUR_MODE.OFF; },
 
     updateSource(newTrack) {
       if (destroyed) return;

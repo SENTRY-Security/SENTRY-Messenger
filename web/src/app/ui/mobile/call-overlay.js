@@ -23,11 +23,11 @@ import {
   toggleLocalVideo,
   switchCamera,
   resolveCallPeerProfile,
-  setFaceBlurEnabled,
-  isFaceBlurEnabled,
-  isFaceBlurActive,
+  setFaceBlurMode,
+  getFaceBlurMode,
   createFaceBlurPipeline,
-  isFaceBlurSupported
+  isFaceBlurSupported,
+  BLUR_MODE
 } from '../../features/calls/index.js';
 import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
@@ -219,6 +219,46 @@ function ensureStyles() {
     .call-overlay .call-btn.toggle.active {
       background: #0ea5e9;
       box-shadow: 0 0 18px rgba(14,165,233,0.45);
+    }
+    .call-overlay .call-blur-mode-btn {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      background: rgba(15, 23, 42, 0.7);
+      color: #f8fafc;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      z-index: 10;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      transition: background 150ms ease, border-color 150ms ease;
+      white-space: nowrap;
+    }
+    .call-overlay .call-blur-mode-btn:active {
+      transform: scale(0.95);
+    }
+    .call-overlay .call-blur-mode-btn i {
+      font-size: 16px;
+      margin: 0;
+    }
+    .call-overlay .call-blur-mode-btn[data-blur-mode="face"] {
+      border-color: rgba(14,165,233,0.5);
+      background: rgba(14,165,233,0.25);
+    }
+    .call-overlay .call-blur-mode-btn[data-blur-mode="background"] {
+      border-color: rgba(168,85,247,0.5);
+      background: rgba(168,85,247,0.25);
+    }
+    .call-overlay .call-blur-mode-btn[data-blur-mode="off"] {
+      border-color: rgba(255,255,255,0.12);
+      background: rgba(15,23,42,0.55);
+      color: rgba(248,250,252,0.6);
     }
     .call-overlay .call-controls .call-btn {
       min-width: 48px;
@@ -500,7 +540,7 @@ function ensureOverlayElements() {
       hangupBtn: root.querySelector('[data-call-action="hangup"]'),
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
-      faceBlurBtn: root.querySelector('[data-call-action="face-blur"]'),
+      blurModeBtn: root.querySelector('[data-call-action="blur-mode"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
@@ -558,10 +598,10 @@ function ensureOverlayElements() {
         <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
           <i class='bx bx-refresh'></i><span>翻轉</span>
         </button>
-        <button type="button" class="call-btn toggle active" data-call-action="face-blur" aria-pressed="true" style="display:none">
-          <i class='bx bx-face'></i><span>模糊</span>
-        </button>
       </div>
+      <button type="button" class="call-blur-mode-btn" data-call-action="blur-mode" data-blur-mode="face">
+        <i class='bx bx-face'></i><span>人臉馬賽克</span>
+      </button>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
       <video class="call-remote-video" autoplay playsinline muted style="display:none"></video>
       <div class="call-video-waiting" style="display:none">
@@ -604,7 +644,7 @@ function ensureOverlayElements() {
       hangupBtn: root.querySelector('[data-call-action="hangup"]'),
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
-      faceBlurBtn: root.querySelector('[data-call-action="face-blur"]'),
+      blurModeBtn: root.querySelector('[data-call-action="blur-mode"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
@@ -881,6 +921,24 @@ export function initCallOverlay({ showToast }) {
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
 
+  const BLUR_MODE_CYCLE = [BLUR_MODE.FACE, BLUR_MODE.BACKGROUND, BLUR_MODE.OFF];
+  const BLUR_MODE_UI = {
+    [BLUR_MODE.FACE]:       { icon: 'bx-face',  label: '人臉馬賽克' },
+    [BLUR_MODE.BACKGROUND]: { icon: 'bx-image',  label: '背景馬賽克' },
+    [BLUR_MODE.OFF]:        { icon: 'bx-show',   label: '關閉' }
+  };
+
+  function syncBlurModeBtn() {
+    if (!ui.blurModeBtn) return;
+    const mode = getFaceBlurMode();
+    const info = BLUR_MODE_UI[mode] || BLUR_MODE_UI[BLUR_MODE.FACE];
+    ui.blurModeBtn.setAttribute('data-blur-mode', mode);
+    const icon = ui.blurModeBtn.querySelector('i');
+    const span = ui.blurModeBtn.querySelector('span');
+    if (icon) icon.className = 'bx ' + info.icon;
+    if (span) span.textContent = info.label;
+  }
+
   function handleWindowResize() {
     if (!state.minimized) return;
     applyBubblePosition();
@@ -1057,7 +1115,7 @@ export function initCallOverlay({ showToast }) {
     setToggleState(ui.muteBtn, !!localMuted);
     const videoEnabled = controls.videoEnabled ?? !isLocalVideoMuted();
     setToggleState(ui.cameraBtn, !!videoEnabled);
-    setToggleState(ui.faceBlurBtn, isFaceBlurEnabled());
+    syncBlurModeBtn();
   }
 
   function updateBubbleDetails(profile) {
@@ -1102,13 +1160,14 @@ export function initCallOverlay({ showToast }) {
   // element's srcObject to the blurred stream so the transition is seamless.
   // Used for both outgoing and incoming video calls.
   function startWaitingFaceBlur(rawStream) {
-    if (!isFaceBlurSupported() || !isFaceBlurEnabled()) return;
+    if (!isFaceBlurSupported()) return;
     const videoTrack = rawStream.getVideoTracks()[0];
     if (!videoTrack) return;
     try {
       destroyWaitingBlurPipeline();
       const pipeline = createFaceBlurPipeline(videoTrack);
       if (!pipeline || !pipeline.track) return;
+      pipeline.setMode(getFaceBlurMode());
       state._waitingBlurPipeline = pipeline;
       const blurredStream = new MediaStream([pipeline.track, ...rawStream.getAudioTracks()]);
       // Wait a short period for the pipeline's hidden video to load and
@@ -1212,13 +1271,17 @@ export function initCallOverlay({ showToast }) {
     const inCall = session.status === CALL_SESSION_STATUS.IN_CALL;
     const connecting = session.status === CALL_SESSION_STATUS.CONNECTING;
 
-    // Camera / flip / face-blur buttons visibility
+    // Camera / flip buttons visibility
     if (ui.cameraBtn) ui.cameraBtn.style.display = isVideo && showControlsRow ? 'flex' : 'none';
     if (ui.flipCameraBtn) ui.flipCameraBtn.style.display = isVideo && showControlsRow ? 'flex' : 'none';
-    if (ui.faceBlurBtn) ui.faceBlurBtn.style.display = isVideo && showControlsRow && isFaceBlurActive() ? 'flex' : 'none';
     if (ui.cameraBtn) ui.cameraBtn.disabled = togglesDisabled;
     if (ui.flipCameraBtn) ui.flipCameraBtn.disabled = togglesDisabled;
-    if (ui.faceBlurBtn) ui.faceBlurBtn.disabled = togglesDisabled;
+    // Blur mode button — visible during both waiting and in-call for video calls
+    const showBlurBtn = isVideo && isFaceBlurSupported() && (showResponseRow || showControlsRow);
+    if (ui.blurModeBtn) {
+      ui.blurModeBtn.style.display = showBlurBtn ? 'flex' : 'none';
+      syncBlurModeBtn();
+    }
 
     // Video elements
     if (isVideo) {
@@ -1359,7 +1422,7 @@ export function initCallOverlay({ showToast }) {
       if (ui.videoTopBar) ui.videoTopBar.style.display = 'none';
       if (ui.cameraBtn) ui.cameraBtn.style.display = 'none';
       if (ui.flipCameraBtn) ui.flipCameraBtn.style.display = 'none';
-      if (ui.faceBlurBtn) ui.faceBlurBtn.style.display = 'none';
+      if (ui.blurModeBtn) ui.blurModeBtn.style.display = 'none';
       // Reset accept button for voice
       if (ui.acceptBtn && incoming) {
         ui.acceptBtn.innerHTML = "<i class='bx bx-phone'></i>接聽";
@@ -1544,10 +1607,16 @@ export function initCallOverlay({ showToast }) {
     await switchCamera();
   }
 
-  function handleFaceBlurToggle() {
-    const next = !isFaceBlurEnabled();
-    setFaceBlurEnabled(next);
-    setToggleState(ui.faceBlurBtn, next);
+  function handleBlurModeCycle() {
+    const current = getFaceBlurMode();
+    const idx = BLUR_MODE_CYCLE.indexOf(current);
+    const next = BLUR_MODE_CYCLE[(idx + 1) % BLUR_MODE_CYCLE.length];
+    setFaceBlurMode(next);
+    syncBlurModeBtn();
+    // Also update waiting pipeline if it exists
+    if (state._waitingBlurPipeline) {
+      state._waitingBlurPipeline.setMode(next);
+    }
   }
 
   ui.acceptBtn?.addEventListener('click', handleAccept);
@@ -1557,7 +1626,7 @@ export function initCallOverlay({ showToast }) {
   ui.muteBtn?.addEventListener('click', handleMuteToggle);
   ui.cameraBtn?.addEventListener('click', handleCameraToggle);
   ui.flipCameraBtn?.addEventListener('click', handleFlipCamera);
-  ui.faceBlurBtn?.addEventListener('click', handleFaceBlurToggle);
+  ui.blurModeBtn?.addEventListener('click', handleBlurModeCycle);
   ui.minifyBtn?.addEventListener('click', minimizeOverlay);
   // Wire video elements to media-session
   if (ui.remoteVideo) setRemoteVideoElement(ui.remoteVideo);
@@ -1625,7 +1694,7 @@ export function initCallOverlay({ showToast }) {
     ui.muteBtn?.removeEventListener('click', handleMuteToggle);
     ui.cameraBtn?.removeEventListener('click', handleCameraToggle);
     ui.flipCameraBtn?.removeEventListener('click', handleFlipCamera);
-    ui.faceBlurBtn?.removeEventListener('click', handleFaceBlurToggle);
+    ui.blurModeBtn?.removeEventListener('click', handleBlurModeCycle);
     ui.minifyBtn?.removeEventListener('click', minimizeOverlay);
     setRemoteVideoElement(null);
     setLocalVideoElement(null);
