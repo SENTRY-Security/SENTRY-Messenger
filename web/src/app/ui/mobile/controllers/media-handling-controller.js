@@ -195,6 +195,11 @@ export class MediaHandlingController extends BaseController {
             viewer.setMsePlayer(msePlayer);
             await msePlayer.open();
 
+            // Start playback early while the user-gesture context from the
+            // click that opened the viewer may still be valid.  The browser
+            // will wait for data and begin playing once enough is buffered.
+            video.play().catch(() => {});
+
             let mseInitialized = false;
             let firstMediaAppended = false;
             let consecutiveErrors = 0;
@@ -207,6 +212,8 @@ export class MediaHandlingController extends BaseController {
                 if (!firstMediaAppended) {
                     firstMediaAppended = true;
                     viewer.hideBuffering();
+                    // Ensure playback starts — autoplay may have been blocked
+                    if (video.paused) video.play().catch(() => {});
                 }
             }, { once: true });
 

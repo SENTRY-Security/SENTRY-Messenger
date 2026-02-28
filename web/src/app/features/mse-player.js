@@ -287,11 +287,20 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
   }
 
   const processQueue = () => {
-    if (destroyed || appending || paused || !sourceBuffer || !queue.length) return;
-    if (sourceBuffer.updating) return;
+    if (destroyed || !queue.length) return;
 
+    // If MediaSource is no longer accepting data, drain all pending
+    // items so callers' promises settle instead of hanging forever.
     const ms = getMediaSource?.();
-    if (ms && ms.readyState !== 'open') return;
+    if (ms && ms.readyState !== 'open') {
+      const drainErr = new Error(`MediaSource readyState is "${ms.readyState}", cannot append`);
+      const pending = queue.splice(0);
+      for (const entry of pending) entry.reject(drainErr);
+      return;
+    }
+
+    if (appending || paused || !sourceBuffer) return;
+    if (sourceBuffer.updating) return;
 
     // Proactive eviction: if too much played buffer has accumulated,
     // evict before appending the next chunk to keep memory under control.
@@ -406,7 +415,14 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
     pause() { paused = true; },
     resume() { paused = false; processQueue(); },
     get pending() { return queue.length + (appending ? 1 : 0); },
-    destroy() { destroyed = true; queue = []; }
+    destroy() {
+      destroyed = true;
+      const pending = queue;
+      queue = [];
+      for (const entry of pending) {
+        try { entry.reject(new Error('queue destroyed')); } catch {}
+      }
+    }
   };
 }
 
