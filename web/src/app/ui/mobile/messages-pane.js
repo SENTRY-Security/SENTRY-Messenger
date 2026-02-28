@@ -1154,9 +1154,11 @@ export function initMessagesPane({
           const state = getMessageState();
           const lastMsg = state.messages && state.messages.length > 0 ? state.messages[state.messages.length - 1] : null;
           // Compute deletion timestamp (seconds) from the last message
-          const lastMsgTs = lastMsg
+          let lastMsgTs = lastMsg
             ? (Number(lastMsg.ts) || Math.floor(Number(lastMsg.tsMs || 0) / 1000) || 0)
             : 0;
+          // [FIX] Normalize to seconds — lastMsg.ts may be in milliseconds
+          if (lastMsgTs > 100000000000) lastMsgTs = Math.floor(lastMsgTs / 1000);
           const clearTimestamp = lastMsgTs > 0 ? lastMsgTs : Math.floor(Date.now() / 1000);
 
           // 1. Set Deletion Cursor (Server filters future fetches)

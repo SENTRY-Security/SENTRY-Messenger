@@ -1179,6 +1179,20 @@ async function ensureDataTables(env) {
         console.warn('ensureDataTables: min_ts column add failed (may already exist)', alterErr?.message);
       }
     }
+    // [FIX] Repair any deletion_cursors rows where min_ts was stored in
+    // milliseconds instead of seconds.  A ms value (>1e11) makes the SQL
+    // filter `created_at_sec > min_ts_ms` always false, permanently hiding
+    // all messages.  This is a one-time idempotent repair.
+    try {
+      const repaired = await env.DB.prepare(`
+        UPDATE deletion_cursors SET min_ts = min_ts / 1000.0 WHERE min_ts > 100000000000
+      `).run();
+      if (repaired?.changes > 0) {
+        console.log('ensureDataTables: repaired', repaired.changes, 'deletion_cursors rows (ms→s)');
+      }
+    } catch (repairErr) {
+      console.warn('ensureDataTables: deletion_cursors ms repair failed', repairErr?.message);
+    }
     // Auto-add pairing_code + prekey_bundle_json columns to invite_dropbox
     try {
       await env.DB.prepare(`SELECT pairing_code FROM invite_dropbox LIMIT 0`).all();
@@ -3028,7 +3042,7 @@ async function handleMessagesRoutes(req, env) {
            ${cursorClause}
            AND (
              (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END)
-               > COALESCE((SELECT min_ts FROM deletion_cursors WHERE conversation_id=?1 AND account_digest=?${params.length + 1}), 0)
+               > COALESCE((SELECT CASE WHEN min_ts > 100000000000 THEN min_ts / 1000.0 ELSE min_ts END FROM deletion_cursors WHERE conversation_id=?1 AND account_digest=?${params.length + 1}), 0)
            )
          ORDER BY 
            (CASE WHEN created_at > 100000000000 THEN created_at / 1000.0 ELSE created_at END) DESC,
@@ -3188,13 +3202,29 @@ async function handleMessagesRoutes(req, env) {
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
     const targetDigest = normalizeAccountDigest(body?.targetDigest || body?.targetAccountDigest || body?.accountDigest);
     const minTsRaw = Number(body?.minTs || body?.min_ts || 0);
-    const minTs = Number.isFinite(minTsRaw) && minTsRaw > 0 ? minTsRaw : 0;
+    // [FIX] Normalize to seconds — clients may accidentally send Date.now() (ms).
+    // The message listing SQL normalizes created_at to seconds, so min_ts must
+    // also be in seconds.  A ms value (>1e11) would permanently block all messages.
+    const minTsNorm = Number.isFinite(minTsRaw) && minTsRaw > 0
+      ? (minTsRaw > 100000000000 ? Math.floor(minTsRaw / 1000) : minTsRaw)
+      : 0;
 
-    if (!conversationId || !targetDigest || !minTs) {
+    if (!conversationId || !targetDigest || !minTsNorm) {
       return json({ error: 'BadRequest', message: 'conversationId, targetDigest, min_ts required' }, { status: 400 });
     }
 
     await ensureDataTables(env);
+
+    // [FIX] Also repair any existing corrupted cursors that were stored in ms.
+    // If the existing row has min_ts > 1e11 (clearly ms, not seconds), normalize
+    // it first so the MAX() comparison works correctly.
+    await env.DB.prepare(`
+      UPDATE deletion_cursors
+         SET min_ts = min_ts / 1000.0
+       WHERE conversation_id = ?1 AND account_digest = ?2
+         AND min_ts > 100000000000
+    `).bind(conversationId, targetDigest).run();
+
     await env.DB.prepare(`
       INSERT INTO deletion_cursors (conversation_id, account_digest, min_ts, updated_at)
       VALUES (?1, ?2, ?3, ?4)
@@ -3202,9 +3232,9 @@ async function handleMessagesRoutes(req, env) {
         min_ts = MAX(deletion_cursors.min_ts, excluded.min_ts),
         updated_at = excluded.updated_at
       WHERE excluded.min_ts > deletion_cursors.min_ts
-    `).bind(conversationId, targetDigest, minTs, Date.now()).run();
+    `).bind(conversationId, targetDigest, minTsNorm, Date.now()).run();
 
-    return json({ ok: true, min_ts: minTs });
+    return json({ ok: true, min_ts: minTsNorm });
   }
 
   // Batch delete messages/attachments by id

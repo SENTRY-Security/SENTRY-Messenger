@@ -100,8 +100,13 @@ export function clearConversationTombstone(conversationId) {
 export function clearConversationHistory(conversationId, ts = null, lockWiper = null) {
     if (!conversationId) return;
     const key = String(conversationId);
-    const nowMs = Date.now();
-    const stamp = Number.isFinite(Number(ts)) ? Number(ts) : nowMs;
+    const nowSec = Math.floor(Date.now() / 1000);
+    let stamp = Number.isFinite(Number(ts)) ? Number(ts) : nowSec;
+    // [FIX] Normalize to seconds — callers may pass Date.now() (ms) or message
+    // timestamps that are already in seconds.  The in-memory clearAfter is
+    // compared against incoming tsRaw (seconds), so storing ms here would cause
+    // ALL future messages to be silently dropped (seconds < ms → always true).
+    if (stamp > 100000000000) stamp = Math.floor(stamp / 1000);
     conversationClearAfter.set(key, stamp);
 
     // Clear related caches

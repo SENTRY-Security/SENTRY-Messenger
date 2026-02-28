@@ -458,7 +458,10 @@ export async function smartFetchMessages({
                         setDeletionCursor(conversationId, clearTimestamp).catch(err => {
                             console.warn('[hybrid-flow] setDeletionCursor for conversation-deleted failed', err?.message || err);
                         });
-                        clearConversationHistory(conversationId, Date.now());
+                        // [FIX] Use clearTimestamp (seconds) instead of Date.now() (ms)
+                        // to prevent the in-memory clearAfter filter from blocking
+                        // all future incoming messages.
+                        clearConversationHistory(conversationId, clearTimestamp);
                     }
                 }
 

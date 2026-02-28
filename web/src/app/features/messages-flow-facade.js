@@ -78,7 +78,10 @@ function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
       console.warn('[facade] setDeletionCursor for conversation-deleted failed', err?.message || err);
     });
 
-    clearConversationHistory(conversationId, Date.now());
+    // [FIX] Use clearTimestamp (seconds) — Date.now() is milliseconds, which
+    // causes the in-memory clearAfter filter to block ALL incoming messages
+    // because tsRaw (seconds) < clearAfter (ms) is always true.
+    clearConversationHistory(conversationId, clearTimestamp);
   }
 
   // Dispatch DOM event for UI cleanup (thread removal, contact hiding)
