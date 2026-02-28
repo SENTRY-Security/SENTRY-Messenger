@@ -12,9 +12,10 @@ else
   echo "⚠️  .env file not found"
 fi
 
-# Disable Wrangler telemetry to prevent hanging
+# Disable Wrangler telemetry and interactive prompts
 export WRANGLER_SEND_METRICS=false
 export WRANGLER_SKIP_UPDATE_CHECK=1
+export CI=true
 
 # Configuration
 REMOTE_HOST="Message"
@@ -31,8 +32,8 @@ echo "⚡️ Deploying Data Worker..."
 if [ -d "$WORKER_DIR" ]; then
   cd "$WORKER_DIR"
   echo "   - Applying D1 migrations (remote)..."
-  npx wrangler d1 migrations apply message_db --remote || echo "     (No pending migrations or error applying migrations)"
-  npx wrangler deploy
+  npx wrangler@4 d1 migrations apply message_db --remote || echo "     (No pending migrations or error applying migrations)"
+  npx wrangler@4 deploy
   cd ..
 else
   echo "⚠️  Worker directory not found: $WORKER_DIR"
@@ -55,7 +56,7 @@ if [ -d "$WEB_DIR" ]; then
     mkdir -p dist/functions
     cp -r functions/* dist/functions/
   fi
-  npx wrangler pages deploy ./dist --project-name message-web-hybrid --branch=main --commit-dirty=true --commit-message="Hybrid Deploy $(date)"
+  npx wrangler@4 pages deploy ./dist --project-name message-web-hybrid --branch=main --commit-dirty=true --commit-message="Hybrid Deploy $(date)"
   cd ..
 else
   echo "⚠️  Web directory not found: $WEB_DIR"
