@@ -324,12 +324,16 @@ export function createConversationThreadsManager(deps) {
                     }
 
                     let text;
+                    if (msgType === 'conversation-deleted') {
+                        text = '尚無訊息';
+                        updateThreadPreview(thread, { text, ts, messageId, direction, msgType: 'conversation-deleted' }, { force: true });
+                        thread.unreadCount = 0;
+                        thread.offlineUnreadCount = 0;
+                        return;
+                    }
+
                     if (rawText && typeof rawText === 'string' && rawText.trim()) {
-                        if (msgType === 'conversation-deleted') {
-                            text = '尚無訊息';
-                        } else {
-                            text = resolveMessagePreview({ text: rawText, msgType });
-                        }
+                        text = resolveMessagePreview({ text: rawText, msgType });
                     } else {
                         text = '訊息尚未解密🔐';
                     }

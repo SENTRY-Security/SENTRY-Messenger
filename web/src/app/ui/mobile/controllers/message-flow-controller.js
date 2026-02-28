@@ -815,8 +815,35 @@ export class MessageFlowController extends BaseController {
         let incomingCount = 0;
         let playedSound = false;
 
-        for (const item of batchEntries) {
+        // Detect if any entry is a conversation-deleted tombstone.
+        // If so, only messages AFTER the tombstone should count for preview / unread.
+        let tombstoneIdx = -1;
+        for (let i = 0; i < batchEntries.length; i++) {
+            const t = batchEntries[i].msgType || batchEntries[i].subtype;
+            if (t === 'conversation-deleted') tombstoneIdx = i;
+        }
+
+        const effectiveEntries = tombstoneIdx >= 0
+            ? batchEntries.slice(tombstoneIdx + 1)
+            : batchEntries;
+
+        if (tombstoneIdx >= 0) {
+            // Tombstone present — reset preview & unread for this conversation
+            const tomb = batchEntries[tombstoneIdx];
+            updateThreadPreview(thread, {
+                text: '',
+                ts: typeof tomb.ts === 'number' ? tomb.ts : thread.lastMessageTs,
+                messageId: tomb.messageId || tomb.id || thread.lastMessageId,
+                direction: tomb.direction || null,
+                msgType: 'conversation-deleted'
+            }, { force: true });
+            thread.unreadCount = 0;
+        }
+
+        for (const item of effectiveEntries) {
             if (!isUserTimelineMessage(item)) continue;
+            const itemType = item.msgType || item.subtype;
+            if (itemType === 'conversation-deleted') continue;
             const previewText = resolveMessagePreview(item);
             updateThreadPreview(thread, {
                 text: previewText,

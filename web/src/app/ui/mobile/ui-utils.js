@@ -239,6 +239,13 @@ export function updateThreadPreview(thread, { text, ts, messageId, direction, ms
   thread.lastMsgType = msgType || null;
   thread.previewLoaded = true;
   thread.needsRefresh = false;
+
+  // Conversation-deleted tombstone: reset unread as a safety net
+  if (msgType === 'conversation-deleted') {
+    thread.unreadCount = 0;
+    thread.offlineUnreadCount = 0;
+  }
+
   return true;
 }
 

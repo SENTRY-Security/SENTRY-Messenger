@@ -337,19 +337,41 @@ export class ConversationListController extends BaseController {
                         currentThreadVal.offlineUnreadCount = 0;
                     }
 
-                    // [FIX] Preview Logic: Iterate Newest -> Oldest (Standard behavior)
-                    // Do NOT reverse. API provides DESC. We want the first valid Match.
+                    // [FIX] Deletion-Aware Preview Logic
+                    // API provides DESC (newest first). First pass: find the newest
+                    // conversation-deleted tombstone so we only consider messages after it.
+
+                    let tombstoneIndex = -1;
+                    for (let i = 0; i < messages.length; i++) {
+                        const payload = messages[i].payload || {};
+                        let type = normalizeMsgTypeValue(payload.type);
+                        if (!type && messages[i].header) {
+                            let header = messages[i].header;
+                            if (typeof header === 'string') {
+                                try { header = JSON.parse(header); } catch { }
+                            }
+                            type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
+                        }
+                        if (type === 'conversation-deleted') {
+                            tombstoneIndex = i;
+                            break; // newest tombstone (DESC order) → everything after this index is older
+                        }
+                    }
+
+                    // Only consider messages BEFORE the tombstone in DESC order
+                    // (i.e. messages newer than the tombstone).
+                    const candidates = tombstoneIndex >= 0
+                        ? messages.slice(0, tombstoneIndex)
+                        : messages;
+                    const isDeleted = tombstoneIndex >= 0 && candidates.length === 0;
 
                     let previewMsg = null;
-                    let isDeleted = false;
                     let skippedCount = 0;
 
-                    for (const msg of messages) {
+                    for (const msg of candidates) {
                         const payload = msg.payload || {};
-                        // [FIX] Fallback for encrypted messages (payload missing)
                         let type = normalizeMsgTypeValue(payload.type);
                         if (!type && msg.header) {
-                            // Try parsing header if string
                             let header = msg.header;
                             if (typeof header === 'string') {
                                 try { header = JSON.parse(header); } catch { }
@@ -357,10 +379,8 @@ export class ConversationListController extends BaseController {
                             type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
                         }
 
-                        if (type === 'conversation-deleted') {
-                            isDeleted = true;
-                            break;
-                        }
+                        // Skip conversation-deleted (shouldn't appear but be safe)
+                        if (type === 'conversation-deleted') continue;
 
                         // Skip control / transient / internal messages
                         const isControl = type === 'sys' || type === 'system' || type === 'control' ||
@@ -377,9 +397,8 @@ export class ConversationListController extends BaseController {
                             previewMsg = msg;
                             break; // Found newest valid content
                         } else {
-                            // If type is unknown/encrypted but has ciphertext, treat as text/encrypted preview
                             if (!type && msg.ciphertext_b64) {
-                                previewMsg = msg; // Treat as encrypted content
+                                previewMsg = msg;
                                 break;
                             }
                             skippedCount++;
@@ -394,7 +413,11 @@ export class ConversationListController extends BaseController {
                     if (isDeleted) {
                         text = '尚無訊息';
                         type = 'conversation-deleted';
-                        ts = extractMessageTimestampMs(messages[0] || {});
+                        // Use the tombstone's own timestamp (not messages[0] which may not exist after slicing)
+                        ts = tombstoneIndex >= 0 ? extractMessageTimestampMs(messages[tombstoneIndex]) : extractMessageTimestampMs(messages[0] || {});
+                        // No visible messages after tombstone → unread must be 0
+                        const ct = threadsMap.get(thread.conversationId);
+                        if (ct) { ct.unreadCount = 0; ct.offlineUnreadCount = 0; }
                     } else if (previewMsg) {
                         const payload = previewMsg.payload || {};
                         const meta = previewMsg.meta || {}; // Note: Valid even if encrypted if we parse header... wait meta is from PayloadWrapper usually.
