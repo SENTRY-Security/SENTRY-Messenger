@@ -9,6 +9,7 @@ import {
     clearConversationHistory
 } from '../messages-support/conversation-clear-store.js';
 import { setDeletionCursor } from '../soft-deletion/deletion-api.js';
+import { appendUserMessage } from '../timeline-store.js';
 import {
     ensurePeerAccountDigest,
     ensureConversationIndex,
@@ -246,6 +247,24 @@ export async function handleIncomingSecureMessage(event, deps) {
         // We want to preserve the session so future messages can be decrypted.
         // Just hide the contact.
         hideContactSecret(peerDigest);
+
+        // [FIX] Append a local tombstone so the renderer shows "已清除上方對話紀錄".
+        // clearConversationHistory above wipes the timeline; without re-appending,
+        // the receiver never sees the deletion marker.
+        if (convId) {
+            const tombstoneTs = clearTimestamp || (tsRaw > 100000000000 ? Math.floor(tsRaw / 1000) : tsRaw) || Math.floor(Date.now() / 1000);
+            appendUserMessage(convId, {
+                messageId: `tombstone-deleted-${convId}`,
+                msgType: 'conversation-deleted',
+                subtype: 'conversation-deleted',
+                text: '',
+                direction: 'incoming',
+                ts: tombstoneTs,
+                tsMs: tombstoneTs * 1000,
+                conversationId: convId,
+                senderDigest: peerDigest || null
+            });
+        }
 
         const isActive = state.activePeerDigest === peerDigest || state.conversationId === convId;
 

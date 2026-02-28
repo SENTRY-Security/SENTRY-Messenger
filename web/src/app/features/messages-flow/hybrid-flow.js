@@ -8,7 +8,7 @@ import { consumeLiveJob } from './live/coordinator.js';
 import { sessionStore } from '../../ui/mobile/session-store.js';
 import { enqueueDrIncomingOp } from '../dr-session.js';
 import { normalizePeerIdentity } from '../../core/store.js';
-import { appendBatch as timelineAppendBatch, updateTimelineEntryStatusByCounter } from '../timeline-store.js';
+import { appendBatch as timelineAppendBatch, appendUserMessage, updateTimelineEntryStatusByCounter } from '../timeline-store.js';
 import { CONTROL_STATE_SUBTYPES, TRANSIENT_SIGNAL_SUBTYPES, normalizeSemanticSubtype } from '../semantic.js';
 import { resolvePlaceholderSubtype } from '../messages/parser.js';
 
@@ -462,6 +462,25 @@ export async function smartFetchMessages({
                         // to prevent the in-memory clearAfter filter from blocking
                         // all future incoming messages.
                         clearConversationHistory(conversationId, clearTimestamp);
+
+                        // [FIX] Ensure tombstone survives the timeline wipe.
+                        // clearConversationHistory clears the timeline; the decryptedItems.push
+                        // below will include this item in the return set, but for the SENDER
+                        // re-login case (own outgoing message can't be decrypted), this
+                        // item might be the only record.  Append a deterministic tombstone
+                        // so the renderer always shows the deletion separator.
+                        const tombstoneTs = clearTimestamp || Math.floor(Date.now() / 1000);
+                        appendUserMessage(conversationId, {
+                            messageId: `tombstone-deleted-${conversationId}`,
+                            msgType: 'conversation-deleted',
+                            subtype: 'conversation-deleted',
+                            text: '',
+                            direction: item.direction || 'incoming',
+                            ts: tombstoneTs,
+                            tsMs: tombstoneTs * 1000,
+                            conversationId,
+                            senderDigest: item.senderDigest || groupDigest || null
+                        });
                     }
                 }
 

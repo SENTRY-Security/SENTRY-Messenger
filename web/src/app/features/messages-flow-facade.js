@@ -21,7 +21,7 @@ import { LIVE_RETRY_MAX, LIVE_RETRY_BASE_MS } from './messages-flow/policy.js';
 import { decryptReplayBatch } from './messages-flow/vault-replay.js';
 import { normalizeReplayItems } from './messages-flow/normalize.js';
 import { handoffReplayVaultMissing } from './restore-coordinator.js';
-import { appendBatch } from './timeline-store.js';
+import { appendBatch, appendUserMessage } from './timeline-store.js';
 import { b64u8 as naclB64u8 } from '../crypto/nacl.js';
 import { MessageKeyVault } from './message-key-vault.js';
 import { buildDrAadFromHeader as cryptoBuildDrAadFromHeader } from '../crypto/dr.js';
@@ -82,6 +82,23 @@ function handleConversationDeletedFromLive(conversationId, decryptedMessage) {
     // causes the in-memory clearAfter filter to block ALL incoming messages
     // because tsRaw (seconds) < clearAfter (ms) is always true.
     clearConversationHistory(conversationId, clearTimestamp);
+
+    // [FIX] Re-append tombstone AFTER clearing history.
+    // clearConversationHistory wipes the timeline, which removes any tombstone
+    // that the coordinator just appended.  Without this, the receiver never sees
+    // the "已清除上方對話紀錄" separator.
+    const tombstoneTs = clearTimestamp || Math.floor(Date.now() / 1000);
+    appendUserMessage(conversationId, {
+      messageId: `tombstone-deleted-${conversationId}`,
+      msgType: 'conversation-deleted',
+      subtype: 'conversation-deleted',
+      text: '',
+      direction: 'incoming',
+      ts: tombstoneTs,
+      tsMs: tombstoneTs * 1000,
+      conversationId,
+      senderDigest: decryptedMessage.senderDigest || null
+    });
   }
 
   // Dispatch DOM event for UI cleanup (thread removal, contact hiding)
