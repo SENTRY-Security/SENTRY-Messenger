@@ -590,7 +590,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
       } else {
         const targetDeviceId = resolveTargetDeviceId(raw, header) || selfDeviceId || null;
         const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
-        const ts = Number(raw.ts || raw.created_at || raw.createdAt || (meta?.ts) || Date.now() / 1000);
+        const ts = toMessageTimestamp(raw) ?? Math.floor(Date.now() / 1000);
 
         let content = {};
         try {

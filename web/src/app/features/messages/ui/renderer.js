@@ -727,9 +727,11 @@ export class MessageRenderer {
                     senderName = '你';
                 }
 
-                // Timestamp
-                const ts = msg.ts || msg.tsMs / 1000 || Date.now() / 1000;
-                const timeStr = new Date(ts * 1000).toLocaleString('zh-TW', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                // Timestamp – normalise: msg.ts may be seconds or milliseconds
+                let rawTs = Number(msg.ts);
+                if (Number.isFinite(rawTs) && rawTs > 10_000_000_000) rawTs = Math.floor(rawTs / 1000);
+                const tsMs = msg.tsMs || (Number.isFinite(rawTs) && rawTs > 0 ? rawTs * 1000 : Date.now());
+                const timeStr = new Date(tsMs).toLocaleString('zh-TW', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
                 sep.textContent = `${senderName} 已於 ${timeStr} 清除上方對話紀錄`;
                 this.listEl.appendChild(sep);
