@@ -1087,35 +1087,43 @@ export function initCallOverlay({ showToast }) {
     state.lastStatus = status;
   }
 
-  // Apply face blur to a raw camera stream for preview display.
-  // Returns a new MediaStream with the blurred video track (+ original audio).
-  // Falls back to the original stream if face blur is not supported or fails.
-  function applyPreviewFaceBlur(rawStream) {
-    if (!isFaceBlurSupported() || !isFaceBlurEnabled()) return rawStream;
-    const videoTrack = rawStream.getVideoTracks()[0];
-    if (!videoTrack) return rawStream;
-    try {
-      const pipeline = createFaceBlurPipeline(videoTrack);
-      if (!pipeline || !pipeline.track) return rawStream;
-      // Destroy any previous preview pipeline
-      if (state._outgoingBlurPipeline) {
-        try { state._outgoingBlurPipeline.destroy(); } catch {}
-      }
-      state._outgoingBlurPipeline = pipeline;
-      // Build a new stream: blurred video + original audio tracks
-      const blurredStream = new MediaStream([pipeline.track, ...rawStream.getAudioTracks()]);
-      log({ outgoingCameraPreview: 'face blur applied' });
-      return blurredStream;
-    } catch (err) {
-      log({ outgoingCameraPreview: 'face blur failed, using raw', error: err?.message || String(err) });
-      return rawStream;
-    }
-  }
-
   function destroyPreviewBlurPipeline() {
     if (state._outgoingBlurPipeline) {
       try { state._outgoingBlurPipeline.destroy(); } catch {}
       state._outgoingBlurPipeline = null;
+    }
+  }
+
+  // Start a face blur pipeline for the preview in the background.
+  // Once the pipeline's canvas starts producing frames, swap the video
+  // element's srcObject to the blurred stream so the transition is seamless.
+  function startPreviewFaceBlur(rawStream) {
+    if (!isFaceBlurSupported() || !isFaceBlurEnabled()) return;
+    const videoTrack = rawStream.getVideoTracks()[0];
+    if (!videoTrack) return;
+    try {
+      destroyPreviewBlurPipeline();
+      const pipeline = createFaceBlurPipeline(videoTrack);
+      if (!pipeline || !pipeline.track) return;
+      state._outgoingBlurPipeline = pipeline;
+      const blurredStream = new MediaStream([pipeline.track, ...rawStream.getAudioTracks()]);
+      // Wait a short period for the pipeline's hidden video to load and
+      // start drawing canvas frames, then swap to the blurred stream.
+      const swapDelay = 300;
+      setTimeout(() => {
+        if (!state._outgoingBlurPipeline || state._outgoingBlurPipeline !== pipeline) return;
+        if (!state._outgoingPreview) return; // already cleaned up
+        state._outgoingPreview = blurredStream;
+        if (ui.remoteVideo && ui.remoteVideo.srcObject !== blurredStream) {
+          ui.remoteVideo.srcObject = blurredStream;
+          ui.remoteVideo.muted = true;
+          ui.remoteVideo.play().catch(() => {});
+          log({ outgoingCameraPreview: 'switched to face blur stream' });
+        }
+      }, swapDelay);
+      log({ outgoingCameraPreview: 'face blur pipeline started, will swap in ' + swapDelay + 'ms' });
+    } catch (err) {
+      log({ outgoingCameraPreview: 'face blur setup failed', error: err?.message || String(err) });
     }
   }
 
@@ -1129,25 +1137,28 @@ export function initCallOverlay({ showToast }) {
     state._outgoingPreviewLoading = true;
     log({ outgoingCameraPreview: 'requesting' });
     try {
-      let rawStream = null;
       // Prefer the stream already cached by the composer controller.
       const cached = sessionStore?.cachedMicrophoneStream;
       if (cached && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
         log({ outgoingCameraPreview: 'reusing cached stream', videoTracks: cached.getVideoTracks().length });
-        rawStream = cached;
-      } else {
-        // No usable cached stream — acquire a fresh one.
-        rawStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
-        });
-        const vTracks = rawStream.getVideoTracks();
-        log({ outgoingCameraPreview: 'acquired fresh', videoTracks: vTracks.length, audioTracks: rawStream.getAudioTracks().length });
-        if (!vTracks.length) { log({ outgoingCameraPreview: 'no video tracks' }); return; }
-        try { sessionStore.cachedMicrophoneStream = rawStream; } catch {}
+        state._outgoingPreview = cached;
+        // Start face blur pipeline in background; raw stream shows immediately
+        startPreviewFaceBlur(cached);
+        render();
+        return;
       }
-      // Apply face blur to the preview stream
-      state._outgoingPreview = applyPreviewFaceBlur(rawStream);
+      // No usable cached stream — acquire a fresh one.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
+      });
+      const vTracks = stream.getVideoTracks();
+      log({ outgoingCameraPreview: 'acquired fresh', videoTracks: vTracks.length, audioTracks: stream.getAudioTracks().length });
+      if (!vTracks.length) { log({ outgoingCameraPreview: 'no video tracks' }); return; }
+      state._outgoingPreview = stream;
+      try { sessionStore.cachedMicrophoneStream = stream; } catch {}
+      // Start face blur pipeline in background; raw stream shows immediately
+      startPreviewFaceBlur(stream);
       render();
     } catch (err) {
       log({ outgoingCameraPreview: 'failed', error: err?.message || String(err) });
@@ -1235,15 +1246,19 @@ export function initCallOverlay({ showToast }) {
           // Try multiple sources: WebRTC local stream → our preview → composer cached stream
           const ls = getLocalStream();
           const cached = sessionStore?.cachedMicrophoneStream;
-          let preview = ls || state._outgoingPreview;
-          // If no preview yet but cached stream available, apply face blur and use it
-          if (!preview && cached && cached.getVideoTracks().some((t) => t.readyState === 'live')) {
-            preview = applyPreviewFaceBlur(cached);
-            state._outgoingPreview = preview;
-          }
+          const preview = ls
+            || state._outgoingPreview
+            || (cached && cached.getVideoTracks().some((t) => t.readyState === 'live') ? cached : null);
+          log({ outgoingPreviewRender: true, hasLocalStream: !!ls, hasPreview: !!state._outgoingPreview, hasCached: !!cached, videoTracks: preview?.getVideoTracks()?.length ?? 0 });
           if (preview && preview.getVideoTracks().some((t) => t.readyState === 'live')) {
-            if (ui.remoteVideo.srcObject !== preview) {
-              ui.remoteVideo.srcObject = preview;
+            if (!state._outgoingPreview) {
+              state._outgoingPreview = preview;
+              // Start face blur pipeline in background; raw stream shows immediately
+              startPreviewFaceBlur(preview);
+            }
+            if (ui.remoteVideo.srcObject !== preview && ui.remoteVideo.srcObject !== state._outgoingPreview) {
+              const streamToShow = state._outgoingPreview || preview;
+              ui.remoteVideo.srcObject = streamToShow;
               ui.remoteVideo.muted = true;
               ui.remoteVideo.play().then(() => {
                 log({ outgoingPreviewPlay: 'success' });
