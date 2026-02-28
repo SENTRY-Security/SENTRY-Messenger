@@ -18,7 +18,10 @@ import { getMkRaw } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK } from '../crypto/aead.js';
 import { b64 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
-import { remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError } from './mp4-remuxer.js';
+import {
+  remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError,
+  isAlreadyFragmented, countMoofBoxes, iterateFragmentedSegments
+} from './mp4-remuxer.js';
 import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
@@ -125,10 +128,144 @@ function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
 }
 
 /**
+ * Streaming upload for already-fragmented fMP4 files.
+ * Reads file once, then iterates segments via generator — only a few segments
+ * in memory at any time (bounded by UPLOAD_CONCURRENCY) instead of all at once.
+ * Peak memory: ~1x file size + a few segment copies, vs ~2x for batch mode.
+ */
+async function _streamingUploadFragmented({
+  file, convId, cryptoKey, useSharedKey, sharedKeyU8,
+  name, direction, dir, mk,
+  PHASE, onProgress, abortSignal
+}) {
+  const fileBuffer = await file.arrayBuffer();
+  const fileU8 = new Uint8Array(fileBuffer);
+
+  const moofCount = countMoofBoxes(fileU8);
+  if (moofCount === 0) {
+    throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
+  }
+
+  const chunkCount = 1 + moofCount;
+  const contentType = 'video/mp4';
+
+  const dirSegments = normalizeDirSegments(dir);
+  let storageDir = '';
+  if (dirSegments.length) {
+    if (!mk) throw new Error('MK required for directory hashing');
+    storageDir = await deriveStorageDirPath(dirSegments, mk);
+  }
+
+  // Sign URLs (use file size as approximate totalSize for the API)
+  const { r: rSign, data: signData } = await apiSignPutChunked({
+    convId, totalSize: fileU8.byteLength, chunkCount, contentType, direction,
+    dir: storageDir || undefined
+  });
+  if (!rSign.ok) throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
+  const { baseKey, manifest: manifestPut, chunks: chunkPuts } = signData;
+  if (!baseKey || !manifestPut?.url || !chunkPuts?.length) {
+    throw new Error('sign-put-chunked returned incomplete data');
+  }
+  onProgress?.({ percent: PHASE.signEnd });
+
+  // Stream segments: iterate with generator, encrypt & upload with concurrency.
+  // Each segment is a copy produced by concatU8 inside the generator — after
+  // encryption + upload, the copy goes out of scope and can be GC'd.
+  let uploadedBytes = 0;
+  let actualTotalSize = 0;
+  const chunkMetas = new Array(chunkCount);
+  let uploadError = null;
+  let chunkIndex = 0;
+
+  try {
+    const pool = [];
+    for (const { trackIndex, data } of iterateFragmentedSegments(fileU8)) {
+      if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
+      if (uploadError) throw uploadError;
+
+      const idx = chunkIndex++;
+      const segSize = data.byteLength;
+      actualTotalSize += segSize;
+      const chunkPut = chunkPuts[idx];
+      if (!chunkPut?.url) throw new Error(`missing presigned URL for chunk ${idx}`);
+
+      const p = (async () => {
+        const ct = await aeadEncryptWithMK(data, cryptoKey, CHUNK_INFO_TAG);
+        await uploadChunkXhr({
+          url: chunkPut.url, method: chunkPut.method || 'PUT',
+          headers: chunkPut.headers, cipherBuf: ct.cipherBuf, abortSignal
+        });
+        chunkMetas[idx] = {
+          index: idx, size: segSize, cipher_size: ct.cipherBuf.byteLength,
+          iv_b64: b64(ct.iv), salt_b64: b64(ct.hkdfSalt), trackIndex
+        };
+        uploadedBytes += segSize;
+        const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
+        onProgress?.({
+          loaded: uploadedBytes, total: fileU8.byteLength,
+          percent: Math.round(PHASE.chunkStart + (uploadedBytes / fileU8.byteLength) * chunkRange)
+        });
+      })().catch(err => { if (!uploadError) uploadError = err; throw err; });
+
+      pool.push(p);
+      if (pool.length >= UPLOAD_CONCURRENCY) {
+        await Promise.race(pool);
+        for (let j = pool.length - 1; j >= 0; j--) {
+          const st = await Promise.race([pool[j].then(() => 'done'), Promise.resolve('pending')]);
+          if (st === 'done') pool.splice(j, 1);
+        }
+      }
+      if (uploadError) throw uploadError;
+    }
+    await Promise.all(pool);
+  } catch (err) {
+    try { await apiCleanupChunked({ baseKey }); } catch { }
+    throw err;
+  }
+  if (uploadError) {
+    try { await apiCleanupChunked({ baseKey }); } catch { }
+    throw uploadError;
+  }
+
+  // Build and upload manifest (use actual sizes from uploaded segments)
+  onProgress?.({ percent: PHASE.chunkEnd });
+  const manifest = {
+    v: 3, segment_aligned: true, chunkSize: 0,
+    totalSize: actualTotalSize, totalChunks: chunkIndex,
+    contentType, name,
+    chunks: chunkMetas.slice(0, chunkIndex),
+    tracks: [{ type: 'muxed', codec: null }]
+  };
+  const manifestJson = new TextEncoder().encode(JSON.stringify(manifest));
+  const manifestCt = await aeadEncryptWithMK(manifestJson, cryptoKey, MANIFEST_INFO_TAG);
+
+  try {
+    await uploadChunkXhr({
+      url: manifestPut.url, method: manifestPut.method || 'PUT',
+      headers: manifestPut.headers, cipherBuf: manifestCt.cipherBuf, abortSignal
+    });
+  } catch (err) {
+    try { await apiCleanupChunked({ baseKey }); } catch { }
+    throw err;
+  }
+  onProgress?.({ percent: PHASE.manifestEnd });
+
+  const manifestEnvelope = {
+    v: useSharedKey ? 2 : 1, aead: 'aes-256-gcm',
+    iv_b64: b64(manifestCt.iv), hkdf_salt_b64: b64(manifestCt.hkdfSalt),
+    info_tag: MANIFEST_INFO_TAG, key_type: useSharedKey ? 'shared' : 'mk'
+  };
+  if (useSharedKey && sharedKeyU8) manifestEnvelope.key_b64 = b64(sharedKeyU8);
+
+  return { baseKey, totalSize: actualTotalSize, chunkCount: chunkIndex, manifestEnvelope, chunked: true };
+}
+
+/**
  * Encrypt and upload a file in chunks.
  *
  * For video files (MP4/MOV/WebM):
- *   - MP4/MOV → remuxed to fMP4 → each fMP4 segment is one chunk
+ *   - Already-fragmented fMP4 → streaming upload (low memory)
+ *   - Non-fragmented MP4/MOV → remuxed to fMP4 → each fMP4 segment is one chunk
  *   - WebM → fixed 5MB byte-range chunks
  *
  * For non-video files:
@@ -212,8 +349,23 @@ export async function encryptAndPutChunked({
       }
     }
 
-    // If transcode returned null (already MSE-safe or unavailable), use remux
+    // If transcode returned null (already MSE-safe or unavailable):
+    // check for streaming fast path before falling back to full remux.
     if (!preprocessResult) {
+      const peekBuf = await file.slice(0, 64 * 1024).arrayBuffer();
+      if (isAlreadyFragmented(new Uint8Array(peekBuf))) {
+        // Already-fragmented fMP4: streaming upload (low memory).
+        // Segments are produced one at a time via generator instead of
+        // accumulating all in memory. Peak memory: ~1x file vs ~2x.
+        onProgress?.({ percent: PHASE.remuxEnd });
+        return _streamingUploadFragmented({
+          file, convId, cryptoKey, useSharedKey, sharedKeyU8,
+          name, direction, dir, mk,
+          PHASE, onProgress, abortSignal
+        });
+      }
+
+      // Not fragmented — remux to fMP4 via mp4box.js
       preprocessResult = await remuxToFragmentedMp4(file, {
         onProgress: ({ percent }) => {
           onProgress?.({ percent: Math.round(percent * PHASE.remuxEnd / 100) });

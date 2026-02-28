@@ -56,7 +56,7 @@ export function canRemuxVideo(file) {
 /**
  * Check if the file is already fragmented MP4 by scanning for 'moof' box in first 64KB.
  */
-function isAlreadyFragmented(u8) {
+export function isAlreadyFragmented(u8) {
   if (!u8 || u8.length < 8) return false;
   const m = 0x6D, o = 0x6F, f = 0x66; // 'moof'
   const limit = Math.min(u8.length - 3, 64 * 1024);
@@ -281,6 +281,109 @@ function splitFragmentedMp4(u8) {
 
   const initSegment = concatU8(initParts);
   return { initSegment, mediaSegments };
+}
+
+/**
+ * Count moof boxes in a fragmented MP4 without extracting segment data.
+ * Returns the number of media segments (each moof+mdat pair = 1 segment).
+ * Total chunk count for upload = 1 (init) + countMoofBoxes(u8).
+ *
+ * @param {Uint8Array} u8
+ * @returns {number}
+ */
+export function countMoofBoxes(u8) {
+  let count = 0;
+  let i = 0;
+  while (i < u8.length - 7) {
+    let boxSize = readU32(u8, i);
+    const boxType = String.fromCharCode(u8[i + 4], u8[i + 5], u8[i + 6], u8[i + 7]);
+    let headerSize = 8;
+    if (boxSize === 1 && i + 16 <= u8.length) {
+      boxSize = readU64(u8, i + 8);
+      headerSize = 16;
+    }
+    if (boxSize < headerSize || i + boxSize > u8.length) break;
+    if (boxType === 'moof') count++;
+    i += boxSize;
+  }
+  return count;
+}
+
+/**
+ * Generator that yields segments from a fragmented MP4 one at a time.
+ * First yield is the init segment (ftyp + moov), then each media segment
+ * (moof + mdat pair). Only one segment copy exists in memory at a time —
+ * the caller should process (encrypt + upload) each segment before resuming.
+ *
+ * The file buffer (u8) must remain valid for the lifetime of the generator.
+ *
+ * @param {Uint8Array} u8 - The fMP4 file bytes
+ * @yields {{ trackIndex: number, data: Uint8Array }}
+ */
+export function* iterateFragmentedSegments(u8) {
+  const initParts = [];
+  let i = 0;
+  let foundFirstMoof = false;
+  let currentSegParts = [];
+  let currentHasMoof = false;
+
+  while (i < u8.length - 7) {
+    let boxSize = readU32(u8, i);
+    const boxType = String.fromCharCode(u8[i + 4], u8[i + 5], u8[i + 6], u8[i + 7]);
+    let headerSize = 8;
+    if (boxSize === 1 && i + 16 <= u8.length) {
+      boxSize = readU64(u8, i + 8);
+      headerSize = 16;
+    }
+    if (boxSize < headerSize || i + boxSize > u8.length) break;
+
+    const boxData = u8.subarray(i, i + boxSize);
+
+    if (!foundFirstMoof) {
+      if (boxType === 'moof') {
+        foundFirstMoof = true;
+        // Yield init segment before first media segment
+        if (initParts.length > 0) {
+          yield { trackIndex: 0, data: concatU8(initParts) };
+          initParts.length = 0;
+        }
+        currentSegParts.push(boxData);
+        currentHasMoof = true;
+      } else {
+        initParts.push(boxData);
+      }
+    } else if (boxType === 'moof') {
+      if (currentSegParts.length > 0 && currentHasMoof) {
+        yield { trackIndex: 0, data: concatU8(currentSegParts) };
+        currentSegParts = [];
+        currentHasMoof = false;
+      }
+      currentSegParts.push(boxData);
+      currentHasMoof = true;
+    } else if (boxType === 'mdat') {
+      currentSegParts.push(boxData);
+      if (currentHasMoof) {
+        yield { trackIndex: 0, data: concatU8(currentSegParts) };
+        currentSegParts = [];
+        currentHasMoof = false;
+      }
+    } else if (SEGMENT_PREFIX_TYPES.has(boxType)) {
+      currentSegParts.push(boxData);
+    } else if (TRAILING_BOX_TYPES.has(boxType)) {
+      // discard trailing non-media boxes
+    } else {
+      if (currentHasMoof) {
+        currentSegParts.push(boxData);
+      }
+    }
+
+    i += boxSize;
+  }
+
+  // Flush last segment
+  if (currentSegParts.length > 0 && currentHasMoof) {
+    yield { trackIndex: 0, data: concatU8(currentSegParts) };
+  }
 }
 
 /**
