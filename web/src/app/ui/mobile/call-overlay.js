@@ -32,6 +32,7 @@ import {
 import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 import { createCallAudioManager } from './call-audio.js';
+import { getCallAudioConstraints } from './browser-detection.js';
 
 const STATUS_LABEL = {
   [CALL_SESSION_STATUS.OUTGOING]: '撥號中…',
@@ -1381,9 +1382,10 @@ export function initCallOverlay({ showToast }) {
     // and caches the stream for attachLocalMedia() to reuse.
     const wantVideo = session.kind === CALL_REQUEST_KIND.VIDEO;
     let mediaStream = null;
+    const audioConstraints = getCallAudioConstraints();
     try {
       const constraints = {
-        audio: true,
+        audio: audioConstraints,
         video: wantVideo
           ? { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
           : false
@@ -1393,7 +1395,7 @@ export function initCallOverlay({ showToast }) {
       // Video call: fall back to audio-only (camera denied is tolerable)
       if (wantVideo) {
         try {
-          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          mediaStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
         } catch { /* handled below */ }
       }
       if (!mediaStream) {

@@ -20,6 +20,7 @@ import { sendCallInviteSignal } from '../../../features/calls/signaling.js';
 import { startOutgoingCallMedia } from '../../../features/calls/media-session.js';
 import { prepareCallKeyEnvelope } from '../../../features/calls/key-manager.js';
 import { buildCallPeerIdentity } from '../../../features/calls/identity.js';
+import { getCallAudioConstraints } from '../browser-detection.js';
 import { getAccountDigest, normalizePeerIdentity } from '../../../core/store.js';
 
 import { sendDrText } from '../../../features/dr-session.js';
@@ -239,8 +240,9 @@ export class ComposerController extends BaseController {
         // and caches the stream so attachLocalMedia() can reuse it.
         try {
             const wantVideo = actionType === 'video';
+            const audioConstraints = getCallAudioConstraints();
             const constraints = {
-                audio: true,
+                audio: audioConstraints,
                 video: wantVideo
                     ? { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
                     : false
@@ -253,7 +255,7 @@ export class ComposerController extends BaseController {
             // Video call: fall back to audio-only (camera denied is tolerable)
             if (actionType === 'video') {
                 try {
-                    const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
                     if (this.sessionStore) {
                         this.sessionStore.cachedMicrophoneStream = audioOnly;
                     }

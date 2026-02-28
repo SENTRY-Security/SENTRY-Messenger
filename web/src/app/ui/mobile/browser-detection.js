@@ -44,6 +44,20 @@ export function getMicrophoneConstraintProfiles() {
 }
 
 /**
+ * Audio constraints for real-time calls: echo cancellation, noise
+ * suppression, and auto gain control.  Only requests features the
+ * browser reports as supported.  All values are non-mandatory so
+ * getUserMedia will not throw OverconstrainedError.
+ */
+export function getCallAudioConstraints() {
+  const c = {};
+  if (supportsMediaConstraint('echoCancellation')) c.echoCancellation = true;
+  if (supportsMediaConstraint('noiseSuppression') && !isIosWebKitLikeBrowser()) c.noiseSuppression = true;
+  if (supportsMediaConstraint('autoGainControl')) c.autoGainControl = true;
+  return Object.keys(c).length > 0 ? c : true;
+}
+
+/**
  * Detect iOS version from user agent string.
  * Returns { isIos: boolean, major: number, minor: number } or { isIos: false } if not iOS.
  */

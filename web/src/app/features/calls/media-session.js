@@ -22,6 +22,7 @@ import {
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { createFaceBlurPipeline, isFaceBlurSupported } from './face-blur.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccountDigest } from '../../core/store.js';
+import { getCallAudioConstraints } from '../../ui/mobile/browser-detection.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
 
@@ -816,14 +817,15 @@ async function attachLocalMedia() {
       const videoConstraints = wantVideo
         ? { facingMode: cameraFacing, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }
         : false;
+      const audioConstraints = getCallAudioConstraints();
       let freshStream;
       try {
-        freshStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: videoConstraints });
+        freshStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: videoConstraints });
       } catch (mediaErr) {
         if (wantVideo) {
           log({ callMediaCameraFallback: mediaErr?.message || mediaErr });
           showToast?.('無法存取攝影機，改為語音通話', { variant: 'warning' });
-          freshStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          freshStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
         } else {
           throw mediaErr;
         }
