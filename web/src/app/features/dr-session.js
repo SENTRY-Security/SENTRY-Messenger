@@ -2883,7 +2883,11 @@ export async function sendDrMedia(params = {}) {
   const remappedProgress = onProgress
     ? (p) => {
         const inner = Number.isFinite(p?.percent) ? p.percent : 0;
-        onProgress({ percent: PREVIEW_UPLOAD_END + Math.round(inner * mainProgressRange / 100) });
+        const forwarded = { percent: PREVIEW_UPLOAD_END + Math.round(inner * mainProgressRange / 100) };
+        // Forward non-percent fields (statusText, steps) so the UI can render them
+        if (p?.statusText !== undefined) forwarded.statusText = p.statusText;
+        if (p?.steps) forwarded.steps = p.steps;
+        onProgress(forwarded);
       }
     : undefined;
 
