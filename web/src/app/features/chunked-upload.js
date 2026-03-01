@@ -499,19 +499,44 @@ export async function encryptAndPutChunked({
     contentType = preprocessResult.contentType;
 
     if (preprocessResult.segments) {
-      fmp4Segments = preprocessResult.segments;
+      const rawSegments = preprocessResult.segments;
       fmp4Tracks = preprocessResult.tracks
         ? preprocessResult.tracks.map(t => ({ type: t.type, codec: t.codec }))
         : [{ type: 'muxed', codec: null }];
+
+      // [FIX] Consolidate all segment Uint8Arrays into a single disk-backed Blob
+      // to avoid holding ~582MB+ of heap memory after remux. Browsers store large
+      // Blobs on disk, so this trades heap pressure for a Blob reference.
+      // During upload, each segment is read back via blob.slice() (~5MB at a time).
+      const segMeta = [];
+      const blobParts = [];
+      let blobPos = 0;
       totalSize = 0;
-      for (const seg of fmp4Segments) totalSize += seg.data.byteLength;
+      for (const seg of rawSegments) {
+        const size = seg.data.byteLength;
+        segMeta.push({ offset: blobPos, size, trackIndex: seg.trackIndex });
+        blobParts.push(seg.data);
+        blobPos += size;
+        totalSize += size;
+        seg.data = null; // Release original Uint8Array for GC
+      }
+      const consolidatedBlob = new Blob(blobParts);
+      blobParts.length = 0; // Release array references
+
+      fmp4Segments = segMeta.map(m => ({
+        trackIndex: m.trackIndex,
+        _blob: consolidatedBlob,
+        _offset: m.offset,
+        _size: m.size,
+        data: null // Read from Blob on demand in processChunk
+      }));
     } else {
       // WebM or passthrough — use byte-range chunking on original file
       totalSize = typeof file.size === 'number' ? file.size : 0;
     }
 
-    // Release the preprocessResult reference — segments are now in fmp4Segments,
-    // tracks extracted to fmp4Tracks. This drops the remuxer's internal references
+    // Release the preprocessResult reference — segments are now consolidated into
+    // a disk-backed Blob. This drops the remuxer's internal references
     // (muxedTrack, orderedMediaSegs, etc.) so GC can reclaim the file buffer.
     preprocessResult = null;
   } else {
@@ -569,8 +594,13 @@ export async function encryptAndPutChunked({
 
     let plainBuf;
     if (fmp4Segments) {
-      // fMP4 segment-based: each segment is { trackIndex, data }
-      plainBuf = fmp4Segments[index].data;
+      // fMP4 segment-based: read from consolidated Blob on demand (low memory)
+      const seg = fmp4Segments[index];
+      if (seg._blob) {
+        plainBuf = new Uint8Array(await seg._blob.slice(seg._offset, seg._offset + seg._size).arrayBuffer());
+      } else {
+        plainBuf = seg.data;
+      }
     } else {
       // Byte-range chunking: slice from file
       const offset = index * CHUNK_SIZE;
@@ -618,9 +648,12 @@ export async function encryptAndPutChunked({
       percent: Math.round(PHASE.chunkStart + chunkRatio * chunkRange)
     });
 
-    // Allow GC of the segment data after upload
+    // Allow GC of the segment data after upload.
+    // For consolidated segments, clearing _blob per-segment is safe —
+    // the shared Blob itself stays alive until all segments are processed.
     if (fmp4Segments && fmp4Segments[index]) {
       fmp4Segments[index].data = null;
+      fmp4Segments[index]._blob = null;
       fmp4Segments[index] = null;
     }
   };
