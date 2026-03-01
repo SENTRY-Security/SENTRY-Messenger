@@ -453,6 +453,21 @@ export async function encryptAndPutChunked({
     if (detail !== undefined) _steps[idx].detail = detail;
     _emitSteps();
   };
+  /** Extract a short, UI-friendly error reason from a transcode Error. */
+  const _shortError = (err) => {
+    const msg = err?.message || String(err || '');
+    // Strip common Chinese prefixes to get the actual reason
+    const stripped = msg
+      .replace(/^視訊[編解]碼失敗[：:]\s*/i, '')
+      .replace(/^音訊[編解]碼失敗[：:]\s*/i, '')
+      .replace(/^影片解析失敗[（(]?記憶體不足[？?][）)]?[：:]\s*/i, '記憶體不足：')
+      .replace(/^影片解析失敗[：:]\s*/i, '')
+      .replace(/^此裝置不支援\s*/, '不支援 ')
+      .trim();
+    // Truncate to keep UI readable
+    const short = stripped.length > 40 ? stripped.slice(0, 38) + '…' : stripped;
+    return short || '未知錯誤';
+  };
 
   if (isVideo) {
     // Step 0: Format detection
@@ -501,7 +516,7 @@ export async function encryptAndPutChunked({
         }
       } catch (err) {
         console.warn('[chunked-upload] WebCodecs transcode failed:', err?.message);
-        _setStep(transcodeIdx, 'warn', '失敗');
+        _setStep(transcodeIdx, 'warn', _shortError(err));
 
         // Retry with extreme fallback (480p, 800Kbps) to reduce
         // OOM risk on memory-constrained devices (e.g. older iPhones).
@@ -519,7 +534,7 @@ export async function encryptAndPutChunked({
           }
         } catch (retryErr) {
           console.warn('[chunked-upload] WebCodecs retry also failed:', retryErr?.message);
-          _setStep(retryIdx, 'warn', '失敗');
+          _setStep(retryIdx, 'warn', _shortError(retryErr));
           preprocessResult = null;
           onProgress?.({ statusText: null });
         }

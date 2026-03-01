@@ -1025,6 +1025,17 @@
   margin-left: auto;
   font-size: 11px;
   opacity: 0.55;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Make error detail more visible so users can read the failure reason */
+.transfer-step[data-status="warn"] .transfer-step-detail,
+.transfer-step[data-status="error"] .transfer-step-detail {
+  opacity: 0.85;
+  color: #fbbf24;
 }
 
 /* Spinner for active step */
