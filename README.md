@@ -10,6 +10,8 @@
 
 - [架構概覽](#架構概覽)
 - [核心功能](#核心功能)
+- [視訊通話架構](#視訊通話架構)
+- [分片加密串流](#分片加密串流)
 - [專案結構](#專案結構)
 - [密碼學協定](#密碼學協定)
 - [訊息流程架構](#訊息流程架構)
@@ -69,11 +71,16 @@
 | NFC 認證 | NTAG 424 DNA SDM (CMAC/HKDF/EV2) | 實體 NFC 標籤身份綁定 |
 | 金鑰派生 | HKDF-SHA256 / Argon2id | 密碼學安全的金鑰衍生 |
 | 主金鑰保護 | Argon2id + AES-256-GCM wrapping | 使用者密碼保護主金鑰 |
+| 媒體分片加密 | HKDF-SHA256 → AES-256-GCM per-chunk | 每 chunk 獨立鑰匙與 IV，info tag 域分離 |
+| 通話 E2EE | InsertableStreams + AES-GCM | WebRTC 逐幀加密，counter-based nonce，10 分鐘金鑰輪換 |
 
 ### 通訊功能
 
 - **端對端加密訊息** — 文字、媒體、檔案，伺服器無法解密
-- **語音/視訊通話** — WebRTC + TURN relay，端對端加密信令
+- **語音/視訊通話** — WebRTC P2P + Cloudflare TURN relay，InsertableStreams E2EE 媒體加密
+- **AI 人臉/背景馬賽克** — MediaPipe Face Detection 三階段模糊（人臉馬賽克 / 背景馬賽克 / 關閉），三層偵測策略（Native FaceDetector → MediaPipe WASM → 膚色偵測）
+- **分片加密串流** — 影片上傳自動轉碼為 fMP4，Per-chunk AES-256-GCM 加密，MSE/ManagedMediaSource 即時串流播放（單檔上限 1GB）
+- **WebCodecs 智慧轉碼** — HEVC/VP9 → H.264 fMP4 自動轉碼，支援降級重試（720p/1.5Mbps），已是 H.264 時直接 remux 免轉碼
 - **聯絡人邀請** — 加密 Invite Dropbox 機制（支援離線互加 + 確認回饋）
 - **群組對話** — 多人加密聊天室，角色權限管理（owner/admin/member）
 - **已讀回條** — Commit-driven 訊息狀態追蹤（✓ sent / ✓✓ delivered）
@@ -84,6 +91,8 @@
 - **軟刪除** — 訊息/對話 Cursor-based 軟刪除（timestamp 驅動）
 - **頭像管理** — 聯絡人頭像上傳/下載（Presigned URL + R2）
 - **媒體預覽** — 圖片檢視器、PDF 檢視器、媒體權限管理
+- **檔案儲存空間** — Drive Pane 檔案管理，資料夾建立/瀏覽/上傳，配額管理（預設 3GB）
+- **傳輸進度 UI** — 上傳/下載雙進度條，可展開處理步驟 checklist（格式偵測→轉碼→加密上傳）
 - **SDM 模擬** — 開發用 NFC 標籤模擬（Sim Chips）
 - **離線同步** — Hybrid Flow 離線/線上訊息同步、Gap 偵測與填補
 - **帳號管理** — 管理員帳號清除（purge）與強制登出
@@ -97,6 +106,162 @@
 - **無 Fallback 政策** — 嚴格密碼協定，拒絕任何降級/重試/回滾
 - **離線密鑰交換** — 透過 X3DH Prekey Bundle，對方離線時也能安全初始化
 - **強制登出** — 帳號清除時透過 WebSocket `force-logout` 即時踢出所有裝置
+
+---
+
+## 視訊通話架構
+
+### WebRTC P2P 通話
+
+```
+  Caller                        Signaling (WebSocket)                     Callee
+  ──────                        ─────────────────────                     ──────
+    │── call-invite ────────────────────────────────────────────────────▶│
+    │◀──────────────────────────────────────────────────── call-ringing ─│
+    │◀──────────────────────────────────────────────────── call-accept ──│
+    │                                                                    │
+    │── SDP offer (+ ICE candidates) ──────────────────────────────────▶│
+    │◀──────────────────────────────── SDP answer (+ ICE candidates) ───│
+    │                                                                    │
+    │◀═══════════════ DTLS/SRTP ═══════════════════════════════════════▶│
+    │               WebRTC P2P 加密媒體通道（via TURN relay if needed）    │
+```
+
+- **架構**: 純 P2P 點對點通話（非 SFU），WebSocket 僅用於信令交換
+- **ICE**: 完整候選收集（host + srflx + relay），Cloudflare STUN + 動態 TURN 憑證
+- **DTLS**: ECDSA P-256 憑證，確保傳輸層加密
+- **媒體**: 音訊（echo cancellation + noise suppression + auto gain control）+ 視訊
+- **Safari 相容**: 完整 ICE 候選嵌入 SDP、獨立 `<audio>` 元素、usernameFragment 注入
+
+### E2EE 媒體加密（InsertableStreams）
+
+| 方向 | Info Tag | 說明 |
+|------|----------|------|
+| 音訊發送 | `call-audio-tx:caller` | AES-GCM 逐幀加密 |
+| 音訊接收 | `call-audio-tx:callee` | 對端解密 |
+| 視訊發送 | `call-video-tx:caller` | AES-GCM 逐幀加密 |
+| 視訊接收 | `call-video-tx:callee` | 對端解密 |
+
+- 每幀獨立 nonce（counter-based），防止重放
+- 金鑰每 10 分鐘自動輪換
+
+### MediaPipe 人臉/背景馬賽克
+
+```
+Camera VideoTrack
+  ↓
+Hidden <video> element
+  ↓
+Canvas drawImage (30 FPS)
+  ↓
+Face Detection (每 200ms 偵測一次，結果快取)
+  ├── Tier 1: Native FaceDetector API (Chrome/Edge 86+)
+  ├── Tier 2: MediaPipe Face Detection WASM (Safari/Firefox/iOS)
+  │           CDN: @mediapipe/tasks-vision@0.10.14
+  │           Model: BlazeFace Short Range TFLite (~1.5MB)
+  └── Tier 3: 膚色區域偵測 (YCbCr 閾值 + BFS 連通分量)
+  ↓
+Pixelation (14×14 pixel blocks, 20% padding)
+  ├── FACE mode → 馬賽克偵測到的人臉區域
+  ├── BACKGROUND mode → 馬賽克人臉以外的所有區域
+  └── OFF mode → 直接通過不處理
+  ↓
+canvas.captureStream() → processed VideoTrack
+  ↓
+RTCRtpSender.replaceTrack() → 送出處理後的視訊
+```
+
+- **瀏覽器支援**: Chrome 51+ / Firefox 43+ / Safari 15+ / iOS Safari 15+
+- **Safari 心跳**: 每 ~33ms 維持 captureStream 活性
+- **模式切換**: 通話介面左上角按鈕，藍色（人臉）→ 紫色（背景）→ 灰色（關閉）
+
+---
+
+## 分片加密串流
+
+### 上傳流程
+
+```
+使用者選擇檔案
+  ↓
+格式偵測 (canRemuxVideo)
+  ↓                                    ┌─────────────────────────────┐
+  ├── 影片檔案 ──▶ WebCodecs 轉碼?     │  WebCodecs 智慧轉碼         │
+  │                  │                  │  HEVC/VP9 → H.264 fMP4      │
+  │                  ├── 需要轉碼 ──────│  失敗 → 降級 720p/1.5Mbps   │
+  │                  ├── 已是 H.264 ────│  → 跳過，直接 remux          │
+  │                  └── 已是 fMP4 ─────│  → Streaming Upload (低記憶) │
+  │                                     └─────────────────────────────┘
+  │                  ↓
+  │           MP4 Remux → fMP4 分段
+  │                  ↓
+  │           每段 = 一個 chunk
+  │
+  ├── 非影片檔案 ──▶ 固定 5MB byte-range chunks
+  ↓
+Per-chunk 加密: HKDF-SHA256(MK, random_salt, 'media/chunk-v1') → AES-256-GCM
+  ↓
+並行上傳 (concurrency=3) → S3 Presigned URL
+  ↓
+上傳 Manifest (v3): chunk 清單 + codec 資訊 + track 資訊
+  ↓
+Manifest 加密: HKDF-SHA256(MK, salt, 'media/manifest-v1') → AES-256-GCM
+```
+
+### 下載 & 串流播放
+
+```
+訊息包含: { baseKey, manifestEnvelope }
+  ↓
+下載 & 解密 Manifest (media/manifest-v1)
+  ↓
+URL 批次簽章 (每批 20 URLs，預取下一批)
+  ↓
+並行下載 chunks (concurrency=3, 每 chunk 30s timeout, 3 retries + exponential backoff)
+  ↓
+Per-chunk 解密: AES-256-GCM
+  ↓                                    ┌─────────────────────────────┐
+MSE 串流播放                            │  MediaSource Extensions      │
+  ├── Desktop: MediaSource API         │  Codec 自動偵測 from fMP4    │
+  ├── iOS 17.1+: ManagedMediaSource    │  H.264 / HEVC profiles      │
+  │     (startstreaming/endstreaming)  │  Buffer 自動回收 (5s behind) │
+  └── Fallback: Blob URL 整檔播放      │  QuotaExceeded 自動 evict    │
+                                        └─────────────────────────────┘
+```
+
+### Manifest 結構 (v3)
+
+```json
+{
+  "v": 3,
+  "segment_aligned": true,
+  "totalSize": 52428800,
+  "totalChunks": 12,
+  "contentType": "video/mp4",
+  "name": "video.mp4",
+  "chunks": [
+    { "index": 0, "size": 4194304, "cipher_size": 4194320, "iv_b64": "...", "salt_b64": "..." }
+  ],
+  "tracks": [
+    { "type": "muxed", "codec": "avc1.64001E" }
+  ]
+}
+```
+
+### 串流效能指標
+
+| 指標 | 數值 |
+|------|------|
+| 單檔上限 | 1 GB |
+| 最大 chunk 數 | 2,000 |
+| 固定 chunk 大小（非影片） | 5 MB |
+| 上傳並行數 | 3 |
+| 下載並行數 | 3（最大 6） |
+| URL 預取批次 | 20 URLs/批 |
+| 下載逾時/chunk | 30 秒 |
+| 下載重試 | 3 次，exponential backoff (1s→8s) |
+| MSE 最大 in-flight appends | 15 |
+| Buffer 回收保留 | currentTime - 5s |
 
 ---
 
@@ -182,7 +347,8 @@ SENTRY-Messenger/
 │   │   ├── 0003_restore_deletion_cursors.sql  # deletion_cursors + legacy prekey
 │   │   ├── 0004_add_conversation_deletion_log.sql  # 對話刪除紀錄表
 │   │   ├── 0005_add_min_ts_to_deletion_cursors.sql # 新增 min_ts 欄位
-│   │   └── 0006_drop_min_counter_from_deletion_cursors.sql # 移除 min_counter
+│   │   ├── 0006_drop_min_counter_from_deletion_cursors.sql # 移除 min_counter
+│   │   └── 0007_add_pairing_code.sql # 配對碼支援
 │   └── wrangler.toml                 # Workers 設定 (D1 binding)
 │
 ├── web/                              # ═══ Frontend SPA ═══
@@ -252,6 +418,12 @@ SENTRY-Messenger/
 │       │   │   ├── settings.js       #   應用程式設定
 │       │   │   ├── groups.js         #   群組管理
 │       │   │   ├── media.js          #   媒體處理（上傳/下載）
+│       │   │   ├── chunked-upload.js #   分片加密上傳（影片轉碼 + fMP4 + AES-GCM）
+│       │   │   ├── chunked-download.js #  分片解密下載（並行下載 + URL 預取）
+│       │   │   ├── mse-player.js    #   MSE/ManagedMediaSource 串流播放器
+│       │   │   ├── webcodecs-transcoder.js # WebCodecs H.264 轉碼器
+│       │   │   ├── mp4-remuxer.js   #   MP4 → fMP4 Remux（Box 解析 + 分段）
+│       │   │   ├── transfer-progress.js #  傳輸進度 UI（雙進度條 + 步驟 checklist）
 │       │   │   ├── semantic.js       #   語意版本管理
 │       │   │   ├── messages.js       #   訊息處理
 │       │   │   ├── messages-flow-facade.js # 訊息流程 Facade 入口
@@ -324,14 +496,15 @@ SENTRY-Messenger/
 │       │   │   │   ├── send-policy.js #    發送重試策略
 │       │   │   │   └── db.js         #     本地佇列 DB
 │       │   │   │
-│       │   │   ├── calls/            #   通話功能 (WebRTC)
+│       │   │   ├── calls/            #   通話功能 (WebRTC + MediaPipe)
 │       │   │   │   ├── index.js      #     通話模組入口
 │       │   │   │   ├── events.js     #     通話狀態事件
 │       │   │   │   ├── signaling.js  #     通話信令
-│       │   │   │   ├── key-manager.js #    Per-call 加密金鑰
-│       │   │   │   ├── media-session.js #  媒體串流處理
+│       │   │   │   ├── key-manager.js #    Per-call E2EE 金鑰（InsertableStreams）
+│       │   │   │   ├── media-session.js #  WebRTC P2P 媒體管理
+│       │   │   │   ├── face-blur.js  #     MediaPipe 人臉/背景馬賽克 Pipeline
 │       │   │   │   ├── identity.js   #     參與者身份
-│       │   │   │   ├── network-config.js # STUN/TURN 設定
+│       │   │   │   ├── network-config.js # Cloudflare STUN/TURN 設定
 │       │   │   │   ├── state.js      #     通話狀態機
 │       │   │   │   └── call-log.js   #     通話紀錄
 │       │   │   │
@@ -667,7 +840,7 @@ Timeline: 加入訊息              # Commit-driven
 
 ## 資料庫 Schema
 
-D1 (SQLite) 共 27 張表（經 6 次遷移），以下為完整表結構：
+D1 (SQLite) 共 27 張表（經 7 次遷移），以下為完整表結構：
 
 ### 帳號與裝置
 
@@ -926,8 +1099,11 @@ media_objects         # 媒體物件追蹤
 
 | 端點 | 方法 | 說明 |
 |------|------|------|
-| `/media/sign-put` | POST | 取得 R2 上傳 Presigned URL |
-| `/media/sign-get` | POST | 取得 R2 下載 Presigned URL |
+| `/media/sign-put` | POST | 取得 R2 上傳 Presigned URL（單檔） |
+| `/media/sign-get` | POST | 取得 R2 下載 Presigned URL（單檔） |
+| `/media/sign-put-chunked` | POST | 取得分片上傳 Presigned URLs（baseKey + manifest + chunks，max 2000 chunks） |
+| `/media/sign-get-chunked` | POST | 取得分片下載 Presigned URLs（支援指定 chunk_indices） |
+| `/media/cleanup-chunked` | POST | 刪除 baseKey 下所有物件（取消/錯誤清理） |
 
 ### 通話 (`/api/v1/calls/`)
 
@@ -1182,15 +1358,42 @@ npm run preview      # Wrangler Pages 本地預覽
 
 部署流程：
 
-1. **Cloudflare Worker** — `wrangler deploy` 部署 `data-worker/`
-2. **Cloudflare Pages** — `wrangler pages deploy` 部署 `web/src`
-3. **Backend** — git push → SSH 到遠端 → `git pull && npm install && pm2 reload`
+1. **Cloudflare Worker** — `wrangler d1 migrations apply` + `wrangler deploy` 部署 `data-worker/`
+2. **Cloudflare Pages** — `npm run build`（esbuild bundle + SRI）→ `wrangler pages deploy ./dist`
+3. **Backend** — git push → SSH 到遠端 → `npm install --production && pm2 reload message-api`
+
+### Frontend Bundle 打包
+
+```bash
+cd web
+npm run build        # esbuild 打包 → dist/（ES2022, code splitting, minify, SRI）
+npm run build:raw    # 直接複製 src → dist（開發用，不壓縮）
+npm run verify       # 打包完整性驗證（SHA256 + SRI SHA384）
+npm run verify:cdn   # CDN 完整性驗證（含 verbose）
+npm run preview      # Wrangler Pages 本地預覽
+```
+
+**Bundle 特性：**
+- **esbuild** ES2022 target，code splitting + minification + source maps
+- **SRI** (Subresource Integrity) — 所有 JS/CSS 注入 SHA384 完整性雜湊
+- **Build Manifest** — `dist/build-manifest.json` 含 git commit hash + 每檔 SHA256
+- **Entry Points**: `app-mobile.js`、`login-ui.js`、`debug-page.js`、`media-permission-demo.js`
+- **CSS Bundle**: `app-bundle.css` 單檔壓縮
+
+### GitHub Actions CI/CD
+
+```yaml
+deploy.yml:
+  ├── job: deploy-worker     # Cloudflare Worker (D1 migrations + wrangler deploy)
+  ├── job: deploy-pages      # Cloudflare Pages (npm build → wrangler pages deploy ./dist)
+  └── job: deploy-backend    # Node.js VPS (SSH → git pull → npm install → pm2 reload)
+```
 
 ### Worker D1 遷移
 
 ```bash
 cd data-worker
-wrangler d1 migrations apply message_db     # 套用資料庫遷移（共 6 個）
+wrangler d1 migrations apply message_db     # 套用資料庫遷移（共 7 個）
 wrangler deploy                              # 部署 Worker
 ```
 
@@ -1200,11 +1403,14 @@ wrangler deploy                              # 部署 Worker
 # Worker
 cd data-worker && wrangler deploy
 
-# Pages
+# Pages（bundle 模式）
+cd web && npm run build && wrangler pages deploy ./dist --project-name message-web-hybrid
+
+# Pages（raw 模式，開發用）
 cd web && wrangler pages deploy ./src
 
 # Backend (VPS)
-ssh Message "cd /path/to/app && git pull && npm install && pm2 reload all"
+ssh Message "cd /path/to/app && git pull && npm install --production && pm2 reload message-api"
 ```
 
 ---
@@ -1271,7 +1477,7 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 | `S3_BUCKET` | 儲存桶名稱 | |
 | `S3_ACCESS_KEY` | S3 存取金鑰 | |
 | `S3_SECRET_KEY` | S3 秘密金鑰 | |
-| `UPLOAD_MAX_BYTES` | 單檔上傳大小限制 | `524288000` (500MB) |
+| `UPLOAD_MAX_BYTES` | 單檔上傳大小限制 | `1073741824` (1GB) |
 | `DRIVE_QUOTA_BYTES` | 每個對話儲存配額 | `3221225472` (3GB) |
 | `SIGNED_PUT_TTL` | 上傳簽章 URL 有效期 (秒) | `900` |
 | `SIGNED_GET_TTL` | 下載簽章 URL 有效期 (秒) | `900` |
@@ -1299,10 +1505,15 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 
 | 變數 | 說明 | 範例 |
 |------|------|------|
-| `TURN_SHARED_SECRET` | TURN 憑證簽章密鑰 | `<secret>` |
-| `TURN_STUN_URIS` | STUN 伺服器列表 (逗號分隔) | `stun:stun.l.google.com:19302` |
+| `CLOUDFLARE_TURN_TOKEN_ID` | Cloudflare TURN token ID | `<token-id>` |
+| `CLOUDFLARE_TURN_TOKEN_KEY` | Cloudflare TURN token 密鑰 | `<token-key>` |
+| `TURN_TTL_SECONDS` | TURN 憑證有效期 (秒) | `300` |
+| `TURN_SHARED_SECRET` | TURN 憑證簽章密鑰 (備用) | `<secret>` |
+| `TURN_STUN_URIS` | STUN 伺服器列表 (逗號分隔) | `stun:stun.cloudflare.com:3478` |
 | `TURN_RELAY_URIS` | TURN relay 伺服器列表 | `turn:relay.example.com` |
 | `CALL_LOCK_TTL_MS` | 通話鎖定逾時 (毫秒, 最小 30s) | `120000` |
+| `CALL_SESSION_TTL_SECONDS` | 通話 Session 過期時間 | `90` |
+| `CALL_EXTRA_STUN_URIS` | 額外 STUN 伺服器 | `stun:stun.l.google.com:19302` |
 
 ### 除錯與遠端 Console
 
@@ -1346,13 +1557,23 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 | node-aes-cmac | AES-CMAC (NTAG424) |
 | pm2 | 程序管理 |
 
-### Frontend 工具
+### Frontend 工具與技術
 
-| 工具 | 用途 |
+| 工具 / 技術 | 用途 |
 |------|------|
-| esbuild | JS 打包/壓縮 |
+| esbuild | JS 打包（ES2022, code splitting, minify, SRI） |
 | Vanilla JS | 無框架 SPA |
-| Cloudflare Pages | 靜態部署 |
+| Cloudflare Pages | 靜態部署（含 Pages Functions API proxy） |
+| WebRTC | P2P 音訊/視訊通話（ECDSA P-256 DTLS） |
+| InsertableStreams | 通話 E2EE 逐幀加密（AES-GCM） |
+| MediaPipe Face Detection | 人臉偵測 WASM（BlazeFace TFLite, @mediapipe/tasks-vision） |
+| WebCodecs | 影片轉碼（HEVC/VP9 → H.264 fMP4） |
+| MediaSource Extensions | 加密影片即時串流播放（含 ManagedMediaSource for iOS） |
+| mp4box.js | MP4 demux/mux（轉碼 + remux 用） |
+| Canvas captureStream | 視訊人臉/背景馬賽克 pipeline |
+| Web Crypto API | HKDF-SHA256, AES-256-GCM, SHA-256 |
+| Argon2 (WASM) | 密碼 KDF（m=64MiB, t=3, p=1） |
+| TweetNaCl | Ed25519 / X25519 密碼學操作 |
 | cropper.esm.js | 圖片裁切 (vendor) |
 | qr-scanner.min.js | QR Code 掃描 (vendor) |
 | qrcode-generator.js | QR Code 產生 (vendor) |
@@ -1363,6 +1584,7 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 |------|------|
 | @playwright/test | E2E 測試框架 |
 | wrangler | Cloudflare CLI（Workers/D1/Pages） |
+| GitHub Actions | CI/CD（三階段自動部署） |
 
 ### Infrastructure
 
@@ -1371,7 +1593,8 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 | Cloudflare Workers | 資料層 API |
 | Cloudflare D1 | SQLite 資料庫 |
 | Cloudflare R2 | 媒體物件儲存 |
-| Cloudflare Pages | 前端靜態部署 |
+| Cloudflare Pages | 前端部署（esbuild bundle + Pages Functions） |
+| Cloudflare TURN | WebRTC 通話 relay（動態憑證） |
 | Linode VPS | Backend + WebSocket |
 | PM2 | 程序管理 + 自動重啟 |
 
