@@ -900,12 +900,16 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     try {
       incMuxer = createMp4boxFile(mp4boxMod);
 
-      // Pass description as ArrayBuffer (not Uint8Array) for mp4box.js compatibility
+      // mp4box.js addTrack requires the actual sample entry type (e.g. 'avc1'),
+      // NOT generic 'video'/'audio'. It checks BoxParser[type+"SampleEntry"]
+      // and returns undefined if the class doesn't exist.
+      // For H.264, the avcC config must be passed as avcDecoderConfigRecord (ArrayBuffer),
+      // NOT as description (which expects a parsed Box object).
       const videoDescAB = toArrayBuffer(videoMuxDesc);
       incMuxVideoTrackId = incMuxer.addTrack({
-        type: 'video', width: vEncConfig.width, height: vEncConfig.height,
+        type: 'avc1', width: vEncConfig.width, height: vEncConfig.height,
         timescale: 90000, media_duration: 0, nb_samples: 0,
-        codec: 'avc1', description: videoDescAB,
+        avcDecoderConfigRecord: videoDescAB,
       });
       if (incMuxVideoTrackId == null) {
         throw new Error('addTrack(video) returned ' + incMuxVideoTrackId);
@@ -913,12 +917,10 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
       if (audioTrack) {
         const audioTimescale = audioTrack.audio?.sample_rate || 44100;
-        const audioDescAB = audioMuxDesc ? toArrayBuffer(audioMuxDesc) : undefined;
         incMuxAudioTrackId = incMuxer.addTrack({
-          type: 'audio', timescale: audioTimescale, media_duration: 0, nb_samples: 0,
-          codec: 'mp4a', channel_count: audioTrack.audio?.channel_count || 2,
+          type: 'mp4a', timescale: audioTimescale, media_duration: 0, nb_samples: 0,
+          channel_count: audioTrack.audio?.channel_count || 2,
           samplerate: audioTimescale, samplesize: 16,
-          description: audioDescAB,
         });
         if (incMuxAudioTrackId == null) {
           throw new Error('addTrack(audio) returned ' + incMuxAudioTrackId);
@@ -1221,31 +1223,34 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
   const segments = []; // [{ trackIndex: 0, data: Uint8Array }]
 
   // Add video track
+  // mp4box.js addTrack requires the actual sample entry type (e.g. 'avc1'),
+  // NOT generic 'video'. It checks BoxParser[type+"SampleEntry"] and returns
+  // undefined silently if the class doesn't exist.
+  // For H.264, pass avcDecoderConfigRecord (raw avcC ArrayBuffer from encoder).
+  const videoDesc = encodedVideo.find(e => e.description)?.description;
   const videoTrackId = mp4boxFile.addTrack({
-    type: 'video',
+    type: 'avc1',
     width: videoConfig.width,
     height: videoConfig.height,
     timescale: 90000,
     media_duration: 0,
     nb_samples: encodedVideo.length,
-    codec: 'avc1',
-    // avcC description from first keyframe
-    description: encodedVideo.find(e => e.description)?.description,
+    avcDecoderConfigRecord: videoDesc
+      ? (videoDesc.buffer || videoDesc) // ensure ArrayBuffer for mp4box.js
+      : undefined,
   });
 
   // Add audio track (if we have encoded audio)
   let audioTrackId = null;
   if (encodedAudio.length > 0) {
     audioTrackId = mp4boxFile.addTrack({
-      type: 'audio',
+      type: 'mp4a',
       timescale: audioTrackInfo?.audio?.sample_rate || 44100,
       media_duration: 0,
       nb_samples: encodedAudio.length,
-      codec: 'mp4a',
       channel_count: audioTrackInfo?.audio?.channel_count || 2,
       samplerate: audioTrackInfo?.audio?.sample_rate || 44100,
       samplesize: 16,
-      description: encodedAudio.find(e => e.description)?.description,
     });
   }
 
