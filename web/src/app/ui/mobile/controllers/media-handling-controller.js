@@ -221,42 +221,38 @@ export class MediaHandlingController extends BaseController {
             let streamingComplete = false;
             let userPaused = false; // true when user explicitly pauses via UI
 
-            // Track user-initiated pauses: mark userPaused=true when the user
-            // taps play/pause controls. The viewer's click handlers call
-            // video.pause() which fires the 'pause' event. We detect this by
-            // briefly setting userPaused before the pause event propagates.
-            // Uses 'pointerdown' on the viewer overlay (captures all taps on
-            // play/pause buttons, stage tap, etc.) to know user intent.
-            let userInteracting = false;
-            const onPointerDown = () => { userInteracting = true; };
-            const onPointerUp = () => { setTimeout(() => { userInteracting = false; }, 300); };
-            viewer.overlay.addEventListener('pointerdown', onPointerDown, true);
-            viewer.overlay.addEventListener('pointerup', onPointerUp, true);
-            viewer.overlay.addEventListener('pointercancel', onPointerUp, true);
+            // Detect user-initiated pauses: the video-viewer's togglePlay()
+            // is triggered by click events on the stage/controls. We track
+            // recent clicks and correlate with pause events to distinguish
+            // user pauses from browser-initiated pauses (e.g. durationchange).
+            let lastUserClickTime = 0;
+            const onUserClick = () => { lastUserClickTime = Date.now(); };
+            viewer.overlay.addEventListener('click', onUserClick, true);
 
-            // When pause fires during user interaction → user explicitly paused.
-            // When play fires → clear userPaused (user resumed or auto-resume).
             const onPauseEvent = () => {
-                if (userInteracting && !video.ended) userPaused = true;
+                // If a click happened within the last 500ms, this is user-initiated
+                if (!video.ended && Date.now() - lastUserClickTime < 500) {
+                    userPaused = true;
+                }
             };
             const onPlayEvent = () => { userPaused = false; };
             video.addEventListener('pause', onPauseEvent);
             video.addEventListener('play', onPlayEvent);
 
-            // Auto-resume: during streaming, the browser may pause when
-            // MediaSource duration grows (incremental durationchange).
-            // If the user didn't explicitly pause, auto-resume playback.
-            const onUnexpectedPause = () => {
-                if (userPaused || streamingComplete || !mseInitialized) return;
-                if (userInteracting) return; // user is tapping — don't interfere
-                // Small delay — let the browser settle after duration change
-                setTimeout(() => {
-                    if (!video.paused || userPaused || streamingComplete) return;
-                    console.info('[mse] auto-resuming after unexpected pause during streaming');
+            // Watchdog: during streaming, the browser may pause the video when
+            // MediaSource duration grows (incremental durationchange) or for
+            // other internal reasons. A periodic check is more reliable than
+            // event-based auto-resume because it doesn't depend on event
+            // ordering or timing. Every 500ms, if video is paused but the user
+            // didn't explicitly pause, auto-resume.
+            const playbackWatchdog = setInterval(() => {
+                if (streamingComplete || !mseInitialized || video.ended) return;
+                if (userPaused) return;
+                if (video.paused && video.readyState >= 2) {
+                    console.info('[mse] watchdog: auto-resuming paused video during streaming');
                     video.play().catch(() => {});
-                }, 150);
-            };
-            video.addEventListener('pause', onUnexpectedPause);
+                }
+            }, 500);
 
             // Hide buffering overlay only when the video actually has frames
             // (not just when MSE accepts data — that doesn't guarantee decodability).
@@ -264,15 +260,16 @@ export class MediaHandlingController extends BaseController {
                 if (!firstMediaAppended) {
                     firstMediaAppended = true;
                     viewer.hideBuffering();
-                    // Ensure playback starts — autoplay may have been blocked
+                    // Ensure playback starts — autoplay may have been blocked.
+                    // Do NOT use a mute/unmute hack: on mobile browsers,
+                    // video.muted=false without a user gesture is silently ignored,
+                    // which permanently kills audio. Instead, if autoplay fails,
+                    // let the video stay paused — the center play button is visible
+                    // and the user can tap to play with a fresh gesture + audio.
+                    // The watchdog will also retry play() periodically.
                     if (video.paused && !userPaused) {
                         video.play().catch(() => {
-                            // [FIX] Fallback: muted autoplay (always allowed on iOS).
-                            // Unmute once playback starts.
-                            video.muted = true;
-                            video.play().then(() => {
-                                video.muted = false;
-                            }).catch(() => {});
+                            // Autoplay blocked — video stays paused, play button visible.
                         });
                     }
                 }
@@ -524,15 +521,13 @@ export class MediaHandlingController extends BaseController {
             // Check for deferred append errors (skip if we voluntarily abandoned MSE)
             if (appendError && !mseAbandoned) throw appendError;
 
-            // Streaming complete — disable auto-resume so user pause works normally
+            // Streaming complete — disable watchdog so user pause works normally
             streamingComplete = true;
-            video.removeEventListener('pause', onUnexpectedPause);
+            clearInterval(playbackWatchdog);
             video.removeEventListener('pause', onPauseEvent);
             video.removeEventListener('play', onPlayEvent);
             try {
-                viewer.overlay.removeEventListener('pointerdown', onPointerDown, true);
-                viewer.overlay.removeEventListener('pointerup', onPointerUp, true);
-                viewer.overlay.removeEventListener('pointercancel', onPointerUp, true);
+                viewer.overlay.removeEventListener('click', onUserClick, true);
             } catch {}
 
             if (useBlobFallback) {
@@ -572,14 +567,13 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
 
         } catch (err) {
-            // Clean up auto-resume listeners
+            // Clean up watchdog and listeners
             streamingComplete = true;
+            clearInterval(playbackWatchdog);
             try {
-                video.removeEventListener('pause', onUnexpectedPause);
                 video.removeEventListener('pause', onPauseEvent);
-                viewer.overlay.removeEventListener('pointerdown', onPointerDown, true);
-                viewer.overlay.removeEventListener('pointerup', onPointerUp, true);
-                viewer.overlay.removeEventListener('pointercancel', onPointerUp, true);
+                video.removeEventListener('play', onPlayEvent);
+                viewer.overlay.removeEventListener('click', onUserClick, true);
             } catch {}
 
             // Release seek handler and chunk cache
