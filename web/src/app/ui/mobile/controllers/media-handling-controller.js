@@ -652,41 +652,50 @@ export class MediaHandlingController extends BaseController {
         let pendingSeekTime = null; // Track seek that arrived during re-append
 
         /**
-         * Read chunk blobs in parallel batches, then fire-and-forget append.
-         * The MSE append queue is sequential by spec, but we can overlap
-         * blob→ArrayBuffer reads with pending appends so the queue never
-         * starves waiting for the next blob. This is ~3-5× faster than
-         * the previous fully-sequential loop.
+         * Re-append ALL media chunks from the blob cache in parallel
+         * batches, with early exit once the target seek time is buffered.
+         *
+         * Why not estimate which chunks to re-append?
+         * The remuxer uses nbSamples:100 for both video and audio tracks,
+         * producing segments of ~3.3s (video@30fps) and ~2.3s (audio@44100Hz).
+         * After interleaving [v0,a0,v1,a1,...], video segment i and audio
+         * segment i cover COMPLETELY DIFFERENT time ranges. Any linear
+         * estimation (seekTime/dur * chunkCount) maps to the wrong time
+         * region — causing the "wrong area buffered" problem.
+         *
+         * Solution: re-append all media chunks. The SourceBuffer handles
+         * duplicate timestamps gracefully (replaces existing data). We
+         * check isTimeBuffered() after each batch for early exit.
          */
-        const batchAppendChunks = async (startIdx, endIdx, skipSet) => {
-            const BATCH = 8; // read 8 blobs at a time
-            const appends = [];
+        const reappendAllChunks = async (seekTime) => {
+            const BATCH = 8;
+            const total = chunkCache.length;
 
-            for (let b = startIdx; b < endIdx; b += BATCH) {
+            for (let b = numTracks; b < total; b += BATCH) {
                 if (destroyed || !msePlayer) break;
-                const batchEnd = Math.min(b + BATCH, endIdx);
+                // Early exit: seek position is now buffered
+                if (msePlayer.isTimeBuffered(seekTime)) break;
+
+                const batchEnd = Math.min(b + BATCH, total);
                 const blobReads = [];
                 for (let i = b; i < batchEnd; i++) {
-                    if (skipSet?.has(i) || !chunkCache[i]) continue;
-                    blobReads.push({ idx: i, promise: chunkCache[i].arrayBuffer() });
+                    if (!chunkCache[i]) continue;
+                    blobReads.push(chunkCache[i].arrayBuffer());
                 }
-                // Read all blobs in this batch concurrently
-                const bufs = await Promise.all(blobReads.map(async (r) => {
-                    const buf = await r.promise;
-                    return new Uint8Array(buf);
-                }));
-                // Fire-and-forget append — queue processes them in order
+                const bufs = await Promise.all(blobReads.map(async (p) => new Uint8Array(await p)));
+
+                const appends = [];
                 for (const data of bufs) {
                     if (destroyed || !msePlayer) break;
-                    const p = msePlayer.appendChunk('muxed', data).catch(err => {
-                        console.warn('[video-seek] append error:', err?.message);
-                    });
-                    appends.push(p);
+                    appends.push(
+                        msePlayer.appendChunk('muxed', data).catch(err => {
+                            console.warn('[video-seek] append error:', err?.message);
+                        })
+                    );
                 }
-            }
-            // Wait for all appends to settle
-            if (appends.length > 0) {
-                await Promise.allSettled(appends);
+                if (appends.length > 0) {
+                    await Promise.allSettled(appends);
+                }
             }
         };
 
@@ -718,40 +727,12 @@ export class MediaHandlingController extends BaseController {
                 // (paused=true) → promises never resolve → deadlock.
                 msePlayer.resumeQueues();
 
-                // Estimate which chunk index corresponds to the seek time.
-                // Each media segment covers roughly (duration / mediaChunkCount) seconds.
-                const mediaChunkCount = chunkCache.length - numTracks;
-                if (mediaChunkCount <= 0) return;
+                console.info(`[video-seek] re-appending all ${chunkCache.length - numTracks} media chunks for seek to ${seekTime.toFixed(1)}s`);
 
-                const targetMediaIdx = Math.floor((seekTime / dur) * mediaChunkCount);
-                const targetChunkIdx = numTracks + Math.max(0, Math.min(targetMediaIdx, mediaChunkCount - 1));
-
-                // Re-append a window of chunks around the target.
-                // Go back a few chunks to ensure we hit a keyframe before the seek point.
-                const WINDOW_BEFORE = 5;
-                const WINDOW_AFTER = 25;
-                const start = Math.max(numTracks, targetChunkIdx - WINDOW_BEFORE);
-                const end = Math.min(chunkCache.length, targetChunkIdx + WINDOW_AFTER);
-
-                console.info(`[video-seek] re-appending chunks ${start}..${end - 1} for seek to ${seekTime.toFixed(1)}s (estimated target chunk ${targetChunkIdx})`);
-
-                // Safety timeout: cap total re-append time. If the queue is
-                // stuck (e.g. SourceBuffer in a broken state), don't hang forever.
+                // Safety timeout: cap total re-append time.
                 const REAPPEND_TIMEOUT = 5_000;
                 const timeoutPromise = new Promise(r => setTimeout(r, REAPPEND_TIMEOUT));
-
-                await Promise.race([batchAppendChunks(start, end, null), timeoutPromise]);
-
-                // If still not buffered (estimation was off), try a wider range
-                if (!destroyed && msePlayer && !msePlayer.isTimeBuffered(seekTime)) {
-                    const wideStart = Math.max(numTracks, start - 20);
-                    const wideEnd = Math.min(chunkCache.length, end + 20);
-                    console.info(`[video-seek] widening to chunks ${wideStart}..${wideEnd - 1}`);
-                    // Skip chunks already appended in the first window
-                    const skipSet = new Set();
-                    for (let i = start; i < end; i++) skipSet.add(i);
-                    await Promise.race([batchAppendChunks(wideStart, wideEnd, skipSet), timeoutPromise]);
-                }
+                await Promise.race([reappendAllChunks(seekTime), timeoutPromise]);
 
                 // Re-signal end of stream so the browser knows the full
                 // timeline. appendBuffer() transitions readyState from
