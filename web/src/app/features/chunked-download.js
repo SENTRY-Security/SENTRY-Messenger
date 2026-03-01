@@ -255,5 +255,5 @@ export async function downloadAllChunks({ baseKey, manifest, manifestEnvelope, a
   }
   const contentType = manifest.contentType || 'application/octet-stream';
   const blob = new Blob(parts, { type: contentType });
-  return { blob, contentType, name: manifest.name || 'video.bin' };
+  return { blob, contentType, name: manifest.name || 'download.bin' };
 }

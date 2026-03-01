@@ -7,7 +7,7 @@
 
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
-import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
+import { downloadChunkedManifest, streamChunks, downloadAllChunks } from '../../../features/chunked-download.js';
 import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer, isValidMseInitSegment } from '../../../features/mse-player.js';
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
@@ -532,7 +532,28 @@ export class MediaHandlingController extends BaseController {
             const displayName = media.name || '附件';
             let result = null;
 
-            if (media.objectKey && media.envelope) {
+            if (media.chunked && media.baseKey && media.manifestEnvelope) {
+                // Chunked file (large non-video files uploaded via chunked path)
+                this._showModalLoading('下載加密檔案中…');
+                this._updateLoadingModal({ percent: 5, text: '取得解密資訊中…' });
+                const manifest = await downloadChunkedManifest({
+                    baseKey: media.baseKey,
+                    manifestEnvelope: media.manifestEnvelope
+                });
+                this._updateLoadingModal({ percent: 10, text: '下載加密分片中…' });
+                result = await downloadAllChunks({
+                    baseKey: media.baseKey,
+                    manifest,
+                    manifestEnvelope: media.manifestEnvelope,
+                    onProgress: ({ percent: pct }) => {
+                        if (Number.isFinite(pct)) {
+                            const mapped = 10 + Math.round(pct * 0.85);
+                            this._updateLoadingModal({ percent: mapped, text: `下載加密分片中… ${pct}%` });
+                        }
+                    }
+                });
+                this._updateLoadingModal({ percent: 98, text: '組裝檔案中…' });
+            } else if (media.objectKey && media.envelope) {
                 this._showModalLoading('下載加密檔案中…');
                 result = await downloadAndDecrypt({
                     key: media.objectKey,
