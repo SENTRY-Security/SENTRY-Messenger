@@ -546,6 +546,7 @@ export async function encryptAndPutChunked({
 
     onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
     contentType = preprocessResult.contentType;
+    const mediaDuration = preprocessResult.duration || undefined;
 
     if (preprocessResult.segments) {
       const rawSegments = preprocessResult.segments;
@@ -776,7 +777,7 @@ export async function encryptAndPutChunked({
     // Total media duration in seconds (if available from remuxer).
     // Used by MSE player to set MediaSource.duration upfront, preventing
     // incremental duration growth that causes auto-pause on some browsers.
-    duration: preprocessResult?.duration || undefined
+    duration: mediaDuration
   };
 
   const manifestJson = new TextEncoder().encode(JSON.stringify(manifest));

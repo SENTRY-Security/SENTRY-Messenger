@@ -96,13 +96,14 @@ export function isDownloadBusy() { return !!_download; }
  * Start showing upload progress.
  * @param {string} name - file name
  * @param {Function} onCancel - called when user clicks cancel
+ * @param {{ fileSize?: number }} [opts] - optional metadata
  */
-export function startUpload(name, onCancel) {
+export function startUpload(name, onCancel, opts) {
     _upload = { name: name || '檔案', percent: 0, onCancel };
     _uploadSteps = [];
     _detailExpanded = false;
     _uploadLoaded = 0;
-    _uploadTotal = 0;
+    _uploadTotal = (opts?.fileSize > 0) ? opts.fileSize : 0;
     _uploadSpeedSamples = [];
     _uploadStatsEl = null;
     if (_uploadDetailBtnEl) {
@@ -323,14 +324,28 @@ function _renderDetailContent() {
     }
 }
 
-/** Update the stats display text without full DOM rebuild */
+/** Update the stats display without full DOM rebuild */
 function _updateStatsDisplay() {
     if (!_uploadStatsEl) return;
     const speed = _calcSpeed();
-    const loadedStr = _fmtBytes(_uploadLoaded);
     const totalStr = _uploadTotal > 0 ? _fmtBytes(_uploadTotal) : '—';
-    const speedStr = speed > 0 ? `${_fmtBytes(speed)}/s` : '—';
-    _uploadStatsEl.textContent = `${loadedStr} / ${totalStr}    ${speedStr}`;
+    const speedStr = speed > 0 ? `${_fmtBytes(speed)}/s` : '計算中…';
+
+    // Build two-line display: progress + speed
+    _uploadStatsEl.innerHTML = '';
+
+    const line1 = document.createElement('div');
+    line1.style.cssText = 'display:flex;justify-content:space-between;gap:12px';
+    const sizeLabel = document.createElement('span');
+    sizeLabel.textContent = _uploadLoaded > 0
+        ? `已上傳 ${_fmtBytes(_uploadLoaded)} / ${totalStr}`
+        : `檔案大小 ${totalStr}`;
+    const speedLabel = document.createElement('span');
+    speedLabel.style.opacity = '0.7';
+    speedLabel.textContent = _uploadLoaded > 0 ? speedStr : '';
+    line1.appendChild(sizeLabel);
+    line1.appendChild(speedLabel);
+    _uploadStatsEl.appendChild(line1);
 }
 
 /**

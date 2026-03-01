@@ -230,7 +230,7 @@ export class MessageSendingController extends BaseController {
                     try { abortController.abort(); } catch {}
                     this.removeLocalMessageById(localMsg.id);
                     endUpload();
-                });
+                }, { fileSize: file.size || 0 });
 
                 let _lastUploadStatus = null;
                 const progressHandler = (progress) => {
