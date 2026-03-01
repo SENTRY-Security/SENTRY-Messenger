@@ -435,7 +435,8 @@ async function _streamingTranscodeUpload({
     const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
     onProgress?.({
       loaded: completedBytes, total: actualTotalSize || completedBytes || 1,
-      percent: Math.round(PHASE.chunkStart + ratio * chunkRange)
+      percent: Math.round(PHASE.chunkStart + ratio * chunkRange),
+      statusText: segmentsComplete > 0 ? `上傳中 ${segmentsComplete}/${totalExpectedSegments}` : undefined,
     });
   };
 
@@ -505,6 +506,18 @@ async function _streamingTranscodeUpload({
       onProgress: ({ phase, percent }) => {
         if (phase === 'load') {
           onProgress?.({ percent: Math.round(percent * PHASE.chunkStart / 100) });
+        } else if (phase === 'encode') {
+          // Blend encode progress with upload progress:
+          // The encode phase covers the full chunkStart→chunkEnd range.
+          // As segments upload, _reportPipelineProgress also updates this range.
+          // Use whichever is higher so the bar never goes backwards.
+          const encodePercent = Math.round(PHASE.chunkStart + (percent / 100) * (PHASE.chunkEnd - PHASE.chunkStart));
+          // Only report if encode progress leads upload progress
+          const currentUploadFrac = segmentsComplete / totalExpectedSegments;
+          const currentUploadPercent = Math.round(PHASE.chunkStart + currentUploadFrac * (PHASE.chunkEnd - PHASE.chunkStart));
+          if (encodePercent > currentUploadPercent) {
+            onProgress?.({ percent: encodePercent, statusText: `正在轉碼… ${percent}%` });
+          }
         }
       },
     });
