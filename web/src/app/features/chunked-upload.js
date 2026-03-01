@@ -23,7 +23,7 @@ import {
   isAlreadyFragmented, countMoofBoxesFromFile, iterateFragmentedSegmentsFromFile,
   extractDurationFromFile
 } from './mp4-remuxer.js';
-import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
+import { transcodeToFmp4, isWebCodecsSupported, probeTranscode } from './webcodecs-transcoder.js';
 import { AdaptiveConcurrency } from './adaptive-concurrency.js';
 
 // Default encoder constraints: cap all uploads to 720p @ 1.5Mbps for smooth MSE streaming
@@ -368,6 +368,188 @@ async function _streamingUploadFragmented({
 }
 
 /**
+ * Streaming transcode + upload pipeline.
+ * Segments are encrypted and uploaded as they're produced by the encoder,
+ * so the upload starts within seconds instead of waiting for full transcode.
+ * Memory: bounded by ~2MB file chunk + decoder/encoder pipeline + ~3 in-flight segments.
+ */
+async function _streamingTranscodeUpload({
+  file, probe, convId, cryptoKey, useSharedKey, sharedKeyU8,
+  name, direction, dir, mk,
+  encoderConstraints, onProgress, abortSignal,
+}) {
+  const PHASE = { chunkStart: 5, chunkEnd: 95, manifestEnd: 100 };
+  const contentType = 'video/mp4';
+
+  const dirSegments = normalizeDirSegments(dir);
+  let storageDir = '';
+  if (dirSegments.length) {
+    if (!mk) throw new Error('MK required for directory hashing');
+    storageDir = await deriveStorageDirPath(dirSegments, mk);
+  }
+
+  // 1. Sign presigned URLs (use file.size as upper bound for server size check)
+  const { r: rSign, data: signData } = await apiSignPutChunked({
+    convId, totalSize: file.size, chunkCount: probe.estimatedChunks,
+    contentType, direction, dir: storageDir || undefined
+  });
+  if (!rSign.ok) {
+    const errCode = signData?.error || 'Unknown';
+    if (errCode === 'FileTooLarge') {
+      const limitMB = signData?.maxBytes ? Math.round(signData.maxBytes / 1024 / 1024) : '?';
+      throw new Error(`檔案大小超過伺服器限制 (${limitMB}MB)，請確認伺服器已更新至最新版本`);
+    }
+    throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
+  }
+  const { baseKey, manifest: manifestPut, chunks: chunkPuts } = signData;
+  if (!baseKey || !manifestPut?.url || !chunkPuts?.length) {
+    throw new Error('sign-put-chunked returned incomplete data');
+  }
+  onProgress?.({ percent: PHASE.chunkStart });
+
+  // 2. Set up encrypt + upload machinery
+  const bulkEncrypt = createBulkEncryptor(cryptoKey, CHUNK_INFO_TAG);
+  const ac = new AdaptiveConcurrency({ floor: 2, ceiling: 8 });
+  let chunkIndex = 0;
+  let completedBytes = 0;
+  let actualTotalSize = 0;
+  let segmentsComplete = 0;
+  const totalExpectedSegments = Math.max(probe.estimatedChunks, 1);
+  const chunkMetas = [];
+  let uploadError = null;
+  const uploadPool = new Set();
+  const inFlightFrac = {};   // idx → fraction of segment uploaded (0-1)
+  let _lastPT = 0;
+
+  // Progress is based on segment count, not bytes, because the transcoded
+  // output at 720p is much smaller than the original file (e.g. 36MB vs 581MB).
+  const _reportPipelineProgress = (force) => {
+    if (!force) {
+      const now = Date.now();
+      if (now - _lastPT < 200) return;
+      _lastPT = now;
+    }
+    let frac = segmentsComplete;
+    for (const k in inFlightFrac) frac += inFlightFrac[k];
+    const ratio = Math.min(frac / totalExpectedSegments, 1);
+    const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
+    onProgress?.({
+      loaded: completedBytes, total: actualTotalSize || completedBytes || 1,
+      percent: Math.round(PHASE.chunkStart + ratio * chunkRange)
+    });
+  };
+
+  // 3. Segment callback: each transcoded fMP4 segment → encrypt → upload
+  const onSegmentReady = async (seg) => {
+    if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
+    if (uploadError) throw uploadError;
+
+    const idx = chunkIndex++;
+    const segData = seg.data;
+    const segSize = segData.byteLength;
+    actualTotalSize += segSize;
+
+    if (idx >= chunkPuts.length) {
+      throw new Error(`segment count exceeded estimate (${idx + 1} > ${chunkPuts.length})`);
+    }
+
+    const t0 = performance.now();
+    const ct = await bulkEncrypt(segData);
+
+    const p = (async () => {
+      inFlightFrac[idx] = 0;
+      try {
+        await uploadChunkWithRetry({
+          url: chunkPuts[idx].url, method: chunkPuts[idx].method || 'PUT',
+          headers: chunkPuts[idx].headers, cipherBuf: ct.cipherBuf, abortSignal,
+          onUploadProgress: (loaded, total) => {
+            inFlightFrac[idx] = total > 0 ? loaded / total : 0;
+            _reportPipelineProgress();
+          }
+        });
+        ac.recordSuccess(performance.now() - t0);
+      } catch (err) {
+        ac.recordFailure();
+        if (!uploadError) uploadError = err;
+        throw err;
+      }
+      delete inFlightFrac[idx];
+      completedBytes += segSize;
+      segmentsComplete++;
+      _reportPipelineProgress(true);
+
+      chunkMetas[idx] = {
+        index: idx, size: segSize, cipher_size: ct.cipherBuf.byteLength,
+        iv_b64: b64(ct.iv), salt_b64: b64(ct.hkdfSalt), trackIndex: seg.trackIndex
+      };
+    })().catch(err => { if (!uploadError) uploadError = err; throw err; })
+      .finally(() => uploadPool.delete(p));
+
+    uploadPool.add(p);
+    if (uploadPool.size >= ac.concurrency) {
+      await Promise.race(uploadPool);
+    }
+    if (uploadError) throw uploadError;
+  };
+
+  // 4. Run transcode — segments are encrypted + uploaded via onSegmentReady
+  let transcodeResult;
+  try {
+    transcodeResult = await transcodeToFmp4(file, {
+      encoderConstraints,
+      onSegment: onSegmentReady,
+      onProgress: ({ phase, percent }) => {
+        if (phase === 'load') {
+          onProgress?.({ percent: Math.round(percent * PHASE.chunkStart / 100) });
+        }
+      },
+    });
+    // Wait for remaining uploads to finish
+    await Promise.all(uploadPool);
+  } catch (err) {
+    try { await apiCleanupChunked({ baseKey }); } catch {}
+    throw uploadError || err;
+  }
+  if (uploadError) {
+    try { await apiCleanupChunked({ baseKey }); } catch {}
+    throw uploadError;
+  }
+
+  // 5. Upload manifest
+  onProgress?.({ percent: PHASE.chunkEnd });
+  const manifest = {
+    v: 3, segment_aligned: true, chunkSize: 0,
+    totalSize: actualTotalSize, totalChunks: chunkIndex,
+    contentType, name,
+    chunks: chunkMetas.slice(0, chunkIndex),
+    tracks: transcodeResult?.tracks || [{ type: 'muxed', codec: null }],
+    duration: probe.duration
+  };
+  const manifestJson = new TextEncoder().encode(JSON.stringify(manifest));
+  const manifestCt = await aeadEncryptWithMK(manifestJson, cryptoKey, MANIFEST_INFO_TAG);
+
+  try {
+    await uploadChunkWithRetry({
+      url: manifestPut.url, method: manifestPut.method || 'PUT',
+      headers: manifestPut.headers, cipherBuf: manifestCt.cipherBuf, abortSignal
+    });
+  } catch (err) {
+    try { await apiCleanupChunked({ baseKey }); } catch {}
+    throw err;
+  }
+  onProgress?.({ percent: PHASE.manifestEnd, statusText: null });
+
+  const manifestEnvelope = {
+    v: useSharedKey ? 2 : 1, aead: 'aes-256-gcm',
+    iv_b64: b64(manifestCt.iv), hkdf_salt_b64: b64(manifestCt.hkdfSalt),
+    info_tag: MANIFEST_INFO_TAG, key_type: useSharedKey ? 'shared' : 'mk'
+  };
+  if (useSharedKey && sharedKeyU8) manifestEnvelope.key_b64 = b64(sharedKeyU8);
+
+  return { baseKey, totalSize: actualTotalSize, chunkCount: chunkIndex, manifestEnvelope, chunked: true };
+}
+
+/**
  * Encrypt and upload a file in chunks.
  *
  * For video files (MP4/MOV/WebM):
@@ -479,64 +661,50 @@ export async function encryptAndPutChunked({
     }
     _setStep(fmtIdx, 'done', rawType);
 
-    // Preprocessing: WebCodecs transcode → retry with lower quality → remux fallback
-    // transcodeToFmp4 returns null if input is already MSE-safe (H.264+AAC)
-    // or if WebCodecs is unavailable, signalling to use the fast remux path.
+    // Preprocessing: WebCodecs streaming pipeline → remux fallback
     let preprocessResult = null;
 
-    // Progress helper for WebCodecs transcode phases
-    const transcodeProgress = ({ phase, percent }) => {
-      if (phase === 'load') {
-        onProgress?.({ percent: Math.round(percent * 2 / 100) });
-      } else {
-        onProgress?.({ percent: 2 + Math.round(percent * (PHASE.remuxEnd - 2) / 100) });
-      }
-    };
-
-    let transcodeIdx = -1;
     if (isWebCodecsSupported()) {
-      transcodeIdx = _addStep('編碼轉換 (720p)', 'active');
-      try {
-        // Always pass DEFAULT_ENCODER constraints so that even H.264 videos
-        // exceeding 720p / 1.5Mbps get re-encoded for smooth MSE streaming.
-        // Videos already within limits are returned as null (fast remux path).
-        preprocessResult = await transcodeToFmp4(file, {
-          onProgress: transcodeProgress,
-          encoderConstraints: DEFAULT_ENCODER,
-          onTranscodeStart: () => {
-            _setStep(transcodeIdx, 'active', '轉碼至 720p');
-            onProgress?.({ percent: 1, statusText: '正在轉換影片至 720p…' });
-          }
-        });
-        if (preprocessResult) {
-          _setStep(transcodeIdx, 'done', '720p');
-        } else {
-          // Already H.264 and within 720p/1.5Mbps — no re-encode needed
-          _setStep(transcodeIdx, 'skip', '品質已符合');
-        }
-      } catch (err) {
-        console.warn('[chunked-upload] WebCodecs transcode failed:', err?.message);
-        _setStep(transcodeIdx, 'warn', _shortError(err));
+      // Probe to check if transcode is needed (lightweight, reads headers only)
+      let transcodeProbe = null;
+      try { transcodeProbe = await probeTranscode(file, DEFAULT_ENCODER); } catch {}
 
-        // Retry with extreme fallback (480p, 800Kbps) to reduce
-        // OOM risk on memory-constrained devices (e.g. older iPhones).
-        const retryIdx = _addStep('降級重試 (480p)', 'active');
-        onProgress?.({ percent: 1, statusText: '影片轉換失敗，正在以較低品質重試…' });
+      if (transcodeProbe?.needed) {
+        // ── Streaming pipeline: transcode → encrypt → upload per-segment ──
+        // Segments are encrypted and uploaded as they're produced by the encoder,
+        // so the upload starts within seconds instead of waiting for full transcode.
+        const tcIdx = _addStep('轉碼上傳 (720p)', 'active');
+        onProgress?.({ percent: 1, statusText: '正在轉碼並上傳…' });
         try {
-          preprocessResult = await transcodeToFmp4(file, {
-            onProgress: transcodeProgress,
-            encoderConstraints: EXTREME_FALLBACK_ENCODER
+          const result = await _streamingTranscodeUpload({
+            file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
+            name, direction, dir, mk,
+            encoderConstraints: DEFAULT_ENCODER, onProgress, abortSignal,
           });
-          if (preprocessResult) {
-            _setStep(retryIdx, 'done');
-          } else {
-            _setStep(retryIdx, 'skip');
+          _setStep(tcIdx, 'done', '720p');
+          return result;
+        } catch (err) {
+          console.warn('[chunked-upload] Streaming transcode 720p failed:', err?.message);
+          _setStep(tcIdx, 'warn', _shortError(err));
+
+          // Retry with extreme fallback (480p, 800Kbps)
+          const retryIdx = _addStep('降級重試 (480p)', 'active');
+          onProgress?.({ percent: 1, statusText: '影片轉換失敗，正在以較低品質重試…' });
+          try {
+            const retryResult = await _streamingTranscodeUpload({
+              file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
+              name, direction, dir, mk,
+              encoderConstraints: EXTREME_FALLBACK_ENCODER, onProgress, abortSignal,
+            });
+            _setStep(retryIdx, 'done', '480p');
+            return retryResult;
+          } catch (retryErr) {
+            console.warn('[chunked-upload] Streaming transcode 480p also failed:', retryErr?.message);
+            _setStep(retryIdx, 'warn', _shortError(retryErr));
+            preprocessResult = null;
+            onProgress?.({ statusText: null });
+            // Fall through to remux path below
           }
-        } catch (retryErr) {
-          console.warn('[chunked-upload] WebCodecs retry also failed:', retryErr?.message);
-          _setStep(retryIdx, 'warn', _shortError(retryErr));
-          preprocessResult = null;
-          onProgress?.({ statusText: null });
         }
       }
     }
