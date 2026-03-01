@@ -122,9 +122,11 @@ function resolveContentType(file) {
 /**
  * Upload a single encrypted chunk via XHR with progress.
  * Includes a timeout to prevent permanent hangs on stalled connections.
+ * Retries up to CHUNK_RETRY_COUNT times on transient errors (timeout, network).
  * @returns {Promise<void>}
  */
 const CHUNK_UPLOAD_TIMEOUT_MS = 120_000; // 2 minutes per chunk
+const CHUNK_RETRY_COUNT = 2; // max retries per chunk (total attempts = 3)
 
 function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
   return new Promise((resolve, reject) => {
@@ -152,6 +154,30 @@ function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
     xhr.ontimeout = () => settle(reject, new Error('chunk PUT timeout (connection stalled)'));
     xhr.send(new Blob([cipherBuf], { type: ct }));
   });
+}
+
+/**
+ * Upload with retry — retries on timeout or network errors only.
+ * Abort errors and HTTP 4xx/5xx are NOT retried.
+ */
+async function uploadChunkWithRetry(opts) {
+  let lastErr;
+  for (let attempt = 0; attempt <= CHUNK_RETRY_COUNT; attempt++) {
+    try {
+      return await uploadChunkXhr(opts);
+    } catch (err) {
+      lastErr = err;
+      // Don't retry user-initiated abort
+      if (err?.name === 'AbortError') throw err;
+      // Only retry on timeout or network error
+      const msg = err?.message || '';
+      const isRetryable = msg.includes('timeout') || msg.includes('network error');
+      if (!isRetryable || attempt >= CHUNK_RETRY_COUNT) throw err;
+      // Exponential backoff: 2s, 4s
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -212,7 +238,7 @@ async function _streamingUploadFragmented({
   let chunkIndex = 0;
 
   try {
-    const pool = [];
+    const pool = new Set();
     for await (const { trackIndex, data } of iterateFragmentedSegmentsFromFile(file)) {
       if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
       if (uploadError) throw uploadError;
@@ -225,7 +251,7 @@ async function _streamingUploadFragmented({
 
       const p = (async () => {
         const ct = await aeadEncryptWithMK(data, cryptoKey, CHUNK_INFO_TAG);
-        await uploadChunkXhr({
+        await uploadChunkWithRetry({
           url: chunkPut.url, method: chunkPut.method || 'PUT',
           headers: chunkPut.headers, cipherBuf: ct.cipherBuf, abortSignal
         });
@@ -239,15 +265,12 @@ async function _streamingUploadFragmented({
           loaded: uploadedBytes, total: totalFileSize,
           percent: Math.round(PHASE.chunkStart + (uploadedBytes / totalFileSize) * chunkRange)
         });
-      })().catch(err => { if (!uploadError) uploadError = err; throw err; });
+      })().catch(err => { if (!uploadError) uploadError = err; throw err; })
+        .finally(() => pool.delete(p));
 
-      pool.push(p);
-      if (pool.length >= UPLOAD_CONCURRENCY) {
+      pool.add(p);
+      if (pool.size >= UPLOAD_CONCURRENCY) {
         await Promise.race(pool);
-        for (let j = pool.length - 1; j >= 0; j--) {
-          const st = await Promise.race([pool[j].then(() => 'done'), Promise.resolve('pending')]);
-          if (st === 'done') pool.splice(j, 1);
-        }
       }
       if (uploadError) throw uploadError;
     }
@@ -274,7 +297,7 @@ async function _streamingUploadFragmented({
   const manifestCt = await aeadEncryptWithMK(manifestJson, cryptoKey, MANIFEST_INFO_TAG);
 
   try {
-    await uploadChunkXhr({
+    await uploadChunkWithRetry({
       url: manifestPut.url, method: manifestPut.method || 'PUT',
       headers: manifestPut.headers, cipherBuf: manifestCt.cipherBuf, abortSignal
     });
@@ -619,7 +642,7 @@ export async function encryptAndPutChunked({
     const chunkPut = chunkPuts[index];
     if (!chunkPut?.url) throw new Error(`missing presigned URL for chunk ${index}`);
 
-    await uploadChunkXhr({
+    await uploadChunkWithRetry({
       url: chunkPut.url,
       method: chunkPut.method || 'PUT',
       headers: chunkPut.headers,
@@ -658,25 +681,22 @@ export async function encryptAndPutChunked({
     }
   };
 
-  // Concurrency pool
+  // Concurrency pool — use a proper slot-based limiter so that exactly
+  // UPLOAD_CONCURRENCY uploads run in parallel (not more, not fewer).
   try {
-    const pool = [];
+    const pool = new Set();
     for (let i = 0; i < chunkCount; i++) {
+      if (uploadError) throw uploadError;
+
       const p = processChunk(i).catch((err) => {
         if (!uploadError) uploadError = err;
         throw err;
-      });
-      pool.push(p);
+      }).finally(() => pool.delete(p));
+      pool.add(p);
 
-      if (pool.length >= UPLOAD_CONCURRENCY) {
+      if (pool.size >= UPLOAD_CONCURRENCY) {
         await Promise.race(pool);
-        // Remove settled promises
-        for (let j = pool.length - 1; j >= 0; j--) {
-          const status = await Promise.race([pool[j].then(() => 'done'), Promise.resolve('pending')]);
-          if (status === 'done') pool.splice(j, 1);
-        }
       }
-      if (uploadError) throw uploadError;
     }
     await Promise.all(pool);
   } catch (err) {
@@ -713,7 +733,7 @@ export async function encryptAndPutChunked({
 
   // 4. Upload encrypted manifest
   try {
-    await uploadChunkXhr({
+    await uploadChunkWithRetry({
       url: manifestPut.url,
       method: manifestPut.method || 'PUT',
       headers: manifestPut.headers,
