@@ -239,12 +239,22 @@ export class MediaHandlingController extends BaseController {
             video.addEventListener('pause', onPauseEvent);
             video.addEventListener('play', onPlayEvent);
 
-            // Watchdog: during streaming, the browser may pause the video when
-            // MediaSource duration grows (incremental durationchange) or for
-            // other internal reasons. A periodic check is more reliable than
-            // event-based auto-resume because it doesn't depend on event
-            // ordering or timing. Every 500ms, if video is paused but the user
-            // didn't explicitly pause, auto-resume.
+            // Direct durationchange handler: the primary fix for auto-pause.
+            // When MediaSource.duration grows incrementally (each segment append
+            // extends the timeline), some browsers pause the video. This handler
+            // responds immediately instead of waiting for the watchdog poll.
+            const onDurationChange = () => {
+                if (streamingComplete || userPaused || video.ended) return;
+                if (video.paused && video.readyState >= 2) {
+                    console.info('[mse] durationchange: auto-resuming paused video');
+                    video.play().catch(() => {});
+                }
+            };
+            video.addEventListener('durationchange', onDurationChange);
+
+            // Watchdog: safety net for pauses not covered by the durationchange
+            // handler (e.g. readyState was < 2 at durationchange time but data
+            // arrived shortly after). Polls every 300ms.
             const playbackWatchdog = setInterval(() => {
                 if (streamingComplete || !mseInitialized || video.ended) return;
                 if (userPaused) return;
@@ -252,7 +262,7 @@ export class MediaHandlingController extends BaseController {
                     console.info('[mse] watchdog: auto-resuming paused video during streaming');
                     video.play().catch(() => {});
                 }
-            }, 500);
+            }, 300);
 
             // Hide buffering overlay only when the video actually has frames
             // (not just when MSE accepts data — that doesn't guarantee decodability).
@@ -524,6 +534,7 @@ export class MediaHandlingController extends BaseController {
             // Streaming complete — disable watchdog so user pause works normally
             streamingComplete = true;
             clearInterval(playbackWatchdog);
+            video.removeEventListener('durationchange', onDurationChange);
             video.removeEventListener('pause', onPauseEvent);
             video.removeEventListener('play', onPlayEvent);
             try {
@@ -571,6 +582,7 @@ export class MediaHandlingController extends BaseController {
             streamingComplete = true;
             clearInterval(playbackWatchdog);
             try {
+                video.removeEventListener('durationchange', onDurationChange);
                 video.removeEventListener('pause', onPauseEvent);
                 video.removeEventListener('play', onPlayEvent);
                 viewer.overlay.removeEventListener('click', onUserClick, true);

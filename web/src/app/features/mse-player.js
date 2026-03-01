@@ -616,23 +616,38 @@ export function createMsePlayer({ videoElement, onError }) {
     setDuration(seconds) {
       if (!mediaSource || mediaSource.readyState !== 'open') return;
       if (!Number.isFinite(seconds) || seconds <= 0) return;
-      try {
-        // Wait for all SourceBuffers to finish updating before setting duration
-        const anyUpdating = Object.values(buffers).some(b => b.sourceBuffer?.updating);
-        if (anyUpdating) {
-          // Defer until next updateend
-          const waitAndSet = () => {
-            const still = Object.values(buffers).some(b => b.sourceBuffer?.updating);
-            if (!still && mediaSource?.readyState === 'open') {
-              mediaSource.duration = seconds;
-            }
-          };
-          setTimeout(waitAndSet, 100);
-        } else {
-          mediaSource.duration = seconds;
+
+      const trySet = () => {
+        try {
+          if (mediaSource?.readyState === 'open') {
+            mediaSource.duration = seconds;
+          }
+        } catch (err) {
+          console.warn('[mse-player] setDuration failed:', err?.message);
         }
-      } catch (err) {
-        console.warn('[mse-player] setDuration failed:', err?.message);
+      };
+
+      const anyUpdating = Object.values(buffers).some(b => b.sourceBuffer?.updating);
+      if (anyUpdating) {
+        // Wait for the first SourceBuffer to finish, then try again.
+        // Uses both updateend listener and timeout fallback for reliability.
+        const updatingSb = Object.values(buffers).find(b => b.sourceBuffer?.updating)?.sourceBuffer;
+        if (updatingSb) {
+          const onDone = () => {
+            updatingSb.removeEventListener('updateend', onDone);
+            trySet();
+          };
+          updatingSb.addEventListener('updateend', onDone);
+          // Safety fallback: if updateend never fires within 500ms, try anyway
+          setTimeout(() => {
+            updatingSb.removeEventListener('updateend', onDone);
+            trySet();
+          }, 500);
+        } else {
+          setTimeout(trySet, 100);
+        }
+      } else {
+        trySet();
       }
     },
 
