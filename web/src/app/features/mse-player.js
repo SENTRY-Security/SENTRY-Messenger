@@ -654,6 +654,27 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
     resume() { paused = false; processQueue(); },
     setEvictionEnabled(v) { evictionEnabled = !!v; },
     get pending() { return queue.length + (appending ? 1 : 0); },
+
+    /**
+     * Force-reset the queue for seek re-append.
+     * If the previous append's updateend event was lost (common on MMS after
+     * endOfStream), `appending` stays stuck at true and the entire queue
+     * deadlocks. This method:
+     *   1. Aborts any in-progress SourceBuffer operation
+     *   2. Resets `appending` and `paused` flags
+     *   3. Kicks processQueue to resume
+     */
+    resetForSeek() {
+      if (sourceBuffer) {
+        try {
+          if (sourceBuffer.updating) sourceBuffer.abort();
+        } catch {}
+      }
+      appending = false;
+      paused = false;
+      processQueue();
+    },
+
     destroy() {
       destroyed = true;
       const pending = queue;
@@ -987,6 +1008,51 @@ export function createMsePlayer({ videoElement, onError }) {
      * On non-MMS browsers this is a no-op.
      */
     setSuppressEndStreaming(v) { suppressEndStreaming = !!v; },
+
+    /**
+     * Force-reset all SourceBuffer queues for seek re-append.
+     * Aborts any stuck SourceBuffer operations, resets appending/paused
+     * flags, and kicks processQueue. Call BEFORE pushing seek re-append
+     * data to ensure the queue isn't deadlocked from a prior endOfStream
+     * where updateend was missed (common MMS issue).
+     */
+    resetQueuesForSeek() {
+      for (const b of Object.values(buffers)) {
+        b.queue.resetForSeek();
+      }
+    },
+
+    /**
+     * Prepare MediaSource for seek re-append.
+     * On MMS (iOS Safari), after endOfStream() the SourceBuffer won't
+     * process appendBuffer() until the browser fires 'startstreaming'.
+     * This method waits for that event (with a short timeout for
+     * non-MMS browsers or if the event doesn't fire).
+     *
+     * Must be called AFTER setting video.currentTime (the seek itself)
+     * and BEFORE appending chunks.
+     */
+    async prepareForSeekAppend() {
+      if (!isMMS || !mediaSource) return;
+      // If already open (startstreaming was fired), no need to wait
+      if (mediaSource.readyState === 'open') return;
+
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          try { mediaSource.removeEventListener('sourceopen', finish); } catch {}
+          resolve();
+        };
+        // When appendBuffer transitions 'ended' → 'open', sourceopen fires
+        mediaSource.addEventListener('sourceopen', finish);
+        // Also resolve on startstreaming (MMS-specific)
+        try { mediaSource.addEventListener('startstreaming', finish); } catch {}
+        // Fallback timeout: don't block forever if events don't fire
+        setTimeout(finish, 500);
+      });
+    },
 
     /** Get the list of track labels that have SourceBuffers. */
     get labels() { return Object.keys(buffers); },

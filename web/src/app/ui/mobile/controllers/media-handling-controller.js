@@ -712,28 +712,35 @@ export class MediaHandlingController extends BaseController {
         const appendChunks = async (indices) => {
             if (!indices.length) return;
             const BATCH = 8;
+            let appendedCount = 0;
             for (let b = 0; b < indices.length; b += BATCH) {
                 if (destroyed || !msePlayer) break;
-                // Safety: re-resume queues before each batch in case
-                // something paused them despite endstreaming suppression.
-                msePlayer.resumeQueues();
+                // Safety: re-resume and reset queues before each batch in case
+                // something paused or stuck them despite endstreaming suppression.
+                msePlayer.resetQueuesForSeek();
                 const batch = indices.slice(b, b + BATCH);
                 const blobReads = [];
                 for (const idx of batch) {
-                    if (!chunkCache[idx]) continue;
+                    if (!chunkCache[idx]) {
+                        console.warn(`[video-seek] chunkCache[${idx}] is empty`);
+                        continue;
+                    }
                     blobReads.push(chunkCache[idx].arrayBuffer());
                 }
+                if (blobReads.length === 0) continue;
                 const bufs = await Promise.all(blobReads.map(async (p) => new Uint8Array(await p)));
                 // Append sequentially to avoid queue ordering issues
                 for (const data of bufs) {
                     if (destroyed || !msePlayer) break;
                     try {
                         await msePlayer.appendChunk('muxed', data);
+                        appendedCount++;
                     } catch (err) {
                         console.warn('[video-seek] append error:', err?.message);
                     }
                 }
             }
+            console.info(`[video-seek] appendChunks done: ${appendedCount}/${indices.length} appended`);
         };
 
         const doReappend = async (seekTime) => {
@@ -780,9 +787,16 @@ export class MediaHandlingController extends BaseController {
                 // buffer at the wrong position.
                 msePlayer.setSuppressEndStreaming(true);
 
-                // Resume append queues — endOfStream() may have triggered
-                // 'endstreaming' which paused all queues before we suppressed it.
-                msePlayer.resumeQueues();
+                // On MMS (iOS Safari), after endOfStream() the SourceBuffer may
+                // not process appendBuffer() calls until the browser fires
+                // 'startstreaming'. Wait briefly for this event before appending.
+                await msePlayer.prepareForSeekAppend();
+
+                // Force-reset all SourceBuffer queues: abort any stuck operations,
+                // clear the `appending` flag (which can stay stuck if updateend was
+                // missed after endOfStream on MMS), unpause, and kick processQueue.
+                // Without this, the queue deadlocks and no chunks are appended.
+                msePlayer.resetQueuesForSeek();
 
                 // Use precise chunk time index to find exactly which chunks
                 // cover the seek position. Start with ±5s margin to ensure
