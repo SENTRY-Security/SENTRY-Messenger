@@ -338,6 +338,22 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   // Last released sample number per track (for releaseUsedSamples)
   const lastReleasedSample = {};
 
+  // ── Fatal error propagation ──
+  // WebCodecs error callbacks fire asynchronously in browser context.
+  // Using `throw` inside them creates unhandled exceptions that never
+  // propagate to the async function. Instead, we capture the FIRST error
+  // and check it at every async yield point in the pipeline.
+  let fatalError = null;
+  function setFatalError(err) {
+    if (!fatalError) {
+      fatalError = err;
+      console.error('[streamingTranscode] fatal:', err?.message || err);
+    }
+  }
+  function checkError() {
+    if (fatalError) throw fatalError;
+  }
+
   const reportProgress = () => {
     if (!totalSamples) return;
     const pct = Math.round((processedSamples / totalSamples) * 100);
@@ -349,21 +365,25 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   function setupVideoEncoder(config) {
     videoEncoder = new VideoEncoder({
       output: (chunk, meta) => {
-        const buf = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(buf);
-        encodedVideo.push({
-          data: buf,
-          timestamp: chunk.timestamp,
-          duration: chunk.duration || 0,
-          key: chunk.type === 'key',
-          description: meta?.decoderConfig?.description
-            ? new Uint8Array(meta.decoderConfig.description)
-            : undefined,
-        });
-        processedSamples++;
-        reportProgress();
+        try {
+          const buf = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(buf);
+          encodedVideo.push({
+            data: buf,
+            timestamp: chunk.timestamp,
+            duration: chunk.duration || 0,
+            key: chunk.type === 'key',
+            description: meta?.decoderConfig?.description
+              ? new Uint8Array(meta.decoderConfig.description)
+              : undefined,
+          });
+          processedSamples++;
+          reportProgress();
+        } catch (err) {
+          setFatalError(err);
+        }
       },
-      error: (err) => { throw new Error('視訊編碼失敗：' + (err?.message || err)); },
+      error: (err) => setFatalError(new Error('視訊編碼失敗：' + (err?.message || err))),
     });
     videoEncoder.configure(config);
   }
@@ -379,29 +399,34 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
     videoDecoder = new VideoDecoder({
       output: (frame) => {
-        let toEncode = frame;
-        if (needsRot && rotCtx) {
-          const fw = frame.displayWidth;
-          const fh = frame.displayHeight;
-          const ow = encConfig.width;
-          const oh = encConfig.height;
-          rotCtx.clearRect(0, 0, ow, oh);
-          rotCtx.save();
-          rotCtx.translate(ow / 2, oh / 2);
-          rotCtx.rotate((rotation * Math.PI) / 180);
-          rotCtx.drawImage(frame, -fw / 2, -fh / 2, fw, fh);
-          rotCtx.restore();
-          toEncode = new VideoFrame(rotCanvas, {
-            timestamp: frame.timestamp,
-            duration: frame.duration,
-          });
-          frame.close();
+        try {
+          let toEncode = frame;
+          if (needsRot && rotCtx) {
+            const fw = frame.displayWidth;
+            const fh = frame.displayHeight;
+            const ow = encConfig.width;
+            const oh = encConfig.height;
+            rotCtx.clearRect(0, 0, ow, oh);
+            rotCtx.save();
+            rotCtx.translate(ow / 2, oh / 2);
+            rotCtx.rotate((rotation * Math.PI) / 180);
+            rotCtx.drawImage(frame, -fw / 2, -fh / 2, fw, fh);
+            rotCtx.restore();
+            toEncode = new VideoFrame(rotCanvas, {
+              timestamp: frame.timestamp,
+              duration: frame.duration,
+            });
+            frame.close();
+          }
+          videoEncoder.encode(toEncode, { keyFrame: decodedFrameCount % 60 === 0 });
+          toEncode.close();
+          decodedFrameCount++;
+        } catch (err) {
+          try { frame.close(); } catch {}
+          setFatalError(err);
         }
-        videoEncoder.encode(toEncode, { keyFrame: decodedFrameCount % 60 === 0 });
-        toEncode.close();
-        decodedFrameCount++;
       },
-      error: (err) => { throw new Error('視訊解碼失敗：' + (err?.message || err)); },
+      error: (err) => setFatalError(new Error('視訊解碼失敗：' + (err?.message || err))),
     });
 
     const decoderConfig = {
@@ -419,30 +444,39 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
     audioEncoder = new AudioEncoder({
       output: (chunk, meta) => {
-        const buf = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(buf);
-        encodedAudio.push({
-          data: buf,
-          timestamp: chunk.timestamp,
-          duration: chunk.duration || 0,
-          key: chunk.type === 'key',
-          description: meta?.decoderConfig?.description
-            ? new Uint8Array(meta.decoderConfig.description)
-            : undefined,
-        });
-        processedSamples++;
-        reportProgress();
+        try {
+          const buf = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(buf);
+          encodedAudio.push({
+            data: buf,
+            timestamp: chunk.timestamp,
+            duration: chunk.duration || 0,
+            key: chunk.type === 'key',
+            description: meta?.decoderConfig?.description
+              ? new Uint8Array(meta.decoderConfig.description)
+              : undefined,
+          });
+          processedSamples++;
+          reportProgress();
+        } catch (err) {
+          setFatalError(err);
+        }
       },
-      error: (err) => { throw new Error('音訊編碼失敗：' + (err?.message || err)); },
+      error: (err) => setFatalError(new Error('音訊編碼失敗：' + (err?.message || err))),
     });
     audioEncoder.configure(aEncConfig);
 
     audioDecoder = new AudioDecoder({
       output: (frame) => {
-        audioEncoder.encode(frame);
-        frame.close();
+        try {
+          audioEncoder.encode(frame);
+          frame.close();
+        } catch (err) {
+          try { frame.close(); } catch {}
+          setFatalError(err);
+        }
       },
-      error: (err) => { throw new Error('音訊解碼失敗：' + (err?.message || err)); },
+      error: (err) => setFatalError(new Error('音訊解碼失敗：' + (err?.message || err))),
     });
 
     const decoderConfig = {
@@ -459,13 +493,19 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   async function processPendingSamples() {
     // Feed video samples to decoder, releasing compressed data immediately
     while (pendingVideo.length > 0) {
+      checkError();
       const s = pendingVideo.shift();
-      videoDecoder.decode(new EncodedVideoChunk({
-        type: s.is_sync ? 'key' : 'delta',
-        timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
-        duration: Math.round((s.duration / s.timescale) * 1_000_000),
-        data: s.data,
-      }));
+      try {
+        videoDecoder.decode(new EncodedVideoChunk({
+          type: s.is_sync ? 'key' : 'delta',
+          timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
+          duration: Math.round((s.duration / s.timescale) * 1_000_000),
+          data: s.data,
+        }));
+      } catch (decodeErr) {
+        // Decoder may have closed due to a codec error — throw the original
+        throw fatalError || decodeErr;
+      }
       // Track last sample number for releaseUsedSamples
       if (s.number != null) lastReleasedSample[s.track_id || videoTrack.id] = s.number;
       s.data = null;
@@ -479,6 +519,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
     // Feed audio samples
     while (pendingAudio.length > 0) {
+      checkError();
       const s = pendingAudio.shift();
       if (audioIsPassthrough) {
         encodedAudio.push({
@@ -490,21 +531,44 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         processedSamples++;
         reportProgress();
       } else if (audioDecoder) {
-        audioDecoder.decode(new EncodedAudioChunk({
-          type: s.is_sync ? 'key' : 'delta',
-          timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
-          duration: Math.round((s.duration / s.timescale) * 1_000_000),
-          data: s.data,
-        }));
+        try {
+          audioDecoder.decode(new EncodedAudioChunk({
+            type: s.is_sync ? 'key' : 'delta',
+            timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
+            duration: Math.round((s.duration / s.timescale) * 1_000_000),
+            data: s.data,
+          }));
+        } catch (decodeErr) {
+          throw fatalError || decodeErr;
+        }
       }
       if (s.number != null) lastReleasedSample[s.track_id || audioTrack.id] = s.number;
       s.data = null;
     }
 
-    // Tell mp4box.js to release buffer data for processed samples
+    // Tell mp4box.js to release sample data for processed samples
     for (const [trackId, sampleNum] of Object.entries(lastReleasedSample)) {
       try { demuxer.releaseUsedSamples(Number(trackId), sampleNum); } catch {}
     }
+
+    // Release mp4box.js internal stream buffers that are no longer needed.
+    // mp4box accumulates ALL appendBuffer data in stream.buffers[]; without
+    // cleanup, a 581MB file consumes 581MB of ArrayBuffers just for the stream.
+    // After samples are extracted and released, the underlying mdat data is
+    // no longer needed — only keep the most recent buffer for ongoing parsing.
+    try {
+      const stream = demuxer.stream;
+      if (stream && Array.isArray(stream.buffers) && stream.buffers.length > 3) {
+        // Keep last 3 buffers (~6MB) for any in-progress box parsing
+        const keep = stream.buffers.length - 3;
+        for (let i = 0; i < keep; i++) {
+          // Null out the underlying ArrayBuffer data but keep the entry
+          // so mp4box position tracking doesn't break
+          stream.buffers[i] = new ArrayBuffer(0);
+          stream.buffers[i].fileStart = i * READ_CHUNK_SIZE;
+        }
+      }
+    } catch { /* best effort */ }
   }
 
   // ── Main flow ──
@@ -595,10 +659,16 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   let ready = false;
 
   while (readOffset < file.size) {
+    checkError();
     const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
     const chunk = await file.slice(readOffset, end).arrayBuffer();
     chunk.fileStart = readOffset;
-    demuxer.appendBuffer(chunk);
+    try {
+      demuxer.appendBuffer(chunk);
+    } catch (appendErr) {
+      // appendBuffer can throw if mp4box runs out of memory or can't parse
+      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (appendErr?.message || appendErr));
+    }
     readOffset = end;
 
     // Wait for onReady to fire and set up codecs (first time only)
@@ -623,7 +693,9 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   }
 
   // Process any remaining samples from flush
+  checkError();
   await processPendingSamples();
+  checkError();
 
   // ── Flush decoder → encoder pipelines ──
 
