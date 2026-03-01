@@ -422,6 +422,7 @@ export async function encryptAndPutChunked({
   let fmp4Tracks = null; // track info: [{ type, codec }]
   let contentType = resolveContentType(file);
   let totalSize;
+  let mediaDuration;  // video duration in seconds (from remuxer), used in manifest
 
   // Progress allocation across all phases (percent ranges):
   //   Video:     remux 0-10 | sign 10-12 | chunks 12-95 | manifest 95-100
@@ -566,7 +567,7 @@ export async function encryptAndPutChunked({
 
     onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
     contentType = preprocessResult.contentType;
-    const mediaDuration = preprocessResult.duration || undefined;
+    mediaDuration = preprocessResult.duration || undefined;
 
     if (preprocessResult.segments) {
       const rawSegments = preprocessResult.segments;
