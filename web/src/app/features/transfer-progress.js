@@ -56,6 +56,7 @@ let _uploadLoaded = 0;
 let _uploadTotal = 0;
 let _uploadSpeedSamples = [];   // { time, loaded } ring buffer for speed calc
 let _uploadStatsEl = null;      // DOM element inside detail panel
+let _statsRefreshTimer = null;  // 1s interval for reliable stats refresh
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -154,6 +155,7 @@ export function endUpload() {
     _uploadTotal = 0;
     _uploadSpeedSamples = [];
     _uploadStatsEl = null;
+    _stopStatsRefresh();
     if (_uploadDetailBtnEl) {
         _uploadDetailBtnEl.style.display = 'none';
         _uploadDetailBtnEl.classList.remove('active');
@@ -253,12 +255,33 @@ function _toggleDetailPanel() {
         if (_detailExpanded) {
             _renderDetailContent();
             _uploadDetailPanelEl.style.display = '';
+            _startStatsRefresh();
         } else {
             _uploadDetailPanelEl.style.display = 'none';
+            _stopStatsRefresh();
         }
     }
     if (_uploadDetailBtnEl) {
         _uploadDetailBtnEl.classList.toggle('active', _detailExpanded);
+    }
+}
+
+/** Start a 1s interval that refreshes the stats display while the panel is open */
+function _startStatsRefresh() {
+    _stopStatsRefresh();
+    _statsRefreshTimer = setInterval(() => {
+        if (!_upload || !_detailExpanded) {
+            _stopStatsRefresh();
+            return;
+        }
+        _updateStatsDisplay();
+    }, 1000);
+}
+
+function _stopStatsRefresh() {
+    if (_statsRefreshTimer) {
+        clearInterval(_statsRefreshTimer);
+        _statsRefreshTimer = null;
     }
 }
 
@@ -328,24 +351,34 @@ function _renderDetailContent() {
 function _updateStatsDisplay() {
     if (!_uploadStatsEl) return;
     const speed = _calcSpeed();
+    const loadedStr = _fmtBytes(_uploadLoaded);
     const totalStr = _uploadTotal > 0 ? _fmtBytes(_uploadTotal) : '—';
-    const speedStr = speed > 0 ? `${_fmtBytes(speed)}/s` : '計算中…';
+    const speedStr = speed > 0 ? `${_fmtBytes(speed)}/s` : '';
 
-    // Build two-line display: progress + speed
-    _uploadStatsEl.innerHTML = '';
+    // Reuse existing child elements if possible (avoids flicker from innerHTML='')
+    let line1 = _uploadStatsEl.firstElementChild;
+    let sizeLabel, speedLabel;
 
-    const line1 = document.createElement('div');
-    line1.style.cssText = 'display:flex;justify-content:space-between;gap:12px';
-    const sizeLabel = document.createElement('span');
-    sizeLabel.textContent = _uploadLoaded > 0
-        ? `已上傳 ${_fmtBytes(_uploadLoaded)} / ${totalStr}`
-        : `檔案大小 ${totalStr}`;
-    const speedLabel = document.createElement('span');
-    speedLabel.style.opacity = '0.7';
-    speedLabel.textContent = _uploadLoaded > 0 ? speedStr : '';
-    line1.appendChild(sizeLabel);
-    line1.appendChild(speedLabel);
-    _uploadStatsEl.appendChild(line1);
+    if (line1 && line1.childElementCount === 2) {
+        // Fast path: update text only
+        sizeLabel = line1.children[0];
+        speedLabel = line1.children[1];
+    } else {
+        // First render: create elements
+        _uploadStatsEl.innerHTML = '';
+        line1 = document.createElement('div');
+        line1.style.cssText = 'display:flex;justify-content:space-between;gap:12px';
+        sizeLabel = document.createElement('span');
+        speedLabel = document.createElement('span');
+        speedLabel.style.opacity = '0.7';
+        line1.appendChild(sizeLabel);
+        line1.appendChild(speedLabel);
+        _uploadStatsEl.appendChild(line1);
+    }
+
+    // Always show uploaded/total format
+    sizeLabel.textContent = `已上傳 ${loadedStr} / ${totalStr}`;
+    speedLabel.textContent = speedStr;
 }
 
 /**
