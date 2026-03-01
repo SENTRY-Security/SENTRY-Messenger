@@ -68,6 +68,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     let statsIntervalId = null;
     let seekDragging = false;
     let destroyed = false;
+    let _userPauseIntent = false; // set true only when user explicitly pauses via togglePlay
 
     const chunkStats = { received: 0, total: 0, bytes: 0 };
 
@@ -243,8 +244,10 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
 
     const togglePlay = () => {
         if (video.paused) {
+            _userPauseIntent = false;
             video.play().catch(() => {});
         } else {
+            _userPauseIntent = true;
             video.pause();
         }
     };
@@ -266,6 +269,8 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
 
     video.addEventListener('play', syncPlayButton);
     video.addEventListener('pause', syncPlayButton);
+    // Reset user-pause intent when playback resumes (e.g. auto-resume by controller)
+    video.addEventListener('play', () => { _userPauseIntent = false; });
 
     /* ── Waiting / Seeking — re-show buffering spinner when video stalls ── */
     let seekCallbacks = [];  // external callbacks registered via onSeeking()
@@ -355,8 +360,8 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     }, { passive: true });
     seekbar.addEventListener('touchend', () => { seekDragging = false; }, { passive: true });
 
-    /* ── Stats Panel (default: visible) ── */
-    statsToggle.classList.add('active');
+    /* ── Stats Panel (default: hidden) ── */
+    statsPanel.hidden = true;
     const statsCloseBtn = statsPanel.querySelector('.vv-stats-close');
 
     const hideStats = () => {
@@ -591,6 +596,9 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
         setMsePlayer(player) {
             msePlayer = player;
         },
+
+        /** True if the current paused state was user-initiated via togglePlay */
+        get userPaused() { return _userPauseIntent && video.paused; },
 
         /** Register a callback for seek events: cb(seekTimeSeconds) */
         onSeeking(cb) {

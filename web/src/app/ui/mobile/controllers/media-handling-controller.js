@@ -221,48 +221,56 @@ export class MediaHandlingController extends BaseController {
             let streamingComplete = false;
             let userPaused = false; // true when user explicitly pauses via UI
 
-            // Detect user-initiated pauses: the video-viewer's togglePlay()
-            // is triggered by click events on the stage/controls. We track
-            // recent clicks and correlate with pause events to distinguish
-            // user pauses from browser-initiated pauses (e.g. durationchange).
-            let lastUserClickTime = 0;
-            const onUserClick = () => { lastUserClickTime = Date.now(); };
-            viewer.overlay.addEventListener('click', onUserClick, true);
-
+            // Detect user-initiated pauses via the video-viewer's togglePlay
+            // intent flag. This replaces the old click-correlation approach
+            // which was too broad — any click on the overlay (seekbar, stats,
+            // rotate) within 500ms of a browser-initiated pause was mis-
+            // classified as a user pause, suppressing auto-resume.
             const onPauseEvent = () => {
-                // If a click happened within the last 500ms, this is user-initiated
-                if (!video.ended && Date.now() - lastUserClickTime < 500) {
+                if (streamingComplete || video.ended) return;
+                // Check if the video-viewer flagged this as user-initiated
+                if (viewer.userPaused) {
                     userPaused = true;
+                    return;
+                }
+                // Browser-initiated pause during streaming — auto-resume after
+                // a brief delay so the browser finishes processing whatever
+                // triggered the pause (e.g. durationchange, buffer update).
+                if (!userPaused) {
+                    setTimeout(() => {
+                        if (streamingComplete || userPaused || video.ended) return;
+                        if (video.paused && !viewer.userPaused && video.readyState >= 2) {
+                            console.info('[mse] auto-resuming browser-initiated pause');
+                            video.play().catch(() => {});
+                        }
+                    }, 50);
                 }
             };
             const onPlayEvent = () => { userPaused = false; };
             video.addEventListener('pause', onPauseEvent);
             video.addEventListener('play', onPlayEvent);
 
-            // Direct durationchange handler: the primary fix for auto-pause.
-            // When MediaSource.duration grows incrementally (each segment append
-            // extends the timeline), some browsers pause the video. This handler
-            // responds immediately instead of waiting for the watchdog poll.
+            // Direct durationchange handler: immediate resume attempt when
+            // MediaSource.duration grows incrementally (each segment append
+            // extends the timeline) and some browsers pause the video.
             const onDurationChange = () => {
                 if (streamingComplete || userPaused || video.ended) return;
                 if (video.paused && video.readyState >= 2) {
-                    console.info('[mse] durationchange: auto-resuming paused video');
                     video.play().catch(() => {});
                 }
             };
             video.addEventListener('durationchange', onDurationChange);
 
-            // Watchdog: safety net for pauses not covered by the durationchange
-            // handler (e.g. readyState was < 2 at durationchange time but data
-            // arrived shortly after). Polls every 300ms.
+            // Watchdog: safety net for pauses not covered by the above handlers
+            // (e.g. readyState was < 2 at durationchange time but data arrived
+            // shortly after). Polls every 200ms.
             const playbackWatchdog = setInterval(() => {
                 if (streamingComplete || !mseInitialized || video.ended) return;
                 if (userPaused) return;
                 if (video.paused && video.readyState >= 2) {
-                    console.info('[mse] watchdog: auto-resuming paused video during streaming');
                     video.play().catch(() => {});
                 }
-            }, 300);
+            }, 200);
 
             // Hide buffering overlay only when the video actually has frames
             // (not just when MSE accepts data — that doesn't guarantee decodability).
@@ -541,9 +549,6 @@ export class MediaHandlingController extends BaseController {
             video.removeEventListener('durationchange', onDurationChange);
             video.removeEventListener('pause', onPauseEvent);
             video.removeEventListener('play', onPlayEvent);
-            try {
-                viewer.overlay.removeEventListener('click', onUserClick, true);
-            } catch {}
 
             if (useBlobFallback) {
                 // All chunks collected — create blob URL and play natively
@@ -589,7 +594,6 @@ export class MediaHandlingController extends BaseController {
                 video.removeEventListener('durationchange', onDurationChange);
                 video.removeEventListener('pause', onPauseEvent);
                 video.removeEventListener('play', onPlayEvent);
-                viewer.overlay.removeEventListener('click', onUserClick, true);
             } catch {}
 
             // Release seek handler and chunk cache
