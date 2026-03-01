@@ -741,7 +741,10 @@ export class MediaHandlingController extends BaseController {
                     await batchAppendChunks(wideStart, wideEnd, skipSet);
                 }
 
-                // Signal end of stream ONCE after all appends complete
+                // Re-signal end of stream so the browser knows the full
+                // timeline. appendBuffer() transitions readyState from
+                // 'ended' → 'open'; we must transition back to 'ended'
+                // so the seekbar/duration remain correct.
                 if (!destroyed && msePlayer) {
                     await msePlayer.endOfStream();
                 }
@@ -760,16 +763,27 @@ export class MediaHandlingController extends BaseController {
                     return; // skip hideBuffering — the next re-append will handle it
                 }
 
-                // Hide buffering spinner if the position is now buffered
-                if (msePlayer?.isTimeBuffered(video.currentTime)) {
-                    viewer.hideBuffering();
+                // Resume playback after re-append. The initial streaming's
+                // auto-resume watchdog was already cleared (streamingComplete),
+                // so without an explicit play() the video stays paused after
+                // seeking to an evicted region.
+                if (!destroyed && video.paused && !viewer.userPaused) {
+                    video.play().catch(() => {});
                 }
+
+                // Always hide spinner after re-append completes. Even if
+                // isTimeBuffered returns false (edge case: segment boundary
+                // near seek point), the data IS appended and the browser
+                // will resume once it processes the buffered segments.
+                viewer.hideBuffering();
             }
         };
 
-        // Debounced seek handler — waits for drag to settle before re-appending
+        // Debounced seek handler — waits for drag to settle before re-appending.
+        // Also cancels any pending onWaiting trigger to avoid double re-append.
         const onSeek = (seekTime) => {
             if (seekTimer) clearTimeout(seekTimer);
+            if (waitingReappendTimer) { clearTimeout(waitingReappendTimer); waitingReappendTimer = null; }
             seekTimer = setTimeout(() => doReappend(seekTime), 250);
         };
 
@@ -777,11 +791,21 @@ export class MediaHandlingController extends BaseController {
         viewer.onSeeking(onSeek);
 
         // Also handle 'waiting' event: video stalled at end of buffered range
-        // (e.g. user watched past our re-appended window)
+        // (e.g. user watched past our re-appended window). Debounce to avoid
+        // double-triggering with onSeek — the seeking event often fires right
+        // before waiting, and we don't want two concurrent re-appends.
+        let waitingReappendTimer = null;
         const onWaiting = () => {
-            if (!destroyed && !reappending && msePlayer) {
-                doReappend(video.currentTime);
-            }
+            if (destroyed || reappending || !msePlayer) return;
+            // If a seek-triggered re-append is already scheduled, skip
+            if (seekTimer) return;
+            if (waitingReappendTimer) return;
+            waitingReappendTimer = setTimeout(() => {
+                waitingReappendTimer = null;
+                if (!destroyed && !reappending && msePlayer) {
+                    doReappend(video.currentTime);
+                }
+            }, 300);
         };
         video.addEventListener('waiting', onWaiting);
 
@@ -789,6 +813,7 @@ export class MediaHandlingController extends BaseController {
         return () => {
             destroyed = true;
             if (seekTimer) { clearTimeout(seekTimer); seekTimer = null; }
+            if (waitingReappendTimer) { clearTimeout(waitingReappendTimer); waitingReappendTimer = null; }
             video.removeEventListener('waiting', onWaiting);
         };
     }

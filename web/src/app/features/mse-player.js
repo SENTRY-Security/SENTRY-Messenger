@@ -759,7 +759,7 @@ export function createMsePlayer({ videoElement, onError }) {
           if (!sb?.buffered) continue;
           for (let i = 0; i < sb.buffered.length; i++) {
             if (time >= sb.buffered.start(i) - toleranceSec &&
-                time < sb.buffered.end(i)) {
+                time <= sb.buffered.end(i) + toleranceSec) {
               return true;
             }
           }
