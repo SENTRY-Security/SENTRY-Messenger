@@ -711,6 +711,13 @@ export class MediaHandlingController extends BaseController {
                 // Disable eviction during re-append to protect freshly-appended data
                 msePlayer.setEvictionEnabled(false);
 
+                // CRITICAL: Resume append queues before re-appending.
+                // On MMS (iOS Safari), endOfStream() triggers 'endstreaming'
+                // which pauses all queues. Without resuming first, appendChunk()
+                // pushes data into the queue but processQueue() exits immediately
+                // (paused=true) → promises never resolve → deadlock.
+                msePlayer.resumeQueues();
+
                 // Estimate which chunk index corresponds to the seek time.
                 // Each media segment covers roughly (duration / mediaChunkCount) seconds.
                 const mediaChunkCount = chunkCache.length - numTracks;
@@ -728,7 +735,12 @@ export class MediaHandlingController extends BaseController {
 
                 console.info(`[video-seek] re-appending chunks ${start}..${end - 1} for seek to ${seekTime.toFixed(1)}s (estimated target chunk ${targetChunkIdx})`);
 
-                await batchAppendChunks(start, end, null);
+                // Safety timeout: cap total re-append time. If the queue is
+                // stuck (e.g. SourceBuffer in a broken state), don't hang forever.
+                const REAPPEND_TIMEOUT = 15_000;
+                const timeoutPromise = new Promise(r => setTimeout(r, REAPPEND_TIMEOUT));
+
+                await Promise.race([batchAppendChunks(start, end, null), timeoutPromise]);
 
                 // If still not buffered (estimation was off), try a wider range
                 if (!destroyed && msePlayer && !msePlayer.isTimeBuffered(seekTime)) {
@@ -738,7 +750,7 @@ export class MediaHandlingController extends BaseController {
                     // Skip chunks already appended in the first window
                     const skipSet = new Set();
                     for (let i = start; i < end; i++) skipSet.add(i);
-                    await batchAppendChunks(wideStart, wideEnd, skipSet);
+                    await Promise.race([batchAppendChunks(wideStart, wideEnd, skipSet), timeoutPromise]);
                 }
 
                 // Re-signal end of stream so the browser knows the full

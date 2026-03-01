@@ -778,6 +778,19 @@ export function createMsePlayer({ videoElement, onError }) {
       }
     },
 
+    /**
+     * Resume all paused append queues.
+     * Must be called before seek re-append on MMS: endOfStream()
+     * triggers the MMS 'endstreaming' event which pauses all queues.
+     * Without an explicit resume, subsequent appendChunk() calls
+     * deadlock because processQueue() exits on paused=true.
+     */
+    resumeQueues() {
+      for (const b of Object.values(buffers)) {
+        b.queue.resume();
+      }
+    },
+
     /** Get the list of track labels that have SourceBuffers. */
     get labels() { return Object.keys(buffers); },
 
