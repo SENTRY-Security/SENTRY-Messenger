@@ -577,16 +577,23 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
   if (isAlreadyFragmented(peekBuf)) {
     // Already-fragmented MP4 — read boxes from file via file.slice() instead
-    // of loading the entire file. Each box is read individually; only one
-    // segment copy exists at a time during iteration.
+    // of loading the entire file. Each segment is wrapped in a Blob immediately
+    // to avoid accumulating ~582MB of Uint8Arrays in heap.
     const segments = [];
+    let initSegment = null;
     for await (const seg of iterateFragmentedSegmentsFromFile(file)) {
-      segments.push(seg);
+      if (!initSegment) {
+        // First segment is the init segment — keep as Uint8Array (tiny, <1KB)
+        initSegment = seg.data;
+        segments.push(seg);
+      } else {
+        const size = seg.data.byteLength;
+        segments.push({ trackIndex: seg.trackIndex, blob: new Blob([seg.data]), size, data: null });
+      }
     }
-    if (segments.length < 2 || !segments[0].data.byteLength) {
+    if (segments.length < 2 || !initSegment?.byteLength) {
       throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
     }
-    const initSegment = segments[0].data;
     const track = { type: 'muxed', codec: null, initSegment, mediaSegments: null };
     onProgress?.({ percent: 100 });
     return { tracks: [track], segments, contentType: 'video/mp4', remuxed: false, name };
@@ -664,7 +671,14 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   };
 
   mp4boxFile.onSegment = (id, _user, buffer, _sampleNum, _isLast) => {
-    orderedMediaSegs.push({ trackId: id, data: new Uint8Array(buffer) });
+    // Wrap segment data in a Blob immediately so the ArrayBuffer can be GC'd.
+    // Without this, orderedMediaSegs accumulates ~582MB of Uint8Arrays in heap,
+    // exceeding iOS Safari's jetsam limit (~300-450MB) and crashing the tab.
+    // Each segment is ~5MB; the Blob constructor copies the data and the browser
+    // may store it on disk or in low-priority cache.
+    const u8 = new Uint8Array(buffer);
+    const size = u8.byteLength;
+    orderedMediaSegs.push({ trackId: id, blob: new Blob([u8]), size });
   };
 
   // Feed file to mp4box in 2MB chunks via file.slice() — avoids loading entire
@@ -722,12 +736,13 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
   // Build flat segments array for upload:
   // [combined-init, mediaSeg1, mediaSeg2, ...]
+  // Media segments are already Blobs (from onSegment), init stays as Uint8Array (tiny).
   const segments = [
     { trackIndex: 0, data: combinedInit },
-    ...orderedMediaSegs.map(ms => ({ trackIndex: 0, data: ms.data }))
+    ...orderedMediaSegs.map(ms => ({ trackIndex: 0, blob: ms.blob, size: ms.size, data: null }))
   ];
 
-  // Release orderedMediaSegs — data now lives in segments array
+  // Release orderedMediaSegs — blob references now live in segments array
   orderedMediaSegs.length = 0;
 
   const muxedTrack = {

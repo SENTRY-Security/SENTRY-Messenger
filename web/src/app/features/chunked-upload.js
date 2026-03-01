@@ -504,28 +504,32 @@ export async function encryptAndPutChunked({
         ? preprocessResult.tracks.map(t => ({ type: t.type, codec: t.codec }))
         : [{ type: 'muxed', codec: null }];
 
-      // [FIX] Wrap each segment Uint8Array into an individual Blob immediately,
-      // then release the Uint8Array for GC. This avoids accumulating ~582MB+
-      // of heap memory after remux.
-      //
-      // Why per-segment Blobs instead of one consolidated Blob:
-      // - new Blob([allParts]) requires ALL Uint8Arrays in heap simultaneously
-      //   during the copy, which peaks at ~582MB+ and exceeds iOS Safari's
-      //   jetsam limit (~300-450MB), crashing the tab.
-      // - Per-segment Blobs (~5MB each) only need ~5MB of heap during each
-      //   Blob construction. The browser may store them on disk or in cache.
-      // - During upload, each segment is read back via blob.arrayBuffer().
+      // Segments from remuxer already have media data wrapped in Blobs
+      // (converted in onSegment callback to avoid ~582MB heap accumulation).
+      // Init segment (first entry) may still be a Uint8Array — it's tiny (<1KB).
+      // Just transfer the blob references; no additional copying needed.
       totalSize = 0;
       fmp4Segments = [];
       for (const seg of rawSegments) {
-        const size = seg.data.byteLength;
-        const blob = new Blob([seg.data]); // ~5MB copy, then original can be GC'd
-        seg.data = null; // Release original Uint8Array for GC
+        let blob, size;
+        if (seg.blob) {
+          // Media segment — already a Blob from remuxer
+          blob = seg.blob;
+          size = seg.size;
+          seg.blob = null; // Release remuxer's reference
+        } else if (seg.data) {
+          // Init segment or legacy path — wrap small Uint8Array in Blob
+          size = seg.data.byteLength;
+          blob = new Blob([seg.data]);
+          seg.data = null;
+        } else {
+          continue; // skip empty segments
+        }
         fmp4Segments.push({
           trackIndex: seg.trackIndex,
           _blob: blob,
           _size: size,
-          data: null // Read from Blob on demand in processChunk
+          data: null
         });
         totalSize += size;
       }
