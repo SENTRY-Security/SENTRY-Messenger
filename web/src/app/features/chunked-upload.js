@@ -28,7 +28,7 @@ import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js
 const FALLBACK_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000 };
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
-const UPLOAD_CONCURRENCY = 3;
+const UPLOAD_CONCURRENCY = 6;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB — must match server UPLOAD_MAX_BYTES
 
@@ -128,7 +128,7 @@ function resolveContentType(file) {
 const CHUNK_UPLOAD_TIMEOUT_MS = 120_000; // 2 minutes per chunk
 const CHUNK_RETRY_COUNT = 2; // max retries per chunk (total attempts = 3)
 
-function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
+function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal, onUploadProgress }) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
@@ -142,6 +142,11 @@ function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
       };
       if (abortSignal.aborted) { onAbort(); return; }
       abortSignal.addEventListener('abort', onAbort, { once: true });
+    }
+    if (onUploadProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onUploadProgress(e.loaded, e.total);
+      };
     }
     xhr.open(method || 'PUT', url, true);
     const ct = headers?.['Content-Type'] || 'application/octet-stream';
@@ -231,11 +236,24 @@ async function _streamingUploadFragmented({
   // Stream segments from file via async generator — reads each box individually
   // with file.slice(), never loading the entire file into memory.
   // Each segment is processed (encrypt + upload) before the next is read.
-  let uploadedBytes = 0;
+  let completedBytesStream = 0;
+  const streamInFlight = {}; // idx → partial bytes uploaded
   let actualTotalSize = 0;
   const chunkMetas = new Array(chunkCount);
   let uploadError = null;
   let chunkIndex = 0;
+
+  const _reportStreamProgress = () => {
+    let inflight = 0;
+    for (const k in streamInFlight) inflight += streamInFlight[k];
+    const totalUploaded = completedBytesStream + inflight;
+    const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
+    const ratio = Math.min(totalUploaded / totalFileSize, 1);
+    onProgress?.({
+      loaded: totalUploaded, total: totalFileSize,
+      percent: Math.round(PHASE.chunkStart + ratio * chunkRange)
+    });
+  };
 
   try {
     const pool = new Set();
@@ -251,20 +269,22 @@ async function _streamingUploadFragmented({
 
       const p = (async () => {
         const ct = await aeadEncryptWithMK(data, cryptoKey, CHUNK_INFO_TAG);
+        streamInFlight[idx] = 0;
         await uploadChunkWithRetry({
           url: chunkPut.url, method: chunkPut.method || 'PUT',
-          headers: chunkPut.headers, cipherBuf: ct.cipherBuf, abortSignal
+          headers: chunkPut.headers, cipherBuf: ct.cipherBuf, abortSignal,
+          onUploadProgress: (loaded, total) => {
+            streamInFlight[idx] = total > 0 ? segSize * (loaded / total) : 0;
+            _reportStreamProgress();
+          }
         });
+        delete streamInFlight[idx];
+        completedBytesStream += segSize;
+        _reportStreamProgress();
         chunkMetas[idx] = {
           index: idx, size: segSize, cipher_size: ct.cipherBuf.byteLength,
           iv_b64: b64(ct.iv), salt_b64: b64(ct.hkdfSalt), trackIndex
         };
-        uploadedBytes += segSize;
-        const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
-        onProgress?.({
-          loaded: uploadedBytes, total: totalFileSize,
-          percent: Math.round(PHASE.chunkStart + (uploadedBytes / totalFileSize) * chunkRange)
-        });
       })().catch(err => { if (!uploadError) uploadError = err; throw err; })
         .finally(() => pool.delete(p));
 
@@ -608,9 +628,22 @@ export async function encryptAndPutChunked({
   }
   onProgress?.({ percent: PHASE.signEnd });
 
-  // Track uploaded bytes for progress
-  let uploadedBytes = 0;
+  // Track uploaded bytes for progress — per-chunk partial bytes for smooth updates
+  let completedBytes = 0;
+  const chunkInFlight = new Float64Array(chunkCount); // tracks partial upload per chunk
   const chunkMetas = new Array(chunkCount);
+
+  const _reportProgress = () => {
+    let inflight = 0;
+    for (let k = 0; k < chunkCount; k++) inflight += chunkInFlight[k];
+    const totalUploaded = completedBytes + inflight;
+    const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
+    const ratio = Math.min(totalUploaded / totalSize, 1);
+    onProgress?.({
+      loaded: totalUploaded, total: totalSize,
+      percent: Math.round(PHASE.chunkStart + ratio * chunkRange)
+    });
+  };
 
   // 2. Encrypt and upload chunks with concurrency limit
   let uploadError = null;
@@ -642,37 +675,37 @@ export async function encryptAndPutChunked({
     const chunkPut = chunkPuts[index];
     if (!chunkPut?.url) throw new Error(`missing presigned URL for chunk ${index}`);
 
+    const chunkPlainSize = plainBuf.byteLength;
     await uploadChunkWithRetry({
       url: chunkPut.url,
       method: chunkPut.method || 'PUT',
       headers: chunkPut.headers,
       cipherBuf: ct.cipherBuf,
-      abortSignal
+      abortSignal,
+      onUploadProgress: (loaded, total) => {
+        // Map cipher bytes to plain bytes ratio for accurate progress
+        chunkInFlight[index] = total > 0 ? chunkPlainSize * (loaded / total) : 0;
+        _reportProgress();
+      }
     });
+
+    // Chunk fully uploaded — move from in-flight to completed
+    chunkInFlight[index] = 0;
+    completedBytes += chunkPlainSize;
+    _reportProgress();
 
     // Record metadata
     const meta = {
       index,
-      size: plainBuf.byteLength,
+      size: chunkPlainSize,
       cipher_size: ct.cipherBuf.byteLength,
       iv_b64: b64(ct.iv),
       salt_b64: b64(ct.hkdfSalt)
     };
-    // Tag with track index for fMP4 segment-based chunks
     if (fmp4Segments) {
       meta.trackIndex = fmp4Segments[index].trackIndex;
     }
     chunkMetas[index] = meta;
-
-    // Update progress — map chunk upload ratio into PHASE.chunkStart..chunkEnd range
-    uploadedBytes += plainBuf.byteLength;
-    const chunkRatio = uploadedBytes / totalSize;
-    const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
-    onProgress?.({
-      loaded: uploadedBytes,
-      total: totalSize,
-      percent: Math.round(PHASE.chunkStart + chunkRatio * chunkRange)
-    });
 
     // Allow GC of the segment Blob after upload
     if (fmp4Segments && fmp4Segments[index]) {
