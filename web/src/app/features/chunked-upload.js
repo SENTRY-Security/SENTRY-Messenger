@@ -445,7 +445,11 @@ async function _streamingTranscodeUpload({
     if (uploadError) throw uploadError;
 
     const idx = chunkIndex++;
-    const segData = seg.data;
+    const segData = seg?.data;
+    if (!segData || !segData.byteLength) {
+      console.warn('[streaming-upload] skipping empty segment at index', idx);
+      return;
+    }
     const segSize = segData.byteLength;
     actualTotalSize += segSize;
 
@@ -647,7 +651,7 @@ export async function encryptAndPutChunked({
       .replace(/^此裝置不支援\s*/, '不支援 ')
       .trim();
     // Truncate to keep UI readable
-    const short = stripped.length > 40 ? stripped.slice(0, 38) + '…' : stripped;
+    const short = stripped.length > 80 ? stripped.slice(0, 78) + '…' : stripped;
     return short || '未知錯誤';
   };
 

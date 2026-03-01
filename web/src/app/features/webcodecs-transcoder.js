@@ -877,66 +877,108 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   // ── Incremental muxer helpers (streaming mode only) ──
 
+  /** Convert a Uint8Array (or typed view) to a standalone ArrayBuffer.
+   *  mp4box.js internally uses DataView/stream on description & sample data,
+   *  which expects ArrayBuffer — passing a Uint8Array can fail on Safari. */
+  function toArrayBuffer(u8) {
+    if (!u8) return u8;
+    if (u8 instanceof ArrayBuffer) return u8;
+    if (u8.buffer) {
+      // Ensure we get exactly the relevant slice (not the full backing buffer)
+      return u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength
+        ? u8.buffer
+        : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    }
+    return u8;
+  }
+
   function tryInitIncMuxer() {
     if (!isStreaming || incMuxReady) return;
     if (!videoMuxDesc) return;
     if (audioTrack && !audioMuxDescReady) return;
 
-    incMuxer = createMp4boxFile(mp4boxMod);
-    incMuxVideoTrackId = incMuxer.addTrack({
-      type: 'video', width: vEncConfig.width, height: vEncConfig.height,
-      timescale: 90000, media_duration: 0, nb_samples: 0,
-      codec: 'avc1', description: videoMuxDesc,
-    });
+    try {
+      incMuxer = createMp4boxFile(mp4boxMod);
 
-    if (audioTrack) {
-      const audioTimescale = audioTrack.audio?.sample_rate || 44100;
-      incMuxAudioTrackId = incMuxer.addTrack({
-        type: 'audio', timescale: audioTimescale, media_duration: 0, nb_samples: 0,
-        codec: 'mp4a', channel_count: audioTrack.audio?.channel_count || 2,
-        samplerate: audioTimescale, samplesize: 16,
-        description: audioMuxDesc || undefined,
+      // Pass description as ArrayBuffer (not Uint8Array) for mp4box.js compatibility
+      const videoDescAB = toArrayBuffer(videoMuxDesc);
+      incMuxVideoTrackId = incMuxer.addTrack({
+        type: 'video', width: vEncConfig.width, height: vEncConfig.height,
+        timescale: 90000, media_duration: 0, nb_samples: 0,
+        codec: 'avc1', description: videoDescAB,
       });
+      if (incMuxVideoTrackId == null) {
+        throw new Error('addTrack(video) returned ' + incMuxVideoTrackId);
+      }
+
+      if (audioTrack) {
+        const audioTimescale = audioTrack.audio?.sample_rate || 44100;
+        const audioDescAB = audioMuxDesc ? toArrayBuffer(audioMuxDesc) : undefined;
+        incMuxAudioTrackId = incMuxer.addTrack({
+          type: 'audio', timescale: audioTimescale, media_duration: 0, nb_samples: 0,
+          codec: 'mp4a', channel_count: audioTrack.audio?.channel_count || 2,
+          samplerate: audioTimescale, samplesize: 16,
+          description: audioDescAB,
+        });
+        if (incMuxAudioTrackId == null) {
+          throw new Error('addTrack(audio) returned ' + incMuxAudioTrackId);
+        }
+      }
+
+      incMuxer.setSegmentOptions(incMuxVideoTrackId, null, { nbSamples: 100 });
+      if (incMuxAudioTrackId != null) {
+        incMuxer.setSegmentOptions(incMuxAudioTrackId, null, { nbSamples: 100 });
+      }
+
+      const initSegs = incMuxer.initializeSegmentation();
+      if (!initSegs || initSegs.length === 0) {
+        throw new Error('initializeSegmentation returned empty');
+      }
+      const initParts = [];
+      for (let i = 0; i < initSegs.length; i++) {
+        const seg = initSegs[i];
+        if (!seg || !seg.buffer) {
+          throw new Error('initSeg[' + i + '].buffer is ' + (seg ? typeof seg.buffer : 'null entry'));
+        }
+        initParts.push(new Uint8Array(seg.buffer));
+      }
+      const combinedInit = initParts.length === 1
+        ? initParts[0]
+        : mergeInitSegments(initParts);
+      readySegments.push({ trackIndex: 0, data: combinedInit });
+
+      incMuxer.onSegment = (_id, _user, buf) => {
+        if (buf) readySegments.push({ trackIndex: 0, data: new Uint8Array(buf) });
+      };
+      incMuxer.start();
+      incMuxReady = true;
+
+      // Flush buffered frames that arrived before muxer was ready
+      for (const f of preMuxVideoFrames) feedVideoToIncMuxer(f);
+      preMuxVideoFrames.length = 0;
+      for (const f of preMuxAudioFrames) feedAudioToIncMuxer(f);
+      preMuxAudioFrames.length = 0;
+    } catch (err) {
+      console.error('[streamingTranscode] incMuxer init failed:', err);
+      setFatalError(new Error('incremental muxer init: ' + (err?.message || err)));
     }
-
-    incMuxer.setSegmentOptions(incMuxVideoTrackId, null, { nbSamples: 100 });
-    if (incMuxAudioTrackId != null) {
-      incMuxer.setSegmentOptions(incMuxAudioTrackId, null, { nbSamples: 100 });
-    }
-
-    const initSegs = incMuxer.initializeSegmentation();
-    const initParts = initSegs.map(s => new Uint8Array(s.buffer));
-    const combinedInit = initParts.length === 1
-      ? initParts[0]
-      : mergeInitSegments(initParts);
-    readySegments.push({ trackIndex: 0, data: combinedInit });
-
-    incMuxer.onSegment = (_id, _user, buf) => {
-      readySegments.push({ trackIndex: 0, data: new Uint8Array(buf) });
-    };
-    incMuxer.start();
-    incMuxReady = true;
-
-    // Flush buffered frames that arrived before muxer was ready
-    for (const f of preMuxVideoFrames) feedVideoToIncMuxer(f);
-    preMuxVideoFrames.length = 0;
-    for (const f of preMuxAudioFrames) feedAudioToIncMuxer(f);
-    preMuxAudioFrames.length = 0;
   }
 
   function feedVideoToIncMuxer(frame) {
+    if (!frame?.data || !incMuxer) return;
     const ts = Math.round((frame.timestamp / 1_000_000) * 90000);
     const dur = Math.round((frame.duration / 1_000_000) * 90000);
-    incMuxer.addSample(incMuxVideoTrackId, frame.data.buffer, {
+    incMuxer.addSample(incMuxVideoTrackId, toArrayBuffer(frame.data), {
       duration: dur || 3000, is_sync: frame.key, cts: ts, dts: ts,
     });
   }
 
   function feedAudioToIncMuxer(frame) {
+    if (!frame?.data || !incMuxer) return;
     const audioTimescale = audioTrack?.audio?.sample_rate || 44100;
     const ts = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
     const dur = Math.round((frame.duration / 1_000_000) * audioTimescale);
-    incMuxer.addSample(incMuxAudioTrackId, frame.data.buffer, {
+    incMuxer.addSample(incMuxAudioTrackId, toArrayBuffer(frame.data), {
       duration: dur || 1024, is_sync: frame.key !== false, cts: ts, dts: ts,
     });
   }
