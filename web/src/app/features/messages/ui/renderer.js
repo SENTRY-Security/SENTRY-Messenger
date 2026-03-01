@@ -446,6 +446,20 @@ export class MessageRenderer {
             if (existing) existing.remove();
             return;
         }
+
+        const pct = Number.isFinite(media.progress) ? Math.min(100, Math.max(0, Math.round(media.progress))) : null;
+
+        // Fast path: if overlay already exists and state hasn't changed type
+        // (still uploading, not switched to error), just update text + bar width.
+        if (existing && !media.error && existing.dataset.mode === 'uploading') {
+            const label = existing.querySelector('[data-role="label"]');
+            const bar = existing.querySelector('[data-role="bar"]');
+            if (label) label.textContent = pct != null ? `上傳中… ${pct}%` : '準備上傳…';
+            if (bar) bar.style.width = `${pct != null ? pct : 10}%`;
+            return;
+        }
+
+        // Full build (first render or mode change to error)
         const overlay = existing || document.createElement('div');
         overlay.className = 'message-file-overlay';
         Object.assign(overlay.style, {
@@ -458,16 +472,14 @@ export class MessageRenderer {
             alignItems: 'center',
             justifyContent: 'center',
             gap: '8px',
-            borderRadius: '12px',
-            pointerEvents: 'none',
+            borderRadius: getComputedStyle(target).borderRadius || '12px',
+            pointerEvents: 'auto',
             padding: '10px',
             textAlign: 'center'
         });
-        const pct = Number.isFinite(media.progress) ? Math.min(100, Math.max(0, Math.round(media.progress))) : null;
         overlay.innerHTML = '';
-        overlay.style.borderRadius = getComputedStyle(target).borderRadius || '12px';
-        overlay.style.pointerEvents = 'auto';
         if (media.error) {
+            overlay.dataset.mode = 'error';
             const label = document.createElement('div');
             label.textContent = '上傳失敗';
             label.style.fontWeight = '600';
@@ -478,7 +490,9 @@ export class MessageRenderer {
             detail.style.opacity = '0.9';
             overlay.appendChild(detail);
         } else {
+            overlay.dataset.mode = 'uploading';
             const label = document.createElement('div');
+            label.dataset.role = 'label';
             label.textContent = pct != null ? `上傳中… ${pct}%` : '準備上傳…';
             label.style.fontWeight = '600';
             overlay.appendChild(label);
@@ -488,10 +502,12 @@ export class MessageRenderer {
             barWrap.style.borderRadius = '999px';
             barWrap.style.background = 'rgba(255,255,255,0.25)';
             const bar = document.createElement('div');
+            bar.dataset.role = 'bar';
             bar.style.height = '100%';
             bar.style.borderRadius = '999px';
             bar.style.background = '#22d3ee';
             bar.style.width = `${pct != null ? pct : 10}%`;
+            bar.style.transition = 'width 0.2s ease';
             barWrap.appendChild(bar);
             overlay.appendChild(barWrap);
             const cancelBtn = document.createElement('button');

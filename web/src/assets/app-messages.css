@@ -973,11 +973,20 @@
   background: rgba(56, 189, 248, 0.4);
 }
 
-/* Expandable detail panel (processing steps checklist) */
+/* Expandable detail panel (processing steps checklist + stats) */
 .transfer-bar-detail-panel {
   background: linear-gradient(90deg, #0a3d5c, #035180);
   padding: 6px 12px 8px 50px;
   border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.transfer-stats-row {
+  font-size: 12px;
+  color: rgba(255,255,255,0.75);
+  padding: 3px 0 5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+  white-space: pre;
 }
 
 .transfer-step {

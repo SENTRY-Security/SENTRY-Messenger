@@ -245,7 +245,11 @@ export class MessageSendingController extends BaseController {
                     if (Number.isFinite(percent)) {
                         this.applyUploadProgress(msg, { percent });
                         this.updateUploadOverlayUI(msg.id, msg.media);
-                        updateUploadProgress(percent);
+                        // Forward loaded/total for byte-level stats display
+                        const stats = (Number.isFinite(progress?.loaded) && Number.isFinite(progress?.total))
+                            ? { loaded: progress.loaded, total: progress.total }
+                            : undefined;
+                        updateUploadProgress(percent, stats);
                     }
 
                     // Forward processing steps to the detail panel checklist

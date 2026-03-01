@@ -243,7 +243,13 @@ async function _streamingUploadFragmented({
   let uploadError = null;
   let chunkIndex = 0;
 
-  const _reportStreamProgress = () => {
+  let _lastStreamProgressTime = 0;
+  const _reportStreamProgress = (force) => {
+    if (!force) {
+      const now = Date.now();
+      if (now - _lastStreamProgressTime < 200) return;
+      _lastStreamProgressTime = now;
+    }
     let inflight = 0;
     for (const k in streamInFlight) inflight += streamInFlight[k];
     const totalUploaded = completedBytesStream + inflight;
@@ -280,7 +286,7 @@ async function _streamingUploadFragmented({
         });
         delete streamInFlight[idx];
         completedBytesStream += segSize;
-        _reportStreamProgress();
+        _reportStreamProgress(true);
         chunkMetas[idx] = {
           index: idx, size: segSize, cipher_size: ct.cipherBuf.byteLength,
           iv_b64: b64(ct.iv), salt_b64: b64(ct.hkdfSalt), trackIndex
@@ -633,7 +639,15 @@ export async function encryptAndPutChunked({
   const chunkInFlight = new Float64Array(chunkCount); // tracks partial upload per chunk
   const chunkMetas = new Array(chunkCount);
 
-  const _reportProgress = () => {
+  let _lastProgressTime = 0;
+  const _reportProgress = (force) => {
+    // Throttle XHR byte-level updates to max 5/sec to avoid flooding the UI.
+    // Chunk completions pass force=true for immediate feedback.
+    if (!force) {
+      const now = Date.now();
+      if (now - _lastProgressTime < 200) return;
+      _lastProgressTime = now;
+    }
     let inflight = 0;
     for (let k = 0; k < chunkCount; k++) inflight += chunkInFlight[k];
     const totalUploaded = completedBytes + inflight;
@@ -692,7 +706,7 @@ export async function encryptAndPutChunked({
     // Chunk fully uploaded — move from in-flight to completed
     chunkInFlight[index] = 0;
     completedBytes += chunkPlainSize;
-    _reportProgress();
+    _reportProgress(true);
 
     // Record metadata
     const meta = {

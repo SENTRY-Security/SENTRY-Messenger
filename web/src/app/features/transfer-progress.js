@@ -5,8 +5,9 @@
  * Enforces: at most one upload + one download active simultaneously.
  * Renders up to two horizontal bars stacked vertically at the top of the chat scroll area.
  *
- * Upload bar includes an expandable detail panel showing processing steps
- * (format detection, transcode, remux, upload) with status indicators.
+ * Upload bar includes an expandable detail panel showing:
+ *   - Upload stats: uploaded/total bytes + upload speed
+ *   - Processing steps (format detection, transcode, remux, upload) with status indicators.
  *
  * All DOM elements and event listeners are created exactly once.
  * Cancel buttons read the current onCancel from module-level state at click-time,
@@ -49,6 +50,12 @@ let _uploadDetailPanelEl = null;
 let _uploadDetailBtnEl = null;
 let _uploadSteps = [];
 let _detailExpanded = false;
+
+// Upload stats tracking
+let _uploadLoaded = 0;
+let _uploadTotal = 0;
+let _uploadSpeedSamples = [];   // { time, loaded } ring buffer for speed calc
+let _uploadStatsEl = null;      // DOM element inside detail panel
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -94,7 +101,14 @@ export function startUpload(name, onCancel) {
     _upload = { name: name || '檔案', percent: 0, onCancel };
     _uploadSteps = [];
     _detailExpanded = false;
-    if (_uploadDetailBtnEl) _uploadDetailBtnEl.style.display = 'none';
+    _uploadLoaded = 0;
+    _uploadTotal = 0;
+    _uploadSpeedSamples = [];
+    _uploadStatsEl = null;
+    if (_uploadDetailBtnEl) {
+        _uploadDetailBtnEl.style.display = '';
+        _uploadDetailBtnEl.classList.remove('active');
+    }
     if (_uploadDetailPanelEl) {
         _uploadDetailPanelEl.style.display = 'none';
         _uploadDetailPanelEl.innerHTML = '';
@@ -104,16 +118,41 @@ export function startUpload(name, onCancel) {
     _updateVisibility();
 }
 
-export function updateUploadProgress(percent) {
+/**
+ * Update upload progress.
+ * @param {number} percent - 0-100
+ * @param {{ loaded?: number, total?: number }} [stats] - byte-level stats for speed display
+ */
+export function updateUploadProgress(percent, stats) {
     if (!_upload) return;
     _upload.percent = percent;
     _updateBar(_uploadBarEl, _upload);
+
+    // Track byte-level stats for speed calculation
+    if (stats && Number.isFinite(stats.loaded)) {
+        _uploadLoaded = stats.loaded;
+        if (Number.isFinite(stats.total) && stats.total > 0) _uploadTotal = stats.total;
+
+        const now = Date.now();
+        _uploadSpeedSamples.push({ time: now, loaded: stats.loaded });
+        // Keep only samples from the last 5 seconds for a smooth rolling average
+        while (_uploadSpeedSamples.length > 1 && now - _uploadSpeedSamples[0].time > 5000) {
+            _uploadSpeedSamples.shift();
+        }
+    }
+
+    // Update stats display if detail panel is open
+    if (_detailExpanded) _updateStatsDisplay();
 }
 
 export function endUpload() {
     _upload = null;
     _uploadSteps = [];
     _detailExpanded = false;
+    _uploadLoaded = 0;
+    _uploadTotal = 0;
+    _uploadSpeedSamples = [];
+    _uploadStatsEl = null;
     if (_uploadDetailBtnEl) {
         _uploadDetailBtnEl.style.display = 'none';
         _uploadDetailBtnEl.classList.remove('active');
@@ -136,16 +175,12 @@ export function endUpload() {
 export function updateUploadSteps(steps) {
     if (!Array.isArray(steps) || steps.length === 0) {
         _uploadSteps = [];
-        if (_uploadDetailBtnEl) _uploadDetailBtnEl.style.display = 'none';
-        if (_detailExpanded && _uploadDetailPanelEl) {
-            _uploadDetailPanelEl.style.display = 'none';
-            _detailExpanded = false;
-        }
+        // Don't hide the info button — it always shows upload stats now
+        if (_detailExpanded) _renderDetailContent();
         return;
     }
     _uploadSteps = steps;
-    if (_uploadDetailBtnEl) _uploadDetailBtnEl.style.display = '';
-    if (_detailExpanded) _renderSteps();
+    if (_detailExpanded) _renderDetailContent();
 }
 
 /**
@@ -215,7 +250,7 @@ function _toggleDetailPanel() {
     _detailExpanded = !_detailExpanded;
     if (_uploadDetailPanelEl) {
         if (_detailExpanded) {
-            _renderSteps();
+            _renderDetailContent();
             _uploadDetailPanelEl.style.display = '';
         } else {
             _uploadDetailPanelEl.style.display = 'none';
@@ -226,9 +261,37 @@ function _toggleDetailPanel() {
     }
 }
 
-function _renderSteps() {
+/** Format bytes to human-readable string */
+function _fmtBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/** Calculate upload speed from rolling samples (bytes/sec) */
+function _calcSpeed() {
+    if (_uploadSpeedSamples.length < 2) return 0;
+    const first = _uploadSpeedSamples[0];
+    const last = _uploadSpeedSamples[_uploadSpeedSamples.length - 1];
+    const dt = (last.time - first.time) / 1000; // seconds
+    if (dt <= 0) return 0;
+    return (last.loaded - first.loaded) / dt;
+}
+
+/** Render the full detail panel content (stats + steps) */
+function _renderDetailContent() {
     if (!_uploadDetailPanelEl) return;
     _uploadDetailPanelEl.innerHTML = '';
+
+    // Upload stats row (always shown)
+    const statsRow = document.createElement('div');
+    statsRow.className = 'transfer-stats-row';
+    _uploadStatsEl = statsRow;
+    _updateStatsDisplay();
+    _uploadDetailPanelEl.appendChild(statsRow);
+
+    // Processing steps (if any)
     for (const step of _uploadSteps) {
         const row = document.createElement('div');
         row.className = 'transfer-step';
@@ -258,6 +321,16 @@ function _renderSteps() {
 
         _uploadDetailPanelEl.appendChild(row);
     }
+}
+
+/** Update the stats display text without full DOM rebuild */
+function _updateStatsDisplay() {
+    if (!_uploadStatsEl) return;
+    const speed = _calcSpeed();
+    const loadedStr = _fmtBytes(_uploadLoaded);
+    const totalStr = _uploadTotal > 0 ? _fmtBytes(_uploadTotal) : '—';
+    const speedStr = speed > 0 ? `${_fmtBytes(speed)}/s` : '—';
+    _uploadStatsEl.textContent = `${loadedStr} / ${totalStr}    ${speedStr}`;
 }
 
 /**
@@ -307,14 +380,14 @@ function _createBarElement(type, onCancelThunk) {
     bar.appendChild(info);
     bar.appendChild(pctEl);
 
-    // Info button (upload only) — toggles the detail steps panel
+    // Info button (upload only) — toggles the detail panel
     if (type === 'upload') {
         const detailBtn = document.createElement('button');
         detailBtn.type = 'button';
         detailBtn.className = 'transfer-bar-detail-btn';
         detailBtn.title = '詳細資訊';
         detailBtn.innerHTML = INFO_ICON;
-        detailBtn.style.display = 'none';
+        detailBtn.style.display = 'none'; // shown when upload starts
         detailBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
