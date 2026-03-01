@@ -5,6 +5,9 @@
  * Enforces: at most one upload + one download active simultaneously.
  * Renders up to two horizontal bars stacked vertically at the top of the chat scroll area.
  *
+ * Upload bar includes an expandable detail panel showing processing steps
+ * (format detection, transcode, remux, upload) with status indicators.
+ *
  * All DOM elements and event listeners are created exactly once.
  * Cancel buttons read the current onCancel from module-level state at click-time,
  * so no listener re-registration is needed when the callback changes.
@@ -18,6 +21,16 @@ const DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="non
 
 const CANCEL_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 
+const INFO_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+
+const STEP_ICONS = {
+    done: '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="7" fill="#22c55e"/><path d="M5 8l2 2 4-4" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warn: '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="7" fill="#f59e0b"/><path d="M8 5v3" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/><circle cx="8" cy="11" r="0.8" fill="#fff"/></svg>',
+    error: '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="7" fill="#ef4444"/><path d="M6 6l4 4M10 6l-4 4" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>',
+    skip: '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6.5" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1"/><line x1="5" y1="8" x2="11" y2="8" stroke="rgba(255,255,255,0.4)" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    pending: '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="6.5" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1"/></svg>',
+};
+
 // ── Singleton state ────────────────────────────────────────────────────────
 
 let _initialized = false;
@@ -30,6 +43,12 @@ let _download = null;
 // Pre-created once, reused forever — never recreated or cloned.
 let _uploadBarEl = null;
 let _downloadBarEl = null;
+
+// Upload detail panel (expandable checklist)
+let _uploadDetailPanelEl = null;
+let _uploadDetailBtnEl = null;
+let _uploadSteps = [];
+let _detailExpanded = false;
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -48,6 +67,11 @@ export function initTransferProgress(scrollEl) {
         // Create both bars once with permanent click listeners
         _uploadBarEl = _createBarElement('upload', () => _upload?.onCancel?.());
         _downloadBarEl = _createBarElement('download', () => _download?.onCancel?.());
+
+        // Create upload detail panel once
+        _uploadDetailPanelEl = document.createElement('div');
+        _uploadDetailPanelEl.className = 'transfer-bar-detail-panel';
+        _uploadDetailPanelEl.style.display = 'none';
 
         _initialized = true;
     }
@@ -68,6 +92,13 @@ export function isDownloadBusy() { return !!_download; }
  */
 export function startUpload(name, onCancel) {
     _upload = { name: name || '檔案', percent: 0, onCancel };
+    _uploadSteps = [];
+    _detailExpanded = false;
+    if (_uploadDetailBtnEl) _uploadDetailBtnEl.style.display = 'none';
+    if (_uploadDetailPanelEl) {
+        _uploadDetailPanelEl.style.display = 'none';
+        _uploadDetailPanelEl.innerHTML = '';
+    }
     _attachBar(_uploadBarEl, true);
     _updateBar(_uploadBarEl, _upload);
     _updateVisibility();
@@ -81,8 +112,40 @@ export function updateUploadProgress(percent) {
 
 export function endUpload() {
     _upload = null;
+    _uploadSteps = [];
+    _detailExpanded = false;
+    if (_uploadDetailBtnEl) {
+        _uploadDetailBtnEl.style.display = 'none';
+        _uploadDetailBtnEl.classList.remove('active');
+    }
+    if (_uploadDetailPanelEl) {
+        _uploadDetailPanelEl.style.display = 'none';
+        _uploadDetailPanelEl.innerHTML = '';
+    }
     _detachBar(_uploadBarEl);
     _updateVisibility();
+}
+
+/**
+ * Update the upload detail panel's processing steps checklist.
+ * Only shown for video uploads. The info button becomes visible when steps
+ * are provided, and hidden when cleared.
+ *
+ * @param {Array<{ label: string, status: 'pending'|'active'|'done'|'warn'|'error'|'skip', detail?: string }>} steps
+ */
+export function updateUploadSteps(steps) {
+    if (!Array.isArray(steps) || steps.length === 0) {
+        _uploadSteps = [];
+        if (_uploadDetailBtnEl) _uploadDetailBtnEl.style.display = 'none';
+        if (_detailExpanded && _uploadDetailPanelEl) {
+            _uploadDetailPanelEl.style.display = 'none';
+            _detailExpanded = false;
+        }
+        return;
+    }
+    _uploadSteps = steps;
+    if (_uploadDetailBtnEl) _uploadDetailBtnEl.style.display = '';
+    if (_detailExpanded) _renderSteps();
 }
 
 /**
@@ -124,9 +187,16 @@ function _attachBar(barEl, prepend) {
     } else {
         _containerEl.appendChild(barEl);
     }
+    // Attach detail panel right after upload bar
+    if (barEl === _uploadBarEl && _uploadDetailPanelEl) {
+        barEl.insertAdjacentElement('afterend', _uploadDetailPanelEl);
+    }
 }
 
 function _detachBar(barEl) {
+    if (barEl === _uploadBarEl && _uploadDetailPanelEl?.parentElement) {
+        _uploadDetailPanelEl.remove();
+    }
     if (barEl?.parentElement) barEl.remove();
 }
 
@@ -139,6 +209,55 @@ function _updateBar(barEl, state) {
     if (nameEl) nameEl.textContent = state.name || '檔案';
     if (inner) inner.style.width = `${pct}%`;
     if (pctEl) pctEl.textContent = `${pct}%`;
+}
+
+function _toggleDetailPanel() {
+    _detailExpanded = !_detailExpanded;
+    if (_uploadDetailPanelEl) {
+        if (_detailExpanded) {
+            _renderSteps();
+            _uploadDetailPanelEl.style.display = '';
+        } else {
+            _uploadDetailPanelEl.style.display = 'none';
+        }
+    }
+    if (_uploadDetailBtnEl) {
+        _uploadDetailBtnEl.classList.toggle('active', _detailExpanded);
+    }
+}
+
+function _renderSteps() {
+    if (!_uploadDetailPanelEl) return;
+    _uploadDetailPanelEl.innerHTML = '';
+    for (const step of _uploadSteps) {
+        const row = document.createElement('div');
+        row.className = 'transfer-step';
+        row.dataset.status = step.status || 'pending';
+
+        const iconEl = document.createElement('span');
+        iconEl.className = 'transfer-step-icon';
+        if (step.status === 'active') {
+            iconEl.innerHTML = '<span class="transfer-step-spinner"></span>';
+        } else {
+            iconEl.innerHTML = STEP_ICONS[step.status] || STEP_ICONS.pending;
+        }
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'transfer-step-label';
+        labelEl.textContent = step.label;
+
+        row.appendChild(iconEl);
+        row.appendChild(labelEl);
+
+        if (step.detail) {
+            const detailEl = document.createElement('span');
+            detailEl.className = 'transfer-step-detail';
+            detailEl.textContent = step.detail;
+            row.appendChild(detailEl);
+        }
+
+        _uploadDetailPanelEl.appendChild(row);
+    }
 }
 
 /**
@@ -187,6 +306,24 @@ function _createBarElement(type, onCancelThunk) {
     bar.appendChild(icon);
     bar.appendChild(info);
     bar.appendChild(pctEl);
+
+    // Info button (upload only) — toggles the detail steps panel
+    if (type === 'upload') {
+        const detailBtn = document.createElement('button');
+        detailBtn.type = 'button';
+        detailBtn.className = 'transfer-bar-detail-btn';
+        detailBtn.title = '詳細資訊';
+        detailBtn.innerHTML = INFO_ICON;
+        detailBtn.style.display = 'none';
+        detailBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            _toggleDetailPanel();
+        });
+        _uploadDetailBtnEl = detailBtn;
+        bar.appendChild(detailBtn);
+    }
+
     bar.appendChild(cancelBtn);
 
     return bar;

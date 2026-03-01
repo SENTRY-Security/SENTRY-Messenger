@@ -948,6 +948,90 @@
   background: rgba(239,68,68,0.6);
 }
 
+/* Info (ⓘ) button — toggles detail checklist panel */
+.transfer-bar-detail-btn {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  padding: 0;
+}
+
+.transfer-bar-detail-btn:hover {
+  background: rgba(255,255,255,0.3);
+}
+
+.transfer-bar-detail-btn.active {
+  background: rgba(56, 189, 248, 0.4);
+}
+
+/* Expandable detail panel (processing steps checklist) */
+.transfer-bar-detail-panel {
+  background: linear-gradient(90deg, #0a3d5c, #035180);
+  padding: 6px 12px 8px 50px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.transfer-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  color: rgba(255,255,255,0.85);
+}
+
+.transfer-step[data-status="skip"] {
+  opacity: 0.45;
+}
+
+.transfer-step[data-status="skip"] .transfer-step-label {
+  text-decoration: line-through;
+}
+
+.transfer-step-icon {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.transfer-step-label {
+  flex: 0 1 auto;
+}
+
+.transfer-step-detail {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+/* Spinner for active step */
+.transfer-step-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: transfer-step-spin 0.6s linear infinite;
+}
+
+@keyframes transfer-step-spin {
+  to { transform: rotate(360deg); }
+}
+
 .message-me {
   margin-left: auto;
   background: linear-gradient(135deg, #38bdf8, #0ea5e9);

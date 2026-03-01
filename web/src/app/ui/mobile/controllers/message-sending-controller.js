@@ -9,7 +9,7 @@ import { sendDrMedia, sendDrText, buildMediaPreviewBlob } from '../../../feature
 import { UnsupportedVideoFormatError, resolveContentType, MAX_UPLOAD_BYTES } from '../../../features/media.js';
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
-import { isUploadBusy, startUpload, updateUploadProgress, endUpload } from '../../../features/transfer-progress.js';
+import { isUploadBusy, startUpload, updateUploadProgress, updateUploadSteps, endUpload } from '../../../features/transfer-progress.js';
 
 export class MessageSendingController extends BaseController {
     constructor(deps) {
@@ -243,6 +243,11 @@ export class MessageSendingController extends BaseController {
                     this.applyUploadProgress(msg, { percent });
                     this.updateUploadOverlayUI(msg.id, msg.media);
                     if (Number.isFinite(percent)) updateUploadProgress(percent);
+
+                    // Forward processing steps to the detail panel checklist
+                    if (progress?.steps) {
+                        updateUploadSteps(progress.steps);
+                    }
 
                     // Show transcode status changes as toast (e.g. retry notification)
                     if (progress?.statusText && progress.statusText !== _lastUploadStatus) {

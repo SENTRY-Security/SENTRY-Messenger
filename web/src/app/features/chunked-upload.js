@@ -346,10 +346,34 @@ export async function encryptAndPutChunked({
     ? { remuxEnd: 10, signEnd: 12, chunkStart: 12, chunkEnd: 95, manifestEnd: 100 }
     : { remuxEnd: 0,  signEnd: 2,  chunkStart: 2,  chunkEnd: 95, manifestEnd: 100 };
 
+  // ── Step tracking for the upload detail panel (video only) ──
+  // Steps are emitted via onProgress({ steps }) and rendered by the UI.
+  let _steps = isVideo ? [] : null;
+  const _emitSteps = () => {
+    if (_steps) onProgress?.({ steps: _steps.map(s => ({ ...s })) });
+  };
+  const _addStep = (label, status = 'pending', detail) => {
+    if (!_steps) return -1;
+    _steps.push({ label, status, detail: detail || '' });
+    _emitSteps();
+    return _steps.length - 1;
+  };
+  const _setStep = (idx, status, detail) => {
+    if (!_steps || idx < 0 || !_steps[idx]) return;
+    _steps[idx].status = status;
+    if (detail !== undefined) _steps[idx].detail = detail;
+    _emitSteps();
+  };
+
   if (isVideo) {
+    // Step 0: Format detection
+    const fmtIdx = _addStep('格式偵測', 'active');
+
     if (!canRemuxVideo(file)) {
+      _setStep(fmtIdx, 'error', rawType);
       throw new UnsupportedVideoFormatError(`不支援此影片格式：${rawType}`);
     }
+    _setStep(fmtIdx, 'done', rawType);
 
     // Preprocessing: WebCodecs transcode → retry with lower quality → remux fallback
     // transcodeToFmp4 returns null if input is already MSE-safe (H.264+AAC)
@@ -365,29 +389,46 @@ export async function encryptAndPutChunked({
       }
     };
 
+    let transcodeIdx = -1;
     if (isWebCodecsSupported()) {
+      transcodeIdx = _addStep('編碼轉換', 'active');
       try {
         preprocessResult = await transcodeToFmp4(file, {
           onProgress: transcodeProgress,
           onTranscodeStart: () => {
             // Fires only when transcode is actually needed (HEVC/VP9 input),
             // NOT for H.264 input that just needs remux.
+            _setStep(transcodeIdx, 'active', 'HEVC → H.264');
             onProgress?.({ percent: 1, statusText: '偵測到非 H.264 影片，正在轉換格式…' });
           }
         });
+        if (preprocessResult) {
+          _setStep(transcodeIdx, 'done');
+        } else {
+          // Already H.264 — transcode returned null (not needed)
+          _setStep(transcodeIdx, 'skip', '已為 H.264');
+        }
       } catch (err) {
         console.warn('[chunked-upload] WebCodecs transcode failed:', err?.message);
+        _setStep(transcodeIdx, 'warn', '失敗');
 
         // Retry with conservative encoder settings (720p, 1.5Mbps) to reduce
         // OOM risk on memory-constrained devices (e.g. older iPhones).
+        const retryIdx = _addStep('降級重試 (720p)', 'active');
         onProgress?.({ percent: 1, statusText: '影片轉換失敗，正在以較低品質重試…' });
         try {
           preprocessResult = await transcodeToFmp4(file, {
             onProgress: transcodeProgress,
             encoderConstraints: FALLBACK_ENCODER
           });
+          if (preprocessResult) {
+            _setStep(retryIdx, 'done');
+          } else {
+            _setStep(retryIdx, 'skip');
+          }
         } catch (retryErr) {
           console.warn('[chunked-upload] WebCodecs retry also failed:', retryErr?.message);
+          _setStep(retryIdx, 'warn', '失敗');
           preprocessResult = null;
           onProgress?.({ statusText: null });
         }
@@ -400,22 +441,25 @@ export async function encryptAndPutChunked({
       const peekBuf = await file.slice(0, 64 * 1024).arrayBuffer();
       if (isAlreadyFragmented(new Uint8Array(peekBuf))) {
         // Already-fragmented fMP4: streaming upload (low memory).
-        // Segments are produced one at a time via generator instead of
-        // accumulating all in memory. Peak memory: ~1x file vs ~2x.
+        const uploadIdx = _addStep('加密上傳', 'active');
         onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
-        return _streamingUploadFragmented({
+        const result = await _streamingUploadFragmented({
           file, convId, cryptoKey, useSharedKey, sharedKeyU8,
           name, direction, dir, mk,
           PHASE, onProgress, abortSignal
         });
+        _setStep(uploadIdx, 'done');
+        return result;
       }
 
       // Not fragmented — remux to fMP4 via mp4box.js (keeps original codec)
+      const remuxIdx = _addStep('影片封裝', 'active');
       preprocessResult = await remuxToFragmentedMp4(file, {
         onProgress: ({ percent }) => {
           onProgress?.({ percent: Math.round(percent * PHASE.remuxEnd / 100) });
         }
       });
+      _setStep(remuxIdx, 'done');
 
       // Guard: if the remuxed output uses a codec that isn't universally
       // MSE-compatible (e.g. HEVC after failed transcode), verify the current
@@ -432,6 +476,9 @@ export async function encryptAndPutChunked({
         }
       }
     }
+
+    // Add upload step (will be set to 'done' after chunks + manifest)
+    _addStep('加密上傳', 'active');
 
     onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
     contentType = preprocessResult.contentType;
@@ -623,6 +670,14 @@ export async function encryptAndPutChunked({
     throw err;
   }
   onProgress?.({ percent: PHASE.manifestEnd });
+
+  // Mark upload step as done (last step in _steps array for video uploads)
+  if (_steps && _steps.length > 0) {
+    const lastIdx = _steps.length - 1;
+    if (_steps[lastIdx].status === 'active') {
+      _setStep(lastIdx, 'done');
+    }
+  }
 
   const manifestEnvelope = {
     v: useSharedKey ? 2 : 1,
