@@ -130,6 +130,11 @@ export class MediaHandlingController extends BaseController {
         let msePlayer = null;
         let blobUrl = null; // For blob-URL fallback when MSE init fails
 
+        // Chunk cache: stores all downloaded chunks as Blobs (disk-backed)
+        // for seek-triggered re-append after buffer eviction.
+        const chunkCache = []; // index → Blob
+        let seekCleanup = null; // cleanup function for seek handler
+
         // Step 1: Open fullscreen video viewer immediately
         const viewer = openVideoViewer({
             name: media.name || '影片',
@@ -137,6 +142,8 @@ export class MediaHandlingController extends BaseController {
             onClose: () => {
                 // User closed the viewer — abort download and release resources
                 try { downloadAbort.abort(); } catch {}
+                if (seekCleanup) { try { seekCleanup(); } catch {} seekCleanup = null; }
+                chunkCache.length = 0; // Release cached Blobs
                 if (msePlayer) {
                     try { msePlayer.destroy(); } catch {}
                     msePlayer = null;
@@ -348,6 +355,10 @@ export class MediaHandlingController extends BaseController {
                 bytesReceived += (data?.byteLength || 0);
                 viewer.updateChunkStats({ received: chunksReceived, bytes: bytesReceived });
 
+                // Cache every chunk as a Blob (disk-backed) for seek re-append.
+                // Browsers store Blobs >~64KB on disk, so this doesn't add heap pressure.
+                chunkCache[index] = new Blob([data]);
+
                 // Blob fallback mode: collect all chunks for later concatenation
                 if (useBlobFallback) {
                     blobParts.push(data);
@@ -487,6 +498,16 @@ export class MediaHandlingController extends BaseController {
                 }
                 if (appendError) throw appendError;
                 await msePlayer.endOfStream();
+
+                // ── Seek-aware re-append ──
+                // All chunks are now cached as Blobs. Set up a handler that
+                // re-appends chunks from cache when the user seeks to an
+                // evicted (unbuffered) region.
+                if (chunkCache.length > 0) {
+                    seekCleanup = this._setupSeekReappend({
+                        video, viewer, msePlayer, chunkCache, numTracks
+                    });
+                }
             }
 
             endDownload();
@@ -495,6 +516,10 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
 
         } catch (err) {
+            // Release seek handler and chunk cache
+            if (seekCleanup) { try { seekCleanup(); } catch {} seekCleanup = null; }
+            chunkCache.length = 0;
+
             // Release MSE resources
             if (msePlayer) {
                 try { msePlayer.destroy(); } catch {}
@@ -521,6 +546,138 @@ export class MediaHandlingController extends BaseController {
             viewer.destroy();
             this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
         }
+    }
+
+    /**
+     * Set up seek-aware re-append for MSE playback.
+     *
+     * After all chunks are downloaded and endOfStream() is called, the MSE
+     * buffer may have been partially evicted. When the user seeks to an
+     * evicted region, this handler re-appends the relevant chunks from the
+     * disk-backed Blob cache so playback can resume at the seek position.
+     *
+     * @returns {Function} cleanup — call to remove all event listeners
+     */
+    _setupSeekReappend({ video, viewer, msePlayer, chunkCache, numTracks }) {
+        let reappending = false;
+        let seekTimer = null;
+        let destroyed = false;
+        let pendingSeekTime = null; // Track seek that arrived during re-append
+
+        const doReappend = async (seekTime) => {
+            if (destroyed || !msePlayer) return;
+            if (reappending) {
+                // Another re-append in progress — remember this seek for later
+                pendingSeekTime = seekTime;
+                return;
+            }
+
+            const dur = video.duration;
+            if (!dur || !isFinite(dur) || dur <= 0) return;
+
+            // Already buffered at this position — nothing to do
+            if (msePlayer.isTimeBuffered(seekTime)) return;
+
+            reappending = true;
+            viewer.showBuffering('載入中…');
+
+            try {
+                // Disable eviction during re-append to protect freshly-appended data
+                msePlayer.setEvictionEnabled(false);
+
+                // Estimate which chunk index corresponds to the seek time.
+                // Each media segment covers roughly (duration / mediaChunkCount) seconds.
+                const mediaChunkCount = chunkCache.length - numTracks;
+                if (mediaChunkCount <= 0) return;
+
+                const targetMediaIdx = Math.floor((seekTime / dur) * mediaChunkCount);
+                const targetChunkIdx = numTracks + Math.max(0, Math.min(targetMediaIdx, mediaChunkCount - 1));
+
+                // Re-append a window of chunks around the target.
+                // Go back a few chunks to ensure we hit a keyframe before the seek point.
+                const WINDOW_BEFORE = 5;
+                const WINDOW_AFTER = 25;
+                const start = Math.max(numTracks, targetChunkIdx - WINDOW_BEFORE);
+                const end = Math.min(chunkCache.length, targetChunkIdx + WINDOW_AFTER);
+
+                console.info(`[video-seek] re-appending chunks ${start}..${end - 1} for seek to ${seekTime.toFixed(1)}s (estimated target chunk ${targetChunkIdx})`);
+
+                for (let i = start; i < end; i++) {
+                    if (destroyed || !msePlayer) break;
+                    const blob = chunkCache[i];
+                    if (!blob) continue;
+                    const buf = await blob.arrayBuffer();
+                    await msePlayer.appendChunk('muxed', new Uint8Array(buf));
+                }
+
+                // Re-signal end of stream so the browser knows the full timeline
+                if (!destroyed && msePlayer) {
+                    await msePlayer.endOfStream();
+                }
+
+                // If still not buffered (estimation was off), try a wider range
+                if (!destroyed && msePlayer && !msePlayer.isTimeBuffered(seekTime)) {
+                    const wideStart = Math.max(numTracks, start - 20);
+                    const wideEnd = Math.min(chunkCache.length, end + 20);
+                    console.info(`[video-seek] widening to chunks ${wideStart}..${wideEnd - 1}`);
+                    for (let i = wideStart; i < wideEnd; i++) {
+                        if (destroyed || !msePlayer) break;
+                        if (i >= start && i < end) continue; // already appended
+                        const blob = chunkCache[i];
+                        if (!blob) continue;
+                        const buf = await blob.arrayBuffer();
+                        await msePlayer.appendChunk('muxed', new Uint8Array(buf));
+                    }
+                    if (!destroyed && msePlayer) {
+                        await msePlayer.endOfStream();
+                    }
+                }
+            } catch (err) {
+                console.warn('[video-seek] re-append failed:', err?.message);
+            } finally {
+                // Re-enable eviction for normal playback
+                if (msePlayer) msePlayer.setEvictionEnabled(true);
+                reappending = false;
+
+                // If another seek arrived during this re-append, process it now
+                if (pendingSeekTime !== null && !destroyed) {
+                    const nextTime = pendingSeekTime;
+                    pendingSeekTime = null;
+                    doReappend(nextTime);
+                    return; // skip hideBuffering — the next re-append will handle it
+                }
+
+                // Hide buffering spinner if the position is now buffered
+                if (msePlayer?.isTimeBuffered(video.currentTime)) {
+                    viewer.hideBuffering();
+                }
+            }
+        };
+
+        // Debounced seek handler — waits for drag to settle before re-appending
+        const onSeek = (seekTime) => {
+            if (seekTimer) clearTimeout(seekTimer);
+            seekTimer = setTimeout(() => doReappend(seekTime), 250);
+        };
+
+        // Register via the viewer's callback system
+        viewer.onSeeking(onSeek);
+
+        // Also handle 'waiting' event: video stalled at end of buffered range
+        // (e.g. user watched past our re-appended window)
+        const onWaiting = () => {
+            if (!destroyed && !reappending && msePlayer) {
+                doReappend(video.currentTime);
+            }
+        };
+        video.addEventListener('waiting', onWaiting);
+
+        // Return cleanup function
+        return () => {
+            destroyed = true;
+            if (seekTimer) { clearTimeout(seekTimer); seekTimer = null; }
+            video.removeEventListener('waiting', onWaiting);
+        };
     }
 
     /**

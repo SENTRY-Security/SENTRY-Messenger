@@ -267,6 +267,32 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     video.addEventListener('play', syncPlayButton);
     video.addEventListener('pause', syncPlayButton);
 
+    /* ── Waiting / Seeking — re-show buffering spinner when video stalls ── */
+    let seekCallbacks = [];  // external callbacks registered via onSeeking()
+
+    video.addEventListener('waiting', () => {
+        // Video stalled waiting for data — show buffering spinner
+        if (!destroyed && bufOverlay) {
+            if (bufText) bufText.textContent = '緩衝中…';
+            bufOverlay.classList.remove('vv-buf-hidden');
+        }
+    });
+
+    video.addEventListener('seeking', () => {
+        // Notify external seek handler (media-handling-controller)
+        const t = video.currentTime;
+        for (const cb of seekCallbacks) {
+            try { cb(t); } catch {}
+        }
+    });
+
+    // Hide buffering when playback actually resumes after a stall
+    video.addEventListener('playing', () => {
+        if (!destroyed && bufOverlay) {
+            bufOverlay.classList.add('vv-buf-hidden');
+        }
+    });
+
     /* ── Seek Bar ── */
     const updateSeekBar = () => {
         if (seekDragging) return;
@@ -547,11 +573,10 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
             }
         },
 
-        /** Hide buffering overlay with fade */
+        /** Hide buffering overlay with fade (keeps element in DOM for re-show) */
         hideBuffering() {
             if (bufOverlay) {
                 bufOverlay.classList.add('vv-buf-hidden');
-                setTimeout(() => { try { bufOverlay.remove(); } catch {} }, 300);
             }
         },
 
@@ -565,6 +590,11 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
         /** Provide the MSE player for stats polling */
         setMsePlayer(player) {
             msePlayer = player;
+        },
+
+        /** Register a callback for seek events: cb(seekTimeSeconds) */
+        onSeeking(cb) {
+            if (typeof cb === 'function') seekCallbacks.push(cb);
         },
 
         /** Force cleanup */

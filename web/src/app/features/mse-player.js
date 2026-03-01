@@ -273,6 +273,7 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
   let appending = false;
   let destroyed = false;
   let paused = false;  // For MMS endstreaming
+  let evictionEnabled = true; // Can be disabled for seek re-append
 
   /**
    * Evict already-played buffer to free space for new appends.
@@ -335,11 +336,14 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
   const processQueue = () => {
     if (destroyed || !queue.length) return;
 
-    // If MediaSource is no longer accepting data, drain all pending
+    // If MediaSource is truly closed (destroyed), drain all pending
     // items so callers' promises settle instead of hanging forever.
+    // Note: "ended" state still accepts appends — appendBuffer()
+    // transitions readyState back to "open" automatically. This is
+    // essential for seek-triggered re-append after endOfStream().
     const ms = getMediaSource?.();
-    if (ms && ms.readyState !== 'open') {
-      const drainErr = new Error(`MediaSource readyState is "${ms.readyState}", cannot append`);
+    if (ms && ms.readyState === 'closed') {
+      const drainErr = new Error(`MediaSource readyState is "closed", cannot append`);
       const pending = queue.splice(0);
       for (const entry of pending) entry.reject(drainErr);
       return;
@@ -350,7 +354,8 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
 
     // Proactive eviction: if too much played buffer has accumulated,
     // evict before appending the next chunk to keep memory under control.
-    if (shouldEvictProactively()) {
+    // Disabled during seek re-append to avoid evicting freshly appended data.
+    if (evictionEnabled && shouldEvictProactively()) {
       appending = true; // Block queue while evicting
       // Double-safety: even if evictPlayed's own timeout fails, cap the total
       // wait so the queue can never be permanently blocked by eviction.
@@ -460,6 +465,7 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
     flush() { processQueue(); },
     pause() { paused = true; },
     resume() { paused = false; processQueue(); },
+    setEvictionEnabled(v) { evictionEnabled = !!v; },
     get pending() { return queue.length + (appending ? 1 : 0); },
     destroy() {
       destroyed = true;
@@ -694,6 +700,36 @@ export function createMsePlayer({ videoElement, onError }) {
       }
 
       mediaSource = null;
+    },
+
+    /**
+     * Check if a specific time is within the buffered range of any SourceBuffer.
+     * Used by seek handler to decide if re-append is needed.
+     */
+    isTimeBuffered(time, toleranceSec = 0.5) {
+      for (const buf of Object.values(buffers)) {
+        const sb = buf.sourceBuffer;
+        try {
+          if (!sb?.buffered) continue;
+          for (let i = 0; i < sb.buffered.length; i++) {
+            if (time >= sb.buffered.start(i) - toleranceSec &&
+                time < sb.buffered.end(i)) {
+              return true;
+            }
+          }
+        } catch {}
+      }
+      return false;
+    },
+
+    /**
+     * Enable/disable proactive buffer eviction on all SourceBuffers.
+     * Disable during seek re-append to avoid evicting freshly-appended data.
+     */
+    setEvictionEnabled(enabled) {
+      for (const buf of Object.values(buffers)) {
+        buf.queue.setEvictionEnabled(enabled);
+      }
     },
 
     /** Get the list of track labels that have SourceBuffers. */
