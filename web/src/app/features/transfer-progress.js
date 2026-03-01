@@ -310,12 +310,12 @@ function _calcSpeed() {
     return (last.loaded - first.loaded) / dt;
 }
 
-/** Build a small SVG progress-pie circle (24×24) showing produced/total fraction. */
+/** Build a small SVG progress-pie circle (24×24). */
 const _PIE_R = 9;
 const _PIE_C = 2 * Math.PI * _PIE_R; // ≈ 56.55
 
-function _buildPieSvg(produced, total) {
-    const frac = total > 0 ? Math.min(1, produced / total) : 0;
+function _buildPieSvg(pct) {
+    const frac = Math.min(1, Math.max(0, pct / 100));
     const NS = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
@@ -345,14 +345,13 @@ function _buildPieSvg(produced, total) {
     return svg;
 }
 
-/** Check if a step has segment progress data to show. */
+/** Check if a step has progress data to show. */
 function _stepHasProgress(step) {
     return step.status === 'active' &&
-        Number.isFinite(step.produced) && step.produced > 0 &&
-        Number.isFinite(step.total) && step.total > 0;
+        Number.isFinite(step.percent) && step.percent > 0;
 }
 
-/** Fast-path: update only pie SVGs + fraction labels without full DOM rebuild */
+/** Fast-path: update only pie SVGs + segment labels without full DOM rebuild */
 function _updateStepPies() {
     if (!_uploadDetailPanelEl) return;
     const rows = _uploadDetailPanelEl.querySelectorAll('.transfer-step');
@@ -360,26 +359,29 @@ function _updateStepPies() {
         const step = _uploadSteps[i];
         const row = rows[i];
         const pie = row.querySelector('.transfer-step-pie');
-        const fracEl = row.querySelector('.transfer-step-frac');
+        const segEl = row.querySelector('.transfer-step-frac');
         if (_stepHasProgress(step)) {
-            const frac = Math.min(1, step.produced / step.total);
+            const pct = Math.min(100, Math.max(0, step.percent));
+            const frac = pct / 100;
             if (pie) {
                 const arc = pie.querySelector('[data-role="arc"]');
                 if (arc) arc.setAttribute('stroke-dashoffset', String(_PIE_C * (1 - frac)));
             } else {
-                row.appendChild(_buildPieSvg(step.produced, step.total));
+                row.appendChild(_buildPieSvg(pct));
             }
-            if (fracEl) {
-                fracEl.textContent = `${step.produced}/${step.total}`;
-            } else {
-                const el = document.createElement('span');
-                el.className = 'transfer-step-frac';
-                el.textContent = `${step.produced}/${step.total}`;
-                row.appendChild(el);
+            if (step.segCount > 0) {
+                if (segEl) {
+                    segEl.textContent = `段 ${step.segCount}`;
+                } else {
+                    const el = document.createElement('span');
+                    el.className = 'transfer-step-frac';
+                    el.textContent = `段 ${step.segCount}`;
+                    row.appendChild(el);
+                }
             }
         } else {
             if (pie) pie.remove();
-            if (fracEl) fracEl.remove();
+            if (segEl) segEl.remove();
         }
     }
 }
@@ -424,13 +426,15 @@ function _renderDetailContent() {
             row.appendChild(detailEl);
         }
 
-        // Progress pie + fraction label for active transcode steps
+        // Progress pie (encode %) + segment count for active transcode steps
         if (_stepHasProgress(step)) {
-            row.appendChild(_buildPieSvg(step.produced, step.total));
-            const fracEl = document.createElement('span');
-            fracEl.className = 'transfer-step-frac';
-            fracEl.textContent = `${step.produced}/${step.total}`;
-            row.appendChild(fracEl);
+            row.appendChild(_buildPieSvg(step.percent));
+            if (step.segCount > 0) {
+                const segEl = document.createElement('span');
+                segEl.className = 'transfer-step-frac';
+                segEl.textContent = `段 ${step.segCount}`;
+                row.appendChild(segEl);
+            }
         }
 
         _uploadDetailPanelEl.appendChild(row);

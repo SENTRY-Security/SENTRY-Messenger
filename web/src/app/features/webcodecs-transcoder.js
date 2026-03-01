@@ -555,7 +555,6 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   const preMuxAudioFrames = [];
   const readySegments = [];        // fMP4 segments waiting to be consumed
   let totalEmittedSegments = 0;
-  let expectedSegments = 0;        // computed from full moov parse in onReady
   let hadAudioOutput = false;
 
   // Track info (discovered in onReady)
@@ -966,10 +965,11 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       const combinedInit = initParts.length === 1
         ? initParts[0]
         : mergeInitSegments(initParts);
-      readySegments.push({ trackIndex: 0, data: combinedInit, expectedSegments });
+      readySegments.push({ trackIndex: 0, data: combinedInit, encodeProgress: 0 });
 
       incMuxer.onSegment = (_id, _user, buf) => {
-        if (buf) readySegments.push({ trackIndex: 0, data: new Uint8Array(buf), expectedSegments });
+        const ep = totalSamples > 0 ? Math.min(1, processedSamples / totalSamples) : 0;
+        if (buf) readySegments.push({ trackIndex: 0, data: new Uint8Array(buf), encodeProgress: ep });
       };
       incMuxer.start();
       incMuxReady = true;
@@ -1048,12 +1048,6 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         readyReject(new Error('影片不包含視訊軌道'));
         return;
       }
-
-      // Compute expected segment count from full moov parse (accurate, unlike probe)
-      // 1 init + ceil(video/100) + ceil(audio/100)
-      expectedSegments = 1
-        + Math.ceil((videoTrack.nb_samples || 0) / 100)
-        + (audioTrack ? Math.ceil((audioTrack.nb_samples || 0) / 100) : 0);
 
       // Configure video encoder/decoder
       vEncConfig = videoEncoderConfig(videoTrack, encoderConstraints);

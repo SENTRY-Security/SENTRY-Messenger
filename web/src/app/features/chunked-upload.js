@@ -377,7 +377,7 @@ async function _streamingTranscodeUpload({
   file, probe, convId, cryptoKey, useSharedKey, sharedKeyU8,
   name, direction, dir, mk,
   encoderConstraints, onProgress, abortSignal,
-  onSegmentProduced,
+  onTranscodeStep,
 }) {
   const PHASE = { chunkStart: 5, chunkEnd: 95, manifestEnd: 100 };
   const contentType = 'video/mp4';
@@ -447,10 +447,7 @@ async function _streamingTranscodeUpload({
     if (uploadError) throw uploadError;
 
     const idx = chunkIndex++;
-    // Use transcoder's full-moov-parsed expectedSegments when available (more
-    // accurate than probe estimate which may only read partial moov headers).
-    const segTotal = seg.expectedSegments || totalExpectedSegments;
-    onSegmentProduced?.(chunkIndex, segTotal);
+    onTranscodeStep?.(Math.round((seg.encodeProgress || 0) * 100), chunkIndex);
     const segData = seg?.data;
     if (!segData || !segData.byteLength) {
       console.warn('[streaming-upload] skipping empty segment at index', idx);
@@ -657,14 +654,13 @@ export async function encryptAndPutChunked({
     if (detail !== undefined) _steps[idx].detail = detail;
     _emitSteps();
   };
-  // Throttled step progress updater — updates produced/total on a step
-  // and emits steps at most every 500ms to keep the pie responsive without
-  // flooding the UI with full DOM rebuilds.
+  // Throttled step progress updater — stores encode percent (pie arc) and
+  // segment count (label) on a step, emitting at most every 500ms.
   let _stepPctTimer = null;
-  const _setStepSegments = (idx, produced, total) => {
+  const _setStepProgress = (idx, pct, segCount) => {
     if (!_steps || idx < 0 || !_steps[idx]) return;
-    _steps[idx].produced = produced;
-    _steps[idx].total = total;
+    _steps[idx].percent = pct;
+    _steps[idx].segCount = segCount;
     if (!_stepPctTimer) {
       _stepPctTimer = setTimeout(() => { _stepPctTimer = null; _emitSteps(); }, 500);
     }
@@ -714,7 +710,7 @@ export async function encryptAndPutChunked({
             file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
             name, direction, dir, mk,
             encoderConstraints: DEFAULT_ENCODER, onProgress, abortSignal,
-            onSegmentProduced: (produced, total) => _setStepSegments(tcIdx, produced, total),
+            onTranscodeStep: (pct, segCount) => _setStepProgress(tcIdx, pct, segCount),
           });
           _setStep(tcIdx, 'done', '720p');
           return result;
@@ -730,7 +726,7 @@ export async function encryptAndPutChunked({
               file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
               name, direction, dir, mk,
               encoderConstraints: EXTREME_FALLBACK_ENCODER, onProgress, abortSignal,
-              onSegmentProduced: (produced, total) => _setStepSegments(retryIdx, produced, total),
+              onTranscodeStep: (pct, segCount) => _setStepProgress(retryIdx, pct, segCount),
             });
             _setStep(retryIdx, 'done', '480p');
             return retryResult;
