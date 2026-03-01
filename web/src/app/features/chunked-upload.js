@@ -26,8 +26,12 @@ import {
 import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
 import { AdaptiveConcurrency } from './adaptive-concurrency.js';
 
-// Fallback encoder constraints for WebCodecs retry (lower quality to reduce OOM risk)
-const FALLBACK_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000 };
+// Default encoder constraints: cap all uploads to 720p @ 1.5Mbps for smooth MSE streaming
+// on iOS Safari. Short high-bitrate videos (e.g. 4K iPhone) cause excessive buffering times.
+const DEFAULT_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000 };
+
+// Extreme fallback for OOM retry (480p @ 800Kbps)
+const EXTREME_FALLBACK_ENCODER = { maxWidth: 854, maxHeight: 480, maxBitrate: 800_000 };
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
 const CHUNK_INFO_TAG = 'media/chunk-v1';
@@ -476,35 +480,37 @@ export async function encryptAndPutChunked({
 
     let transcodeIdx = -1;
     if (isWebCodecsSupported()) {
-      transcodeIdx = _addStep('編碼轉換', 'active');
+      transcodeIdx = _addStep('編碼轉換 (720p)', 'active');
       try {
+        // Always pass DEFAULT_ENCODER constraints so that even H.264 videos
+        // exceeding 720p / 1.5Mbps get re-encoded for smooth MSE streaming.
+        // Videos already within limits are returned as null (fast remux path).
         preprocessResult = await transcodeToFmp4(file, {
           onProgress: transcodeProgress,
+          encoderConstraints: DEFAULT_ENCODER,
           onTranscodeStart: () => {
-            // Fires only when transcode is actually needed (HEVC/VP9 input),
-            // NOT for H.264 input that just needs remux.
-            _setStep(transcodeIdx, 'active', 'HEVC → H.264');
-            onProgress?.({ percent: 1, statusText: '偵測到非 H.264 影片，正在轉換格式…' });
+            _setStep(transcodeIdx, 'active', '轉碼至 720p');
+            onProgress?.({ percent: 1, statusText: '正在轉換影片至 720p…' });
           }
         });
         if (preprocessResult) {
-          _setStep(transcodeIdx, 'done');
+          _setStep(transcodeIdx, 'done', '720p');
         } else {
-          // Already H.264 — transcode returned null (not needed)
-          _setStep(transcodeIdx, 'skip', '已為 H.264');
+          // Already H.264 and within 720p/1.5Mbps — no re-encode needed
+          _setStep(transcodeIdx, 'skip', '品質已符合');
         }
       } catch (err) {
         console.warn('[chunked-upload] WebCodecs transcode failed:', err?.message);
         _setStep(transcodeIdx, 'warn', '失敗');
 
-        // Retry with conservative encoder settings (720p, 1.5Mbps) to reduce
+        // Retry with extreme fallback (480p, 800Kbps) to reduce
         // OOM risk on memory-constrained devices (e.g. older iPhones).
-        const retryIdx = _addStep('降級重試 (720p)', 'active');
+        const retryIdx = _addStep('降級重試 (480p)', 'active');
         onProgress?.({ percent: 1, statusText: '影片轉換失敗，正在以較低品質重試…' });
         try {
           preprocessResult = await transcodeToFmp4(file, {
             onProgress: transcodeProgress,
-            encoderConstraints: FALLBACK_ENCODER
+            encoderConstraints: EXTREME_FALLBACK_ENCODER
           });
           if (preprocessResult) {
             _setStep(retryIdx, 'done');

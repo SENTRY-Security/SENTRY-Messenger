@@ -69,6 +69,25 @@ function needsTranscode(tracks) {
   return dominated;
 }
 
+/**
+ * Check if video tracks exceed the given encoder constraints (resolution or bitrate).
+ * Used to force re-encoding of H.264 videos that are too large for smooth MSE streaming.
+ */
+function exceedsConstraints(tracks, constraints) {
+  if (!constraints) return false;
+  for (const t of tracks) {
+    if (t._type === 'video') {
+      const w = t.video?.width || t.track_width || 0;
+      const h = t.video?.height || t.track_height || 0;
+      const bitrate = t.bitrate || 0;
+      if (constraints.maxWidth && w > constraints.maxWidth) return true;
+      if (constraints.maxHeight && h > constraints.maxHeight) return true;
+      if (constraints.maxBitrate && bitrate > constraints.maxBitrate) return true;
+    }
+  }
+  return false;
+}
+
 // ─── Rotation detection from tkhd matrix ───
 
 /**
@@ -185,15 +204,27 @@ export async function transcodeToFmp4(file, { onProgress, encoderConstraints, on
   }
 
   // 3. Check if transcoding is actually needed — BEFORE extracting samples
-  if (!needsTranscode(probeResult.tracks)) {
-    // Already MSE-safe → return null so caller uses fast remux path.
+  const codecNeedsTranscode = needsTranscode(probeResult.tracks);
+  const constraintsExceeded = exceedsConstraints(probeResult.tracks, encoderConstraints);
+
+  if (!codecNeedsTranscode && !constraintsExceeded) {
+    // Already MSE-safe AND within constraints → return null so caller uses fast remux path.
     // No samples were extracted, so memory usage stays near zero.
     return null;
   }
 
   // Notify caller that transcode is actually needed (for UI status updates).
-  // This only fires for non-H.264 input (e.g. HEVC), NOT for already-safe files.
-  onTranscodeStart?.();
+  if (codecNeedsTranscode) {
+    onTranscodeStart?.();
+  } else if (constraintsExceeded) {
+    // H.264 but exceeds size/bitrate constraints — force re-encode for smaller output
+    const vt = probeResult.tracks.find(t => t._type === 'video');
+    const w = vt?.video?.width || vt?.track_width || '?';
+    const h = vt?.video?.height || vt?.track_height || '?';
+    const br = vt?.bitrate ? `${(vt.bitrate / 1_000_000).toFixed(1)}Mbps` : '?';
+    console.info(`[transcode] H.264 ${w}x${h} @ ${br} exceeds constraints — forcing re-encode to ${encoderConstraints.maxWidth}x${encoderConstraints.maxHeight} @ ${(encoderConstraints.maxBitrate / 1_000_000).toFixed(1)}Mbps`);
+    onTranscodeStart?.();
+  }
 
   // 4. Now extract samples (heavy — loads all sample data for transcoding)
   const { tracks: inputTracks, samples: inputSamples, duration } =
