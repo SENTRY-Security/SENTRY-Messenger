@@ -15,7 +15,7 @@
 
 import { signPutChunked as apiSignPutChunked, cleanupChunked as apiCleanupChunked } from '../api/media.js';
 import { getMkRaw } from '../core/store.js';
-import { encryptWithMK as aeadEncryptWithMK } from '../crypto/aead.js';
+import { encryptWithMK as aeadEncryptWithMK, createBulkEncryptor } from '../crypto/aead.js';
 import { b64 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import {
@@ -28,7 +28,10 @@ import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js
 const FALLBACK_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000 };
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
-const UPLOAD_CONCURRENCY = 6;
+// 10 concurrent processChunk calls: browsers allow 6 HTTP/1.1 connections per host,
+// but the extra 4 slots pre-encrypt while the 6 network slots are busy uploading.
+// With HTTP/2 (MinIO/S3), all 10 can upload in parallel over a single connection.
+const UPLOAD_CONCURRENCY = 10;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB — must match server UPLOAD_MAX_BYTES
 
@@ -157,7 +160,11 @@ function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal, onUpload
     };
     xhr.onerror = () => settle(reject, new Error('chunk PUT network error'));
     xhr.ontimeout = () => settle(reject, new Error('chunk PUT timeout (connection stalled)'));
-    xhr.send(new Blob([cipherBuf], { type: ct }));
+    // Send the ArrayBuffer directly — avoids an extra Blob copy (~5MB per chunk).
+    // Content-Type is already set via setRequestHeader above.
+    xhr.send(cipherBuf.buffer.byteLength === cipherBuf.byteLength
+      ? cipherBuf.buffer
+      : cipherBuf.buffer.slice(cipherBuf.byteOffset, cipherBuf.byteOffset + cipherBuf.byteLength));
   });
 }
 
@@ -261,6 +268,8 @@ async function _streamingUploadFragmented({
     });
   };
 
+  const bulkEncrypt = createBulkEncryptor(cryptoKey, CHUNK_INFO_TAG);
+
   try {
     const pool = new Set();
     for await (const { trackIndex, data } of iterateFragmentedSegmentsFromFile(file)) {
@@ -274,7 +283,7 @@ async function _streamingUploadFragmented({
       if (!chunkPut?.url) throw new Error(`missing presigned URL for chunk ${idx}`);
 
       const p = (async () => {
-        const ct = await aeadEncryptWithMK(data, cryptoKey, CHUNK_INFO_TAG);
+        const ct = await bulkEncrypt(data);
         streamInFlight[idx] = 0;
         await uploadChunkWithRetry({
           url: chunkPut.url, method: chunkPut.method || 'PUT',
@@ -661,10 +670,13 @@ export async function encryptAndPutChunked({
   };
 
   // 2. Encrypt and upload chunks with concurrency limit
+  const bulkEncryptMain = createBulkEncryptor(cryptoKey, CHUNK_INFO_TAG);
   let uploadError = null;
 
   const processChunk = async (index) => {
     if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
+
+    const t0 = performance.now();
 
     let plainBuf;
     if (fmp4Segments) {
@@ -683,14 +695,19 @@ export async function encryptAndPutChunked({
       plainBuf = new Uint8Array(await chunkSlice.arrayBuffer());
     }
 
-    // Encrypt this chunk independently
-    const ct = await aeadEncryptWithMK(plainBuf, cryptoKey, CHUNK_INFO_TAG);
+    const tRead = performance.now();
+
+    // Encrypt this chunk (uses cached HKDF key import)
+    const chunkPlainSize = plainBuf.byteLength;
+    const ct = await bulkEncryptMain(plainBuf);
+    plainBuf = null; // Free plaintext immediately — cipher is all we need now
+
+    const tEncrypt = performance.now();
 
     // Upload
     const chunkPut = chunkPuts[index];
     if (!chunkPut?.url) throw new Error(`missing presigned URL for chunk ${index}`);
 
-    const chunkPlainSize = plainBuf.byteLength;
     await uploadChunkWithRetry({
       url: chunkPut.url,
       method: chunkPut.method || 'PUT',
@@ -704,10 +721,22 @@ export async function encryptAndPutChunked({
       }
     });
 
+    const tUpload = performance.now();
+
     // Chunk fully uploaded — move from in-flight to completed
     chunkInFlight[index] = 0;
     completedBytes += chunkPlainSize;
     _reportProgress(true);
+
+    // Log per-chunk timing for diagnostics (helps identify bottleneck)
+    if (index < 5 || index % 20 === 0) {
+      const readMs = (tRead - t0).toFixed(0);
+      const encMs = (tEncrypt - tRead).toFixed(0);
+      const upMs = (tUpload - tEncrypt).toFixed(0);
+      const sizeMB = (chunkPlainSize / (1024 * 1024)).toFixed(1);
+      const upSpeed = chunkPlainSize / ((tUpload - tEncrypt) / 1000) / (1024 * 1024);
+      console.info(`[upload] chunk ${index}: ${sizeMB}MB read=${readMs}ms enc=${encMs}ms up=${upMs}ms (${upSpeed.toFixed(1)} MB/s)`);
+    }
 
     // Record metadata
     const meta = {

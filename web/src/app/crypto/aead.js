@@ -134,6 +134,42 @@ export async function unwrapWithMK_JSON(envelope, mkRawU8) {
   }
 }
 
+/**
+ * Create a reusable encryptor for bulk operations (e.g., chunked upload).
+ * Imports the master key ONCE and reuses it across all encrypt calls,
+ * eliminating the per-chunk importKey overhead (3 WebCrypto calls → 2).
+ *
+ * @param {Uint8Array} mkRawU8 - raw master key bytes
+ * @param {string} infoTag - HKDF info tag (e.g., 'media/chunk-v1')
+ * @returns {(plainU8: Uint8Array) => Promise<{cipherBuf: Uint8Array, iv: Uint8Array, hkdfSalt: Uint8Array}>}
+ */
+export function createBulkEncryptor(mkRawU8, infoTag = 'media/v1') {
+  const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
+  const infoBytes = new TextEncoder().encode(normalizedInfoTag);
+  const mkKeyPromise = crypto.subtle.importKey(
+    'raw',
+    toU8Strict(mkRawU8, 'aead:createBulkEncryptor'),
+    'HKDF',
+    false,
+    ['deriveKey']
+  );
+
+  return async function encrypt(plainU8) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const mkKey = await mkKeyPromise;
+    const key = await crypto.subtle.deriveKey(
+      { name: 'HKDF', hash: 'SHA-256', salt, info: infoBytes },
+      mkKey,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt']
+    );
+    const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plainU8);
+    return { cipherBuf: new Uint8Array(ctBuf), iv, hkdfSalt: salt };
+  };
+}
+
 // --- small helpers ---
 export function b64(u8) {
   let s = ''; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
