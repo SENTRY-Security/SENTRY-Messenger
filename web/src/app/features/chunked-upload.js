@@ -121,15 +121,22 @@ function resolveContentType(file) {
 
 /**
  * Upload a single encrypted chunk via XHR with progress.
+ * Includes a timeout to prevent permanent hangs on stalled connections.
  * @returns {Promise<void>}
  */
+const CHUNK_UPLOAD_TIMEOUT_MS = 120_000; // 2 minutes per chunk
+
 function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
+
     const xhr = new XMLHttpRequest();
+    xhr.timeout = CHUNK_UPLOAD_TIMEOUT_MS;
     if (abortSignal) {
       const onAbort = () => {
         try { xhr.abort(); } catch { }
-        reject(new DOMException('aborted', 'AbortError'));
+        settle(reject, new DOMException('aborted', 'AbortError'));
       };
       if (abortSignal.aborted) { onAbort(); return; }
       abortSignal.addEventListener('abort', onAbort, { once: true });
@@ -138,10 +145,11 @@ function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
     const ct = headers?.['Content-Type'] || 'application/octet-stream';
     xhr.setRequestHeader('Content-Type', ct);
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error('chunk PUT failed (status ' + xhr.status + ')'));
+      if (xhr.status >= 200 && xhr.status < 300) settle(resolve);
+      else settle(reject, new Error('chunk PUT failed (status ' + xhr.status + ')'));
     };
-    xhr.onerror = () => reject(new Error('chunk PUT network error'));
+    xhr.onerror = () => settle(reject, new Error('chunk PUT network error'));
+    xhr.ontimeout = () => settle(reject, new Error('chunk PUT timeout (connection stalled)'));
     xhr.send(new Blob([cipherBuf], { type: ct }));
   });
 }

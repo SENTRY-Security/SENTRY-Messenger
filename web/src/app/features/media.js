@@ -335,13 +335,17 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   const { upload, objectPath } = sign;
   if (!upload?.url) throw new Error('sign-put missing upload.url');
 
-  // XHR upload for progress
+  // XHR upload for progress (with timeout to prevent permanent hangs)
   await new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
+
     const xhr = new XMLHttpRequest();
+    xhr.timeout = 180_000; // 3 minutes for single-file upload
     if (abortSignal) {
       const onAbort = () => {
         try { xhr.abort(); } catch { }
-        reject(new DOMException('aborted', 'AbortError'));
+        settle(reject, new DOMException('aborted', 'AbortError'));
       };
       if (abortSignal.aborted) {
         onAbort();
@@ -361,12 +365,13 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
         // [FIX] Fire explicit 100% — browsers may not fire onprogress
         // with loaded===total before onload, leaving progress at 99%.
         onProgress?.({ loaded: 1, total: 1, percent: 100 });
-        resolve(null);
+        settle(resolve, null);
       } else {
-        reject(new Error('PUT failed (status ' + xhr.status + ')'));
+        settle(reject, new Error('PUT failed (status ' + xhr.status + ')'));
       }
     };
-    xhr.onerror = () => reject(new Error('PUT network error'));
+    xhr.onerror = () => settle(reject, new Error('PUT network error'));
+    xhr.ontimeout = () => settle(reject, new Error('PUT timeout (connection stalled)'));
     xhr.send(new Blob([ct.cipherBuf], { type: ctForPut }));
   });
 

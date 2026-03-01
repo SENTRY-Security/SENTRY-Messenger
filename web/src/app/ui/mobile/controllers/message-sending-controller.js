@@ -262,6 +262,11 @@ export class MessageSendingController extends BaseController {
                     }
                 };
 
+                // [FIX] Guarantee endUpload() is ALWAYS called, even if sendDrMedia
+                // hangs (e.g. XHR stalls) or throws in an unexpected code path.
+                // Without this, isUploadBusy() stays true and blocks ALL subsequent
+                // file uploads across the entire session.
+                try {
                 try {
                     const res = await sendDrMedia({
                         peerAccountDigest: state.activePeerDigest,
@@ -281,17 +286,10 @@ export class MessageSendingController extends BaseController {
                     // Re-fetch msg to ensure we have latest ref
                     const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
                     const convId = res?.convId || state.conversationId;
-                    // Usage of controllers.messageStatus needed
-                    // We can access it via deps if we exposed it, or call it if we passed it.
-                    // Ideally we should use deps.controllers if circular deps are handled, or deps provided.
-                    // Currently deps usually doesn't include other controllers, except via facade.
-                    // But here we need messageStatus controller methods: getReplacementInfo, applyCounterTooLowReplaced etc.
-                    // We can add these to deps in messages-pane.js
 
                     const messageStatus = this.deps.messageStatus;
                     if (!messageStatus) {
                         console.error('MessageStatusController not available in deps');
-                        endUpload();
                         continue;
                     }
 
@@ -387,11 +385,7 @@ export class MessageSendingController extends BaseController {
                         this.updateMessagesUI({ preserveScroll: true });
                     }
 
-                    endUpload();
-
                 } catch (err) {
-                    endUpload();
-
                     // Unsupported video format — show user-friendly modal and remove the local message
                     if (err instanceof UnsupportedVideoFormatError || err?.name === 'UnsupportedVideoFormatError') {
                         const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
@@ -453,6 +447,12 @@ export class MessageSendingController extends BaseController {
                         this.applyUploadProgress(msg, { percent: 0, error: err?.message || err });
                         this.updateUploadOverlayUI(msg.id, msg.media);
                     }
+                }
+                } finally {
+                    // [FIX] Guarantee the upload lock is ALWAYS released.
+                    // endUpload() is idempotent — safe to call even if the cancel
+                    // callback already called it.
+                    endUpload();
                 }
             } // end for loop
         } catch (err) {
