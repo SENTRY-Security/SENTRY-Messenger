@@ -123,10 +123,10 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
             <span class="vv-time vv-time-current">0:00</span>
             <div class="vv-seekbar">
                 <div class="vv-seekbar-track">
-                    <div class="vv-seekbar-buffered"></div>
+                    <div class="vv-seekbar-ranges"></div>
                     <div class="vv-seekbar-progress"></div>
                 </div>
-                <div class="vv-seekbar-thumb"></div>
+                <div class="vv-seekbar-thumb"><img src="/assets/images/logo.svg" class="vv-seekbar-thumb-logo" alt="" /></div>
             </div>
             <span class="vv-time vv-time-total">0:00</span>
         </div>
@@ -147,7 +147,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     const timeCurrent = overlay.querySelector('.vv-time-current');
     const timeTotal = overlay.querySelector('.vv-time-total');
     const seekbar = overlay.querySelector('.vv-seekbar');
-    const seekBuffered = overlay.querySelector('.vv-seekbar-buffered');
+    const seekRanges = overlay.querySelector('.vv-seekbar-ranges');
     const seekProgress = overlay.querySelector('.vv-seekbar-progress');
     const seekThumb = overlay.querySelector('.vv-seekbar-thumb');
 
@@ -311,6 +311,39 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
     });
 
     /* ── Seek Bar ── */
+
+    // Build / update buffer-range segments inside .vv-seekbar-ranges.
+    // Each TimeRanges interval gets its own <div> positioned absolutely.
+    let _prevRangeKey = ''; // avoid unnecessary DOM updates
+    const updateBufferRanges = (dur) => {
+        if (!dur || dur <= 0) return;
+        try {
+            const buf = video.buffered;
+            const n = buf.length;
+            // Build a compact key to detect changes
+            let key = '';
+            for (let i = 0; i < n; i++) {
+                key += `${buf.start(i).toFixed(1)}-${buf.end(i).toFixed(1)},`;
+            }
+            if (key === _prevRangeKey) return;
+            _prevRangeKey = key;
+
+            // Rebuild children
+            seekRanges.innerHTML = '';
+            for (let i = 0; i < n; i++) {
+                const s = buf.start(i);
+                const e = buf.end(i);
+                const left = (s / dur) * 100;
+                const width = ((e - s) / dur) * 100;
+                const seg = document.createElement('div');
+                seg.className = 'vv-seekbar-range';
+                seg.style.left = `${left}%`;
+                seg.style.width = `${width}%`;
+                seekRanges.appendChild(seg);
+            }
+        } catch {}
+    };
+
     const updateSeekBar = () => {
         if (seekDragging) return;
         const dur = video.duration || 0;
@@ -320,13 +353,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
             seekProgress.style.width = `${pct}%`;
             seekThumb.style.left = `${pct}%`;
         }
-        // Buffer visualization
-        try {
-            if (video.buffered.length > 0 && dur > 0) {
-                const end = video.buffered.end(video.buffered.length - 1);
-                seekBuffered.style.width = `${(end / dur) * 100}%`;
-            }
-        } catch {}
+        updateBufferRanges(dur);
         timeCurrent.textContent = fmtTime(cur);
         timeTotal.textContent = fmtTime(dur);
     };
