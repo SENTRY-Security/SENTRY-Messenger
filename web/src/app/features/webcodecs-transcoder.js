@@ -253,24 +253,30 @@ function demuxFile(file, mp4boxMod) {
       }
     };
 
+    // Feed file to mp4box in 2MB chunks via file.slice() — avoids loading
+    // the entire file into memory. mp4box supports incremental appendBuffer.
+    const READ_CHUNK_SIZE = 2 * 1024 * 1024;
+    let readOffset = 0;
     try {
-      let buf = await file.arrayBuffer();
-      buf.fileStart = 0;
-      mp4boxFile.appendBuffer(buf);
+      while (readOffset < file.size) {
+        const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
+        const chunk = await file.slice(readOffset, end).arrayBuffer();
+        chunk.fileStart = readOffset;
+        mp4boxFile.appendBuffer(chunk);
+        readOffset = end;
+      }
       mp4boxFile.flush();
-      // mp4box reads synchronously — release the file buffer reference.
-      // Sample data references (s.data) point into mp4box's internal buffers,
-      // not into this ArrayBuffer, so it's safe to drop.
-      buf = null;
     } catch (err) {
       reject(new Error('無法解析此影片：' + (err?.message || err)));
       return;
     }
 
-    // mp4box processes synchronously; small delay for safety
-    setTimeout(() => {
-      resolve({ tracks, samples, duration: fileDuration });
-    }, 50);
+    if (tracks.length === 0) {
+      reject(new Error('影片不包含可播放的音視訊軌道'));
+      return;
+    }
+
+    resolve({ tracks, samples, duration: fileDuration });
   });
 }
 

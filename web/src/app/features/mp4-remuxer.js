@@ -82,6 +82,122 @@ function readU64(data, offset) {
   return hi * 0x100000000 + lo;
 }
 
+// ─── File-based box reading (avoids loading entire file into memory) ───
+
+/**
+ * Read a top-level MP4 box header from a File/Blob at the given byte offset.
+ * Returns { type, size, headerSize } or null if invalid/EOF.
+ * Only reads up to 16 bytes — does NOT load the box body.
+ */
+async function readBoxHeaderFromFile(file, offset) {
+  if (offset + 8 > file.size) return null;
+  const hdrBuf = new Uint8Array(
+    await file.slice(offset, Math.min(offset + 16, file.size)).arrayBuffer()
+  );
+  if (hdrBuf.length < 8) return null;
+  let size = readU32(hdrBuf, 0);
+  const type = String.fromCharCode(hdrBuf[4], hdrBuf[5], hdrBuf[6], hdrBuf[7]);
+  let headerSize = 8;
+  if (size === 1) {
+    if (hdrBuf.length < 16) return null;
+    size = readU64(hdrBuf, 8);
+    headerSize = 16;
+  }
+  if (size < headerSize) return null;
+  return { type, size, headerSize };
+}
+
+/**
+ * Count moof boxes in a File/Blob by scanning box headers without loading
+ * the file into memory. Each call reads only up to 16 bytes per top-level box.
+ *
+ * @param {File|Blob} file
+ * @returns {Promise<number>}
+ */
+export async function countMoofBoxesFromFile(file) {
+  let count = 0;
+  let offset = 0;
+  while (offset < file.size) {
+    const hdr = await readBoxHeaderFromFile(file, offset);
+    if (!hdr || offset + hdr.size > file.size) break;
+    if (hdr.type === 'moof') count++;
+    offset += hdr.size;
+  }
+  return count;
+}
+
+/**
+ * Async generator that yields fMP4 segments from a File/Blob without loading
+ * the entire file into memory. First yield is the init segment (ftyp + moov),
+ * then each media segment (moof + mdat pair).
+ *
+ * Only one segment's worth of data is in memory at a time — the caller should
+ * process (encrypt + upload) each segment before resuming the generator.
+ *
+ * @param {File|Blob} file
+ * @yields {{ trackIndex: number, data: Uint8Array }}
+ */
+export async function* iterateFragmentedSegmentsFromFile(file) {
+  const initParts = [];
+  let offset = 0;
+  let foundFirstMoof = false;
+  let currentSegParts = [];
+  let currentHasMoof = false;
+
+  while (offset < file.size) {
+    const hdr = await readBoxHeaderFromFile(file, offset);
+    if (!hdr || offset + hdr.size > file.size) break;
+
+    const boxType = hdr.type;
+    const boxData = new Uint8Array(
+      await file.slice(offset, offset + hdr.size).arrayBuffer()
+    );
+
+    if (!foundFirstMoof) {
+      if (boxType === 'moof') {
+        foundFirstMoof = true;
+        if (initParts.length > 0) {
+          yield { trackIndex: 0, data: concatU8(initParts) };
+          initParts.length = 0;
+        }
+        currentSegParts.push(boxData);
+        currentHasMoof = true;
+      } else {
+        initParts.push(boxData);
+      }
+    } else if (boxType === 'moof') {
+      if (currentSegParts.length > 0 && currentHasMoof) {
+        yield { trackIndex: 0, data: concatU8(currentSegParts) };
+        currentSegParts = [];
+        currentHasMoof = false;
+      }
+      currentSegParts.push(boxData);
+      currentHasMoof = true;
+    } else if (boxType === 'mdat') {
+      currentSegParts.push(boxData);
+      if (currentHasMoof) {
+        yield { trackIndex: 0, data: concatU8(currentSegParts) };
+        currentSegParts = [];
+        currentHasMoof = false;
+      }
+    } else if (SEGMENT_PREFIX_TYPES.has(boxType)) {
+      currentSegParts.push(boxData);
+    } else if (TRAILING_BOX_TYPES.has(boxType)) {
+      // discard trailing non-media boxes
+    } else {
+      if (currentHasMoof) {
+        currentSegParts.push(boxData);
+      }
+    }
+
+    offset += hdr.size;
+  }
+
+  if (currentSegParts.length > 0 && currentHasMoof) {
+    yield { trackIndex: 0, data: concatU8(currentSegParts) };
+  }
+}
+
 // ─── Helpers ───
 
 /**
@@ -452,182 +568,176 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
     return { tracks: null, segments: null, contentType: type || 'application/octet-stream', remuxed: false, name };
   }
 
-  // Read file into memory
+  // Peek at first 64KB to check if already fragmented — avoids loading the full file.
   onProgress?.({ percent: 0 });
-  let fileBuffer = await file.arrayBuffer();
-  let fileU8 = new Uint8Array(fileBuffer);
-  onProgress?.({ percent: 30 });
+  const peekBuf = new Uint8Array(
+    await file.slice(0, Math.min(65536, file.size)).arrayBuffer()
+  );
+  onProgress?.({ percent: 10 });
 
-  if (isAlreadyFragmented(fileU8)) {
-    // Already-fragmented MP4 — split at moof boundaries.
-    // Works for both single-track and multi-track: the init segment contains
-    // the full moov with all track descriptions, and each moof+mdat pair
-    // references a specific track_ID that the browser demuxes internally.
-    const { initSegment, mediaSegments } = splitFragmentedMp4(fileU8);
-    // splitFragmentedMp4 creates independent copies via concatU8 —
-    // safe to release the original file buffer now.
-    fileU8 = null;
-    fileBuffer = null;
-    if (!initSegment.byteLength || mediaSegments.length === 0) {
+  if (isAlreadyFragmented(peekBuf)) {
+    // Already-fragmented MP4 — read boxes from file via file.slice() instead
+    // of loading the entire file. Each box is read individually; only one
+    // segment copy exists at a time during iteration.
+    const segments = [];
+    for await (const seg of iterateFragmentedSegmentsFromFile(file)) {
+      segments.push(seg);
+    }
+    if (segments.length < 2 || !segments[0].data.byteLength) {
       throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
     }
+    const initSegment = segments[0].data;
     const track = { type: 'muxed', codec: null, initSegment, mediaSegments: null };
-    const segments = [
-      { trackIndex: 0, data: initSegment },
-      ...mediaSegments.map(data => ({ trackIndex: 0, data }))
-    ];
     onProgress?.({ percent: 100 });
     return { tracks: [track], segments, contentType: 'video/mp4', remuxed: false, name };
   }
 
   // Need to remux: load mp4box.js and fragment the file
-  onProgress?.({ percent: 40 });
+  onProgress?.({ percent: 20 });
   const mp4boxMod = await loadMp4box();
-  onProgress?.({ percent: 60 });
+  onProgress?.({ percent: 30 });
   const MP4Box = mp4boxMod.default || mp4boxMod.createFile || mp4boxMod;
   const createFileFn = typeof MP4Box.createFile === 'function' ? MP4Box.createFile : MP4Box;
 
-  return new Promise((resolve, reject) => {
-    let mp4boxFile;
+  let mp4boxFile;
+  try {
+    mp4boxFile = typeof createFileFn === 'function' ? createFileFn() : new createFileFn();
+  } catch {
     try {
-      mp4boxFile = typeof createFileFn === 'function' ? createFileFn() : new createFileFn();
-    } catch {
-      try {
-        mp4boxFile = MP4Box.createFile();
-      } catch (err2) {
-        reject(new Error('mp4box.js 初始化失敗：' + (err2?.message || err2)));
-        return;
-      }
+      mp4boxFile = MP4Box.createFile();
+    } catch (err2) {
+      throw new Error('mp4box.js 初始化失敗：' + (err2?.message || err2));
     }
+  }
 
-    // Per-track state: trackId → { type, codec, initSegment, mediaSegments[] }
-    const trackMap = {};
-    let trackOrder = [];
-    const orderedMediaSegs = [];
+  // Per-track state: trackId → { type, codec, initSegment }
+  const trackMap = {};
+  let trackOrder = [];
+  const orderedMediaSegs = [];
+  let mp4boxError = null;
+  let readyFired = false;
 
-    mp4boxFile.onError = (err) => {
-      reject(new Error('影片解析失敗：' + (err?.message || err || 'unknown mp4box error')));
-    };
+  mp4boxFile.onError = (err) => {
+    mp4boxError = new Error('影片解析失敗：' + (err?.message || err || 'unknown mp4box error'));
+  };
 
-    mp4boxFile.onReady = (info) => {
-      if (!info || !info.tracks || info.tracks.length === 0) {
-        reject(new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道'));
-        return;
-      }
-
-      const avTracks = info.tracks.filter(t => {
-        const tt = getTrackType(t);
-        return tt === 'video' || tt === 'audio';
-      });
-
-      if (avTracks.length === 0) {
-        reject(new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道'));
-        return;
-      }
-
-      trackOrder = avTracks.map(t => t.id);
-
-      for (const track of avTracks) {
-        const trackType = getTrackType(track);
-        trackMap[track.id] = {
-          type: trackType,
-          codec: track.codec || null,
-          initSegment: null,
-          mediaSegments: []
-        };
-        mp4boxFile.setSegmentOptions(track.id, track.id, {
-          nbSamples: 100
-        });
-      }
-
-      const initSegs = mp4boxFile.initializeSegmentation();
-      for (const seg of initSegs) {
-        const tid = seg.id;
-        if (trackMap[tid]) {
-          trackMap[tid].initSegment = new Uint8Array(seg.buffer);
-        }
-      }
-
-      mp4boxFile.start();
-    };
-
-    mp4boxFile.onSegment = (id, _user, buffer, _sampleNum, _isLast) => {
-      const data = new Uint8Array(buffer);
-      // Only store in orderedMediaSegs — trackMap.mediaSegments is redundant
-      // and doubles memory usage. We build the final segments from orderedMediaSegs.
-      orderedMediaSegs.push({ trackId: id, data });
-    };
-
-    // Feed the file buffer to mp4box.
-    // mp4box requires fileStart property but does NOT need a copy —
-    // it reads synchronously during appendBuffer.
-    fileBuffer.fileStart = 0;
-
-    try {
-      mp4boxFile.appendBuffer(fileBuffer);
-    } catch (err) {
-      reject(new UnsupportedVideoFormatError('無法解析此影片檔案：' + (err?.message || err)));
+  mp4boxFile.onReady = (info) => {
+    if (!info || !info.tracks || info.tracks.length === 0) {
+      mp4boxError = new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道');
       return;
     }
 
-    mp4boxFile.flush();
+    const avTracks = info.tracks.filter(t => {
+      const tt = getTrackType(t);
+      return tt === 'video' || tt === 'audio';
+    });
 
-    // mp4box reads synchronously — release the file buffer.
-    // Segment data in onSegment comes from mp4box's internal buffers, not fileBuffer.
-    fileBuffer = null;
-    fileU8 = null;
+    if (avTracks.length === 0) {
+      mp4boxError = new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道');
+      return;
+    }
 
-    // mp4box.js processes synchronously in appendBuffer/flush, but use
-    // a short delay as a safety net for any async callback scheduling.
-    setTimeout(() => {
-      try {
-        const perTrackData = trackOrder.map(tid => trackMap[tid]).filter(t => t && t.initSegment);
+    trackOrder = avTracks.map(t => t.id);
 
-        if (perTrackData.length === 0) {
-          reject(new UnsupportedVideoFormatError('影片轉檔失敗：無法產生有效的分片格式'));
-          return;
-        }
+    for (const track of avTracks) {
+      const trackType = getTrackType(track);
+      trackMap[track.id] = {
+        type: trackType,
+        codec: track.codec || null,
+        initSegment: null,
+      };
+      mp4boxFile.setSegmentOptions(track.id, track.id, {
+        nbSamples: 100
+      });
+    }
 
-        // Merge per-track init segments into one combined muxed init segment.
-        // Single-track: pass-through. Multi-track: merge moov traks.
-        const combinedInit = perTrackData.length === 1
-          ? perTrackData[0].initSegment
-          : mergeInitSegments(perTrackData.map(t => t.initSegment));
-
-        // Combine codec strings: e.g. 'avc1.64001E,mp4a.40.2'
-        const combinedCodec = perTrackData.map(t => t.codec).filter(Boolean).join(',') || null;
-
-        // Release per-track data — no longer needed after merging
-        for (const tid of trackOrder) {
-          if (trackMap[tid]) {
-            trackMap[tid].initSegment = null;
-            trackMap[tid] = null;
-          }
-        }
-
-        // Build flat segments array for upload:
-        // [combined-init, mediaSeg1, mediaSeg2, ...]
-        const segments = [
-          { trackIndex: 0, data: combinedInit },
-          ...orderedMediaSegs.map(ms => ({ trackIndex: 0, data: ms.data }))
-        ];
-
-        // Release orderedMediaSegs — data now lives in segments array
-        orderedMediaSegs.length = 0;
-
-        const muxedTrack = {
-          type: 'muxed',
-          codec: combinedCodec,
-          initSegment: combinedInit,
-          mediaSegments: null // Not needed — segments array is the canonical source
-        };
-
-        const outputName = name.replace(/\.(mov|m4v|qt)$/i, '.mp4');
-        onProgress?.({ percent: 100 });
-        resolve({ tracks: [muxedTrack], segments, contentType: 'video/mp4', remuxed: true, name: outputName });
-      } catch (err) {
-        reject(new Error('影片重封裝失敗：' + (err?.message || err)));
+    const initSegs = mp4boxFile.initializeSegmentation();
+    for (const seg of initSegs) {
+      const tid = seg.id;
+      if (trackMap[tid]) {
+        trackMap[tid].initSegment = new Uint8Array(seg.buffer);
       }
-    }, 50);
-  });
+    }
+
+    mp4boxFile.start();
+    readyFired = true;
+  };
+
+  mp4boxFile.onSegment = (id, _user, buffer, _sampleNum, _isLast) => {
+    orderedMediaSegs.push({ trackId: id, data: new Uint8Array(buffer) });
+  };
+
+  // Feed file to mp4box in 2MB chunks via file.slice() — avoids loading entire
+  // file into memory. mp4box.js supports incremental appendBuffer with fileStart.
+  const READ_CHUNK_SIZE = 2 * 1024 * 1024;
+  let readOffset = 0;
+  try {
+    while (readOffset < file.size) {
+      if (mp4boxError) break;
+      const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
+      const chunk = await file.slice(readOffset, end).arrayBuffer();
+      chunk.fileStart = readOffset;
+      mp4boxFile.appendBuffer(chunk);
+      readOffset = end;
+      // Report progress: 30–70% range for feeding data to mp4box
+      onProgress?.({ percent: 30 + Math.round((readOffset / file.size) * 40) });
+    }
+  } catch (err) {
+    throw new UnsupportedVideoFormatError('無法解析此影片檔案：' + (err?.message || err));
+  }
+
+  if (mp4boxError) throw mp4boxError;
+
+  mp4boxFile.flush();
+
+  if (mp4boxError) throw mp4boxError;
+
+  if (!readyFired) {
+    throw new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道');
+  }
+
+  // Build result
+  const perTrackData = trackOrder.map(tid => trackMap[tid]).filter(t => t && t.initSegment);
+
+  if (perTrackData.length === 0) {
+    throw new UnsupportedVideoFormatError('影片轉檔失敗：無法產生有效的分片格式');
+  }
+
+  // Merge per-track init segments into one combined muxed init segment.
+  // Single-track: pass-through. Multi-track: merge moov traks.
+  const combinedInit = perTrackData.length === 1
+    ? perTrackData[0].initSegment
+    : mergeInitSegments(perTrackData.map(t => t.initSegment));
+
+  // Combine codec strings: e.g. 'avc1.64001E,mp4a.40.2'
+  const combinedCodec = perTrackData.map(t => t.codec).filter(Boolean).join(',') || null;
+
+  // Release per-track data — no longer needed after merging
+  for (const tid of trackOrder) {
+    if (trackMap[tid]) {
+      trackMap[tid].initSegment = null;
+      trackMap[tid] = null;
+    }
+  }
+
+  // Build flat segments array for upload:
+  // [combined-init, mediaSeg1, mediaSeg2, ...]
+  const segments = [
+    { trackIndex: 0, data: combinedInit },
+    ...orderedMediaSegs.map(ms => ({ trackIndex: 0, data: ms.data }))
+  ];
+
+  // Release orderedMediaSegs — data now lives in segments array
+  orderedMediaSegs.length = 0;
+
+  const muxedTrack = {
+    type: 'muxed',
+    codec: combinedCodec,
+    initSegment: combinedInit,
+    mediaSegments: null // Not needed — segments array is the canonical source
+  };
+
+  const outputName = name.replace(/\.(mov|m4v|qt)$/i, '.mp4');
+  onProgress?.({ percent: 100 });
+  return { tracks: [muxedTrack], segments, contentType: 'video/mp4', remuxed: true, name: outputName };
 }

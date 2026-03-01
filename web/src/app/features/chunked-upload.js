@@ -20,7 +20,7 @@ import { b64 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import {
   remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError,
-  isAlreadyFragmented, countMoofBoxes, iterateFragmentedSegments
+  isAlreadyFragmented, countMoofBoxesFromFile, iterateFragmentedSegmentsFromFile
 } from './mp4-remuxer.js';
 import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
 
@@ -148,25 +148,25 @@ function uploadChunkXhr({ url, method, headers, cipherBuf, abortSignal }) {
 
 /**
  * Streaming upload for already-fragmented fMP4 files.
- * Reads file once, then iterates segments via generator — only a few segments
- * in memory at any time (bounded by UPLOAD_CONCURRENCY) instead of all at once.
- * Peak memory: ~1x file size + a few segment copies, vs ~2x for batch mode.
+ * Reads boxes directly from the File via file.slice() — never loads the entire
+ * file into memory. Each segment is read, encrypted, and uploaded before the
+ * next is read. Peak memory: a few segments (bounded by UPLOAD_CONCURRENCY).
  */
 async function _streamingUploadFragmented({
   file, convId, cryptoKey, useSharedKey, sharedKeyU8,
   name, direction, dir, mk,
   PHASE, onProgress, abortSignal
 }) {
-  const fileBuffer = await file.arrayBuffer();
-  const fileU8 = new Uint8Array(fileBuffer);
-
-  const moofCount = countMoofBoxes(fileU8);
+  // Count moof boxes by scanning box headers — only reads 16 bytes per box,
+  // never loads the file into memory.
+  const moofCount = await countMoofBoxesFromFile(file);
   if (moofCount === 0) {
     throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
   }
 
   const chunkCount = 1 + moofCount;
   const contentType = 'video/mp4';
+  const totalFileSize = file.size;
 
   const dirSegments = normalizeDirSegments(dir);
   let storageDir = '';
@@ -175,9 +175,9 @@ async function _streamingUploadFragmented({
     storageDir = await deriveStorageDirPath(dirSegments, mk);
   }
 
-  // Sign URLs (use file size as approximate totalSize for the API)
+  // Sign URLs (use file.size as totalSize for the API)
   const { r: rSign, data: signData } = await apiSignPutChunked({
-    convId, totalSize: fileU8.byteLength, chunkCount, contentType, direction,
+    convId, totalSize: totalFileSize, chunkCount, contentType, direction,
     dir: storageDir || undefined
   });
   if (!rSign.ok) throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
@@ -187,9 +187,9 @@ async function _streamingUploadFragmented({
   }
   onProgress?.({ percent: PHASE.signEnd });
 
-  // Stream segments: iterate with generator, encrypt & upload with concurrency.
-  // Each segment is a copy produced by concatU8 inside the generator — after
-  // encryption + upload, the copy goes out of scope and can be GC'd.
+  // Stream segments from file via async generator — reads each box individually
+  // with file.slice(), never loading the entire file into memory.
+  // Each segment is processed (encrypt + upload) before the next is read.
   let uploadedBytes = 0;
   let actualTotalSize = 0;
   const chunkMetas = new Array(chunkCount);
@@ -198,7 +198,7 @@ async function _streamingUploadFragmented({
 
   try {
     const pool = [];
-    for (const { trackIndex, data } of iterateFragmentedSegments(fileU8)) {
+    for await (const { trackIndex, data } of iterateFragmentedSegmentsFromFile(file)) {
       if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
       if (uploadError) throw uploadError;
 
@@ -221,8 +221,8 @@ async function _streamingUploadFragmented({
         uploadedBytes += segSize;
         const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
         onProgress?.({
-          loaded: uploadedBytes, total: fileU8.byteLength,
-          percent: Math.round(PHASE.chunkStart + (uploadedBytes / fileU8.byteLength) * chunkRange)
+          loaded: uploadedBytes, total: totalFileSize,
+          percent: Math.round(PHASE.chunkStart + (uploadedBytes / totalFileSize) * chunkRange)
         });
       })().catch(err => { if (!uploadError) uploadError = err; throw err; });
 
