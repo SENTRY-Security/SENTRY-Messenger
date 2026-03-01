@@ -93,11 +93,25 @@ function getTrackRotation(track) {
 
 // ─── Build encoder configs from mp4box track info ───
 
-function videoEncoderConfig(track) {
-  const codedW = track.video?.width || track.track_width || 640;
-  const codedH = track.video?.height || track.track_height || 480;
+function videoEncoderConfig(track, constraints = {}) {
+  let codedW = track.video?.width || track.track_width || 640;
+  let codedH = track.video?.height || track.track_height || 480;
   const rotation = getTrackRotation(track);
   const swap = rotation === 90 || rotation === 270;
+
+  // Apply resolution constraints (for fallback retry with lower quality)
+  if (constraints.maxWidth || constraints.maxHeight) {
+    const maxW = constraints.maxWidth || Infinity;
+    const maxH = constraints.maxHeight || Infinity;
+    const scale = Math.min(1, maxW / codedW, maxH / codedH);
+    if (scale < 1) {
+      codedW = (Math.round(codedW * scale) >> 1) << 1; // round to even
+      codedH = (Math.round(codedH * scale) >> 1) << 1;
+    }
+  }
+
+  const baseBitrate = track.bitrate || 2_000_000;
+  const maxBitrate = constraints.maxBitrate || 5_000_000;
 
   // Target: H.264 Baseline for maximum MSE compatibility
   // If source has 90°/270° rotation, swap output dimensions so the
@@ -106,10 +120,7 @@ function videoEncoderConfig(track) {
     codec: 'avc1.42001E', // Baseline profile, level 3.0
     width: swap ? codedH : codedW,
     height: swap ? codedW : codedH,
-    bitrate: Math.min(
-      (track.bitrate || 2_000_000),
-      5_000_000
-    ),
+    bitrate: Math.min(baseBitrate, maxBitrate),
     framerate: track.video?.frame_rate || track.timescale / (track.samples_duration / track.nb_samples) || 30,
     latencyMode: 'quality',
     avc: { format: 'avc' }, // Annex-B → mp4box expects AVC (length-prefixed)
@@ -152,7 +163,7 @@ function concatU8(arrays) {
  * @returns {Promise<{ segments, tracks, contentType } | null>}
  *   null = input already MSE-safe, use remux instead
  */
-export async function transcodeToFmp4(file, { onProgress } = {}) {
+export async function transcodeToFmp4(file, { onProgress, encoderConstraints, onTranscodeStart } = {}) {
   if (!file) throw new Error('file required');
   if (!isWebCodecsSupported()) return null; // fallback to remux
 
@@ -178,8 +189,12 @@ export async function transcodeToFmp4(file, { onProgress } = {}) {
     return null;
   }
 
+  // Notify caller that transcode is actually needed (for UI status updates).
+  // This only fires for non-H.264 input (e.g. HEVC), NOT for already-safe files.
+  onTranscodeStart?.();
+
   // 4. Transcode via WebCodecs
-  const result = await doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onProgress);
+  const result = await doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onProgress, encoderConstraints);
   return result;
 }
 
@@ -261,7 +276,7 @@ function demuxFile(file, mp4boxMod) {
 
 // ─── Transcode pipeline ───
 
-async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onProgress) {
+async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onProgress, encoderConstraints = {}) {
   const videoTrack = inputTracks.find(t => t._type === 'video');
   const audioTrack = inputTracks.find(t => t._type === 'audio');
 
@@ -285,7 +300,7 @@ async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onPro
 
   // ── Video: decode → re-encode ──
 
-  const vEncConfig = videoEncoderConfig(videoTrack);
+  const vEncConfig = videoEncoderConfig(videoTrack, encoderConstraints);
 
   // Check encoder support
   const vSupport = await VideoEncoder.isConfigSupported(vEncConfig);

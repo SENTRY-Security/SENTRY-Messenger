@@ -232,6 +232,7 @@ export class MessageSendingController extends BaseController {
                     endUpload();
                 });
 
+                let _lastUploadStatus = null;
                 const progressHandler = (progress) => {
                     const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
                     if (!msg) return;
@@ -242,6 +243,14 @@ export class MessageSendingController extends BaseController {
                     this.applyUploadProgress(msg, { percent });
                     this.updateUploadOverlayUI(msg.id, msg.media);
                     if (Number.isFinite(percent)) updateUploadProgress(percent);
+
+                    // Show transcode status changes as toast (e.g. retry notification)
+                    if (progress?.statusText && progress.statusText !== _lastUploadStatus) {
+                        _lastUploadStatus = progress.statusText;
+                        this.deps.showToast?.(progress.statusText);
+                    } else if (progress?.statusText === null) {
+                        _lastUploadStatus = null;
+                    }
                 };
 
                 try {

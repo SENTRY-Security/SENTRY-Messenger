@@ -24,6 +24,9 @@ import {
 } from './mp4-remuxer.js';
 import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
 
+// Fallback encoder constraints for WebCodecs retry (lower quality to reduce OOM risk)
+const FALLBACK_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000 };
+
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
 const UPLOAD_CONCURRENCY = 3;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
@@ -93,6 +96,21 @@ function normalizeSharedKey(input) {
     }
   }
   return null;
+}
+
+/**
+ * Check if the current browser supports HEVC playback through MSE/MMS.
+ * Used to decide whether HEVC fMP4 (after failed H.264 transcode) is
+ * viable for streaming, or if the upload should be rejected.
+ */
+function _checkHevcMseSupport() {
+  const MSCtor = (typeof self !== 'undefined' && typeof self.ManagedMediaSource === 'function')
+    ? self.ManagedMediaSource
+    : (typeof MediaSource !== 'undefined' ? MediaSource : null);
+  if (!MSCtor?.isTypeSupported) return false;
+  return MSCtor.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.b0"') ||
+         MSCtor.isTypeSupported('video/mp4; codecs="hvc1"') ||
+         MSCtor.isTypeSupported('video/mp4; codecs="hev1.1.6.L93.b0"');
 }
 
 function resolveContentType(file) {
@@ -333,28 +351,46 @@ export async function encryptAndPutChunked({
       throw new UnsupportedVideoFormatError(`不支援此影片格式：${rawType}`);
     }
 
-    // Preprocessing: WebCodecs transcode → remux fallback
+    // Preprocessing: WebCodecs transcode → retry with lower quality → remux fallback
     // transcodeToFmp4 returns null if input is already MSE-safe (H.264+AAC)
     // or if WebCodecs is unavailable, signalling to use the fast remux path.
     let preprocessResult = null;
 
+    // Progress helper for WebCodecs transcode phases
+    const transcodeProgress = ({ phase, percent }) => {
+      if (phase === 'load') {
+        onProgress?.({ percent: Math.round(percent * 2 / 100) });
+      } else {
+        onProgress?.({ percent: 2 + Math.round(percent * (PHASE.remuxEnd - 2) / 100) });
+      }
+    };
+
     if (isWebCodecsSupported()) {
       try {
         preprocessResult = await transcodeToFmp4(file, {
-          onProgress: ({ phase, percent }) => {
-            if (phase === 'load') {
-              // Loading phase: 0-2% of overall
-              onProgress?.({ percent: Math.round(percent * 2 / 100) });
-            } else {
-              // Encoding phase: 2-10% of overall
-              onProgress?.({ percent: 2 + Math.round(percent * (PHASE.remuxEnd - 2) / 100) });
-            }
+          onProgress: transcodeProgress,
+          onTranscodeStart: () => {
+            // Fires only when transcode is actually needed (HEVC/VP9 input),
+            // NOT for H.264 input that just needs remux.
+            onProgress?.({ percent: 1, statusText: '偵測到非 H.264 影片，正在轉換格式…' });
           }
         });
       } catch (err) {
-        // WebCodecs failed — fall through to remux
-        console.warn('[chunked-upload] WebCodecs transcode failed, falling back to remux:', err?.message);
-        preprocessResult = null;
+        console.warn('[chunked-upload] WebCodecs transcode failed:', err?.message);
+
+        // Retry with conservative encoder settings (720p, 1.5Mbps) to reduce
+        // OOM risk on memory-constrained devices (e.g. older iPhones).
+        onProgress?.({ percent: 1, statusText: '影片轉換失敗，正在以較低品質重試…' });
+        try {
+          preprocessResult = await transcodeToFmp4(file, {
+            onProgress: transcodeProgress,
+            encoderConstraints: FALLBACK_ENCODER
+          });
+        } catch (retryErr) {
+          console.warn('[chunked-upload] WebCodecs retry also failed:', retryErr?.message);
+          preprocessResult = null;
+          onProgress?.({ statusText: null });
+        }
       }
     }
 
@@ -366,7 +402,7 @@ export async function encryptAndPutChunked({
         // Already-fragmented fMP4: streaming upload (low memory).
         // Segments are produced one at a time via generator instead of
         // accumulating all in memory. Peak memory: ~1x file vs ~2x.
-        onProgress?.({ percent: PHASE.remuxEnd });
+        onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
         return _streamingUploadFragmented({
           file, convId, cryptoKey, useSharedKey, sharedKeyU8,
           name, direction, dir, mk,
@@ -374,15 +410,30 @@ export async function encryptAndPutChunked({
         });
       }
 
-      // Not fragmented — remux to fMP4 via mp4box.js
+      // Not fragmented — remux to fMP4 via mp4box.js (keeps original codec)
       preprocessResult = await remuxToFragmentedMp4(file, {
         onProgress: ({ percent }) => {
           onProgress?.({ percent: Math.round(percent * PHASE.remuxEnd / 100) });
         }
       });
+
+      // Guard: if the remuxed output uses a codec that isn't universally
+      // MSE-compatible (e.g. HEVC after failed transcode), verify the current
+      // browser can stream it. Reject early rather than uploading data that
+      // forces blob-URL fallback (OOM risk on large files in iOS Safari).
+      const outCodec = preprocessResult?.tracks?.[0]?.codec || '';
+      if (outCodec && !/^avc/i.test(outCodec)) {
+        if (_checkHevcMseSupport()) {
+          console.info(`[chunked-upload] proceeding with HEVC fMP4 (MSE HEVC supported on this browser)`);
+        } else {
+          throw new UnsupportedVideoFormatError(
+            '此影片使用 HEVC 編碼，無法在此裝置上串流播放。請在相機設定中切換為「最相容」(H.264) 後重新錄製。'
+          );
+        }
+      }
     }
 
-    onProgress?.({ percent: PHASE.remuxEnd });
+    onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
     contentType = preprocessResult.contentType;
 
     if (preprocessResult.segments) {
