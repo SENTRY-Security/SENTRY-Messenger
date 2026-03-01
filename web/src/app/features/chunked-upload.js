@@ -447,7 +447,10 @@ async function _streamingTranscodeUpload({
     if (uploadError) throw uploadError;
 
     const idx = chunkIndex++;
-    onSegmentProduced?.(chunkIndex, totalExpectedSegments);
+    // Use transcoder's full-moov-parsed expectedSegments when available (more
+    // accurate than probe estimate which may only read partial moov headers).
+    const segTotal = seg.expectedSegments || totalExpectedSegments;
+    onSegmentProduced?.(chunkIndex, segTotal);
     const segData = seg?.data;
     if (!segData || !segData.byteLength) {
       console.warn('[streaming-upload] skipping empty segment at index', idx);
