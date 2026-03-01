@@ -353,7 +353,9 @@ function _updateStatsDisplay() {
     const speed = _calcSpeed();
     const loadedStr = _fmtBytes(_uploadLoaded);
     const totalStr = _uploadTotal > 0 ? _fmtBytes(_uploadTotal) : '—';
-    const speedStr = speed > 0 ? `${_fmtBytes(speed)}/s` : '';
+    const speedStr = speed > 0
+        ? `${_fmtBytes(speed)}/s`
+        : (_uploadLoaded > 0 ? '計算中…' : '—');
 
     // Reuse existing child elements if possible (avoids flicker from innerHTML='')
     let line1 = _uploadStatsEl.firstElementChild;
