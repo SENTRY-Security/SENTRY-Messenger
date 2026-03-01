@@ -536,8 +536,16 @@ function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSou
       return;
     }
 
-    if (appending || paused || !sourceBuffer) return;
-    if (sourceBuffer.updating) return;
+    if (appending || paused || !sourceBuffer) {
+      if (queue.length > 0) {
+        console.info(`[mse-queue] blocked: appending=${appending}, paused=${paused}, sb=${!!sourceBuffer}, qLen=${queue.length}, msState=${ms?.readyState}`);
+      }
+      return;
+    }
+    if (sourceBuffer.updating) {
+      console.info(`[mse-queue] blocked: sourceBuffer.updating=true, qLen=${queue.length}`);
+      return;
+    }
 
     // Proactive eviction: if too much played buffer has accumulated,
     // evict before appending the next chunk to keep memory under control.

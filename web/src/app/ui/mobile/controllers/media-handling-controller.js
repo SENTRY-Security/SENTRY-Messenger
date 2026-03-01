@@ -744,15 +744,30 @@ export class MediaHandlingController extends BaseController {
         };
 
         const doReappend = async (seekTime) => {
+            // Log ALL entry conditions for diagnostics
+            const _bufRanges = [];
+            try {
+                const _b = video.buffered;
+                for (let _i = 0; _i < _b.length; _i++) _bufRanges.push(`${_b.start(_i).toFixed(1)}-${_b.end(_i).toFixed(1)}`);
+            } catch {}
+            console.info(`[video-seek] doReappend(${seekTime.toFixed(1)}) entry: ` +
+                `destroyed=${destroyed}, msePlayer=${!!msePlayer}, reappending=${reappending}, ` +
+                `dur=${video.duration?.toFixed(1)}, readyState=${video.readyState}, ` +
+                `buffered=[${_bufRanges.join(', ')}]`);
+
             if (destroyed || !msePlayer) return;
             if (reappending) {
                 // Another re-append in progress — remember this seek for later
                 pendingSeekTime = seekTime;
+                console.info(`[video-seek] queued as pending (reappending in progress)`);
                 return;
             }
 
             const dur = video.duration;
-            if (!dur || !isFinite(dur) || dur <= 0) return;
+            if (!dur || !isFinite(dur) || dur <= 0) {
+                console.warn(`[video-seek] skipped: invalid duration ${dur}`);
+                return;
+            }
 
             // Check if there's enough buffer AHEAD of the seek position.
             // A simple isTimeBuffered(seekTime) with tolerance can return true
@@ -770,7 +785,11 @@ export class MediaHandlingController extends BaseController {
                 } catch {}
                 return false;
             })();
-            if (hasEnoughBuffer) return;
+            if (hasEnoughBuffer) {
+                console.info(`[video-seek] skipped: already buffered at ${seekTime.toFixed(1)}s`);
+                return;
+            }
+            console.info(`[video-seek] proceeding with re-append for ${seekTime.toFixed(1)}s`);
 
             reappending = true;
             viewer.showBuffering('載入中…');
@@ -894,6 +913,7 @@ export class MediaHandlingController extends BaseController {
         // Debounced seek handler — waits for drag to settle before re-appending.
         // Also cancels any pending onWaiting trigger to avoid double re-append.
         const onSeek = (seekTime) => {
+            console.info(`[video-seek] onSeek fired: ${seekTime.toFixed(1)}s`);
             if (seekTimer) clearTimeout(seekTimer);
             if (waitingReappendTimer) { clearTimeout(waitingReappendTimer); waitingReappendTimer = null; }
             seekTimer = setTimeout(() => doReappend(seekTime), 250);
