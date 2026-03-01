@@ -747,8 +747,23 @@ export class MediaHandlingController extends BaseController {
             const dur = video.duration;
             if (!dur || !isFinite(dur) || dur <= 0) return;
 
-            // Already buffered at this position — nothing to do
-            if (msePlayer.isTimeBuffered(seekTime)) return;
+            // Check if there's enough buffer AHEAD of the seek position.
+            // A simple isTimeBuffered(seekTime) with tolerance can return true
+            // even when seekTime is at the very edge of the buffer — there's
+            // technically "buffered" data at that point, but not enough ahead
+            // for continued playback. Require at least 0.5s of buffer ahead.
+            const hasEnoughBuffer = (() => {
+                try {
+                    const buf = video.buffered;
+                    for (let i = 0; i < buf.length; i++) {
+                        if (seekTime >= buf.start(i) - 0.1 && seekTime <= buf.end(i) - 0.5) {
+                            return true; // seekTime is well inside this range (not at edge)
+                        }
+                    }
+                } catch {}
+                return false;
+            })();
+            if (hasEnoughBuffer) return;
 
             reappending = true;
             viewer.showBuffering('載入中…');
@@ -770,8 +785,10 @@ export class MediaHandlingController extends BaseController {
                 msePlayer.resumeQueues();
 
                 // Use precise chunk time index to find exactly which chunks
-                // cover the seek position. Start with ±1s margin, widen if needed.
-                let margin = 1.0;
+                // cover the seek position. Start with ±5s margin to ensure
+                // enough data AHEAD for continuous playback (not just at the
+                // exact seek point), and widen if needed.
+                let margin = 5.0;
                 let indices = findChunksForTime(seekTime, margin);
 
                 // Progressively widen until we find chunks (handles edge cases
@@ -837,14 +854,6 @@ export class MediaHandlingController extends BaseController {
                 }
                 reappending = false;
 
-                // If another seek arrived during this re-append, process it now
-                if (pendingSeekTime !== null && !destroyed) {
-                    const nextTime = pendingSeekTime;
-                    pendingSeekTime = null;
-                    doReappend(nextTime);
-                    return; // skip hideBuffering — the next re-append will handle it
-                }
-
                 // Resume playback after re-append. The initial streaming's
                 // auto-resume watchdog was already cleared (streamingComplete),
                 // so without an explicit play() the video stays paused after
@@ -853,11 +862,18 @@ export class MediaHandlingController extends BaseController {
                     video.play().catch(() => {});
                 }
 
-                // Always hide spinner after re-append completes. Even if
-                // isTimeBuffered returns false (edge case: segment boundary
-                // near seek point), the data IS appended and the browser
-                // will resume once it processes the buffered segments.
+                // ALWAYS hide spinner before potentially recursing.
+                // Previously, the pendingSeekTime branch returned early
+                // and the recursive doReappend could return early too
+                // (hasEnoughBuffer=true), leaving the overlay stuck.
                 viewer.hideBuffering();
+
+                // If another seek arrived during this re-append, process it now
+                if (pendingSeekTime !== null && !destroyed) {
+                    const nextTime = pendingSeekTime;
+                    pendingSeekTime = null;
+                    doReappend(nextTime);
+                }
             }
         };
 
